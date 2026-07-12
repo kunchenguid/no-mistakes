@@ -105,26 +105,30 @@ func newDoctorCmd() *cobra.Command {
 				fmt.Fprintf(w, "  %s\n", sCyan.Render("Routing"))
 
 				globalCfg := &config.GlobalConfig{Routing: config.DefaultRoutingConfig()}
+				routingResolved := p != nil
 				if p != nil {
 					if gc, gerr := config.LoadGlobal(p.ConfigFile()); gerr != nil {
 						fail("config        ", gerr.Error())
 						allOK = false
+						routingResolved = false
 					} else {
 						globalCfg = gc
 					}
 				}
-				routing := globalCfg.Routing
+				effectiveRepoCfg := &config.RepoConfig{}
 				if workDir, rerr := git.FindGitRoot("."); rerr == nil {
 					defaultBranch := git.DefaultBranch(cmd.Context(), workDir, "origin")
 					trustedRepoCfg, terr := loadPinnedTrustedRepoConfig(cmd.Context(), workDir, defaultBranch)
 					if terr != nil {
 						fail("repo config   ", terr.Error())
 						allOK = false
+						routingResolved = false
 					} else {
-						effectiveRepoCfg := config.EffectiveRepoConfig(&config.RepoConfig{}, trustedRepoCfg)
-						routing = config.Merge(globalCfg, effectiveRepoCfg).Routing
+						effectiveRepoCfg = config.EffectiveRepoConfig(&config.RepoConfig{}, trustedRepoCfg)
 					}
 				}
+				effectiveCfg := config.Merge(globalCfg, effectiveRepoCfg)
+				routing := effectiveCfg.Routing
 				routingValid := true
 				if err := routing.Validate(); err != nil {
 					fail("contract      ", err.Error())
@@ -154,20 +158,14 @@ func newDoctorCmd() *cobra.Command {
 				if p == nil {
 					fail("gate validation", "unavailable: data directory could not be resolved")
 					allOK = false
+				} else if !routingResolved {
+					fail("gate validation", "unavailable: effective routing configuration could not be resolved")
+					allOK = false
+				} else if err := effectiveCfg.ValidateRunnable(exec.LookPath); err != nil {
+					fail("gate validation", err.Error())
+					allOK = false
 				} else {
-					globalCfg, err := config.LoadGlobal(p.ConfigFile())
-					if err != nil {
-						fail("gate validation", fmt.Sprintf("unavailable: load config (%v)", err))
-						allOK = false
-					} else {
-						cfg := config.Merge(globalCfg, &config.RepoConfig{})
-						if err := cfg.ValidateRunnable(exec.LookPath); err != nil {
-							fail("gate validation", err.Error())
-							allOK = false
-						} else {
-							ok("gate validation", "every routed profile has a runnable candidate")
-						}
-					}
+					ok("gate validation", "every routed profile has a runnable candidate")
 				}
 
 				if !allOK {

@@ -236,10 +236,19 @@ func (ri *routingInvoker) launchCandidate(ctx context.Context, request agent.Inv
 	if result != nil {
 		result.Provider = string(agentName)
 	}
-	restoreErr := agent.RestoreFailedAttempt(payload, runErr)
+	effectiveErr := runErr
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		effectiveErr = ctxErr
+	}
+	if effectiveErr == nil {
+		if validationErr := agent.ValidateSuccessfulAttempt(payload); validationErr != nil {
+			effectiveErr = fmt.Errorf("validate successful fixer attempt: %w", validationErr)
+		}
+	}
+	restoreErr := agent.RestoreFailedAttempt(payload, effectiveErr)
 
 	terminal := types.InvocationAttemptTerminal{
-		Outcome:    routedOutcome(ctx, runErr),
+		Outcome:    routedOutcome(ctx, effectiveErr),
 		DurationMS: time.Since(startedAt).Milliseconds(),
 	}
 	if result != nil {
@@ -248,11 +257,12 @@ func (ri *routingInvoker) launchCandidate(ctx context.Context, request agent.Inv
 		terminal.CacheReadTokens = int64(result.Usage.CacheReadTokens)
 		terminal.CacheCreationTokens = int64(result.Usage.CacheCreationTokens)
 	}
-	// Only a classified operational failure carries a provider failure domain.
-	// Persist the terminal before opening the circuit: the durable terminal is
-	// the fact that authorizes a provider transition and any backup launch.
+	// A failure domain is durable authorization for circuit opening and
+	// provider failover. Cancellation and a failed candidate restore take
+	// precedence over the abandoned adapter error, so neither may carry it.
 	var opErr *agent.OperationalError
-	operational := errors.As(runErr, &opErr)
+	operational := restoreErr == nil && effectiveErr != nil && errors.As(effectiveErr, &opErr) &&
+		!errors.Is(effectiveErr, context.Canceled) && !errors.Is(effectiveErr, context.DeadlineExceeded)
 	if operational {
 		terminal.FailureDomain = domain
 	}
@@ -260,22 +270,22 @@ func (ri *routingInvoker) launchCandidate(ctx context.Context, request agent.Inv
 		// A successful process is not an accepted Candidate until its terminal
 		// fact is durable. Restore its mutations before returning the fatal
 		// journal error just as for any other failed invocation boundary.
-		if runErr == nil {
+		if effectiveErr == nil {
 			restoreErr = agent.RestoreFailedAttempt(payload, journalErr)
 		}
 		fatalErr := fmt.Errorf("record routed invocation terminal: %w", journalErr)
 		if restoreErr != nil {
 			fatalErr = errors.Join(fatalErr, restoreErr)
 		}
-		return result, nil, fatalErr
+		return result, nil, agent.FatalInvocationError(fatalErr)
 	}
 	if restoreErr != nil {
-		return result, nil, restoreErr
+		return result, nil, agent.FatalInvocationError(restoreErr)
 	}
 	if operational {
 		ri.circuits.markOpen(domain)
 	}
-	return result, runErr, nil
+	return result, effectiveErr, nil
 }
 
 func routedOutcome(ctx context.Context, err error) types.InvocationOutcome {

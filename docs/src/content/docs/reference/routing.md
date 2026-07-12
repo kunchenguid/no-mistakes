@@ -42,7 +42,8 @@ A requested tier outside the route fails closed instead of clamping to a weaker 
 ### Profiles and candidates
 
 A profile groups provider candidates that share one capability intent.
-Candidates are ordered by provider preference: the OpenAI-family candidate first, the Anthropic backup second.
+Each profile declares its candidate order.
+The built-in profiles put an OpenAI-family candidate first and an Anthropic backup second.
 Candidates in a profile are tried serially, in declared order, and never raced.
 A candidate's model is a free string, and its effort is one of the four normalized levels: `low`, `medium`, `high`, or `xhigh`.
 
@@ -110,7 +111,7 @@ A standalone utility caller, such as the setup wizard, gets its own fresh circui
 All circuits start closed.
 
 Only a terminal classified operational failure opens a circuit: a quota, outage, overload, authentication, or missing-executable error that survives the native adapter's own retry loop.
-When a launched candidate fails that way, its runner's canonical failure domain opens and the profile tries its backup candidate.
+When a launched candidate fails that way, its runner's canonical failure domain opens and the profile tries the next declared candidate.
 Any later candidate whose domain is already open is not launched; it is persisted as skipped with that failure domain.
 If no candidate in the profile remains available, the invocation fails closed rather than weakening the profile.
 
@@ -279,8 +280,13 @@ Each cohort is complete only when it holds ten runs.
 
 The compared metric is execution-only: for each run, the summed wall-clock of the step rounds that actually launched an agent invocation.
 Time parked at gates, waiting on CI, or spent in rounds without agent work does not count.
-The report compares the median of that metric across each cohort.
-It also reports each cohort's run count, completeness, and total escalation and failover counts.
+The report compares the exact median of that metric across each cohort, including half-millisecond medians for even cohorts.
+It also reports each cohort's run count, completeness, and total semantic escalation and operational provider-failover counts.
+The `baseline_workloads` and `routed_workloads` tables identify every cohort run and give its `execution_ms`, exact summed terminal `invocation_ms`, per-run escalation and failover counts, `changed_files`, `changed_lines`, and `initial_findings`.
+`changed_files` and `changed_lines` are `-1` only when those git-derived facts were unavailable when the cohort member was frozen.
+A semantic escalation is a transition from a launched attempt to a higher route tier within the same purpose and step round; merely starting at a higher tier does not invent an escalation.
+An operational provider failover requires a classified failed terminal followed by a launched Candidate from another provider in the same profile and tier.
+An already-open provider circuit's skipped Candidates remain durable evidence but never double-count the original failure or failover.
 
 ### The advisory target
 

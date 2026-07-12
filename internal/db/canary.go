@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"sort"
@@ -44,12 +45,14 @@ type CanaryRunFacts struct {
 	InitialFindings int
 }
 
-// CanaryCohort is an ordered, frozen set of run facts and its derived median of
-// the execution-only agent-bearing Step-round metric.
+// CanaryCohort is an ordered, frozen set of run facts and its derived exact
+// median of the execution-only agent-bearing Step-round metric. MedianExecMS is
+// a JSON number so half-millisecond even-cohort medians remain numeric and are
+// never rounded away by the public projection.
 type CanaryCohort struct {
 	Runs         []CanaryRunFacts
 	Complete     bool
-	MedianExecMS int64
+	MedianExecMS json.Number
 	exactMedian  exactInt64Median
 }
 
@@ -290,7 +293,11 @@ func (d *DB) GetCanaryReport() (*CanaryReport, error) {
 	if _, err := d.backfillRoutedCanary("", -1, -1); err != nil {
 		return nil, fmt.Errorf("backfill routed canary report: %w", err)
 	}
-	report := &CanaryReport{TargetReduction: canaryTargetReduction}
+	report := &CanaryReport{
+		TargetReduction: canaryTargetReduction,
+		Baseline:        CanaryCohort{MedianExecMS: json.Number("0")},
+		Routed:          CanaryCohort{MedianExecMS: json.Number("0")},
+	}
 	switch err := d.sql.QueryRow(`SELECT activated_at, fingerprint FROM canary_activation WHERE id = 1`).Scan(&report.ActivatedAt, &report.Fingerprint); err {
 	case nil:
 		report.Activated = true
@@ -340,7 +347,7 @@ func (d *DB) loadCanaryCohort(cohort string) (CanaryCohort, error) {
 	}
 	c.Complete = len(c.Runs) >= canaryCohortSize
 	c.exactMedian = exactMedianInt64(execs)
-	c.MedianExecMS = c.exactMedian.floor()
+	c.MedianExecMS = c.exactMedian.number()
 	return c, nil
 }
 
@@ -379,12 +386,12 @@ func computeCanaryRunFacts(q canaryQueryer, runID string) (*CanaryRunFacts, erro
 		WHERE ia.run_id = ?`, runID).Scan(&facts.InvocationMS); err != nil {
 		return nil, fmt.Errorf("sum invocation durations: %w", err)
 	}
-	if err := q.QueryRow(`SELECT count(*) FROM invocation_attempt_starts WHERE run_id = ? AND tier > 0`, runID).Scan(&facts.Escalations); err != nil {
-		return nil, fmt.Errorf("count escalations: %w", err)
+	escalations, failovers, err := canaryRoutingEvents(q, runID)
+	if err != nil {
+		return nil, err
 	}
-	if err := q.QueryRow(`SELECT count(*) FROM invocation_attempt_starts WHERE run_id = ? AND candidate_index > 0`, runID).Scan(&facts.Failovers); err != nil {
-		return nil, fmt.Errorf("count failovers: %w", err)
-	}
+	facts.Escalations = escalations
+	facts.Failovers = failovers
 	var reviewFindings sql.NullString
 	switch err := q.QueryRow(`
 		SELECT round.findings_json
@@ -406,6 +413,109 @@ func computeCanaryRunFacts(q canaryQueryer, runID string) (*CanaryRunFacts, erro
 	return facts, nil
 }
 
+type canaryAttemptGroup struct {
+	purpose     types.Purpose
+	stepRoundID string
+}
+
+type canaryProviderFailure struct {
+	profile string
+	tier    int
+	domain  types.FailureDomain
+}
+
+type canaryAttemptSequence struct {
+	hasLaunched      bool
+	lastLaunchedTier int
+	pendingFailure   *canaryProviderFailure
+}
+
+// canaryRoutingEvents derives semantic route transitions from the append-only
+// attempt journal. Candidate positions alone are not events: a resumed session
+// may start at a backup Candidate, and every Candidate at a higher tier carries
+// that tier. SQLite rowid is the durable insertion order and remains exact when
+// multiple sequential attempts share the same second-resolution timestamp.
+func canaryRoutingEvents(q canaryQueryer, runID string) (int, int, error) {
+	rows, err := q.Query(`
+		SELECT ia.purpose, ia.step_round_id, COALESCE(ia.profile, ''),
+		       COALESCE(ia.tier, -1), COALESCE(ia.runner, ''),
+		       t.outcome, COALESCE(t.failure_domain, '')
+		FROM invocation_attempt_starts AS ia
+		JOIN invocation_attempt_terminals AS t ON t.attempt_id = ia.id
+		WHERE ia.run_id = ?
+		ORDER BY ia.rowid`, runID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("load canary routing attempts: %w", err)
+	}
+	defer rows.Close()
+
+	sequences := make(map[canaryAttemptGroup]*canaryAttemptSequence)
+	seenOperationalDomains := make(map[types.FailureDomain]bool)
+	escalations, failovers := 0, 0
+	for rows.Next() {
+		var purpose types.Purpose
+		var stepRoundID, profile string
+		var tier int
+		var runner types.Runner
+		var outcome types.InvocationOutcome
+		var failureDomain types.FailureDomain
+		if err := rows.Scan(&purpose, &stepRoundID, &profile, &tier, &runner, &outcome, &failureDomain); err != nil {
+			return 0, 0, fmt.Errorf("scan canary routing attempt: %w", err)
+		}
+		// Legacy attempts have no routed Candidate facts. A skipped Candidate is
+		// circuit evidence but was never launched, so it cannot itself be an
+		// escalation or a provider transition.
+		if profile == "" || tier < 0 || outcome == types.InvocationOutcomeSkipped {
+			continue
+		}
+		domain, err := runner.FailureDomain()
+		if err != nil {
+			return 0, 0, fmt.Errorf("derive canary attempt provider: %w", err)
+		}
+		key := canaryAttemptGroup{purpose: purpose, stepRoundID: stepRoundID}
+		sequence := sequences[key]
+		if sequence == nil {
+			sequence = &canaryAttemptSequence{}
+			sequences[key] = sequence
+		}
+
+		if sequence.hasLaunched && tier == sequence.lastLaunchedTier+1 {
+			escalations++
+		}
+		sequence.hasLaunched = true
+		sequence.lastLaunchedTier = tier
+
+		// Only the next launched Candidate can consume a classified provider
+		// failure. It is a failover only inside the same Profile/tier and when
+		// it actually crosses provider domains.
+		if pending := sequence.pendingFailure; pending != nil {
+			if profile == pending.profile && tier == pending.tier && domain != pending.domain {
+				failovers++
+			}
+			sequence.pendingFailure = nil
+		}
+
+		// A failed terminal with a matching classified domain is the sole fact
+		// that opens a circuit. Dedupe it run-wide: later skipped-domain facts
+		// describe the already-open circuit and must not double-count it.
+		if outcome == types.InvocationOutcomeFailed &&
+			failureDomain != "" &&
+			failureDomain == domain &&
+			!seenOperationalDomains[failureDomain] {
+			seenOperationalDomains[failureDomain] = true
+			sequence.pendingFailure = &canaryProviderFailure{
+				profile: profile,
+				tier:    tier,
+				domain:  failureDomain,
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, fmt.Errorf("iterate canary routing attempts: %w", err)
+	}
+	return escalations, failovers, nil
+}
+
 type exactInt64Median struct {
 	lower int64
 	upper int64
@@ -425,12 +535,18 @@ func exactMedianInt64(vals []int64) exactInt64Median {
 	return exactInt64Median{lower: sorted[n/2-1], upper: sorted[n/2]}
 }
 
-func (m exactInt64Median) floor() int64 {
-	return (m.lower + m.upper) / 2
-}
-
-func medianInt64(vals []int64) int64 {
-	return exactMedianInt64(vals).floor()
+// number renders the exact integer or half-integer median as a JSON number.
+// The rational calculation avoids overflow when both middle values approach
+// the int64 limit.
+func (m exactInt64Median) number() json.Number {
+	var numerator, term big.Int
+	numerator.SetInt64(m.lower)
+	numerator.Add(&numerator, term.SetInt64(m.upper))
+	value := new(big.Rat).SetFrac(&numerator, big.NewInt(2)).FloatString(1)
+	if value[len(value)-2:] == ".0" {
+		value = value[:len(value)-2]
+	}
+	return json.Number(value)
 }
 
 func canaryTargetMet(baseline, routed exactInt64Median) bool {

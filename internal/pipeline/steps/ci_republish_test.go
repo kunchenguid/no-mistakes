@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -551,6 +552,336 @@ func TestCIStep_TransportsExactSealedSHAWhenHEADMovesAfterSeal(t *testing.T) {
 	}
 	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != sealedSHA {
 		t.Fatalf("remote transported %s, want exact sealed SHA %s (moved HEAD was %s)", got, sealedSHA, movedHeadSHA)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != sealedSHA {
+		t.Fatalf("local HEAD = %s, want sealed SHA %s", got, sealedSHA)
+	}
+	if got := gitCmd(t, dir, "status", "--porcelain=v1", "--untracked-files=all"); got != "" {
+		t.Fatalf("sealed publication left dirty local state: %q", got)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "after-seal.txt")); !os.IsNotExist(err) {
+		t.Fatalf("post-seal path remains after exact reconciliation: %v", err)
+	}
+	if sctx.Run.HeadSHA != sealedSHA {
+		t.Fatalf("run head = %s, want sealed SHA %s", sctx.Run.HeadSHA, sealedSHA)
+	}
+	publication, err := sctx.DB.LatestPublication(sctx.Run.ID, db.PublicationKindCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if publication == nil || publication.State != db.PublicationStateCompleted || publication.SealSHA != sealedSHA {
+		t.Fatalf("publication = %+v, want completed sealed SHA %s", publication, sealedSHA)
+	}
+}
+func TestCIStepAcceptedPublicationRetainsSnapshotUntilRecoveryRestoresIgnoredState(t *testing.T) {
+	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
+	excludePath := gitCmd(t, dir, "rev-parse", "--git-path", "info/exclude")
+	if !filepath.IsAbs(excludePath) {
+		excludePath = filepath.Join(dir, excludePath)
+	}
+	if err := os.WriteFile(excludePath, []byte("ignored-local*\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ignoredPath := filepath.Join(dir, "ignored-local")
+	if err := os.WriteFile(ignoredPath, []byte("original ignored state\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ag := &ciRepublishAgent{fix: func(cwd string) error {
+		if err := os.WriteFile(filepath.Join(cwd, "accepted-before-cleanup.txt"), []byte("fixed\n"), 0o644); err != nil {
+			return err
+		}
+		if err := os.WriteFile(ignoredPath, []byte("repair-mutated ignored state\n"), 0o644); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(cwd, "ignored-local-created"), []byte("repair-created\n"), 0o644)
+	}}
+	step, sctx, host, pr := republishContext(t, ag, upstream, dir, baseSHA, originalHead, config.Commands{})
+	runningCI, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.StartStep(runningCI.ID); err != nil {
+		t.Fatal(err)
+	}
+	step.restorePublishedState = func(*pipeline.StepContext, ciCandidateSnapshot, string) error {
+		return errors.New("injected crash before ignored-state cleanup")
+	}
+	if pushed, err := step.autoFixCI(sctx, host, pr, []string{"test"}, false); err == nil || pushed {
+		t.Fatalf("autoFixCI = pushed %v, err %v; want accepted publication interrupted before cleanup", pushed, err)
+	}
+	publication, err := sctx.DB.LatestPublication(sctx.Run.ID, db.PublicationKindCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if publication == nil || publication.State != db.PublicationStateAccepted || publication.CleanupSnapshotDir == "" {
+		t.Fatalf("publication = %+v, want accepted transaction retaining its cleanup snapshot", publication)
+	}
+	if info, statErr := os.Lstat(publication.CleanupSnapshotDir); statErr != nil || !info.IsDir() {
+		t.Fatalf("durable cleanup snapshot = %v, %v; want retained directory", info, statErr)
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != publication.SealSHA {
+		t.Fatalf("remote SHA = %s, want accepted sealed SHA %s", got, publication.SealSHA)
+	}
+
+	if err := RecoverPublication(context.Background(), sctx.DB, publication, sctx.Run, sctx.Repo, dir); err != nil {
+		t.Fatalf("recover accepted publication: %v", err)
+	}
+	recovered, err := sctx.DB.GetPublication(publication.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.State != db.PublicationStateCompleted {
+		t.Fatalf("recovered publication state = %s, want completed", recovered.State)
+	}
+	if got, readErr := os.ReadFile(ignoredPath); readErr != nil || string(got) != "original ignored state\n" {
+		t.Fatalf("recovered ignored state = %q, %v; want exact original", got, readErr)
+	}
+	if info, statErr := os.Stat(ignoredPath); statErr != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("recovered ignored mode = %v, %v; want 0600", info, statErr)
+	}
+	if _, statErr := os.Lstat(filepath.Join(dir, "ignored-local-created")); !os.IsNotExist(statErr) {
+		t.Fatalf("repair-created ignored path survived recovery: %v", statErr)
+	}
+	if _, statErr := os.Lstat(publication.CleanupSnapshotDir); !os.IsNotExist(statErr) {
+		t.Fatalf("completed cleanup retained snapshot: %v", statErr)
+	}
+	if err := os.Mkdir(publication.CleanupSnapshotDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(publication.CleanupSnapshotDir, "partial-cleanup"), []byte("orphan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := protectCIRepublishCandidate(sctx, publication.SealSHA); err != nil {
+		t.Fatal(err)
+	}
+	if retried, err := (&CIStep{}).retryPendingCIRepublish(sctx); err != nil || !retried {
+		t.Fatalf("retry completed cleanup = %v, %v; want recovered cleanup", retried, err)
+	}
+	if _, statErr := os.Lstat(publication.CleanupSnapshotDir); !os.IsNotExist(statErr) {
+		t.Fatalf("in-process completed cleanup retained partial snapshot: %v", statErr)
+	}
+	if got, readErr := os.ReadFile(ignoredPath); readErr != nil || string(got) != "original ignored state\n" {
+		t.Fatalf("completed cleanup retry mutated ignored state = %q, %v", got, readErr)
+	}
+}
+
+func TestCIStepPersistsExactTransactionBeforeTransport(t *testing.T) {
+	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
+	if err := os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("fixed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "ci-fix.txt")
+	gitCmd(t, dir, "commit", "-m", "sealed CI fix")
+	candidateSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	step, sctx, _, _ := republishContext(t, &ciRepublishAgent{}, upstream, dir, baseSHA, originalHead, config.Commands{})
+	step.transportPublication = func(_ context.Context, _, _, _, _, _ string, _ bool) error {
+		publication, err := sctx.DB.LatestPublication(sctx.Run.ID, db.PublicationKindCI)
+		if err != nil {
+			return err
+		}
+		if publication == nil ||
+			publication.State != db.PublicationStateAttempted ||
+			publication.SealSHA != candidateSHA ||
+			publication.DestinationURL != upstream ||
+			publication.DestinationRef != "refs/heads/feature" ||
+			publication.ExpectedRemoteSHA != originalHead ||
+			!publication.Force {
+			return fmt.Errorf("publication not durably pinned before transport: %+v", publication)
+		}
+		return errors.New("injected CI transport rejection")
+	}
+	if _, err := step.pushUpdatedHeadSHA(sctx, candidateSHA); err == nil || !strings.Contains(err.Error(), "injected CI transport rejection") {
+		t.Fatalf("pushUpdatedHeadSHA error = %v, want injected rejection", err)
+	}
+}
+
+func TestCIStepExpectedAbsentLeaseRejectsConcurrentRemoteCreation(t *testing.T) {
+	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
+	if err := os.WriteFile(filepath.Join(dir, "ci-race-fix.txt"), []byte("fixed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "ci-race-fix.txt")
+	gitCmd(t, dir, "commit", "-m", "sealed CI race fix")
+	candidateSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	step, sctx, _, _ := republishContext(t, &ciRepublishAgent{}, upstream, dir, baseSHA, originalHead, config.Commands{})
+	sctx.Run.Branch = "race"
+	step.transportPublication = func(_ context.Context, workDir, destinationURL, sourceSHA, destinationRef, expectedRemoteSHA string, force bool) error {
+		gitCmd(t, workDir, "push", destinationURL, originalHead+":"+destinationRef)
+		return stepGitPush(sctx, destinationURL, sourceSHA, destinationRef, expectedRemoteSHA, force)
+	}
+
+	if _, err := step.pushUpdatedHeadSHA(sctx, candidateSHA); err == nil || !strings.Contains(err.Error(), "stale info") {
+		t.Fatalf("pushUpdatedHeadSHA error = %v, want expected-absent lease rejection", err)
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/race"); got != originalHead {
+		t.Fatalf("concurrently created CI destination = %s, want preserved %s", got, originalHead)
+	}
+	publication, err := sctx.DB.LatestPublication(sctx.Run.ID, db.PublicationKindCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if publication == nil || publication.ExpectedRemoteSHA != "" || !publication.Force || publication.State != db.PublicationStateAttempted {
+		t.Fatalf("rejected expected-absent CI publication = %+v", publication)
+	}
+}
+
+func TestCIStepReconcilesAcceptedAmbiguousTransportOnce(t *testing.T) {
+	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
+	if err := os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("fixed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "ci-fix.txt")
+	gitCmd(t, dir, "commit", "-m", "sealed CI fix")
+	candidateSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	step, sctx, _, _ := republishContext(t, &ciRepublishAgent{}, upstream, dir, baseSHA, originalHead, config.Commands{})
+	calls := 0
+	step.transportPublication = func(ctx context.Context, workDir, destinationURL, sourceSHA, destinationRef, expectedRemoteSHA string, force bool) error {
+		calls++
+		if err := git.Push(ctx, workDir, destinationURL, sourceSHA, destinationRef, expectedRemoteSHA, force); err != nil {
+			return err
+		}
+		return errors.New("connection lost after CI publication was accepted")
+	}
+	pushed, err := step.pushUpdatedHeadSHA(sctx, candidateSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pushed {
+		t.Fatal("ambiguous accepted transport must reconcile without claiming a confirmed transport")
+	}
+	if calls != 1 {
+		t.Fatalf("transport calls = %d, want exactly 1", calls)
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != candidateSHA {
+		t.Fatalf("remote SHA = %s, want candidate %s", got, candidateSHA)
+	}
+	publication, err := sctx.DB.LatestPublication(sctx.Run.ID, db.PublicationKindCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if publication == nil || publication.State != db.PublicationStateCompleted {
+		t.Fatalf("publication = %+v, want completed", publication)
+	}
+}
+
+func TestCIStepRecoversDurableTransactionWithoutPendingRef(t *testing.T) {
+	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
+	if err := os.WriteFile(filepath.Join(dir, "ci-fix.txt"), []byte("fixed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "ci-fix.txt")
+	gitCmd(t, dir, "commit", "-m", "sealed CI fix")
+	candidateSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	step, sctx, _, _ := republishContext(t, &ciRepublishAgent{}, upstream, dir, baseSHA, originalHead, config.Commands{})
+	_, publication, err := sctx.DB.PrepareCISealedPublication(db.PrepareCISealedPublicationInput{
+		RunID:             sctx.Run.ID,
+		SHA:               candidateSHA,
+		DestinationURL:    upstream,
+		DestinationRef:    "refs/heads/feature",
+		ExpectedRemoteSHA: originalHead,
+		Force:             true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending := gitCmd(t, dir, "for-each-ref", "--format=%(objectname)", ciRepublishPendingRef(sctx)); pending != "" {
+		t.Fatalf("fixture unexpectedly has pending ref %s", pending)
+	}
+	retried, err := step.retryPendingCIRepublish(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retried {
+		t.Fatal("durable transaction without pending ref was ignored")
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != candidateSHA {
+		t.Fatalf("remote SHA = %s, want recovered candidate %s", got, candidateSHA)
+	}
+	completed, err := sctx.DB.GetPublication(publication.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed == nil || completed.State != db.PublicationStateCompleted {
+		t.Fatalf("publication = %+v, want completed", completed)
+	}
+}
+func TestCIStepRecoversSealWithoutPendingRefOrPublicationRow(t *testing.T) {
+	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
+	if err := os.WriteFile(filepath.Join(dir, "legacy-sealed.txt"), []byte("fixed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "legacy-sealed.txt")
+	gitCmd(t, dir, "commit", "-m", "legacy sealed CI fix")
+	candidateSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	step, sctx, _, _ := republishContext(t, &ciRepublishAgent{}, upstream, dir, baseSHA, originalHead, config.Commands{})
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, candidateSHA, "ci_republish"); err != nil {
+		t.Fatal(err)
+	}
+
+	retried, err := step.retryPendingCIRepublish(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retried {
+		t.Fatal("seal-only CI publication was ignored")
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != candidateSHA {
+		t.Fatalf("remote SHA = %s, want recovered seal %s", got, candidateSHA)
+	}
+	publication, err := sctx.DB.LatestPublication(sctx.Run.ID, db.PublicationKindCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if publication == nil || publication.State != db.PublicationStateCompleted || publication.SealSHA != candidateSHA {
+		t.Fatalf("publication = %+v, want completed seal-only recovery", publication)
+	}
+}
+
+func TestCIStepPendingRefWriteFailureLeavesDurableRecoverableTransaction(t *testing.T) {
+	upstream, dir, baseSHA, originalHead := setupCIRepublish(t)
+	if err := os.WriteFile(filepath.Join(dir, "ref-failure-fix.txt"), []byte("fixed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "ref-failure-fix.txt")
+	gitCmd(t, dir, "commit", "-m", "sealed fix before ref failure")
+	candidateSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	step, sctx, _, _ := republishContext(t, &ciRepublishAgent{}, upstream, dir, baseSHA, originalHead, config.Commands{})
+
+	lockPath := gitCmd(t, dir, "rev-parse", "--git-path", ciRepublishPendingRef(sctx)+".lock")
+	if !filepath.IsAbs(lockPath) {
+		lockPath = filepath.Join(dir, lockPath)
+	}
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockPath, []byte("injected lock contention"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if pushed, err := step.pushUpdatedHeadSHA(sctx, candidateSHA); err == nil || pushed {
+		t.Fatalf("ref failure = pushed %v, err %v; want failure before transport", pushed, err)
+	}
+	publication, err := sctx.DB.LatestPublication(sctx.Run.ID, db.PublicationKindCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if publication == nil || publication.State != db.PublicationStatePrepared || publication.SealSHA != candidateSHA {
+		t.Fatalf("publication after ref failure = %+v, want prepared durable transaction", publication)
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != originalHead {
+		t.Fatalf("remote moved to %s before pending ref existed; want %s", got, originalHead)
+	}
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := step.retryPendingCIRepublish(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retried {
+		t.Fatal("durable transaction was not retried after ref recovery")
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != candidateSHA {
+		t.Fatalf("remote SHA = %s, want recovered candidate %s", got, candidateSHA)
 	}
 }
 

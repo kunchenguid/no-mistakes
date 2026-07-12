@@ -301,6 +301,84 @@ func TestModel_Yolo_ResolutionMatchesAXISelectableIDContract(t *testing.T) {
 	}
 }
 
+func TestModel_Yolo_FixPayloadCarriesOnlyActionableSelections(t *testing.T) {
+	tests := []struct {
+		name       string
+		findings   string
+		added      []types.Finding
+		wantAction types.ApprovalAction
+		wantIDs    []string
+		wantAdded  []types.Finding
+	}{
+		{
+			name:     "user-only actionable gate fixes through added findings",
+			findings: `{"findings":[],"summary":"no agent findings"}`,
+			added: []types.Finding{
+				{ID: "user-1", Severity: "warning", Description: "user-requested repair", Action: types.ActionAutoFix, Source: types.FindingSourceUser},
+			},
+			wantAction: types.ActionFix,
+			wantAdded: []types.Finding{
+				{ID: "user-1", Severity: "warning", Description: "user-requested repair", Action: types.ActionAutoFix, Source: types.FindingSourceUser},
+			},
+		},
+		{
+			name:     "mixed agent and user gate preserves both payload classes",
+			findings: `{"findings":[{"id":"review-1","severity":"error","description":"agent repair","action":"auto-fix"},{"id":"review-2","severity":"info","description":"agent context","action":"no-op"}],"summary":"mixed"}`,
+			added: []types.Finding{
+				{ID: "user-1", Severity: "warning", Description: "user repair", Action: types.ActionAskUser, Source: types.FindingSourceUser},
+				{ID: "user-2", Severity: "info", Description: "user context", Action: types.ActionNoOp, Source: types.FindingSourceUser},
+			},
+			wantAction: types.ActionFix,
+			wantIDs:    []string{"review-1"},
+			wantAdded: []types.Finding{
+				{ID: "user-1", Severity: "warning", Description: "user repair", Action: types.ActionAskUser, Source: types.FindingSourceUser},
+			},
+		},
+		{
+			name:     "all no-op gate approves without inert fix payload",
+			findings: `{"findings":[{"id":"review-1","severity":"info","description":"agent context","action":"no-op"}],"summary":"context"}`,
+			added: []types.Finding{
+				{ID: "user-1", Severity: "info", Description: "user context", Action: types.ActionNoOp, Source: types.FindingSourceUser},
+			},
+			wantAction: types.ActionApprove,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sock, client, snapshot := captureRespond(t)
+			run := testRun()
+			run.Steps[0].Status = types.StepStatusAwaitingApproval
+			run.Steps[0].FindingsJSON = &tt.findings
+			m := NewModel(sock, client, run)
+			m.addedFindings[types.StepReview] = append([]types.Finding(nil), tt.added...)
+			m.yoloMode = true
+
+			cmd := m.maybeAutoApproveCmd()
+			if cmd == nil {
+				t.Fatal("expected a yolo resolution command")
+			}
+			if msg := cmd(); msg != nil {
+				t.Fatalf("expected nil msg, got %#v", msg)
+			}
+
+			calls := snapshot()
+			if len(calls) != 1 {
+				t.Fatalf("respond calls = %d, want 1", len(calls))
+			}
+			if calls[0].Action != tt.wantAction {
+				t.Fatalf("action = %s, want %s", calls[0].Action, tt.wantAction)
+			}
+			if !slices.Equal(calls[0].FindingIDs, tt.wantIDs) {
+				t.Fatalf("FindingIDs = %v, want %v", calls[0].FindingIDs, tt.wantIDs)
+			}
+			if !slices.Equal(calls[0].AddedFindings, tt.wantAdded) {
+				t.Fatalf("AddedFindings = %v, want %v", calls[0].AddedFindings, tt.wantAdded)
+			}
+		})
+	}
+}
+
 func TestModel_Yolo_FixesAllActionableFindingsDespiteManualDeselection(t *testing.T) {
 	sock, client, snapshot := captureRespond(t)
 
@@ -341,9 +419,16 @@ func TestModel_ManualFixPreservesActionableSelectionAndDropsNoOp(t *testing.T) {
 	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"leave deselected","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"selected fix","action":"ask-user"},{"id":"review-3","severity":"info","description":"selected note","action":"no-op"}],"summary":"3 findings"}`
 	run.Steps[0].FindingsJSON = &findings
 	m := NewModel(sock, client, run)
+	m.addedFindings[types.StepReview] = []types.Finding{
+		{ID: "user-1", Severity: "warning", Description: "selected user fix", Action: types.ActionAutoFix, Source: types.FindingSourceUser},
+		{ID: "user-2", Severity: "warning", Description: "deselected user fix", Action: types.ActionAskUser, Source: types.FindingSourceUser},
+		{ID: "user-3", Severity: "info", Description: "selected user note", Action: types.ActionNoOp, Source: types.FindingSourceUser},
+	}
 	m.findingSelections[types.StepReview] = map[string]bool{
 		"review-2": true,
 		"review-3": true,
+		"user-1":   true,
+		"user-3":   true,
 	}
 
 	cmd := m.respondCmd(types.ActionFix)
@@ -360,6 +445,9 @@ func TestModel_ManualFixPreservesActionableSelectionAndDropsNoOp(t *testing.T) {
 	}
 	if got, want := calls[0].FindingIDs, []string{"review-2"}; !slices.Equal(got, want) {
 		t.Fatalf("FindingIDs = %v, want manually selected actionable IDs %v", got, want)
+	}
+	if got, want := calls[0].AddedFindings, []types.Finding{m.addedFindings[types.StepReview][0]}; !slices.Equal(got, want) {
+		t.Fatalf("AddedFindings = %v, want manually selected actionable findings %v", got, want)
 	}
 }
 

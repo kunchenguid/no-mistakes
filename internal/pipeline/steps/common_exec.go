@@ -193,14 +193,13 @@ func stepGitHeadSHA(sctx *pipeline.StepContext) (string, error) {
 	return stepGitRun(sctx, "rev-parse", "HEAD")
 }
 
-func stepGitPush(sctx *pipeline.StepContext, remote, sourceSHA, ref, expectedSHA string, forceWithLease bool) error {
+// stepGitPush pushes sourceSHA to ref on remote. It mirrors git.Push: force
+// false is an ordinary fast-forward push, force true anchors a per-ref
+// --force-with-lease to expectedSHA (empty expectedSHA requires absence).
+func stepGitPush(sctx *pipeline.StepContext, remote, sourceSHA, ref, expectedSHA string, force bool) error {
 	args := []string{"push", remote}
-	if forceWithLease {
-		if expectedSHA != "" {
-			args = append(args, fmt.Sprintf("--force-with-lease=%s:%s", ref, expectedSHA))
-		} else {
-			args = append(args, "--force-with-lease")
-		}
+	if force {
+		args = append(args, fmt.Sprintf("--force-with-lease=%s:%s", ref, expectedSHA))
 	}
 	args = append(args, sourceSHA+":"+ref)
 	_, err := stepGitRun(sctx, args...)

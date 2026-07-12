@@ -145,6 +145,10 @@ func (rc RoutingConfig) Validate() error {
 		return fmt.Errorf("routing: no profiles configured")
 	}
 	for _, name := range sortedProfileNames(rc.Profiles) {
+		normalizedName := ProfileName(strings.TrimSpace(string(name)))
+		if normalizedName == "" || normalizedName != name {
+			return fmt.Errorf("routing profile ID %q must be non-empty and normalized (no surrounding whitespace)", name)
+		}
 		p := rc.Profiles[name]
 		if len(p.Candidates) == 0 {
 			return fmt.Errorf("routing profile %q: empty candidates", name)

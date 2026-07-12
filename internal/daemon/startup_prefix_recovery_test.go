@@ -17,6 +17,26 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+type aggregateVerifyRecoveryStep struct {
+	probe    *mockPassStep
+	database *db.DB
+	runID    string
+	headSHA  string
+}
+
+func (s *aggregateVerifyRecoveryStep) Name() types.StepName { return types.StepVerify }
+
+func (s *aggregateVerifyRecoveryStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	outcome, err := s.probe.Execute(sctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.database.CreateSeal(s.runID, s.headSHA, "reviewed"); err != nil {
+		return nil, err
+	}
+	return outcome, nil
+}
+
 func TestRecoverOnStartup_ResumesCompletedStepPrefixAtEveryCrashBoundary(t *testing.T) {
 	t.Setenv("NM_DEMO", "1")
 	stepNames := []types.StepName{
@@ -62,7 +82,13 @@ func TestRecoverOnStartup_ResumesCompletedStepPrefixAtEveryCrashBoundary(t *test
 			probes := make([]*mockPassStep, 0, len(stepNames))
 			for index, name := range stepNames {
 				probe := &mockPassStep{name: name}
-				steps = append(steps, probe)
+				var step pipeline.Step = probe
+				if name == types.StepVerify {
+					step = &aggregateVerifyRecoveryStep{
+						probe: probe, database: database, runID: run.ID, headSHA: headSHA,
+					}
+				}
+				steps = append(steps, step)
 				probes = append(probes, probe)
 				result, err := database.InsertStepResult(run.ID, name)
 				if err != nil {
@@ -85,6 +111,11 @@ func TestRecoverOnStartup_ResumesCompletedStepPrefixAtEveryCrashBoundary(t *test
 			}
 			if completedPrefix > 5 {
 				if _, err := database.CreateSeal(run.ID, headSHA, "lint"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if completedPrefix > 6 {
+				if _, err := database.CreateSeal(run.ID, headSHA, "reviewed"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -289,6 +320,78 @@ func TestRecoverOnStartup_FailsClosedForUnsealedPublishedPrefix(t *testing.T) {
 	}
 	if push.execCnt.Load() != 0 || pr.execCnt.Load() != 0 {
 		t.Fatalf("unsealed published prefix replayed steps: push=%d pr=%d", push.execCnt.Load(), pr.execCnt.Load())
+	}
+}
+
+func TestRecoverOnStartup_FailsClosedForPublishedSkippedVerify(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	repo, headSHA := setupTestGitRepo(t, p, database, "skipped-verify-prefix-repo")
+	run, err := database.InsertRun(repo.ID, "main", headSHA, headSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitpkg.WorktreeAdd(context.Background(), p.RepoDir(repo.ID), p.WorktreeDir(repo.ID, run.ID), headSHA); err != nil {
+		t.Fatal(err)
+	}
+	verifyResult, err := database.InsertStepResult(run.ID, types.StepVerify)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteStepWithStatus(verifyResult.ID, types.StepStatusSkipped, 0, 1, ""); err != nil {
+		t.Fatal(err)
+	}
+	pushResult, err := database.InsertStepResult(run.ID, types.StepPush)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(pushResult.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteStepWithStatus(pushResult.ID, types.StepStatusCompleted, 0, 1, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertStepResult(run.ID, types.StepPR); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.CreateSeal(run.ID, headSHA, "reviewed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.CreateSeal(run.ID, headSHA, "pre_verify"); err != nil {
+		t.Fatal(err)
+	}
+
+	verify := &mockPassStep{name: types.StepVerify}
+	push := &mockPassStep{name: types.StepPush}
+	pr := &mockPassStep{name: types.StepPR}
+	manager := NewRunManager(database, p, func() []pipeline.Step {
+		return []pipeline.Step{verify, push, pr}
+	})
+	defer manager.Shutdown()
+
+	recoverOnStartup(database, p, manager)
+
+	recovered := waitForRunTerminalState(t, database, run.ID)
+	if recovered.Status != types.RunFailed {
+		t.Fatalf("published skipped-Verify prefix status = %s, want failed", recovered.Status)
+	}
+	if verify.execCnt.Load() != 0 || push.execCnt.Load() != 0 || pr.execCnt.Load() != 0 {
+		t.Fatalf(
+			"published skipped-Verify prefix replayed steps: verify=%d push=%d pr=%d",
+			verify.execCnt.Load(), push.execCnt.Load(), pr.execCnt.Load(),
+		)
 	}
 }
 

@@ -6,24 +6,23 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// PushStep force-pushes the worktree state to the configured push remote.
-type PushStep struct{}
+// PushStep durably publishes the sealed worktree state to the configured push
+// remote. transport is an acceptance-ambiguity seam used by focused tests.
+type PushStep struct {
+	transport publicationTransport
+}
 
 func (s *PushStep) Name() types.StepName { return types.StepPush }
 
 func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
-
-	// Push is transport-only: it never formats, stages, writes evidence, or
-	// creates commits. It validates the sealed candidate - a clean worktree at
-	// the exact sealed SHA - then transports it under the existing
-	// force-with-lease and unseen-remote-commit protections.
 	seal, err := sctx.DB.LatestSeal(sctx.Run.ID)
 	if err != nil {
 		return nil, fmt.Errorf("load sealed candidate: %w", err)
@@ -32,69 +31,62 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		return nil, fmt.Errorf("push: no sealed candidate to publish")
 	}
 
-	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
-	if err != nil {
-		return nil, fmt.Errorf("read worktree status before push: %w", err)
-	}
-	if strings.TrimSpace(status) != "" {
-		return nil, fmt.Errorf("push: refusing to publish a dirty worktree; sealed candidate %s must be published clean", shortSHA(seal.SHA))
-	}
-
-	headBeingPushed, err := git.HeadSHA(ctx, sctx.WorkDir)
-	if err != nil {
-		return nil, fmt.Errorf("resolve head before push: %w", err)
-	}
-	if headBeingPushed != seal.SHA {
-		return nil, fmt.Errorf("push: HEAD %s no longer matches sealed candidate %s; a reverified candidate must be resealed before publishing", shortSHA(headBeingPushed), shortSHA(seal.SHA))
-	}
-
-	ref := normalizedBranchRef(sctx.Run.Branch)
-	branch := strings.TrimPrefix(ref, "refs/heads/")
-
-	pushURL := sctx.Repo.PushURL()
-	pushTarget := "upstream"
-	usingFork := strings.TrimSpace(sctx.Repo.ForkURL) != ""
-	if usingFork {
-		pushTarget = "fork"
-		sctx.Log(fmt.Sprintf("pushing to fork %s (%s)...", safeurl.Redact(pushURL), ref))
-	} else {
-		sctx.Log(fmt.Sprintf("pushing to %s (%s)...", safeurl.Redact(pushURL), ref))
-	}
-
-	// Decide whether force-pushing would discard commits the pipeline never saw.
-	// The lease is anchored to the remote-tracking ref the rebase step freshly
-	// fetched (the exact commit this branch was rebased against), so a push that
-	// would clobber an out-of-band or stale-mirror commit fails loudly instead
-	// of silently dropping it. A bare --force-with-lease offers no protection
-	// when pushing to a URL (no remote-tracking refs), so the anchor is explicit.
-	lastSeen := lastFetchedBranchTip(ctx, sctx.WorkDir, branch, usingFork)
 	gitRun := func(args ...string) (string, error) { return git.Run(ctx, sctx.WorkDir, args...) }
-	decision, err := resolveForcePushDecision(gitRun, pushURL, ref, headBeingPushed, lastSeen, sctx.Run.BaseSHA)
+	publication, err := sctx.DB.LatestPublication(sctx.Run.ID, db.PublicationKindPush)
 	if err != nil {
+		return nil, fmt.Errorf("load publication transaction: %w", err)
+	}
+	if publication != nil && publication.SealSHA != seal.SHA && publication.State != db.PublicationStateCompleted {
+		return nil, fmt.Errorf("push: incomplete publication for sealed SHA %s blocks newer sealed SHA %s", shortSHA(publication.SealSHA), shortSHA(seal.SHA))
+	}
+	if publication == nil || publication.SealSHA != seal.SHA {
+		status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+		if err != nil {
+			return nil, fmt.Errorf("read worktree status before push: %w", err)
+		}
+		if strings.TrimSpace(status) != "" {
+			return nil, fmt.Errorf("push: refusing to publish a dirty worktree; sealed candidate %s must be published clean", shortSHA(seal.SHA))
+		}
+		headBeingPushed, err := git.HeadSHA(ctx, sctx.WorkDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve head before push: %w", err)
+		}
+		if headBeingPushed != seal.SHA {
+			return nil, fmt.Errorf("push: HEAD %s no longer matches sealed candidate %s; a reverified candidate must be resealed before publishing", shortSHA(headBeingPushed), shortSHA(seal.SHA))
+		}
+
+		ref := normalizedBranchRef(sctx.Run.Branch)
+		branch := strings.TrimPrefix(ref, "refs/heads/")
+		pushURL := sctx.Repo.PushURL()
+		usingFork := strings.TrimSpace(sctx.Repo.ForkURL) != ""
+		lastSeen := lastFetchedBranchTip(ctx, sctx.WorkDir, branch, usingFork)
+		decision, err := resolveForcePushDecision(gitRun, pushURL, ref, seal.SHA, lastSeen, sctx.Run.BaseSHA)
+		if err != nil {
+			return nil, fmt.Errorf("prepare publication: %w", err)
+		}
+		publication, err = sctx.DB.PreparePublication(db.PreparePublicationInput{
+			RunID:             sctx.Run.ID,
+			Kind:              db.PublicationKindPush,
+			SealID:            seal.ID,
+			SealSHA:           seal.SHA,
+			DestinationURL:    pushURL,
+			DestinationRef:    ref,
+			ExpectedRemoteSHA: decision.remoteSHA,
+			Force:             !decision.upToDate,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("prepare durable publication: %w", err)
+		}
+	}
+
+	pushTarget := "upstream"
+	if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
+		pushTarget = "fork"
+	}
+	sctx.Log(fmt.Sprintf("publishing sealed candidate to %s %s (%s)...", pushTarget, safeurl.Redact(publication.DestinationURL), publication.DestinationRef))
+	if _, err := executePreparedPublication(sctx, publication, s.transport, gitRun, db.PublicationRecoveryNone, nil); err != nil {
 		return nil, fmt.Errorf("push to %s: %w", pushTarget, err)
 	}
-	switch {
-	case decision.newBranch:
-		// New branch: regular push (no force needed).
-		if err := git.Push(ctx, sctx.WorkDir, pushURL, seal.SHA, ref, "", false); err != nil {
-			return nil, fmt.Errorf("push to %s: %w", pushTarget, err)
-		}
-	case decision.upToDate:
-		// Remote already at this head: nothing to push, just reconcile refs below.
-	default:
-		// Existing branch: force-with-lease anchored to the verified remote head.
-		if err := git.Push(ctx, sctx.WorkDir, pushURL, seal.SHA, ref, decision.remoteSHA, true); err != nil {
-			return nil, fmt.Errorf("push to %s: %w", pushTarget, err)
-		}
-	}
-
-	if sctx.Run.HeadSHA != seal.SHA {
-		sctx.Run.HeadSHA = seal.SHA
-		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, seal.SHA); err != nil {
-			return nil, err
-		}
-	}
-
 	sctx.Log("pushed successfully")
 	return &pipeline.StepOutcome{}, nil
 }

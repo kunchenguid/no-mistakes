@@ -100,6 +100,35 @@ func TestRunHelp_UnattendedConsentContract(t *testing.T) {
 	if respondFlag == nil || !strings.Contains(respondFlag.Usage, "abort if a blocking repair remains unresolved") {
 		t.Errorf("axi respond --yes usage must state the fail-closed abort, got %+v", respondFlag)
 	}
+	addFindingFlag := newAxiRespondCmd().Flags().Lookup("add-finding")
+	if addFindingFlag == nil ||
+		!strings.Contains(addFindingFlag.Usage, "severity defaults to "+defaultAddFindingSeverity) ||
+		!strings.Contains(addFindingFlag.Usage, addFindingExample) {
+		t.Errorf("axi respond --add-finding usage must state and exemplify the CLI default, got %+v", addFindingFlag)
+	}
+}
+
+func TestAxiRespondRejectsMalformedAddFindingBeforeIPC(t *testing.T) {
+	chdir(t, t.TempDir())
+	t.Setenv("NM_HOME", t.TempDir())
+
+	for _, raw := range []string{
+		`{"description":"missing action"}`,
+		`{"description":"bad severity","action":"auto-fix","severity":"critical"}`,
+	} {
+		var out bytes.Buffer
+		cmd := &cobra.Command{}
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+
+		err := runAxiRespond(cmd, respondArgs{action: "fix", addFinding: raw})
+		if err == nil {
+			t.Fatalf("axi respond accepted malformed --add-finding %s", raw)
+		}
+		if !strings.Contains(out.String(), "invalid --add-finding") {
+			t.Errorf("axi respond output for %s did not report payload validation before environment/IPC setup:\n%s", raw, out.String())
+		}
+	}
 }
 
 func TestGateResolution(t *testing.T) {

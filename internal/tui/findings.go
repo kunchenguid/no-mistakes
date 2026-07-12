@@ -4,14 +4,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// stepHasActionableFindings reports whether the step's findings (agent-produced
-// plus any user-added) include at least one finding a fix agent could act on,
-// i.e. anything other than a purely informational "no-op". Yolo uses this to
-// decide between fixing a gate's findings and approving it as-is.
-func (m Model) stepHasActionableFindings(step types.StepName) bool {
-	return types.HasActionableFindings(types.Findings{Items: m.findingItems(step)})
-}
-
 func (m Model) awaitingActionState() (showSelectionActions bool, allowFix bool, selectedCount int, totalCount int) {
 	step := awaitingStep(m.steps)
 	if step == nil {
@@ -21,13 +13,9 @@ func (m Model) awaitingActionState() (showSelectionActions bool, allowFix bool, 
 	if len(items) == 0 {
 		return false, false, 0, 0
 	}
-	totalCount = len(items)
-	selected, ok := m.findingSelections[step.StepName]
-	if !ok {
-		return true, true, totalCount, totalCount
-	}
-	selectedCount = len(selected)
-	return true, selectedCount > 0, selectedCount, totalCount
+	selection := m.selectedFixPayload(step.StepName)
+	selectedCount = len(selection.findingIDs) + len(selection.addedFindings)
+	return true, selectedCount > 0, selectedCount, selection.totalCount
 }
 
 // findingItems returns the complete list of findings rendered for the step,
@@ -109,38 +97,50 @@ func (m *Model) resetFindingSelection(step types.StepName) {
 	m.findingCursor[step] = 0
 }
 
+type fixSelection struct {
+	findingIDs    []string
+	addedFindings []finding
+	totalCount    int
+}
+
+// selectedFixPayload is the single selection contract shared by the action
+// bar and Respond IPC. Agent-produced findings must be actionable and carry an
+// ID; user-authored findings travel separately and must be actionable.
+func (m *Model) selectedFixPayload(step types.StepName) fixSelection {
+	selected, selectionExists := m.findingSelections[step]
+	var result fixSelection
+	for _, item := range m.agentFindingItems(step) {
+		if item.ID == "" || !item.IsActionable() {
+			continue
+		}
+		result.totalCount++
+		if !selectionExists || selected[item.ID] {
+			result.findingIDs = append(result.findingIDs, item.ID)
+		}
+	}
+	for _, item := range m.addedFindings[step] {
+		if !item.IsActionable() {
+			continue
+		}
+		result.totalCount++
+		if !selectionExists || selected[item.ID] {
+			result.addedFindings = append(result.addedFindings, item)
+		}
+	}
+	return result
+}
+
 // selectedFindingIDs returns the IDs of selected actionable agent-produced
 // findings. User-authored findings are conveyed via addedFindings separately
 // because the daemon only recognizes agent IDs in the FindingIDs list.
 func (m *Model) selectedFindingIDs(step types.StepName) []string {
-	selected := m.findingSelections[step]
-	if len(selected) == 0 {
-		return nil
-	}
-	var ids []string
-	for _, item := range m.agentFindingItems(step) {
-		if item.ID != "" && selected[item.ID] && item.IsActionable() {
-			ids = append(ids, item.ID)
-		}
-	}
-	return ids
+	return m.selectedFixPayload(step).findingIDs
 }
 
 // selectedUserAddedFindings returns the user-added findings that are
 // currently selected (and therefore should be sent to the fix agent).
 func (m *Model) selectedUserAddedFindings(step types.StepName) []finding {
-	added := m.addedFindings[step]
-	if len(added) == 0 {
-		return nil
-	}
-	selected := m.findingSelections[step]
-	var result []finding
-	for _, item := range added {
-		if selected == nil || selected[item.ID] {
-			result = append(result, item)
-		}
-	}
-	return result
+	return m.selectedFixPayload(step).addedFindings
 }
 
 // diffOffsetForCurrentFinding returns the diff scroll offset that corresponds

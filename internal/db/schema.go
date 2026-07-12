@@ -193,6 +193,35 @@ CREATE TABLE IF NOT EXISTS run_seals (
 
 CREATE INDEX IF NOT EXISTS run_seals_run_idx ON run_seals(run_id, sealed_at);
 
+CREATE TABLE IF NOT EXISTS publication_transactions (
+    id                   TEXT PRIMARY KEY,
+    run_id               TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    kind                 TEXT NOT NULL CHECK (kind IN ('push', 'ci')),
+    seal_id              TEXT NOT NULL REFERENCES run_seals(id) ON DELETE CASCADE,
+    seal_sha             TEXT NOT NULL,
+    destination_url      TEXT NOT NULL,
+    destination_ref      TEXT NOT NULL,
+    expected_remote_sha  TEXT NOT NULL,
+    force                INTEGER NOT NULL CHECK (force IN (0, 1)),
+    cleanup_snapshot_dir TEXT NOT NULL DEFAULT '',
+    state                TEXT NOT NULL CHECK (state IN ('prepared', 'attempted', 'accepted', 'completed')),
+    created_at           INTEGER NOT NULL,
+    attempted_at         INTEGER,
+    accepted_at          INTEGER,
+    completed_at         INTEGER,
+    UNIQUE (run_id, kind, seal_id),
+    CHECK (
+        (state = 'prepared' AND attempted_at IS NULL AND accepted_at IS NULL AND completed_at IS NULL)
+        OR (state = 'attempted' AND attempted_at IS NOT NULL AND accepted_at IS NULL AND completed_at IS NULL)
+        OR (state = 'accepted' AND attempted_at IS NOT NULL AND accepted_at IS NOT NULL AND completed_at IS NULL)
+        OR (state = 'completed' AND attempted_at IS NOT NULL AND accepted_at IS NOT NULL AND completed_at IS NOT NULL)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS publication_transactions_pending_idx
+    ON publication_transactions (state, created_at, id)
+    WHERE state <> 'completed';
+
 CREATE TABLE IF NOT EXISTS invocation_attempt_terminals (
     attempt_id            TEXT PRIMARY KEY REFERENCES invocation_attempt_starts(id) ON DELETE CASCADE,
     outcome               TEXT NOT NULL,
@@ -349,6 +378,7 @@ var migrationStatements = []string{
 	`ALTER TABLE step_results ADD COLUMN approval_gate_id TEXT`,
 	`ALTER TABLE approval_gates ADD COLUMN repair_checks_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(repair_checks_json) AND json_type(repair_checks_json) = 'array')`,
 	`ALTER TABLE canary_activation ADD COLUMN completion_fence INTEGER NOT NULL DEFAULT -1`,
+	`ALTER TABLE publication_transactions ADD COLUMN cleanup_snapshot_dir TEXT NOT NULL DEFAULT ''`,
 	`INSERT OR IGNORE INTO run_completion_order (run_id)
 		SELECT r.id
 		FROM runs r

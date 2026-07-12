@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,6 +64,72 @@ func TestDriveRunUnattendedFailsClosedOnUnresolvedBlocking(t *testing.T) {
 	}
 	if respondedAction != types.ActionAbort {
 		t.Fatalf("unattended consent responded %q, want abort", respondedAction)
+	}
+}
+
+func TestDriveRunUnattendedReportsFailedAbortAndParkedState(t *testing.T) {
+	tests := []struct {
+		name       string
+		respond    func(context.Context, json.RawMessage) (interface{}, error)
+		wantDetail string
+	}{
+		{
+			name: "ipc failure",
+			respond: func(context.Context, json.RawMessage) (interface{}, error) {
+				return nil, errors.New("abort transport failed")
+			},
+			wantDetail: "abort transport failed",
+		},
+		{
+			name: "daemon rejection",
+			respond: func(context.Context, json.RawMessage) (interface{}, error) {
+				return &ipc.RespondResult{OK: false}, nil
+			},
+			wantDetail: "daemon rejected the response",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, err := os.MkdirTemp("", "cli-ipc")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.RemoveAll(dir) })
+			sock := filepath.Join(dir, "d.sock")
+
+			awaiting := &ipc.RunInfo{
+				ID: "run-abort-failed", RepoID: "repo-1", Branch: "feature", Status: types.RunRunning,
+				Steps: []ipc.StepResultInfo{{
+					ID: "s1", RunID: "run-abort-failed", StepName: types.StepReview, Status: types.StepStatusAwaitingApproval,
+				}},
+			}
+			srv := ipc.NewServer()
+			srv.Handle(ipc.MethodGetRun, func(context.Context, json.RawMessage) (interface{}, error) {
+				return &ipc.GetRunResult{Run: awaiting}, nil
+			})
+			srv.Handle(ipc.MethodRespond, tt.respond)
+			go func() { _ = srv.Serve(sock) }()
+			t.Cleanup(srv.Close)
+
+			client := dialWithRetry(t, sock)
+			defer client.Close()
+
+			_, _, err = driveRun(context.Background(), io.Discard, client, awaiting.ID, true, nil,
+				func(string) (bool, error) { return true, nil })
+			if err == nil {
+				t.Fatal("driveRun succeeded after the abort response failed")
+			}
+			for _, want := range []string{
+				"blocking finding remains unresolved",
+				"run remains parked",
+				tt.wantDetail,
+			} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("driveRun error %q missing %q", err, want)
+				}
+			}
+		})
 	}
 }
 

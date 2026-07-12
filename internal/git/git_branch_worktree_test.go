@@ -215,6 +215,57 @@ func TestPushForceWithLease(t *testing.T) {
 	}
 }
 
+func TestPushExpectedAbsentLeaseRejectsConcurrentRefCreation(t *testing.T) {
+	ctx := context.Background()
+	src := initTestRepo(t)
+	bare := filepath.Join(t.TempDir(), "dest.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	run(t, src, "git", "remote", "add", "dest", bare)
+
+	concurrentSHA := run(t, src, "git", "rev-parse", "HEAD")
+	writeFile(t, filepath.Join(src, "sealed.txt"), "sealed\n")
+	run(t, src, "git", "add", "sealed.txt")
+	run(t, src, "git", "commit", "-m", "sealed candidate")
+	sealedSHA := run(t, src, "git", "rev-parse", "HEAD")
+	run(t, src, "git", "push", "dest", concurrentSHA+":refs/heads/race")
+
+	if err := Push(ctx, src, "dest", sealedSHA, "refs/heads/race", "", true); err == nil {
+		t.Fatal("Push succeeded after an expected-absent destination was concurrently created")
+	}
+	if got := run(t, bare, "git", "rev-parse", "refs/heads/race"); got != concurrentSHA {
+		t.Fatalf("concurrent destination moved to %s, want preserved %s", got, concurrentSHA)
+	}
+}
+
+// TestPushWithOptionsOrdinaryFastForwardsExistingBranch covers the AXI drive and
+// wizard utility pushes, which pass forceWithLease=false and an empty expectedSHA.
+// Such a push must fast-forward an existing branch rather than being rejected by
+// an expected-absent lease.
+func TestPushWithOptionsOrdinaryFastForwardsExistingBranch(t *testing.T) {
+	ctx := context.Background()
+	src := initTestRepo(t)
+	bare := filepath.Join(t.TempDir(), "dest.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	run(t, src, "git", "remote", "add", "dest", bare)
+	run(t, src, "git", "push", "dest", "HEAD:refs/heads/main")
+
+	writeFile(t, filepath.Join(src, "next.txt"), "next\n")
+	run(t, src, "git", "add", "next.txt")
+	run(t, src, "git", "commit", "-m", "fast-forward commit")
+	newSHA := run(t, src, "git", "rev-parse", "HEAD")
+
+	if err := PushWithOptions(ctx, src, "dest", "HEAD", "refs/heads/main", "", false, nil); err != nil {
+		t.Fatalf("ordinary utility push to an existing fast-forward branch failed: %v", err)
+	}
+	if got := run(t, bare, "git", "rev-parse", "refs/heads/main"); got != newSHA {
+		t.Fatalf("fast-forwarded ref = %s, want %s", got, newSHA)
+	}
+}
+
 func TestLsRemote(t *testing.T) {
 	ctx := context.Background()
 	src := initTestRepo(t)

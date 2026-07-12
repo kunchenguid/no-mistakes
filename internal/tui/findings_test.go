@@ -398,6 +398,132 @@ func TestModel_View_HidesFixActionWhenNoFindingsSelected(t *testing.T) {
 	}
 }
 
+func TestModel_AwaitingActionStateMatchesDispatchableFixPayload(t *testing.T) {
+	m := newAwaitingModel(t, `{"findings":[
+		{"id":"review-1","severity":"error","description":"selected agent repair","action":"auto-fix"},
+		{"id":"review-2","severity":"warning","description":"deselected agent repair","action":"ask-user"},
+		{"id":"review-3","severity":"info","description":"selected agent context","action":"no-op"},
+		{"severity":"warning","description":"id-less agent repair","action":"auto-fix"}
+	],"summary":"mixed"}`)
+	m.addedFindings[types.StepReview] = []types.Finding{
+		{ID: "user-1", Severity: "warning", Description: "selected user repair", Action: types.ActionAutoFix, Source: types.FindingSourceUser},
+		{ID: "user-2", Severity: "info", Description: "selected user context", Action: types.ActionNoOp, Source: types.FindingSourceUser},
+	}
+	m.findingSelections[types.StepReview] = map[string]bool{
+		"review-1": true,
+		"review-3": true,
+		"user-1":   true,
+		"user-2":   true,
+	}
+
+	show, allowFix, selected, total := m.awaitingActionState()
+	if !show {
+		t.Fatal("expected finding selection controls for the rendered findings")
+	}
+	if !allowFix {
+		t.Fatal("expected Fix for selected dispatchable findings")
+	}
+	if selected != 2 || total != 3 {
+		t.Fatalf("visible fix count = %d/%d, want selected agent plus user payload 2/3", selected, total)
+	}
+	if ids := m.selectedFindingIDs(types.StepReview); len(ids) != 1 || ids[0] != "review-1" {
+		t.Fatalf("selected agent payload = %v, want [review-1]", ids)
+	}
+	added := m.selectedUserAddedFindings(types.StepReview)
+	if len(added) != 1 || added[0].ID != "user-1" {
+		t.Fatalf("selected user payload = %v, want only actionable user-1", added)
+	}
+}
+
+func TestModel_AwaitingActionStateSupportsUserOnlyFix(t *testing.T) {
+	m := newAwaitingModel(t, `{"findings":[],"summary":"no agent findings"}`)
+	m.addedFindings[types.StepReview] = []types.Finding{
+		{ID: "user-1", Severity: "warning", Description: "user repair", Action: types.ActionAutoFix, Source: types.FindingSourceUser},
+	}
+	m.resetFindingSelection(types.StepReview)
+
+	show, allowFix, selected, total := m.awaitingActionState()
+	if !show || !allowFix || selected != 1 || total != 1 {
+		t.Fatalf("user-only visible Fix state: show=%v allow=%v count=%d/%d, want true true 1/1", show, allowFix, selected, total)
+	}
+	if ids := m.selectedFindingIDs(types.StepReview); len(ids) != 0 {
+		t.Fatalf("user-only fix leaked agent IDs: %v", ids)
+	}
+	added := m.selectedUserAddedFindings(types.StepReview)
+	if len(added) != 1 || added[0].ID != "user-1" {
+		t.Fatalf("user-only AddedFindings = %v, want [user-1]", added)
+	}
+	if !strings.Contains(stripANSI(m.View()), "f fix") {
+		t.Fatal("user-only dispatchable finding did not advertise Fix")
+	}
+}
+
+func TestModel_AwaitingActionStateNeverAdvertisesInertFix(t *testing.T) {
+	tests := []struct {
+		name     string
+		findings string
+		added    []types.Finding
+	}{
+		{
+			name:     "no-op only",
+			findings: `{"findings":[{"id":"review-1","severity":"info","description":"context","action":"no-op"}],"summary":"context"}`,
+		},
+		{
+			name:     "ID-less agent finding",
+			findings: `{"findings":[{"severity":"warning","description":"cannot identify this repair","action":"auto-fix"}],"summary":"unselectable"}`,
+		},
+		{
+			name:     "no-op agent and user findings",
+			findings: `{"findings":[{"id":"review-1","severity":"info","description":"agent context","action":"no-op"}],"summary":"context"}`,
+			added: []types.Finding{
+				{ID: "user-1", Severity: "info", Description: "user context", Action: types.ActionNoOp, Source: types.FindingSourceUser},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newAwaitingModel(t, tt.findings)
+			m.addedFindings[types.StepReview] = append([]types.Finding(nil), tt.added...)
+			m.resetFindingSelection(types.StepReview)
+
+			show, allowFix, selected, total := m.awaitingActionState()
+			if !show {
+				t.Fatal("expected selection controls to remain available for rendered findings")
+			}
+			if allowFix || selected != 0 || total != 0 {
+				t.Fatalf("inert visible fix state: allow=%v count=%d/%d", allowFix, selected, total)
+			}
+			if cmd := m.respondCmd(types.ActionFix); cmd != nil {
+				t.Fatal("Fix dispatch must be blocked when the visible state has no dispatchable selection")
+			}
+		})
+	}
+}
+
+func TestModel_AwaitingActionStateTracksActionableTogglesOnly(t *testing.T) {
+	m := newAwaitingModel(t, `{"findings":[
+		{"id":"review-1","severity":"info","description":"context","action":"no-op"},
+		{"id":"review-2","severity":"warning","description":"repair","action":"auto-fix"}
+	],"summary":"mixed"}`)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")})
+	m = updated.(Model)
+	_, allowFix, selected, total := m.awaitingActionState()
+	if !allowFix || selected != 1 || total != 1 {
+		t.Fatalf("toggling no-op changed Fix state: allow=%v count=%d/%d", allowFix, selected, total)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")})
+	m = updated.(Model)
+	_, allowFix, selected, total = m.awaitingActionState()
+	if allowFix || selected != 0 || total != 1 {
+		t.Fatalf("deselecting actionable finding left inert Fix state: allow=%v count=%d/%d", allowFix, selected, total)
+	}
+}
+
 func TestModel_View_NoFindingsWhenNotAwaiting(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)

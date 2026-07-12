@@ -283,6 +283,29 @@ func (d *DB) GetRoundsByStep(stepResultID string) ([]*StepRound, error) {
 	return d.getCompletedRounds(stepResultID, "")
 }
 
+// GetAllRoundsByStep returns every durable round state in ordinal order.
+// Recovery callers use it to reconcile a reserved child without changing the
+// completed-only history consumed by prompts and reports.
+func (d *DB) GetAllRoundsByStep(stepResultID string) ([]*StepRound, error) {
+	rows, err := d.sql.Query(
+		`SELECT `+stepRoundColumns+` FROM step_rounds WHERE step_result_id = ? ORDER BY round, id`,
+		stepResultID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get all rounds by step: %w", err)
+	}
+	defer rows.Close()
+	var rounds []*StepRound
+	for rows.Next() {
+		round := &StepRound{}
+		if err := scanStepRound(rows, round); err != nil {
+			return nil, fmt.Errorf("scan step round: %w", err)
+		}
+		rounds = append(rounds, round)
+	}
+	return rounds, rows.Err()
+}
+
 // GetPriorCompletedRounds returns completed history excluding the current
 // reservation explicitly, even if a caller races with its finalization.
 func (d *DB) GetPriorCompletedRounds(stepResultID, currentRoundID string) ([]*StepRound, error) {

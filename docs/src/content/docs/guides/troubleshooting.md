@@ -132,7 +132,7 @@ Symptom: `no-mistakes axi status` shows a `review_routing` attempt with a `failu
 
 A provider circuit is scoped to one run and opens only on a terminal classified operational failure: quota, outage, overload, auth, or a missing executable.
 The native adapter retries transient errors first, so a single network blip never opens a circuit.
-Once a domain opens, the profile fails over to its backup candidate, and candidates in the open domain are recorded as skipped rather than launched.
+Once a domain opens, the profile tries its next declared candidate, and candidates in the open domain are recorded as skipped rather than launched.
 If no candidate remains, the invocation fails closed and the run reports the operational cause.
 Fix the provider problem - quota, auth, or the missing executable - then start a fresh validation.
 

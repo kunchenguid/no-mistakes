@@ -65,6 +65,30 @@ func seedCompletedCanaryRun(t *testing.T, d *DB, repoID string, execMS int64, ti
 	return run.ID
 }
 
+func recordCanaryAttempt(t *testing.T, d *DB, runID, stepID, roundID, profile string, tier, candidateIndex int, runner types.Runner, terminal types.InvocationAttemptTerminal) {
+	t.Helper()
+	attemptID, err := d.StartInvocationAttempt(types.InvocationAttemptStart{
+		Purpose:      types.PurposeInitialReview,
+		Role:         types.InvocationRoleVerifier,
+		Scope:        types.InvocationScope{Kind: types.InvocationScopePipeline, RunID: runID, StepResultID: stepID, StepRoundID: roundID},
+		CandidateKey: fmt.Sprintf("%s:%d:%s", profile, candidateIndex, runner),
+		Candidate: types.InvocationCandidate{
+			Profile:        profile,
+			Tier:           tier,
+			CandidateIndex: candidateIndex,
+			Runner:         runner,
+			Model:          "test-model",
+			Effort:         types.EffortHigh,
+		},
+	})
+	if err != nil {
+		t.Fatalf("start attempt: %v", err)
+	}
+	if err := d.FinishInvocationAttempt(attemptID, terminal); err != nil {
+		t.Fatalf("finish attempt: %v", err)
+	}
+}
+
 func TestComputeCanaryRunFactsRetainsInitialReviewFindings(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepoWithID("repo-1", "/tmp/repo", "origin", "main")
@@ -151,8 +175,8 @@ func TestActivateCanaryFreezesTenMostRecentIdempotently(t *testing.T) {
 		t.Fatalf("baseline = %d runs (complete=%v), want 10 complete", len(report.Baseline.Runs), report.Baseline.Complete)
 	}
 	// Kept runs are i=2..11 (exec 3000..12000); even-set median = (7000+8000)/2.
-	if report.Baseline.MedianExecMS != 7500 {
-		t.Fatalf("baseline median = %d, want 7500", report.Baseline.MedianExecMS)
+	if report.Baseline.MedianExecMS.String() != "7500" {
+		t.Fatalf("baseline median = %s, want 7500", report.Baseline.MedianExecMS)
 	}
 	for _, r := range report.Baseline.Runs {
 		if r.RunID == ids[0] || r.RunID == ids[1] {
@@ -445,8 +469,8 @@ func TestCanaryReportTargetPendingUntilBothCohortsComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("complete report: %v", err)
 	}
-	if !complete.Routed.Complete || complete.Routed.MedianExecMS != 14000 {
-		t.Fatalf("complete routed state: complete=%v median=%d, want true/14000", complete.Routed.Complete, complete.Routed.MedianExecMS)
+	if !complete.Routed.Complete || complete.Routed.MedianExecMS.String() != "14000" {
+		t.Fatalf("complete routed state: complete=%v median=%s, want true/14000", complete.Routed.Complete, complete.Routed.MedianExecMS)
 	}
 	if complete.Met == nil || !*complete.Met {
 		t.Fatalf("30%% advisory target should be met at exact threshold 14000 <= 70%% of 20000; met=%v", complete.Met)
@@ -476,8 +500,8 @@ func TestCanaryReportTargetUsesExactFractionalMedians(t *testing.T) {
 	if err != nil {
 		t.Fatalf("report: %v", err)
 	}
-	if report.Baseline.MedianExecMS != 10 || report.Routed.MedianExecMS != 7 {
-		t.Fatalf("display medians = %d/%d, want compatible integer fields 10/7", report.Baseline.MedianExecMS, report.Routed.MedianExecMS)
+	if report.Baseline.MedianExecMS.String() != "10.5" || report.Routed.MedianExecMS.String() != "7.5" {
+		t.Fatalf("exact medians = %s/%s, want 10.5/7.5", report.Baseline.MedianExecMS, report.Routed.MedianExecMS)
 	}
 	if report.Met == nil || *report.Met {
 		t.Fatalf("target met = %v, want false: exact medians 10.5 and 7.5 improve by less than 30%%", report.Met)
@@ -489,42 +513,58 @@ func TestCanaryTargetMetBoundaries(t *testing.T) {
 		name     string
 		baseline []int64
 		routed   []int64
+		want     bool
 	}{
 		{
 			name:     "exactly 30 percent with fractional routed median",
 			baseline: []int64{15, 15},
 			routed:   []int64{10, 11},
+			want:     true,
 		},
 		{
 			name:     "more than 30 percent with fractional baseline",
 			baseline: []int64{10, 11},
 			routed:   []int64{7, 7},
+			want:     true,
+		},
+		{
+			name:     "both zero",
+			baseline: []int64{0, 0},
+			routed:   []int64{0, 0},
+			want:     true,
+		},
+		{
+			name:     "zero baseline cannot reduce positive routed duration",
+			baseline: []int64{0, 0},
+			routed:   []int64{0, 1},
+			want:     false,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if !canaryTargetMet(exactMedianInt64(tt.baseline), exactMedianInt64(tt.routed)) {
-				t.Fatal("target met = false, want true")
+			if got := canaryTargetMet(exactMedianInt64(tt.baseline), exactMedianInt64(tt.routed)); got != tt.want {
+				t.Fatalf("target met = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestMedianInt64EmptyOddAndEven(t *testing.T) {
+func TestExactMedianInt64EmptyOddAndEven(t *testing.T) {
 	tests := []struct {
 		name string
 		vals []int64
-		want int64
+		want string
 	}{
-		{name: "empty", want: 0},
-		{name: "odd unsorted", vals: []int64{9, 1, 5}, want: 5},
-		{name: "even integral", vals: []int64{12, 4, 8, 6}, want: 7},
-		{name: "even fractional floors display", vals: []int64{11, 10}, want: 10},
+		{name: "empty", want: "0"},
+		{name: "odd unsorted", vals: []int64{9, 1, 5}, want: "5"},
+		{name: "even integral", vals: []int64{12, 4, 8, 6}, want: "7"},
+		{name: "even fractional", vals: []int64{11, 10}, want: "10.5"},
+		{name: "even fractional near int64 maximum", vals: []int64{1<<63 - 2, 1<<63 - 1}, want: "9223372036854775806.5"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := medianInt64(tt.vals); got != tt.want {
-				t.Fatalf("medianInt64(%v) = %d, want %d", tt.vals, got, tt.want)
+			if got := exactMedianInt64(tt.vals).number().String(); got != tt.want {
+				t.Fatalf("exactMedianInt64(%v) = %s, want %s", tt.vals, got, tt.want)
 			}
 		})
 	}
@@ -557,7 +597,7 @@ func TestCanaryReportCompleteCohortCanMissAdvisoryTarget(t *testing.T) {
 	}
 }
 
-func TestCanaryRunFactsCaptureSupplements(t *testing.T) {
+func TestCanaryRunFactsCaptureComparableWorkloadAndSemanticRoutingEvents(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepoWithID("repo-1", "/tmp/repo", "origin", "main")
 	if err != nil {
@@ -566,12 +606,87 @@ func TestCanaryRunFactsCaptureSupplements(t *testing.T) {
 	if _, err := d.ActivateCanary("fp", nil); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	at := canaryActivatedAt(t, d)
-	// exec 5000ms, escalated tier (tier>0), backup candidate (index>0), 3 findings.
-	id := seedCompletedCanaryRun(t, d, repo.ID, 5000, 2, 1, 3)
-	setRunUpdatedAt(t, d, id, at+10)
-	if added, err := d.RecordRoutedRunInCanary(id, 7, 88); err != nil || !added {
-		t.Fatalf("added=%v err=%v", added, err)
+
+	run, err := d.InsertRun(repo.ID, "feature", "head", "base")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	step, err := d.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatalf("insert step: %v", err)
+	}
+
+	// A directly selected higher-tier backup Candidate is neither an escalation
+	// nor a failover: no prior semantic attempt or operational failure caused it.
+	direct, err := d.ReserveStepRound(step.ID, 1, "initial")
+	if err != nil {
+		t.Fatalf("reserve direct round: %v", err)
+	}
+	recordCanaryAttempt(t, d, run.ID, step.ID, direct.ID, "authority", 2, 1, types.RunnerClaude, types.InvocationAttemptTerminal{
+		Outcome: types.InvocationOutcomeSucceeded, DurationMS: 1000,
+	})
+	initial := canaryFindingsJSON(3)
+	if err := d.CompleteReservedStepRound(direct.ID, &initial, nil, 1000); err != nil {
+		t.Fatalf("complete direct round: %v", err)
+	}
+
+	// One classified provider failure followed by a different launched provider
+	// is one failover. The intervening open-circuit skip is evidence, not a
+	// second provider failure or launch.
+	failover, err := d.ReserveStepRound(step.ID, 2, "repair")
+	if err != nil {
+		t.Fatalf("reserve failover round: %v", err)
+	}
+	recordCanaryAttempt(t, d, run.ID, step.ID, failover.ID, "review", 0, 0, types.RunnerCodex, types.InvocationAttemptTerminal{
+		Outcome: types.InvocationOutcomeFailed, FailureDomain: types.FailureDomainOpenAI, DurationMS: 200,
+	})
+	recordCanaryAttempt(t, d, run.ID, step.ID, failover.ID, "review", 0, 1, types.RunnerCodex, types.InvocationAttemptTerminal{
+		Outcome: types.InvocationOutcomeSkipped, FailureDomain: types.FailureDomainOpenAI,
+	})
+	recordCanaryAttempt(t, d, run.ID, step.ID, failover.ID, "review", 0, 2, types.RunnerClaude, types.InvocationAttemptTerminal{
+		Outcome: types.InvocationOutcomeSucceeded, DurationMS: 300,
+	})
+	if err := d.CompleteReservedStepRound(failover.ID, nil, nil, 1000); err != nil {
+		t.Fatalf("complete failover round: %v", err)
+	}
+
+	// A later launched tier in the same purpose/scope is one semantic
+	// escalation, regardless of either Candidate's position.
+	escalation, err := d.ReserveStepRound(step.ID, 3, "repair")
+	if err != nil {
+		t.Fatalf("reserve escalation round: %v", err)
+	}
+	recordCanaryAttempt(t, d, run.ID, step.ID, escalation.ID, "review", 0, 1, types.RunnerClaude, types.InvocationAttemptTerminal{
+		Outcome: types.InvocationOutcomeSucceeded, DurationMS: 400,
+	})
+	recordCanaryAttempt(t, d, run.ID, step.ID, escalation.ID, "authority", 1, 0, types.RunnerCodex, types.InvocationAttemptTerminal{
+		Outcome: types.InvocationOutcomeSucceeded, DurationMS: 500,
+	})
+	if err := d.CompleteReservedStepRound(escalation.ID, nil, nil, 1000); err != nil {
+		t.Fatalf("complete escalation round: %v", err)
+	}
+
+	// A run-wide circuit skip followed by the available provider does not
+	// invent another failover event.
+	circuit, err := d.ReserveStepRound(step.ID, 4, "repair")
+	if err != nil {
+		t.Fatalf("reserve circuit round: %v", err)
+	}
+	recordCanaryAttempt(t, d, run.ID, step.ID, circuit.ID, "review", 0, 0, types.RunnerCodex, types.InvocationAttemptTerminal{
+		Outcome: types.InvocationOutcomeSkipped, FailureDomain: types.FailureDomainOpenAI,
+	})
+	recordCanaryAttempt(t, d, run.ID, step.ID, circuit.ID, "review", 0, 1, types.RunnerClaude, types.InvocationAttemptTerminal{
+		Outcome: types.InvocationOutcomeSucceeded, DurationMS: 600,
+	})
+	if err := d.CompleteReservedStepRound(circuit.ID, nil, nil, 1000); err != nil {
+		t.Fatalf("complete circuit round: %v", err)
+	}
+
+	if err := d.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
+		t.Fatalf("complete run: %v", err)
+	}
+	if added, err := d.RecordRoutedRunInCanary(run.ID, 7, 88); err != nil || !added {
+		t.Fatalf("record routed run added=%v err=%v", added, err)
 	}
 	report, err := d.GetCanaryReport()
 	if err != nil {
@@ -581,17 +696,17 @@ func TestCanaryRunFactsCaptureSupplements(t *testing.T) {
 		t.Fatalf("routed cohort = %d, want 1", len(report.Routed.Runs))
 	}
 	f := report.Routed.Runs[0]
-	if f.ExecutionMS != 5000 {
-		t.Errorf("execution metric = %d, want 5000", f.ExecutionMS)
+	if f.ExecutionMS != 4000 {
+		t.Errorf("execution metric = %d, want 4000", f.ExecutionMS)
 	}
-	if f.InvocationMS != 5000 {
-		t.Errorf("invocation duration = %d, want 5000", f.InvocationMS)
+	if f.InvocationMS != 3000 {
+		t.Errorf("invocation duration = %d, want exact terminal sum 3000", f.InvocationMS)
 	}
 	if f.Escalations != 1 {
-		t.Errorf("escalations = %d, want 1", f.Escalations)
+		t.Errorf("semantic escalations = %d, want 1", f.Escalations)
 	}
 	if f.Failovers != 1 {
-		t.Errorf("failovers = %d, want 1", f.Failovers)
+		t.Errorf("operational failovers = %d, want 1", f.Failovers)
 	}
 	if f.InitialFindings != 3 {
 		t.Errorf("initial findings = %d, want 3", f.InitialFindings)

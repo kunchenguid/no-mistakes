@@ -9,6 +9,17 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 )
 
+type canaryWorkloadRow struct {
+	Run             string `toon:"run"`
+	ExecutionMS     int64  `toon:"execution_ms"`
+	InvocationMS    int64  `toon:"invocation_ms"`
+	Escalations     int    `toon:"escalations"`
+	Failovers       int    `toon:"failovers"`
+	ChangedFiles    int    `toon:"changed_files"`
+	ChangedLines    int    `toon:"changed_lines"`
+	InitialFindings int    `toon:"initial_findings"`
+}
+
 // newAxiCanaryCmd shows the routing canary: the frozen baseline cohort (the ten
 // runs before routing activated) versus the routed cohort (the first ten runs
 // after), compared on the execution-only agent-bearing Step-round median. The
@@ -77,13 +88,9 @@ func runAxiCanary(cmd *cobra.Command) error {
 	fields = append(fields, canaryCohortFields("baseline", report.Baseline)...)
 	fields = append(fields, canaryCohortFields("routed", report.Routed)...)
 
-	met := "pending"
+	var met any = "pending"
 	if report.Met != nil {
-		if *report.Met {
-			met = "true"
-		} else {
-			met = "false"
-		}
+		met = *report.Met
 	}
 	fields = append(fields, toon.Field{Key: "target_met", Value: met})
 	emitDoc(cmd, fields...)
@@ -99,9 +106,20 @@ func canaryResultState(report *db.CanaryReport) string {
 
 func canaryCohortFields(name string, c db.CanaryCohort) []toon.Field {
 	escalations, failovers := 0, 0
-	for _, r := range c.Runs {
+	workloads := make([]canaryWorkloadRow, len(c.Runs))
+	for i, r := range c.Runs {
 		escalations += r.Escalations
 		failovers += r.Failovers
+		workloads[i] = canaryWorkloadRow{
+			Run:             r.RunID,
+			ExecutionMS:     r.ExecutionMS,
+			InvocationMS:    r.InvocationMS,
+			Escalations:     r.Escalations,
+			Failovers:       r.Failovers,
+			ChangedFiles:    r.ChangedFiles,
+			ChangedLines:    r.ChangedLines,
+			InitialFindings: r.InitialFindings,
+		}
 	}
 	return []toon.Field{
 		{Key: name + "_runs", Value: len(c.Runs)},
@@ -109,5 +127,6 @@ func canaryCohortFields(name string, c db.CanaryCohort) []toon.Field {
 		{Key: name + "_median_exec_ms", Value: c.MedianExecMS},
 		{Key: name + "_escalations", Value: escalations},
 		{Key: name + "_failovers", Value: failovers},
+		{Key: name + "_workloads", Value: workloads},
 	}
 }

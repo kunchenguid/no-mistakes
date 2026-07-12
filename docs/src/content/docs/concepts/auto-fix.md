@@ -104,7 +104,7 @@ If a blocking lineage remains unresolved or inconclusive after its cascade, they
 Escalation changes the quality tier.
 Failover changes the provider inside the same tier.
 
-- within a profile, candidates are tried in provider-preference order, and a classified operational failure opens that provider's circuit for the rest of the run
+- within a profile, candidates are tried in their declared order, and a classified operational failure opens that provider's circuit for the rest of the run
 - when every candidate in a required profile is unavailable, the invocation fails closed and the gate fails, rather than borrowing a weaker or stronger profile
 - provider failover never advances the quality tier
 

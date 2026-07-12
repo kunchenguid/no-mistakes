@@ -29,6 +29,25 @@ type AttemptIsolation interface {
 	RestoreFailedAttempt() error
 }
 
+// SuccessfulAttemptIsolation optionally validates protected candidate topology
+// before a successful write-capable attempt can be journaled as accepted.
+type SuccessfulAttemptIsolation interface {
+	ValidateSuccessfulAttempt() error
+}
+
+// ValidateSuccessfulAttempt applies the optional success boundary without
+// widening the baseline rollback contract required from every isolation.
+func ValidateSuccessfulAttempt(opts RunOpts) error {
+	if opts.AttemptIsolation == nil {
+		return nil
+	}
+	validator, ok := opts.AttemptIsolation.(SuccessfulAttemptIsolation)
+	if !ok {
+		return nil
+	}
+	return validator.ValidateSuccessfulAttempt()
+}
+
 // RunOpts configures a single agent invocation.
 type RunOpts struct {
 	Prompt      string

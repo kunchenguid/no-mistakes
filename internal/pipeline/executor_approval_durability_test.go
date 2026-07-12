@@ -365,6 +365,525 @@ func TestExecutorResumeReplaysAppliedFixAfterCrash(t *testing.T) {
 	}
 }
 
+func TestExecutorResumeAppliedFixContinuesAfterDurableRepairFrontier(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	workDir := gitInitTestDir(t)
+	headSHA, err := git.HeadSHA(context.Background(), workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(run.ID, headSHA); err != nil {
+		t.Fatal(err)
+	}
+	stepResult, err := database.InsertStepResult(run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(stepResult.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[{"id":"test-1","severity":"error","description":"tests require repair","action":"ask-user"}],"summary":"one"}`
+	sourceRound, err := database.InsertStepRound(stepResult.ID, 1, "initial", &findings, nil, 11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := database.ParkApprovalGate(db.ParkApprovalGateInput{
+		RunID: run.ID, StepResultID: stepResult.ID, SourceRoundID: sourceRound.ID,
+		Status: types.StepStatusAwaitingApproval, FindingsJSON: findings,
+		RepairChecksJSON: `[]`, DurationMS: 11,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	action, err := database.InsertApprovalAction(db.ApprovalActionInput{
+		GateID: gate.ID, RunID: run.ID, StepResultID: stepResult.ID, StepRoundID: sourceRound.ID,
+		Action: types.ActionFix, SelectedFindingIDsJSON: `["test-1"]`, InstructionsJSON: `{}`, AddedFindingsJSON: `[]`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["test-1"]`
+	if err := database.ApplyApprovalFix(db.ApplyApprovalFixInput{ActionID: action.ID, ParkedMS: 5, SelectedIDsJSON: &selected}); err != nil {
+		t.Fatal(err)
+	}
+
+	repairRound, err := database.ReserveStepRound(stepResult.ID, 2, "auto_fix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lineageID := fmt.Sprintf("approval:%s:test-1", action.ID)
+	repairID, err := database.StartFindingRepair(db.FindingRepairStart{
+		RunID: run.ID, LineageID: lineageID, StepResultID: stepResult.ID, StepRoundID: repairRound.ID,
+		Severity: "error", Action: types.ActionAskUser, Description: "tests require repair", Tier: 0, RemainingBudget: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := types.InvocationScope{
+		Kind: types.InvocationScopePipeline, RunID: run.ID,
+		StepResultID: stepResult.ID, StepRoundID: repairRound.ID,
+	}
+	startSucceededAttempt := func(purpose types.Purpose, role types.InvocationRole, key, profile string) string {
+		t.Helper()
+		id, startErr := database.StartInvocationAttempt(types.InvocationAttemptStart{
+			Purpose: purpose, Role: role, Scope: scope, CandidateKey: key,
+			Candidate: types.InvocationCandidate{
+				Profile: profile, Runner: types.RunnerCodex, Model: "test-model", Effort: types.EffortHigh,
+			},
+		})
+		if startErr != nil {
+			t.Fatal(startErr)
+		}
+		if finishErr := database.FinishInvocationAttempt(id, types.InvocationAttemptTerminal{Outcome: types.InvocationOutcomeSucceeded}); finishErr != nil {
+			t.Fatal(finishErr)
+		}
+		return id
+	}
+	fixerAttempt := startSucceededAttempt(types.PurposeUnstructuredTestRepair, types.InvocationRoleFixer, "fix_balanced:0:codex", "fix_balanced")
+	verifierAttempt := startSucceededAttempt(types.PurposeNormalAggregateVerification, types.InvocationRoleVerifier, "review_strong:0:codex", "review_strong")
+	if err := database.SetFindingRepairFixer(repairID, fixerAttempt); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetFindingRepairVerifier(repairID, verifierAttempt); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ResolveFindingRepair(repairID, db.RepairVerdictUnresolved, "still failing", db.RepairStatusUnresolved); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteReservedStepRound(repairRound.ID, nil, nil, 7); err != nil {
+		t.Fatal(err)
+	}
+
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepCalls := 0
+	step := &adaptiveCallStep{name: types.StepTest, fn: func(*StepContext) (*StepOutcome, error) {
+		stepCalls++
+		return &StepOutcome{}, nil
+	}}
+	executor := NewExecutor(
+		database,
+		p,
+		&config.Config{Routing: config.DefaultRoutingConfig()},
+		&scriptedExecutorRepairAgent{resolve: true},
+		[]Step{step},
+		nil,
+	)
+	if err := executor.ResumeRecoveredPrefix(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("ResumeRecoveredPrefix: %v", err)
+	}
+	if stepCalls != 0 {
+		t.Fatalf("recovery reran original Test step %d time(s), want durable repair continuation", stepCalls)
+	}
+	repairs, err := database.GetFindingRepairsByLineage(lineageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repairs) != 2 ||
+		repairs[0].Tier != 0 || repairs[0].RemainingBudget != 1 || repairs[0].Status != db.RepairStatusUnresolved ||
+		repairs[1].Tier != 1 || repairs[1].RemainingBudget != 0 || repairs[1].Status != db.RepairStatusResolved {
+		t.Fatalf("recovered repair frontier = %+v, want tier 0 unresolved then tier 1 resolved without duplicate budget", repairs)
+	}
+	rounds, err := database.GetRoundsByStep(stepResult.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[int]bool, len(rounds))
+	for _, round := range rounds {
+		if seen[round.Round] {
+			t.Fatalf("recovery duplicated round %d: %+v", round.Round, rounds)
+		}
+		seen[round.Round] = true
+	}
+}
+
+func TestExecutorRecoveredVerifyRepairReentersAggregateBeforePush(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	workDir := gitInitTestDir(t)
+	if _, err := git.Run(context.Background(), workDir, "checkout", "-b", run.Branch); err != nil {
+		t.Fatal(err)
+	}
+	headSHA, err := git.HeadSHA(context.Background(), workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(run.ID, headSHA); err != nil {
+		t.Fatal(err)
+	}
+	verifyResult, err := database.InsertStepResult(run.ID, types.StepVerify)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertStepResult(run.ID, types.StepPush); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(verifyResult.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[{"id":"verify-1","severity":"error","description":"aggregate verification failed","action":"ask-user"}],"summary":"one"}`
+	sourceRound, err := database.InsertStepRound(verifyResult.ID, 1, "initial", &findings, nil, 11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := database.ParkApprovalGate(db.ParkApprovalGateInput{
+		RunID: run.ID, StepResultID: verifyResult.ID, SourceRoundID: sourceRound.ID,
+		Status: types.StepStatusAwaitingApproval, FindingsJSON: findings,
+		RepairChecksJSON: `[]`, DurationMS: 11,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	action, err := database.InsertApprovalAction(db.ApprovalActionInput{
+		GateID: gate.ID, RunID: run.ID, StepResultID: verifyResult.ID, StepRoundID: sourceRound.ID,
+		Action: types.ActionFix, SelectedFindingIDsJSON: `["verify-1"]`, InstructionsJSON: `{}`, AddedFindingsJSON: `[]`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["verify-1"]`
+	if err := database.ApplyApprovalFix(db.ApplyApprovalFixInput{ActionID: action.ID, ParkedMS: 5, SelectedIDsJSON: &selected}); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	aggregateCalls := 0
+	verify := &adaptiveCallStep{name: types.StepVerify, fn: func(*StepContext) (*StepOutcome, error) {
+		aggregateCalls++
+		candidate, headErr := git.HeadSHA(context.Background(), workDir)
+		if headErr != nil {
+			return nil, headErr
+		}
+		if _, sealErr := database.CreateSeal(run.ID, candidate, "reviewed"); sealErr != nil {
+			return nil, sealErr
+		}
+		return &StepOutcome{}, nil
+	}}
+	push := newPassStep(types.StepPush)
+	repairAgent := &scriptedExecutorRepairAgent{
+		resolve: true,
+		fixEdit: func(cwd string) {
+			writeTestFile(t, cwd, "verify-recovery-fix.txt", "fixed\n")
+		},
+	}
+	executor := NewExecutor(
+		database,
+		p,
+		&config.Config{Routing: config.DefaultRoutingConfig()},
+		repairAgent,
+		[]Step{verify, push},
+		nil,
+	)
+	if err := executor.ResumeRecoveredPrefix(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("ResumeRecoveredPrefix: %v", err)
+	}
+	if aggregateCalls != 1 || push.callCount() != 1 {
+		t.Fatalf("recovered Verify repair ran aggregate %d time(s), Push %d time(s); want 1 then 1", aggregateCalls, push.callCount())
+	}
+	seal, err := database.LatestSeal(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewed, err := database.LatestSealByReason(run.ID, "reviewed")
+	if err != nil || seal == nil || reviewed == nil || reviewed.SHA != seal.SHA {
+		t.Fatalf("recovered publication evidence = seal %+v reviewed %+v err %v", seal, reviewed, err)
+	}
+}
+
+func TestExecutorRecoveryReconcilesDurableAggregateFrontierWithoutDuplicateRound(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	workDir := gitInitTestDir(t)
+	if _, err := git.Run(context.Background(), workDir, "checkout", "-b", run.Branch); err != nil {
+		t.Fatal(err)
+	}
+	initialHead, err := git.HeadSHA(context.Background(), workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(run.ID, initialHead); err != nil {
+		t.Fatal(err)
+	}
+	verifyResult, err := database.InsertStepResult(run.ID, types.StepVerify)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertStepResult(run.ID, types.StepPush); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(verifyResult.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[{"id":"verify-1","severity":"error","description":"aggregate verification failed","action":"ask-user"}],"summary":"one"}`
+	sourceRound, err := database.InsertStepRound(verifyResult.ID, 1, "initial", &findings, nil, 11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := database.ParkApprovalGate(db.ParkApprovalGateInput{
+		RunID: run.ID, StepResultID: verifyResult.ID, SourceRoundID: sourceRound.ID,
+		Status: types.StepStatusAwaitingApproval, FindingsJSON: findings,
+		RepairChecksJSON: `[]`, DurationMS: 11,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	action, err := database.InsertApprovalAction(db.ApprovalActionInput{
+		GateID: gate.ID, RunID: run.ID, StepResultID: verifyResult.ID, StepRoundID: sourceRound.ID,
+		Action: types.ActionFix, SelectedFindingIDsJSON: `["verify-1"]`, InstructionsJSON: `{}`, AddedFindingsJSON: `[]`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["verify-1"]`
+	if err := database.ApplyApprovalFix(db.ApplyApprovalFixInput{ActionID: action.ID, ParkedMS: 5, SelectedIDsJSON: &selected}); err != nil {
+		t.Fatal(err)
+	}
+	repairRound, err := database.ReserveStepRound(verifyResult.ID, 2, "auto_fix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lineageID := fmt.Sprintf("approval:%s:verify-1", action.ID)
+	repairID, err := database.StartFindingRepair(db.FindingRepairStart{
+		RunID: run.ID, LineageID: lineageID, StepResultID: verifyResult.ID, StepRoundID: repairRound.ID,
+		Severity: "error", Action: types.ActionAskUser, Description: "aggregate verification failed",
+		Tier: 0, RemainingBudget: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startSucceeded := func(roundID string, purpose types.Purpose, role types.InvocationRole, key, profile string) string {
+		t.Helper()
+		id, startErr := database.StartInvocationAttempt(types.InvocationAttemptStart{
+			Purpose: purpose, Role: role,
+			Scope: types.InvocationScope{
+				Kind: types.InvocationScopePipeline, RunID: run.ID,
+				StepResultID: verifyResult.ID, StepRoundID: roundID,
+			},
+			CandidateKey: key,
+			Candidate: types.InvocationCandidate{
+				Profile: profile, Runner: types.RunnerCodex, Model: "test-model", Effort: types.EffortHigh,
+			},
+		})
+		if startErr != nil {
+			t.Fatal(startErr)
+		}
+		if finishErr := database.FinishInvocationAttempt(id, types.InvocationAttemptTerminal{Outcome: types.InvocationOutcomeSucceeded}); finishErr != nil {
+			t.Fatal(finishErr)
+		}
+		return id
+	}
+	fixerAttempt := startSucceeded(repairRound.ID, types.PurposeStructuredFindingRepair, types.InvocationRoleFixer, "fix_fast:0:codex", "fix_fast")
+	repairVerifier := startSucceeded(repairRound.ID, types.PurposeNormalAggregateVerification, types.InvocationRoleVerifier, "review_strong:0:codex", "review_strong")
+	if err := database.SetFindingRepairFixer(repairID, fixerAttempt); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetFindingRepairVerifier(repairID, repairVerifier); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ResolveFindingRepair(repairID, db.RepairVerdictResolved, "fixed", db.RepairStatusResolved); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteReservedStepRound(repairRound.ID, nil, nil, 7); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, workDir, "recovered-aggregate.txt", "fixed\n")
+	if _, err := git.Run(context.Background(), workDir, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git.Run(context.Background(), workDir, "commit", "-m", "repair Verify finding"); err != nil {
+		t.Fatal(err)
+	}
+	repairedHead, err := git.HeadSHA(context.Background(), workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(run.ID, repairedHead); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.CreateSeal(run.ID, repairedHead, "pre_verify"); err != nil {
+		t.Fatal(err)
+	}
+	aggregateRound, err := database.ReserveStepRound(verifyResult.ID, 3, "auto_fix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	startSucceeded(
+		aggregateRound.ID,
+		types.PurposeEscalatedAggregateVerification,
+		types.InvocationRoleVerifier,
+		"authority_strong:0:codex",
+		"authority_strong",
+	)
+	if _, err := database.CreateSeal(run.ID, repairedHead, "reviewed"); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	aggregateCalls := 0
+	verify := &adaptiveCallStep{name: types.StepVerify, fn: func(*StepContext) (*StepOutcome, error) {
+		aggregateCalls++
+		return &StepOutcome{}, nil
+	}}
+	push := newPassStep(types.StepPush)
+	executor := NewExecutor(
+		database,
+		p,
+		&config.Config{Routing: config.DefaultRoutingConfig()},
+		&scriptedExecutorRepairAgent{resolve: true},
+		[]Step{verify, push},
+		nil,
+	)
+	if err := executor.ResumeRecoveredPrefix(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("ResumeRecoveredPrefix: %v", err)
+	}
+	if aggregateCalls != 0 || push.callCount() != 1 {
+		t.Fatalf("reconciled aggregate frontier reran Verify %d time(s), Push %d time(s); want 0 then 1", aggregateCalls, push.callCount())
+	}
+	rounds, err := database.GetAllRoundsByStep(verifyResult.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rounds) != 3 || rounds[2].ID != aggregateRound.ID || rounds[2].State != db.StepRoundCompleted {
+		t.Fatalf("reconciled rounds = %+v, want the original three-round frontier completed in place", rounds)
+	}
+}
+
+func TestExecutorRecoveryCancelsEveryUnreconstructableOpenChildBoundary(t *testing.T) {
+	for _, withActiveFixer := range []bool{false, true} {
+		name := "reserved"
+		if withActiveFixer {
+			name = "fixer_started"
+		}
+		t.Run(name, func(t *testing.T) {
+			database, p, run, repo := setupTest(t)
+			if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+			workDir := gitInitTestDir(t)
+			headSHA, err := git.HeadSHA(context.Background(), workDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.UpdateRunHeadSHA(run.ID, headSHA); err != nil {
+				t.Fatal(err)
+			}
+			stepResult, err := database.InsertStepResult(run.ID, types.StepTest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.StartStep(stepResult.ID); err != nil {
+				t.Fatal(err)
+			}
+			findings := `{"findings":[{"id":"test-1","severity":"error","description":"tests require repair","action":"ask-user"}],"summary":"one"}`
+			sourceRound, err := database.InsertStepRound(stepResult.ID, 1, "initial", &findings, nil, 11)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gate, err := database.ParkApprovalGate(db.ParkApprovalGateInput{
+				RunID: run.ID, StepResultID: stepResult.ID, SourceRoundID: sourceRound.ID,
+				Status: types.StepStatusAwaitingApproval, FindingsJSON: findings,
+				RepairChecksJSON: `[]`, DurationMS: 11,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			action, err := database.InsertApprovalAction(db.ApprovalActionInput{
+				GateID: gate.ID, RunID: run.ID, StepResultID: stepResult.ID, StepRoundID: sourceRound.ID,
+				Action: types.ActionFix, SelectedFindingIDsJSON: `["test-1"]`, InstructionsJSON: `{}`, AddedFindingsJSON: `[]`,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			selected := `["test-1"]`
+			if err := database.ApplyApprovalFix(db.ApplyApprovalFixInput{ActionID: action.ID, ParkedMS: 5, SelectedIDsJSON: &selected}); err != nil {
+				t.Fatal(err)
+			}
+			openRound, err := database.ReserveStepRound(stepResult.ID, 2, "auto_fix")
+			if err != nil {
+				t.Fatal(err)
+			}
+			activeAttemptID := ""
+			if withActiveFixer {
+				activeAttemptID, err = database.StartInvocationAttempt(types.InvocationAttemptStart{
+					Purpose: types.PurposeUnstructuredTestRepair,
+					Role:    types.InvocationRoleFixer,
+					Scope: types.InvocationScope{
+						Kind: types.InvocationScopePipeline, RunID: run.ID,
+						StepResultID: stepResult.ID, StepRoundID: openRound.ID,
+					},
+					CandidateKey: "fix_balanced:0:codex",
+					Candidate: types.InvocationCandidate{
+						Profile: "fix_balanced", Runner: types.RunnerCodex, Model: "test-model", Effort: types.EffortHigh,
+					},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			run, err = database.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			executor := NewExecutor(
+				database,
+				p,
+				&config.Config{Routing: config.DefaultRoutingConfig()},
+				&scriptedExecutorRepairAgent{resolve: true},
+				[]Step{newPassStep(types.StepTest)},
+				nil,
+			)
+			if err := executor.ResumeRecoveredPrefix(context.Background(), run, repo, workDir); err != nil {
+				t.Fatalf("ResumeRecoveredPrefix: %v", err)
+			}
+			reconciled, err := database.GetStepRound(openRound.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reconciled == nil || reconciled.State != db.StepRoundCancelled {
+				t.Fatalf("unreconstructable child = %+v, want cancelled in place", reconciled)
+			}
+			if activeAttemptID != "" {
+				attempt, err := database.GetInvocationAttempt(activeAttemptID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if attempt == nil || attempt.Terminal == nil || attempt.Terminal.Outcome != types.InvocationOutcomeInterrupted {
+					t.Fatalf("recovered active attempt = %+v, want interrupted terminal", attempt)
+				}
+			}
+			rounds, err := database.GetAllRoundsByStep(stepResult.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seen := make(map[int]bool, len(rounds))
+			for _, round := range rounds {
+				if round.State == db.StepRoundReserved {
+					t.Fatalf("recovery preserved open child round %+v", round)
+				}
+				if seen[round.Round] {
+					t.Fatalf("recovery duplicated round ordinal %d: %+v", round.Round, rounds)
+				}
+				seen[round.Round] = true
+			}
+		})
+	}
+}
+
 func approvalActionInput(gate *db.ApprovalGate, action types.ApprovalAction) db.ApprovalActionInput {
 	return db.ApprovalActionInput{
 		GateID: gate.ID, RunID: gate.RunID, StepResultID: gate.StepResultID, StepRoundID: gate.SourceRoundID,
@@ -499,8 +1018,21 @@ func TestExecutorNonReviewUserFixRequiresDurableVerifiedRepair(t *testing.T) {
 					},
 				})
 			}
-			step := newApprovalStep(stepName, findings)
-			step.outcome.RepairChecks = repairChecks
+			stepCalls := 0
+			step := &adaptiveCallStep{name: stepName, fn: func(*StepContext) (*StepOutcome, error) {
+				stepCalls++
+				if stepName == types.StepVerify && stepCalls > 1 {
+					head, err := git.HeadSHA(context.Background(), workDir)
+					if err != nil {
+						return nil, err
+					}
+					if _, err := database.CreateSeal(run.ID, head, "reviewed"); err != nil {
+						return nil, err
+					}
+					return &StepOutcome{}, nil
+				}
+				return &StepOutcome{NeedsApproval: true, Findings: findings, RepairChecks: repairChecks}, nil
+			}}
 			repairAgent := &scriptedExecutorRepairAgent{resolve: true}
 			executor := NewExecutor(
 				database,
@@ -531,6 +1063,19 @@ func TestExecutorNonReviewUserFixRequiresDurableVerifiedRepair(t *testing.T) {
 				}
 			case <-time.After(10 * time.Second):
 				t.Fatal("verified user fix timed out")
+			}
+			if stepName == types.StepVerify {
+				if stepCalls != 2 {
+					t.Fatalf("Verify calls = %d, want consented repair followed by fresh aggregate Verify", stepCalls)
+				}
+				seal, err := database.LatestSeal(run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				reviewed, err := database.LatestSealByReason(run.ID, "reviewed")
+				if err != nil || seal == nil || reviewed == nil || reviewed.SHA != seal.SHA {
+					t.Fatalf("consented Verify publication evidence = seal %+v reviewed %+v err %v", seal, reviewed, err)
+				}
 			}
 			repairs, err := database.GetFindingRepairsByRun(run.ID)
 			if err != nil {

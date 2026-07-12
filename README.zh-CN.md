@@ -38,10 +38,10 @@ PR 创建和托管 CI 都发生在发布之后。
 你会得到：
 
 - 一条隔离的流水线，绝不阻塞你的工作副本
-- 按语义用途（Purpose）路由的模型调用，可在 OpenAI 与 Anthropic 之间做提供商故障切换
+- 默认路由按语义用途（Purpose）选择模型，并在 OpenAI 首选候选与 Anthropic 后备候选之间故障切换；自定义 Profile 按其声明顺序尝试候选
 - 一个 `/no-mistakes` skill，让你的编码 agent 完成任务并过网关，或直接为已提交的工作过网关
 - 每次修复都先应用、再经确定性检查和独立验证，之后才允许发布任何内容
-- 替你开出干净的 PR 并盯好 CI，需要人拍板的事仍由你决定
+- 在主机支持时自动创建 PR，并在 PR 保持开放期间监控 CI；需要人拍板的事仍由你决定
 
 完整文档：<https://kunchenguid.github.io/no-mistakes/>
 
@@ -58,12 +58,12 @@ PR 创建和托管 CI 都发生在发布之后。
    └────────────────────────────────────────────────┘
             │  本地及推送前 gate 通过后才会进入 Push
             ▼
-        已发布认证提交，已开出干净 PR，托管 CI 变绿
+        顺利路径：发布认证提交，开出干净 PR，托管 CI 变绿
 ```
 
 流水线永远按同样的十个步骤运行：intent（意图）→ rebase（变基）→ review（评审）→ test（测试）→ document（文档）→ lint（静态检查）→ verify（验证）→ push（推送）→ PR → CI。
-每个步骤要么自行通过，要么停下来留下一条 finding。
-系统会替你修复可安全修复的 finding；任何触及你意图的事项都会等待你作出决定。
+Review 会先运行自动修复，再考虑停下来。
+只有 `ask-user` finding 或仍未解决的阻塞 lineage 才会等待你作出决定。
 push 步骤只负责传输 verify 步骤认证过的那一个确切提交。
 在所有本地及推送前 gate 变绿之前，任何东西都不会到达配置的推送目标。
 
@@ -71,7 +71,7 @@ push 步骤只负责传输 verify 步骤认证过的那一个确切提交。
 
 每一次模型调用都始于一个语义用途（Purpose），例如首次评审或 PR 撰写。
 Purpose 选定一条由能力档位（Profile）组成的有限路由（Route），每个 Profile 按优先顺序列出各提供商的候选（Candidate）。
-一旦某次调用出现已分类的运行故障（例如配额耗尽或服务中断），该候选所属提供商的熔断器就会在本次运行期间保持打开，并由同一 Profile 内的备用候选接管。
+一旦某次调用出现已分类的运行故障（例如配额耗尽或服务中断），该候选所属提供商的熔断器就会在本次运行期间保持打开，并尝试同一 Profile 中下一个已声明的候选。
 当所有候选都不可用时，这次调用会直接以失败收场（fail closed），而不是悄悄降级。
 系统会将每条 finding 作为持久谱系（lineage）追踪：先由新的修复执行者处理，再运行确定性检查，最后由独立验证者验证，并沿 Route 逐级升级，直到该 finding 被解决或以失败关闭（fail closed）的方式终止。
 完整契约见[路由参考](https://kunchenguid.github.io/no-mistakes/reference/routing/)。
@@ -115,9 +115,10 @@ $ no-mistakes
 若要通过 GitHub fork 贡献代码，请让 `origin` 保持指向父仓库，并使用 `no-mistakes init --fork-url <your-fork-url>` 初始化。
 
 在 TUI 里你逐条处理 finding。
-流水线会自行修复安全的 finding，并对每次修复做独立验证；需要人拍板的事项会让运行停下来，由你 approve（批准）、fix（修复）或 skip（跳过）。
+流水线会自行修复安全的 finding，并对每次修复做独立验证。
+Review 只有遇到 `ask-user` finding 或仍未解决的阻塞 lineage 才会停下来，供你 approve（批准）、fix（修复）或 skip（跳过）。
 所有本地及推送前 gate 变绿后，Push 才会把认证过的提交转发到配置的推送目标。
-PR 会在发布后创建，托管 CI 随后检查已发布的提交。
+在受支持主机的顺利路径中，PR 会在发布后创建，托管 CI 随后检查已发布的提交。
 你不需要手动运行 `git push origin`，也不用手写 PR 正文。
 希望让编码智能体以无界面方式驱动同一流程？
 用 `/no-mistakes`（见下文）。

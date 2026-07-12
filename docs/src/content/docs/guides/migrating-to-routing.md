@@ -28,7 +28,7 @@ If you must pin different models, declare a complete custom `routing` block; cop
 ### fallback_agents
 
 Delete it.
-Provider fail-over is now structural: each profile orders its candidates, and a candidate backup is tried after a classified operational failure opens the first candidate's provider circuit.
+Provider fail-over is now structural: each profile declares its candidate order, and a classified operational failure opens the failed candidate's provider circuit before the next declared candidate is tried.
 Non-operational failures, such as malformed output or a bad result, fail immediately instead of falling through to another provider.
 
 ### acpx_path and acp_registry_overrides

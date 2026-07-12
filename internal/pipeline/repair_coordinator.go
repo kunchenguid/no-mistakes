@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -262,14 +263,97 @@ func (rc *repairCoordinator) reviewDiff(ctx context.Context, baseSHA string) str
 	return ""
 }
 
+func (rc *repairCoordinator) repairPublicationRef() string {
+	return "refs/no-mistakes/repair-publications/" + rc.run.ID
+}
+
+// reconcileRepairPublication completes or accepts a previously sealed repair
+// commit before any new fixer can run. The private ref is the durable intent:
+// the shared branch is never moved to an unnamed or recomputed commit.
+func (rc *repairCoordinator) reconcileRepairPublication(ctx context.Context) error {
+	intentRef := rc.repairPublicationRef()
+	candidate, err := git.Run(ctx, rc.workDir, "for-each-ref", "--format=%(objectname)", intentRef)
+	if err != nil {
+		return fmt.Errorf("inspect repair publication intent: %w", err)
+	}
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return nil
+	}
+	parent, err := git.Run(ctx, rc.workDir, "rev-parse", candidate+"^")
+	if err != nil {
+		return fmt.Errorf("resolve repair publication parent: %w", err)
+	}
+	parent = strings.TrimSpace(parent)
+	sharedRef := branchRef(rc.branch)
+	currentHead, err := git.HeadSHA(ctx, rc.workDir)
+	if err != nil {
+		return fmt.Errorf("resolve repair publication worktree HEAD: %w", err)
+	}
+	if currentHead != parent && currentHead != candidate {
+		return fmt.Errorf("repair publication worktree HEAD %s matches neither parent %s nor candidate %s", currentHead, parent, candidate)
+	}
+	sharedSHA, err := git.Run(ctx, rc.workDir, "for-each-ref", "--format=%(objectname)", sharedRef)
+	if err != nil {
+		return fmt.Errorf("resolve shared repair branch: %w", err)
+	}
+	sharedSHA = strings.TrimSpace(sharedSHA)
+	switch sharedSHA {
+	case "":
+		if _, err := git.Run(ctx, rc.workDir, "update-ref", sharedRef, candidate, ""); err != nil {
+			return fmt.Errorf("create shared repair branch at sealed commit: %w", err)
+		}
+	case parent:
+		if _, err := git.Run(ctx, rc.workDir, "update-ref", sharedRef, candidate, parent); err != nil {
+			return fmt.Errorf("publish sealed repair commit: %w", err)
+		}
+	case candidate:
+	default:
+		return fmt.Errorf("shared repair branch %s matches neither journaled parent %s nor candidate %s", sharedSHA, parent, candidate)
+	}
+	if _, err := git.Run(ctx, rc.workDir, "symbolic-ref", "HEAD", sharedRef); err != nil {
+		return fmt.Errorf("attach repair worktree to shared branch: %w", err)
+	}
+	if rc.run.HeadSHA != parent && rc.run.HeadSHA != candidate {
+		return fmt.Errorf("repair publication run head %s matches neither parent %s nor candidate %s", rc.run.HeadSHA, parent, candidate)
+	}
+	if rc.run.HeadSHA != candidate {
+		if err := rc.db.UpdateRunHeadSHA(rc.run.ID, candidate); err != nil {
+			return fmt.Errorf("accept sealed repair commit: %w", err)
+		}
+		rc.run.HeadSHA = candidate
+	}
+	if _, err := git.Run(ctx, rc.workDir, "update-ref", "-d", intentRef, candidate); err != nil {
+		return fmt.Errorf("clear repair publication intent: %w", err)
+	}
+	return nil
+}
+
 func (rc *repairCoordinator) commitFix(ctx context.Context, summary string) error {
+	if err := rc.reconcileRepairPublication(ctx); err != nil {
+		return err
+	}
 	status, _ := git.Run(ctx, rc.workDir, "status", "--porcelain")
 	if strings.TrimSpace(status) == "" {
-		rc.log("fixer produced no changes to commit")
+		rc.logf("fixer produced no changes to commit")
 		return nil
+	}
+	sharedRef := branchRef(rc.branch)
+	sharedParent, err := git.Run(ctx, rc.workDir, "for-each-ref", "--format=%(objectname)", sharedRef)
+	if err != nil {
+		return fmt.Errorf("resolve shared repair branch: %w", err)
+	}
+	sharedParent = strings.TrimSpace(sharedParent)
+	parent, err := git.HeadSHA(ctx, rc.workDir)
+	if err != nil {
+		return fmt.Errorf("resolve repair parent: %w", err)
 	}
 	if _, err := git.Run(ctx, rc.workDir, "add", "-A"); err != nil {
 		return fmt.Errorf("stage repair changes: %w", err)
+	}
+	tree, err := git.Run(ctx, rc.workDir, "write-tree")
+	if err != nil {
+		return fmt.Errorf("write repair candidate tree: %w", err)
 	}
 	if summary == "" {
 		summary = "apply review finding repair"
@@ -279,19 +363,30 @@ func (rc *repairCoordinator) commitFix(ctx context.Context, summary string) erro
 		step = types.StepReview
 	}
 	message := fmt.Sprintf("no-mistakes(%s): %s", step, summary)
-	if _, err := git.Run(ctx, rc.workDir, "commit", "-m", message); err != nil {
-		return fmt.Errorf("commit repair changes: %w", err)
-	}
-	headSHA, err := git.HeadSHA(ctx, rc.workDir)
+	candidate, err := git.Run(ctx, rc.workDir, "commit-tree", tree, "-p", parent, "-m", message)
 	if err != nil {
-		return fmt.Errorf("resolve head after repair commit: %w", err)
+		return fmt.Errorf("seal repair commit: %w", err)
 	}
-	if _, err := git.Run(ctx, rc.workDir, "update-ref", branchRef(rc.branch), headSHA); err != nil {
-		return fmt.Errorf("update local branch ref: %w", err)
+	candidate = strings.TrimSpace(candidate)
+	intentRef := rc.repairPublicationRef()
+	if _, err := git.Run(ctx, rc.workDir, "update-ref", intentRef, candidate, ""); err != nil {
+		return fmt.Errorf("journal repair publication intent: %w", err)
 	}
-	rc.run.HeadSHA = headSHA
-	if err := rc.db.UpdateRunHeadSHA(rc.run.ID, headSHA); err != nil {
-		return err
+	if sharedParent != "" && sharedParent != parent {
+		return fmt.Errorf("shared repair branch %s is not the candidate parent %s", sharedParent, parent)
+	}
+	if _, err := git.Run(ctx, rc.workDir, "update-ref", sharedRef, candidate, sharedParent); err != nil {
+		return fmt.Errorf("publish sealed repair commit: %w", err)
+	}
+	if _, err := git.Run(ctx, rc.workDir, "symbolic-ref", "HEAD", sharedRef); err != nil {
+		return fmt.Errorf("attach repair worktree to shared branch: %w", err)
+	}
+	if err := rc.db.UpdateRunHeadSHA(rc.run.ID, candidate); err != nil {
+		return fmt.Errorf("accept sealed repair commit: %w", err)
+	}
+	rc.run.HeadSHA = candidate
+	if _, err := git.Run(ctx, rc.workDir, "update-ref", "-d", intentRef, candidate); err != nil {
+		return fmt.Errorf("clear repair publication intent: %w", err)
 	}
 	return nil
 }
@@ -354,11 +449,31 @@ type repairResult struct {
 
 func repairResultFromStates(states map[string]*lineageState, seeds []repairSeed) repairResult {
 	seedLineages := make(map[string]struct{}, len(seeds))
+	ordered := make([]string, 0, len(states))
 	for _, seed := range seeds {
 		seedLineages[seed.LineageID] = struct{}{}
+		if _, exists := states[seed.LineageID]; exists {
+			ordered = append(ordered, seed.LineageID)
+		}
 	}
+	additional := make([]string, 0, len(states)-len(ordered))
+	for lineageID := range states {
+		if _, original := seedLineages[lineageID]; !original {
+			additional = append(additional, lineageID)
+		}
+	}
+	sort.Slice(additional, func(i, j int) bool {
+		left, right := states[additional[i]], states[additional[j]]
+		if left.order != right.order {
+			return left.order < right.order
+		}
+		return additional[i] < additional[j]
+	})
+	ordered = append(ordered, additional...)
+
 	result := repairResult{Owned: len(states) > 0, Resolved: true}
-	for lineageID, state := range states {
+	for _, lineageID := range ordered {
+		state := states[lineageID]
 		if !state.resolved && state.finding.Action != types.ActionNoOp {
 			result.Resolved = false
 		}

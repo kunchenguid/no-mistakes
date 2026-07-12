@@ -957,8 +957,19 @@ func TestExecutorResolvedVerifyRepairResealsAndAdvances(t *testing.T) {
 	workDir := t.TempDir()
 	initGitRepo(t, workDir)
 	scripted := &scriptedExecutorRepairAgent{resolve: true}
-	verify := &mockStep{name: types.StepVerify, outcome: &StepOutcome{
-		Findings: `{"findings":[{"id":"verify-1","severity":"error","description":"verification failed","action":"auto-fix"}],"summary":"one"}`,
+	verifyCalls := 0
+	verify := &adaptiveCallStep{name: types.StepVerify, fn: func(*StepContext) (*StepOutcome, error) {
+		verifyCalls++
+		if verifyCalls == 1 {
+			return &StepOutcome{
+				Findings: `{"findings":[{"id":"verify-1","severity":"error","description":"verification failed","action":"auto-fix"}],"summary":"one"}`,
+			}, nil
+		}
+		head := gitOut(t, workDir, "rev-parse", "HEAD")
+		if _, err := database.CreateSeal(run.ID, head, "reviewed"); err != nil {
+			return nil, err
+		}
+		return &StepOutcome{}, nil
 	}}
 	push := newPassStep(types.StepPush)
 	cfg := &config.Config{Routing: config.DefaultRoutingConfig()}
@@ -967,6 +978,9 @@ func TestExecutorResolvedVerifyRepairResealsAndAdvances(t *testing.T) {
 	if err := executor.Execute(context.Background(), run, repo, workDir); err != nil {
 		t.Fatalf("executor error: %v", err)
 	}
+	if verifyCalls != 2 {
+		t.Fatalf("Verify calls = %d, want repair followed by a fresh full aggregate Verify", verifyCalls)
+	}
 	if push.callCount() != 1 {
 		t.Fatalf("Push calls = %d, want 1 after resolved Verify repair", push.callCount())
 	}
@@ -974,12 +988,52 @@ func TestExecutorResolvedVerifyRepairResealsAndAdvances(t *testing.T) {
 	if err != nil || seal == nil {
 		t.Fatalf("load resealed candidate: %+v, %v", seal, err)
 	}
+	reviewed, err := database.LatestSealByReason(run.ID, "reviewed")
+	if err != nil || reviewed == nil || reviewed.SHA != seal.SHA {
+		t.Fatalf("aggregate-verified seal = %+v, err = %v; want repaired seal SHA %s", reviewed, err, seal.SHA)
+	}
 	repairs, err := database.GetFindingRepairsByRun(run.ID)
 	if err != nil {
 		t.Fatalf("get repairs: %v", err)
 	}
 	if len(repairs) != 1 || repairs[0].Status != db.RepairStatusResolved {
 		t.Fatalf("resolved Verify repairs = %+v, want one durable resolution", repairs)
+	}
+}
+
+func TestExecutorResolvedVerifyRepairCannotPushWithoutAggregateSeal(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+	verifyCalls := 0
+	verify := &adaptiveCallStep{name: types.StepVerify, fn: func(*StepContext) (*StepOutcome, error) {
+		verifyCalls++
+		if verifyCalls == 1 {
+			return &StepOutcome{
+				Findings: `{"findings":[{"id":"verify-1","severity":"error","description":"verification failed","action":"auto-fix"}],"summary":"one"}`,
+			}, nil
+		}
+		return &StepOutcome{}, nil
+	}}
+	push := newPassStep(types.StepPush)
+	executor := NewExecutor(
+		database,
+		p,
+		&config.Config{Routing: config.DefaultRoutingConfig()},
+		&scriptedExecutorRepairAgent{resolve: true},
+		[]Step{newPassStep(types.StepLint), verify, push},
+		nil,
+	)
+
+	err := executor.Execute(context.Background(), run, repo, workDir)
+	if err == nil || !strings.Contains(err.Error(), "aggregate-verified") {
+		t.Fatalf("Execute error = %v, want missing aggregate verification evidence", err)
+	}
+	if verifyCalls != 2 {
+		t.Fatalf("Verify calls = %d, want targeted repair plus fresh aggregate pass", verifyCalls)
+	}
+	if push.callCount() != 0 {
+		t.Fatalf("Push calls = %d, want 0 without aggregate-verified seal", push.callCount())
 	}
 }
 
@@ -1945,5 +1999,250 @@ func TestVerifyRepairRoutesThroughStructuredCascade(t *testing.T) {
 	}
 	if policy.finalVerifierPurpose != types.PurposeEscalatedAggregateVerification {
 		t.Fatalf("verify final verifier = %q, want escalated aggregate verification", policy.finalVerifierPurpose)
+	}
+}
+
+func TestEscalateResumesPersistedUnresolvedTierAndBudget(t *testing.T) {
+	fake := &fakeRepairInvoker{verify: func(_ int, ids []string) verdictSpec {
+		return verdictSpec{resolved: allResolved(ids)}
+	}}
+	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+	priorRound, err := rc.reserveRound("auto_fix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorID, err := rc.db.StartFindingRepair(db.FindingRepairStart{
+		RunID: rc.run.ID, LineageID: seeds[0].LineageID, StepResultID: rc.stepResultID, StepRoundID: priorRound.ID,
+		Severity: "error", Action: types.ActionAutoFix, Description: "nil deref", File: "app.go", Line: 3,
+		Tier: 0, RemainingBudget: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := types.InvocationScope{
+		Kind: types.InvocationScopePipeline, RunID: rc.run.ID,
+		StepResultID: rc.stepResultID, StepRoundID: priorRound.ID,
+	}
+	fixerID, err := rc.db.StartInvocationAttempt(types.InvocationAttemptStart{
+		Purpose: rc.policy.fixerPurpose, Role: types.InvocationRoleFixer, Scope: scope,
+		CandidateKey: "fix_fast:0:codex",
+		Candidate: types.InvocationCandidate{
+			Profile: "fix_fast", Runner: types.RunnerCodex, Model: "m", Effort: types.EffortMedium,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.db.FinishInvocationAttempt(fixerID, types.InvocationAttemptTerminal{Outcome: types.InvocationOutcomeSucceeded}); err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.db.SetFindingRepairFixer(priorID, fixerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.db.ResolveFindingRepair(priorID, db.RepairVerdictUnresolved, "still broken", db.RepairStatusUnresolved); err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.db.CompleteReservedStepRound(priorRound.ID, nil, nil, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	states, err := rc.escalateBatch(context.Background(), seeds)
+	if err != nil {
+		t.Fatalf("escalateBatch: %v", err)
+	}
+	if fmt.Sprint(fake.fixerTiers) != "[1]" {
+		t.Fatalf("fixer tiers = %v, want persisted frontier to resume at tier 1", fake.fixerTiers)
+	}
+	if !states[seeds[0].LineageID].resolved {
+		t.Fatalf("resumed lineage = %+v, want resolved", states[seeds[0].LineageID])
+	}
+	repairs, err := rc.db.GetFindingRepairsByLineage(seeds[0].LineageID)
+	if err != nil || len(repairs) != 2 {
+		t.Fatalf("repairs = %+v, err = %v; want two", repairs, err)
+	}
+	if repairs[0].Tier != 0 || repairs[0].RemainingBudget != 2 || repairs[1].Tier != 1 || repairs[1].RemainingBudget != 1 {
+		t.Fatalf("persisted repair frontier reset its budget: %+v", repairs)
+	}
+}
+
+func TestEscalateFinalTierPersistsPatchCausedReplacement(t *testing.T) {
+	fake := &fakeRepairInvoker{verify: func(_ int, ids []string) verdictSpec {
+		return verdictSpec{
+			resolved: map[string]bool{ids[0]: true},
+			newFindings: []newFindingSpec{{
+				description: "terminal patch regression",
+				severity:    "error",
+				action:      types.ActionAutoFix,
+				causedBy:    ids[0],
+			}},
+		}
+	}}
+	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "original root")})
+	rc.policy.maxTier = 0
+
+	states, err := rc.escalateBatch(context.Background(), seeds)
+	if err != nil {
+		t.Fatalf("escalateBatch: %v", err)
+	}
+	state := states[seeds[0].LineageID]
+	if !state.failed || state.finding.Description != "terminal patch regression" {
+		t.Fatalf("terminal lineage state = %+v, want latest patch-caused finding", state)
+	}
+	repairs, err := rc.db.GetFindingRepairsByLineage(seeds[0].LineageID)
+	if err != nil || len(repairs) != 2 {
+		t.Fatalf("repairs = %+v, err = %v; want original plus terminal replacement", repairs, err)
+	}
+	latest := repairs[len(repairs)-1]
+	if latest.Description != "terminal patch regression" || latest.Status != db.RepairStatusUnresolved ||
+		latest.RemainingBudget != 0 || latest.VerifierAttemptID == "" {
+		t.Fatalf("terminal replacement = %+v, want verifier-linked unresolved latest finding", latest)
+	}
+}
+
+func TestEscalateRejectsVerifierRefMutation(t *testing.T) {
+	fake := &fakeRepairInvoker{verify: func(_ int, ids []string) verdictSpec {
+		return verdictSpec{resolved: allResolved(ids)}
+	}}
+	rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+	rc.policy.maxTier = 0
+	gitOut(t, rc.workDir, "branch", "protected-ref")
+	fake.verifyEdit = func(int) {
+		gitOut(t, rc.workDir, "update-ref", "refs/heads/protected-ref", "HEAD")
+	}
+
+	states, err := rc.escalateBatch(context.Background(), seeds)
+	if err == nil || !strings.Contains(err.Error(), "verifier mutated the repair candidate") {
+		t.Fatalf("escalateBatch error = %v, want ref mutation rejection", err)
+	}
+	state := states[seeds[0].LineageID]
+	if state.resolved || !state.failed || state.verdict != db.RepairVerdictInconclusive {
+		t.Fatalf("ref-mutating verifier must fail closed, got %+v", state)
+	}
+}
+
+func TestRepairResultPreservesSeedAndNewLineageOrder(t *testing.T) {
+	seeds := []repairSeed{
+		{LineageID: "seed-b", Finding: blockingFinding("review-2", "second")},
+		{LineageID: "seed-a", Finding: blockingFinding("review-1", "first")},
+	}
+	states := map[string]*lineageState{
+		"seed-a": {lineageID: "seed-a", finding: seeds[1].Finding, resolved: true},
+		"new-z":  {lineageID: "new-z", finding: blockingFinding("new-z", "new z"), order: 2, failed: true},
+		"seed-b": {lineageID: "seed-b", finding: seeds[0].Finding, resolved: true},
+		"new-a":  {lineageID: "new-a", finding: blockingFinding("new-a", "new a"), order: 3, failed: true},
+	}
+	result := repairResultFromStates(states, seeds)
+	if fmt.Sprint(result.ResolvedIDs) != "[review-2 review-1]" {
+		t.Fatalf("resolved IDs = %v, want seed order", result.ResolvedIDs)
+	}
+	gotNew := []string{result.NewFindings[0].ID, result.NewFindings[1].ID}
+	if fmt.Sprint(gotNew) != "[new-z new-a]" {
+		t.Fatalf("new finding IDs = %v, want verifier discovery order", gotNew)
+	}
+}
+
+func TestRepairPublicationIntentReconcilesBeforeAndAfterSharedRefUpdate(t *testing.T) {
+	for _, publishBeforeRestart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("shared-ref-published-%t", publishBeforeRestart), func(t *testing.T) {
+			rc, _ := repairFixture(t, &fakeRepairInvoker{}, []types.Finding{blockingFinding("review-1", "nil deref")})
+			parent := gitOut(t, rc.workDir, "rev-parse", "HEAD")
+			rc.run.HeadSHA = parent
+			if err := rc.db.UpdateRunHeadSHA(rc.run.ID, parent); err != nil {
+				t.Fatal(err)
+			}
+			tree := gitOut(t, rc.workDir, "write-tree")
+			candidate := gitOut(t, rc.workDir, "commit-tree", tree, "-p", parent, "-m", "journaled repair")
+			intentRef := rc.repairPublicationRef()
+			gitOut(t, rc.workDir, "update-ref", intentRef, candidate, "")
+			if publishBeforeRestart {
+				gitOut(t, rc.workDir, "update-ref", branchRef(rc.branch), candidate, parent)
+			}
+
+			if err := rc.reconcileRepairPublication(context.Background()); err != nil {
+				t.Fatalf("reconcileRepairPublication: %v", err)
+			}
+			if got := gitOut(t, rc.workDir, "rev-parse", branchRef(rc.branch)); got != candidate {
+				t.Fatalf("shared branch = %s, want sealed candidate %s", got, candidate)
+			}
+			stored, err := rc.db.GetRun(rc.run.ID)
+			if err != nil || stored.HeadSHA != candidate {
+				t.Fatalf("stored run = %+v, err = %v; want head %s", stored, err, candidate)
+			}
+			if got := gitOut(t, rc.workDir, "for-each-ref", "--format=%(objectname)", intentRef); got != "" {
+				t.Fatalf("publication intent still present at %s", got)
+			}
+			if err := rc.reconcileRepairPublication(context.Background()); err != nil {
+				t.Fatalf("idempotent reconcile: %v", err)
+			}
+		})
+	}
+}
+
+func TestEscalateReconcilesInterruptedRepairFrontier(t *testing.T) {
+	tests := []struct {
+		name            string
+		acceptedFixer   bool
+		wantTier        int
+		wantPriorStatus string
+	}{
+		{name: "before fixer", wantTier: 0, wantPriorStatus: db.RepairStatusFailed},
+		{name: "after durable fixer", acceptedFixer: true, wantTier: 1, wantPriorStatus: db.RepairStatusUnresolved},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeRepairInvoker{verify: func(_ int, ids []string) verdictSpec {
+				return verdictSpec{resolved: allResolved(ids)}
+			}}
+			rc, seeds := repairFixture(t, fake, []types.Finding{blockingFinding("review-1", "nil deref")})
+			priorRound, err := rc.reserveRound("auto_fix")
+			if err != nil {
+				t.Fatal(err)
+			}
+			priorID, err := rc.db.StartFindingRepair(db.FindingRepairStart{
+				RunID: rc.run.ID, LineageID: seeds[0].LineageID, StepResultID: rc.stepResultID, StepRoundID: priorRound.ID,
+				Severity: "error", Action: types.ActionAutoFix, Description: "nil deref", Tier: 0, RemainingBudget: 2,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.acceptedFixer {
+				scope := types.InvocationScope{
+					Kind: types.InvocationScopePipeline, RunID: rc.run.ID,
+					StepResultID: rc.stepResultID, StepRoundID: priorRound.ID,
+				}
+				attemptID, err := rc.db.StartInvocationAttempt(types.InvocationAttemptStart{
+					Purpose: rc.policy.fixerPurpose, Role: types.InvocationRoleFixer, Scope: scope,
+					CandidateKey: "fix_fast:0:codex",
+					Candidate: types.InvocationCandidate{
+						Profile: "fix_fast", Runner: types.RunnerCodex, Model: "m", Effort: types.EffortMedium,
+					},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := rc.db.FinishInvocationAttempt(attemptID, types.InvocationAttemptTerminal{Outcome: types.InvocationOutcomeSucceeded}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if _, err := rc.escalateBatch(context.Background(), seeds); err != nil {
+				t.Fatalf("escalateBatch: %v", err)
+			}
+			if fmt.Sprint(fake.fixerTiers) != fmt.Sprintf("[%d]", tc.wantTier) {
+				t.Fatalf("fixer tiers = %v, want [%d]", fake.fixerTiers, tc.wantTier)
+			}
+			round, err := rc.db.GetStepRound(priorRound.ID)
+			if err != nil || round.State != db.StepRoundFailed {
+				t.Fatalf("interrupted round = %+v, err = %v; want failed", round, err)
+			}
+			repairs, err := rc.db.GetFindingRepairsByLineage(seeds[0].LineageID)
+			if err != nil || len(repairs) != 2 {
+				t.Fatalf("repairs = %+v, err = %v; want recovered prior plus resumed tier", repairs, err)
+			}
+			prior := latestFindingRepair([]*db.FindingRepair{repairs[0]})
+			if prior.ID != priorID || prior.Status != tc.wantPriorStatus {
+				t.Fatalf("prior repair = %+v, want id %s status %s", prior, priorID, tc.wantPriorStatus)
+			}
+		})
 	}
 }

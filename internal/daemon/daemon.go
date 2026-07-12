@@ -2,12 +2,14 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -274,6 +277,9 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) error {
 	reapOrphanedServers(p)
 	migrateGateConfigs(context.Background(), p)
 	recoverStaleUtilityInvocations(d)
+	if err := recoverPendingPublications(d, p); err != nil {
+		return err
+	}
 
 	plans, err := mgr.recoverableRuns(context.Background())
 	if err != nil {
@@ -294,6 +300,133 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) error {
 	cleanupOrphanWorktrees(d, p)
 	mgr.resumeRecoveredRuns(plans)
 	return nil
+}
+
+func recoverPendingPublications(d *db.DB, p *paths.Paths) error {
+	publications, err := d.RecoverablePublications()
+	if err != nil {
+		return fmt.Errorf("list recoverable publications: %w", err)
+	}
+	ctx := context.Background()
+	for _, publication := range publications {
+		run, err := d.GetRun(publication.RunID)
+		if err != nil {
+			return fmt.Errorf("load publication %s run %s: %w", publication.ID, publication.RunID, err)
+		}
+		if run == nil {
+			return fmt.Errorf("recover publication %s: run %s is missing", publication.ID, publication.RunID)
+		}
+		repo, err := d.GetRepo(run.RepoID)
+		if err != nil {
+			return fmt.Errorf("load publication %s repository %s: %w", publication.ID, run.RepoID, err)
+		}
+		if repo == nil {
+			return fmt.Errorf("recover publication %s: repository %s is missing", publication.ID, run.RepoID)
+		}
+		workDir, err := validatePublicationRecoveryWorktree(ctx, p, repo.ID, run.ID)
+		if err != nil {
+			return fmt.Errorf("recover publication %s: %w", publication.ID, err)
+		}
+		if err := steps.RecoverPublication(ctx, d, publication, run, repo, workDir); err != nil {
+			return fmt.Errorf("recover publication %s: %w", publication.ID, err)
+		}
+	}
+	runs, err := d.GetActiveRuns()
+	if err != nil {
+		return fmt.Errorf("list active runs for legacy CI publication recovery: %w", err)
+	}
+	for _, run := range runs {
+		if run.Status != types.RunPending && run.Status != types.RunRunning {
+			continue
+		}
+		required, err := legacyCIPublicationRecoveryRequired(ctx, d, p, run)
+		if err != nil {
+			return fmt.Errorf("inspect run %s for legacy CI publication recovery: %w", run.ID, err)
+		}
+		if !required {
+			continue
+		}
+		workDir, err := validatePublicationRecoveryWorktree(ctx, p, run.RepoID, run.ID)
+		if err != nil {
+			return fmt.Errorf("recover seal-only CI publication for run %s: %w", run.ID, err)
+		}
+		repo, err := d.GetRepo(run.RepoID)
+		if err != nil {
+			return fmt.Errorf("load run %s repository %s for legacy CI publication recovery: %w", run.ID, run.RepoID, err)
+		}
+		if repo == nil {
+			return fmt.Errorf("recover legacy CI publication for run %s: repository %s is missing", run.ID, run.RepoID)
+		}
+		if _, err := steps.RecoverLegacyCIPublication(ctx, d, run, repo, workDir); err != nil {
+			return fmt.Errorf("recover legacy CI publication for run %s: %w", run.ID, err)
+		}
+	}
+	return nil
+}
+func validatePublicationRecoveryWorktree(ctx context.Context, p *paths.Paths, repoID, runID string) (string, error) {
+	workDir := p.WorktreeDir(repoID, runID)
+	info, err := os.Lstat(workDir)
+	if err != nil {
+		return "", fmt.Errorf("inspect worktree %s: %w", workDir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("worktree %s is a symbolic link", workDir)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("worktree %s is not a directory", workDir)
+	}
+
+	canonicalRoot, err := filepath.EvalSymlinks(p.WorktreesDir())
+	if err != nil {
+		return "", fmt.Errorf("resolve canonical worktree root %s: %w", p.WorktreesDir(), err)
+	}
+	canonicalWorkDir, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve canonical worktree %s: %w", workDir, err)
+	}
+	relative, err := filepath.Rel(canonicalRoot, canonicalWorkDir)
+	if err != nil ||
+		relative == "." ||
+		relative == ".." ||
+		filepath.IsAbs(relative) ||
+		strings.HasPrefix(relative, ".."+string(filepath.Separator)) ||
+		canonicalWorkDir != filepath.Join(canonicalRoot, repoID, runID) {
+		return "", fmt.Errorf("worktree %s resolves outside its canonical run worktree location", workDir)
+	}
+
+	commonDir, err := git.Run(ctx, workDir, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", fmt.Errorf("resolve worktree common git dir: %w", err)
+	}
+	if !samePath(resolveGitPath(workDir, commonDir), p.RepoDir(repoID)) {
+		return "", fmt.Errorf("worktree %s does not belong to its gate repository", workDir)
+	}
+	return workDir, nil
+}
+
+func legacyCIPublicationRecoveryRequired(ctx context.Context, d *db.DB, p *paths.Paths, run *db.Run) (bool, error) {
+	publication, err := d.LatestPublication(run.ID, db.PublicationKindCI)
+	if err != nil {
+		return false, err
+	}
+	if publication != nil {
+		return false, nil
+	}
+	seal, err := d.LatestSealByReason(run.ID, "ci_republish")
+	if err != nil {
+		return false, err
+	}
+	if seal != nil {
+		return true, nil
+	}
+
+	sum := sha256.Sum256([]byte(run.ID))
+	pendingRef := fmt.Sprintf("refs/no-mistakes/ci-republish-pending/%x", sum[:])
+	sha, err := git.Run(ctx, p.RepoDir(run.RepoID), "for-each-ref", "--format=%(objectname)", pendingRef)
+	if err != nil {
+		return false, nil
+	}
+	return strings.TrimSpace(sha) != "", nil
 }
 
 // cleanupOrphanWorktrees removes worktree directories left behind by runs

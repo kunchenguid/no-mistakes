@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -108,6 +109,9 @@ CI logs:
 	}
 	prompt += userIntentPromptSection(sctx)
 
+	if err := validateCIRepairStartingState(sctx); err != nil {
+		return false, err
+	}
 	s.verifiedCandidateHead = ""
 	s.verifiedCandidateTree = ""
 	tier := s.ciRepairTier(sctx)
@@ -127,17 +131,21 @@ CI logs:
 	if err != nil {
 		return false, fmt.Errorf("snapshot candidate before CI repair: %w", err)
 	}
+	snapshotRetained := false
+	publicationAccepted := false
 	defer func() {
 		rollbackContext := *sctx
 		rollbackContext.Ctx = context.WithoutCancel(sctx.Ctx)
-		if retErr != nil {
+		if retErr != nil && !publicationAccepted {
 			s.verifiedCandidateHead = ""
 			s.verifiedCandidateTree = ""
 			if restoreErr := candidateBeforeRepair.restore(&rollbackContext); restoreErr != nil {
 				retErr = errors.Join(retErr, fmt.Errorf("restore candidate after failed CI repair: %w", restoreErr))
 			}
 		}
-		candidateBeforeRepair.cleanup(&rollbackContext)
+		if !snapshotRetained {
+			candidateBeforeRepair.cleanup(&rollbackContext)
+		}
 	}()
 	_, err = sctx.InvokeAgentTier(types.PurposeUnstructuredCIRepair, tier, agent.RunOpts{
 		Prompt:  prompt,
@@ -157,12 +165,20 @@ CI logs:
 	if !linked {
 		return false, &ciJournalError{operation: "link hosted CI invocation", err: fmt.Errorf("no journaled %s attempt in current round", types.PurposeUnstructuredCIRepair)}
 	}
+	if err := candidateBeforeRepair.restoreSharedRefsForCandidate(sctx); err != nil {
+		return false, fmt.Errorf("restore shared refs after CI repair: %w", err)
+	}
 
 	candidateChanged, candidateHead, candidateTree, err := s.prepareCICandidate(sctx, mergeConflict, rebaseBaseSHA)
 	if err != nil {
 		return false, err
 	}
 	if !candidateChanged {
+		integrityContext := *sctx
+		integrityContext.Ctx = context.WithoutCancel(sctx.Ctx)
+		if err := candidateBeforeRepair.validate(&integrityContext); err != nil {
+			return false, fmt.Errorf("CI repair reported no candidate changes but mutated state: %w", err)
+		}
 		return false, nil
 	}
 	verificationCandidate, err := captureCICandidate(sctx)
@@ -184,9 +200,43 @@ CI logs:
 	if verificationErr != nil {
 		return false, fmt.Errorf("CI patch failed verification: %w", verificationErr)
 	}
+	if err := candidateBeforeRepair.validateIgnoredPathsForCandidate(sctx); err != nil {
+		return false, fmt.Errorf("validate pre-existing ignored CI state: %w", err)
+	}
 	s.verifiedCandidateHead = candidateHead
 	s.verifiedCandidateTree = candidateTree
-	return s.commitAndPush(sctx)
+	pushed, err = s.commitAndPushWithSnapshot(sctx, &candidateBeforeRepair)
+	publication, publicationErr := sctx.DB.LatestPublication(sctx.Run.ID, db.PublicationKindCI)
+	if publicationErr != nil {
+		snapshotRetained = true
+		if err != nil {
+			return false, errors.Join(err, &ciJournalError{operation: "confirm CI publication state", err: publicationErr})
+		}
+		return false, &ciJournalError{operation: "confirm CI publication state", err: publicationErr}
+	}
+	if publication != nil {
+		publicationAccepted = publication.State == db.PublicationStateAccepted || publication.State == db.PublicationStateCompleted
+		if publication.CleanupSnapshotDir == candidateBeforeRepair.rootDir {
+			snapshotRetained = true
+		}
+	}
+	if err != nil {
+		return false, err
+	}
+	if publication == nil || publication.State != db.PublicationStateCompleted || publication.SealSHA != sctx.Run.HeadSHA {
+		return false, &ciJournalError{operation: "confirm completed CI publication", err: fmt.Errorf("publication cleanup did not complete")}
+	}
+	return pushed, nil
+}
+func validateCIRepairStartingState(sctx *pipeline.StepContext) error {
+	status, err := stepGitRun(sctx, "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return fmt.Errorf("inspect pre-existing CI candidate state: %w", err)
+	}
+	if strings.TrimSpace(status) == "" {
+		return nil
+	}
+	return fmt.Errorf("refusing CI repair with pre-existing staged, unstaged, or untracked changes; preserve or remove them before fixing CI")
 }
 
 // prepareCICandidate freezes the agent's candidate in the index before local
@@ -285,10 +335,15 @@ func validatePreparedCICandidate(sctx *pipeline.StepContext, wantHead, wantTree 
 type ciCandidateSnapshot struct {
 	head             string
 	headRef          string
+	rebaseHeadRef    string
 	indexTree        string
 	status           string
 	trackedDiff      string
+	rootDir          string
 	worktreeDir      string
+	rebaseStateDir   string
+	refs             map[string]rebaseRefState
+	ignoredPaths     map[string]struct{}
 	rebaseInProgress bool
 }
 
@@ -319,9 +374,21 @@ func captureCICandidate(sctx *pipeline.StepContext) (ciCandidateSnapshot, error)
 	if err != nil {
 		return ciCandidateSnapshot{}, fmt.Errorf("snapshot rebase state: %w", err)
 	}
-	snapshot.worktreeDir, err = os.MkdirTemp("", "no-mistakes-ci-candidate-*")
+	snapshot.refs, err = captureCIRefs(sctx)
 	if err != nil {
-		return ciCandidateSnapshot{}, fmt.Errorf("create worktree snapshot: %w", err)
+		return ciCandidateSnapshot{}, fmt.Errorf("snapshot shared refs: %w", err)
+	}
+	snapshot.ignoredPaths, err = captureCIIgnoredPaths(sctx)
+	if err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("snapshot ignored paths: %w", err)
+	}
+	gitDir, err := stepGitRun(sctx, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("resolve Git directory for candidate snapshot: %w", err)
+	}
+	snapshot.rootDir, err = os.MkdirTemp(gitDir, "no-mistakes-ci-candidate-")
+	if err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("create candidate snapshot: %w", err)
 	}
 	complete := false
 	defer func() {
@@ -329,11 +396,328 @@ func captureCICandidate(sctx *pipeline.StepContext) (ciCandidateSnapshot, error)
 			snapshot.cleanup(sctx)
 		}
 	}()
+	snapshot.worktreeDir = filepath.Join(snapshot.rootDir, "worktree")
+	if err := os.Mkdir(snapshot.worktreeDir, 0o700); err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("create worktree snapshot: %w", err)
+	}
 	if err := copyCIWorktree(sctx.WorkDir, snapshot.worktreeDir); err != nil {
 		return ciCandidateSnapshot{}, fmt.Errorf("snapshot candidate worktree: %w", err)
 	}
+	snapshot.rebaseStateDir = filepath.Join(snapshot.rootDir, "git-state")
+	if err := os.Mkdir(snapshot.rebaseStateDir, 0o700); err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("create rebase snapshot: %w", err)
+	}
+	if err := snapshotCIRebaseState(sctx, snapshot.rebaseStateDir); err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("snapshot rebase metadata: %w", err)
+	}
+	if err := snapshotCIGitMetadata(sctx, snapshot.rebaseStateDir); err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("snapshot shared Git metadata: %w", err)
+	}
+	snapshot.rebaseHeadRef = snapshotCIRebaseHeadRef(snapshot.rebaseStateDir)
 	complete = true
 	return snapshot, nil
+}
+func captureCIRefs(sctx *pipeline.StepContext) (map[string]rebaseRefState, error) {
+	output, err := stepGitRun(sctx, "for-each-ref", "--format=%(refname)%09%(objectname)%09%(symref)")
+	if err != nil {
+		return nil, err
+	}
+	refs := make(map[string]rebaseRefState)
+	for _, line := range strings.Split(output, "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) < 2 {
+			return nil, fmt.Errorf("malformed ref snapshot line %q", line)
+		}
+		state := rebaseRefState{oid: fields[1]}
+		if len(fields) == 3 {
+			state.symref = fields[2]
+		}
+		refs[fields[0]] = state
+	}
+	return refs, nil
+}
+func captureCIIgnoredPaths(sctx *pipeline.StepContext) (map[string]struct{}, error) {
+	output, err := stepGitRun(sctx, "status", "--porcelain=v1", "-z", "--ignored=matching", "--untracked-files=all")
+	if err != nil {
+		return nil, err
+	}
+	paths := make(map[string]struct{})
+	for _, entry := range strings.Split(strings.TrimSuffix(output, "\x00"), "\x00") {
+		if !strings.HasPrefix(entry, "!! ") {
+			continue
+		}
+		path := filepath.Clean(strings.TrimSuffix(entry[3:], "/"))
+		if path == "." || filepath.IsAbs(path) || path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("unsafe ignored path %q", entry[3:])
+		}
+		paths[path] = struct{}{}
+	}
+	return paths, nil
+}
+
+func snapshotCIRebaseHeadRef(rebaseStateDir string) string {
+	for _, state := range []string{"rebase-merge", "rebase-apply"} {
+		data, err := os.ReadFile(filepath.Join(rebaseStateDir, state, "head-name"))
+		if err != nil {
+			continue
+		}
+		ref := strings.TrimSpace(string(data))
+		if strings.HasPrefix(ref, "refs/heads/") {
+			return ref
+		}
+	}
+	return ""
+}
+
+func (snapshot ciCandidateSnapshot) restoreSharedRefsForCandidate(sctx *pipeline.StepContext) error {
+	if err := restoreCIGitMetadata(sctx, snapshot.rebaseStateDir); err != nil {
+		return fmt.Errorf("restore shared Git metadata: %w", err)
+	}
+	preserve := make(map[string]string)
+	if snapshot.headRef != "HEAD" {
+		head, err := stepGitHeadSHA(sctx)
+		if err != nil {
+			return err
+		}
+		preserve[snapshot.headRef] = head
+	} else if snapshot.rebaseHeadRef != "" {
+		rebaseInProgress, err := ciRebaseState(sctx)
+		if err != nil {
+			return err
+		}
+		if !rebaseInProgress {
+			currentRef, err := stepGitRun(sctx, "rev-parse", "--symbolic-full-name", "HEAD")
+			if err != nil {
+				return err
+			}
+			if currentRef == snapshot.rebaseHeadRef {
+				head, err := stepGitHeadSHA(sctx)
+				if err != nil {
+					return err
+				}
+				preserve[currentRef] = head
+			}
+		}
+	}
+	return snapshot.restoreSharedRefs(sctx, preserve)
+}
+
+type ciRefRestoreHookContextKey struct{}
+
+func (snapshot ciCandidateSnapshot) restoreSharedRefs(sctx *pipeline.StepContext, preserve map[string]string) error {
+	current, err := captureCIRefs(sctx)
+	if err != nil {
+		return err
+	}
+	var restoreErr error
+	for ref, observed := range current {
+		if _, keep := preserve[ref]; keep {
+			continue
+		}
+		if _, existed := snapshot.refs[ref]; existed {
+			continue
+		}
+		preservePending, err := shouldPreserveCIRepublishRef(sctx, ref, observed.oid)
+		if err != nil {
+			restoreErr = errors.Join(restoreErr, err)
+			continue
+		}
+		if preservePending {
+			continue
+		}
+		runCIRefRestoreHook(sctx.Ctx, ref)
+		if err := restoreRebaseRefCAS(sctx.Ctx, sctx.WorkDir, ref, rebaseRefState{}, false, observed, true); err != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("delete repair-created ref %s with lease: %w", ref, err))
+		}
+	}
+	for ref, want := range snapshot.refs {
+		if _, keep := preserve[ref]; keep {
+			continue
+		}
+		observed, exists := current[ref]
+		if exists && observed == want {
+			continue
+		}
+		runCIRefRestoreHook(sctx.Ctx, ref)
+		if err := restoreRebaseRefCAS(sctx.Ctx, sctx.WorkDir, ref, want, true, observed, exists); err != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("restore shared ref %s with lease: %w", ref, err))
+		}
+	}
+	return restoreErr
+}
+
+func runCIRefRestoreHook(ctx context.Context, ref string) {
+	if hook, ok := ctx.Value(ciRefRestoreHookContextKey{}).(func(string)); ok && hook != nil {
+		hook(ref)
+	}
+}
+
+func shouldPreserveCIRepublishRef(sctx *pipeline.StepContext, ref, sha string) (bool, error) {
+	if ref != ciRepublishPendingRef(sctx) {
+		return false, nil
+	}
+	publication, err := sctx.DB.LatestPublication(sctx.Run.ID, db.PublicationKindCI)
+	if err != nil {
+		return false, err
+	}
+	return publication != nil && publication.SealSHA == sha, nil
+}
+
+func snapshotCIRebaseState(sctx *pipeline.StepContext, destination string) error {
+	for _, state := range []string{"rebase-merge", "rebase-apply"} {
+		path, err := ciStatePath(sctx, state)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Lstat(path); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if err := copyCICandidatePath(path, filepath.Join(destination, state)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ciStatePath(sctx *pipeline.StepContext, state string) (string, error) {
+	path, err := stepGitRun(sctx, "rev-parse", "--git-path", state)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(sctx.WorkDir, path)
+	}
+	return path, nil
+}
+
+func (snapshot ciCandidateSnapshot) restoreCIRebaseState(sctx *pipeline.StepContext) error {
+	for _, state := range []string{"rebase-merge", "rebase-apply"} {
+		path, err := ciStatePath(sctx, state)
+		if err != nil {
+			return err
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return err
+		}
+		saved := filepath.Join(snapshot.rebaseStateDir, state)
+		if _, err := os.Lstat(saved); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if err := copyCICandidatePath(saved, path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type ciGitMetadataPath struct {
+	live  string
+	saved string
+}
+
+func ciGitMetadataPaths(sctx *pipeline.StepContext, snapshotDir string) ([]ciGitMetadataPath, error) {
+	commonDir, err := stepGitRun(sctx, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return nil, err
+	}
+	gitDir, err := stepGitRun(sctx, "rev-parse", "--git-dir")
+	if err != nil {
+		return nil, err
+	}
+	resolve := func(path string) string {
+		if filepath.IsAbs(path) {
+			return filepath.Clean(path)
+		}
+		return filepath.Clean(filepath.Join(sctx.WorkDir, path))
+	}
+	commonDir = resolve(commonDir)
+	gitDir = resolve(gitDir)
+	return []ciGitMetadataPath{
+		{live: filepath.Join(commonDir, "config"), saved: filepath.Join(snapshotDir, "git-common", "config")},
+		{live: filepath.Join(commonDir, "hooks"), saved: filepath.Join(snapshotDir, "git-common", "hooks")},
+		{live: filepath.Join(commonDir, "info"), saved: filepath.Join(snapshotDir, "git-common", "info")},
+		{live: filepath.Join(gitDir, "config.worktree"), saved: filepath.Join(snapshotDir, "git-dir", "config.worktree")},
+	}, nil
+}
+
+func snapshotCIGitMetadata(sctx *pipeline.StepContext, snapshotDir string) error {
+	paths, err := ciGitMetadataPaths(sctx, snapshotDir)
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		if _, err := os.Lstat(path.live); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if err := copyCICandidatePath(path.live, path.saved); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func restoreCIGitMetadata(sctx *pipeline.StepContext, snapshotDir string) error {
+	paths, err := ciGitMetadataPaths(sctx, snapshotDir)
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		if err := os.RemoveAll(path.live); err != nil {
+			return err
+		}
+		if _, err := os.Lstat(path.saved); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if err := copyCICandidatePath(path.saved, path.live); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateCIGitMetadata(sctx *pipeline.StepContext, snapshotDir string) error {
+	paths, err := ciGitMetadataPaths(sctx, snapshotDir)
+	if err != nil {
+		return err
+	}
+	var buffers ciFileCompareBuffers
+	for _, path := range paths {
+		savedInfo, savedErr := os.Lstat(path.saved)
+		liveInfo, liveErr := os.Lstat(path.live)
+		if os.IsNotExist(savedErr) && os.IsNotExist(liveErr) {
+			continue
+		}
+		if savedErr != nil {
+			return savedErr
+		}
+		if liveErr != nil {
+			return liveErr
+		}
+		if savedInfo.Mode() != liveInfo.Mode() {
+			return fmt.Errorf("metadata mode differs for %s", filepath.Base(path.live))
+		}
+		if savedInfo.IsDir() {
+			if err := compareCIWorktrees(path.saved, path.live); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := compareCIFileContents(path.saved, path.live, &buffers); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func copyCIWorktree(sourceDir, destinationDir string) error {
@@ -412,6 +796,12 @@ func (snapshot ciCandidateSnapshot) restore(sctx *pipeline.StepContext) error {
 	if err := snapshot.reconcileRebase(sctx); err != nil {
 		return err
 	}
+	if err := restoreCIGitMetadata(sctx, snapshot.rebaseStateDir); err != nil {
+		return fmt.Errorf("restore shared Git metadata: %w", err)
+	}
+	if err := snapshot.restoreSharedRefs(sctx, nil); err != nil {
+		return fmt.Errorf("restore shared refs: %w", err)
+	}
 	if _, err := stepGitRun(sctx, "reset", "--hard"); err != nil {
 		return err
 	}
@@ -436,7 +826,66 @@ func (snapshot ciCandidateSnapshot) restore(sctx *pipeline.StepContext) error {
 	if _, err := stepGitRun(sctx, "read-tree", snapshot.indexTree); err != nil {
 		return fmt.Errorf("restore candidate index: %w", err)
 	}
+	if err := snapshot.restoreCIRebaseState(sctx); err != nil {
+		return fmt.Errorf("restore rebase metadata: %w", err)
+	}
 	return snapshot.validate(sctx)
+}
+
+func (snapshot ciCandidateSnapshot) validateIgnoredPathsForCandidate(sctx *pipeline.StepContext) error {
+	for path := range snapshot.ignoredPaths {
+		if _, err := stepGitRun(sctx, "ls-files", "--error-unmatch", "--", path); err == nil {
+			return fmt.Errorf("repair made pre-existing ignored path %q tracked", path)
+		}
+		if _, err := stepGitRun(sctx, "check-ignore", "--quiet", "--no-index", "--", path); err != nil {
+			return fmt.Errorf("repair changed ignore semantics for pre-existing path %q", path)
+		}
+	}
+	return nil
+}
+
+func (snapshot ciCandidateSnapshot) restoreFilesystemAtSealedSHA(sctx *pipeline.StepContext, sha string) error {
+	if err := reconcilePublicationWorktree(sctx, sha); err != nil {
+		return err
+	}
+	currentIgnored, err := captureCIIgnoredPaths(sctx)
+	if err != nil {
+		return err
+	}
+	for path := range currentIgnored {
+		if _, existed := snapshot.ignoredPaths[path]; existed {
+			continue
+		}
+		destination := filepath.Join(sctx.WorkDir, path)
+		if _, err := os.Lstat(destination); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if err := removeCICandidatePath(destination); err != nil {
+			return fmt.Errorf("remove repair-created ignored path %q: %w", path, err)
+		}
+	}
+	for path := range snapshot.ignoredPaths {
+		source := filepath.Join(snapshot.worktreeDir, path)
+		destination := filepath.Join(sctx.WorkDir, path)
+		if _, err := os.Lstat(destination); err == nil {
+			if err := removeCICandidatePath(destination); err != nil {
+				return fmt.Errorf("replace ignored path %q: %w", path, err)
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if _, err := os.Lstat(source); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if err := copyCICandidatePath(source, destination); err != nil {
+			return fmt.Errorf("restore ignored path %q: %w", path, err)
+		}
+	}
+	return reconcilePublicationWorktree(sctx, sha)
 }
 
 func (snapshot ciCandidateSnapshot) reconcileRebase(sctx *pipeline.StepContext) error {
@@ -546,6 +995,37 @@ func (snapshot ciCandidateSnapshot) validate(sctx *pipeline.StepContext) error {
 	}
 	if err := compareCIWorktrees(snapshot.worktreeDir, sctx.WorkDir); err != nil {
 		return fmt.Errorf("candidate filesystem differs from snapshot: %w", err)
+	}
+	currentRefs, err := captureCIRefs(sctx)
+	if err != nil {
+		return err
+	}
+	for ref, want := range snapshot.refs {
+		if got := currentRefs[ref]; got != want {
+			return fmt.Errorf("shared ref %s topology changed from %s to %s", ref, shortSHA(want.oid), shortPublicationSHA(got.oid))
+		}
+	}
+	for ref, state := range currentRefs {
+		if _, existed := snapshot.refs[ref]; existed {
+			continue
+		}
+		preservePending, err := shouldPreserveCIRepublishRef(sctx, ref, state.oid)
+		if err != nil {
+			return err
+		}
+		if !preservePending {
+			return fmt.Errorf("repair-created shared ref %s remains", ref)
+		}
+	}
+	if err := validateCIGitMetadata(sctx, snapshot.rebaseStateDir); err != nil {
+		return fmt.Errorf("shared Git metadata differs from snapshot: %w", err)
+	}
+	rebaseInProgress, err := ciRebaseState(sctx)
+	if err != nil {
+		return err
+	}
+	if rebaseInProgress != snapshot.rebaseInProgress {
+		return fmt.Errorf("candidate rebase topology differs from snapshot")
 	}
 	return nil
 }
@@ -674,10 +1154,186 @@ func compareCIFileContents(expected, actual string, buffers *ciFileCompareBuffer
 	}
 }
 
+const ciPublicationSnapshotManifest = "publication-cleanup.json"
+
+type ciRefSnapshotManifest struct {
+	OID    string `json:"oid"`
+	Symref string `json:"symref,omitempty"`
+}
+
+type ciCandidateSnapshotManifest struct {
+	Head             string                           `json:"head"`
+	HeadRef          string                           `json:"head_ref"`
+	RebaseHeadRef    string                           `json:"rebase_head_ref"`
+	IndexTree        string                           `json:"index_tree"`
+	Status           string                           `json:"status"`
+	TrackedDiff      string                           `json:"tracked_diff"`
+	Refs             map[string]ciRefSnapshotManifest `json:"refs"`
+	IgnoredPaths     []string                         `json:"ignored_paths"`
+	RebaseInProgress bool                             `json:"rebase_in_progress"`
+}
+
+func (snapshot ciCandidateSnapshot) persistForPublication() error {
+	if snapshot.rootDir == "" {
+		return fmt.Errorf("persist CI publication cleanup: missing snapshot root")
+	}
+	ignoredPaths := make([]string, 0, len(snapshot.ignoredPaths))
+	for path := range snapshot.ignoredPaths {
+		ignoredPaths = append(ignoredPaths, path)
+	}
+	sort.Strings(ignoredPaths)
+	savedRefs := make(map[string]ciRefSnapshotManifest, len(snapshot.refs))
+	for ref, state := range snapshot.refs {
+		savedRefs[ref] = ciRefSnapshotManifest{OID: state.oid, Symref: state.symref}
+	}
+	payload, err := json.Marshal(ciCandidateSnapshotManifest{
+		Head: snapshot.head, HeadRef: snapshot.headRef, RebaseHeadRef: snapshot.rebaseHeadRef,
+		IndexTree: snapshot.indexTree, Status: snapshot.status, TrackedDiff: snapshot.trackedDiff,
+		Refs: savedRefs, IgnoredPaths: ignoredPaths, RebaseInProgress: snapshot.rebaseInProgress,
+	})
+	if err != nil {
+		return fmt.Errorf("encode CI publication cleanup snapshot: %w", err)
+	}
+	temporary := filepath.Join(snapshot.rootDir, ciPublicationSnapshotManifest+".tmp")
+	manifest := filepath.Join(snapshot.rootDir, ciPublicationSnapshotManifest)
+	if err := os.WriteFile(temporary, payload, 0o600); err != nil {
+		return fmt.Errorf("write CI publication cleanup snapshot: %w", err)
+	}
+	if err := os.Rename(temporary, manifest); err != nil {
+		return fmt.Errorf("commit CI publication cleanup snapshot: %w", err)
+	}
+	if err := syncCISnapshotTree(snapshot.rootDir); err != nil {
+		return fmt.Errorf("sync CI publication cleanup snapshot: %w", err)
+	}
+	return nil
+}
+
+func validateCIPublicationSnapshotRoot(sctx *pipeline.StepContext, rootDir string) (string, error) {
+	gitDir, err := stepGitRun(sctx, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return "", fmt.Errorf("resolve Git directory for publication cleanup: %w", err)
+	}
+	rootDir = filepath.Clean(rootDir)
+	gitDir = filepath.Clean(gitDir)
+	if filepath.Dir(rootDir) != gitDir || !strings.HasPrefix(filepath.Base(rootDir), "no-mistakes-ci-candidate-") {
+		return "", fmt.Errorf("publication cleanup snapshot %q is outside the worktree Git directory", rootDir)
+	}
+	info, err := os.Lstat(rootDir)
+	if err != nil {
+		return "", fmt.Errorf("inspect publication cleanup snapshot: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", fmt.Errorf("publication cleanup snapshot %q is not a trusted directory", rootDir)
+	}
+	canonicalGitDir, err := filepath.EvalSymlinks(gitDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve publication Git directory: %w", err)
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(rootDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve publication cleanup snapshot: %w", err)
+	}
+	if filepath.Dir(canonicalRoot) != canonicalGitDir {
+		return "", fmt.Errorf("publication cleanup snapshot %q resolves outside the worktree Git directory", rootDir)
+	}
+	return rootDir, nil
+}
+
+func loadCIPublicationSnapshot(sctx *pipeline.StepContext, rootDir string) (ciCandidateSnapshot, error) {
+	rootDir, err := validateCIPublicationSnapshotRoot(sctx, rootDir)
+	if err != nil {
+		return ciCandidateSnapshot{}, err
+	}
+	worktreeDir := filepath.Join(rootDir, "worktree")
+	rebaseStateDir := filepath.Join(rootDir, "git-state")
+	for _, path := range []string{worktreeDir, rebaseStateDir} {
+		childInfo, err := os.Lstat(path)
+		if err != nil {
+			return ciCandidateSnapshot{}, fmt.Errorf("inspect publication cleanup payload: %w", err)
+		}
+		if childInfo.Mode()&os.ModeSymlink != 0 || !childInfo.IsDir() {
+			return ciCandidateSnapshot{}, fmt.Errorf("publication cleanup payload %q is not a trusted directory", path)
+		}
+	}
+	manifestPath := filepath.Join(rootDir, ciPublicationSnapshotManifest)
+	manifestInfo, err := os.Lstat(manifestPath)
+	if err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("inspect publication cleanup manifest: %w", err)
+	}
+	if manifestInfo.Mode()&os.ModeSymlink != 0 || !manifestInfo.Mode().IsRegular() {
+		return ciCandidateSnapshot{}, fmt.Errorf("publication cleanup manifest is not a trusted regular file")
+	}
+	payload, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("read publication cleanup manifest: %w", err)
+	}
+	var saved ciCandidateSnapshotManifest
+	if err := json.Unmarshal(payload, &saved); err != nil {
+		return ciCandidateSnapshot{}, fmt.Errorf("decode publication cleanup manifest: %w", err)
+	}
+	ignoredPaths := make(map[string]struct{}, len(saved.IgnoredPaths))
+	for _, path := range saved.IgnoredPaths {
+		clean := filepath.Clean(path)
+		if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || clean != path {
+			return ciCandidateSnapshot{}, fmt.Errorf("publication cleanup manifest contains unsafe ignored path %q", path)
+		}
+		ignoredPaths[path] = struct{}{}
+	}
+	refs := make(map[string]rebaseRefState, len(saved.Refs))
+	for ref, state := range saved.Refs {
+		refs[ref] = rebaseRefState{oid: state.OID, symref: state.Symref}
+	}
+	return ciCandidateSnapshot{
+		head: saved.Head, headRef: saved.HeadRef, rebaseHeadRef: saved.RebaseHeadRef,
+		indexTree: saved.IndexTree, status: saved.Status, trackedDiff: saved.TrackedDiff,
+		rootDir: rootDir, worktreeDir: worktreeDir, rebaseStateDir: rebaseStateDir,
+		refs: refs, ignoredPaths: ignoredPaths, rebaseInProgress: saved.RebaseInProgress,
+	}, nil
+}
+
+func syncCISnapshotTree(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil
+	}
+	if info.IsDir() {
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := syncCISnapshotTree(filepath.Join(path, entry.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return file.Sync()
+}
+
 func (snapshot ciCandidateSnapshot) cleanup(_ *pipeline.StepContext) {
+	if snapshot.rootDir != "" {
+		if err := os.RemoveAll(snapshot.rootDir); err != nil {
+			slog.Warn("failed to remove CI candidate snapshot", "err", err)
+		}
+		return
+	}
 	if snapshot.worktreeDir != "" {
 		if err := os.RemoveAll(snapshot.worktreeDir); err != nil {
 			slog.Warn("failed to remove CI candidate snapshot", "err", err)
+		}
+	}
+	if snapshot.rebaseStateDir != "" {
+		if err := os.RemoveAll(snapshot.rebaseStateDir); err != nil {
+			slog.Warn("failed to remove CI rebase snapshot", "err", err)
 		}
 	}
 }
@@ -1058,6 +1714,10 @@ Return structured findings. Use severity "error" or "warning" for anything that 
 // Returns (true, nil) when changes were pushed, (false, nil) when there was
 // nothing to commit, or (false, err) on failure.
 func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
+	return s.commitAndPushWithSnapshot(sctx, nil)
+}
+
+func (s *CIStep) commitAndPushWithSnapshot(sctx *pipeline.StepContext, cleanupSnapshot *ciCandidateSnapshot) (bool, error) {
 	status, err := stepGitRun(sctx, "status", "--porcelain")
 	if err != nil {
 		return false, fmt.Errorf("check CI changes: %w", err)
@@ -1071,7 +1731,7 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 		sctx.Log("no changes to commit")
 		headSHA, err := stepGitHeadSHA(sctx)
 		if err == nil && headSHA != sctx.Run.HeadSHA {
-			return s.pushUpdatedHeadSHA(sctx, headSHA)
+			return s.pushUpdatedHeadSHAWithSnapshot(sctx, headSHA, cleanupSnapshot)
 		}
 		return false, nil
 	}
@@ -1083,7 +1743,7 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 	} else if err := validatePreparedCICandidate(sctx, s.verifiedCandidateHead, s.verifiedCandidateTree); err != nil {
 		return false, fmt.Errorf("verified CI candidate changed before commit: %w", err)
 	}
-	if _, err := stepGitRun(sctx, "commit", "-m", "no-mistakes: apply CI fixes"); err != nil {
+	if _, err := stepGitRun(sctx, "-c", "core.hooksPath=/dev/null", "commit", "-m", "no-mistakes: apply CI fixes"); err != nil {
 		return false, fmt.Errorf("commit: %w", err)
 	}
 	headSHA, err := stepGitHeadSHA(sctx)
@@ -1100,12 +1760,16 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 		}
 	}
 
-	return s.pushUpdatedHeadSHA(sctx, headSHA)
+	return s.pushUpdatedHeadSHAWithSnapshot(sctx, headSHA, cleanupSnapshot)
 }
 
 func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA string) (bool, error) {
+	return s.pushUpdatedHeadSHAWithSnapshot(sctx, newHeadSHA, nil)
+}
+
+func (s *CIStep) pushUpdatedHeadSHAWithSnapshot(sctx *pipeline.StepContext, newHeadSHA string, cleanupSnapshot *ciCandidateSnapshot) (bool, error) {
 	ref := normalizedBranchRef(sctx.Run.Branch)
-	pushURL := sctx.Repo.PushURL()
+	gitRun := func(args ...string) (string, error) { return stepGitRun(sctx, args...) }
 
 	if s.verifiedCandidateTree != "" {
 		tree, err := stepGitRun(sctx, "rev-parse", newHeadSHA+"^{tree}")
@@ -1116,44 +1780,97 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 			return false, fmt.Errorf("republish SHA %s does not name verified tree %s", shortSHA(newHeadSHA), shortSHA(s.verifiedCandidateTree))
 		}
 	}
-	if err := s.ensureCIRepublishSeal(sctx, newHeadSHA); err != nil {
-		return false, err
+
+	publication, err := sctx.DB.LatestPublication(sctx.Run.ID, db.PublicationKindCI)
+	if err != nil {
+		return false, &ciJournalError{operation: "load CI publication transaction", err: err}
+	}
+	if publication != nil && publication.SealSHA != newHeadSHA && publication.State != db.PublicationStateCompleted {
+		return false, &ciJournalError{operation: "prepare CI publication", err: fmt.Errorf("incomplete sealed candidate %s blocks newer candidate %s", shortSHA(publication.SealSHA), shortSHA(newHeadSHA))}
+	}
+	if publication == nil || publication.SealSHA != newHeadSHA {
+		pushURL := sctx.Repo.PushURL()
+		decision, err := resolveForcePushDecision(gitRun, pushURL, ref, newHeadSHA, sctx.Run.HeadSHA, sctx.Run.BaseSHA)
+		if err != nil {
+			return false, &ciPublicationPendingError{sha: newHeadSHA, err: err}
+		}
+		cleanupSnapshotDir := ""
+		if cleanupSnapshot != nil {
+			if err := cleanupSnapshot.persistForPublication(); err != nil {
+				return false, &ciPublicationPendingError{sha: newHeadSHA, err: err}
+			}
+			cleanupSnapshotDir = cleanupSnapshot.rootDir
+		}
+		if s.sealCIRepublish != nil {
+			if err := s.ensureCIRepublishSeal(sctx, newHeadSHA); err != nil {
+				return false, err
+			}
+			seal, err := sctx.DB.LatestSealByReason(sctx.Run.ID, "ci_republish")
+			if err != nil {
+				return false, &ciJournalError{operation: "load CI republish seal", err: err}
+			}
+			publication, err = sctx.DB.PreparePublication(db.PreparePublicationInput{
+				RunID:              sctx.Run.ID,
+				Kind:               db.PublicationKindCI,
+				SealID:             seal.ID,
+				SealSHA:            newHeadSHA,
+				DestinationURL:     pushURL,
+				DestinationRef:     ref,
+				ExpectedRemoteSHA:  decision.remoteSHA,
+				Force:              !decision.upToDate,
+				CleanupSnapshotDir: cleanupSnapshotDir,
+			})
+		} else {
+			_, publication, err = sctx.DB.PrepareCISealedPublication(db.PrepareCISealedPublicationInput{
+				RunID:              sctx.Run.ID,
+				SHA:                newHeadSHA,
+				DestinationURL:     pushURL,
+				DestinationRef:     ref,
+				ExpectedRemoteSHA:  decision.remoteSHA,
+				Force:              !decision.upToDate,
+				CleanupSnapshotDir: cleanupSnapshotDir,
+			})
+		}
+		if err != nil {
+			return false, &ciJournalError{operation: "prepare durable CI publication", err: err}
+		}
 	}
 	if err := protectCIRepublishCandidate(sctx, newHeadSHA); err != nil {
-		return false, err
-	}
-	pendingError := func(err error) error {
-		return &ciPublicationPendingError{sha: newHeadSHA, err: err}
+		return false, &ciPublicationPendingError{sha: newHeadSHA, err: err}
 	}
 
-	// Anchor the force-with-lease to the head the run last recorded for this
-	// branch (what the pipeline last pushed/observed), NOT to a SHA freshly read
-	// from the remote a moment before pushing. The durable pending ref above
-	// protects the sealed commit while this transport decision or push retries.
-	gitRun := func(args ...string) (string, error) { return stepGitRun(sctx, args...) }
-	decision, err := resolveForcePushDecision(gitRun, pushURL, ref, newHeadSHA, sctx.Run.HeadSHA, sctx.Run.BaseSHA)
-	if err != nil {
-		return false, pendingError(err)
-	}
-	pushed := false
-	if !decision.upToDate {
-		if err := stepGitPush(sctx, pushURL, newHeadSHA, ref, decision.remoteSHA, !decision.newBranch); err != nil {
-			return false, pendingError(fmt.Errorf("push: %w", err))
+	transport := s.transportPublication
+	if transport == nil {
+		transport = func(_ context.Context, _, destinationURL, sourceSHA, destinationRef, expectedRemoteSHA string, force bool) error {
+			return stepGitPush(sctx, destinationURL, sourceSHA, destinationRef, expectedRemoteSHA, force)
 		}
-		pushed = true
 	}
 
-	if _, err := stepGitRun(sctx, "update-ref", ref, newHeadSHA); err != nil {
-		return false, pendingError(fmt.Errorf("update local branch ref: %w", err))
+	var cleanup publicationCleanup
+	if s.restorePublishedState != nil && publication.CleanupSnapshotDir != "" {
+		cleanup = func(sctx *pipeline.StepContext, publication *db.Publication) error {
+			snapshot, err := loadCIPublicationSnapshot(sctx, publication.CleanupSnapshotDir)
+			if err != nil {
+				return err
+			}
+			return s.restorePublishedState(sctx, snapshot, publication.SealSHA)
+		}
 	}
-	sctx.Run.HeadSHA = newHeadSHA
-	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, newHeadSHA); err != nil {
-		return false, pendingError(err)
+
+	pushed, err := executePreparedPublication(
+		sctx,
+		publication,
+		transport,
+		gitRun,
+		db.PublicationRecoveryNone,
+		cleanup,
+	)
+	if err != nil {
+		return false, &ciPublicationPendingError{sha: newHeadSHA, err: err}
 	}
 	if err := clearCIRepublishPending(sctx); err != nil {
-		return false, pendingError(err)
+		return pushed, &ciPublicationPendingError{sha: newHeadSHA, err: err}
 	}
-
 	if pushed {
 		sctx.Log("committed and pushed fixes")
 	}
@@ -1198,39 +1915,53 @@ func pendingCIRepublishSHA(sctx *pipeline.StepContext) (string, error) {
 }
 
 func (s *CIStep) retryPendingCIRepublish(sctx *pipeline.StepContext) (bool, error) {
+	publication, err := sctx.DB.LatestPublication(sctx.Run.ID, db.PublicationKindCI)
+	if err != nil {
+		return true, &ciJournalError{operation: "load pending CI publication", err: err}
+	}
+	if publication != nil && publication.State != db.PublicationStateCompleted {
+		sctx.Log(fmt.Sprintf("retrying publication of sealed CI candidate %s...", shortSHA(publication.SealSHA)))
+		if _, err := s.pushUpdatedHeadSHA(sctx, publication.SealSHA); err != nil {
+			return true, err
+		}
+		sctx.Log(fmt.Sprintf("published sealed CI candidate %s", shortSHA(publication.SealSHA)))
+		return true, nil
+	}
+
 	sha, err := pendingCIRepublishSHA(sctx)
 	if err != nil {
 		return true, err
 	}
 	if sha == "" {
-		return false, nil
-	}
-	seal, err := sctx.DB.LatestSealByReason(sctx.Run.ID, "ci_republish")
-	if err != nil {
-		return true, &ciJournalError{operation: "load pending CI republish seal", err: err}
-	}
-	if seal == nil {
-		if err := s.ensureCIRepublishSeal(sctx, sha); err != nil {
-			return true, err
-		}
-		seal, err = sctx.DB.LatestSealByReason(sctx.Run.ID, "ci_republish")
+		seal, err := sctx.DB.LatestSealByReason(sctx.Run.ID, "ci_republish")
 		if err != nil {
-			return true, &ciJournalError{operation: "confirm repaired CI republish seal", err: err}
+			return true, &ciJournalError{operation: "load seal-only CI publication", err: err}
 		}
+		if seal == nil || seal.SHA == sctx.Run.HeadSHA {
+			return false, nil
+		}
+		sha = seal.SHA
 	}
-	if seal == nil || seal.SHA != sha {
-		return true, &ciJournalError{operation: "load pending CI republish seal", err: fmt.Errorf("protected candidate %s is not the latest durable seal", shortSHA(sha))}
+	if publication != nil && publication.State == db.PublicationStateCompleted {
+		if publication.SealSHA != sha {
+			return true, &ciJournalError{operation: "clear completed CI publication", err: fmt.Errorf("protected candidate %s does not match completed publication %s", shortSHA(sha), shortSHA(publication.SealSHA))}
+		}
+		if publication.CleanupSnapshotDir == "" {
+			if err := reconcilePublicationWorktree(sctx, sha); err != nil {
+				return true, &ciPublicationPendingError{sha: sha, err: err}
+			}
+		} else if err := removeCompletedPublicationSnapshot(sctx, publication); err != nil {
+			return true, &ciPublicationPendingError{sha: sha, err: err}
+		}
+		if err := clearCIRepublishPending(sctx); err != nil {
+			return true, &ciPublicationPendingError{sha: sha, err: err}
+		}
+		return true, nil
 	}
 
-	sctx.Log(fmt.Sprintf("retrying publication of sealed CI candidate %s...", shortSHA(sha)))
+	sctx.Log(fmt.Sprintf("recovering publication of sealed CI candidate %s...", shortSHA(sha)))
 	if _, err := s.pushUpdatedHeadSHA(sctx, sha); err != nil {
 		return true, err
-	}
-	if _, err := stepGitRun(sctx, "reset", "--hard", sha); err != nil {
-		if protectErr := protectCIRepublishCandidate(sctx, sha); protectErr != nil {
-			err = errors.Join(err, protectErr)
-		}
-		return true, &ciPublicationPendingError{sha: sha, err: fmt.Errorf("reconcile worktree after publication: %w", err)}
 	}
 	sctx.Log(fmt.Sprintf("published sealed CI candidate %s", shortSHA(sha)))
 	return true, nil

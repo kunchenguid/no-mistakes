@@ -42,6 +42,8 @@ type CIStep struct {
 	activeCIRepairPlan    ciRepairPlan
 	activeCIRepairBudget  int
 	sealCIRepublish       func(*pipeline.StepContext, string) error
+	transportPublication  publicationTransport
+	restorePublishedState func(*pipeline.StepContext, ciCandidateSnapshot, string) error
 	checksGracePeriod     time.Duration // minimum wait before trusting empty CI checks (0 = default 60s)
 	pollIntervalOverride  time.Duration // if set, overrides computed poll interval (for testing)
 	waitForNextPoll       func(context.Context, time.Duration) error

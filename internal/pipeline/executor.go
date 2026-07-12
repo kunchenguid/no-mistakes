@@ -109,6 +109,74 @@ func (e *Executor) SetSkippedSteps(steps []types.StepName) {
 	}
 }
 
+func (e *Executor) enabledStepAfter(current, target types.StepName) bool {
+	afterCurrent := false
+	for _, step := range e.steps {
+		if afterCurrent && step.Name() == target {
+			return !e.skips[target]
+		}
+		if step.Name() == current {
+			afterCurrent = true
+		}
+	}
+	return false
+}
+
+func (e *Executor) validateConfiguredSkips() error {
+	if e.skips[types.StepVerify] && e.enabledStepAfter(types.StepVerify, types.StepPush) {
+		return fmt.Errorf("cannot skip Verify while Push is enabled")
+	}
+	return nil
+}
+
+func (e *Executor) rejectUnsafeVerifySkip(step types.StepName, action types.ApprovalAction) error {
+	if step == types.StepVerify && action == types.ActionSkip && e.enabledStepAfter(types.StepVerify, types.StepPush) {
+		return fmt.Errorf("cannot skip Verify while Push is enabled")
+	}
+	return nil
+}
+
+func (e *Executor) requireAggregateVerifiedCandidate(runID string) error {
+	verifyRequired := false
+	for _, step := range e.steps {
+		if step.Name() == types.StepPush {
+			break
+		}
+		if step.Name() == types.StepVerify {
+			verifyRequired = true
+		}
+	}
+	if !verifyRequired {
+		return nil
+	}
+	results, err := e.db.GetStepsByRun(runID)
+	if err != nil {
+		return fmt.Errorf("load Verify result before Push: %w", err)
+	}
+	var verifyResult *db.StepResult
+	for _, result := range results {
+		if result.StepName == types.StepVerify {
+			verifyResult = result
+			break
+		}
+	}
+	if verifyResult == nil || verifyResult.Status != types.StepStatusCompleted {
+		return fmt.Errorf("Push requires a successful Verify result tied to the aggregate-verified candidate")
+	}
+	seal, err := e.db.LatestSeal(runID)
+	if err != nil {
+		return fmt.Errorf("load publication seal before Push: %w", err)
+	}
+	reviewed, err := e.db.LatestSealByReason(runID, "reviewed")
+	if err != nil {
+		return fmt.Errorf("load aggregate-verified seal before Push: %w", err)
+	}
+	if seal == nil || reviewed == nil || reviewed.SHA != seal.SHA {
+		return fmt.Errorf("Push requires an aggregate-verified seal for the exact publication candidate")
+	}
+	return nil
+}
+
 // NewExecutor creates a pipeline executor.
 func NewExecutor(database *db.DB, p *paths.Paths, cfg *config.Config, ag agent.Agent, steps []Step, onEvent EventFunc) *Executor {
 	if onEvent == nil {
@@ -144,6 +212,9 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 	if step != e.waitingStep {
 		return fmt.Errorf("step mismatch: responding to %q but %q is awaiting approval", step, e.waitingStep)
 	}
+	if err := e.rejectUnsafeVerifySkip(step, action); err != nil {
+		return err
+	}
 	response, input, err := approvalActionForGate(e.waitingGate, action, findingIDs, instructions, addedFindings)
 	if err != nil {
 		return err
@@ -169,6 +240,9 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 	}
 	run.Status = types.RunRunning
 	e.emitRunEvent(ipc.EventRunUpdated, run, repo)
+	if err := e.validateConfiguredSkips(); err != nil {
+		return e.failRun(run, repo, err, ctx)
+	}
 
 	// Create log directory for this run
 	logDir := e.paths.RunLogDir(run.ID)
@@ -289,6 +363,7 @@ type stepExecutionState struct {
 	consentedRepairFindings   string
 	consentedRepairChecksJSON string
 	consentedIDs              []string
+	aggregateVerified         bool
 }
 
 type recoveredGate struct {
@@ -302,9 +377,11 @@ type recoveredGate struct {
 }
 
 type recoveredAppliedFix struct {
-	gate    recoveredGate
-	action  *db.ApprovalAction
-	payload userFixPayload
+	gate                recoveredGate
+	action              *db.ApprovalAction
+	payload             userFixPayload
+	aggregateRound      *db.StepRound
+	openNonRepairRounds []*db.StepRound
 }
 
 func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
@@ -336,6 +413,9 @@ func ValidateRecoveredPrefix(database *db.DB, run *db.Run, steps []Step) error {
 	for index := range start {
 		if steps[index].Name() != types.StepPush {
 			continue
+		}
+		if err := executor.requireAggregateVerifiedCandidate(run.ID); err != nil {
+			return fmt.Errorf("recovered published prefix is unsafe: %w", err)
 		}
 		seal, err := database.LatestSeal(run.ID)
 		if err != nil {
@@ -472,6 +552,59 @@ func (e *Executor) recoveredAppliedFix(runID string) (*recoveredAppliedFix, erro
 	if payload.hasOverrides && (round.UserFindingsJSON == nil || *round.UserFindingsJSON != payload.findingsJSON) {
 		return nil, fmt.Errorf("recovered applied approval fix findings are incomplete")
 	}
+	allRounds, err := e.db.GetAllRoundsByStep(stepResult.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load applied approval fix child rounds: %w", err)
+	}
+	repairs, err := e.db.GetFindingRepairsByRun(runID)
+	if err != nil {
+		return nil, fmt.Errorf("load applied approval fix repairs: %w", err)
+	}
+	repairRounds := make(map[string]bool, len(repairs))
+	for _, repair := range repairs {
+		if repair.StepResultID == stepResult.ID {
+			repairRounds[repair.StepRoundID] = true
+		}
+	}
+	latestRound := round.Round
+	var aggregateRound *db.StepRound
+	var openNonRepairRounds []*db.StepRound
+	for _, child := range allRounds {
+		if child.Round <= round.Round {
+			continue
+		}
+		if child.Round > latestRound {
+			latestRound = child.Round
+		}
+		switch child.State {
+		case db.StepRoundCompleted:
+			if repairRounds[child.ID] {
+				continue
+			}
+			attempts, attemptErr := e.db.GetInvocationAttemptsByRound(child.ID)
+			if attemptErr != nil {
+				return nil, fmt.Errorf("load completed applied-fix child attempts: %w", attemptErr)
+			}
+			if hasSucceededAggregateAttempt(attempts) {
+				aggregateRound = child
+			}
+		case db.StepRoundReserved:
+			if repairRounds[child.ID] {
+				continue
+			}
+			openNonRepairRounds = append(openNonRepairRounds, child)
+			attempts, attemptErr := e.db.GetInvocationAttemptsByRound(child.ID)
+			if attemptErr != nil {
+				return nil, fmt.Errorf("load open applied-fix child attempts: %w", attemptErr)
+			}
+			if hasSucceededAggregateAttempt(attempts) {
+				aggregateRound = child
+			}
+		case db.StepRoundFailed, db.StepRoundCancelled:
+		default:
+			return nil, fmt.Errorf("recovered applied approval fix has child round %d in unknown state %q", child.Round, child.State)
+		}
+	}
 	return &recoveredAppliedFix{
 		gate: recoveredGate{
 			index:       fixIndex,
@@ -479,12 +612,127 @@ func (e *Executor) recoveredAppliedFix(runID string) (*recoveredAppliedFix, erro
 			stepResult:  stepResult,
 			durableGate: gate,
 			findings:    gate.FindingsJSON,
-			round:       round.Round,
+			round:       latestRound,
 			lastRoundID: round.ID,
 		},
-		action:  action,
-		payload: payload,
+		action:              action,
+		payload:             payload,
+		aggregateRound:      aggregateRound,
+		openNonRepairRounds: openNonRepairRounds,
 	}, nil
+}
+func hasSucceededAggregateAttempt(attempts []*db.InvocationAttempt) bool {
+	for _, attempt := range attempts {
+		if attempt.Terminal == nil || attempt.Terminal.Outcome != types.InvocationOutcomeSucceeded {
+			continue
+		}
+		switch attempt.Start.Purpose {
+		case types.PurposeNormalAggregateVerification, types.PurposeEscalatedAggregateVerification:
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Executor) recoveredFixRepairsResolved(recovered *recoveredAppliedFix) (bool, error) {
+	for _, findingID := range recovered.payload.findingIDs {
+		lineageID := fmt.Sprintf("approval:%s:%s", recovered.action.ID, findingID)
+		repairs, err := e.db.GetFindingRepairsByLineage(lineageID)
+		if err != nil {
+			return false, fmt.Errorf("load recovered Verify repair lineage: %w", err)
+		}
+		if len(repairs) == 0 || repairs[len(repairs)-1].Status != db.RepairStatusResolved {
+			return false, nil
+		}
+	}
+	return len(recovered.payload.findingIDs) > 0, nil
+}
+
+func (e *Executor) aggregateSealMatches(runID, headSHA string) (bool, error) {
+	seal, err := e.db.LatestSeal(runID)
+	if err != nil {
+		return false, fmt.Errorf("load recovered aggregate publication seal: %w", err)
+	}
+	reviewed, err := e.db.LatestSealByReason(runID, "reviewed")
+	if err != nil {
+		return false, fmt.Errorf("load recovered aggregate-reviewed seal: %w", err)
+	}
+	return seal != nil && reviewed != nil && seal.SHA == headSHA && reviewed.SHA == headSHA, nil
+}
+
+func (e *Executor) reconcileRecoveredAppliedFix(recovered *recoveredAppliedFix, headSHA string) (bool, error) {
+	aggregateVerified := false
+	for _, round := range recovered.openNonRepairRounds {
+		attempts, err := e.db.GetInvocationAttemptsByRound(round.ID)
+		if err != nil {
+			return false, fmt.Errorf("load recovered open child attempts: %w", err)
+		}
+		hasActive := false
+		for _, attempt := range attempts {
+			if attempt.Terminal != nil {
+				continue
+			}
+			hasActive = true
+			if err := e.db.FinishInvocationAttempt(attempt.ID, types.InvocationAttemptTerminal{
+				Outcome: types.InvocationOutcomeInterrupted,
+			}); err != nil {
+				return false, fmt.Errorf("interrupt recovered open child attempt: %w", err)
+			}
+		}
+		reconstructableAggregate := recovered.aggregateRound != nil &&
+			recovered.aggregateRound.ID == round.ID &&
+			!hasActive &&
+			hasSucceededAggregateAttempt(attempts)
+		if reconstructableAggregate {
+			repairsResolved, err := e.recoveredFixRepairsResolved(recovered)
+			if err != nil {
+				return false, err
+			}
+			sealMatches, err := e.aggregateSealMatches(recovered.action.RunID, headSHA)
+			if err != nil {
+				return false, err
+			}
+			if repairsResolved && sealMatches {
+				if err := e.db.CompleteReservedStepRound(round.ID, nil, nil, round.DurationMS); err != nil {
+					return false, fmt.Errorf("complete recovered aggregate Verify round: %w", err)
+				}
+				aggregateVerified = true
+				continue
+			}
+		}
+		if err := e.db.TerminateReservedStepRound(round.ID, db.StepRoundCancelled, round.DurationMS); err != nil {
+			return false, fmt.Errorf("cancel unreconstructable recovered child round: %w", err)
+		}
+	}
+	if recovered.aggregateRound != nil && recovered.aggregateRound.State == db.StepRoundCompleted {
+		attempts, err := e.db.GetInvocationAttemptsByRound(recovered.aggregateRound.ID)
+		if err != nil {
+			return false, fmt.Errorf("load recovered aggregate Verify attempts: %w", err)
+		}
+		for _, attempt := range attempts {
+			if attempt.Terminal == nil {
+				return false, fmt.Errorf("completed recovered aggregate Verify round has an active invocation")
+			}
+		}
+		repairsResolved, err := e.recoveredFixRepairsResolved(recovered)
+		if err != nil {
+			return false, err
+		}
+		sealMatches, err := e.aggregateSealMatches(recovered.action.RunID, headSHA)
+		if err != nil {
+			return false, err
+		}
+		if !repairsResolved || !sealMatches {
+			return false, fmt.Errorf("completed recovered aggregate Verify round lacks matching durable repair and seal evidence")
+		}
+		aggregateVerified = true
+	}
+	if aggregateVerified {
+		if err := e.db.ClearStepFindings(recovered.gate.stepResult.ID); err != nil {
+			return false, fmt.Errorf("clear aggregate-verified recovered findings: %w", err)
+		}
+	}
+	return aggregateVerified, nil
 }
 
 func (e *Executor) resumeRecoveredAppliedFix(ctx context.Context, run *db.Run, repo *db.Repo, workDir string, recovered *recoveredAppliedFix) error {
@@ -494,6 +742,10 @@ func (e *Executor) resumeRecoveredAppliedFix(ctx context.Context, run *db.Run, r
 	}
 	if headSHA != run.HeadSHA {
 		return fmt.Errorf("recovered worktree head does not match run head")
+	}
+	aggregateVerified, err := e.reconcileRecoveredAppliedFix(recovered, headSHA)
+	if err != nil {
+		return e.failRun(run, repo, fmt.Errorf("reconcile recovered applied fix: %w", err), ctx)
 	}
 	logDir := e.paths.RunLogDir(run.ID)
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
@@ -517,6 +769,7 @@ func (e *Executor) resumeRecoveredAppliedFix(ctx context.Context, run *db.Run, r
 		consentedRepairFindings:   recovered.payload.findingsJSON,
 		consentedRepairChecksJSON: recovered.gate.durableGate.RepairChecksJSON,
 		consentedIDs:              recovered.payload.findingIDs,
+		aggregateVerified:         aggregateVerified,
 	}, circuits)
 	if err != nil {
 		return e.failRun(run, repo, err, ctx)
@@ -997,6 +1250,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	stepName := step.Name()
 	logPath := filepath.Join(logDir, string(stepName)+".log")
 	finalExitCode := 0
+	if stepName == types.StepPush {
+		if err := e.requireAggregateVerifiedCandidate(run.ID); err != nil {
+			return false, err
+		}
+	}
 
 	if !state.fixing {
 		if err := e.db.StartStep(sr.ID); err != nil {
@@ -1159,7 +1417,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	currentRoundID := state.currentRoundID
 	postRepairRereview := false
 	var recoveredOutcome *StepOutcome
-	if state.consentedRepairFindings != "" {
+	if state.consentedRepairFindings != "" && !state.aggregateVerified {
 		if stepName == types.StepReview && e.routingActive() {
 			remaining, err := e.repairConsentedReviewAtGate(ctx, sctx, run, sr, state.consentedSourceFindings, state.consentedRepairFindings, state.consentedIDs, currentRoundID, &roundNum)
 			if err != nil {
@@ -1201,7 +1459,15 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 					return false, fmt.Errorf("clear recovered resolved %s findings: %w", stepName, err)
 				}
 				sctx.Fixing = false
-				recoveredOutcome = &StepOutcome{RepairChecks: recoveredChecks}
+				if stepName == types.StepVerify {
+					if err := e.sealCandidate(ctx, run, workDir); err != nil {
+						return false, fmt.Errorf("reseal before recovered aggregate Verify: %w", err)
+					}
+					postRepairRereview = true
+					nextTrigger = "auto_fix"
+				} else {
+					recoveredOutcome = &StepOutcome{RepairChecks: recoveredChecks}
+				}
 			} else {
 				if err := e.db.SetStepFindings(sr.ID, remaining); err != nil {
 					return false, fmt.Errorf("persist recovered remaining %s findings: %w", stepName, err)
@@ -1210,6 +1476,10 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				recoveredOutcome = &StepOutcome{NeedsApproval: true, Findings: remaining, RepairChecks: recoveredChecks}
 			}
 		}
+	}
+
+	if state.aggregateVerified {
+		goto done
 	}
 
 	// Execute with possible fix loop.
@@ -1359,12 +1629,18 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			continue
 		}
 
-		// A Verify repair mutates the sealed candidate, so reseal the new HEAD:
-		// a repaired/reverified candidate produces a fresh seal that Push validates.
+		// A targeted verifier can resolve the repaired Verify finding, but it
+		// cannot certify the complete candidate for publication. Seal the
+		// repaired HEAD, then re-enter Verify once through its full aggregate
+		// invocation. The post-repair flag prevents the aggregate result from
+		// recursively entering automatic repair in the same pass.
 		if coordinatorResult.Owned && coordinatorResult.Resolved && stepName == types.StepVerify {
 			if sealErr := e.sealCandidate(ctx, run, workDir); sealErr != nil {
-				return false, fmt.Errorf("reseal after verify repair: %w", sealErr)
+				return false, fmt.Errorf("reseal before aggregate Verify after repair: %w", sealErr)
 			}
+			postRepairRereview = true
+			nextTrigger = "auto_fix"
+			continue
 		}
 
 		// If the step produced a PR URL, propagate it to the run and emit an update.
@@ -1589,18 +1865,21 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				} else if err := e.db.SetStepFindings(sr.ID, updated); err != nil {
 					return false, fmt.Errorf("persist remaining consented %s findings: %w", stepName, err)
 				}
-				if stepName == types.StepVerify {
-					if err := e.sealCandidate(ctx, run, workDir); err != nil {
-						return false, fmt.Errorf("reseal after consented verify repair: %w", err)
-					}
-				}
-				executionMS += time.Since(phaseStart).Milliseconds()
 				if hasBlockingFindingsJSON(updated) || hasAskUserFindingsJSON(updated) {
 					sctx.Fixing = true
 					goto approval
 				}
 				sctx.Fixing = false
+				executionMS += time.Since(phaseStart).Milliseconds()
 				phaseStart = time.Now()
+				if stepName == types.StepVerify {
+					if err := e.sealCandidate(ctx, run, workDir); err != nil {
+						return false, fmt.Errorf("reseal before aggregate Verify after consented repair: %w", err)
+					}
+					postRepairRereview = true
+					nextTrigger = "auto_fix"
+					continue
+				}
 				goto done
 			}
 			sctx.Fixing = true

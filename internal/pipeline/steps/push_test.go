@@ -1,6 +1,9 @@
 package steps
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 )
 
 func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
@@ -236,8 +241,11 @@ func TestPushStep_PublishesSealedSHAWhenHeadMovesBeforeNormalPush(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != racedSHA {
-		t.Fatalf("race seam did not move HEAD: got %s, want %s", got, racedSHA)
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != sealedSHA {
+		t.Fatalf("reconciled HEAD = %s, want sealed SHA %s (race moved it to %s)", got, sealedSHA, racedSHA)
+	}
+	if got := gitCmd(t, dir, "status", "--porcelain=v1", "--untracked-files=all"); got != "" {
+		t.Fatalf("reconciled worktree is dirty: %q", got)
 	}
 	publishedSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
 	if publishedSHA != sealedSHA {
@@ -292,8 +300,11 @@ func TestPushStep_PublishesSealedSHAWhenHeadMovesBeforeForcePush(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != racedSHA {
-		t.Fatalf("race seam did not move HEAD: got %s, want %s", got, racedSHA)
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != sealedSHA {
+		t.Fatalf("reconciled HEAD = %s, want sealed SHA %s (race moved it to %s)", got, sealedSHA, racedSHA)
+	}
+	if got := gitCmd(t, dir, "status", "--porcelain=v1", "--untracked-files=all"); got != "" {
+		t.Fatalf("reconciled worktree is dirty: %q", got)
 	}
 	publishedSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
 	if publishedSHA != sealedSHA {
@@ -308,6 +319,154 @@ func TestPushStep_PublishesSealedSHAWhenHeadMovesBeforeForcePush(t *testing.T) {
 	}
 	if dbRun.HeadSHA != publishedSHA {
 		t.Fatalf("DB HeadSHA = %s, want published SHA %s", dbRun.HeadSHA, publishedSHA)
+	}
+}
+
+func TestPushStepPersistsExactTransactionBeforeTransport(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, sealedSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, sealedSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "feature"
+	seal, err := sctx.DB.CreateSeal(sctx.Run.ID, sealedSHA, "reviewed")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	transported := false
+	step := &PushStep{transport: func(_ context.Context, _, _, _, _, _ string, _ bool) error {
+		transported = true
+		publication, err := sctx.DB.LatestPublication(sctx.Run.ID, db.PublicationKindPush)
+		if err != nil {
+			return err
+		}
+		if publication == nil {
+			return errors.New("transport began without a durable publication")
+		}
+		if publication.State != db.PublicationStateAttempted ||
+			publication.SealID != seal.ID ||
+			publication.SealSHA != sealedSHA ||
+			publication.DestinationURL != upstream ||
+			publication.DestinationRef != "refs/heads/feature" ||
+			publication.ExpectedRemoteSHA != "" ||
+			!publication.Force {
+			return errors.New("durable publication does not pin the exact transport")
+		}
+		return errors.New("injected transport rejection")
+	}}
+
+	if _, err := step.Execute(sctx); err == nil || !strings.Contains(err.Error(), "injected transport rejection") {
+		t.Fatalf("Execute error = %v, want injected transport rejection", err)
+	}
+	if !transported {
+		t.Fatal("transport seam was not reached")
+	}
+}
+
+func TestPushStepExpectedAbsentLeaseRejectsConcurrentRemoteCreation(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, sealedSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, sealedSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "race"
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, sealedSHA, "reviewed"); err != nil {
+		t.Fatal(err)
+	}
+
+	step := &PushStep{transport: func(ctx context.Context, workDir, destinationURL, sourceSHA, destinationRef, expectedRemoteSHA string, force bool) error {
+		gitCmd(t, workDir, "push", destinationURL, baseSHA+":"+destinationRef)
+		return git.Push(ctx, workDir, destinationURL, sourceSHA, destinationRef, expectedRemoteSHA, force)
+	}}
+	if _, err := step.Execute(sctx); err == nil || !strings.Contains(err.Error(), "stale info") {
+		t.Fatalf("Execute error = %v, want expected-absent lease rejection", err)
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/race"); got != baseSHA {
+		t.Fatalf("concurrently created remote ref = %s, want preserved %s", got, baseSHA)
+	}
+	publication, err := sctx.DB.LatestPublication(sctx.Run.ID, db.PublicationKindPush)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if publication == nil || publication.ExpectedRemoteSHA != "" || !publication.Force || publication.State != db.PublicationStateAttempted {
+		t.Fatalf("rejected expected-absent publication = %+v", publication)
+	}
+}
+
+func TestPushStepReconcilesAcceptedAmbiguousTransportWithoutRepush(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, sealedSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, sealedSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "feature"
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, sealedSHA, "reviewed"); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := 0
+	step := &PushStep{transport: func(ctx context.Context, workDir, pushURL, sourceRef, destinationRef, expectedRemoteSHA string, force bool) error {
+		calls++
+		if err := git.Push(ctx, workDir, pushURL, sourceRef, destinationRef, expectedRemoteSHA, force); err != nil {
+			return err
+		}
+		return errors.New("connection lost after server accepted push")
+	}}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("transport calls = %d, want exactly 1", calls)
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != sealedSHA {
+		t.Fatalf("remote SHA = %s, want sealed SHA %s", got, sealedSHA)
+	}
+	publication, err := sctx.DB.LatestPublication(sctx.Run.ID, db.PublicationKindPush)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if publication == nil || publication.State != db.PublicationStateCompleted {
+		t.Fatalf("publication = %+v, want completed ambiguous transport", publication)
+	}
+}
+func TestPushStepRetryUsesPersistedDestinationAfterRepoMetadataChanges(t *testing.T) {
+	original := t.TempDir()
+	reconfigured := t.TempDir()
+	gitCmd(t, original, "init", "--bare")
+	gitCmd(t, reconfigured, "init", "--bare")
+	dir, baseSHA, sealedSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, sealedSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = original
+	sctx.Run.Branch = "feature"
+	if _, err := sctx.DB.CreateSeal(sctx.Run.ID, sealedSHA, "reviewed"); err != nil {
+		t.Fatal(err)
+	}
+
+	step := &PushStep{transport: func(_ context.Context, _, destinationURL, _, _, _ string, _ bool) error {
+		if destinationURL != original {
+			return fmt.Errorf("first destination = %s, want %s", destinationURL, original)
+		}
+		return errors.New("injected rejection before acceptance")
+	}}
+	if _, err := step.Execute(sctx); err == nil {
+		t.Fatal("expected first transport to fail")
+	}
+	sctx.Repo.UpstreamURL = reconfigured
+	step.transport = func(ctx context.Context, workDir, destinationURL, sourceSHA, destinationRef, expectedRemoteSHA string, force bool) error {
+		if destinationURL != original {
+			return fmt.Errorf("retried destination = %s, want persisted %s", destinationURL, original)
+		}
+		return git.Push(ctx, workDir, destinationURL, sourceSHA, destinationRef, expectedRemoteSHA, force)
+	}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitCmd(t, original, "rev-parse", "refs/heads/feature"); got != sealedSHA {
+		t.Fatalf("original destination SHA = %s, want %s", got, sealedSHA)
+	}
+	if output, err := exec.Command("git", "-C", reconfigured, "rev-parse", "--verify", "refs/heads/feature").CombinedOutput(); err == nil {
+		t.Fatalf("reconfigured destination unexpectedly received %s", strings.TrimSpace(string(output)))
 	}
 }
 

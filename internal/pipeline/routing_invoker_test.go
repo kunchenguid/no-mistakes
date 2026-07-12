@@ -47,6 +47,16 @@ func (j failingFinishJournal) FinishInvocationAttempt(string, types.InvocationAt
 	return j.err
 }
 
+type failingAttemptIsolation struct {
+	err   error
+	calls int
+}
+
+func (i *failingAttemptIsolation) RestoreFailedAttempt() error {
+	i.calls++
+	return i.err
+}
+
 func reservedReviewScope(t *testing.T, database *db.DB, run *db.Run) types.InvocationScope {
 	t.Helper()
 	step, err := database.InsertStepResult(run.ID, types.StepReview)
@@ -648,6 +658,7 @@ type routedCandidateState struct {
 	head                 string
 	headRef              string
 	indexTree            string
+	refs                 string
 	status               string
 	trackedContent       string
 	untrackedContent     string
@@ -664,9 +675,22 @@ func seedRoutedCandidateState(t *testing.T) (string, routedCandidateState) {
 	t.Helper()
 	dir := t.TempDir()
 	initGitRepo(t, dir)
+	if err := os.Chmod(dir, 0o751); err != nil {
+		t.Fatal(err)
+	}
 	writeTestFile(t, dir, ".gitignore", "*.ignored\n")
-	execGit(t, dir, "add", ".gitignore")
-	execGit(t, dir, "commit", "-m", "ignore generated files")
+	if err := os.Mkdir(filepath.Join(dir, "tracked-dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, dir, "tracked-dir/value.txt", "tracked directory\n")
+	execGit(t, dir, "add", ".gitignore", "tracked-dir/value.txt")
+	execGit(t, dir, "commit", "-m", "seed candidate topology")
+	execGit(t, dir, "branch", "auxiliary")
+	execGit(t, dir, "tag", "candidate-baseline")
+	execGit(t, dir, "symbolic-ref", "refs/no-mistakes/test-symbolic", "refs/heads/auxiliary")
+	if err := os.Chmod(filepath.Join(dir, "tracked-dir"), 0o711); err != nil {
+		t.Fatal(err)
+	}
 	writeTestFile(t, dir, "README.md", "legitimate staged\n")
 	execGit(t, dir, "add", "README.md")
 	writeTestFile(t, dir, "README.md", "legitimate unstaged\n")
@@ -738,6 +762,7 @@ func seedRoutedCandidateState(t *testing.T) (string, routedCandidateState) {
 		headRef:             gitOut(t, dir, "rev-parse", "--symbolic-full-name", "HEAD"),
 		indexTree:           gitOut(t, dir, "write-tree"),
 		status:              gitOut(t, dir, "status", "--porcelain=v1", "--untracked-files=all"),
+		refs:                visibleRepairRefs(t, dir),
 		trackedContent:      "legitimate unstaged\n",
 		untrackedContent:    "#!/bin/sh\necho legitimate\n",
 		untrackedMode:       info.Mode().Perm(),
@@ -746,6 +771,8 @@ func seedRoutedCandidateState(t *testing.T) (string, routedCandidateState) {
 		ignoredContent:      "legitimate ignored\n",
 		ignoredMode:         ignoredInfo.Mode().Perm(),
 		directoryModes: map[string]os.FileMode{
+			".":                                     0o751,
+			"tracked-dir":                           0o711,
 			"legitimate-tree":                       0o751,
 			"legitimate-tree/nested":                0o711,
 			"legitimate-tree/nested/empty":          0o701,
@@ -775,6 +802,9 @@ func assertRoutedCandidateBase(t *testing.T, dir string, want routedCandidateSta
 	}
 	if got := gitOut(t, dir, "rev-parse", "--symbolic-full-name", "HEAD"); got != want.headRef {
 		t.Fatalf("HEAD ref = %q, want %q", got, want.headRef)
+	}
+	if got := visibleRepairRefs(t, dir); got != want.refs {
+		t.Fatalf("refs after attempt:\n%s\nwant:\n%s", got, want.refs)
 	}
 	if got := gitOut(t, dir, "write-tree"); got != want.indexTree {
 		t.Fatalf("index tree = %s, want %s", got, want.indexTree)
@@ -860,6 +890,12 @@ func mutateFailedRoutedCandidate(t *testing.T, dir, label string) {
 	if err := os.Chmod(filepath.Join(dir, "legitimate.ignored"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "tracked-dir"), 0o777); err != nil {
+		t.Fatal(err)
+	}
 	for _, path := range []string{"legitimate-tree", "legitimate-cache.ignored"} {
 		if err := os.RemoveAll(filepath.Join(dir, path)); err != nil {
 			t.Fatal(err)
@@ -897,7 +933,23 @@ func mutateFailedRoutedCandidate(t *testing.T, dir, label string) {
 	execGit(t, dir, "add", "README.md", label+"-staged.txt", "legitimate-untracked.sh")
 	execGit(t, dir, "commit", "-m", label+" failed attempt")
 	execGit(t, dir, "checkout", "--detach", "HEAD")
+	execGit(t, dir, "update-ref", "refs/heads/auxiliary", "HEAD")
+	execGit(t, dir, "update-ref", "-d", "refs/tags/candidate-baseline")
+	execGit(t, dir, "update-ref", "refs/heads/"+label+"-created", "HEAD")
+	execGit(t, dir, "symbolic-ref", "refs/no-mistakes/test-symbolic", "refs/heads/"+label+"-created")
 	writeTestFile(t, dir, label+"-after-commit.txt", label+" after commit\n")
+}
+
+func visibleRepairRefs(t *testing.T, dir string) string {
+	t.Helper()
+	lines := strings.Split(gitOut(t, dir, "for-each-ref", "--format=%(refname)%09%(objectname)%09%(symref)"), "\n")
+	visible := lines[:0]
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "refs/no-mistakes/repair-attempt-snapshots/") {
+			visible = append(visible, line)
+		}
+	}
+	return strings.Join(visible, "\n")
 }
 
 func conflictedRebaseWorktree(t *testing.T) string {
@@ -1192,4 +1244,275 @@ func TestRoutingInvokerRestoresFailedFixerAfterCallerCancellation(t *testing.T) 
 			t.Fatalf("cancelled fixer mutation %q survived: %v", failed, err)
 		}
 	}
+}
+
+func TestRoutingInvokerCancellationBeatsSuccessfulFixerResult(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	dir, before := seedRoutedCandidateState(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	codex := &recordingRoutedAgent{runFn: func(opts agent.RunOpts) (*agent.Result, error) {
+		mutateFailedRoutedCandidate(t, opts.CWD, "cancelled-success")
+		cancel()
+		return &agent.Result{Output: []byte(`{"summary":"must not publish"}`)}, nil
+	}}
+	claude := &recordingRoutedAgent{}
+	circuits := newProviderCircuits()
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, circuits)
+	ri.newAgent = perRunner(codex, claude)
+
+	_, err := ri.Invoke(ctx, agent.InvocationRequest{
+		Purpose: types.PurposeStructuredFindingRepair,
+		Scope:   scope,
+		Payload: agent.RunOpts{Prompt: "repair", CWD: dir},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
+	}
+	if codex.calls != 1 || claude.calls != 0 {
+		t.Fatalf("provider calls = codex %d, claude %d; cancellation must not fail over", codex.calls, claude.calls)
+	}
+	assertRoutedCandidateState(t, dir, before)
+	attempts, getErr := database.GetInvocationAttemptsByStepResult(scope.StepResultID)
+	if getErr != nil || len(attempts) != 1 {
+		t.Fatalf("attempts = %+v, err = %v; want one", attempts, getErr)
+	}
+	if terminal := attempts[0].Terminal; terminal == nil || terminal.Outcome != types.InvocationOutcomeCancelled || terminal.FailureDomain != "" {
+		t.Fatalf("terminal = %+v, want cancelled without failure domain", terminal)
+	}
+	if circuits.isOpen(types.FailureDomainOpenAI) || circuits.isOpen(types.FailureDomainAnthropic) {
+		t.Fatal("cancellation must not open a provider circuit")
+	}
+}
+
+func TestRoutingInvokerCancellationBeatsOperationalFailure(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	ctx, cancel := context.WithCancel(context.Background())
+	codex := &recordingRoutedAgent{runFn: func(agent.RunOpts) (*agent.Result, error) {
+		cancel()
+		return nil, opError()
+	}}
+	claude := &recordingRoutedAgent{}
+	circuits := newProviderCircuits()
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, circuits)
+	ri.newAgent = perRunner(codex, claude)
+
+	_, err := ri.Invoke(ctx, agent.InvocationRequest{
+		Purpose: types.PurposeInitialReview,
+		Scope:   scope,
+		Payload: agent.RunOpts{Prompt: "review"},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
+	}
+	if codex.calls != 1 || claude.calls != 0 {
+		t.Fatalf("provider calls = codex %d, claude %d; cancellation must not fail over", codex.calls, claude.calls)
+	}
+	attempts, getErr := database.GetInvocationAttemptsByStepResult(scope.StepResultID)
+	if getErr != nil || len(attempts) != 1 {
+		t.Fatalf("attempts = %+v, err = %v; want one", attempts, getErr)
+	}
+	if terminal := attempts[0].Terminal; terminal == nil || terminal.Outcome != types.InvocationOutcomeCancelled || terminal.FailureDomain != "" {
+		t.Fatalf("terminal = %+v, want cancelled without failure domain", terminal)
+	}
+	if circuits.isOpen(types.FailureDomainOpenAI) || circuits.isOpen(types.FailureDomainAnthropic) {
+		t.Fatal("cancellation must not open a provider circuit")
+	}
+}
+
+func TestRoutingInvokerRestoreFailureDoesNotAuthorizeCircuitAfterRestart(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	isolation := &failingAttemptIsolation{err: errors.New("restore topology")}
+	codex := &recordingRoutedAgent{err: opError()}
+	claude := &recordingRoutedAgent{}
+	circuits := newProviderCircuits()
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, circuits)
+	ri.newAgent = perRunner(codex, claude)
+
+	_, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeStructuredFindingRepair,
+		Scope:   scope,
+		Payload: agent.RunOpts{Prompt: "repair", CWD: t.TempDir(), AttemptIsolation: isolation},
+	})
+	if err == nil || isolation.calls == 0 {
+		t.Fatalf("error = %v, restore calls = %d; want fatal restore failure", err, isolation.calls)
+	}
+	if codex.calls != 1 || claude.calls != 0 {
+		t.Fatalf("provider calls = codex %d, claude %d; failed restore must stop failover", codex.calls, claude.calls)
+	}
+	attempts, getErr := database.GetInvocationAttemptsByStepResult(scope.StepResultID)
+	if getErr != nil || len(attempts) != 1 {
+		t.Fatalf("attempts = %+v, err = %v; want one", attempts, getErr)
+	}
+	if terminal := attempts[0].Terminal; terminal == nil || terminal.Outcome != types.InvocationOutcomeFailed || terminal.FailureDomain != "" {
+		t.Fatalf("terminal = %+v, want failed without circuit-authorizing domain", terminal)
+	}
+	restarted := providerCircuitsFromAttempts(attempts)
+	if circuits.isOpen(types.FailureDomainOpenAI) || restarted.isOpen(types.FailureDomainOpenAI) {
+		t.Fatal("failed restore must keep both live and reconstructed circuits closed")
+	}
+}
+
+func TestRoutingInvokerRejectsSuccessfulFixerRefMutationAndRestores(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	dir, before := seedRoutedCandidateState(t)
+	codex := &recordingRoutedAgent{runFn: func(opts agent.RunOpts) (*agent.Result, error) {
+		writeTestFile(t, opts.CWD, "successful-but-invalid.txt", "invalid topology\n")
+		execGit(t, opts.CWD, "add", "successful-but-invalid.txt")
+		execGit(t, opts.CWD, "commit", "-m", "invalid fixer commit")
+		execGit(t, opts.CWD, "update-ref", "refs/heads/auxiliary", "HEAD")
+		execGit(t, opts.CWD, "update-ref", "refs/heads/created-by-fixer", "HEAD")
+		return &agent.Result{Output: []byte(`{"summary":"invalid topology"}`)}, nil
+	}}
+	claude := &recordingRoutedAgent{}
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, newProviderCircuits())
+	ri.newAgent = perRunner(codex, claude)
+
+	_, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeStructuredFindingRepair,
+		Scope:   scope,
+		Payload: agent.RunOpts{Prompt: "repair", CWD: dir},
+	})
+	if err == nil || !strings.Contains(err.Error(), "protected HEAD or ref topology") {
+		t.Fatalf("error = %v, want protected topology rejection", err)
+	}
+	if codex.calls != 1 || claude.calls != 0 {
+		t.Fatalf("provider calls = codex %d, claude %d; integrity failure must not fail over", codex.calls, claude.calls)
+	}
+	assertRoutedCandidateState(t, dir, before)
+	if _, statErr := os.Lstat(filepath.Join(dir, "successful-but-invalid.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid successful mutation survived: %v", statErr)
+	}
+	attempts, getErr := database.GetInvocationAttemptsByStepResult(scope.StepResultID)
+	if getErr != nil || len(attempts) != 1 {
+		t.Fatalf("attempts = %+v, err = %v; want one", attempts, getErr)
+	}
+	if terminal := attempts[0].Terminal; terminal == nil || terminal.Outcome != types.InvocationOutcomeFailed || terminal.FailureDomain != "" {
+		t.Fatalf("terminal = %+v, want non-operational integrity failure", terminal)
+	}
+}
+
+func TestRoutingInvokerRestoresDetachedConflictedRebaseBeforeFailover(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	baseBranch := gitOut(t, dir, "branch", "--show-current")
+	execGit(t, dir, "checkout", "-b", "detached-feature")
+	writeTestFile(t, dir, "README.md", "detached feature\n")
+	execGit(t, dir, "add", "README.md")
+	execGit(t, dir, "commit", "-m", "detached feature")
+	featureSHA := gitOut(t, dir, "rev-parse", "HEAD")
+	execGit(t, dir, "checkout", baseBranch)
+	writeTestFile(t, dir, "README.md", "new base\n")
+	execGit(t, dir, "add", "README.md")
+	execGit(t, dir, "commit", "-m", "new base")
+	execGit(t, dir, "checkout", "--detach", featureSHA)
+	rebase := exec.Command("git", "rebase", baseBranch)
+	rebase.Dir = dir
+	if out, err := rebase.CombinedOutput(); err == nil {
+		t.Fatalf("detached rebase unexpectedly completed:\n%s", out)
+	}
+
+	codex := &recordingRoutedAgent{runFn: func(opts agent.RunOpts) (*agent.Result, error) {
+		writeTestFile(t, opts.CWD, "README.md", "premature detached resolution\n")
+		execGit(t, opts.CWD, "add", "README.md")
+		continueRebase := exec.Command("git", "rebase", "--continue")
+		continueRebase.Dir = opts.CWD
+		continueRebase.Env = append(os.Environ(), "GIT_EDITOR=true")
+		if out, err := continueRebase.CombinedOutput(); err != nil {
+			t.Fatalf("complete failed detached rebase: %v\n%s", err, out)
+		}
+		return nil, opError()
+	}}
+	claude := &recordingRoutedAgent{runFn: func(opts agent.RunOpts) (*agent.Result, error) {
+		if got := gitOut(t, opts.CWD, "rev-parse", "--symbolic-full-name", "HEAD"); got != "HEAD" {
+			t.Fatalf("restored detached conflict HEAD ref = %q, want HEAD", got)
+		}
+		content, err := os.ReadFile(filepath.Join(opts.CWD, "README.md"))
+		if err != nil || !strings.Contains(string(content), "<<<<<<<") {
+			t.Fatalf("restored detached conflict content = %q, err = %v", content, err)
+		}
+		if got := gitOut(t, opts.CWD, "diff", "--name-only", "--diff-filter=U"); got != "README.md" {
+			t.Fatalf("restored detached conflicts = %q, want README.md", got)
+		}
+		return &agent.Result{Output: []byte(`{"summary":"retry detached conflict"}`)}, nil
+	}}
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, newProviderCircuits())
+	ri.newAgent = perRunner(codex, claude)
+	if _, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeUnstructuredConflictRepair,
+		Scope:   scope,
+		Payload: agent.RunOpts{Prompt: "resolve detached conflict", CWD: dir},
+	}); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if codex.calls != 1 || claude.calls != 1 {
+		t.Fatalf("provider calls = codex %d, claude %d; want detached failover", codex.calls, claude.calls)
+	}
+}
+
+func TestRunSessionsDoesNotColdRetryFatalRoutedTransaction(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	dir, before := seedRoutedCandidateState(t)
+	journalErr := errors.New("terminal unavailable")
+	codex := &recordingRoutedAgent{runFn: func(opts agent.RunOpts) (*agent.Result, error) {
+		mutateFailedRoutedCandidate(t, opts.CWD, "fatal-session")
+		return nil, opError()
+	}}
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), failingFinishJournal{
+		InvocationJournal: database,
+		err:               journalErr,
+	}, newProviderCircuits())
+	ri.newAgent = perRunner(codex, &recordingRoutedAgent{})
+	sessions := NewRunSessions(database, run.ID, nil, true)
+	sessions.remember(SessionRoleFixer, "stored-session", string(types.AgentCodex))
+
+	_, err := sessions.InvokeRequest(context.Background(), ri, SessionRoleFixer, agent.InvocationRequest{
+		Purpose: types.PurposeStructuredFindingRepair,
+		Scope:   scope,
+		Payload: agent.RunOpts{Prompt: "repair", CWD: dir},
+	}, nil)
+	if !agent.IsFatalInvocationError(err) || !errors.Is(err, journalErr) {
+		t.Fatalf("error = %v, want fatal terminal journal error", err)
+	}
+	if codex.calls != 1 {
+		t.Fatalf("native calls = %d, want one without cold-session retry", codex.calls)
+	}
+	if stored := sessions.id(SessionRoleFixer); stored.ID != "stored-session" {
+		t.Fatalf("stored session = %+v, want original identity retained", stored)
+	}
+	assertRoutedCandidateState(t, dir, before)
+}
+
+func TestRoutingInvokerRejectsSuccessfulFixerTrackedDirectoryModeMutation(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	scope := reservedReviewScope(t, database, run)
+	dir, before := seedRoutedCandidateState(t)
+	codex := &recordingRoutedAgent{runFn: func(opts agent.RunOpts) (*agent.Result, error) {
+		if err := os.Chmod(filepath.Join(opts.CWD, "tracked-dir"), 0o777); err != nil {
+			t.Fatal(err)
+		}
+		return &agent.Result{Output: []byte(`{"summary":"invalid directory mode"}`)}, nil
+	}}
+	claude := &recordingRoutedAgent{}
+	ri := newRoutingInvoker(config.DefaultRoutingConfig(), database, newProviderCircuits())
+	ri.newAgent = perRunner(codex, claude)
+
+	_, err := ri.Invoke(context.Background(), agent.InvocationRequest{
+		Purpose: types.PurposeStructuredFindingRepair,
+		Scope:   scope,
+		Payload: agent.RunOpts{Prompt: "repair", CWD: dir},
+	})
+	if err == nil || !strings.Contains(err.Error(), "protected directory mode") {
+		t.Fatalf("error = %v, want protected directory mode rejection", err)
+	}
+	if codex.calls != 1 || claude.calls != 0 {
+		t.Fatalf("provider calls = codex %d, claude %d; integrity failure must not fail over", codex.calls, claude.calls)
+	}
+	assertRoutedCandidateState(t, dir, before)
 }

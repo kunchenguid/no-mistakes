@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -66,6 +67,16 @@ func NewRunSessions(database *db.DB, runID string, sessionAgent agent.Agent, ena
 	}
 	return rs
 }
+func validateSuccessfulSessionAttempt(opts agent.RunOpts) error {
+	validationErr := agent.ValidateSuccessfulAttempt(opts)
+	if validationErr == nil {
+		return nil
+	}
+	if restoreErr := agent.RestoreFailedAttempt(opts, validationErr); restoreErr != nil {
+		validationErr = errors.Join(validationErr, restoreErr)
+	}
+	return agent.FatalInvocationError(validationErr)
+}
 
 // Run executes one turn of the given role, reusing the role's durable
 // session when the adapter supports it. logf (optional) receives operator-
@@ -85,6 +96,12 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 			logf(fmt.Sprintf("agent %s does not support session resume; running cold", a.Name()))
 		}
 		result, err := a.Run(ctx, opts)
+		if err == nil {
+			err = validateSuccessfulSessionAttempt(opts)
+		}
+		if agent.IsFatalInvocationError(err) {
+			return nil, err
+		}
 		if restoreErr := agent.RestoreFailedAttempt(opts, err); restoreErr != nil {
 			return nil, restoreErr
 		}
@@ -96,6 +113,9 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 	opts.Session = &stored
 	result, err := a.Run(ctx, opts)
 	if err == nil {
+		if validationErr := validateSuccessfulSessionAttempt(opts); validationErr != nil {
+			return nil, validationErr
+		}
 		rs.remember(role, result.SessionID, sessionProvider(a, result))
 		return result, nil
 	}
@@ -120,6 +140,9 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 			return nil, restoreErr
 		}
 		return nil, err
+	}
+	if validationErr := validateSuccessfulSessionAttempt(opts); validationErr != nil {
+		return nil, validationErr
 	}
 	rs.remember(role, result.SessionID, sessionProvider(a, result))
 	return result, nil
@@ -156,6 +179,12 @@ func (rs *RunSessions) InvokeRequest(ctx context.Context, invoker agent.Invoker,
 	}
 	if rs == nil || !rs.enabled {
 		result, err := invoke(opts)
+		if err == nil {
+			err = validateSuccessfulSessionAttempt(opts)
+		}
+		if agent.IsFatalInvocationError(err) {
+			return nil, err
+		}
 		if restoreErr := agent.RestoreFailedAttempt(opts, err); restoreErr != nil {
 			return nil, restoreErr
 		}
@@ -167,10 +196,16 @@ func (rs *RunSessions) InvokeRequest(ctx context.Context, invoker agent.Invoker,
 	opts.Session = &stored
 	result, err := invoke(opts)
 	if err == nil {
+		if validationErr := validateSuccessfulSessionAttempt(opts); validationErr != nil {
+			return nil, validationErr
+		}
 		if result != nil {
 			rs.remember(role, result.SessionID, result.Provider)
 		}
 		return result, nil
+	}
+	if agent.IsFatalInvocationError(err) {
+		return nil, err
 	}
 	if restoreErr := agent.RestoreFailedAttempt(opts, err); restoreErr != nil {
 		return nil, restoreErr
@@ -191,6 +226,9 @@ func (rs *RunSessions) InvokeRequest(ctx context.Context, invoker agent.Invoker,
 			return nil, restoreErr
 		}
 		return nil, err
+	}
+	if validationErr := validateSuccessfulSessionAttempt(opts); validationErr != nil {
+		return nil, validationErr
 	}
 	if result != nil {
 		rs.remember(role, result.SessionID, result.Provider)

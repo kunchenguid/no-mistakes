@@ -231,6 +231,16 @@ func (terminal InvocationAttemptTerminal) Validate() error {
 	if terminal.FailureDomain != "" && terminal.FailureDomain != FailureDomainOpenAI && terminal.FailureDomain != FailureDomainAnthropic {
 		return fmt.Errorf("unknown failure domain %q", terminal.FailureDomain)
 	}
+	switch terminal.Outcome {
+	case InvocationOutcomeSkipped:
+		if terminal.FailureDomain == "" {
+			return fmt.Errorf("skipped invocation terminal requires a failure domain")
+		}
+	case InvocationOutcomeSucceeded, InvocationOutcomeCancelled, InvocationOutcomeInterrupted:
+		if terminal.FailureDomain != "" {
+			return fmt.Errorf("%s invocation terminal cannot carry a failure domain", terminal.Outcome)
+		}
+	}
 	if terminal.DurationMS < 0 || terminal.InputTokens < 0 || terminal.OutputTokens < 0 || terminal.CacheReadTokens < 0 || terminal.CacheCreationTokens < 0 {
 		return fmt.Errorf("invocation terminal counters cannot be negative")
 	}

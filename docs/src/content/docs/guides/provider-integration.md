@@ -28,8 +28,9 @@ What you do not get is PR automation and CI monitoring.
 
 This page covers git host providers: GitHub, GitLab, and Bitbucket Cloud.
 They are a separate failure domain from the model providers the routing contract launches.
-Every agent invocation, including CI repair, routes through profiles of ordered candidates whose runners map to the `openai` and `anthropic` provider domains.
-A classified operational failure opens that model-provider domain's circuit for the rest of the run and fails over to the backup candidate; when no candidate remains available, the invocation fails closed.
+Every agent invocation, including CI repair, routes through a profile's declared candidate order.
+The built-in profiles use runners in the `openai` and `anthropic` provider domains.
+A classified operational failure opens that model-provider domain's circuit for the rest of the run and tries the next declared candidate; when no candidate remains available, the invocation fails closed.
 A git host outage never opens a model-provider circuit; it surfaces as a failing or skipped PR or CI step instead.
 See the [default profile and route tables](/no-mistakes/reference/routing/#default-profiles) for the routing contract.
 

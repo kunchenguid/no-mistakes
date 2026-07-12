@@ -38,10 +38,10 @@ PR creation and hosted CI happen after publication.
 What you get:
 
 - an isolated pipeline that never blocks your working copy
-- purpose-routed model calls with provider failover between OpenAI and Anthropic
+- built-in model routes with OpenAI-first, Anthropic-backup failover; custom profiles use their declared candidate order
 - a `/no-mistakes` skill so your coding agent can do a task and gate it, or gate existing committed work
 - repairs that are applied, checked deterministically, and independently verified before anything ships
-- a clean PR raised and CI watched for you, with judgment calls left to you
+- automatic PR creation when host support is available, plus CI monitoring while a PR is open, with judgment calls left to you
 
 Full documentation: <https://kunchenguid.github.io/no-mistakes/>
 
@@ -58,20 +58,21 @@ Full documentation: <https://kunchenguid.github.io/no-mistakes/>
    └────────────────────────────────────────────────┘
             │  local and pre-push gates pass before Push
             ▼
-        verified commit published, clean PR opened, hosted CI green
+        happy path: verified commit published, clean PR opened, hosted CI green
 ```
 
 The pipeline always runs the same ten steps: intent, rebase, review, test, document, lint, verify, push, PR, CI.
-Each step passes on its own or stops with a finding.
-Safe findings are repaired for you; anything that touches your intent waits for your decision.
+Review runs automatic repair before it parks.
+Only `ask-user` findings and unresolved blocking repair lineages wait for your decision.
 The push step transports only the exact commit the verify step certified.
 Nothing reaches the configured push target until every local and pre-push gate is green.
 
 ## How model calls are chosen
 
-Every model call is routed by its purpose, with ordered provider failover between OpenAI and Anthropic.
-An operational failure, such as quota or an outage, moves the rest of the run to the backup provider; when no candidate is available, the call fails closed instead of downgrading.
-Repairs escalate the same way, and every fix is independently verified, until the finding resolves or fails closed.
+Every model call is routed by its purpose, and each profile tries candidates in its declared order.
+The built-in profiles try OpenAI first and Anthropic second.
+An operational failure, such as quota or an outage, opens that provider's circuit and tries the next declared candidate; when no candidate is available, the call fails closed instead of downgrading.
+Repairs escalate through their declared route, and every fix is independently verified, until the finding resolves or fails closed.
 See the [routing reference](https://kunchenguid.github.io/no-mistakes/reference/routing/) for the exact profiles, routes, and circuit rules.
 
 ## Install
@@ -113,9 +114,10 @@ $ no-mistakes
 For GitHub fork contributions, keep `origin` pointed at the parent repository and initialize with `no-mistakes init --fork-url <your-fork-url>`.
 
 From the TUI you act on each finding.
-The pipeline repairs safe findings itself and verifies each repair independently; judgment calls stop the run for you to approve, fix, or skip.
+The pipeline repairs safe findings itself and verifies each repair independently.
+Review parks only for an `ask-user` finding or an unresolved blocking repair lineage, which you can approve, fix, or skip.
 After every local and pre-push gate is green, Push forwards the verified commit to the configured push target.
-The PR opens after publication, and hosted CI then checks the published commit.
+On the supported-host happy path, the PR opens after publication and hosted CI checks the published commit.
 You do not need to run `git push origin` or write the PR body.
 Prefer to let your coding agent drive the same flow headlessly?
 Use `/no-mistakes` (see below).

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -413,6 +414,67 @@ func TestExecutor_ConfiguredSkippedStepDoesNotExecuteAndContinues(t *testing.T) 
 		if step.StepName == types.StepReview && step.Status != types.StepStatusSkipped {
 			t.Fatalf("review status = %s, want %s", step.Status, types.StepStatusSkipped)
 		}
+	}
+}
+
+func TestExecutorRejectsConfiguredVerifySkipBeforePush(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	verify := newPassStep(types.StepVerify)
+	push := newPassStep(types.StepPush)
+	executor := NewExecutor(database, p, nil, nil, []Step{verify, push}, nil)
+	executor.SetSkippedSteps([]types.StepName{types.StepVerify})
+
+	err := executor.Execute(context.Background(), run, repo, t.TempDir())
+	if err == nil {
+		t.Fatal("Execute accepted a configured Verify skip while Push remained enabled")
+	}
+	if !strings.Contains(err.Error(), "cannot skip Verify while Push is enabled") {
+		t.Fatalf("Execute error = %q, want unsafe Verify skip rejection", err)
+	}
+	if verify.callCount() != 0 || push.callCount() != 0 {
+		t.Fatalf("unsafe skip executed Verify %d time(s) and Push %d time(s), want neither", verify.callCount(), push.callCount())
+	}
+}
+
+func TestValidateRecoveredPrefixRejectsPublishedSkippedVerify(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	verifyResult, err := database.InsertStepResult(run.ID, types.StepVerify)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteStepWithStatus(verifyResult.ID, types.StepStatusSkipped, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	pushResult, err := database.InsertStepResult(run.ID, types.StepPush)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(pushResult.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CompleteStepWithStatus(pushResult.ID, types.StepStatusCompleted, 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.CreateSeal(run.ID, run.HeadSHA, "reviewed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.CreateSeal(run.ID, run.HeadSHA, "pre_verify"); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = ValidateRecoveredPrefix(database, run, []Step{
+		newPassStep(types.StepVerify),
+		newPassStep(types.StepPush),
+	})
+	if err == nil || !strings.Contains(err.Error(), "successful Verify") {
+		t.Fatalf("ValidateRecoveredPrefix error = %v, want skipped Verify publication rejection", err)
 	}
 }
 

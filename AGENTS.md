@@ -38,7 +38,7 @@ Safest local verification sequence after non-trivial changes:
 
 - `skills/no-mistakes/SKILL.md` is **generated**: the source of truth is the `body` constant in `internal/skill/skill.go`. Edit the body, then `make skill`; `make lint` fails CI on drift. Never edit `SKILL.md` directly. `no-mistakes init` ships this rendering to agents at user level.
 - Agent-driving guidance is owned by the skill body and the live `axi` output strings (`internal/cli/axi*.go`); `docs/src/content/docs/guides/agents.md` carries only the canonical invariant sentences pinned by `internal/cli/axi_guidance_test.go` plus a pointer to the skill. When you change driving guidance, change the skill body and the point-of-use `axi` strings together; that drift test is the sync check.
-- Review blocking and ask-user findings park for an agent decision rather than being silently self-fixed. There is no `auto_fix` config key or numeric per-Step auto-fix limit: model selection and repair are the routing contract's job. Keep the skill body, live `axi` note, and the guide's canonical invariant sentence in sync if you touch review-gate driving guidance.
+- Review runs auto-fix cascades before any gate. Only `ask-user` findings and unresolved blocking repair lineages park for an agent decision. There is no `auto_fix` config key or numeric per-Step auto-fix limit: model selection and repair are the routing contract's job. Keep the skill body, live `axi` note, and the guide's canonical invariant sentence in sync if you touch review-gate driving guidance.
 
 **Context, Concurrency, and Processes**
 

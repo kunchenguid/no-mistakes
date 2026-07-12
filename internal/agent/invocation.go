@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -38,6 +39,32 @@ func (e *ProfileUnavailableError) Error() string {
 }
 
 func (e *ProfileUnavailableError) Unwrap() error { return e.Cause }
+
+// fatalInvocationError marks an invocation boundary that cannot safely be
+// retried. Journal failures and failed candidate restoration are transaction
+// failures, not resumability failures, so session fallback must preserve them.
+type fatalInvocationError struct {
+	err error
+}
+
+func (e *fatalInvocationError) Error() string { return e.err.Error() }
+func (e *fatalInvocationError) Unwrap() error { return e.err }
+
+// FatalInvocationError prevents a higher session layer from retrying an
+// invocation whose terminal fact or isolated candidate could not be made safe.
+func FatalInvocationError(err error) error {
+	if err == nil || IsFatalInvocationError(err) {
+		return err
+	}
+	return &fatalInvocationError{err: err}
+}
+
+// IsFatalInvocationError reports whether retrying the invocation could violate
+// its journal or candidate-isolation transaction.
+func IsFatalInvocationError(err error) bool {
+	var fatal *fatalInvocationError
+	return errors.As(err, &fatal)
+}
 
 // ValidateInvocationRequest rejects invalid semantic ownership before any
 // native agent process can launch.

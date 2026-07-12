@@ -40,8 +40,8 @@ flowchart LR
     direction TB
     E["Local branch"] -->|"git push no-mistakes"| F["Local gate"]
     F --> G["Intent, rebase, review, test, document, lint, verify"]
-    G --> H["Push verified commit + open PR"]
-    H --> I["Watch CI + auto-fix"]
+    G --> H["Push verified commit"]
+    H --> I["Supported-host happy path: open PR + watch CI"]
   end
 
   before ~~~ after
@@ -49,7 +49,7 @@ flowchart LR
 
 ## What happens to a gated push
 
-A gated push turns a rough branch into a clean PR:
+A gated push validates and publishes a rough branch before any supported-host PR automation begins.
 
 | Before the gate | After the gate |
 |---|---|
@@ -58,8 +58,8 @@ A gated push turns a rough branch into a clean PR:
 | Uneven test coverage | Regression and new tests executed |
 | Missing docs | Documentation kept up to date |
 | Formatting and lint churn | Linter and formatter done before push |
-| One model for everything | Every model call routed by purpose, with provider failover |
-| Manually raise and shepherd the PR | PR opened and CI watched automatically |
+| One model for everything | Every model call routed by purpose through each profile's declared candidates |
+| Manually raise and shepherd the PR | With host support, PR opened and CI watched while it remains open |
 
 ## Start here
 

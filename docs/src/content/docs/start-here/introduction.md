@@ -5,7 +5,8 @@ description: What no-mistakes is and why it exists.
 
 `no-mistakes` puts a local git proxy in front of your real remote.
 Push to `no-mistakes` instead of `origin` and it runs an AI-driven validation pipeline in a disposable worktree.
-The branch reaches the configured push target only after every check passes, and a clean PR opens automatically.
+Every local and pre-push check must pass before the branch reaches the configured push target.
+On the supported-host happy path, no-mistakes then opens a clean PR and monitors hosted CI while that PR remains open.
 
 ## The bottleneck moved
 
@@ -21,8 +22,8 @@ Branch protection can reject bad outcomes, but it does not help get a branch rea
 It gives you a deliberate local gate before the branch reaches the configured push target:
 
 - before the code is public, it rebases, runs a structured AI code review, runs baseline tests, gathers user-facing test evidence when intent is available, checks that docs are in sync, runs lint, and independently verifies the final candidate
-- after the push, it watches CI and fixes failures, and on GitHub and GitLab it also watches PR mergeability and fixes merge conflicts on the branch
-- throughout, every blocking step can pause for your approval, so you see the findings, pick what to fix, and decide when to ship
+- after the push, supported host integration creates or updates the PR and watches CI while it stays open; on GitHub and GitLab it also watches mergeability and fixes merge conflicts on the branch
+- throughout, automatic repair runs before a gate; `ask-user` findings and unresolved blocking repair lineages pause for your decision
 
 The whole thing runs in a disposable worktree.
 Your working directory is never touched, so you can keep coding while the pipeline runs.
@@ -62,7 +63,7 @@ Every model invocation starts from a semantic purpose, such as the initial revie
 A global routing contract maps each purpose to a finite route: an ordered escalation cascade of profiles.
 A profile is an ordered list of provider candidates, and the default profiles pair an OpenAI-family candidate with an Anthropic backup.
 Candidates run one at a time, in order, and are never raced.
-A classified operational failure, such as quota, an outage, or an auth error, opens a run-wide circuit for that provider family, and the same profile's backup candidate takes over.
+A classified operational failure, such as quota, an outage, or an auth error, opens a run-wide circuit for that provider family, and the profile tries its next declared candidate.
 When every candidate in a profile is unavailable, the invocation fails closed instead of downgrading to a weaker model.
 
 Repairs follow the same contract.

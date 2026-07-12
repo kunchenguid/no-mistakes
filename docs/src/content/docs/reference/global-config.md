@@ -187,9 +187,9 @@ The guidance column quotes the emitted guidance text exactly.
 | `agent_path_override` | runner executables are configured via `routing.runners.<name>.executable` |
 | `agent_args_override` | native agent arguments are derived from routing profile candidates and cannot be overridden |
 | `auto_fix` | per-step numeric auto-fix limits were removed; repair escalates through the routing cascade |
-| `babysit_timeout` | use `ci_timeout`; the `babysit_timeout` alias was removed |
-| `daemon_connect_timeout` | daemon connection readiness is managed internally; this timeout is no longer configurable |
-| `step_quiet_warning` | step liveness is reported from durable execution state; this warning threshold is no longer configurable |
+| `babysit_timeout` | use `ci_timeout`; the old spelling is not an alias |
+| `daemon_connect_timeout` | daemon connection readiness is managed internally and is not configurable |
+| `step_quiet_warning` | step liveness reporting is managed internally and is not configurable |
 
 See [migrating to routing](/no-mistakes/guides/migrating-to-routing/) for what to put in place of each key.
 

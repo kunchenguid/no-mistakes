@@ -50,6 +50,9 @@ func providerCircuitsFromAttempts(attempts []*db.InvocationAttempt) *providerCir
 		if attempt == nil || attempt.Terminal == nil || attempt.Terminal.FailureDomain == "" {
 			continue
 		}
+		if attempt.Terminal.Outcome != types.InvocationOutcomeFailed && attempt.Terminal.Outcome != types.InvocationOutcomeSkipped {
+			continue
+		}
 		circuits.markOpen(attempt.Terminal.FailureDomain)
 	}
 	return circuits

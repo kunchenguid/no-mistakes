@@ -74,15 +74,14 @@ func (m Model) rerunCmd(requestID uint64) tea.Cmd {
 }
 
 // maybeAutoApproveCmd auto-resolves the current awaiting step when yolo mode is
-// on, returning nil otherwise. Yolo means "agree to fix every selectable
-// actionable finding": a gate whose findings are actionable gets a fix request
-// only when at least one actionable finding has an ID, while a gate with only
-// non-actionable (no-op) findings, no selectable actionable findings, or no
-// findings at all is approved as-is.
+// on, returning nil otherwise. Yolo agrees to fix every dispatchable actionable
+// finding: agent-produced findings travel as IDs, while user-authored findings
+// travel in AddedFindings. Gates with only no-op or ID-less agent findings are
+// approved as-is.
 // A step is fixed at most once; the fix re-runs the step and re-enters the gate
-// as a fix_review, which yolo then approves so the pipeline
-// runs to completion without looping. Each terminal action fires once so
-// duplicate events while waiting for the round-trip don't resend it.
+// as a fix_review, which yolo then approves so the pipeline runs to completion
+// without looping. Each terminal action fires once so duplicate events while
+// waiting for the round-trip do not resend it.
 func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	if !m.yoloMode {
 		return nil
@@ -91,22 +90,23 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	if step == nil || m.yoloApproved[step.StepName] {
 		return nil
 	}
-	if step.Status != types.StepStatusFixReview && !m.yoloFixed[step.StepName] && m.stepHasActionableFindings(step.StepName) {
+	if step.Status != types.StepStatusFixReview && !m.yoloFixed[step.StepName] {
 		m.resetFindingSelection(step.StepName)
-		if ids := m.selectedFindingIDs(step.StepName); len(ids) > 0 {
+		selection := m.selectedFixPayload(step.StepName)
+		if len(selection.findingIDs)+len(selection.addedFindings) > 0 {
 			m.yoloFixed[step.StepName] = true
-			return m.yoloResolveCmd(step.StepName, true, ids)
+			return m.yoloResolveCmd(step.StepName, selection)
 		}
 	}
 	m.yoloApproved[step.StepName] = true
-	return m.yoloResolveCmd(step.StepName, false, nil)
+	return m.yoloResolveCmd(step.StepName, fixSelection{})
 }
 
 // yoloResolveCmd resolves a gate under unattended (yolo) consent, failing
 // closed: it re-fetches the run and aborts instead of fixing again or approving
 // when a blocking finding lineage remains unresolved after its repair cascade,
 // rather than accepting merely because a fix was attempted.
-func (m Model) yoloResolveCmd(stepName types.StepName, fix bool, fixIDs []string) tea.Cmd {
+func (m Model) yoloResolveCmd(stepName types.StepName, selection fixSelection) tea.Cmd {
 	client := m.client
 	runID := m.runID
 	return func() tea.Msg {
@@ -132,9 +132,10 @@ func (m Model) yoloResolveCmd(stepName types.StepName, fix bool, fixIDs []string
 			return nil
 		}
 		params := &ipc.RespondParams{RunID: runID, Step: stepName, Action: types.ActionApprove}
-		if fix {
+		if len(selection.findingIDs)+len(selection.addedFindings) > 0 {
 			params.Action = types.ActionFix
-			params.FindingIDs = fixIDs
+			params.FindingIDs = append([]string(nil), selection.findingIDs...)
+			params.AddedFindings = append([]types.Finding(nil), selection.addedFindings...)
 		}
 		var result ipc.RespondResult
 		if err := client.Call(ipc.MethodRespond, params, &result); err != nil {
@@ -152,39 +153,31 @@ func (m Model) respondCmd(action types.ApprovalAction) tea.Cmd {
 	if step == nil {
 		return nil
 	}
+	params := &ipc.RespondParams{
+		RunID:  m.runID,
+		Step:   step.StepName,
+		Action: action,
+	}
 	if action == types.ActionFix {
-		ids := m.selectedFindingIDs(step.StepName)
-		userAdded := m.selectedUserAddedFindings(step.StepName)
-		if len(ids) == 0 && len(userAdded) == 0 && len(m.findingItems(step.StepName)) > 0 {
+		selection := m.selectedFixPayload(step.StepName)
+		if len(selection.findingIDs)+len(selection.addedFindings) == 0 {
 			return nil
+		}
+		params.FindingIDs = append([]string(nil), selection.findingIDs...)
+		params.AddedFindings = append([]types.Finding(nil), selection.addedFindings...)
+		if byStep := m.findingInstructions[step.StepName]; len(byStep) > 0 {
+			filtered := make(map[string]string, len(byStep))
+			for _, id := range selection.findingIDs {
+				if note, ok := byStep[id]; ok && note != "" {
+					filtered[id] = note
+				}
+			}
+			if len(filtered) > 0 {
+				params.Instructions = filtered
+			}
 		}
 	}
 	return func() tea.Msg {
-		params := &ipc.RespondParams{
-			RunID:  m.runID,
-			Step:   step.StepName,
-			Action: action,
-		}
-		if action == types.ActionFix {
-			ids := m.selectedFindingIDs(step.StepName)
-			if len(ids) > 0 {
-				params.FindingIDs = ids
-				if byStep := m.findingInstructions[step.StepName]; len(byStep) > 0 {
-					filtered := make(map[string]string, len(byStep))
-					for _, id := range ids {
-						if note, ok := byStep[id]; ok && note != "" {
-							filtered[id] = note
-						}
-					}
-					if len(filtered) > 0 {
-						params.Instructions = filtered
-					}
-				}
-			}
-			if added := m.selectedUserAddedFindings(step.StepName); len(added) > 0 {
-				params.AddedFindings = append([]types.Finding(nil), added...)
-			}
-		}
 		var result ipc.RespondResult
 		err := m.client.Call(ipc.MethodRespond, params, &result)
 		if err != nil {

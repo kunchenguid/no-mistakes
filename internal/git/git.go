@@ -282,13 +282,19 @@ func FetchRemoteBranchToRef(ctx context.Context, dir, remote, branch, localRef s
 	return err
 }
 
-// Push pushes sourceRef to destinationRef on a remote. If forceWithLease is
-// true, it uses --force-with-lease with expectedSHA for safe force-push.
+// Push pushes sourceRef to destinationRef on a remote. When forceWithLease is
+// false the push is an ordinary push that git accepts only as a fast-forward.
+// When true the push is guarded by --force-with-lease=<destinationRef>:<expectedSHA>;
+// an empty expectedSHA leases the ref as expected-absent, so a ref created
+// concurrently on the remote rejects the push instead of silently overwriting it.
 func Push(ctx context.Context, dir, remote, sourceRef, destinationRef, expectedSHA string, forceWithLease bool) error {
 	return PushWithOptions(ctx, dir, remote, sourceRef, destinationRef, expectedSHA, forceWithLease, nil)
 }
 
 // PushWithOptions pushes sourceRef to destinationRef with per-push options.
+// forceWithLease carries the same semantics as Push: false is an ordinary
+// fast-forward push, true anchors a per-ref --force-with-lease to expectedSHA
+// (an empty expectedSHA requires the destination ref to be absent).
 func PushWithOptions(ctx context.Context, dir, remote, sourceRef, destinationRef, expectedSHA string, forceWithLease bool, pushOptions []string) error {
 	args := []string{"push"}
 	for _, option := range pushOptions {
@@ -296,11 +302,7 @@ func PushWithOptions(ctx context.Context, dir, remote, sourceRef, destinationRef
 	}
 	args = append(args, remote)
 	if forceWithLease {
-		if expectedSHA != "" {
-			args = append(args, fmt.Sprintf("--force-with-lease=%s:%s", destinationRef, expectedSHA))
-		} else {
-			args = append(args, "--force-with-lease")
-		}
+		args = append(args, fmt.Sprintf("--force-with-lease=%s:%s", destinationRef, expectedSHA))
 	}
 	args = append(args, sourceRef+":"+destinationRef)
 	_, err := Run(ctx, dir, args...)

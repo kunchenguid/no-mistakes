@@ -59,8 +59,9 @@ It embeds the telemetry website ID from `NO_MISTAKES_UMAMI_WEBSITE_ID` in `.env`
   - `glab` CLI (GitLab)
   - `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN` (Bitbucket Cloud)
 
-Every model call is routed through profiles that pair a Codex candidate with a Claude backup, so one runner is enough to run the gate.
-Installing both runners adds provider failover when one provider has an operational failure.
+The built-in profiles pair a Codex candidate with a Claude backup, so either runner is enough to use the default contract.
+Installing both runners enables the built-in provider failover.
+Custom profiles instead use exactly the candidates and order they declare.
 Run `no-mistakes doctor` to validate the routing contract, check the runner binaries, and confirm every routed profile has an available candidate.
 
 See [provider integration](/no-mistakes/guides/provider-integration/) for PR and CI setup per host.

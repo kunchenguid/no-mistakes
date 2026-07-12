@@ -95,7 +95,7 @@ With `--yes`, `axi run` treats both `action: auto-fix` and `action: ask-user` fi
 Gates with no findings or only `action: no-op` findings are approved as-is, and each step is fixed at most once so unresolved findings do not loop forever.
 Unattended consent fails closed: before resolving each gate, `--yes` checks the run's blocking repair lineages, and if one ended its routed repair cascade unresolved or inconclusive, it aborts the run and returns an error instead of approving or retrying.
 Without `--yes`, an agent driving `axi run` should stop when a gate contains `action: ask-user` findings and relay each finding's ID, file, and full description to the user before responding.
-Review gates include a `note` field reminding agents that review findings are parked for explicit consent: `ask-user` requires the user's decision unless `--yes` supplies standing consent, and `--yes` aborts rather than accepts an unresolved blocking repair.
+Review gates include this `note`: `Review runs auto-fix cascades before a gate; ask-user findings and unresolved blocking repair lineages park for explicit user decision; --yes aborts rather than accepts an unresolved blocking repair.`
 Long-running `axi run` calls are working, not stalled; if one returns a `gate:`, read that output and answer it with `axi respond`.
 Backgrounding a call is fine for an agent harness, but the run never advances past a gate on its own.
 When the CI step is still monitoring an open PR and checks are green, `axi run` exits successfully with `outcome: checks-passed` instead of waiting for a human merge.
@@ -220,8 +220,10 @@ Show the required routing canary report.
 no-mistakes axi canary
 ```
 
-The canary compares a frozen baseline cohort (the ten completed runs before routing activation) against the routed cohort (the first ten successful runs after activation) on the execution-only agent-bearing step-round median.
-The output always carries `surface: routing-canary`, `report_required: true`, `activated`, `target_reduction`, `target_advisory: true`, `comparison_complete`, `result_state`, the per-cohort fields (`baseline_runs`, `baseline_complete`, `baseline_median_exec_ms`, `baseline_escalations`, `baseline_failovers`, and the same `routed_*` fields), and `target_met`.
+The canary compares a frozen baseline cohort (the ten completed runs before routing activation) against the routed cohort (the first ten successful runs after activation) on the exact execution-only agent-bearing step-round median, including half milliseconds for even cohorts.
+The output always carries `surface: routing-canary`, `report_required: true`, `activated`, `target_reduction`, `target_advisory: true`, `comparison_complete`, `result_state`, the per-cohort fields (`baseline_runs`, `baseline_complete`, `baseline_median_exec_ms`, `baseline_escalations`, `baseline_failovers`, `baseline_workloads`, and the same `routed_*` fields), and `target_met`.
+Each workload table has one row per frozen run with `run`, `execution_ms`, exact summed terminal `invocation_ms`, `escalations`, `failovers`, `changed_files`, `changed_lines`, and `initial_findings`.
+Unavailable git-derived changed-file and changed-line counts appear as `-1`.
 Before activation, `result_state` is `dormant` and a `state` field explains that the routing cutover has not activated the canary yet.
 Until both cohorts are complete, `result_state` is `preliminary` and `target_met` stays `pending`; preliminary samples must not be treated as live results.
 `target_met` becomes `true` or `false` only once both cohorts are complete.

@@ -1,11 +1,13 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadGlobalDefaultsRoutingWhenAbsent(t *testing.T) {
@@ -64,6 +66,42 @@ func TestLoadGlobalRejectsPresentButEmptyRoutingBlock(t *testing.T) {
 		if _, err := LoadGlobal(path); err == nil {
 			t.Fatalf("expected a present-but-empty routing block to be rejected:\n%s", block)
 		}
+	}
+}
+
+func TestLoadGlobalRejectsNonNormalizedProfileIDs(t *testing.T) {
+	for _, profileID := range []ProfileName{"", "   ", " review_strong "} {
+		t.Run(fmt.Sprintf("%q", profileID), func(t *testing.T) {
+			routing := DefaultRoutingConfig()
+			profile := routing.Profiles[ProfileReviewStrong]
+			delete(routing.Profiles, ProfileReviewStrong)
+			routing.Profiles[profileID] = profile
+			for purpose, route := range routing.Routes {
+				for i, name := range route {
+					if name == ProfileReviewStrong {
+						route[i] = profileID
+					}
+				}
+				routing.Routes[purpose] = route
+			}
+
+			data, err := yaml.Marshal(struct {
+				Routing RoutingConfig `yaml:"routing"`
+			}{Routing: routing})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = LoadGlobal(path)
+			want := fmt.Sprintf("global routing: routing profile ID %q must be non-empty and normalized (no surrounding whitespace)", profileID)
+			if err == nil || err.Error() != want {
+				t.Fatalf("LoadGlobal() error = %v, want %q", err, want)
+			}
+		})
 	}
 }
 

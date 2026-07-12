@@ -318,7 +318,14 @@ func splitLogLines(s string) []string {
 	return strings.Split(s, "\n")
 }
 
-// parseAddFinding decodes a user-authored finding from a JSON object string.
+const (
+	defaultAddFindingSeverity = "warning"
+	addFindingExample         = `{"description":"...","action":"auto-fix"}`
+)
+
+// parseAddFinding decodes and validates the CLI's user-authored finding
+// contract. Warning is the fail-safe default for the documented compact
+// payload: it remains blocking until the fix is verified.
 func parseAddFinding(raw string) (types.Finding, error) {
 	var f types.Finding
 	if err := json.Unmarshal([]byte(raw), &f); err != nil {
@@ -326,6 +333,19 @@ func parseAddFinding(raw string) (types.Finding, error) {
 	}
 	if strings.TrimSpace(f.Description) == "" {
 		return types.Finding{}, fmt.Errorf("description is required")
+	}
+	if strings.TrimSpace(f.Severity) == "" {
+		f.Severity = defaultAddFindingSeverity
+	}
+	switch f.Severity {
+	case "error", "warning", "info":
+	default:
+		return types.Finding{}, fmt.Errorf("severity must be error, warning, or info")
+	}
+	switch f.Action {
+	case types.ActionAutoFix, types.ActionAskUser:
+	default:
+		return types.Finding{}, fmt.Errorf("action must be auto-fix or ask-user")
 	}
 	return f, nil
 }

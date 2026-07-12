@@ -30,7 +30,8 @@ You need:
 - at least one routed runner CLI: `codex` (OpenAI provider) or `claude` (Anthropic provider)
 - for PRs and CI: `gh` (GitHub), `glab` (GitLab), or Bitbucket Cloud credentials
 
-Every model call is routed through profiles that pair a Codex candidate with a Claude backup, so one runner is enough and installing both adds provider failover.
+The built-in profiles pair a Codex candidate with a Claude backup, so either runner is enough for the default contract and installing both enables its provider failover.
+Custom profiles use exactly the candidates and order they declare.
 `no-mistakes doctor` validates the routing contract, checks the runner binaries, and fails when a routed profile has no available candidate.
 
 See [provider integration](/no-mistakes/guides/provider-integration/) for PR and CI setup.
@@ -134,9 +135,12 @@ The pipeline runs these ten steps in order:
 6. Lint - your linters, from the configured command or routed lint inspection.
 7. Verify - a fresh, independent verification of the sealed candidate whenever anything changed after the strong review.
 8. Push - transports the exact verified commit to the configured push target.
-9. PR - create or update the pull request.
-10. CI - poll CI, watch PR mergeability, and fix failures.
+9. PR - create or update the pull request when host integration is available; otherwise skip.
+10. CI - while the PR is open, poll CI, watch supported mergeability, and fix failures.
 
-Steps that find issues pause for your approval.
+PR and CI can skip when provider integration is unavailable.
+CI also completes cleanly without promising green checks when the PR is already merged, closed, or declined.
+Blocking `auto-fix` findings enter automatic repair before a gate.
+Only `ask-user` findings and unresolved blocking repair lineages pause for your approval.
 Model selection for every step follows the [routing contract](/no-mistakes/reference/routing/).
 See the [pipeline concept page](/no-mistakes/concepts/pipeline/) for the overview and [pipeline steps](/no-mistakes/reference/pipeline-steps/) for each step's exact behavior.

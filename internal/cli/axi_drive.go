@@ -387,7 +387,9 @@ func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, runID
 					return run, false, fmt.Errorf("check unresolved blocking repair: %w", uerr)
 				}
 				if unresolved {
-					_ = sendRespond(client, runID, types.StepName(gate.Name), types.ActionAbort, nil, nil, nil)
+					if err := sendRespond(client, runID, types.StepName(gate.Name), types.ActionAbort, nil, nil, nil); err != nil {
+						return run, false, fmt.Errorf("unattended consent refused %s: a blocking finding remains unresolved after repair; abort response failed, so the run remains parked at the unresolved gate: %w", gate.Name, err)
+					}
 					return run, false, fmt.Errorf("unattended consent refused %s: a blocking finding remains unresolved after repair", gate.Name)
 				}
 			}
@@ -644,7 +646,7 @@ func newAxiRespondCmd() *cobra.Command {
 	cmd.Flags().StringVar(&step, "step", "", "step to respond to (default: the step awaiting approval)")
 	cmd.Flags().StringVar(&findings, "findings", "", "comma-separated finding IDs to fix (with --action fix)")
 	cmd.Flags().StringVar(&instructions, "instructions", "", "guidance applied to the selected findings (with --action fix)")
-	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding object to add and fix (with --action fix)")
+	cmd.Flags().StringVar(&addFinding, "add-finding", "", "JSON finding to add and fix; severity defaults to "+defaultAddFindingSeverity+", e.g. "+addFindingExample)
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "apply unattended consent at subsequent gates; abort if a blocking repair remains unresolved")
 	return cmd
 }
@@ -670,6 +672,30 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	default:
 		return emitError(cmd, 2, fmt.Sprintf("unknown action %q", ra.action),
 			"Valid actions: approve, fix, skip")
+	}
+
+	findingIDs := splitCSV(ra.findings)
+	var instructions map[string]string
+	var added []types.Finding
+	if act == types.ActionFix {
+		if len(findingIDs) == 0 && ra.addFinding == "" {
+			return emitError(cmd, 2, "--action fix requires --findings <id,...> or --add-finding <json>",
+				"Run `no-mistakes axi status` to list finding IDs")
+		}
+		if note := strings.TrimSpace(ra.instructions); note != "" && len(findingIDs) > 0 {
+			instructions = make(map[string]string, len(findingIDs))
+			for _, id := range findingIDs {
+				instructions[id] = note
+			}
+		}
+		if ra.addFinding != "" {
+			f, err := parseAddFinding(ra.addFinding)
+			if err != nil {
+				return emitError(cmd, 2, fmt.Sprintf("invalid --add-finding: %v", err),
+					"Expected a JSON object, e.g. "+addFindingExample+"; severity defaults to "+defaultAddFindingSeverity)
+			}
+			added = append(added, f)
+		}
 	}
 
 	env, err := openAxiDaemonEnv()
@@ -708,31 +734,6 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		stepName = types.StepName(gate.Name)
 	}
 
-	findingIDs := splitCSV(ra.findings)
-	var instructions map[string]string
-	var added []types.Finding
-
-	if act == types.ActionFix {
-		if len(findingIDs) == 0 && ra.addFinding == "" {
-			return emitError(cmd, 2, "--action fix requires --findings <id,...> or --add-finding <json>",
-				"Run `no-mistakes axi status` to list finding IDs")
-		}
-		if note := strings.TrimSpace(ra.instructions); note != "" && len(findingIDs) > 0 {
-			instructions = make(map[string]string, len(findingIDs))
-			for _, id := range findingIDs {
-				instructions[id] = note
-			}
-		}
-		if ra.addFinding != "" {
-			f, err := parseAddFinding(ra.addFinding)
-			if err != nil {
-				return emitError(cmd, 2, fmt.Sprintf("invalid --add-finding: %v", err),
-					`Expected a JSON object, e.g. {"description":"...","action":"auto-fix"}`)
-			}
-			added = append(added, f)
-		}
-	}
-
 	if ra.autoYes {
 		unresolved, err := env.d.HasUnresolvedBlockingRepair(runID)
 		if err != nil {
@@ -740,7 +741,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		}
 		if unresolved {
 			if err := sendRespond(env.client, runID, stepName, types.ActionAbort, nil, nil, nil); err != nil {
-				return emitError(cmd, 1, fmt.Sprintf("abort unresolved blocking repair at %s: %v", stepName, err))
+				return emitError(cmd, 1, fmt.Sprintf("unattended consent refused %s: a blocking finding remains unresolved after repair; abort response failed, so the run remains parked at the unresolved gate: %v", stepName, err))
 			}
 			return emitError(cmd, 1, fmt.Sprintf("unattended consent refused %s: a blocking finding remains unresolved after repair", stepName))
 		}

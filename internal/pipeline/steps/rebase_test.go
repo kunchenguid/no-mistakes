@@ -313,10 +313,13 @@ func TestRebaseStep_FixModeStopsWhenProfileIsUnavailable(t *testing.T) {
 	dir, upstream, baseSHA, headSHA := setupRebaseConflictRepo(t)
 
 	fixerCalls := 0
+	var conflictHead, conflictStatus string
 	ag := &mockAgent{
 		name: "test",
 		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
 			fixerCalls++
+			conflictHead = gitCmd(t, dir, "rev-parse", "HEAD")
+			conflictStatus = gitCmd(t, dir, "status", "--porcelain")
 			return nil, fmt.Errorf("route invocation failed: %w", &agent.ProfileUnavailableError{
 				Profile: "fix_balanced",
 				Cause:   errors.New("all providers unavailable"),
@@ -336,11 +339,14 @@ func TestRebaseStep_FixModeStopsWhenProfileIsUnavailable(t *testing.T) {
 	if fixerCalls != 1 {
 		t.Fatalf("fixer calls = %d, want 1 with no authority_strong tier jump", fixerCalls)
 	}
-	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
-		t.Fatalf("HEAD = %s, want pre-rebase %s", got, headSHA)
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != conflictHead {
+		t.Fatalf("HEAD = %s, want restored conflicted HEAD %s", got, conflictHead)
 	}
-	if status := gitCmd(t, dir, "status", "--porcelain"); status != "" {
-		t.Fatalf("expected clean worktree after unavailable profile, got: %s", status)
+	if status := gitCmd(t, dir, "status", "--porcelain"); status != conflictStatus {
+		t.Fatalf("conflict status changed after unavailable profile: got %q, want %q", status, conflictStatus)
+	}
+	if !rebaseInProgress(context.Background(), dir) {
+		t.Fatal("expected unavailable profile to leave the exact resumable rebase conflict")
 	}
 	if sctx.Run.HeadSHA != headSHA {
 		t.Fatalf("Run.HeadSHA = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)
@@ -470,7 +476,7 @@ func TestRebaseStep_FixModeRequiresConclusiveVerifierOutput(t *testing.T) {
 	}
 }
 
-func TestRebaseStep_FixModeRejectsVerifierCommitWithoutHidingIt(t *testing.T) {
+func TestRebaseStep_FixModeRestoresVerifierCommitMutation(t *testing.T) {
 	t.Parallel()
 	dir, upstream, baseSHA, headSHA := setupRebaseConflictRepo(t)
 
@@ -509,8 +515,11 @@ func TestRebaseStep_FixModeRejectsVerifierCommitWithoutHidingIt(t *testing.T) {
 	if verifierCommitSHA == "" || verifierCommitSHA == fixerCandidateSHA {
 		t.Fatalf("verifier commit HEAD = %q, want commit after fixer candidate %s", verifierCommitSHA, fixerCandidateSHA)
 	}
-	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != verifierCommitSHA {
-		t.Fatalf("HEAD = %s, want visible verifier mutation %s", got, verifierCommitSHA)
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != fixerCandidateSHA {
+		t.Fatalf("HEAD = %s, want restored fixer candidate %s", got, fixerCandidateSHA)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "verifier.txt")); !os.IsNotExist(err) {
+		t.Fatalf("verifier-created file survived candidate restore: %v", err)
 	}
 	if sctx.Run.HeadSHA != headSHA {
 		t.Fatalf("Run.HeadSHA = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)
@@ -524,7 +533,7 @@ func TestRebaseStep_FixModeRejectsVerifierCommitWithoutHidingIt(t *testing.T) {
 	}
 }
 
-func TestRebaseStep_FixModeRejectsVerifierDirtyWorktreeWithoutHidingIt(t *testing.T) {
+func TestRebaseStep_FixModeRestoresVerifierDirtyWorktree(t *testing.T) {
 	t.Parallel()
 	dir, upstream, baseSHA, headSHA := setupRebaseConflictRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "candidate-untracked.txt"), []byte("fixer candidate content\n"), 0o644); err != nil {
@@ -561,18 +570,18 @@ func TestRebaseStep_FixModeRejectsVerifierDirtyWorktreeWithoutHidingIt(t *testin
 		t.Fatalf("fixer candidate HEAD = %q, want completed rebased candidate", fixerCandidateSHA)
 	}
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != fixerCandidateSHA {
-		t.Fatalf("HEAD = %s, want visible fixer candidate %s", got, fixerCandidateSHA)
+		t.Fatalf("HEAD = %s, want restored fixer candidate %s", got, fixerCandidateSHA)
 	}
 	status := gitCmd(t, dir, "status", "--porcelain", "--untracked-files=all")
 	if !strings.Contains(status, "candidate-untracked.txt") {
-		t.Fatalf("expected verifier mutation to remain visible, got status:\n%s", status)
+		t.Fatalf("expected original candidate untracked path after restore, got status:\n%s", status)
 	}
 	content, err := os.ReadFile(filepath.Join(dir, "candidate-untracked.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(content); got != "verifier changed untracked content\n" {
-		t.Fatalf("untracked candidate content = %q, want visible verifier mutation", got)
+	if got := string(content); got != "fixer candidate content\n" {
+		t.Fatalf("untracked candidate content = %q, want restored fixer candidate content", got)
 	}
 	if sctx.Run.HeadSHA != headSHA {
 		t.Fatalf("Run.HeadSHA = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)
@@ -586,7 +595,7 @@ func TestRebaseStep_FixModeRejectsVerifierDirtyWorktreeWithoutHidingIt(t *testin
 	}
 }
 
-func TestRebaseStep_FixModeRejectsVerifierUntrackedExecutableBitMutationWithoutHidingIt(t *testing.T) {
+func TestRebaseStep_FixModeRestoresVerifierUntrackedExecutableBitMutation(t *testing.T) {
 	t.Parallel()
 	dir, upstream, baseSHA, headSHA := setupRebaseConflictRepo(t)
 	candidatePath := filepath.Join(dir, "candidate-untracked.sh")
@@ -634,14 +643,14 @@ func TestRebaseStep_FixModeRejectsVerifierUntrackedExecutableBitMutationWithoutH
 		t.Fatal("expected verifier executable-bit mutation to fail closed")
 	}
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != fixerCandidateSHA {
-		t.Fatalf("HEAD = %s, want visible fixer candidate %s", got, fixerCandidateSHA)
+		t.Fatalf("HEAD = %s, want restored fixer candidate %s", got, fixerCandidateSHA)
 	}
 	info, err = os.Lstat(candidatePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o111 == 0 {
-		t.Fatalf("untracked candidate mode = %o, want visible verifier executable bit", info.Mode().Perm())
+	if info.Mode().Perm()&0o111 != 0 {
+		t.Fatalf("untracked candidate mode = %o, want restored non-executable mode", info.Mode().Perm())
 	}
 	if sctx.Run.HeadSHA != headSHA {
 		t.Fatalf("Run.HeadSHA = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)
@@ -655,7 +664,7 @@ func TestRebaseStep_FixModeRejectsVerifierUntrackedExecutableBitMutationWithoutH
 	}
 }
 
-func TestRebaseStep_FixModeRejectsVerifierUntrackedSymlinkPayloadMutationWithoutHidingIt(t *testing.T) {
+func TestRebaseStep_FixModeRestoresVerifierUntrackedSymlinkPayloadMutation(t *testing.T) {
 	t.Parallel()
 	dir, upstream, baseSHA, headSHA := setupRebaseConflictRepo(t)
 	for _, name := range []string{"candidate-target-a.txt", "candidate-target-b.txt"} {
@@ -698,14 +707,14 @@ func TestRebaseStep_FixModeRejectsVerifierUntrackedSymlinkPayloadMutationWithout
 		t.Fatal("expected verifier symlink-payload mutation to fail closed")
 	}
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != fixerCandidateSHA {
-		t.Fatalf("HEAD = %s, want visible fixer candidate %s", got, fixerCandidateSHA)
+		t.Fatalf("HEAD = %s, want restored fixer candidate %s", got, fixerCandidateSHA)
 	}
 	target, err := os.Readlink(candidatePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target != "candidate-target-b.txt" {
-		t.Fatalf("untracked candidate symlink target = %q, want visible verifier target", target)
+	if target != "candidate-target-a.txt" {
+		t.Fatalf("untracked candidate symlink target = %q, want restored target", target)
 	}
 	if sctx.Run.HeadSHA != headSHA {
 		t.Fatalf("Run.HeadSHA = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)
@@ -719,16 +728,16 @@ func TestRebaseStep_FixModeRejectsVerifierUntrackedSymlinkPayloadMutationWithout
 	}
 }
 
-func TestRebaseStep_FixModeRejectsVerifierUntrackedFileTypeMutationWithoutHidingIt(t *testing.T) {
+func TestRebaseStep_FixModeRestoresVerifierUntrackedFileTypeMutation(t *testing.T) {
 	t.Parallel()
 	dir, upstream, baseSHA, headSHA := setupRebaseConflictRepo(t)
 	const payload = "same candidate content\n"
-	targetName := "candidate-target.txt"
-	if err := os.WriteFile(filepath.Join(dir, targetName), []byte(payload), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	candidatePath := filepath.Join(dir, "candidate-untracked")
 	if err := os.WriteFile(candidatePath, []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	targetName := gitCmd(t, dir, "hash-object", "--no-filters", "--", candidatePath)
+	if err := os.WriteFile(filepath.Join(dir, targetName), []byte(payload), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	probePath := filepath.Join(dir, ".candidate-symlink-probe")
@@ -769,21 +778,21 @@ func TestRebaseStep_FixModeRejectsVerifierUntrackedFileTypeMutationWithoutHiding
 		t.Fatal("expected verifier file-type mutation to fail closed")
 	}
 	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != fixerCandidateSHA {
-		t.Fatalf("HEAD = %s, want visible fixer candidate %s", got, fixerCandidateSHA)
+		t.Fatalf("HEAD = %s, want restored fixer candidate %s", got, fixerCandidateSHA)
 	}
 	info, err := os.Lstat(candidatePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("untracked candidate mode = %s, want visible verifier symlink", info.Mode())
+	if !info.Mode().IsRegular() {
+		t.Fatalf("untracked candidate mode = %s, want restored regular file", info.Mode())
 	}
-	target, err := os.Readlink(candidatePath)
+	content, err := os.ReadFile(candidatePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target != targetName {
-		t.Fatalf("untracked candidate symlink target = %q, want %q", target, targetName)
+	if string(content) != payload {
+		t.Fatalf("restored candidate payload = %q, want %q", content, payload)
 	}
 	if sctx.Run.HeadSHA != headSHA {
 		t.Fatalf("Run.HeadSHA = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)

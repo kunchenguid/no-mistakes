@@ -510,12 +510,12 @@ func TestGateNote_ReviewOnly(t *testing.T) {
 }
 
 func TestParseAddFinding(t *testing.T) {
-	f, err := parseAddFinding(`{"description":"add a nil check","action":"auto-fix","file":"x.go"}`)
+	f, err := parseAddFinding(addFindingExample)
 	if err != nil {
 		t.Fatalf("parseAddFinding: %v", err)
 	}
-	if f.Description != "add a nil check" || f.Action != types.ActionAutoFix || f.File != "x.go" {
-		t.Errorf("parsed finding = %+v", f)
+	if f.Description != "..." || f.Action != types.ActionAutoFix || f.Severity != defaultAddFindingSeverity {
+		t.Errorf("parsed finding = %+v, want copy-paste help example with warning default", f)
 	}
 
 	if _, err := parseAddFinding(`{"action":"auto-fix"}`); err == nil {
@@ -523,6 +523,16 @@ func TestParseAddFinding(t *testing.T) {
 	}
 	if _, err := parseAddFinding(`not json`); err == nil {
 		t.Error("expected error for invalid JSON")
+	}
+
+	for _, raw := range []string{
+		`{"description":"x","action":"no-op"}`,
+		`{"description":"x","action":"unknown"}`,
+		`{"description":"x","action":"auto-fix","severity":"critical"}`,
+	} {
+		if _, err := parseAddFinding(raw); err == nil {
+			t.Errorf("parseAddFinding(%s) succeeded, want validation error", raw)
+		}
 	}
 }
 
