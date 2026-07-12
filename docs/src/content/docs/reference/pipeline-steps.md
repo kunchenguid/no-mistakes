@@ -85,6 +85,10 @@ What it does:
 Repair: blocking `auto-fix` findings (severity `error` or `warning`) automatically enter the structured repair cascade `fix_fast → fix_balanced → authority_strong` before the gate.
 Informational `auto-fix` findings take the non-blocking two-tier cascade and never gate the step.
 `ask-user` findings start no fixer before consent; `no-op` findings are never repaired.
+The fixer receives the selected findings, per-finding user notes, selected user-authored findings from TUI or AXI, and sanitized prior-round history for the step.
+It applies the selected fixes without running the complete repository test or lint suite, then a separate routed verifier adjudicates the repair before the lineage can resolve.
+The dedicated Test and Lint steps remain the authoritative deterministic gates.
+Follow-up review passes use the history to avoid re-reporting findings the user left unselected unless the code now has a materially different problem.
 See [automatic repair](/no-mistakes/concepts/auto-fix/) for the cascade, batching, verification, and fail-closed rules.
 
 Approval: required while any blocking finding remains unresolved, and for any `ask-user` finding.

@@ -110,6 +110,13 @@ Safest local verification sequence after non-trivial changes:
 - `codex exec resume` has a narrower flag surface than `codex exec`, so an unsupported override fails the resume and falls back; the e2e fakeagent must keep parsing both codex argv shapes (`extractCodexPrompt`).
 - Regressions: `internal/pipeline/sessions_test.go`, `internal/pipeline/steps/review_session_test.go`, `internal/agent/session_test.go`.
 
+**Review Fixer Verification Discipline (`internal/pipeline/steps/review.go`)**
+
+- The review-fix prompt requires all fixes before one focused verification limited to the changed area and forbids the whole repository test/lint suite during the fix round.
+  The dedicated Test and Lint steps are the authoritative gates, although their coverage may be focused when commands are unconfigured.
+  This is a prompt contract, not an enforced sandbox.
+  Regression: `TestReviewStep_FixMode_FocusedVerificationContract`.
+
 **Intent Provenance & Conformance (`internal/pipeline/steps/intent_prompt.go`)**
 
 - Intent carries provenance: an explicit `axi run --intent` persists `Source==db.RunIntentSourceAgent` ("agent", score 1); a transcript match persists the agent name ("claude"/"codex"/...). The executor propagates it as `StepContext.IntentSource` alongside `UserIntent` (`executor.go`).
@@ -135,6 +142,15 @@ Safest local verification sequence after non-trivial changes:
 - Every force-push routes through `resolveForcePushDecision`, which re-reads the live remote head and allows the push only for a new branch, an already-equal remote, an unchanged `lastSeenSHA`, or remote commits already incorporated by patch-id (excluding `^baseSHA` history the run knowingly rewrites). Anything else refuses, and a failed ls-remote/fetch fails closed; never degrade to a bare `--force`/`--force-with-lease` without an explicit anchor.
 - `lastSeenSHA` must stay the head the run last **observed**, never the live remote tip: the rebase step refreshes `origin/<branch>` only on a normal push, NOT on a force push, and the CI step passes `Run.HeadSHA`. Anchoring the lease to a SHA read immediately before pushing is the original #281 bug (it always passes and protects nothing); always-fetching the branch on force push recreates it. Never reintroduce either.
 - Regressions: `TestCIStep_CommitAndPush_RefusesToClobberUnseenUpstreamCommit` (#281), `TestPushStep_RefusesToClobberAdvancedUpstreamBranch` (#305), `TestForcePushRun_RefusesToClobberOutOfBandBranchCommit`, `TestRebaseStep_DetectsUnpushedLocalDefaultBranchCommits` (#283), `TestResolveForcePushDecision_*`.
+
+**macOS Release Signing (permanent identity)**
+
+- Every official macOS release artifact - both `darwin/arm64` and `darwin/amd64` - is Developer ID Application signed on a macOS runner with a fixed identifier, hardened runtime, secure timestamp, and no entitlements, then strictly verified before it is archived or checksummed; the Linux and Windows release paths are unchanged.
+- The executable identifier `com.kunchenguid.no-mistakes` and Team ID `9T2J7MNUP9` are the permanent Developer ID identity and MUST NEVER change: they are the invariant of the identity-based designated requirement that lets macOS permission grants survive `no-mistakes update`, so changing either resets every grant once.
+- Signing runs only in the darwin build job gated behind the `release-signing` GitHub environment; the certificate is the base64 `CSC_LINK` secret unlocked with `CSC_KEY_PASSWORD`, imported into an ephemeral keychain with a runtime-generated password that is deleted on success and failure, and no other job may reference those secrets.
+- Signing happens before tarball creation and checksum generation, and the verify gate fails the release closed on any missing or ambiguous signature, wrong Team ID, non-permanent identifier, content-based (`cdhash`) requirement, missing hardened runtime or timestamp, or wrong architecture.
+- Mechanics live in `.github/workflows/release.yml`; the contract is pinned by the root `TestReleaseWorkflow*` static tests in `workflow_release_signing_test.go`, and secret values are never recorded here or in any test fixture.
+- Notarization, stapling, a PKG, Homebrew, and universal binaries are intentionally out of scope for this phase.
 
 **When Making Changes**
 

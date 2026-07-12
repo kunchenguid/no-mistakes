@@ -257,6 +257,14 @@ type fakeBitbucketPRAPI struct {
 	createdPRURL   string
 }
 
+// isUnauthenticatedLocalHealthProbe recognizes the harness probe that may
+// inspect a newly opened localhost test server before the test client uses it.
+func isUnauthenticatedLocalHealthProbe(r *http.Request) bool {
+	return r.Method == http.MethodGet &&
+		r.URL.Path == "/" &&
+		r.Header.Get("Authorization") == ""
+}
+
 func newFakeBitbucketPRAPI(t *testing.T, existingPRID int, existingPRURL string) *fakeBitbucketPRAPI {
 	t.Helper()
 
@@ -270,6 +278,8 @@ func newFakeBitbucketPRAPI(t *testing.T, existingPRID int, existingPRURL string)
 		api.lastAuthHeader = r.Header.Get("Authorization")
 
 		switch {
+		case isUnauthenticatedLocalHealthProbe(r):
+			http.NotFound(w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
 			api.listCalls++
 			w.Header().Set("Content-Type", "application/json")
@@ -354,6 +364,8 @@ func newFakeBitbucketCIAPI(t *testing.T, prState, statusesJSON string) *fakeBitb
 		api.lastAuthHeader = r.Header.Get("Authorization")
 
 		switch {
+		case isUnauthenticatedLocalHealthProbe(r):
+			http.NotFound(w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests/42":
 			api.prStateCalls++
 			w.Header().Set("Content-Type", "application/json")

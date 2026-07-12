@@ -145,6 +145,8 @@ func TestPRStep_BitbucketUpdatesExistingPRWithoutHTMLLink(t *testing.T) {
 		api.lastAuthHeader = r.Header.Get("Authorization")
 
 		switch {
+		case isUnauthenticatedLocalHealthProbe(r):
+			http.NotFound(w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
 			api.listCalls++
 			w.Header().Set("Content-Type", "application/json")
@@ -420,6 +422,8 @@ func TestPRStep_BitbucketCreatesNewPRWithoutHTMLLink(t *testing.T) {
 		api.lastAuthHeader = r.Header.Get("Authorization")
 
 		switch {
+		case isUnauthenticatedLocalHealthProbe(r):
+			http.NotFound(w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
 			api.listCalls++
 			w.Header().Set("Content-Type", "application/json")

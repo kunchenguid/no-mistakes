@@ -27,8 +27,15 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  build-and-upload:
-    runs-on: ubuntu-latest
+  # macOS artifacts are built and Developer ID signed on a macOS runner (codesign
+  # is macOS-only). Signing happens before archiving and before the checksums job
+  # so the published tarball and its SHA-256 both cover the signed binary. The
+  # signing certificate is gated behind the release-signing environment and never
+  # leaves the runner. The "macOS Release Signing" section of AGENTS.md owns the
+  # permanent-identity invariant and the full signing contract.
+  build-darwin:
+    runs-on: macos-latest
+    environment: release-signing
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
     strategy:
@@ -39,6 +46,190 @@ jobs:
             goarch: amd64
           - goos: darwin
             goarch: arm64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build darwin binary
+        env:
+          GOOS: darwin
+          GOARCH: ${{ matrix.goarch }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+          UMAMI_HOST: https://a.kunchenguid.com
+          UMAMI_WEBSITE_ID: f959e889-92f5-4121-8a1f-571b10861198
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          COMMIT="$(git rev-parse --short=7 HEAD)"
+          CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+            go build -ldflags "-X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=${TAG} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Commit=${COMMIT} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.Date=${DATE} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.TelemetryHost=${UMAMI_HOST} -X github.com/kunchenguid/no-mistakes/internal/buildinfo.TelemetryWebsiteID=${UMAMI_WEBSITE_ID}" \
+            -o "dist/no-mistakes" ./cmd/no-mistakes
+
+      # Import the Developer ID Application cert into an ephemeral keychain locked
+      # with a runtime-generated password, discover exactly one signing identity
+      # (fail closed otherwise), and sign with a fixed identifier, hardened runtime,
+      # and secure timestamp. The cert (CSC_LINK) is base64 and only ever touches
+      # a RUNNER_TEMP file that is deleted immediately after import.
+      - name: Import Developer ID certificate and sign
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          TEAM_ID="9T2J7MNUP9"
+          if [ -z "${CSC_LINK:-}" ] || [ -z "${CSC_KEY_PASSWORD:-}" ]; then
+            echo "::error::CSC_LINK/CSC_KEY_PASSWORD signing secrets are missing; refusing to publish an unsigned macOS artifact" >&2
+            exit 1
+          fi
+          KEYCHAIN_PATH="$RUNNER_TEMP/nm-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          CERT_PATH="$RUNNER_TEMP/nm-developer-id.p12"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+          # Reconstruct the cert from the base64 secret into RUNNER_TEMP only.
+          printf '%s' "$CSC_LINK" | tr -d '[:space:]' | openssl base64 -A -d > "$CERT_PATH"
+
+          # Ephemeral keychain: create, unlock, import scoped to codesign, and add
+          # to the search list so codesign can find the private key.
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$CSC_KEY_PASSWORD" -f pkcs12 \
+            -k "$KEYCHAIN_PATH" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          # Prepend the ephemeral keychain to the user search list, preserving the
+          # existing (space-free) entries. Word splitting here is intentional.
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | sed 's/["]//g')
+          rm -f "$CERT_PATH"
+
+          # Fail closed unless exactly one Developer ID Application identity for the
+          # expected Team ID is present.
+          IDENTITIES="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | grep 'Developer ID Application' || true)"
+          COUNT="$(printf '%s\n' "$IDENTITIES" | grep -c 'Developer ID Application' || true)"
+          if [ "$COUNT" -ne 1 ]; then
+            echo "::error::expected exactly one Developer ID Application identity, found $COUNT" >&2
+            exit 1
+          fi
+          if ! printf '%s\n' "$IDENTITIES" | grep -q "($TEAM_ID)"; then
+            echo "::error::signing identity does not belong to Team ID $TEAM_ID" >&2
+            exit 1
+          fi
+          IDENTITY_HASH="$(printf '%s\n' "$IDENTITIES" | awk 'NR==1 {print $2}')"
+
+          codesign --force --timestamp --options runtime \
+            --identifier com.kunchenguid.no-mistakes \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$IDENTITY_HASH" \
+            "dist/no-mistakes"
+
+      # Strict verification gate: any missing or ambiguous property fails the
+      # release before the artifact is archived or uploaded.
+      - name: Verify Developer ID signature
+        env:
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          TEAM_ID="9T2J7MNUP9"
+          BIN="dist/no-mistakes"
+
+          case "$GOARCH" in
+            amd64) EXPECTED_ARCH="x86_64" ;;
+            arm64) EXPECTED_ARCH="arm64" ;;
+            *) echo "::error::unexpected GOARCH $GOARCH" >&2; exit 1 ;;
+          esac
+
+          # 1. Signature valid and strict.
+          codesign --verify --strict --verbose=2 "$BIN"
+
+          # 2. Developer ID identity + Team ID + permanent identifier, not ad-hoc.
+          SIG="$(codesign -dvvv "$BIN" 2>&1)"
+          printf '%s\n' "$SIG"
+          grep -q 'Authority=Developer ID Application' <<<"$SIG"
+          grep -q "TeamIdentifier=$TEAM_ID" <<<"$SIG"
+          grep -q 'Identifier=com.kunchenguid.no-mistakes' <<<"$SIG"
+          if grep -qi 'adhoc' <<<"$SIG"; then
+            echo "::error::signature is ad-hoc" >&2; exit 1
+          fi
+
+          # 3. Hardened runtime enabled.
+          if ! grep -Eq 'flags=0x[0-9a-f]+\([^)]*runtime[^)]*\)' <<<"$SIG"; then
+            echo "::error::hardened runtime flag not set" >&2; exit 1
+          fi
+
+          # 4. Secure (RFC-3161) timestamp present.
+          TIMESTAMP="$(sed -n 's/^Timestamp=//p' <<<"$SIG")"
+          if [[ -z "$TIMESTAMP" ]] || grep -qi '^none$' <<<"$TIMESTAMP"; then
+            echo "::error::secure timestamp is missing" >&2; exit 1
+          fi
+
+          # 5. Designated requirement is identity-based, never a content hash.
+          DR="$(codesign -d -r- "$BIN" 2>&1)"
+          printf '%s\n' "$DR"
+          grep -q 'anchor apple generic' <<<"$DR"
+          # The Team ID starts with a digit so codesign quotes it, but accept the
+          # unquoted form too so a codesign quirk cannot fail a valid release.
+          grep -Eq "leaf\[subject.OU][[:space:]]*=[[:space:]]*\"?$TEAM_ID\"?" <<<"$DR"
+          grep -q 'identifier "com.kunchenguid.no-mistakes"' <<<"$DR"
+          if grep -q 'cdhash H' <<<"$DR"; then
+            echo "::error::designated requirement is content-based (cdhash), not identity-based" >&2; exit 1
+          fi
+
+          # 6. Correct architecture for this matrix leg.
+          ARCHS="$(lipo -archs "$BIN")"
+          if [ "$ARCHS" != "$EXPECTED_ARCH" ]; then
+            echo "::error::architecture mismatch: got '$ARCHS', want '$EXPECTED_ARCH'" >&2; exit 1
+          fi
+
+      - name: Archive signed binary
+        env:
+          GOOS: darwin
+          GOARCH: ${{ matrix.goarch }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="dist/no-mistakes-${TAG}-${GOOS}-${GOARCH}.tar.gz"
+          tar -C dist -czf "$ARCHIVE" no-mistakes
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release upload "$TAG" "$ARCHIVE" --clobber
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: archive-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ${{ env.ARCHIVE }}
+
+      # Tear down the ephemeral keychain on success and failure alike.
+      - name: Clean up signing keychain
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYCHAIN_PATH:-}" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          fi
+          rm -f "$RUNNER_TEMP/nm-developer-id.p12" 2>/dev/null || true
+
+  build-and-upload:
+    runs-on: ubuntu-latest
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           - goos: linux
             goarch: amd64
           - goos: linux
@@ -104,10 +295,12 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - release-please
+      - build-darwin
       - build-and-upload
     if: |
       !cancelled() &&
       needs.release-please.result == 'success' &&
+      needs.build-darwin.result == 'success' &&
       needs.build-and-upload.result == 'success' &&
       needs.release-please.outputs.release_created == 'true'
     steps:
@@ -135,11 +328,13 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - release-please
+      - build-darwin
       - build-and-upload
       - checksums
     if: |
       !cancelled() &&
       needs.release-please.result == 'success' &&
+      needs.build-darwin.result == 'success' &&
       needs.build-and-upload.result == 'success' &&
       needs.checksums.result == 'success' &&
       needs.release-please.outputs.release_created == 'true'

@@ -121,6 +121,62 @@ func TestReviewStep_FixMode(t *testing.T) {
 	}
 }
 
+// The review fixer must apply every fix first, then run one focused
+// verification of the changed area, and must NOT re-run the whole repository
+// test/lint suite in the fix round. A forensic audit measured the old
+// open-ended "verify the issues are resolved" instruction driving the fixer to
+// re-run the full test+lint suite ~5x per round (~784s of a 2419s review step);
+// the dedicated Test and Lint steps that run after review are the authoritative
+// gates, though their coverage may be focused when commands are unconfigured.
+// This pins the exact contract wording so a revert is caught.
+func TestReviewStep_FixMode_FocusedVerificationContract(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	callCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			callCount++
+			if callCount == 1 {
+				os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644)
+				return &agent.Result{Output: json.RawMessage(`{"summary":"address findings"}`)}, nil
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"clean","risk_level":"low","risk_rationale":"focused repair verified"}`)}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"id":"review-1","severity":"warning","file":"main.go","description":"possible nil deref"}],"summary":"1 issue"}`
+
+	step := &ReviewStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) == 0 {
+		t.Fatal("expected the fixer to be invoked")
+	}
+	fixPrompt := ag.calls[0].Prompt
+
+	for _, want := range []string{
+		"Apply all the fixes you intend to make first; do not run any verification in between individual fixes.",
+		"After all fixes are applied, run one focused verification limited to the changed area (the specific package, file, or test you touched) at the end of the fix round to confirm the fixes hold.",
+		"Do NOT run the complete repository test suite or lint suite during this fix round. The pipeline has dedicated test and lint steps after review that are the authoritative test and lint gates; their coverage may itself be focused on the changed area when the repository has no configured test or lint commands.",
+	} {
+		if !strings.Contains(fixPrompt, want) {
+			t.Errorf("expected fixer prompt to contain %q, got:\n%s", want, fixPrompt)
+		}
+	}
+
+	// The open-ended instruction that invited repeated full-suite verification
+	// must be gone.
+	if strings.Contains(fixPrompt, "Verify that the issues are resolved before finishing") {
+		t.Errorf("fixer prompt still carries the open-ended full-suite verification instruction:\n%s", fixPrompt)
+	}
+}
+
 func TestReviewStep_FixMode_RequiresPreviousFindings(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

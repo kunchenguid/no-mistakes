@@ -33,7 +33,23 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		reviewScope = fmt.Sprintf("current worktree and HEAD changes relative to base commit %s (starting head %s)", baseSHA, sctx.Run.HeadSHA)
 	}
 
-	// In fix mode, ask the agent to fix issues first
+	// In fix mode, ask the agent to fix issues first.
+	//
+	// The verification-discipline rules below (apply all fixes first, then one
+	// focused verification of the changed area, and never run the whole repo
+	// test/lint suite in the fixer round) exist for wall-clock reasons: a
+	// forensic audit of a real multi-round run measured the fixer re-running the
+	// entire test+lint suite ~5x per round (27 runs across 5 rounds, ~784s of
+	// the 2419s review step), plus the model round-trips that poll those long
+	// subprocesses. Review runs before the dedicated Test and Lint steps
+	// (pipeline order in common.go), which are the authoritative test and lint
+	// gates; their coverage may be focused when the repository has no configured
+	// commands. The fixer prohibition stays universal because the fixer only
+	// needs to confirm its own edits hold, not re-gate the whole repository. This
+	// mirrors the same "relevant"-scoped, cross-tool-forbidden discipline the
+	// test and lint fix prompts already carry. The instruction is a contract,
+	// not an enforced sandbox - the agent has free shell access - so the pinned
+	// regression tests guard the wording, not the runtime.
 	var fixSummary string
 	if sctx.Fixing {
 		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
@@ -57,7 +73,9 @@ Rules:
 - If a narrow fix would leave the same class of bug likely elsewhere, fix the deepest practical cause instead.
 - Avoid resolving a finding by removing or reverting the author's intentional code in their original 1st commit. If the original change introduced something on purpose, fix it forward (e.g. add validation, handle edge cases, tighten logic) rather than deleting it. Similarly, if the original change intentionally deleted or simplified code, do not restore or re-add the removed code unless the finding is a legitimate correctness, reliability, or security issue and the smallest reasonable fix happens to reintroduce a small amount of previously deleted logic. When in doubt about whether code is intentional, leave it and report the finding as unresolved.
 - Do not add code comments explaining your fixes.
-- Verify that the issues are resolved before finishing.
+- Apply all the fixes you intend to make first; do not run any verification in between individual fixes.
+- After all fixes are applied, run one focused verification limited to the changed area (the specific package, file, or test you touched) at the end of the fix round to confirm the fixes hold.
+- Do NOT run the complete repository test suite or lint suite during this fix round. The pipeline has dedicated test and lint steps after review that are the authoritative test and lint gates; their coverage may itself be focused on the changed area when the repository has no configured test or lint commands.
 - Return JSON with a single "summary" field when you are done.
 - The summary must be one concise sentence fragment suitable for a git commit subject.
 - Keep the summary under 10 words.%s
