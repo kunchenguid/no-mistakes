@@ -125,11 +125,14 @@ func (c *Client) FindOpenPRBySourceBranch(ctx context.Context, repo RepoRef, bra
 	clauses = append(clauses, fmt.Sprintf(`state=%q`, "OPEN"))
 	query.Set("q", strings.Join(clauses, " AND "))
 
-	var response struct {
+	var response *struct {
 		Values []bitbucketPullRequest `json:"values"`
 	}
 	if err := c.doJSON(ctx, http.MethodGet, repoPRPath(repo), query, nil, &response); err != nil {
 		return nil, err
+	}
+	if response == nil || response.Values == nil {
+		return nil, fmt.Errorf("decode Bitbucket PR list: expected values array")
 	}
 	if len(response.Values) == 0 {
 		return nil, nil
