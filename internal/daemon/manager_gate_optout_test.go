@@ -119,21 +119,31 @@ func TestAssertGateTrustedConfigReadable_UnreadableCommitAborts(t *testing.T) {
 
 func TestAssertGateTrustedConfigReadable_PresentUnreadableBlobAborts(t *testing.T) {
 	wt, _ := gateOptOutWorktree(t, "")
-	objectFormat := gitOutput(t, wt, "rev-parse", "--show-object-format")
-	objectLength := 40
-	if objectFormat == "sha256" {
-		objectLength = 64
+	blobCmd := exec.Command("git", "hash-object", "-w", "--stdin")
+	blobCmd.Dir = wt
+	blobCmd.Stdin = strings.NewReader("disable_project_settings: true\n")
+	blobOutput, err := blobCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git hash-object failed: %v\n%s", err, blobOutput)
 	}
-	missingBlob := strings.Repeat("1", objectLength)
-	cmd := exec.Command("git", "mktree", "--missing")
+	blobSHA := strings.TrimSpace(string(blobOutput))
+
+	cmd := exec.Command("git", "mktree")
 	cmd.Dir = wt
-	cmd.Stdin = strings.NewReader("100644 blob " + missingBlob + "\t.no-mistakes.yaml\n")
+	cmd.Stdin = strings.NewReader("100644 blob " + blobSHA + "\t.no-mistakes.yaml\n")
 	treeOutput, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git mktree failed: %v\n%s", err, treeOutput)
 	}
 	treeSHA := strings.TrimSpace(string(treeOutput))
 	commitSHA := gitOutput(t, wt, "commit-tree", treeSHA, "-m", "missing blob")
+	objectsDir := gitOutput(t, wt, "rev-parse", "--git-path", "objects")
+	if !filepath.IsAbs(objectsDir) {
+		objectsDir = filepath.Join(wt, objectsDir)
+	}
+	if err := os.Remove(filepath.Join(objectsDir, blobSHA[:2], blobSHA[2:])); err != nil {
+		t.Fatalf("remove trusted config blob: %v", err)
+	}
 
 	err = assertGateTrustedConfigReadable(context.Background(), wt, "main", commitSHA)
 	if err == nil {
