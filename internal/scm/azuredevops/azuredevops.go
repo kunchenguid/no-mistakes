@@ -130,12 +130,16 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if err != nil {
 		return nil, fmt.Errorf("az repos pr list: %w", err)
 	}
-	if len(bytes.TrimSpace(out)) == 0 {
-		return nil, nil
+	trimmed := bytes.TrimSpace(out)
+	if len(trimmed) == 0 {
+		return nil, errors.New("az repos pr list: parse response: expected array")
 	}
 	var prs []azPR
-	if err := json.Unmarshal(out, &prs); err != nil {
+	if err := json.Unmarshal(trimmed, &prs); err != nil {
 		return nil, fmt.Errorf("az repos pr list: parse response: %w", err)
+	}
+	if prs == nil {
+		return nil, errors.New("az repos pr list: parse response: expected array")
 	}
 	if len(prs) == 0 {
 		return nil, nil
