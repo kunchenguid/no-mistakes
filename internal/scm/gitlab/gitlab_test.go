@@ -309,6 +309,7 @@ func TestFindPRReturnsJSONError(t *testing.T) {
 	}{
 		{name: "no JSON", output: "not-json\n"},
 		{name: "malformed JSON", output: "[{\n"},
+		{name: "null", output: "null\n"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

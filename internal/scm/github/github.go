@@ -182,6 +182,9 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if err := json.Unmarshal(out, &prs); err != nil {
 		return nil, fmt.Errorf("parse gh pr list JSON: %w", err)
 	}
+	if prs == nil {
+		return nil, errors.New("parse gh pr list JSON: expected array")
+	}
 	if len(prs) == 0 {
 		return nil, nil
 	}
