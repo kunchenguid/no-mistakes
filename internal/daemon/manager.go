@@ -486,12 +486,8 @@ func loadTrustedRepoConfig(ctx context.Context, wtDir, trustedSHA, runID string)
 // must proceed). Abort cases:
 //   - no known default branch to read a trusted copy from,
 //   - the default branch could not be fetched/resolved to a pinned SHA,
-//   - the pinned commit itself is not readable (missing object / partial fetch),
-//   - the trusted .no-mistakes.yaml is present but unparseable.
-//
-// It confirms the commit is readable BEFORE probing the file, so a subsequent
-// ShowFile miss is an authoritative "file absent on the default branch" rather
-// than an unreadable tree.
+//   - the pinned commit or tree is not readable (missing object / partial fetch),
+//   - the trusted .no-mistakes.yaml is present but unreadable or unparseable.
 func assertGateTrustedConfigReadable(ctx context.Context, wtDir, defaultBranch, trustedSHA string) error {
 	if defaultBranch == "" {
 		return fmt.Errorf("cannot evaluate disable_project_settings: repository has no known default branch to read trusted config from")
@@ -502,11 +498,16 @@ func assertGateTrustedConfigReadable(ctx context.Context, wtDir, defaultBranch, 
 	if _, err := git.Run(ctx, wtDir, "rev-parse", "-q", "--verify", trustedSHA+"^{commit}"); err != nil {
 		return fmt.Errorf("cannot evaluate disable_project_settings: trusted default-branch commit %s is not readable: %w", trustedSHA, err)
 	}
+	entry, err := git.Run(ctx, wtDir, "ls-tree", trustedSHA, "--", ".no-mistakes.yaml")
+	if err != nil {
+		return fmt.Errorf("cannot evaluate disable_project_settings: trusted default-branch tree at %s is not readable: %w", trustedSHA, err)
+	}
+	if entry == "" {
+		return nil
+	}
 	content, err := git.ShowFile(ctx, wtDir, trustedSHA, ".no-mistakes.yaml")
 	if err != nil {
-		// The commit is confirmed readable, so this is a legitimate "no
-		// .no-mistakes.yaml on the default branch": ordinary repo, not opted out.
-		return nil
+		return fmt.Errorf("cannot evaluate disable_project_settings: trusted .no-mistakes.yaml at %s is present but not readable: %w", trustedSHA, err)
 	}
 	if _, err := config.LoadRepoFromBytes([]byte(content)); err != nil {
 		return fmt.Errorf("cannot evaluate disable_project_settings: trusted .no-mistakes.yaml at %s is present but unparseable: %w", trustedSHA, err)

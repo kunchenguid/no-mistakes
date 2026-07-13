@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -113,6 +114,33 @@ func TestAssertGateTrustedConfigReadable_UnreadableCommitAborts(t *testing.T) {
 	bogus := "0123456789abcdef0123456789abcdef01234567"
 	if err := assertGateTrustedConfigReadable(context.Background(), wt, "main", bogus); err == nil {
 		t.Fatal("an unreadable trusted commit must abort")
+	}
+}
+
+func TestAssertGateTrustedConfigReadable_PresentUnreadableBlobAborts(t *testing.T) {
+	wt, _ := gateOptOutWorktree(t, "")
+	objectFormat := gitOutput(t, wt, "rev-parse", "--show-object-format")
+	objectLength := 40
+	if objectFormat == "sha256" {
+		objectLength = 64
+	}
+	missingBlob := strings.Repeat("1", objectLength)
+	cmd := exec.Command("git", "mktree", "--missing")
+	cmd.Dir = wt
+	cmd.Stdin = strings.NewReader("100644 blob " + missingBlob + "\t.no-mistakes.yaml\n")
+	treeOutput, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git mktree failed: %v\n%s", err, treeOutput)
+	}
+	treeSHA := strings.TrimSpace(string(treeOutput))
+	commitSHA := gitOutput(t, wt, "commit-tree", treeSHA, "-m", "missing blob")
+
+	err = assertGateTrustedConfigReadable(context.Background(), wt, "main", commitSHA)
+	if err == nil {
+		t.Fatal("a present but unreadable trusted config blob must abort")
+	}
+	if !strings.Contains(err.Error(), "present but not readable") {
+		t.Errorf("abort error should distinguish an unreadable blob, got: %v", err)
 	}
 }
 

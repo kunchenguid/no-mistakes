@@ -466,9 +466,15 @@ func TestParseCodexEvents_SkipsMalformedLines(t *testing.T) {
 // project-settings contract UNDER the trusted opt-out: codex is told to read
 // zero bytes of AGENTS.md (project doc) and to ignore project execpolicy .rules,
 // so a gate agent validating an agent-orchestration repo (firstmate) does not
-// adopt its fleet-captain identity. Verified empirically: with the project doc
-// loaded codex adopts the AGENTS.md identity; with project_doc_max_bytes=0 (plus
-// --ignore-rules) it does not.
+// adopt its fleet-captain identity.
+//
+// The empirical Codex E2E canary showing that default Codex adopts the target
+// AGENTS.md identity while project_doc_max_bytes=0 plus --ignore-rules suppresses
+// it was run manually and is recorded in
+// data/nm-gate-ambient-authority-containment-c3/design-assessment.md section 6.
+// A real-Codex canary is intentionally excluded from CI because it requires
+// authentication and network access and would be flaky; these argument-level
+// tests are the CI guarantee that the verified suppression knobs are emitted.
 func TestCodexAgent_BuildArgs_SuppressesProjectDocUnderOptOut(t *testing.T) {
 	ca := &codexAgent{bin: "codex", disableProjectSettings: true}
 	args := ca.buildArgs("review the diff", "", "")
