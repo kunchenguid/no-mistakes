@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,18 +46,22 @@ func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
 
 	mgr := NewRunManager(nil, p, nil)
 	started := time.Now()
-	cfg, err := mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "run"}, &db.Repo{DefaultBranch: "main"}, workDir)
-	if err != nil {
-		t.Fatalf("load recovered config: %v", err)
+	// The bounded fetch times out, leaving trustedSHA empty. Under the
+	// disable_project_settings security boundary a trusted-config fetch failure
+	// must ABORT (not silently proceed as "not opted out"), so this now returns
+	// an error rather than a config with empty commands.
+	_, err := mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "run"}, &db.Repo{DefaultBranch: "main"}, workDir)
+	if err == nil {
+		t.Fatal("expected loadRecoveredConfig to abort on trusted-config fetch failure")
+	}
+	if !strings.Contains(err.Error(), "disable_project_settings") {
+		t.Fatalf("abort error should name the boundary, got: %v", err)
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("load recovered config took %s, want under 1s", elapsed)
 	}
 	if err := <-fetchResult; !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("fetch error = %v, want deadline exceeded", err)
-	}
-	if cfg.Commands.Lint != "" {
-		t.Fatalf("commands.lint = %q, want empty after fetch timeout", cfg.Commands.Lint)
 	}
 }
 

@@ -240,6 +240,12 @@ func setupTestGitRepo(t *testing.T, p *paths.Paths, d *db.DB, repoID string) (*d
 	gitCmd(t, workDir, "remote", "add", "gate", bareDir)
 	gitCmd(t, workDir, "push", "gate", "HEAD:refs/heads/main")
 
+	// Point the gate bare repo's origin at itself so a run worktree can fetch
+	// and resolve the trusted default branch (as a real init-configured gate
+	// does). Without this the trusted-config fetch fails, which now aborts the
+	// run (the disable_project_settings security boundary).
+	gitCmd(t, bareDir, "remote", "add", "origin", bareDir)
+
 	// Register repo in DB.
 	repo, err := d.InsertRepoWithID(repoID, workDir, "https://github.com/test/repo", "main")
 	if err != nil {

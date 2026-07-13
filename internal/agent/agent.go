@@ -121,6 +121,57 @@ func ReportsAgentAttempts(a Agent) bool {
 	return ok && r.ReportsAgentAttempts()
 }
 
+// GateInstructionNeutralizer is the optional adapter capability that reports the
+// adapter neutralizes the target repository's project agent-instruction files
+// (AGENTS.md/CLAUDE.md) for this invocation, so they cannot install a governing
+// identity on the gate agent.
+//
+// A gate agent runs with cmd.Dir set to the target checkout and a free shell. If
+// the checkout is itself an agent-orchestration harness (for example firstmate),
+// its AGENTS.md can otherwise convince the gate agent it is the fleet captain and
+// drive it to spawn a crew and reset the branch it is validating (the
+// ambient-authority incident). Only adapters whose suppression knob is
+// empirically verified implement this and return true, and only while that knob
+// is actually in effect for the invocation (an operator override that defeats the
+// knob must report false so the gate fails closed rather than launching
+// unneutralized).
+type GateInstructionNeutralizer interface {
+	NeutralizesGateInstructions() bool
+}
+
+// NeutralizesGateInstructions reports whether a (possibly wrapped) agent
+// neutralizes the target repo's project agent-instruction files during a gate
+// run. It fails closed: an adapter that does not implement the capability, a
+// nil agent, or a wrapper any member of which does not neutralize, is reported
+// as NOT neutralized.
+func NeutralizesGateInstructions(a Agent) bool {
+	if a == nil {
+		return false
+	}
+	n, ok := a.(GateInstructionNeutralizer)
+	return ok && n.NeutralizesGateInstructions()
+}
+
+// EnsureGateNeutralized fails closed when the agent that will run gate steps in
+// the target checkout does not neutralize that checkout's project
+// agent-instruction files. Callers must invoke it before launching any gate
+// agent so an unverified harness is refused with a clear error rather than run
+// unneutralized in the target checkout. Only codex and claude have a verified
+// neutralization knob today.
+func EnsureGateNeutralized(a Agent) error {
+	if a == nil {
+		return fmt.Errorf("no gate agent configured")
+	}
+	if NeutralizesGateInstructions(a) {
+		return nil
+	}
+	return fmt.Errorf("gate agent %q does not neutralize the target repository's project "+
+		"agent-instruction files (AGENTS.md/CLAUDE.md); refusing to launch it in the target "+
+		"checkout. Only codex and claude have a verified neutralization knob (and only when it "+
+		"is not overridden by agent_args_override); set 'agent' to codex or claude in "+
+		"~/.no-mistakes/config.yaml", a.Name())
+}
+
 // LifecycleEvent describes process-level activity for an agent invocation.
 // The pipeline records these as step log lines and active-step heartbeats.
 type LifecycleEvent struct {
@@ -195,6 +246,12 @@ type InvocationWorkload struct {
 // ACPRegistryOverrides maps acpx target names to raw ACP agent commands.
 type Options struct {
 	ACPRegistryOverrides map[string]string
+	// DisableProjectSettings, when true, asks a supported adapter (codex,
+	// claude) to launch with the target repo's project-level agent
+	// settings/instructions suppressed. It is the resolved, trusted-only opt-out
+	// from config.Config; adapters without a verified suppression knob ignore it
+	// and are refused separately by EnsureGateNeutralized when the opt-out is on.
+	DisableProjectSettings bool
 }
 
 func finalizeTextResult(agentName, text string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
@@ -741,9 +798,9 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	}
 	switch name {
 	case types.AgentClaude:
-		return &claudeAgent{bin: bin, extraArgs: extraArgs}, nil
+		return &claudeAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
 	case types.AgentCodex:
-		return &codexAgent{bin: bin, extraArgs: extraArgs}, nil
+		return &codexAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
 	case types.AgentRovoDev:
 		return &rovodevAgent{bin: bin, extraArgs: extraArgs}, nil
 	case types.AgentOpenCode:

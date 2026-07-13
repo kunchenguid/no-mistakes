@@ -140,7 +140,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err != nil {
 		return nil, err
 	}
-	ag, err := newPipelineAgent(ctx, cfg)
+	ag, err := newPipelineAgent(ctx, cfg, exec.LookPath)
 	if err != nil {
 		return nil, err
 	}
@@ -201,16 +201,21 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 			trustedSHA = sha
 		}
 	}
+	// SECURITY: a trusted-config fetch failure must abort, not silently disable
+	// the disable_project_settings opt-out (see assertGateTrustedConfigReadable).
+	if err := assertGateTrustedConfigReadable(ctx, workDir, repo.DefaultBranch, trustedSHA); err != nil {
+		return nil, err
+	}
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	return config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)), nil
 }
 
-func newPipelineAgent(ctx context.Context, cfg *config.Config) (agent.Agent, error) {
+func newPipelineAgent(ctx context.Context, cfg *config.Config, lookPath func(string) (string, error)) (agent.Agent, error) {
 	if steps.IsDemoMode() {
 		return agent.NewNoop(), nil
 	}
-	if err := cfg.ResolveAgent(ctx, exec.LookPath); err != nil {
+	if err := cfg.ResolveAgent(ctx, lookPath); err != nil {
 		return nil, err
 	}
 	agents := cfg.Agents
@@ -220,7 +225,8 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config) (agent.Agent, err
 	created := make([]agent.Agent, 0, len(agents))
 	for _, name := range agents {
 		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
-			ACPRegistryOverrides: cfg.ACPRegistryOverrides,
+			ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
+			DisableProjectSettings: cfg.DisableProjectSettings,
 		})
 		if err != nil {
 			for _, existing := range created {
@@ -230,7 +236,17 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config) (agent.Agent, err
 		}
 		created = append(created, agent.WithSteering(next))
 	}
-	return agent.NewFallback(created), nil
+	ag := agent.NewFallback(created)
+	// Fail closed ONLY under the trusted opt-out (see startRun): refuse an
+	// unverified harness when the repo disabled project settings; otherwise run
+	// every adapter as before.
+	if cfg.DisableProjectSettings {
+		if err := agent.EnsureGateNeutralized(ag); err != nil {
+			_ = ag.Close()
+			return nil, err
+		}
+	}
+	return ag, nil
 }
 
 func resolveGitPath(workDir, value string) string {
@@ -456,6 +472,48 @@ func loadTrustedRepoConfig(ctx context.Context, wtDir, trustedSHA, runID string)
 	return trusted
 }
 
+// assertGateTrustedConfigReadable fails a run LOUD when the trusted
+// default-branch copy of .no-mistakes.yaml could not be READ at all. This is the
+// security correction for disable_project_settings: that field is a boundary
+// honored only from the trusted copy, so an unreadable trusted config must NOT
+// be silently treated as "not opted out" — no-mistakes cannot know whether the
+// repo relies on the boundary, so it refuses to run rather than risk launching a
+// gate agent with the project instructions loaded.
+//
+// It distinguishes "could not read the trusted config at all" (abort) from
+// "read the trusted tree fine, there is simply no .no-mistakes.yaml on the
+// default branch" (the common ordinary-repo case, which is NOT opted out and
+// must proceed). Abort cases:
+//   - no known default branch to read a trusted copy from,
+//   - the default branch could not be fetched/resolved to a pinned SHA,
+//   - the pinned commit itself is not readable (missing object / partial fetch),
+//   - the trusted .no-mistakes.yaml is present but unparseable.
+//
+// It confirms the commit is readable BEFORE probing the file, so a subsequent
+// ShowFile miss is an authoritative "file absent on the default branch" rather
+// than an unreadable tree.
+func assertGateTrustedConfigReadable(ctx context.Context, wtDir, defaultBranch, trustedSHA string) error {
+	if defaultBranch == "" {
+		return fmt.Errorf("cannot evaluate disable_project_settings: repository has no known default branch to read trusted config from")
+	}
+	if trustedSHA == "" {
+		return fmt.Errorf("cannot evaluate disable_project_settings: failed to fetch or resolve trusted default branch %q (refusing to run without reading the trusted config)", defaultBranch)
+	}
+	if _, err := git.Run(ctx, wtDir, "rev-parse", "-q", "--verify", trustedSHA+"^{commit}"); err != nil {
+		return fmt.Errorf("cannot evaluate disable_project_settings: trusted default-branch commit %s is not readable: %w", trustedSHA, err)
+	}
+	content, err := git.ShowFile(ctx, wtDir, trustedSHA, ".no-mistakes.yaml")
+	if err != nil {
+		// The commit is confirmed readable, so this is a legitimate "no
+		// .no-mistakes.yaml on the default branch": ordinary repo, not opted out.
+		return nil
+	}
+	if _, err := config.LoadRepoFromBytes([]byte(content)); err != nil {
+		return fmt.Errorf("cannot evaluate disable_project_settings: trusted .no-mistakes.yaml at %s is present but unparseable: %w", trustedSHA, err)
+	}
+	return nil
+}
+
 // HandlePushReceived processes a push notification from the post-receive hook.
 // It creates a run, sets up a worktree, and launches pipeline execution in the background.
 func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushReceivedParams) (string, error) {
@@ -653,6 +711,13 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// contributor cannot self-enable it from the pushed branch. With no
 	// trusted copy (fetch failed, no default branch, or no file on it) the
 	// opt-in is false and commands/agent are forced empty — fail closed.
+	// SECURITY: a trusted-config fetch failure must abort, not silently disable
+	// the disable_project_settings opt-out (see assertGateTrustedConfigReadable).
+	if err := assertGateTrustedConfigReadable(ctx, wtDir, repo.DefaultBranch, trustedSHA); err != nil {
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("trusted_config_unreadable")
+		return "", err
+	}
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, wtDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
@@ -683,7 +748,8 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		created := make([]agent.Agent, 0, len(agents))
 		for _, name := range agents {
 			next, agErr := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
-				ACPRegistryOverrides: cfg.ACPRegistryOverrides,
+				ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
+				DisableProjectSettings: cfg.DisableProjectSettings,
 			})
 			if agErr != nil {
 				m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent %s: %s", name, agErr))
@@ -696,6 +762,18 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			created = append(created, agent.WithSteering(next))
 		}
 		ag = agent.NewFallback(created)
+		// Fail closed ONLY under the trusted opt-out: when the repo asked to
+		// disable project settings, refuse any resolved harness that lacks a
+		// verified suppression knob rather than launch it with the target repo's
+		// project instructions loaded. When the repo did not opt out, every
+		// adapter runs exactly as before (backward-compat).
+		if cfg.DisableProjectSettings {
+			if err := agent.EnsureGateNeutralized(ag); err != nil {
+				m.db.UpdateRunError(run.ID, err.Error())
+				trackStartFailure("gate_not_neutralized")
+				return "", err
+			}
+		}
 	}
 
 	execSteps := m.steps()

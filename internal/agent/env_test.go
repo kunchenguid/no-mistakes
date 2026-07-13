@@ -53,3 +53,28 @@ func TestGitSafeEnv_CouplesPWDToWorkdir(t *testing.T) {
 		t.Errorf("PWD = %q, want \"/work/dir\"", resolved["PWD"])
 	}
 }
+
+// TestGitSafeEnv_StampsGateRoleMarker locks in the ambient-authority containment
+// marker: every spawned gate agent must carry NO_MISTAKES_GATE=1 so a
+// cooperating orchestration harness in the target repo can recognize the gate
+// agent and refuse to let it drive the fleet. If this regresses, a gate agent
+// validating a firstmate-shaped repo becomes indistinguishable from a real
+// fleet operator.
+func TestGitSafeEnv_StampsGateRoleMarker(t *testing.T) {
+	resolved := resolveAgentEnv(gitSafeEnv("/work/dir"))
+	if resolved[GateRoleEnvVar] != "1" {
+		t.Errorf("%s = %q, want \"1\"", GateRoleEnvVar, resolved[GateRoleEnvVar])
+	}
+}
+
+// TestGitSafeEnv_GateMarkerWinsOverAmbient guards that a target repo (or a
+// confused parent) cannot pre-empt the marker with its own ambient value: the
+// stamp is appended last, and exec resolves duplicate keys to the last
+// occurrence.
+func TestGitSafeEnv_GateMarkerWinsOverAmbient(t *testing.T) {
+	t.Setenv(GateRoleEnvVar, "0")
+	resolved := resolveAgentEnv(gitSafeEnv("/work/dir"))
+	if resolved[GateRoleEnvVar] != "1" {
+		t.Errorf("%s = %q, want \"1\" (managed stamp must win over ambient)", GateRoleEnvVar, resolved[GateRoleEnvVar])
+	}
+}

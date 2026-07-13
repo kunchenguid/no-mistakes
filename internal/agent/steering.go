@@ -47,6 +47,10 @@ func (s steeredAgent) ReportsAgentAttempts() bool {
 	return ReportsAgentAttempts(s.Agent)
 }
 
+func (s steeredAgent) NeutralizesGateInstructions() bool {
+	return NeutralizesGateInstructions(s.Agent)
+}
+
 // WithSteering wraps an agent so every invocation is steered to keep writes
 // inside the worktree. Wrapping is idempotent: an already-steered agent is
 // returned unchanged so the preamble is never added twice.

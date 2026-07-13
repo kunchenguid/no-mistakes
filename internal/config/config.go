@@ -106,6 +106,17 @@ type RepoConfig struct {
 	// EffectiveRepoConfig): a contributor's pushed branch must not be able to
 	// weaken documentation rules for its own review.
 	Document DocumentRaw `yaml:"document"`
+	// DisableProjectSettings opts the repository out of loading project-level
+	// agent settings/instructions (AGENTS.md/CLAUDE.md and the equivalent
+	// per-harness project settings) into gate agents. It exists for
+	// agent-orchestration repos (e.g. firstmate) whose project instructions
+	// would otherwise install a fleet-captain identity on a gate agent. It is a
+	// SECURITY boundary honored ONLY from the trusted default-branch copy of
+	// .no-mistakes.yaml (see EffectiveRepoConfig and the daemon's
+	// assertGateTrustedConfigReadable): a contributor's pushed branch must not be
+	// able to turn it off (or on). Default false; a plain bool so a missing key
+	// or a YAML/JSON null is falsy and preserves current loading.
+	DisableProjectSettings bool `yaml:"disable_project_settings"`
 }
 
 // DocumentRaw is the YAML representation of document-step settings.
@@ -118,14 +129,15 @@ type DocumentRaw struct {
 
 func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	type repoConfigRaw struct {
-		Agent             agentList   `yaml:"agent"`
-		Commands          Commands    `yaml:"commands"`
-		IgnorePatterns    []string    `yaml:"ignore_patterns"`
-		AllowRepoCommands bool        `yaml:"allow_repo_commands"`
-		AutoFix           AutoFixRaw  `yaml:"auto_fix"`
-		Intent            IntentRaw   `yaml:"intent"`
-		Test              TestRaw     `yaml:"test"`
-		Document          DocumentRaw `yaml:"document"`
+		Agent                  agentList   `yaml:"agent"`
+		Commands               Commands    `yaml:"commands"`
+		IgnorePatterns         []string    `yaml:"ignore_patterns"`
+		AllowRepoCommands      bool        `yaml:"allow_repo_commands"`
+		AutoFix                AutoFixRaw  `yaml:"auto_fix"`
+		Intent                 IntentRaw   `yaml:"intent"`
+		Test                   TestRaw     `yaml:"test"`
+		Document               DocumentRaw `yaml:"document"`
+		DisableProjectSettings bool        `yaml:"disable_project_settings"`
 	}
 	var raw repoConfigRaw
 	if err := value.Decode(&raw); err != nil {
@@ -140,6 +152,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Intent = raw.Intent
 	c.Test = raw.Test
 	c.Document = raw.Document
+	c.DisableProjectSettings = raw.DisableProjectSettings
 	return nil
 }
 
@@ -191,6 +204,11 @@ type Config struct {
 	Intent               Intent
 	Test                 Test
 	Document             Document
+	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
+	// RepoConfig field). When true, gate agents are launched with their
+	// project-level settings/instructions suppressed; the daemon fails the run
+	// closed if the resolved harness has no verified suppression knob.
+	DisableProjectSettings bool
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -925,8 +943,15 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 	effective := *pushed
 	if trusted != nil {
 		effective.Document = trusted.Document
+		// disable_project_settings is a security boundary: honor it ONLY from the
+		// trusted default-branch copy so a pushed branch cannot turn the opt-out
+		// off (and re-enable its own AGENTS.md) or on. A nil trusted copy here
+		// means the trusted config was legitimately absent (the daemon aborts
+		// separately when it could not be READ at all), so falsy is correct.
+		effective.DisableProjectSettings = trusted.DisableProjectSettings
 	} else {
 		effective.Document = DocumentRaw{}
+		effective.DisableProjectSettings = false
 	}
 	if allowRepoCommands {
 		return &effective
@@ -1102,6 +1127,9 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Intent:               intent,
 		Test:                 test,
 		Document:             Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
+		// repo is the EffectiveRepoConfig result, so this value is already
+		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
+		DisableProjectSettings: repo.DisableProjectSettings,
 	}
 
 	if repo.Agent != "" {
