@@ -18,9 +18,15 @@ Safest local verification sequence after non-trivial changes:
 
 - `repos.upstream_url` is the parent repository used for PR base routing; `repos.fork_url` is an optional GitHub fork push target.
 - `no-mistakes init --fork-url <url>` expects `origin` to point at the GitHub parent repository and `<url>` at the contributor fork; plain `no-mistakes init` preserves an existing fork URL on idempotent refresh.
-- Push code must use `Repo.PushURL()` so configured forks receive branch updates.
+- Push and CI auto-fix push code must resolve the push URL via `resolvePushURL` (`internal/pipeline/steps/common_git.go`) so configured forks still receive branch updates; the non-fork path recovers the credentialled upstream from the worktree's `origin` remote at run time because the DB `upstream_url` is stored redacted (see Credential Redaction below). `Repo.PushURL()` remains correct only for fork-only callers (e.g. `rebase.go`), since fork URLs carry no embedded credentials.
 - GitHub PR code must keep `--repo` pointed at the parent and use `--head <fork_owner>:<branch>` when `fork_url` is set; existing-PR lookup must list by the bare branch and filter head-owner fields, never pass `<owner>:<branch>` to `gh pr list --head`.
 - GitLab and Bitbucket fork MR/PR routing is intentionally out of scope until implemented end to end; if a legacy row has `fork_url` for those hosts, PR creation must skip instead of opening a self PR.
+
+**Credential Redaction in Stored URLs and Errors (security)**
+
+- `gate.InitWithFork` runs the upstream URL through `safeurl.Redact` before every DB persist (`UpdateRepoMetadata*`, `InsertRepoWithIDAndFork`) and the "gate initialized" log line; the bare gate's `origin` remote still carries the full credentialled URL (via `provisionGate`) so carved worktrees authenticate. Because the DB copy is redacted, push and CI auto-fix push must recover the credential from the worktree's `origin` remote at run time (`resolvePushURL`/`resolveUpstreamURL`), never from `Repo.UpstreamURL`/`Repo.PushURL()`.
+- Step-failure errors (`executor.go` `FailStep`/log/IPC emit) and the Bitbucket resolve-repo error are redacted via `safeurl.RedactText`/`safeurl.Redact` so a credentialled URL wrapped into an error can never reach a step log or `runs.error`. Reuse `internal/safeurl` for new redaction sites rather than adding a git-local helper; it is already wired into `git.Run`/step git-run error formatting.
+- Regressions: `TestInitRedactsCredentialURL`, `TestResolveUpstreamURL_PreservesCredential`, `TestResolveUpstreamURL_FallsBackToRecordedURL`, `TestResolvePushURL_ForkWinsOverCredential`.
 
 **GitLab Backend (`internal/scm/gitlab`)**
 
