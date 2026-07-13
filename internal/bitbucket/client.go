@@ -403,8 +403,12 @@ func (c *Client) doJSONPathOrURL(ctx context.Context, method, pathOrURL string, 
 	if responseBody == nil {
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(responseBody); err != nil {
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(responseBody); err != nil {
 		return fmt.Errorf("decode Bitbucket response: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("decode Bitbucket response: expected a single JSON value")
 	}
 	return nil
 }

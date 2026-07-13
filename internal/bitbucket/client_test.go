@@ -174,6 +174,7 @@ func TestFindOpenPRBySourceBranchRejectsInvalidResponse(t *testing.T) {
 	}{
 		{name: "null", response: "null"},
 		{name: "missing values", response: `{}`},
+		{name: "trailing data", response: `{"values":[]}garbage`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
