@@ -18,15 +18,35 @@ import (
 // way into the pipeline's agent prompts rather than being inferred.
 const axiIntent = "wire the feature flag into the config loader"
 
-// axiScenario gates exactly one step: the review step returns a single
+// axiScenario gates exactly one step: the initial review returns a single
 // ask-user finding (so the pipeline blocks for a human/agent decision), while
 // every other step returns no findings and completes on its own. Matching on
 // the review prompt text - not the branch - keeps gating to that one step
 // regardless of branch name, giving the axi journey crisp assertions.
+//
+// The fix path is modeled too, for the --yes journey: a funded fix round
+// applies an edit and the post-fix rereview (distinguished by the round
+// history the rereview prompt carries) comes back clean, so --yes completes
+// the run after one fix round. Matcher order matters: the fix prompt also
+// carries round history, so its matcher must precede the rereview matcher.
 func axiScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "axi-scenario.yaml")
 	content := `actions:
+  - match: "Investigate previous review findings"
+    text: "fixing the nil deref"
+    edits:
+      - path: "axi-fix-applied.txt"
+        new: "guarded the nil deref\n"
+    structured:
+      summary: "guard nil deref before use"
+  - match: "Previous rounds for this step"
+    text: "re-review after fix is clean"
+    structured:
+      findings: []
+      summary: "fix verified, no remaining issues"
+      risk_level: low
+      risk_rationale: "the fix round resolved the only finding"
   - match: "Review the code changes and return structured findings"
     text: "review found a warning"
     structured:
@@ -64,7 +84,8 @@ func axiScenario(t *testing.T) string {
 // `axi run` blocks at an approval gate and emits TOON, `axi respond` clears it
 // and runs to completion, and `axi status`/`logs` inspect the result. It also
 // proves the agent-supplied intent is used verbatim (no transcript inference)
-// and that `axi run --yes` auto-approves the gate end to end.
+// and that `axi run --yes` funds a fix round for the actionable finding and
+// completes end to end once the post-fix rereview comes back clean.
 func branchSyncScenario(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "branch-sync-scenario.yaml")
@@ -588,7 +609,10 @@ func TestAxiAgentJourney(t *testing.T) {
 		t.Errorf("axi logs missing step header in:\n%s", logsOut)
 	}
 
-	// --- Fast path: --yes auto-approves the gate to completion ---
+	// --- Fast path: --yes funds a fix round and completes once it clears ---
+	// The actionable ask-user finding is not blind-approved: --yes responds
+	// with a fix, the fix agent applies its edit, and the clean rereview lets
+	// the step complete, so the passing outcome carries the applied fix.
 	h.CommitChange("feature/axi-yes", "feature2.txt", "change2\n", "add feature change 2")
 	yw := h.AddWorktree("feature/axi-yes")
 
@@ -599,8 +623,97 @@ func TestAxiAgentJourney(t *testing.T) {
 	if !strings.Contains(autoOut, "outcome: passed") {
 		t.Errorf("axi run --yes did not report a passing outcome:\n%s", autoOut)
 	}
+	if !strings.Contains(autoOut, "guard nil deref before use") {
+		t.Errorf("axi run --yes outcome does not surface the funded fix round's summary:\n%s", autoOut)
+	}
 	if autoRun := h.WaitForRun("feature/axi-yes", 60*time.Second); autoRun.Status != types.RunCompleted {
 		t.Fatalf("feature/axi-yes run status = %s, want completed", autoRun.Status)
+	}
+}
+
+// yesBudgetScenario models a review finding no fix round can clear: the
+// initial review and every rereview report the same ask-user finding, and the
+// fix agent returns a summary without changing anything. Under --yes this must
+// exhaust the per-step fix budget and hand the gate back parked - never
+// blind-approve the finding into a passing run, and never wedge the drive loop
+// (a fast fix round re-parks as fix_review between two polls, so consecutive
+// parks are indistinguishable by status alone).
+func yesBudgetScenario(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "axi-yes-budget-scenario.yaml")
+	content := `actions:
+  - match: "Investigate previous review findings"
+    text: "attempted a fix"
+    structured:
+      summary: "attempted nil deref guard"
+  - match: "Review the code changes and return structured findings"
+    text: "review found a warning"
+    structured:
+      findings:
+        - id: "axi-1"
+          severity: warning
+          file: "feature.txt"
+          line: 1
+          description: "potential nil deref"
+          action: ask-user
+      summary: "found 1 issue"
+      risk_level: medium
+      risk_rationale: "warning requires human review"
+  - text: "no issues found"
+    structured:
+      findings: []
+      summary: "no issues found"
+      risk_level: low
+      risk_rationale: "no risks detected in the diff"
+      tested:
+        - "fakeagent: simulated test run"
+      testing_summary: "simulated tests passed"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write yes budget scenario: %v", err)
+	}
+	return path
+}
+
+// TestAxiYesBudgetParksUnresolvedFindings proves `axi run --yes` is not an
+// unconditional approval: when fix rounds cannot clear an actionable finding,
+// the drive loop funds at most the per-step budget and then exits cleanly,
+// handing the gate back with the run parked awaiting adjudication instead of
+// approving findings nothing applied, and instead of spinning until killed.
+func TestAxiYesBudgetParksUnresolvedFindings(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: yesBudgetScenario(t)})
+
+	h.CommitChange("feature/yes-budget", "feature.txt", "change\n", "add feature change")
+	fw := h.AddWorktree("feature/yes-budget")
+	if out, err := h.RunInDir(fw, "init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+
+	out, err := h.RunInDir(fw, "axi", "run", "--yes", "--intent", "wire the feature flag into the config loader")
+	if err != nil {
+		t.Fatalf("axi run --yes must exit cleanly when the fix budget is exhausted, got: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"leaving the run parked for explicit adjudication",
+		"gate:",
+		"status: fix_review",
+		"potential nil deref",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("budget-exhausted --yes output missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "outcome: passed") {
+		t.Errorf("budget-exhausted --yes must not report a passing outcome:\n%s", out)
+	}
+
+	// The run stays parked at the fix_review gate for a real decision.
+	parked := waitForStepStatus(t, h, "feature/yes-budget", types.StepReview, types.StepStatusFixReview, 30*time.Second)
+	if parked == nil {
+		t.Fatal("expected feature/yes-budget to stay parked at the review fix_review gate")
+	}
+	if parked.Status != types.RunRunning {
+		t.Errorf("run status = %s, want running (parked, not terminal)", parked.Status)
 	}
 }
 

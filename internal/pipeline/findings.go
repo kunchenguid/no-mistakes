@@ -249,6 +249,20 @@ func hasAskUserFindingsJSON(raw string) bool {
 	return types.HasAskUserFindings(findings)
 }
 
+// actionableFindingsCountJSON returns how many findings in raw carry an
+// actionable action (anything other than "no-op"). Unparseable or empty
+// findings count as zero.
+func actionableFindingsCountJSON(raw string) int {
+	if raw == "" {
+		return 0
+	}
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return 0
+	}
+	return types.CountActionableFindings(findings)
+}
+
 // combineSelectedFindingIDs returns the ordered list of finding IDs that
 // were dispatched to the fix agent: the user's selected agent-produced
 // IDs plus any user-authored finding IDs (which only appear in the merged

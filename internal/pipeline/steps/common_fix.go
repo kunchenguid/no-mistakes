@@ -113,35 +113,54 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 	return nil
 }
 
+// commitAgentFixes records everything the fix agent produced onto the run:
+// uncommitted worktree changes are staged and committed, and commits the agent
+// created itself are adopted by advancing the branch ref and the recorded run
+// head. Agents routinely self-commit (many repos' agent instructions demand
+// it); before adoption existed, a self-committing agent left the worktree
+// clean, the early "no agent changes to commit" return skipped the branch-ref
+// update, and the fix commit was stranded on the worktree's detached HEAD and
+// destroyed with the worktree while the run shipped without it.
+//
+// The continuity guard brackets the fix commit: the first call catches an
+// out-of-band clobber before anything is committed on top of it, and the
+// second call re-verifies ancestry against the live HEAD immediately before
+// adoption, so a reset that races the pipeline's own commit is also refused.
+// A forward HEAD move passes both checks and is adopted below.
 func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) error {
 	ctx := sctx.Ctx
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 		return err
 	}
+	var commitMessage string
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
-	if strings.TrimSpace(status) == "" {
-		sctx.Log("no agent changes to commit")
-		return nil
-	}
-	if summary == "" {
-		summary = fallbackSummary
-	}
-	if summary == "" {
-		summary = "apply fixes"
-	}
-	commitMessage, err := sctx.Config.Commit.RenderFixMessage(stepName, summary)
-	if err != nil {
-		return fmt.Errorf("render %s fix commit message: %w", stepName, err)
-	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
-		return fmt.Errorf("stage %s changes: %w", stepName, err)
-	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", commitMessage); err != nil {
-		return fmt.Errorf("commit %s changes: %w", stepName, err)
+	if strings.TrimSpace(status) != "" {
+		if summary == "" {
+			summary = fallbackSummary
+		}
+		if summary == "" {
+			summary = "apply fixes"
+		}
+		var err error
+		commitMessage, err = sctx.Config.Commit.RenderFixMessage(stepName, summary)
+		if err != nil {
+			return fmt.Errorf("render %s fix commit message: %w", stepName, err)
+		}
+		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+			return fmt.Errorf("stage %s changes: %w", stepName, err)
+		}
+		if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", commitMessage); err != nil {
+			return fmt.Errorf("commit %s changes: %w", stepName, err)
+		}
 	}
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
-		return fmt.Errorf("resolve head after %s commit: %w", stepName, err)
+		return fmt.Errorf("resolve head after %s fix round: %w", stepName, err)
+	}
+	recorded := strings.TrimSpace(sctx.Run.HeadSHA)
+	if headSHA == recorded {
+		sctx.Log("no agent changes to commit")
+		return nil
 	}
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 		return err
@@ -154,7 +173,11 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
 		return err
 	}
-	sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
+	if commitMessage != "" {
+		sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
+	} else {
+		sctx.Log(fmt.Sprintf("adopted agent-created commit(s): head advanced to %s", headSHA))
+	}
 	return nil
 }
 
