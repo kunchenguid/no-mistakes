@@ -142,7 +142,7 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 
 func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA string) (bool, error) {
 	ref := normalizedBranchRef(sctx.Run.Branch)
-	pushURL := sctx.Repo.PushURL()
+	pushURL := resolvePushURL(sctx)
 
 	// Anchor the force-with-lease to the head the run last recorded for this
 	// branch (what the pipeline last pushed/observed), NOT to a SHA freshly read

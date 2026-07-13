@@ -6,6 +6,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
 // reviewWorkload returns the bounded change size (files + net lines) between
@@ -130,4 +131,34 @@ func normalizedBranchRef(ref string) string {
 		return "refs/heads/" + ref
 	}
 	return ref
+}
+
+// resolveUpstreamURL returns the credentialled upstream URL to push or query.
+// It prefers the worktree's configured "origin" remote, which inherits the
+// full upstream URL (including any embedded credentials) from the gate's bare
+// repo via the shared common config. It falls back to the repo record's
+// upstream URL when origin cannot be resolved (e.g. a test worktree without
+// origin, or an older gate whose DB still carries the full URL).
+//
+// This separation lets the database and logs store a redacted URL while the
+// credential still reaches the git push/ls-remote argv that needs it.
+func resolveUpstreamURL(sctx *pipeline.StepContext) string {
+	if url, err := git.GetRemoteURL(sctx.Ctx, sctx.WorkDir, "origin"); err == nil && strings.TrimSpace(url) != "" {
+		return url
+	}
+	return sctx.Repo.UpstreamURL
+}
+
+// resolvePushURL returns the URL to push to: the fork when one is configured
+// (fork-based contributions, Repo.ForkURL set), else the credentialled upstream
+// resolved from the worktree's "origin" remote. The non-fork path resolves the
+// credential at run time so the redacted DB copy is never placed on the
+// push/ls-remote argv. Fork URLs carry no embedded credentials today, so the
+// fork path uses the repo record directly. In both cases callers wrap the URL
+// in safeurl.Redact before logging it.
+func resolvePushURL(sctx *pipeline.StepContext) string {
+	if sctx.Repo != nil && strings.TrimSpace(sctx.Repo.ForkURL) != "" {
+		return sctx.Repo.ForkURL
+	}
+	return resolveUpstreamURL(sctx)
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -630,9 +631,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// Persist the failure reason to the step's own log file. The error
 			// often carries the only detail of why the step failed (e.g. git
 			// stderr from a rejected push); without this the step log shows the
-			// work starting but never why it stopped.
-			fmt.Fprintf(logFile, "\nerror: %s\n", err.Error())
-			touchLogActivity("error: "+err.Error(), true)
+			// work starting but never why it stopped. Redact defensively so a
+			// credentialled upstream URL that slipped into a wrapped error can
+			// never land in the log file.
+			redactedErr := safeurl.RedactText(err.Error())
+			fmt.Fprintf(logFile, "\nerror: %s\n", redactedErr)
+			touchLogActivity("error: "+redactedErr, true)
 			if dbErr := e.db.FailStep(sr.ID, err.Error(), durationMS); dbErr != nil {
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}

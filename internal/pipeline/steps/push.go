@@ -56,7 +56,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	branch := strings.TrimPrefix(ref, "refs/heads/")
 
-	pushURL := sctx.Repo.PushURL()
+	pushURL := resolvePushURL(sctx)
 	pushTarget := "upstream"
 	usingFork := strings.TrimSpace(sctx.Repo.ForkURL) != ""
 	if usingFork {

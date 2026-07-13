@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/scm/github"
 )
@@ -88,6 +89,13 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 		}
 	}
 
+	// Redact embedded credentials for everything that is persisted, logged, or
+	// surfaced to the user. The bare gate keeps the full credentialled URL on
+	// its "origin" remote via provisionGate below so worktrees carved from it
+	// can still authenticate pushes; the push step resolves that credential
+	// from the worktree at run time instead of trusting the DB copy.
+	redactedUpstreamURL := safeurl.Redact(upstreamURL)
+
 	id := repoID(absRoot)
 	if existing != nil {
 		id = existing.ID
@@ -113,9 +121,9 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 	if existing != nil {
 		var repo *db.Repo
 		if forkURL != "" {
-			repo, err = d.UpdateRepoMetadataWithFork(existing.ID, upstreamURL, forkURL, branch)
+			repo, err = d.UpdateRepoMetadataWithFork(existing.ID, redactedUpstreamURL, forkURL, branch)
 		} else {
-			repo, err = d.UpdateRepoMetadata(existing.ID, upstreamURL, branch)
+			repo, err = d.UpdateRepoMetadata(existing.ID, redactedUpstreamURL, branch)
 		}
 		if err != nil {
 			return nil, false, fmt.Errorf("update repo metadata: %w", err)
@@ -125,7 +133,7 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 	}
 
 	// Insert repo record with deterministic ID.
-	repo, err := d.InsertRepoWithIDAndFork(id, absRoot, upstreamURL, forkURL, branch)
+	repo, err := d.InsertRepoWithIDAndFork(id, absRoot, redactedUpstreamURL, forkURL, branch)
 	if err != nil {
 		// Rollback: remove remote and bare repo.
 		git.RemoveRemote(ctx, absRoot, RemoteName)
@@ -133,7 +141,7 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 		return nil, false, fmt.Errorf("insert repo: %w", err)
 	}
 
-	slog.Info("gate initialized", "repo_id", id, "path", absRoot, "upstream", upstreamURL)
+	slog.Info("gate initialized", "repo_id", id, "path", absRoot, "upstream", redactedUpstreamURL)
 	return repo, true, nil
 }
 

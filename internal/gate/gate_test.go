@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -986,5 +987,63 @@ func TestInit_PostReceiveSurvivesHooksPathPoisoning(t *testing.T) {
 
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("post-receive did not fire after husky poisoned core.hookspath: %v", err)
+	}
+}
+
+// TestInitRedactsCredentialURL asserts that an origin URL carrying embedded
+// credentials (e.g. a fine-grained PAT) is stored redacted in the DB and in the
+// returned repo record, while the bare gate's "origin" remote keeps the full
+// credentialled URL so worktrees carved from it can still authenticate pushes.
+//
+// The upstream host is an unreachable loopback address so DefaultBranch's
+// ls-remote fails fast and falls back to "main" without real network I/O.
+func TestInitRedactsCredentialURL(t *testing.T) {
+	workDir := setupTestRepo(t)
+	const token = "ghp_secret_DO_NOT_LEAK"
+	credURL := "https://x-access-token:" + token + "@127.0.0.1:1/o/r.git"
+	if out, err := exec.Command("git", "-C", workDir, "remote", "set-url", "origin", credURL).CombinedOutput(); err != nil {
+		t.Fatalf("set credentialled origin: %v: %s", err, out)
+	}
+
+	nmRoot := t.TempDir()
+	p := paths.WithRoot(nmRoot)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	d := openTestDB(t, p)
+	ctx := context.Background()
+
+	repo, _, err := Init(ctx, d, p, workDir)
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// The returned repo record (and thus anything logged from it) must not
+	// carry the credential.
+	if strings.Contains(repo.UpstreamURL, token) {
+		t.Errorf("returned repo.UpstreamURL leaked credential: %q", repo.UpstreamURL)
+	}
+	if !strings.Contains(repo.UpstreamURL, "redacted@127.0.0.1:1/o/r.git") {
+		t.Errorf("expected redacted URL, got %q", repo.UpstreamURL)
+	}
+
+	// The persisted DB row must match the redacted form.
+	dbRepo, err := d.GetRepo(repo.ID)
+	if err != nil {
+		t.Fatalf("get repo: %v", err)
+	}
+	if strings.Contains(dbRepo.UpstreamURL, token) {
+		t.Errorf("DB repo.UpstreamURL leaked credential: %q", dbRepo.UpstreamURL)
+	}
+
+	// The bare gate's origin must still carry the full credential so pushes
+	// from carved worktrees can authenticate.
+	bareDir := p.RepoDir(repo.ID)
+	gateOrigin, err := gitpkg.GetRemoteURL(ctx, bareDir, "origin")
+	if err != nil {
+		t.Fatalf("get gate origin: %v", err)
+	}
+	if gateOrigin != credURL {
+		t.Errorf("gate origin = %q, want full credentialled URL %q (credential must be preserved for pushes)", gateOrigin, credURL)
 	}
 }
