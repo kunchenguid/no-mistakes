@@ -435,23 +435,21 @@ func branchFromRef(ref string) string {
 }
 
 // loadTrustedRepoConfig reads .no-mistakes.yaml from the trusted
-// default-branch commit (trustedSHA — the exact SHA startRun just fetched and
+// default-branch commit (trustedSHA - the exact SHA startRun just fetched and
 // resolved) in the worktree and parses it. Reading at a pinned SHA, rather
 // than the origin/<defaultBranch> remote-tracking ref, closes the stale-ref
 // hole: the gate worktree shares refs with the bare repo, so without a fresh
 // fetch + resolve the ref could point at a commit a previous run left behind.
 //
 // trustedSHA is empty when the default branch is unknown, the fetch failed,
-// or the ref did not resolve — every one of those failure modes returns nil
-// here so the caller (EffectiveRepoConfig) fails closed: the pushed branch's
-// commands and agent are dropped and the run proceeds on built-in defaults.
-// None of these are fatal, since the pushed-branch copy is still read for
-// non-executing fields.
+// or the ref did not resolve. The caller must first reject those cases with
+// assertGateTrustedConfigReadable; returning nil here remains defensive and
+// ensures EffectiveRepoConfig never uses pushed gate-control fields.
 func loadTrustedRepoConfig(ctx context.Context, wtDir, trustedSHA, runID string) *config.RepoConfig {
 	if trustedSHA == "" {
 		// No trusted SHA means no freshly-fetched default-branch commit to
 		// read from. Return nil so EffectiveRepoConfig forces empty
-		// commands/agent — the secure default — instead of falling back to a
+		// commands/agent - the secure default - instead of falling back to a
 		// potentially stale origin/<defaultBranch> ref.
 		return nil
 	}
@@ -476,7 +474,7 @@ func loadTrustedRepoConfig(ctx context.Context, wtDir, trustedSHA, runID string)
 // default-branch copy of .no-mistakes.yaml could not be READ at all. This is the
 // security correction for disable_project_settings: that field is a boundary
 // honored only from the trusted copy, so an unreadable trusted config must NOT
-// be silently treated as "not opted out" — no-mistakes cannot know whether the
+// be silently treated as "not opted out" - no-mistakes cannot know whether the
 // repo relies on the boundary, so it refuses to run rather than risk launching a
 // gate agent with the project instructions loaded.
 //
@@ -663,7 +661,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// EffectiveRepoConfig drops the pushed branch's commands/agent. Without
 	// the resolve, a stale origin/<defaultBranch> left in the shared bare
 	// repo by a previous run could serve a trusted copy that the live default
-	// branch has already removed — silently running stale shell.
+	// branch has already removed - silently running stale shell.
 	var trustedSHA string
 	if repo.DefaultBranch != "" {
 		if err := git.FetchRemoteBranch(ctx, wtDir, "origin", repo.DefaultBranch); err != nil {
@@ -709,9 +707,9 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// default-branch values unless the maintainer has explicitly opted in.
 	//
 	// allow_repo_commands is itself read ONLY from the trusted copy: a
-	// contributor cannot self-enable it from the pushed branch. With no
-	// trusted copy (fetch failed, no default branch, or no file on it) the
-	// opt-in is false and commands/agent are forced empty — fail closed.
+	// contributor cannot self-enable it from the pushed branch. A readable
+	// trusted tree with no config leaves the opt-in false and forces
+	// commands/agent empty. An unreadable trusted tree aborts below.
 	// SECURITY: a trusted-config fetch failure must abort, not silently disable
 	// the disable_project_settings opt-out (see assertGateTrustedConfigReadable).
 	if err := assertGateTrustedConfigReadable(ctx, wtDir, repo.DefaultBranch, trustedSHA); err != nil {

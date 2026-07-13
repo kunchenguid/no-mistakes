@@ -6,7 +6,13 @@ description: All fields for .no-mistakes.yaml.
 Per-repo configuration lives in `.no-mistakes.yaml` at the root of your repository.
 
 :::caution[Security: gate-control fields are read from the default branch]
-`commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists and `acp:` targets) with the maintainer's credentials. To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed). If the fetch fails, both fields are forced empty - the run proceeds on built-in defaults rather than falling back to a potentially stale or hostile copy. Commit the `commands` and `agent` you want the gate to run to your default branch. Non-executing fields (`ignore_patterns`, `auto_fix`, `intent`, `test`) are still read from the pushed branch. `document.instructions` is the exception: its documentation policy is also read only from the trusted default branch.
+`commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists and `acp:` targets) with the maintainer's credentials.
+To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
+The daemon also reads `document.instructions` and `disable_project_settings` only from that trusted copy.
+If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
+A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
+Commit the gate-control settings you want to your default branch.
+Non-executing fields (`ignore_patterns`, `auto_fix`, `intent`, `test`) are still read from the pushed branch.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -29,6 +35,10 @@ ignore_patterns:
 document:
   instructions: |
     docs/ owns detailed product guidance; README.md owns the introduction.
+
+# For orchestration repos whose project instructions would misidentify gate agents.
+# Read only from the trusted default branch. Defaults to false.
+disable_project_settings: true
 
 auto_fix:
   rebase: 3
@@ -90,6 +100,28 @@ Opt in to honoring the code-executing selection fields (`commands.{test,lint,for
 | Default | `false` |
 
 This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
+
+### disable_project_settings
+
+Suppress project-level agent settings and instructions for every gate-agent start and resumed session.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `false` |
+
+This opt-in is intended for agent-orchestration repositories whose `AGENTS.md`, `CLAUDE.md`, or harness-specific project settings would give a validation agent an operator identity and authority that it must not adopt.
+When enabled, no-mistakes suppresses the target checkout's project settings for every agent-driven gate step while preserving user-level agent configuration.
+Codex and Claude are the currently verified agents: Codex receives `project_doc_max_bytes=0` and `--ignore-rules`, while Claude loads only its user setting source.
+The setting applies to both new and resumed sessions.
+
+The gate fails before launching an agent if any resolved agent or fallback lacks a verified suppression mechanism.
+It also fails if `agent_args_override` defeats suppression, such as a nonzero Codex `project_doc_max_bytes` or Claude setting sources that include `project` or `local`.
+When this option is `false`, missing, or `null`, all agents retain their existing project-setting behavior.
+
+This field is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`.
+A pushed branch cannot enable it or disable a trusted opt-in.
+If the trusted commit or its present config file cannot be read and parsed, the run aborts rather than guessing that the option is disabled.
 
 ### commands.test
 

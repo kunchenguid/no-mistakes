@@ -916,21 +916,23 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // EffectiveRepoConfig returns the repo config that should drive the pipeline
 // given a pushed-branch copy and the trusted default-branch copy.
 //
-// The code-executing selection fields — Commands (run verbatim via sh -c on
+// The code-executing selection fields - Commands (run verbatim via sh -c on
 // the daemon host) and Agent/Agents (select which processes launch with the
-// maintainer's credentials, including fallback lists and acp: targets) — are
+// maintainer's credentials, including fallback lists and acp: targets) - are
 // taken only from the trusted copy when it is present, so a contributor's
 // pushed branch cannot inject shell or pick an agent. Document (the
 // documentation placement policy injected into the document gate prompt) is
 // trusted-only for the same reason: a pushed branch must not weaken the
-// documentation rules that gate itself. When allowRepoCommands is
+// documentation rules that gate itself. DisableProjectSettings is also
+// trusted-only so a pushed branch cannot enable or defeat the gate-agent
+// project-instruction boundary. When allowRepoCommands is
 // true the maintainer has explicitly opted in (via allow_repo_commands on the
 // TRUSTED default-branch copy) to honoring the pushed branch's commands and
 // agent selection.
 // When there is no trusted copy and the maintainer has not opted in, both
 // fields are forced empty (Agent "" and nil Agents inherit the global agent;
 // Commands{} yields built-in defaults) rather than falling back to the pushed
-// branch — this blocks the supply-chain vector for repos that ship
+// branch - this blocks the supply-chain vector for repos that ship
 // .no-mistakes.yaml only on feature branches.
 //
 // Non-executing fields (ignore patterns, auto-fix, intent, test) are always
