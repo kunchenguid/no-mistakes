@@ -33,6 +33,33 @@ func resolveSymlinks(t *testing.T, p string) string {
 	return resolved
 }
 
+// copyDirTree recursively copies src into dst (creating dst). It is a portable
+// stand-in for `cp -R`, which is unavailable on Windows.
+func copyDirTree(t *testing.T, src, dst string) {
+	t.Helper()
+	err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode().Perm())
+	})
+	if err != nil {
+		t.Fatalf("copy working dir: %v", err)
+	}
+}
+
 // setupTestRepo creates a git repo with an origin remote and returns its resolved path.
 func setupTestRepo(t *testing.T) string {
 	t.Helper()
@@ -588,9 +615,7 @@ func TestInitCreatesFreshGateForCopiedWorkingDir(t *testing.T) {
 	}
 
 	copyDir := filepath.Join(filepath.Dir(workDir), "copy")
-	if out, err := exec.Command("cp", "-R", workDir, copyDir).CombinedOutput(); err != nil {
-		t.Fatalf("copy working dir: %v: %s", err, out)
-	}
+	copyDirTree(t, workDir, copyDir)
 
 	second, created, err := Init(ctx, d, p, copyDir)
 	if err != nil {
@@ -873,7 +898,7 @@ func TestEjectCleansUpWorktrees(t *testing.T) {
 
 	// Create a fake worktree directory to verify cleanup.
 	wtDir := p.WorktreeDir(repo.ID, "fake-run-id")
-	if err := exec.Command("mkdir", "-p", wtDir).Run(); err != nil {
+	if err := os.MkdirAll(wtDir, 0o755); err != nil {
 		t.Fatalf("create worktree dir: %v", err)
 	}
 

@@ -10,10 +10,11 @@ import (
 
 // recordingAgent captures the RunOpts it was invoked with.
 type recordingAgent struct {
-	name     string
-	gotOpts  RunOpts
-	runCalls int
-	closed   bool
+	name      string
+	gotOpts   RunOpts
+	runCalls  int
+	closed    bool
+	resumable bool
 }
 
 func (r *recordingAgent) Name() string { return r.name }
@@ -28,6 +29,8 @@ func (r *recordingAgent) Close() error {
 	r.closed = true
 	return nil
 }
+
+func (r *recordingAgent) SupportsSessionResume() bool { return r.resumable }
 
 func TestWithSteering_PrependsPreamble(t *testing.T) {
 	inner := &recordingAgent{name: "claude"}
@@ -77,6 +80,13 @@ func TestWithSteering_DoesNotDoubleWrap(t *testing.T) {
 
 	if got := strings.Count(inner.gotOpts.Prompt, WorktreeSteering); got != 1 {
 		t.Errorf("steering preamble appeared %d times, want 1:\n%q", got, inner.gotOpts.Prompt)
+	}
+}
+
+func TestWithSteering_ForwardsSessionCapability(t *testing.T) {
+	steered := WithSteering(&recordingAgent{name: "codex", resumable: true})
+	if !SupportsSessionResume(steered) {
+		t.Fatal("steered resumable agent must remain resumable")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -119,6 +120,102 @@ func TestExecutor_AwaitingAgentMarkerSetOnGateClearedOnRespond(t *testing.T) {
 	}
 	if resumed.AwaitingAgentSince != nil {
 		t.Errorf("AwaitingAgentSince = %d after respond, want nil", *resumed.AwaitingAgentSince)
+	}
+}
+
+func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	stepResult, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(stepResult.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"needs a fix","action":"ask-user"}],"summary":"one issue"}`
+	if err := database.SetStepFindings(stepResult.ID, findings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertStepRound(stepResult.ID, 1, "initial", &findings, nil, 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpsertRunAgentSession(run.ID, string(SessionRoleReviewer), "fake", "reviewer-session"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpsertRunAgentSession(run.ID, string(SessionRoleFixer), "fake", "fixer-session"); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fake := newFakeSessionAgent()
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			if !sctx.Fixing {
+				return nil, fmt.Errorf("recovered gate must not rerun its completed review pass")
+			}
+			if _, err := sctx.RunAgentSession(SessionRoleFixer, agent.RunOpts{Prompt: "fix"}); err != nil {
+				return nil, err
+			}
+			if _, err := sctx.RunAgentSession(SessionRoleReviewer, agent.RunOpts{Prompt: "rereview"}); err != nil {
+				return nil, err
+			}
+			return &StepOutcome{}, nil
+		},
+	}
+	exec := NewExecutor(database, p, &config.Config{SessionReuse: true}, fake, []Step{step}, nil)
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Resume(context.Background(), run, repo, t.TempDir())
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"})
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("recovered gate never accepted a response: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovered executor timed out")
+	}
+
+	if len(fake.calls) != 2 {
+		t.Fatalf("agent invocations = %d, want fixer and rereviewer", len(fake.calls))
+	}
+	if fake.calls[0].session == nil || fake.calls[0].session.ID != "fixer-session" {
+		t.Fatalf("fixer session = %+v, want fixer-session", fake.calls[0].session)
+	}
+	if fake.calls[1].session == nil || fake.calls[1].session.ID != "reviewer-session" {
+		t.Fatalf("reviewer session = %+v, want reviewer-session", fake.calls[1].session)
+	}
+	resumed, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Status != types.RunCompleted || resumed.AwaitingAgentSince != nil {
+		t.Fatalf("recovered run = status %s awaiting %v, want completed and unparked", resumed.Status, resumed.AwaitingAgentSince)
 	}
 }
 

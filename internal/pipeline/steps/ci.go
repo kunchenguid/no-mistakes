@@ -17,6 +17,8 @@ import (
 const (
 	defaultChecksGracePeriod          = 60 * time.Second
 	defaultBaseBranchTipResolveWindow = 30 * time.Second
+	evidenceGistDeleteAttempts        = 3
+	evidenceGistDeleteRetryDelay      = 100 * time.Millisecond
 )
 
 // CI monitoring status messages. These are surfaced to the user and parsed by
@@ -188,9 +190,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			prStateKnown = false
 		} else if state == scm.PRStateMerged {
 			sctx.Log("PR has been merged!")
+			s.pruneEvidenceGistsAfterTerminalPR(sctx, host)
 			return &pipeline.StepOutcome{}, nil
 		} else if state == scm.PRStateClosed {
 			sctx.Log("PR has been closed")
+			s.pruneEvidenceGistsAfterTerminalPR(sctx, host)
 			return &pipeline.StepOutcome{}, nil
 		}
 
@@ -349,6 +353,62 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 	}
+}
+
+func (s *CIStep) pruneEvidenceGistsAfterTerminalPR(sctx *pipeline.StepContext, host scm.Host) {
+	if sctx == nil || sctx.DB == nil || host == nil || !host.Capabilities().SecretGists {
+		return
+	}
+	gistHost, ok := host.(scm.SecretGistHost)
+	if !ok {
+		return
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		sctx.Log(fmt.Sprintf("warning: could not load evidence gist cleanup state: %v", err))
+		return
+	}
+	if run == nil || len(run.EvidenceGistIDs) == 0 {
+		return
+	}
+
+	failed := make([]string, 0, len(run.EvidenceGistIDs))
+	for _, id := range run.EvidenceGistIDs {
+		if err := deleteGistWithRetry(sctx.Ctx, gistHost, id); err != nil {
+			sctx.Log(fmt.Sprintf("warning: could not delete evidence gist %s after PR terminal state: %v", id, err))
+			failed = append(failed, id)
+			continue
+		}
+		sctx.Log(fmt.Sprintf("deleted evidence gist %s after PR terminal state", id))
+	}
+
+	if err := sctx.DB.SetRunEvidenceGistIDs(run.ID, failed); err != nil {
+		sctx.Log(fmt.Sprintf("warning: could not update evidence gist cleanup state: %v", err))
+		return
+	}
+	sctx.Run.EvidenceGistIDs = failed
+}
+
+func deleteGistWithRetry(ctx context.Context, host scm.SecretGistHost, id string) error {
+	var lastErr error
+	for attempt := 1; attempt <= evidenceGistDeleteAttempts; attempt++ {
+		if err := host.DeleteGist(ctx, id); err != nil {
+			lastErr = err
+		} else {
+			return nil
+		}
+		if attempt == evidenceGistDeleteAttempts {
+			break
+		}
+		timer := time.NewTimer(evidenceGistDeleteRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return lastErr
 }
 
 func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) string {

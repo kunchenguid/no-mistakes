@@ -36,8 +36,9 @@ func newAxiCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackAxiSurface("axi-home", "/axi", nil, func() error {
-				return runAxiHome(cmd)
+			return trackReadSurface("axi-home", nil, func() (string, string, error) {
+				fingerprint, err := runAxiHome(cmd)
+				return fingerprint, "", err
 			})
 		},
 	}
@@ -134,11 +135,12 @@ func openAxiEnvWithOptions(opts axiEnvOptions) (*axiEnv, error) {
 
 // runAxiHome renders the content-first home view: tool identity, repo, daemon
 // state, the active run (if any) with its gate, and recent runs - all from the
-// local database so it works whether or not the daemon is running.
-func runAxiHome(cmd *cobra.Command) error {
+// local database so it works whether or not the daemon is running. It returns
+// a low-cardinality state fingerprint for telemetry dedupe of repeated calls.
+func runAxiHome(cmd *cobra.Command) (string, error) {
 	env, err := openAxiEnv(false)
 	if err != nil {
-		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
+		return "", emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 	}
 	defer env.close()
 
@@ -164,7 +166,7 @@ func runAxiHome(cmd *cobra.Command) error {
 	if branch != "" {
 		currentActive, err = env.d.GetActiveRun(env.repo.ID, branch)
 		if err != nil {
-			return emitError(cmd, 1, fmt.Sprintf("check current-branch active run: %v", err))
+			return "", emitError(cmd, 1, fmt.Sprintf("check current-branch active run: %v", err))
 		}
 	}
 
@@ -172,7 +174,7 @@ func runAxiHome(cmd *cobra.Command) error {
 	if currentActive == nil {
 		otherActive, err = env.d.GetActiveRun(env.repo.ID, "")
 		if err != nil {
-			return emitError(cmd, 1, fmt.Sprintf("check repo active run: %v", err))
+			return "", emitError(cmd, 1, fmt.Sprintf("check repo active run: %v", err))
 		}
 		if otherActive != nil && otherActive.Branch == branch {
 			otherActive = nil
@@ -180,6 +182,7 @@ func runAxiHome(cmd *cobra.Command) error {
 	}
 
 	gated := false
+	fingerprint := env.repo.ID + "|" + daemonState
 	if currentActive != nil {
 		steps, _ := env.d.GetStepsByRun(currentActive.ID)
 		rv := runViewFromDB(currentActive, steps)
@@ -189,18 +192,23 @@ func runAxiHome(cmd *cobra.Command) error {
 			gated = true
 			fields = append(fields, gateFields(gate)...)
 		}
+		fingerprint += "|" + runStateFingerprint(rv)
 	} else if otherActive != nil {
 		steps, _ := env.d.GetStepsByRun(otherActive.ID)
 		rv := runViewFromDB(otherActive, steps)
 		annotateRunView(env, &rv)
 		fields = append(fields, runObjectFieldWithKey("other_branch_active_run", rv))
+		fingerprint += "|other:" + runStateFingerprint(rv)
+	} else {
+		fingerprint += "|idle"
 	}
 
 	runs, err := env.d.GetRunsByRepo(env.repo.ID)
 	if err != nil {
-		return emitError(cmd, 1, fmt.Sprintf("list runs: %v", err))
+		return "", emitError(cmd, 1, fmt.Sprintf("list runs: %v", err))
 	}
 	fields = append(fields, runsFields(runs, recentRunsHomeLimit)...)
+	fingerprint += "|runs:" + renderedRunsFingerprint(runs, recentRunsHomeLimit)
 
 	help := []string{}
 	switch {
@@ -215,11 +223,12 @@ func runAxiHome(cmd *cobra.Command) error {
 		help = append(help, "Run `no-mistakes axi status` to inspect the active run")
 	}
 	help = append(help, preserveGateFixCommitsGuidance)
+	help = append(help, "The calling agent drives AXI gates but does not replace the configured pipeline agent; run `no-mistakes doctor` if no native agent or ACP runner is available")
 	help = append(help, "How to drive the pipeline: `no-mistakes axi run --help`, or the `/no-mistakes` skill (loaded when you invoke `/no-mistakes`)")
 	fields = append(fields, toon.Field{Key: "help", Value: help})
 
 	emitDoc(cmd, fields...)
-	return nil
+	return fingerprint, nil
 }
 
 // runsFields renders a recent-runs table with an aggregate count, showing at
@@ -244,6 +253,23 @@ func runsFields(runs []*db.Run, limit int) []toon.Field {
 		{Key: "count", Value: fmt.Sprintf("%d of %d total", len(shown), len(runs))},
 		{Key: "runs", Value: rows},
 	}
+}
+
+func renderedRunsFingerprint(runs []*db.Run, limit int) string {
+	shown := runs
+	if limit > 0 && len(shown) > limit {
+		shown = shown[:limit]
+	}
+	values := make([]string, 0, 1+len(shown)*5)
+	values = append(values, fmt.Sprintf("count:%d", len(runs)))
+	for _, r := range shown {
+		pr := ""
+		if r.PRURL != nil {
+			pr = *r.PRURL
+		}
+		values = append(values, r.ID, r.Branch, string(r.Status), r.HeadSHA, pr)
+	}
+	return strings.Join(values, "\x00")
 }
 
 // repoInitHelp returns an actionable hint when the failure is an uninitialized

@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -149,7 +151,7 @@ func (h *Host) Available(ctx context.Context) error {
 	if h.host != "" {
 		authArgs = append(authArgs, "--hostname", h.host)
 	}
-	if err := h.cmd(ctx, "gh", authArgs...).Run(); err != nil {
+	if err := scm.RunAuthProbe(func() *exec.Cmd { return h.cmd(ctx, "gh", authArgs...) }); err != nil {
 		return errors.New("gh CLI is not authenticated")
 	}
 	return nil
@@ -361,8 +363,41 @@ func (h *Host) CreateSecretGist(ctx context.Context, filePaths []string) (*scm.S
 	if len(filePaths) == 0 {
 		return nil, errors.New("no gist files")
 	}
-	args := append([]string{"gist", "create", "--secret"}, filePaths...)
+	args := append([]string{"gist", "create"}, filePaths...)
 	cmd := h.cmd(ctx, "gh", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "binary file not supported") {
+			return h.createSecretGistViaGit(ctx, filePaths)
+		}
+		return nil, fmt.Errorf("gh gist create: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	gistURL := strings.TrimSpace(string(out))
+	id := gistIDFromURL(gistURL)
+	if id == "" {
+		return nil, fmt.Errorf("gh gist create: could not parse gist id from %q", gistURL)
+	}
+	gist := &scm.SecretGist{ID: id, URL: gistURL}
+	files, err := h.fetchGistFiles(ctx, id)
+	if err != nil {
+		return gist, err
+	}
+	gist.Files = files
+	return gist, nil
+}
+
+func (h *Host) createSecretGistViaGit(ctx context.Context, filePaths []string) (*scm.SecretGist, error) {
+	stageDir, err := os.MkdirTemp("", "no-mistakes-gist-*")
+	if err != nil {
+		return nil, fmt.Errorf("stage gist files: %w", err)
+	}
+	defer os.RemoveAll(stageDir)
+
+	seedPath := filepath.Join(stageDir, "README.md")
+	if err := os.WriteFile(seedPath, []byte("no-mistakes evidence\n"), 0o644); err != nil {
+		return nil, fmt.Errorf("write gist seed: %w", err)
+	}
+	cmd := h.cmd(ctx, "gh", "gist", "create", seedPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("gh gist create: %s: %w", strings.TrimSpace(string(out)), err)
@@ -372,6 +407,34 @@ func (h *Host) CreateSecretGist(ctx context.Context, filePaths []string) (*scm.S
 	if id == "" {
 		return nil, fmt.Errorf("gh gist create: could not parse gist id from %q", gistURL)
 	}
+
+	cloneDir := filepath.Join(stageDir, "gist")
+	if out, err := h.cmd(ctx, "git", "clone", "https://gist.github.com/"+id+".git", cloneDir).CombinedOutput(); err != nil {
+		return &scm.SecretGist{ID: id, URL: gistURL}, fmt.Errorf("git clone gist %s: %s: %w", id, strings.TrimSpace(string(out)), err)
+	}
+	for _, src := range filePaths {
+		data, err := os.ReadFile(src)
+		if err != nil {
+			return &scm.SecretGist{ID: id, URL: gistURL}, fmt.Errorf("read gist file %s: %w", src, err)
+		}
+		name := filepath.Base(src)
+		if name == "." || name == string(filepath.Separator) || name == "" {
+			return &scm.SecretGist{ID: id, URL: gistURL}, fmt.Errorf("invalid gist file path %q", src)
+		}
+		if err := os.WriteFile(filepath.Join(cloneDir, name), data, 0o644); err != nil {
+			return &scm.SecretGist{ID: id, URL: gistURL}, fmt.Errorf("stage gist file %s: %w", src, err)
+		}
+	}
+	if out, err := h.cmd(ctx, "git", "-C", cloneDir, "add", ".").CombinedOutput(); err != nil {
+		return &scm.SecretGist{ID: id, URL: gistURL}, fmt.Errorf("git add gist files: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	if out, err := h.cmd(ctx, "git", "-C", cloneDir, "-c", "user.name=no-mistakes evidence", "-c", "user.email=no-mistakes@example.invalid", "commit", "-m", "Add no-mistakes evidence").CombinedOutput(); err != nil {
+		return &scm.SecretGist{ID: id, URL: gistURL}, fmt.Errorf("git commit gist files: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	if out, err := h.cmd(ctx, "git", "-C", cloneDir, "push", "origin", "HEAD").CombinedOutput(); err != nil {
+		return &scm.SecretGist{ID: id, URL: gistURL}, fmt.Errorf("git push gist files: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
 	gist := &scm.SecretGist{ID: id, URL: gistURL}
 	files, err := h.fetchGistFiles(ctx, id)
 	if err != nil {

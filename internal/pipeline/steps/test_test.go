@@ -30,7 +30,7 @@ func TestTestStep_FixMode(t *testing.T) {
 			return &agent.Result{Output: json.RawMessage(`{"summary":"  \"fix test failures.\"  "}`)}, nil
 		},
 	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "true"})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
 	sctx.Fixing = true
 	sctx.PreviousFindings = previousFindings
 
@@ -89,7 +89,7 @@ func TestTestStep_FixMode_UsesFallbackSummaryWhenStructuredSummaryMalformed(t *t
 			return &agent.Result{Output: json.RawMessage(`{"not_summary":"oops"}`)}, nil
 		},
 	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "true"})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
 	sctx.Fixing = true
 	sctx.PreviousFindings = `{"findings":[{"severity":"error","description":"tests failed"}],"summary":"tests failed"}`
 
@@ -120,7 +120,7 @@ func TestTestStep_FixMode_AgentWritesNewTests_NeedsApproval(t *testing.T) {
 			return &agent.Result{Output: json.RawMessage(`{"summary":"add regression test"}`)}, nil
 		},
 	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "true"})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
 	sctx.Fixing = true
 
 	step := &TestStep{}

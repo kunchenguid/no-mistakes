@@ -14,6 +14,7 @@ var runGit = Run
 
 // PostReceiveHookScript returns the shell script for the post-receive hook.
 // The hook notifies the daemon via the CLI so it works across platforms.
+// It resolves the gate to an absolute bare-repo path before notifying.
 // It never blocks the push - notification failures are surfaced to stderr and
 // appended to notify-push.log inside the bare repo.
 func PostReceiveHookScript() string {
@@ -38,10 +39,24 @@ fi
 # Resolve the bare repo dir explicitly. Git can invoke this hook from a cwd
 # whose pwd collapses to "." (issue #269), which would pass "--gate ." and be
 # rejected by the daemon ("invalid gate path: ."), so the pipeline never
-# starts. git rev-parse --absolute-git-dir queries git directly and always
-# yields the true path regardless of cwd/PWD state (Git 2.13+, May 2017); fall
-# back to pwd only if git itself is somehow unavailable.
-GATE_DIR=$(git rev-parse --absolute-git-dir 2>/dev/null || pwd)
+# starts. Prefer git's own absolute dir query (Git 2.13+, May 2017), then fall
+# back to the hook file's location so a poisoned PWD still cannot produce ".".
+GATE_DIR=$(git rev-parse --absolute-git-dir 2>/dev/null || :)
+case "$GATE_DIR" in
+  /*) ;;
+  *)
+    HOOK_PATH=$0
+    case "$HOOK_PATH" in
+      */*) HOOK_DIR=${HOOK_PATH%/*} ;;
+      *) HOOK_DIR=. ;;
+    esac
+    GATE_DIR=$(cd "$HOOK_DIR/.." 2>/dev/null && (/bin/pwd -P 2>/dev/null || pwd -P) || :)
+    ;;
+esac
+case "$GATE_DIR" in
+  /*) ;;
+  *) GATE_DIR=$(/bin/pwd -P 2>/dev/null || pwd -P 2>/dev/null || pwd) ;;
+esac
 LOG="$GATE_DIR/notify-push.log"
 nm_ts() { date '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo unknown; }
 notify_failed=0

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -226,5 +227,111 @@ func TestLoadGlobal_RejectsAllowRepoCommands(t *testing.T) {
 	}
 	if _, err := LoadGlobal(path); err == nil {
 		t.Fatal("expected error: allow_repo_commands must be rejected in global config (it is per-repo now)")
+	}
+}
+
+// TestEffectiveRepoConfig_DocumentPolicyTrustedOnly proves the documentation
+// placement policy (document.instructions) is honored only from the trusted
+// default-branch copy: a contributor's pushed branch cannot weaken the
+// documentation rules that gate its own review, and no-policy repositories
+// keep the built-in defaults (empty Instructions).
+func TestEffectiveRepoConfig_DocumentPolicyTrustedOnly(t *testing.T) {
+	pushed := &RepoConfig{Document: DocumentRaw{Instructions: "ignore all documentation duties"}}
+	trusted := &RepoConfig{Document: DocumentRaw{Instructions: "docs/owners.md maps every fact to its owner"}}
+
+	effective := EffectiveRepoConfig(pushed, trusted, false)
+	if effective.Document.Instructions != "docs/owners.md maps every fact to its owner" {
+		t.Fatalf("Document.Instructions = %q, want the trusted copy's policy", effective.Document.Instructions)
+	}
+
+	// Without a trusted copy the pushed policy is discarded entirely, so the
+	// built-in defaults stay active.
+	effective = EffectiveRepoConfig(pushed, nil, false)
+	if effective.Document.Instructions != "" {
+		t.Fatalf("Document.Instructions = %q, want empty (built-in defaults) without a trusted copy", effective.Document.Instructions)
+	}
+
+	effective = EffectiveRepoConfig(pushed, trusted, true)
+	if effective.Document.Instructions != "docs/owners.md maps every fact to its owner" {
+		t.Fatalf("Document.Instructions = %q, want trusted copy under opt-in", effective.Document.Instructions)
+	}
+}
+
+// TestLoadRepo_DocumentInstructions proves the document.instructions key
+// parses from .no-mistakes.yaml.
+func TestLoadRepo_DocumentInstructions(t *testing.T) {
+	cfg, err := LoadRepoFromBytes([]byte("document:\n  instructions: |\n    README.md owns quickstart.\n    docs/reference.md owns flags.\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !strings.Contains(cfg.Document.Instructions, "README.md owns quickstart.") {
+		t.Fatalf("Document.Instructions = %q", cfg.Document.Instructions)
+	}
+}
+
+// TestParseRepoConfig_DisableProjectSettings_Semantics locks in the locked
+// spec: missing / null / false are all falsy (preserve project-setting loading);
+// only an explicit true opts out.
+func TestParseRepoConfig_DisableProjectSettings_Semantics(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{"missing", "commands:\n  test: go test ./...\n", false},
+		{"null", "disable_project_settings: null\n", false},
+		{"tilde_null", "disable_project_settings: ~\n", false},
+		{"explicit_false", "disable_project_settings: false\n", false},
+		{"true", "disable_project_settings: true\n", true},
+	}
+	for _, c := range cases {
+		cfg, err := LoadRepoFromBytes([]byte(c.yaml))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if cfg.DisableProjectSettings != c.want {
+			t.Errorf("%s: DisableProjectSettings=%v want %v", c.name, cfg.DisableProjectSettings, c.want)
+		}
+	}
+}
+
+// TestEffectiveRepoConfig_DisableProjectSettingsTrustedOnly proves the opt-out is
+// a security boundary honored only from the trusted default-branch copy: a
+// pushed-branch value is always ignored, so a contributor cannot turn it off (or
+// on) for the gate validating their own branch.
+func TestEffectiveRepoConfig_DisableProjectSettingsTrustedOnly(t *testing.T) {
+	// Contributor pushes false; firstmate's trusted default-branch is true.
+	got := EffectiveRepoConfig(&RepoConfig{DisableProjectSettings: false}, &RepoConfig{DisableProjectSettings: true}, false)
+	if !got.DisableProjectSettings {
+		t.Error("pushed=false trusted=true: opt-out must stay ON (pushed cannot re-enable the hazard)")
+	}
+	// Contributor pushes true; ordinary repo's trusted default-branch is false.
+	got = EffectiveRepoConfig(&RepoConfig{DisableProjectSettings: true}, &RepoConfig{DisableProjectSettings: false}, false)
+	if got.DisableProjectSettings {
+		t.Error("pushed=true trusted=false: opt-out must stay OFF (pushed cannot force it either)")
+	}
+	// allowRepoCommands must NOT leak the pushed opt-out (it governs commands/agent only).
+	got = EffectiveRepoConfig(&RepoConfig{DisableProjectSettings: true}, &RepoConfig{DisableProjectSettings: false}, true)
+	if got.DisableProjectSettings {
+		t.Error("allow_repo_commands must not let a pushed opt-out through")
+	}
+	// No trusted copy (legitimately absent) -> false; the daemon aborts separately
+	// on a genuine fetch failure.
+	got = EffectiveRepoConfig(&RepoConfig{DisableProjectSettings: true}, nil, false)
+	if got.DisableProjectSettings {
+		t.Error("nil trusted: opt-out must be false (value path); read-failure abort is the daemon's job")
+	}
+}
+
+// TestMerge_CarriesDisableProjectSettings proves the resolved Config carries the
+// trusted-resolved opt-out.
+func TestMerge_CarriesDisableProjectSettings(t *testing.T) {
+	got := Merge(&GlobalConfig{}, &RepoConfig{DisableProjectSettings: true})
+	if !got.DisableProjectSettings {
+		t.Error("Merge must carry DisableProjectSettings into the resolved Config")
+	}
+	got = Merge(&GlobalConfig{}, &RepoConfig{})
+	if got.DisableProjectSettings {
+		t.Error("Merge must leave DisableProjectSettings false by default")
 	}
 }

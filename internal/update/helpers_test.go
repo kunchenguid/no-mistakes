@@ -5,8 +5,33 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"fmt"
+	"os"
 	"testing"
 )
+
+func TestMain(m *testing.M) {
+	root, err := os.MkdirTemp("", "nm-update-test-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create test NM_HOME: %v\n", err)
+		os.Exit(1)
+	}
+	home, err := os.MkdirTemp("", "nm-update-home-")
+	if err != nil {
+		_ = os.RemoveAll(root)
+		fmt.Fprintf(os.Stderr, "create test HOME: %v\n", err)
+		os.Exit(1)
+	}
+	_ = os.Setenv("NM_HOME", root)
+	_ = os.Setenv("HOME", home)
+	_ = os.Setenv("NO_MISTAKES_TELEMETRY", "off")
+
+	code := m.Run()
+
+	_ = os.RemoveAll(root)
+	_ = os.RemoveAll(home)
+	os.Exit(code)
+}
 
 func stringsRepeat(s string, count int) string {
 	buf := bytes.NewBuffer(nil)

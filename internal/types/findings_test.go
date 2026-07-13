@@ -236,19 +236,44 @@ func TestAutoFixableFindings_NoOpExcluded(t *testing.T) {
 	}
 }
 
-func TestAutoFixableFindings_EmptyActionDefaultsToAutoFix(t *testing.T) {
+// An empty/missing action must NOT be auto-fixed. It fails closed to ask-user
+// (park) so an unclassified finding routes to a human instead of being
+// silently auto-applied.
+func TestAutoFixableFindings_EmptyActionIsNotAutoFixable(t *testing.T) {
 	f := Findings{
 		Items: []Finding{
 			{ID: "f1", Severity: "error", Description: "bug"},
-			{ID: "f2", Severity: "warning", Description: "needs approval", Action: ActionAskUser},
+			{ID: "f2", Severity: "warning", Description: "explicit fix", Action: ActionAutoFix},
 		},
 	}
 	fixable := AutoFixableFindings(f)
 	if len(fixable.Items) != 1 {
-		t.Fatalf("Items count = %d, want 1", len(fixable.Items))
+		t.Fatalf("Items count = %d, want 1 (only the explicit auto-fix)", len(fixable.Items))
 	}
-	if fixable.Items[0].ID != "f1" {
-		t.Errorf("Items[0].ID = %q, want %q", fixable.Items[0].ID, "f1")
+	if fixable.Items[0].ID != "f2" {
+		t.Errorf("Items[0].ID = %q, want %q", fixable.Items[0].ID, "f2")
+	}
+}
+
+// A finding with no action field (a non-schema path that omits it) must fail
+// closed: never auto-fixed, always caught as ask-user so it parks for a human.
+func TestEmptyActionFindingFailsClosedToAskUser(t *testing.T) {
+	raw := `{"findings":[{"severity":"error","description":"unclassified finding with no action"}]}`
+	f, err := ParseFindingsJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Items) != 1 {
+		t.Fatalf("Items count = %d, want 1", len(f.Items))
+	}
+	if f.Items[0].Action != "" {
+		t.Fatalf("expected action to remain empty on the wire, got %q", f.Items[0].Action)
+	}
+	if len(AutoFixableFindings(f).Items) != 0 {
+		t.Error("empty-action finding must not be auto-fixable")
+	}
+	if !HasAskUserFindings(f) {
+		t.Error("empty-action finding must be caught as ask-user (park)")
 	}
 }
 
@@ -262,6 +287,8 @@ func TestHasAskUserFindings(t *testing.T) {
 		{"only auto-fix", []Finding{{Action: ActionAutoFix}}, false},
 		{"only no-op", []Finding{{Action: ActionNoOp}}, false},
 		{"mixed", []Finding{{Action: ActionAutoFix}, {Action: ActionAskUser}}, true},
+		{"empty action defaults to ask-user", []Finding{{Action: ""}}, true},
+		{"mixed with empty action", []Finding{{Action: ActionAutoFix}, {Action: ""}}, true},
 		{"empty", nil, false},
 	}
 	for _, tt := range tests {
@@ -282,7 +309,7 @@ func TestHasActionableFindings(t *testing.T) {
 	}{
 		{"has ask-user", []Finding{{Action: ActionAskUser}}, true},
 		{"has auto-fix", []Finding{{Action: ActionAutoFix}}, true},
-		{"empty action defaults to auto-fix", []Finding{{Action: ""}}, true},
+		{"empty action defaults to ask-user (still actionable)", []Finding{{Action: ""}}, true},
 		{"only no-op", []Finding{{Action: ActionNoOp}}, false},
 		{"all no-op", []Finding{{Action: ActionNoOp}, {Action: ActionNoOp}}, false},
 		{"mixed no-op and ask-user", []Finding{{Action: ActionNoOp}, {Action: ActionAskUser}}, true},

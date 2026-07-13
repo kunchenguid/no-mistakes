@@ -30,6 +30,6 @@ func listen(endpoint string) (net.Listener, error) {
 	return ln, err
 }
 
-func dial(endpoint string) (net.Conn, error) {
-	return net.Dial("unix", endpoint)
+func dial(endpoint string, timeout time.Duration) (net.Conn, error) {
+	return dialNetworkWithTimeout("unix", endpoint, timeout)
 }

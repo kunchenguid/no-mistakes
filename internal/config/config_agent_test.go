@@ -85,11 +85,12 @@ func TestParseLogLevel(t *testing.T) {
 }
 
 func TestResolveAgent_ExplicitAgent(t *testing.T) {
-	// When agent is explicitly set (not auto), ResolveAgent returns it as-is.
 	cfg := &Config{Agent: types.AgentCodex}
-	err := cfg.ResolveAgent(context.Background(), func(string) (string, error) {
-		t.Fatal("lookPath should not be called for explicit agent")
-		return "", nil
+	err := cfg.ResolveAgent(context.Background(), func(bin string) (string, error) {
+		if bin != "codex" {
+			t.Fatalf("lookPath(%q), want codex", bin)
+		}
+		return "/usr/local/bin/codex", nil
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -99,17 +100,49 @@ func TestResolveAgent_ExplicitAgent(t *testing.T) {
 	}
 }
 
+func TestResolveAgent_ExplicitAgentMustBeRunnable(t *testing.T) {
+	cfg := &Config{Agent: types.AgentCodex}
+	err := cfg.ResolveAgent(context.Background(), func(bin string) (string, error) {
+		return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
+	})
+	if err == nil {
+		t.Fatal("expected unavailable explicit agent to fail resolution")
+	}
+	for _, want := range []string{"no runnable agent", "codex", "gate cannot validate"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("ResolveAgent() error should contain %q, got: %v", want, err)
+		}
+	}
+}
+
 func TestResolveAgent_ExplicitACPAgent(t *testing.T) {
 	cfg := &Config{Agent: "acp:gemini"}
-	err := cfg.ResolveAgent(context.Background(), func(string) (string, error) {
-		t.Fatal("lookPath should not be called for explicit acp agent")
-		return "", nil
+	err := cfg.ResolveAgent(context.Background(), func(bin string) (string, error) {
+		if bin != "acpx" {
+			t.Fatalf("lookPath(%q), want acpx", bin)
+		}
+		return "/usr/local/bin/acpx", nil
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.Agent != "acp:gemini" {
 		t.Errorf("agent = %q, want %q", cfg.Agent, "acp:gemini")
+	}
+}
+
+func TestResolveAgent_ExplicitACPAgentMustHaveACPX(t *testing.T) {
+	cfg := &Config{Agent: "acp:gemini"}
+	err := cfg.ResolveAgent(context.Background(), func(bin string) (string, error) {
+		return "", &exec.Error{Name: bin, Err: exec.ErrNotFound}
+	})
+	if err == nil {
+		t.Fatal("expected ACP agent without acpx to fail resolution")
+	}
+	for _, want := range []string{"no runnable agent", "acp:gemini", "acpx", "gate cannot validate"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("ResolveAgent() error should contain %q, got: %v", want, err)
+		}
 	}
 }
 
@@ -361,8 +394,8 @@ func TestResolveAgent_AutoNoneAvailable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no agents found")
 	}
-	if !strings.Contains(err.Error(), "no supported agent found") {
-		t.Errorf("expected 'no supported agent found' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "no runnable agent found") {
+		t.Errorf("expected 'no runnable agent found' in error, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "config") {
 		t.Errorf("expected config guidance in error, got: %v", err)

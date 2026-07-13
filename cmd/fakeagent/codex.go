@@ -173,8 +173,10 @@ func filterStructuredToSchema(structured map[string]any, schemaPath string) (map
 }
 
 // extractCodexPrompt finds the prompt positional. Real codex argv is
-// `codex exec [user-flags...] <prompt> --json [...]`. The prompt is the
-// first non-flag, non-flag-value positional after "exec".
+// `codex exec [user-flags...] <prompt> --json [...]` for a fresh session and
+// `codex exec resume [user-flags...] <session-id> <prompt> --json [...]` for
+// a session-resume turn, so on resume the prompt is the positional after the
+// session id.
 func extractCodexPrompt(args []string) string {
 	flagsWithValues := map[string]bool{
 		"-m": true, "--model": true,
@@ -191,6 +193,7 @@ func extractCodexPrompt(args []string) string {
 			break
 		}
 	}
+	var positionals []string
 	for i := start; i < len(args); i++ {
 		a := args[i]
 		if flagsWithValues[a] {
@@ -200,7 +203,16 @@ func extractCodexPrompt(args []string) string {
 		if len(a) > 0 && a[0] == '-' {
 			continue
 		}
-		return a
+		positionals = append(positionals, a)
 	}
-	return ""
+	if len(positionals) == 0 {
+		return ""
+	}
+	if positionals[0] == "resume" {
+		if len(positionals) >= 3 {
+			return positionals[2] // resume <session-id> <prompt>
+		}
+		return "" // resume without id+prompt is not a shape no-mistakes emits
+	}
+	return positionals[0]
 }

@@ -24,6 +24,8 @@ type copilotAgent struct {
 
 func (a *copilotAgent) Name() string { return "copilot" }
 
+func (a *copilotAgent) ReportsAgentAttempts() bool { return true }
+
 func (a *copilotAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "copilot", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
@@ -270,7 +272,7 @@ func parseCopilotEvents(
 			if event.Data == nil {
 				continue
 			}
-			usage.Add(TokenUsage{OutputTokens: event.Data.OutputTokens})
+			usage.Add(TokenUsage{OutputTokens: event.Data.OutputTokens, Reported: true})
 			if event.Data.Content != "" && messages != nil {
 				*messages = append(*messages, event.Data.Content)
 			}

@@ -18,6 +18,8 @@ type opencodeAgent struct {
 
 func (a *opencodeAgent) Name() string { return "opencode" }
 
+func (a *opencodeAgent) ReportsAgentAttempts() bool { return true }
+
 func (a *opencodeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "opencode", opts, claudeMaxRetries, classifyTransient, a.recoverTransientRetry, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
@@ -165,9 +167,11 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 	// Prefer structured output from response
 	if mr.resp != nil && mr.resp.Info != nil && mr.resp.Info.Structured != nil {
 		return &Result{
-			Output: mr.resp.Info.Structured,
-			Text:   state.lastText,
-			Usage:  state.usage,
+			Output:                mr.resp.Info.Structured,
+			Text:                  state.lastText,
+			Usage:                 state.usage,
+			UsageReported:         state.usage.Reported,
+			CacheCreationReported: state.usage.CacheCreationReported,
 		}, nil
 	}
 

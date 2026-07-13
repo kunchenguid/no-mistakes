@@ -40,7 +40,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 | 3 | **Review** | AI code review of your diff | `0` (requires approval) |
 | 4 | **Test** | Run baseline tests and gather evidence for available intent | `3` |
 | 5 | **Document** | Update docs when needed and report unresolved gaps | initial pass |
-| 6 | **Lint** | Run lint/static analysis | `3` |
+| 6 | **Lint** | Run lint/static analysis; shares the document step's initial housekeeping pass when no lint command is configured | `3` |
 | 7 | **Push** | Safely push the validated branch to the configured target | n/a |
 | 8 | **PR** | Create or update the pull request | n/a |
 | 9 | **CI** | Watch CI + mergeability, auto-fix failures | `3` |
@@ -64,7 +64,7 @@ Every step can:
 
 - **Complete** cleanly and advance the pipeline.
 - **Return findings** with severity (`error`, `warning`, `info`) and an action (`auto-fix`, `ask-user`, `no-op`).
-- **Trigger auto-fix** if the step's `auto_fix` limit is above 0, the step result is auto-fixable, and any finding is `auto-fix`-eligible. Document and empty-command lint can instead apply safe fixes during their initial pass and report only unresolved findings.
+- **Trigger auto-fix** if the step's `auto_fix` limit is above 0, the step result is auto-fixable, and any finding is `auto-fix`-eligible. The document step applies safe documentation fixes during its initial pass and, when `commands.lint` is empty, combines that pass with initial safe lint fixes before the lint step consumes its findings.
 - **Pause for approval** if blocking findings remain after auto-fix, or if any finding is `ask-user`.
 - **Skip** when there's nothing to do (e.g., no diff, unsupported host).
 - **Fail** on fatal errors and stop the pipeline.

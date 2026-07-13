@@ -85,6 +85,143 @@ func TestDaemonStartTimeoutDefaultsToLongerWindowOnWindows(t *testing.T) {
 	}
 }
 
+func TestEnsureDaemonDoesNotStartWhenHealthCheckTimesOut(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	timeoutErr := fmt.Errorf("dial ipc: %w", &ipc.ConnectTimeoutError{
+		SocketPath:      p.Socket(),
+		TimeoutDuration: 25 * time.Millisecond,
+		Err:             errors.New("dial timeout"),
+	})
+
+	originalHealthCheck := daemonHealthCheck
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		return false, timeoutErr
+	}
+	defer func() {
+		daemonHealthCheck = originalHealthCheck
+	}()
+
+	originalStart := daemonStart
+	started := false
+	daemonStart = func(*paths.Paths) error {
+		started = true
+		return nil
+	}
+	defer func() {
+		daemonStart = originalStart
+	}()
+
+	startedAt := time.Now()
+	err = EnsureDaemon(p)
+	elapsed := time.Since(startedAt)
+	if err == nil {
+		t.Fatal("EnsureDaemon returned nil for timed-out daemon socket")
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("EnsureDaemon took %v, want fast failure", elapsed)
+	}
+	if started {
+		t.Fatal("EnsureDaemon started a daemon after a connect timeout")
+	}
+	if !strings.Contains(err.Error(), p.Socket()) {
+		t.Fatalf("EnsureDaemon error = %q, want socket path %q", err.Error(), p.Socket())
+	}
+}
+
+func TestIsRunningFailsFastWhenSocketAcceptsButDoesNotRespond(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket setup is platform-specific")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- conn
+	}()
+	t.Cleanup(func() {
+		select {
+		case conn := <-accepted:
+			_ = conn.Close()
+		default:
+		}
+	})
+
+	type result struct {
+		alive bool
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		alive, err := IsRunning(p)
+		done <- result{alive: alive, err: err}
+	}()
+
+	select {
+	case got := <-done:
+		if got.alive {
+			t.Fatal("silent socket must not be reported running")
+		}
+		if got.err == nil {
+			t.Fatal("expected a clear health-check error from silent socket")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("IsRunning hung on a silent daemon socket")
+	}
+}
+
+func TestIsRunningSurfacesExistingDeadSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket setup is platform-specific")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.Socket(), []byte("dead"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	alive, err := IsRunning(p)
+	if alive {
+		t.Fatal("dead socket must not be reported running")
+	}
+	if err == nil || !strings.Contains(err.Error(), "connect to daemon socket") {
+		t.Fatalf("err = %v, want clear dead-socket connection error", err)
+	}
+}
+
 func TestStopDetachedDaemonFallsBackToPIDWhenSocketIsBroken(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix socket setup is platform-specific")
@@ -280,6 +417,51 @@ func TestStopDetachedDaemonRejectsUnrelatedLiveProcessPIDFallback(t *testing.T) 
 	}
 	if _, statErr := os.Stat(p.Socket()); statErr != nil {
 		t.Fatalf("expected socket file to remain after rejected pid fallback, got err=%v", statErr)
+	}
+}
+
+// TestValidateDaemonPIDFallback_RefusesToKillOwnProcess covers the crash
+// behind an intermittent Windows CI hang: helpers_test.go's startTestDaemon
+// runs the daemon in-process via a goroutine (daemon.RunWithResources), so
+// the pid file it writes records the test binary's own pid. If the daemon
+// doesn't confirm a graceful stop before waitForDaemonStop's deadline, the
+// PID-kill fallback must never target that pid - doing so kills the test
+// binary itself (SIGKILL on the current process), which surfaces as the
+// whole package crashing with no per-test PASS/FAIL output rather than a
+// normal test failure. The pid file record here is otherwise fully valid
+// (matching StartedAt) to prove the self-pid guard fires before, and
+// independent of, the record/staleness checks.
+func TestValidateDaemonPIDFallback_RefusesToKillOwnProcess(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	startedAt := time.Now()
+	writeDaemonPIDRecord(t, p.PIDFile(), daemonPIDFile{PID: os.Getpid(), StartedAt: startedAt})
+
+	originalProcessStartTime := daemonProcessStartTime
+	daemonProcessStartTime = func(checkPID int) (time.Time, error) {
+		if checkPID != os.Getpid() {
+			t.Fatalf("processStartTime pid = %d, want %d", checkPID, os.Getpid())
+		}
+		return startedAt, nil
+	}
+	defer func() {
+		daemonProcessStartTime = originalProcessStartTime
+	}()
+
+	err = validateDaemonPIDFallback(p, os.Getpid())
+	if err == nil {
+		t.Fatal("expected validateDaemonPIDFallback to refuse killing our own pid")
+	}
+	if !strings.Contains(err.Error(), "our own pid") {
+		t.Fatalf("err = %v, want a clear self-kill refusal", err)
 	}
 }
 
@@ -650,6 +832,68 @@ func TestReadPIDNoFile(t *testing.T) {
 	_, err = ReadPID(p)
 	if err == nil {
 		t.Error("expected error when no PID file")
+	}
+}
+
+// TestWaitForDaemonStopNeverKillsOwnPIDWhenHealthCheckOnlyErrors reproduces
+// the full path behind the Windows CI hang end to end: a daemon that never
+// confirms a graceful stop (health check errors on every poll, as observed
+// on Windows where a closed loopback listener doesn't fail pending/racing
+// connections as immediately as a Unix domain socket unlink does) combined
+// with a pid file that records our own pid (the shape startTestDaemon in
+// internal/cli/helpers_test.go produces, since it runs the daemon in-process
+// via a goroutine). waitForDaemonStop must give up with an error instead of
+// ever calling daemonKillPID against the current process.
+func TestWaitForDaemonStopNeverKillsOwnPIDWhenHealthCheckOnlyErrors(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	startedAt := time.Now()
+	writeDaemonPIDRecord(t, p.PIDFile(), daemonPIDFile{PID: os.Getpid(), StartedAt: startedAt})
+	if err := os.WriteFile(p.Socket(), []byte("still-there"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	originalHealthCheck := daemonHealthCheck
+	daemonHealthCheck = func(*paths.Paths) (bool, error) {
+		return false, errors.New("connect to daemon socket timed out")
+	}
+	defer func() {
+		daemonHealthCheck = originalHealthCheck
+	}()
+	originalProcessStartTime := daemonProcessStartTime
+	daemonProcessStartTime = func(checkPID int) (time.Time, error) {
+		return startedAt, nil
+	}
+	defer func() {
+		daemonProcessStartTime = originalProcessStartTime
+	}()
+	originalKillPID := daemonKillPID
+	killCalled := false
+	daemonKillPID = func(int) error {
+		killCalled = true
+		return nil
+	}
+	defer func() {
+		daemonKillPID = originalKillPID
+	}()
+
+	err = waitForDaemonStop(p)
+	if err == nil {
+		t.Fatal("expected waitForDaemonStop to fail rather than kill our own pid")
+	}
+	if !strings.Contains(err.Error(), "our own pid") {
+		t.Fatalf("err = %v, want a clear self-kill refusal", err)
+	}
+	if killCalled {
+		t.Fatal("waitForDaemonStop must never kill its own process")
 	}
 }
 

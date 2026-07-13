@@ -30,7 +30,28 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		reviewScope = fmt.Sprintf("current worktree and HEAD changes relative to base commit %s (starting head %s)", baseSHA, sctx.Run.HeadSHA)
 	}
 
-	// In fix mode, ask the agent to fix issues first
+	// Bounded workload size (changed files + net lines) for local telemetry, so
+	// review/fix efficiency can be normalized without external git archaeology.
+	// Best-effort: a diff-stat failure leaves the workload unknown.
+	workload := reviewWorkload(ctx, sctx.WorkDir, baseSHA, sctx.Run.HeadSHA)
+
+	// In fix mode, ask the agent to fix issues first.
+	//
+	// The verification-discipline rules below (apply all fixes first, then one
+	// focused verification of the changed area, and never run the whole repo
+	// test/lint suite in the fixer round) exist for wall-clock reasons: a
+	// forensic audit of a real multi-round run measured the fixer re-running the
+	// entire test+lint suite ~5x per round (27 runs across 5 rounds, ~784s of
+	// the 2419s review step), plus the model round-trips that poll those long
+	// subprocesses. Review runs before the dedicated Test and Lint steps
+	// (pipeline order in common.go), which are the authoritative test and lint
+	// gates; their coverage may be focused when the repository has no configured
+	// commands. The fixer prohibition stays universal because the fixer only
+	// needs to confirm its own edits hold, not re-gate the whole repository. This
+	// mirrors the same "relevant"-scoped, cross-tool-forbidden discipline the
+	// test and lint fix prompts already carry. The instruction is a contract,
+	// not an enforced sandbox - the agent has free shell access - so the pinned
+	// regression tests guard the wording, not the runtime.
 	var fixSummary string
 	if sctx.Fixing {
 		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
@@ -54,7 +75,9 @@ Rules:
 - If a narrow fix would leave the same class of bug likely elsewhere, fix the deepest practical cause instead.
 - Avoid resolving a finding by removing or reverting the author's intentional code in their original 1st commit. If the original change introduced something on purpose, fix it forward (e.g. add validation, handle edge cases, tighten logic) rather than deleting it. Similarly, if the original change intentionally deleted or simplified code, do not restore or re-add the removed code unless the finding is a legitimate correctness, reliability, or security issue and the smallest reasonable fix happens to reintroduce a small amount of previously deleted logic. When in doubt about whether code is intentional, leave it and report the finding as unresolved.
 - Do not add code comments explaining your fixes.
-- Verify that the issues are resolved before finishing.
+- Apply all the fixes you intend to make first; do not run any verification in between individual fixes.
+- After all fixes are applied, run one focused verification limited to the changed area (the specific package, file, or test you touched) at the end of the fix round to confirm the fixes hold.
+- Do NOT run the complete repository test suite or lint suite during this fix round. The pipeline has dedicated test and lint steps after review that are the authoritative test and lint gates; their coverage may itself be focused on the changed area when the repository has no configured test or lint commands.
 - Return JSON with a single "summary" field when you are done.
 - The summary must be one concise sentence fragment suitable for a git commit subject.
 - Keep the summary under 10 words.%s
@@ -77,6 +100,9 @@ Previous review findings to address:
 			Prompt:                  fixPrompt,
 			ErrorPrefix:             "agent fix",
 			FallbackSummary:         "address review findings",
+			SessionRole:             pipeline.SessionRoleFixer,
+			Purpose:                 "review-fix",
+			Workload:                workload,
 		})
 		if err != nil {
 			return nil, err
@@ -131,7 +157,18 @@ Previous review findings to address:
 	// Ask agent to review
 	sctx.Log("reviewing changes...")
 
-	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+	// The review turn (initial and every post-fix rereview) carries the intent
+	// conformance obligation: when the intent is authoritative acceptance
+	// criteria (explicit --intent), a change that contradicts it must park via
+	// an ask-user finding. The clause is empty for inferred intent, leaving the
+	// prompt unchanged. This is what makes a fixer round that removed a
+	// required behavior park instead of silently completing.
+	//
+	// TODO(intent-conformance-C, HELD): add the deterministic, zero-LLM
+	// net-deleted-author-lines git-diff backstop for the removal-of-required
+	// class - a fixer round that net-deletes author-added lines parks
+	// regardless of intent source. Held pending a scope decision.
+	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx)
 
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
@@ -179,11 +216,18 @@ Risk assessment (after listing all findings):
 		historySection,
 	)
 
-	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+	// Every review turn - the initial review and every post-fix rereview -
+	// resumes the run's single durable reviewer session. The prompt above
+	// still demands a full review of the complete branch diff each turn; the
+	// session only carries the reviewer's own prior context, never the
+	// fixer's (that role has its own isolated session in executeFixMode).
+	result, err := sctx.RunAgentSession(pipeline.SessionRoleReviewer, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: reviewFindingsSchema,
 		OnChunk:    sctx.LogChunk,
+		Purpose:    "review",
+		Workload:   workload,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent review: %w", err)

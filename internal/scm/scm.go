@@ -2,11 +2,14 @@ package scm
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"gopkg.in/yaml.v3"
 )
 
@@ -186,6 +189,38 @@ func CLIAvailable(provider Provider) bool {
 	return err == nil
 }
 
+// RunAuthProbe runs a read-only availability/auth probe command, retrying only
+// when the process fails to run to completion (killed by a signal, or never
+// started) rather than exiting cleanly. newCmd must return a fresh *exec.Cmd on
+// every call so each attempt is independent.
+//
+// A clean non-zero exit is a definitive negative answer ("CLI not
+// authenticated") and is returned immediately with no retry. But a probe that
+// is killed by a signal or cannot start is transient environmental noise (for
+// example a subprocess OOM-killed under memory pressure); treating that as a
+// definitive negative would silently skip PR creation, so the probe is retried
+// a few times before giving up. This is safe only because the probe is
+// read-only; never route a mutating command (PR/branch creation) through it.
+func RunAuthProbe(newCmd func() *exec.Cmd) error {
+	const attempts = 4
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = newCmd().Run(); err == nil {
+			return nil
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.Exited() {
+			// Ran to completion with a non-zero exit: definitive, do not retry.
+			return err
+		}
+		// Killed by a signal or never started: transient, back off and retry.
+		if i < attempts-1 {
+			time.Sleep(time.Duration(i+1) * 25 * time.Millisecond)
+		}
+	}
+	return err
+}
+
 func AuthConfigured(ctx context.Context, provider Provider, workDir string) bool {
 	args := provider.AuthCheckCommand()
 	if len(args) == 0 {
@@ -193,5 +228,6 @@ func AuthConfigured(ctx context.Context, provider Provider, workDir string) bool
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Dir = workDir
+	winproc.Harden(cmd)
 	return cmd.Run() == nil
 }

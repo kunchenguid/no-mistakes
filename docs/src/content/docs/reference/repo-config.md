@@ -5,8 +5,14 @@ description: All fields for .no-mistakes.yaml.
 
 Per-repo configuration lives in `.no-mistakes.yaml` at the root of your repository.
 
-:::caution[Security: code-executing fields are read from the default branch]
-`commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists and `acp:` targets) with the maintainer's credentials. To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed). If the fetch fails, both fields are forced empty — the run proceeds on built-in defaults rather than falling back to a potentially stale or hostile copy. Commit the `commands` and `agent` you want the gate to run to your default branch. Non-executing fields (`ignore_patterns`, `auto_fix`, `intent`, `test`) are still read from the pushed branch.
+:::caution[Security: gate-control fields are read from the default branch]
+`commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists and `acp:` targets) with the maintainer's credentials.
+To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
+The daemon also reads `document.instructions` and `disable_project_settings` only from that trusted copy.
+If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
+A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
+Commit the gate-control settings you want to your default branch.
+Non-executing fields (`ignore_patterns`, `auto_fix`, `intent`, `test`) are still read from the pushed branch.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -24,6 +30,15 @@ commands:
 ignore_patterns:
   - "*.generated.go"
   - "vendor/**"
+
+# Optional documentation ownership policy, read only from the trusted default branch.
+document:
+  instructions: |
+    docs/ owns detailed product guidance; README.md owns the introduction.
+
+# For orchestration repos whose project instructions would misidentify gate agents.
+# Read only from the trusted default branch. Defaults to false.
+disable_project_settings: true
 
 auto_fix:
   rebase: 3
@@ -61,6 +76,8 @@ Override the default agent for this repo and its setup-wizard suggestions.
 `auto` resolves to the first supported native agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, then `copilot`.
 `acp:<target>` uses the user-installed `acpx` binary configured in global config.
 ACP agents are opt-in and are not considered by `agent: auto`.
+The effective agent configuration must resolve to a runnable runner before a new validation gate starts.
+If the selected explicit agent or `auto` is unavailable, the gate fails before its first pipeline step rather than reporting partial validation as passed.
 
 You can also set an ordered fallback list:
 
@@ -68,7 +85,11 @@ You can also set an ordered fallback list:
 agent: [codex, claude]
 ```
 
-The list is filtered to entries available to the daemon at run startup, and the first available entry becomes the primary agent. If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback. Structured findings and schema/output validation problems do not trigger fallback. This per-repo `agent` value, including every fallback entry, is still read from the trusted default-branch `.no-mistakes.yaml` unless `allow_repo_commands` is enabled there.
+The list is filtered to entries available to the daemon at run startup, and the first available entry becomes the primary agent.
+If no entry is available, the gate fails before its first pipeline step.
+If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
+Structured findings and schema/output validation problems do not trigger fallback.
+This per-repo `agent` value, including every fallback entry, is still read from the trusted default-branch `.no-mistakes.yaml` unless `allow_repo_commands` is enabled there.
 
 ### allow_repo_commands
 
@@ -80,6 +101,28 @@ Opt in to honoring the code-executing selection fields (`commands.{test,lint,for
 | Default | `false` |
 
 This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
+
+### disable_project_settings
+
+Suppress project-level agent settings and instructions for every gate-agent start and resumed session.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | `false` |
+
+This opt-in is intended for agent-orchestration repositories whose `AGENTS.md`, `CLAUDE.md`, or harness-specific project settings would give a validation agent an operator identity and authority that it must not adopt.
+When enabled, no-mistakes suppresses the target checkout's project settings for every agent-driven gate step while preserving user-level agent configuration.
+Codex and Claude are the currently verified agents: Codex receives `project_doc_max_bytes=0` and `--ignore-rules`, while Claude loads only its user setting source.
+The setting applies to both new and resumed sessions.
+
+The gate fails before launching an agent if any resolved agent or fallback lacks a verified suppression mechanism.
+It also fails if `agent_args_override` defeats suppression, such as a nonzero Codex `project_doc_max_bytes` or Claude setting sources that include `project` or `local`.
+When this option is `false`, missing, or `null`, all agents retain their existing project-setting behavior.
+
+This field is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`.
+A pushed branch cannot enable it or disable a trusted opt-in.
+If the trusted commit or its present config file cannot be read and parsed, the run aborts rather than guessing that the option is disabled.
 
 ### commands.test
 
@@ -104,7 +147,8 @@ Explicit lint command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /
 | Default | Empty (agent auto-detects) |
 
 When set, the lint step runs this exact command and checks the exit code.
-When empty, the agent detects relevant linters and formatters, applies safe fixes, reruns the relevant checks, commits any agent changes, and reports only unresolved issues.
+When empty, the agent-driven lint duty is folded into the document step's combined housekeeping pass: one agent invocation covers both documentation and lint, and the lint step consumes that result, reporting lint-category findings with the same gate semantics (blocking findings park for a decision).
+Neither responsibility is skipped: when the document step has nothing to run against (or its structured output cannot be trusted), the lint step runs its own agent pass as before.
 
 ### commands.format
 
@@ -115,7 +159,22 @@ Formatter command run before the push step commits agent fixes.
 | Type | `string` |
 | Default | Empty (no separate push-step formatter) |
 
-This does not prevent empty `commands.lint` from detecting and running formatters during the lint step.
+This does not prevent empty `commands.lint` from detecting and running formatters during the combined housekeeping pass, or during the lint step when that pass cannot provide a result.
+
+### document.instructions
+
+Repository-specific documentation ownership policy for the document step.
+
+| | |
+|---|---|
+| Type | `string` (multiline) |
+| Default | Empty (built-in placement policy only) |
+
+The document step always applies a built-in placement policy: every fact has exactly one authoritative owner document, stale duplicates are removed or reduced to pointers instead of synchronized, no new documentation surfaces are created merely to close perceived gaps, and incident lessons live as invariants near their owner (with a pointer to the regression test), never as AGENTS.md postmortems.
+`document.instructions` states this repository's ownership map or extra placement rules (for example, which file owns which class of facts).
+It augments or clarifies the built-in policy; it cannot disable documentation integrity.
+
+Like `commands.*` and `agent`, this field steers gate behavior, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`: a contributor's pushed branch cannot weaken the documentation rules that gate its own review.
 
 ### Command process lifetime
 
@@ -159,7 +218,7 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 
 Set to `0` to disable the follow-up auto-fix loop for a step (findings require manual approval).
 The document step attempts documentation fixes during its initial pass, so unresolved documentation findings pause for approval instead of using an automatic follow-up loop.
-For empty `commands.lint`, the agent still attempts safe fixes during the initial lint pass; unresolved lint findings then pause for approval instead of starting another automatic fix loop.
+For empty `commands.lint`, the document step's combined housekeeping pass also attempts safe lint fixes, and the lint step consumes its result; unresolved blocking lint findings pause for approval instead of starting another automatic fix loop.
 
 `auto_fix.ci` covers the CI step's CI failure and merge-conflict auto-fix attempts.
 
@@ -193,6 +252,7 @@ Fields not set here inherit from global config and then the built-in defaults.
 By default, test evidence is written under `<dir>/<branch-slug>` inside the worktree so push can commit and publish it with the branch.
 Set `store_in_repo: false` only for repos where local-only evidence paths are acceptable.
 For GitHub PRs, approved local visual evidence can still be uploaded to secret gists when `upload_to_gist` is true.
-Use `no-mistakes evidence prune --run <id>` or `--pr <number>` for deliberate post-merge cleanup; deleted gists make existing PR screenshots and evidence links 404.
+The CI monitor automatically deletes those gists when it sees the PR merge or close; deleted gists make existing PR screenshots and evidence links 404.
+Use `no-mistakes evidence prune --run <id>` or `--pr <number>` as a manual fallback for older runs, failed automatic cleanup, or monitors that are no longer running.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 If `store_in_repo` is false, or if `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.

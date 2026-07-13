@@ -4,8 +4,21 @@ import (
 	"context"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 )
+
+// reviewWorkload returns the bounded change size (files + net lines) between
+// base and head for local telemetry, or nil when the diff-stat cannot be
+// computed (so the invocation records an unknown workload rather than a
+// fabricated zero).
+func reviewWorkload(ctx context.Context, workDir, base, head string) *agent.InvocationWorkload {
+	files, lines, err := git.DiffStat(ctx, workDir, base, head)
+	if err != nil {
+		return nil
+	}
+	return &agent.InvocationWorkload{Files: files, Lines: lines}
+}
 
 // resolveBaseSHA returns a usable base SHA for diff/log operations.
 // When baseSHA is the zero ref (new branch push), it tries git merge-base

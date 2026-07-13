@@ -231,7 +231,7 @@ func TestAgentDisambiguatorPreservesPreexistingIgnoredSymlink(t *testing.T) {
 	gitTestOutput(t, repo, "add", ".gitignore")
 	gitTestOutput(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "ignore logs")
 	if err := os.Symlink("missing", filepath.Join(repo, "keep.log")); err != nil {
-		t.Fatalf("create ignored symlink: %v", err)
+		t.Skipf("symlinks unavailable: %v", err)
 	}
 
 	d := NewAgentDisambiguator(mutatingAgent{run: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {

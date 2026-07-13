@@ -111,5 +111,6 @@ The wizard requires:
   If you already have a branch and clean working tree, or you enter those values yourself in the interactive flow, the wizard can continue without agent suggestions.
 
 If any of those are missing, the wizard reports the problem and exits.
-`no-mistakes doctor` is the fastest way to check native agent availability.
-For ACP targets, verify `acpx_path` yourself.
+`no-mistakes doctor` is the fastest way to check whether the configured global runner can start a validation gate.
+For ACP targets, it verifies that `acpx_path` resolves but does not invoke the target or test its credentials.
+The wizard can proceed without an agent when it does not need a suggestion, but the pushed validation gate still fails before its first step unless the effective pipeline-agent configuration resolves to a runnable runner.

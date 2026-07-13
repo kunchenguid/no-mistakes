@@ -1,0 +1,42 @@
+# Fork sync — carried-forward evidence-gist features verified
+
+Branch: chore/sync-upstream-main   Target: 11bf344
+Fork-specific commits carried forward on top of upstream v1.37.0:
+11bf344 fix(pr): fall back to git-based gist creation for binary evidence files
+037cd3e fix(pr): auto-prune evidence gists
+7c5ffed chore: sync fork with upstream main
+
+## 1. Git-based binary gist fallback (11bf344, from fm/nm-gist-evidence-g2)
+New end-to-end test drives the real clone->add->commit->push path against a
+local git remote with a real binary (PNG w/ NUL bytes) and asserts the bytes
+were pushed byte-for-byte. Previously this branch had NO test.
+
+=== RUN   TestCreateSecretGistFallsBackToGitForBinaryFiles
+--- PASS: TestCreateSecretGistFallsBackToGitForBinaryFiles (2.47s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/scm/github	3.678s
+
+## 2. Automatic gist cleanup (037cd3e) — CI monitor prunes on PR merge/close
+ok  	github.com/kunchenguid/no-mistakes/internal/pipeline/steps	5.667s
+--- PASS: TestCIStep_EvidenceGistDeleteFailureWarnsAndPreservesIDs (3.39s)
+--- PASS: TestCIStep_PRMergedPrunesEvidenceGists (4.11s)
+--- PASS: TestCIStep_PRClosedPrunesEvidenceGists (4.17s)
+
+## 3. Secret-gist publishing (text path) + delete retained
+--- PASS: TestDeleteGistUsesGhYesFlag (1.01s)
+--- PASS: TestCreateSecretGistUsesGhAndReturnsRawURLs (2.03s)
+
+## 4. User-facing manual fallback: no-mistakes evidence prune
+Delete secret GitHub gists recorded for a no-mistakes run.
+
+The CI monitor normally deletes these gists automatically when it sees the PR merge or close. Use this command as a manual fallback for older runs, failed automatic cleanup, or monitors that are no longer running.
+
+Warning: deleting these gists makes existing PR screenshots and video evidence links 404.
+
+Usage:
+  no-mistakes evidence prune [flags]
+
+Flags:
+  -h, --help         help for prune
+      --pr string    PR number in the current repository whose recorded evidence gists should be deleted
+      --run string   run ID whose recorded evidence gists should be deleted

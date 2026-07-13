@@ -3,9 +3,13 @@ title: Choosing an Agent
 description: Supported AI agents, how to pick one, and how they integrate.
 ---
 
-`no-mistakes` is agent-agnostic by design. The gate should mean the same thing
-regardless of which agent you prefer. The default `agent: auto` setting picks
-the first supported native agent available on your system.
+`no-mistakes` is pipeline-agent-agnostic by design: the gate should mean the same thing regardless of which supported agent backend you prefer.
+It is not runner-free.
+Every validation run requires either a supported native agent binary or `acpx` configured for an ACP target.
+The default `agent: auto` setting picks the first supported native agent available on your system.
+
+The coding agent that calls `no-mistakes axi` drives approval gates, but it does not automatically become the pipeline agent that performs review, evidence testing, documentation, combined documentation-and-lint housekeeping, or fixes.
+Those jobs run in the daemon's disposable worktree through the configured pipeline agent.
 
 The agent is responsible for the parts of the gate that benefit from judgment:
 code review, evidence-oriented test validation, test or lint detection when you
@@ -43,6 +47,44 @@ By default that directory is inside the repo and published with the branch; repo
 | Copilot | `copilot` | Subprocess per invocation, JSONL events |
 | ACP target | `acpx` | Optional user-installed ACP bridge |
 
+## Runner requirements
+
+A complete gate never degrades silently when its configured pipeline agent is unavailable.
+The daemon resolves the effective agent before creating pipeline step records, and the run fails immediately with setup guidance if the configured binary cannot run.
+This refusal also applies when deterministic test or lint commands are configured because review and documentation always require agent judgment, while rebase, PR, and CI paths may need an agent to resolve conflicts, generate content, or fix failures.
+
+| Surface or capability | Works without a runnable pipeline agent? | Behavior |
+|---|---:|---|
+| Install, `init`, daemon lifecycle, `status`, `runs`, and `doctor` | Yes | Local setup and diagnostics remain available. `doctor` reports that gate validation is unavailable. |
+| Start or rerun a validation gate | No | The run fails before any pipeline step starts. |
+| Review | No | Requires agent judgment and structured findings. |
+| Test with `commands.test` | No, as part of a full gate | The command is deterministic, but the gate refuses before steps start rather than presenting command-only validation as a complete pass. |
+| Test without `commands.test`, or evidence validation with user intent | No | Requires the agent to discover checks and gather end-to-end evidence. |
+| Document | No | Requires the agent to discover and update documentation gaps. |
+| Lint with `commands.lint` | No, as part of a full gate | The command is deterministic, but the full gate still requires an agent. |
+| Lint without `commands.lint` and all fix rounds | No | The document step performs the initial combined housekeeping pass, and an agent is still needed for fallback assessment or code changes. |
+| Push, PR, and CI as part of a gate | No | They run only after the required validation steps, and PR or CI paths may invoke the agent themselves. |
+
+### Antigravity and Gemini setups
+
+Running the gate from Antigravity or another Gemini-based coding environment does not make that calling model available to the daemon automatically.
+Choose one of these supported setups:
+
+1. Install any supported native agent CLI and leave `agent: auto`, or select it explicitly in `~/.no-mistakes/config.yaml`.
+2. Install `acpx`, confirm that the Gemini ACP target works locally, and configure `agent: acp:gemini`.
+
+```yaml
+# ~/.no-mistakes/config.yaml
+agent: acp:gemini
+
+# Optional when acpx is not on PATH.
+acpx_path: C:\path\to\acpx.exe
+```
+
+Run `no-mistakes doctor` afterward and look for a successful `gate validation` line.
+Doctor checks the global agent configuration; each run performs the authoritative check again after applying any trusted repository-level agent override.
+If the calling environment exposes neither a supported native CLI nor a working ACP target, it can still inspect and respond to existing AXI state, but it cannot start an honest validation gate by itself.
+
 ## Setting the agent
 
 ### Global default
@@ -68,19 +110,12 @@ Repo config takes precedence over global config.
 agent: [codex, claude]
 ```
 
-no-mistakes filters the list to agents available on the daemon's `PATH`, uses the first available entry as the primary agent, and keeps later available entries as fallbacks. If an invocation fails because the current agent process cannot start or exits with an unavailable/error condition, that invocation is retried with the next fallback. Structured findings and schema/output validation failures do not trigger fallback.
-
 ### Optional ACP target
 
-If you install `acpx` separately, you can opt into any ACP target with the `acp:` prefix.
+If you install `acpx` separately, you can opt into any ACP target with the `acp:` prefix, for example `agent: acp:gemini`.
+`agent: auto` only probes native agents and never auto-selects ACP targets.
 
-```yaml
-# ~/.no-mistakes/config.yaml or .no-mistakes.yaml
-agent: acp:gemini
-```
-
-`agent: auto` only probes native agents.
-It does not auto-select ACP targets.
+The [`agent` field reference](/no-mistakes/reference/global-config/#agent) owns the exact resolution order, fallback-list filtering and retry semantics, and the failure behavior when no entry is runnable.
 
 ## Where agent choice matters most
 
@@ -132,85 +167,29 @@ no-mistakes axi abort
 no-mistakes axi abort --run <id>
 ```
 
-Before starting validation, agents should run the `no-mistakes axi` home view.
-If it shows `active_run`, inspect that current-branch run with `no-mistakes axi status`.
-If it is parked at a gate, drive it with `no-mistakes axi respond`.
-Reattach an in-flight run by re-running `no-mistakes axi run` when it still matches your current `HEAD`.
-If it shows `other_branch_active_run`, they should leave that run alone and start validation for the current branch with `no-mistakes axi run --intent "..."`.
-Use `no-mistakes axi abort --run <id>` only when you need to cancel a specific active run by id from outside its worktree.
-
 When an agent makes an additional fix after a gate round has already produced fix commits - a newly surfaced finding, a reviewer or pre-merge request, or any other post-completion change - it should commit the fix on top of the existing branch and run `no-mistakes axi run --intent "..."` with the original user intent.
 Never abort-and-restart, reset the branch, or open a new branch in a way that drops prior gate-fix commits, including the pipeline's own `no-mistakes(review|document|lint): ...` commits.
 A fresh run re-validates the branch's current state, so already-resolved findings do not re-surface.
 
-When an agent starts a new run, `--intent` is required and should describe what the user wanted to accomplish, not what files changed.
-Agents should prefer a few complete sentences over a terse summary, capturing user decisions, tradeoffs, constraints, ruled-out approaches, and explicit requests that would not be obvious from the diff alone.
-If the repo is on the default branch or has uncommitted changes, direct `axi run` returns a structured error with the command the agent should run instead of silently creating a branch or commit.
-Approval gates are exposed as `gate:` objects with finding IDs, severities, files, actions, descriptions, and help commands for `no-mistakes axi respond`.
-While a non-terminal run is parked at an `awaiting_approval` or `fix_review` gate, the run object also includes `awaiting_agent: parked <duration>`.
-Use that field in `axi status` output to tell in one read that the run is waiting for the driving agent to send `axi respond`, not actively running, fixing, or watching CI.
-It is observability only: it does not auto-resume the run, change gate resolution, or make `--yes` the default.
-While a step is actively `running` or `fixing`, `axi status` also includes `active_steps` with `active_for`, `last_activity`, native `agent_pid` when a subprocess agent is running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
-If `last_activity` is prefixed with `quiet`, no step-log or native-agent lifecycle activity has arrived for longer than `step_quiet_warning`.
-Treat that as a liveness clue for investigation, not as permission to cancel, rerun, or edit the worktree yourself.
-A long-running `axi run` or `axi respond` call is working, not stalled, and an agent may background it if its harness needs to, but the run never advances past a gate on its own, so the agent must read every return and respond at each `gate:`, looping until an `outcome:`, and never idle-wait for the run to move forward by itself.
-An agent should resolve `action: auto-fix` findings on its own judgment, ignore `action: no-op` findings when approving, and stop on `action: ask-user` findings unless it is running with explicit `--yes` consent.
-Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed.
-The review gate output flags this with a `note`.
-When it stops for `ask-user`, it should relay each finding's ID, file, and full description to the user before choosing `approve`, `fix`, or `skip`.
-Resolving a finding always means responding with `no-mistakes axi respond --action fix`, which has the pipeline apply the fix and re-review it - the agent must not edit the code itself while a run is active.
-For the same reason, while a run is active the agent must not `abort` or `rerun` to go fix a finding itself - even a real bug in its own code - because that discards the pipeline's in-flight work and forces a full re-validation; `abort` and `rerun` are between-runs actions, correct only after a `failed` or `cancelled` outcome, never a way to circumvent a gate.
-Successful outputs can be `outcome: passed` for a completed run or `outcome: checks-passed` when CI has passed and the daemon is still monitoring the unmerged PR for humans, and may include a `fixes` table when the pipeline applied fixes.
+The full driving protocol - how to read the home view and `gate:` objects, when to respond, fix, approve, or relay `ask-user` findings, and how to interpret `axi status` fields like `awaiting_agent` and `active_steps` - is owned by the skill itself and by the live `axi` output.
+Each `axi` response carries version-matched `help` lines for its state, and `no-mistakes axi run --help` and `no-mistakes axi respond --help` describe the loop authoritatively for the installed binary, so agents driving a gate never need this page open.
+The [CLI reference](/no-mistakes/reference/cli/) documents each `axi` command and output field for humans.
 
 ## Binary resolution
 
-By default, `no-mistakes` resolves `agent: auto` by checking for supported native agents on your `PATH` in this order:
+When the daemon is running through a managed service, its `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories; on Windows it reuses the current process environment.
+If native agent discovery does not resolve the binary you expect, check `~/.no-mistakes/logs/daemon.log` and set an explicit override; [Environment the daemon sees](/no-mistakes/reference/environment/#environment-the-daemon-sees) owns the full resolution story.
 
-1. `claude`
-2. `codex`
-3. `opencode`
-4. `acli` with `rovodev` support
-5. `pi`
-6. `copilot`
+Three global config fields tune resolution and invocation, and the [Global Config Reference](/no-mistakes/reference/global-config/) owns each one:
 
-The default binary names are:
+- [`agent_path_override`](/no-mistakes/reference/global-config/#agent_path_override) - custom binary paths per native agent, plus the default binary-name table ([`acpx_path`](/no-mistakes/reference/global-config/#acpx_path) is the ACP equivalent).
+- [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) - extra CLI flags per native agent for model selection, service tier, reasoning depth, or permission mode, including the reserved-flag rules and smart defaults. Keep it global-only; it reflects your local agent setup rather than repo policy.
+- [`agent`](/no-mistakes/reference/global-config/#agent) - the `auto` resolution order and ordered fallback-list semantics.
 
-| Agent | Default binary name |
-|---|---|
-| `claude` | `claude` |
-| `codex` | `codex` |
-| `rovodev` | `acli` |
-| `opencode` | `opencode` |
-| `pi` | `pi` |
-| `copilot` | `copilot` |
-| `acp:<target>` | `acpx` |
+## Review session reuse
 
-When the daemon is running through a managed service, that `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories. If login-shell resolution fails, the daemon logs a warning and uses a degraded fallback `PATH` that may omit version-manager shim directories. On Windows it reuses the current process environment instead of reloading a login shell. If native agent discovery still does not resolve the binary you expect, check `~/.no-mistakes/logs/daemon.log` and use an explicit `agent_path_override`.
-
-For an ordered fallback list, no-mistakes checks each configured entry at run startup and drops unavailable entries. If none are available, the run fails before the pipeline starts.
-
-Override paths in global config:
-
-```yaml
-agent_path_override:
-  claude: /Users/you/bin/claude
-  codex: /opt/homebrew/bin/codex
-  rovodev: /usr/local/bin/acli
-  opencode: /usr/local/bin/opencode
-  pi: /usr/local/bin/pi
-  copilot: /usr/local/bin/copilot
-```
-
-For ACP targets, set `acpx_path` instead of `agent_path_override`:
-
-```yaml
-acpx_path: /Users/you/bin/acpx
-```
-
-You can also set extra CLI flags for native agents in global config with
-`agent_args_override`. This is useful for things like model selection,
-reasoning level, or permission mode. Keep this in global config only, since it
-reflects your local agent setup rather than repo policy.
+With the default `session_reuse: true`, Claude and Codex keep one durable reviewer session and a separate review-fixer session per run, every rereview still evaluates the entire branch diff, and resume failures fall back to fresh same-role sessions instead of skipping review.
+The [`session_reuse` field reference](/no-mistakes/reference/global-config/#session_reuse) owns the exact reuse, fallback, privacy, and restart-recovery semantics.
 
 ## Agent interface
 
@@ -222,12 +201,16 @@ All agents implement the same interface. Each invocation receives:
 - **JSONSchema** - optional structured output schema for typed responses
 - **OnChunk** - callback for streaming text output to the TUI
 - **OnLifecycle** - callback for native subprocess start, exit, and retry activity that is recorded in step logs and AXI active-step status
+- **Session** - optional no-mistakes-owned native session identity for review-loop reuse
+- **Purpose** - local performance label for the pipeline duty served
 
 Each invocation returns:
 
 - **Output** - structured JSON output; native structured responses are returned as-is, while text-parsed fallbacks are validated before return and may use `null` for optional fields
 - **Text** - raw text output
 - **Usage** - token counts (input, output, cache read, cache creation)
+- **SessionID** and **Resumed** - the adapter-native session identity and whether this invocation resumed it, when supported
+- **Model** and **Provider** - adapter-reported serving metadata when available
 
 One-shot subprocess agents (Claude, Codex, Pi, Copilot CLI, and acpx) are invocation-scoped.
 After no-mistakes starts one, it terminates any remaining child processes when the invocation exits, fails, or is cancelled, so agent-spawned test workers, build watchers, and dev servers do not survive the step.
@@ -238,9 +221,10 @@ Transient API and network failures are retried up to three times with exponentia
 
 ## Intent extraction
 
-When an agent starts a run through `no-mistakes axi run --intent`, no-mistakes uses that supplied intent verbatim and skips transcript-based inference, even if `intent.enabled` is false.
+When an agent starts a run through `no-mistakes axi run --intent`, no-mistakes uses that supplied intent verbatim as authoritative acceptance criteria and skips transcript-based inference, even if `intent.enabled` is false.
+Review checks the diff against those criteria, and a change that removes required behavior or adds forbidden behavior becomes an `ask-user` finding instead of being resolved automatically.
 Otherwise, when `intent.enabled` is true, no-mistakes reads recent local transcripts from Claude Code, Codex, OpenCode, Rovo Dev, Pi, and the GitHub Copilot CLI during the `intent` pipeline step.
-It matches sessions against non-deleted changed files when present, falls back to all changed files for all-deletion diffs, summarizes the likely author intent with the configured pipeline agent, includes that summary as untrusted context in rebase fixes, review checks and fixes, test detection, evidence validation, and fixes, lint detection and fixes, documentation checks and fixes, CI auto-fixes, and PR prompts, and renders it in generated PR descriptions.
+It matches sessions against non-deleted changed files when present, falls back to all changed files for all-deletion diffs, summarizes the likely author intent with the configured pipeline agent, includes that summary as an untrusted, low-confidence hint in rebase fixes, review checks and fixes, test detection, evidence validation, and fixes, lint detection and fixes, documentation checks and fixes, CI auto-fixes, and PR prompts, and renders it in generated PR descriptions.
 
 Transcript readers collect user and assistant text messages but exclude tool call output.
 They read Claude Code transcripts from `~/.claude/projects`, Codex metadata from `~/.codex/state_*.sqlite` plus referenced rollout files, OpenCode messages from `$XDG_DATA_HOME/opencode/opencode.db` or `~/.local/share/opencode/opencode.db`, Rovo Dev sessions from `~/.rovodev/sessions`, Pi transcripts from `~/.pi/agent/sessions`, and GitHub Copilot CLI sessions from `~/.copilot/session-state`.
@@ -258,10 +242,14 @@ Use `intent.disabled_readers` to disable specific transcript sources, or set `in
 ## Claude
 
 Spawns a `claude` subprocess for each invocation with `--output-format stream-json`. By default it also adds `--dangerously-skip-permissions`, unless you already set your own Claude permission flag through `agent_args_override`. Reads JSONL events from stdout. Supports native structured output via `--json-schema`.
+For review-loop reuse, Claude starts a stream-json session and resumes it with `claude -p --resume <id>`.
 
 ## Codex
 
 Spawns a `codex` subprocess for each invocation with `exec --json`. When structured output is requested, no-mistakes also writes a normalized schema file and passes it with `--output-schema`. By default it also adds `--dangerously-bypass-approvals-and-sandbox`, unless you already set your own Codex approval or sandbox flag through `agent_args_override`. Reads JSONL events. Structured output is returned from the final `agent_message` text, with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose, then validates the result against the normalized schema.
+Codex model and config overrides, such as `-m gpt-5.4`, `-c service_tier="priority"`, or `-c model_reasoning_effort="low"`, belong in global `agent_args_override.codex`.
+For review-loop reuse, Codex resumes the reported thread with `codex exec resume <id> <prompt>`.
+That resume command has a narrower flag surface than `codex exec`, so a resume that rejects an override falls back to a fresh same-role session rather than skipping the review turn.
 
 ## Rovo Dev
 
@@ -304,7 +292,7 @@ Structured output is handled by appending the requested JSON schema to the promp
 
 ## Checking agent availability
 
-Run `no-mistakes doctor` to see which native agent binaries are installed and available:
+Run `no-mistakes doctor` to inspect individual native and ACP runner binaries and to check the effective global agent configuration:
 
 ```
 $ no-mistakes doctor
@@ -315,13 +303,17 @@ $ no-mistakes doctor
   ✓ daemon running
   ✓ claude
   – codex (not found)
-  – acli (not found)
+  – rovodev (not found)
   – opencode (not found)
   – pi (not found)
   – copilot (not found)
+  – acpx (not found)
+  ✓ gate validation claude is runnable
 ```
 
 `✓` = available, `–` = not found (optional), `✗` = problem detected.
+The `gate validation` line is the decisive result: when the configured global runner is unavailable, doctor fails because a complete gate cannot validate without it.
 
-For `agent: acp:<target>`, make sure `acpx` is installed on `PATH` or set `acpx_path` in global config.
-`no-mistakes doctor` does not validate ACP targets.
+For `agent: acp:<target>`, doctor verifies that `acpx` is installed on `PATH` or resolves through `acpx_path` in global config.
+It does not invoke the target or test its credentials.
+Every new validation run resolves its effective agent again after applying any trusted repository-level override.

@@ -55,10 +55,7 @@ func parseDaemonProcessOutput(output string, split daemonProcessLineSplitter) []
 }
 
 // looksLikeDaemonRunCommand reports whether a command line is a no-mistakes
-// managed-daemon invocation (`... daemon run ...`). Detached daemons re-execute
-// the binary bare (no `daemon run` argv) and are deliberately excluded: they
-// bind the canonical socket for their root, so the socket-keyed health check in
-// Start already accounts for them.
+// daemon invocation (`... daemon run ...`) with an explicit root.
 func looksLikeDaemonRunCommand(command string) bool {
 	tokens := splitCommandLineTokens(command)
 	hasDaemon, hasRun := false, false

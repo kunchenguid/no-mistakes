@@ -71,6 +71,9 @@ func newAxiRunCmd() *cobra.Command {
 			"--intent is required when starting a new run: pass what the user set out\n" +
 			"to accomplish (the goal behind the change, not a description of the diff)\n" +
 			"so no-mistakes uses it directly instead of inferring it from transcripts.\n\n" +
+			"The calling agent drives AXI approval gates but does not become the pipeline\n" +
+			"agent. The daemon requires a supported native agent binary or a configured\n" +
+			"ACP target through acpx, and fails before the first step when none can run.\n\n" +
 			preserveGateFixCommitsGuidance,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
@@ -221,9 +224,15 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
+	priorRunIDs, err := runIDsForHead(env.client, env.repo.ID, branch, headSHA)
+	if err != nil {
+		// An active run can still be found below. Without a baseline, however,
+		// a matching terminal run may predate this push, so do not attach to it.
+		priorRunIDs = nil
+	}
 	pushErr := git.PushWithOptions(ctx, ".", gate.RemoteName, "refs/heads/"+branch, "", false, pushOptions)
 
-	if run, _ := waitForActiveRunForHead(ctx, env.client, env.repo.ID, branch, headSHA, triggerWaitTimeout); run != nil {
+	if run, _ := waitForTriggeredRunForHead(ctx, env.client, env.repo.ID, branch, headSHA, priorRunIDs, triggerWaitTimeout); run != nil {
 		return run.ID, nil
 	}
 	if !shouldRerunAfterNoActiveRun(pushErr) {
@@ -239,7 +248,36 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	return rr.RunID, nil
 }
 
-func waitForActiveRunForHead(ctx context.Context, client *ipc.Client, repoID, branch, headSHA string, timeout time.Duration) (*ipc.RunInfo, error) {
+// runIDsForHead snapshots the run IDs already present for a repo's exact branch
+// and head SHA before a push, so waitForTriggeredRunForHead can tell a run this
+// push created apart from a terminal run an earlier push left behind. Scoping to
+// the head keeps this lookup, and the poll that reuses the same method, bounded
+// to the handful of runs for one head rather than the repo's whole history.
+func runIDsForHead(client *ipc.Client, repoID, branch, headSHA string) (map[string]struct{}, error) {
+	runs, err := runsForHead(client, repoID, branch, headSHA)
+	if err != nil {
+		return nil, err
+	}
+	ids := make(map[string]struct{}, len(runs))
+	for _, run := range runs {
+		ids[run.ID] = struct{}{}
+	}
+	return ids, nil
+}
+
+func runsForHead(client *ipc.Client, repoID, branch, headSHA string) ([]ipc.RunInfo, error) {
+	var result ipc.GetRunsResult
+	if err := client.Call(ipc.MethodGetRunsForHead, &ipc.GetRunsForHeadParams{RepoID: repoID, Branch: branch, HeadSHA: headSHA}, &result); err != nil {
+		return nil, err
+	}
+	return result.Runs, nil
+}
+
+// waitForTriggeredRunForHead waits for the run created by this trigger. The
+// active-run lookup handles normal execution; the head lookup catches a run
+// that fails before it can be observed as active. priorRunIDs prevents an
+// up-to-date push from attaching to a terminal run created by an earlier one.
+func waitForTriggeredRunForHead(ctx context.Context, client *ipc.Client, repoID, branch, headSHA string, priorRunIDs map[string]struct{}, timeout time.Duration) (*ipc.RunInfo, error) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 
@@ -256,6 +294,19 @@ func waitForActiveRunForHead(ctx context.Context, client *ipc.Client, repoID, br
 		}
 		if run := activeRunInfoForHead(result.Run, headSHA); run != nil {
 			return run, nil
+		}
+		if priorRunIDs != nil {
+			runs, err := runsForHead(client, repoID, branch, headSHA)
+			if err != nil {
+				return nil, err
+			}
+			for i := range runs {
+				run := &runs[i]
+				if _, existed := priorRunIDs[run.ID]; !existed {
+					return run, nil
+				}
+				break
+			}
 		}
 		select {
 		case <-ctx.Done():

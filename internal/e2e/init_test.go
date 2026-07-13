@@ -148,6 +148,104 @@ func TestInitRepoRename(t *testing.T) {
 	}
 }
 
+// TestInitInSubmoduleRegistersSubmoduleOwnOrigin reproduces issue #328:
+// `no-mistakes init` from inside a Git submodule checkout must register the
+// gate against the submodule's own origin, not the superproject's. Before the
+// fix, FindMainRepoRoot took the parent of --git-common-dir, which for an
+// absorbed submodule is <super>/.git/modules/<name>. The gate then read its
+// origin from that wrong root and recorded the superproject's URL as the
+// upstream — a "push would land in the wrong repository" data-loss hazard.
+func TestInitInSubmoduleRegistersSubmoduleOwnOrigin(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude"})
+	ctx := context.Background()
+
+	// Second bare repo serving as the submodule's "origin", distinct from
+	// the superproject's upstream (h.UpstreamDir) so the assertion below can
+	// tell which one the gate recorded.
+	subUpstream := filepath.Join(filepath.Dir(h.UpstreamDir), "sub-upstream.git")
+	if err := os.MkdirAll(subUpstream, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := h.runGit(ctx, subUpstream, "init", "--bare", "--initial-branch=main"); err != nil {
+		t.Fatalf("init sub upstream: %v\n%s", err, out)
+	}
+	// Seed the submodule's upstream with a real commit so `submodule add`
+	// can clone and check out a branch. Without it, the empty-repo clone
+	// dies with "fatal: You are on a branch yet to be born".
+	subSeed := filepath.Join(t.TempDir(), "sub-seed")
+	if err := os.MkdirAll(subSeed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := h.runGit(ctx, subSeed, "init", "--initial-branch=main"); err != nil {
+		t.Fatalf("init sub seed: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(subSeed, "README.md"), []byte("# submodule upstream\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := h.runGit(ctx, subSeed, "add", "."); err != nil {
+		t.Fatalf("add sub seed: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, subSeed, "commit", "-m", "initial"); err != nil {
+		t.Fatalf("commit sub seed: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, subSeed, "remote", "add", "origin", subUpstream); err != nil {
+		t.Fatalf("remote add sub seed: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, subSeed, "push", "-u", "origin", "main"); err != nil {
+		t.Fatalf("push sub seed: %v\n%s", err, out)
+	}
+
+	// Build the submodule in <work>/sub pointing at subUpstream.
+	if out, err := h.runGit(ctx, h.WorkDir, "-c", "protocol.file.allow=always", "submodule", "add", subUpstream, "sub"); err != nil {
+		t.Fatalf("submodule add: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "-c", "protocol.file.allow=always", "submodule", "init", "sub"); err != nil {
+		t.Fatalf("submodule init: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "-c", "protocol.file.allow=always", "submodule", "update", "sub"); err != nil {
+		t.Fatalf("submodule update: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "add", ".gitmodules", "sub"); err != nil {
+		t.Fatalf("git add submodule: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "commit", "-m", "add sub submodule"); err != nil {
+		t.Fatalf("commit submodule: %v\n%s", err, out)
+	}
+
+	subWorktree := filepath.Join(h.WorkDir, "sub")
+
+	// Run init from the submodule checkout. The pre-fix behavior writes the
+	// superproject's upstream into the gate row; the post-fix behavior must
+	// write the submodule's own.
+	if out, err := h.RunInDir(subWorktree, "init"); err != nil {
+		t.Fatalf("init in submodule: %v\n%s", err, out)
+	}
+
+	p := paths.WithRoot(h.NMHome)
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	// Find the gate by its working path (the submodule's own working tree,
+	// not the superproject's). The pre-fix code stored the superproject path
+	// and never created a row for the submodule, so the by-path lookup
+	// returns nil; the post-fix code stores the submodule path and the
+	// recorded upstream must match the submodule's origin.
+	resolvedSub, _ := filepath.EvalSymlinks(subWorktree)
+	repo, err := d.GetRepoByPath(resolvedSub)
+	if err != nil {
+		t.Fatalf("get repo by path: %v", err)
+	}
+	if repo == nil {
+		t.Fatalf("no gate registered for submodule working tree %q; init must record the submodule's own path, not the superproject's", resolvedSub)
+	}
+	if repo.UpstreamURL != subUpstream {
+		t.Fatalf("gate upstream = %q, want %q (the submodule's own origin); recording the superproject's origin is the data-loss bug from issue #328", repo.UpstreamURL, subUpstream)
+	}
+}
+
 func TestInitRollsBackWhenDaemonStartFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows IPC does not use Unix socket path limits")

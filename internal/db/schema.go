@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS runs (
     evidence_gist_ids    TEXT,
     error                TEXT,
     awaiting_agent_since INTEGER,
+    parked_ms            INTEGER,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
@@ -58,6 +59,59 @@ CREATE TABLE IF NOT EXISTS step_rounds (
     created_at           INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS agent_invocations (
+    id                    TEXT PRIMARY KEY,
+    run_id                TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    step_name             TEXT NOT NULL,
+    round                 INTEGER NOT NULL,
+    purpose               TEXT NOT NULL,
+    agent                 TEXT NOT NULL,
+    model                 TEXT,
+    model_provider        TEXT,
+    session_mode          TEXT NOT NULL,
+    session_key           TEXT,
+    fallback_reason       TEXT,
+    started_at            INTEGER NOT NULL,
+    completed_at          INTEGER NOT NULL,
+    duration_ms           INTEGER NOT NULL,
+    subprocess_wait_ms    INTEGER,
+    exit_status           TEXT NOT NULL,
+    failure_category      TEXT,
+    input_tokens          INTEGER,
+    output_tokens         INTEGER,
+    cache_read_tokens     INTEGER,
+    cache_creation_tokens INTEGER,
+    fresh_input_tokens    INTEGER,
+    reasoning_tokens      INTEGER,
+    delta_input_tokens    INTEGER,
+    delta_output_tokens   INTEGER,
+    delta_cache_read_tokens INTEGER,
+    model_roundtrips      INTEGER,
+    tool_calls            INTEGER,
+    tool_wait_calls       INTEGER,
+    tool_test_lint_calls  INTEGER,
+    tool_edit_calls       INTEGER,
+    tool_read_calls       INTEGER,
+    tool_git_calls        INTEGER,
+    tool_other_calls      INTEGER,
+    workload_files        INTEGER,
+    workload_lines        INTEGER,
+    finding_count         INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_invocations_run_started_id
+    ON agent_invocations (run_id, started_at, id);
+
+CREATE TABLE IF NOT EXISTS run_agent_sessions (
+    run_id     TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    role       TEXT NOT NULL,
+    agent      TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (run_id, role)
+);
+
 CREATE TABLE IF NOT EXISTS intent_cache (
     cache_key   TEXT PRIMARY KEY,
     summary     TEXT NOT NULL,
@@ -82,8 +136,30 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN intent_score REAL`,
 	`ALTER TABLE runs ADD COLUMN awaiting_agent_since INTEGER`,
 	`ALTER TABLE runs ADD COLUMN evidence_gist_ids TEXT`,
+	`ALTER TABLE runs ADD COLUMN parked_ms INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN auto_fix_limit INTEGER`,
+	// Session-fidelity telemetry columns (all nullable so pre-existing rows read
+	// back as unknown, never a fabricated zero).
+	`ALTER TABLE agent_invocations ADD COLUMN model_provider TEXT`,
+	`ALTER TABLE agent_invocations ADD COLUMN fallback_reason TEXT`,
+	`ALTER TABLE agent_invocations ADD COLUMN subprocess_wait_ms INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN fresh_input_tokens INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN reasoning_tokens INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN delta_input_tokens INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN delta_output_tokens INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN delta_cache_read_tokens INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN model_roundtrips INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN tool_calls INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN tool_wait_calls INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN tool_test_lint_calls INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN tool_edit_calls INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN tool_read_calls INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN tool_git_calls INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN tool_other_calls INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN workload_files INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN workload_lines INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN finding_count INTEGER`,
 }

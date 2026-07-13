@@ -215,7 +215,7 @@ func TestUpdaterRunResetsDaemonAfterUpdate(t *testing.T) {
 	}
 }
 
-func TestUpdaterRunWarnsAndRequiresConfirmationForActiveRuns(t *testing.T) {
+func TestUpdaterRunRefusesWithActiveRunsAndListsThem(t *testing.T) {
 	allowInsecureDownloads = true
 	t.Cleanup(func() { allowInsecureDownloads = false })
 
@@ -290,7 +290,7 @@ func TestUpdaterRunWarnsAndRequiresConfirmationForActiveRuns(t *testing.T) {
 		executablePath: execPath,
 		stdout:         stdout,
 		stderr:         stderr,
-		stdin:          strings.NewReader("n\n"),
+		stdin:          strings.NewReader("y\n"),
 		now:            func() time.Time { return time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC) },
 		resetDaemon: func() error {
 			resetCalled = true
@@ -303,7 +303,7 @@ func TestUpdaterRunWarnsAndRequiresConfirmationForActiveRuns(t *testing.T) {
 	if err == nil {
 		t.Fatal("run should fail when active run warning is rejected")
 	}
-	if !strings.Contains(err.Error(), "active pipeline runs") {
+	if !strings.Contains(err.Error(), "refusing update") {
 		t.Fatalf("run error = %v", err)
 	}
 	transcript := stderr.String()
@@ -313,7 +313,7 @@ func TestUpdaterRunWarnsAndRequiresConfirmationForActiveRuns(t *testing.T) {
 		"feature-a",
 		runningRun.ID,
 		"feature-b",
-		"Continue with update and restart the daemon? [y/N]",
+		"continuing can cause these pipelines to fail",
 	} {
 		if !strings.Contains(transcript, want) {
 			t.Fatalf("stderr should contain %q, got %q", want, transcript)
@@ -331,6 +331,43 @@ func TestUpdaterRunWarnsAndRequiresConfirmationForActiveRuns(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestUpdaterActiveRunGuardAllowsForce(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure paths: %v", err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	repo, err := database.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	if _, err := database.InsertRun(repo.ID, "feature-a", "aaa111", "000"); err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	stderr := new(bytes.Buffer)
+	u := &updater{paths: p, stderr: stderr, force: true}
+	if err := u.confirmActiveRunsBeforeUpdate(); err != nil {
+		t.Fatalf("confirmActiveRunsBeforeUpdate with force error = %v", err)
+	}
+	transcript := stderr.String()
+	for _, want := range []string{
+		"FORCE: continuing update",
+		"feature-a",
+		"aaa111",
+	} {
+		if !strings.Contains(transcript, want) {
+			t.Fatalf("stderr should contain %q, got %q", want, transcript)
+		}
 	}
 }
 
@@ -878,6 +915,22 @@ func TestUpdaterMaybeNotifyAndCheck(t *testing.T) {
 	}
 	if spawned {
 		t.Fatal("update command should not spawn background refresh")
+	}
+
+	// Version queries are informational health checks: they must stay
+	// side-effect-free even with a stale cache and a newer version available
+	// (never print a notice, never spawn a background refresh) so callers can
+	// probe `--version` without turning it into an execution engine (#401).
+	for _, versionArgs := range [][]string{{"--version"}, {"-v"}} {
+		stderr.Reset()
+		spawned = false
+		u.maybeNotifyAndCheck(versionArgs)
+		if stderr.Len() != 0 {
+			t.Fatalf("%v should not notify, got %q", versionArgs, stderr.String())
+		}
+		if spawned {
+			t.Fatalf("%v should not spawn background refresh", versionArgs)
+		}
 	}
 }
 

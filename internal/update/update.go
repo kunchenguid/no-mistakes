@@ -61,11 +61,13 @@ type updater struct {
 	noColor            bool
 	includePrereleases bool
 	assumeYes          bool
+	force              bool
 }
 
 type RunOptions struct {
 	Beta  bool
 	Yes   bool
+	Force bool
 	Stdin io.Reader
 }
 
@@ -76,6 +78,7 @@ func Run(ctx context.Context, stdout, stderr io.Writer, opts RunOptions) error {
 	}
 	u.includePrereleases = opts.Beta
 	u.assumeYes = opts.Yes
+	u.force = opts.Force
 	if opts.Stdin != nil {
 		u.stdin = opts.Stdin
 	}
@@ -155,7 +158,11 @@ func (u *updater) maybeNotifyAndCheck(args []string) {
 	if u.disableBackground || isDevVersion(u.currentVersion) || os.Getenv(noUpdateCheckEnv) == "1" {
 		return
 	}
-	if len(args) > 0 && (args[0] == "update" || args[0] == backgroundFlag) {
+	// Informational commands must be side-effect-free probes: `update` and the
+	// background refresh must not re-enter it, and a version query (`--version`
+	// / `-v`) must never print a notice or spawn a background refresh so that
+	// supervision scripts can call it as an innocuous health check (#401).
+	if len(args) > 0 && (args[0] == "update" || args[0] == backgroundFlag || args[0] == "--version" || args[0] == "-v") {
 		return
 	}
 	cache := readCache(u.cachePath)

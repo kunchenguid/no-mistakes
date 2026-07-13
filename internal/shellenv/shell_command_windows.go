@@ -14,6 +14,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"golang.org/x/sys/windows"
 )
 
@@ -54,6 +55,11 @@ var resumeProcessThreadsFunc = resumeProcessThreads
 // the goroutine that owns Wait should terminate the group when the leader exits
 // so inherited pipe holders cannot wedge the parser.
 func ConfigureShellCommand(cmd *exec.Cmd) {
+	// Suppress the visible console window Windows would otherwise allocate for
+	// this console child (agents, cmd.exe shell steps) when spawned from the
+	// console-less daemon. See issue #287. Harden allocates SysProcAttr if
+	// needed; the process-group flag below is then OR-ed in alongside it.
+	winproc.Harden(cmd)
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
@@ -81,6 +87,7 @@ func ConfigureShellCommand(cmd *exec.Cmd) {
 		}
 		pid := strconv.Itoa(cmd.Process.Pid)
 		kill := exec.Command("taskkill", "/T", "/F", "/PID", pid)
+		winproc.Harden(kill)
 		err := kill.Run()
 		switch {
 		case err == nil:
@@ -140,7 +147,9 @@ func TerminateShellCommandGroup(cmd *exec.Cmd) {
 		return
 	}
 	pid := strconv.Itoa(cmd.Process.Pid)
-	_ = exec.Command("taskkill", "/T", "/F", "/PID", pid).Run()
+	kill := exec.Command("taskkill", "/T", "/F", "/PID", pid)
+	winproc.Harden(kill)
+	_ = kill.Run()
 }
 
 func newShellCommandJob() (windows.Handle, error) {

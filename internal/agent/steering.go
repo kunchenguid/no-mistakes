@@ -35,6 +35,22 @@ func (s steeredAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return s.Agent.Run(ctx, opts)
 }
 
+func (s steeredAgent) SupportsSessionResume() bool {
+	return SupportsSessionResume(s.Agent)
+}
+
+func (s steeredAgent) SupportsSessionProvider(provider string) bool {
+	return SupportsSessionProvider(s.Agent, provider)
+}
+
+func (s steeredAgent) ReportsAgentAttempts() bool {
+	return ReportsAgentAttempts(s.Agent)
+}
+
+func (s steeredAgent) NeutralizesGateInstructions() bool {
+	return NeutralizesGateInstructions(s.Agent)
+}
+
 // WithSteering wraps an agent so every invocation is steered to keep writes
 // inside the worktree. Wrapping is idempotent: an already-steered agent is
 // returned unchanged so the preamble is never added twice.

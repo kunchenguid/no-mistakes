@@ -132,7 +132,7 @@ func (h *Host) Available(ctx context.Context) error {
 	if h.host != "" {
 		authArgs = append(authArgs, "--hostname", h.host)
 	}
-	if err := h.cmd(ctx, "glab", authArgs...).Run(); err != nil {
+	if err := scm.RunAuthProbe(func() *exec.Cmd { return h.cmd(ctx, "glab", authArgs...) }); err != nil {
 		return errors.New("glab CLI is not authenticated")
 	}
 	return nil

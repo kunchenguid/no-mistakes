@@ -150,7 +150,11 @@ func TestRunWithRetry_RetriesTransientThenSucceeds(t *testing.T) {
 	calls := 0
 	transientErr := fmt.Errorf("API Error: overloaded_error: please retry")
 	var chunks []string
-	opts := RunOpts{OnChunk: func(s string) { chunks = append(chunks, s) }}
+	var attempts []Attempt
+	opts := RunOpts{
+		OnChunk:   func(s string) { chunks = append(chunks, s) },
+		OnAttempt: func(attempt Attempt) { attempts = append(attempts, attempt) },
+	}
 
 	res, err := runWithRetry(context.Background(), "claude", opts, 3, classifyTransient, nil, func() (*Result, error) {
 		calls++
@@ -167,6 +171,20 @@ func TestRunWithRetry_RetriesTransientThenSucceeds(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Errorf("expected 3 calls (2 retries + success), got %d", calls)
+	}
+	if len(attempts) != 3 {
+		t.Fatalf("attempts = %d, want 3", len(attempts))
+	}
+	for i, attempt := range attempts {
+		if attempt.Agent != "claude" || attempt.StartedAt.IsZero() || attempt.CompletedAt.IsZero() {
+			t.Fatalf("attempt %d = %+v", i, attempt)
+		}
+		if i < 2 && attempt.Err == nil {
+			t.Fatalf("attempt %d must preserve the transient error", i)
+		}
+	}
+	if attempts[2].Result == nil || attempts[2].Result.Text != "ok" {
+		t.Fatalf("successful attempt = %+v", attempts[2])
 	}
 	if len(chunks) < 2 {
 		t.Errorf("expected at least 2 retry notification chunks, got %d: %v", len(chunks), chunks)

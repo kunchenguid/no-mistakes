@@ -54,8 +54,9 @@ make install
   - `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN` (Bitbucket Cloud)
   - `az` CLI with the `azure-devops` extension (Azure DevOps)
 
-Run `no-mistakes doctor` to check native agents and provider tools.
-For ACP agents, verify `acpx` or `acpx_path` separately because `doctor` does not validate ACP targets.
+Run `no-mistakes doctor` to check native agents, provider tools, and whether the configured global runner can start a validation gate.
+For `agent: acp:<target>`, doctor verifies that `acpx` or `acpx_path` resolves, but does not invoke the target or test its credentials.
+Every validation gate requires a runnable pipeline agent and otherwise fails before its first pipeline step.
 
 See [Provider Integration](/no-mistakes/guides/provider-integration/) for PR and CI setup per host.
 
@@ -71,17 +72,16 @@ This downloads the latest release from GitHub, verifies the SHA-256 checksum, at
 
 `no-mistakes update` installs the latest stable release.
 Use `no-mistakes update --beta` to opt into prereleases and install the latest beta when one is newer than the current stable release.
-Use `no-mistakes update -y` to answer yes to update safety prompts.
+Use `no-mistakes update -y` to answer yes to the daemon-executable-mismatch prompt described below.
 
 Because `update` installs the latest official release binary, it installs a binary with the default self-hosted telemetry host and website ID. Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
 
-If pending or running pipeline runs exist, the update warns that restarting the daemon can cause those runs to fail, prints each active run's ID, status, branch, and short head SHA, and prompts before continuing.
-If the running daemon was started from a different binary, the update prompts before replacing it.
-Pass `-y` or `--yes` to continue through these prompts while still printing warnings.
+If pending or running pipeline runs exist, the update refuses to restart the daemon and prints each active run's ID, status, branch, and short head SHA. Pass `--force` to restart the daemon anyway and accept that those runs may fail; `-y`/`--yes` does **not** bypass this guard.
+If the running daemon was started from a different binary, the update still prompts before replacing it; `-y`/`--yes` answers that prompt non-interactively.
 If the daemon executable path cannot be determined, the update aborts before replacing the binary.
 If the daemon does not come back cleanly after a successful replacement, the new binary stays installed but the command reports the daemon reset failure.
 
-Background update checks run automatically on each CLI invocation (except `update` itself). Suppress with `NO_MISTAKES_NO_UPDATE_CHECK=1`.
+Background update checks run automatically on each CLI invocation (except `update` itself and version queries `--version` / `-v`, which stay side-effect-free). Suppress with `NO_MISTAKES_NO_UPDATE_CHECK=1`.
 
 ## Remove from a repo
 

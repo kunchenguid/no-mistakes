@@ -23,6 +23,8 @@ type piAgent struct {
 
 func (a *piAgent) Name() string { return "pi" }
 
+func (a *piAgent) ReportsAgentAttempts() bool { return true }
+
 func (a *piAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "pi", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
@@ -404,20 +406,25 @@ func piIntField(m map[string]any, names ...string) int {
 }
 
 func piUsageFrom(usage map[string]any) TokenUsage {
+	_, cacheCreationReported := usage["cacheWrite"]
 	return TokenUsage{
-		InputTokens:         piIntField(usage, "input"),
-		OutputTokens:        piIntField(usage, "output"),
-		CacheReadTokens:     piIntField(usage, "cacheRead"),
-		CacheCreationTokens: piIntField(usage, "cacheWrite"),
+		Reported:              len(usage) > 0,
+		CacheCreationReported: cacheCreationReported,
+		InputTokens:           piIntField(usage, "input"),
+		OutputTokens:          piIntField(usage, "output"),
+		CacheReadTokens:       piIntField(usage, "cacheRead"),
+		CacheCreationTokens:   piIntField(usage, "cacheWrite"),
 	}
 }
 
 func piUsageAdd(a, b TokenUsage) TokenUsage {
 	return TokenUsage{
-		InputTokens:         a.InputTokens + b.InputTokens,
-		OutputTokens:        a.OutputTokens + b.OutputTokens,
-		CacheReadTokens:     a.CacheReadTokens + b.CacheReadTokens,
-		CacheCreationTokens: a.CacheCreationTokens + b.CacheCreationTokens,
+		Reported:              a.Reported || b.Reported,
+		CacheCreationReported: a.CacheCreationReported || b.CacheCreationReported,
+		InputTokens:           a.InputTokens + b.InputTokens,
+		OutputTokens:          a.OutputTokens + b.OutputTokens,
+		CacheReadTokens:       a.CacheReadTokens + b.CacheReadTokens,
+		CacheCreationTokens:   a.CacheCreationTokens + b.CacheCreationTokens,
 	}
 }
 

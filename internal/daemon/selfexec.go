@@ -16,6 +16,7 @@ import (
 
 var daemonHealthCheck = daemonIsRunningViaIPC
 var daemonDial = ipc.Dial
+var daemonStart = Start
 var daemonProcessRunning = processRunning
 var daemonProcessStartTime = processStartTime
 var daemonKillPID = killPID
@@ -27,6 +28,21 @@ func daemonStartTimeout() time.Duration {
 		fallback = 15 * time.Second
 	}
 	return durationFromEnv("NM_TEST_DAEMON_START_TIMEOUT", fallback)
+}
+
+// daemonStopTimeout bounds how long waitForDaemonStop polls the health check
+// for graceful shutdown before falling back to killing the daemon by PID.
+// Windows gets a longer window: closing the loopback TCP listener used for
+// its named-pipe-less IPC transport (transport_windows.go) does not make
+// pending/racing connections fail as immediately as a Unix domain socket
+// unlink does, so the health check can keep reporting an ambiguous error
+// for longer after a graceful shutdown request has already succeeded.
+func daemonStopTimeout() time.Duration {
+	fallback := 5 * time.Second
+	if runtimeGOOS == "windows" {
+		fallback = 15 * time.Second
+	}
+	return durationFromEnv("NM_TEST_DAEMON_STOP_TIMEOUT", fallback)
 }
 
 func daemonStartPollInterval() time.Duration {
@@ -46,9 +62,9 @@ func durationFromEnv(name string, fallback time.Duration) time.Duration {
 }
 
 // Start installs or refreshes the managed daemon service when supported and
-// starts it, falling back to a detached re-exec with NM_DAEMON=1 when managed
-// startup is unavailable or fails. It waits up to 5 seconds for the daemon to
-// become responsive on the IPC socket.
+// starts it, falling back to a detached explicit `daemon run --root` re-exec
+// when managed startup is unavailable or fails. It waits up to 5 seconds for
+// the daemon to become responsive on the IPC socket.
 //
 // When the daemon is already running, Start refreshes the installed service
 // definition and reloads the service manager if the on-disk definition is
@@ -248,9 +264,8 @@ func startDetachedDaemon(p *paths.Paths) error {
 	}
 	defer logFile.Close()
 
-	cmd := exec.Command(exe)
+	cmd := exec.Command(exe, "daemon", "run", "--root", p.Root())
 	cmd.Env = upsertEnv(os.Environ(), "NM_HOME", p.Root())
-	cmd.Env = upsertEnv(cmd.Env, "NM_DAEMON", "1")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	// Detach from parent process group so daemon survives CLI exit.
@@ -377,12 +392,22 @@ func IsRunning(p *paths.Paths) (bool, error) {
 func daemonIsRunningViaIPC(p *paths.Paths) (bool, error) {
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
-		return false, nil
+		_, statErr := os.Stat(p.Socket())
+		if os.IsNotExist(statErr) {
+			return false, nil
+		}
+		if ipc.IsConnectTimeout(err) {
+			return false, err
+		}
+		if statErr != nil {
+			return false, fmt.Errorf("check daemon socket: %w", statErr)
+		}
+		return false, fmt.Errorf("connect to daemon socket: %w", err)
 	}
 	defer client.Close()
 
 	var result ipc.HealthResult
-	if err := client.Call(ipc.MethodHealth, &ipc.HealthParams{}, &result); err != nil {
+	if err := client.CallWithTimeout(ipc.MethodHealth, &ipc.HealthParams{}, &result, ipc.DefaultDialTimeout); err != nil {
 		return false, err
 	}
 	return result.Status == "ok", nil
@@ -462,6 +487,14 @@ func validateDaemonPIDFallback(p *paths.Paths, pid int) error {
 	if pid <= 0 {
 		return fmt.Errorf("invalid daemon pid %d", pid)
 	}
+	// A daemon is always a separate process from whatever is stopping it.
+	// A pid file recording our own pid means the "daemon" is actually
+	// running in-process (e.g. a test harness driving RunWithResources in
+	// a goroutine) rather than as a real detached process. Killing it here
+	// would kill the caller, not a daemon.
+	if pid == os.Getpid() {
+		return fmt.Errorf("refusing to kill our own pid %d", pid)
+	}
 	record, err := readDaemonPIDFile(p.PIDFile())
 	if err != nil {
 		return fmt.Errorf("read pid file: %w", err)
@@ -538,7 +571,7 @@ func daemonSocketAcceptingConnections(path string) (bool, error) {
 
 func waitForDaemonStop(p *paths.Paths) error {
 	// Wait for daemon to actually stop (socket becomes unavailable).
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(daemonStopTimeout())
 	for time.Now().Before(deadline) {
 		alive, err := daemonHealthCheck(p)
 		if err == nil && !alive {
@@ -605,10 +638,14 @@ func upsertEnv(env []string, key, value string) []string {
 
 // EnsureDaemon starts the daemon if it's not already running.
 func EnsureDaemon(p *paths.Paths) error {
-	if alive, _ := daemonHealthCheck(p); alive {
+	alive, err := daemonHealthCheck(p)
+	if err != nil {
+		return fmt.Errorf("%w (run 'no-mistakes daemon start' to recover)", err)
+	}
+	if alive {
 		return nil
 	}
-	return Start(p)
+	return daemonStart(p)
 }
 
 // ReadPID reads the daemon PID from the PID file.

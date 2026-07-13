@@ -9,8 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
@@ -19,9 +21,35 @@ import (
 type codexAgent struct {
 	bin       string
 	extraArgs []string
+	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
+	// buildArgs suppresses codex's project-level settings/instructions surface.
+	disableProjectSettings bool
 }
 
 func (a *codexAgent) Name() string { return "codex" }
+
+// SupportsSessionResume reports codex's native durable-session capability:
+// `codex exec --json` emits thread.started with a thread_id, and
+// `codex exec resume <id> <prompt>` continues that thread.
+func (a *codexAgent) SupportsSessionResume() bool { return true }
+
+func (a *codexAgent) ReportsAgentAttempts() bool { return true }
+
+// NeutralizesGateInstructions reports whether codex is currently launched with
+// the target repo's project-level settings/instructions suppressed. It is
+// meaningful only under the opt-out (disableProjectSettings): the gate only
+// consults it when the repo opted out. It is honest about the EFFECTIVE knob
+// value, not merely its presence - codex neutralizes iff the effective codex
+// `project_doc_max_bytes` is 0 (buildArgs appends `=0`, or the operator pinned
+// `=0` themselves). An operator override that re-enables the project doc
+// (`project_doc_max_bytes` > 0) defeats neutralization, so this returns false
+// and the gate fails closed rather than running with the captain-identity hazard
+// re-enabled. Verified empirically: with the project doc loaded codex adopts the
+// AGENTS.md identity; with project_doc_max_bytes=0 (plus --ignore-rules) it does
+// not.
+func (a *codexAgent) NeutralizesGateInstructions() bool {
+	return a.disableProjectSettings && codexEffectiveProjectDocSuppressed(a.extraArgs)
+}
 
 func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "codex", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
@@ -57,7 +85,11 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		defer os.Remove(schemaPath)
 	}
 
-	args := a.buildArgs(opts.Prompt, schemaPath)
+	resumeID := ""
+	if opts.Session != nil {
+		resumeID = opts.Session.ID
+	}
+	args := a.buildArgs(opts.Prompt, schemaPath, resumeID)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
@@ -83,7 +115,9 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	var usage TokenUsage
 	var lastMessage string
 	var codexErr string
-	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr); err != nil {
+	var threadID string
+	metrics := newCodexMetricsAccumulator()
+	if err := parseCodexEvents(ctx, started.stdout, opts.OnChunk, &usage, &lastMessage, &codexErr, &threadID, metrics); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		retErr := fmt.Errorf("codex parse events: %w", err)
@@ -107,6 +141,17 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	}
 
 	res, err := finalizeTextResult("codex", lastMessage, validationSchema, usage)
+	if res != nil {
+		res.SessionID = threadID
+		res.Resumed = resumeID != ""
+		// codex reports usage cumulatively across a resumed thread and does not
+		// surface cache-creation cost, so mark both so the pipeline records
+		// correct per-round deltas and an honest unknown for cache creation.
+		res.SessionUsageCumulative = true
+		m := metrics.metrics()
+		res.Metrics = &m
+		res.Model, res.ModelProvider = resolveCodexModel(threadID, time.Now())
+	}
 	emitAgentExited(opts, "codex", pid, err)
 	return res, err
 }
@@ -117,10 +162,20 @@ func (a *codexAgent) Close() error { return nil }
 // inserted between "exec" and the prompt so user flags (e.g. -m, --sandbox)
 // take effect. If the user declared their own execution-mode flag, the
 // default --dangerously-bypass-approvals-and-sandbox is not added.
-func (a *codexAgent) buildArgs(prompt, schemaPath string) []string {
-	args := make([]string, 0, len(a.extraArgs)+8)
+// A non-empty resumeID routes through `codex exec resume <id> <prompt>`,
+// which exposes a narrower flag surface than `codex exec` (no --color, no
+// -s/--sandbox as of codex 0.144): unsupported user extraArgs make the
+// invocation fail fast and the caller's cold fallback preserves correctness.
+func (a *codexAgent) buildArgs(prompt, schemaPath, resumeID string) []string {
+	args := make([]string, 0, len(a.extraArgs)+11)
 	args = append(args, "exec")
+	if resumeID != "" {
+		args = append(args, "resume")
+	}
 	args = append(args, a.extraArgs...)
+	if resumeID != "" {
+		args = append(args, resumeID)
+	}
 	args = append(args, prompt, "--json")
 	if schemaPath != "" {
 		args = append(args, "--output-schema", schemaPath)
@@ -128,8 +183,95 @@ func (a *codexAgent) buildArgs(prompt, schemaPath string) []string {
 	if !codexUserSetExecutionMode(a.extraArgs) {
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
-	args = append(args, "--color", "never")
+	if resumeID == "" {
+		args = append(args, "--color", "never")
+	}
+	// Project-settings opt-out (trusted-only; see config.DisableProjectSettings):
+	// suppress codex's project-level settings/instructions so the target repo's
+	// AGENTS.md cannot install a fleet-captain identity on the gate agent. The
+	// full project surface codex loads from the checkout is the project doc
+	// (AGENTS.md) plus project execpolicy `.rules`; codex config itself is
+	// user-level ($CODEX_HOME), not project. Both knobs are global overrides
+	// accepted by `codex exec` AND `codex exec resume`, appended last so they
+	// never disturb codex's `[resume] <id> <prompt>` positionals:
+	//   - `-c project_doc_max_bytes=0` makes codex read zero bytes of AGENTS.md
+	//     (the identity-bearing surface). Skipped only when the operator pinned
+	//     their own project_doc_max_bytes (their choice wins; NeutralizesGate-
+	//     Instructions then fails closed if that value re-enables the doc).
+	//   - `--ignore-rules` drops project (and user) execpolicy `.rules` for full
+	//     project-settings coverage. It is functionally redundant under the gate's
+	//     --dangerously-bypass-approvals-and-sandbox (which bypasses execpolicy
+	//     anyway) but completes the contract and is robust to future sandbox
+	//     changes. Skipped only if the operator already passed it.
+	// When the repo did not opt out, none of this is added and codex loads
+	// AGENTS.md exactly as before (backward-compat for ordinary repos).
+	if a.disableProjectSettings {
+		if !codexUserSetProjectDocMaxBytes(a.extraArgs) {
+			args = append(args, "-c", "project_doc_max_bytes=0")
+		}
+		if !codexArgsContain(a.extraArgs, "--ignore-rules") {
+			args = append(args, "--ignore-rules")
+		}
+	}
 	return args
+}
+
+// codexEffectiveProjectDocSuppressed reports whether the EFFECTIVE codex
+// project_doc_max_bytes is 0 (AGENTS.md fully suppressed): true when the
+// operator did not pin the value (buildArgs appends `=0`) or pinned it to 0
+// themselves, and false when the operator pinned a non-zero (or unparseable)
+// value that would re-enable the project doc.
+func codexEffectiveProjectDocSuppressed(extraArgs []string) bool {
+	value, pinned := codexUserProjectDocMaxBytes(extraArgs)
+	if !pinned {
+		return true // buildArgs appends project_doc_max_bytes=0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	return err == nil && n == 0
+}
+
+// codexUserSetProjectDocMaxBytes reports whether extraArgs pin
+// project_doc_max_bytes at all (so buildArgs does not double-set it).
+func codexUserSetProjectDocMaxBytes(extraArgs []string) bool {
+	_, pinned := codexUserProjectDocMaxBytes(extraArgs)
+	return pinned
+}
+
+// codexUserProjectDocMaxBytes returns the operator-pinned project_doc_max_bytes
+// value (the last occurrence wins) and whether it was pinned at all. It handles
+// both the inline `-c project_doc_max_bytes=<v>` token and the split
+// `-c <key=value>` form.
+func codexUserProjectDocMaxBytes(extraArgs []string) (string, bool) {
+	const key = "project_doc_max_bytes"
+	value := ""
+	pinned := false
+	extract := func(tok string) {
+		if i := strings.Index(tok, key+"="); i >= 0 {
+			value = tok[i+len(key)+1:]
+			pinned = true
+		}
+	}
+	for i, arg := range extraArgs {
+		if strings.Contains(arg, key+"=") {
+			extract(arg)
+			continue
+		}
+		if (arg == "-c" || arg == "--config") && i+1 < len(extraArgs) &&
+			strings.Contains(extraArgs[i+1], key+"=") {
+			extract(extraArgs[i+1])
+		}
+	}
+	return value, pinned
+}
+
+// codexArgsContain reports whether extraArgs already include the exact flag.
+func codexArgsContain(extraArgs []string, flag string) bool {
+	for _, arg := range extraArgs {
+		if arg == flag {
+			return true
+		}
+	}
+	return false
 }
 
 // codexUserSetExecutionMode reports whether extraArgs already declare an
@@ -151,26 +293,35 @@ func codexUserSetExecutionMode(extraArgs []string) bool {
 
 // codexEvent is the top-level JSONL event from codex CLI.
 type codexEvent struct {
-	Type    string      `json:"type"`
-	Item    *codexItem  `json:"item,omitempty"`
-	Usage   *codexUsage `json:"usage,omitempty"`
-	Message string      `json:"message,omitempty"`
+	Type     string      `json:"type"`
+	Item     *codexItem  `json:"item,omitempty"`
+	Usage    *codexUsage `json:"usage,omitempty"`
+	Message  string      `json:"message,omitempty"`
+	ThreadID string      `json:"thread_id,omitempty"`
 }
 
 type codexItem struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Text    string `json:"text"`
+	Command string `json:"command"`
 }
 
 type codexUsage struct {
-	InputTokens       int `json:"input_tokens"`
-	CachedInputTokens int `json:"cached_input_tokens"`
-	OutputTokens      int `json:"output_tokens"`
+	InputTokens         int `json:"input_tokens"`
+	CachedInputTokens   int `json:"cached_input_tokens"`
+	OutputTokens        int `json:"output_tokens"`
+	ReasoningOutputToks int `json:"reasoning_output_tokens"`
 }
 
 // parseCodexEvents reads JSONL from the reader and dispatches events.
-// It captures the last agent_message text and accumulates token usage.
-func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, codexErr *string) error {
+// It captures the last agent_message text, the durable thread identity, and
+// accumulates token usage.
+// metrics, when non-nil, accumulates the bounded per-invocation activity
+// evidence (round-trips, tool calls + categories, subprocess wait time). It is
+// clocked by time.Now as events arrive, so a tool item's started->completed gap
+// is its real subprocess wall time.
+func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, lastMessage *string, codexErr *string, threadID *string, metrics *codexMetricsAccumulator) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024*1024)
 
@@ -197,7 +348,16 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 				*codexErr = event.Message
 			}
 
+		case "thread.started":
+			if event.ThreadID != "" && threadID != nil {
+				*threadID = event.ThreadID
+			}
+
+		case "item.started":
+			metrics.onItem(event.Type, event.Item, time.Now())
+
 		case "item.completed":
+			metrics.onItem(event.Type, event.Item, time.Now())
 			if event.Item != nil && event.Item.Type == "agent_message" {
 				*lastMessage = event.Item.Text
 				if onChunk != nil {
@@ -211,6 +371,8 @@ func parseCodexEvents(ctx context.Context, r io.Reader, onChunk func(string), us
 					InputTokens:     event.Usage.InputTokens,
 					OutputTokens:    event.Usage.OutputTokens,
 					CacheReadTokens: event.Usage.CachedInputTokens,
+					ReasoningTokens: event.Usage.ReasoningOutputToks,
+					Reported:        true,
 				})
 			}
 		}

@@ -32,10 +32,11 @@ func newAxiStatusCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackAxiSurface("axi-status", "/axi/status", telemetry.Fields{
+			return trackReadSurface("axi-status", telemetry.Fields{
 				"explicit_run_id": strings.TrimSpace(runID) != "",
-			}, func() error {
-				return runAxiStatus(cmd, runID)
+			}, func() (string, string, error) {
+				fingerprint, err := runAxiStatus(cmd, runID)
+				return fingerprint, "", err
 			})
 		},
 	}
@@ -43,32 +44,35 @@ func newAxiStatusCmd() *cobra.Command {
 	return cmd
 }
 
-func runAxiStatus(cmd *cobra.Command, runID string) error {
+// runAxiStatus renders the run status and returns a low-cardinality state
+// fingerprint (run id, run status, per-step statuses) used to dedupe the
+// command's telemetry across repeated polls.
+func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
 	env, err := openAxiEnv(false)
 	if err != nil {
-		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
+		return "", emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 	}
 	defer env.close()
 
 	run, err := resolveRun(env, runID, currentBranchForRunResolve(cmd.Context()))
 	if err != nil {
-		return emitError(cmd, 1, err.Error())
+		return "", emitError(cmd, 1, err.Error())
 	}
 
 	if run == nil {
 		if runID != "" {
-			return emitError(cmd, 1, fmt.Sprintf("run %q not found", runID))
+			return "", emitError(cmd, 1, fmt.Sprintf("run %q not found", runID))
 		}
 		emitDoc(cmd,
 			toon.Field{Key: "runs", Value: "0 runs yet in this repository"},
 			toon.Field{Key: "help", Value: []string{startRunHelp()}},
 		)
-		return nil
+		return env.repo.ID + "|no-runs", nil
 	}
 
 	steps, err := env.d.GetStepsByRun(run.ID)
 	if err != nil {
-		return emitError(cmd, 1, fmt.Sprintf("load steps: %v", err))
+		return "", emitError(cmd, 1, fmt.Sprintf("load steps: %v", err))
 	}
 	rv := runViewFromDB(run, steps)
 	annotateRunView(env, &rv)
@@ -82,7 +86,29 @@ func runAxiStatus(cmd *cobra.Command, runID string) error {
 		}
 	}
 	emitDoc(cmd, fields...)
-	return nil
+	return runStateFingerprint(rv), nil
+}
+
+// runStateFingerprint summarizes a run's observable state for telemetry
+// dedupe: any run/step status transition changes the fingerprint.
+func runStateFingerprint(rv runView) string {
+	var b strings.Builder
+	b.WriteString(rv.ID)
+	b.WriteByte('|')
+	b.WriteString(rv.Branch)
+	b.WriteByte('|')
+	b.WriteString(rv.Status)
+	b.WriteByte('|')
+	b.WriteString(rv.HeadSHA)
+	b.WriteByte('|')
+	b.WriteString(rv.PRURL)
+	for _, step := range rv.Steps {
+		b.WriteByte('|')
+		b.WriteString(step.Name)
+		b.WriteByte(':')
+		b.WriteString(step.Status)
+	}
+	return b.String()
 }
 
 func annotateRunView(env *axiEnv, rv *runView) {
@@ -136,12 +162,13 @@ func newAxiLogsCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackAxiSurface("axi-logs", "/axi/logs", telemetry.Fields{
+			return trackReadSurface("axi-logs", telemetry.Fields{
 				"step":            sanitizeAxiTelemetryStep(step),
 				"full":            full,
 				"explicit_run_id": strings.TrimSpace(runID) != "",
-			}, func() error {
-				return runAxiLogs(cmd, step, runID, full)
+			}, func() (string, string, error) {
+				fingerprint, err := runAxiLogs(cmd, step, runID, full)
+				return fingerprint, "", err
 			})
 		},
 	}
@@ -151,31 +178,39 @@ func newAxiLogsCmd() *cobra.Command {
 	return cmd
 }
 
-func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) error {
+// runAxiLogs renders a step log and returns a run+step telemetry fingerprint:
+// repeated reads of the same step's log carry no distinct analytics signal,
+// so only switching run or step (or the heartbeat) re-emits.
+func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) (string, error) {
 	step = strings.TrimSpace(step)
 	if step == "" {
-		return emitError(cmd, 2, "--step is required",
+		return "", emitError(cmd, 2, "--step is required",
 			"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
 	}
 	if !validStep(types.StepName(step)) {
-		return emitError(cmd, 2, fmt.Sprintf("unknown step %q", step),
+		return "", emitError(cmd, 2, fmt.Sprintf("unknown step %q", step),
 			"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
 	}
 
 	env, err := openAxiEnv(false)
 	if err != nil {
-		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
+		return "", emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 	}
 	defer env.close()
 
 	run, err := resolveRun(env, runID, currentBranchForRunResolve(cmd.Context()))
 	if err != nil {
-		return emitError(cmd, 1, err.Error())
+		return "", emitError(cmd, 1, err.Error())
 	}
 	if run == nil {
-		return emitError(cmd, 1, "no run found to read logs from",
+		return "", emitError(cmd, 1, "no run found to read logs from",
 			noRunLogsHelp())
 	}
+	steps, err := env.d.GetStepsByRun(run.ID)
+	if err != nil {
+		return "", emitError(cmd, 1, fmt.Sprintf("load steps: %v", err))
+	}
+	fingerprint := runStateFingerprint(runViewFromDB(run, steps)) + "|log:" + step
 
 	path := filepath.Join(env.p.RunLogDir(run.ID), step+".log")
 	data, err := os.ReadFile(path)
@@ -187,9 +222,9 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) error {
 		if os.IsNotExist(err) {
 			fields = append(fields, toon.Field{Key: "log", Value: fmt.Sprintf("no log recorded for step %q in this run", step)})
 			emitDoc(cmd, fields...)
-			return nil
+			return fingerprint, nil
 		}
-		return emitError(cmd, 1, fmt.Sprintf("read log: %v", err))
+		return "", emitError(cmd, 1, fmt.Sprintf("read log: %v", err))
 	}
 
 	lines := splitLogLines(string(data))
@@ -202,14 +237,14 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) error {
 			toon.Field{Key: "help", Value: []string{fmt.Sprintf("Run `no-mistakes axi logs --step %s --full` to see the entire log", step)}},
 		)
 		emitDoc(cmd, fields...)
-		return nil
+		return fingerprint, nil
 	}
 	fields = append(fields,
 		toon.Field{Key: "lines", Value: fmt.Sprintf("%d total", len(lines))},
 		toon.Field{Key: "log", Value: logRows(shown)},
 	)
 	emitDoc(cmd, fields...)
-	return nil
+	return fingerprint, nil
 }
 
 // logRows wraps log lines as single-column rows so the encoder renders them as

@@ -55,7 +55,7 @@ func listen(endpoint string) (net.Listener, error) {
 	}, nil
 }
 
-func dial(endpoint string) (net.Conn, error) {
+func dial(endpoint string, timeout time.Duration) (net.Conn, error) {
 	data, err := os.ReadFile(endpoint)
 	if err != nil {
 		return nil, err
@@ -73,7 +73,7 @@ func dial(endpoint string) (net.Conn, error) {
 	if pid, err := strconv.Atoi(pidStr); err == nil && !processAlive(pid) {
 		return nil, fmt.Errorf("daemon process %d is no longer running", pid)
 	}
-	conn, err := net.Dial("tcp", addr)
+	conn, err := dialNetworkWithTimeout("tcp", addr, timeout)
 	if err != nil {
 		return nil, err
 	}

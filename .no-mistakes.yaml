@@ -9,3 +9,22 @@ commands:
   test: "go test -race ./..."
   lint: "make lint"
   format: "gofmt -w ."
+
+# Documentation ownership map for the document step's placement policy.
+document:
+  instructions: |
+    Configuration keys are owned by docs/src/content/docs/reference/global-config.md
+    (global fields) and docs/src/content/docs/reference/repo-config.md (repo fields).
+    Environment variables and the telemetry local/remote split are owned by
+    docs/src/content/docs/reference/environment.md.
+    The daemon lifecycle model (singleton lock, lifecycle guard, crash recovery)
+    is owned by docs/src/content/docs/concepts/daemon.md.
+    Agent-driving guidance is owned by the skill body in internal/skill/skill.go
+    and the live axi output strings; docs/src/content/docs/guides/agents.md keeps
+    only the canonical invariant sentences pinned by internal/cli/axi_guidance_test.go.
+    Guides and troubleshooting pages explain purpose and symptoms and link to the
+    owners above instead of restating their tables, examples, or key semantics.
+    AGENTS.md holds invariants plus pointers to the authoritative implementation
+    and regression tests. Do not duplicate generic command catalogs, but retain
+    its project-specific verification sequence and other load-bearing operating
+    guidance.

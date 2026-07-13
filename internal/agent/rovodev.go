@@ -23,6 +23,8 @@ type rovodevAgent struct {
 
 func (a *rovodevAgent) Name() string { return "rovodev" }
 
+func (a *rovodevAgent) ReportsAgentAttempts() bool { return true }
+
 func (a *rovodevAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "rovodev", opts, claudeMaxRetries, classifyTransient, a.recoverTransientRetry, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
@@ -296,10 +298,12 @@ func parseRovodevSSE(r io.Reader, onChunk func(string), usage *TokenUsage, lates
 		switch kind {
 		case "request-usage":
 			usage.Add(TokenUsage{
-				InputTokens:         payload.InputTokens,
-				OutputTokens:        payload.OutputTokens,
-				CacheReadTokens:     payload.CacheReadTokens,
-				CacheCreationTokens: payload.CacheWriteTokens,
+				InputTokens:           payload.InputTokens,
+				OutputTokens:          payload.OutputTokens,
+				CacheReadTokens:       payload.CacheReadTokens,
+				CacheCreationTokens:   payload.CacheWriteTokens,
+				Reported:              true,
+				CacheCreationReported: true,
 			})
 
 		case "text":

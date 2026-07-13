@@ -62,9 +62,6 @@ func run() int {
 }
 
 func daemonRunRootFromArgs(args []string) (string, bool, error) {
-	if os.Getenv("NM_DAEMON") == "1" {
-		return "", true, nil
-	}
 	if len(args) < 2 || args[0] != "daemon" || args[1] != "run" {
 		return "", false, nil
 	}

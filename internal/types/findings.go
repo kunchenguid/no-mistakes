@@ -19,6 +19,14 @@ const (
 	FindingSourceUser  = "user"
 )
 
+// Finding category constants for the combined document+lint housekeeping
+// pass. An empty Category on a housekeeping finding is treated as
+// documentation (the stricter gate).
+const (
+	FindingCategoryDocumentation = "documentation"
+	FindingCategoryLint          = "lint"
+)
+
 // Finding represents a single review, test, lint, or PR comment finding.
 type Finding struct {
 	ID               string `json:"id,omitempty"`
@@ -29,6 +37,9 @@ type Finding struct {
 	Action           string `json:"action"`
 	Source           string `json:"source,omitempty"`
 	UserInstructions string `json:"user_instructions,omitempty"`
+	// Category separates the combined document+lint housekeeping pass's
+	// findings into their owning gates. Empty everywhere else.
+	Category string `json:"category,omitempty"`
 }
 
 // TestArtifact describes evidence produced by the test step for human review.
@@ -49,6 +60,7 @@ type findingWire struct {
 	Action              string `json:"action"`
 	Source              string `json:"source,omitempty"`
 	UserInstructions    string `json:"user_instructions,omitempty"`
+	Category            string `json:"category,omitempty"`
 	RequiresHumanReview *bool  `json:"requires_human_review,omitempty"`
 }
 
@@ -200,10 +212,14 @@ func MergeUserOverrides(findings Findings, instructions map[string]string, added
 	return result
 }
 
-// HasAskUserFindings returns true if any finding has Action "ask-user".
+// HasAskUserFindings returns true if any finding has an effective action of
+// "ask-user". It uses actionOrDefault so an empty/missing action (which now
+// defaults to ask-user) parks for a human, keeping this in agreement with
+// AutoFixableFindings: an unclassified finding is never auto-fixed and is
+// always caught here as ask-user.
 func HasAskUserFindings(findings Findings) bool {
 	for _, item := range findings.Items {
-		if item.Action == ActionAskUser {
+		if item.actionOrDefault() == ActionAskUser {
 			return true
 		}
 	}
@@ -303,6 +319,7 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	f.Action = wire.Action
 	f.Source = wire.Source
 	f.UserInstructions = wire.UserInstructions
+	f.Category = wire.Category
 	if f.Action == "" && wire.RequiresHumanReview != nil {
 		if *wire.RequiresHumanReview {
 			f.Action = ActionAskUser
@@ -313,9 +330,17 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// actionOrDefault resolves a finding's effective action, defaulting an
+// empty/missing action to ask-user (park), not auto-fix. This closes a
+// fail-open hole: an unclassified finding on a non-schema path (a legacy
+// requires_human_review omission, an IPC- or user-supplied finding) must
+// route to a human rather than be silently auto-applied. It also matches the
+// review prompt's own "When in doubt, default to ask-user" instruction.
+// (MergeUserOverrides still stamps user-*added* findings auto-fix explicitly -
+// a user who hand-adds a finding is asking for a fix.)
 func (f Finding) actionOrDefault() string {
 	if f.Action == "" {
-		return ActionAutoFix
+		return ActionAskUser
 	}
 	return f.Action
 }

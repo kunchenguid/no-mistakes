@@ -72,7 +72,9 @@ func runWithRetry(
 				return nil, err
 			}
 		}
+		startedAt := time.Now()
 		result, err := runOnce()
+		emitAgentAttempt(opts, name, result, err, startedAt, time.Now())
 		if err == nil {
 			return result, nil
 		}
@@ -87,6 +89,29 @@ func runWithRetry(
 		lastLabel = label
 	}
 	return nil, lastErr
+}
+
+func emitAgentAttempt(opts RunOpts, name string, result *Result, err error, startedAt, completedAt time.Time) {
+	if opts.OnAttempt == nil {
+		return
+	}
+	opts.OnAttempt(Attempt{
+		Agent:           name,
+		Result:          result,
+		Err:             err,
+		StartedAt:       startedAt,
+		CompletedAt:     completedAt,
+		Session:         cloneSessionRef(opts.Session),
+		SessionFallback: opts.SessionFallback,
+	})
+}
+
+func cloneSessionRef(session *SessionRef) *SessionRef {
+	if session == nil {
+		return nil
+	}
+	copy := *session
+	return &copy
 }
 
 // claudeRetryClassifier retries both transient API errors and the

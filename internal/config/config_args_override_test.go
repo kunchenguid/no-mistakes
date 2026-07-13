@@ -21,7 +21,10 @@ agent_args_override:
   codex:
     - -m
     - gpt-5.4
-    - --full-auto
+    - -c
+    - service_tier="priority"
+    - -c
+    - model_reasoning_effort="low"
   rovodev:
     - --profile
     - work
@@ -40,7 +43,7 @@ agent_args_override:
 
 	cases := map[string][]string{
 		"claude":   {"--permission-mode", "acceptEdits"},
-		"codex":    {"-m", "gpt-5.4", "--full-auto"},
+		"codex":    {"-m", "gpt-5.4", "-c", `service_tier="priority"`, "-c", `model_reasoning_effort="low"`},
 		"rovodev":  {"--profile", "work"},
 		"opencode": {"--model", "gpt-5"},
 	}
@@ -84,7 +87,27 @@ func TestLoadGlobal_AgentArgsOverride_ReservedArgsRejected(t *testing.T) {
 		{"claude", "--output-format"},
 		{"claude", "--output-format=stream-json"},
 		{"claude", "--json-schema"},
+		{"claude", "-r"},
+		{"claude", "--resume"},
+		{"claude", "--resume=session-id"},
+		{"claude", "--session-id"},
+		{"claude", "--session-id=session-id"},
+		{"claude", "-c"},
+		{"claude", "--continue"},
+		{"claude", "--fork-session"},
 		{"codex", "exec"},
+		{"codex", "resume"},
+		{"codex", "--resume"},
+		{"codex", "--resume=session-id"},
+		{"codex", "--session"},
+		{"codex", "--session=session-id"},
+		{"codex", "--session-id"},
+		{"codex", "--session-id=session-id"},
+		{"codex", "--thread"},
+		{"codex", "--thread=session-id"},
+		{"codex", "--thread-id"},
+		{"codex", "--thread-id=session-id"},
+		{"codex", "--last"},
 		{"codex", "--json"},
 		{"codex", "--color"},
 		{"codex", "--color=never"},
@@ -111,6 +134,9 @@ func TestLoadGlobal_AgentArgsOverride_ReservedArgsRejected(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "managed by no-mistakes") {
 				t.Errorf("error should mention 'managed by no-mistakes', got: %v", err)
+			}
+			if !strings.Contains(err.Error(), tt.arg) {
+				t.Errorf("error should name reserved arg %q, got: %v", tt.arg, err)
 			}
 		})
 	}

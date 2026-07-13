@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/winproc"
 )
 
 func serviceDefinitionMatchesRoot(data []byte, p *paths.Paths) bool {
@@ -248,6 +249,7 @@ func runServiceCommand(name string, args ...string) ([]byte, error) {
 		return nil, err
 	}
 	cmd := exec.Command(path, args...)
+	winproc.Harden(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return output, fmt.Errorf("%s %s: %w: %s", path, strings.Join(args, " "), err, strings.TrimSpace(string(output)))

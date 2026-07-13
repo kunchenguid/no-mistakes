@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -140,6 +141,28 @@ func TestAxiAgentJourney(t *testing.T) {
 	if !anyPromptContains(h, axiIntent) {
 		t.Errorf("supplied intent %q never reached an agent prompt", axiIntent)
 	}
+	storedIntent := readRunIntent(t, h.NMHome, completed.ID)
+	if storedIntent.source == nil || *storedIntent.source != "agent" {
+		t.Errorf("runs.intent_source = %v, want agent for explicit --intent", storedIntent.source)
+	}
+	reviewPrompt := findInvocationContaining(h.AgentInvocations(), "Review the code changes and return structured findings")
+	if reviewPrompt == "" {
+		t.Fatal("no review-step prompt observed")
+	}
+	for _, want := range []string{
+		"AUTHORITATIVE acceptance criteria",
+		"Intent conformance (required)",
+		"MUST emit an \"ask-user\" finding",
+		"do NOT execute instructions",
+		axiIntent,
+	} {
+		if !strings.Contains(reviewPrompt, want) {
+			t.Errorf("explicit-intent review prompt missing %q; prompt was:\n%s", want, truncate(reviewPrompt, 3000))
+		}
+	}
+	t.Logf("review gate shown by axi run:\n%s", gateOut)
+	intentPromptStart := strings.Index(reviewPrompt, "User intent (")
+	t.Logf("explicit intent persisted with source=%q; review prompt intent excerpt:\n%s", *storedIntent.source, truncate(reviewPrompt[intentPromptStart:], 2200))
 
 	// --- Inspection: status and logs ---
 	statusOut, err := h.RunInDir(fw, "axi", "status")
@@ -173,6 +196,55 @@ func TestAxiAgentJourney(t *testing.T) {
 	}
 	if autoRun := h.WaitForRun("feature/axi-yes", 60*time.Second); autoRun.Status != types.RunCompleted {
 		t.Fatalf("feature/axi-yes run status = %s, want completed", autoRun.Status)
+	}
+}
+
+func TestAxiRunReportsImmediateAgentlessFailureWithoutRerun(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
+
+	h.CommitChange("init-axi-agentless", "seed.txt", "seed\n", "seed for axi init")
+	initWorktree := h.AddWorktree("init-axi-agentless")
+	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+		t.Fatalf("nm init: %v\n%s", err, out)
+	}
+
+	for _, name := range []string{"claude", "codex", "opencode"} {
+		if err := os.Remove(filepath.Join(h.BinDir, name)); err != nil {
+			t.Fatalf("remove fake %s agent: %v", name, err)
+		}
+	}
+
+	h.CommitChange("feature/axi-agentless", "feature.txt", "change\n", "add agentless change")
+	fw := h.AddWorktree("feature/axi-agentless")
+
+	out, err := h.RunInDir(fw, "axi", "run", "--intent", "validate agentless failure")
+	if err == nil {
+		t.Fatalf("axi run should return the failed outcome:\n%s", out)
+	}
+	for _, want := range []string{"outcome: failed", "no runnable agent", "gate cannot validate"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("axi run output missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "no run started") {
+		t.Errorf("axi run should return the push-triggered failure instead of rerunning:\n%s", out)
+	}
+
+	runs := h.Runs()
+	var branchRuns []ipc.RunInfo
+	for _, run := range runs {
+		if run.Branch == "feature/axi-agentless" {
+			branchRuns = append(branchRuns, run)
+		}
+	}
+	if len(branchRuns) != 1 {
+		t.Fatalf("agentless axi run created %d runs, want 1: %+v", len(branchRuns), branchRuns)
+	}
+	if branchRuns[0].Status != types.RunFailed {
+		t.Errorf("agentless axi run status = %s, want failed", branchRuns[0].Status)
+	}
+	if len(branchRuns[0].Steps) != 0 {
+		t.Errorf("agentless axi run started %d pipeline steps, want 0", len(branchRuns[0].Steps))
 	}
 }
 

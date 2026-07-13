@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -18,8 +19,8 @@ type Run struct {
 	Status  types.RunStatus
 	PRURL   *string
 	// EvidenceGistIDs records secret GitHub gist IDs created to host visual
-	// evidence for this run's PR body. Deleting these gists makes existing PR
-	// embeds 404, so cleanup is explicit.
+	// evidence for this run's PR body. The CI monitor prunes them after the PR
+	// is merged or closed; deleting these gists makes existing PR embeds 404.
 	EvidenceGistIDs []string
 	Error           *string
 	// AwaitingAgentSince is the unix-seconds timestamp at which the run parked
@@ -29,15 +30,19 @@ type Run struct {
 	// wait is cancelled). It is observability only and does not affect gate
 	// resolution.
 	AwaitingAgentSince *int64
-	Intent             *string
-	IntentSource       *string
-	IntentSessionID    *string
-	IntentScore        *float64
-	CreatedAt          int64
-	UpdatedAt          int64
+	// ParkedMS accumulates the run's total parked-at-gate wall time in
+	// milliseconds across every gate wait (local performance telemetry;
+	// step duration_ms values exclude this time).
+	ParkedMS        int64
+	Intent          *string
+	IntentSource    *string
+	IntentSessionID *string
+	IntentScore     *float64
+	CreatedAt       int64
+	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, status, pr_url, evidence_gist_ids, error, awaiting_agent_since, intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, status, pr_url, evidence_gist_ids, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -45,7 +50,7 @@ func scanRun(row interface {
 	var gistIDs sql.NullString
 	if err := row.Scan(
 		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.Status,
-		&r.PRURL, &gistIDs, &r.Error, &r.AwaitingAgentSince,
+		&r.PRURL, &gistIDs, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
 	); err != nil {
@@ -98,6 +103,30 @@ func (d *DB) GetRunsByRepo(repoID string) ([]*Run, error) {
 	rows, err := d.sql.Query(`SELECT `+runColumns+` FROM runs WHERE repo_id = ? ORDER BY created_at DESC, id DESC`, repoID)
 	if err != nil {
 		return nil, fmt.Errorf("get runs by repo: %w", err)
+	}
+	defer rows.Close()
+	var runs []*Run
+	for rows.Next() {
+		r := &Run{}
+		if err := scanRun(rows, r); err != nil {
+			return nil, fmt.Errorf("scan run: %w", err)
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
+}
+
+// GetRunsByRepoHead returns the runs for a repo matching an exact branch and
+// head SHA, newest first. It lets a caller detect the run created by a specific
+// push without scanning (and rebuilding step data for) the repo's entire run
+// history, so the cost stays bounded to the handful of runs for one head.
+func (d *DB) GetRunsByRepoHead(repoID, branch, headSHA string) ([]*Run, error) {
+	rows, err := d.sql.Query(
+		`SELECT `+runColumns+` FROM runs WHERE repo_id = ? AND branch = ? AND head_sha = ? ORDER BY created_at DESC, id DESC`,
+		repoID, branch, headSHA,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get runs by repo head: %w", err)
 	}
 	defer rows.Close()
 	var runs []*Run
@@ -202,7 +231,24 @@ func (d *DB) AddRunEvidenceGistIDs(id string, gistIDs []string) error {
 	return nil
 }
 
-// ClearRunEvidenceGistIDs clears recorded evidence gist IDs after explicit cleanup.
+// SetRunEvidenceGistIDs replaces the recorded evidence gist IDs for a run.
+func (d *DB) SetRunEvidenceGistIDs(id string, gistIDs []string) error {
+	clean := uniqueGistIDs(gistIDs)
+	if len(clean) == 0 {
+		return d.ClearRunEvidenceGistIDs(id)
+	}
+	data, err := json.Marshal(clean)
+	if err != nil {
+		return fmt.Errorf("marshal evidence gist ids: %w", err)
+	}
+	_, err = d.sql.Exec(`UPDATE runs SET evidence_gist_ids = ?, updated_at = ? WHERE id = ?`, string(data), now(), id)
+	if err != nil {
+		return fmt.Errorf("set run evidence gist ids: %w", err)
+	}
+	return nil
+}
+
+// ClearRunEvidenceGistIDs clears recorded evidence gist IDs after cleanup.
 func (d *DB) ClearRunEvidenceGistIDs(id string) error {
 	_, err := d.sql.Exec(`UPDATE runs SET evidence_gist_ids = NULL, updated_at = ? WHERE id = ?`, now(), id)
 	if err != nil {
@@ -246,6 +292,14 @@ func (d *DB) UpdateRunErrorStatus(id, errMsg string, status types.RunStatus) err
 	}
 	return nil
 }
+
+// RunIntentSourceAgent is the intent_source value stamped when the driving
+// agent supplied the intent explicitly via `axi run --intent`. It marks an
+// authoritative, author-stated goal (score 1) as opposed to a transcript
+// inference (whose source is the matched agent name: "claude", "codex", ...).
+// Prompt-construction code branches on this to frame an explicit intent as
+// authoritative acceptance criteria rather than a low-confidence hint.
+const RunIntentSourceAgent = "agent"
 
 // RunIntent carries the four intent-related columns persisted on a run.
 type RunIntent struct {
@@ -292,10 +346,44 @@ func (d *DB) ClearRunAwaitingAgent(id string) error {
 	return nil
 }
 
+// AddRunParkedDuration accumulates parked-at-gate wall time onto a run's
+// total. Called by the executor when a gate wait ends.
+func (d *DB) AddRunParkedDuration(id string, ms int64) error {
+	if ms <= 0 {
+		return nil
+	}
+	_, err := d.sql.Exec(`UPDATE runs SET parked_ms = COALESCE(parked_ms, 0) + ?, updated_at = ? WHERE id = ?`, ms, now(), id)
+	if err != nil {
+		return fmt.Errorf("add run parked duration: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) CompleteRunAwaitingAgent(id string, ms int64) error {
+	if ms < 0 {
+		ms = 0
+	}
+	_, err := d.sql.Exec(
+		`UPDATE runs SET awaiting_agent_since = NULL, parked_ms = COALESCE(parked_ms, 0) + ?, updated_at = ? WHERE id = ?`,
+		ms, now(), id,
+	)
+	if err != nil {
+		return fmt.Errorf("complete run awaiting agent: %w", err)
+	}
+	return nil
+}
+
 // RecoverStaleRuns marks any runs stuck in pending/running status as failed
 // and fails any in-progress steps. This is called at daemon startup to clean
 // up after a previous crash. Returns the number of recovered runs.
 func (d *DB) RecoverStaleRuns(errMsg string) (int, error) {
+	return d.RecoverStaleRunsExcept(errMsg, nil)
+}
+
+// RecoverStaleRunsExcept marks active runs as failed unless their IDs appear
+// in preserved. Callers use preserved only after independently proving a run
+// can be reconstructed safely.
+func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}) (int, error) {
 	ts := now()
 
 	tx, err := d.sql.Begin()
@@ -304,22 +392,37 @@ func (d *DB) RecoverStaleRuns(errMsg string) (int, error) {
 	}
 	defer tx.Rollback()
 
-	// Fail stale steps first (running, awaiting_approval, fixing, fix_review).
-	_, err = tx.Exec(
-		`UPDATE step_results SET status = ?, error = ?, completed_at = ? WHERE status IN (?, ?, ?, ?)`,
+	placeholders, args := recoveryExclusionClause(preserved)
+	stepArgs := []any{
 		types.StepStatusFailed, errMsg, ts,
 		types.StepStatusRunning, types.StepStatusAwaitingApproval, types.StepStatusFixing, types.StepStatusFixReview,
+		types.RunPending, types.RunRunning,
+	}
+	stepArgs = append(stepArgs, args...)
+	_, err = tx.Exec(
+		`UPDATE step_results SET status = ?, error = ?, completed_at = ?
+		 WHERE status IN (?, ?, ?, ?) AND run_id IN (
+			SELECT id FROM runs WHERE status IN (?, ?)`+placeholders+`
+		 )`,
+		stepArgs...,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("recover stale steps: %w", err)
 	}
 
 	// Fail stale runs. Clear any awaiting-agent marker so a recovered (now
-	// failed) run is never reported as still parked awaiting the agent.
+	// failed) run is never reported as still parked awaiting the agent,
+	// accumulating the marker's elapsed time into the run's parked total so
+	// the parked evidence survives the crash.
+	runArgs := []any{types.RunFailed, errMsg, ts, ts, ts, types.RunPending, types.RunRunning}
+	runArgs = append(runArgs, args...)
 	result, err := tx.Exec(
-		`UPDATE runs SET status = ?, error = ?, awaiting_agent_since = NULL, updated_at = ? WHERE status IN (?, ?)`,
-		types.RunFailed, errMsg, ts,
-		types.RunPending, types.RunRunning,
+		`UPDATE runs SET status = ?, error = ?,
+			parked_ms = COALESCE(parked_ms, 0) + CASE
+				WHEN awaiting_agent_since IS NOT NULL AND ? > awaiting_agent_since
+				THEN (? - awaiting_agent_since) * 1000 ELSE 0 END,
+			awaiting_agent_since = NULL, updated_at = ? WHERE status IN (?, ?)`+placeholders,
+		runArgs...,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("recover stale runs: %w", err)
@@ -334,4 +437,17 @@ func (d *DB) RecoverStaleRuns(errMsg string) (int, error) {
 		return 0, fmt.Errorf("commit transaction: %w", err)
 	}
 	return int(count), nil
+}
+
+func recoveryExclusionClause(preserved map[string]struct{}) (string, []any) {
+	if len(preserved) == 0 {
+		return "", nil
+	}
+	args := make([]any, 0, len(preserved))
+	placeholders := make([]string, 0, len(preserved))
+	for id := range preserved {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+	return " AND id NOT IN (" + strings.Join(placeholders, ", ") + ")", args
 }

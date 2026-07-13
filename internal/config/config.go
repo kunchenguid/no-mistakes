@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"gopkg.in/yaml.v3"
 )
 
@@ -33,6 +34,9 @@ const (
 	// DefaultStepQuietWarning is how long a running/fixing step can go without
 	// a new log or lifecycle activity before AXI status marks it quiet.
 	DefaultStepQuietWarning = 10 * time.Minute
+	// DefaultDaemonConnectTimeout bounds client IPC connection attempts to a
+	// daemon socket that exists but is not accepting connections.
+	DefaultDaemonConnectTimeout = 3 * time.Second
 	// CITimeoutUnlimited is the sentinel meaning "monitor until the PR is
 	// merged, closed, or the run is aborted - never self-terminate".
 	// Any non-positive ci_timeout, or the keywords "unlimited", "none",
@@ -50,10 +54,16 @@ type GlobalConfig struct {
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
 	CITimeout            time.Duration       `yaml:"-"`
 	StepQuietWarning     time.Duration       `yaml:"-"`
+	DaemonConnectTimeout time.Duration       `yaml:"-"`
 	LogLevel             string              `yaml:"log_level"`
-	AutoFix              AutoFixRaw
-	Intent               IntentRaw
-	Test                 TestRaw
+	// SessionReuse controls per-run, per-role agent session reuse in the
+	// review loop (one durable reviewer session across full reviews, a
+	// separate durable fixer session across fix turns). Default true; set
+	// session_reuse: false to force every invocation cold.
+	SessionReuse bool `yaml:"-"`
+	AutoFix      AutoFixRaw
+	Intent       IntentRaw
+	Test         TestRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -64,9 +74,11 @@ type globalConfigRaw struct {
 	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
 	CITimeout            string              `yaml:"ci_timeout"`
+	DaemonConnectTimeout string              `yaml:"daemon_connect_timeout"`
 	BabysitTimeout       string              `yaml:"babysit_timeout"`
 	StepQuietWarning     string              `yaml:"step_quiet_warning"`
 	LogLevel             string              `yaml:"log_level"`
+	SessionReuse         *bool               `yaml:"session_reuse"`
 	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
 	Intent               IntentRaw           `yaml:"intent"`
 	Test                 TestRaw             `yaml:"test"`
@@ -88,17 +100,44 @@ type RepoConfig struct {
 	AutoFix           AutoFixRaw `yaml:"auto_fix"`
 	Intent            IntentRaw  `yaml:"intent"`
 	Test              TestRaw    `yaml:"test"`
+	// Document carries the repository's documentation placement policy. It
+	// steers the document step's gate prompt, so it is honored ONLY from the
+	// trusted default-branch copy of .no-mistakes.yaml (see
+	// EffectiveRepoConfig): a contributor's pushed branch must not be able to
+	// weaken documentation rules for its own review.
+	Document DocumentRaw `yaml:"document"`
+	// DisableProjectSettings opts the repository out of loading project-level
+	// agent settings/instructions (AGENTS.md/CLAUDE.md and the equivalent
+	// per-harness project settings) into gate agents. It exists for
+	// agent-orchestration repos (e.g. firstmate) whose project instructions
+	// would otherwise install a fleet-captain identity on a gate agent. It is a
+	// SECURITY boundary honored ONLY from the trusted default-branch copy of
+	// .no-mistakes.yaml (see EffectiveRepoConfig and the daemon's
+	// assertGateTrustedConfigReadable): a contributor's pushed branch must not be
+	// able to turn it off (or on). Default false; a plain bool so a missing key
+	// or a YAML/JSON null is falsy and preserves current loading.
+	DisableProjectSettings bool `yaml:"disable_project_settings"`
+}
+
+// DocumentRaw is the YAML representation of document-step settings.
+type DocumentRaw struct {
+	// Instructions augment (never replace) the built-in documentation
+	// placement policy with the repository's ownership map or extra
+	// placement rules.
+	Instructions string `yaml:"instructions"`
 }
 
 func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	type repoConfigRaw struct {
-		Agent             agentList  `yaml:"agent"`
-		Commands          Commands   `yaml:"commands"`
-		IgnorePatterns    []string   `yaml:"ignore_patterns"`
-		AllowRepoCommands bool       `yaml:"allow_repo_commands"`
-		AutoFix           AutoFixRaw `yaml:"auto_fix"`
-		Intent            IntentRaw  `yaml:"intent"`
-		Test              TestRaw    `yaml:"test"`
+		Agent                  agentList   `yaml:"agent"`
+		Commands               Commands    `yaml:"commands"`
+		IgnorePatterns         []string    `yaml:"ignore_patterns"`
+		AllowRepoCommands      bool        `yaml:"allow_repo_commands"`
+		AutoFix                AutoFixRaw  `yaml:"auto_fix"`
+		Intent                 IntentRaw   `yaml:"intent"`
+		Test                   TestRaw     `yaml:"test"`
+		Document               DocumentRaw `yaml:"document"`
+		DisableProjectSettings bool        `yaml:"disable_project_settings"`
 	}
 	var raw repoConfigRaw
 	if err := value.Decode(&raw); err != nil {
@@ -112,6 +151,8 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.AutoFix = raw.AutoFix
 	c.Intent = raw.Intent
 	c.Test = raw.Test
+	c.Document = raw.Document
+	c.DisableProjectSettings = raw.DisableProjectSettings
 	return nil
 }
 
@@ -156,11 +197,25 @@ type Config struct {
 	CITimeout            time.Duration
 	StepQuietWarning     time.Duration
 	LogLevel             string
+	SessionReuse         bool
 	Commands             Commands
 	IgnorePatterns       []string
 	AutoFix              AutoFix
 	Intent               Intent
 	Test                 Test
+	Document             Document
+	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
+	// RepoConfig field). When true, gate agents are launched with their
+	// project-level settings/instructions suppressed; the daemon fails the run
+	// closed if the resolved harness has no verified suppression knob.
+	DisableProjectSettings bool
+}
+
+// Document is the resolved document-step config. Instructions come from the
+// trusted default-branch repo config and augment the built-in placement
+// policy in the document prompt.
+type Document struct {
+	Instructions string
 }
 
 // TestRaw is the YAML representation of test-step settings.
@@ -286,6 +341,17 @@ ci_timeout: "168h"
 # only; it never cancels work.
 step_quiet_warning: "10m"
 
+# Maximum time a CLI client waits for an existing daemon socket to accept a
+# connection before failing instead of hanging.
+daemon_connect_timeout: "3s"
+
+# Reuse one durable agent session per run for the review loop: the reviewer
+# keeps a single session across the initial review and every full rereview,
+# and review fixes keep a separate fixer session. Roles never share a session.
+# Supported for claude and codex; other agents run cold. Set false to force
+# every agent invocation cold.
+session_reuse: true
+
 # Log level for daemon output
 # Options: debug, info, warn, error
 log_level: info
@@ -296,10 +362,15 @@ log_level: info
 #   codex: /opt/codex
 
 # Extra native agent CLI flags (optional, global only)
+# Codex service_tier controls speed/priority; model_reasoning_effort controls reasoning depth.
 # agent_args_override:
 #   codex:
 #     - -m
 #     - gpt-5.4
+#     - -c
+#     - service_tier="priority"
+#     - -c
+#     - model_reasoning_effort="low"
 #
 # Maximum follow-up auto-fix attempts per step (0 = disabled after the initial pass)
 # Document fixes are attempted during the initial document pass.
@@ -368,6 +439,7 @@ var probeRovoDevSupport = func(ctx context.Context, bin string) (bool, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, bin, "rovodev", "--help")
+	winproc.Harden(cmd)
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		return true, nil
@@ -393,20 +465,29 @@ var probeRovoDevSupport = func(ctx context.Context, bin string) (bool, error) {
 }
 
 // ResolveAgent resolves configured agent names to available agents. A single
-// explicit agent is preserved; auto is probed into the first available native
-// agent; an ordered list is filtered to available agents and kept as fallbacks.
+// explicit agent must be runnable; auto is probed into the first available
+// native agent; an ordered list is filtered to available agents and kept as fallbacks.
 // The lookPath function should behave like exec.LookPath.
 func (c *Config) ResolveAgent(ctx context.Context, lookPath func(string) (string, error)) error {
 	candidates := c.configuredAgents()
 	if len(candidates) <= 1 {
 		c.Agent = firstAgent(candidates)
 		c.Agents = copyAgents(candidates)
-		if c.Agent != types.AgentAuto {
+		if c.Agent == types.AgentAuto {
+			name, err := c.resolveAutoAgent(ctx, lookPath)
+			if err != nil {
+				return err
+			}
+			c.Agent = name
+			c.Agents = []types.AgentName{name}
 			return nil
 		}
-		name, err := c.resolveAutoAgent(ctx, lookPath)
+		name, ok, probe, err := c.resolveConfiguredAgent(ctx, c.Agent, lookPath)
 		if err != nil {
 			return err
+		}
+		if !ok {
+			return noRunnableAgentError([]types.AgentName{c.Agent}, []string{probe})
 		}
 		c.Agent = name
 		c.Agents = []types.AgentName{name}
@@ -461,7 +542,7 @@ func (c *Config) resolveAutoAgent(ctx context.Context, lookPath func(string) (st
 			return "", fmt.Errorf("resolve %s agent from %q: %w", name, bin, err)
 		}
 	}
-	return "", fmt.Errorf("no supported agent found in PATH (looked for: %s); install one or set 'agent' in ~/.no-mistakes/config.yaml", strings.Join(probed, ", "))
+	return "", noRunnableAgentError([]types.AgentName{types.AgentAuto}, probed)
 }
 
 func (c *Config) resolveAgentList(ctx context.Context, candidates []types.AgentName, lookPath func(string) (string, error)) ([]types.AgentName, error) {
@@ -483,15 +564,27 @@ func (c *Config) resolveAgentList(ctx context.Context, candidates []types.AgentN
 		resolved = append(resolved, name)
 	}
 	if len(resolved) == 0 {
-		return nil, fmt.Errorf("no configured agent found in PATH (looked for: %s)", strings.Join(probed, ", "))
+		return nil, noRunnableAgentError(candidates, probed)
 	}
 	return resolved, nil
+}
+
+func noRunnableAgentError(configured []types.AgentName, probed []string) error {
+	names := make([]string, 0, len(configured))
+	for _, name := range configured {
+		names = append(names, string(name))
+	}
+	return fmt.Errorf(
+		"no runnable agent found for configured agent %s (looked for: %s); the gate cannot validate without an agent; install a supported native agent, choose an available agent in ~/.no-mistakes/config.yaml, or configure agent: acp:<target> with acpx installed",
+		strings.Join(names, ", "),
+		strings.Join(probed, ", "),
+	)
 }
 
 func (c *Config) resolveConfiguredAgent(ctx context.Context, name types.AgentName, lookPath func(string) (string, error)) (types.AgentName, bool, string, error) {
 	if name == types.AgentAuto {
 		resolved, err := c.resolveAutoAgent(ctx, lookPath)
-		if err != nil && strings.HasPrefix(err.Error(), "no supported agent found in PATH") {
+		if err != nil && strings.HasPrefix(err.Error(), "no runnable agent found") {
 			return "", false, "auto", nil
 		}
 		return resolved, err == nil, "auto", err
@@ -578,11 +671,24 @@ var reservedAgentArgs = map[string]map[string]bool{
 		"--verbose":       true,
 		"--output-format": true,
 		"--json-schema":   true,
+		"-r":              true,
+		"--resume":        true,
+		"--session-id":    true,
+		"-c":              true,
+		"--continue":      true,
+		"--fork-session":  true,
 	},
 	string(types.AgentCodex): {
-		"exec":    true,
-		"--json":  true,
-		"--color": true,
+		"exec":         true,
+		"resume":       true,
+		"--resume":     true,
+		"--session":    true,
+		"--session-id": true,
+		"--thread":     true,
+		"--thread-id":  true,
+		"--last":       true,
+		"--json":       true,
+		"--color":      true,
 	},
 	string(types.AgentRovoDev): {
 		"rovodev":                 true,
@@ -653,11 +759,13 @@ func EnsureDefaultGlobalConfig(path string) {
 // DefaultGlobalConfig returns the built-in global defaults.
 func DefaultGlobalConfig() *GlobalConfig {
 	return &GlobalConfig{
-		Agent:            types.AgentAuto,
-		Agents:           []types.AgentName{types.AgentAuto},
-		CITimeout:        DefaultCITimeout,
-		StepQuietWarning: DefaultStepQuietWarning,
-		LogLevel:         "info",
+		Agent:                types.AgentAuto,
+		Agents:               []types.AgentName{types.AgentAuto},
+		CITimeout:            DefaultCITimeout,
+		StepQuietWarning:     DefaultStepQuietWarning,
+		DaemonConnectTimeout: DefaultDaemonConnectTimeout,
+		LogLevel:             "info",
+		SessionReuse:         true,
 	}
 }
 
@@ -719,8 +827,18 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 			cfg.StepQuietWarning = d
 		}
 	}
+	if raw.DaemonConnectTimeout != "" {
+		d, err := parsePositiveDuration("daemon_connect_timeout", raw.DaemonConnectTimeout)
+		if err != nil {
+			return nil, err
+		}
+		cfg.DaemonConnectTimeout = d
+	}
 	if raw.LogLevel != "" {
 		cfg.LogLevel = raw.LogLevel
+	}
+	if raw.SessionReuse != nil {
+		cfg.SessionReuse = *raw.SessionReuse
 	}
 	if raw.AutoFix.CI == nil {
 		raw.AutoFix.CI = raw.AutoFix.Babysit
@@ -747,6 +865,17 @@ func parseCITimeout(value string) (time.Duration, error) {
 	}
 	if d <= 0 {
 		return CITimeoutUnlimited, nil
+	}
+	return d, nil
+}
+
+func parsePositiveDuration(name, value string) (time.Duration, error) {
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s %q: %w", name, value, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("parse %s %q: duration must be positive", name, value)
 	}
 	return d, nil
 }
@@ -791,17 +920,23 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // EffectiveRepoConfig returns the repo config that should drive the pipeline
 // given a pushed-branch copy and the trusted default-branch copy.
 //
-// The code-executing selection fields — Commands (run verbatim via sh -c on
+// The code-executing selection fields - Commands (run verbatim via sh -c on
 // the daemon host) and Agent/Agents (select which processes launch with the
-// maintainer's credentials, including fallback lists and acp: targets) — are
+// maintainer's credentials, including fallback lists and acp: targets) - are
 // taken only from the trusted copy when it is present, so a contributor's
-// pushed branch cannot inject shell or pick an agent. When allowRepoCommands is
+// pushed branch cannot inject shell or pick an agent. Document (the
+// documentation placement policy injected into the document gate prompt) is
+// trusted-only for the same reason: a pushed branch must not weaken the
+// documentation rules that gate itself. DisableProjectSettings is also
+// trusted-only so a pushed branch cannot enable or defeat the gate-agent
+// project-instruction boundary. When allowRepoCommands is
 // true the maintainer has explicitly opted in (via allow_repo_commands on the
-// TRUSTED default-branch copy) to honoring the pushed-branch copy wholesale.
+// TRUSTED default-branch copy) to honoring the pushed branch's commands and
+// agent selection.
 // When there is no trusted copy and the maintainer has not opted in, both
 // fields are forced empty (Agent "" and nil Agents inherit the global agent;
 // Commands{} yields built-in defaults) rather than falling back to the pushed
-// branch — this blocks the supply-chain vector for repos that ship
+// branch - this blocks the supply-chain vector for repos that ship
 // .no-mistakes.yaml only on feature branches.
 //
 // Non-executing fields (ignore patterns, auto-fix, intent, test) are always
@@ -812,6 +947,18 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		pushed = &RepoConfig{}
 	}
 	effective := *pushed
+	if trusted != nil {
+		effective.Document = trusted.Document
+		// disable_project_settings is a security boundary: honor it ONLY from the
+		// trusted default-branch copy so a pushed branch cannot turn the opt-out
+		// off (and re-enable its own AGENTS.md) or on. A nil trusted copy here
+		// means the trusted config was legitimately absent (the daemon aborts
+		// separately when it could not be READ at all), so falsy is correct.
+		effective.DisableProjectSettings = trusted.DisableProjectSettings
+	} else {
+		effective.Document = DocumentRaw{}
+		effective.DisableProjectSettings = false
+	}
 	if allowRepoCommands {
 		return &effective
 	}
@@ -984,11 +1131,16 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		CITimeout:            global.CITimeout,
 		StepQuietWarning:     global.StepQuietWarning,
 		LogLevel:             global.LogLevel,
+		SessionReuse:         global.SessionReuse,
 		Commands:             repo.Commands,
 		IgnorePatterns:       repo.IgnorePatterns,
 		AutoFix:              af,
 		Intent:               intent,
 		Test:                 test,
+		Document:             Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
+		// repo is the EffectiveRepoConfig result, so this value is already
+		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
+		DisableProjectSettings: repo.DisableProjectSettings,
 	}
 
 	if repo.Agent != "" {

@@ -106,14 +106,14 @@ func (h *Host) Available(ctx context.Context) error {
 	}
 	// The azure-devops extension is separate from the az binary; without it
 	// every `az repos`/`az devops` command fails. Probe it for a clear message.
-	if err := h.cmd(ctx, "az", "extension", "show", "--name", "azure-devops").Run(); err != nil {
+	if err := scm.RunAuthProbe(func() *exec.Cmd { return h.cmd(ctx, "az", "extension", "show", "--name", "azure-devops") }); err != nil {
 		return errors.New("az azure-devops extension is not installed (run: az extension add --name azure-devops)")
 	}
 	// Auth probe: an organization-scoped read exercises the PAT
 	// (AZURE_DEVOPS_EXT_PAT, or `az devops login`) against this organization.
 	args := []string{"devops", "project", "list", "--query", "value[0].id", "--output", "tsv"}
 	args = append(args, h.orgArgs()...)
-	if err := h.cmd(ctx, "az", args...).Run(); err != nil {
+	if err := scm.RunAuthProbe(func() *exec.Cmd { return h.cmd(ctx, "az", args...) }); err != nil {
 		return errors.New("az CLI is not authenticated for Azure DevOps")
 	}
 	return nil

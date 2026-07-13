@@ -17,29 +17,31 @@ func newRunsCmd() *cobra.Command {
 		Short: "List pipeline runs for the current repository",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return trackCommand("runs", func() error {
+			return trackReadSurface("runs", nil, func() (string, string, error) {
 				_, d, err := openResources()
 				if err != nil {
-					return err
+					return "", "", err
 				}
 				defer d.Close()
 
 				repo, err := findRepo(d)
 				if err != nil {
-					return err
+					return "", "", err
 				}
 
 				runs, err := d.GetRunsByRepo(repo.ID)
 				if err != nil {
-					return fmt.Errorf("list runs: %w", err)
+					return "", "", fmt.Errorf("list runs: %w", err)
 				}
+
+				fingerprint := repo.ID + "|" + renderedRunsFingerprint(runs, limit)
 
 				w := cmd.OutOrStdout()
 
 				if len(runs) == 0 {
 					fmt.Fprintf(w, "  %s\n", sDim.Render("no runs yet. Push through the gate to start a pipeline:"))
 					fmt.Fprintf(w, "  %s\n", sBold.Render("git push no-mistakes <branch>"))
-					return nil
+					return fingerprint, "", nil
 				}
 
 				// Apply limit.
@@ -56,7 +58,7 @@ func newRunsCmd() *cobra.Command {
 					fmt.Fprintf(w, "\n  %s\n", sDim.Render(fmt.Sprintf("(%d more runs, use --limit to see more)", len(runs)-len(shown))))
 				}
 
-				return nil
+				return fingerprint, "", nil
 			})
 		},
 	}

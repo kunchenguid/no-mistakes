@@ -1,11 +1,37 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestMain(m *testing.M) {
+	root, err := os.MkdirTemp("", "nm-main-test-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create test NM_HOME: %v\n", err)
+		os.Exit(1)
+	}
+	home, err := os.MkdirTemp("", "nm-main-home-")
+	if err != nil {
+		_ = os.RemoveAll(root)
+		fmt.Fprintf(os.Stderr, "create test HOME: %v\n", err)
+		os.Exit(1)
+	}
+	_ = os.Setenv("NM_HOME", root)
+	_ = os.Setenv("HOME", home)
+	_ = os.Setenv("NO_MISTAKES_TELEMETRY", "off")
+	_ = os.Setenv("NO_MISTAKES_NO_UPDATE_CHECK", "1")
+
+	code := m.Run()
+
+	_ = os.RemoveAll(root)
+	_ = os.RemoveAll(home)
+	os.Exit(code)
+}
 
 func TestCLILogWriterReturnsDiscardWhenLogsDirMissing(t *testing.T) {
 	nmHome := t.TempDir()
@@ -94,14 +120,24 @@ func TestDaemonRunRootFromArgs(t *testing.T) {
 	}
 }
 
-func TestDaemonRunRootFromArgs_EnvForcesDaemonMode(t *testing.T) {
+func TestDaemonRunRootFromArgs_EnvDoesNotForceDaemonModeForProbes(t *testing.T) {
 	t.Setenv("NM_DAEMON", "1")
 
-	gotRoot, gotOK, err := daemonRunRootFromArgs([]string{"status"})
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
+	tests := [][]string{
+		{"--version"},
+		{"daemon", "status"},
+		{"status"},
 	}
-	if gotRoot != "" || !gotOK {
-		t.Fatalf("got (%q, %v), want (%q, %v)", gotRoot, gotOK, "", true)
+
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			gotRoot, gotOK, err := daemonRunRootFromArgs(args)
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if gotRoot != "" || gotOK {
+				t.Fatalf("got (%q, %v), want (%q, %v)", gotRoot, gotOK, "", false)
+			}
+		})
 	}
 }

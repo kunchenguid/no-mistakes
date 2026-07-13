@@ -195,7 +195,7 @@ func TestPiParser_SumsUniqueAssistantUsageAcrossTurns(t *testing.T) {
 	if err := pp.parse(context.Background(), strings.NewReader(stream)); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	want := TokenUsage{InputTokens: 11, OutputTokens: 7, CacheReadTokens: 9, CacheCreationTokens: 11}
+	want := TokenUsage{InputTokens: 11, OutputTokens: 7, CacheReadTokens: 9, CacheCreationTokens: 11, Reported: true, CacheCreationReported: true}
 	if pp.usage != want {
 		t.Fatalf("usage = %+v, want %+v", pp.usage, want)
 	}

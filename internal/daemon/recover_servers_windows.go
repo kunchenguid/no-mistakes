@@ -7,10 +7,13 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/kunchenguid/no-mistakes/internal/winproc"
 )
 
 var taskkillProcessTree = func(pid int) ([]byte, error) {
 	cmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
+	winproc.Harden(cmd)
 	return cmd.CombinedOutput()
 }
 

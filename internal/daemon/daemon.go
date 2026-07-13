@@ -27,8 +27,8 @@ var createDaemonPIDTempFile = os.CreateTemp
 var renameDaemonPIDFile = os.Rename
 
 // Run starts the daemon process. It blocks until a shutdown signal is received
-// or the shutdown IPC method is called. This is called when NM_DAEMON=1 or via
-// the hidden `no-mistakes daemon run` entrypoint used by the managed service.
+// or the shutdown IPC method is called. This is called via the hidden
+// `no-mistakes daemon run` entrypoint used by managed and detached services.
 func Run() error {
 	p, err := paths.New()
 	if err != nil {
@@ -137,20 +137,20 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 		_ = telemetry.Close(ctx)
 	}()
 
-	// Recover stale runs from a previous daemon crash.
-	recoverOnStartup(d, p)
-
 	// Point the agent package at our PID tracking dir so any managed
 	// servers we spawn from here on leave crash-recovery breadcrumbs.
 	agent.SetServerPIDsDir(p.ServerPIDsDir())
 	defer agent.SetServerPIDsDir("")
 
+	mgr := NewRunManager(d, p, stepFactory)
+
+	// Recover stale runs from a previous daemon crash.
+	recoverOnStartup(d, p, mgr)
+
 	srv := ipc.NewServer()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	mgr := NewRunManager(d, p, stepFactory)
 
 	var shutdownOnce sync.Once
 	doShutdown := func(reason string) {
@@ -264,13 +264,21 @@ func writeDaemonPIDFile(path string, record daemonPIDFile) error {
 // best-effort migrates gate bare repos in place so older installs pick up
 // the per-worktree hookspath isolation introduced for issue #122 when Git
 // supports config --worktree.
-func recoverOnStartup(d *db.DB, p *paths.Paths) {
+func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	reapOrphanedServers(p)
 	migrateGateConfigs(context.Background(), p)
 
-	count, err := d.RecoverStaleRuns("daemon crashed during execution")
+	plans := mgr.recoverableParkedRuns(context.Background())
+	preserved := make(map[string]struct{}, len(plans))
+	for _, plan := range plans {
+		preserved[plan.run.ID] = struct{}{}
+	}
+	count, err := d.RecoverStaleRunsExcept("daemon crashed during execution", preserved)
 	if err != nil {
 		slog.Error("failed to recover stale runs", "error", err)
+		for _, plan := range plans {
+			_ = plan.agent.Close()
+		}
 		return
 	}
 	if count > 0 {
@@ -278,6 +286,7 @@ func recoverOnStartup(d *db.DB, p *paths.Paths) {
 	}
 
 	cleanupOrphanWorktrees(d, p)
+	mgr.resumeRecoveredRuns(plans)
 }
 
 // cleanupOrphanWorktrees removes worktree directories left behind by runs
@@ -420,6 +429,26 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		runs, err := d.GetRunsByRepo(p.RepoID)
 		if err != nil {
 			return nil, fmt.Errorf("get runs: %w", err)
+		}
+		infos := make([]ipc.RunInfo, 0, len(runs))
+		for _, r := range runs {
+			steps, err := d.GetStepsByRun(r.ID)
+			if err != nil {
+				return nil, fmt.Errorf("get steps for run %s: %w", r.ID, err)
+			}
+			infos = append(infos, *runToInfo(d, r, steps))
+		}
+		return &ipc.GetRunsResult{Runs: infos}, nil
+	})
+
+	srv.Handle(ipc.MethodGetRunsForHead, func(_ context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.GetRunsForHeadParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		runs, err := d.GetRunsByRepoHead(p.RepoID, p.Branch, p.HeadSHA)
+		if err != nil {
+			return nil, fmt.Errorf("get runs for head: %w", err)
 		}
 		infos := make([]ipc.RunInfo, 0, len(runs))
 		for _, r := range runs {

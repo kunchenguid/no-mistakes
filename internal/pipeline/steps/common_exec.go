@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
+	"github.com/kunchenguid/no-mistakes/internal/winproc"
 )
 
 func envValue(env []string, key string) (string, bool) {
@@ -157,6 +158,7 @@ func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd 
 	}
 	cmd := exec.CommandContext(sctx.Ctx, resolved, args...)
 	cmd.Dir = sctx.WorkDir
+	winproc.Harden(cmd)
 	if len(sctx.Env) > 0 {
 		cmd.Env = mergeEnv(sctx.Env)
 	}

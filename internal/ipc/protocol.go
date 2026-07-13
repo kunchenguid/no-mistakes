@@ -9,16 +9,17 @@ import (
 
 // JSON-RPC 2.0 method names.
 const (
-	MethodPushReceived = "push_received"
-	MethodGetRun       = "get_run"
-	MethodGetRuns      = "get_runs"
-	MethodGetActiveRun = "get_active_run"
-	MethodRerun        = "rerun"
-	MethodSubscribe    = "subscribe"
-	MethodRespond      = "respond"
-	MethodCancelRun    = "cancel_run"
-	MethodHealth       = "health"
-	MethodShutdown     = "shutdown"
+	MethodPushReceived   = "push_received"
+	MethodGetRun         = "get_run"
+	MethodGetRuns        = "get_runs"
+	MethodGetRunsForHead = "get_runs_for_head"
+	MethodGetActiveRun   = "get_active_run"
+	MethodRerun          = "rerun"
+	MethodSubscribe      = "subscribe"
+	MethodRespond        = "respond"
+	MethodCancelRun      = "cancel_run"
+	MethodHealth         = "health"
+	MethodShutdown       = "shutdown"
 )
 
 // JSON-RPC 2.0 error codes.
@@ -62,6 +63,7 @@ func (e *RPCError) Error() string { return e.Message }
 // stamped onto the run so the intent step uses it verbatim instead of inferring
 // intent from local transcripts.
 type PushReceivedParams struct {
+	// Gate is the absolute path to the gate bare repo.
 	Gate      string           `json:"gate"`
 	Ref       string           `json:"ref"`
 	Old       string           `json:"old"`
@@ -78,6 +80,16 @@ type GetRunParams struct {
 // GetRunsParams requests all runs for a repo.
 type GetRunsParams struct {
 	RepoID string `json:"repo_id"`
+}
+
+// GetRunsForHeadParams requests the runs for a repo on an exact branch and head
+// SHA. It backs a lightweight lookup that avoids scanning the repo's whole run
+// history, so a caller polling for the run created by a specific push does not
+// re-fetch every run (and its steps) on each poll.
+type GetRunsForHeadParams struct {
+	RepoID  string `json:"repo_id"`
+	Branch  string `json:"branch"`
+	HeadSHA string `json:"head_sha"`
 }
 
 // GetActiveRunParams requests the active run for a repo.

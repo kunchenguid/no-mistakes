@@ -45,7 +45,12 @@ func init() {
 		}
 		os.Exit(0)
 	}
-	if os.Getenv("NM_DAEMON") != "1" || os.Getenv("NM_TEST_START_DAEMON") != "1" {
+	if os.Getenv("NM_TEST_START_DAEMON") != "1" {
+		return
+	}
+	if root, ok := explicitDaemonRunRootFromArgs(os.Args[1:]); ok && root != "" {
+		_ = os.Setenv("NM_HOME", root)
+	} else if os.Getenv("NM_DAEMON") != "1" {
 		return
 	}
 	if err := daemon.Run(); err != nil {
@@ -53,6 +58,54 @@ func init() {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+func TestMain(m *testing.M) {
+	base := os.TempDir()
+	if runtime.GOOS != "windows" {
+		base = "/tmp"
+	}
+	root, err := os.MkdirTemp(base, "nm-cli-test-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create test NM_HOME: %v\n", err)
+		os.Exit(1)
+	}
+	home, err := os.MkdirTemp(base, "nm-cli-home-")
+	if err != nil {
+		_ = os.RemoveAll(root)
+		fmt.Fprintf(os.Stderr, "create test HOME: %v\n", err)
+		os.Exit(1)
+	}
+	_ = os.Setenv("NM_HOME", root)
+	_ = os.Setenv("HOME", home)
+	_ = os.Setenv("NO_MISTAKES_TELEMETRY", "off")
+	_ = os.Setenv("NO_MISTAKES_NO_UPDATE_CHECK", "1")
+
+	code := m.Run()
+
+	_ = daemon.Stop(paths.WithRoot(root))
+	_ = os.RemoveAll(root)
+	_ = os.RemoveAll(home)
+	os.Exit(code)
+}
+
+func explicitDaemonRunRootFromArgs(args []string) (string, bool) {
+	if len(args) < 2 || args[0] != "daemon" || args[1] != "run" {
+		return "", false
+	}
+	if len(args) == 2 {
+		return "", true
+	}
+	if len(args) == 3 {
+		if value, ok := strings.CutPrefix(args[2], "--root="); ok {
+			return value, true
+		}
+		return "", false
+	}
+	if len(args) == 4 && args[2] == "--root" {
+		return args[3], true
+	}
+	return "", false
 }
 
 // setupTestRepo creates a git repo with an origin remote in a temp dir and

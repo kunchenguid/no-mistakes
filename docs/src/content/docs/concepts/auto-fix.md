@@ -30,34 +30,16 @@ flowchart TD
    - If issues remain, the step pauses for user approval
    - If everything passes, the step completes and the pipeline moves on
 
-Two steps apply fixes during their initial pass instead of relying on a follow-up automatic fix loop.
-When `commands.lint` is empty, the agent detects relevant linters and formatters, applies safe fixes, verifies them, and commits any changes during the initial lint pass.
-The document step finds documentation gaps, updates docs or doc comments for every gap it can resolve, verifies the edits, and commits any documentation changes during the initial document pass.
-Unresolved findings from either pass pause for approval instead of entering another automatic fix loop.
+The document step applies fixes during its initial pass instead of relying on a follow-up automatic fix loop.
+When `commands.lint` is empty, that same invocation is a combined documentation-and-lint housekeeping pass: it updates documentation, detects relevant linters and formatters, applies safe fixes, verifies both duties, and categorizes any unresolved findings for the document or lint gate.
+The lint step consumes a usable lint result from that pass instead of starting a second cold agent invocation; when the combined pass is skipped, cannot produce trustworthy structured output, or loses its in-memory result across a daemon restart, lint falls back to its own agent pass.
+Unresolved documentation findings and unresolved blocking lint findings pause for approval instead of entering another automatic fix loop.
 
 ## Configuration
 
-Set limits in global or repo config:
-
-```yaml
-auto_fix:
-  rebase: 3
-  review: 0    # disabled by default, requires manual approval
-  test: 3
-  document: 3
-  lint: 3
-  ci: 3        # shared by CI for failures, and on GitHub/GitLab/Azure DevOps for merge conflicts
-```
-
-Setting a step to `0` disables the follow-up auto-fix loop, so the pipeline pauses for human input when that step finds issues.
-The document step does not use this limit for automatic follow-up loops because it attempts documentation fixes during its initial pass.
-For empty `commands.lint`, the initial lint pass can still apply safe fixes before reporting unresolved issues.
-
-`auto_fix.review` defaults to `0`, so review findings require manual approval unless you opt in.
-
-`auto_fix.ci` applies to the CI step. The same limit covers CI-failure fixes for supported providers, plus merge-conflict fixes on GitHub, GitLab, and Azure DevOps.
-
-Repo config overlays global config - you can set `auto_fix.lint: 5` in a repo's `.no-mistakes.yaml` to override just that step while inheriting the rest from global.
+Per-step attempt limits come from the `auto_fix` config object; the [`auto_fix` field reference](/no-mistakes/reference/global-config/#auto_fix) owns the defaults, per-step meanings, and the legacy alias.
+Setting a step to `0` disables the follow-up auto-fix loop, so the pipeline pauses for human input when that step finds issues; `auto_fix.review` defaults to `0`, so review findings require manual approval unless you opt in.
+Repo config overlays global config field by field - you can set `auto_fix.lint: 5` in a repo's `.no-mistakes.yaml` to override just that step while inheriting the rest from global.
 
 ## Finding actions
 
@@ -67,12 +49,15 @@ Agent-driven findings now use an `action` field instead of `requires_human_revie
 - `ask-user` - intent-sensitive or ambiguous issues that pause for approval instead of entering the normal auto-fix loop
 - `no-op` - informational notes that do not need a fix
 
+If an agent or integration omits `action`, no-mistakes fails closed by treating the finding as `ask-user`.
+An unclassified finding is never eligible for automatic fixing.
+
 `ask-user` is meant for findings that need human judgment - for example, questioning an intentional product or design choice, arguing that an intentional addition, removal, or guard should be undone, or reporting that the test step could not produce enough evidence for the available intent. Routine correctness, reliability, or security fixes still stay `auto-fix` even if the smallest fix reintroduces a small amount of previously deleted logic. Agents driving the AXI skill should relay `ask-user` findings to the user unless they have explicit `--yes` consent to resolve gates unattended.
 In the TUI, yolo mode is an explicit override that auto-resolves paused steps by treating `auto-fix` and `ask-user` findings as consent to run one fix round.
 Steps with only `no-op` findings are approved as-is.
 
 The `review`, `test`, and configured-command `lint` steps use this shared model directly. The `document` step also uses the same `action` field, but unresolved documentation findings pause for approval because the initial document pass already attempted the documentation updates it could make safely.
-When `commands.lint` is empty, lint findings describe issues left after the agent already attempted safe fixes, so they pause for approval instead of remaining eligible for another automatic fix loop.
+When `commands.lint` is empty, the combined housekeeping pass routes documentation and lint findings to their owning gates. Its unresolved lint findings describe issues left after safe fixes, so blocking findings pause for approval instead of remaining eligible for another automatic fix loop.
 
 Documentation findings use the same approval UI, but the `document` step treats any finding as an unresolved documentation gap or judgment call that should pause for approval.
 
@@ -94,7 +79,10 @@ Yolo and AXI `--yes` approve that fix review automatically after their one fix r
 
 ## Fix commits
 
-Each auto-fix cycle commits its changes with a descriptive message. Agent-managed initial passes that apply safe fixes, such as Document and empty-command Lint, use the same step-specific prefixes:
+Each auto-fix cycle commits its changes with a descriptive message. The combined document-and-lint housekeeping pass runs in the Document step, so its documentation and safe lint fixes use the Document prefix; configured-command lint fixes use the Lint prefix:
+
+Before a step-specific fix commit, the pipeline verifies that the live worktree HEAD still descends from the head recorded after its previous commit.
+It allows a legitimate forward commit made by an agent, but aborts the run if an out-of-band backward or divergent reset would drop the reviewed history.
 
 | Step | Commit prefix |
 |---|---|

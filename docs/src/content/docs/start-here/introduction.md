@@ -70,7 +70,7 @@ When a branch passes the gate, it means:
 ## What you get
 
 - A fixed, opinionated pipeline: `intent → rebase → review → test → document → lint → push → pr → ci`. Order is not configurable; what each step runs is.
-- Choice of agent: `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, or `acp:<target>` via `acpx`, with per-repo override and ordered fallbacks.
+- Choice of agent: `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, or `acp:<target>` via `acpx`, with per-repo override and ordered fallbacks; every gate requires a runnable configured pipeline agent.
 - A TUI to watch, approve, fix, skip, or abort any step.
 - A `/no-mistakes` agent skill so a coding agent can do a task and gate it, or gate existing committed work, backed by a non-interactive `no-mistakes axi` interface.
 - A setup wizard when you run bare `no-mistakes` with no active run on the current branch - it walks you through creating a branch, committing, and pushing through the gate, then attaches if the daemon registers the new run.

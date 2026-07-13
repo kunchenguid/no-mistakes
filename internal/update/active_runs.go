@@ -2,17 +2,17 @@ package update
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/lifecycle"
 )
 
 func (u *updater) confirmActiveRunsBeforeUpdate() error {
-	runs, err := u.activeRuns()
+	runs, err := lifecycle.ActiveRuns(u.paths)
 	if err != nil {
 		return fmt.Errorf("check active pipeline runs: %w", err)
 	}
@@ -21,36 +21,12 @@ func (u *updater) confirmActiveRunsBeforeUpdate() error {
 	}
 
 	u.writeActiveRunWarning(runs)
-	if u.assumeYes {
-		fmt.Fprintln(u.stderrWriter(), "continuing because -y was provided")
+	if u.force {
+		fmt.Fprintln(u.stderrWriter(), "FORCE: continuing update and daemon restart despite active pipeline runs")
 		return nil
 	}
 
-	fmt.Fprint(u.stderrWriter(), "Continue with update and restart the daemon? [y/N] ")
-	if readYes(u.stdin) {
-		return nil
-	}
-	return fmt.Errorf("update cancelled because %d active pipeline runs are in progress", len(runs))
-}
-
-func (u *updater) activeRuns() ([]*db.Run, error) {
-	if u == nil || u.paths == nil {
-		return nil, nil
-	}
-	dbPath := u.paths.DB()
-	if _, err := os.Stat(dbPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("stat database: %w", err)
-	}
-
-	database, err := db.Open(dbPath)
-	if err != nil {
-		return nil, err
-	}
-	defer database.Close()
-	return database.GetActiveRuns()
+	return fmt.Errorf("refusing update because %d active pipeline runs are in progress; pass --force to stop/restart the daemon anyway", len(runs))
 }
 
 func (u *updater) writeActiveRunWarning(runs []*db.Run) {
@@ -59,18 +35,8 @@ func (u *updater) writeActiveRunWarning(runs []*db.Run) {
 		runWord = "run"
 	}
 	fmt.Fprintf(u.stderrWriter(), "warning: update will restart the daemon while %d active pipeline %s are in progress\n", len(runs), runWord)
-	fmt.Fprintln(u.stderrWriter(), "active pipeline runs:")
-	for _, run := range runs {
-		fmt.Fprintf(u.stderrWriter(), "  %s  %s  %s  %s\n", run.ID, run.Status, run.Branch, shortRunSHA(run.HeadSHA))
-	}
+	fmt.Fprint(u.stderrWriter(), lifecycle.RunList(runs))
 	fmt.Fprintln(u.stderrWriter(), "continuing can cause these pipelines to fail")
-}
-
-func shortRunSHA(sha string) string {
-	if len(sha) <= 8 {
-		return sha
-	}
-	return sha[:8]
 }
 
 func readYes(input io.Reader) bool {

@@ -3,11 +3,63 @@ package ipc
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
+
+var dialNetworkWithTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
+	return (&net.Dialer{Timeout: timeout}).Dial(network, address)
+}
+
+// ConnectTimeoutError reports a daemon IPC connect attempt that exceeded the
+// bounded client timeout.
+type ConnectTimeoutError struct {
+	SocketPath      string
+	TimeoutDuration time.Duration
+	Err             error
+}
+
+func (e *ConnectTimeoutError) Error() string {
+	return fmt.Sprintf("daemon socket %s did not accept a connection within %s", e.SocketPath, e.TimeoutDuration)
+}
+
+func (e *ConnectTimeoutError) Unwrap() error { return e.Err }
+
+func (e *ConnectTimeoutError) Timeout() bool { return true }
+
+// IsConnectTimeout reports whether err was caused by a bounded IPC connect
+// timeout.
+func IsConnectTimeout(err error) bool {
+	var timeoutErr *ConnectTimeoutError
+	return errors.As(err, &timeoutErr)
+}
+
+func connectTimeout() time.Duration {
+	value := os.Getenv("NM_DAEMON_CONNECT_TIMEOUT")
+	if value == "" {
+		p, err := paths.New()
+		if err != nil {
+			return config.DefaultDaemonConnectTimeout
+		}
+		cfg, err := config.LoadGlobal(p.ConfigFile())
+		if err != nil {
+			return config.DefaultDaemonConnectTimeout
+		}
+		return cfg.DaemonConnectTimeout
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		return config.DefaultDaemonConnectTimeout
+	}
+	return d
+}
 
 // Client connects to the IPC server over the platform transport.
 type Client struct {
@@ -17,11 +69,18 @@ type Client struct {
 	mu      sync.Mutex // serializes calls on a single connection
 }
 
+const (
+	// DefaultDialTimeout is the read deadline used for the daemon health check
+	// dial made by callers outside this package (see internal/daemon/selfexec.go).
+	DefaultDialTimeout = 250 * time.Millisecond
+	defaultCallTimeout = 30 * time.Second
+)
+
 // Dial connects to the IPC server at the given endpoint path.
 func Dial(socketPath string) (*Client, error) {
-	conn, err := dial(socketPath)
+	conn, err := dialEndpoint(socketPath)
 	if err != nil {
-		return nil, fmt.Errorf("dial ipc: %w", err)
+		return nil, err
 	}
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
@@ -32,10 +91,32 @@ func Dial(socketPath string) (*Client, error) {
 	}, nil
 }
 
+func dialEndpoint(socketPath string) (net.Conn, error) {
+	timeout := connectTimeout()
+	conn, err := dial(socketPath, timeout)
+	if err != nil {
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return nil, fmt.Errorf("dial ipc: %w", &ConnectTimeoutError{
+				SocketPath:      socketPath,
+				TimeoutDuration: timeout,
+				Err:             err,
+			})
+		}
+		return nil, fmt.Errorf("dial ipc: %w", err)
+	}
+	return conn, nil
+}
+
 // Call sends a JSON-RPC request and waits for the response.
 // The result is unmarshaled into the provided pointer.
 // If the server returns a JSON-RPC error, it is returned as *RPCError.
 func (c *Client) Call(method string, params interface{}, result interface{}) error {
+	return c.CallWithTimeout(method, params, result, defaultCallTimeout)
+}
+
+// CallWithTimeout is Call with a caller-selected read deadline.
+func (c *Client) CallWithTimeout(method string, params interface{}, result interface{}, timeout time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -48,7 +129,10 @@ func (c *Client) Call(method string, params interface{}, result interface{}) err
 		return fmt.Errorf("send request: %w", err)
 	}
 
-	c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	if timeout <= 0 {
+		timeout = defaultCallTimeout
+	}
+	c.conn.SetReadDeadline(time.Now().Add(timeout))
 	defer c.conn.SetReadDeadline(time.Time{})
 
 	if !c.scanner.Scan() {
@@ -85,9 +169,9 @@ func (c *Client) Close() error {
 // Returns an event channel, a cancel function (to stop and clean up), and an error.
 // The channel is closed when the run completes, the connection drops, or cancel is called.
 func Subscribe(socketPath string, params *SubscribeParams) (<-chan Event, func(), error) {
-	conn, err := dial(socketPath)
+	conn, err := dialEndpoint(socketPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("dial ipc: %w", err)
+		return nil, nil, err
 	}
 	encoder := json.NewEncoder(conn)
 	scanner := bufio.NewScanner(conn)

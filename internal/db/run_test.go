@@ -133,6 +133,36 @@ func TestRunsByRepo(t *testing.T) {
 	}
 }
 
+func TestRunsByRepoHead(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+
+	older, _ := d.InsertRun(repo.ID, "feature", "head-1", "base")
+	d.InsertRun(repo.ID, "feature", "head-2", "base") // same branch, other head
+	d.InsertRun(repo.ID, "other", "head-1", "base")   // same head, other branch
+	newer, _ := d.InsertRun(repo.ID, "feature", "head-1", "base")
+
+	runs, err := d.GetRunsByRepoHead(repo.ID, "feature", "head-1")
+	if err != nil {
+		t.Fatalf("get runs by repo head: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("got %d runs for feature/head-1, want 2: %+v", len(runs), runs)
+	}
+	// newest first
+	if runs[0].ID != newer.ID || runs[1].ID != older.ID {
+		t.Errorf("runs = [%s %s], want [%s %s] (newest first)", runs[0].ID, runs[1].ID, newer.ID, older.ID)
+	}
+
+	none, err := d.GetRunsByRepoHead(repo.ID, "feature", "missing")
+	if err != nil {
+		t.Fatalf("get runs by repo head (missing): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("got %d runs for unknown head, want 0", len(none))
+	}
+}
+
 func TestActiveRun(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
@@ -288,7 +318,7 @@ func TestUpdateRunPRURL(t *testing.T) {
 	}
 }
 
-func TestRunEvidenceGistIDsAppendAndClear(t *testing.T) {
+func TestRunEvidenceGistIDsAppendSetAndClear(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepo("/tmp/repo", "https://github.com/test/repo", "main")
 	if err != nil {
@@ -308,6 +338,17 @@ func TestRunEvidenceGistIDsAppendAndClear(t *testing.T) {
 	}
 	if len(got.EvidenceGistIDs) != 2 || got.EvidenceGistIDs[0] != "gist1" || got.EvidenceGistIDs[1] != "gist2" {
 		t.Fatalf("EvidenceGistIDs = %+v, want [gist1 gist2]", got.EvidenceGistIDs)
+	}
+
+	if err := d.SetRunEvidenceGistIDs(run.ID, []string{"gist2"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.EvidenceGistIDs) != 1 || got.EvidenceGistIDs[0] != "gist2" {
+		t.Fatalf("EvidenceGistIDs after set = %+v, want [gist2]", got.EvidenceGistIDs)
 	}
 
 	if err := d.ClearRunEvidenceGistIDs(run.ID); err != nil {
@@ -409,6 +450,45 @@ func TestRecoverStaleRunsMarksRunsFailed(t *testing.T) {
 	got, _ = d.GetRun(completedRun.ID)
 	if got.Status != types.RunCompleted {
 		t.Errorf("completed run status = %q, want %q", got.Status, types.RunCompleted)
+	}
+}
+
+func TestRecoverStaleRunsExceptPreservesOnlyValidatedRuns(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/recovery-project", "git@github.com:user/recovery-project.git", "main")
+	preserved, _ := d.InsertRun(repo.ID, "feat-a", "aaa", "bbb")
+	stale, _ := d.InsertRun(repo.ID, "feat-b", "ccc", "ddd")
+	if err := d.UpdateRunStatus(preserved.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(stale.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	preservedStep, _ := d.InsertStepResult(preserved.ID, types.StepReview)
+	staleStep, _ := d.InsertStepResult(stale.ID, types.StepReview)
+	if err := d.StartStep(preservedStep.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.StartStep(staleStep.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := d.RecoverStaleRunsExcept("daemon crashed", map[string]struct{}{preserved.ID: {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("recovered count = %d, want 1", count)
+	}
+	gotPreserved, _ := d.GetRun(preserved.ID)
+	gotStale, _ := d.GetRun(stale.ID)
+	if gotPreserved.Status != types.RunRunning || gotStale.Status != types.RunFailed {
+		t.Fatalf("run statuses = preserved %s stale %s, want running and failed", gotPreserved.Status, gotStale.Status)
+	}
+	gotPreservedStep, _ := d.GetStepResult(preservedStep.ID)
+	gotStaleStep, _ := d.GetStepResult(staleStep.ID)
+	if gotPreservedStep.Status != types.StepStatusRunning || gotStaleStep.Status != types.StepStatusFailed {
+		t.Fatalf("step statuses = preserved %s stale %s, want running and failed", gotPreservedStep.Status, gotStaleStep.Status)
 	}
 }
 

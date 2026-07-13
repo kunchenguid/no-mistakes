@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"golang.org/x/sys/windows"
 )
 
@@ -27,6 +28,7 @@ const psListDaemonProcessesScript = "$ErrorActionPreference='SilentlyContinue'; 
 // Failures (e.g. PowerShell absent) fail open in the caller.
 func listDaemonProcesses() ([]daemonProcessInfo, error) {
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psListDaemonProcessesScript)
+	winproc.Harden(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("enumerate processes: %w", err)
