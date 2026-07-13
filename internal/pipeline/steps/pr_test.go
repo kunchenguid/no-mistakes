@@ -782,7 +782,7 @@ func TestAssemblePRBody_NoLimitKeepsEverything(t *testing.T) {
 	sctx := &pipeline.StepContext{UserIntent: "wanted a Bar() helper"}
 	testing := "## Testing\n\n```text\n" + strings.Repeat("log ", 2000) + "\n```"
 
-	got := assemblePRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", testing, "## Pipeline\n\n- ok", 0)
+	got := assemblePRBody(sctx, "## What Changed\n\n- add Bar()", "", "low risk", testing, "## Pipeline\n\n- ok", 0)
 
 	for _, want := range []string{"## Intent", "## What Changed", "## Risk Assessment", "## Testing", "## Pipeline"} {
 		if !strings.Contains(got, want) {
@@ -801,6 +801,7 @@ func TestAssemblePRBody_DropsTestingEmbedsToFitAzureCap(t *testing.T) {
 
 	got := assemblePRBody(sctx,
 		"## What Changed\n\n- add Bar() helper",
+		"",
 		"behavior preserved; low risk",
 		testing,
 		"## Pipeline\n\n- review: pass\n- tests: pass",
@@ -832,7 +833,7 @@ func TestAssemblePRBody_ClampsWhenCoreAloneExceedsCap(t *testing.T) {
 	sctx := &pipeline.StepContext{UserIntent: strings.Repeat("x", 6000)}
 	limit := scm.MaxPRBodyChars(scm.ProviderAzureDevOps)
 
-	got := assemblePRBody(sctx, "## What Changed\n\n- add Bar()", "low risk", "", "## Pipeline\n\n- ok", limit)
+	got := assemblePRBody(sctx, "## What Changed\n\n- add Bar()", "", "low risk", "", "## Pipeline\n\n- ok", limit)
 
 	if scm.PRBodyLen(got) > limit {
 		t.Fatalf("clamped body = %d units, want <= %d", scm.PRBodyLen(got), limit)
@@ -1117,7 +1118,7 @@ func TestBuildPRBody_TrimsOversizedLaterSectionWithoutDroppingSmallEssentials(t 
 	riskLine := "✅ Low: generated PR body length guard only"
 	testingMD := "## Testing\n\n- go test ./internal/pipeline/steps"
 
-	got := buildPRBody(body, riskLine, testingMD, "", sctx)
+	got := buildPRBody(body, "", riskLine, testingMD, "", sctx)
 
 	assertGitHubBodyLimitForTest(t, got)
 	for _, want := range []string{
@@ -1179,7 +1180,7 @@ func TestBuildPRBody_TruncatesOversizedIntentBeforeGeneratedSections(t *testing.
 	riskLine := "✅ Low: generated PR body length guard only"
 	testingMD := "## Testing\n\n- go test ./internal/pipeline/steps"
 
-	got := buildPRBody(body, riskLine, testingMD, pipelineMarkdownForTest("review round 001"), sctx)
+	got := buildPRBody(body, "", riskLine, testingMD, pipelineMarkdownForTest("review round 001"), sctx)
 
 	assertGitHubBodyLimitForTest(t, got)
 	for _, want := range []string{
@@ -1297,7 +1298,7 @@ func TestPRStep_BuildPRContentTruncatesGeneratedPipelineUpdates(t *testing.T) {
 		}
 	}
 
-	content, err := (&PRStep{}).buildPRContent(sctx, nil, "feature", baseSHA, 0)
+	content, _, err := (&PRStep{}).buildPRContent(sctx, nil, "feature", baseSHA, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1395,6 +1396,7 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 		sctx,
 		"feature",
 		"abc123 add feature",
+		"",
 		"✅ Low: generated PR body length guard only",
 		"## Testing\n\n- go test ./internal/pipeline/steps",
 		pipelineMarkdownForTest(rounds...),
@@ -1916,7 +1918,7 @@ func TestPRStep_PromptRequiresReleaseTypesForProductImpact(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 
 	step := &PRStep{}
-	if _, err := step.buildPRContent(sctx, nil, "feature", baseSHA, 0); err != nil {
+	if _, _, err := step.buildPRContent(sctx, nil, "feature", baseSHA, 0); err != nil {
 		t.Fatal(err)
 	}
 	if len(ag.calls) != 1 {
