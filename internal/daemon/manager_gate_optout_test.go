@@ -136,7 +136,11 @@ func TestAssertGateTrustedConfigReadable_PresentUnreadableBlobAborts(t *testing.
 		t.Fatalf("git mktree failed: %v\n%s", err, treeOutput)
 	}
 	treeSHA := strings.TrimSpace(string(treeOutput))
-	commitSHA := gitOutput(t, wt, "commit-tree", treeSHA, "-m", "missing blob")
+	commitSHA := gitOutput(t, wt,
+		"-c", "user.name=Test",
+		"-c", "user.email=test@test.com",
+		"commit-tree", treeSHA, "-m", "missing blob",
+	)
 	objectsDir := gitOutput(t, wt, "rev-parse", "--git-path", "objects")
 	if !filepath.IsAbs(objectsDir) {
 		objectsDir = filepath.Join(wt, objectsDir)
