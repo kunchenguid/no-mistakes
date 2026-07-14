@@ -3,6 +3,7 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -112,6 +113,27 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 	if !hasNonIgnoredDocumentChanges(changedFiles, sctx.Config.IgnorePatterns) {
 		sctx.Log("no changes to document")
 		return &pipeline.StepOutcome{}, nil
+	}
+
+	// The review already inspected the complete diff, so reuse its explicit
+	// documentation assessment instead of paying for a separate classifier.
+	// A missing handoff, an empty rationale, or a deterministic outward-facing
+	// path keeps the document pass enabled.
+	decision, hasDecision := sctx.Shared.TakeDocumentationDecision()
+	if reason := documentationFloorReason(changedFiles, sctx.Config.IgnorePatterns); reason != "" {
+		sctx.Log("documentation pass required by changed path: " + reason)
+	} else if hasDecision && decision.HeadSHA != sctx.Run.HeadSHA {
+		sctx.Log("documentation assessment predates later fixes; running document agent")
+	} else if hasDecision && !decision.Required && strings.TrimSpace(decision.Rationale) != "" {
+		sctx.Log("documentation unaffected; skipping document agent: " + decision.Rationale)
+		if combinedLint {
+			sctx.Log("agent-driven lint remains enabled and will run in the lint step")
+		}
+		return &pipeline.StepOutcome{Skipped: true}, nil
+	} else if hasDecision {
+		sctx.Log("documentation pass required by review: " + decision.Rationale)
+	} else {
+		sctx.Log("documentation assessment unavailable; running document agent")
 	}
 
 	if combinedLint {
@@ -342,6 +364,67 @@ func hasNonIgnoredDocumentChanges(changedFiles string, ignorePatterns []string) 
 		}
 		if !ignored {
 			return true
+		}
+	}
+	return false
+}
+
+// documentationFloorReason returns the first outward-facing path class that
+// always requires the document pass, regardless of an agent's classification.
+// It is deliberately conservative; semantic surfaces not recognizable by path
+// remain the review classifier's responsibility.
+func documentationFloorReason(changedFiles string, ignorePatterns []string) string {
+	for _, raw := range strings.Split(changedFiles, "\n") {
+		path := strings.TrimSpace(raw)
+		if path == "" || matchesAnyIgnorePattern(path, ignorePatterns) {
+			continue
+		}
+		lower := strings.ToLower(filepath.ToSlash(path))
+		base := filepath.Base(lower)
+		ext := filepath.Ext(base)
+		parts := strings.Split(lower, "/")
+
+		if ext == ".md" || ext == ".mdx" || ext == ".rst" || ext == ".adoc" ||
+			strings.HasPrefix(base, "readme") || strings.HasPrefix(base, "changelog") ||
+			base == "agents.md" || base == "gotchas.md" || base == "contributing.md" {
+			return path + " is documentation"
+		}
+		if hasPathPart(parts, "docs", "doc", "documentation", "examples", "example") {
+			return path + " is a documentation or example surface"
+		}
+		if hasPathPart(parts, "migrations", "migration", "cmd", "cli", "api") {
+			return path + " is a migration, CLI, or API surface"
+		}
+		if strings.HasPrefix(lower, ".github/workflows/") ||
+			hasPathPart(parts, "deploy", "deployment", "infra", "docker", "scripts") ||
+			strings.HasPrefix(base, "dockerfile") || strings.Contains(base, "docker-compose") {
+			return path + " is a deployment or workflow surface"
+		}
+		if strings.HasPrefix(base, ".env") || strings.Contains(base, ".example") ||
+			strings.Contains(base, ".sample") || base == ".no-mistakes.yaml" ||
+			strings.HasPrefix(base, "config.") || strings.HasPrefix(base, "settings.") ||
+			hasPathPart(parts, "config", "configs", "configuration") {
+			return path + " is a configuration surface"
+		}
+	}
+	return ""
+}
+
+func matchesAnyIgnorePattern(path string, ignorePatterns []string) bool {
+	for _, pattern := range ignorePatterns {
+		if matchIgnorePattern(path, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPathPart(parts []string, values ...string) bool {
+	for _, part := range parts {
+		for _, value := range values {
+			if part == value {
+				return true
+			}
 		}
 	}
 	return false

@@ -37,7 +37,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 |---|---|---|---|
 | 1 | **Intent** | Use supplied intent or infer it from recent local agent transcripts | n/a |
 | 2 | **Rebase** | Fetch fresh remote upstream and the configured branch target, then rebase your branch onto them | `3` |
-| 3 | **Review** | AI code review of your diff | `0` (requires approval) |
+| 3 | **Review** | AI code review plus documentation-impact assessment of your diff | `0` (requires approval) |
 | 4 | **Test** | Run baseline tests and gather evidence for available intent | `3` |
 | 5 | **Document** | Update docs when needed and report unresolved gaps | initial pass |
 | 6 | **Lint** | Run lint/static analysis; shares the document step's initial housekeeping pass when no lint command is configured | `3` |
@@ -53,6 +53,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
   If there's no diff left after the rebase, the pipeline skips the rest.
 - **Review before test** so the agent reads fresh code, not code it may have touched during fixes.
 - **Document after test** so docs are updated against code that's known to work.
+  The document agent may be skipped only when the review proved documentation is unaffected and no later fix or outward-facing path invalidates that assessment.
 - **Lint last among local checks** so it doesn't churn over code that may still change.
 - **Push → PR → CI** happens after all local checks pass.
   The push and CI auto-fix paths refuse to overwrite commits that reached the configured push target out of band.

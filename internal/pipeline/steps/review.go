@@ -17,6 +17,11 @@ type ReviewStep struct{}
 func (s *ReviewStep) Name() types.StepName { return types.StepReview }
 
 func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	// Every review round must produce a fresh documentation decision. A failed
+	// or malformed rereview must never leave an earlier safe-to-skip decision
+	// available to the document step.
+	sctx.Shared.ClearDocumentationDecision()
+
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	branch := sctx.Run.Branch
@@ -206,7 +211,13 @@ Risk assessment (after listing all findings):
 - Set risk_level to "low" if the change is well-bounded, mostly cosmetic, or straightforward with little ambiguity.
 - Set risk_level to "medium" if the change has room to improve but is safe to merge first with concerns addressed as follow-ups.
 - Set risk_level to "high" if the change should not be merged without explicit human approval - it is fundamental, risky, ambiguous, or has strong negative signals.
-- Provide a one-sentence risk_rationale explaining why you chose that risk level.%s`,
+- Provide a one-sentence risk_rationale explaining why you chose that risk level.
+
+Documentation assessment (after the risk assessment):
+- Set documentation_required to true when the change alters or may alter user-facing behavior, public APIs, CLI behavior, configuration, examples, migrations, deployment or operational workflows, architecture contracts, onboarding, security guidance, compatibility constraints, or any documented fact.
+- Set documentation_required to false only when you can positively establish that the change is entirely internal and cannot make existing documentation or doc comments stale.
+- When uncertain, set documentation_required to true.
+- Provide a specific, non-empty documentation_rationale explaining the decision.%s`,
 		branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
@@ -240,6 +251,16 @@ Risk assessment (after listing all findings):
 			sctx.Log("could not parse structured output, using text response")
 			findings = Findings{Summary: result.Text}
 		}
+	}
+	if findings.DocumentationRequired != nil && strings.TrimSpace(findings.DocumentationRationale) != "" {
+		sctx.Shared.SetDocumentationDecision(pipeline.DocumentationDecision{
+			Required:  *findings.DocumentationRequired,
+			Rationale: strings.TrimSpace(findings.DocumentationRationale),
+			HeadSHA:   sctx.Run.HeadSHA,
+		})
+		sctx.Log(fmt.Sprintf("review documentation assessment: required=%t (%s)", *findings.DocumentationRequired, strings.TrimSpace(findings.DocumentationRationale)))
+	} else {
+		sctx.Log("review documentation assessment unavailable; document step will run")
 	}
 
 	needsApproval := hasBlockingFindings(findings.Items)

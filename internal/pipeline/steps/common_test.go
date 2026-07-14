@@ -929,6 +929,33 @@ func TestReviewFindingsSchema_AllowsTestingMetadata(t *testing.T) {
 	}
 }
 
+func TestReviewFindingsSchema_RequiresDocumentationAssessment(t *testing.T) {
+	t.Parallel()
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(reviewFindingsSchema, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	props := parsed["properties"].(map[string]interface{})
+	for _, name := range []string{"documentation_required", "documentation_rationale"} {
+		if _, ok := props[name]; !ok {
+			t.Fatalf("reviewFindingsSchema missing %s", name)
+		}
+	}
+	required := parsed["required"].([]interface{})
+	for _, name := range []string{"documentation_required", "documentation_rationale"} {
+		found := false
+		for _, item := range required {
+			if item == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("reviewFindingsSchema does not require %s", name)
+		}
+	}
+}
+
 func TestSanitizedPreviousFindingsForPrompt_PreservesMultilineDescriptions(t *testing.T) {
 	t.Parallel()
 	raw, err := types.MarshalFindingsJSON(types.Findings{
