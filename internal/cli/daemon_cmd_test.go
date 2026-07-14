@@ -77,6 +77,34 @@ func TestFormatSkipPushOptions(t *testing.T) {
 	}
 }
 
+func TestAgentPushOptionRoundTrip(t *testing.T) {
+	for _, want := range []types.AgentName{types.AgentClaude, types.AgentCodex} {
+		got, err := parseAgentPushOptions([]string{"ci.skip", formatAgentPushOption(want)})
+		if err != nil {
+			t.Fatalf("parseAgentPushOptions(%q): %v", want, err)
+		}
+		if got != want {
+			t.Fatalf("parseAgentPushOptions(%q) = %q", want, got)
+		}
+	}
+}
+
+func TestParseAgentPushOptionsRejectsConflict(t *testing.T) {
+	_, err := parseAgentPushOptions([]string{
+		"no-mistakes.agent=claude",
+		"no-mistakes.agent=codex",
+	})
+	if err == nil {
+		t.Fatal("expected conflicting run agents to fail")
+	}
+}
+
+func TestParseRunAgentRejectsUnsupportedAgent(t *testing.T) {
+	if _, err := parseRunAgent("auto"); err == nil {
+		t.Fatal("expected auto to be rejected for a run-scoped override")
+	}
+}
+
 func TestIntentPushOptionRoundTrip(t *testing.T) {
 	// Multi-line, comma- and colon-bearing intent must survive the
 	// line-oriented push-option transport intact.

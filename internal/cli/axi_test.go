@@ -440,12 +440,27 @@ func TestConfigErrorForFreshAxiRunAllowsReattach(t *testing.T) {
 }
 
 func TestRerunParamsIncludeSkipSteps(t *testing.T) {
-	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal")
+	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal", types.AgentCodex)
 	if params.RepoID != "repo-1" || params.Branch != "feature/x" || params.Intent != "user goal" {
 		t.Fatalf("unexpected rerun params: %#v", params)
 	}
 	if len(params.SkipSteps) != 1 || params.SkipSteps[0] != types.StepReview {
 		t.Fatalf("SkipSteps = %#v, want review", params.SkipSteps)
+	}
+	if params.Agent != types.AgentCodex {
+		t.Fatalf("Agent = %q, want codex", params.Agent)
+	}
+}
+
+func TestActiveRunAgentOverrideMustMatch(t *testing.T) {
+	codex := string(types.AgentCodex)
+	run := &ipc.RunInfo{ID: "run-1", Status: types.RunRunning, HeadSHA: "head", RequestedAgent: &codex, ResolvedAgent: &codex}
+
+	if got := activeRunAgentConflict(run, types.AgentCodex); got != nil {
+		t.Fatalf("matching override should reattach: %v", got)
+	}
+	if got := activeRunAgentConflict(run, types.AgentClaude); got == nil {
+		t.Fatal("conflicting override should fail")
 	}
 }
 
@@ -677,7 +692,7 @@ func TestAxiRunReportsInvalidGlobalConfig(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if err := runAxiRun(cmd, false, nil, "user goal"); err == nil {
+	if err := runAxiRun(cmd, false, nil, "user goal", ""); err == nil {
 		t.Fatalf("axi run should fail on invalid global config:\n%s", out.String())
 	}
 	got := out.String()

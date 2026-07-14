@@ -7,16 +7,22 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
 
 func newRerunCmd() *cobra.Command {
-	return &cobra.Command{
+	var agentValue string
+	cmd := &cobra.Command{
 		Use:   "rerun",
 		Short: "Rerun the pipeline for the current branch",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackCommand("rerun", func() error {
+				agentName, err := parseRunAgent(agentValue)
+				if err != nil {
+					return err
+				}
 				p, d, err := openResources()
 				if err != nil {
 					return err
@@ -47,7 +53,7 @@ func newRerunCmd() *cobra.Command {
 				defer client.Close()
 
 				var result ipc.RerunResult
-				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch}, &result); err != nil {
+				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Agent: types.AgentName(agentName)}, &result); err != nil {
 					return fmt.Errorf("rerun pipeline: %w", err)
 				}
 
@@ -56,4 +62,6 @@ func newRerunCmd() *cobra.Command {
 			})
 		},
 	}
+	cmd.Flags().StringVar(&agentValue, "agent", "", "pipeline agent for this rerun only (claude or codex); defaults to the previous run's explicit selection")
+	return cmd
 }

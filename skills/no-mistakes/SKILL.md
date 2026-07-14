@@ -16,6 +16,13 @@ asks for something specific, translate that request into the matching `axi run`
 flags yourself - for example, "skip the lint step" becomes `--skip=lint`. Run
 `no-mistakes axi run --help` to see the available flags.
 
+When the user invokes `/no-mistakes --codex` or `/no-mistakes --claude`,
+translate that into `no-mistakes axi run --agent codex` or `--agent claude`.
+The selection applies to this entire run, including every review and fix round,
+and disables configured agent fallback for the run. A bare `/no-mistakes`
+keeps the configured agent selection. If reattaching, preserve the original
+selection; a conflicting `--agent` is an error rather than an agent switch.
+
 ## Two ways to invoke
 
 `/no-mistakes` works in two modes, depending on whether the user hands you a
@@ -90,7 +97,7 @@ Run the pipeline and decide on its findings as they come up:
 
 1. Start the run. It blocks until the first decision point or the end:
    ```sh
-   no-mistakes axi run --intent "<what the user set out to accomplish>"
+   no-mistakes axi run --intent "<what the user set out to accomplish>" [--agent codex|claude]
    ```
    `axi run` and every `axi respond` block synchronously - the review, test,
    and CI steps can each take **several minutes**, so a single call may not

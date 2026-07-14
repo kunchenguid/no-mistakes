@@ -208,7 +208,21 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	}
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
-	return config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)), nil
+	cfg := config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands))
+	applyRecoveredRunAgent(cfg, run)
+	return cfg, nil
+}
+
+// applyRecoveredRunAgent keeps an explicit run-scoped selection stable across
+// daemon restarts. Repository/global config may have changed since the run
+// started, but recovery must resume the adapter recorded for that run.
+func applyRecoveredRunAgent(cfg *config.Config, run *db.Run) {
+	if run.RequestedAgent == nil || run.ResolvedAgent == nil {
+		return
+	}
+	resolved := types.AgentName(*run.ResolvedAgent)
+	cfg.Agent = resolved
+	cfg.Agents = []types.AgentName{resolved}
 }
 
 func newPipelineAgent(ctx context.Context, cfg *config.Config, lookPath func(string) (string, error)) (agent.Agent, error) {
@@ -536,12 +550,12 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 
 	branch := branchFromRef(params.Ref)
-	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
+	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent, params.Agent)
 }
 
 // HandleRerun creates a new run for the latest gate head on a branch. An
 // optional intent is stamped onto the new run.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, skipSteps []types.StepName, intent string) (string, error) {
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, skipSteps []types.StepName, intent string, agentName types.AgentName) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -584,13 +598,16 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 		baseSHA = matchingHead.BaseSHA
 	}
 
-	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent)
+	if agentName == "" && latestForBranch.RequestedAgent != nil {
+		agentName = types.AgentName(*latestForBranch.RequestedAgent)
+	}
+	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, agentName)
 }
 
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
-func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
+func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string, agentName types.AgentName) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -599,6 +616,10 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			"branch_role": branchRole,
 			"stage":       stage,
 		})
+	}
+	if agentName != "" && agentName != types.AgentClaude && agentName != types.AgentCodex {
+		trackStartFailure("validate_agent")
+		return "", fmt.Errorf("unsupported run agent %q (valid: claude, codex)", agentName)
 	}
 
 	if m.shuttingDown.Load() {
@@ -729,6 +750,10 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
+	if agentName != "" {
+		cfg.Agent = agentName
+		cfg.Agents = []types.AgentName{agentName}
+	}
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
 	var ag agent.Agent
@@ -739,6 +764,15 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			m.db.UpdateRunError(run.ID, err.Error())
 			trackStartFailure("resolve_agent")
 			return "", err
+		}
+		if err := m.db.UpdateRunAgents(run.ID, string(agentName), string(cfg.Agent)); err != nil {
+			return "", err
+		}
+		resolved := string(cfg.Agent)
+		run.ResolvedAgent = &resolved
+		if agentName != "" {
+			requested := string(agentName)
+			run.RequestedAgent = &requested
 		}
 		agents := cfg.Agents
 		if len(agents) == 0 {
@@ -776,14 +810,19 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	}
 
 	execSteps := m.steps()
-	telemetry.Track("run", telemetry.Fields{
-		"action":      "started",
-		"trigger":     trigger,
-		"agent":       string(cfg.Agent),
-		"branch_role": branchRole,
-		"step_count":  len(execSteps),
-		"demo_mode":   steps.IsDemoMode(),
-	})
+	startedFields := telemetry.Fields{
+		"action":         "started",
+		"trigger":        trigger,
+		"agent":          string(cfg.Agent),
+		"resolved_agent": string(cfg.Agent),
+		"branch_role":    branchRole,
+		"step_count":     len(execSteps),
+		"demo_mode":      steps.IsDemoMode(),
+	}
+	if agentName != "" {
+		startedFields["requested_agent"] = string(agentName)
+	}
+	telemetry.Track("run", startedFields)
 
 	// Create executor with event broadcast.
 	runCtx, cancel := context.WithCancelCause(context.Background())

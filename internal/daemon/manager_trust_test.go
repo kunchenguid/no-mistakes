@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
@@ -62,6 +63,26 @@ func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
 	}
 	if err := <-fetchResult; !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("fetch error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestApplyRecoveredRunAgentPreservesExplicitSelection(t *testing.T) {
+	requested, resolved := "codex", "codex"
+	cfg := &config.Config{Agent: "claude", Agents: []types.AgentName{types.AgentClaude}}
+	applyRecoveredRunAgent(cfg, &db.Run{RequestedAgent: &requested, ResolvedAgent: &resolved})
+
+	if cfg.Agent != types.AgentCodex || len(cfg.Agents) != 1 || cfg.Agents[0] != types.AgentCodex {
+		t.Fatalf("recovered config agent = %q / %v, want codex only", cfg.Agent, cfg.Agents)
+	}
+}
+
+func TestApplyRecoveredRunAgentLeavesDefaultRunConfigAlone(t *testing.T) {
+	resolved := "claude"
+	cfg := &config.Config{Agent: types.AgentCodex, Agents: []types.AgentName{types.AgentCodex}}
+	applyRecoveredRunAgent(cfg, &db.Run{ResolvedAgent: &resolved})
+
+	if cfg.Agent != types.AgentCodex {
+		t.Fatalf("default run recovery changed current config to %q", cfg.Agent)
 	}
 }
 
