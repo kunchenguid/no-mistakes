@@ -648,6 +648,11 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		trackStartFailure("create_worktree")
 		return "", fmt.Errorf("create worktree: %w", err)
 	}
+	if err := git.SubmoduleUpdate(ctx, wtDir); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("update submodules: %s", err))
+		trackStartFailure("update_submodules")
+		return "", fmt.Errorf("update submodules: %w", err)
+	}
 	if err := git.CopyLocalUserIdentity(ctx, repo.WorkingPath, wtDir); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree git identity: %s", err))
 		trackStartFailure("configure_worktree_identity")
