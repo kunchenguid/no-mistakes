@@ -77,6 +77,16 @@ func TestReviewStep_DropsDeferredPipelineOwnedPRFinding(t *testing.T) {
 	if outcome.AutoFixable {
 		t.Error("no remaining findings should mean AutoFixable=false")
 	}
+	var filtered Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &filtered); err != nil {
+		t.Fatal(err)
+	}
+	if filtered.RiskLevel != "low" {
+		t.Errorf("risk level = %q, want low after deferred finding removal", filtered.RiskLevel)
+	}
+	if strings.Contains(strings.ToLower(filtered.RiskRationale), "pr") {
+		t.Errorf("risk rationale retained deferred delivery claim: %q", filtered.RiskRationale)
+	}
 }
 
 // Negative: a finding about a pre-existing external PR stays enforceable at

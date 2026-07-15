@@ -138,8 +138,9 @@ func TestStripDeferredPipelineOwnedDeliveryFindings_Mixed(t *testing.T) {
 				ReviewScope: types.FindingReviewScopeExternalDelivery,
 			},
 		},
-		Summary:   "3 issues",
-		RiskLevel: "high",
+		Summary:       "missing PR and source issues",
+		RiskLevel:     "high",
+		RiskRationale: "the PR is missing and the handler can panic",
 	}
 	out, n := stripDeferredPipelineOwnedDeliveryFindings(in)
 	if n != 1 {
@@ -158,6 +159,15 @@ func TestStripDeferredPipelineOwnedDeliveryFindings_Mixed(t *testing.T) {
 	if !ids["real-bug"] || !ids["external-pr"] {
 		t.Errorf("real and external findings must be kept: %v", ids)
 	}
+	if out.Summary != "2 review findings remain" {
+		t.Errorf("summary = %q, want deterministic retained count", out.Summary)
+	}
+	if out.RiskLevel != "high" {
+		t.Errorf("risk level = %q, want high for retained errors", out.RiskLevel)
+	}
+	if strings.Contains(strings.ToLower(out.RiskRationale), "pr") || strings.Contains(strings.ToLower(out.RiskRationale), "push") {
+		t.Errorf("risk rationale retained deferred delivery claim: %q", out.RiskRationale)
+	}
 }
 
 func TestStripDeferredPipelineOwnedDeliveryFindings_AllDeferred(t *testing.T) {
@@ -170,7 +180,9 @@ func TestStripDeferredPipelineOwnedDeliveryFindings_AllDeferred(t *testing.T) {
 			Description: "PR list returned zero PRs; the branch is not present on a remote",
 			ReviewScope: types.FindingReviewScopePipelineOwnedDelivery,
 		}},
-		Summary: "missing PR",
+		Summary:       "missing PR",
+		RiskLevel:     "high",
+		RiskRationale: "required PR criterion not satisfied",
 	}
 	out, n := stripDeferredPipelineOwnedDeliveryFindings(in)
 	if n != 1 {
@@ -181,6 +193,12 @@ func TestStripDeferredPipelineOwnedDeliveryFindings_AllDeferred(t *testing.T) {
 	}
 	if out.Summary == "missing PR" {
 		t.Error("expected summary to note deferred claims were dropped when none remain")
+	}
+	if out.RiskLevel != "low" {
+		t.Errorf("risk level = %q, want low after all findings are dropped", out.RiskLevel)
+	}
+	if strings.Contains(strings.ToLower(out.RiskRationale), "pr") {
+		t.Errorf("risk rationale retained deferred delivery claim: %q", out.RiskRationale)
 	}
 }
 

@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -38,11 +39,32 @@ func stripDeferredPipelineOwnedDeliveryFindings(findings Findings) (Findings, in
 	}
 	out := findings
 	out.Items = kept
-	if len(kept) == 0 && strings.TrimSpace(out.Summary) != "" {
-		// Keep a truthful summary when the only findings were deferred.
-		out.Summary = "no source-review findings (deferred pipeline-owned delivery claims dropped)"
-	}
+	out.Summary, out.RiskLevel, out.RiskRationale = filteredReviewAggregates(kept)
 	return out, dropped
+}
+
+func filteredReviewAggregates(items []Finding) (string, string, string) {
+	if len(items) == 0 {
+		return "no review findings remain", "low", "no review findings remain after deferred delivery filtering"
+	}
+
+	summary := fmt.Sprintf("%d review findings remain", len(items))
+	if len(items) == 1 {
+		summary = "1 review finding remains"
+	}
+
+	riskLevel := "low"
+	riskRationale := "retained review findings are informational"
+	for _, item := range items {
+		switch strings.ToLower(item.Severity) {
+		case "error":
+			return summary, "high", "retained review findings include errors"
+		case "warning":
+			riskLevel = "medium"
+			riskRationale = "retained review findings include warnings"
+		}
+	}
+	return summary, riskLevel, riskRationale
 }
 
 // isDeferredPipelineOwnedDeliveryFinding reports whether a finding's claim is
