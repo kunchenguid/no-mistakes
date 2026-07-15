@@ -40,6 +40,7 @@ func writePipelineOwnedPRScenario(t *testing.T) string {
       summary: "missing required open PR"
       risk_level: high
       risk_rationale: "required PR criterion not satisfied"
+      risk_scope: pipeline-owned-delivery
   - text: "no issues found"
     structured:
       findings: []
@@ -74,6 +75,7 @@ func writeExternalPRScenario(t *testing.T) string {
       summary: "external PR requirement violated"
       risk_level: high
       risk_rationale: "pre-existing PR requirement not met"
+      risk_scope: source-or-external
   - text: "no issues found"
     structured:
       findings: []

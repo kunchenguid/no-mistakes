@@ -213,10 +213,12 @@ Rules:
   - "external-delivery": a pre-existing or external PR, third-party artifact, or other lifecycle requirement not owned by this run.
 
 Risk assessment (after listing all findings):
+- Assess source code, source-verifiable criteria, and enforceable external lifecycle requirements normally, while excluding findings scoped "pipeline-owned-delivery" from risk.
 - Set risk_level to "low" if the change is well-bounded, mostly cosmetic, or straightforward with little ambiguity.
 - Set risk_level to "medium" if the change has room to improve but is safe to merge first with concerns addressed as follow-ups.
 - Set risk_level to "high" if the change should not be merged without explicit human approval - it is fundamental, risky, ambiguous, or has strong negative signals.
-- Provide a one-sentence risk_rationale explaining why you chose that risk level.%s`,
+- Provide a one-sentence risk_rationale explaining why you chose that risk level.
+- Set risk_scope to "source-or-external" when the assessment reflects source risk or enforceable external state, and to "pipeline-owned-delivery" only when it is based solely on a deferred outcome this run owns.%s`,
 		branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
@@ -289,6 +291,7 @@ func sanitizedPreviousFindingsForPrompt(raw string) string {
 	findings.Summary = sanitizePromptMultilineText(findings.Summary)
 	findings.RiskLevel = sanitizePromptText(findings.RiskLevel)
 	findings.RiskRationale = sanitizePromptMultilineText(findings.RiskRationale)
+	findings.RiskScope = sanitizePromptText(findings.RiskScope)
 	encoded, err := types.MarshalFindingsJSON(findings)
 	if err != nil {
 		return sanitizePromptMultilineText(raw)

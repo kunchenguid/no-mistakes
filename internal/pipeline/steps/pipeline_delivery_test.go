@@ -140,7 +140,8 @@ func TestStripDeferredPipelineOwnedDeliveryFindings_Mixed(t *testing.T) {
 		},
 		Summary:       "missing PR and source issues",
 		RiskLevel:     "high",
-		RiskRationale: "the PR is missing and the handler can panic",
+		RiskRationale: "the handler can panic on malformed input",
+		RiskScope:     types.FindingsRiskScopeSourceOrExternal,
 	}
 	out, n := stripDeferredPipelineOwnedDeliveryFindings(in)
 	if n != 1 {
@@ -165,8 +166,8 @@ func TestStripDeferredPipelineOwnedDeliveryFindings_Mixed(t *testing.T) {
 	if out.RiskLevel != "high" {
 		t.Errorf("risk level = %q, want high for retained errors", out.RiskLevel)
 	}
-	if strings.Contains(strings.ToLower(out.RiskRationale), "pr") || strings.Contains(strings.ToLower(out.RiskRationale), "push") {
-		t.Errorf("risk rationale retained deferred delivery claim: %q", out.RiskRationale)
+	if out.RiskRationale != in.RiskRationale {
+		t.Errorf("source risk rationale = %q, want %q", out.RiskRationale, in.RiskRationale)
 	}
 }
 
@@ -183,6 +184,7 @@ func TestStripDeferredPipelineOwnedDeliveryFindings_AllDeferred(t *testing.T) {
 		Summary:       "missing PR",
 		RiskLevel:     "high",
 		RiskRationale: "required PR criterion not satisfied",
+		RiskScope:     types.FindingsRiskScopePipelineOwnedDelivery,
 	}
 	out, n := stripDeferredPipelineOwnedDeliveryFindings(in)
 	if n != 1 {
@@ -199,6 +201,37 @@ func TestStripDeferredPipelineOwnedDeliveryFindings_AllDeferred(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(out.RiskRationale), "pr") {
 		t.Errorf("risk rationale retained deferred delivery claim: %q", out.RiskRationale)
+	}
+}
+
+func TestStripDeferredPipelineOwnedDeliveryFindings_PreservesHolisticSourceRisk(t *testing.T) {
+	t.Parallel()
+	in := Findings{
+		Items: []Finding{
+			{
+				Severity:    "error",
+				Action:      types.ActionAskUser,
+				Description: "the PR for this change is missing",
+				ReviewScope: types.FindingReviewScopePipelineOwnedDelivery,
+			},
+			{
+				Severity:    "warning",
+				Action:      types.ActionAutoFix,
+				Description: "the parser accepts an ambiguous fallback",
+				ReviewScope: types.FindingReviewScopeSource,
+			},
+		},
+		Summary:       "two findings",
+		RiskLevel:     "high",
+		RiskRationale: "the parser changes a fundamental trust boundary",
+		RiskScope:     types.FindingsRiskScopeSourceOrExternal,
+	}
+	out, dropped := stripDeferredPipelineOwnedDeliveryFindings(in)
+	if dropped != 1 {
+		t.Fatalf("dropped = %d, want 1", dropped)
+	}
+	if out.RiskLevel != in.RiskLevel || out.RiskRationale != in.RiskRationale {
+		t.Errorf("source risk changed from %q/%q to %q/%q", in.RiskLevel, in.RiskRationale, out.RiskLevel, out.RiskRationale)
 	}
 }
 

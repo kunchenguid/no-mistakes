@@ -8,7 +8,7 @@ import (
 )
 
 func TestParseFindingsJSON_RiskFields(t *testing.T) {
-	raw := `{"findings":[{"severity":"error","description":"bug"}],"risk_level":"high","risk_rationale":"Critical bug."}`
+	raw := `{"findings":[{"severity":"error","description":"bug"}],"risk_level":"high","risk_rationale":"Critical bug.","risk_scope":"source-or-external"}`
 	f, err := ParseFindingsJSON(raw)
 	if err != nil {
 		t.Fatal(err)
@@ -18,6 +18,9 @@ func TestParseFindingsJSON_RiskFields(t *testing.T) {
 	}
 	if f.RiskRationale != "Critical bug." {
 		t.Errorf("RiskRationale = %q, want %q", f.RiskRationale, "Critical bug.")
+	}
+	if f.RiskScope != FindingsRiskScopeSourceOrExternal {
+		t.Errorf("RiskScope = %q, want %q", f.RiskScope, FindingsRiskScopeSourceOrExternal)
 	}
 	if len(f.Items) != 1 {
 		t.Fatalf("Items count = %d, want 1", len(f.Items))

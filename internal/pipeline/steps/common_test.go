@@ -787,7 +787,7 @@ func TestReviewFindingsSchema_ValidJSON(t *testing.T) {
 	if !ok {
 		t.Fatal("expected 'required' array in schema")
 	}
-	want := map[string]bool{"findings": false, "risk_level": false, "risk_rationale": false}
+	want := map[string]bool{"findings": false, "risk_level": false, "risk_rationale": false, "risk_scope": false}
 	for _, r := range required {
 		s, _ := r.(string)
 		want[s] = true

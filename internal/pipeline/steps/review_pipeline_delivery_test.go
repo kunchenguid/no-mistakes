@@ -30,8 +30,14 @@ func TestReviewStep_DropsDeferredPipelineOwnedPRFinding(t *testing.T) {
 			if !strings.Contains(opts.Prompt, "review_scope") {
 				t.Errorf("review prompt missing finding scope instructions:\n%s", opts.Prompt)
 			}
+			if !strings.Contains(opts.Prompt, "risk_scope") {
+				t.Errorf("review prompt missing risk scope instructions:\n%s", opts.Prompt)
+			}
 			if !strings.Contains(string(opts.JSONSchema), `"review_scope"`) {
 				t.Errorf("review schema missing review_scope: %s", opts.JSONSchema)
+			}
+			if !strings.Contains(string(opts.JSONSchema), `"risk_scope"`) {
+				t.Errorf("review schema missing risk_scope: %s", opts.JSONSchema)
 			}
 			if !strings.Contains(opts.Prompt, "Do not treat deferred pipeline-owned delivery outcomes") {
 				t.Errorf("conformance clause missing deferred-delivery exclusion:\n%s", opts.Prompt)
@@ -50,6 +56,7 @@ func TestReviewStep_DropsDeferredPipelineOwnedPRFinding(t *testing.T) {
 				Summary:       "missing required open PR",
 				RiskLevel:     "high",
 				RiskRationale: "required PR criterion not satisfied",
+				RiskScope:     types.FindingsRiskScopePipelineOwnedDelivery,
 			}
 			j, _ := json.Marshal(findings)
 			return &agent.Result{Output: j}, nil
@@ -110,6 +117,7 @@ func TestReviewStep_KeepsExternalPRLifecycleFinding(t *testing.T) {
 				}},
 				Summary:   "external PR requirement violated",
 				RiskLevel: "high",
+				RiskScope: types.FindingsRiskScopeSourceOrExternal,
 			}
 			j, _ := json.Marshal(findings)
 			return &agent.Result{Output: j}, nil

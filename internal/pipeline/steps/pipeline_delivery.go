@@ -2,7 +2,6 @@ package steps
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -39,32 +38,27 @@ func stripDeferredPipelineOwnedDeliveryFindings(findings Findings) (Findings, in
 	}
 	out := findings
 	out.Items = kept
-	out.Summary, out.RiskLevel, out.RiskRationale = filteredReviewAggregates(kept)
+	out.Summary = filteredReviewSummary(kept)
+	switch findings.RiskScope {
+	case types.FindingsRiskScopePipelineOwnedDelivery:
+		out.RiskLevel = "low"
+		out.RiskRationale = "no delivery-independent review risk was reported"
+		out.RiskScope = types.FindingsRiskScopeSourceOrExternal
+	case types.FindingsRiskScopeSourceOrExternal:
+	default:
+		out.RiskRationale = "review risk retained after deferred delivery filtering"
+	}
 	return out, dropped
 }
 
-func filteredReviewAggregates(items []Finding) (string, string, string) {
+func filteredReviewSummary(items []Finding) string {
 	if len(items) == 0 {
-		return "no review findings remain", "low", "no review findings remain after deferred delivery filtering"
+		return "no review findings remain"
 	}
-
-	summary := fmt.Sprintf("%d review findings remain", len(items))
 	if len(items) == 1 {
-		summary = "1 review finding remains"
+		return "1 review finding remains"
 	}
-
-	riskLevel := "low"
-	riskRationale := "retained review findings are informational"
-	for _, item := range items {
-		switch strings.ToLower(item.Severity) {
-		case "error":
-			return summary, "high", "retained review findings include errors"
-		case "warning":
-			riskLevel = "medium"
-			riskRationale = "retained review findings include warnings"
-		}
-	}
-	return summary, riskLevel, riskRationale
+	return fmt.Sprintf("%d review findings remain", len(items))
 }
 
 // isDeferredPipelineOwnedDeliveryFinding reports whether a finding's claim is
