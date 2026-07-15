@@ -347,6 +347,66 @@ func TestPipeline_DocumentPlusLintIsOneAgentInvocation(t *testing.T) {
 	}
 }
 
+// TestPipeline_ReviewDecisionSkipsDocumentWithoutClassifier drives the real
+// review and document steps through the executor. The normal review call must
+// be the only agent invocation, and its safe assessment must skip Document.
+func TestPipeline_ReviewDecisionSkipsDocumentWithoutClassifier(t *testing.T) {
+	t.Parallel()
+	workDir, baseSHA, headSHA := setupGitRepo(t)
+
+	database, err := db.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	repo, err := database.InsertRepo(workDir, "https://github.com/test/repo", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := database.InsertRun(repo.ID, "refs/heads/feature", headSHA, baseSHA)
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	calls := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			calls++
+			return &agent.Result{Output: json.RawMessage(`{
+				"findings":[],
+				"risk_level":"low",
+				"risk_rationale":"bounded internal refactor",
+				"documentation_required":false,
+				"documentation_rationale":"only an unexported parser helper changed"
+			}`)}, nil
+		},
+	}
+
+	cfg := &config.Config{Agent: types.AgentClaude, Commands: config.Commands{Lint: "true"}}
+	exec := pipeline.NewExecutor(database, paths.WithRoot(t.TempDir()), cfg, ag, []pipeline.Step{&ReviewStep{}, &DocumentStep{}}, nil)
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("review plus adaptive document routing cost %d agent invocations, want 1", calls)
+	}
+
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("get steps: %v", err)
+	}
+	if len(steps) != 2 {
+		t.Fatalf("got %d steps, want 2", len(steps))
+	}
+	if steps[0].StepName != types.StepReview || steps[0].Status != types.StepStatusCompleted {
+		t.Fatalf("review step = %s/%s, want review/completed", steps[0].StepName, steps[0].Status)
+	}
+	if steps[1].StepName != types.StepDocument || steps[1].Status != types.StepStatusSkipped {
+		t.Fatalf("document step = %s/%s, want document/skipped", steps[1].StepName, steps[1].Status)
+	}
+}
+
 // TestPipeline_ConfiguredLintCommandStaysFirstClassGate proves a configured
 // deterministic lint command still runs and its failure still parks the lint
 // step, unchanged by the combined pass.

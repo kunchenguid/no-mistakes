@@ -116,9 +116,11 @@ var reviewFindingsSchema = json.RawMessage(`{
 			"type": "string"
 		},
 		"risk_level": {"type": "string", "enum": ["low", "medium", "high"]},
-		"risk_rationale": {"type": "string"}
+		"risk_rationale": {"type": "string"},
+		"documentation_required": {"type": "boolean"},
+		"documentation_rationale": {"type": "string"}
 	},
-	"required": ["findings", "risk_level", "risk_rationale"]
+	"required": ["findings", "risk_level", "risk_rationale", "documentation_required", "documentation_rationale"]
 }`)
 
 // AllSteps returns the fixed pipeline step sequence.

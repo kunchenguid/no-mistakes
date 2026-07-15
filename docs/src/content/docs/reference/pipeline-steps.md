@@ -66,6 +66,7 @@ AI code review of your diff.
 - Includes user intent when the run has supplied intent or transcript matching found a relevant local agent session; the detailed provenance semantics are documented in [Intent extraction](/no-mistakes/guides/agents/#intent-extraction)
 - Agent returns findings with severity (`error`, `warning`, `info`), file location, description, and an `action` (`no-op`, `auto-fix`, `ask-user`)
 - Also returns a `risk_level` (`low`, `medium`, `high`) and `risk_rationale`
+- Also classifies whether documentation can be affected in the same invocation; uncertainty must classify documentation as required
 - With the default `session_reuse: true`, Claude and Codex reuse one reviewer session across the initial review and every full rereview, and a separate fixer session across review-fix turns
 - A resume failure retries the same turn in a fresh session for that role, never skips the full rereview, and unsupported agents run cold
 
@@ -104,10 +105,13 @@ Updates matching documentation for code changes and reports only unresolved gaps
 
 **Behavior:**
 - Diffs the base commit against head and skips the step if there are no non-ignored changed files to document
+- Reuses the final review pass's documentation assessment instead of starting a separate classifier
+- Skips the document agent only when review explicitly proves documentation is unaffected, supplies a rationale, and the reviewed head still matches the current head
+- Runs fail-safe when that assessment is missing, malformed, lost across a process boundary, invalidated by a later fix, or contradicted by a documentation, example, configuration, migration, CLI, API, deployment, or workflow path
 - Asks the agent to find every documentation gap, update docs or doc comments for all gaps it can resolve, verify its edits, and commit any documentation changes under the placement policy
 - The placement policy gives each fact one authoritative owner, prefers removing stale duplicates or replacing them with pointers, avoids new documentation surfaces for perceived gaps, and keeps durable incident lessons near their owner instead of in `AGENTS.md`
 - `document.instructions` can add trusted default-branch ownership rules for the repository
-- When `commands.lint` is empty, performs documentation and agent-driven lint in one combined housekeeping invocation, categorizing findings for the document or lint gate; if that pass is skipped, its structured output is unusable, or a daemon restart loses the in-memory result, lint runs its own agent pass instead
+- When `commands.lint` is empty, performs documentation and agent-driven lint in one combined housekeeping invocation, categorizing findings for the document or lint gate; if documentation is safely skipped, that pass is skipped, its structured output is unusable, or a daemon restart loses the in-memory result, lint runs its own agent pass instead
 - Includes user intent when available
 - Returns findings only for unresolved documentation gaps or human judgment calls
 - Requires approval whenever any unresolved documentation finding is returned, including `info` findings

@@ -39,12 +39,16 @@ func axiScenario(t *testing.T) string {
       summary: "found 1 issue"
       risk_level: medium
       risk_rationale: "warning requires human review"
+      documentation_required: true
+      documentation_rationale: "the warning may affect documented behavior"
   - text: "no issues found"
     structured:
       findings: []
       summary: "no issues found"
       risk_level: low
       risk_rationale: "no risks detected in the diff"
+      documentation_required: true
+      documentation_rationale: "the scenario conservatively runs documentation"
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"

@@ -67,14 +67,17 @@ func TestParseFindingsJSON_TestingSummary(t *testing.T) {
 }
 
 func TestFilterFindings_PreservesRiskFields(t *testing.T) {
+	documentationRequired := false
 	f := Findings{
 		Items: []Finding{
 			{ID: "f1", Severity: "error", Description: "bad"},
 			{ID: "f2", Severity: "warning", Description: "warn"},
 		},
-		Summary:       "2 issues",
-		RiskLevel:     "medium",
-		RiskRationale: "Some risk.",
+		Summary:                "2 issues",
+		RiskLevel:              "medium",
+		RiskRationale:          "Some risk.",
+		DocumentationRequired:  &documentationRequired,
+		DocumentationRationale: "internal implementation only",
 	}
 	filtered := FilterFindings(f, []string{"f1"})
 	if filtered.RiskLevel != "medium" {
@@ -83,11 +86,24 @@ func TestFilterFindings_PreservesRiskFields(t *testing.T) {
 	if filtered.RiskRationale != "Some risk." {
 		t.Errorf("RiskRationale = %q, want %q", filtered.RiskRationale, "Some risk.")
 	}
+	if filtered.DocumentationRequired == nil || *filtered.DocumentationRequired || filtered.DocumentationRationale != "internal implementation only" {
+		t.Fatalf("documentation assessment was not preserved: %+v", filtered)
+	}
 	if len(filtered.Items) != 1 {
 		t.Fatalf("Items count = %d, want 1", len(filtered.Items))
 	}
 	if filtered.Items[0].ID != "f1" {
 		t.Errorf("filtered item ID = %q, want %q", filtered.Items[0].ID, "f1")
+	}
+}
+
+func TestParseFindingsJSON_DocumentationAssessment(t *testing.T) {
+	f, err := ParseFindingsJSON(`{"findings":[],"documentation_required":false,"documentation_rationale":"internal only"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.DocumentationRequired == nil || *f.DocumentationRequired || f.DocumentationRationale != "internal only" {
+		t.Fatalf("unexpected documentation assessment: %+v", f)
 	}
 }
 

@@ -66,24 +66,28 @@ type findingWire struct {
 
 // Findings is the structured findings payload exchanged across pipeline, IPC, and TUI.
 type Findings struct {
-	Items          []Finding      `json:"findings"`
-	Summary        string         `json:"summary"`
-	Tested         []string       `json:"tested,omitempty"`
-	TestingSummary string         `json:"testing_summary,omitempty"`
-	Artifacts      []TestArtifact `json:"artifacts,omitempty"`
-	RiskLevel      string         `json:"risk_level"`
-	RiskRationale  string         `json:"risk_rationale"`
+	Items                  []Finding      `json:"findings"`
+	Summary                string         `json:"summary"`
+	Tested                 []string       `json:"tested,omitempty"`
+	TestingSummary         string         `json:"testing_summary,omitempty"`
+	Artifacts              []TestArtifact `json:"artifacts,omitempty"`
+	RiskLevel              string         `json:"risk_level"`
+	RiskRationale          string         `json:"risk_rationale"`
+	DocumentationRequired  *bool          `json:"documentation_required,omitempty"`
+	DocumentationRationale string         `json:"documentation_rationale,omitempty"`
 }
 
 type findingsWire struct {
-	Items          []Finding      `json:"findings"`
-	Legacy         []Finding      `json:"items"`
-	Summary        string         `json:"summary"`
-	Tested         []string       `json:"tested"`
-	TestingSummary string         `json:"testing_summary"`
-	Artifacts      []TestArtifact `json:"artifacts"`
-	RiskLevel      string         `json:"risk_level"`
-	RiskRationale  string         `json:"risk_rationale"`
+	Items                  []Finding      `json:"findings"`
+	Legacy                 []Finding      `json:"items"`
+	Summary                string         `json:"summary"`
+	Tested                 []string       `json:"tested"`
+	TestingSummary         string         `json:"testing_summary"`
+	Artifacts              []TestArtifact `json:"artifacts"`
+	RiskLevel              string         `json:"risk_level"`
+	RiskRationale          string         `json:"risk_rationale"`
+	DocumentationRequired  *bool          `json:"documentation_required"`
+	DocumentationRationale string         `json:"documentation_rationale"`
 }
 
 // ParseFindingsJSON decodes findings JSON, accepting current and legacy item
@@ -97,7 +101,7 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 	if len(items) == 0 && len(wire.Legacy) > 0 {
 		items = wire.Legacy
 	}
-	return Findings{Items: items, Summary: wire.Summary, Tested: wire.Tested, TestingSummary: wire.TestingSummary, Artifacts: wire.Artifacts, RiskLevel: wire.RiskLevel, RiskRationale: wire.RiskRationale}, nil
+	return Findings{Items: items, Summary: wire.Summary, Tested: wire.Tested, TestingSummary: wire.TestingSummary, Artifacts: wire.Artifacts, RiskLevel: wire.RiskLevel, RiskRationale: wire.RiskRationale, DocumentationRequired: wire.DocumentationRequired, DocumentationRationale: wire.DocumentationRationale}, nil
 }
 
 // NormalizeFindings assigns deterministic IDs to findings that do not have one yet.
@@ -120,7 +124,7 @@ func FilterFindings(findings Findings, ids []string) Findings {
 	for _, id := range ids {
 		selected[id] = true
 	}
-	filtered := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
+	filtered := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale, DocumentationRequired: findings.DocumentationRequired, DocumentationRationale: findings.DocumentationRationale}
 	for _, item := range findings.Items {
 		if selected[item.ID] {
 			filtered.Items = append(filtered.Items, item)
@@ -141,7 +145,7 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 	for _, id := range ids {
 		excluded[id] = true
 	}
-	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
+	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale, DocumentationRequired: findings.DocumentationRequired, DocumentationRationale: findings.DocumentationRationale}
 	for _, item := range findings.Items {
 		if !excluded[item.ID] {
 			result.Items = append(result.Items, item)
@@ -154,7 +158,7 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 // Action is "auto-fix". These are safe for automatic fixing without
 // user involvement.
 func AutoFixableFindings(findings Findings) Findings {
-	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
+	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale, DocumentationRequired: findings.DocumentationRequired, DocumentationRationale: findings.DocumentationRationale}
 	for _, item := range findings.Items {
 		if item.actionOrDefault() == ActionAutoFix {
 			result.Items = append(result.Items, item)
@@ -169,12 +173,14 @@ func AutoFixableFindings(findings Findings) Findings {
 // if they do not carry an ID. The original Findings is not mutated.
 func MergeUserOverrides(findings Findings, instructions map[string]string, added []Finding) Findings {
 	result := Findings{
-		Summary:        findings.Summary,
-		Tested:         findings.Tested,
-		TestingSummary: findings.TestingSummary,
-		Artifacts:      findings.Artifacts,
-		RiskLevel:      findings.RiskLevel,
-		RiskRationale:  findings.RiskRationale,
+		Summary:                findings.Summary,
+		Tested:                 findings.Tested,
+		TestingSummary:         findings.TestingSummary,
+		Artifacts:              findings.Artifacts,
+		RiskLevel:              findings.RiskLevel,
+		RiskRationale:          findings.RiskRationale,
+		DocumentationRequired:  findings.DocumentationRequired,
+		DocumentationRationale: findings.DocumentationRationale,
 	}
 	if len(findings.Items) > 0 {
 		result.Items = make([]Finding, len(findings.Items))

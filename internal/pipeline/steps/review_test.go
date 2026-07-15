@@ -15,6 +15,62 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+func TestReviewStep_RecordsDocumentationAssessmentWithoutAnotherInvocation(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	callCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			callCount++
+			return &agent.Result{Output: json.RawMessage(`{
+				"findings":[],
+				"risk_level":"low",
+				"risk_rationale":"bounded internal refactor",
+				"documentation_required":false,
+				"documentation_rationale":"only an unexported parser helper changed"
+			}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Shared = &pipeline.RunShared{}
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected only the normal review invocation, got %d", callCount)
+	}
+	decision, ok := sctx.Shared.TakeDocumentationDecision()
+	if !ok || decision.Required || decision.Rationale != "only an unexported parser helper changed" || decision.HeadSHA != headSHA {
+		t.Fatalf("unexpected documentation decision: ok=%t decision=%+v", ok, decision)
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "When uncertain, set documentation_required to true") {
+		t.Fatal("review prompt does not carry the fail-safe documentation rule")
+	}
+}
+
+func TestReviewStep_MissingDocumentationAssessmentClearsPriorDecision(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"risk_level":"low","risk_rationale":"clean"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Shared = &pipeline.RunShared{}
+	sctx.Shared.SetDocumentationDecision(pipeline.DocumentationDecision{Required: false, Rationale: "stale prior round"})
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if decision, ok := sctx.Shared.TakeDocumentationDecision(); ok {
+		t.Fatalf("missing assessment retained stale decision: %+v", decision)
+	}
+}
+
 func TestReviewStep_FixMode(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

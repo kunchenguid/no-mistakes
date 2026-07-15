@@ -10,6 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -280,6 +281,177 @@ func TestDocumentStep_NoChanges_SkipsAgent(t *testing.T) {
 	}
 	if outcome.NeedsApproval || outcome.AutoFixable {
 		t.Error("expected a clean no-op outcome when nothing changed")
+	}
+}
+
+func TestDocumentStep_ReviewProvesDocumentationUnaffected_SkipsAgent(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	callCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			callCount++
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"noop"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "echo lint"})
+	sctx.Shared = &pipeline.RunShared{}
+	sctx.Shared.SetDocumentationDecision(pipeline.DocumentationDecision{
+		Required:  false,
+		Rationale: "the change only refactors an unexported parser helper",
+		HeadSHA:   headSHA,
+	})
+
+	outcome, err := (&DocumentStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Skipped {
+		t.Fatal("expected an explicit safe review decision to skip the document step")
+	}
+	if callCount != 0 {
+		t.Fatalf("expected no document agent call, got %d", callCount)
+	}
+}
+
+func TestDocumentStep_DocumentationDecisionFailsSafe(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		decision *pipeline.DocumentationDecision
+	}{
+		{name: "missing after process boundary"},
+		{name: "explicitly required", decision: &pipeline.DocumentationDecision{Required: true, Rationale: "public behavior changed", HeadSHA: "set below"}},
+		{name: "empty rationale", decision: &pipeline.DocumentationDecision{Required: false, HeadSHA: "set below"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			callCount := 0
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					callCount++
+					return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs current"}`)}, nil
+				},
+			}
+			sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "echo lint"})
+			sctx.Shared = &pipeline.RunShared{}
+			if tt.decision != nil {
+				decision := *tt.decision
+				decision.HeadSHA = headSHA
+				sctx.Shared.SetDocumentationDecision(decision)
+			}
+
+			outcome, err := (&DocumentStep{}).Execute(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome.Skipped {
+				t.Fatal("expected fail-safe document pass")
+			}
+			if callCount != 1 {
+				t.Fatalf("expected one document agent call, got %d", callCount)
+			}
+		})
+	}
+}
+
+func TestDocumentationFloorReason(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"internal/parser/cache.go", false},
+		{"README.md", true},
+		{"docs/reference/cli.mdx", true},
+		{"examples/basic/main.go", true},
+		{"db/migrations/001.sql", true},
+		{"cmd/no-mistakes/main.go", true},
+		{"src/api/public.ts", true},
+		{".github/workflows/ci.yml", true},
+		{"docker/Dockerfile", true},
+		{"scripts/release.sh", true},
+		{".env.example", true},
+		{".no-mistakes.yaml", true},
+		{"config/app.yaml", true},
+		{"src/settings.toml", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := documentationFloorReason(tt.path+"\n", nil) != ""
+			if got != tt.want {
+				t.Fatalf("documentationFloorReason(%q) present = %t, want %t", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDocumentationFloorOverridesSafeReviewDecision(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, _ := setupGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "README.md")
+	gitCmd(t, dir, "commit", "-m", "update readme")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	callCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			callCount++
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs current"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "echo lint"})
+	sctx.Shared = &pipeline.RunShared{}
+	sctx.Shared.SetDocumentationDecision(pipeline.DocumentationDecision{Required: false, Rationale: "incorrectly classified as internal", HeadSHA: headSHA})
+
+	outcome, err := (&DocumentStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Skipped || callCount != 1 {
+		t.Fatalf("expected hard floor to run document agent, skipped=%t calls=%d", outcome.Skipped, callCount)
+	}
+}
+
+func TestDocumentStep_LaterFixInvalidatesSafeReviewDecision(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "later-fix.txt"), []byte("fixed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "later-fix.txt")
+	gitCmd(t, dir, "commit", "-m", "apply later test fix")
+	laterHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	callCount := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			callCount++
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs current"}`)}, nil
+		},
+	}
+	sctx := newTestContext(t, ag, dir, baseSHA, laterHeadSHA, config.Commands{Lint: "echo lint"})
+	sctx.Shared = &pipeline.RunShared{}
+	sctx.Shared.SetDocumentationDecision(pipeline.DocumentationDecision{
+		Required:  false,
+		Rationale: "the reviewed diff was internal",
+		HeadSHA:   headSHA,
+	})
+
+	outcome, err := (&DocumentStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Skipped || callCount != 1 {
+		t.Fatalf("expected later fix to force document pass, skipped=%t calls=%d", outcome.Skipped, callCount)
 	}
 }
 

@@ -14,13 +14,64 @@ type HousekeepingLintResult struct {
 	Summary string
 }
 
+// DocumentationDecision is the final review pass's explicit assessment of
+// whether the change can make project documentation stale. It is intentionally
+// in-memory only: losing the handoff across a process boundary makes the
+// document step run, which fails safe.
+type DocumentationDecision struct {
+	Required  bool
+	Rationale string
+	// HeadSHA binds the assessment to the exact diff the reviewer inspected.
+	// Any later test/fix commit invalidates a safe-to-skip decision.
+	HeadSHA string
+}
+
 // RunShared carries in-memory run-scoped results one step hands to a later
 // step in the same run. It lives on the executor for the run's lifetime and
 // is never persisted: on any process boundary the consuming step simply
 // falls back to doing its own work.
 type RunShared struct {
-	mu               sync.Mutex
-	housekeepingLint *HousekeepingLintResult
+	mu                    sync.Mutex
+	housekeepingLint      *HousekeepingLintResult
+	documentationDecision *DocumentationDecision
+}
+
+// SetDocumentationDecision records the final review pass's explicit,
+// non-empty documentation assessment for the later document step.
+func (s *RunShared) SetDocumentationDecision(decision DocumentationDecision) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.documentationDecision = &decision
+}
+
+// ClearDocumentationDecision prevents a prior review round from authorizing
+// a skip after a fix changes the diff or a later review fails to classify it.
+func (s *RunShared) ClearDocumentationDecision() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.documentationDecision = nil
+}
+
+// TakeDocumentationDecision returns and consumes the final review decision.
+// Absence means the document step must run.
+func (s *RunShared) TakeDocumentationDecision() (DocumentationDecision, bool) {
+	if s == nil {
+		return DocumentationDecision{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.documentationDecision == nil {
+		return DocumentationDecision{}, false
+	}
+	decision := *s.documentationDecision
+	s.documentationDecision = nil
+	return decision, true
 }
 
 // SetHousekeepingLint records the combined pass's lint assessment for the

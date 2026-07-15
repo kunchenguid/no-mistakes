@@ -353,6 +353,8 @@ func cleanReviewScenario(t *testing.T) string {
       summary: "README needs updating"
       risk_level: low
       risk_rationale: "documentation-only follow-up"
+      documentation_required: true
+      documentation_rationale: "the change directly affects documentation"
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
@@ -372,6 +374,8 @@ func cleanReviewScenario(t *testing.T) string {
       summary: "found 1 issue"
       risk_level: medium
       risk_rationale: "warning requires human review"
+      documentation_required: true
+      documentation_rationale: "the warning may affect documented behavior"
   - match: "branch: agent-edits"
     text: "agent edited a file"
     edits:
@@ -382,6 +386,8 @@ func cleanReviewScenario(t *testing.T) string {
       summary: "no issues found"
       risk_level: low
       risk_rationale: "agent edit is deterministic"
+      documentation_required: true
+      documentation_rationale: "the scenario conservatively runs documentation"
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
@@ -443,6 +449,8 @@ func cleanReviewScenario(t *testing.T) string {
       summary: "no blocking issues"
       risk_level: low
       risk_rationale: "informational finding only"
+      documentation_required: true
+      documentation_rationale: "the scenario conservatively runs documentation"
       tested:
         - "fakeagent: simulated review"
       testing_summary: "not run during review"
@@ -459,6 +467,8 @@ func cleanReviewScenario(t *testing.T) string {
       summary: "no blocking issues"
       risk_level: low
       risk_rationale: "informational finding only"
+      documentation_required: true
+      documentation_rationale: "the scenario conservatively runs documentation"
       tested:
         - "fakeagent: simulated review"
       testing_summary: "not run during review"
@@ -468,6 +478,8 @@ func cleanReviewScenario(t *testing.T) string {
       summary: "no issues found"
       risk_level: low
       risk_rationale: "no risks detected in the diff"
+      documentation_required: true
+      documentation_rationale: "the scenario conservatively runs documentation"
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
