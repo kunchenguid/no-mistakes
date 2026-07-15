@@ -79,7 +79,10 @@ func intentConformanceReviewClause(sctx *pipeline.StepContext) string {
 	if !intentSourceIsAuthoritative(sctx) || cleanedUserIntent(sctx) == "" {
 		return ""
 	}
-	return "\n\nIntent conformance (required): the User intent above is authoritative acceptance criteria, not a hint. If the change contradicts it - it removes or omits a behavior the criteria mark as REQUIRED, or adds a behavior they mark as FORBIDDEN - you MUST emit an \"ask-user\" finding that quotes the specific criterion and the contradicting diff hunk (or, for a removed required behavior, notes what the criteria require that is now absent from the change), even if the change is otherwise risk-clean. Do not resolve such a contradiction yourself and do not classify it \"auto-fix\"."
+	// Pipeline-owned delivery outcomes (push, PR open/update, CI) are owned by
+	// later steps; review must not treat their absence as an intent
+	// contradiction. Source-verifiable required/forbidden behavior stays hard.
+	return "\n\nIntent conformance (required): the User intent above is authoritative acceptance criteria, not a hint. If the change contradicts it - it removes or omits a source-verifiable behavior the criteria mark as REQUIRED, or adds a behavior they mark as FORBIDDEN - you MUST emit an \"ask-user\" finding that quotes the specific criterion and the contradicting diff hunk (or, for a removed required behavior, notes what the criteria require that is now absent from the change), even if the change is otherwise risk-clean. Do not resolve such a contradiction yourself and do not classify it \"auto-fix\". Do not treat deferred pipeline-owned delivery outcomes (remote branch not yet pushed, pull request not yet opened or updated, CI not yet observed for this run) as contradictions at this phase; later pipeline steps own those."
 }
 
 // cleanedUserIntent returns the trimmed, secret-redacted, adversarial-stripped

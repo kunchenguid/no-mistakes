@@ -164,11 +164,17 @@ Previous review findings to address:
 	// prompt unchanged. This is what makes a fixer round that removed a
 	// required behavior park instead of silently completing.
 	//
+	// Review is always pre-push (StepReview.Order < StepPush/PR/CI). The phase
+	// clause and the post-parse strip below keep pipeline-owned delivery
+	// outcomes (remote branch, PR, CI for this run) out of source-review
+	// findings; later steps own those. External / pre-existing lifecycle
+	// requirements stay in scope.
+	//
 	// TODO(intent-conformance-C, HELD): add the deterministic, zero-LLM
 	// net-deleted-author-lines git-diff backstop for the removal-of-required
 	// class - a fixer round that net-deletes author-added lines parks
 	// regardless of intent source. Held pending a scope decision.
-	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx)
+	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause()
 
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
@@ -240,6 +246,15 @@ Risk assessment (after listing all findings):
 			sctx.Log("could not parse structured output, using text response")
 			findings = Findings{Summary: result.Text}
 		}
+	}
+
+	// Phase ownership boundary: drop findings that only claim later pipeline-
+	// owned delivery (push/PR/CI for this run) has not happened yet. Prompt
+	// guidance alone is not enough - models still emit these under
+	// authoritative intent criteria like "Open PR A unmerged".
+	if stripped, n := stripDeferredPipelineOwnedDeliveryFindings(findings); n > 0 {
+		sctx.Log(fmt.Sprintf("dropped %d deferred pipeline-owned delivery finding(s) (owned by later push/PR/CI steps)", n))
+		findings = stripped
 	}
 
 	needsApproval := hasBlockingFindings(findings.Items)
