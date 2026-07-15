@@ -89,3 +89,12 @@ type Step interface {
 	// until the user responds with an approval action.
 	Execute(sctx *StepContext) (*StepOutcome, error)
 }
+
+// ApprovalGateReconciler is implemented by a step whose parked approval gate
+// can become obsolete when an external source of truth changes. The executor
+// invokes it with a bounded context while also waiting for an approval. A true
+// result completes the step through the normal success path; false or an error
+// leaves the gate parked. Implementations must be read-only and fail closed.
+type ApprovalGateReconciler interface {
+	ReconcileApprovalGate(sctx *StepContext) (resolved bool, err error)
+}

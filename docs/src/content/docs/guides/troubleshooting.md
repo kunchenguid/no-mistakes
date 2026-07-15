@@ -85,7 +85,14 @@ Symptom: `update` refuses because active pipeline runs are in progress, prompts 
 
 `update`, `daemon stop`, and `daemon restart` all refuse by default while pipeline runs are active and list the affected runs; [Daemon & Worktrees](/no-mistakes/concepts/daemon/#starting-and-stopping) owns the guard's exact rules, including why `-y`/`--yes` does not bypass it.
 
-Fix, once you have confirmed it is fine for the listed active runs to fail:
+First inspect each listed run with `no-mistakes axi status --run <id>`.
+A parked CI gate now keeps checking its PR read-only and clears itself when the provider reports that PR merged or closed, including after a daemon restart.
+Open, unknown, or unreachable PRs remain parked and must not be guessed complete.
+
+When upgrading from an older release that left a merged/closed PR at a stale CI gate, verify the PR state independently, check out the matching branch, and run `no-mistakes axi respond --action approve --step ci` before retrying the update.
+Do not edit `state.sqlite` directly.
+
+Only when you have confirmed it is acceptable for every remaining listed active run to fail, force the lifecycle operation:
 
 ```sh
 no-mistakes daemon stop --force

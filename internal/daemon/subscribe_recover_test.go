@@ -12,8 +12,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/lifecycle"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -456,6 +458,106 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 			t.Fatalf("recovered worktree still exists after cleanup: %s", worktree)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testing.T) {
+	for _, state := range []string{"MERGED", "CLOSED"} {
+		t.Run(state, func(t *testing.T) {
+			tmpDir, err := os.MkdirTemp("", "dtest")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+			p := paths.WithRoot(tmpDir)
+			if err := p.EnsureDirs(); err != nil {
+				t.Fatal(err)
+			}
+			mockClaude := writeMockClaude(t, t.TempDir())
+			if err := os.WriteFile(p.ConfigFile(), []byte("agent: claude\nagent_path_override:\n  claude: "+mockClaude+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			d, err := db.Open(p.DB())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			repo, headSHA := setupTestGitRepo(t, p, d, "reconcile-parked-ci-"+strings.ToLower(state))
+			run, err := d.InsertRun(repo.ID, "feature", headSHA, headSHA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.UpdateRunPRURL(run.ID, "https://github.com/test/repo/pull/42"); err != nil {
+				t.Fatal(err)
+			}
+			prURL := "https://github.com/test/repo/pull/42"
+			run.PRURL = &prURL
+			worktree := p.WorktreeDir(repo.ID, run.ID)
+			if err := gitpkg.WorktreeAdd(context.Background(), p.RepoDir(repo.ID), worktree, headSHA); err != nil {
+				t.Fatal(err)
+			}
+			step, err := d.InsertStepResult(run.ID, types.StepCI)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := d.StartStep(step.ID); err != nil {
+				t.Fatal(err)
+			}
+			findings := `{"findings":[{"id":"ci-1","severity":"warning","description":"PR was still open when CI monitoring timed out","action":"ask-user"}],"summary":"CI monitoring timed out before PR was merged or closed"}`
+			if err := d.SetStepFindings(step.ID, findings); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := d.InsertStepRound(step.ID, 1, "initial", &findings, nil, 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.UpdateStepStatusWithDuration(step.ID, types.StepStatusAwaitingApproval, 1); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.SetRunAwaitingAgent(run.ID); err != nil {
+				t.Fatal(err)
+			}
+
+			ghDir, ghLog := writeMockGHState(t, t.TempDir(), state)
+			t.Setenv("PATH", ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			errCh := make(chan error, 1)
+			go func() {
+				errCh <- RunWithOptions(p, d, func() []pipeline.Step { return []pipeline.Step{&steps.CIStep{}} })
+			}()
+			defer func() {
+				client, dialErr := ipc.Dial(p.Socket())
+				if dialErr == nil {
+					_ = client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
+					_ = client.Close()
+				}
+				select {
+				case <-errCh:
+				case <-time.After(3 * time.Second):
+					t.Error("daemon did not stop")
+				}
+			}()
+
+			completed := waitForRunTerminalState(t, d, run.ID)
+			if completed.Status != types.RunCompleted || completed.AwaitingAgentSince != nil {
+				t.Fatalf("historical CI gate after %s reconciliation = status %s awaiting %v", state, completed.Status, completed.AwaitingAgentSince)
+			}
+			active, err := lifecycle.ActiveRuns(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(active) != 0 {
+				t.Fatalf("update guard still sees %d active runs after reconciliation", len(active))
+			}
+			logData, err := os.ReadFile(ghLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(logData), "pr view 42") {
+				t.Fatalf("startup reconciliation did not read current PR state: %s", logData)
+			}
+		})
 	}
 }
 

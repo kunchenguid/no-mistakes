@@ -317,6 +317,36 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured
 	return path
 }
 
+func writeMockGHState(t *testing.T, dir, state string) (string, string) {
+	t.Helper()
+	logPath := filepath.Join(dir, "gh.log")
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(dir, "gh.bat")
+		script := "@echo off\r\necho %*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status\" >nul && exit /b 0\r\necho %* | findstr /C:\"pr view 42\" >nul && (echo " + state + "& exit /b 0)\r\nexit /b 1\r\n"
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return dir, logPath
+	}
+	path := filepath.Join(dir, "gh")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >>` + shellQuoteForTest(logPath) + `
+case "$*" in
+  "auth status"*|"auth status --hostname "*) exit 0 ;;
+  "pr view 42 "*) printf '%s\n' ` + shellQuoteForTest(state) + `; exit 0 ;;
+esac
+exit 1
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir, logPath
+}
+
+func shellQuoteForTest(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
 func writeSlowMockClaude(t *testing.T, dir string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
