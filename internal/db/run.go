@@ -10,14 +10,25 @@ import (
 
 // Run represents a pipeline run.
 type Run struct {
-	ID      string
-	RepoID  string
-	Branch  string
-	HeadSHA string
-	BaseSHA string
-	Status  types.RunStatus
-	PRURL   *string
-	Error   *string
+	ID                    string
+	RepoID                string
+	Branch                string
+	HeadSHA               string
+	BaseSHA               string
+	SubmittedHeadSHA      *string
+	Status                types.RunStatus
+	PRURL                 *string
+	PRState               *string
+	PRStateObservedAt     *int64
+	CIReadyAt             *int64
+	LastPushedSHA         *string
+	PushTargetKind        *string
+	PushTargetFingerprint *string
+	PushRef               *string
+	LastPushedAt          *int64
+	PushGeneration        *int64
+	PushActive            bool
+	Error                 *string
 	// AwaitingAgentSince is the unix-seconds timestamp at which the run parked
 	// at a gate awaiting the driving agent's response (an awaiting_approval or
 	// fix_review step). It is nil whenever the run is not parked: the executor
@@ -37,14 +48,17 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, status, pr_url, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
 	return row.Scan(
-		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.Status,
-		&r.PRURL, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
+		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.SubmittedHeadSHA, &r.Status,
+		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt,
+		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
+		&r.LastPushedAt, &r.PushGeneration, &r.PushActive,
+		&r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -54,18 +68,19 @@ func scanRun(row interface {
 func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
 	ts := now()
 	r := &Run{
-		ID:        newID(),
-		RepoID:    repoID,
-		Branch:    branch,
-		HeadSHA:   headSHA,
-		BaseSHA:   baseSHA,
-		Status:    types.RunPending,
-		CreatedAt: ts,
-		UpdatedAt: ts,
+		ID:               newID(),
+		RepoID:           repoID,
+		Branch:           branch,
+		HeadSHA:          headSHA,
+		BaseSHA:          baseSHA,
+		SubmittedHeadSHA: &headSHA,
+		Status:           types.RunPending,
+		CreatedAt:        ts,
+		UpdatedAt:        ts,
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, r.Status, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.Status, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
@@ -178,7 +193,7 @@ func (d *DB) GetActiveRuns() ([]*Run, error) {
 
 // UpdateRunStatus updates a run's status and updated_at timestamp.
 func (d *DB) UpdateRunStatus(id string, status types.RunStatus) error {
-	_, err := d.sql.Exec(`UPDATE runs SET status = ?, updated_at = ? WHERE id = ?`, status, now(), id)
+	_, err := d.sql.Exec(`UPDATE runs SET status = ?, push_active = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN 0 ELSE push_active END, updated_at = ? WHERE id = ?`, status, status, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run status: %w", err)
 	}
@@ -187,9 +202,68 @@ func (d *DB) UpdateRunStatus(id string, status types.RunStatus) error {
 
 // UpdateRunPRURL sets the PR URL on a run.
 func (d *DB) UpdateRunPRURL(id, prURL string) error {
-	_, err := d.sql.Exec(`UPDATE runs SET pr_url = ?, updated_at = ? WHERE id = ?`, prURL, now(), id)
+	_, err := d.sql.Exec(`UPDATE runs SET pr_url = ?, pr_state = 'open', pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, prURL, now(), now(), id)
 	if err != nil {
 		return fmt.Errorf("update run pr url: %w", err)
+	}
+	return nil
+}
+
+// PushBinding records the exact target and commit proven by a successful
+// pipeline-owned push. TargetFingerprint is a one-way digest and must never be
+// a raw URL.
+type PushBinding struct {
+	HeadSHA           string
+	TargetKind        string
+	TargetFingerprint string
+	Ref               string
+}
+
+// UpdateRunPushBinding advances a run's successful-push provenance and
+// increments its generation. It is called for both a completed push and a
+// freshly verified already-up-to-date push.
+func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
+	ts := now()
+	_, err := d.sql.Exec(
+		`UPDATE runs SET last_pushed_sha = ?, push_target_kind = ?, push_target_fingerprint = ?, push_ref = ?, last_pushed_at = ?, push_generation = COALESCE(push_generation, 0) + 1, updated_at = ? WHERE id = ?`,
+		binding.HeadSHA, binding.TargetKind, binding.TargetFingerprint, binding.Ref, ts, ts, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update run push binding: %w", err)
+	}
+	return nil
+}
+
+// SetRunPushActive marks whether a pipeline phase currently owns a possible
+// branch-head update. Sync refuses while this marker is set.
+func (d *DB) SetRunPushActive(id string, active bool) error {
+	_, err := d.sql.Exec(`UPDATE runs SET push_active = ?, updated_at = ? WHERE id = ?`, active, now(), id)
+	if err != nil {
+		return fmt.Errorf("set run push active: %w", err)
+	}
+	return nil
+}
+
+// UpdateRunPRState persists normalized lifecycle truth independently of logs.
+func (d *DB) UpdateRunPRState(id, state string) error {
+	ts := now()
+	_, err := d.sql.Exec(`UPDATE runs SET pr_state = ?, pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, state, ts, ts, id)
+	if err != nil {
+		return fmt.Errorf("update run PR state: %w", err)
+	}
+	return nil
+}
+
+// SetRunCIReady persists checks-passed readiness so fresh TUI and AXI attaches
+// do not depend on receiving a historical log line.
+func (d *DB) SetRunCIReady(id string, ready bool) error {
+	var readyAt any
+	if ready {
+		readyAt = now()
+	}
+	_, err := d.sql.Exec(`UPDATE runs SET ci_ready_at = ?, updated_at = ? WHERE id = ? AND ((ci_ready_at IS NULL AND ? = 1) OR (ci_ready_at IS NOT NULL AND ? = 0))`, readyAt, now(), id, ready, ready)
+	if err != nil {
+		return fmt.Errorf("set run CI ready: %w", err)
 	}
 	return nil
 }
@@ -210,7 +284,7 @@ func (d *DB) UpdateRunError(id, errMsg string) error {
 
 // UpdateRunErrorStatus sets the error message and terminal status on a run.
 func (d *DB) UpdateRunErrorStatus(id, errMsg string, status types.RunStatus) error {
-	_, err := d.sql.Exec(`UPDATE runs SET error = ?, status = ?, updated_at = ? WHERE id = ?`, errMsg, status, now(), id)
+	_, err := d.sql.Exec(`UPDATE runs SET error = ?, status = ?, push_active = 0, updated_at = ? WHERE id = ?`, errMsg, status, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run error: %w", err)
 	}
@@ -341,7 +415,7 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 	runArgs := []any{types.RunFailed, errMsg, ts, ts, ts, types.RunPending, types.RunRunning}
 	runArgs = append(runArgs, args...)
 	result, err := tx.Exec(
-		`UPDATE runs SET status = ?, error = ?,
+		`UPDATE runs SET status = ?, error = ?, push_active = 0,
 			parked_ms = COALESCE(parked_ms, 0) + CASE
 				WHEN awaiting_agent_since IS NOT NULL AND ? > awaiting_agent_since
 				THEN (? - awaiting_agent_since) * 1000 ELSE 0 END,

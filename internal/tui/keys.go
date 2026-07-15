@@ -14,6 +14,25 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return updated, cmd
 	}
 
+	if m.syncConfirm {
+		switch key {
+		case "esc":
+			m.syncConfirm = false
+			return m, nil
+		case "u", "enter":
+			if m.syncRefreshing {
+				return m, nil
+			}
+			m.syncRefreshing = true
+			return m, m.applySyncCmd()
+		case "q", "ctrl+c":
+			m.quitting = true
+			return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
+		default:
+			return m, nil
+		}
+	}
+
 	// Reset abort confirmation on any key except 'x'.
 	if key != "x" {
 		m.confirmAbort = false
@@ -205,6 +224,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
+	case "u":
+		if m.syncRefreshing || m.syncRefresh == nil || m.branchSync == nil || m.branchSync.State != "behind" {
+			return m, nil
+		}
+		m.syncRefreshing = true
+		m.err = nil
+		return m, m.refreshSyncCmd()
 
 	case "y":
 		m.yoloMode = !m.yoloMode

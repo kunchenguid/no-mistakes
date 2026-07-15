@@ -303,6 +303,35 @@ func TestUpdateRunStatus(t *testing.T) {
 	}
 }
 
+func TestRunPushBindingIsForwardOnlyAndLegacyRowsStayNullable(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/repo-sync-binding", "https://example.com/repo.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.SubmittedHeadSHA == nil || *run.SubmittedHeadSHA != "submitted" || run.LastPushedSHA != nil {
+		t.Fatalf("new run provenance = %#v", run)
+	}
+	binding := PushBinding{HeadSHA: "pushed-1", TargetKind: "fork", TargetFingerprint: "digest-only", Ref: "refs/heads/feature"}
+	if err := d.UpdateRunPushBinding(run.ID, binding); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPushBinding(run.ID, PushBinding{HeadSHA: "pushed-2", TargetKind: "fork", TargetFingerprint: "digest-only", Ref: "refs/heads/feature"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := d.GetRun(run.ID)
+	if got.LastPushedSHA == nil || *got.LastPushedSHA != "pushed-2" || got.PushGeneration == nil || *got.PushGeneration != 2 {
+		t.Fatalf("push binding = %#v", got)
+	}
+	if got.PushTargetFingerprint == nil || *got.PushTargetFingerprint != "digest-only" {
+		t.Fatalf("target fingerprint = %#v", got.PushTargetFingerprint)
+	}
+	if got.SubmittedHeadSHA == nil || *got.SubmittedHeadSHA != "submitted" {
+		t.Fatalf("submitted head was mutated: %#v", got.SubmittedHeadSHA)
+	}
+}
+
 func TestUpdateRunPRURL(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

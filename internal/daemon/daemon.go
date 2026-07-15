@@ -562,6 +562,7 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		Status:             r.Status,
 		PRURL:              r.PRURL,
 		Error:              r.Error,
+		CIReady:            r.CIReadyAt != nil,
 		AwaitingAgent:      r.AwaitingAgentSince != nil,
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CreatedAt:          r.CreatedAt,

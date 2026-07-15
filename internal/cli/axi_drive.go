@@ -526,6 +526,11 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error {
 	rv := runViewFromIPC(run)
 	fields := []toon.Field{runObjectField(rv)}
+	hasBranchSync := false
+	if syncField := cachedBranchSyncField(cmd, run.ID); syncField != nil {
+		fields = append(fields, *syncField)
+		hasBranchSync = true
+	}
 
 	// CI passed but the run is intentionally still monitoring for a human
 	// merge. Report it as a distinct, successful outcome so the agent stops
@@ -539,6 +544,9 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 		fixes := rv.fixRows()
 		fields = appendFixesField(fields, fixes)
 		help := append([]string{merge}, successReportHelp(fixes)...)
+		if hasBranchSync {
+			help = append(help, branchSyncAgentGuidance)
+		}
 		help = append(help, staleMonitorGuidance)
 		fields = append(fields, toon.Field{Key: "help", Value: help})
 		emitDoc(cmd, fields...)
@@ -564,12 +572,18 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 			help = append(help, fmt.Sprintf("Open the PR: %s", rv.PRURL))
 		}
 		help = append(help, successReportHelp(fixes)...)
+		if hasBranchSync {
+			help = append(help, branchSyncAgentGuidance)
+		}
 		fields = append(fields, toon.Field{Key: "help", Value: help})
 		emitDoc(cmd, fields...)
 		return nil
 	}
 
 	help := []string{preserveGateFixCommitsGuidance}
+	if hasBranchSync {
+		help = append(help, branchSyncAgentGuidance)
+	}
 	if rv.PRURL != "" {
 		help = append([]string{fmt.Sprintf("Open the PR: %s", rv.PRURL)}, help...)
 	}

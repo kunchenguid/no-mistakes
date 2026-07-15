@@ -217,14 +217,12 @@ Run the pipeline and decide on its findings as they come up:
      never mid-run to circumvent a gate. Do not leave the user at a ` + "`failed`" + `
      outcome without either retrying or explaining what blocks it.
 
-The same applies to any additional fix that comes after a gate round has
-already produced fix commits - a newly surfaced finding, a reviewer's
-pre-merge request, or any other post-completion change: commit it on top of
-the existing branch and re-run ` + "`no-mistakes axi run --intent \"...\"`" + ` with the original user intent.
-Never abort-and-restart, reset the branch, or open a new branch in a way that drops the prior gate-fix commits (including the pipeline's own
-` + "`no-mistakes(review|document|lint): ...`" + ` commits) - a re-run only
-re-validates the branch's current state, so those commits stay on the branch
-and already-resolved findings do not re-surface.
+Before any post-pipeline local commit or fresh run, read the structured ` + "`branch_sync`" + ` object returned by AXI home, status, or a drive result.
+Only when its ` + "`next_action.code`" + ` is ` + "`sync`" + `, run ` + "`no-mistakes axi sync`" + ` first.
+If it reports an unpublished pipeline-owned update, wait and keep driving the active run without making local follow-up commits.
+If synchronization is blocked, process that structured state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
+After synchronization, commit the follow-up on top and re-run ` + "`no-mistakes axi run --intent \"...\"`" + ` with the original user intent.
+This preserves every prior gate-fix commit, including the pipeline's own ` + "`no-mistakes(review|document|lint): ...`" + ` commits.
 
 The CI step deliberately keeps watching the PR after checks pass, so
 ` + "`axi run`" + ` returns ` + "`checks-passed`" + ` the moment checks are green rather than
@@ -283,7 +281,9 @@ run without checking back.
 
 ` + "```sh" + `
 no-mistakes axi               # home view: current branch, active runs, next steps
-no-mistakes axi status        # full detail of the resolved run
+no-mistakes axi status        # full detail plus cached branch_sync when relevant
+no-mistakes axi sync --check  # freshly verify an offered synchronization plan
+no-mistakes axi sync          # apply only an offered exact safe fast-forward
 no-mistakes axi logs --step <name> --full   # full log output of one step
 no-mistakes axi abort         # cancel the current-branch active run
 no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside its worktree)
@@ -312,7 +312,7 @@ help[6]:
   Run ` + "`no-mistakes axi respond --action skip`" + ` to skip this step
   Run ` + "`no-mistakes axi logs --step review --full`" + ` to read the full step log
   A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a ` + "`gate:`" + `, respond; loop until an ` + "`outcome:`" + `.
-  When you make an additional fix after a gate round has already produced fix commits, commit it on top of the existing branch and run ` + "`no-mistakes axi run --intent \"...\"`" + ` with the original user intent. Never abort-and-restart, reset the branch, or open a new branch in a way that drops prior gate-fix commits. A fresh run re-validates the branch's current state, so already-resolved findings do not re-surface.
+  Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits.
 ` + "```" + `
 
 Read the ` + "`action`" + ` column per row: decide ` + "`r1`" + ` (auto-fix) on your own

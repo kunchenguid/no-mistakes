@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,6 +65,129 @@ func axiScenario(t *testing.T) string {
 // and runs to completion, and `axi status`/`logs` inspect the result. It also
 // proves the agent-supplied intent is used verbatim (no transcript inference)
 // and that `axi run --yes` auto-approves the gate end to end.
+func branchSyncScenario(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "branch-sync-scenario.yaml")
+	content := `actions:
+  - match: "Investigate previous review findings"
+    text: "fixed unsafe value"
+    edits:
+      - path: "feature.txt"
+        old: "unsafe"
+        new: "safe"
+    structured:
+      summary: "guard unsafe value"
+  - match: "Review the code changes and return structured findings"
+    text: "review found a warning"
+    structured:
+      findings:
+        - id: "sync-1"
+          severity: warning
+          file: "feature.txt"
+          line: 1
+          description: "unsafe value needs validation"
+          action: auto-fix
+      summary: "found one issue"
+      risk_level: medium
+      risk_rationale: "the unsafe value needs a guard"
+  - text: "no issues found"
+    structured:
+      findings: []
+      summary: "no issues found"
+      risk_level: low
+      risk_rationale: "no remaining risk"
+      tested: ["fakeagent: focused verification"]
+      testing_summary: "simulated tests passed"
+      title: "feat: branch sync"
+      body: "branch sync journey"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write branch sync scenario: %v", err)
+	}
+	return path
+}
+
+// TestAxiBranchSyncJourney reproduces the end-user stale-local journey with the
+// real binary, fake agent, isolated daemon, and local bare push target.
+func TestAxiBranchSyncJourney(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: branchSyncScenario(t)})
+	h.CommitChange("init-sync", "seed.txt", "seed\n", "seed sync init")
+	initWorktree := h.AddWorktree("init-sync")
+	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+
+	originalHead := h.CommitChange("feature/sync-journey", "feature.txt", "unsafe\n", "add unsafe feature")
+	operator := h.AddWorktree("feature/sync-journey")
+	gateOut, err := h.RunInDir(operator, "axi", "run", "--intent", "guard the feature and preserve pipeline fixes")
+	if err != nil || !strings.Contains(gateOut, "sync-1") {
+		t.Fatalf("initial review gate: %v\n%s", err, gateOut)
+	}
+	fixOut, err := h.RunInDir(operator, "axi", "respond", "--action", "fix", "--findings", "sync-1")
+	if err != nil {
+		t.Fatalf("review fix: %v\n%s", err, fixOut)
+	}
+	for _, want := range []string{"state: pipeline_owned", "blocked_pipeline_owned", "do not make local follow-up commits"} {
+		if !strings.Contains(fixOut, want) {
+			t.Errorf("pre-push output missing %q:\n%s", want, fixOut)
+		}
+	}
+	if got := strings.TrimSpace(h.WorktreeRefSHA("feature/sync-journey")); got != originalHead {
+		t.Fatalf("operator branch moved before explicit sync: %s != %s", got, originalHead)
+	}
+
+	doneOut, err := h.RunInDir(operator, "axi", "respond", "--action", "approve")
+	if err != nil {
+		t.Fatalf("approve fix review: %v\n%s", err, doneOut)
+	}
+	for _, want := range []string{"outcome: passed", "branch_sync:", "state: behind", "command: no-mistakes axi sync"} {
+		if !strings.Contains(doneOut, want) {
+			t.Errorf("post-push output missing %q:\n%s", want, doneOut)
+		}
+	}
+	pushedHead := h.UpstreamBranchSHA("feature/sync-journey")
+	if pushedHead == originalHead {
+		t.Fatal("pipeline did not create and push a fix commit")
+	}
+	if got := strings.TrimSpace(h.WorktreeRefSHA("feature/sync-journey")); got != originalHead {
+		t.Fatalf("operator branch was mutated automatically: %s", got)
+	}
+
+	syncOut, err := h.RunInDir(operator, "axi", "sync")
+	if err != nil {
+		t.Fatalf("guarded sync: %v\n%s", err, syncOut)
+	}
+	if !strings.Contains(syncOut, "state: synchronized") || !strings.Contains(syncOut, "changed: true") {
+		t.Fatalf("sync output:\n%s", syncOut)
+	}
+	if got := strings.TrimSpace(h.WorktreeRefSHA("feature/sync-journey")); got != pushedHead {
+		t.Fatalf("operator HEAD after sync = %s, want %s", got, pushedHead)
+	}
+
+	if err := os.WriteFile(filepath.Join(operator, "followup.txt"), []byte("reviewer follow-up\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := h.runGit(operatorContext(), operator, "add", "followup.txt"); err != nil {
+		t.Fatalf("stage follow-up: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(operatorContext(), operator, "commit", "-m", "reviewer follow-up"); err != nil {
+		t.Fatalf("commit follow-up: %v\n%s", err, out)
+	}
+	followupHead := strings.TrimSpace(h.WorktreeRefSHA("feature/sync-journey"))
+	if out, err := h.runGit(operatorContext(), operator, "merge-base", "--is-ancestor", pushedHead, followupHead); err != nil {
+		t.Fatalf("follow-up dropped pipeline fix: %v\n%s", err, out)
+	}
+	freshOut, err := h.RunInDir(operator, "axi", "run", "--intent", "apply reviewer follow-up without losing the pipeline fix")
+	if err != nil {
+		t.Fatalf("fresh pipeline start: %v\n%s", err, freshOut)
+	}
+	if !strings.Contains(freshOut, "gate:") || strings.Contains(freshOut, "fetch first") {
+		t.Fatalf("fresh pipeline did not start cleanly:\n%s", freshOut)
+	}
+}
+
+func operatorContext() context.Context { return context.Background() }
+
 func TestAxiAgentJourney(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: axiScenario(t)})
 

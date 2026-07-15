@@ -1,9 +1,12 @@
 package tui
 
 import (
+	"context"
+	"fmt"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -53,6 +56,15 @@ type Model struct {
 	yoloMode         bool                    // auto-resolve every step awaiting human action
 	yoloApproved     map[types.StepName]bool // steps already finalized (approved) this run
 	yoloFixed        map[types.StepName]bool // steps yolo has already requested a fix for
+
+	// Guarded local-branch synchronization. Cached state is rendered passively;
+	// only the explicit u flow calls Refresh or Apply.
+	branchSync     *branchsync.State
+	syncService    *branchsync.Service
+	syncRefresh    func() branchsync.State
+	syncApply      func() branchsync.State
+	syncConfirm    bool
+	syncRefreshing bool
 }
 
 // NewModel creates a TUI model for the given run.
@@ -178,6 +190,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.events = msg.events
 		m.cancelSub = msg.cancelSub
+		if m.done {
+			if m.cancelSub != nil {
+				m.cancelSub()
+			}
+			return m, nil
+		}
 		return m, tea.Batch(m.waitForEvent(), m.startSpinnerIfNeeded())
 
 	case rerunStartedMsg:
@@ -207,6 +225,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.applyEvent(msg.event)
+		m.refreshCachedSync()
 		if m.done {
 			return m, nil
 		}
@@ -217,6 +236,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.err = msg.err
+		return m, nil
+
+	case syncRefreshedMsg:
+		m.syncRefreshing = false
+		m.branchSync = &msg.state
+		m.syncConfirm = msg.state.Safety == "safe_fast_forward"
+		if msg.state.Error != "" && !m.syncConfirm {
+			m.err = fmt.Errorf("branch sync: %s", msg.state.Error)
+		}
+		return m, nil
+
+	case syncAppliedMsg:
+		m.syncRefreshing = false
+		m.syncConfirm = false
+		m.branchSync = &msg.state
+		if msg.state.Error != "" {
+			m.err = fmt.Errorf("branch sync: %s", msg.state.Error)
+		}
 		return m, nil
 
 	case spinnerTickMsg:
@@ -271,7 +308,7 @@ func (m Model) terminalTitle() string {
 		icon := stepStatusIndicator(s.Status, m.spinnerFrame)
 		switch s.Status {
 		case types.StepStatusRunning, types.StepStatusFixing:
-			if s.StepName == types.StepCI && parseCIActivity(m.logs).Ready {
+			if s.StepName == types.StepCI && ((m.run != nil && m.run.CIReady) || parseCIActivity(m.logs).Ready) {
 				return "✓ Checks passed" + suffix
 			}
 			return icon + " " + stepLabel(s.StepName) + suffix
@@ -302,10 +339,44 @@ func (m *Model) resetForRun(run *ipc.RunInfo) {
 }
 
 // Run starts the TUI program.
+func (m *Model) refreshCachedSync() {
+	if m.syncService == nil {
+		return
+	}
+	state := m.syncService.InspectCached(context.Background())
+	if state.Pipeline.RunID == m.runID && tuiRelevantSyncState(state) {
+		m.branchSync = &state
+	} else {
+		m.branchSync = nil
+	}
+}
+
+// Run starts the TUI and wires the same guarded synchronization service used
+// by the human and AXI commands. Opening the TUI performs cached inspection
+// only and never contacts a remote.
 func Run(socketPath string, client *ipc.Client, run *ipc.RunInfo, latestVersion string) error {
 	model := NewModel(socketPath, client, run)
 	model.latestVersion = latestVersion
+	if service, closeFn, err := branchsync.OpenCurrent(); err == nil {
+		defer closeFn()
+		model.syncService = service
+		model.syncRefresh = func() branchsync.State { return service.Refresh(context.Background()) }
+		model.syncApply = func() branchsync.State { return service.Apply(context.Background()) }
+		model.refreshCachedSync()
+	}
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
+}
+
+func tuiRelevantSyncState(state branchsync.State) bool {
+	switch state.State {
+	case branchsync.StatePipelineOwned, branchsync.StatePushInProgress, branchsync.StateBehind,
+		branchsync.StateLocalAhead, branchsync.StateDiverged, branchsync.StateDirty,
+		branchsync.StateMergedRemoteRetained, branchsync.StateMergedRemoteRemoved,
+		branchsync.StateClosed, branchsync.StateTargetChanged:
+		return true
+	default:
+		return false
+	}
 }

@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 )
 
 func TestCIStep_CommitAndPush(t *testing.T) {
@@ -40,9 +42,12 @@ func TestCIStep_CommitAndPush(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("ci fix"), 0o644)
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
+	if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{HeadSHA: headSHA, TargetKind: "upstream", TargetFingerprint: branchsync.TargetFingerprint(upstream), Ref: "refs/heads/feature"}); err != nil {
+		t.Fatal(err)
+	}
 
 	step := &CIStep{}
 	pushed, err := step.commitAndPush(sctx)
@@ -57,6 +62,13 @@ func TestCIStep_CommitAndPush(t *testing.T) {
 	upstreamSHA := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
 	if upstreamSHA == headSHA {
 		t.Error("upstream should have a new commit with CI fixes")
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.LastPushedSHA == nil || *dbRun.LastPushedSHA != upstreamSHA || dbRun.PushGeneration == nil || *dbRun.PushGeneration != 2 {
+		t.Fatalf("later CI push binding = %#v", dbRun)
 	}
 }
 

@@ -46,6 +46,7 @@ func newAxiCmd() *cobra.Command {
 	cmd.AddCommand(newAxiRunCmd())
 	cmd.AddCommand(newAxiRespondCmd())
 	cmd.AddCommand(newAxiStatusCmd())
+	cmd.AddCommand(newAxiSyncCmd())
 	cmd.AddCommand(newAxiLogsCmd())
 	cmd.AddCommand(newAxiAbortCmd())
 	return cmd
@@ -182,12 +183,17 @@ func runAxiHome(cmd *cobra.Command) (string, error) {
 	}
 
 	gated := false
+	hasBranchSync := false
 	fingerprint := env.repo.ID + "|" + daemonState
 	if currentActive != nil {
 		steps, _ := env.d.GetStepsByRun(currentActive.ID)
 		rv := runViewFromDB(currentActive, steps)
 		annotateRunView(env, &rv)
 		fields = append(fields, runObjectFieldWithKey("active_run", rv))
+		if syncField := cachedBranchSyncField(cmd, currentActive.ID); syncField != nil {
+			fields = append(fields, *syncField)
+			hasBranchSync = true
+		}
 		if gate, ok := rv.awaitingStep(); ok {
 			gated = true
 			fields = append(fields, gateFields(gate)...)
@@ -201,6 +207,10 @@ func runAxiHome(cmd *cobra.Command) (string, error) {
 		fingerprint += "|other:" + runStateFingerprint(rv)
 	} else {
 		fingerprint += "|idle"
+		if syncField := cachedBranchSyncField(cmd, ""); syncField != nil {
+			fields = append(fields, *syncField)
+			hasBranchSync = true
+		}
 	}
 
 	runs, err := env.d.GetRunsByRepo(env.repo.ID)
@@ -221,6 +231,9 @@ func runAxiHome(cmd *cobra.Command) (string, error) {
 		help = append(help, "Run `no-mistakes axi respond --action approve` to clear the current gate")
 	default:
 		help = append(help, "Run `no-mistakes axi status` to inspect the active run")
+	}
+	if hasBranchSync {
+		help = append(help, branchSyncAgentGuidance)
 	}
 	help = append(help, preserveGateFixCommitsGuidance)
 	help = append(help, "The calling agent drives AXI gates but does not replace the configured pipeline agent; run `no-mistakes doctor` if no native agent or ACP runner is available")

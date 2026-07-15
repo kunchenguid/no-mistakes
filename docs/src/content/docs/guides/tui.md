@@ -131,6 +131,16 @@ When a real CI auto-fix attempt starts, the panel increments `CI auto-fixes: N`.
 Once checks are green and known mergeability is clear, the panel shows `✓ Checks passed` with `still monitoring until merged or closed`, and the terminal title switches to `Checks passed`.
 That text means the CI monitor is still active; it can still pause later if the configured idle timeout elapses with no base-branch movement.
 That ready signal clears if checks start running again, new failures appear, provider state becomes uncertain, or the PR is merged or closed.
+The ready signal is persisted, so a fresh attach shows `Checks passed` without depending on delivery of an earlier log line.
+
+### Local branch
+
+When the pipeline creates a fix commit in its isolated worktree, one compact `Local branch` box explains whether the invoking branch is unchanged, behind, dirty, diverged, synchronized, or retired after PR merge or close.
+Passive TUI rendering uses cached pipeline push provenance and never fetches or mutates the checkout.
+When a clean strict-behind relation is eligible, the box alone offers `u sync branch`.
+Pressing `u` explicitly refreshes the configured upstream or fork target, then opens a confirmation with both full SHAs, the exact target ref, and the clean-worktree proof.
+Confirm with `u` or Enter, or cancel with Escape.
+The apply path rechecks every mutable assumption and can only perform the same exact strict fast-forward as `no-mistakes sync`; blocked states never trigger destructive Git recovery.
 
 ### Footer
 
@@ -180,6 +190,7 @@ When the instruction editor is open, press `Ctrl+s` or `Ctrl+enter` to save, or 
 | `?` | Toggle help overlay |
 | `y` | Toggle yolo mode, which auto-resolves paused steps |
 | `r` | Start a rerun after a failed or cancelled run |
+| `u` | Refresh and confirm local branch synchronization when offered |
 | `q` | Detach from TUI (or quit if run is done) |
 
 In diff view, `n`/`p` jumps the viewport to the file and line of the next/previous finding.

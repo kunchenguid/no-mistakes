@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
@@ -61,6 +62,9 @@ func newStatusCmd() *cobra.Command {
 					return "", "", fmt.Errorf("check active run: %w", err)
 				}
 				fingerprint := statusFingerprint(repo.ID, daemonState, activeRun)
+				if syncState := (&branchsync.Service{DB: d, Repo: repo, WorkDir: "."}).InspectCached(cmd.Context()); relevantCachedSyncState(syncState) {
+					fmt.Fprintf(w, "\n  %s  %s\n", sDim.Render("local branch:"), humanSyncSummary(syncState))
+				}
 				if activeRun != nil {
 					fmt.Fprintln(w)
 					fmt.Fprintf(w, "  %s\n", sCyan.Render("Active run"))

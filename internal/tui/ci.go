@@ -98,7 +98,7 @@ func renderCIViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo, fin
 		if activity.AutoFixing {
 			style := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBlue))
 			b.WriteString(style.Render("\u2699 Auto-fixing CI failures...") + "\n")
-		} else if activity.Ready {
+		} else if activity.Ready || (run != nil && run.CIReady) {
 			style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiGreen))
 			b.WriteString(style.Render("✓ Checks passed") + "\n")
 			dim := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))

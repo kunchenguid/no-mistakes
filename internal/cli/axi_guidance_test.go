@@ -26,10 +26,16 @@ var canonicalStaleMonitorPhrases = []string{
 }
 
 var canonicalPreserveGateFixPhrases = []string{
-	"no-mistakes axi run --intent",
-	"Never abort-and-restart",
-	"prior gate-fix commits",
-	"already-resolved findings do not re-surface",
+	"post-pipeline",
+	"on top",
+	"every pipeline fix commit",
+}
+
+var canonicalBranchSyncPhrases = []string{
+	"branch_sync",
+	"no-mistakes axi sync",
+	"blocked",
+	"reset, stash, merge, rebase, force, or branch replacement",
 }
 
 // TestStaleMonitorGuidance_SyncedAcrossSurfaces guards the repo invariant that
@@ -103,6 +109,28 @@ func TestPreserveGateFixGuidance_SyncedAcrossSurfaces(t *testing.T) {
 				t.Errorf("%s is missing the canonical preserve-gate-fix guidance phrase %q", name, phrase)
 			}
 		}
+	}
+}
+
+func TestBranchSyncGuidance_SyncedAcrossStaticAndLiveSurfaces(t *testing.T) {
+	surfaces := map[string]string{
+		"skill body":         skill.Markdown(),
+		"agents guide":       readAgentsGuide(t),
+		"live sync guidance": branchSyncAgentGuidance,
+	}
+	for name, content := range surfaces {
+		for _, phrase := range canonicalBranchSyncPhrases {
+			if !strings.Contains(content, phrase) {
+				t.Errorf("%s is missing branch-sync guidance phrase %q", name, phrase)
+			}
+		}
+	}
+}
+
+func TestNormalDriveOutputDoesNotFloodBranchSyncGuidance(t *testing.T) {
+	got := renderDriveResultForGuidanceTest(t, true, types.RunRunning)
+	if strings.Contains(got, branchSyncAgentGuidance) || strings.Contains(got, "branch_sync.next_action") {
+		t.Fatalf("ordinary drive output included irrelevant branch-sync guidance:\n%s", got)
 	}
 }
 

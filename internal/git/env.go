@@ -30,6 +30,9 @@ func NonInteractiveEnv(dir string) []string {
 		"GIT_EDITOR=true",
 		"GIT_SEQUENCE_EDITOR=true",
 		"GIT_TERMINAL_PROMPT=0",
+		// Read-only commands such as status and rev-parse must not refresh the
+		// index as a side effect. Mutating commands still take required locks.
+		"GIT_OPTIONAL_LOCKS=0",
 	)
 	// Mirror os/exec, which only injects PWD when Cmd.Env is nil, skips it on
 	// these platforms, and absolutizes Cmd.Dir first (go.dev/issue/50599):

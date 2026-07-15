@@ -161,15 +161,18 @@ Agents can also call `no-mistakes axi` directly:
 ```sh
 no-mistakes axi run --intent "the user's goal"
 no-mistakes axi status
+no-mistakes axi sync --check
+no-mistakes axi sync
 no-mistakes axi respond --action approve
 no-mistakes axi logs --step review --full
 no-mistakes axi abort
 no-mistakes axi abort --run <id>
 ```
 
-When an agent makes an additional fix after a gate round has already produced fix commits - a newly surfaced finding, a reviewer or pre-merge request, or any other post-completion change - it should commit the fix on top of the existing branch and run `no-mistakes axi run --intent "..."` with the original user intent.
-Never abort-and-restart, reset the branch, or open a new branch in a way that drops prior gate-fix commits, including the pipeline's own `no-mistakes(review|document|lint): ...` commits.
-A fresh run re-validates the branch's current state, so already-resolved findings do not re-surface.
+Before any post-pipeline local commit or fresh run, read `branch_sync`.
+Only when its structured `next_action.code` is `sync`, run `no-mistakes axi sync` first.
+If synchronization is blocked or the pipeline still owns an unpublished update, process that state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
+Then commit follow-up work on top so every pipeline fix commit remains in the branch.
 
 The full driving protocol - how to read the home view and `gate:` objects, when to respond, fix, approve, or relay `ask-user` findings, and how to interpret `axi status` fields like `awaiting_agent` and `active_steps` - is owned by the skill itself and by the live `axi` output.
 Each `axi` response carries version-matched `help` lines for its state, and `no-mistakes axi run --help` and `no-mistakes axi respond --help` describe the loop authoritatively for the installed binary, so agents driving a gate never need this page open.

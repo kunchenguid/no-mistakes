@@ -28,6 +28,7 @@ func TestNonInteractiveEnv_SetsGitOverrides(t *testing.T) {
 		"GIT_EDITOR":          "true",
 		"GIT_SEQUENCE_EDITOR": "true",
 		"GIT_TERMINAL_PROMPT": "0",
+		"GIT_OPTIONAL_LOCKS":  "0",
 	}
 	for k, v := range want {
 		if got[k] != v {

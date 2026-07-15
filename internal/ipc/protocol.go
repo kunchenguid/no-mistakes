@@ -199,6 +199,7 @@ type RunInfo struct {
 	Status  types.RunStatus `json:"status"`
 	PRURL   *string         `json:"pr_url,omitempty"`
 	Error   *string         `json:"error,omitempty"`
+	CIReady bool            `json:"ci_ready,omitempty"`
 	// AwaitingAgent is true while the run is parked at a gate awaiting the
 	// driving agent's response. AwaitingAgentSince is the unix-seconds time it
 	// parked, so a supervisor can read "parked for N seconds" in one call. Both

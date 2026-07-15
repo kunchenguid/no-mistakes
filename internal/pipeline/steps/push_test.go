@@ -61,6 +61,12 @@ func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
 	if dbRun.HeadSHA != actualHeadSHA {
 		t.Errorf("DB HeadSHA = %s, want %s", dbRun.HeadSHA, actualHeadSHA)
 	}
+	if dbRun.LastPushedSHA == nil || *dbRun.LastPushedSHA != actualHeadSHA || dbRun.PushGeneration == nil || *dbRun.PushGeneration != 1 {
+		t.Fatalf("already-up-to-date push binding = %#v", dbRun)
+	}
+	if dbRun.PushActive {
+		t.Fatal("push-active marker remained set after successful step")
+	}
 }
 
 func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
@@ -160,6 +166,16 @@ func TestPushStep_TargetsForkWhenConfigured(t *testing.T) {
 	}
 	if out, err := exec.Command("git", "-C", parent, "rev-parse", "--verify", "refs/heads/feature").CombinedOutput(); err == nil {
 		t.Fatalf("parent unexpectedly received feature branch at %s", strings.TrimSpace(string(out)))
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.LastPushedSHA == nil || *dbRun.LastPushedSHA != headSHA || dbRun.PushTargetKind == nil || *dbRun.PushTargetKind != "fork" || dbRun.PushRef == nil || *dbRun.PushRef != "refs/heads/feature" {
+		t.Fatalf("fork push binding = %#v", dbRun)
+	}
+	if dbRun.PushTargetFingerprint == nil || strings.Contains(*dbRun.PushTargetFingerprint, fork) {
+		t.Fatalf("push target fingerprint persisted a URL: %#v", dbRun.PushTargetFingerprint)
 	}
 }
 

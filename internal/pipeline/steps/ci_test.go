@@ -85,7 +85,7 @@ func TestCIStep_UsesStepEnvForCLIStartupChecks(t *testing.T) {
 	env := fakeCIGH(t, "MERGED", "[]")
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 
@@ -107,6 +107,13 @@ func TestCIStep_UsesStepEnvForCLIStartupChecks(t *testing.T) {
 	}
 	if len(logs) == 0 || !strings.Contains(logs[len(logs)-1], "PR has been merged") {
 		t.Fatalf("expected CI monitoring to reach PR state check, got logs: %v", logs)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.PRState == nil || *dbRun.PRState != "merged" || dbRun.PRStateObservedAt == nil {
+		t.Fatalf("structured PR lifecycle = %#v", dbRun)
 	}
 }
 

@@ -21,4 +21,9 @@ const staleMonitorGuidance = "If this PR later falls behind the default branch o
 // that drops prior pipeline work. This same guidance is mirrored in the skill
 // body and the published agents guide, with CLI-reference coverage in
 // docs/.../reference/cli.md.
-const preserveGateFixCommitsGuidance = "When you make an additional fix after a gate round has already produced fix commits, commit it on top of the existing branch and run `no-mistakes axi run --intent \"...\"` with the original user intent. Never abort-and-restart, reset the branch, or open a new branch in a way that drops prior gate-fix commits. A fresh run re-validates the branch's current state, so already-resolved findings do not re-surface."
+const preserveGateFixCommitsGuidance = "Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits."
+
+// branchSyncAgentGuidance is emitted only when a relevant branch_sync object
+// is present. Keeping it conditional avoids flooding ordinary runs whose local
+// and pipeline heads never differed.
+const branchSyncAgentGuidance = "Before a post-pipeline local commit or fresh run, follow the structured `branch_sync.next_action`. Run `no-mistakes axi sync` only when its code is `sync`; process blocked or pipeline-owned states instead of improvising reset, stash, merge, rebase, force, or branch replacement."
