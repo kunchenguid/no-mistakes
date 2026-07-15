@@ -27,6 +27,12 @@ func TestReviewStep_DropsDeferredPipelineOwnedPRFinding(t *testing.T) {
 			if !strings.Contains(opts.Prompt, "Pipeline phase (review is pre-push)") {
 				t.Errorf("review prompt missing pipeline delivery phase clause:\n%s", opts.Prompt)
 			}
+			if !strings.Contains(opts.Prompt, "review_scope") {
+				t.Errorf("review prompt missing finding scope instructions:\n%s", opts.Prompt)
+			}
+			if !strings.Contains(string(opts.JSONSchema), `"review_scope"`) {
+				t.Errorf("review schema missing review_scope: %s", opts.JSONSchema)
+			}
 			if !strings.Contains(opts.Prompt, "Do not treat deferred pipeline-owned delivery outcomes") {
 				t.Errorf("conformance clause missing deferred-delivery exclusion:\n%s", opts.Prompt)
 			}
@@ -39,6 +45,7 @@ func TestReviewStep_DropsDeferredPipelineOwnedPRFinding(t *testing.T) {
 					Severity:    "error",
 					Action:      types.ActionAskUser,
 					Description: reported,
+					ReviewScope: types.FindingReviewScopePipelineOwnedDelivery,
 				}},
 				Summary:       "missing required open PR",
 				RiskLevel:     "high",
@@ -89,6 +96,7 @@ func TestReviewStep_KeepsExternalPRLifecycleFinding(t *testing.T) {
 					Severity:    "error",
 					Action:      types.ActionAskUser,
 					Description: external,
+					ReviewScope: types.FindingReviewScopeExternalDelivery,
 				}},
 				Summary:   "external PR requirement violated",
 				RiskLevel: "high",
@@ -133,12 +141,14 @@ func TestReviewStep_StripsOnlyDeferredAmongMixedFindings(t *testing.T) {
 						Severity:    "error",
 						Action:      types.ActionAskUser,
 						Description: "PR list returned zero PRs and the target commit is not present on a remote branch",
+						ReviewScope: types.FindingReviewScopePipelineOwnedDelivery,
 					},
 					{
 						ID:          "real-bug",
 						Severity:    "error",
 						Action:      types.ActionAutoFix,
 						Description: "nil pointer dereference in handler.go when config is missing",
+						ReviewScope: types.FindingReviewScopeSource,
 					},
 				},
 				Summary: "2 issues",

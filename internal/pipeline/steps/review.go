@@ -207,6 +207,10 @@ Rules:
   - "ask-user": the finding is about functional requirements or product behavior, or otherwise challenges the author's deliberate intent. Even if it seems obviously wrong, we should ask the user for review. Examples: "this feature seems unnecessary", "this hardcoded value should be configurable", "this deletion looks wrong". When in doubt, default to "ask-user".
   - "auto-fix": the finding is a non-functional, non user-visible issue (correctness, error handling, security, performance, mechanical code quality) that can be safely fixed without any discussion about the author's intent.
   - "no-op": the finding is informational and does not require any action (e.g. noting a pattern, acknowledging a tradeoff).
+- For each finding, set review_scope to exactly one of:
+  - "source": every source-verifiable finding, including any finding that mixes a source defect with a delivery claim.
+  - "pipeline-owned-delivery": only a finding whose sole claim is that this run's remote branch, push, PR, or CI output is not present yet.
+  - "external-delivery": a pre-existing or external PR, third-party artifact, or other lifecycle requirement not owned by this run.
 
 Risk assessment (after listing all findings):
 - Set risk_level to "low" if the change is well-bounded, mostly cosmetic, or straightforward with little ambiguity.
@@ -280,6 +284,7 @@ func sanitizedPreviousFindingsForPrompt(raw string) string {
 		findings.Items[i].Description = sanitizePromptMultilineText(findings.Items[i].Description)
 		findings.Items[i].Source = sanitizePromptText(findings.Items[i].Source)
 		findings.Items[i].UserInstructions = sanitizePromptMultilineText(findings.Items[i].UserInstructions)
+		findings.Items[i].ReviewScope = sanitizePromptText(findings.Items[i].ReviewScope)
 	}
 	findings.Summary = sanitizePromptMultilineText(findings.Summary)
 	findings.RiskLevel = sanitizePromptText(findings.RiskLevel)

@@ -1,8 +1,9 @@
 package steps
 
 import (
-	"regexp"
 	"strings"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // pipelineDeliveryPhaseClause documents the pre-push ownership boundary for
@@ -50,146 +51,5 @@ func stripDeferredPipelineOwnedDeliveryFindings(findings Findings) (Findings, in
 // review. Findings about pre-existing external PRs, third-party artifacts, or
 // other non-run-owned lifecycle state return false.
 func isDeferredPipelineOwnedDeliveryFinding(item Finding) bool {
-	desc := strings.TrimSpace(item.Description)
-	if desc == "" {
-		return false
-	}
-	lower := strings.ToLower(desc)
-
-	if claimsExternalOrNonOwnedLifecycle(lower) {
-		return false
-	}
-	return claimsMissingPipelineOwnedDelivery(lower)
-}
-
-// externalPRRefPattern matches concrete external PR references that are not
-// owned by this run's future PR step (numbered PRs, host URLs).
-var externalPRRefPattern = regexp.MustCompile(`(?i)(?:\bpr\s*#\s*\d+\b|\bpull\s*request\s*#\s*\d+\b|\bpull/\d+\b|https?://[^\s]+/(?:pull|merge_requests)/\d+)`)
-
-var deliverySurfacePattern = regexp.MustCompile(`\b(?:pr|prs|ci|push|pushed|pushes|pushing|check|checks)\b|\bpull requests?\b|\bremote branches?\b|\bon (?:a|the) remote\b|\bpipeline status\b`)
-
-var deliveryClaimSeparatorPattern = regexp.MustCompile(`[.;]|\b(?:and|but|while|whereas|although)\b`)
-
-func claimsExternalOrNonOwnedLifecycle(lower string) bool {
-	if externalPRRefPattern.MatchString(lower) {
-		return true
-	}
-	// Explicit external / pre-existing scope stays enforceable at review.
-	for _, needle := range []string{
-		"pre-existing",
-		"preexisting",
-		"already open",
-		"already opened",
-		"already exists",
-		"already existing",
-		"third-party",
-		"third party",
-		"external pr",
-		"external pull request",
-		"upstream pr",
-		"upstream pull request",
-		"must remain",
-		"must stay",
-		"keep open",
-		"keep the pr",
-		"keep pr",
-	} {
-		if strings.Contains(lower, needle) {
-			return true
-		}
-	}
-	// Third-party / published artifact requirements are not this run's delivery.
-	for _, needle := range []string{
-		"third-party artifact",
-		"third party artifact",
-		"published artifact",
-		"release artifact",
-		"npm package",
-		"pypi",
-		"docker hub",
-		"container registry",
-	} {
-		if strings.Contains(lower, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func claimsMissingPipelineOwnedDelivery(lower string) bool {
-	if !deliverySurfacePattern.MatchString(lower) {
-		return false
-	}
-
-	// Must claim absence / not-yet for that delivery surface.
-	for _, needle := range []string{
-		"zero pr",
-		"zero prs",
-		"zero pull",
-		"no pr",
-		"no pull request",
-		"no pull requests",
-		"returned zero",
-		"list returned zero",
-		"still needs to be opened",
-		"still need to be opened",
-		"needs to be opened",
-		"need to be opened",
-		"has not been opened",
-		"have not been opened",
-		"has not been created",
-		"have not been created",
-		"has not been pushed",
-		"have not been pushed",
-		"not been pushed",
-		"not yet pushed",
-		"not yet opened",
-		"not yet created",
-		"not yet present",
-		"does not exist",
-		"do not exist",
-		"doesn't exist",
-		"don't exist",
-		"not present on a remote",
-		"not present on the remote",
-		"not on a remote",
-		"not on the remote",
-		"missing pr",
-		"missing pull request",
-		"pr is missing",
-		"pull request is missing",
-		"no remote branch",
-		"remote branch is missing",
-		"branch does not exist on",
-		"no ci",
-		"ci has not",
-		"checks have not",
-		"no checks",
-		"checks not",
-		"not green",
-		"ci not",
-	} {
-		if strings.Contains(lower, needle) {
-			return onlyContainsDeliveryClaims(lower)
-		}
-	}
-
-	// "PR A still needs to be opened" / "open a PR" as the defect claim.
-	if strings.Contains(lower, "opened without merging") ||
-		strings.Contains(lower, "still needs to be opened") ||
-		(strings.Contains(lower, "open") && deliverySurfacePattern.MatchString(lower) &&
-			(strings.Contains(lower, "still") || strings.Contains(lower, "not") || strings.Contains(lower, "zero") || strings.Contains(lower, "missing"))) {
-		return onlyContainsDeliveryClaims(lower)
-	}
-	return false
-}
-
-func onlyContainsDeliveryClaims(lower string) bool {
-	for _, fragment := range deliveryClaimSeparatorPattern.Split(lower, -1) {
-		fragment = strings.TrimSpace(fragment)
-		if fragment != "" && !deliverySurfacePattern.MatchString(fragment) {
-			return false
-		}
-	}
-	return true
+	return item.ReviewScope == types.FindingReviewScopePipelineOwnedDelivery
 }

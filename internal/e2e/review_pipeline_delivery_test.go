@@ -36,6 +36,7 @@ func writePipelineOwnedPRScenario(t *testing.T) string {
           severity: error
           description: ` + yamlDoubleQuoted(deferredPRFinding) + `
           action: ask-user
+          review_scope: pipeline-owned-delivery
       summary: "missing required open PR"
       risk_level: high
       risk_rationale: "required PR criterion not satisfied"
@@ -69,6 +70,7 @@ func writeExternalPRScenario(t *testing.T) string {
           severity: error
           description: "PR #456 must remain open and unmerged; it is currently closed"
           action: ask-user
+          review_scope: external-delivery
       summary: "external PR requirement violated"
       risk_level: high
       risk_rationale: "pre-existing PR requirement not met"

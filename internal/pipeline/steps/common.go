@@ -103,9 +103,10 @@ var reviewFindingsSchema = json.RawMessage(`{
 					"file": {"type": "string"},
 					"line": {"type": "integer"},
 					"description": {"type": "string"},
-					"action": {"type": "string", "enum": ["no-op", "auto-fix", "ask-user"]}
+					"action": {"type": "string", "enum": ["no-op", "auto-fix", "ask-user"]},
+					"review_scope": {"type": "string", "enum": ["source", "pipeline-owned-delivery", "external-delivery"]}
 				},
-				"required": ["severity", "description", "action"]
+				"required": ["severity", "description", "action", "review_scope"]
 			}
 		},
 		"tested": {

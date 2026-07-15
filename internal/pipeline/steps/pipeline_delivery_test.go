@@ -14,50 +14,59 @@ func TestIsDeferredPipelineOwnedDeliveryFinding(t *testing.T) {
 	reported := `The required criterion says "Open PR A unmerged," but the PR list returned zero PRs and the target commit is not present on a remote branch. PR A still needs to be opened without merging.`
 
 	cases := []struct {
-		name string
-		desc string
-		want bool
+		name  string
+		desc  string
+		scope string
+		want  bool
 	}{
 		{
-			name: "reported pipeline-owned missing PR",
-			desc: reported,
-			want: true,
+			name:  "reported pipeline-owned missing PR",
+			desc:  reported,
+			scope: types.FindingReviewScopePipelineOwnedDelivery,
+			want:  true,
 		},
 		{
-			name: "remote branch not present yet",
-			desc: "target commit is not present on a remote branch; the branch has not been pushed",
-			want: true,
+			name:  "remote branch not present yet",
+			desc:  "target commit is not present on a remote branch; the branch has not been pushed",
+			scope: types.FindingReviewScopePipelineOwnedDelivery,
+			want:  true,
 		},
 		{
-			name: "PR not created yet",
-			desc: "the pull request for this change has not been created yet",
-			want: true,
+			name:  "PR not created yet",
+			desc:  "the pull request for this change has not been created yet",
+			scope: types.FindingReviewScopePipelineOwnedDelivery,
+			want:  true,
 		},
 		{
-			name: "CI not observed yet",
-			desc: "CI has not run yet for this branch; no checks are present",
-			want: true,
+			name:  "CI not observed yet",
+			desc:  "CI has not run yet for this branch; no checks are present",
+			scope: types.FindingReviewScopePipelineOwnedDelivery,
+			want:  true,
 		},
 		// Negative: external / pre-existing lifecycle remains enforceable.
 		{
-			name: "numbered external PR must stay open",
-			desc: "PR #456 must remain open and unmerged; it is currently closed",
-			want: false,
+			name:  "numbered external PR must stay open",
+			desc:  "PR #456 must remain open and unmerged; it is currently closed",
+			scope: types.FindingReviewScopeExternalDelivery,
+			want:  false,
 		},
 		{
-			name: "pre-existing external PR URL missing",
-			desc: "required pre-existing external PR https://github.com/org/dep/pull/99 is missing required approval",
-			want: false,
+			name:  "pre-existing external PR URL missing",
+			desc:  "required pre-existing external PR https://github.com/org/dep/pull/99 is missing required approval",
+			scope: types.FindingReviewScopeExternalDelivery,
+			want:  false,
 		},
 		{
-			name: "third-party artifact",
-			desc: "required third-party artifact release-notes.pdf is not published",
-			want: false,
+			name:  "third-party artifact",
+			desc:  "required third-party artifact release-notes.pdf is not published",
+			scope: types.FindingReviewScopeExternalDelivery,
+			want:  false,
 		},
 		{
-			name: "source implementation bug",
-			desc: "nil pointer dereference in handler.go when config is missing",
-			want: false,
+			name:  "source implementation bug",
+			desc:  "nil pointer dereference in handler.go when config is missing",
+			scope: types.FindingReviewScopeSource,
+			want:  false,
 		},
 		{
 			name: "proper is not a PR token",
@@ -67,6 +76,17 @@ func TestIsDeferredPipelineOwnedDeliveryFinding(t *testing.T) {
 		{
 			name: "mixed source and deferred delivery claim",
 			desc: "the handler has no proper validation, and the PR for this change is missing",
+			want: false,
+		},
+		{
+			name:  "delivery vocabulary inside source defect",
+			desc:  "The CI parser panics on malformed responses, and the PR is missing",
+			scope: types.FindingReviewScopeSource,
+			want:  false,
+		},
+		{
+			name: "missing scope fails closed",
+			desc: "the PR for this change is missing",
 			want: false,
 		},
 		{
@@ -83,6 +103,7 @@ func TestIsDeferredPipelineOwnedDeliveryFinding(t *testing.T) {
 				Severity:    "error",
 				Action:      types.ActionAskUser,
 				Description: tc.desc,
+				ReviewScope: tc.scope,
 			})
 			if got != tc.want {
 				t.Errorf("isDeferredPipelineOwnedDeliveryFinding() = %v, want %v\ndesc: %s", got, tc.want, tc.desc)
@@ -100,18 +121,21 @@ func TestStripDeferredPipelineOwnedDeliveryFindings_Mixed(t *testing.T) {
 				Severity:    "error",
 				Action:      types.ActionAskUser,
 				Description: `The required criterion says "Open PR A unmerged," but the PR list returned zero PRs and the target commit is not present on a remote branch. PR A still needs to be opened without merging.`,
+				ReviewScope: types.FindingReviewScopePipelineOwnedDelivery,
 			},
 			{
 				ID:          "real-bug",
 				Severity:    "error",
 				Action:      types.ActionAutoFix,
 				Description: "nil pointer dereference in handler.go when config is missing",
+				ReviewScope: types.FindingReviewScopeSource,
 			},
 			{
 				ID:          "external-pr",
 				Severity:    "error",
 				Action:      types.ActionAskUser,
 				Description: "PR #456 must remain open and unmerged; it is currently closed",
+				ReviewScope: types.FindingReviewScopeExternalDelivery,
 			},
 		},
 		Summary:   "3 issues",
@@ -144,6 +168,7 @@ func TestStripDeferredPipelineOwnedDeliveryFindings_AllDeferred(t *testing.T) {
 			Severity:    "error",
 			Action:      types.ActionAskUser,
 			Description: "PR list returned zero PRs; the branch is not present on a remote",
+			ReviewScope: types.FindingReviewScopePipelineOwnedDelivery,
 		}},
 		Summary: "missing PR",
 	}
