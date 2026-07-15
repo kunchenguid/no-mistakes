@@ -106,6 +106,84 @@ func TestCIStep_CIFailureAutoFix(t *testing.T) {
 	}
 }
 
+func TestCIStep_RefreshesGitHubProvenanceHeadAfterAutoFixPush(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	env, headLog := fakeCIGHProvenance(t, headSHA)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(opts.CWD, "ci-fix.txt"), []byte("fixed"), 0o644); err != nil {
+				return nil, err
+			}
+			return &agent.Result{}, nil
+		},
+	}
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = "https://github.com/test/repo.git"
+	sctx.Repo.ForkURL = upstream
+	sctx.Config.CITimeout = time.Hour
+	sctx.Config.AutoFix = config.AutoFix{CI: 1}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+	polls := 0
+	step := &CIStep{
+		baseBranchTip: func(context.Context) (string, bool) { return "", false },
+		waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
+			polls++
+			if polls == 2 {
+				cancel()
+			}
+			return ctx.Err()
+		},
+	}
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute() error = %v, want context.Canceled", err)
+	}
+	if sctx.Run.HeadSHA == headSHA {
+		t.Fatal("CI auto-fix did not update the run head")
+	}
+	headCalls, err := os.ReadFile(headLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(headCalls), "/commits/"+headSHA+"/") || !strings.Contains(string(headCalls), "/commits/"+sctx.Run.HeadSHA+"/") {
+		t.Fatalf("provenance head calls = %q, want initial and updated heads", headCalls)
+	}
+}
+
 func TestCIStep_CIAutoFixDisabledWithZero(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

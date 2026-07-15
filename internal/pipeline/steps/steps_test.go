@@ -58,6 +58,8 @@ func handleFakeCLI(mode string) {
 		fakeCIGHHandler(args)
 	case "ci-gh-seq":
 		fakeCIGHSequenceHandler(args)
+	case "ci-gh-provenance":
+		fakeCIGHProvenanceHandler(args)
 	case "ci-gh-nochecks":
 		fakeCIGHNoChecksHandler(args)
 	case "ci-glab":
@@ -397,6 +399,44 @@ func fakeCIGHSequenceHandler(args []string) {
 	}
 	if strings.Contains(joined, "run view") {
 		fmt.Println("error log output")
+		os.Exit(0)
+	}
+	os.Exit(1)
+}
+
+func fakeCIGHProvenanceHandler(args []string) {
+	joined := strings.Join(args, " ")
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
+		fmt.Println("MERGEABLE")
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
+		fmt.Println("OPEN")
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "branches/main/protection/required_status_checks") {
+		fmt.Fprintln(os.Stderr, "Branch not protected")
+		os.Exit(1)
+	}
+	if strings.Contains(joined, "rules/branches/main") || strings.Contains(joined, "/statuses?per_page=100") || strings.Contains(joined, "run list") {
+		fmt.Println("[]")
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "/check-runs?per_page=100") {
+		if logPath := os.Getenv("FAKE_CLI_HEAD_LOG"); logPath != "" {
+			if f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+				fmt.Fprintln(f, joined)
+				f.Close()
+			}
+		}
+		if strings.Contains(joined, "/commits/"+os.Getenv("FAKE_CLI_INITIAL_HEAD")+"/") {
+			fmt.Println(`{"check_runs":[{"name":"build","status":"completed","conclusion":"failure"}]}`)
+		} else {
+			fmt.Println(`{"check_runs":[{"name":"build","status":"in_progress"}]}`)
+		}
 		os.Exit(0)
 	}
 	os.Exit(1)

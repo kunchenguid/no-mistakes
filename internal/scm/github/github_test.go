@@ -220,7 +220,7 @@ func TestGetChecksMarksOnlyUnprotectedLinklessLegacyPendingAsAdvisory(t *testing
 	t.Parallel()
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
 		"gh api repos/test/repo/branches/main/protection/required_status_checks": {stderr: "Branch not protected", code: 1},
-		"gh api repos/test/repo/rules/branches/main":                             {stdout: "[]\n"},
+		"gh api --paginate repos/test/repo/rules/branches/main":                  {stdout: "[]\n"},
 		"gh api --paginate repos/test/repo/commits/abc/check-runs?per_page=100":  {stdout: `{"check_runs":[{"name":"unit","status":"completed","conclusion":"success"}]}` + "\n"},
 		"gh api --paginate repos/test/repo/commits/abc/statuses?per_page=100":    {stdout: `[{"context":"CodeRabbit","state":"pending","target_url":null}]` + "\n"},
 	}), nil, "", "test/repo")
@@ -249,7 +249,7 @@ func TestGetChecksKeepsProtectedOrLinkedLegacyPendingBlocking(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			host := New(githubTestCmdFactory(map[string]githubTestResponse{
 				"gh api repos/test/repo/branches/main/protection/required_status_checks": {stdout: tc.protection + "\n"},
-				"gh api repos/test/repo/rules/branches/main":                             {stdout: "[]\n"},
+				"gh api --paginate repos/test/repo/rules/branches/main":                  {stdout: "[]\n"},
 				"gh api --paginate repos/test/repo/commits/abc/check-runs?per_page=100":  {stdout: `{"check_runs":[]}` + "\n"},
 				"gh api --paginate repos/test/repo/commits/abc/statuses?per_page=100":    {stdout: `[{"context":"CodeRabbit","state":"pending","target_url":"` + tc.targetURL + `"}]` + "\n"},
 			}), nil, "", "test/repo")
@@ -284,7 +284,7 @@ func TestGetChecksReadsEveryPaginatedNativeCheckPage(t *testing.T) {
 	t.Parallel()
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
 		"gh api repos/test/repo/branches/main/protection/required_status_checks": {stderr: "Branch not protected", code: 1},
-		"gh api repos/test/repo/rules/branches/main":                             {stdout: "[]\n"},
+		"gh api --paginate repos/test/repo/rules/branches/main":                  {stdout: "[]\n"},
 		"gh api --paginate repos/test/repo/commits/abc/check-runs?per_page=100":  {stdout: `{"check_runs":[]}` + "\n" + `{"check_runs":[{"name":"late-pending","status":"in_progress","conclusion":null}]}` + "\n"},
 		"gh api --paginate repos/test/repo/commits/abc/statuses?per_page=100":    {stdout: "[]\n"},
 	}), nil, "", "test/repo")
@@ -301,7 +301,7 @@ func TestGetChecksFailsClosedForWorkflowRules(t *testing.T) {
 	t.Parallel()
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
 		"gh api repos/test/repo/branches/main/protection/required_status_checks": {stderr: "Branch not protected", code: 1},
-		"gh api repos/test/repo/rules/branches/main":                             {stdout: `[{"type":"workflows","parameters":{}}]` + "\n"},
+		"gh api --paginate repos/test/repo/rules/branches/main":                  {stdout: `[{"type":"workflows","parameters":{}}]` + "\n"},
 		"gh api --paginate repos/test/repo/commits/abc/check-runs?per_page=100":  {stdout: `{"check_runs":[]}` + "\n"},
 		"gh api --paginate repos/test/repo/commits/abc/statuses?per_page=100":    {stdout: "[]\n"},
 	}), nil, "", "test/repo")
@@ -311,6 +311,27 @@ func TestGetChecksFailsClosedForWorkflowRules(t *testing.T) {
 	}
 	if len(checks) != 1 || checks[0].Name != "GitHub required-check policy unresolved" || !checks[0].Pending() {
 		t.Fatalf("checks = %+v, want fail-closed policy pending", checks)
+	}
+}
+
+func TestGetChecksReadsEveryPaginatedBranchRulePage(t *testing.T) {
+	t.Parallel()
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api repos/test/repo/branches/main/protection/required_status_checks": {stderr: "Branch not protected", code: 1},
+		"gh api --paginate repos/test/repo/rules/branches/main": {
+			stdout: `[{"type":"pull_request","parameters":{}}]` + "\n" +
+				`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"CodeRabbit"}]}}]` + "\n",
+		},
+		"gh api --paginate repos/test/repo/commits/abc/check-runs?per_page=100": {stdout: `{"check_runs":[]}` + "\n"},
+		"gh api --paginate repos/test/repo/commits/abc/statuses?per_page=100":   {stdout: `[{"context":"CodeRabbit","state":"pending","target_url":null}]` + "\n"},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{HeadSHA: "abc", BaseBranch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checks) != 1 || checks[0].Name != "CodeRabbit" || !checks[0].BlocksPending || !checks[0].Pending() {
+		t.Fatalf("checks = %+v, want late-page required legacy pending check", checks)
 	}
 }
 

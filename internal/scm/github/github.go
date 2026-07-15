@@ -473,7 +473,7 @@ func (h *Host) requiredStatusContexts(ctx context.Context, repo, branch string) 
 		}
 	}
 
-	var rules []struct {
+	var rulePages [][]struct {
 		Type       string `json:"type"`
 		Parameters struct {
 			RequiredStatusChecks []struct {
@@ -481,19 +481,21 @@ func (h *Host) requiredStatusContexts(ctx context.Context, repo, branch string) 
 			} `json:"required_status_checks"`
 		} `json:"parameters"`
 	}
-	if err := h.apiJSON(ctx, "repos/"+repo+"/rules/branches/"+branch, &rules); err != nil {
+	if err := h.apiJSONPages(ctx, "repos/"+repo+"/rules/branches/"+branch, &rulePages); err != nil {
 		return nil, false
 	}
-	for _, rule := range rules {
-		if rule.Type == "workflows" {
-			return nil, false
-		}
-		if rule.Type != "required_status_checks" {
-			continue
-		}
-		for _, check := range rule.Parameters.RequiredStatusChecks {
-			if check.Context != "" {
-				required[check.Context] = true
+	for _, rules := range rulePages {
+		for _, rule := range rules {
+			if rule.Type == "workflows" {
+				return nil, false
+			}
+			if rule.Type != "required_status_checks" {
+				continue
+			}
+			for _, check := range rule.Parameters.RequiredStatusChecks {
+				if check.Context != "" {
+					required[check.Context] = true
+				}
 			}
 		}
 	}
