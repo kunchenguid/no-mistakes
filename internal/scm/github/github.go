@@ -504,7 +504,7 @@ func (h *Host) requiredStatusContexts(ctx context.Context, repo, branch string) 
 
 func isUnprotectedBranchError(err error) bool {
 	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "branch not protected") || strings.Contains(message, "status: 404")
+	return strings.Contains(message, "branch not protected")
 }
 
 func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {

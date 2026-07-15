@@ -280,6 +280,23 @@ func TestGetChecksFailsClosedWhenProtectionCannotBeRead(t *testing.T) {
 	}
 }
 
+func TestGetChecksFailsClosedWhenProtectionReturnsArbitrary404(t *testing.T) {
+	t.Parallel()
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api repos/test/repo/branches/main/protection/required_status_checks": {stderr: "HTTP 404: resource unavailable", code: 1},
+		"gh api --paginate repos/test/repo/commits/abc/check-runs?per_page=100":  {stdout: `{"check_runs":[]}` + "\n"},
+		"gh api --paginate repos/test/repo/commits/abc/statuses?per_page=100":    {stdout: "[]\n"},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{HeadSHA: "abc", BaseBranch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checks) != 1 || !checks[0].BlocksPending || !checks[0].Pending() {
+		t.Fatalf("checks = %+v, want fail-closed blocking policy check", checks)
+	}
+}
+
 func TestGetChecksReadsEveryPaginatedNativeCheckPage(t *testing.T) {
 	t.Parallel()
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
