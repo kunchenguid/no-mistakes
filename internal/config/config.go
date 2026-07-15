@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -690,7 +691,14 @@ func (c *Config) acpBinaries(name types.AgentName) []string {
 }
 
 func acpCommandBinaryForProbe(command string) (string, bool) {
-	if strings.ContainsAny(command, `"'\`) {
+	return acpCommandBinaryForProbeForOS(command, runtime.GOOS)
+}
+
+func acpCommandBinaryForProbeForOS(command, goos string) (string, bool) {
+	if strings.ContainsAny(command, `"'`) {
+		return "", false
+	}
+	if goos != "windows" && strings.ContainsRune(command, '\\') {
 		return "", false
 	}
 	fields := strings.Fields(command)
@@ -698,13 +706,45 @@ func acpCommandBinaryForProbe(command string) (string, bool) {
 		return "", false
 	}
 	bin := fields[0]
-	if filepath.IsAbs(bin) {
+	if isAbsolutePathForProbe(bin, goos) {
 		return bin, true
 	}
-	if strings.ContainsAny(bin, `/\`) {
+	if containsPathSeparatorForProbe(bin, goos) {
 		return "", false
 	}
 	return bin, true
+}
+
+func isAbsolutePathForProbe(path, goos string) bool {
+	if goos == runtime.GOOS {
+		return filepath.IsAbs(path)
+	}
+	if goos == "windows" {
+		return isWindowsAbsolutePath(path)
+	}
+	return strings.HasPrefix(path, "/")
+}
+
+func isWindowsAbsolutePath(path string) bool {
+	if len(path) >= 3 && isASCIILetter(path[0]) && path[1] == ':' && isWindowsPathSeparator(path[2]) {
+		return true
+	}
+	return len(path) >= 3 && isWindowsPathSeparator(path[0]) && isWindowsPathSeparator(path[1])
+}
+
+func isASCIILetter(value byte) bool {
+	return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
+}
+
+func isWindowsPathSeparator(value byte) bool {
+	return value == '\\' || value == '/'
+}
+
+func containsPathSeparatorForProbe(path, goos string) bool {
+	if goos == "windows" {
+		return strings.ContainsAny(path, `/\`)
+	}
+	return strings.ContainsRune(path, '/')
 }
 
 // AgentArgs returns extra CLI args for the configured native agent, as declared in

@@ -672,6 +672,36 @@ func TestResolveAgent_ACPAliasCommandAvailability(t *testing.T) {
 	}
 }
 
+func TestACPCommandBinaryForProbeForOS(t *testing.T) {
+	tests := []struct {
+		name    string
+		goos    string
+		command string
+		wantBin string
+		wantOK  bool
+	}{
+		{name: "windows drive path", goos: "windows", command: `C:\tools\cursor-agent.exe acp`, wantBin: `C:\tools\cursor-agent.exe`, wantOK: true},
+		{name: "windows UNC path", goos: "windows", command: `\\host\share\cursor-agent.exe acp`, wantBin: `\\host\share\cursor-agent.exe`, wantOK: true},
+		{name: "unix absolute path", goos: "linux", command: "/opt/cursor-agent acp", wantBin: "/opt/cursor-agent", wantOK: true},
+		{name: "unix escaped space", goos: "linux", command: `/opt/Cursor\ Agent/cursor-agent acp`},
+		{name: "windows double-quoted path", goos: "windows", command: `"C:\Program Files\cursor-agent.exe" acp`},
+		{name: "windows single-quoted path", goos: "windows", command: `'C:\Program Files\cursor-agent.exe' acp`},
+		{name: "unix double-quoted path", goos: "linux", command: `"/opt/Cursor Agent/cursor-agent" acp`},
+		{name: "unix single-quoted path", goos: "linux", command: `'/opt/Cursor Agent/cursor-agent' acp`},
+		{name: "relative path", goos: "linux", command: "./bin/x acp"},
+		{name: "bare command", goos: "linux", command: "cursor-agent acp", wantBin: "cursor-agent", wantOK: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotBin, gotOK := acpCommandBinaryForProbeForOS(tt.command, tt.goos)
+			if gotBin != tt.wantBin || gotOK != tt.wantOK {
+				t.Errorf("acpCommandBinaryForProbeForOS(%q, %q) = (%q, %t), want (%q, %t)", tt.command, tt.goos, gotBin, gotOK, tt.wantBin, tt.wantOK)
+			}
+		})
+	}
+}
+
 func TestResolveAgent_AutoPassesContextToRovoDevProbe(t *testing.T) {
 	cfg := &Config{Agent: types.AgentAuto}
 	originalProbe := probeRovoDevSupport
