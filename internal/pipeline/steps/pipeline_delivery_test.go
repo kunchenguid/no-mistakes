@@ -60,6 +60,16 @@ func TestIsDeferredPipelineOwnedDeliveryFinding(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "proper is not a PR token",
+			desc: "there is no proper validation for an empty repository name",
+			want: false,
+		},
+		{
+			name: "mixed source and deferred delivery claim",
+			desc: "the handler has no proper validation, and the PR for this change is missing",
+			want: false,
+		},
+		{
 			name: "intent-required source behavior removed",
 			desc: "the fix deletes the intent-required guarded stale-lock removal, leaving rejected retry-only",
 			want: false,

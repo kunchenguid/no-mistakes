@@ -3,7 +3,6 @@ package steps
 import (
 	"regexp"
 	"strings"
-	"unicode"
 )
 
 // pipelineDeliveryPhaseClause documents the pre-push ownership boundary for
@@ -67,6 +66,10 @@ func isDeferredPipelineOwnedDeliveryFinding(item Finding) bool {
 // owned by this run's future PR step (numbered PRs, host URLs).
 var externalPRRefPattern = regexp.MustCompile(`(?i)(?:\bpr\s*#\s*\d+\b|\bpull\s*request\s*#\s*\d+\b|\bpull/\d+\b|https?://[^\s]+/(?:pull|merge_requests)/\d+)`)
 
+var deliverySurfacePattern = regexp.MustCompile(`\b(?:pr|prs|ci|push|pushed|pushes|pushing|check|checks)\b|\bpull requests?\b|\bremote branches?\b|\bon (?:a|the) remote\b|\bpipeline status\b`)
+
+var deliveryClaimSeparatorPattern = regexp.MustCompile(`[.;]|\b(?:and|but|while|whereas|although)\b`)
+
 func claimsExternalOrNonOwnedLifecycle(lower string) bool {
 	if externalPRRefPattern.MatchString(lower) {
 		return true
@@ -114,36 +117,7 @@ func claimsExternalOrNonOwnedLifecycle(lower string) bool {
 }
 
 func claimsMissingPipelineOwnedDelivery(lower string) bool {
-	// Must mention a delivery surface this pipeline owns later.
-	delivery := false
-	for _, needle := range []string{
-		"pull request",
-		" pull ",
-		"pr ",
-		" pr",
-		"prs",
-		"remote branch",
-		"remote branches",
-		"on a remote",
-		"on the remote",
-		" pushed",
-		"not pushed",
-		"force-push",
-		" ci",
-		"ci ",
-		"checks",
-		"pipeline status",
-	} {
-		if strings.Contains(lower, needle) {
-			delivery = true
-			break
-		}
-	}
-	// Compact forms: "PR", "PRs" as whole tokens.
-	if !delivery && hasWholeToken(lower, "pr", "prs", "ci") {
-		delivery = true
-	}
-	if !delivery {
+	if !deliverySurfacePattern.MatchString(lower) {
 		return false
 	}
 
@@ -196,46 +170,26 @@ func claimsMissingPipelineOwnedDelivery(lower string) bool {
 		"ci not",
 	} {
 		if strings.Contains(lower, needle) {
-			return true
+			return onlyContainsDeliveryClaims(lower)
 		}
 	}
 
 	// "PR A still needs to be opened" / "open a PR" as the defect claim.
 	if strings.Contains(lower, "opened without merging") ||
 		strings.Contains(lower, "still needs to be opened") ||
-		(strings.Contains(lower, "open") && strings.Contains(lower, "pr") &&
+		(strings.Contains(lower, "open") && deliverySurfacePattern.MatchString(lower) &&
 			(strings.Contains(lower, "still") || strings.Contains(lower, "not") || strings.Contains(lower, "zero") || strings.Contains(lower, "missing"))) {
-		return true
+		return onlyContainsDeliveryClaims(lower)
 	}
 	return false
 }
 
-// hasWholeToken reports whether any of the tokens appears as a standalone word
-// in s (letter/digit boundaries).
-func hasWholeToken(s string, tokens ...string) bool {
-	for _, tok := range tokens {
-		if tok == "" {
-			continue
-		}
-		start := 0
-		for {
-			i := strings.Index(s[start:], tok)
-			if i < 0 {
-				break
-			}
-			i += start
-			end := i + len(tok)
-			leftOK := i == 0 || !isWordChar(rune(s[i-1]))
-			rightOK := end == len(s) || !isWordChar(rune(s[end]))
-			if leftOK && rightOK {
-				return true
-			}
-			start = i + 1
+func onlyContainsDeliveryClaims(lower string) bool {
+	for _, fragment := range deliveryClaimSeparatorPattern.Split(lower, -1) {
+		fragment = strings.TrimSpace(fragment)
+		if fragment != "" && !deliverySurfacePattern.MatchString(fragment) {
+			return false
 		}
 	}
-	return false
-}
-
-func isWordChar(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+	return true
 }
