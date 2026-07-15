@@ -277,7 +277,7 @@ The roles never share a session, other pipeline steps stay session-isolated in t
 Every review turn still performs a full review of the complete branch diff; only the reviewer's own prior context is carried.
 When resume is unavailable or fails, the invocation falls back to a cold run or a fresh same-role session and the fallback is recorded in the local `agent_invocations` performance record.
 Session identities are persisted only as minimum local resume metadata, never as prompts or transcripts.
-After a daemon restart, no-mistakes resumes only fully recorded parked approval gates; incomplete or ambiguous active runs fail closed through normal crash recovery.
+The [daemon crash-recovery reference](/no-mistakes/concepts/daemon/#crash-recovery) owns which parked gates can resume or reconcile after a restart.
 Set `false` to force every agent invocation cold.
 
 ### auto_fix

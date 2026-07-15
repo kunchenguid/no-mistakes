@@ -1,0 +1,16 @@
+=== RUN   TestEvidenceParkedCIGateLifecycle
+=== RUN   TestEvidenceParkedCIGateLifecycle/MERGED
+PR state OPEN - lifecycle guard sees 1 active run:
+active pipeline runs:
+  01KXJ413SFGDX4Q7QPSVW0NRRK  running  refs/heads/feature  2768bfe7
+PR state MERGED - run status=completed, awaiting_agent=false, lifecycle guard sees 0 active runs
+=== RUN   TestEvidenceParkedCIGateLifecycle/CLOSED
+PR state OPEN - lifecycle guard sees 1 active run:
+active pipeline runs:
+  01KXJ41DRRJVCNN2RBVBWEPS4P  running  refs/heads/feature  2768bfe7
+PR state CLOSED - run status=completed, awaiting_agent=false, lifecycle guard sees 0 active runs
+--- PASS: TestEvidenceParkedCIGateLifecycle (21.00s)
+    --- PASS: TestEvidenceParkedCIGateLifecycle/MERGED (10.34s)
+    --- PASS: TestEvidenceParkedCIGateLifecycle/CLOSED (10.66s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/pipeline/steps	22.514s
