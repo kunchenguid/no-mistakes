@@ -109,10 +109,30 @@ func yamlDoubleQuoted(s string) string {
 // proceeds through PR ownership.
 func TestReviewPipelineOwnedPRCriterionDoesNotPark(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: writePipelineOwnedPRScenario(t)})
+	parentURL := "https://github.com/example/no-mistakes.git"
+	forkURL := "https://github.com/example-fork/no-mistakes.git"
+	forkDir := filepath.Join(filepath.Dir(h.UpstreamDir), "fork.git")
+	if err := os.MkdirAll(forkDir, 0o755); err != nil {
+		t.Fatalf("mkdir fork: %v", err)
+	}
+	if out, err := h.runGit(t.Context(), forkDir, "init", "--bare", "--initial-branch=main"); err != nil {
+		t.Fatalf("init fork: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(t.Context(), h.WorkDir, "push", forkDir, "main"); err != nil {
+		t.Fatalf("seed fork main: %v\n%s", err, out)
+	}
+	configureGitURLRewrite(t, h, parentURL, h.UpstreamDir)
+	configureGitURLRewrite(t, h, forkURL, forkDir)
+	if out, err := h.runGit(t.Context(), h.WorkDir, "remote", "set-url", "origin", parentURL); err != nil {
+		t.Fatalf("set GitHub origin: %v\n%s", err, out)
+	}
+	ghLog := filepath.Join(filepath.Dir(h.AgentLog), "gh-pipeline-owned-pr.log")
+	t.Setenv("FAKEAGENT_GH_MODE", "fork-pr")
+	t.Setenv("FAKEAGENT_GH_LOG", ghLog)
+	t.Setenv("FAKEAGENT_GH_PARENT", "example/no-mistakes")
 
 	h.CommitChange("init-delivery", "seed.txt", "seed\n", "seed")
-	initWT := h.AddWorktree("init-delivery")
-	if out, err := h.RunInDir(initWT, "init"); err != nil {
+	if out, err := h.Run("init", "--fork-url", forkURL); err != nil {
 		t.Fatalf("nm init: %v\n%s", err, out)
 	}
 
@@ -123,6 +143,7 @@ func TestReviewPipelineOwnedPRCriterionDoesNotPark(t *testing.T) {
 	if err != nil {
 		t.Fatalf("axi run: %v\n%s", err, out)
 	}
+	t.Logf("pipeline-owned PR axi output:\n%s", out)
 
 	// Must not stop at a review gate solely for the deferred PR claim.
 	if strings.Contains(out, "gate:") && strings.Contains(out, "step: review") {
@@ -136,15 +157,27 @@ func TestReviewPipelineOwnedPRCriterionDoesNotPark(t *testing.T) {
 	if completed.Status != types.RunCompleted {
 		t.Fatalf("run status = %q, want completed; error=%v\naxi out:\n%s", completed.Status, completed.Error, out)
 	}
+	if logs, logsErr := h.RunInDir(fw, "axi", "logs", "--step", "pr", "--full"); logsErr == nil {
+		t.Logf("PR step logs:\n%s", logs)
+	}
 
 	// Stage ordering: push and PR (pipeline-owned delivery) still ran after review.
-	for _, stepName := range []types.StepName{types.StepReview, types.StepPush, types.StepPR} {
+	for _, stepName := range []types.StepName{types.StepReview, types.StepPush, types.StepPR, types.StepCI} {
 		st, ok := findStep(completed.Steps, stepName)
 		if !ok {
 			t.Fatalf("missing step %s in run", stepName)
 		}
-		if st.Status != types.StepStatusCompleted && st.Status != types.StepStatusSkipped {
-			t.Errorf("step %s status = %s, want completed or skipped", stepName, st.Status)
+		if st.Status != types.StepStatusCompleted {
+			t.Errorf("step %s status = %s, want completed", stepName, st.Status)
+		}
+	}
+	if completed.PRURL == nil || *completed.PRURL != "https://github.com/example/no-mistakes/pull/99" {
+		t.Fatalf("PR URL = %v, want created PR URL", completed.PRURL)
+	}
+	invocations := readGHStubInvocations(t, ghLog)
+	for _, want := range [][]string{{"pr", "create"}, {"pr", "view"}} {
+		if !hasGHInvocation(invocations, want...) {
+			t.Errorf("missing strict post-review gh invocation %q in %+v", want, invocations)
 		}
 	}
 	// Review completed without parking; deferred claim must not remain in findings.
@@ -176,6 +209,25 @@ func TestReviewPipelineOwnedPRCriterionDoesNotPark(t *testing.T) {
 	}
 }
 
+func hasGHInvocation(invocations []ghStubInvocation, prefix ...string) bool {
+	for _, invocation := range invocations {
+		if len(invocation.Args) < len(prefix) {
+			continue
+		}
+		matched := true
+		for i := range prefix {
+			if invocation.Args[i] != prefix[i] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
 // TestReviewExternalPRLifecycleStillParks is the negative control: a finding
 // about a pre-existing external PR is not suppressed at pre-push review.
 func TestReviewExternalPRLifecycleStillParks(t *testing.T) {
@@ -195,6 +247,7 @@ func TestReviewExternalPRLifecycleStillParks(t *testing.T) {
 		// axi run exits 0 at a gate; if it errors, surface it.
 		t.Fatalf("axi run: %v\n%s", err, out)
 	}
+	t.Logf("external PR axi output:\n%s", out)
 	for _, want := range []string{
 		"gate:",
 		"step: review",
