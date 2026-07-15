@@ -17,6 +17,7 @@ type reconcilingApprovalStep struct {
 	err       atomic.Pointer[error]
 	block     bool
 	started   chan struct{}
+	release   chan struct{}
 	startOnce atomic.Bool
 }
 
@@ -34,6 +35,9 @@ func (s *reconcilingApprovalStep) ReconcileApprovalGate(sctx *StepContext) (bool
 	if s.startOnce.CompareAndSwap(false, true) && s.started != nil {
 		close(s.started)
 	}
+	if s.release != nil {
+		<-s.release
+	}
 	if s.block {
 		<-sctx.Ctx.Done()
 		return false, sctx.Ctx.Err()
@@ -42,6 +46,48 @@ func (s *reconcilingApprovalStep) ReconcileApprovalGate(sctx *StepContext) (bool
 		return false, *ptr
 	}
 	return s.resolved.Load(), nil
+}
+
+func TestExecutor_AcceptedApprovalWinsReconciliationRace(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	step := &reconcilingApprovalStep{
+		name:    types.StepCI,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	step.resolved.Store(true)
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	exec.SetGateReconcileTimings(time.Hour, time.Second)
+
+	workDir := t.TempDir()
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
+	select {
+	case <-step.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("gate reconciliation did not start")
+	}
+	if err := exec.Respond(types.StepCI, types.ActionAbort, nil); err != nil {
+		t.Fatalf("Respond() error = %v", err)
+	}
+	close(step.release)
+
+	select {
+	case err := <-done:
+		if err == nil || err.Error() != "step ci: aborted by user" {
+			t.Fatalf("Execute() error = %v, want accepted abort", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("accepted abort did not complete")
+	}
+
+	got, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != types.RunFailed {
+		t.Fatalf("run status = %s, want %s", got.Status, types.RunFailed)
+	}
 }
 
 func TestExecutor_ReconcilesParkedGateThroughNormalCompletionPath(t *testing.T) {

@@ -1056,7 +1056,10 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 		case <-timer.C:
 			resolved, err := e.reconcileApprovalGate(ctx, step, sctx)
 			if resolved {
-				return approvalResponse{}, true, nil
+				if e.claimGateReconciliation() {
+					return approvalResponse{}, true, nil
+				}
+				return <-e.approvalCh, false, nil
 			}
 			if err != nil && ctx.Err() == nil {
 				if sctx != nil && sctx.Log != nil {
@@ -1068,6 +1071,17 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 			timer.Reset(e.gateReconcileInterval)
 		}
 	}
+}
+
+func (e *Executor) claimGateReconciliation() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.waiting {
+		return false
+	}
+	e.waiting = false
+	e.waitingStep = ""
+	return true
 }
 
 func (e *Executor) reconcileApprovalGate(ctx context.Context, step Step, sctx *StepContext) (bool, error) {
