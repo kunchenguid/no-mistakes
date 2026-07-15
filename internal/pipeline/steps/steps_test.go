@@ -430,7 +430,11 @@ func serveFakeGitHubProvenanceAPI(args []string, checksJSON string) bool {
 		fmt.Println("[]")
 		return true
 	case strings.Contains(joined, "/statuses?per_page=100"):
-		fmt.Println("[]")
+		legacyStatuses := os.Getenv("FAKE_CLI_LEGACY_STATUSES")
+		if legacyStatuses == "" {
+			legacyStatuses = "[]"
+		}
+		fmt.Println(legacyStatuses)
 		return true
 	case strings.Contains(joined, "/check-runs?per_page=100"):
 		fmt.Println(fakeGitHubCheckRunsJSON(checksJSON))
