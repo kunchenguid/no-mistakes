@@ -72,7 +72,8 @@ Running the gate from Antigravity or another Gemini-based coding environment doe
 Choose one of these supported setups:
 
 1. Install any supported native agent CLI and leave `agent: auto`, or select it explicitly in `~/.no-mistakes/config.yaml`.
-2. Install `acpx`, confirm that the Gemini ACP target works locally, and configure `agent: acp:gemini`.
+2. Install both `cursor-agent` and `acpx`, then leave `agent: auto` or select `agent: cursor`.
+3. Install `acpx`, confirm that the Gemini ACP target works locally, and configure `agent: acp:gemini`.
 
 ```yaml
 # ~/.no-mistakes/config.yaml
@@ -186,10 +187,12 @@ The [CLI reference](/no-mistakes/reference/cli/) documents each `axi` command an
 When the daemon is running through a managed service, its `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories; on Windows it reuses the current process environment.
 If native agent discovery does not resolve the binary you expect, check `~/.no-mistakes/logs/daemon.log` and set an explicit override; [Environment the daemon sees](/no-mistakes/reference/environment/#environment-the-daemon-sees) owns the full resolution story.
 
-Three global config fields tune resolution and invocation, and the [Global Config Reference](/no-mistakes/reference/global-config/) owns each one:
+Five global config fields tune resolution and invocation, and the [Global Config Reference](/no-mistakes/reference/global-config/) owns each one:
 
-- [`agent_path_override`](/no-mistakes/reference/global-config/#agent_path_override) - custom binary paths per native agent, plus the default binary-name table ([`acpx_path`](/no-mistakes/reference/global-config/#acpx_path) is the ACP equivalent).
+- [`agent_path_override`](/no-mistakes/reference/global-config/#agent_path_override) - custom binary paths per native agent, plus the default native binary-name table.
 - [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) - extra CLI flags per native agent for model selection, service tier, reasoning depth, or permission mode, including the reserved-flag rules and smart defaults. Keep it global-only; it reflects your local agent setup rather than repo policy.
+- [`acpx_path`](/no-mistakes/reference/global-config/#acpx_path) - the bridge binary path for explicit ACP targets and first-class ACP aliases.
+- [`acp_registry_overrides`](/no-mistakes/reference/global-config/#acp_registry_overrides) - raw ACP target commands, including replacements for alias defaults such as `cursor-agent acp`, plus their availability-probing rules.
 - [`agent`](/no-mistakes/reference/global-config/#agent) - the `auto` resolution order and ordered fallback-list semantics.
 
 ## Review session reuse
@@ -287,7 +290,7 @@ ACP aliases are first-class agent names that resolve to ACP targets.
 `agent: acp:cursor` uses that same default command, so either spelling works without an `acp_registry_overrides.cursor` entry.
 
 Because aliases still run through acpx, they use `acpx_path` for the bridge binary and share the same ACP prompt and structured-output behavior as `agent: acp:<target>`.
-Unlike arbitrary `acp:<target>` entries, aliases may participate in `agent: auto` when their required binaries are present.
+Unlike arbitrary `acp:<target>` entries, aliases may participate in `agent: auto` when their availability checks pass.
 The [Global Config Reference](/no-mistakes/reference/global-config/) owns ACP availability, bridge-path, command-override, and equivalent-spelling deduplication rules.
 
 ## ACP via acpx

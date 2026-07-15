@@ -243,7 +243,8 @@ type InvocationWorkload struct {
 }
 
 // Options configures backend-specific agent construction behavior.
-// ACPRegistryOverrides maps acpx target names to raw ACP agent commands.
+// ACPRegistryOverrides maps acpx target names, including first-class alias
+// targets, to raw ACP agent commands.
 type Options struct {
 	ACPRegistryOverrides map[string]string
 	// DisableProjectSettings, when true, asks a supported adapter (codex,
@@ -782,7 +783,8 @@ func (u *TokenUsage) Add(other TokenUsage) {
 // New creates an agent by name with the given binary path.
 // For native agents, extraArgs are user CLI flags from agent_args_override that
 // are injected into the underlying tool's argv ahead of no-mistakes' managed flags.
-// ACP agents ignore extraArgs; use NewWithOptions to provide registry overrides.
+// ACP agents and aliases ignore extraArgs; use NewWithOptions to provide
+// registry overrides.
 func New(name types.AgentName, bin string, extraArgs []string) (Agent, error) {
 	return NewWithOptions(name, bin, extraArgs, Options{})
 }
