@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -328,6 +329,9 @@ func fakeCIGHHandler(args []string) {
 		fmt.Println(state)
 		os.Exit(0)
 	}
+	if serveFakeGitHubProvenanceAPI(args, checksJSON) {
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "pr checks") {
 		if checksErr != "" {
 			fmt.Fprintln(os.Stderr, checksErr)
@@ -369,32 +373,16 @@ func fakeCIGHSequenceHandler(args []string) {
 		fmt.Println(state)
 		os.Exit(0)
 	}
-	if strings.Contains(joined, "pr checks") {
-		data, err := os.ReadFile(checksPath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		entries := strings.Split(strings.TrimSpace(string(data)), "\n")
-		if len(entries) == 0 || entries[0] == "" {
-			fmt.Println("[]")
+	if strings.Contains(joined, "/check-runs?per_page=100") {
+		if serveFakeGitHubProvenanceAPI(args, nextFakeCIGHChecks(checksPath, indexPath)) {
 			os.Exit(0)
 		}
-
-		index := 0
-		if rawIndex, err := os.ReadFile(indexPath); err == nil {
-			if parsed, err := strconv.Atoi(strings.TrimSpace(string(rawIndex))); err == nil {
-				index = parsed
-			}
-		}
-		if index >= len(entries) {
-			index = len(entries) - 1
-		}
-		if err := os.WriteFile(indexPath, []byte(strconv.Itoa(index+1)), 0o644); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		fmt.Println(entries[index])
+	}
+	if serveFakeGitHubProvenanceAPI(args, "") {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr checks") {
+		fmt.Println(nextFakeCIGHChecks(checksPath, indexPath))
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "run view") {
@@ -402,6 +390,127 @@ func fakeCIGHSequenceHandler(args []string) {
 		os.Exit(0)
 	}
 	os.Exit(1)
+}
+
+func nextFakeCIGHChecks(checksPath, indexPath string) string {
+	data, err := os.ReadFile(checksPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	entries := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(entries) == 0 || entries[0] == "" {
+		return "[]"
+	}
+
+	index := 0
+	if rawIndex, err := os.ReadFile(indexPath); err == nil {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(string(rawIndex))); err == nil {
+			index = parsed
+		}
+	}
+	if index >= len(entries) {
+		index = len(entries) - 1
+	}
+	if err := os.WriteFile(indexPath, []byte(strconv.Itoa(index+1)), 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	return entries[index]
+}
+
+func serveFakeGitHubProvenanceAPI(args []string, checksJSON string) bool {
+	joined := strings.Join(args, " ")
+	switch {
+	case strings.Contains(joined, "/protection/required_status_checks"):
+		fmt.Fprintln(os.Stderr, "Branch not protected")
+		os.Exit(1)
+		return false
+	case strings.Contains(joined, "/rules/branches/"):
+		fmt.Println("[]")
+		return true
+	case strings.Contains(joined, "/statuses?per_page=100"):
+		fmt.Println("[]")
+		return true
+	case strings.Contains(joined, "/check-runs?per_page=100"):
+		fmt.Println(fakeGitHubCheckRunsJSON(checksJSON))
+		return true
+	default:
+		return false
+	}
+}
+
+func fakeGitHubCheckRunsJSON(checksJSON string) string {
+	var checks []struct {
+		Name        string `json:"name"`
+		State       string `json:"state"`
+		Status      string `json:"status"`
+		Conclusion  string `json:"conclusion"`
+		Bucket      string `json:"bucket"`
+		CompletedAt string `json:"completedAt"`
+	}
+	if err := json.Unmarshal([]byte(checksJSON), &checks); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	runs := make([]struct {
+		Name        string `json:"name"`
+		Status      string `json:"status"`
+		Conclusion  string `json:"conclusion,omitempty"`
+		CompletedAt string `json:"completed_at,omitempty"`
+	}, 0, len(checks))
+	for _, check := range checks {
+		status, conclusion := fakeGitHubCheckRunState(check)
+		runs = append(runs, struct {
+			Name        string `json:"name"`
+			Status      string `json:"status"`
+			Conclusion  string `json:"conclusion,omitempty"`
+			CompletedAt string `json:"completed_at,omitempty"`
+		}{
+			Name: check.Name, Status: status, Conclusion: conclusion, CompletedAt: check.CompletedAt,
+		})
+	}
+
+	encoded, err := json.Marshal(struct {
+		CheckRuns any `json:"check_runs"`
+	}{CheckRuns: runs})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	return string(encoded)
+}
+
+func fakeGitHubCheckRunState(check struct {
+	Name        string `json:"name"`
+	State       string `json:"state"`
+	Status      string `json:"status"`
+	Conclusion  string `json:"conclusion"`
+	Bucket      string `json:"bucket"`
+	CompletedAt string `json:"completedAt"`
+}) (string, string) {
+	if check.Status != "" {
+		return strings.ToLower(check.Status), strings.ToLower(check.Conclusion)
+	}
+	switch strings.ToLower(check.Bucket) {
+	case "pending":
+		return "in_progress", ""
+	case "pass":
+		return "completed", "success"
+	case "fail":
+		return "completed", "failure"
+	case "cancel":
+		return "completed", "cancelled"
+	case "skipping":
+		return "completed", "skipped"
+	}
+	switch strings.ToUpper(check.State) {
+	case "PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED", "EXPECTED":
+		return "in_progress", ""
+	default:
+		return "completed", strings.ToLower(check.State)
+	}
 }
 
 func fakeCIGHProvenanceHandler(args []string) {
@@ -560,6 +669,9 @@ func fakeCIGHNoChecksHandler(args []string) {
 	joined := strings.Join(args, " ")
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if serveFakeGitHubProvenanceAPI(args, "[]") {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr checks") {
