@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -48,6 +49,12 @@ type RunOpts struct {
 	// can be normalized without external git archaeology. Instrumentation only;
 	// adapters ignore it.
 	Workload *InvocationWorkload
+	// Routing is selected by the no-mistakes core before launch. Adapters may
+	// use only the bounded effective model/effort fields; they must not consult
+	// project-owned manifests or routers.
+	Routing                 routing.Decision
+	RouteRisk               routing.Risk
+	RouteReviewConfirmation bool
 	// OnAttempt receives each concrete adapter attempt, including retries and
 	// fallback-provider attempts, after it completes. It is instrumentation
 	// only and must not change invocation behavior.

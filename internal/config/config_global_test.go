@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"gopkg.in/yaml.v3"
 )
@@ -34,6 +35,33 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	}
 	if len(cfg.AgentPathOverride) != 0 {
 		t.Errorf("agent_path_override = %v, want empty", cfg.AgentPathOverride)
+	}
+	if cfg.RoutingGeneration == "" {
+		t.Fatal("missing built-in routing generation")
+	}
+}
+
+func TestLoadGlobalRoutingGenerationChangesWithSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("agent: auto\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.RoutingGeneration != routing.ConfigFingerprint("agent: auto\n") {
+		t.Fatalf("generation = %q, want source fingerprint", first.RoutingGeneration)
+	}
+	if err := os.WriteFile(path, []byte("agent: codex\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.RoutingGeneration == second.RoutingGeneration {
+		t.Fatalf("stale routing generation reused: %q", first.RoutingGeneration)
 	}
 }
 

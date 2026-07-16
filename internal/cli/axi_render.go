@@ -90,11 +90,15 @@ type stepView struct {
 
 // runView is a render-ready view of a pipeline run.
 type runView struct {
-	ID      string
-	Branch  string
-	Status  string
-	HeadSHA string
-	PRURL   string
+	ID                   string
+	Branch               string
+	Status               string
+	HeadSHA              string
+	PRURL                string
+	ProvisioningPhase    string
+	ProvisioningProgress int
+	ProvisioningError    string
+	BlockedReason        string
 	// AwaitingAgentSince is the unix-seconds time the run parked at a gate
 	// awaiting the driving agent, or nil when the run is not parked. It powers
 	// the top-level parked signal in the run object.
@@ -104,14 +108,22 @@ type runView struct {
 
 func runViewFromIPC(r *ipc.RunInfo) runView {
 	rv := runView{
-		ID:                 r.ID,
-		Branch:             r.Branch,
-		Status:             string(r.Status),
-		HeadSHA:            r.HeadSHA,
-		AwaitingAgentSince: r.AwaitingAgentSince,
+		ID:                   r.ID,
+		Branch:               r.Branch,
+		Status:               string(r.Status),
+		HeadSHA:              r.HeadSHA,
+		ProvisioningPhase:    r.ProvisioningPhase,
+		ProvisioningProgress: r.ProvisioningProgress,
+		AwaitingAgentSince:   r.AwaitingAgentSince,
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
+	}
+	if r.ProvisioningError != nil {
+		rv.ProvisioningError = *r.ProvisioningError
+	}
+	if r.BlockedReason != nil {
+		rv.BlockedReason = *r.BlockedReason
 	}
 	for _, s := range r.Steps {
 		sv := stepView{
@@ -143,14 +155,22 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 
 func runViewFromDB(r *db.Run, steps []*db.StepResult) runView {
 	rv := runView{
-		ID:                 r.ID,
-		Branch:             r.Branch,
-		Status:             string(r.Status),
-		HeadSHA:            r.HeadSHA,
-		AwaitingAgentSince: r.AwaitingAgentSince,
+		ID:                   r.ID,
+		Branch:               r.Branch,
+		Status:               string(r.Status),
+		HeadSHA:              r.HeadSHA,
+		ProvisioningPhase:    r.ProvisioningPhase,
+		ProvisioningProgress: r.ProvisioningProgress,
+		AwaitingAgentSince:   r.AwaitingAgentSince,
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
+	}
+	if r.ProvisioningError != nil {
+		rv.ProvisioningError = *r.ProvisioningError
+	}
+	if r.BlockedReason != nil {
+		rv.BlockedReason = *r.BlockedReason
 	}
 	for _, s := range steps {
 		sv := stepView{
@@ -410,6 +430,15 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 	// while genuinely parked (non-nil marker on a non-terminal run).
 	if rv.AwaitingAgentSince != nil && !terminalStatus(rv.Status) {
 		fields = append(fields, toon.Field{Key: "awaiting_agent", Value: formatParkedFor(*rv.AwaitingAgentSince)})
+	}
+	if rv.ProvisioningPhase != "" {
+		fields = append(fields, toon.Field{Key: "provisioning", Value: fmt.Sprintf("%s (%d%%)", rv.ProvisioningPhase, rv.ProvisioningProgress)})
+	}
+	if rv.ProvisioningError != "" {
+		fields = append(fields, toon.Field{Key: "provisioning_error", Value: rv.ProvisioningError})
+	}
+	if rv.BlockedReason != "" {
+		fields = append(fields, toon.Field{Key: "blocked_reason", Value: rv.BlockedReason})
 	}
 	fields = append(fields, toon.Field{Key: "head", Value: shortSHA(rv.HeadSHA)})
 	if rv.PRURL != "" {

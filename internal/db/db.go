@@ -29,15 +29,26 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
 	sqlDB.SetMaxOpenConns(1)
-	if _, err := sqlDB.Exec(schemaSQL); err != nil {
+	tx, err := sqlDB.Begin()
+	if err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("begin migration: %w", err)
+	}
+	if _, err := tx.Exec(schemaSQL); err != nil {
+		_ = tx.Rollback()
 		sqlDB.Close()
 		return nil, fmt.Errorf("migrate db: %w", err)
 	}
 	for _, stmt := range migrationStatements {
-		if _, err := sqlDB.Exec(stmt); err != nil && !isDuplicateColumnErr(err) {
+		if _, err := tx.Exec(stmt); err != nil && !isDuplicateColumnErr(err) {
+			_ = tx.Rollback()
 			sqlDB.Close()
 			return nil, fmt.Errorf("migrate db: %w", err)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("commit migration: %w", err)
 	}
 	return &DB{sql: sqlDB}, nil
 }

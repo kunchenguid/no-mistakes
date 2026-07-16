@@ -153,6 +153,7 @@ no-mistakes axi status --run <id>
 | `--run` | `string` | resolved run | Inspect a specific run ID |
 
 When the resolved run is parked at an `awaiting_approval` or `fix_review` gate, its top-level `run:` object includes `awaiting_agent: parked <duration>` immediately after `status`.
+During slow checkout or agent setup, `status` may be `provisioning`; the run also reports persisted `provisioning_phase` and `provisioning_progress`, and can be cancelled with `axi abort --run <id>`. When Codex reports `AuthorizationRequired`, the run is parked as `awaiting_auth` with a `blocked_reason`. Log into a healthy account and explicitly approve one bounded retry with `axi respond --action approve`; do not blindly replay a fixer turn whose completion is unknown.
 The field disappears after `axi respond`, on cancel, and on terminal outcomes; use it to distinguish a run waiting for the driving agent from one actively running, fixing, or watching CI.
 When the resolved run has a `running` or `fixing` step, the run object includes `active_steps`.
 Each row reports how long the step has been active, the latest meaningful log or native-agent lifecycle activity, the native agent PID if one is currently running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.

@@ -9,6 +9,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -28,7 +29,8 @@ type fixExecutionOptions struct {
 	Purpose string
 	// Workload records the bounded size of the change under fix for local
 	// telemetry. Optional; nil leaves the invocation's workload unknown.
-	Workload *agent.InvocationWorkload
+	Workload  *agent.InvocationWorkload
+	RouteRisk routing.Risk
 }
 
 type commitSummary struct {
@@ -193,6 +195,7 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 		OnChunk:    sctx.LogChunk,
 		Purpose:    purpose,
 		Workload:   opts.Workload,
+		RouteRisk:  opts.RouteRisk,
 	}
 	var result *agent.Result
 	var err error

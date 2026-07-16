@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
@@ -89,10 +90,13 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	if opts.Session != nil {
 		resumeID = opts.Session.ID
 	}
-	args := a.buildArgs(opts.Prompt, schemaPath, resumeID)
+	args := a.buildArgsTransport(opts, schemaPath, resumeID)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Stdin = nil
+	// Codex reads the task prompt from stdin when no positional prompt is
+	// supplied. Keeping the full payload out of argv avoids macOS E2BIG and
+	// keeps process listings free of source and test evidence.
+	cmd.Stdin = strings.NewReader(opts.Prompt)
 	cmd.Env = gitSafeEnv(opts.CWD)
 	shellenv.ConfigureShellCommand(cmd)
 
@@ -121,6 +125,12 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		retErr := fmt.Errorf("codex parse events: %w", err)
+		if authorizationRequiredText(codexErr) {
+			retErr = authorizationError(codexErr)
+		}
+		if authorizationRequiredText(codexErr) || authorizationRequiredText(string(stderrBuf)) {
+			retErr = authorizationError(firstNonEmpty(codexErr, string(stderrBuf)))
+		}
 		emitAgentExited(opts, "codex", pid, retErr)
 		return nil, retErr
 	}
@@ -136,8 +146,16 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 			detail = stderr
 		}
 		retErr := fmt.Errorf("codex exited: %w: %s", waitErr, detail)
+		if authorizationRequiredText(detail) {
+			retErr = authorizationError(detail)
+		}
 		emitAgentExited(opts, "codex", pid, retErr)
 		return nil, retErr
+	}
+	if authorizationRequiredText(codexErr) {
+		err := authorizationError(codexErr)
+		emitAgentExited(opts, "codex", pid, err)
+		return nil, err
 	}
 
 	res, err := finalizeTextResult("codex", lastMessage, validationSchema, usage)
@@ -167,6 +185,14 @@ func (a *codexAgent) Close() error { return nil }
 // -s/--sandbox as of codex 0.144): unsupported user extraArgs make the
 // invocation fail fast and the caller's cold fallback preserves correctness.
 func (a *codexAgent) buildArgs(prompt, schemaPath, resumeID string) []string {
+	return a.buildArgsWithPrompt(prompt, schemaPath, resumeID, routing.Decision{}, true)
+}
+
+func (a *codexAgent) buildArgsTransport(opts RunOpts, schemaPath, resumeID string) []string {
+	return a.buildArgsWithPrompt("", schemaPath, resumeID, opts.Routing, false)
+}
+
+func (a *codexAgent) buildArgsWithPrompt(prompt, schemaPath, resumeID string, route routing.Decision, includePrompt bool) []string {
 	args := make([]string, 0, len(a.extraArgs)+11)
 	args = append(args, "exec")
 	if resumeID != "" {
@@ -176,7 +202,10 @@ func (a *codexAgent) buildArgs(prompt, schemaPath, resumeID string) []string {
 	if resumeID != "" {
 		args = append(args, resumeID)
 	}
-	args = append(args, prompt, "--json")
+	if includePrompt {
+		args = append(args, prompt)
+	}
+	args = append(args, "--json")
 	if schemaPath != "" {
 		args = append(args, "--output-schema", schemaPath)
 	}
@@ -212,6 +241,12 @@ func (a *codexAgent) buildArgs(prompt, schemaPath, resumeID string) []string {
 		if !codexArgsContain(a.extraArgs, "--ignore-rules") {
 			args = append(args, "--ignore-rules")
 		}
+	}
+	if route.EffectiveModel != "" {
+		args = append(args, "-m", route.EffectiveModel)
+	}
+	if route.EffectiveEffort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+route.EffectiveEffort)
 	}
 	return args
 }

@@ -273,6 +273,24 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	for _, plan := range plans {
 		preserved[plan.run.ID] = struct{}{}
 	}
+	// Authorization parks are deliberately not reconstructed into a live
+	// executor. Replaying an agent turn with unknown completion could repeat a
+	// mutating fixer, so keep the run and worktree durable for explicit resume.
+	if active, err := d.GetActiveRuns(); err == nil {
+		for _, run := range active {
+			if run.Status == types.RunAwaitingAuth {
+				preserved[run.ID] = struct{}{}
+			}
+		}
+	}
+	provisioning, provisionErr := d.GetProvisioningRuns()
+	if provisionErr != nil {
+		slog.Error("failed to inspect provisioning runs", "error", provisionErr)
+	} else {
+		for _, run := range provisioning {
+			preserved[run.ID] = struct{}{}
+		}
+	}
 	count, err := d.RecoverStaleRunsExcept("daemon crashed during execution", preserved)
 	if err != nil {
 		slog.Error("failed to recover stale runs", "error", err)
@@ -286,6 +304,9 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	}
 
 	cleanupOrphanWorktrees(d, p)
+	if provisionErr == nil {
+		mgr.resumeProvisioningRuns(provisioning)
+	}
 	mgr.resumeRecoveredRuns(plans)
 }
 
@@ -355,7 +376,7 @@ func skipWorktreeCleanup(d *db.DB, runID string) (bool, string) {
 	if err != nil {
 		return true, fmt.Sprintf("failed to look up run %s: %v", runID, err)
 	}
-	if run != nil && (run.Status == types.RunPending || run.Status == types.RunRunning) {
+	if run != nil && (run.Status == types.RunPending || run.Status == types.RunProvisioning || run.Status == types.RunRunning || run.Status == types.RunAwaitingAuth || run.BlockedReason != nil) {
 		return true, fmt.Sprintf("run %s is %s", runID, run.Status)
 	}
 	return false, ""
@@ -554,18 +575,22 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 
 func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 	info := &ipc.RunInfo{
-		ID:                 r.ID,
-		RepoID:             r.RepoID,
-		Branch:             r.Branch,
-		HeadSHA:            r.HeadSHA,
-		BaseSHA:            r.BaseSHA,
-		Status:             r.Status,
-		PRURL:              r.PRURL,
-		Error:              r.Error,
-		AwaitingAgent:      r.AwaitingAgentSince != nil,
-		AwaitingAgentSince: r.AwaitingAgentSince,
-		CreatedAt:          r.CreatedAt,
-		UpdatedAt:          r.UpdatedAt,
+		ID:                   r.ID,
+		RepoID:               r.RepoID,
+		Branch:               r.Branch,
+		HeadSHA:              r.HeadSHA,
+		BaseSHA:              r.BaseSHA,
+		Status:               r.Status,
+		ProvisioningPhase:    r.ProvisioningPhase,
+		ProvisioningProgress: r.ProvisioningProgress,
+		ProvisioningError:    r.ProvisioningError,
+		PRURL:                r.PRURL,
+		Error:                r.Error,
+		BlockedReason:        r.BlockedReason,
+		AwaitingAgent:        r.AwaitingAgentSince != nil,
+		AwaitingAgentSince:   r.AwaitingAgentSince,
+		CreatedAt:            r.CreatedAt,
+		UpdatedAt:            r.UpdatedAt,
 	}
 	if len(steps) > 0 {
 		info.Steps = make([]ipc.StepResultInfo, 0, len(steps))

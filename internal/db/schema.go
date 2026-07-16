@@ -17,8 +17,14 @@ CREATE TABLE IF NOT EXISTS runs (
     head_sha             TEXT NOT NULL,
     base_sha             TEXT NOT NULL,
     status               TEXT NOT NULL DEFAULT 'pending',
+    provisioning_phase   TEXT NOT NULL DEFAULT 'created',
+    provisioning_progress INTEGER NOT NULL DEFAULT 0,
+    provisioning_error   TEXT,
+    provisioning_started_at INTEGER,
+    provisioning_completed_at INTEGER,
     pr_url               TEXT,
     error                TEXT,
+    blocked_reason       TEXT,
     awaiting_agent_since INTEGER,
     parked_ms            INTEGER,
     created_at           INTEGER NOT NULL,
@@ -95,7 +101,18 @@ CREATE TABLE IF NOT EXISTS agent_invocations (
     tool_other_calls      INTEGER,
     workload_files        INTEGER,
     workload_lines        INTEGER,
-    finding_count         INTEGER
+    finding_count         INTEGER,
+    requested_harness     TEXT,
+    effective_harness     TEXT,
+    requested_model       TEXT,
+    effective_model       TEXT,
+    requested_effort      TEXT,
+    effective_effort      TEXT,
+    route_policy_version  TEXT,
+    route_phase           TEXT,
+    route_reason          TEXT,
+    route_source_config   TEXT,
+    route_generation      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_invocations_run_started_id
@@ -118,6 +135,47 @@ CREATE TABLE IF NOT EXISTS intent_cache (
     session_id  TEXT NOT NULL,
     created_at  INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS lifecycle_events (
+    id          TEXT PRIMARY KEY,
+    run_id      TEXT,
+    step_name   TEXT,
+    event_type  TEXT NOT NULL,
+    status      TEXT,
+    error       TEXT,
+    metadata    TEXT,
+    created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_lifecycle_events_run_created
+    ON lifecycle_events (run_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS route_decisions (
+    id                    TEXT PRIMARY KEY,
+    run_id                TEXT NOT NULL,
+    step_name             TEXT,
+    round                 INTEGER NOT NULL,
+    requested_harness     TEXT NOT NULL,
+    effective_harness     TEXT NOT NULL,
+    requested_model       TEXT,
+    effective_model       TEXT,
+    requested_effort      TEXT,
+    effective_effort      TEXT,
+    policy_version        TEXT NOT NULL,
+    phase                 TEXT NOT NULL,
+    risk                  TEXT NOT NULL DEFAULT 'unknown',
+    reason                TEXT NOT NULL,
+    source_configuration  TEXT,
+    configuration_generation TEXT,
+    repository            TEXT,
+    prompt_sha256         TEXT,
+    prompt_bytes          INTEGER NOT NULL DEFAULT 0,
+    prompt_transport     TEXT NOT NULL DEFAULT 'stdin',
+    created_at            INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_route_decisions_run_created
+    ON route_decisions (run_id, created_at, id);
 `
 
 // migrationStatements hold additive schema changes applied to databases that
@@ -135,6 +193,12 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN intent_score REAL`,
 	`ALTER TABLE runs ADD COLUMN awaiting_agent_since INTEGER`,
 	`ALTER TABLE runs ADD COLUMN parked_ms INTEGER`,
+	`ALTER TABLE runs ADD COLUMN blocked_reason TEXT`,
+	`ALTER TABLE runs ADD COLUMN provisioning_phase TEXT NOT NULL DEFAULT 'created'`,
+	`ALTER TABLE runs ADD COLUMN provisioning_progress INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE runs ADD COLUMN provisioning_error TEXT`,
+	`ALTER TABLE runs ADD COLUMN provisioning_started_at INTEGER`,
+	`ALTER TABLE runs ADD COLUMN provisioning_completed_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,
@@ -160,4 +224,19 @@ var migrationStatements = []string{
 	`ALTER TABLE agent_invocations ADD COLUMN workload_files INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN workload_lines INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN finding_count INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN requested_harness TEXT`,
+	`ALTER TABLE agent_invocations ADD COLUMN effective_harness TEXT`,
+	`ALTER TABLE agent_invocations ADD COLUMN requested_model TEXT`,
+	`ALTER TABLE agent_invocations ADD COLUMN effective_model TEXT`,
+	`ALTER TABLE agent_invocations ADD COLUMN requested_effort TEXT`,
+	`ALTER TABLE agent_invocations ADD COLUMN effective_effort TEXT`,
+	`ALTER TABLE agent_invocations ADD COLUMN route_policy_version TEXT`,
+	`ALTER TABLE agent_invocations ADD COLUMN route_phase TEXT`,
+	`ALTER TABLE agent_invocations ADD COLUMN route_reason TEXT`,
+	`ALTER TABLE agent_invocations ADD COLUMN route_source_config TEXT`,
+	`ALTER TABLE agent_invocations ADD COLUMN route_generation TEXT`,
+	`ALTER TABLE route_decisions ADD COLUMN prompt_sha256 TEXT`,
+	`ALTER TABLE route_decisions ADD COLUMN prompt_bytes INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE route_decisions ADD COLUMN prompt_transport TEXT NOT NULL DEFAULT 'stdin'`,
+	`ALTER TABLE route_decisions ADD COLUMN risk TEXT NOT NULL DEFAULT 'unknown'`,
 }

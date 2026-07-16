@@ -75,10 +75,31 @@ As an independent safety layer, the daemon also refuses to bind the Unix socket 
 
 When a push arrives via the post-receive hook:
 
-1. Creates a detached worktree at `~/.no-mistakes/worktrees/<repoID>/<runID>/`
-2. Starts the pipeline executor in that worktree
-3. Streams events to any connected TUI clients and serves request/response state to AXI clients
-4. Cleans up the worktree when the run finishes (success or failure)
+1. Records the run and queues detached-worktree provisioning
+2. Provisions a detached worktree at `~/.no-mistakes/worktrees/<repoID>/<runID>/` in a bounded background worker
+3. Starts the pipeline executor after provisioning completes
+4. Streams events to any connected TUI clients and serves request/response state to AXI clients
+5. Cleans up the worktree when the run finishes (success or failure)
+
+Run creation returns after the provisioning request is persisted; `axi status`
+shows the durable provisioning phase and progress while a slow checkout is in
+flight. Cancellation stops queued or active provisioning, and a daemon restart
+re-queues unfinished provisioning after removing only its partial worktree.
+
+Agent routing is owned by No Mistakes and is independent of repository-owned
+manifests or any external project router. The default and initial phases use
+GPT-5.6 Luna with `xhigh`; medium/high-risk non-review phases use GPT-5.6 Terra
+with `high`; GPT-5.6 Sol with `high` is eligible only for a review confirmation
+after the initial review has classified the change as high risk. Each invocation
+stores its requested/effective route, policy generation, phase, reason, and
+bounded source fingerprint in the local database.
+
+If Codex reports `AuthorizationRequired`, the run is parked with an explicit
+authentication blockage instead of being mislabeled as an ordinary agent
+failure or daemon shutdown. Log into the intended Codex account, then approve
+the parked gate with `no-mistakes axi respond --action approve`. The failure and
+subsequent recovery remain in the append-only lifecycle event history; an
+unknown-completion fixer turn is never blindly replayed by crash recovery.
 
 Pipeline agents are prompted to keep intentional writes inside that detached worktree and avoid changing system state outside it, such as Homebrew packages, apps under `/Applications`, or global tool configuration.
 That reduces surprising machine-level side effects and macOS App Management prompts, but it is prompt steering rather than a true sandbox.
@@ -100,7 +121,9 @@ reason about in one long-lived process than inside independent hook invocations.
 
 ## Crash recovery
 
-On startup, the daemon checks for runs that were left in `pending` or `running` status (which means the daemon crashed while they were active):
+On startup, the daemon checks for runs that were left in `pending`, `provisioning`,
+`running`, or `awaiting_auth` status (which means the daemon crashed while they
+were active):
 
 - Resumes only fully recorded parked approval gates whose worktree and step history can be validated; incomplete or ambiguous active runs fail closed
 - Before resuming a parked CI gate, re-checks its persisted PR URL through the configured provider; a currently merged or closed PR completes the stale gate, while an open, unknown, or unreachable PR remains parked
@@ -111,6 +134,7 @@ On startup, the daemon checks for runs that were left in `pending` or `running` 
 - Reapplies per-worktree gate hook-path isolation to existing bare repos when Git supports `config --worktree`, so shared `core.hookspath` writes cannot disable `post-receive`
 - Enables Git push-option support on existing gate repos so per-push options like `no-mistakes.skip=...` keep working after upgrades
 - Clears any parked-awaiting-agent marker so a recovered failed run is not shown as still waiting for `axi respond`
+- Preserves authorization-blocked runs and their worktrees for explicit recovery; it never replays an agent turn solely because the daemon restarted
 
 ## Logging
 

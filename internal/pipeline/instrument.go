@@ -12,6 +12,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -21,10 +22,15 @@ import (
 // best-effort: a failed insert never fails the invocation, and no
 // per-invocation record leaves the machine.
 type perfRecordingAgent struct {
-	inner    agent.Agent
-	db       *db.DB
-	runID    string
-	stepName types.StepName
+	inner                   agent.Agent
+	db                      *db.DB
+	runID                   string
+	stepName                types.StepName
+	repository              string
+	sourceConfiguration     string
+	configurationGeneration string
+	risk                    func() routing.Risk
+	reviewConfirmation      func() bool
 	// round returns the 1-based round the current invocation belongs to.
 	round func() int
 }
@@ -43,6 +49,39 @@ func (a *perfRecordingAgent) SupportsSessionProvider(provider string) bool {
 }
 
 func (a *perfRecordingAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	if opts.Routing.PolicyVersion == "" {
+		risk := opts.RouteRisk
+		if a.risk != nil {
+			risk = a.risk()
+		}
+		confirmation := opts.RouteReviewConfirmation
+		if a.reviewConfirmation != nil {
+			confirmation = confirmation || a.reviewConfirmation()
+		}
+		opts.Routing = routing.Decide(routing.Input{
+			Harness: a.inner.Name(), Purpose: opts.Purpose, Repository: a.repository,
+			Risk: risk, ReviewConfirmation: confirmation,
+			SourceConfiguration:     a.sourceConfiguration,
+			ConfigurationGeneration: a.configurationGeneration,
+		})
+	}
+	if a.db != nil {
+		promptSHA, promptBytes := db.PromptEvidence(opts.Prompt)
+		if err := a.db.InsertRouteDecision(db.RouteDecision{
+			RunID: a.runID, StepName: string(a.stepName), Round: a.round(),
+			RequestedHarness: opts.Routing.RequestedHarness, EffectiveHarness: opts.Routing.EffectiveHarness,
+			RequestedModel: opts.Routing.RequestedModel, EffectiveModel: opts.Routing.EffectiveModel,
+			RequestedEffort: opts.Routing.RequestedEffort, EffectiveEffort: opts.Routing.EffectiveEffort,
+			PolicyVersion: opts.Routing.PolicyVersion, Phase: opts.Routing.Phase, Reason: opts.Routing.Reason,
+			Risk:                    string(opts.Routing.Risk),
+			SourceConfiguration:     opts.Routing.SourceConfiguration,
+			ConfigurationGeneration: opts.Routing.ConfigurationGeneration,
+			Repository:              opts.Routing.Repository,
+			PromptSHA256:            promptSHA, PromptBytes: promptBytes, PromptTransport: "stdin",
+		}); err != nil {
+			slog.Warn("failed to record route decision", "step", a.stepName, "error", err)
+		}
+	}
 	attempts := 0
 	previous := opts.OnAttempt
 	opts.OnAttempt = func(attempt agent.Attempt) {
@@ -75,17 +114,28 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 
 	sessionKey := invocationSessionKey(opts, result)
 	inv := db.AgentInvocation{
-		RunID:       a.runID,
-		StepName:    string(a.stepName),
-		Round:       a.round(),
-		Purpose:     purpose,
-		Agent:       agentName,
-		SessionMode: invocationSessionMode(opts),
-		SessionKey:  sessionKey,
-		StartedAt:   startedAt.Unix(),
-		CompletedAt: completedAt.Unix(),
-		DurationMS:  completedAt.Sub(startedAt).Milliseconds(),
-		ExitStatus:  "ok",
+		RunID:                        a.runID,
+		StepName:                     string(a.stepName),
+		Round:                        a.round(),
+		Purpose:                      purpose,
+		Agent:                        agentName,
+		SessionMode:                  invocationSessionMode(opts),
+		SessionKey:                   sessionKey,
+		StartedAt:                    startedAt.Unix(),
+		CompletedAt:                  completedAt.Unix(),
+		DurationMS:                   completedAt.Sub(startedAt).Milliseconds(),
+		ExitStatus:                   "ok",
+		RequestedHarness:             opts.Routing.RequestedHarness,
+		EffectiveHarness:             opts.Routing.EffectiveHarness,
+		RequestedModel:               opts.Routing.RequestedModel,
+		EffectiveModel:               opts.Routing.EffectiveModel,
+		RequestedEffort:              opts.Routing.RequestedEffort,
+		EffectiveEffort:              opts.Routing.EffectiveEffort,
+		RoutePolicyVersion:           opts.Routing.PolicyVersion,
+		RoutePhase:                   opts.Routing.Phase,
+		RouteReason:                  opts.Routing.Reason,
+		RouteSourceConfiguration:     opts.Routing.SourceConfiguration,
+		RouteConfigurationGeneration: opts.Routing.ConfigurationGeneration,
 	}
 	if opts.SessionFallback && opts.SessionFallbackReason != "" {
 		reason := opts.SessionFallbackReason
@@ -121,6 +171,9 @@ func (a *perfRecordingAgent) recordResult(inv *db.AgentInvocation, sessionKey st
 		return
 	}
 	inv.Model = result.Model
+	if inv.EffectiveModel == "" {
+		inv.EffectiveModel = result.Model
+	}
 	if result.ModelProvider != "" {
 		provider := result.ModelProvider
 		inv.ModelProvider = &provider

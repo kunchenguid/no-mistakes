@@ -20,6 +20,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -33,15 +34,17 @@ var fetchRecoveredRemoteBranch = git.FetchRemoteBranch
 
 // RunManager tracks active pipeline executors and manages run lifecycle.
 type RunManager struct {
-	mu           sync.Mutex
-	executors    map[string]*pipeline.Executor      // runID → executor
-	cancels      map[string]context.CancelCauseFunc // runID → cancel function with cause
-	dones        map[string]chan struct{}           // runID → closed when goroutine exits
-	wg           sync.WaitGroup                     // tracks background run goroutines
-	shuttingDown atomic.Bool                        // prevents new runs during shutdown
-	db           *db.DB
-	paths        *paths.Paths
-	steps        StepFactory
+	mu               sync.Mutex
+	executors        map[string]*pipeline.Executor      // runID → executor
+	cancels          map[string]context.CancelCauseFunc // runID → cancel function with cause
+	dones            map[string]chan struct{}           // runID → closed when goroutine exits
+	wg               sync.WaitGroup                     // tracks background run goroutines
+	provisionCancels map[string]context.CancelCauseFunc
+	provisionSlots   chan struct{}
+	shuttingDown     atomic.Bool // prevents new runs during shutdown
+	db               *db.DB
+	paths            *paths.Paths
+	steps            StepFactory
 
 	branchLocks sync.Map // repoID+"/"+branch → *sync.Mutex
 
@@ -57,14 +60,16 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 		stepFactory = func() []pipeline.Step { return steps.AllSteps() }
 	}
 	return &RunManager{
-		executors:     make(map[string]*pipeline.Executor),
-		cancels:       make(map[string]context.CancelCauseFunc),
-		dones:         make(map[string]chan struct{}),
-		db:            database,
-		paths:         p,
-		steps:         stepFactory,
-		subscribers:   make(map[string][]chan<- ipc.Event),
-		completedRuns: make(map[string]bool),
+		executors:        make(map[string]*pipeline.Executor),
+		cancels:          make(map[string]context.CancelCauseFunc),
+		dones:            make(map[string]chan struct{}),
+		provisionCancels: make(map[string]context.CancelCauseFunc),
+		provisionSlots:   make(chan struct{}, 2),
+		db:               database,
+		paths:            p,
+		steps:            stepFactory,
+		subscribers:      make(map[string][]chan<- ipc.Event),
+		completedRuns:    make(map[string]bool),
 	}
 }
 
@@ -105,7 +110,7 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 }
 
 func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*recoveredRunPlan, error) {
-	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince == nil || run.Branch == "" {
+	if run == nil || (run.Status != types.RunRunning && run.Status != types.RunAwaitingAuth) || run.AwaitingAgentSince == nil || run.Branch == "" {
 		return nil, fmt.Errorf("run is not a parked running run")
 	}
 	repo, err := m.db.GetRepo(run.RepoID)
@@ -275,6 +280,52 @@ func (m *RunManager) resumeRecoveredRuns(plans []recoveredRunPlan) {
 	}
 }
 
+// resumeProvisioningRuns re-queues durable setup rows after a daemon restart.
+// Any partially materialized checkout is removed first; no pipeline agent has
+// been launched until provisioning reaches the ready projection.
+func (m *RunManager) resumeProvisioningRuns(runs []*db.Run) {
+	for _, run := range runs {
+		repo, err := m.db.GetRepo(run.RepoID)
+		if err != nil || repo == nil {
+			slog.Error("cannot recover provisioning run repository", "run_id", run.ID, "error", err)
+			continue
+		}
+		ctx, cancel := context.WithCancelCause(context.Background())
+		m.mu.Lock()
+		m.provisionCancels[run.ID] = cancel
+		m.mu.Unlock()
+		m.wg.Add(1)
+		go func(run *db.Run, repo *db.Repo, ctx context.Context) {
+			defer m.wg.Done()
+			defer func() {
+				m.mu.Lock()
+				delete(m.provisionCancels, run.ID)
+				m.mu.Unlock()
+			}()
+			select {
+			case m.provisionSlots <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-m.provisionSlots }()
+			gateDir := m.paths.RepoDir(repo.ID)
+			wtDir := m.paths.WorktreeDir(repo.ID, run.ID)
+			_ = git.WorktreeRemove(context.Background(), gateDir, wtDir)
+			branchRole := telemetryBranchRole(run.Branch, repo.DefaultBranch)
+			track := func(stage string) {
+				telemetry.Track("run", telemetry.Fields{"action": "start_failed", "trigger": "restart", "branch_role": branchRole, "stage": stage})
+			}
+			if err := m.provisionRun(ctx, repo, run.Branch, run.HeadSHA, run.BaseSHA, "restart", nil, run, branchRole, track); err != nil {
+				if cause := context.Cause(ctx); cause != nil {
+					_ = m.db.UpdateRunErrorStatus(run.ID, cause.Error(), types.RunCancelled)
+				} else {
+					_ = m.db.FailRunProvisioning(run.ID, "failed", err)
+				}
+			}
+		}(run, repo, ctx)
+	}
+}
+
 func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	if m.shuttingDown.Load() {
 		_ = plan.agent.Close()
@@ -282,6 +333,9 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	}
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
+	executor.SetRouteContext(plan.repo.UpstreamURL, routing.ConfigFingerprint(
+		string(plan.cfg.Agent), strings.Join(agentNames(plan.cfg.Agents), ","),
+		plan.cfg.RoutingGeneration, plan.cfg.AgentPathFor(plan.cfg.Agent)), plan.cfg.RoutingGeneration)
 	done := make(chan struct{})
 	m.mu.Lock()
 	m.executors[plan.run.ID] = executor
@@ -306,8 +360,12 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			cancel(nil)
 			_ = plan.agent.Close()
 			m.closeSubscribers(plan.run.ID)
-			if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
-				slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
+			if plan.run.BlockedReason == nil && plan.run.Status != types.RunAwaitingAuth {
+				if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
+					slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
+				}
+			} else {
+				slog.Info("preserving parked authorization worktree", "run_id", plan.run.ID, "path", plan.workDir)
 			}
 			m.mu.Lock()
 			delete(m.executors, plan.run.ID)
@@ -587,9 +645,10 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent)
 }
 
-// startRun creates a run, sets up a worktree, and launches pipeline execution.
-// A non-empty intent is stamped onto the run as agent-supplied, so the intent
-// step uses it instead of inferring from transcripts.
+// startRun admits a run and returns after durable provisioning has been
+// queued. Worktree checkout, trusted-config loading, and agent construction
+// run outside the IPC request so slow repositories cannot hold the daemon
+// request open.
 func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
@@ -606,28 +665,21 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		return "", fmt.Errorf("daemon is shutting down")
 	}
 
-	// Serialize per repo+branch to prevent two concurrent pushes from both
-	// passing cancelActiveRuns and creating duplicate pipelines.
+	// Serialize only admission. Provisioning itself is bounded separately and
+	// must not hold this lock for the duration of a checkout.
 	lockKey := repo.ID + "/" + branch
 	lockVal, _ := m.branchLocks.LoadOrStore(lockKey, &sync.Mutex{})
 	branchMu := lockVal.(*sync.Mutex)
 	branchMu.Lock()
 	defer branchMu.Unlock()
 
-	// Cancel any active run for this repo+branch.
 	m.cancelActiveRuns(repo.ID, branch)
-
-	// Create run record.
 	run, err := m.db.InsertRun(repo.ID, branch, headSHA, baseSHA)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
 	}
 
-	// Stamp an agent-supplied intent onto the run before the pipeline starts,
-	// so the intent step finds it already present and skips transcript-based
-	// inference. A persist failure is non-fatal: the intent step would simply
-	// fall back to inference.
 	if trimmed := strings.TrimSpace(intent); trimmed != "" {
 		if err := m.db.UpdateRunIntent(run.ID, db.RunIntent{Summary: trimmed, Source: db.RunIntentSourceAgent, Score: 1}); err != nil {
 			slog.Warn("failed to persist agent-supplied intent", "run_id", run.ID, "error", err)
@@ -639,6 +691,48 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			run.IntentScore = &score
 		}
 	}
+	if err := m.db.SetRunProvisioning(run.ID, "queued", 0, ""); err != nil {
+		return "", fmt.Errorf("record provisioning: %w", err)
+	}
+	provisionCtx, cancelProvision := context.WithCancelCause(context.Background())
+	m.mu.Lock()
+	m.provisionCancels[run.ID] = cancelProvision
+	m.mu.Unlock()
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		defer func() {
+			m.mu.Lock()
+			delete(m.provisionCancels, run.ID)
+			m.mu.Unlock()
+		}()
+		select {
+		case m.provisionSlots <- struct{}{}:
+		case <-provisionCtx.Done():
+			cause := context.Cause(provisionCtx)
+			if cause == nil {
+				cause = context.Canceled
+			}
+			_ = m.db.UpdateRunErrorStatus(run.ID, cause.Error(), types.RunCancelled)
+			return
+		}
+		defer func() { <-m.provisionSlots }()
+		if err := m.provisionRun(provisionCtx, repo, branch, headSHA, baseSHA, trigger, skipSteps, run, branchRole, trackStartFailure); err != nil {
+			if cause := context.Cause(provisionCtx); cause != nil {
+				_ = m.db.UpdateRunErrorStatus(run.ID, cause.Error(), types.RunCancelled)
+			} else if run.Status == types.RunProvisioning || run.Status == types.RunPending {
+				_ = m.db.FailRunProvisioning(run.ID, "failed", err)
+			}
+			slog.Error("run provisioning failed", "run_id", run.ID, "error", err)
+		}
+	}()
+	return run.ID, nil
+}
+
+func (m *RunManager) provisionRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, run *db.Run, branchRole string, trackStartFailure func(string)) error {
+	if err := m.db.SetRunProvisioning(run.ID, "worktree", 5, ""); err != nil {
+		return err
+	}
 
 	// Create worktree from the gate bare repo.
 	gateDir := m.paths.RepoDir(repo.ID)
@@ -646,12 +740,12 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	if err := git.WorktreeAdd(ctx, gateDir, wtDir, headSHA); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("create worktree: %s", err))
 		trackStartFailure("create_worktree")
-		return "", fmt.Errorf("create worktree: %w", err)
+		return fmt.Errorf("create worktree: %w", err)
 	}
 	if err := git.CopyLocalUserIdentity(ctx, repo.WorkingPath, wtDir); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree git identity: %s", err))
 		trackStartFailure("configure_worktree_identity")
-		return "", fmt.Errorf("configure worktree git identity: %w", err)
+		return fmt.Errorf("configure worktree git identity: %w", err)
 	}
 	// Fetch the trusted default branch and resolve it to an exact commit SHA
 	// before any read. Reading the trusted config at this pinned SHA (rather
@@ -688,13 +782,13 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
 		trackStartFailure("load_global_config")
-		return "", fmt.Errorf("load global config: %w", err)
+		return fmt.Errorf("load global config: %w", err)
 	}
 	repoCfg, err := config.LoadRepo(wtDir)
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
 		trackStartFailure("load_repo_config")
-		return "", fmt.Errorf("load repo config: %w", err)
+		return fmt.Errorf("load repo config: %w", err)
 	}
 	// SECURITY: load the code-executing selection fields (commands.* and
 	// agent) from the trusted default-branch copy of .no-mistakes.yaml rather
@@ -715,7 +809,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	if err := assertGateTrustedConfigReadable(ctx, wtDir, repo.DefaultBranch, trustedSHA); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("trusted_config_unreadable")
-		return "", err
+		return err
 	}
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, wtDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
@@ -738,7 +832,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		if err := cfg.ResolveAgent(ctx, exec.LookPath); err != nil {
 			m.db.UpdateRunError(run.ID, err.Error())
 			trackStartFailure("resolve_agent")
-			return "", err
+			return err
 		}
 		agents := cfg.Agents
 		if len(agents) == 0 {
@@ -753,7 +847,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			if agErr != nil {
 				m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent %s: %s", name, agErr))
 				trackStartFailure("create_agent")
-				return "", fmt.Errorf("create agent %s: %w", name, agErr)
+				return fmt.Errorf("create agent %s: %w", name, agErr)
 			}
 			// Steer every pipeline agent to keep writes inside the worktree and
 			// avoid mutating system state (e.g. brew/Homebrew touching
@@ -770,10 +864,19 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			if err := agent.EnsureGateNeutralized(ag); err != nil {
 				m.db.UpdateRunError(run.ID, err.Error())
 				trackStartFailure("gate_not_neutralized")
-				return "", err
+				return err
 			}
 		}
 	}
+	if err := m.db.SetRunProvisioning(run.ID, "agent-ready", 85, ""); err != nil {
+		_ = ag.Close()
+		return err
+	}
+	if err := m.db.CompleteRunProvisioning(run.ID); err != nil {
+		_ = ag.Close()
+		return err
+	}
+	run.Status = types.RunPending
 
 	execSteps := m.steps()
 	telemetry.Track("run", telemetry.Fields{
@@ -788,6 +891,9 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// Create executor with event broadcast.
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
+	executor.SetRouteContext(repo.UpstreamURL, routing.ConfigFingerprint(
+		string(cfg.Agent), strings.Join(agentNames(cfg.Agents), ","),
+		cfg.RoutingGeneration, cfg.AgentPathFor(cfg.Agent)), cfg.RoutingGeneration)
 	executor.SetSkippedSteps(skipSteps)
 
 	// Track executor.
@@ -833,12 +939,16 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 				}
 			}
 			cancel(nil)
-			ag.Close()
+			_ = ag.Close()
 			// Close subscriber channels for this run.
 			m.closeSubscribers(run.ID)
 			// Clean up worktree.
-			if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
-				slog.Warn("failed to remove worktree", "path", wtDir, "error", rmErr)
+			if run.BlockedReason == nil {
+				if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
+					slog.Warn("failed to remove worktree", "path", wtDir, "error", rmErr)
+				}
+			} else {
+				slog.Info("retaining worktree for recoverable blocked run", "run_id", run.ID, "path", wtDir)
 			}
 			// Remove tracking.
 			m.mu.Lock()
@@ -882,7 +992,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		}
 	}()
 
-	return run.ID, nil
+	return nil
 }
 
 // addRunPerformanceSummary attaches the bounded per-run performance rollup
@@ -907,6 +1017,14 @@ func telemetryBranchRole(branch, defaultBranch string) string {
 		return "default"
 	}
 	return "feature"
+}
+
+func agentNames(names []types.AgentName) []string {
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		result = append(result, string(name))
+	}
+	return result
 }
 
 func telemetryFailedStepName(database *db.DB, runID string) string {
@@ -945,7 +1063,6 @@ func (m *RunManager) HandleRespondWithOverrides(runID string, step types.StepNam
 // orphaned goroutines from continuing agent calls and git operations.
 func (m *RunManager) Shutdown() {
 	m.shuttingDown.Store(true)
-
 	m.mu.Lock()
 	cancels := make(map[string]context.CancelCauseFunc, len(m.cancels))
 	for id, cancel := range m.cancels {
@@ -956,6 +1073,16 @@ func (m *RunManager) Shutdown() {
 	for id, cancel := range cancels {
 		cancel(fmt.Errorf("daemon shutting down"))
 		slog.Info("cancelled run on shutdown", "run_id", id)
+	}
+	m.mu.Lock()
+	provisionCancels := make(map[string]context.CancelCauseFunc, len(m.provisionCancels))
+	for id, cancel := range m.provisionCancels {
+		provisionCancels[id] = cancel
+	}
+	m.mu.Unlock()
+	for id, cancel := range provisionCancels {
+		cancel(fmt.Errorf("daemon shutting down"))
+		slog.Info("cancelled provisioning on shutdown", "run_id", id)
 	}
 
 	done := make(chan struct{})
@@ -974,6 +1101,9 @@ func (m *RunManager) Shutdown() {
 func (m *RunManager) HandleCancel(runID string) error {
 	m.mu.Lock()
 	cancel, ok := m.cancels[runID]
+	if !ok {
+		cancel, ok = m.provisionCancels[runID]
+	}
 	m.mu.Unlock()
 
 	if !ok {
@@ -1001,15 +1131,22 @@ func (m *RunManager) cancelActiveRuns(repoID, branch string) {
 		if run.Branch != branch {
 			continue
 		}
-		if run.Status != types.RunPending && run.Status != types.RunRunning {
+		if run.Status != types.RunPending && run.Status != types.RunProvisioning && run.Status != types.RunRunning && run.Status != types.RunAwaitingAuth {
 			continue
 		}
 
 		m.mu.Lock()
 		cancel, ok := m.cancels[run.ID]
+		if !ok {
+			cancel = m.provisionCancels[run.ID]
+			ok = cancel != nil
+		}
 		done := m.dones[run.ID]
 		m.mu.Unlock()
 		if !ok {
+			if run.Status == types.RunAwaitingAuth {
+				_ = m.db.UpdateRunErrorStatus(run.ID, types.RunCancelReasonSuperseded, types.RunCancelled)
+			}
 			continue
 		}
 

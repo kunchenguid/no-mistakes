@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 )
 
 func TestCodexAgent_BuildArgs(t *testing.T) {
@@ -30,6 +32,59 @@ func TestCodexAgent_BuildArgs(t *testing.T) {
 		if args[i] != want {
 			t.Errorf("arg[%d]: expected %q, got %q", i, want, args[i])
 		}
+	}
+}
+
+func TestCodexAgent_TransportArgsCarryEffectiveRouteWithoutPrompt(t *testing.T) {
+	ca := &codexAgent{bin: "codex"}
+	args := ca.buildArgsTransport(RunOpts{
+		Prompt:  "do not put this in argv",
+		Routing: routing.Decision{EffectiveModel: routing.ModelSol, EffectiveEffort: routing.EffortHigh},
+	}, "", "")
+	for _, arg := range args {
+		if strings.Contains(arg, "do not put this") {
+			t.Fatalf("prompt leaked into transport argv: %v", args)
+		}
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-m gpt-5.6-sol", "model_reasoning_effort=high"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("route argument %q missing from %v", want, args)
+		}
+	}
+}
+
+func TestCodexAgent_LargePromptUsesStdinAndBoundedArgv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\n" +
+		"for arg do\n" +
+		"  if [ \"${#arg}\" -gt 65536 ]; then exit 91; fi\n" +
+		"done\n" +
+		"wc -c <&0 | tr -d '[:space:]' > \"$PROMPT_BYTES\"\n" +
+		"printf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}'\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bytesPath := filepath.Join(dir, "prompt.bytes")
+	t.Setenv("PROMPT_BYTES", bytesPath)
+	prompt := strings.Repeat("x", 3*1024*1024)
+	result, err := (&codexAgent{bin: bin}).Run(context.Background(), RunOpts{Prompt: prompt, CWD: dir})
+	if err != nil {
+		t.Fatalf("large prompt failed: %v", err)
+	}
+	if string(result.Text) != "ok" {
+		t.Fatalf("result text = %q", result.Text)
+	}
+	got, err := os.ReadFile(bytesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != "3145728" {
+		t.Fatalf("stdin prompt bytes = %q, want 3145728", got)
 	}
 }
 
@@ -241,6 +296,35 @@ exit 1
 	}
 	if !strings.Contains(err.Error(), "schema rejected by codex") {
 		t.Fatalf("expected JSONL error in message, got %v", err)
+	}
+}
+
+func TestCodexAgent_RunTransportsThreeMiBPromptThroughStdin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("posix fake Codex fixture")
+	}
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+cat > "$PROMPT_CAPTURE"
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+`, "")
+	capture := filepath.Join(dir, "prompt.txt")
+	t.Setenv("PROMPT_CAPTURE", capture)
+	prompt := strings.Repeat("x", 3*1024*1024)
+	result, err := (&codexAgent{bin: bin}).Run(context.Background(), RunOpts{Prompt: prompt, CWD: t.TempDir()})
+	if err != nil {
+		t.Fatalf("three MiB prompt failed: %v", err)
+	}
+	if result.Text != "ok" {
+		t.Fatalf("result text = %q, want ok", result.Text)
+	}
+	got, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("read captured prompt: %v", err)
+	}
+	if len(got) != len(prompt) {
+		t.Fatalf("captured prompt bytes = %d, want %d", len(got), len(prompt))
 	}
 }
 

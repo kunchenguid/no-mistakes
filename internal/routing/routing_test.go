@@ -1,0 +1,64 @@
+package routing
+
+import "testing"
+
+func TestDecideBootstrapsReviewOnLuna(t *testing.T) {
+	d := Decide(Input{Harness: "codex", Purpose: "review", Risk: RiskUnknown, Repository: "https://GitHub.com/RaFoyer/no-mistakes.git"})
+	if d.EffectiveModel != ModelLuna || d.EffectiveEffort != EffortXHigh {
+		t.Fatalf("initial review route = %s/%s, want Luna/xhigh", d.EffectiveModel, d.EffectiveEffort)
+	}
+	if d.Phase != "review" || d.Repository != "github.com/rafoyer/no-mistakes" {
+		t.Fatalf("route metadata = %+v", d)
+	}
+}
+
+func TestDecideUsesTerraForMediumHighNonReviewWork(t *testing.T) {
+	d := Decide(Input{Harness: "codex", Purpose: "test-evidence", Risk: RiskMedium})
+	if d.EffectiveModel != ModelTerra || d.EffectiveEffort != EffortHigh {
+		t.Fatalf("medium-risk route = %s/%s, want Terra/high", d.EffectiveModel, d.EffectiveEffort)
+	}
+}
+
+func TestDecideAllowsSolOnlyAfterHighRiskReviewClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		in     Input
+		want   string
+		effort string
+	}{
+		{"first high-risk review", Input{Purpose: "review", Risk: RiskHigh}, ModelLuna, EffortXHigh},
+		{"high-risk fixer", Input{Purpose: "review-fix", Risk: RiskHigh}, ModelTerra, EffortHigh},
+		{"confirmation", ReviewConfirmation(Input{Risk: RiskHigh}), ModelSol, EffortHigh},
+		{"test never inherits Sol", Input{Purpose: "test", Risk: RiskHigh, ReviewConfirmation: true}, ModelTerra, EffortHigh},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Decide(tc.in)
+			if got.EffectiveModel != tc.want {
+				t.Fatalf("route = %s/%s, want %s", got.EffectiveModel, got.EffectiveEffort, tc.want)
+			}
+			wantEffort := tc.effort
+			if wantEffort == "" {
+				wantEffort = EffortXHigh
+			}
+			if got.EffectiveEffort != wantEffort {
+				t.Fatalf("effort = %s, want %s", got.EffectiveEffort, wantEffort)
+			}
+		})
+	}
+}
+
+func TestConfigFingerprintIsBoundedAndDeterministic(t *testing.T) {
+	a := ConfigFingerprint(string(make([]byte, 10_000)))
+	b := ConfigFingerprint(string(make([]byte, 10_000)))
+	if a == "" || a != b || len(a) != 24 {
+		t.Fatalf("fingerprint = %q, want deterministic 24 hex chars", a)
+	}
+	changedTail := string(make([]byte, 10_000))
+	changedTail = changedTail[:9_999] + "x"
+	if a == ConfigFingerprint(changedTail) {
+		t.Fatal("bounded fingerprint ignored a tail configuration change")
+	}
+	if got := CanonicalRepository("git@GitHub.com:RaFoyer/No-Mistakes.git"); got != "github.com/rafoyer/no-mistakes" {
+		t.Fatalf("canonical repository = %q", got)
+	}
+}

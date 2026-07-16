@@ -10,6 +10,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -42,6 +43,52 @@ type fallbackUsageAgent struct {
 	name   string
 	result *agent.Result
 	err    error
+}
+
+type routingCaptureAgent struct {
+	seen []agent.RunOpts
+}
+
+func (a *routingCaptureAgent) Name() string { return "codex" }
+func (a *routingCaptureAgent) Close() error { return nil }
+func (a *routingCaptureAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	a.seen = append(a.seen, opts)
+	return &agent.Result{Text: "ok"}, nil
+}
+
+func TestPerfRecordingAgentRoutesSolOnlyForConfirmedReview(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	capture := &routingCaptureAgent{}
+	wrapped := &perfRecordingAgent{
+		inner: capture, db: database, runID: run.ID, stepName: types.StepReview,
+		repository:          "https://github.com/RaFoyer/no-mistakes.git",
+		sourceConfiguration: "cfg-fingerprint", configurationGeneration: "generation-1",
+		risk:               func() routing.Risk { return routing.RiskHigh },
+		reviewConfirmation: func() bool { return false },
+		round:              func() int { return 1 },
+	}
+	if _, err := wrapped.Run(context.Background(), agent.RunOpts{Prompt: "review", Purpose: "review", RouteReviewConfirmation: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrapped.Run(context.Background(), agent.RunOpts{Prompt: "test", Purpose: "test", RouteReviewConfirmation: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(capture.seen) != 2 {
+		t.Fatalf("captured %d invocations", len(capture.seen))
+	}
+	if got := capture.seen[0].Routing.EffectiveModel; got != routing.ModelSol || capture.seen[0].Routing.EffectiveEffort != routing.EffortHigh {
+		t.Fatalf("review route = %+v, want Sol/high", capture.seen[0].Routing)
+	}
+	if got := capture.seen[1].Routing.EffectiveModel; got != routing.ModelTerra || capture.seen[1].Routing.EffectiveEffort != routing.EffortHigh {
+		t.Fatalf("test route = %+v, want Terra/high", capture.seen[1].Routing)
+	}
+	decisions, err := database.RouteDecisions(run.ID)
+	if err != nil || len(decisions) != 2 {
+		t.Fatalf("route decisions = %+v, err = %v", decisions, err)
+	}
+	if decisions[0].SourceConfiguration != "cfg-fingerprint" || decisions[0].ConfigurationGeneration != "generation-1" || decisions[0].PromptBytes == 0 {
+		t.Fatalf("route evidence = %+v", decisions[0])
+	}
 }
 
 func (a *fallbackUsageAgent) Name() string { return a.name }

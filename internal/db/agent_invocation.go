@@ -1,6 +1,9 @@
 package db
 
-import "fmt"
+import (
+	"database/sql"
+	"fmt"
+)
 
 // Agent invocation session modes recorded for local performance telemetry.
 const (
@@ -107,7 +110,18 @@ type AgentInvocation struct {
 	WorkloadLines *int
 	// FindingCount is the number of findings in this invocation's structured
 	// output. Nil when the output is not findings-shaped.
-	FindingCount *int
+	FindingCount                 *int
+	RequestedHarness             string
+	EffectiveHarness             string
+	RequestedModel               string
+	EffectiveModel               string
+	RequestedEffort              string
+	EffectiveEffort              string
+	RoutePolicyVersion           string
+	RoutePhase                   string
+	RouteReason                  string
+	RouteSourceConfiguration     string
+	RouteConfigurationGeneration string
 }
 
 // agentInvocationColumns is the canonical column order shared by insert and
@@ -120,7 +134,23 @@ const agentInvocationColumns = `id, run_id, step_name, round, purpose, agent, mo
 	delta_input_tokens, delta_output_tokens, delta_cache_read_tokens,
 	model_roundtrips, tool_calls,
 	tool_wait_calls, tool_test_lint_calls, tool_edit_calls, tool_read_calls, tool_git_calls, tool_other_calls,
-	workload_files, workload_lines, finding_count`
+	workload_files, workload_lines, finding_count,
+	requested_harness, effective_harness, requested_model, effective_model,
+	requested_effort, effective_effort, route_policy_version, route_phase,
+	route_reason, route_source_config, route_generation`
+
+const agentInvocationSelectColumns = `id, run_id, step_name, round, purpose, agent, model, model_provider,
+	session_mode, session_key, fallback_reason,
+	started_at, completed_at, duration_ms, subprocess_wait_ms, exit_status, failure_category,
+	input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+	fresh_input_tokens, reasoning_tokens,
+	delta_input_tokens, delta_output_tokens, delta_cache_read_tokens,
+	model_roundtrips, tool_calls,
+	tool_wait_calls, tool_test_lint_calls, tool_edit_calls, tool_read_calls, tool_git_calls, tool_other_calls,
+	workload_files, workload_lines, finding_count,
+	requested_harness, effective_harness, requested_model, effective_model,
+	requested_effort, effective_effort, route_policy_version, route_phase,
+	route_reason, route_source_config, route_generation`
 
 // agentInvocationInsertPlaceholders has one '?' per agentInvocationColumns entry.
 const agentInvocationInsertPlaceholders = `?, ?, ?, ?, ?, ?, ?, ?,
@@ -131,6 +161,9 @@ const agentInvocationInsertPlaceholders = `?, ?, ?, ?, ?, ?, ?, ?,
 	?, ?, ?,
 	?, ?,
 	?, ?, ?, ?, ?, ?,
+	?, ?, ?,
+	?, ?, ?, ?,
+	?, ?, ?, ?,
 	?, ?, ?`
 
 // InsertAgentInvocation records one completed agent invocation. Nil pointer
@@ -149,6 +182,9 @@ func (d *DB) InsertAgentInvocation(inv AgentInvocation) (*AgentInvocation, error
 		inv.ModelRoundtrips, inv.ToolCalls,
 		inv.ToolWaitCalls, inv.ToolTestLintCalls, inv.ToolEditCalls, inv.ToolReadCalls, inv.ToolGitCalls, inv.ToolOtherCalls,
 		inv.WorkloadFiles, inv.WorkloadLines, inv.FindingCount,
+		inv.RequestedHarness, inv.EffectiveHarness, inv.RequestedModel, inv.EffectiveModel,
+		inv.RequestedEffort, inv.EffectiveEffort, inv.RoutePolicyVersion, inv.RoutePhase,
+		inv.RouteReason, inv.RouteSourceConfiguration, inv.RouteConfigurationGeneration,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert agent invocation: %w", err)
@@ -159,7 +195,7 @@ func (d *DB) InsertAgentInvocation(inv AgentInvocation) (*AgentInvocation, error
 // GetAgentInvocationsByRun returns a run's invocations in execution order.
 func (d *DB) GetAgentInvocationsByRun(runID string) ([]AgentInvocation, error) {
 	rows, err := d.sql.Query(
-		`SELECT `+agentInvocationColumns+` FROM agent_invocations WHERE run_id = ? ORDER BY started_at, id`,
+		`SELECT `+agentInvocationSelectColumns+` FROM agent_invocations WHERE run_id = ? ORDER BY started_at, id`,
 		runID,
 	)
 	if err != nil {
@@ -184,6 +220,9 @@ type scanner interface {
 
 func scanAgentInvocation(row scanner) (AgentInvocation, error) {
 	var inv AgentInvocation
+	var requestedHarness, effectiveHarness, requestedModel, effectiveModel sql.NullString
+	var requestedEffort, effectiveEffort, policyVersion, phase sql.NullString
+	var routeReason, routeSource, routeGeneration sql.NullString
 	if err := row.Scan(
 		&inv.ID, &inv.RunID, &inv.StepName, &inv.Round, &inv.Purpose, &inv.Agent, &inv.Model, &inv.ModelProvider,
 		&inv.SessionMode, &inv.SessionKey, &inv.FallbackReason,
@@ -194,9 +233,23 @@ func scanAgentInvocation(row scanner) (AgentInvocation, error) {
 		&inv.ModelRoundtrips, &inv.ToolCalls,
 		&inv.ToolWaitCalls, &inv.ToolTestLintCalls, &inv.ToolEditCalls, &inv.ToolReadCalls, &inv.ToolGitCalls, &inv.ToolOtherCalls,
 		&inv.WorkloadFiles, &inv.WorkloadLines, &inv.FindingCount,
+		&requestedHarness, &effectiveHarness, &requestedModel, &effectiveModel,
+		&requestedEffort, &effectiveEffort, &policyVersion, &phase,
+		&routeReason, &routeSource, &routeGeneration,
 	); err != nil {
 		return AgentInvocation{}, fmt.Errorf("scan agent invocation: %w", err)
 	}
+	inv.RequestedHarness = requestedHarness.String
+	inv.EffectiveHarness = effectiveHarness.String
+	inv.RequestedModel = requestedModel.String
+	inv.EffectiveModel = effectiveModel.String
+	inv.RequestedEffort = requestedEffort.String
+	inv.EffectiveEffort = effectiveEffort.String
+	inv.RoutePolicyVersion = policyVersion.String
+	inv.RoutePhase = phase.String
+	inv.RouteReason = routeReason.String
+	inv.RouteSourceConfiguration = routeSource.String
+	inv.RouteConfigurationGeneration = routeGeneration.String
 	return inv, nil
 }
 

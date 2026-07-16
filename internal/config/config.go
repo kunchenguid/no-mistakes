@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"gopkg.in/yaml.v3"
@@ -61,9 +62,12 @@ type GlobalConfig struct {
 	// separate durable fixer session across fix turns). Default true; set
 	// session_reuse: false to force every invocation cold.
 	SessionReuse bool `yaml:"-"`
-	AutoFix      AutoFixRaw
-	Intent       IntentRaw
-	Test         TestRaw
+	// RoutingGeneration is derived from the exact loaded file (or built-in
+	// defaults), never supplied by project metadata.
+	RoutingGeneration string `yaml:"-"`
+	AutoFix           AutoFixRaw
+	Intent            IntentRaw
+	Test              TestRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -209,6 +213,10 @@ type Config struct {
 	// project-level settings/instructions suppressed; the daemon fails the run
 	// closed if the resolved harness has no verified suppression knob.
 	DisableProjectSettings bool
+	// RoutingGeneration is the explicit configuration generation captured when
+	// the daemon loads this config. It prevents a long-lived daemon from making
+	// route decisions without an auditable source generation.
+	RoutingGeneration string
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -772,10 +780,12 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
+			cfg.RoutingGeneration = routing.ConfigFingerprint("builtin-global-defaults")
 			return cfg, nil
 		}
 		return nil, fmt.Errorf("read global config: %w", err)
 	}
+	cfg.RoutingGeneration = routing.ConfigFingerprint(string(data))
 
 	var raw globalConfigRaw
 	dec := yaml.NewDecoder(bytes.NewReader(data))
@@ -1132,6 +1142,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
+		RoutingGeneration:      global.RoutingGeneration,
 	}
 
 	if repo.Agent != "" {

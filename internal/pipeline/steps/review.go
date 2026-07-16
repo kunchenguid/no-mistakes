@@ -8,6 +8,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -53,6 +54,7 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// not an enforced sandbox - the agent has free shell access - so the pinned
 	// regression tests guard the wording, not the runtime.
 	var fixSummary string
+	priorRisk := reviewRisk(sctx.PreviousFindings)
 	if sctx.Fixing {
 		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
 		historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
@@ -103,6 +105,7 @@ Previous review findings to address:
 			SessionRole:             pipeline.SessionRoleFixer,
 			Purpose:                 "review-fix",
 			Workload:                workload,
+			RouteRisk:               priorRisk,
 		})
 		if err != nil {
 			return nil, err
@@ -234,12 +237,14 @@ Risk assessment (after listing all findings):
 	// session only carries the reviewer's own prior context, never the
 	// fixer's (that role has its own isolated session in executeFixMode).
 	result, err := sctx.RunAgentSession(pipeline.SessionRoleReviewer, agent.RunOpts{
-		Prompt:     prompt,
-		CWD:        sctx.WorkDir,
-		JSONSchema: reviewFindingsSchema,
-		OnChunk:    sctx.LogChunk,
-		Purpose:    "review",
-		Workload:   workload,
+		Prompt:                  prompt,
+		CWD:                     sctx.WorkDir,
+		JSONSchema:              reviewFindingsSchema,
+		OnChunk:                 sctx.LogChunk,
+		Purpose:                 "review",
+		Workload:                workload,
+		RouteRisk:               priorRisk,
+		RouteReviewConfirmation: sctx.Fixing && priorRisk == routing.RiskHigh,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent review: %w", err)
@@ -272,6 +277,26 @@ Risk assessment (after listing all findings):
 		Findings:      string(findingsJSON),
 		FixSummary:    fixSummary,
 	}, nil
+}
+
+func reviewRisk(raw string) routing.Risk {
+	if strings.TrimSpace(raw) == "" {
+		return routing.RiskUnknown
+	}
+	var f Findings
+	if err := json.Unmarshal([]byte(raw), &f); err != nil {
+		return routing.RiskUnknown
+	}
+	switch strings.ToLower(strings.TrimSpace(f.RiskLevel)) {
+	case "high":
+		return routing.RiskHigh
+	case "medium":
+		return routing.RiskMedium
+	case "low":
+		return routing.RiskLow
+	default:
+		return routing.RiskUnknown
+	}
 }
 
 func sanitizedPreviousFindingsForPrompt(raw string) string {
