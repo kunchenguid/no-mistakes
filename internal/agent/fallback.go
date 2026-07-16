@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 )
 
 type fallbackAgent struct {
@@ -53,6 +55,8 @@ func (a *fallbackAgent) SupportsSessionProvider(provider string) bool {
 
 func (a *fallbackAgent) ReportsAgentAttempts() bool { return true }
 
+func (a *fallbackAgent) ReportsAgentRoutes() bool { return true }
+
 // NeutralizesGateInstructions fails closed over the whole fallback set: the
 // wrapper may invoke any member, so it neutralizes the target repo's project
 // agent-instruction files only if EVERY member does. A single unverified member
@@ -90,11 +94,17 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 			return nil, fmt.Errorf("agent %q cannot enforce the Codex routing policy; refusing fallback", current.Name())
 		}
 		currentOpts := opts
+		currentOpts.Routing = routing.ForAdapter(opts.Routing, current.Name())
 		if currentOpts.Session != nil && currentOpts.Session.ID == "" && !SupportsSessionResume(current) {
 			currentOpts.Session = nil
 			currentOpts.SessionFallback = false
 		}
 		startedAt := time.Now()
+		if currentOpts.OnRoute != nil {
+			if err := currentOpts.OnRoute(currentOpts.Routing); err != nil {
+				return nil, fmt.Errorf("record route for agent %q: %w", current.Name(), err)
+			}
+		}
 		result, err := current.Run(ctx, currentOpts)
 		if !ReportsAgentAttempts(current) {
 			emitAgentAttempt(currentOpts, current.Name(), result, err, startedAt, time.Now())

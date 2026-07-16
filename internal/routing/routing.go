@@ -94,7 +94,7 @@ func Decide(in Input) Decision {
 	// The first review is the bootstrap classifier. Any caller-supplied risk
 	// is deliberately ignored until that review has produced its own result.
 	if phase == "review" && !in.ReviewConfirmation {
-		return d
+		return enforceAdapterEvidence(d)
 	}
 	if (risk == RiskMedium || risk == RiskHigh) && phase != "review" && phase != "review-confirmation" {
 		d.EffectiveModel = ModelTerra
@@ -109,6 +109,41 @@ func Decide(in Input) Decision {
 		d.EffectiveEffort = EffortHigh
 		d.Reason = "high-risk review confirmation"
 	}
+	return enforceAdapterEvidence(d)
+}
+
+// ForAdapter binds a policy decision to the concrete adapter that will make
+// the attempt. RequestedHarness remains the configured route, while the
+// effective fields describe only controls the concrete adapter can enforce.
+// Fallback instrumentation uses this at the attempt boundary so immutable
+// route and invocation evidence cannot retain the failed candidate.
+func ForAdapter(decision Decision, harness string) Decision {
+	actual := bounded(strings.TrimSpace(harness), 128)
+	if actual == "" {
+		actual = "unknown"
+	}
+	next := Decide(Input{
+		Harness:                 actual,
+		Purpose:                 decision.Phase,
+		Risk:                    decision.Risk,
+		ReviewConfirmation:      decision.Phase == "review-confirmation",
+		SourceConfiguration:     decision.SourceConfiguration,
+		ConfigurationGeneration: decision.ConfigurationGeneration,
+		Repository:              decision.Repository,
+	})
+	if decision.RequestedHarness != "" {
+		next.RequestedHarness = decision.RequestedHarness
+	}
+	return next
+}
+
+func enforceAdapterEvidence(d Decision) Decision {
+	if strings.EqualFold(d.EffectiveHarness, "codex") {
+		return d
+	}
+	d.EffectiveModel = ""
+	d.EffectiveEffort = ""
+	d.Reason = "configured harness cannot enforce the Codex GPT routing policy"
 	return d
 }
 

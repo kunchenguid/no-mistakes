@@ -10,6 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 )
 
 // sessionCall records one invocation the fake adapter received.
@@ -17,6 +18,7 @@ type sessionCall struct {
 	prompt   string
 	session  *agent.SessionRef
 	fallback bool
+	routing  routing.Decision
 }
 
 // fakeSessionAgent is a session-capable adapter that mints deterministic
@@ -49,7 +51,7 @@ func (f *fakeSessionAgent) Close() error { return nil }
 func (f *fakeSessionAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, sessionCall{prompt: opts.Prompt, session: opts.Session, fallback: opts.SessionFallback})
+	f.calls = append(f.calls, sessionCall{prompt: opts.Prompt, session: opts.Session, fallback: opts.SessionFallback, routing: opts.Routing})
 
 	if f.failNext != nil {
 		err := f.failNext

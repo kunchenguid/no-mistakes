@@ -116,6 +116,26 @@ func TestAxiAgentJourney(t *testing.T) {
 		t.Fatal("expected feature/axi run to be awaiting approval")
 	}
 
+	// The migration canary uses this same isolated init -> invocation -> read
+	// lifecycle. Prove the supported command reads the concrete pre-launch
+	// decision and completed post-result classification from the disposable
+	// database without relying on daemon logs.
+	routeOut, err := h.RunInDir(fw, "axi", "route-evidence")
+	if err != nil {
+		t.Fatalf("axi route-evidence: %v\n%s", err, routeOut)
+	}
+	for _, want := range []string{
+		"route_decisions[",
+		"review_results[",
+		"policy_version",
+		"configuration_generation",
+		",review,1,review,medium,",
+	} {
+		if !strings.Contains(routeOut, want) {
+			t.Fatalf("axi route-evidence missing %q:\n%s", want, routeOut)
+		}
+	}
+
 	doneOut, err := h.RunInDir(fw, "axi", "respond", "--action", "approve")
 	if err != nil {
 		t.Fatalf("axi respond approve (expected exit 0 on pass): %v\n%s", err, doneOut)

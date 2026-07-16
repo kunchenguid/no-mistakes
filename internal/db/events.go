@@ -127,6 +127,9 @@ func (d *DB) InsertRouteDecision(decision RouteDecision) error {
 	if decision.Risk == "" {
 		decision.Risk = "unknown"
 	}
+	if decision.PromptTransport == "" {
+		decision.PromptTransport = "stdin"
+	}
 	query := `INSERT INTO route_decisions
 		(id, run_id, step_name, round, requested_harness, effective_harness,
 		 requested_model, effective_model, requested_effort, effective_effort,
@@ -168,6 +171,58 @@ func (d *DB) RouteDecisions(runID string) ([]RouteDecision, error) {
 		decisions = append(decisions, d)
 	}
 	return decisions, rows.Err()
+}
+
+// RouteResult is immutable post-result evidence for a review classification.
+// Route decisions are captured before launch; these rows record the completed
+// review/fix-review result that recovery must use as policy input.
+type RouteResult struct {
+	ID        string
+	RunID     string
+	StepName  string
+	Round     int
+	Phase     string
+	Risk      string
+	CreatedAt int64
+}
+
+func (d *DB) InsertRouteResult(result RouteResult) error {
+	if result.ID == "" {
+		result.ID = newID()
+	}
+	if result.Risk == "" {
+		result.Risk = "unknown"
+	}
+	if result.CreatedAt == 0 {
+		result.CreatedAt = now()
+	}
+	_, err := d.sql.Exec(`INSERT INTO route_results
+		(id, run_id, step_name, round, phase, risk, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, result.ID, result.RunID, result.StepName,
+		result.Round, result.Phase, result.Risk, result.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("insert route result: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) RouteResults(runID string) ([]RouteResult, error) {
+	rows, err := d.sql.Query(`SELECT id, run_id, step_name, round, phase, risk, created_at
+		FROM route_results WHERE run_id = ? ORDER BY created_at, id`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("get route results: %w", err)
+	}
+	defer rows.Close()
+	var results []RouteResult
+	for rows.Next() {
+		var result RouteResult
+		if err := rows.Scan(&result.ID, &result.RunID, &result.StepName, &result.Round,
+			&result.Phase, &result.Risk, &result.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan route result: %w", err)
+		}
+		results = append(results, result)
+	}
+	return results, rows.Err()
 }
 
 func nullable(value string) any {

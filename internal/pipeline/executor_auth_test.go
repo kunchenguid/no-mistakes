@@ -300,6 +300,40 @@ func TestRestoreRouteStateUsesLatestDurableClassification(t *testing.T) {
 	}
 }
 
+func TestRestoreRouteStateUsesPostResultReviewClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		risk        routing.Risk
+		phase       string
+		wantConfirm bool
+	}{
+		{"recovered medium", routing.RiskMedium, "review", false},
+		{"recovered downgrade", routing.RiskLow, "review-fix", false},
+		{"recovered high confirmation", routing.RiskHigh, "review-fix", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, p, run, _ := setupTest(t)
+			if err := database.InsertRouteDecision(db.RouteDecision{
+				RunID: run.ID, RequestedHarness: "codex", EffectiveHarness: "codex",
+				Risk: string(routing.RiskUnknown), Phase: "review", CreatedAt: 10,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.InsertRouteResult(db.RouteResult{
+				RunID: run.ID, StepName: string(types.StepReview), Round: 1,
+				Phase: tc.phase, Risk: string(tc.risk), CreatedAt: 20,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			exec := NewExecutor(database, p, nil, nil, nil, nil)
+			exec.restoreRouteState(run.ID)
+			if exec.routeRisk != tc.risk || exec.routeReviewConfirmed != tc.wantConfirm {
+				t.Fatalf("restored route = %q/%t, want %q/%t", exec.routeRisk, exec.routeReviewConfirmed, tc.risk, tc.wantConfirm)
+			}
+		})
+	}
+}
+
 func TestAuthorizationParkNamesUnknownFixerCompletion(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {

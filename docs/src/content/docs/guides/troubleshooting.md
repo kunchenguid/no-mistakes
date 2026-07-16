@@ -109,24 +109,47 @@ No Mistakes owns routing in core and records a bounded routing generation with e
    no-mistakes runs
    ```
 2. Let pending or running pipeline runs finish. `daemon restart` and `update` refuse by default while active runs exist; do not pass `--force` for this migration path.
-3. Create named temporary homes once, then canary the new binary against those exact paths before touching the shared daemon:
+3. Create a disposable repository, named temporary homes, and an explicit Codex binary path. The workload is isolated and skips every delivery step, so it cannot push, open a PR, or touch the shared daemon:
    ```sh
+   CANARY_ROOT="$(mktemp -d)"
+   CANARY_REPO="$CANARY_ROOT/repo"
+   CANARY_ORIGIN="$CANARY_ROOT/origin.git"
    CANARY_HOME="$(mktemp -d)"
    CANARY_NM_HOME="$(mktemp -d)"
-   HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes doctor
-   HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes daemon start
+   CANARY_CODEX="$(command -v codex)"
+   test -n "$CANARY_CODEX"
+   git init --bare --initial-branch=main "$CANARY_ORIGIN"
+   git init -b main "$CANARY_REPO"
+   git -C "$CANARY_REPO" config user.email canary@example.invalid
+   git -C "$CANARY_REPO" config user.name canary
+   printf 'route canary\n' > "$CANARY_REPO/README.md"
+   git -C "$CANARY_REPO" add README.md
+   git -C "$CANARY_REPO" commit -m 'canary: route evidence'
+   git -C "$CANARY_REPO" remote add origin "$CANARY_ORIGIN"
+   git -C "$CANARY_REPO" push origin main
+   git -C "$CANARY_REPO" switch -c route-canary
+   mkdir -p "$CANARY_NM_HOME"
+   cat > "$CANARY_NM_HOME/config.yaml" <<EOF
+   agent: codex
+   agent_path_override:
+     codex: $CANARY_CODEX
+   EOF
+   (cd "$CANARY_REPO" && HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes init)
    ```
-4. Verify the exact canary daemon does not invoke the removed router by checking its local logs and route evidence:
+4. Start the exact canary daemon, run one review-only workload, and inspect the supported route-evidence surface. The command defaults to the active or most recent run; pass `--run <id>` when auditing a specific one:
    ```sh
-   HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes daemon status
-   grep -R "Flow" "$CANARY_NM_HOME/logs" || true
+   (cd "$CANARY_REPO" && HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes daemon start)
+   (cd "$CANARY_REPO" && HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes axi run \
+     --intent 'verify the isolated route policy and evidence' \
+     --skip rebase,test,document,lint,push,pr,ci --yes)
+   (cd "$CANARY_REPO" && HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes axi route-evidence)
    ```
-   Route decisions should show No Mistakes model/effort policy and a `configuration_generation`, not an external router path.
+   Inspect `route_decisions` for the requested/effective harness, model, effort, `policy_version`, and `configuration_generation`, and inspect `review_results` for the completed classification. Codex rows should show the No Mistakes GPT policy; non-Codex rows must leave effective model and effort empty. The output must contain no external router name or process. This is a real agent invocation inside the disposable repository, not a log-only daemon check.
 5. Stop the canary explicitly and remove both temporary homes before touching the active installation:
    ```sh
-   HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes daemon stop || true
-   rm -rf "$CANARY_HOME" "$CANARY_NM_HOME"
-   unset CANARY_HOME CANARY_NM_HOME
+   (cd "$CANARY_REPO" && HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes daemon stop) || true
+   rm -rf "$CANARY_ROOT" "$CANARY_HOME" "$CANARY_NM_HOME"
+   unset CANARY_ROOT CANARY_REPO CANARY_ORIGIN CANARY_HOME CANARY_NM_HOME CANARY_CODEX
    ```
 6. Restart the real daemon only after the run list is drained:
    ```sh

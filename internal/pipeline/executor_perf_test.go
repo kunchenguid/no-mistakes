@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -224,6 +225,79 @@ func TestPerfRecordingAgent_MixedFallbackRecordsActualProviderCold(t *testing.T)
 	}
 }
 
+func TestPerfRecordingAgent_MixedFallbackAttributesEveryConcreteAdapter(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	wrapped := &perfRecordingAgent{
+		inner: agent.NewFallback([]agent.Agent{
+			&fallbackUsageAgent{name: "pi", err: errors.New("pi start: executable not found")},
+			&fallbackUsageAgent{name: "claude", result: &agent.Result{Model: "claude-sonnet"}},
+		}),
+		db: database, runID: run.ID, stepName: types.StepReview,
+		round: func() int { return 1 },
+	}
+	if _, err := wrapped.Run(context.Background(), agent.RunOpts{Purpose: "review"}); err != nil {
+		t.Fatalf("fallback run: %v", err)
+	}
+	routes, err := database.RouteDecisions(run.ID)
+	if err != nil || len(routes) != 2 {
+		t.Fatalf("routes = %+v, err = %v", routes, err)
+	}
+	if routes[0].EffectiveHarness != "pi" || routes[1].EffectiveHarness != "claude" {
+		t.Fatalf("route providers = %q/%q", routes[0].EffectiveHarness, routes[1].EffectiveHarness)
+	}
+	invs, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil || len(invs) != 2 {
+		t.Fatalf("invocations = %+v, err = %v", invs, err)
+	}
+	if invs[0].Agent != "pi" || invs[0].EffectiveHarness != "pi" || invs[0].ExitStatus != "error" {
+		t.Fatalf("failed Pi evidence = %+v", invs[0])
+	}
+	if invs[1].Agent != "claude" || invs[1].EffectiveHarness != "claude" || invs[1].EffectiveModel != "" {
+		t.Fatalf("successful Claude evidence = %+v", invs[1])
+	}
+}
+
+func TestPerfRecordingAgentDirectNonCodexRiskEvidenceIsTruthful(t *testing.T) {
+	adapters := []string{"claude", "pi", "grok", "opencode", "acp:copilot"}
+	for _, adapter := range adapters {
+		adapter := adapter
+		t.Run(adapter, func(t *testing.T) {
+			for _, tc := range []struct {
+				name      string
+				step      types.StepName
+				risk      routing.Risk
+				confirmed bool
+				purpose   string
+			}{
+				{"medium", types.StepTest, routing.RiskMedium, false, "test"},
+				{"high", types.StepTest, routing.RiskHigh, false, "test"},
+				{"confirmation", types.StepReview, routing.RiskHigh, true, "review"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					database, _, run, _ := setupTest(t)
+					wrapped := &perfRecordingAgent{
+						inner: &fallbackUsageAgent{name: adapter, result: &agent.Result{Model: "provider-model"}},
+						db:    database, runID: run.ID, stepName: tc.step,
+						risk:               func() routing.Risk { return tc.risk },
+						reviewConfirmation: func() bool { return tc.confirmed },
+						round:              func() int { return 1 },
+					}
+					if _, err := wrapped.Run(context.Background(), agent.RunOpts{Purpose: tc.purpose}); err != nil {
+						t.Fatal(err)
+					}
+					invs, err := database.GetAgentInvocationsByRun(run.ID)
+					if err != nil || len(invs) != 1 {
+						t.Fatalf("invs = %+v, err = %v", invs, err)
+					}
+					if invs[0].EffectiveHarness != adapter || invs[0].EffectiveModel != "" || invs[0].EffectiveEffort != "" {
+						t.Fatalf("invocation evidence = %+v", invs[0])
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestPerfRecordingAgentClearsUnenforceableGPTEvidence(t *testing.T) {
 	database, _, run, _ := setupTest(t)
 	wrapped := &perfRecordingAgent{
@@ -246,6 +320,36 @@ func TestPerfRecordingAgentClearsUnenforceableGPTEvidence(t *testing.T) {
 	}
 	if invs[0].EffectiveHarness != "claude" || invs[0].EffectiveModel != "" || invs[0].EffectiveEffort != "" {
 		t.Fatalf("unenforceable route evidence = %+v", invs[0])
+	}
+}
+
+func TestPerfRecordingAgentFallbackRefusesUnenforceableGPTRoute(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	wrapped := &perfRecordingAgent{
+		inner: agent.NewFallback([]agent.Agent{
+			&fallbackUsageAgent{name: "pi", err: errors.New("pi start: executable not found")},
+			&fallbackUsageAgent{name: "claude", result: &agent.Result{Model: "claude-sonnet"}},
+		}),
+		db: database, runID: run.ID, stepName: types.StepReview,
+		round: func() int { return 1 },
+	}
+	_, err := wrapped.Run(context.Background(), agent.RunOpts{
+		Purpose: "review",
+		Routing: routing.Decision{
+			RequestedHarness: "codex", EffectiveHarness: "codex",
+			EffectiveModel: routing.ModelSol, EffectiveEffort: routing.EffortHigh,
+			PolicyVersion: routing.PolicyVersion, Phase: "review-confirmation", Risk: routing.RiskHigh,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot enforce") {
+		t.Fatalf("fallback error = %v, want fail-closed Codex policy error", err)
+	}
+	invs, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invs) != 0 {
+		t.Fatalf("unenforceable fallback launched attempts: %+v", invs)
 	}
 }
 

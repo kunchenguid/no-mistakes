@@ -59,6 +59,10 @@ type RunOpts struct {
 	// fallback-provider attempts, after it completes. It is instrumentation
 	// only and must not change invocation behavior.
 	OnAttempt func(Attempt)
+	// OnRoute receives the route bound to a concrete adapter immediately before
+	// launch. Fallback wrappers use it once per candidate so route evidence is
+	// immutable and attributable to the actual adapter.
+	OnRoute func(routing.Decision) error
 }
 
 // PromptTransport names the bounded transport used by the native adapter.
@@ -86,6 +90,7 @@ type Attempt struct {
 	CompletedAt     time.Time
 	Session         *SessionRef
 	SessionFallback bool
+	Routing         routing.Decision
 }
 
 // SessionRef identifies a durable adapter-native session for RunOpts.Session.
@@ -140,6 +145,18 @@ type AttemptReporter interface {
 func ReportsAgentAttempts(a Agent) bool {
 	r, ok := a.(AttemptReporter)
 	return ok && r.ReportsAgentAttempts()
+}
+
+// RouteReporter reports whether an adapter wrapper calls OnRoute at each
+// concrete launch boundary. Native adapters do not implement this; the
+// instrumentation layer emits their route once before Run.
+type RouteReporter interface {
+	ReportsAgentRoutes() bool
+}
+
+func ReportsAgentRoutes(a Agent) bool {
+	r, ok := a.(RouteReporter)
+	return ok && r.ReportsAgentRoutes()
 }
 
 // GateInstructionNeutralizer is the optional adapter capability that reports the

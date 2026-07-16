@@ -109,6 +109,12 @@ Safest local verification sequence after non-trivial changes:
 - `codex exec resume` has a narrower flag surface than `codex exec`, so an unsupported override fails the resume and falls back; the e2e fakeagent must keep parsing both codex argv shapes (`extractCodexPrompt`).
 - Regressions: `internal/pipeline/sessions_test.go`, `internal/pipeline/steps/review_session_test.go`, `internal/agent/session_test.go`.
 
+**Routing Evidence & Recovery**
+
+- `route_decisions` is immutable pre-launch evidence recorded once per concrete adapter attempt; `route_results` is immutable post-result evidence for completed review classifications. Approval-gate recovery must prefer the latest valid review result so risk upgrades, downgrades, and high-risk confirmation eligibility survive restart.
+- Effective model/effort fields describe only controls the concrete adapter actually received. Non-Codex attempts keep them empty, fallback rows are attributed to each attempted adapter, and a Codex-effective route fails closed before an unenforceable fallback launches. Inspect both evidence streams through the read-only `no-mistakes axi route-evidence` surface.
+- Regressions: `internal/pipeline/executor_auth_test.go`, `internal/pipeline/executor_perf_test.go`, `internal/routing/routing_test.go`, `internal/cli/axi_route_test.go`, and e2e `TestAxiAgentJourney`.
+
 **Review Fixer Verification Discipline (`internal/pipeline/steps/review.go`)**
 
 - The review-fix prompt requires all fixes before one focused verification limited to the changed area and forbids the whole repository test/lint suite during the fix round.

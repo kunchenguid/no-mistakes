@@ -160,6 +160,21 @@ Each row reports how long the step has been active, the latest meaningful log or
 If no activity arrives for longer than `step_quiet_warning`, `last_activity` is prefixed with `quiet`; this is only a liveness signal and does not cancel the step.
 For older active runs with no recorded activity timestamp, AXI falls back to the step log file modification time.
 
+## no-mistakes axi route-evidence
+
+Read the immutable route decisions and completed review classifications for a run. This is a local, read-only database surface and does not start or contact the daemon.
+
+```sh
+no-mistakes axi route-evidence
+no-mistakes axi route-evidence --run <id>
+```
+
+| Flag | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `--run` | `string` | resolved run | Inspect a specific run ID; otherwise use the active or most recent run |
+
+The output has stable `route_decisions` and `review_results` arrays. Each route row includes requested/effective harness, model, effort, policy version, phase, risk, source configuration, and configuration generation. `review_results` is the post-result classification used by restart recovery; it is distinct from the pre-launch route input.
+
 ## no-mistakes axi logs
 
 Show the log output of one pipeline step.

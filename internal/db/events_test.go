@@ -47,6 +47,20 @@ func TestRouteDecisionStoresPromptFingerprintWithoutPrompt(t *testing.T) {
 	}
 }
 
+func TestRouteResultsPersistCompletedReviewClassification(t *testing.T) {
+	d, _, run := openSessionTestDB(t)
+	if err := d.InsertRouteResult(RouteResult{RunID: run.ID, StepName: "review", Round: 2, Phase: "review-fix", Risk: "low", CreatedAt: 10}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := d.RouteResults(run.ID)
+	if err != nil || len(results) != 1 {
+		t.Fatalf("route results = %+v, err = %v", results, err)
+	}
+	if results[0].Phase != "review-fix" || results[0].Risk != "low" || results[0].Round != 2 {
+		t.Fatalf("route result = %+v", results[0])
+	}
+}
+
 func TestProvisioningProjectionIsRestartReadable(t *testing.T) {
 	d, _, run := openSessionTestDB(t)
 	if err := d.SetRunProvisioning(run.ID, "checkout", 42, ""); err != nil {

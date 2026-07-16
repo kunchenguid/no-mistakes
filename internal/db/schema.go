@@ -176,6 +176,19 @@ CREATE TABLE IF NOT EXISTS route_decisions (
 
 CREATE INDEX IF NOT EXISTS idx_route_decisions_run_created
     ON route_decisions (run_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS route_results (
+    id         TEXT PRIMARY KEY,
+    run_id     TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    step_name  TEXT NOT NULL,
+    round      INTEGER NOT NULL,
+    phase      TEXT NOT NULL,
+    risk       TEXT NOT NULL DEFAULT 'unknown',
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_route_results_run_created
+    ON route_results (run_id, created_at, id);
 `
 
 // migrationStatements hold additive schema changes applied to databases that

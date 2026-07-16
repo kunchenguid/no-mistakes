@@ -50,14 +50,6 @@ func (a *perfRecordingAgent) SupportsSessionProvider(provider string) bool {
 }
 
 func (a *perfRecordingAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-	// A caller may carry a precomputed route from a step or recovery path. Do
-	// not let that metadata claim GPT controls for a non-Codex adapter.
-	if !strings.EqualFold(a.inner.Name(), "codex") {
-		opts.Routing.EffectiveHarness = a.inner.Name()
-		opts.Routing.EffectiveModel = ""
-		opts.Routing.EffectiveEffort = ""
-		opts.Routing.Reason = "configured harness cannot enforce the Codex GPT routing policy"
-	}
 	if opts.Routing.PolicyVersion == "" {
 		risk := opts.RouteRisk
 		if a.risk != nil {
@@ -73,21 +65,25 @@ func (a *perfRecordingAgent) Run(ctx context.Context, opts agent.RunOpts) (*agen
 			SourceConfiguration:     a.sourceConfiguration,
 			ConfigurationGeneration: a.configurationGeneration,
 		})
+	} else if !agent.ReportsAgentRoutes(a.inner) {
+		// A caller may carry a precomputed route from a step or recovery path.
+		// Rebind it to the concrete adapter so stale GPT controls cannot survive
+		// a direct non-Codex adapter invocation. Fallback wrappers retain the
+		// policy-effective route so their own Codex guard can fail closed before
+		// trying an unenforceable candidate.
+		opts.Routing = routing.ForAdapter(opts.Routing, a.inner.Name())
 	}
-	if a.db != nil {
-		promptSHA, promptBytes := db.PromptEvidence(opts.Prompt)
-		if err := a.db.InsertRouteDecision(db.RouteDecision{
-			RunID: a.runID, StepName: string(a.stepName), Round: a.round(),
-			RequestedHarness: opts.Routing.RequestedHarness, EffectiveHarness: opts.Routing.EffectiveHarness,
-			RequestedModel: opts.Routing.RequestedModel, EffectiveModel: opts.Routing.EffectiveModel,
-			RequestedEffort: opts.Routing.RequestedEffort, EffectiveEffort: opts.Routing.EffectiveEffort,
-			PolicyVersion: opts.Routing.PolicyVersion, Phase: opts.Routing.Phase, Reason: opts.Routing.Reason,
-			Risk:                    string(opts.Routing.Risk),
-			SourceConfiguration:     opts.Routing.SourceConfiguration,
-			ConfigurationGeneration: opts.Routing.ConfigurationGeneration,
-			Repository:              opts.Routing.Repository,
-			PromptSHA256:            promptSHA, PromptBytes: promptBytes, PromptTransport: agent.PromptTransport(a.inner.Name()),
-		}); err != nil {
+	previousRoute := opts.OnRoute
+	opts.OnRoute = func(route routing.Decision) error {
+		if previousRoute != nil {
+			if err := previousRoute(route); err != nil {
+				return err
+			}
+		}
+		return a.recordRoute(route, opts)
+	}
+	if !agent.ReportsAgentRoutes(a.inner) {
+		if err := opts.OnRoute(opts.Routing); err != nil {
 			return nil, fmt.Errorf("record route decision before agent launch: %w", err)
 		}
 	}
@@ -101,14 +97,39 @@ func (a *perfRecordingAgent) Run(ctx context.Context, opts agent.RunOpts) (*agen
 		attemptOpts := opts
 		attemptOpts.Session = attempt.Session
 		attemptOpts.SessionFallback = attempt.SessionFallback
+		if attempt.Routing.PolicyVersion != "" {
+			attemptOpts.Routing = attempt.Routing
+		}
 		a.record(ctx, attemptOpts, attempt.Agent, attempt.Result, attempt.Err, attempt.StartedAt, attempt.CompletedAt)
 	}
 	start := time.Now()
 	result, err := a.inner.Run(ctx, opts)
-	if attempts == 0 {
+	if attempts == 0 && !agent.ReportsAgentAttempts(a.inner) {
 		a.record(ctx, opts, a.inner.Name(), result, err, start, time.Now())
 	}
 	return result, err
+}
+
+func (a *perfRecordingAgent) recordRoute(route routing.Decision, opts agent.RunOpts) error {
+	if a.db == nil {
+		return nil
+	}
+	promptSHA, promptBytes := db.PromptEvidence(opts.Prompt)
+	if err := a.db.InsertRouteDecision(db.RouteDecision{
+		RunID: a.runID, StepName: string(a.stepName), Round: a.round(),
+		RequestedHarness: route.RequestedHarness, EffectiveHarness: route.EffectiveHarness,
+		RequestedModel: route.RequestedModel, EffectiveModel: route.EffectiveModel,
+		RequestedEffort: route.RequestedEffort, EffectiveEffort: route.EffectiveEffort,
+		PolicyVersion: route.PolicyVersion, Phase: route.Phase, Reason: route.Reason,
+		Risk:                    string(route.Risk),
+		SourceConfiguration:     route.SourceConfiguration,
+		ConfigurationGeneration: route.ConfigurationGeneration,
+		Repository:              route.Repository,
+		PromptSHA256:            promptSHA, PromptBytes: promptBytes, PromptTransport: agent.PromptTransport(route.EffectiveHarness),
+	}); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, agentName string, result *agent.Result, runErr error, startedAt, completedAt time.Time) {
@@ -145,6 +166,19 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 		RouteReason:                  opts.Routing.Reason,
 		RouteSourceConfiguration:     opts.Routing.SourceConfiguration,
 		RouteConfigurationGeneration: opts.Routing.ConfigurationGeneration,
+	}
+	if attemptRoute := opts.Routing; attemptRoute.PolicyVersion != "" {
+		inv.RequestedHarness = attemptRoute.RequestedHarness
+		inv.EffectiveHarness = attemptRoute.EffectiveHarness
+		inv.RequestedModel = attemptRoute.RequestedModel
+		inv.EffectiveModel = attemptRoute.EffectiveModel
+		inv.RequestedEffort = attemptRoute.RequestedEffort
+		inv.EffectiveEffort = attemptRoute.EffectiveEffort
+		inv.RoutePolicyVersion = attemptRoute.PolicyVersion
+		inv.RoutePhase = attemptRoute.Phase
+		inv.RouteReason = attemptRoute.Reason
+		inv.RouteSourceConfiguration = attemptRoute.SourceConfiguration
+		inv.RouteConfigurationGeneration = attemptRoute.ConfigurationGeneration
 	}
 	if opts.SessionFallback && opts.SessionFallbackReason != "" {
 		reason := opts.SessionFallbackReason

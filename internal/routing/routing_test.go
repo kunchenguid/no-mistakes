@@ -75,6 +75,35 @@ func TestDecideDoesNotClaimGPTRouteForNonCodexHarness(t *testing.T) {
 	}
 }
 
+func TestDecideClearsNonCodexEffectiveControlsAfterEveryRiskBranch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   Input
+	}{
+		{"medium work", Input{Harness: "claude", Purpose: "test", Risk: RiskMedium}},
+		{"high work", Input{Harness: "pi", Purpose: "review-fix", Risk: RiskHigh}},
+		{"confirmation", ReviewConfirmation(Input{Harness: "acp:copilot", Risk: RiskHigh})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Decide(tc.in)
+			if got.EffectiveHarness == "codex" || got.EffectiveModel != "" || got.EffectiveEffort != "" {
+				t.Fatalf("non-Codex effective evidence = %+v", got)
+			}
+		})
+	}
+}
+
+func TestForAdapterPreservesRequestedRouteButRebindsEffectiveProvider(t *testing.T) {
+	base := Decide(Input{Harness: "pi", Purpose: "review-fix", Risk: RiskHigh})
+	got := ForAdapter(base, "claude")
+	if got.RequestedHarness != "pi" || got.EffectiveHarness != "claude" {
+		t.Fatalf("provider attribution = %+v", got)
+	}
+	if got.EffectiveModel != "" || got.EffectiveEffort != "" {
+		t.Fatalf("non-Codex controls = %+v", got)
+	}
+}
+
 func TestDecideBoundsAndValidatesUntrustedRouteMetadata(t *testing.T) {
 	d := Decide(Input{
 		Harness:    string(make([]byte, 10_000)),

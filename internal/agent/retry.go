@@ -106,6 +106,7 @@ func emitAgentAttempt(opts RunOpts, name string, result *Result, err error, star
 		CompletedAt:     completedAt,
 		Session:         cloneSessionRef(opts.Session),
 		SessionFallback: opts.SessionFallback,
+		Routing:         opts.Routing,
 	})
 }
 

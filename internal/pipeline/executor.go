@@ -819,6 +819,16 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		outcome.Findings = normalizeFindingsJSON(outcome.Findings, string(stepName))
 		if stepName == types.StepReview {
 			if risk := routeRiskFromFindings(outcome.Findings); risk != routing.RiskUnknown {
+				phase := "review"
+				if sctx.Fixing {
+					phase = "review-fix"
+				}
+				if dbErr := e.db.InsertRouteResult(db.RouteResult{
+					RunID: run.ID, StepName: string(stepName), Round: roundNum,
+					Phase: phase, Risk: string(risk),
+				}); dbErr != nil {
+					return false, fmt.Errorf("persist completed review classification: %w", dbErr)
+				}
 				e.routeRisk = risk
 				// The initial review is the bootstrap classifier. Only a later
 				// review turn may select Sol, and only after that classifier ran.
@@ -1178,6 +1188,10 @@ func (a *lifecycleAgent) ReportsAgentAttempts() bool {
 	return agent.ReportsAgentAttempts(a.inner)
 }
 
+func (a *lifecycleAgent) ReportsAgentRoutes() bool {
+	return agent.ReportsAgentRoutes(a.inner)
+}
+
 const (
 	maxStepActivityText          = 240
 	stepActivityThrottleInterval = time.Second
@@ -1360,6 +1374,20 @@ func (e *Executor) currentStepName(runID string) types.StepName {
 func (e *Executor) restoreRouteState(runID string) {
 	e.routeRisk = routing.RiskUnknown
 	e.routeReviewConfirmed = false
+	if results, err := e.db.RouteResults(runID); err == nil && len(results) > 0 {
+		for i := len(results) - 1; i >= 0; i-- {
+			result := results[i]
+			if result.StepName != string(types.StepReview) {
+				continue
+			}
+			risk := routing.Risk(result.Risk)
+			if risk == routing.RiskLow || risk == routing.RiskMedium || risk == routing.RiskHigh {
+				e.routeRisk = risk
+				e.routeReviewConfirmed = result.Phase == "review-fix" && risk == routing.RiskHigh
+				return
+			}
+		}
+	}
 	decisions, err := e.db.RouteDecisions(runID)
 	if err != nil {
 		return

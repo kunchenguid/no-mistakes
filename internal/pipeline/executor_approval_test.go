@@ -8,6 +8,8 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -135,11 +137,17 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	if err := database.StartStep(stepResult.ID); err != nil {
 		t.Fatal(err)
 	}
-	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"needs a fix","action":"ask-user"}],"summary":"one issue"}`
+	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"needs a fix","action":"ask-user"}],"summary":"one issue","risk_level":"medium","risk_rationale":"medium canary risk","risk_scope":"source-or-external"}`
 	if err := database.SetStepFindings(stepResult.ID, findings); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.InsertStepRound(stepResult.ID, 1, "initial", &findings, nil, 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.InsertRouteResult(db.RouteResult{
+		RunID: run.ID, StepName: string(types.StepReview), Round: 1,
+		Phase: "review", Risk: string(routing.RiskMedium),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 25); err != nil {
@@ -148,10 +156,10 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.UpsertRunAgentSession(run.ID, string(SessionRoleReviewer), "fake", "reviewer-session"); err != nil {
+	if err := database.UpsertRunAgentSession(run.ID, string(SessionRoleReviewer), "codex", "reviewer-session"); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.UpsertRunAgentSession(run.ID, string(SessionRoleFixer), "fake", "fixer-session"); err != nil {
+	if err := database.UpsertRunAgentSession(run.ID, string(SessionRoleFixer), "codex", "fixer-session"); err != nil {
 		t.Fatal(err)
 	}
 	run, err = database.GetRun(run.ID)
@@ -160,6 +168,7 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	}
 
 	fake := newFakeSessionAgent()
+	fake.name = "codex"
 	step := &adaptiveCallStep{
 		name: types.StepReview,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
@@ -209,6 +218,9 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	}
 	if fake.calls[1].session == nil || fake.calls[1].session.ID != "reviewer-session" {
 		t.Fatalf("reviewer session = %+v, want reviewer-session", fake.calls[1].session)
+	}
+	if fake.calls[0].routing.EffectiveModel != routing.ModelTerra || fake.calls[0].routing.EffectiveEffort != routing.EffortHigh {
+		t.Fatalf("recovered medium fixer route = %+v, want Terra/high", fake.calls[0].routing)
 	}
 	resumed, err := database.GetRun(run.ID)
 	if err != nil {
