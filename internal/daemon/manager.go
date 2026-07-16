@@ -41,6 +41,7 @@ type RunManager struct {
 	wg               sync.WaitGroup                     // tracks background run goroutines
 	provisionCancels map[string]context.CancelCauseFunc
 	provisionSlots   chan struct{}
+	provisionQueue   chan struct{}
 	shuttingDown     atomic.Bool // prevents new runs during shutdown
 	db               *db.DB
 	paths            *paths.Paths
@@ -65,6 +66,7 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 		dones:            make(map[string]chan struct{}),
 		provisionCancels: make(map[string]context.CancelCauseFunc),
 		provisionSlots:   make(chan struct{}, 2),
+		provisionQueue:   make(chan struct{}, 16),
 		db:               database,
 		paths:            p,
 		steps:            stepFactory,
@@ -294,9 +296,20 @@ func (m *RunManager) resumeProvisioningRuns(runs []*db.Run) {
 		m.mu.Lock()
 		m.provisionCancels[run.ID] = cancel
 		m.mu.Unlock()
+		select {
+		case m.provisionQueue <- struct{}{}:
+		default:
+			slog.Warn("provisioning recovery queue is full", "run_id", run.ID)
+			cancel(fmt.Errorf("provisioning recovery queue is full"))
+			m.mu.Lock()
+			delete(m.provisionCancels, run.ID)
+			m.mu.Unlock()
+			continue
+		}
 		m.wg.Add(1)
 		go func(run *db.Run, repo *db.Repo, ctx context.Context) {
 			defer m.wg.Done()
+			defer func() { <-m.provisionQueue }()
 			defer func() {
 				m.mu.Lock()
 				delete(m.provisionCancels, run.ID)
@@ -694,6 +707,12 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	if err := m.db.SetRunProvisioning(run.ID, "queued", 0, ""); err != nil {
 		return "", fmt.Errorf("record provisioning: %w", err)
 	}
+	select {
+	case m.provisionQueue <- struct{}{}:
+	default:
+		_ = m.db.UpdateRunErrorStatus(run.ID, "provisioning queue is full", types.RunFailed)
+		return "", fmt.Errorf("provisioning queue is full")
+	}
 	provisionCtx, cancelProvision := context.WithCancelCause(context.Background())
 	m.mu.Lock()
 	m.provisionCancels[run.ID] = cancelProvision
@@ -701,6 +720,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
+		defer func() { <-m.provisionQueue }()
 		defer func() {
 			m.mu.Lock()
 			delete(m.provisionCancels, run.ID)
