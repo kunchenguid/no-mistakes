@@ -287,6 +287,15 @@ func TestEquivalentButDivergedClassification(t *testing.T) {
 			wantState: StateDiverged,
 			wantSafe:  "blocked_diverged",
 		},
+		{
+			name: "same path pipeline overwrite after represented work",
+			commits: []pipelineCommit{
+				{message: "feature squashed", files: map[string]string{"file.txt": "feature\n", "second.txt": "second\n"}},
+				{message: "pipeline overwrite", files: map[string]string{"file.txt": "pipeline overwrite\n"}},
+			},
+			wantState: StateDiverged,
+			wantSafe:  "blocked_diverged",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

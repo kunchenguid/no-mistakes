@@ -1,6 +1,7 @@
 package branchsync
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -21,7 +22,6 @@ import (
 )
 
 const refreshTimeout = 15 * time.Second
-const maxEquivalentProofCommits = 200
 const maxEquivalentProofPaths = 2000
 const maxEquivalentProofPathspecArgBytes = 30000
 
@@ -857,16 +857,7 @@ func equivalentDivergence(ctx context.Context, dir, local, pushed, base string) 
 	if treeMatchesOnPaths(ctx, dir, local, pushed, paths) {
 		return true
 	}
-	remoteOnly, err := revList(ctx, dir, "rev-list", "--reverse", pushed, "^"+base)
-	if err != nil || len(remoteOnly) == 0 || len(remoteOnly) > maxEquivalentProofCommits {
-		return false
-	}
-	for _, commit := range remoteOnly {
-		if treeMatchesOnPaths(ctx, dir, local, commit, paths) {
-			return true
-		}
-	}
-	return false
+	return reverseLocalPatchAppliesToTree(ctx, dir, base, local, pushed)
 }
 
 func usableEquivalenceBase(ctx context.Context, dir, local, pushed, base string) string {
@@ -931,6 +922,42 @@ func gitRawOutput(ctx context.Context, dir string, args ...string) ([]byte, erro
 		return nil, fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
 	}
 	return out, nil
+}
+
+func reverseLocalPatchAppliesToTree(ctx context.Context, dir, base, local, pushed string) bool {
+	patch, err := gitRawOutput(ctx, dir, "diff", "--no-ext-diff", "--no-color", "--binary", "--full-index", "--no-renames", "-U0", base, local)
+	if err != nil {
+		return false
+	}
+	if len(patch) == 0 {
+		return true
+	}
+	indexFile, err := os.CreateTemp("", "no-mistakes-equivalence-index-*")
+	if err != nil {
+		return false
+	}
+	indexPath := indexFile.Name()
+	_ = indexFile.Close()
+	defer os.Remove(indexPath)
+	env := append(git.NonInteractiveEnv(dir), "GIT_INDEX_FILE="+indexPath)
+	if err := runGitWithEnvInput(ctx, dir, env, nil, "read-tree", pushed+"^{tree}"); err != nil {
+		return false
+	}
+	return runGitWithEnvInput(ctx, dir, env, patch, "apply", "--cached", "--reverse", "--check", "--unidiff-zero", "--whitespace=nowarn") == nil
+}
+
+func runGitWithEnvInput(ctx context.Context, dir string, env []string, input []byte, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	cmd.Env = env
+	if input != nil {
+		cmd.Stdin = bytes.NewReader(input)
+	}
+	winproc.Harden(cmd)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(strings.TrimSpace(string(out))))
+	}
+	return nil
 }
 
 func treeMatchesOnPaths(ctx context.Context, dir, local, pushed string, paths []string) bool {
