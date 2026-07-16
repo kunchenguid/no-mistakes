@@ -109,22 +109,30 @@ No Mistakes owns routing in core and records a bounded routing generation with e
    no-mistakes runs
    ```
 2. Let pending or running pipeline runs finish. `daemon restart` and `update` refuse by default while active runs exist; do not pass `--force` for this migration path.
-3. Canary the new binary from an isolated home before touching the shared daemon:
+3. Create named temporary homes once, then canary the new binary against those exact paths before touching the shared daemon:
    ```sh
-   NM_HOME="$(mktemp -d)" HOME="$(mktemp -d)" /path/to/new/no-mistakes doctor
-   NM_HOME="$(mktemp -d)" HOME="$(mktemp -d)" /path/to/new/no-mistakes daemon start
+   CANARY_HOME="$(mktemp -d)"
+   CANARY_NM_HOME="$(mktemp -d)"
+   HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes doctor
+   HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes daemon start
    ```
-4. Verify the canary daemon does not invoke the removed router by checking its local logs and route evidence:
+4. Verify the exact canary daemon does not invoke the removed router by checking its local logs and route evidence:
    ```sh
-   NM_HOME=<canary-home> /path/to/new/no-mistakes daemon status
-   grep -R "Flow" "$NM_HOME/logs" || true
+   HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes daemon status
+   grep -R "Flow" "$CANARY_NM_HOME/logs" || true
    ```
    Route decisions should show No Mistakes model/effort policy and a `configuration_generation`, not an external router path.
-5. Restart the real daemon only after the run list is drained:
+5. Stop the canary explicitly and remove both temporary homes before touching the active installation:
+   ```sh
+   HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes daemon stop || true
+   rm -rf "$CANARY_HOME" "$CANARY_NM_HOME"
+   unset CANARY_HOME CANARY_NM_HOME
+   ```
+6. Restart the real daemon only after the run list is drained:
    ```sh
    /path/to/new/no-mistakes daemon restart
    ```
-6. Roll back by running the previous exact binary's `daemon restart` after the same drain check. If active runs appear during rollback, stop and inspect them instead of forcing the restart.
+7. Roll back by running the previous exact binary's `daemon restart` after the same drain check. If active runs appear during rollback, stop and inspect them instead of forcing the restart.
 
 The only place Flow is relevant here is migration history: current No Mistakes routing must not depend on a Flow path, manifest, or process.
 

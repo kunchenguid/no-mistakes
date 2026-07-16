@@ -175,15 +175,15 @@ func TestPerfRecordingAgent_RecordsFallbackAttemptsSeparately(t *testing.T) {
 		round:    func() int { return 1 },
 	}
 
-	if _, err := wrapped.Run(context.Background(), agent.RunOpts{Purpose: "review"}); err != nil {
-		t.Fatalf("Run: %v", err)
+	if _, err := wrapped.Run(context.Background(), agent.RunOpts{Purpose: "review"}); err == nil {
+		t.Fatal("Codex policy must fail closed instead of falling back to Claude")
 	}
 	invocations, err := database.GetAgentInvocationsByRun(run.ID)
 	if err != nil {
 		t.Fatalf("get invocations: %v", err)
 	}
-	if len(invocations) != 2 {
-		t.Fatalf("got %d invocation rows, want 2", len(invocations))
+	if len(invocations) != 1 {
+		t.Fatalf("got %d invocation rows, want one attempted Codex route", len(invocations))
 	}
 	byAgent := map[string]db.AgentInvocation{}
 	for _, invocation := range invocations {
@@ -191,9 +191,6 @@ func TestPerfRecordingAgent_RecordsFallbackAttemptsSeparately(t *testing.T) {
 	}
 	if got := byAgent["codex"]; got.ExitStatus != "error" || got.FailureCategory != "spawn" {
 		t.Fatalf("codex invocation = %+v", got)
-	}
-	if got := byAgent["claude"]; got.ExitStatus != "ok" || got.Model != "test-model-2" {
-		t.Fatalf("claude invocation = %+v", got)
 	}
 }
 
@@ -224,6 +221,31 @@ func TestPerfRecordingAgent_MixedFallbackRecordsActualProviderCold(t *testing.T)
 	}
 	if got := invocations[0]; got.Agent != "pi" || got.SessionMode != db.InvocationModeCold {
 		t.Fatalf("invocation = %+v, want pi cold", got)
+	}
+}
+
+func TestPerfRecordingAgentClearsUnenforceableGPTEvidence(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	wrapped := &perfRecordingAgent{
+		inner:    &fallbackUsageAgent{name: "claude", result: &agent.Result{Model: "claude-sonnet"}},
+		db:       database,
+		runID:    run.ID,
+		stepName: types.StepReview,
+		round:    func() int { return 1 },
+	}
+	_, err := wrapped.Run(context.Background(), agent.RunOpts{
+		Purpose: "review",
+		Routing: routing.Decision{RequestedHarness: "claude", EffectiveHarness: "codex", EffectiveModel: routing.ModelSol, EffectiveEffort: routing.EffortHigh, PolicyVersion: routing.PolicyVersion},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invs, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil || len(invs) != 1 {
+		t.Fatalf("invocations = %+v, err=%v", invs, err)
+	}
+	if invs[0].EffectiveHarness != "claude" || invs[0].EffectiveModel != "" || invs[0].EffectiveEffort != "" {
+		t.Fatalf("unenforceable route evidence = %+v", invs[0])
 	}
 }
 

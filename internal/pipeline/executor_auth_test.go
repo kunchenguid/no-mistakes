@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -183,6 +185,118 @@ func TestRecoveredAuthorizationParkSurvivesDaemonShutdown(t *testing.T) {
 	}
 	if len(steps) != 1 || steps[0].Status != types.StepStatusRunning {
 		t.Fatalf("recovered authorization step = %+v", steps)
+	}
+}
+
+func TestRecoveredAuthorizationApprovalKeepsDurableRetryBound(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		_, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "review", Purpose: "review"})
+		return nil, err
+	}}
+	ag := &countingAuthorizationAgent{}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	first := NewExecutor(database, p, nil, ag, []Step{step}, nil)
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- first.Execute(ctx, run, repo, t.TempDir()) }()
+	waitForAuthorizationGate(t, database, first, run.ID, types.StepReview, 1)
+	cancel(fmt.Errorf("daemon shutting down"))
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first parked execution = %v", err)
+	}
+
+	recovered, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryCtx, recoveryCancel := context.WithCancelCause(context.Background())
+	defer recoveryCancel(fmt.Errorf("test cleanup"))
+	second := NewExecutor(database, p, nil, ag, []Step{step}, nil)
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- second.Resume(recoveryCtx, recovered, repo, t.TempDir()) }()
+	waitForAuthorizationGate(t, database, second, run.ID, types.StepReview, 1)
+	if err := second.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitForAuthorizationGate(t, database, second, run.ID, types.StepReview, 2)
+	if err := second.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("bounded recovered execution = %v", err)
+	}
+	if got := ag.attempts.Load(); got != 2 {
+		t.Fatalf("agent attempts after restart approvals = %d, want initial plus one retry", got)
+	}
+}
+
+func TestRecoveredUnknownFixerCompletionCannotBeApprovedIntoReplay(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		if !sctx.Fixing {
+			return &StepOutcome{NeedsApproval: true, Findings: `{"summary":"needs a fix","risk_level":"high","findings":[]}`}, nil
+		}
+		_, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "fix", Purpose: "review-fix"})
+		return nil, err
+	}}
+	ag := &countingAuthorizationAgent{}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	first := NewExecutor(database, p, nil, ag, []Step{step}, nil)
+	done := make(chan error, 1)
+	go func() { done <- first.Execute(ctx, run, repo, t.TempDir()) }()
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := first.Respond(types.StepReview, types.ActionFix, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitForAuthorizationGate(t, database, first, run.ID, types.StepReview, 1)
+	cancel(fmt.Errorf("daemon shutting down"))
+	if err := <-done; err != nil {
+		t.Fatalf("first fixer park = %v", err)
+	}
+
+	recovered, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx2, cancel2 := context.WithCancelCause(context.Background())
+	defer cancel2(fmt.Errorf("test cleanup"))
+	second := NewExecutor(database, p, nil, ag, []Step{step}, nil)
+	done2 := make(chan error, 1)
+	go func() { done2 <- second.Resume(ctx2, recovered, repo, t.TempDir()) }()
+	waitForAuthorizationGate(t, database, second, run.ID, types.StepReview, 1)
+	if err := second.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done2; !errors.Is(err, errAuthorizationParked) {
+		t.Fatalf("recovered fixer park = %v, want recoverable operator park", err)
+	}
+	if got := ag.attempts.Load(); got != 1 {
+		t.Fatalf("fixer attempts after approval = %d, want no replay", got)
+	}
+	got, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != types.RunAwaitingAuth || got.BlockedReason == nil || !strings.Contains(*got.BlockedReason, "completion is unknown") {
+		t.Fatalf("recovered fixer operator state = %+v", got)
+	}
+}
+
+func TestRestoreRouteStateUsesLatestDurableClassification(t *testing.T) {
+	database, p, run, _ := setupTest(t)
+	for _, decision := range []db.RouteDecision{
+		{RunID: run.ID, RequestedHarness: "codex", EffectiveHarness: "codex", Risk: string(routing.RiskHigh), Phase: "review", PromptTransport: "stdin", CreatedAt: 10},
+		{RunID: run.ID, RequestedHarness: "codex", EffectiveHarness: "codex", Risk: string(routing.RiskMedium), Phase: "test", PromptTransport: "stdin", CreatedAt: 20},
+		{RunID: run.ID, RequestedHarness: "codex", EffectiveHarness: "codex", Risk: string(routing.RiskLow), Phase: "test", PromptTransport: "stdin", CreatedAt: 30},
+	} {
+		if err := database.InsertRouteDecision(decision); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec := NewExecutor(database, p, nil, nil, nil, nil)
+	exec.restoreRouteState(run.ID)
+	if exec.routeRisk != routing.RiskLow {
+		t.Fatalf("restored risk = %q, want latest low classification", exec.routeRisk)
 	}
 }
 

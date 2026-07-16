@@ -7,6 +7,36 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+func TestRunProjectionRollsBackWhenLifecycleEvidenceFails(t *testing.T) {
+	d, _, run := openSessionTestDB(t)
+	var err error
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.sql.Exec(`CREATE TRIGGER fail_run_failure BEFORE INSERT ON lifecycle_events WHEN NEW.event_type = 'run_failure' BEGIN SELECT RAISE(ABORT, 'injected lifecycle failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunErrorStatus(run.ID, "boom", types.RunFailed); err == nil {
+		t.Fatal("UpdateRunErrorStatus unexpectedly succeeded")
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != types.RunPending || got.Error != nil {
+		t.Fatalf("projection committed without lifecycle evidence: status=%s error=%v", got.Status, got.Error)
+	}
+	events, err := d.LifecycleEvents(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.EventType == "run_failure" {
+			t.Fatalf("failed lifecycle event persisted: %+v", event)
+		}
+	}
+}
+
 func TestAuthorizationFailureSurvivesLaterCancellationProjection(t *testing.T) {
 	d, _, run := openSessionTestDB(t)
 	if err := d.ParkRunForAuthorization(run.ID, "review-fix", "Transport channel closed, when Auth(AuthorizationRequired)"); err != nil {

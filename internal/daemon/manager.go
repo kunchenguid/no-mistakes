@@ -35,6 +35,7 @@ var fetchRecoveredRemoteBranch = git.FetchRemoteBranch
 // RunManager tracks active pipeline executors and manages run lifecycle.
 type RunManager struct {
 	mu               sync.Mutex
+	admissionMu      sync.RWMutex                       // serializes run admission with shutdown's Wait
 	executors        map[string]*pipeline.Executor      // runID → executor
 	cancels          map[string]context.CancelCauseFunc // runID → cancel function with cause
 	dones            map[string]chan struct{}           // runID → closed when goroutine exits
@@ -295,6 +296,12 @@ func (m *RunManager) resumeProvisioningRuns(runs []*db.Run) {
 		}
 		ctx, cancel := context.WithCancelCause(context.Background())
 		done := make(chan struct{})
+		m.admissionMu.RLock()
+		if m.shuttingDown.Load() {
+			m.admissionMu.RUnlock()
+			cancel(fmt.Errorf("daemon shutting down"))
+			continue
+		}
 		m.mu.Lock()
 		m.provisionCancels[run.ID] = cancel
 		m.dones[run.ID] = done
@@ -308,9 +315,11 @@ func (m *RunManager) resumeProvisioningRuns(runs []*db.Run) {
 			delete(m.provisionCancels, run.ID)
 			delete(m.dones, run.ID)
 			m.mu.Unlock()
+			m.admissionMu.RUnlock()
 			continue
 		}
 		m.wg.Add(1)
+		m.admissionMu.RUnlock()
 		go func(run *db.Run, repo *db.Repo, ctx context.Context, done chan struct{}) {
 			launched := false
 			defer m.wg.Done()
@@ -355,7 +364,9 @@ func (m *RunManager) resumeProvisioningRuns(runs []*db.Run) {
 }
 
 func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
+	m.admissionMu.RLock()
 	if m.shuttingDown.Load() {
+		m.admissionMu.RUnlock()
 		_ = plan.agent.Close()
 		return
 	}
@@ -372,6 +383,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	m.mu.Unlock()
 
 	m.wg.Add(1)
+	m.admissionMu.RUnlock()
 	go func() {
 		startedAt := time.Now()
 		defer m.wg.Done()
@@ -678,6 +690,11 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 // run outside the IPC request so slow repositories cannot hold the daemon
 // request open.
 func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
+	// Keep the read side held through branch-lock admission and wg.Add. This
+	// prevents Shutdown from completing its Wait while an already-admitted
+	// caller is still able to launch provisioning.
+	m.admissionMu.RLock()
+	defer m.admissionMu.RUnlock()
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -734,6 +751,8 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	m.provisionCancels[run.ID] = cancelProvision
 	m.dones[run.ID] = done
 	m.mu.Unlock()
+	// startRun holds admissionMu through this Add, so shutdown cannot begin a
+	// Wait concurrently with this pipeline launch.
 	m.wg.Add(1)
 	go func() {
 		launched := false
@@ -1119,7 +1138,11 @@ func (m *RunManager) HandleRespondWithOverrides(runID string, step types.StepNam
 // Shutdown cancels all active runs. Called during daemon shutdown to prevent
 // orphaned goroutines from continuing agent calls and git operations.
 func (m *RunManager) Shutdown() {
+	// No new startRun caller may pass its admission point after shutdown begins.
+	// Release before cancelling/waiting so admitted work can drain normally.
+	m.admissionMu.Lock()
 	m.shuttingDown.Store(true)
+	m.admissionMu.Unlock()
 	m.mu.Lock()
 	cancels := make(map[string]context.CancelCauseFunc, len(m.cancels))
 	for id, cancel := range m.cancels {

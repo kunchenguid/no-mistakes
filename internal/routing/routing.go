@@ -8,11 +8,11 @@ import (
 	"encoding/hex"
 	"net/url"
 	"path"
-	"strconv"
 	"strings"
 )
 
-const PolicyVersion = "nm-routing-v1"
+const PolicyVersion = "nm-routing-v2"
+const ConfigFingerprintVersion = "nm-config-fingerprint-v2"
 
 const (
 	ModelLuna   = "gpt-5.6-luna"
@@ -82,6 +82,15 @@ func Decide(in Input) Decision {
 		Repository:              bounded(CanonicalRepository(in.Repository), 512),
 		Reason:                  "default initial/default work",
 	}
+	// The approved GPT policy is enforceable only by Codex. Other adapters may
+	// still be explicitly configured, but their evidence must never claim that
+	// a GPT model or reasoning effort was effective when the adapter did not
+	// receive those controls.
+	if !strings.EqualFold(harness, "codex") {
+		d.EffectiveModel = ""
+		d.EffectiveEffort = ""
+		d.Reason = "configured harness cannot enforce the Codex GPT routing policy"
+	}
 	// The first review is the bootstrap classifier. Any caller-supplied risk
 	// is deliberately ignored until that review has produced its own result.
 	if phase == "review" && !in.ReviewConfirmation {
@@ -137,22 +146,12 @@ func ReviewConfirmation(in Input) Input {
 
 func ConfigFingerprint(parts ...string) string {
 	h := sha256.New()
+	h.Write([]byte(ConfigFingerprintVersion))
 	for _, part := range parts {
-		part = boundedFingerprintInput(part)
 		h.Write([]byte{0})
 		h.Write([]byte(part))
 	}
 	return hex.EncodeToString(h.Sum(nil)[:12])
-}
-
-func boundedFingerprintInput(part string) string {
-	const edge = 512
-	if len(part) <= edge*2 {
-		return part
-	}
-	// Include length plus both edges. This is bounded, deterministic, and
-	// avoids silently treating edits in the tail of a large config as stale.
-	return part[:edge] + "\x00len=" + strconv.Itoa(len(part)) + "\x00" + part[len(part)-edge:]
 }
 
 func CanonicalRepository(raw string) string {

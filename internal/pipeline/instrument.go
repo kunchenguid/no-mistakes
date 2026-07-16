@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -19,7 +20,7 @@ import (
 // perfRecordingAgent decorates the step agent to persist one local
 // agent_invocations row per invocation: identity, purpose, session mode,
 // timing, exit status, and token usage. Recording is local-only and
-// best-effort: a failed insert never fails the invocation, and no
+// required: a failed route insert prevents the invocation, and no
 // per-invocation record leaves the machine.
 type perfRecordingAgent struct {
 	inner                   agent.Agent
@@ -49,6 +50,14 @@ func (a *perfRecordingAgent) SupportsSessionProvider(provider string) bool {
 }
 
 func (a *perfRecordingAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	// A caller may carry a precomputed route from a step or recovery path. Do
+	// not let that metadata claim GPT controls for a non-Codex adapter.
+	if !strings.EqualFold(a.inner.Name(), "codex") {
+		opts.Routing.EffectiveHarness = a.inner.Name()
+		opts.Routing.EffectiveModel = ""
+		opts.Routing.EffectiveEffort = ""
+		opts.Routing.Reason = "configured harness cannot enforce the Codex GPT routing policy"
+	}
 	if opts.Routing.PolicyVersion == "" {
 		risk := opts.RouteRisk
 		if a.risk != nil {
@@ -79,7 +88,7 @@ func (a *perfRecordingAgent) Run(ctx context.Context, opts agent.RunOpts) (*agen
 			Repository:              opts.Routing.Repository,
 			PromptSHA256:            promptSHA, PromptBytes: promptBytes, PromptTransport: agent.PromptTransport(a.inner.Name()),
 		}); err != nil {
-			slog.Warn("failed to record route decision", "step", a.stepName, "error", err)
+			return nil, fmt.Errorf("record route decision before agent launch: %w", err)
 		}
 	}
 	attempts := 0
@@ -171,9 +180,6 @@ func (a *perfRecordingAgent) recordResult(inv *db.AgentInvocation, sessionKey st
 		return
 	}
 	inv.Model = result.Model
-	if inv.EffectiveModel == "" {
-		inv.EffectiveModel = result.Model
-	}
 	if result.ModelProvider != "" {
 		provider := result.ModelProvider
 		inv.ModelProvider = &provider

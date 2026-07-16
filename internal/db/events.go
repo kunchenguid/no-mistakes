@@ -23,6 +23,14 @@ type LifecycleEvent struct {
 }
 
 func (d *DB) AppendLifecycleEvent(event LifecycleEvent) error {
+	return d.appendLifecycleEvent(d.sql, event)
+}
+
+type lifecycleExecutor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func (d *DB) appendLifecycleEvent(exec lifecycleExecutor, event LifecycleEvent) error {
 	metadata := ""
 	if event.Metadata != nil {
 		encoded, err := json.Marshal(event.Metadata)
@@ -37,12 +45,27 @@ func (d *DB) AppendLifecycleEvent(event LifecycleEvent) error {
 	if event.CreatedAt == 0 {
 		event.CreatedAt = now()
 	}
-	_, err := d.sql.Exec(`INSERT INTO lifecycle_events
+	_, err := exec.Exec(`INSERT INTO lifecycle_events
 		(id, run_id, step_name, event_type, status, error, metadata, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, event.ID, nullable(event.RunID), nullable(event.StepName),
 		nullable(event.EventType), nullable(event.Status), nullable(event.Error), nullable(metadata), event.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("append lifecycle event: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) withLifecycleTx(fn func(*sql.Tx) error) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin lifecycle transaction: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit lifecycle transaction: %w", err)
 	}
 	return nil
 }

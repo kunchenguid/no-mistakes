@@ -38,6 +38,7 @@ type Harness struct {
 	UpstreamDir string // bare repo serving as origin for the working clone
 	WorkDir     string // working clone where the user runs `no-mistakes init`
 	AgentLog    string // every fake-agent invocation appended here, one JSON per line
+	RootDir     string // short task-local root used to keep Unix socket paths safe
 	Scenario    string // optional path to a scenario yaml; empty = built-in default
 
 	agentName         string // claude / codex / opencode
@@ -81,7 +82,7 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 
 	nmBin, fakeBin := buildBinaries(t)
 
-	root, err := os.MkdirTemp("", "nm-e2e-*")
+	root, err := os.MkdirTemp("/tmp", "nm-e2e-")
 	if err != nil {
 		t.Fatalf("mkdir e2e root: %v", err)
 	}
@@ -96,10 +97,14 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 		UpstreamDir:       filepath.Join(root, "upstream.git"),
 		WorkDir:           filepath.Join(root, "work"),
 		AgentLog:          filepath.Join(root, "fakeagent.log"),
+		RootDir:           root,
 		Scenario:          opts.Scenario,
 		agentName:         opts.Agent,
 		allowRepoCommands: opts.AllowRepoCommands,
 	}
+	// Register cleanup before setup can fail: a fatal setup path must still
+	// stop and reap any daemon it managed to start.
+	t.Cleanup(h.shutdown)
 
 	for _, dir := range []string{h.BinDir, h.NMHome, h.HomeDir, h.WorkDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -157,7 +162,6 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	h.writeGlobalConfig()
 	h.initGitRepos()
 
-	t.Cleanup(h.shutdown)
 	return h
 }
 
@@ -683,8 +687,44 @@ func (h *Harness) shutdown() {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, h.NMBin, "daemon", "stop")
 	cmd.Dir = h.daemonStopDir()
-	cmd.Env = os.Environ()
+	cmd.Env = mergedEnv(os.Environ(), map[string]string{"NM_HOME": h.NMHome, "HOME": h.HomeDir})
 	_ = cmd.Run()
+	h.reapScopedProcesses()
+}
+
+// reapScopedProcesses is a last-resort cleanup for children left by an
+// interrupted stop. It only considers command lines rooted in this harness,
+// so historical or developer-owned processes cannot be touched.
+func (h *Harness) reapScopedProcesses() {
+	if runtime.GOOS == "windows" || h.RootDir == "" {
+		return
+	}
+	for attempt := 0; attempt < 20; attempt++ {
+		out, err := exec.Command("ps", "-axo", "pid=,command=").Output()
+		if err != nil {
+			return
+		}
+		found := false
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 || !strings.Contains(line, h.RootDir) {
+				continue
+			}
+			var pid int
+			if _, scanErr := fmt.Sscanf(fields[0], "%d", &pid); scanErr != nil || pid <= 0 || pid == os.Getpid() {
+				continue
+			}
+			found = true
+			if process, findErr := os.FindProcess(pid); findErr == nil {
+				_ = process.Kill()
+			}
+		}
+		if !found {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	h.t.Errorf("scoped e2e processes remain under %s", h.RootDir)
 }
 
 func (h *Harness) daemonStopDir() string {
@@ -714,7 +754,7 @@ var (
 func buildBinaries(t *testing.T) (nmBin, fakeBin string) {
 	t.Helper()
 	buildOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "nm-e2e-bin-*")
+		dir, err := os.MkdirTemp("/tmp", "nm-e2e-bin-")
 		if err != nil {
 			buildErr = err
 			return

@@ -421,8 +421,8 @@ var defaultBinary = map[types.AgentName]string{
 
 // agentProbeOrder is the priority order for auto-detecting agents.
 var agentProbeOrder = []types.AgentName{
-	types.AgentClaude,
 	types.AgentCodex,
+	types.AgentClaude,
 	types.AgentOpenCode,
 	types.AgentRovoDev,
 	types.AgentPi,

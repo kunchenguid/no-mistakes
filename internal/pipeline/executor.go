@@ -375,6 +375,22 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	if reconciled {
 		return completeReconciledGate()
 	}
+	// Authorization parking is durable. Approval after a restart is not a new
+	// allowance: the immutable lifecycle count is the sole retry budget. A
+	// fixer transport failure is even stricter because the prior mutating turn
+	// may already have completed; approval cannot prove that it did not.
+	if run.Status == types.RunAwaitingAuth {
+		authAttempts, countErr := e.authorizationParkCount(run.ID)
+		if countErr != nil {
+			return e.failRun(run, repo, countErr, ctx)
+		}
+		if authAttempts > authorizationRecoveryLimit || authorizationFixerCompletionUnknown(run) {
+			if response.action == types.ActionApprove || response.action == types.ActionFix {
+				slog.Warn("authorization approval cannot establish safe fixer retry; preserving operator reconciliation park", "run_id", run.ID)
+			}
+			return errAuthorizationParked
+		}
+	}
 
 	approvalFields := telemetry.Fields{
 		"step":       string(gate.step.Name()),
@@ -1049,7 +1065,10 @@ func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *St
 	if err != nil {
 		return err
 	}
-	retryAllowed := attempts < authorizationRecoveryLimit
+	// The initial failed turn is not a retry. Only a non-fixer turn with no
+	// prior authorization park may consume the single recovery retry. A fixer
+	// turn is never replayed without proof of non-completion.
+	retryAllowed := attempts < authorizationRecoveryLimit && !sctx.Fixing
 	if err := e.db.ParkRunForAuthorization(run.ID, string(step.Name()), reason); err != nil {
 		return err
 	}
@@ -1112,6 +1131,11 @@ func (e *Executor) authorizationParkCount(runID string) (int, error) {
 		}
 	}
 	return count, nil
+}
+
+func authorizationFixerCompletionUnknown(run *db.Run) bool {
+	return run != nil && run.BlockedReason != nil &&
+		strings.Contains(strings.ToLower(*run.BlockedReason), "fixer turn completion is unknown")
 }
 
 type lifecycleAgent struct {
@@ -1334,17 +1358,24 @@ func (e *Executor) currentStepName(runID string) types.StepName {
 // re-bootstrapping a review route, while the route decision ledger remains the
 // audit source rather than a mutable project manifest.
 func (e *Executor) restoreRouteState(runID string) {
+	e.routeRisk = routing.RiskUnknown
+	e.routeReviewConfirmed = false
 	decisions, err := e.db.RouteDecisions(runID)
 	if err != nil {
 		return
 	}
 	for _, decision := range decisions {
-		if decision.Risk == string(routing.RiskHigh) {
-			e.routeRisk = routing.RiskHigh
+		// RouteDecisions is ordered by durable creation time and id. Each
+		// decision carries the classification in force for that invocation, so
+		// assigning on every row restores the latest classification rather than
+		// making historical high risk permanently sticky.
+		switch routing.Risk(decision.Risk) {
+		case routing.RiskLow, routing.RiskMedium, routing.RiskHigh:
+			e.routeRisk = routing.Risk(decision.Risk)
+		case routing.RiskUnknown:
+			e.routeRisk = routing.RiskUnknown
 		}
-		if decision.Phase == "review-confirmation" && decision.EffectiveModel == routing.ModelSol {
-			e.routeReviewConfirmed = true
-		}
+		e.routeReviewConfirmed = decision.Phase == "review-confirmation" && decision.EffectiveModel == routing.ModelSol
 	}
 }
 

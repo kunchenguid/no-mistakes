@@ -71,14 +71,16 @@ func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
 		UpdatedAt:         ts,
 		ProvisioningPhase: "created",
 	}
-	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, r.Status, r.CreatedAt, r.UpdatedAt,
-	)
+	err := d.withLifecycleTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(
+			`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, r.Status, r.CreatedAt, r.UpdatedAt,
+		); err != nil {
+			return fmt.Errorf("insert run: %w", err)
+		}
+		return d.appendLifecycleEvent(tx, LifecycleEvent{RunID: r.ID, EventType: "run_created", Status: string(r.Status), Metadata: map[string]any{"branch": branch, "head_sha": headSHA, "base_sha": baseSHA}})
+	})
 	if err != nil {
-		return nil, fmt.Errorf("insert run: %w", err)
-	}
-	if err := d.AppendLifecycleEvent(LifecycleEvent{RunID: r.ID, EventType: "run_created", Status: string(r.Status), Metadata: map[string]any{"branch": branch, "head_sha": headSHA, "base_sha": baseSHA}}); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -92,21 +94,24 @@ func (d *DB) SetRunProvisioning(id, phase string, progress int, provisioningErr 
 		progress = 100
 	}
 	ts := now()
-	_, err := d.sql.Exec(`UPDATE runs SET status = ?, provisioning_phase = ?, provisioning_progress = ?, provisioning_error = ?, provisioning_started_at = COALESCE(provisioning_started_at, ?), updated_at = ? WHERE id = ?`,
-		types.RunProvisioning, phase, progress, nullableString(provisioningErr), ts, ts, id)
-	if err != nil {
-		return fmt.Errorf("set run provisioning: %w", err)
-	}
-	return d.AppendLifecycleEvent(LifecycleEvent{RunID: id, EventType: "provisioning", Status: string(types.RunProvisioning), Error: provisioningErr, Metadata: map[string]any{"phase": phase, "progress": progress}})
+	err := d.withLifecycleTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`UPDATE runs SET status = ?, provisioning_phase = ?, provisioning_progress = ?, provisioning_error = ?, provisioning_started_at = COALESCE(provisioning_started_at, ?), updated_at = ? WHERE id = ?`,
+			types.RunProvisioning, phase, progress, nullableString(provisioningErr), ts, ts, id); err != nil {
+			return fmt.Errorf("set run provisioning: %w", err)
+		}
+		return d.appendLifecycleEvent(tx, LifecycleEvent{RunID: id, EventType: "provisioning", Status: string(types.RunProvisioning), Error: provisioningErr, Metadata: map[string]any{"phase": phase, "progress": progress}})
+	})
+	return err
 }
 
 func (d *DB) CompleteRunProvisioning(id string) error {
 	ts := now()
-	_, err := d.sql.Exec(`UPDATE runs SET status = ?, provisioning_phase = 'ready', provisioning_progress = 100, provisioning_error = NULL, provisioning_completed_at = ?, updated_at = ? WHERE id = ?`, types.RunPending, ts, ts, id)
-	if err != nil {
-		return fmt.Errorf("complete run provisioning: %w", err)
-	}
-	return d.AppendLifecycleEvent(LifecycleEvent{RunID: id, EventType: "provisioning_completed", Status: string(types.RunPending), Metadata: map[string]any{"progress": 100}})
+	return d.withLifecycleTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`UPDATE runs SET status = ?, provisioning_phase = 'ready', provisioning_progress = 100, provisioning_error = NULL, provisioning_completed_at = ?, updated_at = ? WHERE id = ?`, types.RunPending, ts, ts, id); err != nil {
+			return fmt.Errorf("complete run provisioning: %w", err)
+		}
+		return d.appendLifecycleEvent(tx, LifecycleEvent{RunID: id, EventType: "provisioning_completed", Status: string(types.RunPending), Metadata: map[string]any{"progress": 100}})
+	})
 }
 
 func (d *DB) FailRunProvisioning(id, phase string, provisioningErr error) error {
@@ -114,14 +119,16 @@ func (d *DB) FailRunProvisioning(id, phase string, provisioningErr error) error 
 	if provisioningErr != nil {
 		message = provisioningErr.Error()
 	}
-	if err := d.SetRunProvisioning(id, phase, 100, message); err != nil {
-		return err
-	}
-	_, err := d.sql.Exec(`UPDATE runs SET status = ?, error = ?, provisioning_error = ?, updated_at = ? WHERE id = ?`, types.RunFailed, message, message, now(), id)
-	if err != nil {
-		return fmt.Errorf("fail run provisioning: %w", err)
-	}
-	return d.AppendLifecycleEvent(LifecycleEvent{RunID: id, EventType: "provisioning_failure", Status: string(types.RunFailed), Error: message})
+	ts := now()
+	return d.withLifecycleTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`UPDATE runs SET status = ?, provisioning_phase = ?, provisioning_progress = 100, error = ?, provisioning_error = ?, provisioning_started_at = COALESCE(provisioning_started_at, ?), updated_at = ? WHERE id = ?`, types.RunFailed, phase, message, message, ts, ts, id); err != nil {
+			return fmt.Errorf("fail run provisioning: %w", err)
+		}
+		if err := d.appendLifecycleEvent(tx, LifecycleEvent{RunID: id, EventType: "provisioning", Status: string(types.RunProvisioning), Error: message, Metadata: map[string]any{"phase": phase, "progress": 100}}); err != nil {
+			return err
+		}
+		return d.appendLifecycleEvent(tx, LifecycleEvent{RunID: id, EventType: "provisioning_failure", Status: string(types.RunFailed), Error: message})
+	})
 }
 
 // GetRun returns a run by ID.
@@ -248,14 +255,12 @@ func (d *DB) GetProvisioningRuns() ([]*Run, error) {
 
 // UpdateRunStatus updates a run's status and updated_at timestamp.
 func (d *DB) UpdateRunStatus(id string, status types.RunStatus) error {
-	_, err := d.sql.Exec(`UPDATE runs SET status = ?, updated_at = ? WHERE id = ?`, status, now(), id)
-	if err != nil {
-		return fmt.Errorf("update run status: %w", err)
-	}
-	if err := d.AppendLifecycleEvent(LifecycleEvent{RunID: id, EventType: "run_status", Status: string(status)}); err != nil {
-		return err
-	}
-	return nil
+	return d.withLifecycleTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`UPDATE runs SET status = ?, updated_at = ? WHERE id = ?`, status, now(), id); err != nil {
+			return fmt.Errorf("update run status: %w", err)
+		}
+		return d.appendLifecycleEvent(tx, LifecycleEvent{RunID: id, EventType: "run_status", Status: string(status)})
+	})
 }
 
 // UpdateRunPRURL sets the PR URL on a run.
@@ -283,32 +288,32 @@ func (d *DB) UpdateRunError(id, errMsg string) error {
 
 // UpdateRunErrorStatus sets the error message and terminal status on a run.
 func (d *DB) UpdateRunErrorStatus(id, errMsg string, status types.RunStatus) error {
-	_, err := d.sql.Exec(`UPDATE runs SET error = ?, status = ?, blocked_reason = NULL, updated_at = ? WHERE id = ?`, errMsg, status, now(), id)
-	if err != nil {
-		return fmt.Errorf("update run error: %w", err)
-	}
-	if err := d.AppendLifecycleEvent(LifecycleEvent{RunID: id, EventType: "run_failure", Status: string(status), Error: errMsg}); err != nil {
-		return err
-	}
-	return nil
+	return d.withLifecycleTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`UPDATE runs SET error = ?, status = ?, blocked_reason = NULL, updated_at = ? WHERE id = ?`, errMsg, status, now(), id); err != nil {
+			return fmt.Errorf("update run error: %w", err)
+		}
+		return d.appendLifecycleEvent(tx, LifecycleEvent{RunID: id, EventType: "run_failure", Status: string(status), Error: errMsg})
+	})
 }
 
 // SetRunBlockedReason keeps a recoverable external blockage in the current
 // projection while the lifecycle ledger preserves every preceding failure.
 func (d *DB) SetRunBlockedReason(id, reason string) error {
-	_, err := d.sql.Exec(`UPDATE runs SET blocked_reason = ?, updated_at = ? WHERE id = ?`, reason, now(), id)
-	if err != nil {
-		return fmt.Errorf("set run blocked reason: %w", err)
-	}
-	return d.AppendLifecycleEvent(LifecycleEvent{RunID: id, EventType: "run_blocked", Status: string(types.RunRunning), Error: reason})
+	return d.withLifecycleTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`UPDATE runs SET blocked_reason = ?, updated_at = ? WHERE id = ?`, reason, now(), id); err != nil {
+			return fmt.Errorf("set run blocked reason: %w", err)
+		}
+		return d.appendLifecycleEvent(tx, LifecycleEvent{RunID: id, EventType: "run_blocked", Status: string(types.RunRunning), Error: reason})
+	})
 }
 
 func (d *DB) ClearRunBlockedReason(id string) error {
-	_, err := d.sql.Exec(`UPDATE runs SET blocked_reason = NULL, updated_at = ? WHERE id = ?`, now(), id)
-	if err != nil {
-		return fmt.Errorf("clear run blocked reason: %w", err)
-	}
-	return d.AppendLifecycleEvent(LifecycleEvent{RunID: id, EventType: "run_unblocked", Status: string(types.RunRunning)})
+	return d.withLifecycleTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`UPDATE runs SET blocked_reason = NULL, updated_at = ? WHERE id = ?`, now(), id); err != nil {
+			return fmt.Errorf("clear run blocked reason: %w", err)
+		}
+		return d.appendLifecycleEvent(tx, LifecycleEvent{RunID: id, EventType: "run_unblocked", Status: string(types.RunRunning)})
+	})
 }
 
 // ParkRunForAuthorization records a recoverable provider-auth transition.
@@ -319,21 +324,23 @@ func (d *DB) ParkRunForAuthorization(id, step, detail string) error {
 		reason = "authorization required: " + strings.TrimSpace(detail)
 	}
 	ts := now()
-	_, err := d.sql.Exec(`UPDATE runs SET status = ?, blocked_reason = ?, error = ?, updated_at = ? WHERE id = ?`, types.RunAwaitingAuth, reason, reason, ts, id)
-	if err != nil {
-		return fmt.Errorf("park run for authorization: %w", err)
-	}
-	return d.AppendLifecycleEvent(LifecycleEvent{RunID: id, StepName: step, EventType: "authorization_required", Status: string(types.RunAwaitingAuth), Error: reason})
+	return d.withLifecycleTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`UPDATE runs SET status = ?, blocked_reason = ?, error = ?, updated_at = ? WHERE id = ?`, types.RunAwaitingAuth, reason, reason, ts, id); err != nil {
+			return fmt.Errorf("park run for authorization: %w", err)
+		}
+		return d.appendLifecycleEvent(tx, LifecycleEvent{RunID: id, StepName: step, EventType: "authorization_required", Status: string(types.RunAwaitingAuth), Error: reason})
+	})
 }
 
 // ResumeRunAfterAuthorization clears only the current recoverable blockage.
 // The authorization_required lifecycle event remains immutable evidence.
 func (d *DB) ResumeRunAfterAuthorization(id, step string) error {
-	_, err := d.sql.Exec(`UPDATE runs SET status = ?, blocked_reason = NULL, error = NULL, updated_at = ? WHERE id = ?`, types.RunRunning, now(), id)
-	if err != nil {
-		return fmt.Errorf("resume run after authorization: %w", err)
-	}
-	return d.AppendLifecycleEvent(LifecycleEvent{RunID: id, StepName: step, EventType: "authorization_resumed", Status: string(types.RunRunning)})
+	return d.withLifecycleTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`UPDATE runs SET status = ?, blocked_reason = NULL, error = NULL, updated_at = ? WHERE id = ?`, types.RunRunning, now(), id); err != nil {
+			return fmt.Errorf("resume run after authorization: %w", err)
+		}
+		return d.appendLifecycleEvent(tx, LifecycleEvent{RunID: id, StepName: step, EventType: "authorization_resumed", Status: string(types.RunRunning)})
+	})
 }
 
 // RunIntentSourceAgent is the intent_source value stamped when the driving
