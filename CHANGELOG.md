@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.38.1](https://github.com/kunchenguid/no-mistakes/compare/v1.38.0...v1.38.1) (2026-07-16)
+
+
+### Bug Fixes
+
+* **pipeline:** use standard git credential env for steps ([#499](https://github.com/kunchenguid/no-mistakes/issues/499)) ([a87d451](https://github.com/kunchenguid/no-mistakes/commit/a87d4516381103722863ebbd29e3fc0aed61e591))
+
 ## [1.38.0](https://github.com/kunchenguid/no-mistakes/compare/v1.37.1...v1.38.0) (2026-07-16)
 
 
