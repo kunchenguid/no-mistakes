@@ -114,8 +114,9 @@ type Service struct {
 	WorkDir string
 	GateDir string
 
-	beforeApply     func()
-	beforeGateReset func()
+	beforeApply              func()
+	beforeGateReset          func()
+	beforeRecoverFastForward func()
 }
 
 // OpenCurrent opens a service for the invoking registered worktree. The caller
@@ -532,18 +533,33 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 // recoverFastForward advances the clean checked-out branch to the preserved
 // pipeline head with the same strict fast-forward and honesty rules as Apply.
 func (s *Service) recoverFastForward(ctx context.Context, run *db.Run, state State, preserved string) State {
+	if s.beforeRecoverFastForward != nil {
+		s.beforeRecoverFastForward()
+	}
+	branch, branchErr := git.CurrentBranch(ctx, s.workDir())
 	head, headErr := git.HeadSHA(ctx, s.workDir())
 	clean, _ := worktreeClean(ctx, s.workDir())
-	if headErr != nil || head != state.Local.Head || !clean {
+	if branchErr != nil || branch != state.Local.Branch || headErr != nil || head != state.Local.Head || !clean {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch or worktree changed while custody was being returned; no files or refs were changed")
 	}
 	_, mergeErr := git.Run(ctx, s.workDir(), "merge", "--ff-only", "--no-edit", preserved)
 	finalHead, _ := git.HeadSHA(ctx, s.workDir())
+	finalClean, finalReason := worktreeClean(ctx, s.workDir())
+	state.Local.Head = finalHead
+	state.Local.Clean = finalClean
+	state.Local.Reason = finalReason
+	state.Changed = finalHead == preserved && finalHead != head
 	if mergeErr != nil || finalHead != preserved {
-		state.Local.Head = finalHead
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_apply_failed", fmt.Sprintf("strict fast-forward to the preserved pipeline head failed; final HEAD is %s and no destructive recovery was attempted", finalHead))
-		blocked.Changed = finalHead != head
 		return blocked
+	}
+	if !finalClean {
+		state.State = StateDirty
+		state.Relation = RelationEqual
+		state.Safety = "blocked_post_recover_" + finalReason
+		state.Error = "HEAD reached the preserved pipeline head, but a Git hook left the worktree non-clean; custody was not recorded"
+		state.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+		return state
 	}
 	return s.finishRecover(ctx, run, true)
 }

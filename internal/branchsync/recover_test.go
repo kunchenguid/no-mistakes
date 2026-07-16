@@ -208,6 +208,46 @@ func TestRecoverCleanBehindFastForwardsAndReturnsCustody(t *testing.T) {
 	}
 }
 
+func TestRecoverFastForwardRechecksCurrentBranchBeforeMerge(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	f.service.beforeRecoverFastForward = func() {
+		mustRun(t, f.local, "checkout", "-b", "other-clean-branch", f.submitted)
+	}
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
+		t.Fatalf("recover after branch switch = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("HEAD = %s, want submitted %s", got, f.submitted)
+	}
+	if got := strings.TrimSpace(mustRun(t, f.local, "branch", "--show-current")); got != "other-clean-branch" {
+		t.Fatalf("current branch = %q", got)
+	}
+	if f.custodyReturned() {
+		t.Fatal("branch-switch refusal stamped custody")
+	}
+}
+
+func TestRecoverReportsDirtyFinalStateWhenPostMergeHookMutatesWorktree(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	hooks := filepath.Join(f.local, ".git", "hooks")
+	hook := filepath.Join(hooks, "post-merge")
+	mustWrite(t, hook, "#!/bin/sh\nprintf hook > hook-output.txt\nexit 1\n")
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || !state.Changed || state.Local.Head != f.preserved || state.State != StateDirty || state.Local.Clean || !strings.HasPrefix(state.Safety, "blocked_post_recover_") {
+		t.Fatalf("hook final state = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("honest final HEAD = %s", got)
+	}
+	if f.custodyReturned() {
+		t.Fatal("dirty post-recover state stamped custody")
+	}
+}
+
 // TestRecoverIdempotentAfterSuccess proves a repeated recover is a safe no-op.
 func TestRecoverIdempotentAfterSuccess(t *testing.T) {
 	f := newRecoverFixture(t, types.RunCancelled)
