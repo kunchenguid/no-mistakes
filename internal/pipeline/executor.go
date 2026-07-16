@@ -1020,11 +1020,16 @@ func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *St
 	if err != nil {
 		return err
 	}
-	retryAllowed := attempts < authorizationRecoveryLimit
+	if attempts >= authorizationRecoveryLimit {
+		return fmt.Errorf("authorization recovery retry limit reached after %d parked attempt(s)", attempts)
+	}
 	if err := e.db.ParkRunForAuthorization(run.ID, string(step.Name()), reason); err != nil {
 		return err
 	}
 	run.BlockedReason = func() *string { v := reason; return &v }()
+	if err := e.db.SetRunAwaitingAgent(run.ID); err != nil {
+		return err
+	}
 	findings := `{"summary":"Codex authorization is required before this turn can continue","risk_level":"high","risk_rationale":"external authentication state is unavailable","findings":[]}`
 	if err := e.db.SetStepFindings(sr.ID, findings); err != nil {
 		return err
@@ -1043,6 +1048,7 @@ func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *St
 	e.waitingStep = step.Name()
 	e.mu.Unlock()
 	e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(types.StepStatusAwaitingApproval), "", "", reason, nil)
+	parkStart := time.Now()
 	response, _, err := e.waitForApprovalOrReconcile(ctx, step, sctx, false)
 	if err != nil {
 		cause := context.Cause(ctx)
@@ -1051,11 +1057,11 @@ func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *St
 		}
 		return err
 	}
+	if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+		return dbErr
+	}
 	if response.action != types.ActionApprove && response.action != types.ActionFix {
 		return fmt.Errorf("authorization recovery requires approve or fix, got %q", response.action)
-	}
-	if !retryAllowed {
-		return errAuthorizationParked
 	}
 	if dbErr := e.db.ResumeRunAfterAuthorization(run.ID, string(step.Name())); dbErr != nil {
 		return dbErr
