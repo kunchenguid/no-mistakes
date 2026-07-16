@@ -559,7 +559,10 @@ func TestWaitForProcessExitRetriesTransientInspectionErrors(t *testing.T) {
 		daemonProcessRunning = originalProcessRunning
 	})
 
-	waitForProcessExit(4242, 50*time.Millisecond)
+	// Race-instrumented test binaries can be descheduled between the transient
+	// inspection error and the retry that observes the process exit. Keep the
+	// assertion about retrying, but leave enough time for that scheduling.
+	waitForProcessExit(4242, 500*time.Millisecond)
 
 	if checks < 3 {
 		t.Fatalf("waitForProcessExit stopped after %d checks, want at least 3", checks)

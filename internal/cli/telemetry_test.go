@@ -86,6 +86,9 @@ func (r *telemetryRecorder) find(name, field string, want any) *recordedTelemetr
 }
 
 func TestInitTracksCommandTelemetry(t *testing.T) {
+	// Starting the child daemon can exceed the production default while this
+	// package is race-instrumented and the host is under concurrent load.
+	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "30s")
 	setupTestRepo(t)
 
 	recorder := &telemetryRecorder{}

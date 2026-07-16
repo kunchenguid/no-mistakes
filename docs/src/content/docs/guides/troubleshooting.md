@@ -111,13 +111,25 @@ No Mistakes owns routing in core and records a bounded routing generation with e
 2. Let pending or running pipeline runs finish. `daemon restart` and `update` refuse by default while active runs exist; do not pass `--force` for this migration path.
 3. Create a disposable repository, named temporary homes, and an explicit Codex binary path. The workload is isolated and skips every delivery step, so it cannot push, open a PR, or touch the shared daemon:
    ```sh
-   CANARY_ROOT="$(mktemp -d)"
+   CANARY_TMP_BASE="${TMPDIR:-/tmp}"
+   CANARY_TMP_BASE="${CANARY_TMP_BASE%/}"
+   CANARY_ROOT="$(mktemp -d "$CANARY_TMP_BASE/no-mistakes-route-canary.XXXXXX")"
    CANARY_REPO="$CANARY_ROOT/repo"
    CANARY_ORIGIN="$CANARY_ROOT/origin.git"
    CANARY_HOME="$(mktemp -d)"
    CANARY_NM_HOME="$(mktemp -d)"
-   CANARY_CODEX="$(command -v codex)"
-   test -n "$CANARY_CODEX"
+   CANARY_CODEX="$CANARY_ROOT/fake-codex"
+   CANARY_INVOCATIONS="$CANARY_ROOT/codex-invocations.log"
+   export CANARY_INVOCATIONS
+   cat > "$CANARY_CODEX" <<'EOF'
+   #!/bin/sh
+   set -eu
+   cat >/dev/null
+   printf '%s\n' invoked >> "$CANARY_INVOCATIONS"
+   printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"findings\":[],\"tested\":[\"fake Codex canary\"],\"testing_summary\":\"passed\",\"risk_level\":\"low\",\"risk_rationale\":\"local canary\",\"risk_scope\":\"source-or-external\"}"}}'
+   printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
+   EOF
+   chmod 755 "$CANARY_CODEX"
    git init --bare --initial-branch=main "$CANARY_ORIGIN"
    git init -b main "$CANARY_REPO"
    git -C "$CANARY_REPO" config user.email canary@example.invalid
@@ -128,6 +140,9 @@ No Mistakes owns routing in core and records a bounded routing generation with e
    git -C "$CANARY_REPO" remote add origin "$CANARY_ORIGIN"
    git -C "$CANARY_REPO" push origin main
    git -C "$CANARY_REPO" switch -c route-canary
+   printf 'post-branch reviewable change\n' > "$CANARY_REPO/route-canary.txt"
+   git -C "$CANARY_REPO" add route-canary.txt
+   git -C "$CANARY_REPO" commit -m 'canary: review route change'
    mkdir -p "$CANARY_NM_HOME"
    cat > "$CANARY_NM_HOME/config.yaml" <<EOF
    agent: codex
@@ -142,14 +157,22 @@ No Mistakes owns routing in core and records a bounded routing generation with e
    (cd "$CANARY_REPO" && HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes axi run \
      --intent 'verify the isolated route policy and evidence' \
      --skip rebase,test,document,lint,push,pr,ci --yes)
-   (cd "$CANARY_REPO" && HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes axi route-evidence)
+   (cd "$CANARY_REPO" && HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes axi route-evidence) > "$CANARY_ROOT/route-evidence.toon"
+   grep -q 'route_decisions\[1\]' "$CANARY_ROOT/route-evidence.toon"
+   grep -q 'nm-routing-v2' "$CANARY_ROOT/route-evidence.toon"
+   grep -q 'gpt-5.6-luna' "$CANARY_ROOT/route-evidence.toon"
+   grep -q 'xhigh' "$CANARY_ROOT/route-evidence.toon"
+   grep -q 'configuration_generation' "$CANARY_ROOT/route-evidence.toon"
+   test -s "$CANARY_INVOCATIONS"
    ```
    Inspect `route_decisions` for the requested/effective harness, model, effort, `policy_version`, and `configuration_generation`, and inspect `review_results` for the completed classification. Codex rows should show the No Mistakes GPT policy; non-Codex rows must leave effective model and effort empty. The output must contain no external router name or process. This is a real agent invocation inside the disposable repository, not a log-only daemon check.
 5. Stop the canary explicitly and remove both temporary homes before touching the active installation:
    ```sh
    (cd "$CANARY_REPO" && HOME="$CANARY_HOME" NM_HOME="$CANARY_NM_HOME" /path/to/new/no-mistakes daemon stop) || true
-   rm -rf "$CANARY_ROOT" "$CANARY_HOME" "$CANARY_NM_HOME"
-   unset CANARY_ROOT CANARY_REPO CANARY_ORIGIN CANARY_HOME CANARY_NM_HOME CANARY_CODEX
+   test -n "$CANARY_ROOT" -a -n "$CANARY_HOME" -a -n "$CANARY_NM_HOME"
+   case "$CANARY_ROOT" in "$CANARY_TMP_BASE"/*) ;; *) echo "refusing unsafe canary cleanup" >&2; exit 1 ;; esac
+   rm -rf -- "$CANARY_ROOT" "$CANARY_HOME" "$CANARY_NM_HOME"
+   unset CANARY_TMP_BASE CANARY_ROOT CANARY_REPO CANARY_ORIGIN CANARY_HOME CANARY_NM_HOME CANARY_CODEX CANARY_INVOCATIONS
    ```
 6. Restart the real daemon only after the run list is drained:
    ```sh

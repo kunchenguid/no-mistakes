@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -331,6 +332,118 @@ func TestRestoreRouteStateUsesPostResultReviewClassification(t *testing.T) {
 				t.Fatalf("restored route = %q/%t, want %q/%t", exec.routeRisk, exec.routeReviewConfirmed, tc.risk, tc.wantConfirm)
 			}
 		})
+	}
+}
+
+func TestRestoreRouteStateUsesAppendOrderAcrossClockRollbackAndTies(t *testing.T) {
+	database, p, run, _ := setupTest(t)
+	for _, result := range []db.RouteResult{
+		{RunID: run.ID, StepName: string(types.StepReview), Round: 1, Phase: "review-fix", Risk: string(routing.RiskHigh), CreatedAt: 200},
+		{RunID: run.ID, StepName: string(types.StepReview), Round: 2, Phase: "review-fix", Risk: string(routing.RiskLow), CreatedAt: 100},
+		{RunID: run.ID, StepName: string(types.StepReview), Round: 3, Phase: "review-fix", Risk: string(routing.RiskMedium), CreatedAt: 100},
+	} {
+		if err := database.InsertRouteResult(result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec := NewExecutor(database, p, nil, nil, nil, nil)
+	exec.restoreRouteState(run.ID)
+	if exec.routeRisk != routing.RiskMedium || exec.routeReviewConfirmed {
+		t.Fatalf("restored route = %q/%t, want latest equal-clock medium/false", exec.routeRisk, exec.routeReviewConfirmed)
+	}
+
+	if err := database.InsertRouteResult(db.RouteResult{
+		RunID: run.ID, StepName: string(types.StepReview), Round: 4,
+		Phase: "review-fix", Risk: string(routing.RiskHigh), CreatedAt: 50,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	exec.restoreRouteState(run.ID)
+	if exec.routeRisk != routing.RiskHigh || !exec.routeReviewConfirmed {
+		t.Fatalf("restored later high route = %q/%t, want high/true", exec.routeRisk, exec.routeReviewConfirmed)
+	}
+}
+
+func TestExecutorClearsLiveConfirmationBeforeNextReview(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.InsertRouteResult(db.RouteResult{
+		RunID: run.ID, StepName: string(types.StepReview), Round: 1,
+		Phase: "review", Risk: string(routing.RiskHigh), CreatedAt: 200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	exec := NewExecutor(database, p, nil, &routingCaptureAgent{}, nil, nil)
+	exec.restoreRouteState(run.ID)
+	if exec.routeRisk != routing.RiskHigh || exec.routeReviewConfirmed {
+		t.Fatalf("initial recovered route = %q/%t", exec.routeRisk, exec.routeReviewConfirmed)
+	}
+	if err := os.MkdirAll(p.RunLogDir(run.ID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		if _, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "review", Purpose: "review-fix"}); err != nil {
+			return nil, err
+		}
+		return &StepOutcome{Findings: fmt.Sprintf(`{"findings":[],"risk_level":"%s"}`, sctx.UserIntent)}, nil
+	}}
+	stepResult := func() *db.StepResult {
+		sr, err := database.InsertStepResult(run.ID, types.StepReview)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sr
+	}
+	// A fixing high result confirms the route.
+	step.fn = func(sctx *StepContext) (*StepOutcome, error) {
+		if _, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "high", Purpose: "review-fix"}); err != nil {
+			return nil, err
+		}
+		return &StepOutcome{Findings: `{"findings":[],"risk_level":"high"}`}, nil
+	}
+	if _, err := exec.executeStep(context.Background(), step, stepResult(), run, repo, t.TempDir(), p.RunLogDir(run.ID), stepExecutionState{fixing: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !exec.routeReviewConfirmed {
+		t.Fatal("high fixing review did not confirm route")
+	}
+
+	// A later fixing low result must clear confirmation in the same live
+	// executor, before any daemon restart or recovery path runs.
+	step.fn = func(sctx *StepContext) (*StepOutcome, error) {
+		if _, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "low", Purpose: "review-fix"}); err != nil {
+			return nil, err
+		}
+		return &StepOutcome{Findings: `{"findings":[],"risk_level":"low"}`}, nil
+	}
+	if _, err := exec.executeStep(context.Background(), step, stepResult(), run, repo, t.TempDir(), p.RunLogDir(run.ID), stepExecutionState{fixing: true}); err != nil {
+		t.Fatal(err)
+	}
+	if exec.routeReviewConfirmed {
+		t.Fatal("low fixing review left confirmation enabled")
+	}
+
+	// The next review must carry ordinary review evidence, not a false
+	// review-confirmation phase. Recovery must agree with that immutable state.
+	step.fn = func(sctx *StepContext) (*StepOutcome, error) {
+		if _, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "next", Purpose: "review"}); err != nil {
+			return nil, err
+		}
+		return &StepOutcome{Findings: `{"findings":[],"risk_level":"low"}`}, nil
+	}
+	if _, err := exec.executeStep(context.Background(), step, stepResult(), run, repo, t.TempDir(), p.RunLogDir(run.ID), stepExecutionState{}); err != nil {
+		t.Fatal(err)
+	}
+	decisions, err := database.RouteDecisions(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decisions) != 3 || decisions[len(decisions)-1].Phase == "review-confirmation" {
+		t.Fatalf("route decisions = %+v", decisions)
+	}
+	exec.restoreRouteState(run.ID)
+	if exec.routeRisk != routing.RiskLow || exec.routeReviewConfirmed {
+		t.Fatalf("recovered post-downgrade route = %q/%t", exec.routeRisk, exec.routeReviewConfirmed)
 	}
 }
 

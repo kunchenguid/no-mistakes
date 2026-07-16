@@ -184,11 +184,19 @@ CREATE TABLE IF NOT EXISTS route_results (
     round      INTEGER NOT NULL,
     phase      TEXT NOT NULL,
     risk       TEXT NOT NULL DEFAULT 'unknown',
+    append_seq INTEGER NOT NULL CHECK (append_seq > 0),
     created_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_route_results_run_created
     ON route_results (run_id, created_at, id);
+
+-- One row is the durable append-order authority for completed route results.
+-- It is advanced and consumed in the same transaction as each result insert.
+CREATE TABLE IF NOT EXISTS route_result_sequence (
+    id       INTEGER PRIMARY KEY CHECK (id = 1),
+    next_seq INTEGER NOT NULL
+);
 `
 
 // migrationStatements hold additive schema changes applied to databases that
@@ -252,4 +260,5 @@ var migrationStatements = []string{
 	`ALTER TABLE route_decisions ADD COLUMN prompt_bytes INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE route_decisions ADD COLUMN prompt_transport TEXT NOT NULL DEFAULT 'stdin'`,
 	`ALTER TABLE route_decisions ADD COLUMN risk TEXT NOT NULL DEFAULT 'unknown'`,
+	`ALTER TABLE route_results ADD COLUMN append_seq INTEGER`,
 }

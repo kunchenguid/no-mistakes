@@ -64,7 +64,7 @@ func TestAxiRouteEvidenceRendersStableDecisionAndPostResultArrays(t *testing.T) 
 	for _, want := range []string{
 		"run: \"" + run.ID + "\"",
 		"route_decisions[1]{id,step,round,requested_harness,effective_harness,requested_model,effective_model,requested_effort,effective_effort,policy_version,phase,risk,reason,source_configuration,configuration_generation,repository,prompt_transport,created_at}:",
-		"review_results[1]{id,step,round,phase,risk,created_at}:",
+		"review_results[1]{id,step,round,phase,risk,append_seq,created_at}:",
 		"cfg",
 		"gen-1",
 		"medium",

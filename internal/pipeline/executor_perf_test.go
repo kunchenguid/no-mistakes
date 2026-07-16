@@ -92,6 +92,75 @@ func TestPerfRecordingAgentRoutesSolOnlyForConfirmedReview(t *testing.T) {
 	}
 }
 
+func TestExecutorReviewRiskDowngradeRevokesLiveSolConfirmation(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	capture := &routingCaptureAgent{}
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			priorRisk := routeRiskFromFindings(sctx.PreviousFindings)
+			if _, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{
+				Prompt:                  "review",
+				Purpose:                 "review",
+				RouteRisk:               priorRisk,
+				RouteReviewConfirmation: sctx.Fixing && priorRisk == routing.RiskHigh,
+			}); err != nil {
+				return nil, err
+			}
+
+			risk := "high"
+			if callCount >= 3 {
+				risk = "low"
+			}
+			needsApproval := callCount < 4
+			findings := `{"findings":[],"risk_level":"` + risk + `","risk_rationale":"route test","risk_scope":"source-or-external"}`
+			if needsApproval {
+				findings = `{"findings":[{"id":"route-finding","severity":"warning","description":"continue route test","action":"ask-user"}],"risk_level":"` + risk + `","risk_rationale":"route test","risk_scope":"source-or-external"}`
+			}
+			return &StepOutcome{NeedsApproval: needsApproval, Findings: findings}, nil
+		},
+	}
+	exec := NewExecutor(database, p, &config.Config{}, capture, []Step{step}, nil)
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), run, repo, t.TempDir()) }()
+
+	for wantResults := 1; wantResults <= 3; wantResults++ {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			results, err := database.RouteResults(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(results) >= wantResults {
+				if err := exec.Respond(types.StepReview, types.ActionFix, nil); err == nil {
+					break
+				}
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("review round %d never reached its approval gate", wantResults)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+	if len(capture.seen) != 4 {
+		t.Fatalf("review routes = %d, want four rounds", len(capture.seen))
+	}
+	if got := capture.seen[3].Routing; got.Phase != "review" || got.EffectiveModel != routing.ModelLuna || got.EffectiveEffort != routing.EffortXHigh {
+		t.Fatalf("post-downgrade review route = %+v, want ordinary Luna/xhigh review", got)
+	}
+}
+
 func (a *fallbackUsageAgent) Name() string { return a.name }
 
 func (a *fallbackUsageAgent) Run(context.Context, agent.RunOpts) (*agent.Result, error) {

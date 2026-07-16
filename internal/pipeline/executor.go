@@ -831,10 +831,10 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				}
 				e.routeRisk = risk
 				// The initial review is the bootstrap classifier. Only a later
-				// review turn may select Sol, and only after that classifier ran.
-				if sctx.Fixing && risk == routing.RiskHigh {
-					e.routeReviewConfirmed = true
-				}
+				// high-risk review turn may select Sol. Assign on every completed
+				// classification so a downgrade revokes confirmation eligibility
+				// immediately, matching restart recovery from route_results.
+				e.routeReviewConfirmed = sctx.Fixing && risk == routing.RiskHigh
 			}
 		}
 		finalExitCode = outcome.ExitCode

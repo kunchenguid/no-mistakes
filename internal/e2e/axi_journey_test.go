@@ -35,10 +35,15 @@ func axiScenario(t *testing.T) string {
           file: "feature.txt"
           line: 1
           description: "potential nil deref"
+          review_scope: source
           action: ask-user
       summary: "found 1 issue"
       risk_level: medium
       risk_rationale: "warning requires human review"
+      risk_scope: "source-or-external"
+      tested: []
+      testing_summary: "review-only journey"
+      artifacts: []
   - text: "no issues found"
     structured:
       findings: []
@@ -66,7 +71,9 @@ func axiScenario(t *testing.T) string {
 // proves the agent-supplied intent is used verbatim (no transcript inference)
 // and that `axi run --yes` auto-approves the gate end to end.
 func TestAxiAgentJourney(t *testing.T) {
-	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: axiScenario(t)})
+	// Use the isolated fake Codex adapter so route evidence proves a concrete
+	// policy-capable adapter was actually launched, not just a daemon path.
+	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: axiScenario(t)})
 
 	// Initialize the gate from a worktree, mirroring the real install flow.
 	h.CommitChange("init-axi", "seed.txt", "seed\n", "seed for axi init")
@@ -125,15 +132,21 @@ func TestAxiAgentJourney(t *testing.T) {
 		t.Fatalf("axi route-evidence: %v\n%s", err, routeOut)
 	}
 	for _, want := range []string{
-		"route_decisions[",
+		"route_decisions[1]",
 		"review_results[",
 		"policy_version",
 		"configuration_generation",
-		",review,1,review,medium,",
+		",review,1,review,medium,1,",
 	} {
 		if !strings.Contains(routeOut, want) {
 			t.Fatalf("axi route-evidence missing %q:\n%s", want, routeOut)
 		}
+	}
+	if strings.Contains(routeOut, "route_decisions[0]") {
+		t.Fatalf("axi route-evidence returned no concrete route decisions:\n%s", routeOut)
+	}
+	if findInvocationContaining(h.AgentInvocations(), "Review the code changes and return structured findings") == "" {
+		t.Fatal("axi route-evidence journey did not invoke the isolated Codex adapter")
 	}
 
 	doneOut, err := h.RunInDir(fw, "axi", "respond", "--action", "approve")

@@ -1,6 +1,11 @@
 package db
 
 import (
+	"database/sql"
+	"fmt"
+	"path/filepath"
+	"sort"
+	"sync"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -56,8 +61,155 @@ func TestRouteResultsPersistCompletedReviewClassification(t *testing.T) {
 	if err != nil || len(results) != 1 {
 		t.Fatalf("route results = %+v, err = %v", results, err)
 	}
-	if results[0].Phase != "review-fix" || results[0].Risk != "low" || results[0].Round != 2 {
+	if results[0].Phase != "review-fix" || results[0].Risk != "low" || results[0].Round != 2 || results[0].AppendSeq == 0 {
 		t.Fatalf("route result = %+v", results[0])
+	}
+}
+
+func TestRouteResultsUseDurableAppendOrderAcrossClockRollbackAndTies(t *testing.T) {
+	d, _, run := openSessionTestDB(t)
+	for _, result := range []RouteResult{
+		{RunID: run.ID, StepName: "review", Round: 1, Phase: "review-fix", Risk: "high", CreatedAt: 200},
+		{RunID: run.ID, StepName: "review", Round: 2, Phase: "review-fix", Risk: "low", CreatedAt: 100},
+		{RunID: run.ID, StepName: "review", Round: 3, Phase: "review-fix", Risk: "medium", CreatedAt: 100},
+		{RunID: run.ID, StepName: "review", Round: 4, Phase: "review-fix", Risk: "high", CreatedAt: 50},
+	} {
+		if err := d.InsertRouteResult(result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	results, err := d.RouteResults(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"high", "low", "medium", "high"}
+	if len(results) != len(want) {
+		t.Fatalf("route results = %+v", results)
+	}
+	for i, risk := range want {
+		if results[i].Risk != risk || results[i].AppendSeq != int64(i+1) {
+			t.Fatalf("result[%d] = %+v, want risk %q and append sequence %d", i, results[i], risk, i+1)
+		}
+	}
+}
+
+func TestRouteResultsRepairMalformedAndDuplicateAppendSequencesDeterministically(t *testing.T) {
+	d, _, run := openSessionTestDB(t)
+	for i, risk := range []string{"high", "low", "medium"} {
+		if err := d.InsertRouteResult(RouteResult{ID: fmt.Sprintf("repair-%d", i), RunID: run.ID, StepName: "review", Round: i + 1, Phase: "review-fix", Risk: risk, CreatedAt: int64(10 + i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "repair.sqlite")
+	// Copy the test database through SQLite so reopening exercises the same
+	// migration/repair path without reaching into DB internals.
+	if _, err := d.sql.Exec(`VACUUM INTO ?`, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", path+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(on)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`DROP INDEX idx_route_results_append_seq`); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE route_results SET append_seq = CASE round WHEN 1 THEN 'bad' WHEN 2 THEN 1 ELSE 1 END`); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	repaired, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repaired.Close()
+	results, err := repaired.RouteResults(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("repaired results = %+v", results)
+	}
+	// The first valid sequence wins; malformed and duplicate rows are assigned
+	// monotonically after the valid maximum in legacy created_at,id order.
+	if results[0].Risk != "low" || results[1].Risk != "high" || results[2].Risk != "medium" {
+		t.Fatalf("repaired durable order = %+v", results)
+	}
+	seqs := make([]int64, 0, len(results))
+	for _, result := range results {
+		seqs = append(seqs, result.AppendSeq)
+	}
+	if !sort.SliceIsSorted(seqs, func(i, j int) bool { return seqs[i] < seqs[j] }) || seqs[0] != 1 || seqs[1] != 2 || seqs[2] != 3 {
+		t.Fatalf("repaired sequences = %v", seqs)
+	}
+}
+
+func TestRouteResultsConcurrentInsertionUsesUniqueMonotonicSequences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "concurrent.sqlite")
+	first, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := first.InsertRepo("/tmp/concurrent-route-results", "https://github.com/test/concurrent", "main")
+	if err != nil {
+		first.Close()
+		t.Fatal(err)
+	}
+	run, err := first.InsertRun(repo.ID, "feature/concurrent", "head", "base")
+	if err != nil {
+		first.Close()
+		t.Fatal(err)
+	}
+	second, err := Open(path)
+	if err != nil {
+		first.Close()
+		t.Fatal(err)
+	}
+	defer first.Close()
+	defer second.Close()
+
+	const writers = 32
+	var wg sync.WaitGroup
+	errCh := make(chan error, writers)
+	for i := 0; i < writers; i++ {
+		writer := first
+		if i%2 == 1 {
+			writer = second
+		}
+		wg.Add(1)
+		go func(i int, writer *DB) {
+			defer wg.Done()
+			errCh <- writer.InsertRouteResult(RouteResult{
+				ID: fmt.Sprintf("concurrent-%02d", i), RunID: run.ID, StepName: "review",
+				Round: i + 1, Phase: "review-fix", Risk: "low", CreatedAt: 1,
+			})
+		}(i, writer)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	results, err := first.RouteResults(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != writers {
+		t.Fatalf("got %d concurrent results, want %d", len(results), writers)
+	}
+	for i, result := range results {
+		if result.AppendSeq != int64(i+1) {
+			t.Fatalf("result[%d] sequence = %d, want %d", i, result.AppendSeq, i+1)
+		}
 	}
 }
 

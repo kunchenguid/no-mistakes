@@ -117,6 +117,68 @@ func TestOpenMigratesExistingStepRoundsColumns(t *testing.T) {
 	}
 }
 
+func TestOpenBackfillsLegacyRouteResultsBeforeInstallingSequenceAuthority(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy-route-results.sqlite")
+	legacy, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(on)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`
+		CREATE TABLE route_results (
+			id TEXT PRIMARY KEY,
+			run_id TEXT NOT NULL,
+			step_name TEXT NOT NULL,
+			round INTEGER NOT NULL,
+			phase TEXT NOT NULL,
+			risk TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		);
+		INSERT INTO route_results (id, run_id, step_name, round, phase, risk, created_at)
+		VALUES
+			('legacy-high', 'run-1', 'review', 1, 'review-fix', 'high', 200),
+			('legacy-low', 'run-1', 'review', 2, 'review-fix', 'low', 100),
+			('legacy-medium', 'run-1', 'review', 3, 'review-fix', 'medium', 100);
+	`); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open legacy route-results database: %v", err)
+	}
+	defer d.Close()
+	results, err := d.RouteResults("run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("backfilled route results = %+v", results)
+	}
+	for i, want := range []string{"low", "medium", "high"} {
+		if results[i].Risk != want || results[i].AppendSeq != int64(i+1) {
+			t.Fatalf("backfilled result[%d] = %+v, want %s sequence %d", i, results[i], want, i+1)
+		}
+	}
+	if _, err := d.sql.Exec(`INSERT INTO route_results (id, run_id, step_name, round, phase, risk, created_at, append_seq)
+		VALUES ('legacy-next', 'run-1', 'review', 4, 'review-fix', 'low', 1, 1)`); err == nil {
+		t.Fatal("duplicate append sequence was accepted after migration")
+	}
+	if err := d.InsertRouteResult(RouteResult{ID: "legacy-next", RunID: "run-1", StepName: "review", Round: 4, Phase: "review-fix", Risk: "low", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	results, err = d.RouteResults("run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[len(results)-1].AppendSeq != 4 {
+		t.Fatalf("post-migration append sequence = %d, want 4", results[len(results)-1].AppendSeq)
+	}
+}
+
 func TestOpenMigratesReposForkURLColumn(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.sqlite")
 

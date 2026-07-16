@@ -183,6 +183,7 @@ type RouteResult struct {
 	Round     int
 	Phase     string
 	Risk      string
+	AppendSeq int64
 	CreatedAt int64
 }
 
@@ -196,19 +197,41 @@ func (d *DB) InsertRouteResult(result RouteResult) error {
 	if result.CreatedAt == 0 {
 		result.CreatedAt = now()
 	}
-	_, err := d.sql.Exec(`INSERT INTO route_results
-		(id, run_id, step_name, round, phase, risk, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, result.ID, result.RunID, result.StepName,
-		result.Round, result.Phase, result.Risk, result.CreatedAt)
+	tx, err := d.sql.Begin()
 	if err != nil {
-		return fmt.Errorf("insert route result: %w", err)
+		return fmt.Errorf("begin route result insert: %w", err)
+	}
+	rollback := func(err error) error {
+		_ = tx.Rollback()
+		return err
+	}
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO route_result_sequence (id, next_seq) VALUES (1, 0)`); err != nil {
+		return rollback(fmt.Errorf("initialize route result sequence: %w", err))
+	}
+	if _, err := tx.Exec(`UPDATE route_result_sequence SET next_seq = next_seq + 1 WHERE id = 1`); err != nil {
+		return rollback(fmt.Errorf("advance route result sequence: %w", err))
+	}
+	if err := tx.QueryRow(`SELECT next_seq FROM route_result_sequence WHERE id = 1`).Scan(&result.AppendSeq); err != nil {
+		return rollback(fmt.Errorf("read route result sequence: %w", err))
+	}
+	if _, err := tx.Exec(`INSERT INTO route_results
+		(id, run_id, step_name, round, phase, risk, append_seq, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, result.ID, result.RunID, result.StepName,
+		result.Round, result.Phase, result.Risk, result.AppendSeq, result.CreatedAt); err != nil {
+		return rollback(fmt.Errorf("insert route result: %w", err))
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit route result: %w", err)
 	}
 	return nil
 }
 
 func (d *DB) RouteResults(runID string) ([]RouteResult, error) {
-	rows, err := d.sql.Query(`SELECT id, run_id, step_name, round, phase, risk, created_at
-		FROM route_results WHERE run_id = ? ORDER BY created_at, id`, runID)
+	rows, err := d.sql.Query(`SELECT id, run_id, step_name, round, phase, risk,
+		COALESCE(CAST(append_seq AS INTEGER), 0), created_at
+		FROM route_results WHERE run_id = ? ORDER BY
+			CASE WHEN COALESCE(CAST(append_seq AS INTEGER), 0) > 0 THEN 0 ELSE 1 END,
+			COALESCE(CAST(append_seq AS INTEGER), 0), id`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("get route results: %w", err)
 	}
@@ -217,7 +240,7 @@ func (d *DB) RouteResults(runID string) ([]RouteResult, error) {
 	for rows.Next() {
 		var result RouteResult
 		if err := rows.Scan(&result.ID, &result.RunID, &result.StepName, &result.Round,
-			&result.Phase, &result.Risk, &result.CreatedAt); err != nil {
+			&result.Phase, &result.Risk, &result.AppendSeq, &result.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan route result: %w", err)
 		}
 		results = append(results, result)

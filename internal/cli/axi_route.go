@@ -37,6 +37,7 @@ type routeResultRow struct {
 	Round     int    `toon:"round"`
 	Phase     string `toon:"phase"`
 	Risk      string `toon:"risk"`
+	AppendSeq int64  `toon:"append_seq"`
 	CreatedAt int64  `toon:"created_at"`
 }
 
@@ -100,7 +101,7 @@ func runAxiRouteEvidence(cmd *cobra.Command, runID string) (string, error) {
 	for _, result := range results {
 		resultRows = append(resultRows, routeResultRow{
 			ID: result.ID, Step: result.StepName, Round: result.Round,
-			Phase: result.Phase, Risk: result.Risk, CreatedAt: result.CreatedAt,
+			Phase: result.Phase, Risk: result.Risk, AppendSeq: result.AppendSeq, CreatedAt: result.CreatedAt,
 		})
 	}
 	emitDoc(cmd,
