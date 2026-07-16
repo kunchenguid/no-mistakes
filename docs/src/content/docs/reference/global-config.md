@@ -256,7 +256,7 @@ For older active runs that do not yet have activity rows, AXI falls back to the 
 
 ### supervision_max_stale_heartbeats
 
-How many consecutive five-minute hook-native Codex supervision heartbeats may
+How many consecutive five-minute hook-native agent-supervision heartbeats may
 show no authoritative run-state progress before the following heartbeat emits
 one `stale` handoff and pauses supervision. It applies only to the optional
 `axi supervise` Stop-hook adapter; it does not affect AXI's public quiet
@@ -273,7 +273,7 @@ The heartbeat interval is deliberately fixed at five minutes. A value of `4`
 therefore shows up to four unchanged heartbeats before the next deadline
 pauses the local supervisor. A meaningful authoritative run update resets the
 budget. The [CLI reference](/no-mistakes/reference/cli/#no-mistakes-axi-supervise)
-owns the separate Codex Stop-hook timeout preflight.
+owns the separate native Stop-hook timeout preflight.
 
 ### daemon_connect_timeout
 

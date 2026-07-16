@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,6 +37,26 @@ type codexHookEvent struct {
 	CWD            string `json:"cwd"`
 	HookEventName  string `json:"hook_event_name"`
 	StopHookActive bool   `json:"stop_hook_active"`
+}
+
+// claudeHookEvent is the stable subset of the official Claude Code Stop-hook
+// payload. Claude does not expose a turn id, so a bounded opaque digest of the
+// completed assistant message is used only for local duplicate suppression.
+// Neither message nor digest is ever returned through the hook channel.
+type claudeHookEvent struct {
+	SessionID            string `json:"session_id"`
+	CWD                  string `json:"cwd"`
+	HookEventName        string `json:"hook_event_name"`
+	StopHookActive       bool   `json:"stop_hook_active"`
+	LastAssistantMessage string `json:"last_assistant_message"`
+}
+
+// supervisorHookEvent is the provider-neutral, privacy-bounded event shape
+// needed after provider-specific payload validation has completed.
+type supervisorHookEvent struct {
+	SessionID string
+	HandoffID string
+	CWD       string
 }
 
 type supervisorOutcome string
@@ -86,6 +108,19 @@ func newAxiCodexHookCmd() *cobra.Command {
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAxiCodexHook(cmd.InOrStdin(), cmd.OutOrStdout())
+		},
+	}
+}
+
+func newAxiClaudeHookCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:           "claude-hook",
+		Short:         "Claude Code Stop-hook adapter for armed supervision",
+		Args:          cobra.NoArgs,
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runAxiClaudeHook(cmd.InOrStdin(), cmd.OutOrStdout())
 		},
 	}
 }
@@ -177,6 +212,36 @@ func runAxiCodexHook(in io.Reader, out io.Writer) error {
 	if event.HookEventName != "Stop" || strings.TrimSpace(event.SessionID) == "" || strings.TrimSpace(event.TurnID) == "" {
 		return nil
 	}
+	return runAxiSupervisorHook(supervisorHookEvent{SessionID: event.SessionID, HandoffID: event.TurnID, CWD: event.CWD}, out)
+}
+
+// runAxiClaudeHook is intentionally quiet unless it emits the documented Stop
+// continuation object. Claude's message digest is local-only duplicate
+// suppression; no transcript or message content is read or retained.
+func runAxiClaudeHook(in io.Reader, out io.Writer) error {
+	var event claudeHookEvent
+	if err := json.NewDecoder(io.LimitReader(in, 64<<10)).Decode(&event); err != nil {
+		return nil
+	}
+	if event.HookEventName != "Stop" || strings.TrimSpace(event.SessionID) == "" {
+		return nil
+	}
+	handoffID := claudeHookHandoffID(event.SessionID, event.LastAssistantMessage)
+	if handoffID == "" {
+		return nil
+	}
+	return runAxiSupervisorHook(supervisorHookEvent{SessionID: event.SessionID, HandoffID: handoffID, CWD: event.CWD}, out)
+}
+
+func claudeHookHandoffID(sessionID, lastAssistantMessage string) string {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(lastAssistantMessage) == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(sessionID + "\x00" + lastAssistantMessage))
+	return "claude:" + hex.EncodeToString(sum[:])
+}
+
+func runAxiSupervisorHook(event supervisorHookEvent, out io.Writer) error {
 	cwd, err := canonicalSupervisorCWD(event.CWD)
 	if err != nil {
 		return nil
@@ -351,7 +416,7 @@ func classifySupervisorRun(run *ipc.RunInfo, logs func(string) []string) supervi
 	return supervisorNone
 }
 
-func applySupervisorOutcome(store *supervision.Store, p *paths.Paths, reg supervision.Registration, event codexHookEvent, outcome supervisorOutcome, run *ipc.RunInfo, out io.Writer) {
+func applySupervisorOutcome(store *supervision.Store, p *paths.Paths, reg supervision.Registration, event supervisorHookEvent, outcome supervisorOutcome, run *ipc.RunInfo, out io.Writer) {
 	if outcome == supervisorNone {
 		return
 	}
@@ -390,7 +455,7 @@ func applySupervisorOutcome(store *supervision.Store, p *paths.Paths, reg superv
 	if reason == "" {
 		return
 	}
-	prepared, emit, err := store.PrepareHandoff(reg.RunID, event.SessionID, event.TurnID, fingerprint, supervisorProgressFingerprint(run), phase, nextHeartbeat, stale)
+	prepared, emit, err := store.PrepareHandoff(reg.RunID, event.SessionID, event.HandoffID, fingerprint, supervisorProgressFingerprint(run), phase, nextHeartbeat, stale)
 	if err != nil || !emit || prepared.SessionID != event.SessionID {
 		return
 	}

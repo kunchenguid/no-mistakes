@@ -180,6 +180,39 @@ func (s *Store) UpdateForSession(runID, sessionID string, update func(*Registrat
 	return reg, true, nil
 }
 
+// ResumeAfterUser re-arms the one registration that deliberately yielded a
+// visible ask-user gate. It is idempotent so a repeated AXI response cannot
+// revive a paused, completed, or merge-handoff registration.
+func (s *Store) ResumeAfterUser(runID string) (Registration, bool, error) {
+	if strings.TrimSpace(runID) == "" {
+		return Registration{}, false, nil
+	}
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return Registration{}, false, fmt.Errorf("create supervision directory: %w", err)
+	}
+	unlock, acquired, err := s.acquireClaimLock()
+	if err != nil || !acquired {
+		return Registration{}, false, err
+	}
+	defer unlock()
+	reg, found, err := s.Get(runID)
+	if err != nil || !found || reg.Phase != PhaseAwaitingUser {
+		return reg, false, err
+	}
+	reg.Phase = PhaseWatching
+	reg.Fingerprint = ""
+	reg.LastHandoffTurnID = ""
+	reg.LastHandoffFingerprint = ""
+	reg.NextHeartbeatAt = 0
+	reg.StaleHeartbeats = 0
+	reg.Error = ""
+	reg.UpdatedAt = time.Now().UTC().Unix()
+	if err := s.write(reg); err != nil {
+		return Registration{}, false, err
+	}
+	return reg, true, nil
+}
+
 // PrepareHandoff records the exact Stop-turn/event pair before the hook emits
 // its JSON continuation. This is the idempotency boundary for repeated Stop
 // deliveries; stop_hook_active itself is intentionally not used as a veto.

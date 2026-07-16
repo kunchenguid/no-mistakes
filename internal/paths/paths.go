@@ -52,7 +52,7 @@ func (p *Paths) TelemetryGateFile() string {
 	return filepath.Join(p.root, "telemetry-gate.json")
 }
 
-// SupervisionDir holds opt-in, local Codex-session supervisor registrations.
+// SupervisionDir holds opt-in, local native-agent supervisor registrations.
 // It is deliberately separate from the pipeline database: a registration is
 // local process coordination, never pipeline truth.
 func (p *Paths) SupervisionDir() string { return filepath.Join(p.root, "supervision") }

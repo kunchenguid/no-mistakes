@@ -18,6 +18,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/supervision"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
@@ -816,6 +817,13 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 	// don't immediately observe the same gate we just answered.
 	if err := waitStepLeavesGate(ctx, env.client, runID, string(stepName), gateStatusFor(rv, string(stepName))); err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("wait for %s: %v", stepName, err))
+	}
+	// An explicit user answer is the only path that may reactivate a supervisor
+	// that previously yielded an ask-user gate. The local registration is not
+	// pipeline truth, so a missing or already-transitioned registration is a
+	// harmless no-op.
+	if _, _, err := supervision.NewStore(env.p.SupervisionDir()).ResumeAfterUser(runID); err != nil {
+		return emitError(cmd, 1, fmt.Sprintf("resume local supervision: %v", err))
 	}
 
 	final, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, runID, ra.autoYes, ciLogReader(env.p))

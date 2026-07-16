@@ -66,6 +66,34 @@ func TestStoreFindByCWDKeepsAwaitingUserRegistration(t *testing.T) {
 	}
 }
 
+func TestStoreResumeAfterUserRearmsOnlyAwaitingRegistration(t *testing.T) {
+	store := NewStore(t.TempDir())
+	if _, err := store.Arm(Registration{RunID: "run-1", RepoID: "repo-1", CWD: "/work"}); err != nil {
+		t.Fatal(err)
+	}
+	reg, ok, err := store.Claim("/work", "session-1")
+	if err != nil || !ok {
+		t.Fatalf("Claim() = (%+v, %v, %v)", reg, ok, err)
+	}
+	reg.Phase = PhaseAwaitingUser
+	reg.LastHandoffTurnID = "old-turn"
+	if err := store.Save(reg); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, ok, err := store.ResumeAfterUser("run-1")
+	if err != nil || !ok {
+		t.Fatalf("ResumeAfterUser() = (%+v, %v, %v), want resumed registration", resumed, ok, err)
+	}
+	if resumed.Phase != PhaseWatching || resumed.LastHandoffTurnID != "" || resumed.StaleHeartbeats != 0 {
+		t.Fatalf("resumed registration = %+v, want fresh watching state", resumed)
+	}
+
+	if _, ok, err := store.ResumeAfterUser("run-1"); err != nil || ok {
+		t.Fatalf("second ResumeAfterUser() = (_, %v, %v), want no-op", ok, err)
+	}
+}
+
 func TestStoreUsesRunScopedFiles(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)

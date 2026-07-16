@@ -179,7 +179,7 @@ When `next_action.code` is `continue_active_run`, run the reported command and k
 If synchronization is blocked, process that state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
 Then commit follow-up work on top so every pipeline fix commit remains in the branch.
 
-The full driving protocol - how to read the home view and `gate:` objects, when to respond, fix, approve, or relay `ask-user` findings, how to interpret `axi status` fields like `awaiting_agent` and `active_steps`, and how to use `axi watch` or the opt-in Codex supervisor - is owned by the installed skill and the live `axi` output. The [CLI reference](/no-mistakes/reference/cli/#no-mistakes-axi-watch) documents those commands for humans.
+The full driving protocol - how to read the home view and `gate:` objects, when to respond, fix, approve, or relay `ask-user` findings, how to interpret `axi status` fields like `awaiting_agent` and `active_steps`, and how to use `axi watch` or the opt-in Codex/Claude supervisor - is owned by the installed skill and the live `axi` output. The [CLI reference](/no-mistakes/reference/cli/#no-mistakes-axi-watch) documents those commands for humans.
 Each `axi` response carries version-matched `help` lines for its state, and `no-mistakes axi run --help`, `no-mistakes axi respond --help`, and `no-mistakes axi watch --help` describe the loop authoritatively for the installed binary, so agents driving a gate never need this page open.
 
 ## Binary resolution

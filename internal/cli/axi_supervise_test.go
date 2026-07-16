@@ -92,6 +92,32 @@ func TestCodexHookIgnoresMalformedPayload(t *testing.T) {
 	}
 }
 
+func TestClaudeHookIgnoresMalformedAndNonStopPayloads(t *testing.T) {
+	for _, raw := range []string{
+		`not json`,
+		`{"hook_event_name":"PostToolUse","session_id":"s","cwd":"/tmp","last_assistant_message":"done"}`,
+		`{"hook_event_name":"Stop","session_id":"s","cwd":"/tmp"}`,
+	} {
+		if err := runAxiClaudeHook(strings.NewReader(raw), io.Discard); err != nil {
+			t.Fatalf("runAxiClaudeHook(%q) error = %v", raw, err)
+		}
+	}
+}
+
+func TestClaudeHookHandoffIDIsOpaqueAndChangesPerAssistantTurn(t *testing.T) {
+	first := claudeHookHandoffID("session-1", "first completed response")
+	second := claudeHookHandoffID("session-1", "second completed response")
+	if first == "" || second == "" || first == second {
+		t.Fatalf("claude hook IDs = %q, %q; want distinct non-empty opaque IDs", first, second)
+	}
+	if strings.Contains(first, "session-1") || strings.Contains(first, "first completed response") {
+		t.Fatalf("claude hook ID leaks hook payload: %q", first)
+	}
+	if got := claudeHookHandoffID("session-1", ""); got != "" {
+		t.Fatalf("empty assistant message ID = %q, want empty", got)
+	}
+}
+
 func TestClassifySupervisorRunFailsClosedForAskUserAndMalformedGates(t *testing.T) {
 	findings := `{"findings":[{"id":"decision","action":"ask-user"}]}`
 	for _, tc := range []struct {
@@ -154,7 +180,7 @@ func TestApplySupervisorOutcomeBoundsReasonsAndPausesAfterStaleBudget(t *testing
 					t.Fatalf("Get() = (%+v, %v, %v)", reg, ok, err)
 				}
 				var out bytes.Buffer
-				applySupervisorOutcome(store, p, reg, codexHookEvent{SessionID: "session", TurnID: "turn-" + string(rune('0'+i))}, supervisorHeartbeat, run, &out)
+				applySupervisorOutcome(store, p, reg, supervisorHookEvent{SessionID: "session", HandoffID: "turn-" + string(rune('0'+i))}, supervisorHeartbeat, run, &out)
 				want := `{"decision":"block","reason":"nm_event=heartbeat"}` + "\n"
 				if i == budget+1 {
 					want = `{"decision":"block","reason":"nm_event=stale"}` + "\n"
