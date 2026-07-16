@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.37.1](https://github.com/kunchenguid/no-mistakes/compare/v1.37.0...v1.37.1) (2026-07-16)
+
+
+### Bug Fixes
+
+* **pipeline:** defer run-owned delivery findings ([#494](https://github.com/kunchenguid/no-mistakes/issues/494)) ([fc0845a](https://github.com/kunchenguid/no-mistakes/commit/fc0845a231628857a628b0f8818cc2a199c48eab))
+* **pipeline:** reconcile parked CI gates ([#486](https://github.com/kunchenguid/no-mistakes/issues/486)) ([2bbbc14](https://github.com/kunchenguid/no-mistakes/commit/2bbbc143bd4520056e97957883a02615657b2a62))
+
 ## [1.37.0](https://github.com/kunchenguid/no-mistakes/compare/v1.36.0...v1.37.0) (2026-07-13)
 
 
