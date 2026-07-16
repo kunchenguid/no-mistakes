@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -67,9 +68,6 @@ func TestExecutorParksAuthorizationRequiredWithoutTerminalizingRun(t *testing.T)
 	if got.Status != types.RunAwaitingAuth || got.BlockedReason == nil {
 		t.Fatalf("run projection = %+v", got)
 	}
-	if got.AwaitingAgentSince == nil {
-		t.Fatal("authorization park did not persist awaiting-agent marker")
-	}
 	events, err := database.LifecycleEvents(run.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -120,9 +118,6 @@ func TestExecutorRequiresExplicitApprovalForEachAuthorizationRetry(t *testing.T)
 	if got.Status != types.RunAwaitingAuth || got.BlockedReason == nil {
 		t.Fatalf("run status = %s blocked=%v, want awaiting_auth", got.Status, got.BlockedReason)
 	}
-	if got.AwaitingAgentSince == nil {
-		t.Fatal("bounded authorization park did not retain awaiting-agent marker")
-	}
 	events, eventErr := database.LifecycleEvents(run.ID)
 	if eventErr != nil {
 		t.Fatal(eventErr)
@@ -135,6 +130,56 @@ func TestExecutorRequiresExplicitApprovalForEachAuthorizationRetry(t *testing.T)
 	}
 	if authEvents != 2 {
 		t.Fatalf("authorization events = %d, want initial and bounded recovery parks", authEvents)
+	}
+}
+
+func TestRecoveredAuthorizationParkSurvivesDaemonShutdown(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		_, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "review", Purpose: "review"})
+		return nil, err
+	}}
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	first := NewExecutor(database, p, nil, authorizationAgent{}, []Step{step}, nil)
+	done := make(chan error, 1)
+	go func() { done <- first.Execute(ctx, run, repo, t.TempDir()) }()
+	waitForAuthorizationGate(t, database, first, run.ID, types.StepReview, 1)
+	cancel(fmt.Errorf("daemon shutting down"))
+	if err := <-done; err != nil {
+		t.Fatalf("initial parked execution = %v", err)
+	}
+
+	recovered, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryCtx, recoveryCancel := context.WithCancelCause(context.Background())
+	second := NewExecutor(database, p, nil, authorizationAgent{}, []Step{step}, nil)
+	recoveredDone := make(chan error, 1)
+	go func() { recoveredDone <- second.Resume(recoveryCtx, recovered, repo, t.TempDir()) }()
+	waitForAuthorizationGate(t, database, second, run.ID, types.StepReview, 1)
+	recoveryCancel(fmt.Errorf("daemon shutting down"))
+	if err := <-recoveredDone; err != nil {
+		t.Fatalf("recovered parked execution = %v", err)
+	}
+
+	got, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != types.RunAwaitingAuth || got.BlockedReason == nil {
+		t.Fatalf("recovered authorization projection = %+v", got)
+	}
+	if got.Error != nil && strings.Contains(strings.ToLower(*got.Error), "daemon shutting down") {
+		t.Fatalf("shutdown cause overwrote authorization evidence: %q", *got.Error)
+	}
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 1 || steps[0].Status != types.StepStatusAwaitingApproval {
+		t.Fatalf("recovered authorization step = %+v", steps)
 	}
 }
 

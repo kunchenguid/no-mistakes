@@ -348,15 +348,31 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	)
 
 	response, reconciled, err := e.waitForApprovalOrReconcile(ctx, gate.step, reconcileCtx, false)
-	if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
-		slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
-	}
 	if err != nil {
+		// An authorization-parked run is intentionally recoverable. A daemon
+		// shutdown while its recovered gate is waiting must leave that park
+		// intact so the next daemon can offer the same bounded retry; generic
+		// gate cancellation must not rewrite it as a terminal shutdown failure.
+		if run.Status == types.RunAwaitingAuth && preserveAuthorizationPark(ctx, err) {
+			return nil
+		}
+		if run.Status != types.RunAwaitingAuth {
+			if run.Status != types.RunAwaitingAuth {
+				if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+					slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
+				}
+			}
+		}
 		if dbErr := e.db.FailStep(gate.stepResult.ID, err.Error(), duration); dbErr != nil {
 			slog.Warn("failed to mark recovered step as failed in db", "step", gate.step.Name(), "error", dbErr)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", "", err.Error(), &duration)
 		return e.failRun(run, repo, fmt.Errorf("step %s: waiting for approval: %w", gate.step.Name(), err), ctx)
+	}
+	if run.Status != types.RunAwaitingAuth {
+		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+			slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
+		}
 	}
 	if reconciled {
 		return completeReconciledGate()
@@ -456,6 +472,16 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	default:
 		return e.failRun(run, repo, fmt.Errorf("step %s: unsupported approval action %q", gate.step.Name(), response.action), ctx)
 	}
+}
+
+func preserveAuthorizationPark(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	cause := context.Cause(ctx)
+	return cause == nil || errors.Is(cause, context.Canceled) ||
+		errors.Is(err, context.Canceled) ||
+		strings.Contains(strings.ToLower(err.Error()), "daemon shutting down")
 }
 
 func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
@@ -1023,9 +1049,6 @@ func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *St
 		return err
 	}
 	run.BlockedReason = func() *string { v := reason; return &v }()
-	if err := e.db.SetRunAwaitingAgent(run.ID); err != nil {
-		return err
-	}
 	findings := `{"summary":"Codex authorization is required before this turn can continue","risk_level":"high","risk_rationale":"external authentication state is unavailable","findings":[]}`
 	if err := e.db.SetStepFindings(sr.ID, findings); err != nil {
 		return err
@@ -1044,7 +1067,6 @@ func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *St
 	e.waitingStep = step.Name()
 	e.mu.Unlock()
 	e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(types.StepStatusAwaitingApproval), "", "", reason, nil)
-	parkStart := time.Now()
 	response, _, err := e.waitForApprovalOrReconcile(ctx, step, sctx, false)
 	if err != nil {
 		cause := context.Cause(ctx)
@@ -1058,9 +1080,6 @@ func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *St
 	}
 	if !retryAllowed {
 		return errAuthorizationParked
-	}
-	if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
-		return dbErr
 	}
 	if dbErr := e.db.ResumeRunAfterAuthorization(run.ID, string(step.Name())); dbErr != nil {
 		return dbErr
