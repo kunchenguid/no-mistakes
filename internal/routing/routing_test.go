@@ -62,3 +62,18 @@ func TestConfigFingerprintIsBoundedAndDeterministic(t *testing.T) {
 		t.Fatalf("canonical repository = %q", got)
 	}
 }
+
+func TestDecideBoundsAndValidatesUntrustedRouteMetadata(t *testing.T) {
+	d := Decide(Input{
+		Harness:    string(make([]byte, 10_000)),
+		Risk:       Risk("unexpected-risk"),
+		Repository: "https://example.com/" + string(make([]byte, 10_000)),
+		Purpose:    "test",
+	})
+	if d.Risk != RiskUnknown {
+		t.Fatalf("risk = %q, want unknown", d.Risk)
+	}
+	if len(d.RequestedHarness) > 128 || len(d.Repository) > 512 {
+		t.Fatalf("untrusted route metadata was not bounded: harness=%d repository=%d", len(d.RequestedHarness), len(d.Repository))
+	}
+}

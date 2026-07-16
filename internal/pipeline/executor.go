@@ -357,10 +357,8 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return nil
 		}
 		if run.Status != types.RunAwaitingAuth {
-			if run.Status != types.RunAwaitingAuth {
-				if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
-					slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
-				}
+			if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+				slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
 			}
 		}
 		if dbErr := e.db.FailStep(gate.stepResult.ID, err.Error(), duration); dbErr != nil {
@@ -1039,7 +1037,10 @@ func roundInsertID(_ string, inserted *db.StepRound, err error) string {
 }
 
 func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *StepContext, sr *db.StepResult, run *db.Run, repo *db.Repo, round int) error {
-	const reason = "codex authorization required; log into a healthy Codex account, then approve to retry"
+	reason := "codex authorization required; log into a healthy Codex account, then approve one bounded retry"
+	if sctx.Fixing {
+		reason = "codex authorization required; fixer turn completion is unknown; inspect the worktree and confirm the retry is idempotent before approving one bounded retry"
+	}
 	attempts, err := e.authorizationParkCount(run.ID)
 	if err != nil {
 		return err

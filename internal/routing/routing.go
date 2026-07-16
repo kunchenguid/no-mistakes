@@ -58,7 +58,7 @@ type Decision struct {
 }
 
 func Decide(in Input) Decision {
-	harness := strings.TrimSpace(in.Harness)
+	harness := bounded(strings.TrimSpace(in.Harness), 128)
 	if harness == "" {
 		harness = "unknown"
 	}
@@ -66,10 +66,7 @@ func Decide(in Input) Decision {
 	if phase == "review" && in.ReviewConfirmation {
 		phase = "review-confirmation"
 	}
-	risk := in.Risk
-	if risk == "" {
-		risk = RiskUnknown
-	}
+	risk := normalizeRisk(in.Risk)
 	d := Decision{
 		RequestedHarness:        harness,
 		EffectiveHarness:        harness,
@@ -82,7 +79,7 @@ func Decide(in Input) Decision {
 		Risk:                    risk,
 		SourceConfiguration:     bounded(in.SourceConfiguration, 512),
 		ConfigurationGeneration: bounded(in.ConfigurationGeneration, 128),
-		Repository:              CanonicalRepository(in.Repository),
+		Repository:              bounded(CanonicalRepository(in.Repository), 512),
 		Reason:                  "default initial/default work",
 	}
 	// The first review is the bootstrap classifier. Any caller-supplied risk
@@ -104,6 +101,15 @@ func Decide(in Input) Decision {
 		d.Reason = "high-risk review confirmation"
 	}
 	return d
+}
+
+func normalizeRisk(risk Risk) Risk {
+	switch risk {
+	case RiskLow, RiskMedium, RiskHigh:
+		return risk
+	default:
+		return RiskUnknown
+	}
 }
 
 func phaseForPurpose(purpose string) string {
@@ -158,11 +164,11 @@ func CanonicalRepository(raw string) string {
 		host := strings.ToLower(strings.TrimSuffix(u.Host, "."))
 		p := strings.Trim(path.Clean(u.Path), "/")
 		p = strings.TrimSuffix(p, ".git")
-		return host + "/" + strings.ToLower(p)
+		return bounded(host+"/"+strings.ToLower(p), 512)
 	}
 	raw = strings.TrimPrefix(raw, "git@")
 	raw = strings.TrimSuffix(raw, ".git")
-	return strings.ToLower(strings.Trim(strings.ReplaceAll(raw, ":", "/"), "/"))
+	return bounded(strings.ToLower(strings.Trim(strings.ReplaceAll(raw, ":", "/"), "/")), 512)
 }
 
 func bounded(s string, n int) string {

@@ -183,6 +183,38 @@ func TestRecoveredAuthorizationParkSurvivesDaemonShutdown(t *testing.T) {
 	}
 }
 
+func TestAuthorizationParkNamesUnknownFixerCompletion(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	step := &adaptiveCallStep{name: types.StepReview, fn: func(sctx *StepContext) (*StepOutcome, error) {
+		if !sctx.Fixing {
+			return &StepOutcome{NeedsApproval: true, Findings: `{"summary":"needs a fix","risk_level":"high","findings":[]}`}, nil
+		}
+		_, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "fix", Purpose: "review-fix"})
+		return nil, err
+	}}
+	exec := NewExecutor(database, p, nil, authorizationAgent{}, []Step{step}, nil)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	t.Cleanup(func() { cancel(fmt.Errorf("test cleanup")) })
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(ctx, run, repo, t.TempDir()) }()
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepReview, types.ActionFix, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitForAuthorizationGate(t, database, exec, run.ID, types.StepReview, 1)
+	got, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BlockedReason == nil || !strings.Contains(*got.BlockedReason, "completion is unknown") {
+		t.Fatalf("fixer authorization reason = %v", got.BlockedReason)
+	}
+	cancel(fmt.Errorf("daemon shutting down"))
+	if err := <-done; err != nil {
+		t.Fatalf("parked fixer execution = %v", err)
+	}
+}
+
 func waitForAuthorizationEvents(t *testing.T, database *db.DB, runID string, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
