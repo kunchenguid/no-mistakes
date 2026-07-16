@@ -343,6 +343,25 @@ func TestEquivalentDivergenceRefusesDifferentBinaryContent(t *testing.T) {
 	}
 }
 
+func TestEquivalentDivergenceRefusesWrongRepeatedLineOccurrence(t *testing.T) {
+	f := newSyncFixture(t)
+	mustWrite(t, filepath.Join(f.local, "repeated.txt"), "foo\nfoo\n")
+	mustRun(t, f.local, "add", "repeated.txt")
+	mustRun(t, f.local, "commit", "-m", "add repeated lines")
+	f.base = mustRun(t, f.local, "rev-parse", "HEAD")
+	mustWrite(t, filepath.Join(f.local, "repeated.txt"), "bar\nfoo\n")
+	mustRun(t, f.local, "commit", "-am", "change first occurrence")
+	f.old = mustRun(t, f.local, "rev-parse", "HEAD")
+	rebuildPipelineHead(t, f, []pipelineCommit{
+		{message: "change second occurrence", files: map[string]string{"repeated.txt": "foo\nbar\n"}},
+	})
+
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateDiverged || state.Relation != RelationDiverged || state.Safety != "blocked_diverged" || state.Changed {
+		t.Fatalf("state = %#v", state)
+	}
+}
+
 func TestApplyEmptyLocalUniquenessStillUsesStrictBehindFastForward(t *testing.T) {
 	f := newSyncFixture(t)
 	state := f.service.Apply(f.ctx)

@@ -1,7 +1,6 @@
 package branchsync
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -857,7 +857,7 @@ func equivalentDivergence(ctx context.Context, dir, local, pushed, base string) 
 	if treeMatchesOnPaths(ctx, dir, local, pushed, paths) {
 		return true
 	}
-	return reverseLocalPatchAppliesToTree(ctx, dir, base, local, pushed)
+	return finalPreservesLocalHunks(ctx, dir, base, local, pushed, paths)
 }
 
 func usableEquivalenceBase(ctx context.Context, dir, local, pushed, base string) string {
@@ -924,42 +924,6 @@ func gitRawOutput(ctx context.Context, dir string, args ...string) ([]byte, erro
 	return out, nil
 }
 
-func reverseLocalPatchAppliesToTree(ctx context.Context, dir, base, local, pushed string) bool {
-	patch, err := gitRawOutput(ctx, dir, "diff", "--no-ext-diff", "--no-color", "--binary", "--full-index", "--no-renames", "-U0", base, local)
-	if err != nil {
-		return false
-	}
-	if len(patch) == 0 {
-		return true
-	}
-	indexFile, err := os.CreateTemp("", "no-mistakes-equivalence-index-*")
-	if err != nil {
-		return false
-	}
-	indexPath := indexFile.Name()
-	_ = indexFile.Close()
-	defer os.Remove(indexPath)
-	env := append(git.NonInteractiveEnv(dir), "GIT_INDEX_FILE="+indexPath)
-	if err := runGitWithEnvInput(ctx, dir, env, nil, "read-tree", pushed+"^{tree}"); err != nil {
-		return false
-	}
-	return runGitWithEnvInput(ctx, dir, env, patch, "apply", "--cached", "--reverse", "--check", "--unidiff-zero", "--whitespace=nowarn") == nil
-}
-
-func runGitWithEnvInput(ctx context.Context, dir string, env []string, input []byte, args ...string) error {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	cmd.Env = env
-	if input != nil {
-		cmd.Stdin = bytes.NewReader(input)
-	}
-	winproc.Harden(cmd)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(strings.TrimSpace(string(out))))
-	}
-	return nil
-}
-
 func treeMatchesOnPaths(ctx context.Context, dir, local, pushed string, paths []string) bool {
 	for start := 0; start < len(paths); {
 		args := []string{"--literal-pathspecs", "diff", "--quiet", "--no-ext-diff", local, pushed, "--"}
@@ -981,6 +945,129 @@ func treeMatchesOnPaths(ctx context.Context, dir, local, pushed string, paths []
 			return false
 		}
 		start = end
+	}
+	return true
+}
+
+type diffHunk struct {
+	oldStart int
+	newStart int
+	removed  []string
+	added    []string
+}
+
+func finalPreservesLocalHunks(ctx context.Context, dir, base, local, pushed string, paths []string) bool {
+	for _, path := range paths {
+		diff, err := gitRawOutput(ctx, dir, "--literal-pathspecs", "diff", "--no-ext-diff", "--no-color", "--no-renames", "-U0", base, local, "--", path)
+		if err != nil {
+			return false
+		}
+		hunks, ok := parseUnifiedHunks(diff)
+		if !ok || len(hunks) == 0 {
+			return false
+		}
+		pushedLines, pushedExists := gitFileLines(ctx, dir, pushed, path)
+		localLines, localExists := gitFileLines(ctx, dir, local, path)
+		if !localExists {
+			if pushedExists {
+				return false
+			}
+			continue
+		}
+		if len(localLines) == 0 && len(pushedLines) != 0 {
+			return false
+		}
+		for _, hunk := range hunks {
+			if len(hunk.added) > 0 && !linesAt(pushedLines, hunk.newStart, hunk.added) {
+				return false
+			}
+			if len(hunk.added) == 0 && len(hunk.removed) > 0 && linesAt(pushedLines, hunk.oldStart, hunk.removed) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func parseUnifiedHunks(diff []byte) ([]diffHunk, bool) {
+	var hunks []diffHunk
+	var current *diffHunk
+	for _, line := range strings.Split(string(diff), "\n") {
+		if strings.HasPrefix(line, "@@ ") {
+			fields := strings.Fields(line)
+			if len(fields) < 3 {
+				return nil, false
+			}
+			oldStart, ok := parseDiffRangeStart(fields[1])
+			if !ok {
+				return nil, false
+			}
+			newStart, ok := parseDiffRangeStart(fields[2])
+			if !ok {
+				return nil, false
+			}
+			hunks = append(hunks, diffHunk{oldStart: oldStart, newStart: newStart})
+			current = &hunks[len(hunks)-1]
+			continue
+		}
+		if current == nil || line == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, `\`):
+			continue
+		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
+			current.added = append(current.added, line[1:])
+		case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
+			current.removed = append(current.removed, line[1:])
+		}
+	}
+	return hunks, true
+}
+
+func parseDiffRangeStart(field string) (int, bool) {
+	if len(field) < 2 {
+		return 0, false
+	}
+	field = field[1:]
+	if idx := strings.IndexByte(field, ','); idx >= 0 {
+		field = field[:idx]
+	}
+	n, err := strconv.Atoi(field)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	if n == 0 {
+		return 1, true
+	}
+	return n, true
+}
+
+func gitFileLines(ctx context.Context, dir, rev, path string) ([]string, bool) {
+	out, err := gitRawOutput(ctx, dir, "show", rev+":"+path)
+	if err != nil {
+		return nil, false
+	}
+	return splitLines(string(out)), true
+}
+
+func splitLines(s string) []string {
+	s = strings.TrimSuffix(s, "\n")
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, "\n")
+}
+
+func linesAt(lines []string, start int, want []string) bool {
+	idx := start - 1
+	if idx < 0 || idx+len(want) > len(lines) {
+		return false
+	}
+	for i, line := range want {
+		if lines[idx+i] != line {
+			return false
+		}
 	}
 	return true
 }
