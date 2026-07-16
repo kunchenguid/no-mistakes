@@ -67,6 +67,9 @@ func TestExecutorParksAuthorizationRequiredWithoutTerminalizingRun(t *testing.T)
 	if got.Status != types.RunAwaitingAuth || got.BlockedReason == nil {
 		t.Fatalf("run projection = %+v", got)
 	}
+	if got.AwaitingAgentSince == nil {
+		t.Fatal("authorization park did not persist awaiting-agent marker")
+	}
 	events, err := database.LifecycleEvents(run.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +119,9 @@ func TestExecutorRequiresExplicitApprovalForEachAuthorizationRetry(t *testing.T)
 	}
 	if got.Status != types.RunAwaitingAuth || got.BlockedReason == nil {
 		t.Fatalf("run status = %s blocked=%v, want awaiting_auth", got.Status, got.BlockedReason)
+	}
+	if got.AwaitingAgentSince == nil {
+		t.Fatal("bounded authorization park did not retain awaiting-agent marker")
 	}
 	events, eventErr := database.LifecycleEvents(run.ID)
 	if eventErr != nil {

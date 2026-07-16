@@ -348,10 +348,8 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	)
 
 	response, reconciled, err := e.waitForApprovalOrReconcile(ctx, gate.step, reconcileCtx, false)
-	if run.Status != types.RunAwaitingAuth {
-		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
-			slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
-		}
+	if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+		slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
 	}
 	if err != nil {
 		if dbErr := e.db.FailStep(gate.stepResult.ID, err.Error(), duration); dbErr != nil {
@@ -1025,6 +1023,9 @@ func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *St
 		return err
 	}
 	run.BlockedReason = func() *string { v := reason; return &v }()
+	if err := e.db.SetRunAwaitingAgent(run.ID); err != nil {
+		return err
+	}
 	findings := `{"summary":"Codex authorization is required before this turn can continue","risk_level":"high","risk_rationale":"external authentication state is unavailable","findings":[]}`
 	if err := e.db.SetStepFindings(sr.ID, findings); err != nil {
 		return err
@@ -1043,6 +1044,7 @@ func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *St
 	e.waitingStep = step.Name()
 	e.mu.Unlock()
 	e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(types.StepStatusAwaitingApproval), "", "", reason, nil)
+	parkStart := time.Now()
 	response, _, err := e.waitForApprovalOrReconcile(ctx, step, sctx, false)
 	if err != nil {
 		cause := context.Cause(ctx)
@@ -1056,6 +1058,9 @@ func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *St
 	}
 	if !retryAllowed {
 		return errAuthorizationParked
+	}
+	if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+		return dbErr
 	}
 	if dbErr := e.db.ResumeRunAfterAuthorization(run.ID, string(step.Name())); dbErr != nil {
 		return dbErr
