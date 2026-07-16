@@ -191,14 +191,18 @@ type ShutdownResult struct {
 
 // RunInfo is the IPC representation of a pipeline run.
 type RunInfo struct {
-	ID      string          `json:"id"`
-	RepoID  string          `json:"repo_id"`
-	Branch  string          `json:"branch"`
-	HeadSHA string          `json:"head_sha"`
-	BaseSHA string          `json:"base_sha"`
-	Status  types.RunStatus `json:"status"`
-	PRURL   *string         `json:"pr_url,omitempty"`
-	Error   *string         `json:"error,omitempty"`
+	ID                   string          `json:"id"`
+	RepoID               string          `json:"repo_id"`
+	Branch               string          `json:"branch"`
+	HeadSHA              string          `json:"head_sha"`
+	BaseSHA              string          `json:"base_sha"`
+	Status               types.RunStatus `json:"status"`
+	ProvisioningPhase    string          `json:"provisioning_phase,omitempty"`
+	ProvisioningProgress int             `json:"provisioning_progress,omitempty"`
+	ProvisioningError    *string         `json:"provisioning_error,omitempty"`
+	PRURL                *string         `json:"pr_url,omitempty"`
+	Error                *string         `json:"error,omitempty"`
+	BlockedReason        *string         `json:"blocked_reason,omitempty"`
 	// AwaitingAgent is true while the run is parked at a gate awaiting the
 	// driving agent's response. AwaitingAgentSince is the unix-seconds time it
 	// parked, so a supervisor can read "parked for N seconds" in one call. Both

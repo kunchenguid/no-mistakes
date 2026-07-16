@@ -4,12 +4,21 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
 
 func runCodex(args []string, scenario *Scenario) int {
 	prompt := extractCodexPrompt(args)
+	if prompt == "" {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fakeagent: read stdin prompt: %v\n", err)
+			return 1
+		}
+		prompt = string(data)
+	}
 	logInvocation("codex", prompt, args)
 
 	action := scenario.Match(prompt)
@@ -184,7 +193,7 @@ func extractCodexPrompt(args []string) string {
 		"--config": true, "--profile": true,
 		"--output-schema":    true,
 		"--reasoning-effort": true, "--reasoning-summary": true,
-		"-c": true, "--cd": true,
+		"-c": true, "--cd": true, "--color": true,
 	}
 	start := 0
 	for i, a := range args {

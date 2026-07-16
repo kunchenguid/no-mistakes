@@ -171,6 +171,7 @@ Everything sent remotely is low-cardinality: command names, statuses, durations,
 Run IDs, repository paths, branch names, session identities, prompts, model outputs, diffs, and per-invocation performance records are never sent.
 
 Detailed performance evidence stays on the machine in the local state database (`<NM_HOME>/state.sqlite`): one `agent_invocations` row per agent invocation, plus each run's accumulated parked-at-gate time.
+The same database keeps append-only lifecycle events and route decisions. Route records capture requested/effective harness, model, effort, policy version, phase, risk reason, configuration generation, canonical repository, and a prompt hash/byte count/transport without storing prompt content. A later cancellation, supersession, shutdown, or recovery changes the current run projection but does not erase the earlier failure event.
 Each row records run and step identity, purpose (such as review/review-fix/housekeeping), the reported model and its provider, the cold/started/resumed/fallback session mode, a truncated session-identity hash, timestamps, duration, exit status, and failure category, alongside the session-fidelity metrics below.
 It never stores prompts, model outputs, diffs, raw command arguments, secret values, or credentials - only bounded counts, low-cardinality categories, and durations.
 

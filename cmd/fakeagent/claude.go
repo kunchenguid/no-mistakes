@@ -4,11 +4,21 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 )
 
 func runClaude(args []string, scenario *Scenario) int {
 	prompt := extractClaudePrompt(args)
+	if prompt == "" {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "fakeagent: read stdin prompt: %v\n", err)
+			return 1
+		}
+		prompt = string(data)
+	}
 	logInvocation("claude", prompt, args)
 
 	action := scenario.Match(prompt)
@@ -230,6 +240,9 @@ func extractClaudePrompt(args []string) string {
 		switch args[i] {
 		case "-p", "--print":
 			if i+1 < len(args) {
+				if strings.HasPrefix(args[i+1], "-") {
+					return ""
+				}
 				return args[i+1]
 			}
 			return ""

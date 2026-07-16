@@ -10,11 +10,13 @@ import (
 type RunStatus string
 
 const (
-	RunPending   RunStatus = "pending"
-	RunRunning   RunStatus = "running"
-	RunCompleted RunStatus = "completed"
-	RunFailed    RunStatus = "failed"
-	RunCancelled RunStatus = "cancelled"
+	RunPending      RunStatus = "pending"
+	RunProvisioning RunStatus = "provisioning"
+	RunRunning      RunStatus = "running"
+	RunCompleted    RunStatus = "completed"
+	RunFailed       RunStatus = "failed"
+	RunCancelled    RunStatus = "cancelled"
+	RunAwaitingAuth RunStatus = "awaiting_auth"
 )
 
 const (

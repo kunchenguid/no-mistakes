@@ -69,10 +69,10 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	if opts.Session != nil {
 		resumeID = opts.Session.ID
 	}
-	args := a.buildArgs(opts.Prompt, opts.JSONSchema, resumeID)
+	args := a.buildArgsTransport(opts.JSONSchema, resumeID)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Stdin = nil
+	cmd.Stdin = strings.NewReader(opts.Prompt)
 	cmd.Env = gitSafeEnv(opts.CWD)
 	shellenv.ConfigureShellCommand(cmd)
 
@@ -169,11 +169,11 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 func (a *claudeAgent) buildArgs(prompt string, schema json.RawMessage, resumeID string) []string {
 	args := make([]string, 0, len(a.extraArgs)+12)
 	args = append(args, a.extraArgs...)
-	args = append(args,
-		"-p", prompt,
-		"--verbose",
-		"--output-format", "stream-json",
-	)
+	args = append(args, "-p")
+	if prompt != "" {
+		args = append(args, prompt)
+	}
+	args = append(args, "--verbose", "--output-format", "stream-json")
 	// Project-settings opt-out (trusted-only; see config.DisableProjectSettings):
 	// load only user-level settings and memory, never the target repo's
 	// project/local CLAUDE.md/AGENTS.md, .claude/settings.json, or
@@ -197,6 +197,10 @@ func (a *claudeAgent) buildArgs(prompt string, schema json.RawMessage, resumeID 
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	return args
+}
+
+func (a *claudeAgent) buildArgsTransport(schema json.RawMessage, resumeID string) []string {
+	return a.buildArgs("", schema, resumeID)
 }
 
 // claudeUserSetSettingSources reports whether extraArgs pin --setting-sources at

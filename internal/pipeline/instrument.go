@@ -6,25 +6,32 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // perfRecordingAgent decorates the step agent to persist one local
 // agent_invocations row per invocation: identity, purpose, session mode,
 // timing, exit status, and token usage. Recording is local-only and
-// best-effort: a failed insert never fails the invocation, and no
+// required: a failed route insert prevents the invocation, and no
 // per-invocation record leaves the machine.
 type perfRecordingAgent struct {
-	inner    agent.Agent
-	db       *db.DB
-	runID    string
-	stepName types.StepName
+	inner                   agent.Agent
+	db                      *db.DB
+	runID                   string
+	stepName                types.StepName
+	repository              string
+	sourceConfiguration     string
+	configurationGeneration string
+	risk                    func() routing.Risk
+	reviewConfirmation      func() bool
 	// round returns the 1-based round the current invocation belongs to.
 	round func() int
 }
@@ -43,6 +50,47 @@ func (a *perfRecordingAgent) SupportsSessionProvider(provider string) bool {
 }
 
 func (a *perfRecordingAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	// A caller may carry a precomputed route from a step or recovery path. Do
+	// not let that metadata claim GPT controls for a non-Codex adapter.
+	if !strings.EqualFold(a.inner.Name(), "codex") {
+		opts.Routing.EffectiveHarness = a.inner.Name()
+		opts.Routing.EffectiveModel = ""
+		opts.Routing.EffectiveEffort = ""
+		opts.Routing.Reason = "configured harness cannot enforce the Codex GPT routing policy"
+	}
+	if opts.Routing.PolicyVersion == "" {
+		risk := opts.RouteRisk
+		if a.risk != nil {
+			risk = a.risk()
+		}
+		confirmation := opts.RouteReviewConfirmation
+		if a.reviewConfirmation != nil {
+			confirmation = confirmation || a.reviewConfirmation()
+		}
+		opts.Routing = routing.Decide(routing.Input{
+			Harness: a.inner.Name(), Purpose: opts.Purpose, Repository: a.repository,
+			Risk: risk, ReviewConfirmation: confirmation,
+			SourceConfiguration:     a.sourceConfiguration,
+			ConfigurationGeneration: a.configurationGeneration,
+		})
+	}
+	if a.db != nil {
+		promptSHA, promptBytes := db.PromptEvidence(opts.Prompt)
+		if err := a.db.InsertRouteDecision(db.RouteDecision{
+			RunID: a.runID, StepName: string(a.stepName), Round: a.round(),
+			RequestedHarness: opts.Routing.RequestedHarness, EffectiveHarness: opts.Routing.EffectiveHarness,
+			RequestedModel: opts.Routing.RequestedModel, EffectiveModel: opts.Routing.EffectiveModel,
+			RequestedEffort: opts.Routing.RequestedEffort, EffectiveEffort: opts.Routing.EffectiveEffort,
+			PolicyVersion: opts.Routing.PolicyVersion, Phase: opts.Routing.Phase, Reason: opts.Routing.Reason,
+			Risk:                    string(opts.Routing.Risk),
+			SourceConfiguration:     opts.Routing.SourceConfiguration,
+			ConfigurationGeneration: opts.Routing.ConfigurationGeneration,
+			Repository:              opts.Routing.Repository,
+			PromptSHA256:            promptSHA, PromptBytes: promptBytes, PromptTransport: agent.PromptTransport(a.inner.Name()),
+		}); err != nil {
+			return nil, fmt.Errorf("record route decision before agent launch: %w", err)
+		}
+	}
 	attempts := 0
 	previous := opts.OnAttempt
 	opts.OnAttempt = func(attempt agent.Attempt) {
@@ -75,17 +123,28 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 
 	sessionKey := invocationSessionKey(opts, result)
 	inv := db.AgentInvocation{
-		RunID:       a.runID,
-		StepName:    string(a.stepName),
-		Round:       a.round(),
-		Purpose:     purpose,
-		Agent:       agentName,
-		SessionMode: invocationSessionMode(opts),
-		SessionKey:  sessionKey,
-		StartedAt:   startedAt.Unix(),
-		CompletedAt: completedAt.Unix(),
-		DurationMS:  completedAt.Sub(startedAt).Milliseconds(),
-		ExitStatus:  "ok",
+		RunID:                        a.runID,
+		StepName:                     string(a.stepName),
+		Round:                        a.round(),
+		Purpose:                      purpose,
+		Agent:                        agentName,
+		SessionMode:                  invocationSessionMode(opts),
+		SessionKey:                   sessionKey,
+		StartedAt:                    startedAt.Unix(),
+		CompletedAt:                  completedAt.Unix(),
+		DurationMS:                   completedAt.Sub(startedAt).Milliseconds(),
+		ExitStatus:                   "ok",
+		RequestedHarness:             opts.Routing.RequestedHarness,
+		EffectiveHarness:             opts.Routing.EffectiveHarness,
+		RequestedModel:               opts.Routing.RequestedModel,
+		EffectiveModel:               opts.Routing.EffectiveModel,
+		RequestedEffort:              opts.Routing.RequestedEffort,
+		EffectiveEffort:              opts.Routing.EffectiveEffort,
+		RoutePolicyVersion:           opts.Routing.PolicyVersion,
+		RoutePhase:                   opts.Routing.Phase,
+		RouteReason:                  opts.Routing.Reason,
+		RouteSourceConfiguration:     opts.Routing.SourceConfiguration,
+		RouteConfigurationGeneration: opts.Routing.ConfigurationGeneration,
 	}
 	if opts.SessionFallback && opts.SessionFallbackReason != "" {
 		reason := opts.SessionFallbackReason

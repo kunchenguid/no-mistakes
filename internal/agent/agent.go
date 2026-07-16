@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -48,10 +49,30 @@ type RunOpts struct {
 	// can be normalized without external git archaeology. Instrumentation only;
 	// adapters ignore it.
 	Workload *InvocationWorkload
+	// Routing is selected by the no-mistakes core before launch. Adapters may
+	// use only the bounded effective model/effort fields; they must not consult
+	// project-owned manifests or routers.
+	Routing                 routing.Decision
+	RouteRisk               routing.Risk
+	RouteReviewConfirmation bool
 	// OnAttempt receives each concrete adapter attempt, including retries and
 	// fallback-provider attempts, after it completes. It is instrumentation
 	// only and must not change invocation behavior.
 	OnAttempt func(Attempt)
+}
+
+// PromptTransport names the bounded transport used by the native adapter.
+// It is evidence only; routing never depends on this value.
+func PromptTransport(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case name == "codex", name == "claude", name == "copilot", name == "pi", strings.HasPrefix(name, "acp:"):
+		return "stdin"
+	case name == "opencode", name == "rovodev":
+		return "http-body"
+	default:
+		return "unknown"
+	}
 }
 
 // Attempt describes one completed concrete adapter attempt for an agent

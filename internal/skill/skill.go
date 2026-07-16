@@ -289,10 +289,31 @@ no-mistakes axi abort         # cancel the current-branch active run
 no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside its worktree)
 ` + "```" + `
 
+## Reliability and recovery
+
+Run creation is asynchronous: after the run row is durable, ` + "`axi status`" + `
+shows the persisted provisioning phase and progress while the daemon prepares
+the worktree. A cancellation can stop queued or active provisioning, and a
+daemon restart safely re-queues unfinished setup.
+
+No Mistakes owns agent routing. Initial/default work uses GPT-5.6 Luna with
+` + "`xhigh`" + `; medium/high-risk non-review work uses GPT-5.6 Terra with
+` + "`high`" + `; GPT-5.6 Sol is used only for a high-risk review confirmation and
+always with ` + "`high`" + `. The initial review is the bootstrap risk classifier,
+so it cannot select Sol for itself. Tests, docs, lint, and other phases do not
+inherit Sol from a high-risk run.
+
+If Codex reports ` + "`AuthorizationRequired`" + `, the run parks with an
+authentication blockage. Log into a healthy Codex account and approve the gate
+with ` + "`no-mistakes axi respond --action approve`" + `. Do not blindly replay a
+fixer turn whose completion is unknown; restart recovery preserves the run,
+worktree, session metadata, and failure history for an explicit decision.
+
 ## Reading the output
 
 - Output is TOON: ` + "`key: value`" + ` pairs, ` + "`name[N]{cols}:`" + ` tables, and ` + "`help[N]:`" + ` hints.
 - A non-terminal run object may include ` + "`awaiting_agent: parked <duration>`" + ` immediately after ` + "`status`" + `; that means the run is parked at a gate awaiting your ` + "`axi respond`" + `.
+- During slow checkout or agent setup, ` + "`status`" + ` may be ` + "`provisioning`" + ` with persisted ` + "`provisioning_phase`" + ` and ` + "`provisioning_progress`" + `; cancel it with ` + "`axi abort --run <id>`" + `. If Codex reports ` + "`AuthorizationRequired`" + `, the run is parked as ` + "`awaiting_auth`" + ` with a ` + "`blocked_reason`" + `. Log into a healthy account, then use ` + "`axi respond --action approve`" + ` for one bounded retry; do not blindly replay a fixer whose completion is unknown.
 - A run object with a ` + "`running`" + ` or ` + "`fixing`" + ` step may include an ` + "`active_steps`" + ` table. Use it to see the active duration, latest activity, native agent PID, and current execution or fix round.
 - The ` + "`help`" + ` list at the bottom of most responses tells you the next commands to run.
 - Errors are printed as ` + "`error: ...`" + ` on stdout with a ` + "`help`" + ` list; act on the suggestion.

@@ -89,6 +89,11 @@ func (d *DB) UpdateStepStatus(id string, status types.StepStatus) error {
 	if err != nil {
 		return fmt.Errorf("update step status: %w", err)
 	}
+	if step, stepErr := d.GetStepResult(id); stepErr == nil && step != nil {
+		if eventErr := d.AppendLifecycleEvent(LifecycleEvent{RunID: step.RunID, StepName: string(step.StepName), EventType: "step_status", Status: string(status)}); eventErr != nil {
+			return eventErr
+		}
+	}
 	return nil
 }
 
@@ -97,6 +102,11 @@ func (d *DB) UpdateStepStatusWithDuration(id string, status types.StepStatus, du
 	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, duration_ms = ?, last_activity_at = ?, last_activity = ? WHERE id = ?`, status, durationMS, now(), fmt.Sprintf("status: %s", status), id)
 	if err != nil {
 		return fmt.Errorf("update step status with duration: %w", err)
+	}
+	if step, stepErr := d.GetStepResult(id); stepErr == nil && step != nil {
+		if eventErr := d.AppendLifecycleEvent(LifecycleEvent{RunID: step.RunID, StepName: string(step.StepName), EventType: "step_status", Status: string(status)}); eventErr != nil {
+			return eventErr
+		}
 	}
 	return nil
 }
@@ -113,6 +123,11 @@ func (d *DB) StartStepWithAutoFixLimit(id string, autoFixLimit int) error {
 	_, err := d.sql.Exec(`UPDATE step_results SET status = ?, started_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL, auto_fix_limit = ? WHERE id = ?`, types.StepStatusRunning, ts, ts, "step started", autoFixLimitDBValue(autoFixLimit), id)
 	if err != nil {
 		return fmt.Errorf("start step: %w", err)
+	}
+	if step, stepErr := d.GetStepResult(id); stepErr == nil && step != nil {
+		if eventErr := d.AppendLifecycleEvent(LifecycleEvent{RunID: step.RunID, StepName: string(step.StepName), EventType: "step_started", Status: string(types.StepStatusRunning)}); eventErr != nil {
+			return eventErr
+		}
 	}
 	return nil
 }
@@ -145,6 +160,11 @@ func (d *DB) CompleteStepWithStatus(id string, status types.StepStatus, exitCode
 	if err != nil {
 		return fmt.Errorf("complete step: %w", err)
 	}
+	if step, stepErr := d.GetStepResult(id); stepErr == nil && step != nil {
+		if eventErr := d.AppendLifecycleEvent(LifecycleEvent{RunID: step.RunID, StepName: string(step.StepName), EventType: "step_completed", Status: string(status)}); eventErr != nil {
+			return eventErr
+		}
+	}
 	return nil
 }
 
@@ -156,6 +176,11 @@ func (d *DB) FailStep(id string, errMsg string, durationMS int64) error {
 	)
 	if err != nil {
 		return fmt.Errorf("fail step: %w", err)
+	}
+	if step, stepErr := d.GetStepResult(id); stepErr == nil && step != nil {
+		if eventErr := d.AppendLifecycleEvent(LifecycleEvent{RunID: step.RunID, StepName: string(step.StepName), EventType: "step_failure", Status: string(types.StepStatusFailed), Error: errMsg}); eventErr != nil {
+			return eventErr
+		}
 	}
 	return nil
 }

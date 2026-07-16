@@ -91,6 +91,7 @@ func defaultScenario() *Scenario {
 				"risk_rationale":  "no risks detected in the diff",
 				"tested":          []string{"fakeagent: simulated test run"},
 				"testing_summary": "simulated tests passed",
+				"artifacts":       []any{},
 				"title":           "feat: fakeagent change",
 				"body":            "## Summary\nfakeagent canned PR body",
 			},

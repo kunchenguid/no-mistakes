@@ -248,8 +248,9 @@ For review-loop reuse, Claude starts a stream-json session and resumes it with `
 
 Spawns a `codex` subprocess for each invocation with `exec --json`. When structured output is requested, no-mistakes also writes a normalized schema file and passes it with `--output-schema`. By default it also adds `--dangerously-bypass-approvals-and-sandbox`, unless you already set your own Codex approval or sandbox flag through `agent_args_override`. Reads JSONL events. Structured output is returned from the final `agent_message` text, with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose, then validates the result against the normalized schema.
 Codex model and config overrides, such as `-m gpt-5.4`, `-c service_tier="priority"`, or `-c model_reasoning_effort="low"`, belong in global `agent_args_override.codex`.
-For review-loop reuse, Codex resumes the reported thread with `codex exec resume <id> <prompt>`.
+For review-loop reuse, Codex resumes the reported thread with `codex exec resume <id> -` and reads the prompt from stdin.
 That resume command has a narrower flag surface than `codex exec`, so a resume that rejects an override falls back to a fresh same-role session rather than skipping the review turn.
+No Mistakes supplies the phase-aware policy route for each invocation: Luna/`xhigh` for initial/default work, Terra/`high` for medium/high-risk non-review work, and Sol/`high` only for a high-risk review confirmation after the initial review classification. Full prompts are transported through stdin; they are not placed in process argv. If Codex returns `AuthorizationRequired`, the run parks for explicit account recovery and approval rather than replaying an unknown-completion fixer turn.
 
 ## Rovo Dev
 

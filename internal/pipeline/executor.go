@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -18,6 +20,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -29,6 +32,10 @@ const (
 	defaultGateReconcileInterval = 2 * time.Minute
 	defaultGateReconcileTimeout  = 30 * time.Second
 )
+
+var errAuthorizationParked = errors.New("agent authorization required; run parked for authentication recovery")
+
+const authorizationRecoveryLimit = 1
 
 type approvalResponse struct {
 	action        types.ApprovalAction
@@ -58,8 +65,21 @@ type Executor struct {
 	waiting     bool                  // true when blocked on approval
 	waitingStep types.StepName        // which step is currently awaiting approval
 
-	gateReconcileInterval time.Duration
-	gateReconcileTimeout  time.Duration
+	gateReconcileInterval        time.Duration
+	gateReconcileTimeout         time.Duration
+	routeRepository              string
+	routeSourceConfiguration     string
+	routeConfigurationGeneration string
+	routeRisk                    routing.Risk
+	routeReviewConfirmed         bool
+}
+
+// SetRouteContext supplies repository identity and the loaded configuration
+// generation to the core routing/evidence wrapper.
+func (e *Executor) SetRouteContext(repository, sourceConfiguration, generation string) {
+	e.routeRepository = repository
+	e.routeSourceConfiguration = sourceConfiguration
+	e.routeConfigurationGeneration = generation
 }
 
 // SetSkippedSteps configures steps that should be marked skipped without running.
@@ -142,6 +162,8 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 // If the context is cancelled with a cause (via context.WithCancelCause),
 // the cause message is preserved as the run's error in the DB.
 func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
+	e.routeRisk = routing.RiskUnknown
+	e.routeReviewConfirmed = false
 	// Mark run as running. Route write failures through failRun so the
 	// in-memory lifecycle and subscriber stream still become terminal instead
 	// of leaving a silent pending run.
@@ -185,6 +207,9 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		}
 		skipRemaining, err := e.executeStep(ctx, step, sr, run, repo, workDir, logDir, stepExecutionState{})
 		if err != nil {
+			if errors.Is(err, errAuthorizationParked) {
+				return nil
+			}
 			return e.failRun(run, repo, err, ctx)
 		}
 		if skipRemaining {
@@ -236,8 +261,11 @@ type recoveredGate struct {
 }
 
 func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
-	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince == nil {
+	if run == nil || (run.Status == types.RunRunning && run.AwaitingAgentSince == nil) || (run.Status != types.RunRunning && run.Status != types.RunAwaitingAuth) {
 		return fmt.Errorf("run is not a recoverable parked run")
+	}
+	if run.Status == types.RunAwaitingAuth && run.BlockedReason == nil {
+		return fmt.Errorf("authorization-parked run has no blocked reason")
 	}
 	_, err := (&Executor{db: database, steps: steps}).recoveredGate(run.ID)
 	return err
@@ -262,8 +290,12 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		return e.failRun(run, repo, fmt.Errorf("create log dir: %w", err))
 	}
 	e.initializeRunScopes(run.ID)
+	e.restoreRouteState(run.ID)
 
-	parkStart := time.Unix(*run.AwaitingAgentSince, 0)
+	parkStart := time.Now()
+	if run.AwaitingAgentSince != nil {
+		parkStart = time.Unix(*run.AwaitingAgentSince, 0)
+	}
 	duration := recoveredStepDuration(gate.stepResult)
 	completeReconciledGate := func() error {
 		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusCompleted, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
@@ -288,13 +320,15 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		LogChunk: func(string) {},
 		LogFile:  func(string) {},
 	}
-	if reconciled, reconcileErr := e.reconcileApprovalGate(ctx, gate.step, reconcileCtx); reconciled {
-		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
-			return e.failRun(run, repo, fmt.Errorf("complete reconciled awaiting-agent state: %w", dbErr), ctx)
+	if run.Status != types.RunAwaitingAuth {
+		if reconciled, reconcileErr := e.reconcileApprovalGate(ctx, gate.step, reconcileCtx); reconciled {
+			if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+				return e.failRun(run, repo, fmt.Errorf("complete reconciled awaiting-agent state: %w", dbErr), ctx)
+			}
+			return completeReconciledGate()
+		} else if reconcileErr != nil && ctx.Err() == nil {
+			slog.Warn("could not reconcile recovered approval gate; preserving it", "run_id", run.ID, "step", gate.step.Name(), "error", reconcileErr)
 		}
-		return completeReconciledGate()
-	} else if reconcileErr != nil && ctx.Err() == nil {
-		slog.Warn("could not reconcile recovered approval gate; preserving it", "run_id", run.ID, "step", gate.step.Name(), "error", reconcileErr)
 	}
 
 	e.mu.Lock()
@@ -314,18 +348,48 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	)
 
 	response, reconciled, err := e.waitForApprovalOrReconcile(ctx, gate.step, reconcileCtx, false)
-	if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
-		slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
-	}
 	if err != nil {
+		// An authorization-parked run is intentionally recoverable. A daemon
+		// shutdown while its recovered gate is waiting must leave that park
+		// intact so the next daemon can offer the same bounded retry; generic
+		// gate cancellation must not rewrite it as a terminal shutdown failure.
+		if run.Status == types.RunAwaitingAuth && preserveAuthorizationPark(ctx, err) {
+			return nil
+		}
+		if run.Status != types.RunAwaitingAuth {
+			if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+				slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
+			}
+		}
 		if dbErr := e.db.FailStep(gate.stepResult.ID, err.Error(), duration); dbErr != nil {
 			slog.Warn("failed to mark recovered step as failed in db", "step", gate.step.Name(), "error", dbErr)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", "", err.Error(), &duration)
 		return e.failRun(run, repo, fmt.Errorf("step %s: waiting for approval: %w", gate.step.Name(), err), ctx)
 	}
+	if run.Status != types.RunAwaitingAuth {
+		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+			slog.Warn("failed to complete awaiting-agent state in db", "step", gate.step.Name(), "run", run.ID, "error", dbErr)
+		}
+	}
 	if reconciled {
 		return completeReconciledGate()
+	}
+	// Authorization parking is durable. Approval after a restart is not a new
+	// allowance: the immutable lifecycle count is the sole retry budget. A
+	// fixer transport failure is even stricter because the prior mutating turn
+	// may already have completed; approval cannot prove that it did not.
+	if run.Status == types.RunAwaitingAuth {
+		authAttempts, countErr := e.authorizationParkCount(run.ID)
+		if countErr != nil {
+			return e.failRun(run, repo, countErr, ctx)
+		}
+		if authAttempts > authorizationRecoveryLimit || authorizationFixerCompletionUnknown(run) {
+			if response.action == types.ActionApprove || response.action == types.ActionFix {
+				slog.Warn("authorization approval cannot establish safe fixer retry; preserving operator reconciliation park", "run_id", run.ID)
+			}
+			return errAuthorizationParked
+		}
 	}
 
 	approvalFields := telemetry.Fields{
@@ -340,6 +404,30 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		approvalFields["selected_findings_count"] = selectedCount
 	}
 	telemetry.Track("approval", approvalFields)
+	if run.BlockedReason != nil && (response.action == types.ActionApprove || response.action == types.ActionFix) {
+		if dbErr := e.db.ClearRunBlockedReason(run.ID); dbErr != nil {
+			return e.failRun(run, repo, fmt.Errorf("clear authorization blockage: %w", dbErr), ctx)
+		}
+		run.BlockedReason = nil
+		if run.Status == types.RunAwaitingAuth {
+			if dbErr := e.db.UpdateRunStatus(run.ID, types.RunRunning); dbErr != nil {
+				return e.failRun(run, repo, fmt.Errorf("resume authorization-blocked run: %w", dbErr), ctx)
+			}
+			run.Status = types.RunRunning
+		}
+		state := stepExecutionState{roundNum: gate.round, fixing: gate.stepResult.Status == types.StepStatusFixReview, previousFindings: gate.findings}
+		skipRemaining, retryErr := e.executeStep(ctx, gate.step, gate.stepResult, run, repo, workDir, logDir, state)
+		if retryErr != nil {
+			if errors.Is(retryErr, errAuthorizationParked) {
+				return nil
+			}
+			return e.failRun(run, repo, retryErr, ctx)
+		}
+		if skipRemaining {
+			return e.skipRecoveredRemainder(run, repo, gate.index+1)
+		}
+		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1)
+	}
 	switch response.action {
 	case types.ActionApprove:
 		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusCompleted, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
@@ -400,6 +488,16 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	}
 }
 
+func preserveAuthorizationPark(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	cause := context.Cause(ctx)
+	return cause == nil || errors.Is(cause, context.Canceled) ||
+		errors.Is(err, context.Canceled) ||
+		strings.Contains(strings.ToLower(err.Error()), "daemon shutting down")
+}
+
 func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 	results, err := e.db.GetStepsByRun(runID)
 	if err != nil {
@@ -414,7 +512,8 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 		if result.StepName != e.steps[index].Name() {
 			return nil, fmt.Errorf("recovered step %d is %q, want %q", index, result.StepName, e.steps[index].Name())
 		}
-		if result.Status == types.StepStatusAwaitingApproval || result.Status == types.StepStatusFixReview {
+		authGate := result.Status == types.StepStatusRunning && result.FindingsJSON != nil
+		if result.Status == types.StepStatusAwaitingApproval || result.Status == types.StepStatusFixReview || authGate {
 			if gate != nil || result.FindingsJSON == nil || result.StartedAt == nil || result.DurationMS == nil || result.AgentPID != nil {
 				return nil, fmt.Errorf("recovered approval gate is incomplete")
 			}
@@ -423,6 +522,9 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 				return nil, fmt.Errorf("recovered approval gate has no complete round")
 			}
 			latest := rounds[len(rounds)-1]
+			if authGate && latest.Trigger != "auth_required" {
+				return nil, fmt.Errorf("recovered running step %s is not an authorization gate", result.StepName)
+			}
 			if latest.FindingsJSON == nil || *latest.FindingsJSON != *result.FindingsJSON {
 				return nil, fmt.Errorf("recovered approval gate findings are incomplete")
 			}
@@ -642,11 +744,16 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	if stepAgent != nil {
 		stepAgent = &lifecycleAgent{inner: stepAgent, onLifecycle: onAgentLifecycle}
 		stepAgent = &perfRecordingAgent{
-			inner:    stepAgent,
-			db:       e.db,
-			runID:    run.ID,
-			stepName: stepName,
-			round:    func() int { return roundNum + 1 },
+			inner:                   stepAgent,
+			db:                      e.db,
+			runID:                   run.ID,
+			stepName:                stepName,
+			round:                   func() int { return roundNum + 1 },
+			repository:              e.routeRepository,
+			sourceConfiguration:     e.routeSourceConfiguration,
+			configurationGeneration: e.routeConfigurationGeneration,
+			risk:                    func() routing.Risk { return e.routeRisk },
+			reviewConfirmation:      func() bool { return stepName == types.StepReview && e.routeReviewConfirmed },
 		}
 	}
 	sctx := &StepContext{
@@ -679,13 +786,22 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	skipRemaining := false
 	stepSkipped := false
 	currentRoundID := state.currentRoundID
-
 	// Execute with possible fix loop
 	for {
 		outcome, err := step.Execute(sctx)
 		roundNum++
 		roundDuration := time.Since(phaseStart).Milliseconds()
 		if err != nil {
+			if agent.IsAuthorizationRequired(err) {
+				if parkErr := e.parkForAuthorization(ctx, step, sctx, sr, run, repo, roundNum); parkErr == nil {
+					phaseStart = time.Now()
+					continue
+				} else if errors.Is(parkErr, errAuthorizationParked) {
+					return false, parkErr
+				} else {
+					err = fmt.Errorf("authorization recovery: %w", parkErr)
+				}
+			}
 			durationMS := executionMS + roundDuration
 			// Persist the failure reason to the step's own log file. The error
 			// often carries the only detail of why the step failed (e.g. git
@@ -701,6 +817,16 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		}
 
 		outcome.Findings = normalizeFindingsJSON(outcome.Findings, string(stepName))
+		if stepName == types.StepReview {
+			if risk := routeRiskFromFindings(outcome.Findings); risk != routing.RiskUnknown {
+				e.routeRisk = risk
+				// The initial review is the bootstrap classifier. Only a later
+				// review turn may select Sol, and only after that classifier ran.
+				if sctx.Fixing && risk == routing.RiskHigh {
+					e.routeReviewConfirmed = true
+				}
+			}
+		}
 		finalExitCode = outcome.ExitCode
 		durationOverrideMS += outcome.DurationOverrideMS
 
@@ -930,6 +1056,88 @@ func roundInsertID(_ string, inserted *db.StepRound, err error) string {
 	return inserted.ID
 }
 
+func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *StepContext, sr *db.StepResult, run *db.Run, repo *db.Repo, round int) error {
+	reason := "codex authorization required; log into a healthy Codex account, then approve one bounded retry"
+	if sctx.Fixing {
+		reason = "codex authorization required; fixer turn completion is unknown; inspect the worktree and confirm the retry is idempotent before approving one bounded retry"
+	}
+	attempts, err := e.authorizationParkCount(run.ID)
+	if err != nil {
+		return err
+	}
+	// The initial failed turn is not a retry. Only a non-fixer turn with no
+	// prior authorization park may consume the single recovery retry. A fixer
+	// turn is never replayed without proof of non-completion.
+	retryAllowed := attempts < authorizationRecoveryLimit && !sctx.Fixing
+	if err := e.db.ParkRunForAuthorization(run.ID, string(step.Name()), reason); err != nil {
+		return err
+	}
+	run.Status = types.RunAwaitingAuth
+	run.BlockedReason = func() *string { v := reason; return &v }()
+	findings := `{"summary":"Codex authorization is required before this turn can continue","risk_level":"high","risk_rationale":"external authentication state is unavailable","findings":[]}`
+	if err := e.db.SetStepFindings(sr.ID, findings); err != nil {
+		return err
+	}
+	if round < 1 {
+		round = 1
+	}
+	if _, err := e.db.InsertStepRound(sr.ID, round, "auth_required", &findings, nil, 0); err != nil {
+		return err
+	}
+	if err := e.db.UpdateStepStatusWithDuration(sr.ID, types.StepStatusRunning, 0); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.waiting = true
+	e.waitingStep = step.Name()
+	e.mu.Unlock()
+	e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(types.StepStatusAwaitingApproval), "", "", reason, nil)
+	parkStart := time.Now()
+	response, _, err := e.waitForApprovalOrReconcile(ctx, step, sctx, false)
+	if err != nil {
+		cause := context.Cause(ctx)
+		if cause == nil || errors.Is(cause, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "daemon shutting down") {
+			return errAuthorizationParked
+		}
+		return err
+	}
+	if response.action != types.ActionApprove && response.action != types.ActionFix {
+		return fmt.Errorf("authorization recovery requires approve or fix, got %q", response.action)
+	}
+	if !retryAllowed {
+		return errAuthorizationParked
+	}
+	if dbErr := e.db.ResumeRunAfterAuthorization(run.ID, string(step.Name())); dbErr != nil {
+		return dbErr
+	}
+	run.Status = types.RunRunning
+	run.BlockedReason = nil
+	if err := e.db.UpdateStepStatus(sr.ID, types.StepStatusRunning); err != nil {
+		return err
+	}
+	sctx.Log(fmt.Sprintf("authentication recovered after explicit approval (%d ms parked); retrying the same agent turn", time.Since(parkStart).Milliseconds()))
+	return nil
+}
+
+func (e *Executor) authorizationParkCount(runID string) (int, error) {
+	events, err := e.db.LifecycleEvents(runID)
+	if err != nil {
+		return 0, fmt.Errorf("count authorization recovery attempts: %w", err)
+	}
+	count := 0
+	for _, event := range events {
+		if event.EventType == "authorization_required" {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func authorizationFixerCompletionUnknown(run *db.Run) bool {
+	return run != nil && run.BlockedReason != nil &&
+		strings.Contains(strings.ToLower(*run.BlockedReason), "fixer turn completion is unknown")
+}
+
 type lifecycleAgent struct {
 	inner       agent.Agent
 	onLifecycle func(agent.LifecycleEvent)
@@ -1111,6 +1319,16 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 			break
 		}
 	}
+	if agent.IsAuthorizationRequired(err) {
+		if dbErr := e.db.ParkRunForAuthorization(run.ID, string(e.currentStepName(run.ID)), errMsg); dbErr != nil {
+			slog.Error("failed to persist authorization blockage", "run", run.ID, "error", dbErr)
+		}
+		run.Status = types.RunAwaitingAuth
+		run.Error = &errMsg
+		run.BlockedReason = &errMsg
+		e.emitRunEvent(ipc.EventRunUpdated, run, repo)
+		return err
+	}
 	runStatus := types.RunFailed
 	if errMsg == types.RunCancelReasonAbortedByUser || errMsg == types.RunCancelReasonSuperseded {
 		runStatus = types.RunCancelled
@@ -1122,6 +1340,65 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 	run.Error = &errMsg
 	e.emitRunEvent(ipc.EventRunCompleted, run, repo)
 	return err
+}
+
+func (e *Executor) currentStepName(runID string) types.StepName {
+	if steps, err := e.db.GetStepsByRun(runID); err == nil {
+		for _, step := range steps {
+			if step.Status == types.StepStatusRunning || step.Status == types.StepStatusFailed {
+				return step.StepName
+			}
+		}
+	}
+	return "unknown"
+}
+
+// restoreRouteState recovers only durable policy state needed for a resumed
+// invocation. This keeps a daemon restart from silently downgrading or
+// re-bootstrapping a review route, while the route decision ledger remains the
+// audit source rather than a mutable project manifest.
+func (e *Executor) restoreRouteState(runID string) {
+	e.routeRisk = routing.RiskUnknown
+	e.routeReviewConfirmed = false
+	decisions, err := e.db.RouteDecisions(runID)
+	if err != nil {
+		return
+	}
+	for _, decision := range decisions {
+		// RouteDecisions is ordered by durable creation time and id. Each
+		// decision carries the classification in force for that invocation, so
+		// assigning on every row restores the latest classification rather than
+		// making historical high risk permanently sticky.
+		switch routing.Risk(decision.Risk) {
+		case routing.RiskLow, routing.RiskMedium, routing.RiskHigh:
+			e.routeRisk = routing.Risk(decision.Risk)
+		case routing.RiskUnknown:
+			e.routeRisk = routing.RiskUnknown
+		}
+		e.routeReviewConfirmed = decision.Phase == "review-confirmation" && decision.EffectiveModel == routing.ModelSol
+	}
+}
+
+func routeRiskFromFindings(raw string) routing.Risk {
+	if strings.TrimSpace(raw) == "" {
+		return routing.RiskUnknown
+	}
+	var findings struct {
+		RiskLevel string `json:"risk_level"`
+	}
+	if err := json.Unmarshal([]byte(raw), &findings); err != nil {
+		return routing.RiskUnknown
+	}
+	switch strings.ToLower(strings.TrimSpace(findings.RiskLevel)) {
+	case "low":
+		return routing.RiskLow
+	case "medium":
+		return routing.RiskMedium
+	case "high":
+		return routing.RiskHigh
+	default:
+		return routing.RiskUnknown
+	}
 }
 
 // --- event helpers ---

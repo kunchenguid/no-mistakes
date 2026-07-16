@@ -101,6 +101,19 @@ func TestRecoverStaleRunsClearsAwaitingAgent(t *testing.T) {
 	if got.AwaitingAgentSince != nil {
 		t.Errorf("AwaitingAgentSince = %d after recovery, want nil", *got.AwaitingAgentSince)
 	}
+	events, err := d.LifecycleEvents(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRecovery := false
+	for _, event := range events {
+		if event.EventType == "run_recovered" && event.Error == "daemon restarted" {
+			foundRecovery = true
+		}
+	}
+	if !foundRecovery {
+		t.Fatalf("missing recovery evidence: %+v", events)
+	}
 }
 
 func TestRunGetNotFound(t *testing.T) {

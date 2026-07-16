@@ -56,6 +56,11 @@ func TestDaemonRunUsesProvidedRoot(t *testing.T) {
 			if cmd.Process != nil {
 				_ = cmd.Process.Kill()
 			}
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Errorf("daemon run process was not reaped after kill")
+			}
 		}
 	}()
 

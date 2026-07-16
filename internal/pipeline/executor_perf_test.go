@@ -10,6 +10,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -42,6 +43,52 @@ type fallbackUsageAgent struct {
 	name   string
 	result *agent.Result
 	err    error
+}
+
+type routingCaptureAgent struct {
+	seen []agent.RunOpts
+}
+
+func (a *routingCaptureAgent) Name() string { return "codex" }
+func (a *routingCaptureAgent) Close() error { return nil }
+func (a *routingCaptureAgent) Run(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	a.seen = append(a.seen, opts)
+	return &agent.Result{Text: "ok"}, nil
+}
+
+func TestPerfRecordingAgentRoutesSolOnlyForConfirmedReview(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	capture := &routingCaptureAgent{}
+	wrapped := &perfRecordingAgent{
+		inner: capture, db: database, runID: run.ID, stepName: types.StepReview,
+		repository:          "https://github.com/RaFoyer/no-mistakes.git",
+		sourceConfiguration: "cfg-fingerprint", configurationGeneration: "generation-1",
+		risk:               func() routing.Risk { return routing.RiskHigh },
+		reviewConfirmation: func() bool { return false },
+		round:              func() int { return 1 },
+	}
+	if _, err := wrapped.Run(context.Background(), agent.RunOpts{Prompt: "review", Purpose: "review", RouteReviewConfirmation: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrapped.Run(context.Background(), agent.RunOpts{Prompt: "test", Purpose: "test", RouteReviewConfirmation: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(capture.seen) != 2 {
+		t.Fatalf("captured %d invocations", len(capture.seen))
+	}
+	if got := capture.seen[0].Routing.EffectiveModel; got != routing.ModelSol || capture.seen[0].Routing.EffectiveEffort != routing.EffortHigh {
+		t.Fatalf("review route = %+v, want Sol/high", capture.seen[0].Routing)
+	}
+	if got := capture.seen[1].Routing.EffectiveModel; got != routing.ModelTerra || capture.seen[1].Routing.EffectiveEffort != routing.EffortHigh {
+		t.Fatalf("test route = %+v, want Terra/high", capture.seen[1].Routing)
+	}
+	decisions, err := database.RouteDecisions(run.ID)
+	if err != nil || len(decisions) != 2 {
+		t.Fatalf("route decisions = %+v, err = %v", decisions, err)
+	}
+	if decisions[0].SourceConfiguration != "cfg-fingerprint" || decisions[0].ConfigurationGeneration != "generation-1" || decisions[0].PromptBytes == 0 {
+		t.Fatalf("route evidence = %+v", decisions[0])
+	}
 }
 
 func (a *fallbackUsageAgent) Name() string { return a.name }
@@ -128,15 +175,15 @@ func TestPerfRecordingAgent_RecordsFallbackAttemptsSeparately(t *testing.T) {
 		round:    func() int { return 1 },
 	}
 
-	if _, err := wrapped.Run(context.Background(), agent.RunOpts{Purpose: "review"}); err != nil {
-		t.Fatalf("Run: %v", err)
+	if _, err := wrapped.Run(context.Background(), agent.RunOpts{Purpose: "review"}); err == nil {
+		t.Fatal("Codex policy must fail closed instead of falling back to Claude")
 	}
 	invocations, err := database.GetAgentInvocationsByRun(run.ID)
 	if err != nil {
 		t.Fatalf("get invocations: %v", err)
 	}
-	if len(invocations) != 2 {
-		t.Fatalf("got %d invocation rows, want 2", len(invocations))
+	if len(invocations) != 1 {
+		t.Fatalf("got %d invocation rows, want one attempted Codex route", len(invocations))
 	}
 	byAgent := map[string]db.AgentInvocation{}
 	for _, invocation := range invocations {
@@ -144,9 +191,6 @@ func TestPerfRecordingAgent_RecordsFallbackAttemptsSeparately(t *testing.T) {
 	}
 	if got := byAgent["codex"]; got.ExitStatus != "error" || got.FailureCategory != "spawn" {
 		t.Fatalf("codex invocation = %+v", got)
-	}
-	if got := byAgent["claude"]; got.ExitStatus != "ok" || got.Model != "test-model-2" {
-		t.Fatalf("claude invocation = %+v", got)
 	}
 }
 
@@ -177,6 +221,31 @@ func TestPerfRecordingAgent_MixedFallbackRecordsActualProviderCold(t *testing.T)
 	}
 	if got := invocations[0]; got.Agent != "pi" || got.SessionMode != db.InvocationModeCold {
 		t.Fatalf("invocation = %+v, want pi cold", got)
+	}
+}
+
+func TestPerfRecordingAgentClearsUnenforceableGPTEvidence(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	wrapped := &perfRecordingAgent{
+		inner:    &fallbackUsageAgent{name: "claude", result: &agent.Result{Model: "claude-sonnet"}},
+		db:       database,
+		runID:    run.ID,
+		stepName: types.StepReview,
+		round:    func() int { return 1 },
+	}
+	_, err := wrapped.Run(context.Background(), agent.RunOpts{
+		Purpose: "review",
+		Routing: routing.Decision{RequestedHarness: "claude", EffectiveHarness: "codex", EffectiveModel: routing.ModelSol, EffectiveEffort: routing.EffortHigh, PolicyVersion: routing.PolicyVersion},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invs, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil || len(invs) != 1 {
+		t.Fatalf("invocations = %+v, err=%v", invs, err)
+	}
+	if invs[0].EffectiveHarness != "claude" || invs[0].EffectiveModel != "" || invs[0].EffectiveEffort != "" {
+		t.Fatalf("unenforceable route evidence = %+v", invs[0])
 	}
 }
 

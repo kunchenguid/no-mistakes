@@ -74,6 +74,9 @@ func runWithRetry(
 		}
 		startedAt := time.Now()
 		result, err := runOnce()
+		if err != nil && authorizationRequiredText(err.Error()) && !IsAuthorizationRequired(err) {
+			err = authorizationError(name + ": " + err.Error())
+		}
 		emitAgentAttempt(opts, name, result, err, startedAt, time.Now())
 		if err == nil {
 			return result, nil
@@ -152,6 +155,12 @@ var transientNeedles = []struct {
 func classifyTransient(err error) (string, bool) {
 	if err == nil {
 		return "", false
+	}
+	// Account transitions are operator-recoverable, not transient transport
+	// errors. Retrying here can replay a mutating fixer turn repeatedly while
+	// the provider is still unauthenticated.
+	if IsAuthorizationRequired(err) {
+		return "authorization required", false
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "", false
