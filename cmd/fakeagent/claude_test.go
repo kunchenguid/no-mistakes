@@ -6,6 +6,12 @@ import (
 	"testing"
 )
 
+func TestExtractClaudePromptRecognizesStdinTransport(t *testing.T) {
+	if got := extractClaudePrompt([]string{"-p", "--verbose", "--output-format", "stream-json"}); got != "" {
+		t.Fatalf("prompt = %q, want empty for stdin transport", got)
+	}
+}
+
 func TestPatchClaudeFixtureStructuredRunRewritesAssistantText(t *testing.T) {
 	t.Helper()
 

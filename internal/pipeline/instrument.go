@@ -77,7 +77,7 @@ func (a *perfRecordingAgent) Run(ctx context.Context, opts agent.RunOpts) (*agen
 			SourceConfiguration:     opts.Routing.SourceConfiguration,
 			ConfigurationGeneration: opts.Routing.ConfigurationGeneration,
 			Repository:              opts.Routing.Repository,
-			PromptSHA256:            promptSHA, PromptBytes: promptBytes, PromptTransport: "stdin",
+			PromptSHA256:            promptSHA, PromptBytes: promptBytes, PromptTransport: agent.PromptTransport(a.inner.Name()),
 		}); err != nil {
 			slog.Warn("failed to record route decision", "step", a.stepName, "error", err)
 		}

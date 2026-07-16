@@ -179,9 +179,12 @@ func TestACPAgentRunParsesAcpxJSONOutput(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "acpx")
 	argLog := filepath.Join(dir, "args.txt")
+	promptLog := filepath.Join(dir, "prompt.txt")
 	t.Setenv("ARG_LOG", argLog)
+	t.Setenv("PROMPT_LOG", promptLog)
 	contents := `#!/bin/sh
 printf '%s\n' "$@" > "$ARG_LOG"
+cat > "$PROMPT_LOG"
 printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":123,"size":1000}}}'
 printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"done\":true}"}}}}'
 `
@@ -221,10 +224,17 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"s
 		t.Fatalf("read args: %v", err)
 	}
 	argsText := string(argsData)
-	for _, want := range []string{"--cwd\n" + dir, "--format\njson", "--json-strict", "gemini", "do work"} {
+	for _, want := range []string{"--cwd\n" + dir, "--format\njson", "--json-strict", "gemini"} {
 		if !strings.Contains(argsText, want) {
 			t.Errorf("args missing %q in:\n%s", want, argsText)
 		}
+	}
+	prompt, err := os.ReadFile(promptLog)
+	if err != nil {
+		t.Fatalf("read prompt: %v", err)
+	}
+	if !strings.Contains(string(prompt), "do work") {
+		t.Fatalf("prompt was not transported through stdin: %q", prompt)
 	}
 }
 

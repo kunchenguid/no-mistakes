@@ -261,8 +261,11 @@ type recoveredGate struct {
 }
 
 func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
-	if run == nil || (run.Status != types.RunRunning && run.Status != types.RunAwaitingAuth) || run.AwaitingAgentSince == nil {
+	if run == nil || (run.Status == types.RunRunning && run.AwaitingAgentSince == nil) || (run.Status != types.RunRunning && run.Status != types.RunAwaitingAuth) {
 		return fmt.Errorf("run is not a recoverable parked run")
+	}
+	if run.Status == types.RunAwaitingAuth && run.BlockedReason == nil {
+		return fmt.Errorf("authorization-parked run has no blocked reason")
 	}
 	_, err := (&Executor{db: database, steps: steps}).recoveredGate(run.ID)
 	return err
@@ -289,7 +292,10 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	e.initializeRunScopes(run.ID)
 	e.restoreRouteState(run.ID)
 
-	parkStart := time.Unix(*run.AwaitingAgentSince, 0)
+	parkStart := time.Now()
+	if run.AwaitingAgentSince != nil {
+		parkStart = time.Unix(*run.AwaitingAgentSince, 0)
+	}
 	duration := recoveredStepDuration(gate.stepResult)
 	completeReconciledGate := func() error {
 		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusCompleted, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
@@ -314,13 +320,15 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		LogChunk: func(string) {},
 		LogFile:  func(string) {},
 	}
-	if reconciled, reconcileErr := e.reconcileApprovalGate(ctx, gate.step, reconcileCtx); reconciled {
-		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
-			return e.failRun(run, repo, fmt.Errorf("complete reconciled awaiting-agent state: %w", dbErr), ctx)
+	if run.Status != types.RunAwaitingAuth {
+		if reconciled, reconcileErr := e.reconcileApprovalGate(ctx, gate.step, reconcileCtx); reconciled {
+			if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+				return e.failRun(run, repo, fmt.Errorf("complete reconciled awaiting-agent state: %w", dbErr), ctx)
+			}
+			return completeReconciledGate()
+		} else if reconcileErr != nil && ctx.Err() == nil {
+			slog.Warn("could not reconcile recovered approval gate; preserving it", "run_id", run.ID, "step", gate.step.Name(), "error", reconcileErr)
 		}
-		return completeReconciledGate()
-	} else if reconcileErr != nil && ctx.Err() == nil {
-		slog.Warn("could not reconcile recovered approval gate; preserving it", "run_id", run.ID, "step", gate.step.Name(), "error", reconcileErr)
 	}
 
 	e.mu.Lock()

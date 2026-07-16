@@ -36,10 +36,10 @@ func (a *copilotAgent) Close() error { return nil }
 
 func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	prompt := buildCopilotPrompt(opts.Prompt, opts.JSONSchema)
-	args := a.buildArgs(prompt)
+	args := a.buildArgsTransport()
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Stdin = nil
+	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Env = gitSafeEnv(opts.CWD)
 	shellenv.ConfigureShellCommand(cmd)
 
@@ -151,6 +151,19 @@ func (a *copilotAgent) buildArgs(prompt string) []string {
 		"--output-format", "json",
 		"--no-color",
 	)
+	if !copilotUserSetAskUser(a.extraArgs) {
+		args = append(args, "--no-ask-user")
+	}
+	if !copilotUserSetPermissionMode(a.extraArgs) {
+		args = append(args, "--allow-all-tools")
+	}
+	return args
+}
+
+func (a *copilotAgent) buildArgsTransport() []string {
+	args := make([]string, 0, len(a.extraArgs)+7)
+	args = append(args, a.extraArgs...)
+	args = append(args, "--output-format", "json", "--no-color")
 	if !copilotUserSetAskUser(a.extraArgs) {
 		args = append(args, "--no-ask-user")
 	}

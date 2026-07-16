@@ -32,10 +32,14 @@ func (a *acpxAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 }
 
 func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
-	args := a.buildArgs(opts)
+	args := a.buildArgsTransport(opts)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Stdin = nil
+	prompt := opts.Prompt
+	if len(opts.JSONSchema) > 0 {
+		prompt = buildACPStructuredPrompt(prompt, opts.JSONSchema)
+	}
+	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Env = gitSafeEnv(opts.CWD)
 	shellenv.ConfigureShellCommand(cmd)
 
@@ -86,7 +90,15 @@ func (a *acpxAgent) buildArgs(opts RunOpts) []string {
 	if len(opts.JSONSchema) > 0 {
 		prompt = buildACPStructuredPrompt(prompt, opts.JSONSchema)
 	}
+	args := a.buildArgsWithoutPrompt(opts)
+	return append(args, prompt)
+}
 
+func (a *acpxAgent) buildArgsTransport(opts RunOpts) []string {
+	return a.buildArgsWithoutPrompt(opts)
+}
+
+func (a *acpxAgent) buildArgsWithoutPrompt(opts RunOpts) []string {
 	args := make([]string, 0, 12)
 	if a.rawCommand != "" {
 		args = append(args, "--agent", a.rawCommand)
@@ -104,7 +116,7 @@ func (a *acpxAgent) buildArgs(opts RunOpts) []string {
 	if a.rawCommand == "" {
 		args = append(args, a.target)
 	}
-	args = append(args, "exec", prompt)
+	args = append(args, "exec")
 	return args
 }
 

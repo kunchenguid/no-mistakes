@@ -273,9 +273,9 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	for _, plan := range plans {
 		preserved[plan.run.ID] = struct{}{}
 	}
-	// Authorization parks are deliberately not reconstructed into a live
-	// executor. Replaying an agent turn with unknown completion could repeat a
-	// mutating fixer, so keep the run and worktree durable for explicit resume.
+	// Authorization parks are reconstructed only as a waiting executor. The
+	// parked provider turn is never replayed during startup; an operator must
+	// explicitly approve/fix after refreshing authentication.
 	if active, err := d.GetActiveRuns(); err == nil {
 		for _, run := range active {
 			if run.Status == types.RunAwaitingAuth {

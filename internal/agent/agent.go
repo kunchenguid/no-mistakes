@@ -61,6 +61,20 @@ type RunOpts struct {
 	OnAttempt func(Attempt)
 }
 
+// PromptTransport names the bounded transport used by the native adapter.
+// It is evidence only; routing never depends on this value.
+func PromptTransport(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case name == "codex", name == "claude", name == "copilot", name == "pi", strings.HasPrefix(name, "acp:"):
+		return "stdin"
+	case name == "opencode", name == "rovodev":
+		return "http-body"
+	default:
+		return "unknown"
+	}
+}
+
 // Attempt describes one completed concrete adapter attempt for an agent
 // invocation. An Agent may make several attempts when it retries transient
 // failures or moves to a fallback provider.

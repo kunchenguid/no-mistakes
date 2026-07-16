@@ -319,7 +319,7 @@ func (d *DB) ParkRunForAuthorization(id, step, detail string) error {
 		reason = "authorization required: " + strings.TrimSpace(detail)
 	}
 	ts := now()
-	_, err := d.sql.Exec(`UPDATE runs SET status = ?, blocked_reason = ?, error = ?, awaiting_agent_since = COALESCE(awaiting_agent_since, ?), updated_at = ? WHERE id = ?`, types.RunAwaitingAuth, reason, reason, ts, ts, id)
+	_, err := d.sql.Exec(`UPDATE runs SET status = ?, blocked_reason = ?, error = ?, updated_at = ? WHERE id = ?`, types.RunAwaitingAuth, reason, reason, ts, id)
 	if err != nil {
 		return fmt.Errorf("park run for authorization: %w", err)
 	}
