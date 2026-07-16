@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.39.0](https://github.com/kunchenguid/no-mistakes/compare/v1.38.1...v1.39.0) (2026-07-16)
+
+
+### Features
+
+* **branchsync:** recover custody for terminal pipeline-owned runs ([#502](https://github.com/kunchenguid/no-mistakes/issues/502)) ([0bca236](https://github.com/kunchenguid/no-mistakes/commit/0bca23626016105c0c6f56a702b5b7ec3a86f42a))
+
 ## [1.38.1](https://github.com/kunchenguid/no-mistakes/compare/v1.38.0...v1.38.1) (2026-07-16)
 
 
