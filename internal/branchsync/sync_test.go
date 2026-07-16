@@ -393,6 +393,49 @@ func TestEquivalentDivergenceRefusesAmbiguousRepeatedContext(t *testing.T) {
 	}
 }
 
+func TestEquivalentDivergenceRefusesUnrepresentedEdgeDeletion(t *testing.T) {
+	cases := map[string]struct {
+		base  string
+		local string
+	}{
+		"start": {base: "delete\nkeep\n", local: "keep\n"},
+		"end":   {base: "keep\ndelete\n", local: "keep\n"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newSyncFixture(t)
+			mustWrite(t, filepath.Join(f.local, "edge.txt"), tc.base)
+			mustRun(t, f.local, "add", "edge.txt")
+			mustRun(t, f.local, "commit", "-m", "add edge file")
+			f.base = mustRun(t, f.local, "rev-parse", "HEAD")
+			mustWrite(t, filepath.Join(f.local, "edge.txt"), tc.local)
+			mustRun(t, f.local, "commit", "-am", "delete edge line")
+			f.old = mustRun(t, f.local, "rev-parse", "HEAD")
+			run, err := f.db.InsertRun(f.repo.ID, "feature/sync", f.old, f.base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.run = run
+			rebuildPipelineHead(t, f, []pipelineCommit{
+				{message: "pipeline extra", files: map[string]string{"extra.txt": "extra\n"}},
+			})
+			if err := f.db.UpdateRunStatus(f.run.ID, types.RunCompleted); err != nil {
+				t.Fatal(err)
+			}
+			refreshedRun, err := f.db.GetRun(f.run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.run = refreshedRun
+
+			state := f.service.Refresh(f.ctx)
+			if state.State != StateDiverged || state.Relation != RelationDiverged || state.Safety != "blocked_diverged" || state.Changed {
+				t.Fatalf("state = %#v", state)
+			}
+		})
+	}
+}
+
 func TestApplyEmptyLocalUniquenessStillUsesStrictBehindFastForward(t *testing.T) {
 	f := newSyncFixture(t)
 	state := f.service.Apply(f.ctx)

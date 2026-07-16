@@ -949,6 +949,7 @@ func treeMatchesOnPaths(ctx context.Context, dir, local, pushed string, paths []
 }
 
 type diffHunk struct {
+	base    []string
 	removed []string
 	local   []string
 }
@@ -978,7 +979,7 @@ func finalPreservesLocalHunks(ctx context.Context, dir, base, local, pushed stri
 			if len(hunk.local) > 0 && countLineSequence(pushedLines, hunk.local) != 1 {
 				return false
 			}
-			if len(hunk.local) == 0 && len(hunk.removed) > 0 && countLineSequence(pushedLines, hunk.removed) > 0 {
+			if len(hunk.removed) > 0 && countLineSequence(pushedLines, hunk.base) > 0 {
 				return false
 			}
 		}
@@ -1002,10 +1003,12 @@ func parseUnifiedHunks(diff []byte) ([]diffHunk, bool) {
 		case strings.HasPrefix(line, `\`):
 			continue
 		case strings.HasPrefix(line, " "):
+			current.base = append(current.base, line[1:])
 			current.local = append(current.local, line[1:])
 		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
 			current.local = append(current.local, line[1:])
 		case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
+			current.base = append(current.base, line[1:])
 			current.removed = append(current.removed, line[1:])
 		}
 	}
