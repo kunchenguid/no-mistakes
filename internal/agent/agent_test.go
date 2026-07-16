@@ -24,6 +24,7 @@ func TestNew_KnownAgents(t *testing.T) {
 		{name: "rovodev", agent: types.AgentRovoDev, bin: "acli", wantName: "rovodev"},
 		{name: "opencode", agent: types.AgentOpenCode, bin: "opencode", wantName: "opencode"},
 		{name: "pi", agent: types.AgentPi, bin: "pi", wantName: "pi"},
+		{name: "omp", agent: types.AgentOMP, bin: "omp", wantName: "omp"},
 		{name: "copilot", agent: types.AgentCopilot, bin: "copilot", wantName: "copilot"},
 		{name: "cursor alias", agent: types.AgentCursor, bin: "acpx", wantName: "acp:cursor"},
 	}
