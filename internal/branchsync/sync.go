@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,9 +17,12 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/winproc"
 )
 
 const refreshTimeout = 15 * time.Second
+const maxEquivalentProofPaths = 2000
+const maxEquivalentProofPathspecArgBytes = 30000
 
 const (
 	StatePipelineOwned        = "pipeline_owned"
@@ -845,26 +849,11 @@ func equivalentDivergence(ctx context.Context, dir, local, pushed, base string) 
 		return true
 	}
 
-	target, ok := normalizedDiffID(ctx, dir, base, local)
+	paths, ok := locallyChangedPaths(ctx, dir, base, local)
 	if !ok {
 		return false
 	}
-	remoteOnly, err := revList(ctx, dir, "rev-list", "--reverse", pushed, "^"+base)
-	if err != nil || len(remoteOnly) == 0 || len(remoteOnly) > 200 {
-		return false
-	}
-	for startIdx, startCommit := range remoteOnly {
-		start := startCommit + "^"
-		if startIdx == 0 {
-			start = base
-		}
-		for _, end := range remoteOnly[startIdx:] {
-			if id, ok := normalizedDiffID(ctx, dir, start, end); ok && id == target {
-				return true
-			}
-		}
-	}
-	return false
+	return treeMatchesOnPaths(ctx, dir, local, pushed, paths)
 }
 
 func usableEquivalenceBase(ctx context.Context, dir, local, pushed, base string) string {
@@ -889,21 +878,71 @@ func revList(ctx context.Context, dir string, args ...string) ([]string, error) 
 	return strings.Fields(out), nil
 }
 
-func normalizedDiffID(ctx context.Context, dir, from, to string) (string, bool) {
-	out, err := git.Run(ctx, dir, "diff", "--no-ext-diff", "--no-color", "--full-index", from, to)
+func locallyChangedPaths(ctx context.Context, dir, base, local string) ([]string, bool) {
+	out, err := gitRawOutput(ctx, dir, "diff", "--name-only", "-z", base, local)
 	if err != nil {
-		return "", false
+		return nil, false
 	}
-	var b strings.Builder
-	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, "index ") {
+	if len(out) == 0 {
+		return nil, true
+	}
+	seen := make(map[string]struct{})
+	paths := make([]string, 0)
+	for _, path := range strings.Split(string(out), "\x00") {
+		if path == "" {
 			continue
 		}
-		b.WriteString(line)
-		b.WriteByte('\n')
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+		if len(paths) > maxEquivalentProofPaths {
+			return nil, false
+		}
 	}
-	sum := sha256.Sum256([]byte(b.String()))
-	return hex.EncodeToString(sum[:]), true
+	return paths, true
+}
+
+func gitRawOutput(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	cmd.Env = git.NonInteractiveEnv(dir)
+	winproc.Harden(cmd)
+	out, err := cmd.Output()
+	if err != nil {
+		stderr := ""
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = strings.TrimSpace(string(ee.Stderr))
+		}
+		return nil, fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
+	}
+	return out, nil
+}
+
+func treeMatchesOnPaths(ctx context.Context, dir, local, pushed string, paths []string) bool {
+	for start := 0; start < len(paths); {
+		args := []string{"diff", "--quiet", "--no-ext-diff", local, pushed, "--"}
+		argBytes := 0
+		end := start
+		for end < len(paths) {
+			nextBytes := argBytes + len(paths[end]) + 1
+			if end > start && nextBytes > maxEquivalentProofPathspecArgBytes {
+				break
+			}
+			args = append(args, paths[end])
+			argBytes = nextBytes
+			end++
+		}
+		if end == start {
+			return false
+		}
+		if _, err := git.Run(ctx, dir, args...); err != nil {
+			return false
+		}
+		start = end
+	}
+	return true
 }
 
 func (s *Service) remoteName(ctx context.Context) string {

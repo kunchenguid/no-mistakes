@@ -260,6 +260,16 @@ func TestEquivalentButDivergedClassification(t *testing.T) {
 			wantSafe:  "safe_equivalent_advance",
 		},
 		{
+			name: "pipeline extra before equivalent work",
+			commits: []pipelineCommit{
+				{message: "pipeline extra", files: map[string]string{"doc.txt": "pipeline doc\n"}},
+				{message: "second rebased first", files: map[string]string{"second.txt": "second\n"}},
+				{message: "first rebased second", files: map[string]string{"file.txt": "feature\n"}},
+			},
+			wantState: StateDiverged,
+			wantSafe:  "safe_equivalent_advance",
+		},
+		{
 			name: "conflicting rebase output",
 			commits: []pipelineCommit{
 				{message: "feature changed differently", files: map[string]string{"file.txt": "feature but different\n", "second.txt": "second\n"}},
@@ -279,6 +289,23 @@ func TestEquivalentButDivergedClassification(t *testing.T) {
 				t.Fatalf("state = %#v", state)
 			}
 		})
+	}
+}
+
+func TestEquivalentDivergenceRefusesDifferentBinaryContent(t *testing.T) {
+	f := newSyncFixture(t)
+	mustWrite(t, filepath.Join(f.local, "blob.bin"), string([]byte{0x00, 0x01, 0x02, 0x03}))
+	mustRun(t, f.local, "add", "blob.bin")
+	mustRun(t, f.local, "commit", "-m", "local binary")
+	f.old = mustRun(t, f.local, "rev-parse", "HEAD")
+	rebuildPipelineHead(t, f, []pipelineCommit{
+		{message: "feature rebased", files: map[string]string{"file.txt": "feature\n"}},
+		{message: "binary changed differently", files: map[string]string{"blob.bin": string([]byte{0x00, 0x01, 0x02, 0x04})}},
+	})
+
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateDiverged || state.Relation != RelationDiverged || state.Safety != "blocked_diverged" || state.Changed {
+		t.Fatalf("state = %#v", state)
 	}
 }
 
