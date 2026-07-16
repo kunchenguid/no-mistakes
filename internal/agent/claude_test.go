@@ -12,12 +12,12 @@ import (
 func TestClaudeAgent_BuildArgs(t *testing.T) {
 	ca := &claudeAgent{bin: "/usr/bin/claude"}
 	schema := json.RawMessage(`{"type":"object"}`)
-	args := ca.buildArgs("do something", schema, "")
+	args := ca.buildArgs(schema, "")
 
 	// Default (no opt-out): pristine args, no setting-sources restriction -
 	// ordinary repos keep loading project CLAUDE.md/AGENTS.md (backward-compat).
 	expected := []string{
-		"-p", "do something",
+		"-p",
 		"--verbose",
 		"--output-format", "stream-json",
 		"--json-schema", `{"type":"object"}`,
@@ -36,7 +36,7 @@ func TestClaudeAgent_BuildArgs(t *testing.T) {
 
 func TestClaudeAgent_BuildArgs_NoSchema(t *testing.T) {
 	ca := &claudeAgent{bin: "claude"}
-	args := ca.buildArgs("prompt", nil, "")
+	args := ca.buildArgs(nil, "")
 
 	// Without schema, should not include --json-schema flag
 	for _, arg := range args {
@@ -45,18 +45,18 @@ func TestClaudeAgent_BuildArgs_NoSchema(t *testing.T) {
 		}
 	}
 	// Should still have core args
-	if args[0] != "-p" || args[1] != "prompt" {
-		t.Error("missing -p flag")
+	if len(args) < 2 || args[0] != "-p" || args[1] != "--verbose" {
+		t.Errorf("expected bare -p print flag, got %v", args)
 	}
 }
 
 func TestClaudeAgent_BuildArgs_ExtraArgsPrepended(t *testing.T) {
 	ca := &claudeAgent{bin: "claude", extraArgs: []string{"--model", "sonnet"}}
-	args := ca.buildArgs("do it", nil, "")
+	args := ca.buildArgs(nil, "")
 
 	expected := []string{
 		"--model", "sonnet",
-		"-p", "do it",
+		"-p",
 		"--verbose",
 		"--output-format", "stream-json",
 		"--dangerously-skip-permissions",
@@ -79,7 +79,7 @@ func TestClaudeAgent_BuildArgs_UserPermissionModeSuppressesDefault(t *testing.T)
 	}
 	for _, extra := range tests {
 		ca := &claudeAgent{bin: "claude", extraArgs: extra}
-		args := ca.buildArgs("p", nil, "")
+		args := ca.buildArgs(nil, "")
 
 		dangerCount := 0
 		for _, a := range args {
@@ -458,7 +458,7 @@ func TestParseClaudeEvents_ResultCapturesRawEvent(t *testing.T) {
 // does not.
 func TestClaudeAgent_BuildArgs_SuppressesProjectMemoryUnderOptOut(t *testing.T) {
 	ca := &claudeAgent{bin: "claude", disableProjectSettings: true}
-	args := ca.buildArgs("review the diff", nil, "")
+	args := ca.buildArgs(nil, "")
 	if !claudeArgsContainPair(args, "--setting-sources", "user") {
 		t.Errorf("buildArgs = %v, want a `--setting-sources user` pair", args)
 	}
@@ -469,7 +469,7 @@ func TestClaudeAgent_BuildArgs_SuppressesProjectMemoryUnderOptOut(t *testing.T) 
 // loads its project memory exactly as before.
 func TestClaudeAgent_BuildArgs_NoSuppressionWithoutOptOut(t *testing.T) {
 	ca := &claudeAgent{bin: "claude"}
-	args := ca.buildArgs("review the diff", nil, "")
+	args := ca.buildArgs(nil, "")
 	for _, a := range args {
 		if a == "--setting-sources" {
 			t.Errorf("buildArgs = %v, must not restrict setting-sources when the repo did not opt out", args)
@@ -481,7 +481,7 @@ func TestClaudeAgent_BuildArgs_NoSuppressionWithoutOptOut(t *testing.T) {
 // who pinned their own --setting-sources is not double-set even under opt-out.
 func TestClaudeAgent_BuildArgs_UserSettingSourcesOverrideWins(t *testing.T) {
 	ca := &claudeAgent{bin: "claude", disableProjectSettings: true, extraArgs: []string{"--setting-sources", "user,project"}}
-	args := ca.buildArgs("p", nil, "")
+	args := ca.buildArgs(nil, "")
 	if claudeArgsContainPair(args, "--setting-sources", "user") {
 		t.Errorf("buildArgs = %v, must not add default over a user --setting-sources", args)
 	}
