@@ -934,6 +934,31 @@ func TestUpdaterMaybeNotifyAndCheck(t *testing.T) {
 	}
 }
 
+func TestUpdaterDoesNotNotifyForBaseReleaseOfDevelopmentBuild(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "update-check.json")
+	if err := writeCache(cachePath, &checkCache{
+		CheckedAt:     time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC),
+		LatestVersion: "v1.37.0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stderr := new(bytes.Buffer)
+	u := &updater{
+		appName:        "no-mistakes",
+		currentVersion: "v1.37.0-19-g285c8ee",
+		cachePath:      cachePath,
+		stderr:         stderr,
+		now:            func() time.Time { return time.Date(2026, 7, 16, 12, 1, 0, 0, time.UTC) },
+	}
+
+	u.maybeNotifyAndCheck([]string{"status"})
+
+	if stderr.Len() != 0 {
+		t.Fatalf("development build should not be offered its base release, got %q", stderr.String())
+	}
+}
+
 func TestUpdaterCheckLatestBetaUsesReleasesList(t *testing.T) {
 	allowInsecureDownloads = true
 	t.Cleanup(func() { allowInsecureDownloads = false })

@@ -25,6 +25,13 @@ func TestCompareVersions(t *testing.T) {
 		{name: "prerelease with build metadata", a: "v1.2.3-rc1+abc", b: "v1.2.3-rc1+def", wantCmp: 0},
 		{name: "different prerelease lengths", a: "v1.2.3-alpha.1", b: "v1.2.3-alpha", wantCmp: 1},
 		{name: "numeric prerelease less than string", a: "v1.2.3-1", b: "v1.2.3-alpha", wantCmp: -1},
+		{name: "ahead of release git describe is newer than its base", a: "v1.37.0-19-g285c8ee", b: "v1.37.0", wantCmp: 1},
+		{name: "dirty ahead of release git describe is newer than its base", a: "v1.37.0-19-g285c8ee-dirty", b: "v1.37.0", wantCmp: 1},
+		{name: "dirty tagged development build is newer than its base", a: "v1.37.0-dirty", b: "v1.37.0", wantCmp: 1},
+		{name: "ahead build still accepts a genuinely later release", a: "v1.37.0-19-g285c8ee", b: "v1.38.0", wantCmp: -1},
+		{name: "beta is older than its stable release", a: "v1.38.0-beta.1", b: "v1.38.0", wantCmp: -1},
+		{name: "beta policy can compare a later beta", a: "v1.37.0", b: "v1.38.0-beta.1", wantCmp: -1},
+		{name: "development build from beta tag stays ahead of that beta", a: "v1.38.0-beta.1-2-g285c8ee", b: "v1.38.0-beta.1", wantCmp: 1},
 	}
 
 	for _, tt := range tests {
@@ -41,7 +48,45 @@ func TestCompareVersions(t *testing.T) {
 }
 
 func TestCompareVersionsRejectsInvalid(t *testing.T) {
-	if _, err := compareVersions("dev", "v1.2.3"); err == nil {
-		t.Fatal("compareVersions should reject non-semver input")
+	tests := []struct {
+		name    string
+		current string
+		latest  string
+	}{
+		{name: "dev", current: "dev", latest: "v1.2.3"},
+		{name: "empty", current: "", latest: "v1.2.3"},
+		{name: "malformed git describe", current: "v1.37.0-19-gnot-a-commit", latest: "v1.37.0"},
+		{name: "empty prerelease", current: "v1.2.3-", latest: "v1.2.3"},
+		{name: "invalid build metadata", current: "v1.2.3+", latest: "v1.2.3"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := compareVersions(tt.current, tt.latest); err == nil {
+				t.Fatalf("compareVersions(%q, %q) should reject malformed current version", tt.current, tt.latest)
+			}
+		})
+	}
+}
+
+func TestIsDevVersion(t *testing.T) {
+	tests := []struct {
+		version string
+		want    bool
+	}{
+		{version: "dev", want: true},
+		{version: "285c8ee", want: true},
+		{version: "285c8ee-dirty", want: true},
+		{version: "v1.37.0-19-g285c8ee", want: false},
+		{version: "v1.37.0-19-g285c8ee-dirty", want: false},
+		{version: "v1.37.0", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.version, func(t *testing.T) {
+			if got := isDevVersion(tt.version); got != tt.want {
+				t.Fatalf("isDevVersion(%q) = %v, want %v", tt.version, got, tt.want)
+			}
+		})
 	}
 }
