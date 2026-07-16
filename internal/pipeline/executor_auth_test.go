@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -100,9 +99,13 @@ func TestExecutorRequiresExplicitApprovalForEachAuthorizationRetry(t *testing.T)
 	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
 		t.Fatalf("approve auth retry: %v", err)
 	}
+	waitForAuthorizationGate(t, database, exec, run.ID, types.StepReview, 2)
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatalf("approve bounded auth park: %v", err)
+	}
 	err := <-errCh
-	if err == nil || !strings.Contains(err.Error(), "authorization recovery retry limit reached") {
-		t.Fatalf("execution error = %v, want retry-limit failure", err)
+	if err != nil {
+		t.Fatalf("bounded auth park = %v", err)
 	}
 	if got := ag.attempts.Load(); got != 2 {
 		t.Fatalf("agent attempts = %d, want initial attempt plus one explicit retry", got)
@@ -111,8 +114,8 @@ func TestExecutorRequiresExplicitApprovalForEachAuthorizationRetry(t *testing.T)
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
-	if got.Status != types.RunFailed {
-		t.Fatalf("run status = %s, want failed", got.Status)
+	if got.Status != types.RunAwaitingAuth || got.BlockedReason == nil {
+		t.Fatalf("run status = %s blocked=%v, want awaiting_auth", got.Status, got.BlockedReason)
 	}
 	events, eventErr := database.LifecycleEvents(run.ID)
 	if eventErr != nil {
@@ -124,8 +127,8 @@ func TestExecutorRequiresExplicitApprovalForEachAuthorizationRetry(t *testing.T)
 			authEvents++
 		}
 	}
-	if authEvents != 1 {
-		t.Fatalf("authorization events = %d, want one bounded park", authEvents)
+	if authEvents != 2 {
+		t.Fatalf("authorization events = %d, want initial and bounded recovery parks", authEvents)
 	}
 }
 
