@@ -163,6 +163,7 @@ no-mistakes axi run --intent "the user's goal"
 no-mistakes axi status
 no-mistakes axi sync --check
 no-mistakes axi sync
+no-mistakes axi sync --recover
 no-mistakes axi respond --action approve
 no-mistakes axi logs --step review --full
 no-mistakes axi abort
@@ -171,6 +172,7 @@ no-mistakes axi abort --run <id>
 
 Before any post-pipeline local commit or fresh run, read `branch_sync`.
 Only when its structured `next_action.code` is `sync`, run `no-mistakes axi sync` first.
+When `next_action.code` is `recover_custody` - a terminal run left unpublished pipeline commits preserved in the local gate - run `no-mistakes axi sync --recover` to return custody, or `no-mistakes rerun` to resume validating the preserved head.
 If synchronization is blocked or the pipeline still owns an unpublished update, process that state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
 Then commit follow-up work on top so every pipeline fix commit remains in the branch.
 

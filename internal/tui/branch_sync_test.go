@@ -112,3 +112,95 @@ func TestSyncConfirmationEscapeNeverApplies(t *testing.T) {
 		t.Fatalf("escape applied sync: confirm=%v calls=%d", m.syncConfirm, calls)
 	}
 }
+
+// TestRecoverableCustodyActionFlowsThroughConfirmationAndRecoverService covers
+// the TUI half of the guarded custody recovery: a terminal pre-push
+// pipeline_owned state renders the recovery offer, `u` opens an explicit
+// confirmation instead of acting, and `enter` routes through the shared
+// branchsync recovery service exactly once.
+func TestRecoverableCustodyActionFlowsThroughConfirmationAndRecoverService(t *testing.T) {
+	run := &ipc.RunInfo{ID: "run-1", Branch: "feature", Status: types.RunCancelled}
+	m := NewModel("socket", nil, run)
+	stranded := branchsync.State{
+		State: branchsync.StatePipelineOwned, Relation: branchsync.RelationUnknown, Safety: "blocked_pipeline_owned_recoverable",
+		Local:    branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
+		Pipeline: branchsync.PipelineState{RunID: "run-1", Status: "cancelled", Phase: "pre_push", CurrentHead: strings.Repeat("c", 40)},
+	}
+	m.branchSync = &stranded
+
+	view := stripANSI(renderLocalBranchStatus(m.branchSync, false, 80))
+	for _, want := range []string{"preserved in the local gate", "Recover custody", "u recover custody"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("recoverable status missing %q:\n%s", want, view)
+		}
+	}
+
+	recoverCalls := 0
+	m.syncRecover = func() branchsync.State {
+		recoverCalls++
+		recovered := stranded
+		recovered.State = branchsync.StateCustodyReturned
+		recovered.Safety = "custody_returned"
+		recovered.Relation = branchsync.RelationEqual
+		recovered.Recovered = true
+		recovered.Changed = true
+		recovered.Local.Head = recovered.Pipeline.CurrentHead
+		return recovered
+	}
+
+	nextModel, cmd := m.handleKey(keyMsg("u"))
+	m = nextModel.(Model)
+	if cmd != nil || !m.recoverConfirm || recoverCalls != 0 {
+		t.Fatalf("u must open confirmation without acting: confirm=%v calls=%d", m.recoverConfirm, recoverCalls)
+	}
+	plain := stripANSI(m.View())
+	for _, want := range []string{"custody", strings.Repeat("a", 40), strings.Repeat("c", 40), "u/enter recover", "--keep-local", "rerun"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("recover confirmation missing %q:\n%s", want, plain)
+		}
+	}
+
+	nextModel, cmd = m.handleKey(keyMsg("enter"))
+	m = nextModel.(Model)
+	if cmd == nil || recoverCalls != 0 {
+		t.Fatal("recover did not wait for async command")
+	}
+	next, _ := m.Update(cmd())
+	m = next.(Model)
+	if recoverCalls != 1 || m.recoverConfirm || m.branchSync.State != branchsync.StateCustodyReturned || !m.branchSync.Recovered {
+		t.Fatalf("recover result = %#v", m.branchSync)
+	}
+	if m.err != nil {
+		t.Fatalf("successful recovery left an error: %v", m.err)
+	}
+
+	returned := stripANSI(renderLocalBranchStatus(m.branchSync, false, 80))
+	if !strings.Contains(returned, "Custody returned") {
+		t.Fatalf("custody_returned status:\n%s", returned)
+	}
+}
+
+// TestActivePipelineOwnedStateOffersNoRecoveryAction pins that the recovery
+// affordance never appears while the owning run is still active.
+func TestActivePipelineOwnedStateOffersNoRecoveryAction(t *testing.T) {
+	run := &ipc.RunInfo{ID: "run-1", Branch: "feature", Status: types.RunRunning}
+	m := NewModel("socket", nil, run)
+	m.branchSync = &branchsync.State{
+		State: branchsync.StatePipelineOwned, Safety: "blocked_pipeline_owned",
+		Local:    branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
+		Pipeline: branchsync.PipelineState{RunID: "run-1", Status: "running", Phase: "pre_push"},
+	}
+	m.syncRecover = func() branchsync.State {
+		t.Fatal("recover service must not be reachable for an active run")
+		return branchsync.State{}
+	}
+	view := stripANSI(renderLocalBranchStatus(m.branchSync, false, 80))
+	if strings.Contains(view, "recover") || !strings.Contains(view, "Do not make follow-up commits") {
+		t.Fatalf("active pipeline_owned view:\n%s", view)
+	}
+	nextModel, cmd := m.handleKey(keyMsg("u"))
+	m = nextModel.(Model)
+	if cmd != nil || m.recoverConfirm || m.syncConfirm {
+		t.Fatalf("u acted on an active pipeline_owned state: %#v", m)
+	}
+}

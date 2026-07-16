@@ -223,6 +223,25 @@ func (m Model) applySyncCmd() tea.Cmd {
 	}
 }
 
+func (m Model) applyRecoverCmd() tea.Cmd {
+	recover := m.syncRecover
+	if recover == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		started := time.Now()
+		state := recover()
+		result := "refused"
+		if state.Recovered && state.Changed {
+			result = "applied"
+		} else if state.Recovered {
+			result = "noop"
+		}
+		trackTUISyncAttempt("recover", state, result, started)
+		return syncAppliedMsg{state: state}
+	}
+}
+
 func (m Model) spinnerTickCmd() tea.Cmd {
 	return tea.Tick(spinnerTickInterval, func(time.Time) tea.Msg {
 		return spinnerTickMsg{}

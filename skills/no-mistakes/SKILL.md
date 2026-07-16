@@ -180,7 +180,9 @@ Run the pipeline and decide on its findings as they come up:
 
 Before any post-pipeline local commit or fresh run, read the structured `branch_sync` object returned by AXI home, status, or a drive result.
 Only when its `next_action.code` is `sync`, run `no-mistakes axi sync` first.
-If it reports an unpublished pipeline-owned update, wait and keep driving the active run without making local follow-up commits.
+If it reports an unpublished pipeline-owned update while the run is active, wait and keep driving the run without making local follow-up commits.
+When `next_action.code` is `recover_custody`, a terminal run left unpublished pipeline commits preserved in the local gate: run `no-mistakes axi sync --recover` to return custody and fast-forward to the preserved head, or `no-mistakes rerun` to resume validating it instead.
+A dirty or diverged worktree makes the recovery refuse with explicit choices; `--keep-local` keeps your current head while the preserved commits stay anchored under `refs/no-mistakes/recover/<run>`.
 If synchronization is blocked, process that structured state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
 After synchronization, commit the follow-up on top and re-run `no-mistakes axi run --intent "..."` with the original user intent.
 This preserves every prior gate-fix commit, including the pipeline's own `no-mistakes(review|document|lint): ...` commits.
@@ -245,6 +247,7 @@ no-mistakes axi               # home view: current branch, active runs, next ste
 no-mistakes axi status        # full detail plus cached branch_sync when relevant
 no-mistakes axi sync --check  # freshly verify an offered synchronization plan
 no-mistakes axi sync          # apply only an offered exact safe fast-forward
+no-mistakes axi sync --recover  # return custody after a terminal run left unpublished pipeline commits
 no-mistakes axi logs --step <name> --full   # full log output of one step
 no-mistakes axi abort         # cancel the current-branch active run
 no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside its worktree)

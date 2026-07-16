@@ -138,9 +138,10 @@ Safest local verification sequence after non-trivial changes:
 
 **Guarded Local Branch Synchronization (`internal/branchsync`)**
 
-- `sync`, `axi sync`, and the TUI `u` action share one service whose only worktree mutation is a clean strict fast-forward to an exact freshly verified pipeline push binding; passive status never fetches, and blocked states never reset, stash, merge, rebase, force, switch, delete, or update a remote.
+- `sync`, `axi sync`, and the TUI `u` action share one service whose only worktree mutation is a clean strict fast-forward to an exact freshly verified head (the pipeline push binding, or the gate-preserved head under `--recover`); passive status never fetches, and blocked states never reset, stash, merge, rebase, force, switch, delete, or update an external remote.
 - Successful pipeline pushes persist the exact SHA, credential-free target fingerprint/ref, and generation; legacy rows remain nullable and must never infer provenance from mutable `head_sha`. Structured PR lifecycle retires merged/closed branches. The service rechecks the invoking worktree, target, live remote equality, ancestry, generation, and all mutable assumptions immediately before apply.
-- Public guidance is owned by `internal/skill/skill.go` plus live AXI strings, then regenerated with `make skill`. Core regressions live in `internal/branchsync`, `internal/cli/sync_test.go`, `internal/tui/branch_sync_test.go`, and e2e `TestAxiBranchSyncJourney`.
+- A TERMINAL run with unpublished pipeline commits is recoverable, never a dead end: inspection reports `blocked_pipeline_owned_recoverable` + `next_action recover_custody` (active runs keep the plain block), and `sync --recover` verifies the preserved head at the gate branch, anchors it at `refs/no-mistakes/recover/<run>`, fast-forwards only a clean behind worktree, and stamps `runs.custody_returned_at`. `--keep-local` never touches the worktree and CAS-moves the gate branch to the kept head, staging objects via gate-side fetch - never a push, which would fire the receive hook and start a run. The full relation matrix and fail-safe rules live in the `Recover` doc comment in `internal/branchsync/sync.go`.
+- Public guidance is owned by `internal/skill/skill.go` plus live AXI strings, then regenerated with `make skill`. Core regressions live in `internal/branchsync` (incl. `recover_test.go`), `internal/cli/sync_test.go`, `internal/tui/branch_sync_test.go`, and e2e `TestAxiBranchSyncJourney` / `TestAxiCustodyRecoveryJourney`.
 
 **Rebase Base & Force-Push Safety (data-loss prevention)**
 

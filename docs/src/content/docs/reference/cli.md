@@ -159,7 +159,7 @@ When the resolved run has a `running` or `fixing` step, the run object includes 
 Each row reports how long the step has been active, the latest meaningful log or native-agent lifecycle activity, the native agent PID if one is currently running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
 If no activity arrives for longer than `step_quiet_warning`, `last_activity` is prefixed with `quiet`; this is only a liveness signal and does not cancel the step.
 For older active runs with no recorded activity timestamp, AXI falls back to the step log file modification time.
-Relevant current-branch states also include a cached `branch_sync` object with full SHAs, the persisted pipeline push binding, target kind and ref, relation, safety result, PR lifecycle, and a structured next action.
+Relevant current-branch states also include a cached `branch_sync` object with full SHAs, the run's status, the persisted pipeline push binding, target kind and ref, relation, safety result, PR lifecycle, and a structured next action.
 Cached home and status rendering performs no network read and labels the remote observation `pipeline_push`; only explicit sync check or apply reports `live` freshness.
 
 ## no-mistakes axi sync
@@ -169,19 +169,31 @@ Freshly check or apply the guarded synchronization offered by a `branch_sync.nex
 ```sh
 no-mistakes axi sync --check
 no-mistakes axi sync
+no-mistakes axi sync --recover
+no-mistakes axi sync --recover --keep-local
 ```
 
-| Flag      | Type   | Default | Description                                                    |
-| --------- | ------ | ------- | -------------------------------------------------------------- |
-| `--check` | `bool` | `false` | Verify the live target and exact plan without changing `HEAD` |
+| Flag           | Type   | Default | Description                                                                  |
+| -------------- | ------ | ------- | ---------------------------------------------------------------------------- |
+| `--check`      | `bool` | `false` | Verify the live target and exact plan without changing `HEAD`                |
+| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits |
+| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree   |
 
 The default command is an explicit non-interactive apply request and never prompts.
-Both modes return the complete `branch_sync` object as TOON.
-Exit code `0` means an eligible check, applied synchronization, already-synchronized no-op, or expected merged-and-removed no-op; blocked operational states return `1`.
-The only possible worktree mutation is a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA.
+All modes return the complete `branch_sync` object as TOON.
+Exit code `0` means an eligible check, applied synchronization or recovery, already-synchronized or custody-returned no-op, or expected merged-and-removed no-op; blocked operational states return `1`.
+The only possible worktree mutation is a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA (or, under `--recover`, to the preserved pipeline head verified at the local gate).
 Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
 Dirty, in-progress, ahead, diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
 Run `axi sync` only when structured output offers `next_action.code: sync`; process any blocked state instead of substituting reset, stash, merge, rebase, force, or branch replacement.
+
+### Custody recovery
+
+A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head leaves the branch `pipeline_owned` with `safety: blocked_pipeline_owned_recoverable`, the run's terminal `pipeline.status`, and `next_action.code: recover_custody`; while the run is still active the same state stays a plain wait with no action.
+`--recover` verifies the run is terminal, verifies the preserved head at the local gate branch, anchors it under `refs/no-mistakes/recover/<run>` in the invoking repository, fast-forwards only a clean behind worktree to it, and stamps custody returned so a fresh run can start.
+A dirty or diverged worktree refuses with the explicit choices; `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
+`no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
+A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
 
 ## no-mistakes axi logs
 
@@ -272,16 +284,20 @@ Freshly verify and, with confirmation, safely fast-forward the invoking branch t
 no-mistakes sync
 no-mistakes sync --check
 no-mistakes sync --yes
+no-mistakes sync --recover
+no-mistakes sync --recover --keep-local
 ```
 
-| Flag          | Type   | Default | Description                                                     |
-| ------------- | ------ | ------- | --------------------------------------------------------------- |
-| `--check`     | `bool` | `false` | Verify and print the fresh plan without changing `HEAD`         |
-| `-y`, `--yes` | `bool` | `false` | Apply an eligible strict fast-forward without an interactive prompt |
+| Flag           | Type   | Default | Description                                                     |
+| -------------- | ------ | ------- | --------------------------------------------------------------- |
+| `--check`      | `bool` | `false` | Verify and print the fresh plan without changing `HEAD`         |
+| `-y`, `--yes`  | `bool` | `false` | Apply an eligible strict fast-forward without an interactive prompt |
+| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits |
+| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree |
 
-Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation.
+Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` prompts the same way before returning custody.
 A non-TTY apply refuses with a direct `--yes` hint.
-The command uses the same service and safety contract as `no-mistakes axi sync`; it never resets, stashes, rebases, creates a merge commit, switches branches, deletes a branch, or updates a remote.
+The command uses the same service and safety contract as `no-mistakes axi sync`, including the guarded custody recovery documented there; it never resets, stashes, rebases, creates a merge commit, switches branches, deletes a branch, or updates an external remote.
 
 ## no-mistakes status
 

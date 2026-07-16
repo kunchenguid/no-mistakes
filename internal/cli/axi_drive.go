@@ -828,6 +828,9 @@ func runAxiAbort(cmd *cobra.Command, runID string) error {
 		toon.Field{Key: "aborted", Value: true},
 		toon.Field{Key: "run", Value: active.Run.ID},
 		toon.Field{Key: "branch", Value: active.Run.Branch},
+		toon.Field{Key: "help", Value: []string{
+			"Run `no-mistakes axi sync --check` before any local follow-up commit - a cancelled run can leave unpublished pipeline commits preserved in the local gate, and the check offers the guarded custody recovery",
+		}},
 	)
 	return nil
 }

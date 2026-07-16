@@ -122,9 +122,14 @@ func TestInspectCachedPrePushAndPushInProgressAreNonSyncable(t *testing.T) {
 	if err := f.db.UpdateRunStatus(active.ID, types.RunFailed); err != nil {
 		t.Fatal(err)
 	}
+	// Once the owning run is terminal the same state stops being a dead end:
+	// it stays non-syncable but must offer the guarded custody recovery.
 	state = f.service.InspectCached(f.ctx)
-	if state.State != StatePipelineOwned || state.NextAction != nil {
+	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned_recoverable" {
 		t.Fatalf("terminal unpublished pipeline head = %#v", state)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "recover_custody" {
+		t.Fatalf("terminal unpublished pipeline head next action = %#v", state.NextAction)
 	}
 }
 

@@ -63,7 +63,9 @@ type Model struct {
 	syncService    *branchsync.Service
 	syncRefresh    func() branchsync.State
 	syncApply      func() branchsync.State
+	syncRecover    func() branchsync.State
 	syncConfirm    bool
+	recoverConfirm bool
 	syncRefreshing bool
 }
 
@@ -250,6 +252,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case syncAppliedMsg:
 		m.syncRefreshing = false
 		m.syncConfirm = false
+		m.recoverConfirm = false
 		m.branchSync = &msg.state
 		if msg.state.Error != "" {
 			m.err = fmt.Errorf("branch sync: %s", msg.state.Error)
@@ -362,6 +365,7 @@ func Run(socketPath string, client *ipc.Client, run *ipc.RunInfo, latestVersion 
 		model.syncService = service
 		model.syncRefresh = func() branchsync.State { return service.Refresh(context.Background()) }
 		model.syncApply = func() branchsync.State { return service.Apply(context.Background()) }
+		model.syncRecover = func() branchsync.State { return service.Recover(context.Background(), false) }
 		model.refreshCachedSync()
 	}
 	p := tea.NewProgram(model, tea.WithAltScreen())
@@ -374,7 +378,7 @@ func tuiRelevantSyncState(state branchsync.State) bool {
 	case branchsync.StatePipelineOwned, branchsync.StatePushInProgress, branchsync.StateBehind,
 		branchsync.StateLocalAhead, branchsync.StateDiverged, branchsync.StateDirty,
 		branchsync.StateMergedRemoteRetained, branchsync.StateMergedRemoteRemoved,
-		branchsync.StateClosed, branchsync.StateTargetChanged:
+		branchsync.StateClosed, branchsync.StateTargetChanged, branchsync.StateCustodyReturned:
 		return true
 	default:
 		return false

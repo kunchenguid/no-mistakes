@@ -28,7 +28,13 @@ type Run struct {
 	LastPushedAt          *int64
 	PushGeneration        *int64
 	PushActive            bool
-	Error                 *string
+	// CustodyReturnedAt is non-nil once a guarded branch-sync recovery
+	// explicitly ended this run's ownership of an unpublished pipeline head
+	// (terminal run whose head was never successfully pushed, or moved after
+	// the last push). It never changes push provenance; it only records that
+	// the operator worktree took the branch back.
+	CustodyReturnedAt *int64
+	Error             *string
 	// AwaitingAgentSince is the unix-seconds timestamp at which the run parked
 	// at a gate awaiting the driving agent's response (an awaiting_approval or
 	// fix_review step). It is nil whenever the run is not parked: the executor
@@ -48,7 +54,7 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -58,7 +64,7 @@ func scanRun(row interface {
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive,
-		&r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
+		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -230,6 +236,19 @@ func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
 	)
 	if err != nil {
 		return fmt.Errorf("update run push binding: %w", err)
+	}
+	return nil
+}
+
+// SetRunCustodyReturned stamps the moment a guarded recovery explicitly
+// returned custody of this run's branch to the operator worktree. Stamping is
+// idempotent: the first timestamp wins so the record keeps the original
+// recovery moment.
+func (d *DB) SetRunCustodyReturned(id string) error {
+	ts := now()
+	_, err := d.sql.Exec(`UPDATE runs SET custody_returned_at = COALESCE(custody_returned_at, ?), updated_at = ? WHERE id = ?`, ts, ts, id)
+	if err != nil {
+		return fmt.Errorf("set run custody returned: %w", err)
 	}
 	return nil
 }

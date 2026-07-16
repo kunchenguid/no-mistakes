@@ -36,6 +36,12 @@ var canonicalBranchSyncPhrases = []string{
 	"no-mistakes axi sync",
 	"blocked",
 	"reset, stash, merge, rebase, force, or branch replacement",
+	// Guarded custody recovery for a terminal run whose pipeline commits were
+	// never published (v1.38.1 dogfood catch): the action, its next_action
+	// code, and the preservation claim must stay on every guidance surface.
+	"recover_custody",
+	"no-mistakes axi sync --recover",
+	"preserved in the local gate",
 }
 
 // TestStaleMonitorGuidance_SyncedAcrossSurfaces guards the repo invariant that

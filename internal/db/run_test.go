@@ -532,3 +532,35 @@ func TestRecoverStaleRunsNoStaleRuns(t *testing.T) {
 		t.Errorf("recovered count = %d, want 0", count)
 	}
 }
+
+func TestSetRunCustodyReturnedStampsOnceAndSurvivesStatusUpdates(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/custody", "git@github.com:user/custody.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feat", "abc", "def")
+
+	got, err := d.GetRun(run.ID)
+	if err != nil || got.CustodyReturnedAt != nil {
+		t.Fatalf("fresh run custody = %#v, err %v", got.CustodyReturnedAt, err)
+	}
+
+	if err := d.SetRunCustodyReturned(run.ID); err != nil {
+		t.Fatalf("set custody returned: %v", err)
+	}
+	got, _ = d.GetRun(run.ID)
+	if got.CustodyReturnedAt == nil {
+		t.Fatal("custody stamp missing after set")
+	}
+	first := *got.CustodyReturnedAt
+
+	// Re-stamping is idempotent: the original recovery moment is preserved.
+	if err := d.SetRunCustodyReturned(run.ID); err != nil {
+		t.Fatalf("re-stamp: %v", err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+	got, _ = d.GetRun(run.ID)
+	if got.CustodyReturnedAt == nil || *got.CustodyReturnedAt != first {
+		t.Fatalf("custody stamp changed: %#v, want %d", got.CustodyReturnedAt, first)
+	}
+}

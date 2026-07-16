@@ -186,6 +186,109 @@ func TestAxiBranchSyncJourney(t *testing.T) {
 	}
 }
 
+// TestAxiCustodyRecoveryJourney reproduces the first real dogfood catch of the
+// guarded branch sync (run 01KXN8YJ6DWF8XPP582DWQC3HV) with the real binary: a
+// run cancelled at the pre_push phase leaves the branch pipeline_owned with
+// the fix commits preserved only in the local gate. The journey proves the
+// state is no longer a dead end: sync --check points at the guarded recovery,
+// sync --recover returns custody and fast-forwards to the preserved head, and
+// the operator can then commit and start a fresh run without losing anything.
+func TestAxiCustodyRecoveryJourney(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: branchSyncScenario(t)})
+	h.CommitChange("init-recover", "seed.txt", "seed\n", "seed recover init")
+	initWorktree := h.AddWorktree("init-recover")
+	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+
+	submitted := h.CommitChange("feature/recover-journey", "feature.txt", "unsafe\n", "add unsafe feature")
+	operator := h.AddWorktree("feature/recover-journey")
+	gateOut, err := h.RunInDir(operator, "axi", "run", "--intent", "guard the feature before cancellation")
+	if err != nil || !strings.Contains(gateOut, "sync-1") {
+		t.Fatalf("initial review gate: %v\n%s", err, gateOut)
+	}
+	fixOut, err := h.RunInDir(operator, "axi", "respond", "--action", "fix", "--findings", "sync-1")
+	if err != nil {
+		t.Fatalf("review fix: %v\n%s", err, fixOut)
+	}
+
+	// Cancel while the pipeline fix commit exists only in the gate branch.
+	if out, abortErr := h.RunInDir(operator, "axi", "abort"); abortErr != nil {
+		t.Fatalf("axi abort: %v\n%s", abortErr, out)
+	}
+	run := h.WaitForRun("feature/recover-journey", 30*time.Second)
+	if run.Status != types.RunCancelled {
+		t.Fatalf("run status after abort = %s", run.Status)
+	}
+
+	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
+	preservedBytes, err := h.runGit(context.Background(), gateDir, "rev-parse", "refs/heads/feature/recover-journey")
+	if err != nil {
+		t.Fatalf("gate preserved head: %v\n%s", err, preservedBytes)
+	}
+	preserved := strings.TrimSpace(string(preservedBytes))
+	if preserved == submitted {
+		t.Fatal("pipeline fix commit is not preserved in the gate branch")
+	}
+	if got := strings.TrimSpace(h.WorktreeRefSHA("feature/recover-journey")); got != submitted {
+		t.Fatalf("operator branch moved without explicit recovery: %s", got)
+	}
+
+	// The stranded state must surface the recovery action instead of a dead end.
+	checkOut, err := h.RunInDir(operator, "axi", "sync", "--check")
+	if err == nil {
+		t.Fatalf("stranded sync --check should exit non-zero:\n%s", checkOut)
+	}
+	for _, want := range []string{
+		"state: pipeline_owned",
+		"status: cancelled",
+		"safety: blocked_pipeline_owned_recoverable",
+		"code: recover_custody",
+		"command: no-mistakes axi sync --recover",
+		"no-mistakes rerun",
+	} {
+		if !strings.Contains(checkOut, want) {
+			t.Errorf("stranded check missing %q:\n%s", want, checkOut)
+		}
+	}
+
+	recoverOut, err := h.RunInDir(operator, "axi", "sync", "--recover")
+	if err != nil {
+		t.Fatalf("guarded recovery: %v\n%s", err, recoverOut)
+	}
+	for _, want := range []string{"recovered: true", "state: custody_returned", "changed: true", "no-mistakes axi run --intent"} {
+		if !strings.Contains(recoverOut, want) {
+			t.Errorf("recover output missing %q:\n%s", want, recoverOut)
+		}
+	}
+	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", "HEAD"); gitErr != nil || strings.TrimSpace(string(got)) != preserved {
+		t.Fatalf("operator HEAD after recovery = %s (err %v), want preserved %s", strings.TrimSpace(string(got)), gitErr, preserved)
+	}
+
+	// Custody is back: commit a rescope on top of the preserved fix commits
+	// and start a fresh validation run.
+	if err := os.WriteFile(filepath.Join(operator, "rescope.txt"), []byte("rescope after recovery\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, gitErr := h.runGit(context.Background(), operator, "add", "rescope.txt"); gitErr != nil {
+		t.Fatalf("stage rescope: %v\n%s", gitErr, out)
+	}
+	if out, gitErr := h.runGit(context.Background(), operator, "commit", "-m", "rescope after recovery"); gitErr != nil {
+		t.Fatalf("commit rescope: %v\n%s", gitErr, out)
+	}
+	rescoped := strings.TrimSpace(h.WorktreeRefSHA("feature/recover-journey"))
+	if out, gitErr := h.runGit(context.Background(), operator, "merge-base", "--is-ancestor", preserved, rescoped); gitErr != nil {
+		t.Fatalf("rescope dropped preserved pipeline commits: %v\n%s", gitErr, out)
+	}
+	freshOut, err := h.RunInDir(operator, "axi", "run", "--intent", "validate the rescope on top of recovered commits")
+	if err != nil {
+		t.Fatalf("fresh pipeline start after recovery: %v\n%s", err, freshOut)
+	}
+	if !strings.Contains(freshOut, "gate:") {
+		t.Fatalf("fresh pipeline did not start cleanly after recovery:\n%s", freshOut)
+	}
+}
+
 func operatorContext() context.Context { return context.Background() }
 
 func TestAxiAgentJourney(t *testing.T) {
