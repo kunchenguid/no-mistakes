@@ -48,6 +48,8 @@ func handleFakeCLI(mode string) {
 		fakeRecordSuccessHandler()
 	case "git-passthrough":
 		fakeGitPassthroughHandler(args)
+	case "git-require-noninteractive-env":
+		fakeGitRequireNonInteractiveEnvHandler(args)
 	case "git-status-error":
 		fakeGitStatusErrorHandler(args)
 	case "git-remote-error":
@@ -149,6 +151,30 @@ func fakeGitStatusErrorHandler(args []string) {
 
 func fakeGitPassthroughHandler(args []string) {
 	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	fakeGitForward(args, realGit)
+}
+
+func fakeGitRequireNonInteractiveEnvHandler(args []string) {
+	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	required := map[string]string{
+		"GIT_EDITOR":          "true",
+		"GIT_SEQUENCE_EDITOR": "true",
+		"GIT_TERMINAL_PROMPT": "0",
+		"GIT_OPTIONAL_LOCKS":  "0",
+	}
+	for key, want := range required {
+		if got := os.Getenv(key); got != want {
+			fmt.Fprintf(os.Stderr, "%s=%q, want %q\n", key, got, want)
+			os.Exit(1)
+		}
+	}
+	helperCmd := exec.Command(realGit, "config", "--global", "--get-all", "credential.https://github.com.helper")
+	helperCmd.Env = os.Environ()
+	helperOut, err := helperCmd.Output()
+	if err != nil || !strings.Contains(string(helperOut), "gh auth git-credential") {
+		fmt.Fprintf(os.Stderr, "github credential helper = %q, err=%v; want inherited gh auth git-credential helper\n", strings.TrimSpace(string(helperOut)), err)
+		os.Exit(1)
+	}
 	fakeGitForward(args, realGit)
 }
 

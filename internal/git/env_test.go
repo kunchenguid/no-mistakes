@@ -65,6 +65,24 @@ func TestNonInteractiveEnv_PreservesAmbientEnv(t *testing.T) {
 	}
 }
 
+func TestNonInteractiveEnvFrom_UsesBaseAndOverridesGitKeys(t *testing.T) {
+	got := resolveEnv(NonInteractiveEnvFrom([]string{
+		"PATH=/custom/bin",
+		"NM_ENV_PROBE_XYZ=kept",
+		"GIT_TERMINAL_PROMPT=1",
+	}, ""))
+
+	if got["PATH"] != "/custom/bin" {
+		t.Errorf("PATH = %q, want custom base PATH", got["PATH"])
+	}
+	if got["NM_ENV_PROBE_XYZ"] != "kept" {
+		t.Errorf("NM_ENV_PROBE_XYZ = %q, want kept", got["NM_ENV_PROBE_XYZ"])
+	}
+	if got["GIT_TERMINAL_PROMPT"] != "0" {
+		t.Errorf("GIT_TERMINAL_PROMPT = %q, want noninteractive override", got["GIT_TERMINAL_PROMPT"])
+	}
+}
+
 // TestNonInteractiveEnv_SetsPWDToDir locks in the PWD coupling. Assigning
 // cmd.Env disables os/exec's automatic PWD=Cmd.Dir injection, so the helper
 // must restore it; otherwise os.Getwd in the child resolves symlinks (e.g.
