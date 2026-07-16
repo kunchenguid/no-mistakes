@@ -95,6 +95,7 @@ type runView struct {
 	Status  string
 	HeadSHA string
 	PRURL   string
+	Error   string
 	// AwaitingAgentSince is the unix-seconds time the run parked at a gate
 	// awaiting the driving agent, or nil when the run is not parked. It powers
 	// the top-level parked signal in the run object.
@@ -112,6 +113,9 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
+	}
+	if r.Error != nil {
+		rv.Error = *r.Error
 	}
 	for _, s := range r.Steps {
 		sv := stepView{
@@ -151,6 +155,9 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult) runView {
 	}
 	if r.PRURL != nil {
 		rv.PRURL = *r.PRURL
+	}
+	if r.Error != nil {
+		rv.Error = *r.Error
 	}
 	for _, s := range steps {
 		sv := stepView{

@@ -141,6 +141,24 @@ Run the pipeline and decide on its findings as they come up:
    needs to, but the run **never advances past a gate on its own**. Read every
    return; on a ` + "`gate:`" + `, respond; loop until an ` + "`outcome:`" + `. Never idle-wait
    for the run to move forward by itself.
+   In Codex-supervised work, keep ` + "`no-mistakes axi watch --run <id> --until attention`" + `
+   in the foreground when this turn is deliberately staying open. It waits for
+   a gate, checks-passed, a quiet active step, or a terminal outcome, then
+   returns one bounded TOON snapshot to this active agent turn. The watcher
+   itself never responds, edits, or starts the daemon.
+   If the Codex CLI session must survive a completed turn, use the documented
+   opt-in supervisor instead: after the run ID is known, run
+   ` + "`no-mistakes axi supervise arm --run <id>`" + ` and only when Simon has
+   installed and trusted the documented Codex ` + "`Stop`" + ` hook. That hook may
+   keep this same session alive for a technical AXI event or a five-minute
+   heartbeat. It never starts another Codex process, never answers a user gate,
+   and pauses after the configured stale-heartbeat budget. During one supervised
+   chain use only one Codex session for that worktree. Before using it, verify
+   the installed hook timeout is at least 360 seconds. Without the reviewed,
+   opt-in hook, never promise that a background command or a closed turn will
+   wake Codex automatically.
+   Use ` + "`--until terminal`" + ` only when this agent deliberately wants to ignore
+   intermediate attention.
    When that status output includes ` + "`awaiting_agent: parked <duration>`" + ` under the run,
    the run is parked at an approval or fix-review gate and waiting for you to
    send ` + "`axi respond`" + `. The field is observability only: it does not change

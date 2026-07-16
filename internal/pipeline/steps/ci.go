@@ -159,7 +159,12 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, fmt.Errorf("extract PR number: %w", err)
 	}
-	pr := &scm.PR{Number: prNumber, URL: prURL}
+	pr := &scm.PR{
+		Number:     prNumber,
+		URL:        prURL,
+		HeadSHA:    sctx.Run.HeadSHA,
+		BaseBranch: sctx.Repo.DefaultBranch,
+	}
 
 	// CITimeout semantics: <0 (or "unlimited" in config) means never
 	// self-terminate; 0 means the value was never configured, so fall back
@@ -291,6 +296,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 		// Check CI status - wait for all checks to complete before fixing
 		ciFixLimit := sctx.Config.AutoFix.CI
+		pr.HeadSHA = sctx.Run.HeadSHA
 		checks, err := host.GetChecks(ctx, pr)
 		if err != nil {
 			clearCIMonitorReady(sctx)

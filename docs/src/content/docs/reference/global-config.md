@@ -36,6 +36,9 @@ ci_timeout: "168h"
 
 step_quiet_warning: "10m"
 
+# Hook-native Codex supervision: 1 through 6, default 4.
+supervision_max_stale_heartbeats: 4
+
 daemon_connect_timeout: "3s"
 
 log_level: info
@@ -250,6 +253,27 @@ This is observability only.
 It does not cancel the step, change auto-fix behavior, or mark the run failed.
 AXI renders the quiet signal in the `active_steps` table as part of `last_activity`, for example `quiet 12m3s ago: codex started pid=4242`.
 For older active runs that do not yet have activity rows, AXI falls back to the step log file's modification time.
+
+### supervision_max_stale_heartbeats
+
+How many consecutive five-minute hook-native Codex supervision heartbeats may
+show no authoritative run-state progress before the following heartbeat emits
+one `stale` handoff and pauses supervision. It applies only to the optional
+`axi supervise` Stop-hook adapter; it does not affect AXI's public quiet
+warning or the pipeline itself.
+
+| Property | Value |
+| -------- | ----- |
+| Type | integer |
+| Accepted values | `1` through `6` |
+| Default | `4` |
+| Invalid or missing value | `4` |
+
+The heartbeat interval is deliberately fixed at five minutes. A value of `4`
+therefore shows up to four unchanged heartbeats before the next deadline
+pauses the local supervisor. A meaningful authoritative run update resets the
+budget. The [CLI reference](/no-mistakes/reference/cli/#no-mistakes-axi-supervise)
+owns the separate Codex Stop-hook timeout preflight.
 
 ### daemon_connect_timeout
 

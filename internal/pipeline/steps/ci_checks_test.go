@@ -6,6 +6,19 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
+func TestHasPendingChecksIgnoresOnlyExplicitAdvisoryLegacyStatus(t *testing.T) {
+	t.Parallel()
+	if hasPendingChecks([]scm.Check{{Name: "CodeRabbit", Bucket: scm.CheckBucketPending, Source: scm.CheckSourceLegacy, BlocksPending: false}}) {
+		t.Fatal("advisory legacy status must not keep CI running")
+	}
+	if !hasPendingChecks([]scm.Check{{Name: "CodeRabbit", Bucket: scm.CheckBucketPending, Source: scm.CheckSourceLegacy, BlocksPending: true}}) {
+		t.Fatal("protected legacy status must keep CI running")
+	}
+	if !hasPendingChecks([]scm.Check{{Name: "unit", Bucket: scm.CheckBucketPending, Source: scm.CheckSourceNative, BlocksPending: true}}) {
+		t.Fatal("native pending check must keep CI running")
+	}
+}
+
 func TestPendingCheckMatchesLastFixed_SpecialCheckNames(t *testing.T) {
 	t.Parallel()
 

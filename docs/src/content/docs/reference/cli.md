@@ -205,6 +205,53 @@ When you explicitly keep a behind or diverged local head instead of taking the p
 `no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
 
+## no-mistakes axi watch
+
+Wait on one existing run until it needs attention or reaches a terminal outcome. This is a read-only attachment: it never starts the daemon, sends `axi respond`, changes the worktree, or creates a run.
+
+```sh
+no-mistakes axi watch --run <id>
+no-mistakes axi watch --run <id> --until attention
+no-mistakes axi watch --run <id> --until terminal
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--run` | `string` | (none) | Explicit run ID to observe; required |
+| `--until` | `string` | `attention` | `attention` or `terminal` |
+
+`--until attention` exits successfully with one bounded TOON snapshot when the run reaches an approval or fix-review gate, reports `outcome: checks-passed`, becomes quiet for longer than `step_quiet_warning`, or terminates. The snapshot includes `watch.stop` so a supervisor can distinguish `gate`, `checks-passed`, `quiet`, and `terminal`.
+
+`--until terminal` keeps waiting through gates, checks-passed, and quiet warnings, and returns only for a terminal outcome. In either mode, Ctrl-C stops only the watch process (exit code `130`); it never cancels the run.
+
+The command uses daemon events as a wake-up signal and re-reads the current run state before deciding. If that event stream ends, it performs one final read and reports `stream-interrupted` if the run is still non-terminal. Gate output is limited to ten findings; use `no-mistakes axi logs --step <step> --full` for full detail.
+
+In a Codex-supervised flow, keep `axi watch` as a foreground tool call when the active turn is deliberately staying open. When it returns, that same turn decides whether to report, run an explicit `axi respond`, and attach a fresh `axi watch` for the same run. The command alone cannot continue a session that has already been closed or deliberately returned to the user.
+
+## no-mistakes axi supervise
+
+The optional Codex CLI supervisor fills that closed-turn gap. It is intentionally two-part: arm the known run, then install and trust one local Codex Stop hook yourself. No-Mistakes never edits `~/.codex/hooks.json` automatically. Use one Codex session per supervised worktree chain.
+
+```sh
+no-mistakes axi supervise arm --run <id>
+no-mistakes axi supervise status --run <id>
+```
+
+Merge this hook into your reviewed `~/.codex/hooks.json` configuration; do not replace any hooks you already use:
+
+```json
+{
+  "hooks": {
+    "Stop": [{ "hooks": [{ "type": "command", "command": "no-mistakes axi codex-hook" }] }]
+  }
+}
+```
+
+On a matching Codex turn end, the hook claims only the armed run in the same worktree, repository, and branch, then binds it to that Codex session. Each continuation is also bound to its Stop-hook turn, so a repeated delivery cannot emit a second continuation. The hook waits for an AXI event or a fixed five-minute heartbeat. Its stdout is either empty or one Stop-hook JSON object with `decision: "block"` and one fixed `nm_event=` reason: `technical_gate`, `checks_passed`, `terminal`, `watch_fault`, `heartbeat`, or `stale`. It never starts a second Codex process and never exposes findings, logs, run IDs, or session data in the hook response. A terminal run completes the registration. A technical gate continues the session so the agent can inspect the bound AXI status; an `ask-user` gate is marked `awaiting_user` and lets Codex end for Simon's decision. Checks already passed move to `awaiting_merge_result`, while a watcher fault or too many unchanged heartbeats pauses the registration rather than retrying forever. Malformed or non-matching hook events produce no continuation.
+
+The hook reads a Codex lifecycle event from standard input. It is a local trust boundary: review and trust it through Codex before use. Before enabling it, check that the configured Stop-hook timeout is at least 360 seconds (five minutes plus reserve); no-mistakes does not install or change that timeout. Set `supervision_max_stale_heartbeats` to an integer from `1` through `6` to choose how many unchanged five-minute heartbeats are shown before the next heartbeat pauses supervision; the default and invalid-value fallback are `4`.
+`axi supervise status --run <id>` reports the local phase, stale-heartbeat count, and any bounded error without exposing the saved Codex session ID.
+
 ## no-mistakes axi logs
 
 Show the log output of one pipeline step.
