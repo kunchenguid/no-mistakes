@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -17,12 +16,9 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/types"
-	"github.com/kunchenguid/no-mistakes/internal/winproc"
 )
 
 const refreshTimeout = 15 * time.Second
-const maxEquivalentProofPaths = 2000
-const maxEquivalentProofPathspecArgBytes = 30000
 
 const (
 	StatePipelineOwned        = "pipeline_owned"
@@ -840,21 +836,9 @@ func equivalentDivergence(ctx context.Context, dir, local, pushed, base string) 
 	if base == "" {
 		return false
 	}
-	localOnly, err := revList(ctx, dir, append([]string{"rev-list", "--right-only", pushed + "..." + local}, "^"+base)...)
-	if err != nil || len(localOnly) == 0 {
-		return err == nil && len(localOnly) == 0
-	}
-	unmatched, err := revList(ctx, dir, append([]string{"rev-list", "--cherry-pick", "--right-only", pushed + "..." + local}, "^"+base)...)
-	if err == nil && len(unmatched) == 0 {
-		return true
-	}
-
-	paths, ok := locallyChangedPaths(ctx, dir, base, local)
-	if !ok {
+	_, err := revList(ctx, dir, append([]string{"rev-list", "--right-only", pushed + "..." + local}, "^"+base)...)
+	if err != nil {
 		return false
-	}
-	if treeMatchesOnPaths(ctx, dir, local, pushed, paths) {
-		return true
 	}
 	return mergeTreePreservesFinalHead(ctx, dir, base, local, pushed)
 }
@@ -879,73 +863,6 @@ func revList(ctx context.Context, dir string, args ...string) ([]string, error) 
 		return nil, nil
 	}
 	return strings.Fields(out), nil
-}
-
-func locallyChangedPaths(ctx context.Context, dir, base, local string) ([]string, bool) {
-	out, err := gitRawOutput(ctx, dir, "diff", "--no-renames", "--name-only", "-z", base, local)
-	if err != nil {
-		return nil, false
-	}
-	if len(out) == 0 {
-		return nil, true
-	}
-	seen := make(map[string]struct{})
-	paths := make([]string, 0)
-	for _, path := range strings.Split(string(out), "\x00") {
-		if path == "" {
-			continue
-		}
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		seen[path] = struct{}{}
-		paths = append(paths, path)
-		if len(paths) > maxEquivalentProofPaths {
-			return nil, false
-		}
-	}
-	return paths, true
-}
-
-func gitRawOutput(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	cmd.Env = git.NonInteractiveEnv(dir)
-	winproc.Harden(cmd)
-	out, err := cmd.Output()
-	if err != nil {
-		stderr := ""
-		if ee, ok := err.(*exec.ExitError); ok {
-			stderr = strings.TrimSpace(string(ee.Stderr))
-		}
-		return nil, fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
-	}
-	return out, nil
-}
-
-func treeMatchesOnPaths(ctx context.Context, dir, local, pushed string, paths []string) bool {
-	for start := 0; start < len(paths); {
-		args := []string{"--literal-pathspecs", "diff", "--quiet", "--no-ext-diff", local, pushed, "--"}
-		argBytes := 0
-		end := start
-		for end < len(paths) {
-			nextBytes := argBytes + len(paths[end]) + 1
-			if end > start && nextBytes > maxEquivalentProofPathspecArgBytes {
-				break
-			}
-			args = append(args, paths[end])
-			argBytes = nextBytes
-			end++
-		}
-		if end == start {
-			return false
-		}
-		if _, err := git.Run(ctx, dir, args...); err != nil {
-			return false
-		}
-		start = end
-	}
-	return true
 }
 
 func mergeTreePreservesFinalHead(ctx context.Context, dir, base, local, pushed string) bool {

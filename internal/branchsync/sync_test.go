@@ -376,6 +376,20 @@ func TestEquivalentDivergenceRefusesDifferentBinaryContent(t *testing.T) {
 	}
 }
 
+func TestEquivalentDivergenceRefusesIntermediatePatchReverted(t *testing.T) {
+	f := newSyncFixture(t)
+	rebuildPipelineHead(t, f, []pipelineCommit{
+		{message: "feature rebased", files: map[string]string{"file.txt": "feature\n"}},
+		{message: "pipeline reverts feature", files: map[string]string{"file.txt": "base\n"}},
+		{message: "pipeline extra", files: map[string]string{"extra.txt": "extra\n"}},
+	})
+
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateDiverged || state.Relation != RelationDiverged || state.Safety != "blocked_diverged" || state.Changed {
+		t.Fatalf("state = %#v", state)
+	}
+}
+
 func TestEquivalentDivergenceRefusesWrongRepeatedLineOccurrence(t *testing.T) {
 	f := newSyncFixture(t)
 	mustWrite(t, filepath.Join(f.local, "repeated.txt"), "foo\nfoo\n")
