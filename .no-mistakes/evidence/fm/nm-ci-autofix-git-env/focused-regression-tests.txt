@@ -1,0 +1,12 @@
+=== RUN   TestNonInteractiveEnvFrom_UsesBaseAndOverridesGitKeys
+--- PASS: TestNonInteractiveEnvFrom_UsesBaseAndOverridesGitKeys (0.00s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/git	1.341s
+=== RUN   TestCIStep_CommitAndPush_GitCommandsUseStandardCredentialEnv
+--- PASS: TestCIStep_CommitAndPush_GitCommandsUseStandardCredentialEnv (9.16s)
+=== RUN   TestRebaseStep_DetectsUnpushedLocalDefaultBranchCommitsOnForcePush
+=== PAUSE TestRebaseStep_DetectsUnpushedLocalDefaultBranchCommitsOnForcePush
+=== CONT  TestRebaseStep_DetectsUnpushedLocalDefaultBranchCommitsOnForcePush
+--- PASS: TestRebaseStep_DetectsUnpushedLocalDefaultBranchCommitsOnForcePush (0.63s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/pipeline/steps	11.239s

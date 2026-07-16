@@ -169,8 +169,9 @@ func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd 
 	return cmd
 }
 
-// stepGitRun runs a git command using the StepContext's environment.
-// It is like git.Run but respects sctx.Env so that tests can inject a fake git binary.
+// stepGitRun runs git with the StepContext's environment plus the standard
+// non-interactive git overrides. It is like git.Run but respects sctx.Env so
+// step-scoped PATH and credential environment stay in effect.
 func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
 	cmd := stepCmd(sctx, "git", args...)
 	cmd.Env = git.NonInteractiveEnvFrom(cmd.Env, sctx.WorkDir)
