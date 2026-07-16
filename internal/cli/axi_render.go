@@ -206,6 +206,13 @@ func (rv runView) awaitingStep() (stepView, bool) {
 			return s, true
 		}
 	}
+	if rv.Status == string(types.RunAwaitingAuth) {
+		for _, s := range rv.Steps {
+			if s.Status == string(types.StepStatusRunning) {
+				return s, true
+			}
+		}
+	}
 	return stepView{}, false
 }
 

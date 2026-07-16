@@ -180,7 +180,10 @@ func (a *codexAgent) Close() error { return nil }
 // inserted between "exec" and the prompt so user flags (e.g. -m, --sandbox)
 // take effect. If the user declared their own execution-mode flag, the
 // default --dangerously-bypass-approvals-and-sandbox is not added.
-// A non-empty resumeID routes through `codex exec resume <id> <prompt>`,
+// A non-empty resumeID routes through `codex exec resume <id> <prompt>` for
+// the legacy positional helper, and `codex exec resume <id> -` for the stdin
+// transport path used by Run. The "-" marker is required by resume's narrower
+// CLI contract to read the prompt from stdin.
 // which exposes a narrower flag surface than `codex exec` (no --color, no
 // -s/--sandbox as of codex 0.144): unsupported user extraArgs make the
 // invocation fail fast and the caller's cold fallback preserves correctness.
@@ -204,6 +207,8 @@ func (a *codexAgent) buildArgsWithPrompt(prompt, schemaPath, resumeID string, ro
 	}
 	if includePrompt {
 		args = append(args, prompt)
+	} else if resumeID != "" {
+		args = append(args, "-")
 	}
 	args = append(args, "--json")
 	if schemaPath != "" {

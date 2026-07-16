@@ -4,13 +4,17 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -421,6 +425,236 @@ func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 	}
 
 	waitForRunTerminalState(t, d, result.RunID)
+}
+
+func TestStartRunReturnsWhileProvisionerBlockedThirtySeconds(t *testing.T) {
+	p, d := newProvisioningManagerDB(t)
+	repo, headSHA := setupTestGitRepo(t, p, d, "blocked-provision-repo")
+	blocked := make(chan string, 1)
+	exited := make(chan struct{})
+	m := NewRunManager(d, p, func() []pipeline.Step { return []pipeline.Step{&mockPassStep{name: types.StepReview}} })
+	m.provisionHook = func(ctx context.Context, phase string, run *db.Run, _ string) error {
+		if phase != "after_worktree" {
+			return nil
+		}
+		blocked <- run.ID
+		defer close(exited)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	t.Cleanup(m.Shutdown)
+
+	started := time.Now()
+	runID, err := m.startRun(context.Background(), repo, "main", headSHA, headSHA, "push", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("startRun took %s with blocked provisioner, want prompt admission", elapsed)
+	}
+	select {
+	case got := <-blocked:
+		if got != runID {
+			t.Fatalf("blocked run = %s, want %s", got, runID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("provisioner did not reach blocking hook")
+	}
+	select {
+	case <-exited:
+		t.Fatal("provisioner exited before proving a 30 second blockage")
+	case <-time.After(30 * time.Second):
+	}
+	if err := m.HandleCancel(runID); err != nil {
+		t.Fatal(err)
+	}
+	waitForChannel(t, exited, 5*time.Second, "blocked provisioner exit")
+	waitForManagerIdle(t, m, 5*time.Second)
+	if _, err := os.Stat(p.WorktreeDir(repo.ID, runID)); !os.IsNotExist(err) {
+		t.Fatalf("cancelled provisioning worktree still exists or stat failed: %v", err)
+	}
+}
+
+func TestProvisioningSupersessionWaitsForCancelledProvisioner(t *testing.T) {
+	p, d := newProvisioningManagerDB(t)
+	repo, headSHA := setupTestGitRepo(t, p, d, "supersede-provision-repo")
+	firstBlocked := make(chan struct{})
+	firstCancelled := make(chan struct{})
+	allowFirstExit := make(chan struct{})
+	var firstRun atomic.Bool
+	m := NewRunManager(d, p, func() []pipeline.Step { return []pipeline.Step{&mockPassStep{name: types.StepReview}} })
+	m.provisionHook = func(ctx context.Context, phase string, _ *db.Run, _ string) error {
+		if phase != "after_worktree" {
+			return nil
+		}
+		if firstRun.CompareAndSwap(false, true) {
+			close(firstBlocked)
+			<-ctx.Done()
+			close(firstCancelled)
+			<-allowFirstExit
+			return ctx.Err()
+		}
+		return nil
+	}
+	t.Cleanup(m.Shutdown)
+
+	firstID, err := m.startRun(context.Background(), repo, "main", headSHA, headSHA, "push", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForChannel(t, firstBlocked, 5*time.Second, "first provisioning block")
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := m.startRun(context.Background(), repo, "main", headSHA, headSHA, "push", nil, "")
+		secondDone <- err
+	}()
+	waitForChannel(t, firstCancelled, 5*time.Second, "first provisioning cancel")
+	select {
+	case err := <-secondDone:
+		t.Fatalf("second run returned before cancelled provisioner exited: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(allowFirstExit)
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second run after provisioner exit: %v", err)
+	}
+	waitForManagerIdle(t, m, 5*time.Second)
+	if _, err := os.Stat(p.WorktreeDir(repo.ID, firstID)); !os.IsNotExist(err) {
+		t.Fatalf("superseded provisioning worktree still exists or stat failed: %v", err)
+	}
+}
+
+func TestProvisioningWorkerSlotsBoundActiveSetup(t *testing.T) {
+	p, d := newProvisioningManagerDB(t)
+	repo, headSHA := setupTestGitRepo(t, p, d, "bounded-provision-repo")
+	started := make(chan string, 3)
+	release := make(chan struct{})
+	m := NewRunManager(d, p, func() []pipeline.Step { return []pipeline.Step{&mockPassStep{name: types.StepReview}} })
+	m.provisionHook = func(ctx context.Context, phase string, run *db.Run, _ string) error {
+		if phase != "after_worktree" {
+			return nil
+		}
+		started <- run.Branch
+		select {
+		case <-release:
+			return os.ErrClosed
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	t.Cleanup(m.Shutdown)
+
+	for _, branch := range []string{"feature/one", "feature/two", "feature/three"} {
+		if _, err := m.startRun(context.Background(), repo, branch, headSHA, headSHA, "push", nil, ""); err != nil {
+			t.Fatalf("start %s: %v", branch, err)
+		}
+	}
+	seen := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case branch := <-started:
+			seen[branch] = true
+		case <-time.After(5 * time.Second):
+			t.Fatal("expected two active provisioning workers")
+		}
+	}
+	select {
+	case branch := <-started:
+		t.Fatalf("third provisioning worker started before slot release: %s", branch)
+	case <-time.After(200 * time.Millisecond):
+	}
+	release <- struct{}{}
+	select {
+	case branch := <-started:
+		if seen[branch] {
+			t.Fatalf("duplicate started branch %s", branch)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("third provisioning worker did not start after slot release")
+	}
+	close(release)
+	waitForManagerIdle(t, m, 5*time.Second)
+}
+
+func TestResumeProvisioningRunsRegistersWaitHandleBeforeRequeue(t *testing.T) {
+	p, d := newProvisioningManagerDB(t)
+	repo, headSHA := setupTestGitRepo(t, p, d, "restart-provision-repo")
+	run, err := d.InsertRun(repo.ID, "main", headSHA, headSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunProvisioning(run.ID, "worktree", 5, ""); err != nil {
+		t.Fatal(err)
+	}
+	blocked := make(chan struct{})
+	m := NewRunManager(d, p, func() []pipeline.Step { return []pipeline.Step{&mockPassStep{name: types.StepReview}} })
+	m.provisionHook = func(ctx context.Context, phase string, _ *db.Run, _ string) error {
+		if phase != "after_worktree" {
+			return nil
+		}
+		close(blocked)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	t.Cleanup(m.Shutdown)
+
+	m.resumeProvisioningRuns([]*db.Run{run})
+	m.mu.Lock()
+	done := m.dones[run.ID]
+	m.mu.Unlock()
+	if done == nil {
+		t.Fatal("restart requeue did not register a done channel before provisioning resumed")
+	}
+	waitForChannel(t, blocked, 5*time.Second, "requeued provisioning block")
+	if err := m.HandleCancel(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitForChannel(t, done, 5*time.Second, "requeued provisioning done")
+	waitForManagerIdle(t, m, 5*time.Second)
+}
+
+func newProvisioningManagerDB(t *testing.T) (*paths.Paths, *db.DB) {
+	t.Helper()
+	tmpDir, err := os.MkdirTemp("", "dtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tmpDir) })
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	mockClaude := writeMockClaude(t, t.TempDir())
+	if err := os.WriteFile(p.ConfigFile(), []byte("agent: claude\nagent_path_override:\n  claude: "+mockClaude+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	return p, d
+}
+
+func waitForChannel(t *testing.T, ch <-chan struct{}, timeout time.Duration, label string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(timeout):
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		t.Fatalf("timed out waiting for %s\n%s", label, buf[:n])
+	}
+}
+
+func waitForManagerIdle(t *testing.T, m *RunManager, timeout time.Duration) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+	waitForChannel(t, done, timeout, "run manager goroutines")
 }
 
 func writeManagerClaudeFixture(t *testing.T, home, repoCWD string, lines []string) {

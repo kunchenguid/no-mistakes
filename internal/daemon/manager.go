@@ -42,6 +42,7 @@ type RunManager struct {
 	provisionCancels map[string]context.CancelCauseFunc
 	provisionSlots   chan struct{}
 	provisionQueue   chan struct{}
+	provisionHook    func(context.Context, string, *db.Run, string) error
 	shuttingDown     atomic.Bool // prevents new runs during shutdown
 	db               *db.DB
 	paths            *paths.Paths
@@ -293,8 +294,10 @@ func (m *RunManager) resumeProvisioningRuns(runs []*db.Run) {
 			continue
 		}
 		ctx, cancel := context.WithCancelCause(context.Background())
+		done := make(chan struct{})
 		m.mu.Lock()
 		m.provisionCancels[run.ID] = cancel
+		m.dones[run.ID] = done
 		m.mu.Unlock()
 		select {
 		case m.provisionQueue <- struct{}{}:
@@ -303,16 +306,26 @@ func (m *RunManager) resumeProvisioningRuns(runs []*db.Run) {
 			cancel(fmt.Errorf("provisioning recovery queue is full"))
 			m.mu.Lock()
 			delete(m.provisionCancels, run.ID)
+			delete(m.dones, run.ID)
 			m.mu.Unlock()
 			continue
 		}
 		m.wg.Add(1)
-		go func(run *db.Run, repo *db.Repo, ctx context.Context) {
+		go func(run *db.Run, repo *db.Repo, ctx context.Context, done chan struct{}) {
+			launched := false
 			defer m.wg.Done()
+			defer func() {
+				if !launched {
+					close(done)
+				}
+			}()
 			defer func() { <-m.provisionQueue }()
 			defer func() {
 				m.mu.Lock()
 				delete(m.provisionCancels, run.ID)
+				if !launched {
+					delete(m.dones, run.ID)
+				}
 				m.mu.Unlock()
 			}()
 			select {
@@ -323,19 +336,21 @@ func (m *RunManager) resumeProvisioningRuns(runs []*db.Run) {
 			defer func() { <-m.provisionSlots }()
 			gateDir := m.paths.RepoDir(repo.ID)
 			wtDir := m.paths.WorktreeDir(repo.ID, run.ID)
-			_ = git.WorktreeRemove(context.Background(), gateDir, wtDir)
+			removeProvisioningWorktree(gateDir, wtDir)
 			branchRole := telemetryBranchRole(run.Branch, repo.DefaultBranch)
 			track := func(stage string) {
 				telemetry.Track("run", telemetry.Fields{"action": "start_failed", "trigger": "restart", "branch_role": branchRole, "stage": stage})
 			}
-			if err := m.provisionRun(ctx, repo, run.Branch, run.HeadSHA, run.BaseSHA, "restart", nil, run, branchRole, track); err != nil {
+			var err error
+			launched, err = m.provisionRun(ctx, repo, run.Branch, run.HeadSHA, run.BaseSHA, "restart", nil, run, branchRole, track, done)
+			if err != nil {
 				if cause := context.Cause(ctx); cause != nil {
 					_ = m.db.UpdateRunErrorStatus(run.ID, cause.Error(), types.RunCancelled)
 				} else {
 					_ = m.db.FailRunProvisioning(run.ID, "failed", err)
 				}
 			}
-		}(run, repo, ctx)
+		}(run, repo, ctx, done)
 	}
 }
 
@@ -714,16 +729,27 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		return "", fmt.Errorf("provisioning queue is full")
 	}
 	provisionCtx, cancelProvision := context.WithCancelCause(context.Background())
+	done := make(chan struct{})
 	m.mu.Lock()
 	m.provisionCancels[run.ID] = cancelProvision
+	m.dones[run.ID] = done
 	m.mu.Unlock()
 	m.wg.Add(1)
 	go func() {
+		launched := false
 		defer m.wg.Done()
+		defer func() {
+			if !launched {
+				close(done)
+			}
+		}()
 		defer func() { <-m.provisionQueue }()
 		defer func() {
 			m.mu.Lock()
 			delete(m.provisionCancels, run.ID)
+			if !launched {
+				delete(m.dones, run.ID)
+			}
 			m.mu.Unlock()
 		}()
 		select {
@@ -737,7 +763,9 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			return
 		}
 		defer func() { <-m.provisionSlots }()
-		if err := m.provisionRun(provisionCtx, repo, branch, headSHA, baseSHA, trigger, skipSteps, run, branchRole, trackStartFailure); err != nil {
+		var err error
+		launched, err = m.provisionRun(provisionCtx, repo, branch, headSHA, baseSHA, trigger, skipSteps, run, branchRole, trackStartFailure, done)
+		if err != nil {
 			if cause := context.Cause(provisionCtx); cause != nil {
 				_ = m.db.UpdateRunErrorStatus(run.ID, cause.Error(), types.RunCancelled)
 			} else if run.Status == types.RunProvisioning || run.Status == types.RunPending {
@@ -749,23 +777,36 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	return run.ID, nil
 }
 
-func (m *RunManager) provisionRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, run *db.Run, branchRole string, trackStartFailure func(string)) error {
+func (m *RunManager) provisionRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, run *db.Run, branchRole string, trackStartFailure func(string), done chan struct{}) (bool, error) {
 	if err := m.db.SetRunProvisioning(run.ID, "worktree", 5, ""); err != nil {
-		return err
+		return false, err
 	}
 
 	// Create worktree from the gate bare repo.
 	gateDir := m.paths.RepoDir(repo.ID)
 	wtDir := m.paths.WorktreeDir(repo.ID, run.ID)
+	// Track whether the background goroutine takes ownership of worktree cleanup.
+	// If setup fails before the goroutine launches, we must clean up here.
+	bgOwnsWorktree := false
+	defer func() {
+		if !bgOwnsWorktree {
+			removeProvisioningWorktree(gateDir, wtDir)
+		}
+	}()
 	if err := git.WorktreeAdd(ctx, gateDir, wtDir, headSHA); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("create worktree: %s", err))
 		trackStartFailure("create_worktree")
-		return fmt.Errorf("create worktree: %w", err)
+		return false, fmt.Errorf("create worktree: %w", err)
+	}
+	if m.provisionHook != nil {
+		if err := m.provisionHook(ctx, "after_worktree", run, wtDir); err != nil {
+			return false, err
+		}
 	}
 	if err := git.CopyLocalUserIdentity(ctx, repo.WorkingPath, wtDir); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree git identity: %s", err))
 		trackStartFailure("configure_worktree_identity")
-		return fmt.Errorf("configure worktree git identity: %w", err)
+		return false, fmt.Errorf("configure worktree git identity: %w", err)
 	}
 	// Fetch the trusted default branch and resolve it to an exact commit SHA
 	// before any read. Reading the trusted config at this pinned SHA (rather
@@ -787,28 +828,17 @@ func (m *RunManager) provisionRun(ctx context.Context, repo *db.Repo, branch, he
 		}
 	}
 
-	// Track whether the background goroutine takes ownership of worktree cleanup.
-	// If setup fails before the goroutine launches, we must clean up here.
-	bgOwnsWorktree := false
-	defer func() {
-		if !bgOwnsWorktree {
-			if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
-				slog.Warn("failed to remove worktree during setup cleanup", "path", wtDir, "error", rmErr)
-			}
-		}
-	}()
-
 	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
 		trackStartFailure("load_global_config")
-		return fmt.Errorf("load global config: %w", err)
+		return false, fmt.Errorf("load global config: %w", err)
 	}
 	repoCfg, err := config.LoadRepo(wtDir)
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
 		trackStartFailure("load_repo_config")
-		return fmt.Errorf("load repo config: %w", err)
+		return false, fmt.Errorf("load repo config: %w", err)
 	}
 	// SECURITY: load the code-executing selection fields (commands.* and
 	// agent) from the trusted default-branch copy of .no-mistakes.yaml rather
@@ -829,7 +859,7 @@ func (m *RunManager) provisionRun(ctx context.Context, repo *db.Repo, branch, he
 	if err := assertGateTrustedConfigReadable(ctx, wtDir, repo.DefaultBranch, trustedSHA); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("trusted_config_unreadable")
-		return err
+		return false, err
 	}
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, wtDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
@@ -852,7 +882,7 @@ func (m *RunManager) provisionRun(ctx context.Context, repo *db.Repo, branch, he
 		if err := cfg.ResolveAgent(ctx, exec.LookPath); err != nil {
 			m.db.UpdateRunError(run.ID, err.Error())
 			trackStartFailure("resolve_agent")
-			return err
+			return false, err
 		}
 		agents := cfg.Agents
 		if len(agents) == 0 {
@@ -867,7 +897,7 @@ func (m *RunManager) provisionRun(ctx context.Context, repo *db.Repo, branch, he
 			if agErr != nil {
 				m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent %s: %s", name, agErr))
 				trackStartFailure("create_agent")
-				return fmt.Errorf("create agent %s: %w", name, agErr)
+				return false, fmt.Errorf("create agent %s: %w", name, agErr)
 			}
 			// Steer every pipeline agent to keep writes inside the worktree and
 			// avoid mutating system state (e.g. brew/Homebrew touching
@@ -884,17 +914,17 @@ func (m *RunManager) provisionRun(ctx context.Context, repo *db.Repo, branch, he
 			if err := agent.EnsureGateNeutralized(ag); err != nil {
 				m.db.UpdateRunError(run.ID, err.Error())
 				trackStartFailure("gate_not_neutralized")
-				return err
+				return false, err
 			}
 		}
 	}
 	if err := m.db.SetRunProvisioning(run.ID, "agent-ready", 85, ""); err != nil {
 		_ = ag.Close()
-		return err
+		return false, err
 	}
 	if err := m.db.CompleteRunProvisioning(run.ID); err != nil {
 		_ = ag.Close()
-		return err
+		return false, err
 	}
 	run.Status = types.RunPending
 
@@ -917,11 +947,9 @@ func (m *RunManager) provisionRun(ctx context.Context, repo *db.Repo, branch, he
 	executor.SetSkippedSteps(skipSteps)
 
 	// Track executor.
-	done := make(chan struct{})
 	m.mu.Lock()
 	m.executors[run.ID] = executor
 	m.cancels[run.ID] = cancel
-	m.dones[run.ID] = done
 	m.mu.Unlock()
 
 	// Background goroutine now owns worktree cleanup.
@@ -1012,7 +1040,16 @@ func (m *RunManager) provisionRun(ctx context.Context, repo *db.Repo, branch, he
 		}
 	}()
 
-	return nil
+	return true, nil
+}
+
+func removeProvisioningWorktree(gateDir, wtDir string) {
+	if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
+		slog.Warn("failed to remove worktree during setup cleanup", "path", wtDir, "error", rmErr)
+	}
+	if rmErr := os.RemoveAll(wtDir); rmErr != nil {
+		slog.Warn("failed to remove provisioning worktree directory", "path", wtDir, "error", rmErr)
+	}
 }
 
 // addRunPerformanceSummary attaches the bounded per-run performance rollup

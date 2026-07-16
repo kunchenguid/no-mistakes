@@ -54,6 +54,28 @@ func TestCodexAgent_TransportArgsCarryEffectiveRouteWithoutPrompt(t *testing.T) 
 	}
 }
 
+func TestCodexAgent_ResumeTransportUsesStdinPromptMarker(t *testing.T) {
+	ca := &codexAgent{bin: "codex"}
+	args := ca.buildArgsTransport(RunOpts{
+		Prompt:  strings.Repeat("resume prompt ", 1024),
+		Routing: routing.Decision{EffectiveModel: routing.ModelSol, EffectiveEffort: routing.EffortHigh},
+	}, "", "thread-99")
+	wantPrefix := []string{"exec", "resume", "thread-99", "-"}
+	if len(args) < len(wantPrefix) {
+		t.Fatalf("resume args too short: %v", args)
+	}
+	for i, want := range wantPrefix {
+		if args[i] != want {
+			t.Fatalf("resume arg[%d] = %q, want %q in %v", i, args[i], want, args)
+		}
+	}
+	for _, arg := range args {
+		if strings.Contains(arg, "resume prompt") {
+			t.Fatalf("resume prompt leaked into argv: %v", args)
+		}
+	}
+}
+
 func TestCodexAgent_LargePromptUsesStdinAndBoundedArgv(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture is Unix-only")
@@ -318,6 +340,51 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	}
 	if result.Text != "ok" {
 		t.Fatalf("result text = %q, want ok", result.Text)
+	}
+	got, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatalf("read captured prompt: %v", err)
+	}
+	if len(got) != len(prompt) {
+		t.Fatalf("captured prompt bytes = %d, want %d", len(got), len(prompt))
+	}
+}
+
+func TestCodexAgent_RunResumeTransportsThreeMiBPromptThroughStdin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("posix fake Codex fixture")
+	}
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+if [ "$1" != "exec" ] || [ "$2" != "resume" ] || [ "$3" != "thread-99" ] || [ "$4" != "-" ]; then
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 93
+fi
+for arg do
+  case "$arg" in
+    *xxxxxxxx*) exit 94 ;;
+  esac
+done
+cat > "$PROMPT_CAPTURE"
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+`, "")
+	capture := filepath.Join(dir, "resume-prompt.txt")
+	t.Setenv("PROMPT_CAPTURE", capture)
+	prompt := strings.Repeat("x", 3*1024*1024)
+	result, err := (&codexAgent{bin: bin}).Run(context.Background(), RunOpts{
+		Prompt: prompt,
+		CWD:    t.TempDir(),
+		Session: &SessionRef{
+			Agent: "codex",
+			ID:    "thread-99",
+		},
+	})
+	if err != nil {
+		t.Fatalf("resumed three MiB prompt failed: %v", err)
+	}
+	if result.Text != "ok" || !result.Resumed {
+		t.Fatalf("result = %+v, want ok resumed", result)
 	}
 	got, err := os.ReadFile(capture)
 	if err != nil {

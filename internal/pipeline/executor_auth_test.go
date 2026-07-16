@@ -68,6 +68,9 @@ func TestExecutorParksAuthorizationRequiredWithoutTerminalizingRun(t *testing.T)
 	if got.Status != types.RunAwaitingAuth || got.BlockedReason == nil {
 		t.Fatalf("run projection = %+v", got)
 	}
+	if got.AwaitingAgentSince != nil {
+		t.Fatalf("authorization park set gate timer: %v", *got.AwaitingAgentSince)
+	}
 	events, err := database.LifecycleEvents(run.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +181,7 @@ func TestRecoveredAuthorizationParkSurvivesDaemonShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(steps) != 1 || steps[0].Status != types.StepStatusAwaitingApproval {
+	if len(steps) != 1 || steps[0].Status != types.StepStatusRunning {
 		t.Fatalf("recovered authorization step = %+v", steps)
 	}
 }

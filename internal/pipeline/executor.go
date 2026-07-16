@@ -496,7 +496,8 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 		if result.StepName != e.steps[index].Name() {
 			return nil, fmt.Errorf("recovered step %d is %q, want %q", index, result.StepName, e.steps[index].Name())
 		}
-		if result.Status == types.StepStatusAwaitingApproval || result.Status == types.StepStatusFixReview {
+		authGate := result.Status == types.StepStatusRunning && result.FindingsJSON != nil
+		if result.Status == types.StepStatusAwaitingApproval || result.Status == types.StepStatusFixReview || authGate {
 			if gate != nil || result.FindingsJSON == nil || result.StartedAt == nil || result.DurationMS == nil || result.AgentPID != nil {
 				return nil, fmt.Errorf("recovered approval gate is incomplete")
 			}
@@ -505,6 +506,9 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 				return nil, fmt.Errorf("recovered approval gate has no complete round")
 			}
 			latest := rounds[len(rounds)-1]
+			if authGate && latest.Trigger != "auth_required" {
+				return nil, fmt.Errorf("recovered running step %s is not an authorization gate", result.StepName)
+			}
 			if latest.FindingsJSON == nil || *latest.FindingsJSON != *result.FindingsJSON {
 				return nil, fmt.Errorf("recovered approval gate findings are incomplete")
 			}
@@ -1049,6 +1053,7 @@ func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *St
 	if err := e.db.ParkRunForAuthorization(run.ID, string(step.Name()), reason); err != nil {
 		return err
 	}
+	run.Status = types.RunAwaitingAuth
 	run.BlockedReason = func() *string { v := reason; return &v }()
 	findings := `{"summary":"Codex authorization is required before this turn can continue","risk_level":"high","risk_rationale":"external authentication state is unavailable","findings":[]}`
 	if err := e.db.SetStepFindings(sr.ID, findings); err != nil {
@@ -1060,7 +1065,7 @@ func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *St
 	if _, err := e.db.InsertStepRound(sr.ID, round, "auth_required", &findings, nil, 0); err != nil {
 		return err
 	}
-	if err := e.db.UpdateStepStatusWithDuration(sr.ID, types.StepStatusAwaitingApproval, 0); err != nil {
+	if err := e.db.UpdateStepStatusWithDuration(sr.ID, types.StepStatusRunning, 0); err != nil {
 		return err
 	}
 	e.mu.Lock()
@@ -1068,6 +1073,7 @@ func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *St
 	e.waitingStep = step.Name()
 	e.mu.Unlock()
 	e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(types.StepStatusAwaitingApproval), "", "", reason, nil)
+	parkStart := time.Now()
 	response, _, err := e.waitForApprovalOrReconcile(ctx, step, sctx, false)
 	if err != nil {
 		cause := context.Cause(ctx)
@@ -1085,10 +1091,12 @@ func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *St
 	if dbErr := e.db.ResumeRunAfterAuthorization(run.ID, string(step.Name())); dbErr != nil {
 		return dbErr
 	}
+	run.Status = types.RunRunning
+	run.BlockedReason = nil
 	if err := e.db.UpdateStepStatus(sr.ID, types.StepStatusRunning); err != nil {
 		return err
 	}
-	sctx.Log("authentication recovered; retrying the same agent turn")
+	sctx.Log(fmt.Sprintf("authentication recovered after explicit approval (%d ms parked); retrying the same agent turn", time.Since(parkStart).Milliseconds()))
 	return nil
 }
 
