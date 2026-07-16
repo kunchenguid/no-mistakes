@@ -10,12 +10,22 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/routing"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	toon "github.com/toon-format/toon-go"
 )
 
 // axiIntent is a distinctive intent string so we can prove it flowed all the
 // way into the pipeline's agent prompts rather than being inferred.
 const axiIntent = "wire the feature flag into the config loader"
+
+type axiRouteEvidence struct {
+	RouteDecisions []axiRouteDecision `toon:"route_decisions"`
+}
+
+type axiRouteDecision struct {
+	ConfigurationGeneration string `toon:"configuration_generation"`
+}
 
 // axiScenario gates exactly one step: the review step returns a single
 // ask-user finding (so the pipeline blocks for a human/agent decision), while
@@ -144,6 +154,23 @@ func TestAxiAgentJourney(t *testing.T) {
 	}
 	if strings.Contains(routeOut, "route_decisions[0]") {
 		t.Fatalf("axi route-evidence returned no concrete route decisions:\n%s", routeOut)
+	}
+	var routeEvidence axiRouteEvidence
+	if err := toon.UnmarshalString(routeOut, &routeEvidence); err != nil {
+		t.Fatalf("decode axi route-evidence: %v\n%s", err, routeOut)
+	}
+	if len(routeEvidence.RouteDecisions) != 1 {
+		t.Fatalf("axi route-evidence returned %d route decisions, want 1:\n%s", len(routeEvidence.RouteDecisions), routeOut)
+	}
+	configData, err := os.ReadFile(filepath.Join(h.NMHome, "config.yaml"))
+	if err != nil {
+		t.Fatalf("read loaded global config: %v", err)
+	}
+	wantGeneration := routing.ConfigFingerprint(string(configData))
+	if got := routeEvidence.RouteDecisions[0].ConfigurationGeneration; got == "" {
+		t.Fatalf("axi route-evidence returned an empty configuration_generation:\n%s", routeOut)
+	} else if got != wantGeneration {
+		t.Fatalf("axi route-evidence configuration_generation = %q, want loaded config fingerprint %q:\n%s", got, wantGeneration, routeOut)
 	}
 	if findInvocationContaining(h.AgentInvocations(), "Review the code changes and return structured findings") == "" {
 		t.Fatal("axi route-evidence journey did not invoke the isolated Codex adapter")

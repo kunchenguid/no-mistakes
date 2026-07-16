@@ -162,7 +162,24 @@ No Mistakes owns routing in core and records a bounded routing generation with e
    grep -q 'nm-routing-v2' "$CANARY_ROOT/route-evidence.toon"
    grep -q 'gpt-5.6-luna' "$CANARY_ROOT/route-evidence.toon"
    grep -q 'xhigh' "$CANARY_ROOT/route-evidence.toon"
-   grep -q 'configuration_generation' "$CANARY_ROOT/route-evidence.toon"
+   awk -F',' '
+     /^route_decisions\[1\]\{/ {
+       header = $0
+       sub(/^.*\{/, "", header)
+       sub(/\}:$/, "", header)
+       column_count = split(header, columns, ",")
+       for (i = 1; i <= column_count; i++) {
+         if (columns[i] == "configuration_generation") generation_column = i
+       }
+       next
+     }
+     generation_column && /^[[:space:]]/ {
+       generation = $generation_column
+       gsub(/^["[:space:]]+|["[:space:]]+$/, "", generation)
+       if (generation ~ /^[0-9a-f]{24}$/) found = 1
+     }
+     END { exit found ? 0 : 1 }
+   ' "$CANARY_ROOT/route-evidence.toon"
    test -s "$CANARY_INVOCATIONS"
    ```
    Inspect `route_decisions` for the requested/effective harness, model, effort, `policy_version`, and `configuration_generation`, and inspect `review_results` for the completed classification. Codex rows should show the No Mistakes GPT policy; non-Codex rows must leave effective model and effort empty. The output must contain no external router name or process. This is a real agent invocation inside the disposable repository, not a log-only daemon check.
