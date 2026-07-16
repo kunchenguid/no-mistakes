@@ -193,7 +193,8 @@ A run that goes terminal (cancelled, failed, or completed without a push stage) 
 `--recover` verifies the run is terminal, anchors the preserved head under `refs/no-mistakes/recover/<run>` in the invoking repository, and stamps custody returned so a fresh run can start.
 For equal or ahead worktrees where the preserved head is already locally reachable, recovery writes that anchor locally without gate access.
 For behind or diverged worktrees, recovery verifies the preserved head at the local gate branch and fetches it into the anchor before fast-forwarding only a clean behind worktree or refusing with the anchor named.
-A dirty or diverged worktree refuses with the explicit choices; `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
+A dirty or diverged worktree refuses with explicit choices.
+When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
 `no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
 
@@ -298,7 +299,7 @@ no-mistakes sync --recover --keep-local
 | `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree |
 
 Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` prompts the same way before returning custody.
-A non-TTY apply refuses with a direct `--yes` hint.
+A non-TTY apply or recovery refuses with a direct `--yes` hint.
 The command uses the same service and safety contract as `no-mistakes axi sync`, including the guarded custody recovery documented there; it never resets, stashes, rebases, creates a merge commit, switches branches, deletes a branch, or updates an external remote.
 
 ## no-mistakes status

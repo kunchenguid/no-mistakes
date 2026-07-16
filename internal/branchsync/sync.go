@@ -399,8 +399,9 @@ func (s *Service) Apply(ctx context.Context) State {
 //     and fetched into that anchor. The anchor keeps them reachable locally no
 //     matter what later happens to the gate.
 //   - The only possible worktree mutation stays a strict fast-forward of a
-//     clean checked-out branch; --keep-local never touches the worktree and
-//     instead moves the gate branch to the kept head with an atomic
+//     clean checked-out branch. When the operator explicitly keeps a behind or
+//     diverged local head instead of taking P, --keep-local never touches the
+//     worktree and moves the gate branch to the kept head with an atomic
 //     compare-and-swap, so a concurrent gate push wins and recovery refuses.
 //   - Anything unverifiable (missing gate where required, moved gate branch,
 //     failed anchor write or fetch, changed assumptions) refuses with a reason
