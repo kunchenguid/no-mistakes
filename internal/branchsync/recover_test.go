@@ -266,9 +266,15 @@ func TestRecoverWorktreeAlreadyAtPreservedHeadReturnsCustodyWithoutMutation(t *t
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover")
 	mustRun(t, f.local, "merge", "--ff-only", f.preserved)
+	if err := os.RemoveAll(f.gate); err != nil {
+		t.Fatal(err)
+	}
 	state := f.service.Recover(f.ctx, false)
 	if !state.Recovered || state.Changed || state.State != StateCustodyReturned || state.Relation != RelationEqual {
 		t.Fatalf("recover equal = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("anchor ref = %s, want %s", got, f.preserved)
 	}
 	if !f.custodyReturned() {
 		t.Fatal("custody not stamped")
@@ -285,12 +291,18 @@ func TestRecoverLocalAheadOfPreservedHeadReturnsCustodyWithoutMutation(t *testin
 	mustRun(t, f.local, "add", "followup.txt")
 	mustRun(t, f.local, "commit", "-m", "followup")
 	ahead := mustRun(t, f.local, "rev-parse", "HEAD")
+	if err := os.RemoveAll(f.gate); err != nil {
+		t.Fatal(err)
+	}
 	state := f.service.Recover(f.ctx, false)
 	if !state.Recovered || state.Changed || state.State != StateCustodyReturned || state.Relation != RelationAhead {
 		t.Fatalf("recover ahead = %#v", state)
 	}
 	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != ahead {
 		t.Fatal("recover ahead moved HEAD")
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("anchor ref = %s, want %s", got, f.preserved)
 	}
 }
 

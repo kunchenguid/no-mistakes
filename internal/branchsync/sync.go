@@ -380,8 +380,8 @@ func (s *Service) Apply(ctx context.Context) State {
 // (the gate branch head recorded as the run's head_sha):
 //
 //	relation   worktree  default                        --keep-local
-//	equal      any       return custody; no mutation    same
-//	ahead      any       return custody; no mutation    same
+//	equal      any       anchor locally; return custody same
+//	ahead      any       anchor locally; return custody same
 //	behind     clean     strict fast-forward to P,      custody at local head;
 //	                     then return custody            gate reset to it (CAS)
 //	behind     dirty     refuse (commit/stash first)    custody at local head;
@@ -392,17 +392,19 @@ func (s *Service) Apply(ctx context.Context) State {
 //
 // Fail-safe rules, in the same spirit as Refresh/Apply:
 //   - An active run always refuses: only terminal runs are recoverable.
-//   - The preserved commits must be provably safe before custody moves: either
-//     already reachable from the local branch (equal/ahead), or verified at
-//     the gate branch head and fetched into the private anchor ref
-//     refs/no-mistakes/recover/<runID> in the invoking repository. The anchor
-//     keeps them reachable locally no matter what later happens to the gate.
+//   - The preserved commits must be provably safe before custody moves: when
+//     already reachable from the local branch (equal/ahead), recovery pins the
+//     private anchor ref refs/no-mistakes/recover/<runID> locally without gate
+//     access; otherwise the preserved head is verified at the gate branch head
+//     and fetched into that anchor. The anchor keeps them reachable locally no
+//     matter what later happens to the gate.
 //   - The only possible worktree mutation stays a strict fast-forward of a
 //     clean checked-out branch; --keep-local never touches the worktree and
 //     instead moves the gate branch to the kept head with an atomic
 //     compare-and-swap, so a concurrent gate push wins and recovery refuses.
-//   - Anything unverifiable (missing gate, moved gate branch, failed anchor
-//     fetch, changed assumptions) refuses with a reason and changes nothing.
+//   - Anything unverifiable (missing gate where required, moved gate branch,
+//     failed anchor write or fetch, changed assumptions) refuses with a reason
+//     and changes nothing.
 //
 // Recovery ends with a persisted custody-return stamp on the run; inspection
 // then reports custody_returned (never-pushed runs) or the ordinary
@@ -429,9 +431,10 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	preserved := run.HeadSHA
 	anchorRef := recoverAnchorRef(run.ID)
 
-	// When the preserved commits are already reachable from the local branch,
-	// custody return needs no gate access and no anchor.
 	if objectExists(ctx, wd, preserved) && (local == preserved || isAncestor(ctx, wd, preserved, local)) {
+		if blocked, ok := s.anchorReachablePreserved(ctx, state, anchorRef, preserved); !ok {
+			return blocked
+		}
 		return s.finishRecover(ctx, run, false)
 	}
 
@@ -562,6 +565,16 @@ func (s *Service) recoverFastForward(ctx context.Context, run *db.Run, state Sta
 		return state
 	}
 	return s.finishRecover(ctx, run, true)
+}
+
+func (s *Service) anchorReachablePreserved(ctx context.Context, state State, anchorRef, preserved string) (State, bool) {
+	if _, err := git.Run(ctx, s.workDir(), "update-ref", anchorRef, preserved); err != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; no files or refs were changed"), false
+	}
+	if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", anchorRef+"^{commit}"); err != nil || anchored != preserved {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; no files or refs were changed"), false
+	}
+	return State{}, true
 }
 
 // finishRecover stamps custody returned and reports the fresh post-recovery
