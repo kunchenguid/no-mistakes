@@ -45,7 +45,7 @@ func newSyncFixture(t *testing.T) *syncFixture {
 	old := mustRun(t, local, "rev-parse", "HEAD")
 
 	pipeline := filepath.Join(root, "pipeline")
-	mustRun(t, root, "clone", local, pipeline)
+	mustRun(t, root, "-c", "core.autocrlf=false", "clone", local, pipeline)
 	configureIdentity(t, pipeline)
 	mustRun(t, pipeline, "checkout", "feature/sync")
 	mustWrite(t, filepath.Join(pipeline, "fix.txt"), "pipeline fix\n")
@@ -101,7 +101,7 @@ func rebuildPipelineHead(t *testing.T, f *syncFixture, commits []pipelineCommit)
 	t.Helper()
 	root := filepath.Dir(f.local)
 	pipeline := filepath.Join(root, "pipeline-rebuild")
-	mustRun(t, root, "clone", f.local, pipeline)
+	mustRun(t, root, "-c", "core.autocrlf=false", "clone", f.local, pipeline)
 	configureIdentity(t, pipeline)
 	mustRun(t, pipeline, "checkout", "-B", "feature/sync", f.base)
 	for _, commit := range commits {
@@ -768,7 +768,7 @@ func TestForkTargetNeverReadsParentOrigin(t *testing.T) {
 func cloneRemoteBranch(t *testing.T, remote string) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "writer")
-	mustRun(t, filepath.Dir(dir), "clone", remote, dir)
+	mustRun(t, filepath.Dir(dir), "-c", "core.autocrlf=false", "clone", remote, dir)
 	configureIdentity(t, dir)
 	mustRun(t, dir, "checkout", "feature/sync")
 	return dir

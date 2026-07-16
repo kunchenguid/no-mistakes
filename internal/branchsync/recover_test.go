@@ -59,7 +59,7 @@ func newRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
 	mustRun(t, root, "init", "--bare", gate)
 	mustRun(t, local, "push", gate, "refs/heads/feature/recover:refs/heads/feature/recover")
 	pipeline := filepath.Join(root, "pipeline")
-	mustRun(t, root, "clone", gate, pipeline)
+	mustRun(t, root, "-c", "core.autocrlf=false", "clone", gate, pipeline)
 	configureIdentity(t, pipeline)
 	mustRun(t, pipeline, "checkout", "feature/recover")
 	mustWrite(t, filepath.Join(pipeline, "fix.txt"), "pipeline fix\n")
@@ -400,7 +400,7 @@ func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 	t.Run("gate branch moved", func(t *testing.T) {
 		f := newRecoverFixture(t, types.RunCancelled)
 		writer := filepath.Join(t.TempDir(), "writer")
-		mustRun(t, filepath.Dir(writer), "clone", f.gate, writer)
+		mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
 		configureIdentity(t, writer)
 		mustRun(t, writer, "checkout", "feature/recover")
 		mustWrite(t, filepath.Join(writer, "other.txt"), "other\n")
@@ -499,7 +499,7 @@ func TestRecoverConcurrentGatePushLosesCleanly(t *testing.T) {
 	mustRun(t, f.local, "commit", "-m", "diverging rescope")
 	f.service.beforeGateReset = func() {
 		writer := filepath.Join(t.TempDir(), "racer")
-		mustRun(t, filepath.Dir(writer), "clone", f.gate, writer)
+		mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
 		configureIdentity(t, writer)
 		mustRun(t, writer, "checkout", "feature/recover")
 		mustWrite(t, filepath.Join(writer, "race.txt"), "race\n")
