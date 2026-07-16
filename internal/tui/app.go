@@ -243,7 +243,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case syncRefreshedMsg:
 		m.syncRefreshing = false
 		m.branchSync = &msg.state
-		m.syncConfirm = msg.state.Safety == "safe_fast_forward"
+		m.syncConfirm = branchsync.CanApply(msg.state)
 		if msg.state.Error != "" && !m.syncConfirm {
 			m.err = fmt.Errorf("branch sync: %s", msg.state.Error)
 		}

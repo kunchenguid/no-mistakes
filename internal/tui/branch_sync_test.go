@@ -15,9 +15,10 @@ func TestBranchSyncActionRefreshesBeforeConfirmationAndAppliesThroughSharedPath(
 	m := NewModel("socket", nil, run)
 	cached := branchsync.State{
 		State: branchsync.StateBehind, Relation: branchsync.RelationBehind, Safety: "refresh_required",
-		Local:    branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
-		Pipeline: branchsync.PipelineState{RunID: "run-1", PushedHead: strings.Repeat("b", 40)},
-		Target:   branchsync.TargetState{Kind: "fork", Remote: "fork", Ref: "refs/heads/feature"},
+		Local:      branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
+		Pipeline:   branchsync.PipelineState{RunID: "run-1", PushedHead: strings.Repeat("b", 40)},
+		Target:     branchsync.TargetState{Kind: "fork", Remote: "fork", Ref: "refs/heads/feature"},
+		NextAction: &branchsync.NextAction{Code: "sync", Command: "no-mistakes axi sync"},
 	}
 	m.branchSync = &cached
 	refreshCalls := 0
@@ -80,6 +81,53 @@ func TestLocalBranchStatusIsCompactAndOnlyOffersEligibleAction(t *testing.T) {
 	view = stripANSI(renderLocalBranchStatus(&state, false, 80))
 	if !strings.Contains(view, "diverged") || strings.Contains(view, "u sync branch") {
 		t.Fatalf("diverged view:\n%s", view)
+	}
+	state.NextAction = &branchsync.NextAction{Code: "sync", Command: "no-mistakes axi sync"}
+	view = stripANSI(renderLocalBranchStatus(&state, false, 80))
+	if !strings.Contains(view, "equivalent work") || !strings.Contains(view, "u sync branch") {
+		t.Fatalf("equivalent candidate view:\n%s", view)
+	}
+	state.Safety = branchsync.SafetySafeEquivalentAdvance
+	view = stripANSI(renderLocalBranchStatus(&state, false, 80))
+	if !strings.Contains(view, "represented in the live pipeline head") || strings.Contains(view, "No automatic reconciliation") {
+		t.Fatalf("equivalent live view:\n%s", view)
+	}
+}
+
+func TestBranchSyncActionRefreshesEquivalentDivergedBeforeConfirmation(t *testing.T) {
+	m := NewModel("socket", nil, &ipc.RunInfo{ID: "run-1", Branch: "feature", Status: types.RunRunning})
+	cached := branchsync.State{
+		State: branchsync.StateDiverged, Relation: branchsync.RelationDiverged, Safety: "refresh_required",
+		Local:      branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
+		Pipeline:   branchsync.PipelineState{RunID: "run-1", PushedHead: strings.Repeat("b", 40)},
+		Target:     branchsync.TargetState{Kind: "fork", Remote: "fork", Ref: "refs/heads/feature"},
+		NextAction: &branchsync.NextAction{Code: "sync", Command: "no-mistakes axi sync"},
+	}
+	m.branchSync = &cached
+	refreshCalls := 0
+	m.syncRefresh = func() branchsync.State {
+		refreshCalls++
+		fresh := cached
+		fresh.Safety = branchsync.SafetySafeEquivalentAdvance
+		fresh.Remote.Freshness = "live"
+		return fresh
+	}
+
+	nextModel, cmd := m.handleKey(keyMsg("u"))
+	m = nextModel.(Model)
+	if cmd == nil || !m.syncRefreshing || m.syncConfirm {
+		t.Fatalf("refresh was not scheduled: %#v", m)
+	}
+	next, _ := m.Update(cmd())
+	m = next.(Model)
+	if refreshCalls != 1 || !m.syncConfirm || m.branchSync.Safety != branchsync.SafetySafeEquivalentAdvance {
+		t.Fatalf("fresh equivalent confirmation state = %#v, refresh=%d", m.branchSync, refreshCalls)
+	}
+	plain := stripANSI(m.View())
+	for _, want := range []string{"equivalent live pipeline head", "anchored before the branch moves", "u/enter apply"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("confirmation missing %q:\n%s", want, plain)
+		}
 	}
 }
 

@@ -182,9 +182,12 @@ no-mistakes axi sync --recover --keep-local
 The default command is an explicit non-interactive apply request and never prompts.
 All modes return the complete `branch_sync` object as TOON.
 Exit code `0` means an eligible check, applied synchronization or recovery, already-synchronized or custody-returned no-op, or expected merged-and-removed no-op; blocked operational states return `1`.
-The only possible worktree mutation is a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA (or, under `--recover`, to the preserved pipeline head after relation-specific preservation checks).
+The ordinary worktree mutation is a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA.
+When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and advances to the pipeline head.
+Genuine divergence still reports `safety: blocked_diverged` and changes nothing.
+Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head after relation-specific preservation checks.
 Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
-Dirty, in-progress, ahead, diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
+Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
 Run `axi sync` only when structured output offers `next_action.code: sync`; process any blocked state instead of substituting reset, stash, merge, rebase, force, or branch replacement.
 
 ### Custody recovery

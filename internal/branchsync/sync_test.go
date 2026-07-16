@@ -82,6 +82,52 @@ func newSyncFixture(t *testing.T) *syncFixture {
 	return &syncFixture{t: t, ctx: ctx, db: database, repo: repo, run: run, service: &Service{DB: database, Repo: repo, WorkDir: local}, local: local, remote: remote, base: base, old: old, pushed: pushed}
 }
 
+type pipelineCommit struct {
+	message string
+	files   map[string]string
+}
+
+func newSplitLocalSyncFixture(t *testing.T) *syncFixture {
+	t.Helper()
+	f := newSyncFixture(t)
+	mustWrite(t, filepath.Join(f.local, "second.txt"), "second\n")
+	mustRun(t, f.local, "add", "second.txt")
+	mustRun(t, f.local, "commit", "-m", "second local")
+	f.old = mustRun(t, f.local, "rev-parse", "HEAD")
+	return f
+}
+
+func rebuildPipelineHead(t *testing.T, f *syncFixture, commits []pipelineCommit) {
+	t.Helper()
+	root := filepath.Dir(f.local)
+	pipeline := filepath.Join(root, "pipeline-rebuild")
+	mustRun(t, root, "clone", f.local, pipeline)
+	configureIdentity(t, pipeline)
+	mustRun(t, pipeline, "checkout", "-B", "feature/sync", f.base)
+	for _, commit := range commits {
+		for name, contents := range commit.files {
+			mustWrite(t, filepath.Join(pipeline, name), contents)
+			mustRun(t, pipeline, "add", name)
+		}
+		mustRun(t, pipeline, "commit", "-m", commit.message)
+	}
+	f.pushed = mustRun(t, pipeline, "rev-parse", "HEAD")
+	mustRun(t, pipeline, "push", "--force", f.remote, "HEAD:refs/heads/feature/sync")
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, f.pushed); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunPushBinding(f.run.ID, db.PushBinding{
+		HeadSHA: f.pushed, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/sync",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	f.run, err = f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTargetIdentityNeverPersistsOrDisplaysHTTPUserinfo(t *testing.T) {
 	credentialed := "https://token:secret@example.com/owner/repo.git"
 	plain := "https://example.com/owner/repo.git"
@@ -162,6 +208,88 @@ func TestApplyCleanStrictBehindFastForwardsExactBoundHead(t *testing.T) {
 	}
 	if parents := strings.Fields(mustRun(t, f.local, "show", "-s", "--format=%P", "HEAD")); len(parents) != 1 || parents[0] != f.old {
 		t.Fatalf("fast-forward created unexpected history: %v", parents)
+	}
+}
+
+func TestApplyEquivalentButDivergedRebaseWithPipelineCommitsAnchorsAndAdvances(t *testing.T) {
+	f := newSyncFixture(t)
+	rebuildPipelineHead(t, f, []pipelineCommit{
+		{message: "feature rebased", files: map[string]string{"file.txt": "feature\n"}},
+		{message: "pipeline doc", files: map[string]string{"doc.txt": "pipeline doc\n"}},
+	})
+
+	state := f.service.Apply(f.ctx)
+	if state.State != StateSynchronized || state.Relation != RelationEqual || state.Safety != "already_synchronized" || !state.Changed {
+		t.Fatalf("state = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.pushed {
+		t.Fatalf("HEAD = %s, want %s", got, f.pushed)
+	}
+	if got := mustRun(t, f.local, "rev-parse", syncAnchorRef(f.run.ID)); got != f.old {
+		t.Fatalf("pre-sync anchor = %s, want %s", got, f.old)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "doc.txt")); got != "pipeline doc\n" {
+		t.Fatalf("pipeline commit not applied: %q", got)
+	}
+}
+
+func TestEquivalentButDivergedClassification(t *testing.T) {
+	tests := []struct {
+		name      string
+		commits   []pipelineCommit
+		wantState string
+		wantSafe  string
+	}{
+		{
+			name: "reordered commits",
+			commits: []pipelineCommit{
+				{message: "second rebased first", files: map[string]string{"second.txt": "second\n"}},
+				{message: "first rebased second", files: map[string]string{"file.txt": "feature\n"}},
+				{message: "pipeline extra", files: map[string]string{"doc.txt": "pipeline doc\n"}},
+			},
+			wantState: StateDiverged,
+			wantSafe:  "safe_equivalent_advance",
+		},
+		{
+			name: "squashed vs split",
+			commits: []pipelineCommit{
+				{message: "feature squashed", files: map[string]string{"file.txt": "feature\n", "second.txt": "second\n"}},
+				{message: "pipeline extra", files: map[string]string{"doc.txt": "pipeline doc\n"}},
+			},
+			wantState: StateDiverged,
+			wantSafe:  "safe_equivalent_advance",
+		},
+		{
+			name: "conflicting rebase output",
+			commits: []pipelineCommit{
+				{message: "feature changed differently", files: map[string]string{"file.txt": "feature but different\n", "second.txt": "second\n"}},
+				{message: "pipeline extra", files: map[string]string{"doc.txt": "pipeline doc\n"}},
+			},
+			wantState: StateDiverged,
+			wantSafe:  "blocked_diverged",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSplitLocalSyncFixture(t)
+			rebuildPipelineHead(t, f, tc.commits)
+
+			state := f.service.Refresh(f.ctx)
+			if state.State != tc.wantState || state.Relation != RelationDiverged || state.Safety != tc.wantSafe || state.Changed {
+				t.Fatalf("state = %#v", state)
+			}
+		})
+	}
+}
+
+func TestApplyEmptyLocalUniquenessStillUsesStrictBehindFastForward(t *testing.T) {
+	f := newSyncFixture(t)
+	state := f.service.Apply(f.ctx)
+	if state.State != StateSynchronized || !state.Changed {
+		t.Fatalf("state = %#v", state)
+	}
+	if _, err := gitpkg.Run(f.ctx, f.local, "rev-parse", "--verify", "--quiet", syncAnchorRef(f.run.ID)); err == nil {
+		t.Fatal("strict behind fast-forward should not create an equivalent-divergence anchor")
 	}
 }
 

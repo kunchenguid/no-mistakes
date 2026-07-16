@@ -196,7 +196,7 @@ func (m Model) refreshSyncCmd() tea.Cmd {
 		started := time.Now()
 		state := refresh()
 		result := "refused"
-		if state.Safety == "safe_fast_forward" || state.State == branchsync.StateSynchronized || state.State == branchsync.StateMergedRemoteRemoved {
+		if branchsync.CanApply(state) || state.State == branchsync.StateSynchronized || state.State == branchsync.StateMergedRemoteRemoved {
 			result = "noop"
 		}
 		trackTUISyncAttempt("check", state, result, started)

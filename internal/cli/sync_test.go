@@ -18,7 +18,7 @@ import (
 )
 
 type cliSyncFixture struct {
-	local, remote, old, pushed string
+	local, remote, base, old, pushed, runID string
 }
 
 func newCLISyncFixture(t *testing.T) cliSyncFixture {
@@ -94,7 +94,49 @@ func newCLISyncFixture(t *testing.T) cliSyncFixture {
 		t.Fatal(err)
 	}
 	chdir(t, local)
-	return cliSyncFixture{local: local, remote: remote, old: old, pushed: pushed}
+	return cliSyncFixture{local: local, remote: remote, base: base, old: old, pushed: pushed, runID: run.ID}
+}
+
+func rewriteCLIPipelineHead(t *testing.T, f *cliSyncFixture, commits []pipelineCommitForCLI) {
+	t.Helper()
+	root := filepath.Dir(f.local)
+	pipeline := filepath.Join(root, "pipeline-rewrite")
+	cliGit(t, root, "clone", f.local, pipeline)
+	cliGit(t, pipeline, "config", "user.name", "Pipeline")
+	cliGit(t, pipeline, "config", "user.email", "pipeline@example.com")
+	cliGit(t, pipeline, "checkout", "-B", "feature/sync", f.base)
+	for _, commit := range commits {
+		for name, contents := range commit.files {
+			if err := os.WriteFile(filepath.Join(pipeline, name), []byte(contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cliGit(t, pipeline, "add", name)
+		}
+		cliGit(t, pipeline, "commit", "-m", commit.message)
+	}
+	f.pushed = cliGit(t, pipeline, "rev-parse", "HEAD")
+	cliGit(t, pipeline, "push", "--force", f.remote, "HEAD:refs/heads/feature/sync")
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.UpdateRunHeadSHA(f.runID, f.pushed); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPushBinding(f.runID, db.PushBinding{HeadSHA: f.pushed, TargetKind: "upstream", TargetFingerprint: branchsync.TargetFingerprint(f.remote), Ref: "refs/heads/feature/sync"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type pipelineCommitForCLI struct {
+	message string
+	files   map[string]string
 }
 
 func TestSyncHelpAndReferenceExposeGuardedModes(t *testing.T) {
@@ -146,6 +188,40 @@ func TestAxiSyncCheckAndApplyReturnFullStructuredState(t *testing.T) {
 	}
 	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.pushed {
 		t.Fatalf("HEAD = %s", got)
+	}
+}
+
+func TestAxiSyncEquivalentDivergedCheckAndApply(t *testing.T) {
+	f := newCLISyncFixture(t)
+	rewriteCLIPipelineHead(t, &f, []pipelineCommitForCLI{
+		{message: "feature rebased", files: map[string]string{"file.txt": "feature\n"}},
+		{message: "pipeline doc", files: map[string]string{"doc.txt": "pipeline doc\n"}},
+	})
+
+	out, err := executeCmd("axi", "sync", "--check")
+	if err != nil {
+		t.Fatalf("check: %v\n%s", err, out)
+	}
+	for _, want := range []string{"state: diverged", "safety: safe_equivalent_advance", "relation: diverged", "command: no-mistakes axi sync"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("check missing %q:\n%s", want, out)
+		}
+	}
+
+	out, err = executeCmd("axi", "sync")
+	if err != nil {
+		t.Fatalf("apply: %v\n%s", err, out)
+	}
+	for _, want := range []string{"state: synchronized", "changed: true", "relation: equal"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("apply missing %q:\n%s", want, out)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.pushed {
+		t.Fatalf("HEAD = %s, want %s", got, f.pushed)
+	}
+	if got := cliGit(t, f.local, "rev-parse", "refs/no-mistakes/sync-anchor/"+f.runID); got != f.old {
+		t.Fatalf("anchor = %s, want %s", got, f.old)
 	}
 }
 

@@ -126,7 +126,7 @@ func runHumanSync(cmd *cobra.Command, check, yes bool) error {
 		result = "noop"
 		return nil
 	}
-	if state.Safety != "safe_fast_forward" {
+	if !branchsync.CanApply(state) {
 		result = "refused"
 		return &exitError{code: 1}
 	}
@@ -136,7 +136,11 @@ func runHumanSync(cmd *cobra.Command, check, yes bool) error {
 			result = "refused"
 			return &exitError{code: 1}
 		}
-		fmt.Fprint(cmd.OutOrStdout(), "  Apply this exact strict fast-forward? [y/N] ")
+		if state.Safety == branchsync.SafetySafeEquivalentAdvance {
+			fmt.Fprint(cmd.OutOrStdout(), "  Apply this guarded synchronization? [y/N] ")
+		} else {
+			fmt.Fprint(cmd.OutOrStdout(), "  Apply this exact strict fast-forward? [y/N] ")
+		}
 		line, readErr := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
 		if readErr != nil && strings.TrimSpace(line) == "" {
 			return readErr
@@ -257,10 +261,18 @@ func humanSyncSummary(state branchsync.State) string {
 	case branchsync.StatePushInProgress:
 		return "pipeline branch update is in progress; synchronization is unavailable"
 	case branchsync.StateBehind:
-		if state.Safety == "safe_fast_forward" {
+		if state.Safety == branchsync.SafetySafeFastForward {
 			return "clean and strictly behind; exact safe fast-forward verified"
 		}
 		return "behind the pipeline-pushed head; refresh required"
+	case branchsync.StateDiverged:
+		if state.Safety == branchsync.SafetySafeEquivalentAdvance {
+			return "diverged, but local changes are represented in the pipeline head; guarded advance verified"
+		}
+		if state.NextAction != nil && state.NextAction.Code == "sync" {
+			return "diverged; refresh required to verify equivalent pipeline content"
+		}
+		return "diverged from the pipeline-pushed head; manual reconciliation required"
 	case branchsync.StateSynchronized:
 		return "already synchronized with the pipeline-pushed head"
 	case branchsync.StateMergedRemoteRemoved:
@@ -376,7 +388,7 @@ func syncStateSuccessful(state branchsync.State, check bool) bool {
 	if state.State == branchsync.StateCustodyReturned {
 		return true
 	}
-	return check && state.Safety == "safe_fast_forward"
+	return check && branchsync.CanApply(state)
 }
 
 func branchSyncField(state branchsync.State) toON.Field {

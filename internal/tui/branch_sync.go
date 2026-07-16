@@ -29,7 +29,7 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 		case branchsync.StatePushInProgress:
 			message = "Publishing the pipeline head; synchronization is unavailable."
 		case branchsync.StateBehind:
-			if state.Safety == "safe_fast_forward" {
+			if state.Safety == branchsync.SafetySafeFastForward {
 				message = "Local branch is strictly behind the exact live pipeline-pushed head."
 			} else {
 				message = "Local branch is behind the pipeline-pushed head. Safe fast-forward available after refresh."
@@ -38,7 +38,14 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 		case branchsync.StateDirty:
 			message = "Local branch is behind, but the worktree has uncommitted or in-progress changes."
 		case branchsync.StateDiverged:
-			message = "Local branch and pipeline-pushed head have diverged. No automatic reconciliation is allowed."
+			if state.Safety == branchsync.SafetySafeEquivalentAdvance {
+				message = "Local branch diverged, but its changes are represented in the live pipeline head. Sync will preserve the old head before advancing."
+			} else if state.NextAction != nil && state.NextAction.Code == "sync" {
+				message = "Local branch diverged, but the pipeline head may contain equivalent work. Refresh to verify before syncing."
+				footer = "u sync branch"
+			} else {
+				message = "Local branch and pipeline-pushed head have diverged. No automatic reconciliation is allowed."
+			}
 		case branchsync.StateLocalAhead:
 			message = "Local branch contains the pushed head plus new commits. Start a fresh pipeline run."
 		case branchsync.StateMergedRemoteRetained:
@@ -116,12 +123,21 @@ func renderSyncConfirmation(state branchsync.State, width int) string {
 		width = 80
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Only this clean checked-out branch can advance by a strict fast-forward.\n\n")
+	if state.Safety == branchsync.SafetySafeEquivalentAdvance {
+		fmt.Fprintf(&b, "Only this clean checked-out branch can advance to an equivalent live pipeline head.\n")
+		fmt.Fprintf(&b, "The current local head is anchored before the branch moves.\n\n")
+	} else {
+		fmt.Fprintf(&b, "Only this clean checked-out branch can advance by a strict fast-forward.\n\n")
+	}
 	fmt.Fprintf(&b, "Local branch: %s\n", state.Local.Branch)
 	fmt.Fprintf(&b, "Local HEAD:   %s\n", state.Local.Head)
 	fmt.Fprintf(&b, "Target HEAD:  %s\n", state.Pipeline.PushedHead)
 	fmt.Fprintf(&b, "Target:       %s %s (%s)\n", state.Target.Remote, state.Target.Ref, state.Target.Kind)
 	fmt.Fprintf(&b, "Worktree:     clean\n\n")
-	b.WriteString("No reset, stash, merge commit, rebase, force push, branch switch, or remote update can occur.")
+	if state.Safety == branchsync.SafetySafeEquivalentAdvance {
+		b.WriteString("No stash, merge commit, rebase, force push, branch switch, or remote update can occur.")
+	} else {
+		b.WriteString("No reset, stash, merge commit, rebase, force push, branch switch, or remote update can occur.")
+	}
 	return renderBoxWithFooter("Confirm local branch sync", b.String(), width, "u/enter apply  ·  esc cancel")
 }

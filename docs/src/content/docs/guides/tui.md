@@ -137,10 +137,10 @@ The ready signal is persisted, so a fresh attach shows `Checks passed` without d
 
 When the pipeline creates a fix commit in its isolated worktree, one compact `Local branch` box explains whether the invoking branch is unchanged, behind, dirty, diverged, synchronized, or retired after PR merge or close.
 Passive TUI rendering uses cached pipeline push provenance and never fetches or mutates the checkout.
-When a clean strict-behind relation is eligible, the box alone offers `u sync branch`.
+When a clean strict-behind relation is eligible, or a diverged relation may be equivalent after refresh, the box alone offers `u sync branch`.
 Pressing `u` explicitly refreshes the configured upstream or fork target, then opens a confirmation with both full SHAs, the exact target ref, and the clean-worktree proof.
 Confirm with `u` or Enter, or cancel with Escape.
-The apply path rechecks every mutable assumption and can only perform the same exact strict fast-forward as `no-mistakes sync`; blocked states never trigger destructive Git recovery.
+The apply path rechecks every mutable assumption and can only perform the same exact strict fast-forward or anchored equivalent-diverged advance as `no-mistakes sync`; blocked states never trigger destructive Git recovery.
 When the owning run ended without publishing its pipeline commits, the same box offers `u recover custody` instead: `u` opens a confirmation naming the terminal status, the local head, and the preserved head, and applying routes through the guarded recovery documented in [`no-mistakes axi sync`](/no-mistakes/reference/cli/#no-mistakes-axi-sync).
 
 ### Footer

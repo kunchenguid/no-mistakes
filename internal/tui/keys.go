@@ -253,7 +253,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.recoverConfirm = true
 			return m, nil
 		}
-		if m.syncRefresh == nil || m.branchSync.State != "behind" {
+		if m.syncRefresh == nil || m.branchSync.NextAction == nil || m.branchSync.NextAction.Code != "sync" {
 			return m, nil
 		}
 		m.syncRefreshing = true

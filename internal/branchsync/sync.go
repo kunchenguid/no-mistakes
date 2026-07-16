@@ -49,6 +49,11 @@ const (
 	RelationUnknown  = "unknown"
 )
 
+const (
+	SafetySafeFastForward       = "safe_fast_forward"
+	SafetySafeEquivalentAdvance = "safe_equivalent_advance"
+)
+
 // State is the shared branch synchronization contract rendered by CLI, AXI,
 // and TUI presenters. Cached inspection never contacts a remote.
 type State struct {
@@ -102,6 +107,13 @@ type RemoteState struct {
 type NextAction struct {
 	Code    string
 	Command string
+}
+
+// CanApply reports whether Apply may advance the clean checked-out branch for
+// a freshly verified plan. It includes strict fast-forwards and the narrower
+// equivalent-diverged advance that first anchors the pre-sync head.
+func CanApply(state State) bool {
+	return state.Safety == SafetySafeFastForward || state.Safety == SafetySafeEquivalentAdvance
 }
 
 // Service synchronizes only the invoking worktree. Repo is the registered
@@ -290,19 +302,21 @@ func (s *Service) Refresh(ctx context.Context) State {
 		return state
 	}
 
-	s.classifyRelation(ctx, &state, bound, true)
+	s.classifyRelation(ctx, &state, bound, run.BaseSHA, true)
 	return state
 }
 
-// Apply repeats remote and mutable-precondition checks, then performs one
-// strict fast-forward to the exact pipeline-bound SHA.
+// Apply repeats remote and mutable-precondition checks, then advances the clean
+// checked-out branch to the exact pipeline-bound SHA. Ordinary behind branches
+// use a strict fast-forward. Equivalent-diverged branches first anchor the
+// pre-sync head, then move to the verified equivalent pipeline head.
 func (s *Service) Apply(ctx context.Context) State {
 	plan := s.Refresh(ctx)
 	if plan.State == StateSynchronized || plan.State == StateMergedRemoteRemoved {
 		plan.Changed = false
 		return plan
 	}
-	if plan.Safety != "safe_fast_forward" {
+	if !CanApply(plan) {
 		return plan
 	}
 	if s.beforeApply != nil {
@@ -338,21 +352,38 @@ func (s *Service) Apply(ctx context.Context) State {
 		finalPrecondition.Local.Branch != plan.Local.Branch || finalPrecondition.Local.Head != plan.Local.Head || !finalPrecondition.Local.Clean {
 		return blockedPlan(finalPrecondition, StateAmbiguousContext, "blocked_assumptions_changed", "the push binding, branch, HEAD, or worktree changed immediately before synchronization; no files or refs were changed")
 	}
-	if !isAncestor(ctx, s.workDir(), plan.Local.Head, plan.Pipeline.PushedHead) || plan.Local.Head == plan.Pipeline.PushedHead {
+	equivalentAdvance := plan.Safety == SafetySafeEquivalentAdvance
+	if equivalentAdvance {
+		if !equivalentDivergence(ctx, s.workDir(), plan.Local.Head, plan.Pipeline.PushedHead, finalRun.BaseSHA) {
+			return blockedPlan(plan, StateDiverged, "blocked_diverged", "the equivalent-diverged proof changed before synchronization; no files or refs were changed")
+		}
+	} else if !isAncestor(ctx, s.workDir(), plan.Local.Head, plan.Pipeline.PushedHead) || plan.Local.Head == plan.Pipeline.PushedHead {
 		return blockedPlan(plan, StateAmbiguousContext, "blocked_assumptions_changed", "the strict fast-forward assumptions changed before synchronization; no files or refs were changed")
 	}
 
-	_, mergeErr := git.Run(ctx, s.workDir(), "merge", "--ff-only", "--no-edit", plan.Pipeline.PushedHead)
+	var applyErr error
+	if equivalentAdvance {
+		anchorRef := syncAnchorRef(plan.Pipeline.RunID)
+		if _, err := git.Run(ctx, s.workDir(), "update-ref", anchorRef, plan.Local.Head); err != nil {
+			return blockedPlan(plan, StateAmbiguousContext, "blocked_preserve_failed", "the pre-sync local head could not be anchored; no files or refs were changed")
+		}
+		if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", anchorRef+"^{commit}"); err != nil || anchored != plan.Local.Head {
+			return blockedPlan(plan, StateAmbiguousContext, "blocked_preserve_failed", "the pre-sync local head could not be verified after anchoring; no files or worktree refs were changed")
+		}
+		_, applyErr = git.Run(ctx, s.workDir(), "reset", "--hard", plan.Pipeline.PushedHead)
+	} else {
+		_, applyErr = git.Run(ctx, s.workDir(), "merge", "--ff-only", "--no-edit", plan.Pipeline.PushedHead)
+	}
 	finalHead, _ := git.HeadSHA(ctx, s.workDir())
 	finalClean, finalReason := worktreeClean(ctx, s.workDir())
 	plan.Local.Head = finalHead
 	plan.Local.Clean = finalClean
 	plan.Local.Reason = finalReason
 	plan.Changed = finalHead == plan.Pipeline.PushedHead && finalHead != recheck.Local.Head
-	if mergeErr != nil || finalHead != plan.Pipeline.PushedHead {
+	if applyErr != nil || finalHead != plan.Pipeline.PushedHead {
 		plan.State = StateAmbiguousContext
 		plan.Safety = "blocked_apply_failed"
-		plan.Error = fmt.Sprintf("strict fast-forward failed; final HEAD is %s and no destructive recovery was attempted", finalHead)
+		plan.Error = fmt.Sprintf("synchronization failed; final HEAD is %s and no destructive recovery was attempted", finalHead)
 		return plan
 	}
 	if !finalClean {
@@ -731,11 +762,11 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		return state, run, false
 	}
 
-	s.classifyRelation(ctx, &state, ptr(run.LastPushedSHA), false)
+	s.classifyRelation(ctx, &state, ptr(run.LastPushedSHA), run.BaseSHA, false)
 	return state, run, true
 }
 
-func (s *Service) classifyRelation(ctx context.Context, state *State, pushed string, live bool) {
+func (s *Service) classifyRelation(ctx context.Context, state *State, pushed, base string, live bool) {
 	if state.Local.Head == pushed {
 		state.State = StateSynchronized
 		state.Relation = RelationEqual
@@ -755,6 +786,18 @@ func (s *Service) classifyRelation(ctx context.Context, state *State, pushed str
 			state.NextAction = &NextAction{Code: "run_pipeline", Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
 			return
 		default:
+			if equivalentDivergence(ctx, s.workDir(), state.Local.Head, pushed, base) {
+				state.State = StateDiverged
+				state.Relation = RelationDiverged
+				if live {
+					state.Safety = SafetySafeEquivalentAdvance
+				} else {
+					state.Safety = "refresh_required"
+				}
+				state.NextAction = &NextAction{Code: "sync", Command: "no-mistakes axi sync"}
+				state.Error = ""
+				return
+			}
 			state.State = StateDiverged
 			state.Relation = RelationDiverged
 			state.Safety = "blocked_diverged"
@@ -774,11 +817,93 @@ func (s *Service) classifyRelation(ctx context.Context, state *State, pushed str
 		return
 	}
 	if live {
-		state.Safety = "safe_fast_forward"
+		state.Safety = SafetySafeFastForward
 	} else {
 		state.Safety = "refresh_required"
 	}
 	state.NextAction = &NextAction{Code: "sync", Command: "no-mistakes axi sync"}
+}
+
+func syncAnchorRef(runID string) string {
+	return "refs/no-mistakes/sync-anchor/" + runID
+}
+
+func equivalentDivergence(ctx context.Context, dir, local, pushed, base string) bool {
+	if local == "" || pushed == "" || local == pushed {
+		return false
+	}
+	base = usableEquivalenceBase(ctx, dir, local, pushed, base)
+	if base == "" {
+		return false
+	}
+	localOnly, err := revList(ctx, dir, append([]string{"rev-list", "--right-only", pushed + "..." + local}, "^"+base)...)
+	if err != nil || len(localOnly) == 0 {
+		return err == nil && len(localOnly) == 0
+	}
+	unmatched, err := revList(ctx, dir, append([]string{"rev-list", "--cherry-pick", "--right-only", pushed + "..." + local}, "^"+base)...)
+	if err == nil && len(unmatched) == 0 {
+		return true
+	}
+
+	target, ok := normalizedDiffID(ctx, dir, base, local)
+	if !ok {
+		return false
+	}
+	remoteOnly, err := revList(ctx, dir, "rev-list", "--reverse", pushed, "^"+base)
+	if err != nil || len(remoteOnly) == 0 || len(remoteOnly) > 200 {
+		return false
+	}
+	for startIdx, startCommit := range remoteOnly {
+		start := startCommit + "^"
+		if startIdx == 0 {
+			start = base
+		}
+		for _, end := range remoteOnly[startIdx:] {
+			if id, ok := normalizedDiffID(ctx, dir, start, end); ok && id == target {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func usableEquivalenceBase(ctx context.Context, dir, local, pushed, base string) string {
+	if base != "" && !git.IsZeroSHA(base) && objectExists(ctx, dir, base) {
+		return base
+	}
+	mergeBase, err := git.Run(ctx, dir, "merge-base", local, pushed)
+	if err != nil {
+		return ""
+	}
+	return mergeBase
+}
+
+func revList(ctx context.Context, dir string, args ...string) ([]string, error) {
+	out, err := git.Run(ctx, dir, args...)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil, nil
+	}
+	return strings.Fields(out), nil
+}
+
+func normalizedDiffID(ctx context.Context, dir, from, to string) (string, bool) {
+	out, err := git.Run(ctx, dir, "diff", "--no-ext-diff", "--no-color", "--full-index", from, to)
+	if err != nil {
+		return "", false
+	}
+	var b strings.Builder
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "index ") {
+			continue
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:]), true
 }
 
 func (s *Service) remoteName(ctx context.Context) string {
