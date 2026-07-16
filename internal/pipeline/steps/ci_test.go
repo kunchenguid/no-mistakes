@@ -443,6 +443,122 @@ func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
 	}
 }
 
+func TestCIStep_CIWarningClearsPersistedReadiness(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksSequence := []string{
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
+		`not-json`,
+	}
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	waits := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			waits++
+			if waits == 1 {
+				dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if dbRun.CIReadyAt == nil {
+					t.Fatal("expected passing checks to persist CI readiness")
+				}
+				return nil
+			}
+			cancel()
+			return ctx.Err()
+		},
+	}
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected open PR monitoring to continue, got %v", err)
+	}
+
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt != nil {
+		t.Fatalf("expected CI warning to clear readiness, got %v", *dbRun.CIReadyAt)
+	}
+}
+
+func TestCIStep_UncertainProviderStateClearsPersistedReadiness(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		env  func(t *testing.T) []string
+	}{
+		{
+			name: "pr_state_error",
+			env: func(t *testing.T) []string {
+				return fakeCIGHStateError(t, "provider unavailable", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
+			},
+		},
+		{
+			name: "mergeability_unknown",
+			env: func(t *testing.T) []string {
+				return fakeCIGHMergeable(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`, "UNKNOWN")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+
+			prURL := "https://github.com/test/repo/pull/42"
+			ag := &mockAgent{name: "test"}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = tt.env(t)
+			sctx.Run.PRURL = &prURL
+			sctx.Config.CITimeout = 10 * time.Second
+			if err := sctx.DB.SetRunCIReady(sctx.Run.ID, true); err != nil {
+				t.Fatal(err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			sctx.Ctx = ctx
+
+			step := &CIStep{
+				waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+					cancel()
+					return ctx.Err()
+				},
+			}
+			_, err := step.Execute(sctx)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("expected open PR monitoring to continue, got %v", err)
+			}
+
+			dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if dbRun.CIReadyAt != nil {
+				t.Fatalf("expected provider uncertainty to clear readiness, got %v", *dbRun.CIReadyAt)
+			}
+		})
+	}
+}
+
 func TestCIStep_OpenPRKeepsMonitoringAfterChecksPass(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

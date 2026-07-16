@@ -293,6 +293,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		ciFixLimit := sctx.Config.AutoFix.CI
 		checks, err := host.GetChecks(ctx, pr)
 		if err != nil {
+			clearCIMonitorReady(sctx)
 			lastMonitorLog = ""
 			sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
 		} else {
@@ -383,6 +384,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				s.lastFixedCompletedAt = nil
 				switch {
 				case !prStateKnown || !mergeabilityKnown:
+					clearCIMonitorReady(sctx)
 					lastMonitorLog = ""
 				case pending:
 					// Checks are (re-)running with no failures yet. Surface this
@@ -390,6 +392,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					// previous passed-checks signal instead of looking stale.
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
 				case len(checks) == 0 && elapsed < s.gracePeriod():
+					clearCIMonitorReady(sctx)
 					// CI checks may not be registered yet, keep polling.
 					lastMonitorLog = ""
 					sctx.Log("no CI checks reported yet, waiting for checks to register...")
@@ -438,4 +441,10 @@ func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) st
 		sctx.Log(message)
 	}
 	return message
+}
+
+func clearCIMonitorReady(sctx *pipeline.StepContext) {
+	if err := sctx.DB.SetRunCIReady(sctx.Run.ID, false); err != nil {
+		sctx.Log(fmt.Sprintf("warning: could not clear CI readiness: %v", err))
+	}
 }
