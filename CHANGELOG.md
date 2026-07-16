@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.38.0](https://github.com/kunchenguid/no-mistakes/compare/v1.37.1...v1.38.0) (2026-07-16)
+
+
+### Features
+
+* **branchsync:** add guarded local branch synchronization ([#496](https://github.com/kunchenguid/no-mistakes/issues/496)) ([e9b4c14](https://github.com/kunchenguid/no-mistakes/commit/e9b4c14dfd6b444049e1d594b26e40124c4973a3))
+
 ## [1.37.1](https://github.com/kunchenguid/no-mistakes/compare/v1.37.0...v1.37.1) (2026-07-16)
 
 
