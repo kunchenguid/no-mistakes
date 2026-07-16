@@ -382,6 +382,7 @@ func cleanReviewScenario(t *testing.T) string {
       summary: "no issues found"
       risk_level: low
       risk_rationale: "agent edit is deterministic"
+      risk_scope: source-or-external
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
@@ -440,9 +441,11 @@ func cleanReviewScenario(t *testing.T) string {
           line: 1
           description: "looks good"
           action: no-op
+          review_scope: source
       summary: "no blocking issues"
       risk_level: low
       risk_rationale: "informational finding only"
+      risk_scope: source-or-external
       tested:
         - "fakeagent: simulated review"
       testing_summary: "not run during review"
@@ -456,9 +459,11 @@ func cleanReviewScenario(t *testing.T) string {
           line: 1
           description: "looks good"
           action: no-op
+          review_scope: source
       summary: "no blocking issues"
       risk_level: low
       risk_rationale: "informational finding only"
+      risk_scope: source-or-external
       tested:
         - "fakeagent: simulated review"
       testing_summary: "not run during review"
