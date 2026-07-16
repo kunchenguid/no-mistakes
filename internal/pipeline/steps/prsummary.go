@@ -19,7 +19,6 @@ import (
 const (
 	maxEmbeddedArtifactBytes       = 16 * 1024
 	maxEmbeddedArtifactsTotalBytes = 32 * 1024
-	noMistakesPRSignature          = "Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)"
 )
 
 type testingArtifactRenderState struct {
@@ -34,44 +33,6 @@ type testingSummaryOptions struct {
 	summaryParagraph     bool
 	omitOutcome          bool
 	repoRoot             string
-}
-
-// BuildPipelineSummary produces a deterministic markdown section from step results and rounds.
-func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound) (string, string) {
-	if len(steps) == 0 {
-		return "", ""
-	}
-
-	var detailBlocks []string
-
-	for _, sr := range steps {
-		if shouldOmitPipelineStep(sr) {
-			continue
-		}
-		stepRounds := rounds[sr.ID]
-		line, detail := buildStepEntry(sr, stepRounds)
-		if line != "" && detail != "" {
-			detailBlocks = append(detailBlocks, detail)
-		}
-	}
-
-	if len(detailBlocks) == 0 {
-		return "", ""
-	}
-
-	var b strings.Builder
-	b.WriteString("## Pipeline\n\n")
-	b.WriteString(noMistakesPRSignature)
-	b.WriteString("\n\n")
-	for i, detail := range detailBlocks {
-		if i > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString(detail)
-	}
-
-	riskLine := extractRiskLine(steps, rounds)
-	return b.String(), riskLine
 }
 
 // BuildTestingSummary extracts a deterministic Testing section from the test step.
@@ -95,7 +56,7 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 		}
 
 		stepRounds := rounds[sr.ID]
-		line, _ := buildStepEntry(sr, stepRounds)
+		line := buildStepStatusLine(sr, stepRounds)
 		if line == "" {
 			return ""
 		}
@@ -793,116 +754,9 @@ func formatTestingDuration(ms int64) string {
 	return d.Round(time.Second).String()
 }
 
-func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, detailBlock string) {
-	name := stepDisplayName(sr.StepName)
-	buildDetail := func(line string) (string, string) {
-		return line, buildStepDetails(line, sr, rounds)
-	}
-
-	switch sr.Status {
-	case types.StepStatusPending:
-		return buildDetail(fmt.Sprintf("⏳ **%s** - pending", name))
-	case types.StepStatusRunning:
-		return buildDetail(fmt.Sprintf("⏳ **%s** - running", name))
-	case types.StepStatusAwaitingApproval:
-		return buildDetail(fmt.Sprintf("⏸️ **%s** - awaiting approval", name))
-	case types.StepStatusFixing:
-		return buildDetail(fmt.Sprintf("🔄 **%s** - auto-fixing", name))
-	case types.StepStatusFixReview:
-		return buildDetail(fmt.Sprintf("⏸️ **%s** - review fix", name))
-	case types.StepStatusFailed:
-		return buildDetail(fmt.Sprintf("❌ **%s** - failed", name))
-	}
-
-	if sr.Status == types.StepStatusSkipped {
-		return buildDetail(fmt.Sprintf("⏭️ **%s** - skipped", name))
-	}
-
-	// Parse the final findings on the step result (last state).
-	var finalFindings *types.Findings
-	finalFindingsParsed := sr.FindingsJSON == nil
-	if sr.FindingsJSON != nil {
-		if f, err := types.ParseFindingsJSON(*sr.FindingsJSON); err == nil {
-			finalFindings = &f
-			finalFindingsParsed = true
-		}
-	}
-
-	// Parse initial round findings (round 1) for the full story.
-	var initialFindings *types.Findings
-	if len(rounds) > 0 && rounds[0].FindingsJSON != nil {
-		if f, err := types.ParseFindingsJSON(*rounds[0].FindingsJSON); err == nil {
-			initialFindings = &f
-		}
-	}
-
-	// Parse latest round findings for risk fallback when final state is cleared.
-	var latestRoundFindings *types.Findings
-	if len(rounds) > 0 {
-		last := rounds[len(rounds)-1]
-		if last.FindingsJSON != nil {
-			if f, err := types.ParseFindingsJSON(*last.FindingsJSON); err == nil {
-				latestRoundFindings = &f
-			}
-		}
-	}
-
-	hadFindings := initialFindings != nil && len(initialFindings.Items) > 0
-	hasFinalFindings := finalFindings != nil && len(finalFindings.Items) > 0
-	hasAnyRoundFindings := roundsHaveFindings(rounds)
-	hasRoundParseFailure := roundsHaveParseFailure(rounds)
-	hadAnyFindings := hadFindings || hasFinalFindings || hasAnyRoundFindings
-	hasUnreadableFinalFindings := sr.FindingsJSON != nil && !finalFindingsParsed
-	wasFixed := hadFindings && len(rounds) > 1 && !hasUnreadableFinalFindings && !hasFinalFindings
-	riskLevel := ""
-	if sr.StepName == types.StepReview {
-		src := finalFindings
-		if src == nil && !hasUnreadableFinalFindings {
-			src = latestRoundFindings
-		}
-		if src != nil {
-			riskLevel = src.RiskLevel
-		}
-	}
-
-	// Unreadable final findings - can't make claims about the outcome.
-	if hasUnreadableFinalFindings {
-		return buildDetail(fmt.Sprintf("⚠️ **%s** - findings unavailable", name))
-	}
-
-	if sr.StepName == types.StepReview && (riskLevel == "medium" || riskLevel == "high") && !hadAnyFindings {
-		return buildDetail(fmt.Sprintf("%s **%s** - %s risk", riskEmoji(riskLevel), name, riskLevel))
-	}
-
-	if !hadAnyFindings && !hasRoundParseFailure {
-		if len(rounds) == 0 {
-			return buildDetail(fmt.Sprintf("⚠️ **%s** - findings unavailable", name))
-		}
-		return buildDetail(fmt.Sprintf("✅ **%s** - passed", name))
-	}
-
-	if hasRoundParseFailure && !hadAnyFindings {
-		return buildDetail(fmt.Sprintf("⚠️ **%s** - findings unavailable", name))
-	}
-
-	if wasFixed {
-		result := buildFixResultText(rounds)
-		line := fmt.Sprintf("🔧 **%s** - %s ✅", name, result)
-		return buildDetail(line)
-	}
-
-	currentFindings := initialFindings
-	if hasFinalFindings {
-		currentFindings = finalFindings
-	}
-
-	// Had findings and the final state still contains them - approved as-is.
-	count := countFindingsBySeverity(currentFindings)
-	line := fmt.Sprintf("⚠️ **%s** - %s", name, count)
-	return buildDetail(line)
-}
-
-func extractRiskLine(steps []*db.StepResult, rounds map[string][]*db.StepRound) string {
+// BuildRiskLine extracts the deterministic Risk Assessment line from the
+// review step's findings.
+func BuildRiskLine(steps []*db.StepResult, rounds map[string][]*db.StepRound) string {
 	for _, sr := range steps {
 		if sr.StepName != types.StepReview {
 			continue
@@ -963,6 +817,88 @@ func riskEmoji(level string) string {
 	default:
 		return "ℹ️"
 	}
+}
+
+// buildStepStatusLine renders the one-line status for a step (e.g. "✅
+// **Test** - passed") used as the fallback Testing section body when no
+// richer testing evidence was recorded.
+func buildStepStatusLine(sr *db.StepResult, rounds []*db.StepRound) string {
+	name := stepDisplayName(sr.StepName)
+
+	switch sr.Status {
+	case types.StepStatusPending:
+		return fmt.Sprintf("⏳ **%s** - pending", name)
+	case types.StepStatusRunning:
+		return fmt.Sprintf("⏳ **%s** - running", name)
+	case types.StepStatusAwaitingApproval:
+		return fmt.Sprintf("⏸️ **%s** - awaiting approval", name)
+	case types.StepStatusFixing:
+		return fmt.Sprintf("🔄 **%s** - auto-fixing", name)
+	case types.StepStatusFixReview:
+		return fmt.Sprintf("⏸️ **%s** - review fix", name)
+	case types.StepStatusFailed:
+		return fmt.Sprintf("❌ **%s** - failed", name)
+	}
+
+	if sr.Status == types.StepStatusSkipped {
+		return fmt.Sprintf("⏭️ **%s** - skipped", name)
+	}
+
+	// Parse the final findings on the step result (last state).
+	var finalFindings *types.Findings
+	finalFindingsParsed := sr.FindingsJSON == nil
+	if sr.FindingsJSON != nil {
+		if f, err := types.ParseFindingsJSON(*sr.FindingsJSON); err == nil {
+			finalFindings = &f
+			finalFindingsParsed = true
+		}
+	}
+
+	// Parse initial round findings (round 1) for the full story.
+	var initialFindings *types.Findings
+	if len(rounds) > 0 && rounds[0].FindingsJSON != nil {
+		if f, err := types.ParseFindingsJSON(*rounds[0].FindingsJSON); err == nil {
+			initialFindings = &f
+		}
+	}
+
+	hadFindings := initialFindings != nil && len(initialFindings.Items) > 0
+	hasFinalFindings := finalFindings != nil && len(finalFindings.Items) > 0
+	hasAnyRoundFindings := roundsHaveFindings(rounds)
+	hasRoundParseFailure := roundsHaveParseFailure(rounds)
+	hadAnyFindings := hadFindings || hasFinalFindings || hasAnyRoundFindings
+	hasUnreadableFinalFindings := sr.FindingsJSON != nil && !finalFindingsParsed
+	wasFixed := hadFindings && len(rounds) > 1 && !hasUnreadableFinalFindings && !hasFinalFindings
+
+	// Unreadable final findings - can't make claims about the outcome.
+	if hasUnreadableFinalFindings {
+		return fmt.Sprintf("⚠️ **%s** - findings unavailable", name)
+	}
+
+	if !hadAnyFindings && !hasRoundParseFailure {
+		if len(rounds) == 0 {
+			return fmt.Sprintf("⚠️ **%s** - findings unavailable", name)
+		}
+		return fmt.Sprintf("✅ **%s** - passed", name)
+	}
+
+	if hasRoundParseFailure && !hadAnyFindings {
+		return fmt.Sprintf("⚠️ **%s** - findings unavailable", name)
+	}
+
+	if wasFixed {
+		result := buildFixResultText(rounds)
+		return fmt.Sprintf("🔧 **%s** - %s ✅", name, result)
+	}
+
+	currentFindings := initialFindings
+	if hasFinalFindings {
+		currentFindings = finalFindings
+	}
+
+	// Had findings and the final state still contains them - approved as-is.
+	count := countFindingsBySeverity(currentFindings)
+	return fmt.Sprintf("⚠️ **%s** - %s", name, count)
 }
 
 func roundsHaveFindings(rounds []*db.StepRound) bool {
@@ -1028,158 +964,6 @@ func buildFixResultText(rounds []*db.StepRound) string {
 	return strings.Join(parts, " → ")
 }
 
-// buildStepDetails renders the collapsible body for a step as an
-// issue -> fix -> outcome narrative rather than a round-by-round log. Each
-// round is shown as the review state observed at its end; a fix round is
-// prefixed with the fix the agent applied (its commit summary) so a reader can
-// see what was wrong and what was done about it without mentally replaying
-// "rounds".
-func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound) string {
-	var b strings.Builder
-	b.WriteString("<details>\n")
-	b.WriteString(fmt.Sprintf("<summary>%s</summary>\n\n", summaryLine))
-
-	if len(rounds) == 0 {
-		writeStepStatusDetail(&b, sr)
-		b.WriteString("</details>\n")
-		return b.String()
-	}
-
-	// True only when the step recorded final findings but no round captured
-	// them - a data gap we must not paper over as "no issues found".
-	missingRoundFindingsData := sr.FindingsJSON != nil && !roundsHaveFindings(rounds) && !roundsHaveParseFailure(rounds)
-
-	for _, r := range rounds {
-		isFixRound := r.IsFixRound()
-		if isFixRound {
-			b.WriteString(fixRoundLine(r))
-			b.WriteString("\n")
-		}
-
-		if r.FindingsJSON == nil {
-			switch {
-			case missingRoundFindingsData:
-				b.WriteString("findings not recorded\n\n")
-			case isFixRound:
-				b.WriteString("✅ Re-checked - no issues remain.\n\n")
-			default:
-				b.WriteString("✅ No issues found.\n\n")
-			}
-			continue
-		}
-
-		findings, err := types.ParseFindingsJSON(*r.FindingsJSON)
-		if err != nil {
-			b.WriteString("failed to parse findings\n\n")
-			continue
-		}
-
-		if len(findings.Items) == 0 {
-			if isFixRound {
-				b.WriteString("✅ Re-checked - no issues remain.\n")
-			} else {
-				b.WriteString("✅ No issues found.\n")
-			}
-			writeTestedDetails(&b, sr, &findings)
-			b.WriteString("\n")
-			continue
-		}
-
-		// A fix round that still has findings means the fix did not fully
-		// land; label what remained so the chain reads as fix -> still open.
-		if isFixRound {
-			b.WriteString(fmt.Sprintf("%s still open:\n", countFindingsBySeverity(&findings)))
-		}
-		writeFindingItems(&b, sr, &findings)
-		b.WriteString("\n")
-	}
-
-	b.WriteString("</details>\n")
-	return b.String()
-}
-
-// fixRoundLine renders the one-line summary of the fix the agent applied in a
-// fix round, falling back to a generic note when no summary was captured.
-func fixRoundLine(r *db.StepRound) string {
-	summary := ""
-	if r.FixSummary != nil {
-		summary = strings.TrimSpace(*r.FixSummary)
-	}
-	if summary == "" {
-		return "🔧 Fix applied."
-	}
-	return fmt.Sprintf("🔧 Fix: %s", html.EscapeString(summary))
-}
-
-// writeFindingItems renders each finding as a `file:line - description` bullet,
-// followed by any test command details for the test step.
-func writeFindingItems(b *strings.Builder, sr *db.StepResult, findings *types.Findings) {
-	for _, f := range findings.Items {
-		emoji := severityEmoji(f.Severity)
-		loc := ""
-		if f.File != "" {
-			loc = fmt.Sprintf("`%s", html.EscapeString(f.File))
-			if f.Line > 0 {
-				loc += fmt.Sprintf(":%d", f.Line)
-			}
-			loc += "` - "
-		}
-		b.WriteString(fmt.Sprintf("- %s %s%s\n", emoji, loc, html.EscapeString(f.Description)))
-	}
-	writeTestedDetails(b, sr, findings)
-}
-
-// writeTestedDetails lists the commands the test step exercised. It is a no-op
-// for non-test steps.
-func writeTestedDetails(b *strings.Builder, sr *db.StepResult, findings *types.Findings) {
-	if sr.StepName != types.StepTest {
-		return
-	}
-	for _, detail := range findings.Tested {
-		rendered := renderTestedDetail(detail)
-		if rendered == "" {
-			continue
-		}
-		b.WriteString(fmt.Sprintf("- %s\n", rendered))
-	}
-}
-
-func writeStepStatusDetail(b *strings.Builder, sr *db.StepResult) {
-	switch sr.Status {
-	case types.StepStatusPending:
-		b.WriteString("Step has not started yet.\n\n")
-	case types.StepStatusRunning:
-		b.WriteString("Step is currently running.\n\n")
-	case types.StepStatusAwaitingApproval:
-		b.WriteString("Waiting for user approval.\n\n")
-	case types.StepStatusFixing:
-		b.WriteString("Agent is currently applying fixes.\n\n")
-	case types.StepStatusFixReview:
-		b.WriteString("Waiting to review the latest fix.\n\n")
-	case types.StepStatusSkipped:
-		b.WriteString("Step was skipped.\n\n")
-	case types.StepStatusFailed:
-		if sr.Error != nil && strings.TrimSpace(*sr.Error) != "" {
-			b.WriteString(html.EscapeString(strings.TrimSpace(*sr.Error)))
-			b.WriteString("\n\n")
-			return
-		}
-		b.WriteString("Step failed.\n\n")
-	case types.StepStatusCompleted:
-		b.WriteString("No round details recorded.\n\n")
-	default:
-		b.WriteString("Status unavailable.\n\n")
-	}
-}
-
-func shouldOmitPipelineStep(sr *db.StepResult) bool {
-	if sr == nil {
-		return false
-	}
-
-	return sr.StepName == types.StepPR || sr.StepName == types.StepCI
-}
-
 func countFindingsBySeverity(findings *types.Findings) string {
 	if findings == nil || len(findings.Items) == 0 {
 		return "0 issues"
@@ -1219,19 +1003,6 @@ func countFindingsBySeverity(findings *types.Findings) string {
 		}
 	}
 	return fmt.Sprintf("%d %s (%s)", total, noun, strings.Join(parts, ", "))
-}
-
-func severityEmoji(severity string) string {
-	switch severity {
-	case "error":
-		return "🚨"
-	case "warning":
-		return "⚠️"
-	case "info":
-		return "ℹ️"
-	default:
-		return "-"
-	}
 }
 
 func stepDisplayName(name types.StepName) string {

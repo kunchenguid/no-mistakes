@@ -39,14 +39,7 @@ const (
 	// GitHub's character limit with room for provider-side formatting drift.
 	pullRequestBodySafetyBufferBytes = 2048
 	maxPullRequestBodyBytes          = githubPullRequestBodyHardLimitChars - pullRequestBodySafetyBufferBytes
-	minLatestPipelineUpdateBytes     = 256
 )
-
-type pipelineUpdateGroup struct {
-	header string
-	units  []string
-	footer string
-}
 
 func (s *PRStep) Name() types.StepName { return types.StepPR }
 
@@ -134,15 +127,7 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseSHA stri
 	diffStat, _ := git.Run(ctx, sctx.WorkDir, "diff", "--stat", baseSHA+".."+sctx.Run.HeadSHA)
 
 	// Build the deterministic sections from step rounds.
-	pipelineMD, riskLine, testingMD := s.buildPipelineSection(sctx)
-
-	// Build pipeline context for the agent prompt so it can reference findings in the summary.
-	pipelineContext := ""
-	if pipelineMD != "" {
-		pipelineContext = fmt.Sprintf(`
-Pipeline results (reference these naturally in the summary if relevant):
-%s`, pipelineMD)
-	}
+	riskLine, testingMD := s.buildPipelineSection(sctx)
 
 	prompt := fmt.Sprintf(`Draft a pull request title and summary for the full branch delta.
 
@@ -158,14 +143,14 @@ Rules:
 %s
 - When including a scope, it MUST be a real package/module name that exists in the codebase (for example, a directory under internal/, cmd/, or the equivalent top-level grouping for this project), identified by inspecting the changed paths. Pick the primary module affected by the change, not a secondary or incidental one.
 - Keep the scope at a coarse level, not too granular: a codebase typically has fewer than 10 distinct scopes in use across its history. Prefer a broad module name (e.g. "daemon", "pipeline", "cli") over a narrow file or sub-feature name. If you cannot confidently identify a real primary module, omit the scope and use "type: description".
-- Body: a "## What Changed" section in GitHub-flavored markdown. 1-3 concise bullet points describing the concrete changes in this branch (what code/behavior shifted), not the user's motivation. Do not include Intent, Risk Assessment, Testing, or Pipeline sections - those are prepended/appended separately. The body value must be plain markdown text, never a JSON object or serialized JSON string.
+- Body: a "## What Changed" section in GitHub-flavored markdown. 1-3 concise bullet points describing the concrete changes in this branch (what code/behavior shifted), not the user's motivation. Do not include Intent, Risk Assessment, or Testing sections - those are prepended/appended separately. The body value must be plain markdown text, never a JSON object or serialized JSON string.
 - Do not invent tests or behavior.
 
 Commit history:
 %s
 
 Diff stat:
-%s%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, sctx.Repo.DefaultBranch, conventional.ReleaseTypeRule, commitLog, diffStat, pipelineContext, userIntentPromptSection(sctx), executionContextPromptSection())
+%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, sctx.Repo.DefaultBranch, conventional.ReleaseTypeRule, commitLog, diffStat, userIntentPromptSection(sctx), executionContextPromptSection())
 
 	prompt += prBodyBudgetPromptSection(bodyLimit)
 
@@ -177,7 +162,7 @@ Diff stat:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		return fallbackPRContent(sctx, branch, commitLog, riskLine, testingMD, pipelineMD, bodyLimit), nil
+		return fallbackPRContent(sctx, branch, commitLog, riskLine, testingMD, bodyLimit), nil
 	}
 
 	var content prContent
@@ -194,25 +179,25 @@ Diff stat:
 					slog.Warn("tightened agent PR title type", "from", originalTitle, "to", content.Title)
 				}
 				if bodyLimit > 0 {
-					content.Body = assemblePRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, bodyLimit)
+					content.Body = assemblePRBody(sctx, content.Body, riskLine, testingMD, bodyLimit)
 				} else {
-					content.Body = buildPRBody(content.Body, riskLine, testingMD, pipelineMD, sctx)
+					content.Body = buildPRBody(content.Body, riskLine, testingMD, sctx)
 				}
 				return content, nil
 			}
 		}
 	}
 
-	return fallbackPRContent(sctx, branch, commitLog, riskLine, testingMD, pipelineMD, bodyLimit), nil
+	return fallbackPRContent(sctx, branch, commitLog, riskLine, testingMD, bodyLimit), nil
 }
 
 // buildPipelineSection queries step results and rounds from the DB and
-// produces the deterministic pipeline, risk, and testing sections.
-func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (string, string, string) {
+// produces the deterministic risk and testing sections.
+func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (string, string) {
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
 		slog.Warn("failed to query step results for pipeline summary", "error", err)
-		return "", "", ""
+		return "", ""
 	}
 
 	rounds := make(map[string][]*db.StepRound, len(steps))
@@ -225,9 +210,9 @@ func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (string, strin
 		rounds[sr.ID] = r
 	}
 
-	pipelineMD, riskLine := BuildPipelineSummary(steps, rounds)
+	riskLine := BuildRiskLine(steps, rounds)
 	testingMD := BuildTestingSummaryForPR(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir)
-	return pipelineMD, riskLine, testingMD
+	return riskLine, testingMD
 }
 
 // unwrapNestedPRBody detects when the agent returned the body as a
@@ -251,30 +236,30 @@ func unwrapNestedPRBody(body string) string {
 // and applies the PR body length guard.
 // prBodyBudgetPromptSection tells the drafting agent about a host's PR-body
 // character cap so it keeps its "## What Changed" section short. The Intent,
-// Risk, Testing, and Pipeline sections are appended deterministically, so the
+// Risk, and Testing sections are appended deterministically, so the
 // agent only controls a slice of the budget; this nudge keeps that slice small.
 // Returns "" when the provider has no practical limit (bodyLimit <= 0).
 func prBodyBudgetPromptSection(bodyLimit int) string {
 	if bodyLimit <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("\n\n- This repository's host caps the entire PR description at %d characters. The Intent, Risk Assessment, and Pipeline sections are appended automatically; a Testing section is included when budget allows. Keep the \"## What Changed\" section to a few short bullet points.", bodyLimit)
+	return fmt.Sprintf("\n\n- This repository's host caps the entire PR description at %d characters. The Intent and Risk Assessment sections are appended automatically; a Testing section is included when budget allows. Keep the \"## What Changed\" section to a few short bullet points.", bodyLimit)
 }
 
 // assemblePRBody composes the final PR body from its sections and keeps it
 // within bodyLimit (0 = unlimited). When the full body overruns the cap it
 // first drops the Testing section - the only one that embeds artifact and log
 // file contents and is therefore effectively unbounded - so an Azure DevOps PR
-// sheds log dumps while keeping its Intent, What Changed, Risk, and Pipeline
+// sheds log dumps while keeping its Intent, What Changed, and Risk
 // narrative intact. ClampPRBody is the final backstop when even that core
 // overruns (e.g. an unusually long Intent).
-func assemblePRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int) string {
-	full := prependIntentSection(appendGeneratedSections(whatChanged, riskLine, testingMD, pipelineMD), sctx)
+func assemblePRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD string, bodyLimit int) string {
+	full := prependIntentSection(appendGeneratedSections(whatChanged, riskLine, testingMD), sctx)
 	if bodyLimit <= 0 || scm.PRBodyLen(full) <= bodyLimit {
 		return full
 	}
 	if testingMD != "" {
-		core := prependIntentSection(appendGeneratedSections(whatChanged, riskLine, "", pipelineMD), sctx)
+		core := prependIntentSection(appendGeneratedSections(whatChanged, riskLine, ""), sctx)
 		if scm.PRBodyLen(core) <= bodyLimit {
 			return core
 		}
@@ -283,34 +268,20 @@ func assemblePRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD
 	return scm.ClampPRBody(full, bodyLimit)
 }
 
-func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) string {
+func appendGeneratedSections(body, riskLine, testingMD string) string {
 	body = stripGeneratedSections(body)
-	return appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
+	return appendGeneratedSectionsToCleanBody(body, riskLine, testingMD)
 }
 
-func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext) string {
+func buildPRBody(body, riskLine, testingMD string, sctx *pipeline.StepContext) string {
 	body = stripGeneratedSections(body)
 	body = prependIntentSection(body, sctx)
-	return appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
+	return appendGeneratedSectionsToCleanBody(body, riskLine, testingMD)
 }
 
-func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD string) string {
+func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD string) string {
 	generatedSections := generatedEssentialSections(riskLine, testingMD)
-	prefix := body + generatedSections
-	if pipelineMD == "" {
-		return essentialPRBodyWithinLimit(body, generatedSections)
-	}
-
-	separator := ""
-	if prefix != "" {
-		separator = "\n\n"
-	}
-	if len(prefix+separator+pipelineMD) <= maxPullRequestBodyBytes {
-		return prefix + separator + pipelineMD
-	}
-
-	prefix = essentialPRBodyWithinPipelineBudget(body, generatedSections, pipelineMD)
-	return appendPipelineSectionWithinLimit(prefix, pipelineMD)
+	return essentialPRBodyWithinLimit(body, generatedSections)
 }
 
 func generatedEssentialSections(riskLine, testingMD string) string {
@@ -330,25 +301,6 @@ func essentialPRBodyWithinLimit(body, generatedSections string) string {
 	return essentialPRBodyWithinBudget(body, generatedSections, maxPullRequestBodyBytes)
 }
 
-func essentialPRBodyWithinPipelineBudget(body, generatedSections, pipelineMD string) string {
-	minPipeline := minimumPipelineRetainingLatestUpdate(pipelineMD)
-	if minPipeline == "" {
-		minPipeline = minimumPipelineOmissionSection(pipelineMD)
-		if minPipeline == "" {
-			return essentialPRBodyWithinLimit(body, generatedSections)
-		}
-	}
-
-	prefixBudget := maxPullRequestBodyBytes - len(minPipeline)
-	if body != "" || generatedSections != "" {
-		prefixBudget -= len("\n\n")
-	}
-	if prefixBudget <= 0 || len(generatedSections) > prefixBudget {
-		return essentialPRBodyWithinLimit(body, generatedSections)
-	}
-	return essentialPRBodyWithinBudget(body, generatedSections, prefixBudget)
-}
-
 func essentialPRBodyWithinBudget(body, generatedSections string, maxBytes int) string {
 	full := body + generatedSections
 	if len(full) <= maxBytes {
@@ -363,341 +315,6 @@ func essentialPRBodyWithinBudget(body, generatedSections string, maxBytes int) s
 		return truncateTextAtLineBoundary(generatedSections, maxBytes, essentialPRBodyTruncationMarker())
 	}
 	return truncatePRBodySections(body, bodyBudget, essentialPRBodyTruncationMarker()) + generatedSections
-}
-
-func appendPipelineSectionWithinLimit(prefix, pipelineMD string) string {
-	separator := ""
-	if prefix != "" {
-		separator = "\n\n"
-	}
-	full := prefix + separator + pipelineMD
-	if len(full) <= maxPullRequestBodyBytes {
-		return full
-	}
-
-	pipelineBudget := maxPullRequestBodyBytes - len(prefix) - len(separator)
-	if pipelineBudget <= 0 {
-		return truncateEssentialPRBodyIfNeeded(prefix)
-	}
-
-	truncatedPipeline := truncatePipelineSection(pipelineMD, pipelineBudget)
-	if truncatedPipeline == "" {
-		return prefix
-	}
-	candidate := prefix + separator + truncatedPipeline
-	if len(candidate) <= maxPullRequestBodyBytes {
-		return candidate
-	}
-	if len(prefix) <= maxPullRequestBodyBytes {
-		return prefix
-	}
-	return truncateEssentialPRBodyIfNeeded(prefix)
-}
-
-func truncatePipelineSection(pipelineMD string, maxBytes int) string {
-	if maxBytes <= 0 {
-		return ""
-	}
-	if len(pipelineMD) <= maxBytes {
-		return pipelineMD
-	}
-
-	header, updates := splitPipelineSectionHeader(pipelineMD)
-	groups := parsePipelineUpdateGroups(updates)
-	totalUnits := countPipelineUpdateUnits(groups)
-	if totalUnits == 0 {
-		return pipelineOmissionSectionWithinLimit(header, 0, maxBytes)
-	}
-
-	for omitted := 1; omitted < totalUnits; omitted++ {
-		candidate := renderPipelineWithOmittedUpdates(header, groups, omitted)
-		if len(candidate) <= maxBytes {
-			return candidate
-		}
-	}
-
-	if candidate := renderPipelineWithTruncatedLatestUpdate(header, groups, maxBytes); candidate != "" {
-		return candidate
-	}
-
-	return pipelineOmissionSectionWithinLimit(header, totalUnits, maxBytes)
-}
-
-func minimumPipelineOmissionSection(pipelineMD string) string {
-	header, updates := splitPipelineSectionHeader(pipelineMD)
-	totalUnits := countPipelineUpdateUnits(parsePipelineUpdateGroups(updates))
-	return header + pipelineUpdatesOmissionMarker(totalUnits) + "\n"
-}
-
-func minimumPipelineRetainingLatestUpdate(pipelineMD string) string {
-	header, updates := splitPipelineSectionHeader(pipelineMD)
-	groups := parsePipelineUpdateGroups(updates)
-	totalUnits := countPipelineUpdateUnits(groups)
-	if totalUnits == 0 {
-		return ""
-	}
-
-	group, unit, ok := latestPipelineUpdateUnit(groups)
-	if !ok {
-		return ""
-	}
-
-	omitted := totalUnits - 1
-	var b strings.Builder
-	b.WriteString(header)
-	if omitted > 0 {
-		b.WriteString(pipelineUpdatesOmissionMarker(omitted))
-		b.WriteString("\n\n")
-	}
-	b.WriteString(group.header)
-
-	unitBudget := len(unit)
-	if unitBudget > minLatestPipelineUpdateBytes {
-		unitBudget = minLatestPipelineUpdateBytes + len("\n\n") + len(pipelineLatestUpdateTruncationMarker())
-	}
-	if group.footer != "" {
-		unitBudget += len("\n\n") + len(group.footer)
-	}
-
-	return renderPipelineWithTruncatedLatestUpdate(header, groups, b.Len()+unitBudget)
-}
-
-func pipelineOmissionSectionWithinLimit(header string, omitted, maxBytes int) string {
-	markerOnly := header + pipelineUpdatesOmissionMarker(omitted) + "\n"
-	if len(markerOnly) <= maxBytes {
-		return markerOnly
-	}
-	return ""
-}
-
-func splitPipelineSectionHeader(pipelineMD string) (string, string) {
-	const heading = "## Pipeline\n\n"
-	if !strings.HasPrefix(pipelineMD, heading) {
-		return "", pipelineMD
-	}
-
-	rest := pipelineMD[len(heading):]
-	introEnd := strings.Index(rest, "\n\n")
-	if introEnd < 0 {
-		return heading, rest
-	}
-
-	headerEnd := len(heading) + introEnd + len("\n\n")
-	return pipelineMD[:headerEnd], pipelineMD[headerEnd:]
-}
-
-func parsePipelineUpdateGroups(updates string) []pipelineUpdateGroup {
-	var groups []pipelineUpdateGroup
-	rest := updates
-	for strings.TrimSpace(rest) != "" {
-		rest = strings.TrimLeft(rest, "\n")
-		if strings.HasPrefix(rest, "<details>") {
-			end := strings.Index(rest, "</details>")
-			if end >= 0 {
-				end += len("</details>")
-				if end < len(rest) && rest[end] == '\n' {
-					end++
-				}
-				groups = append(groups, parsePipelineDetailsGroup(rest[:end]))
-				rest = rest[end:]
-				continue
-			}
-		}
-
-		nextDetails := strings.Index(rest, "\n<details>")
-		raw := rest
-		if nextDetails >= 0 {
-			raw = rest[:nextDetails]
-			rest = rest[nextDetails+1:]
-		} else {
-			rest = ""
-		}
-		units := splitPipelineUpdateUnits(raw)
-		if len(units) > 0 {
-			groups = append(groups, pipelineUpdateGroup{units: units})
-		}
-	}
-	return groups
-}
-
-func parsePipelineDetailsGroup(raw string) pipelineUpdateGroup {
-	footerStart := strings.LastIndex(raw, "</details>")
-	summaryEnd := strings.Index(raw, "</summary>")
-	if footerStart < 0 || summaryEnd < 0 || summaryEnd > footerStart {
-		return pipelineUpdateGroup{units: splitPipelineUpdateUnits(raw)}
-	}
-
-	contentStart := summaryEnd + len("</summary>")
-	if strings.HasPrefix(raw[contentStart:], "\n\n") {
-		contentStart += len("\n\n")
-	} else if strings.HasPrefix(raw[contentStart:], "\n") {
-		contentStart++
-	}
-
-	footerEnd := footerStart + len("</details>")
-	if footerEnd < len(raw) && raw[footerEnd] == '\n' {
-		footerEnd++
-	}
-
-	return pipelineUpdateGroup{
-		header: raw[:contentStart],
-		units:  splitPipelineUpdateUnits(raw[contentStart:footerStart]),
-		footer: raw[footerStart:footerEnd],
-	}
-}
-
-func splitPipelineUpdateUnits(content string) []string {
-	var units []string
-	var b strings.Builder
-	for _, line := range strings.SplitAfter(content, "\n") {
-		b.WriteString(line)
-		if strings.TrimSpace(line) != "" {
-			continue
-		}
-		if strings.TrimSpace(b.String()) == "" {
-			b.Reset()
-			continue
-		}
-		units = append(units, b.String())
-		b.Reset()
-	}
-	if strings.TrimSpace(b.String()) != "" {
-		units = append(units, b.String())
-	}
-	return units
-}
-
-func countPipelineUpdateUnits(groups []pipelineUpdateGroup) int {
-	total := 0
-	for _, group := range groups {
-		total += len(group.units)
-	}
-	return total
-}
-
-func renderPipelineWithOmittedUpdates(header string, groups []pipelineUpdateGroup, omitted int) string {
-	var b strings.Builder
-	b.WriteString(header)
-	if omitted > 0 {
-		b.WriteString(pipelineUpdatesOmissionMarker(omitted))
-		b.WriteString("\n\n")
-	}
-
-	remainingOmitted := omitted
-	wroteGroup := false
-	for _, group := range groups {
-		if remainingOmitted >= len(group.units) {
-			remainingOmitted -= len(group.units)
-			continue
-		}
-
-		start := remainingOmitted
-		remainingOmitted = 0
-		units := group.units[start:]
-		if len(units) == 0 {
-			continue
-		}
-		if wroteGroup {
-			b.WriteString("\n")
-		}
-		b.WriteString(group.header)
-		for _, unit := range units {
-			b.WriteString(unit)
-		}
-		if group.footer != "" {
-			last := units[len(units)-1]
-			if !strings.HasSuffix(last, "\n\n") {
-				if !strings.HasSuffix(last, "\n") {
-					b.WriteString("\n")
-				}
-				b.WriteString("\n")
-			}
-		}
-		b.WriteString(group.footer)
-		wroteGroup = true
-	}
-
-	return b.String()
-}
-
-func renderPipelineWithTruncatedLatestUpdate(header string, groups []pipelineUpdateGroup, maxBytes int) string {
-	group, unit, ok := latestPipelineUpdateUnit(groups)
-	if !ok {
-		return ""
-	}
-
-	totalUnits := countPipelineUpdateUnits(groups)
-	omitted := totalUnits - 1
-	var b strings.Builder
-	b.WriteString(header)
-	if omitted > 0 {
-		b.WriteString(pipelineUpdatesOmissionMarker(omitted))
-		b.WriteString("\n\n")
-	}
-	b.WriteString(group.header)
-	prefix := b.String()
-
-	footerSeparatorBytes := 0
-	if group.footer != "" {
-		footerSeparatorBytes = len("\n\n")
-	}
-	unitBudget := maxBytes - len(prefix) - len(group.footer) - footerSeparatorBytes
-	if unitBudget <= 0 {
-		return ""
-	}
-
-	marker := pipelineLatestUpdateTruncationMarker()
-	truncatedUnit := truncatePipelineUpdateAtLineBoundary(unit, unitBudget, marker)
-	if truncatedUnit == "" {
-		return ""
-	}
-
-	candidate := prefix + truncatedUnit
-	if group.footer != "" {
-		if !strings.HasSuffix(truncatedUnit, "\n\n") {
-			if !strings.HasSuffix(truncatedUnit, "\n") {
-				candidate += "\n"
-			}
-			candidate += "\n"
-		}
-		candidate += group.footer
-	}
-	if len(candidate) <= maxBytes {
-		return candidate
-	}
-	return ""
-}
-
-func latestPipelineUpdateUnit(groups []pipelineUpdateGroup) (pipelineUpdateGroup, string, bool) {
-	for i := len(groups) - 1; i >= 0; i-- {
-		group := groups[i]
-		for j := len(group.units) - 1; j >= 0; j-- {
-			if strings.TrimSpace(group.units[j]) == "" {
-				continue
-			}
-			return group, group.units[j], true
-		}
-	}
-	return pipelineUpdateGroup{}, "", false
-}
-
-func pipelineUpdatesOmissionMarker(omitted int) string {
-	rounds := "rounds"
-	if omitted == 1 {
-		rounds = "round"
-	}
-	return fmt.Sprintf("_... (%d earlier update %s omitted to keep the PR body within GitHub's %d-char limit; full history is in the run log.)_", omitted, rounds, githubPullRequestBodyHardLimitChars)
-}
-
-func pipelineLatestUpdateTruncationMarker() string {
-	return fmt.Sprintf("_... (latest pipeline update truncated to keep the PR body within GitHub's %d-char limit; full history is in the run log.)_", githubPullRequestBodyHardLimitChars)
-}
-
-func truncateEssentialPRBodyIfNeeded(body string) string {
-	if len(body) <= maxPullRequestBodyBytes {
-		return body
-	}
-	return truncateTextAtLineBoundary(body, maxPullRequestBodyBytes, essentialPRBodyTruncationMarker())
 }
 
 func essentialPRBodyTruncationMarker() string {
@@ -836,36 +453,6 @@ func truncateTextAtLineBoundary(text string, maxBytes int, marker string) string
 	return strings.TrimRight(text[:cut], "\n") + marker
 }
 
-func truncatePipelineUpdateAtLineBoundary(text string, maxBytes int, marker string) string {
-	if maxBytes <= 0 {
-		return ""
-	}
-	if len(text) <= maxBytes {
-		return text
-	}
-	if marker != "" {
-		marker = "\n\n" + marker
-	}
-	available := maxBytes - len(marker)
-	if available <= 0 {
-		if len(marker) <= maxBytes {
-			return strings.TrimLeft(marker, "\n")
-		}
-		return ""
-	}
-
-	available = utf8BoundaryBefore(text, available)
-	searchEnd := available
-	if searchEnd < len(text) && text[searchEnd] == '\n' {
-		searchEnd++
-	}
-	cut := strings.LastIndex(text[:searchEnd], "\n")
-	if cut <= 0 {
-		return strings.TrimRight(text[:available], "\n") + marker
-	}
-	return strings.TrimRight(text[:cut], "\n") + marker
-}
-
 func utf8BoundaryBefore(text string, n int) int {
 	if n >= len(text) {
 		return len(text)
@@ -947,7 +534,7 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	return section + "\n\n" + body
 }
 
-func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, testingMD, pipelineMD string, bodyLimit int) prContent {
+func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, testingMD string, bodyLimit int) prContent {
 	title := ""
 	for _, line := range strings.Split(commitLog, "\n") {
 		line = strings.TrimSpace(line)
@@ -972,9 +559,9 @@ func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, 
 		body = fmt.Sprintf("## What Changed\n\n- %s", title)
 	}
 	if bodyLimit > 0 {
-		body = assemblePRBody(sctx, body, riskLine, testingMD, pipelineMD, bodyLimit)
+		body = assemblePRBody(sctx, body, riskLine, testingMD, bodyLimit)
 	} else {
-		body = buildPRBody(body, riskLine, testingMD, pipelineMD, sctx)
+		body = buildPRBody(body, riskLine, testingMD, sctx)
 	}
 	return prContent{
 		Title: title,
