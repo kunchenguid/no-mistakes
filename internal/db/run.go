@@ -283,7 +283,7 @@ func (d *DB) UpdateRunError(id, errMsg string) error {
 
 // UpdateRunErrorStatus sets the error message and terminal status on a run.
 func (d *DB) UpdateRunErrorStatus(id, errMsg string, status types.RunStatus) error {
-	_, err := d.sql.Exec(`UPDATE runs SET error = ?, status = ?, updated_at = ? WHERE id = ?`, errMsg, status, now(), id)
+	_, err := d.sql.Exec(`UPDATE runs SET error = ?, status = ?, blocked_reason = NULL, updated_at = ? WHERE id = ?`, errMsg, status, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run error: %w", err)
 	}

@@ -32,6 +32,9 @@ func TestAuthorizationFailureSurvivesLaterCancellationProjection(t *testing.T) {
 	if err != nil || current.Status != types.RunCancelled {
 		t.Fatalf("current projection = %#v, err=%v", current, err)
 	}
+	if current.BlockedReason != nil {
+		t.Fatalf("terminal projection retained blocked reason: %#v", current.BlockedReason)
+	}
 }
 
 func TestProvisioningProgressIsPersisted(t *testing.T) {

@@ -35,7 +35,7 @@ const (
 
 var errAuthorizationParked = errors.New("agent authorization required; run parked for authentication recovery")
 
-const authorizationRetryLimit = 2
+const authorizationRecoveryLimit = 1
 
 type approvalResponse struct {
 	action        types.ApprovalAction
@@ -742,8 +742,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	skipRemaining := false
 	stepSkipped := false
 	currentRoundID := state.currentRoundID
-	authorizationRetries := 0
-
 	// Execute with possible fix loop
 	for {
 		outcome, err := step.Execute(sctx)
@@ -751,10 +749,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		roundDuration := time.Since(phaseStart).Milliseconds()
 		if err != nil {
 			if agent.IsAuthorizationRequired(err) {
-				authorizationRetries++
-				if authorizationRetries > authorizationRetryLimit {
-					err = fmt.Errorf("authorization recovery retry limit exceeded: %w", err)
-				} else if parkErr := e.parkForAuthorization(ctx, step, sctx, sr, run, repo, roundNum); parkErr == nil {
+				if parkErr := e.parkForAuthorization(ctx, step, sctx, sr, run, repo, roundNum); parkErr == nil {
 					phaseStart = time.Now()
 					continue
 				} else if errors.Is(parkErr, errAuthorizationParked) {
@@ -1019,6 +1014,13 @@ func roundInsertID(_ string, inserted *db.StepRound, err error) string {
 
 func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *StepContext, sr *db.StepResult, run *db.Run, repo *db.Repo, round int) error {
 	const reason = "codex authorization required; log into a healthy Codex account, then approve to retry"
+	attempts, err := e.authorizationParkCount(run.ID)
+	if err != nil {
+		return err
+	}
+	if attempts >= authorizationRecoveryLimit {
+		return fmt.Errorf("authorization recovery retry limit reached after %d parked attempt(s)", attempts)
+	}
 	if err := e.db.ParkRunForAuthorization(run.ID, string(step.Name()), reason); err != nil {
 		return err
 	}
@@ -1056,17 +1058,31 @@ func (e *Executor) parkForAuthorization(ctx context.Context, step Step, sctx *St
 	if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
 		return dbErr
 	}
-	if dbErr := e.db.ResumeRunAfterAuthorization(run.ID, string(step.Name())); dbErr != nil {
-		return dbErr
-	}
 	if response.action != types.ActionApprove && response.action != types.ActionFix {
 		return fmt.Errorf("authorization recovery requires approve or fix, got %q", response.action)
+	}
+	if dbErr := e.db.ResumeRunAfterAuthorization(run.ID, string(step.Name())); dbErr != nil {
+		return dbErr
 	}
 	if err := e.db.UpdateStepStatus(sr.ID, types.StepStatusRunning); err != nil {
 		return err
 	}
 	sctx.Log("authentication recovered; retrying the same agent turn")
 	return nil
+}
+
+func (e *Executor) authorizationParkCount(runID string) (int, error) {
+	events, err := e.db.LifecycleEvents(runID)
+	if err != nil {
+		return 0, fmt.Errorf("count authorization recovery attempts: %w", err)
+	}
+	count := 0
+	for _, event := range events {
+		if event.EventType == "authorization_required" {
+			count++
+		}
+	}
+	return count, nil
 }
 
 type lifecycleAgent struct {
