@@ -17,6 +17,7 @@ type reconcilingApprovalStep struct {
 	err       atomic.Pointer[error]
 	block     bool
 	started   chan struct{}
+	callStart chan int64
 	release   chan struct{}
 	startOnce atomic.Bool
 }
@@ -31,7 +32,10 @@ func (s *reconcilingApprovalStep) Execute(*StepContext) (*StepOutcome, error) {
 }
 
 func (s *reconcilingApprovalStep) ReconcileApprovalGate(sctx *StepContext) (bool, error) {
-	s.calls.Add(1)
+	call := s.calls.Add(1)
+	if s.callStart != nil {
+		s.callStart <- call
+	}
 	if s.startOnce.CompareAndSwap(false, true) && s.started != nil {
 		close(s.started)
 	}
@@ -129,7 +133,11 @@ func TestExecutor_ReconcilesParkedGateThroughNormalCompletionPath(t *testing.T) 
 
 func TestExecutor_ReconcileErrorPreservesGateFailClosed(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	step := &reconcilingApprovalStep{name: types.StepCI}
+	step := &reconcilingApprovalStep{
+		name:      types.StepCI,
+		callStart: make(chan int64, 4),
+		release:   make(chan struct{}),
+	}
 	reconcileErr := error(errors.New("provider unavailable"))
 	step.err.Store(&reconcileErr)
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
@@ -139,7 +147,18 @@ func TestExecutor_ReconcileErrorPreservesGateFailClosed(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- exec.Execute(context.Background(), run, repo, workDir) }()
 	waitForStepStatus(t, database, run.ID, types.StepCI, types.StepStatusAwaitingApproval)
-	time.Sleep(40 * time.Millisecond)
+
+	select {
+	case <-step.callStart:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first reconcile check did not start")
+	}
+	step.release <- struct{}{}
+	select {
+	case <-step.callStart:
+	case <-time.After(3 * time.Second):
+		t.Fatal("second reconcile check did not start")
+	}
 
 	got, err := database.GetRun(run.ID)
 	if err != nil {
@@ -155,6 +174,7 @@ func TestExecutor_ReconcileErrorPreservesGateFailClosed(t *testing.T) {
 	if err := exec.Respond(types.StepCI, types.ActionApprove, nil); err != nil {
 		t.Fatal(err)
 	}
+	step.release <- struct{}{}
 	select {
 	case err := <-done:
 		if err != nil {

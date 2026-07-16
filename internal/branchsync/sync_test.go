@@ -776,6 +776,7 @@ func cloneRemoteBranch(t *testing.T, remote string) string {
 
 func configureIdentity(t *testing.T, dir string) {
 	t.Helper()
+	mustRun(t, dir, "config", "core.autocrlf", "false")
 	mustRun(t, dir, "config", "user.email", "test@example.com")
 	mustRun(t, dir, "config", "user.name", "Test User")
 }
