@@ -60,6 +60,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			agentName, err := parseAgentPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -84,6 +88,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				New:       newSHA,
 				SkipSteps: skipSteps,
 				Intent:    intent,
+				Agent:     agentName,
 			}, &result)
 		},
 	}
@@ -99,6 +104,42 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("new")
 
 	return cmd
+}
+
+const agentPushOptionPrefix = "no-mistakes.agent="
+
+func parseRunAgent(value string) (types.AgentName, error) {
+	name := types.AgentName(strings.TrimSpace(value))
+	if name == "" || name == types.AgentClaude || name == types.AgentCodex {
+		return name, nil
+	}
+	return "", fmt.Errorf("unsupported run agent %q (valid: claude, codex)", value)
+}
+
+func formatAgentPushOption(name types.AgentName) string {
+	if name == "" {
+		return ""
+	}
+	return agentPushOptionPrefix + string(name)
+}
+
+func parseAgentPushOptions(options []string) (types.AgentName, error) {
+	var selected types.AgentName
+	for _, option := range options {
+		value, ok := strings.CutPrefix(option, agentPushOptionPrefix)
+		if !ok {
+			continue
+		}
+		name, err := parseRunAgent(value)
+		if err != nil {
+			return "", err
+		}
+		if selected != "" && selected != name {
+			return "", fmt.Errorf("conflicting run agents %q and %q", selected, name)
+		}
+		selected = name
+	}
+	return selected, nil
 }
 
 func normalizeNotifyGatePath(gate string) (string, error) {

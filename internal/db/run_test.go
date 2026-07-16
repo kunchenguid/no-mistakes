@@ -6,6 +6,28 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+func TestUpdateRunAgentsRoundTrip(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo(t.TempDir(), "origin", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunAgents(run.ID, "codex", "codex"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RequestedAgent == nil || *got.RequestedAgent != "codex" || got.ResolvedAgent == nil || *got.ResolvedAgent != "codex" {
+		t.Fatalf("agent selection did not round-trip: %#v", got)
+	}
+}
+
 func TestRunInsertAndGet(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

@@ -70,6 +70,7 @@ type PushReceivedParams struct {
 	New       string           `json:"new"`
 	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
 	Intent    string           `json:"intent,omitempty"`
+	Agent     types.AgentName  `json:"agent,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -106,6 +107,7 @@ type RerunParams struct {
 	Branch    string           `json:"branch"`
 	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
 	Intent    string           `json:"intent,omitempty"`
+	Agent     types.AgentName  `json:"agent,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.
@@ -191,14 +193,16 @@ type ShutdownResult struct {
 
 // RunInfo is the IPC representation of a pipeline run.
 type RunInfo struct {
-	ID      string          `json:"id"`
-	RepoID  string          `json:"repo_id"`
-	Branch  string          `json:"branch"`
-	HeadSHA string          `json:"head_sha"`
-	BaseSHA string          `json:"base_sha"`
-	Status  types.RunStatus `json:"status"`
-	PRURL   *string         `json:"pr_url,omitempty"`
-	Error   *string         `json:"error,omitempty"`
+	ID             string          `json:"id"`
+	RepoID         string          `json:"repo_id"`
+	Branch         string          `json:"branch"`
+	HeadSHA        string          `json:"head_sha"`
+	BaseSHA        string          `json:"base_sha"`
+	Status         types.RunStatus `json:"status"`
+	PRURL          *string         `json:"pr_url,omitempty"`
+	Error          *string         `json:"error,omitempty"`
+	RequestedAgent *string         `json:"requested_agent,omitempty"`
+	ResolvedAgent  *string         `json:"resolved_agent,omitempty"`
 	// AwaitingAgent is true while the run is parked at a gate awaiting the
 	// driving agent's response. AwaitingAgentSince is the unix-seconds time it
 	// parked, so a supervisor can read "parked for N seconds" in one call. Both

@@ -485,7 +485,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.SkipSteps, p.Intent)
+		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.SkipSteps, p.Intent, p.Agent)
 		if err != nil {
 			return nil, err
 		}
@@ -562,6 +562,8 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		Status:             r.Status,
 		PRURL:              r.PRURL,
 		Error:              r.Error,
+		RequestedAgent:     r.RequestedAgent,
+		ResolvedAgent:      r.ResolvedAgent,
 		AwaitingAgent:      r.AwaitingAgentSince != nil,
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CreatedAt:          r.CreatedAt,
