@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -950,15 +949,13 @@ func treeMatchesOnPaths(ctx context.Context, dir, local, pushed string, paths []
 }
 
 type diffHunk struct {
-	oldStart int
-	newStart int
-	removed  []string
-	added    []string
+	removed []string
+	local   []string
 }
 
 func finalPreservesLocalHunks(ctx context.Context, dir, base, local, pushed string, paths []string) bool {
 	for _, path := range paths {
-		diff, err := gitRawOutput(ctx, dir, "--literal-pathspecs", "diff", "--no-ext-diff", "--no-color", "--no-renames", "-U0", base, local, "--", path)
+		diff, err := gitRawOutput(ctx, dir, "--literal-pathspecs", "diff", "--no-ext-diff", "--no-color", "--no-renames", "-U3", base, local, "--", path)
 		if err != nil {
 			return false
 		}
@@ -978,10 +975,10 @@ func finalPreservesLocalHunks(ctx context.Context, dir, base, local, pushed stri
 			return false
 		}
 		for _, hunk := range hunks {
-			if len(hunk.added) > 0 && !linesAt(pushedLines, hunk.newStart, hunk.added) {
+			if len(hunk.local) > 0 && countLineSequence(pushedLines, hunk.local) != 1 {
 				return false
 			}
-			if len(hunk.added) == 0 && len(hunk.removed) > 0 && linesAt(pushedLines, hunk.oldStart, hunk.removed) {
+			if len(hunk.local) == 0 && len(hunk.removed) > 0 && countLineSequence(pushedLines, hunk.removed) > 0 {
 				return false
 			}
 		}
@@ -994,19 +991,7 @@ func parseUnifiedHunks(diff []byte) ([]diffHunk, bool) {
 	var current *diffHunk
 	for _, line := range strings.Split(string(diff), "\n") {
 		if strings.HasPrefix(line, "@@ ") {
-			fields := strings.Fields(line)
-			if len(fields) < 3 {
-				return nil, false
-			}
-			oldStart, ok := parseDiffRangeStart(fields[1])
-			if !ok {
-				return nil, false
-			}
-			newStart, ok := parseDiffRangeStart(fields[2])
-			if !ok {
-				return nil, false
-			}
-			hunks = append(hunks, diffHunk{oldStart: oldStart, newStart: newStart})
+			hunks = append(hunks, diffHunk{})
 			current = &hunks[len(hunks)-1]
 			continue
 		}
@@ -1016,31 +1001,15 @@ func parseUnifiedHunks(diff []byte) ([]diffHunk, bool) {
 		switch {
 		case strings.HasPrefix(line, `\`):
 			continue
+		case strings.HasPrefix(line, " "):
+			current.local = append(current.local, line[1:])
 		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
-			current.added = append(current.added, line[1:])
+			current.local = append(current.local, line[1:])
 		case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
 			current.removed = append(current.removed, line[1:])
 		}
 	}
 	return hunks, true
-}
-
-func parseDiffRangeStart(field string) (int, bool) {
-	if len(field) < 2 {
-		return 0, false
-	}
-	field = field[1:]
-	if idx := strings.IndexByte(field, ','); idx >= 0 {
-		field = field[:idx]
-	}
-	n, err := strconv.Atoi(field)
-	if err != nil || n < 0 {
-		return 0, false
-	}
-	if n == 0 {
-		return 1, true
-	}
-	return n, true
 }
 
 func gitFileLines(ctx context.Context, dir, rev, path string) ([]string, bool) {
@@ -1059,17 +1028,24 @@ func splitLines(s string) []string {
 	return strings.Split(s, "\n")
 }
 
-func linesAt(lines []string, start int, want []string) bool {
-	idx := start - 1
-	if idx < 0 || idx+len(want) > len(lines) {
-		return false
+func countLineSequence(lines, want []string) int {
+	if len(want) == 0 || len(want) > len(lines) {
+		return 0
 	}
-	for i, line := range want {
-		if lines[idx+i] != line {
-			return false
+	count := 0
+	for start := 0; start <= len(lines)-len(want); start++ {
+		match := true
+		for i, line := range want {
+			if lines[start+i] != line {
+				match = false
+				break
+			}
+		}
+		if match {
+			count++
 		}
 	}
-	return true
+	return count
 }
 
 func (s *Service) remoteName(ctx context.Context) string {

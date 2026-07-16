@@ -362,6 +362,37 @@ func TestEquivalentDivergenceRefusesWrongRepeatedLineOccurrence(t *testing.T) {
 	}
 }
 
+func TestEquivalentDivergenceAcceptsShiftedPreservedHunk(t *testing.T) {
+	f := newSyncFixture(t)
+	mustWrite(t, filepath.Join(f.local, "file.txt"), "alpha\nfeature\nomega\n")
+	mustRun(t, f.local, "commit", "-am", "expand feature file")
+	f.old = mustRun(t, f.local, "rev-parse", "HEAD")
+	rebuildPipelineHead(t, f, []pipelineCommit{
+		{message: "feature squashed", files: map[string]string{"file.txt": "alpha\nfeature\nomega\n"}},
+		{message: "pipeline inserts earlier line", files: map[string]string{"file.txt": "inserted\nalpha\nfeature\nomega\n"}},
+	})
+
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateDiverged || state.Relation != RelationDiverged || state.Safety != "safe_equivalent_advance" || state.Changed {
+		t.Fatalf("state = %#v", state)
+	}
+}
+
+func TestEquivalentDivergenceRefusesAmbiguousRepeatedContext(t *testing.T) {
+	f := newSyncFixture(t)
+	mustWrite(t, filepath.Join(f.local, "file.txt"), "ctx\nfeature\nend\n")
+	mustRun(t, f.local, "commit", "-am", "contextual feature")
+	f.old = mustRun(t, f.local, "rev-parse", "HEAD")
+	rebuildPipelineHead(t, f, []pipelineCommit{
+		{message: "duplicate contextual feature", files: map[string]string{"file.txt": "ctx\nfeature\nend\nctx\nfeature\nend\n"}},
+	})
+
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateDiverged || state.Relation != RelationDiverged || state.Safety != "blocked_diverged" || state.Changed {
+		t.Fatalf("state = %#v", state)
+	}
+}
+
 func TestApplyEmptyLocalUniquenessStillUsesStrictBehindFastForward(t *testing.T) {
 	f := newSyncFixture(t)
 	state := f.service.Apply(f.ctx)
