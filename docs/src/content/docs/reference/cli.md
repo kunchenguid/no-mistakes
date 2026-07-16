@@ -182,7 +182,7 @@ no-mistakes axi sync --recover --keep-local
 The default command is an explicit non-interactive apply request and never prompts.
 All modes return the complete `branch_sync` object as TOON.
 Exit code `0` means an eligible check, applied synchronization or recovery, already-synchronized or custody-returned no-op, or expected merged-and-removed no-op; blocked operational states return `1`.
-The only possible worktree mutation is a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA (or, under `--recover`, to the preserved pipeline head verified at the local gate).
+The only possible worktree mutation is a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA (or, under `--recover`, to the preserved pipeline head after relation-specific preservation checks).
 Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
 Dirty, in-progress, ahead, diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
 Run `axi sync` only when structured output offers `next_action.code: sync`; process any blocked state instead of substituting reset, stash, merge, rebase, force, or branch replacement.
@@ -190,7 +190,9 @@ Run `axi sync` only when structured output offers `next_action.code: sync`; proc
 ### Custody recovery
 
 A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head leaves the branch `pipeline_owned` with `safety: blocked_pipeline_owned_recoverable`, the run's terminal `pipeline.status`, and `next_action.code: recover_custody`; while the run is still active the same state stays a plain wait with no action.
-`--recover` verifies the run is terminal, verifies the preserved head at the local gate branch, anchors it under `refs/no-mistakes/recover/<run>` in the invoking repository, fast-forwards only a clean behind worktree to it, and stamps custody returned so a fresh run can start.
+`--recover` verifies the run is terminal, anchors the preserved head under `refs/no-mistakes/recover/<run>` in the invoking repository, and stamps custody returned so a fresh run can start.
+For equal or ahead worktrees where the preserved head is already locally reachable, recovery writes that anchor locally without gate access.
+For behind or diverged worktrees, recovery verifies the preserved head at the local gate branch and fetches it into the anchor before fast-forwarding only a clean behind worktree or refusing with the anchor named.
 A dirty or diverged worktree refuses with the explicit choices; `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
 `no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
