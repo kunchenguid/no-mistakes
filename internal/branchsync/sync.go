@@ -21,6 +21,7 @@ import (
 )
 
 const refreshTimeout = 15 * time.Second
+const maxEquivalentProofCommits = 200
 const maxEquivalentProofPaths = 2000
 const maxEquivalentProofPathspecArgBytes = 30000
 
@@ -853,7 +854,19 @@ func equivalentDivergence(ctx context.Context, dir, local, pushed, base string) 
 	if !ok {
 		return false
 	}
-	return treeMatchesOnPaths(ctx, dir, local, pushed, paths)
+	if treeMatchesOnPaths(ctx, dir, local, pushed, paths) {
+		return true
+	}
+	remoteOnly, err := revList(ctx, dir, "rev-list", "--reverse", pushed, "^"+base)
+	if err != nil || len(remoteOnly) == 0 || len(remoteOnly) > maxEquivalentProofCommits {
+		return false
+	}
+	for _, commit := range remoteOnly {
+		if treeMatchesOnPaths(ctx, dir, local, commit, paths) {
+			return true
+		}
+	}
+	return false
 }
 
 func usableEquivalenceBase(ctx context.Context, dir, local, pushed, base string) string {
@@ -879,7 +892,7 @@ func revList(ctx context.Context, dir string, args ...string) ([]string, error) 
 }
 
 func locallyChangedPaths(ctx context.Context, dir, base, local string) ([]string, bool) {
-	out, err := gitRawOutput(ctx, dir, "diff", "--name-only", "-z", base, local)
+	out, err := gitRawOutput(ctx, dir, "diff", "--no-renames", "--name-only", "-z", base, local)
 	if err != nil {
 		return nil, false
 	}
@@ -922,7 +935,7 @@ func gitRawOutput(ctx context.Context, dir string, args ...string) ([]byte, erro
 
 func treeMatchesOnPaths(ctx context.Context, dir, local, pushed string, paths []string) bool {
 	for start := 0; start < len(paths); {
-		args := []string{"diff", "--quiet", "--no-ext-diff", local, pushed, "--"}
+		args := []string{"--literal-pathspecs", "diff", "--quiet", "--no-ext-diff", local, pushed, "--"}
 		argBytes := 0
 		end := start
 		for end < len(paths) {

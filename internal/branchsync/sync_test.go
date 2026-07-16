@@ -260,6 +260,15 @@ func TestEquivalentButDivergedClassification(t *testing.T) {
 			wantSafe:  "safe_equivalent_advance",
 		},
 		{
+			name: "squashed local work then same path pipeline fix",
+			commits: []pipelineCommit{
+				{message: "feature squashed", files: map[string]string{"file.txt": "feature\n", "second.txt": "second\n"}},
+				{message: "pipeline same path fix", files: map[string]string{"file.txt": "feature\npipeline fix\n"}},
+			},
+			wantState: StateDiverged,
+			wantSafe:  "safe_equivalent_advance",
+		},
+		{
 			name: "pipeline extra before equivalent work",
 			commits: []pipelineCommit{
 				{message: "pipeline extra", files: map[string]string{"doc.txt": "pipeline doc\n"}},
@@ -289,6 +298,22 @@ func TestEquivalentButDivergedClassification(t *testing.T) {
 				t.Fatalf("state = %#v", state)
 			}
 		})
+	}
+}
+
+func TestEquivalentDivergenceRefusesRenameSourceOmission(t *testing.T) {
+	f := newSyncFixture(t)
+	mustRun(t, f.local, "config", "diff.renames", "true")
+	mustRun(t, f.local, "mv", "file.txt", "renamed.txt")
+	mustRun(t, f.local, "commit", "-m", "rename feature file")
+	f.old = mustRun(t, f.local, "rev-parse", "HEAD")
+	rebuildPipelineHead(t, f, []pipelineCommit{
+		{message: "feature copied", files: map[string]string{"file.txt": "feature\n", "renamed.txt": "feature\n"}},
+	})
+
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateDiverged || state.Relation != RelationDiverged || state.Safety != "blocked_diverged" || state.Changed {
+		t.Fatalf("state = %#v", state)
 	}
 }
 
