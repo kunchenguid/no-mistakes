@@ -98,8 +98,10 @@ Run the pipeline and decide on its findings as they come up:
    return for a while. That is normal; allow a long timeout and do not cancel
    or re-issue the command because it seems slow. To check progress without
    disturbing the run, use `no-mistakes axi status` from a separate call.
-   A long-running call is working, not stalled - background it if your harness
-   needs to, but the run **never advances past a gate on its own**. Read every
+   A long-running call is working, not stalled. In Codex-supervised work, never
+   put `axi run`, `axi respond`, `axi watch`, or status polling in a
+   background terminal or `run_in_background` task. Keep one foreground process bound to
+   the active turn. The run **never advances past a gate on its own**: read every
    return; on a `gate:`, respond; loop until an `outcome:`. Never idle-wait
    for the run to move forward by itself.
    In agent-supervised work, keep `no-mistakes axi watch --run <id> --until attention`
@@ -297,7 +299,7 @@ help[6]:
   Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)
   Run `no-mistakes axi respond --action skip` to skip this step
   Run `no-mistakes axi logs --step review --full` to read the full step log
-  A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.
+  A long-running call is working, not stalled. In Codex-supervised work, never put `axi run`, `axi respond`, `axi watch`, or status polling in a background terminal or `run_in_background` task. Keep one foreground process bound to the active turn; on a `gate:`, respond; loop until an `outcome:`.
   Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits.
 ```
 
