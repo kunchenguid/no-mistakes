@@ -143,7 +143,7 @@ func TestSyncHelpAndReferenceExposeGuardedModes(t *testing.T) {
 	human := newSyncCmd()
 	agent := newAxiSyncCmd()
 	for name, content := range map[string]string{"human help": human.Long, "axi help": agent.Long} {
-		for _, want := range []string{"fast-forward", "clean", "push"} {
+		for _, want := range []string{"fast-forward", "clean", "push", "equivalent", "reset semantics"} {
 			if !strings.Contains(content, want) {
 				t.Errorf("%s missing %q: %s", name, want, content)
 			}

@@ -856,7 +856,7 @@ func equivalentDivergence(ctx context.Context, dir, local, pushed, base string) 
 	if treeMatchesOnPaths(ctx, dir, local, pushed, paths) {
 		return true
 	}
-	return finalPreservesLocalHunks(ctx, dir, base, local, pushed, paths)
+	return mergeTreePreservesFinalHead(ctx, dir, base, local, pushed)
 }
 
 func usableEquivalenceBase(ctx context.Context, dir, local, pushed, base string) string {
@@ -948,107 +948,16 @@ func treeMatchesOnPaths(ctx context.Context, dir, local, pushed string, paths []
 	return true
 }
 
-type diffHunk struct {
-	base    []string
-	removed []string
-	local   []string
-}
-
-func finalPreservesLocalHunks(ctx context.Context, dir, base, local, pushed string, paths []string) bool {
-	for _, path := range paths {
-		diff, err := gitRawOutput(ctx, dir, "--literal-pathspecs", "diff", "--no-ext-diff", "--no-color", "--no-renames", "-U3", base, local, "--", path)
-		if err != nil {
-			return false
-		}
-		hunks, ok := parseUnifiedHunks(diff)
-		if !ok || len(hunks) == 0 {
-			return false
-		}
-		pushedLines, pushedExists := gitFileLines(ctx, dir, pushed, path)
-		localLines, localExists := gitFileLines(ctx, dir, local, path)
-		if !localExists {
-			if pushedExists {
-				return false
-			}
-			continue
-		}
-		if len(localLines) == 0 && len(pushedLines) != 0 {
-			return false
-		}
-		for _, hunk := range hunks {
-			if len(hunk.local) > 0 && countLineSequence(pushedLines, hunk.local) != 1 {
-				return false
-			}
-			if len(hunk.removed) > 0 && countLineSequence(pushedLines, hunk.base) > 0 {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func parseUnifiedHunks(diff []byte) ([]diffHunk, bool) {
-	var hunks []diffHunk
-	var current *diffHunk
-	for _, line := range strings.Split(string(diff), "\n") {
-		if strings.HasPrefix(line, "@@ ") {
-			hunks = append(hunks, diffHunk{})
-			current = &hunks[len(hunks)-1]
-			continue
-		}
-		if current == nil || line == "" {
-			continue
-		}
-		switch {
-		case strings.HasPrefix(line, `\`):
-			continue
-		case strings.HasPrefix(line, " "):
-			current.base = append(current.base, line[1:])
-			current.local = append(current.local, line[1:])
-		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
-			current.local = append(current.local, line[1:])
-		case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
-			current.base = append(current.base, line[1:])
-			current.removed = append(current.removed, line[1:])
-		}
-	}
-	return hunks, true
-}
-
-func gitFileLines(ctx context.Context, dir, rev, path string) ([]string, bool) {
-	out, err := gitRawOutput(ctx, dir, "show", rev+":"+path)
+func mergeTreePreservesFinalHead(ctx context.Context, dir, base, local, pushed string) bool {
+	mergedTree, err := git.Run(ctx, dir, "merge-tree", "--write-tree", "--merge-base", base, pushed, local)
 	if err != nil {
-		return nil, false
+		return false
 	}
-	return splitLines(string(out)), true
-}
-
-func splitLines(s string) []string {
-	s = strings.TrimSuffix(s, "\n")
-	if s == "" {
-		return nil
+	pushedTree, err := git.Run(ctx, dir, "rev-parse", pushed+"^{tree}")
+	if err != nil {
+		return false
 	}
-	return strings.Split(s, "\n")
-}
-
-func countLineSequence(lines, want []string) int {
-	if len(want) == 0 || len(want) > len(lines) {
-		return 0
-	}
-	count := 0
-	for start := 0; start <= len(lines)-len(want); start++ {
-		match := true
-		for i, line := range want {
-			if lines[start+i] != line {
-				match = false
-				break
-			}
-		}
-		if match {
-			count++
-		}
-	}
-	return count
+	return mergedTree == pushedTree
 }
 
 func (s *Service) remoteName(ctx context.Context) string {

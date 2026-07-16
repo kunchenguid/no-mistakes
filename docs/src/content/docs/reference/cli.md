@@ -182,8 +182,8 @@ no-mistakes axi sync --recover --keep-local
 The default command is an explicit non-interactive apply request and never prompts.
 All modes return the complete `branch_sync` object as TOON.
 Exit code `0` means an eligible check, applied synchronization or recovery, already-synchronized or custody-returned no-op, or expected merged-and-removed no-op; blocked operational states return `1`.
-The ordinary worktree mutation is a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA.
-When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and advances to the pipeline head.
+The ordinary worktree mutation is either a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA, or an equivalent-diverged advance.
+When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and moves to the pipeline head with reset semantics.
 Genuine divergence still reports `safety: blocked_diverged` and changes nothing.
 Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head after relation-specific preservation checks.
 Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
@@ -284,7 +284,7 @@ Treat rerun as a between-runs action after a failed or cancelled outcome, or aft
 
 ## no-mistakes sync
 
-Freshly verify and, with confirmation, safely fast-forward the invoking branch to an exact pipeline-owned push binding.
+Freshly verify and, with confirmation, safely move the invoking branch to an exact pipeline-owned push binding.
 
 ```sh
 no-mistakes sync
@@ -297,13 +297,13 @@ no-mistakes sync --recover --keep-local
 | Flag           | Type   | Default | Description                                                     |
 | -------------- | ------ | ------- | --------------------------------------------------------------- |
 | `--check`      | `bool` | `false` | Verify and print the fresh plan without changing `HEAD`         |
-| `-y`, `--yes`  | `bool` | `false` | Apply an eligible strict fast-forward without an interactive prompt |
+| `-y`, `--yes`  | `bool` | `false` | Apply an eligible guarded synchronization without an interactive prompt |
 | `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits |
 | `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree |
 
 Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` prompts the same way before returning custody.
 A non-TTY apply or recovery refuses with a direct `--yes` hint.
-The command uses the same service and safety contract as `no-mistakes axi sync`, including the guarded custody recovery documented there; it never resets, stashes, rebases, creates a merge commit, switches branches, deletes a branch, or updates an external remote.
+The command uses the same service and safety contract as `no-mistakes axi sync`, including the guarded equivalent advance and custody recovery documented there; it never stashes, rebases, creates a merge commit, switches branches, deletes a branch, or updates an external remote.
 
 ## no-mistakes status
 

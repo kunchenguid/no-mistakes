@@ -219,7 +219,7 @@ Run the pipeline and decide on its findings as they come up:
 
 Before any post-pipeline local commit or fresh run, read the structured ` + "`branch_sync`" + ` object returned by AXI home, status, or a drive result.
 Only when its ` + "`next_action.code`" + ` is ` + "`sync`" + `, run ` + "`no-mistakes axi sync`" + ` first.
-That guarded sync may be a strict fast-forward or a content-equivalent diverged advance that anchors the pre-sync head before moving the branch; genuine divergence stays blocked.
+That guarded sync may be a strict fast-forward or a content-equivalent diverged advance that anchors the pre-sync head before moving the branch with reset semantics; genuine divergence stays blocked.
 If it reports an unpublished pipeline-owned update while the run is active, wait and keep driving the run without making local follow-up commits.
 When ` + "`next_action.code`" + ` is ` + "`recover_custody`" + `, a terminal run left unpublished pipeline commits preserved in the local gate: run ` + "`no-mistakes axi sync --recover`" + ` to return custody and fast-forward to the preserved head, or ` + "`no-mistakes rerun`" + ` to resume validating it instead.
 A dirty or diverged worktree makes the recovery refuse with explicit choices; ` + "`--keep-local`" + ` keeps your current head while the preserved commits stay anchored under ` + "`refs/no-mistakes/recover/<run>`" + `.
@@ -286,7 +286,7 @@ run without checking back.
 no-mistakes axi               # home view: current branch, active runs, next steps
 no-mistakes axi status        # full detail plus cached branch_sync when relevant
 no-mistakes axi sync --check  # freshly verify an offered synchronization plan
-no-mistakes axi sync          # apply only an offered exact safe fast-forward
+no-mistakes axi sync          # apply only an offered guarded synchronization
 no-mistakes axi sync --recover  # return custody after a terminal run left unpublished pipeline commits
 no-mistakes axi logs --step <name> --full   # full log output of one step
 no-mistakes axi abort         # cancel the current-branch active run
