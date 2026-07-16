@@ -5,7 +5,6 @@ Thanks for wanting to contribute. One rule up front:
 **All pull requests to this repository must be raised through `no-mistakes`.**
 
 This repo _is_ no-mistakes. Contributions should be done using the tool itself, which reduces the maintainer's burden of reviewing and merging contributions.
-A GitHub Actions check (`Require no-mistakes`) runs on every PR and fails if the body is missing the deterministic signature that no-mistakes writes. PRs without it will not be reviewed or merged.
 
 ## Workflow
 

@@ -133,7 +133,7 @@ Safest local verification sequence after non-trivial changes:
 **Generated PR Body Sections (`internal/pipeline/steps/pr.go`, `prsummary.go`)**
 
 - Generated PR bodies compose only Intent, Risk Assessment, and Testing sections (`BuildRiskLine`, `BuildTestingSummaryForPR`); there is no `## Pipeline` section and no self-referential "Updates from git push no-mistakes" signature in PR bodies as of the branding-removal change - do not reintroduce either. `isGeneratedSectionHeading` still strips an agent-hallucinated `## Pipeline` heading as a defense-in-depth measure, but nothing regenerates it.
-- Open issue: `.github/workflows/no-mistakes-required.yml` still greps every PR body for that removed marker to enforce (per `CONTRIBUTING.md`) that PRs to this repo were raised through no-mistakes itself; with the marker gone, that required check and its pinning test (`workflow_no_mistakes_required_test.go`, `TestNoMistakesRequiredWorkflowChecksSignatureMarker`) are red until a maintainer decides what replaces that enforcement signal (drop it, or move it to a non-PR-body signal like a commit trailer).
+- The `Require no-mistakes` GitHub Actions check that grepped PR bodies for that marker was deliberately removed along with it (deleted `.github/workflows/no-mistakes-required.yml` and its pinning test) - there is intentionally no automated enforcement that PRs to this repo were raised through no-mistakes itself, and no replacement signal (no commit trailer, no Checks API). Do not reintroduce this without an explicit ask.
 
 **Telemetry Shape**
 
