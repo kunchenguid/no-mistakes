@@ -21,6 +21,7 @@ type geminiAgent struct {
 func (a *geminiAgent) Name() string { return "gemini" }
 
 const geminiMaxRetries = 3
+const geminiScannerMaxTokenSize = 256 * 1024 * 1024
 
 func geminiRetryClassifier(err error) (string, bool) {
 	if strings.Contains(err.Error(), "429") || strings.Contains(strings.ToLower(err.Error()), "quota exceeded") {
@@ -104,7 +105,7 @@ func (a *geminiAgent) buildArgs(prompt string, schema json.RawMessage) []string 
 		"--output-format", "stream-json",
 	)
 	if !geminiUserSetModel(a.extraArgs) {
-		args = append(args, "--model", "gemini-3.1-pro-preview")
+		args = append(args, "--model", "gemini-3.1-pro-preview-customtools")
 	}
 	if !geminiUserSetPermissionMode(a.extraArgs) {
 		args = append(args, "-y", "--no-sandbox")
@@ -148,7 +149,7 @@ type geminiResult struct {
 
 func parseGeminiEvents(ctx context.Context, r io.Reader, onChunk func(string), usage *TokenUsage, result **geminiResult) error {
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), claudeScannerMaxTokenSize)
+	scanner.Buffer(make([]byte, 0, 64*1024), geminiScannerMaxTokenSize)
 	var textBuf string
 
 	for scanner.Scan() {
@@ -188,6 +189,11 @@ func parseGeminiEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 				}
 				usage.InputTokens = event.Stats.InputTokens
 				usage.OutputTokens = event.Stats.OutputTokens
+			}
+		default:
+			textBuf += string(line) + "\n"
+			if onChunk != nil {
+				onChunk(string(line) + "\n")
 			}
 		}
 	}

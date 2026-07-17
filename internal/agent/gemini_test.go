@@ -13,7 +13,7 @@ func TestGeminiAgent_BuildArgs(t *testing.T) {
 	expected := []string{
 		"-p", "do something\n\nCRITICAL: You must output your final answer as a single structured JSON block. Wrap your JSON in standard markdown fences (```json ... ```) so it can be extracted. It must strictly match this schema:\n```json\n{\"type\":\"object\"}\n```",
 		"--output-format", "stream-json",
-		"--model", "gemini-3.1-pro-preview",
+		"--model", "gemini-3.1-pro-preview-customtools",
 		"-y",
 		"--no-sandbox",
 	}
@@ -41,13 +41,13 @@ func TestGeminiAgent_BuildArgs_UserSetModel(t *testing.T) {
 
 		hasDefault := false
 		for _, a := range args {
-			if a == "gemini-3.1-pro-preview" {
+			if a == "gemini-3.1-pro-preview-customtools" {
 				hasDefault = true
 			}
 		}
 		// The custom extraArgs should provide one instance, and we should NOT add the default
 		if hasDefault {
-			t.Errorf("extra=%v expected no default gemini-3.1-pro-preview, got args: %v", extra, args)
+			t.Errorf("extra=%v expected no default gemini-3.1-pro-preview-customtools, got args: %v", extra, args)
 		}
 	}
 }
