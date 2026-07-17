@@ -48,6 +48,26 @@ func TestCommitRenderFixMessage_NormalizesMultilineSummary(t *testing.T) {
 	}
 }
 
+func TestCommitRenderFixMessage_RejectsUnsafeCharacters(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"bell control":                "chore:\a {{.Summary}}",
+		"escape control":              "chore:\x1b {{.Summary}}",
+		"unicode line separator":      "chore:\u2028{{.Summary}}",
+		"unicode paragraph separator": "chore:\u2029{{.Summary}}",
+	}
+	for name, source := range tests {
+		name, source := name, source
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := (Commit{FixMessage: source}).RenderFixMessage(types.StepReview, "apply fixes"); err == nil {
+				t.Fatal("RenderFixMessage() accepted an unsafe character")
+			}
+		})
+	}
+}
+
 func TestLoadGlobal_CommitFixMessage(t *testing.T) {
 	t.Parallel()
 
@@ -70,13 +90,17 @@ func TestLoadGlobal_CommitFixMessage(t *testing.T) {
 
 func TestLoadGlobal_RejectsInvalidCommitFixMessage(t *testing.T) {
 	tests := map[string]string{
-		"unknown variable":  "commit:\n  fix_message: '{{.Unknown}}'\n",
-		"template function": "commit:\n  fix_message: '{{printf \"%s\" .Summary}}'\n",
-		"conditional":       "commit:\n  fix_message: '{{if .Summary}}{{.Summary}}{{end}}'\n",
-		"named template":    "commit:\n  fix_message: '{{define \"loop\"}}{{template \"loop\"}}{{end}}{{template \"loop\"}}'\n",
-		"malformed syntax":  "commit:\n  fix_message: '{{'\n",
-		"empty template":    "commit:\n  fix_message: ''\n",
-		"multiline output":  "commit:\n  fix_message: |-\n    first line\n    second line\n",
+		"unknown variable":    "commit:\n  fix_message: '{{.Unknown}}'\n",
+		"template function":   "commit:\n  fix_message: '{{printf \"%s\" .Summary}}'\n",
+		"conditional":         "commit:\n  fix_message: '{{if .Summary}}{{.Summary}}{{end}}'\n",
+		"named template":      "commit:\n  fix_message: '{{define \"loop\"}}{{template \"loop\"}}{{end}}{{template \"loop\"}}'\n",
+		"malformed syntax":    "commit:\n  fix_message: '{{'\n",
+		"empty template":      "commit:\n  fix_message: ''\n",
+		"multiline output":    "commit:\n  fix_message: |-\n    first line\n    second line\n",
+		"bell control":        "commit:\n  fix_message: \"chore:\\u0007 {{.Summary}}\"\n",
+		"escape control":      "commit:\n  fix_message: \"chore:\\u001b {{.Summary}}\"\n",
+		"line separator":      "commit:\n  fix_message: \"chore:\\u2028{{.Summary}}\"\n",
+		"paragraph separator": "commit:\n  fix_message: \"chore:\\u2029{{.Summary}}\"\n",
 	}
 	for name, data := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -114,11 +138,19 @@ func TestLoadRepo_CommitFixMessage(t *testing.T) {
 }
 
 func TestLoadRepo_RejectsInvalidCommitFixMessage(t *testing.T) {
-	t.Parallel()
-
-	_, err := LoadRepoFromBytes([]byte("commit:\n  fix_message: '{{.Unknown}}'\n"))
-	if err == nil {
-		t.Fatal("LoadRepoFromBytes() accepted an invalid commit.fix_message")
+	tests := map[string]string{
+		"unknown variable": "commit:\n  fix_message: '{{.Unknown}}'\n",
+		"escape control":   "commit:\n  fix_message: \"chore:\\u001b {{.Summary}}\"\n",
+		"line separator":   "commit:\n  fix_message: \"chore:\\u2028{{.Summary}}\"\n",
+	}
+	for name, data := range tests {
+		name, data := name, data
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := LoadRepoFromBytes([]byte(data)); err == nil {
+				t.Fatal("LoadRepoFromBytes() accepted an invalid commit.fix_message")
+			}
+		})
 	}
 }
 

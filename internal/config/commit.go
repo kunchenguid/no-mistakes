@@ -6,6 +6,7 @@ import (
 	"strings"
 	"text/template"
 	"text/template/parse"
+	"unicode"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -67,14 +68,23 @@ func (c Commit) RenderFixMessage(step types.StepName, summary string) (string, e
 		return "", fmt.Errorf("render commit.fix_message template: %w", err)
 	}
 	message := rendered.String()
-	if strings.ContainsAny(message, "\r\n\x00") {
-		return "", fmt.Errorf("commit.fix_message must render to a single-line message without NUL bytes")
+	if containsUnsafeFixMessageRune(message) {
+		return "", fmt.Errorf("commit.fix_message must not contain control characters or Unicode line separators")
 	}
 	message = strings.TrimSpace(message)
 	if message == "" {
 		return "", fmt.Errorf("commit.fix_message must render to a non-empty message")
 	}
 	return message, nil
+}
+
+func containsUnsafeFixMessageRune(message string) bool {
+	for _, r := range message {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return true
+		}
+	}
+	return false
 }
 
 func validateFixMessageTemplate(tmpl *template.Template) error {

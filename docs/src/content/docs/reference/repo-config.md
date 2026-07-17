@@ -238,7 +238,7 @@ Override the auto-fix commit subject template for this repository.
 The template supports literal text plus direct `{{.Step}}` and `{{.Summary}}` placeholders.
 `{{.Step}}` expands to the pipeline step name, and `{{.Summary}}` expands to the sanitized one-line fix summary or the step's deterministic fallback summary.
 The value must render to a non-empty, single-line commit subject.
-Template functions, control actions, named templates, unknown placeholders, malformed syntax, multiline output, and NUL bytes cause configuration loading to fail.
+Template functions, control actions, named templates, unknown placeholders, malformed syntax, control characters, and Unicode line or paragraph separators cause configuration loading to fail.
 The setting applies to the Review, Test, Document, and Lint fix path, not commits created by the Rebase, CI, or Push steps.
 
 This non-executing field is read from the pushed branch, so a branch can adopt its own commit convention without enabling `allow_repo_commands`.
