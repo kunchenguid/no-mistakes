@@ -2,6 +2,9 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,12 +12,98 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/authorization"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestManagedPushDenialHappensBeforeRunRow(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+	repo, headSHA := setupTestGitRepo(t, p, d, "managed-denied-repo")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request authorization.Request
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(authorization.Response{
+			ProtocolVersion: request.ProtocolVersion, RequestID: request.RequestID, Operation: request.Operation,
+			TaskID: request.TaskID, RuntimeGeneration: request.RuntimeGeneration, SessionID: request.SessionID,
+			ProjectPath: request.ProjectPath, Repository: request.Repository, WorktreePath: request.WorktreePath,
+			Branch: request.Branch, DurableMode: "direct-PR", Allowed: false, Reason: "durable_task_mode_denied",
+		})
+	}))
+	defer server.Close()
+	authContext := authorization.Context{
+		Managed: true, VerifierURL: server.URL, Token: "secret", TaskID: "task-1", RuntimeGeneration: 1,
+		SessionID: "session-1", ProjectPath: repo.WorkingPath, Repository: authorization.CanonicalRepository(repo.UpstreamURL),
+		WorktreePath: repo.WorkingPath, Branch: "main", DurableMode: "no-mistakes",
+	}
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: strings.Repeat("0", 40), New: headSHA,
+		Authorization: authContext.Wire(),
+	}, &result)
+	if err == nil {
+		t.Fatal("managed direct push should be denied")
+	}
+	runs, err := d.GetRunsByRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("denied push created %d run rows", len(runs))
+	}
+}
+
+func TestManagedPushAllowsExactScopeAndMarksRunManaged(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+	repo, headSHA := setupTestGitRepo(t, p, d, "managed-allowed-repo")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request authorization.Request
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(authorization.Response{
+			ProtocolVersion: request.ProtocolVersion, RequestID: request.RequestID, Operation: request.Operation,
+			TaskID: request.TaskID, RuntimeGeneration: request.RuntimeGeneration, SessionID: request.SessionID,
+			ProjectPath: request.ProjectPath, Repository: request.Repository, WorktreePath: request.WorktreePath,
+			Branch: request.Branch, DurableMode: request.DurableMode, Allowed: true, Reason: "authorized",
+		})
+	}))
+	defer server.Close()
+	authContext := authorization.Context{
+		Managed: true, VerifierURL: server.URL, Token: "secret", TaskID: "task-1", RuntimeGeneration: 1,
+		SessionID: "session-1", ProjectPath: repo.WorkingPath, Repository: authorization.CanonicalRepository(repo.UpstreamURL),
+		WorktreePath: repo.WorkingPath, Branch: "main", DurableMode: "no-mistakes",
+	}
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: strings.Repeat("0", 40), New: headSHA,
+		Authorization: authContext.Wire(),
+	}, &result); err != nil {
+		t.Fatal(err)
+	}
+	run := waitForRunTerminalState(t, d, result.RunID)
+	if !run.ManagedAuthorization {
+		t.Fatal("allowed managed run was not marked managed")
+	}
+}
 
 // --- RunManager integration tests ---
 

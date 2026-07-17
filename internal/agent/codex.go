@@ -58,6 +58,9 @@ func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 }
 
 func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+	if err := authorizeLaunch(ctx, opts); err != nil {
+		return nil, err
+	}
 	schemaPath := ""
 	validationSchema := opts.JSONSchema
 	if len(opts.JSONSchema) > 0 {

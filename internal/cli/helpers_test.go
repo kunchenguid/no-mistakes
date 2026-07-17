@@ -61,6 +61,15 @@ func init() {
 }
 
 func TestMain(m *testing.M) {
+	// Managed orchestration context from the process running `go test` must not
+	// reinterpret standalone CLI tests. Individual managed tests set their own
+	// complete or deliberately partial context with t.Setenv.
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "PERCH_") || strings.HasPrefix(key, "NO_MISTAKES_AUTHORIZATION_") {
+			_ = os.Unsetenv(key)
+		}
+	}
 	base := os.TempDir()
 	if runtime.GOOS != "windows" {
 		base = "/tmp"

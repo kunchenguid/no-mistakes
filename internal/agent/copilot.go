@@ -35,6 +35,9 @@ func (a *copilotAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 func (a *copilotAgent) Close() error { return nil }
 
 func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+	if err := authorizeLaunch(ctx, opts); err != nil {
+		return nil, err
+	}
 	prompt := buildCopilotPrompt(opts.Prompt, opts.JSONSchema)
 	args := a.buildArgs(prompt)
 	cmd := exec.CommandContext(ctx, a.bin, args...)

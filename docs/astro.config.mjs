@@ -52,6 +52,7 @@ export default defineConfig({
             { label: "Global Config", slug: "reference/global-config" },
             { label: "Repo Config", slug: "reference/repo-config" },
             { label: "Environment Variables", slug: "reference/environment" },
+            { label: "Managed Authorization", slug: "reference/managed-authorization" },
           ],
         },
       ],

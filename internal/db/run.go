@@ -28,6 +28,7 @@ type Run struct {
 	LastPushedAt          *int64
 	PushGeneration        *int64
 	PushActive            bool
+	ManagedAuthorization  bool
 	// CustodyReturnedAt is non-nil once a guarded branch-sync recovery
 	// explicitly ended this run's ownership of an unpublished pipeline head
 	// (terminal run whose head was never successfully pushed, or moved after
@@ -54,7 +55,7 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), COALESCE(managed_authorization, 0), custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -64,7 +65,7 @@ func scanRun(row interface {
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive,
-		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
+		&r.ManagedAuthorization, &r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -72,21 +73,28 @@ func scanRun(row interface {
 
 // InsertRun creates a new run record.
 func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
+	return d.InsertRunWithManagedAuthorization(repoID, branch, headSHA, baseSHA, false)
+}
+
+// InsertRunWithManagedAuthorization atomically records whether this run needs
+// a live external verifier. It never persists the verifier token or scope.
+func (d *DB) InsertRunWithManagedAuthorization(repoID, branch, headSHA, baseSHA string, managed bool) (*Run, error) {
 	ts := now()
 	r := &Run{
-		ID:               newID(),
-		RepoID:           repoID,
-		Branch:           branch,
-		HeadSHA:          headSHA,
-		BaseSHA:          baseSHA,
-		SubmittedHeadSHA: &headSHA,
-		Status:           types.RunPending,
-		CreatedAt:        ts,
-		UpdatedAt:        ts,
+		ID:                   newID(),
+		RepoID:               repoID,
+		Branch:               branch,
+		HeadSHA:              headSHA,
+		BaseSHA:              baseSHA,
+		SubmittedHeadSHA:     &headSHA,
+		Status:               types.RunPending,
+		ManagedAuthorization: managed,
+		CreatedAt:            ts,
+		UpdatedAt:            ts,
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.Status, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_state, managed_authorization, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.Status, r.ManagedAuthorization, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)

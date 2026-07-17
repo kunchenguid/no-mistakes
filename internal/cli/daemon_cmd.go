@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/authorization"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/lifecycle"
@@ -52,6 +53,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			authContext, err := authorization.FromEnvironment(os.Environ())
+			if err != nil {
+				return err
+			}
 			skipSteps, err := parseSkipPushOptions(pushOptions)
 			if err != nil {
 				return err
@@ -78,12 +83,13 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:      gatePath,
-				Ref:       ref,
-				Old:       oldSHA,
-				New:       newSHA,
-				SkipSteps: skipSteps,
-				Intent:    intent,
+				Gate:          gatePath,
+				Ref:           ref,
+				Old:           oldSHA,
+				New:           newSHA,
+				SkipSteps:     skipSteps,
+				Intent:        intent,
+				Authorization: authContext.Wire(),
 			}, &result)
 		},
 	}

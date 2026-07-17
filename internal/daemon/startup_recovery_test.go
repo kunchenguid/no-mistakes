@@ -3,6 +3,7 @@ package daemon
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -84,6 +85,39 @@ func TestRecoverOnStartup_DoesNotDeleteActiveRunWorktree(t *testing.T) {
 	}
 	if got.Status != types.RunPending {
 		t.Fatalf("expected active run to remain pending, got %s", got.Status)
+	}
+}
+
+func TestManagedRunRecoveryFailsClosedWithoutLiveAuthorization(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	repo, err := d.InsertRepoWithID("managed-repo", "/repo", "https://github.com/acme/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRunWithManagedAuthorization(repo.ID, "feature", "head", "base", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	failManagedRunsOnStartup(d)
+
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != types.RunFailed || got.Error == nil || !strings.Contains(*got.Error, "managed authorization unavailable") {
+		t.Fatalf("managed recovery result = %#v", got)
 	}
 }
 

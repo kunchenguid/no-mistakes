@@ -2,8 +2,10 @@ package ipc
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync/atomic"
 
+	"github.com/kunchenguid/no-mistakes/internal/authorization"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -70,7 +72,17 @@ type PushReceivedParams struct {
 	New       string           `json:"new"`
 	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
 	Intent    string           `json:"intent,omitempty"`
+	// Authorization is transient local-IPC capability context. It is never
+	// returned by diagnostic APIs or persisted in the run database.
+	Authorization *authorization.WireContext `json:"authorization,omitempty"`
 }
+
+func (p PushReceivedParams) String() string {
+	return fmt.Sprintf("PushReceivedParams{Gate:%q Ref:%q Old:%q New:%q SkipSteps:%v IntentSet:%t Managed:%t}",
+		p.Gate, p.Ref, p.Old, p.New, p.SkipSteps, p.Intent != "", p.Authorization != nil && p.Authorization.Managed)
+}
+
+func (p PushReceivedParams) GoString() string { return p.String() }
 
 // GetRunParams requests a single run by ID.
 type GetRunParams struct {
@@ -102,11 +114,19 @@ type GetActiveRunParams struct {
 // RerunParams requests a new run for the latest gate head on a branch.
 // Intent, when set, is stamped onto the new run like PushReceivedParams.Intent.
 type RerunParams struct {
-	RepoID    string           `json:"repo_id"`
-	Branch    string           `json:"branch"`
-	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
-	Intent    string           `json:"intent,omitempty"`
+	RepoID        string                     `json:"repo_id"`
+	Branch        string                     `json:"branch"`
+	SkipSteps     []types.StepName           `json:"skip_steps,omitempty"`
+	Intent        string                     `json:"intent,omitempty"`
+	Authorization *authorization.WireContext `json:"authorization,omitempty"`
 }
+
+func (p RerunParams) String() string {
+	return fmt.Sprintf("RerunParams{RepoID:%q Branch:%q SkipSteps:%v IntentSet:%t Managed:%t}",
+		p.RepoID, p.Branch, p.SkipSteps, p.Intent != "", p.Authorization != nil && p.Authorization.Managed)
+}
+
+func (p RerunParams) GoString() string { return p.String() }
 
 // SubscribeParams starts an event stream for a run.
 type SubscribeParams struct {

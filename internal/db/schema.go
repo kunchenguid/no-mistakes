@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS runs (
     last_pushed_at          INTEGER,
     push_generation         INTEGER,
     push_active             INTEGER NOT NULL DEFAULT 0,
+    managed_authorization   INTEGER NOT NULL DEFAULT 0,
     error                   TEXT,
     awaiting_agent_since INTEGER,
     parked_ms            INTEGER,
@@ -163,6 +164,9 @@ var migrationStatements = []string{
 	// unpublished head this run produced; a timestamp means an explicit
 	// guarded recovery ended that ownership (internal/branchsync).
 	`ALTER TABLE runs ADD COLUMN custody_returned_at INTEGER`,
+	// Only the non-secret managed marker is durable. Verifier credentials and
+	// scope stay in daemon memory and are deliberately unrecoverable.
+	`ALTER TABLE runs ADD COLUMN managed_authorization INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,

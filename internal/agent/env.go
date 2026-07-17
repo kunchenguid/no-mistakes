@@ -1,6 +1,9 @@
 package agent
 
-import "github.com/kunchenguid/no-mistakes/internal/git"
+import (
+	"github.com/kunchenguid/no-mistakes/internal/authorization"
+	"github.com/kunchenguid/no-mistakes/internal/git"
+)
 
 // GateRoleEnvVar is exported into every spawned gate agent's environment as an
 // unspoofable-from-outside marker that the process is a no-mistakes gate agent
@@ -27,5 +30,5 @@ const GateRoleEnvVar = "NO_MISTAKES_GATE"
 // dir must be the value assigned to cmd.Dir so PWD stays coupled to the working
 // directory; see git.NonInteractiveEnv for why this matters.
 func gitSafeEnv(dir string) []string {
-	return append(git.NonInteractiveEnv(dir), GateRoleEnvVar+"=1")
+	return append(authorization.ScrubEnvironment(git.NonInteractiveEnv(dir)), GateRoleEnvVar+"=1")
 }

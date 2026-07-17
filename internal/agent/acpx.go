@@ -32,6 +32,9 @@ func (a *acpxAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 }
 
 func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+	if err := authorizeLaunch(ctx, opts); err != nil {
+		return nil, err
+	}
 	args := a.buildArgs(opts)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD

@@ -11,6 +11,7 @@ import (
 
 	toon "github.com/toon-format/toon-go"
 
+	"github.com/kunchenguid/no-mistakes/internal/authorization"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
@@ -122,7 +123,12 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 	}
 
 	runID := activeRunID(env, branch, headSHA)
+	var authContext authorization.Context
 	if runID == "" {
+		authContext, err = authorization.FromEnvironment(os.Environ())
+		if err != nil {
+			return emitError(cmd, 1, err.Error())
+		}
 		if err := configErrorForFreshAxiRun(env, runID); err != nil {
 			return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 		}
@@ -141,8 +147,17 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 		if guard := preflightGuard(ctx, env, branch); guard != nil {
 			return guard(cmd)
 		}
-		var err error
-		runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent)
+		worktreePath, err := git.FindGitRoot(".")
+		if err != nil {
+			return emitError(cmd, 1, fmt.Sprintf("resolve managed worktree: %v", err))
+		}
+		if err := authContext.ValidateLocalScope(env.repo.WorkingPath, env.repo.UpstreamURL, worktreePath, branch); err != nil {
+			return emitError(cmd, 1, err.Error())
+		}
+		if err := authContext.Authorize(ctx, authorization.OperationRun); err != nil {
+			return emitError(cmd, 1, err.Error())
+		}
+		runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent, authContext)
 		if err != nil {
 			return emitError(cmd, 1, err.Error())
 		}
@@ -219,7 +234,7 @@ func preflightGuard(ctx context.Context, env *axiEnv, branch string) func(*cobra
 // the gate to trigger a pipeline, and falls back to a rerun when the push was a
 // no-op (the gate already had this commit). Callers must check for an existing
 // active run first (see activeRunID) and apply pre-flight guards.
-func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent string) (string, error) {
+func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent string, authContext authorization.Context) (string, error) {
 	pushOptions := formatSkipPushOptions(skipSteps)
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
@@ -242,7 +257,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	// No run appeared: the push was likely up-to-date. Rerun the latest gate
 	// head so `axi run` is still useful when there are no new commits.
 	var rr ipc.RerunResult
-	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent), &rr); err != nil {
+	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent, authContext), &rr); err != nil {
 		return "", fmt.Errorf("no run started for %q: %v", branch, err)
 	}
 	return rr.RunID, nil
@@ -326,8 +341,12 @@ func activeRunLookupParams(repoID, branch string) *ipc.GetActiveRunParams {
 	return &ipc.GetActiveRunParams{RepoID: repoID, Branch: branch}
 }
 
-func rerunParams(repoID, branch string, skipSteps []types.StepName, intent string) *ipc.RerunParams {
-	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent}
+func rerunParams(repoID, branch string, skipSteps []types.StepName, intent string, authContexts ...authorization.Context) *ipc.RerunParams {
+	params := &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent}
+	if len(authContexts) > 0 {
+		params.Authorization = authContexts[0].Wire()
+	}
+	return params
 }
 
 // driveRun polls a run until it reaches an approval gate, a terminal state, or

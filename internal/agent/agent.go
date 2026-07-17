@@ -52,6 +52,9 @@ type RunOpts struct {
 	// fallback-provider attempts, after it completes. It is instrumentation
 	// only and must not change invocation behavior.
 	OnAttempt func(Attempt)
+	// AuthorizeLaunch is called immediately before every concrete external
+	// agent attempt, including retries and fallback-provider attempts.
+	AuthorizeLaunch func(context.Context) error
 }
 
 // Attempt describes one completed concrete adapter attempt for an agent

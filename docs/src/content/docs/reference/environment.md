@@ -23,6 +23,31 @@ When set, everything else moves under this root:
 - Managed agent server PID records: `$NM_HOME/servers/`
 - Managed service names get a short stable suffix derived from `$NM_HOME` so multiple installs don't collide.
 
+## Managed authorization
+
+These variables opt one process into the [versioned managed authorization protocol](/no-mistakes/reference/managed-authorization/).
+The presence of any variable in the selected family activates managed parsing, and an incomplete family fails closed.
+They are transient capabilities and must not be stored in shell profiles, git configuration, repository files, or daemon service definitions.
+
+Provider-neutral integrations set:
+
+| Variable | Value |
+| -------- | ----- |
+| `NO_MISTAKES_AUTHORIZATION_MODE` | `managed` |
+| `NO_MISTAKES_AUTHORIZATION_URL` | Verifier HTTP URL |
+| `NO_MISTAKES_AUTHORIZATION_TOKEN` | Short-lived bearer token |
+| `NO_MISTAKES_AUTHORIZATION_TASK_ID` | Durable task ID |
+| `NO_MISTAKES_AUTHORIZATION_RUNTIME_GENERATION` | Live runtime generation |
+| `NO_MISTAKES_AUTHORIZATION_SESSION_ID` | Live session ID |
+| `NO_MISTAKES_AUTHORIZATION_PROJECT` | Canonical project path |
+| `NO_MISTAKES_AUTHORIZATION_REPOSITORY` | Canonical credential-free repository identity |
+| `NO_MISTAKES_AUTHORIZATION_WORKTREE` | Canonical worktree path |
+| `NO_MISTAKES_AUTHORIZATION_BRANCH` | Exact branch |
+| `NO_MISTAKES_AUTHORIZATION_DURABLE_MODE` | `no-mistakes` |
+
+The built-in Perch adapter reads `PERCH_HOOK_URL`, `PERCH_HOOK_TOKEN`, `PERCH_SESSION_ID`, `PERCH_TASK_ID`, `PERCH_RUNTIME_GENERATION`, `PERCH_TASK_PROJECT`, `PERCH_TASK_REPOSITORY`, `PERCH_TASK_WORKTREE`, `PERCH_TASK_BRANCH`, and `PERCH_TASK_MODE`.
+It derives the verifier endpoint from `PERCH_HOOK_URL` and uses the existing hook-token headers.
+
 ## `NM_DAEMON_CONNECT_TIMEOUT`
 
 Override how long a CLI client waits for an existing daemon socket to accept a connection before failing instead of hanging.

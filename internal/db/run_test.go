@@ -1,10 +1,42 @@
 package db
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestInsertManagedRunPersistsOnlyManagedMarker(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/repo", "https://github.com/acme/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRunWithManagedAuthorization(repo.ID, "feature", "abc123", "def456", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !run.ManagedAuthorization {
+		t.Fatal("managed marker was not returned")
+	}
+	loaded, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded == nil || !loaded.ManagedAuthorization {
+		t.Fatalf("managed marker was not persisted: %#v", loaded)
+	}
+	var schema string
+	if err := d.sql.QueryRow("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs'").Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"token", "credential", "verifier_url", "authorization_task", "authorization_session"} {
+		if strings.Contains(strings.ToLower(schema), forbidden) {
+			t.Fatalf("runs schema persists managed secret/scope field %q: %s", forbidden, schema)
+		}
+	}
+}
 
 func TestRunInsertAndGet(t *testing.T) {
 	d := openTestDB(t)

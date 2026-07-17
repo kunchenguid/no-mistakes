@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/authorization"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -105,6 +106,9 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 }
 
 func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*recoveredRunPlan, error) {
+	if run != nil && run.ManagedAuthorization {
+		return nil, fmt.Errorf("managed authorization is unavailable after daemon restart; start a new managed run")
+	}
 	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince == nil || run.Branch == "" {
 		return nil, fmt.Errorf("run is not a parked running run")
 	}
@@ -516,6 +520,23 @@ func assertGateTrustedConfigReadable(ctx context.Context, wtDir, defaultBranch, 
 // HandlePushReceived processes a push notification from the post-receive hook.
 // It creates a run, sets up a worktree, and launches pipeline execution in the background.
 func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushReceivedParams) (string, error) {
+	authContext := authorization.FromWire(params.Authorization)
+	if authContext.Managed {
+		repoID, err := repoIDFromGatePath(params.Gate)
+		if err != nil {
+			return "", err
+		}
+		repo, err := m.db.GetRepo(repoID)
+		if err != nil || repo == nil {
+			return "", fmt.Errorf("managed authorization denied: repository unavailable")
+		}
+		if err := authContext.ValidateLocalScope(repo.WorkingPath, repo.UpstreamURL, authContext.WorktreePath, branchFromRef(params.Ref)); err != nil {
+			return "", err
+		}
+		if err := authContext.Authorize(ctx, authorization.OperationGatePush); err != nil {
+			return "", err
+		}
+	}
 	// Ref deletion (git push remote :branch) sends new SHA as all-zeros.
 	// Nothing to validate - skip pipeline.
 	if git.IsZeroSHA(params.New) {
@@ -536,18 +557,30 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 
 	branch := branchFromRef(params.Ref)
-	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
+	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent, authContext)
 }
 
 // HandleRerun creates a new run for the latest gate head on a branch. An
 // optional intent is stamped onto the new run.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, skipSteps []types.StepName, intent string) (string, error) {
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, skipSteps []types.StepName, intent string, authContexts ...authorization.Context) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
 	}
 	if repo == nil {
 		return "", fmt.Errorf("unknown repo %s", repoID)
+	}
+	var authContext authorization.Context
+	if len(authContexts) > 0 {
+		authContext = authContexts[0]
+	}
+	if authContext.Managed {
+		if err := authContext.ValidateLocalScope(repo.WorkingPath, repo.UpstreamURL, authContext.WorktreePath, branch); err != nil {
+			return "", err
+		}
+		if err := authContext.Authorize(ctx, authorization.OperationRun); err != nil {
+			return "", err
+		}
 	}
 
 	gateDir := m.paths.RepoDir(repo.ID)
@@ -584,13 +617,13 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 		baseSHA = matchingHead.BaseSHA
 	}
 
-	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent)
+	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, authContext)
 }
 
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
-func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
+func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string, authContext authorization.Context) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -618,7 +651,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	m.cancelActiveRuns(repo.ID, branch)
 
 	// Create run record.
-	run, err := m.db.InsertRun(repo.ID, branch, headSHA, baseSHA)
+	run, err := m.db.InsertRunWithManagedAuthorization(repo.ID, branch, headSHA, baseSHA, authContext.Managed)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
@@ -761,6 +794,11 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			created = append(created, agent.WithSteering(next))
 		}
 		ag = agent.NewFallback(created)
+		if authContext.Managed {
+			ag = agent.WithLaunchAuthorization(ag, func(ctx context.Context) error {
+				return authContext.Authorize(ctx, authorization.OperationAgentLaunch)
+			})
+		}
 		// Fail closed ONLY under the trusted opt-out: when the repo asked to
 		// disable project settings, refuse any resolved harness that lacks a
 		// verified suppression knob rather than launch it with the target repo's

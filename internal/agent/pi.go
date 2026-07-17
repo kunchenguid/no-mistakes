@@ -34,6 +34,9 @@ func (a *piAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 func (a *piAgent) Close() error { return nil }
 
 func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+	if err := authorizeLaunch(ctx, opts); err != nil {
+		return nil, err
+	}
 	args := a.buildArgs()
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD

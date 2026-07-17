@@ -65,6 +65,9 @@ func (a *claudeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 }
 
 func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+	if err := authorizeLaunch(ctx, opts); err != nil {
+		return nil, err
+	}
 	resumeID := ""
 	if opts.Session != nil {
 		resumeID = opts.Session.ID

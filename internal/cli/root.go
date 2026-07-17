@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/kunchenguid/no-mistakes/internal/authorization"
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -57,7 +58,7 @@ func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "no-mistakes",
 		Short:   "Local Git proxy that validates code before pushing to the configured target",
-		Version: buildinfo.String(),
+		Version: buildinfo.String() + " authorization-protocol=" + authorization.ProtocolVersion,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			setColorProfileForOutput(cmd.OutOrStdout())
 		},

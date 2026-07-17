@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/authorization"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -267,6 +268,7 @@ func writeDaemonPIDFile(path string, record daemonPIDFile) error {
 func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	reapOrphanedServers(p)
 	migrateGateConfigs(context.Background(), p)
+	failManagedRunsOnStartup(d)
 
 	plans := mgr.recoverableParkedRuns(context.Background())
 	preserved := make(map[string]struct{}, len(plans))
@@ -287,6 +289,22 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 
 	cleanupOrphanWorktrees(d, p)
 	mgr.resumeRecoveredRuns(plans)
+}
+
+func failManagedRunsOnStartup(d *db.DB) {
+	runs, err := d.GetActiveRuns()
+	if err != nil {
+		slog.Error("failed to inspect managed runs during recovery", "error", err)
+		return
+	}
+	for _, run := range runs {
+		if !run.ManagedAuthorization {
+			continue
+		}
+		if err := d.UpdateRunError(run.ID, "managed authorization unavailable after daemon restart; start a new managed run"); err != nil {
+			slog.Error("failed to deny managed run recovery", "run_id", run.ID, "error", err)
+		}
+	}
 }
 
 // cleanupOrphanWorktrees removes worktree directories left behind by runs
@@ -485,7 +503,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.SkipSteps, p.Intent)
+		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.SkipSteps, p.Intent, authorization.FromWire(p.Authorization))
 		if err != nil {
 			return nil, err
 		}

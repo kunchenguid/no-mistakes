@@ -1,6 +1,10 @@
 package cli
 
 import (
+	"fmt"
+	"os"
+
+	"github.com/kunchenguid/no-mistakes/internal/authorization"
 	"github.com/kunchenguid/no-mistakes/internal/update"
 	"github.com/spf13/cobra"
 )
@@ -14,6 +18,9 @@ func newUpdateCmd() *cobra.Command {
 		Short: "Update no-mistakes and reset the daemon",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if authorization.IsManagedEnvironment(os.Environ()) {
+				return fmt.Errorf("self-update is disabled for a managed runtime; update it through the orchestrator package")
+			}
 			logLifecycleInvocation("update", force)
 			return trackCommand("update", func() error {
 				return update.Run(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), update.RunOptions{Beta: beta, Yes: yes, Force: force, Stdin: cmd.InOrStdin()})

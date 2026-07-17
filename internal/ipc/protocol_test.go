@@ -2,9 +2,12 @@ package ipc
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/authorization"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -125,11 +128,12 @@ func TestResponseError(t *testing.T) {
 
 func TestPushReceivedParams(t *testing.T) {
 	params := PushReceivedParams{
-		Gate:      "/path/to/gate.git",
-		Ref:       "refs/heads/main",
-		Old:       "aaa",
-		New:       "bbb",
-		SkipSteps: []types.StepName{types.StepTest, types.StepLint},
+		Gate:          "/path/to/gate.git",
+		Ref:           "refs/heads/main",
+		Old:           "aaa",
+		New:           "bbb",
+		SkipSteps:     []types.StepName{types.StepTest, types.StepLint},
+		Authorization: (&authorization.Context{Managed: true, Token: "ipc-secret"}).Wire(),
 	}
 	data, _ := json.Marshal(params)
 	var got PushReceivedParams
@@ -141,6 +145,12 @@ func TestPushReceivedParams(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.SkipSteps, params.SkipSteps) {
 		t.Errorf("skip_steps = %+v, want %+v", got.SkipSteps, params.SkipSteps)
+	}
+	if got.Authorization == nil || got.Authorization.Token != "ipc-secret" {
+		t.Fatal("transient authorization context did not cross IPC encoding")
+	}
+	if rendered := fmt.Sprintf("%#v", params); strings.Contains(rendered, "ipc-secret") {
+		t.Fatalf("IPC diagnostic leaked credential: %s", rendered)
 	}
 }
 
