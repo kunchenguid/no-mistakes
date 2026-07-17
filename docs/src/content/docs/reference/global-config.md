@@ -50,6 +50,9 @@ auto_fix:
   lint: 3
   ci: 3
 
+commit:
+  fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
+
 intent:
   enabled: true
   threshold: 0.2
@@ -302,6 +305,27 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 Legacy alias: `auto_fix.babysit`.
 
 These are global defaults. Per-repo config can override individual steps.
+
+### commit.fix_message
+
+Template for the subject of commits created by the shared Review, Test, Document, and Lint fix path.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | `no-mistakes({{.Step}}): {{.Summary}}` |
+
+The template supports literal text and two Go-style placeholders:
+
+| Variable | Value |
+|---|---|
+| `{{.Step}}` | Pipeline step name, such as `review`, `test`, `document`, or `lint` |
+| `{{.Summary}}` | Sanitized one-line summary returned by the fix agent, or the step's deterministic fallback summary |
+
+The value must be a valid template that renders to a non-empty, single-line commit subject.
+Template functions, control actions, named templates, unknown placeholders, malformed syntax, multiline output, and NUL bytes cause configuration loading to fail.
+The setting does not change commit subjects created by the Rebase, CI, or Push steps.
+A per-repo [`commit.fix_message`](/no-mistakes/reference/repo-config/#commitfix_message) value overrides this global setting.
 
 ### intent
 

@@ -119,13 +119,19 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 		sctx.Log("no agent changes to commit")
 		return nil
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
-		return fmt.Errorf("stage %s changes: %w", stepName, err)
-	}
 	if summary == "" {
 		summary = fallbackSummary
 	}
-	commitMessage := deterministicFixCommitMessage(stepName, summary)
+	if summary == "" {
+		summary = "apply fixes"
+	}
+	commitMessage, err := sctx.Config.Commit.RenderFixMessage(stepName, summary)
+	if err != nil {
+		return fmt.Errorf("render %s fix commit message: %w", stepName, err)
+	}
+	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+		return fmt.Errorf("stage %s changes: %w", stepName, err)
+	}
 	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", commitMessage); err != nil {
 		return fmt.Errorf("commit %s changes: %w", stepName, err)
 	}
@@ -159,13 +165,6 @@ func extractCommitSummary(result *agent.Result) (string, error) {
 	cleaned := strings.Join(strings.Fields(summary.Summary), " ")
 	cleaned = strings.Trim(cleaned, " \t\r\n\"'.;:,-")
 	return cleaned, nil
-}
-
-func deterministicFixCommitMessage(stepName types.StepName, summary string) string {
-	if summary == "" {
-		summary = "apply fixes"
-	}
-	return fmt.Sprintf("no-mistakes(%s): %s", stepName, summary)
 }
 
 // executeFixMode runs the fix agent and commits any resulting changes. It

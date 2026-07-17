@@ -12,7 +12,7 @@ The daemon also reads `document.instructions` and `disable_project_settings` onl
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, `auto_fix`, `intent`, `test`) are still read from the pushed branch.
+Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`) are still read from the pushed branch.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -47,6 +47,9 @@ auto_fix:
   document: 3
   lint: 5
   ci: 3
+
+commit:
+  fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
 
 intent:
   enabled: true
@@ -222,6 +225,24 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 `auto_fix.ci` covers the CI step's CI failure and merge-conflict auto-fix attempts.
 
 Legacy alias: `auto_fix.babysit`.
+
+### commit.fix_message
+
+Override the auto-fix commit subject template for this repository.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | Inherits from global config, whose default is `no-mistakes({{.Step}}): {{.Summary}}` |
+
+The template supports literal text plus direct `{{.Step}}` and `{{.Summary}}` placeholders.
+`{{.Step}}` expands to the pipeline step name, and `{{.Summary}}` expands to the sanitized one-line fix summary or the step's deterministic fallback summary.
+The value must render to a non-empty, single-line commit subject.
+Template functions, control actions, named templates, unknown placeholders, malformed syntax, multiline output, and NUL bytes cause configuration loading to fail.
+The setting applies to the Review, Test, Document, and Lint fix path, not commits created by the Rebase, CI, or Push steps.
+
+This non-executing field is read from the pushed branch, so a branch can adopt its own commit convention without enabling `allow_repo_commands`.
+See the [global `commit.fix_message` reference](/no-mistakes/reference/global-config/#commitfix_message) for the complete variable table and precedence.
 
 ### intent
 

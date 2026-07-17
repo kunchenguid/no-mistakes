@@ -595,6 +595,26 @@ func TestCommitAgentFixes_NoChanges(t *testing.T) {
 	}
 }
 
+func TestCommitAgentFixes_InvalidTemplateDoesNotStageChanges(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Commit = config.Commit{FixMessage: `{{printf "%s" .Summary}}`}
+
+	if err := os.WriteFile(filepath.Join(dir, "agent-change.txt"), []byte("change"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := commitAgentFixes(sctx, types.StepReview, "apply fix", "fallback"); err == nil {
+		t.Fatal("commitAgentFixes() accepted an invalid commit.fix_message")
+	}
+	if got := gitCmd(t, dir, "diff", "--cached", "--name-only"); got != "" {
+		t.Fatalf("staged files after template error = %q, want none", got)
+	}
+}
+
 func TestCommitAgentFixes_UsesFallbackSummary(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
