@@ -322,8 +322,14 @@ The template supports literal text and two Go-style placeholders:
 | `{{.Step}}` | Pipeline step name, such as `review`, `test`, `document`, or `lint` |
 | `{{.Summary}}` | Sanitized one-line summary returned by the fix agent, or the step's deterministic fallback summary |
 
-The value must be a valid template that renders to a non-empty, single-line commit subject.
-Template functions, control actions, named templates, unknown placeholders, malformed syntax, control characters, and Unicode line or paragraph separators cause configuration loading to fail.
+The value must be a valid UTF-8 template that renders to a non-empty, single-line commit subject.
+The template source is limited to 1,024 bytes and 16 placeholders.
+The fix-agent summary and final rendered subject are each limited to 4,096 bytes.
+Before rendering, no-mistakes predicts the subject size from the validated literal text and placeholders, then rejects oversized output without allocating the expanded message.
+Template functions, control actions, named templates, unknown placeholders, malformed syntax, control characters, unsafe Unicode format characters, and Unicode line or paragraph separators cause configuration loading to fail.
+The blocked format set includes every Unicode `Bidi_Control` code point plus `U+00AD`, `U+180E`, `U+200B`, `U+2060` through `U+2064`, the deprecated bidi controls `U+206A` through `U+206F`, `U+FEFF`, `U+FFF9` through `U+FFFB`, and Unicode tag characters in `U+E0000` through `U+E007F`.
+Legitimate `U+200C` zero-width non-joiner and `U+200D` zero-width joiner text shaping remains allowed.
+The final rendered subject is validated again, so unsafe characters in an agent-provided summary are also rejected.
 The setting does not change commit subjects created by the Rebase, CI, or Push steps.
 A per-repo [`commit.fix_message`](/no-mistakes/reference/repo-config/#commitfix_message) value overrides this global setting.
 

@@ -2,6 +2,7 @@ package steps
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -85,6 +86,9 @@ Previous lint findings to address:
 		}
 		summary, err := extractCommitSummary(result)
 		if err != nil {
+			if errors.Is(err, errRejectedCommitSummary) {
+				return nil, fmt.Errorf("validate lint summary: %w", err)
+			}
 			sctx.Log(fmt.Sprintf("warning: could not parse lint summary: %v", err))
 		}
 		if err := commitAgentFixes(sctx, s.Name(), summary, "fix lint issues"); err != nil {

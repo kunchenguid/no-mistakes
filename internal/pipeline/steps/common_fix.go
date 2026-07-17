@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -35,13 +37,15 @@ type commitSummary struct {
 	Summary string `json:"summary"`
 }
 
-var commitSummarySchema = json.RawMessage(`{
+var errRejectedCommitSummary = errors.New("rejected commit summary")
+
+var commitSummarySchema = json.RawMessage(fmt.Sprintf(`{
 	"type": "object",
 	"properties": {
-		"summary": {"type": "string"}
+		"summary": {"type": "string", "maxLength": %d}
 	},
 	"required": ["summary"]
-}`)
+}`, config.MaxFixMessageSummaryBytes))
 
 // hasBlockingFindings returns true if any finding has error or warning severity.
 func hasBlockingFindings(items []Finding) bool {
@@ -159,8 +163,14 @@ func extractCommitSummary(result *agent.Result) (string, error) {
 	if result.Output == nil {
 		return "", fmt.Errorf("agent returned no structured summary")
 	}
+	if !utf8.Valid(result.Output) {
+		return "", fmt.Errorf("%w: agent output must contain valid UTF-8", errRejectedCommitSummary)
+	}
 	if err := json.Unmarshal(result.Output, &summary); err != nil {
 		return "", fmt.Errorf("parse commit summary: %w", err)
+	}
+	if len(summary.Summary) > config.MaxFixMessageSummaryBytes {
+		return "", fmt.Errorf("%w: commit summary must not exceed %d bytes", errRejectedCommitSummary, config.MaxFixMessageSummaryBytes)
 	}
 	cleaned := strings.Join(strings.Fields(summary.Summary), " ")
 	cleaned = strings.Trim(cleaned, " \t\r\n\"'.;:,-")
@@ -210,6 +220,9 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	}
 	summary, err := extractCommitSummary(result)
 	if err != nil {
+		if errors.Is(err, errRejectedCommitSummary) {
+			return "", fmt.Errorf("validate %s fix summary: %w", stepName, err)
+		}
 		sctx.Log(fmt.Sprintf("warning: could not parse fix summary: %v", err))
 	}
 	if err := commitAgentFixes(sctx, stepName, summary, opts.FallbackSummary); err != nil {

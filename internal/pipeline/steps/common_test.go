@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -612,6 +613,102 @@ func TestCommitAgentFixes_InvalidTemplateDoesNotStageChanges(t *testing.T) {
 	}
 	if got := gitCmd(t, dir, "diff", "--cached", "--name-only"); got != "" {
 		t.Fatalf("staged files after template error = %q, want none", got)
+	}
+}
+
+func TestCommitAgentFixes_OversizedRenderedMessageDoesNotStageChanges(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Commit = config.Commit{FixMessage: "{{.Summary}}{{.Summary}}"}
+
+	if err := os.WriteFile(filepath.Join(dir, "agent-change.txt"), []byte("change"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	summary := strings.Repeat("x", 2049)
+	if err := commitAgentFixes(sctx, types.StepReview, summary, "fallback"); err == nil {
+		t.Fatal("commitAgentFixes() accepted an oversized rendered message")
+	}
+	if got := gitCmd(t, dir, "diff", "--cached", "--name-only"); got != "" {
+		t.Fatalf("staged files after rendered message error = %q, want none", got)
+	}
+}
+
+func TestCommitSummarySchema_BoundsSummaryLength(t *testing.T) {
+	t.Parallel()
+
+	var schema map[string]any
+	if err := json.Unmarshal(commitSummarySchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	properties := schema["properties"].(map[string]any)
+	summary := properties["summary"].(map[string]any)
+	if got := summary["maxLength"]; got != float64(4096) {
+		t.Fatalf("commit summary maxLength = %v, want 4096", got)
+	}
+}
+
+func TestExtractCommitSummary_RejectsOversizedSummary(t *testing.T) {
+	t.Parallel()
+
+	output, err := json.Marshal(map[string]string{"summary": strings.Repeat("x", 4097)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := extractCommitSummary(&agent.Result{Output: output}); err == nil {
+		t.Fatal("extractCommitSummary() accepted an oversized summary")
+	}
+}
+
+func TestExecuteFixMode_RejectsUnsafeSummaryWithoutStaging(t *testing.T) {
+	t.Parallel()
+
+	oversized, err := json.Marshal(map[string]string{"summary": strings.Repeat("x", config.MaxFixMessageSummaryBytes+1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidUTF8 := []byte{
+		0x7b, 0x22, 0x73, 0x75, 0x6d, 0x6d, 0x61, 0x72, 0x79, 0x22, 0x3a, 0x22,
+		0xff, 0x22, 0x7d,
+	}
+
+	for name, output := range map[string]json.RawMessage{
+		"oversized":     oversized,
+		"invalid UTF-8": invalidUTF8,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					if err := os.WriteFile(filepath.Join(opts.CWD, "agent-change.txt"), []byte("change"), 0o644); err != nil {
+						return nil, err
+					}
+					return &agent.Result{Output: output}, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Fixing = true
+
+			if _, err := executeFixMode(sctx, types.StepReview, fixExecutionOptions{
+				ErrorPrefix:     "agent fix review",
+				FallbackSummary: "fix review findings",
+			}); err == nil {
+				t.Fatal("executeFixMode() accepted an unsafe summary")
+			}
+			if got := gitCmd(t, dir, "diff", "--cached", "--name-only"); got != "" {
+				t.Fatalf("staged files after summary error = %q, want none", got)
+			}
+			if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+				t.Fatalf("HEAD after summary error = %q, want %q", got, headSHA)
+			}
+		})
 	}
 }
 
