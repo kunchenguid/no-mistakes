@@ -118,12 +118,31 @@ A PATH wrapper is not sufficient because an absolute binary path could bypass it
 
 ## Distribution and updates
 
-A distributor should pin the first stable upstream release containing protocol version 1 by exact tag and commit.
+A distributor should pin an immutable release from the maintained authorization fork by exact tag and commit.
+It should also record the exact upstream base commit included by that fork release.
 It should verify the release asset against `checksums.txt`, record the GitHub release asset digest, and verify the macOS Developer ID signature, fixed Team ID, signing identifier, hardened runtime, secure timestamp, and architecture before repackaging.
 Checksums without authenticated release metadata are not a signing mechanism.
 
-The packaged manifest should record the upstream tag, commit, asset URL, SHA-256, release digest, signing identity, architecture, build version, and authorization protocol version.
+The packaged manifest should record the fork repository, fork tag and commit, upstream base commit, asset URL, SHA-256, release digest, signing identity, architecture, build version, and authorization protocol version.
 Activation should compare that manifest with `no-mistakes --version` and refuse any mismatch.
 
 `no-mistakes update` refuses self-update whenever managed context is present.
 The orchestrator owns replacement of a pinned managed runtime.
+
+## Maintaining the authorization fork
+
+Treat fork synchronization as a reviewed release operation, not an automatic update of the protected default branch.
+Configure the original repository as a read-only `upstream` remote and keep the fork as `origin`.
+
+For each selected upstream stable tag or commit:
+
+1. Fetch upstream branches and tags without changing the fork default branch.
+2. Create a `maintenance/upstream-<version>` branch from the current fork default branch.
+3. Merge the selected upstream commit into that branch without rewriting published fork history.
+4. Review conflicts specifically at the CLI, hook, IPC, daemon, database, recovery, update, and agent-launch authorization boundaries.
+5. Re-run formatting, generated-file drift checks, vet, full race tests, fake-agent E2E, documentation build, native build, and the supported architecture build matrix.
+6. Open a pull request against the fork default branch that records the previous fork commit, selected upstream commit, resulting merge commit, protocol version, changed boundary files, and verification evidence.
+7. After review, build any fork release from the exact merged commit, create new immutable checksums and signing metadata, and update the orchestrator manifest only after those artifacts verify.
+
+Never move or replace an existing fork release tag, reuse old checksums for rebuilt artifacts, or point the orchestrator at a floating branch.
+If an upstream change removes or bypasses a protected boundary, keep the fork pinned to the previous verified release until the authorization integration is restored and the full matrix passes.
