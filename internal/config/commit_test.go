@@ -35,6 +35,19 @@ func TestCommitRenderFixMessage_CustomTemplate(t *testing.T) {
 	}
 }
 
+func TestCommitRenderFixMessage_NormalizesMultilineSummary(t *testing.T) {
+	t.Parallel()
+
+	got, err := (Commit{}).RenderFixMessage(types.StepDocument, "update configuration\n\tdocs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "no-mistakes(document): update configuration docs"
+	if got != want {
+		t.Fatalf("RenderFixMessage() = %q, want %q", got, want)
+	}
+}
+
 func TestLoadGlobal_CommitFixMessage(t *testing.T) {
 	t.Parallel()
 

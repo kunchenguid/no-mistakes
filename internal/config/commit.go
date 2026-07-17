@@ -54,6 +54,7 @@ func (c Commit) RenderFixMessage(step types.StepName, summary string) (string, e
 	if source == "" {
 		source = DefaultFixMessageTemplate
 	}
+	summary = strings.Join(strings.Fields(summary), " ")
 	tmpl, err := template.New("commit.fix_message").Option("missingkey=error").Parse(source)
 	if err != nil {
 		return "", fmt.Errorf("parse commit.fix_message template: %w", err)

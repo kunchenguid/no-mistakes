@@ -54,6 +54,30 @@ func TestDocumentStep_AgentManaged_FixesAndCommitsWithoutApproval(t *testing.T) 
 	}
 }
 
+func TestDocumentStep_AgentManaged_NormalizesMultilineCommitSummary(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Updated\n"), 0o644); err != nil {
+				return nil, err
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"update README\nand references"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	if _, err := (&DocumentStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(document): update README and references" {
+		t.Fatalf("last commit message = %q", got)
+	}
+}
+
 func TestDocumentStep_AgentManaged_AllowsDocCommentEdits(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
