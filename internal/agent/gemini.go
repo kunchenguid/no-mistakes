@@ -190,6 +190,8 @@ func parseGeminiEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 				usage.InputTokens = event.Stats.InputTokens
 				usage.OutputTokens = event.Stats.OutputTokens
 			}
+		case "init", "tool_use", "tool_result", "tool_call":
+			// Ignore these system events so they don't pollute textBuf
 		default:
 			textBuf += string(line) + "\n"
 			if onChunk != nil {
