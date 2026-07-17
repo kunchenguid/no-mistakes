@@ -186,7 +186,7 @@ When `next_action.code` is `recover_custody`, a terminal run left unpublished pi
 A dirty or diverged worktree makes the recovery refuse with explicit choices; `--keep-local` keeps your current head while the preserved commits stay anchored under `refs/no-mistakes/recover/<run>`.
 If synchronization is blocked, process that structured state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
 After synchronization, commit the follow-up on top and re-run `no-mistakes axi run --intent "..."` with the original user intent.
-This preserves every prior gate-fix commit, including the pipeline's own `no-mistakes(review|document|lint): ...` commits.
+This preserves every prior gate-fix commit regardless of its configured subject.
 
 The CI step deliberately keeps watching the PR after checks pass, so
 `axi run` returns `checks-passed` the moment checks are green rather than
