@@ -395,34 +395,50 @@ func TestActiveRunLookupParamsIncludeBranch(t *testing.T) {
 	}
 }
 
-func TestActiveRunIDForHeadRequiresMatchingHead(t *testing.T) {
-	active := &ipc.GetActiveRunResult{Run: &ipc.RunInfo{ID: "run-old", Status: types.RunRunning, HeadSHA: "old-head"}}
+func TestActiveRunIDForHeadMatchesSubmittedOrCurrentHead(t *testing.T) {
+	submitted := "submitted-head"
+	active := &ipc.GetActiveRunResult{Run: &ipc.RunInfo{
+		ID:               "run-managed-fix",
+		Status:           types.RunRunning,
+		HeadSHA:          "pipeline-fix-head",
+		SubmittedHeadSHA: &submitted,
+	}}
 
-	if got := activeRunIDForHead(active, "new-head"); got != "" {
+	if got := activeRunIDForHead(active, "new-operator-head"); got != "" {
 		t.Fatalf("mismatched active run ID = %q, want empty", got)
 	}
-	if got := activeRunIDForHead(active, "old-head"); got != "run-old" {
-		t.Fatalf("matching active run ID = %q, want run-old", got)
+	for _, head := range []string{submitted, "pipeline-fix-head"} {
+		if got := activeRunIDForHead(active, head); got != "run-managed-fix" {
+			t.Fatalf("active run ID for %s = %q, want run-managed-fix", head, got)
+		}
 	}
 
 	active.Run.Status = types.RunCompleted
-	if got := activeRunIDForHead(active, "old-head"); got != "" {
+	if got := activeRunIDForHead(active, submitted); got != "" {
 		t.Fatalf("terminal active run ID = %q, want empty", got)
 	}
 }
 
-func TestActiveRunInfoForHeadRequiresMatchingHead(t *testing.T) {
-	run := &ipc.RunInfo{ID: "run-old", Status: types.RunRunning, HeadSHA: "old-head"}
+func TestActiveRunInfoForHeadMatchesSubmittedOrCurrentHead(t *testing.T) {
+	submitted := "submitted-head"
+	run := &ipc.RunInfo{
+		ID:               "run-managed-fix",
+		Status:           types.RunRunning,
+		HeadSHA:          "pipeline-fix-head",
+		SubmittedHeadSHA: &submitted,
+	}
 
-	if got := activeRunInfoForHead(run, "new-head"); got != nil {
+	if got := activeRunInfoForHead(run, "new-operator-head"); got != nil {
 		t.Fatalf("mismatched active run = %#v, want nil", got)
 	}
-	if got := activeRunInfoForHead(run, "old-head"); got == nil || got.ID != "run-old" {
-		t.Fatalf("matching active run = %#v, want run-old", got)
+	for _, head := range []string{submitted, "pipeline-fix-head"} {
+		if got := activeRunInfoForHead(run, head); got == nil || got.ID != "run-managed-fix" {
+			t.Fatalf("active run for %s = %#v, want run-managed-fix", head, got)
+		}
 	}
 
 	run.Status = types.RunCompleted
-	if got := activeRunInfoForHead(run, "old-head"); got != nil {
+	if got := activeRunInfoForHead(run, submitted); got != nil {
 		t.Fatalf("terminal active run = %#v, want nil", got)
 	}
 }

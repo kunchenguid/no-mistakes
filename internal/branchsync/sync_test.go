@@ -173,15 +173,21 @@ func TestInspectCachedPrePushAndPushInProgressAreNonSyncable(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := f.service.InspectCached(f.ctx)
-	if state.State != StatePipelineOwned || state.NextAction != nil || !strings.Contains(state.Error, "do not make local follow-up commits") {
+	if state.State != StatePipelineOwned || !strings.Contains(state.Error, "do not make local follow-up commits") {
 		t.Fatalf("pre-push state = %#v", state)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "continue_active_run" || state.NextAction.Command != "no-mistakes axi status" {
+		t.Fatalf("pre-push next action = %#v", state.NextAction)
 	}
 	if err := f.db.SetRunPushActive(active.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	state = f.service.InspectCached(f.ctx)
-	if state.State != StatePushInProgress || state.NextAction != nil {
+	if state.State != StatePushInProgress {
 		t.Fatalf("push-in-progress state = %#v", state)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "continue_active_run" || state.NextAction.Command != "no-mistakes axi status" {
+		t.Fatalf("push-in-progress next action = %#v", state.NextAction)
 	}
 	if err := f.db.SetRunPushActive(active.ID, false); err != nil {
 		t.Fatal(err)

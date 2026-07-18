@@ -8,6 +8,38 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+func TestRunToInfoIncludesImmutableSubmittedHead(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	repo, err := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "submitted-head", "base-head")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := d.UpdateRunHeadSHA(run.ID, "pipeline-fix-head"); err != nil {
+		t.Fatalf("advance run head: %v", err)
+	}
+	run, err = d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("reload run: %v", err)
+	}
+
+	info := runToInfo(d, run, nil)
+	if info.HeadSHA != "pipeline-fix-head" {
+		t.Fatalf("head = %q, want pipeline-fix-head", info.HeadSHA)
+	}
+	if info.SubmittedHeadSHA == nil || *info.SubmittedHeadSHA != "submitted-head" {
+		t.Fatalf("submitted head = %v, want submitted-head", info.SubmittedHeadSHA)
+	}
+}
+
 func TestStepToInfoIncludesFixSummaries(t *testing.T) {
 	d, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

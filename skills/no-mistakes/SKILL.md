@@ -63,7 +63,7 @@ wrong.
 Before starting, run `no-mistakes axi` (home view).
 If it shows an active run on your current branch, inspect it with `no-mistakes axi status`.
 If it is parked at a gate, drive it with `no-mistakes axi respond`.
-Reattach an in-flight run by re-running `no-mistakes axi run` when it still matches your current `HEAD`.
+Reattach an in-flight run by re-running `no-mistakes axi run` when it still matches your current `HEAD` - either as the submitted head or as the current pipeline head.
 Only `no-mistakes axi abort` it when you mean to discard that run before starting over; aborting is a between-runs action, never a way to take over or bypass a gate while a run is still going (see [Validate and decide](#validate-and-decide)).
 If it shows an active run on another branch, leave that run alone and start validation for your current branch with `no-mistakes axi run --intent "..."`.
 
@@ -182,7 +182,7 @@ Run the pipeline and decide on its findings as they come up:
 Before any post-pipeline local commit or fresh run, read the structured `branch_sync` object returned by AXI home, status, or a drive result.
 Only when its `next_action.code` is `sync`, run `no-mistakes axi sync` first.
 That guarded sync may be a strict fast-forward or a content-equivalent diverged advance that anchors the pre-sync head before moving the branch with reset semantics; genuine divergence stays blocked.
-If it reports an unpublished pipeline-owned update while the run is active, wait and keep driving the run without making local follow-up commits.
+If it reports `next_action.code` is `continue_active_run`, the pipeline still owns the branch: run the reported command, keep driving the active run, and do not make local follow-up commits.
 When `next_action.code` is `recover_custody`, a terminal run left unpublished pipeline commits preserved in the local gate: run `no-mistakes axi sync --recover` to return custody and fast-forward to the preserved head, or `no-mistakes rerun` to resume validating it instead.
 A dirty or diverged worktree makes the recovery refuse with explicit choices; `--keep-local` keeps your current head while the preserved commits stay anchored under `refs/no-mistakes/recover/<run>`.
 If synchronization is blocked, process that structured state instead of improvising reset, stash, merge, rebase, force, or branch replacement.

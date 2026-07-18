@@ -141,8 +141,11 @@ func TestTerminalPrePushRunSurfacesGuardedCustodyRecovery(t *testing.T) {
 func TestActivePrePushRunStaysBlockedWithoutRecovery(t *testing.T) {
 	f := newRecoverFixture(t, types.RunRunning)
 	state := f.service.InspectCached(f.ctx)
-	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned" || state.NextAction != nil {
+	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned" {
 		t.Fatalf("active run state = %#v", state)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "continue_active_run" || state.NextAction.Command != "no-mistakes axi status" {
+		t.Fatalf("active run next action = %#v", state.NextAction)
 	}
 	if state.Pipeline.Status != "running" {
 		t.Fatalf("pipeline status = %q", state.Pipeline.Status)
