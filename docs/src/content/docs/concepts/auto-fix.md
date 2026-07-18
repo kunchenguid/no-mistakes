@@ -75,17 +75,18 @@ That history includes which finding IDs were selected for a prior fix attempt, w
 On follow-up review passes, that history tells the agent not to re-report user-ignored findings unless the code now presents a materially different issue.
 
 After a user-triggered fix, the step re-runs and pauses again to show you the results (`fix_review` status). You can then approve, fix again, skip, or abort.
-TUI yolo mode approves the fix review automatically after its one fix round. AXI `--yes` funds up to 3 fix rounds per step and approves a fix review only when it is clean or contains only `no-op` findings. If actionable findings survive that budget, it leaves the run parked for explicit adjudication instead of silently approving them.
+TUI yolo mode approves the fix review automatically after its one fix round. AXI `--yes` funds up to 3 fix rounds per step and approves a fix review only when it is clean or contains only `no-op` findings. If an actionable finding cannot be selected or survives that budget, it leaves the run parked for explicit adjudication instead of silently approving it. An explicit approval can accept remaining actionable findings; the [step log](/no-mistakes/reference/cli/#no-mistakes-axi-logs) records that adjudication.
 
 ## Fix commits
 
-When the Review, Test, Document, or Lint step commits auto-fix changes, its subject comes from `commit.fix_message`.
+When the shared Review, Test, Document, or Lint fix path commits uncommitted changes, its subject comes from `commit.fix_message`.
 The [global config reference](/no-mistakes/reference/global-config/#commitfix_message) owns the template syntax, default, validation rules, size limits, and supported placeholders; the [repo config reference](/no-mistakes/reference/repo-config/#commitfix_message) owns the repository override and trust behavior.
 The pipeline validates the template, agent summary, predicted output size, and final rendered subject before `git add -A`, so a rejected value does not leave changes staged.
 The combined document-and-lint housekeeping pass runs in the Document step, so its documentation and safe lint fixes use the Document value for `{{.Step}}`; configured-command lint fixes use the Lint value.
 
-Before a step-specific fix commit, the pipeline verifies that the live worktree HEAD still descends from the head recorded after its previous commit.
-It allows a legitimate forward commit made by an agent, but aborts the run if an out-of-band backward or divergent reset would drop the reviewed history.
+Before adopting a step's fix result, the pipeline verifies that the live worktree HEAD still descends from the recorded run head.
+It preserves and adopts legitimate forward commits made by an agent. If the agent also leaves uncommitted changes, the pipeline creates the configured fix commit on top before advancing the branch and recorded run head.
+An out-of-band backward or divergent reset aborts the run instead of dropping reviewed history.
 
 The template does not control commits created by the Rebase, CI, or Push steps.
 The CI step uses `no-mistakes: apply CI fixes`, and the Push step uses `no-mistakes: apply agent fixes` for remaining uncommitted changes.
