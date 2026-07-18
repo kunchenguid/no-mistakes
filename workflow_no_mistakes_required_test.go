@@ -53,21 +53,27 @@ func TestNoMistakesRequiredWorkflowChecksSignatureMarker(t *testing.T) {
 	}
 }
 
-// TestNoMistakesRequiredWorkflowReadsPRBodyViaEnv pins the shell-injection-safe
-// pattern: the PR body must be piped through an env var, not interpolated
-// directly into the shell script body.
-func TestNoMistakesRequiredWorkflowReadsPRBodyViaEnv(t *testing.T) {
+// TestNoMistakesRequiredWorkflowReadsCurrentPRBody pins the live lookup that
+// avoids evaluating the stale pull_request event snapshot when a fork workflow
+// waits for approval while the no-mistakes PR step updates the body.
+func TestNoMistakesRequiredWorkflowReadsCurrentPRBody(t *testing.T) {
 	data, err := os.ReadFile(".github/workflows/no-mistakes-required.yml")
 	if err != nil {
 		t.Fatalf("read workflow: %v", err)
 	}
 	content := string(data)
 
-	if !strings.Contains(content, "PR_BODY: ${{ github.event.pull_request.body }}") {
-		t.Errorf("workflow must expose PR body via the PR_BODY env var")
+	if !strings.Contains(content, "pull-requests: read") {
+		t.Errorf("workflow must grant read access for the live PR lookup")
 	}
-	if strings.Contains(content, "${{ github.event.pull_request.body }}\n          run:") {
-		t.Errorf("workflow must not interpolate PR body directly into run: script (injection risk)")
+	if !strings.Contains(content, "GH_TOKEN: ${{ github.token }}") {
+		t.Errorf("workflow must authenticate the live PR lookup")
+	}
+	if !strings.Contains(content, `gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.body // ""'`) {
+		t.Errorf("workflow must fetch the current PR body at job execution time")
+	}
+	if strings.Contains(content, "github.event.pull_request.body") {
+		t.Errorf("workflow must not rely on the potentially stale event PR body")
 	}
 }
 

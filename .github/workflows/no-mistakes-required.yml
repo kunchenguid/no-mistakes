@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: no-mistakes-required-${{ github.event.pull_request.number }}
@@ -28,11 +29,12 @@ jobs:
     steps:
       - name: Verify no-mistakes signature in PR body
         env:
-          PR_BODY: ${{ github.event.pull_request.body }}
+          GH_TOKEN: ${{ github.token }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -eu
+          PR_BODY=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.body // ""')
           marker='Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)'
           if printf '%s' "${PR_BODY:-}" | grep -qF -- "$marker"; then
             echo "Found no-mistakes signature in PR #${PR_NUMBER} body."
