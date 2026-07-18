@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.40.0](https://github.com/kunchenguid/no-mistakes/compare/v1.39.0...v1.40.0) (2026-07-18)
+
+
+### Features
+
+* **agent:** add Cursor as a first-class ACP alias ([#422](https://github.com/kunchenguid/no-mistakes/issues/422)) ([8abc1ed](https://github.com/kunchenguid/no-mistakes/commit/8abc1ed63b5cdef5aca31d4f17c7482aa4275750))
+* **branchsync:** reconcile equivalent diverged sync heads ([#504](https://github.com/kunchenguid/no-mistakes/issues/504)) ([0a2c82f](https://github.com/kunchenguid/no-mistakes/commit/0a2c82f993b9467c5ab84992313dfd13b66830af))
+* **config:** configure pipeline fix commit messages ([#511](https://github.com/kunchenguid/no-mistakes/issues/511)) ([be6921e](https://github.com/kunchenguid/no-mistakes/commit/be6921ef4f739b7e068ec3a315617f3df328f6b6))
+
+
+### Bug Fixes
+
+* **cli:** reattach active AXI runs by submitted head ([#514](https://github.com/kunchenguid/no-mistakes/issues/514)) ([26200ed](https://github.com/kunchenguid/no-mistakes/commit/26200ed06a7ae460396937e49410974f2d2ac81f))
+
 ## [1.39.0](https://github.com/kunchenguid/no-mistakes/compare/v1.38.1...v1.39.0) (2026-07-16)
 
 
