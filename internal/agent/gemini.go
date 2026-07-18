@@ -166,11 +166,7 @@ func parseGeminiEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 
 		var event geminiEvent
 		if err := json.Unmarshal(line, &event); err != nil {
-			textBuf += string(line) + "\n"
-			if onChunk != nil {
-				onChunk(string(line) + "\n")
-			}
-			continue
+			continue // skip malformed lines
 		}
 
 		switch event.Type {
@@ -193,10 +189,7 @@ func parseGeminiEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 		case "init", "tool_use", "tool_result", "tool_call":
 			// Ignore these system events so they don't pollute textBuf
 		default:
-			textBuf += string(line) + "\n"
-			if onChunk != nil {
-				onChunk(string(line) + "\n")
-			}
+			// Ignore unrecognized events to prevent polluting textBuf
 		}
 	}
 	err := scanner.Err()
