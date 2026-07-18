@@ -709,6 +709,7 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		state.State = StatePushInProgress
 		state.Safety = "blocked_push_in_progress"
 		state.Pipeline.Phase = "push"
+		state.NextAction = &NextAction{Code: "continue_active_run", Command: "no-mistakes axi status"}
 		return state, run, false
 	}
 	if run.LastPushedSHA == nil || run.PushTargetFingerprint == nil || run.PushRef == nil || run.PushGeneration == nil || run.SubmittedHeadSHA == nil {
@@ -986,6 +987,7 @@ func classifyPipelineOwned(state *State, run *db.Run, activeMessage string) {
 	}
 	state.Safety = "blocked_pipeline_owned"
 	state.Error = activeMessage
+	state.NextAction = &NextAction{Code: "continue_active_run", Command: "no-mistakes axi status"}
 }
 
 // classifyCustodyReturned reports a branch whose stranded terminal run was

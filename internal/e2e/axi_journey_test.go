@@ -186,6 +186,135 @@ func TestAxiBranchSyncJourney(t *testing.T) {
 	}
 }
 
+// TestAxiRunReattachesAfterManagedFix reproduces the v1.39.0 dogfood failure:
+// a review fix advances the active run and gate branch while the submitting
+// worktree remains at its immutable submitted head. A second axi run from that
+// unchanged worktree must reattach without pushing or creating another run.
+func TestAxiRunReattachesAfterManagedFix(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: branchSyncScenario(t)})
+	h.CommitChange("init-reattach", "seed.txt", "seed\n", "seed reattach init")
+	initWorktree := h.AddWorktree("init-reattach")
+	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+
+	branch := "feature/reattach-managed-fix"
+	submitted := h.CommitChange(branch, "feature.txt", "unsafe\n", "add unsafe feature")
+	operator := h.AddWorktree(branch)
+	gateOut, err := h.RunInDir(operator, "axi", "run", "--intent", "guard the feature and preserve the submitting head")
+	if err != nil || !strings.Contains(gateOut, "sync-1") {
+		t.Fatalf("initial review gate: %v\n%s", err, gateOut)
+	}
+	originalRun := h.ActiveRun(branch)
+	if originalRun == nil {
+		t.Fatal("initial axi run did not leave an active run")
+	}
+
+	fixOut, err := h.RunInDir(operator, "axi", "respond", "--action", "fix", "--findings", "sync-1")
+	if err != nil || !strings.Contains(fixOut, "status: fix_review") {
+		t.Fatalf("review fix: %v\n%s", err, fixOut)
+	}
+	managed := h.ActiveRun(branch)
+	if managed == nil || managed.ID != originalRun.ID {
+		t.Fatalf("managed fix active run = %#v, want %s", managed, originalRun.ID)
+	}
+	if managed.HeadSHA == submitted {
+		t.Fatal("managed fix did not advance the pipeline head")
+	}
+	if got := strings.TrimSpace(h.WorktreeRefSHA(branch)); got != submitted {
+		t.Fatalf("submitting worktree moved to %s, want %s", got, submitted)
+	}
+
+	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
+	gateHeadBeforeBytes, gitErr := h.runGit(context.Background(), gateDir, "rev-parse", "refs/heads/"+branch)
+	if gitErr != nil {
+		t.Fatalf("gate head before reattach: %v\n%s", gitErr, gateHeadBeforeBytes)
+	}
+	gateHeadBefore := strings.TrimSpace(string(gateHeadBeforeBytes))
+	if gateHeadBefore != managed.HeadSHA {
+		t.Fatalf("gate head = %s, want managed head %s", gateHeadBefore, managed.HeadSHA)
+	}
+	runsBefore := len(h.Runs())
+	tracePath := filepath.Join(t.TempDir(), "git-trace.json")
+
+	reattachOut, err := h.RunInDirWithEnv(operator, map[string]string{"GIT_TRACE2_EVENT": tracePath}, "axi", "run", "--intent", "guard the feature and preserve the submitting head")
+	if err != nil {
+		t.Fatalf("reattach after managed fix: %v\n%s", err, reattachOut)
+	}
+	for _, want := range []string{originalRun.ID, "status: fix_review"} {
+		if !strings.Contains(reattachOut, want) {
+			t.Errorf("reattach output missing %q:\n%s", want, reattachOut)
+		}
+	}
+	for _, forbidden := range []string{"fetch first", "non-fast-forward"} {
+		if strings.Contains(reattachOut, forbidden) {
+			t.Errorf("reattach output contains %q:\n%s", forbidden, reattachOut)
+		}
+	}
+	trace, readErr := os.ReadFile(tracePath)
+	if readErr != nil {
+		t.Fatalf("read git trace: %v", readErr)
+	}
+	if strings.Contains(string(trace), `"argv":["git","push"`) {
+		t.Fatalf("reattach executed a fresh gate push:\n%s", trace)
+	}
+	if got := len(h.Runs()); got != runsBefore {
+		t.Fatalf("reattach changed run count from %d to %d", runsBefore, got)
+	}
+	stillActive := h.ActiveRun(branch)
+	if stillActive == nil || stillActive.ID != originalRun.ID || stillActive.Status != types.RunRunning {
+		t.Fatalf("original run was replaced or cancelled: %#v", stillActive)
+	}
+	gateHeadAfterBytes, gitErr := h.runGit(context.Background(), gateDir, "rev-parse", "refs/heads/"+branch)
+	if gitErr != nil || strings.TrimSpace(string(gateHeadAfterBytes)) != gateHeadBefore {
+		t.Fatalf("gate head after reattach = %s (err %v), want %s", strings.TrimSpace(string(gateHeadAfterBytes)), gitErr, gateHeadBefore)
+	}
+
+	// A genuinely new operator commit matches neither immutable submitted HEAD
+	// nor mutable pipeline HEAD. It must not reattach, but pipeline ownership
+	// must still block a colliding fresh push with a structured next action.
+	if err := os.WriteFile(filepath.Join(operator, "operator-work.txt"), []byte("new operator work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, gitErr := h.runGit(context.Background(), operator, "add", "operator-work.txt"); gitErr != nil {
+		t.Fatalf("stage operator work: %v\n%s", gitErr, out)
+	}
+	if out, gitErr := h.runGit(context.Background(), operator, "commit", "-m", "new operator work"); gitErr != nil {
+		t.Fatalf("commit operator work: %v\n%s", gitErr, out)
+	}
+	mismatchTracePath := filepath.Join(t.TempDir(), "mismatch-git-trace.json")
+	blockedOut, blockedErr := h.RunInDirWithEnv(operator, map[string]string{"GIT_TRACE2_EVENT": mismatchTracePath}, "axi", "run", "--intent", "validate genuinely new operator work later")
+	if blockedErr == nil {
+		t.Fatalf("pipeline-owned fresh run should fail:\n%s", blockedOut)
+	}
+	for _, want := range []string{
+		"branch_sync:",
+		"state: pipeline_owned",
+		"status: running",
+		"safety: blocked_pipeline_owned",
+		"code: continue_active_run",
+		"command: no-mistakes axi status",
+	} {
+		if !strings.Contains(blockedOut, want) {
+			t.Errorf("pipeline-owned fresh run missing %q:\n%s", want, blockedOut)
+		}
+	}
+	mismatchTrace, readErr := os.ReadFile(mismatchTracePath)
+	if readErr != nil {
+		t.Fatalf("read mismatched-run git trace: %v", readErr)
+	}
+	if strings.Contains(string(mismatchTrace), `"argv":["git","push"`) {
+		t.Fatalf("pipeline-owned fresh run attempted a gate push:\n%s", mismatchTrace)
+	}
+	if got := len(h.Runs()); got != runsBefore {
+		t.Fatalf("pipeline-owned fresh run changed run count from %d to %d", runsBefore, got)
+	}
+	stillActive = h.ActiveRun(branch)
+	if stillActive == nil || stillActive.ID != originalRun.ID || stillActive.Status != types.RunRunning {
+		t.Fatalf("pipeline-owned fresh run replaced or cancelled the original: %#v", stillActive)
+	}
+}
+
 // TestAxiCustodyRecoveryJourney reproduces the first real dogfood catch of the
 // guarded branch sync (run 01KXN8YJ6DWF8XPP582DWQC3HV) with the real binary: a
 // run cancelled at the pre_push phase leaves the branch pipeline_owned with
@@ -213,12 +342,25 @@ func TestAxiCustodyRecoveryJourney(t *testing.T) {
 	}
 
 	// Cancel while the pipeline fix commit exists only in the gate branch.
-	if out, abortErr := h.RunInDir(operator, "axi", "abort"); abortErr != nil {
-		t.Fatalf("axi abort: %v\n%s", abortErr, out)
+	abortOut, abortErr := h.RunInDir(operator, "axi", "abort")
+	if abortErr != nil {
+		t.Fatalf("axi abort: %v\n%s", abortErr, abortOut)
 	}
 	run := h.WaitForRun("feature/recover-journey", 30*time.Second)
 	if run.Status != types.RunCancelled {
 		t.Fatalf("run status after abort = %s", run.Status)
+	}
+	for _, want := range []string{
+		"branch_sync:",
+		"state: pipeline_owned",
+		"status: cancelled",
+		"safety: blocked_pipeline_owned_recoverable",
+		"code: recover_custody",
+		"command: no-mistakes axi sync --recover",
+	} {
+		if !strings.Contains(abortOut, want) {
+			t.Errorf("abort output missing %q:\n%s", want, abortOut)
+		}
 	}
 
 	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
@@ -232,6 +374,38 @@ func TestAxiCustodyRecoveryJourney(t *testing.T) {
 	}
 	if got := strings.TrimSpace(h.WorktreeRefSHA("feature/recover-journey")); got != submitted {
 		t.Fatalf("operator branch moved without explicit recovery: %s", got)
+	}
+	runsBefore := len(h.Runs())
+	tracePath := filepath.Join(t.TempDir(), "blocked-run-git-trace.json")
+	blockedOut, blockedErr := h.RunInDirWithEnv(operator, map[string]string{"GIT_TRACE2_EVENT": tracePath}, "axi", "run", "--intent", "must recover custody before starting over")
+	if blockedErr == nil {
+		t.Fatalf("axi run before custody recovery should fail:\n%s", blockedOut)
+	}
+	for _, want := range []string{
+		"branch_sync:",
+		"state: pipeline_owned",
+		"status: cancelled",
+		"safety: blocked_pipeline_owned_recoverable",
+		"code: recover_custody",
+		"command: no-mistakes axi sync --recover",
+	} {
+		if !strings.Contains(blockedOut, want) {
+			t.Errorf("blocked fresh run missing %q:\n%s", want, blockedOut)
+		}
+	}
+	blockedTrace, readErr := os.ReadFile(tracePath)
+	if readErr != nil {
+		t.Fatalf("read blocked-run git trace: %v", readErr)
+	}
+	if strings.Contains(string(blockedTrace), `"argv":["git","push"`) {
+		t.Fatalf("blocked fresh run attempted a gate push:\n%s", blockedTrace)
+	}
+	if got := len(h.Runs()); got != runsBefore {
+		t.Fatalf("blocked fresh run changed run count from %d to %d", runsBefore, got)
+	}
+	preservedAfterBlockedRunBytes, gitErr := h.runGit(context.Background(), gateDir, "rev-parse", "refs/heads/feature/recover-journey")
+	if gitErr != nil || strings.TrimSpace(string(preservedAfterBlockedRunBytes)) != preserved {
+		t.Fatalf("blocked fresh run changed preserved gate head to %s (err %v), want %s", strings.TrimSpace(string(preservedAfterBlockedRunBytes)), gitErr, preserved)
 	}
 
 	// The stranded state must surface the recovery action instead of a dead end.
@@ -263,6 +437,10 @@ func TestAxiCustodyRecoveryJourney(t *testing.T) {
 	}
 	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", "HEAD"); gitErr != nil || strings.TrimSpace(string(got)) != preserved {
 		t.Fatalf("operator HEAD after recovery = %s (err %v), want preserved %s", strings.TrimSpace(string(got)), gitErr, preserved)
+	}
+	anchorRef := "refs/no-mistakes/recover/" + run.ID
+	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", anchorRef); gitErr != nil || strings.TrimSpace(string(got)) != preserved {
+		t.Fatalf("recovery anchor %s = %s (err %v), want preserved %s", anchorRef, strings.TrimSpace(string(got)), gitErr, preserved)
 	}
 
 	// Custody is back: commit a rescope on top of the preserved fix commits
