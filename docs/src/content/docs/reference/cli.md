@@ -103,7 +103,7 @@ That refusal returns the complete structured state and its `continue_active_run`
 Reattaching to an in-flight run can proceed while the daemon is already running even if the global config file has become invalid, but starting a fresh run still requires valid global config.
 Starting a fresh run also requires a runnable effective pipeline agent.
 If the configured native agent or ACP runner is unavailable, the run fails before any pipeline step starts instead of reporting command-only validation as a passed gate.
-With `--yes`, `axi run` treats both `action: auto-fix` and `action: ask-user` findings as standing consent for the pipeline to select every actionable finding and fund up to 3 fix rounds per step.
+With `--yes`, `axi run` treats both `action: auto-fix` and `action: ask-user` findings as standing consent to fix them. The pipeline selects every current finding and funds up to 3 fix rounds per step.
 Gates with no findings or only `action: no-op` findings are approved as-is. If actionable findings survive the budget, `--yes` leaves the run parked for explicit adjudication instead of silently approving them.
 Without `--yes`, an agent driving `axi run` should stop when a gate contains `action: ask-user` findings and relay each finding's ID, file, and full description to the user before responding.
 Review gates include a `note` field reminding agents that `auto_fix.review` defaults to `0`, so blocking and ask-user review findings park for a decision unless configuration explicitly opts back into review auto-fix.

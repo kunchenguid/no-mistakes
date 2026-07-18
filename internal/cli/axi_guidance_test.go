@@ -170,6 +170,16 @@ func TestYesFixBudgetGuidance_SyncedAcrossSurfaces(t *testing.T) {
 			}
 		}
 	}
+
+	selectionSurfaces := map[string]string{
+		"skill body":    skill.Markdown(),
+		"CLI reference": readGuidanceDoc(t, "reference", "cli.md"),
+	}
+	for name, content := range selectionSurfaces {
+		if !strings.Contains(content, "selects every current finding") {
+			t.Errorf("%s is missing --yes finding-selection guidance", name)
+		}
+	}
 }
 
 func TestNormalDriveOutputDoesNotFloodBranchSyncGuidance(t *testing.T) {
