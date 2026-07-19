@@ -111,7 +111,13 @@ CI logs:
 		return false, fmt.Errorf("agent CI fix: %w", err)
 	}
 
-	return s.commitAndPush(sctx)
+	pushed, err := s.commitAndPush(sctx)
+	if err == nil && pr != nil && sctx.Run.HeadSHA != "" {
+		// Keep the next poll pinned to the head this run just pushed even if
+		// refreshing the PR state is temporarily unavailable.
+		pr.HeadSHA = sctx.Run.HeadSHA
+	}
+	return pushed, err
 }
 
 // commitAndPush commits any uncommitted changes and force-pushes to the
