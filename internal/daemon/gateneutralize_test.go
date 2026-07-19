@@ -21,10 +21,10 @@ func fakeCapablePi(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	name := "pi"
-	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 0.80.10; exit 0; fi\nif [ \"$1\" = \"--help\" ]; then echo --mode --no-session --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --system-prompt --append-system-prompt; exit 0; fi\n"
+	script := "#!/bin/sh\nfor arg in \"$@\"; do\n  if [ \"$arg\" = \"--version\" ]; then echo 0.80.10; exit 0; fi\n  if [ \"$arg\" = \"--help\" ]; then echo --mode --no-session --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --system-prompt --append-system-prompt; exit 0; fi\ndone\n"
 	if runtime.GOOS == "windows" {
 		name = "pi.cmd"
-		script = "@echo off\r\nif \"%~1\"==\"--version\" (echo 0.80.10& exit /b 0)\r\nif \"%~1\"==\"--help\" (echo --mode --no-session --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --system-prompt --append-system-prompt& exit /b 0)\r\n"
+		script = "@echo off\r\n:scan\r\nif \"%~1\"==\"\" exit /b 0\r\nif \"%~1\"==\"--version\" (echo 0.80.10& exit /b 0)\r\nif \"%~1\"==\"--help\" (echo --mode --no-session --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --system-prompt --append-system-prompt& exit /b 0)\r\nshift\r\ngoto scan\r\n"
 	}
 	piBin := filepath.Join(dir, name)
 	if err := os.WriteFile(piBin, []byte(script), 0o755); err != nil {
