@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
@@ -22,6 +25,8 @@ type piAgent struct {
 	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
 	// buildArgs suppresses every automatic Pi behavior-resource surface.
 	disableProjectSettings bool
+	gateCapabilityOnce     sync.Once
+	gateCapabilitiesOK     bool
 }
 
 func (a *piAgent) Name() string { return "pi" }
@@ -30,16 +35,26 @@ func (a *piAgent) ReportsAgentAttempts() bool { return true }
 
 // NeutralizesGateInstructions reports whether Pi's complete gate-isolation
 // block is in effect and no operator override explicitly loads or re-enables a
-// behavior resource. Pi 0.80.10 was empirically verified with this block: it
-// suppresses extensions, skills, prompt templates, themes, context files, and
-// project-local settings/resources, while empty system-prompt overrides stop
-// automatic SYSTEM.md/APPEND_SYSTEM.md discovery without removing Pi's
-// generated base prompt.
+// behavior resource. Pi 0.80.10 established the minimum contract: compatible
+// installed versions must also advertise every managed capability before they
+// are admitted. The block suppresses extensions, skills, prompt templates,
+// themes, context files, and project-local settings/resources, while empty
+// system-prompt overrides stop automatic SYSTEM.md/APPEND_SYSTEM.md discovery
+// without removing Pi's generated base prompt.
 func (a *piAgent) NeutralizesGateInstructions() bool {
-	return a.disableProjectSettings && piExtraArgsPreserveGateIsolation(a.extraArgs)
+	if !a.disableProjectSettings || !piExtraArgsPreserveGateIsolation(a.extraArgs) {
+		return false
+	}
+	a.gateCapabilityOnce.Do(func() {
+		a.gateCapabilitiesOK = piHasGateIsolationCapabilities(a.bin)
+	})
+	return a.gateCapabilitiesOK
 }
 
 func (a *piAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
+	if a.disableProjectSettings && !a.NeutralizesGateInstructions() {
+		return nil, fmt.Errorf("pi does not satisfy the required gate-isolation version and flag capabilities")
+	}
 	return runWithRetry(ctx, "pi", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
 	})
@@ -132,7 +147,7 @@ func (a *piAgent) buildArgs() []string {
 	return args
 }
 
-// piGateIsolationArgs is the empirically verified Pi 0.80.10 isolation block.
+// piGateIsolationArgs is the isolation block established with Pi 0.80.10.
 // Keep its order stable: tests exercise both the exact argv contract and these
 // flags' effective behavior in a real no-model-call Pi resource probe.
 func piGateIsolationArgs() []string {
@@ -146,6 +161,68 @@ func piGateIsolationArgs() []string {
 		"--system-prompt", "",
 		"--append-system-prompt", "",
 	}
+}
+
+var piVersionPattern = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
+
+func piRequiredGateCapabilityFlags() []string {
+	return []string{
+		"--mode",
+		"--no-session",
+		"--no-extensions",
+		"--no-skills",
+		"--no-prompt-templates",
+		"--no-themes",
+		"--no-context-files",
+		"--no-approve",
+		"--system-prompt",
+		"--append-system-prompt",
+	}
+}
+
+func piHasGateIsolationCapabilities(bin string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	versionOut, err := shellenv.CombinedOutputShellCommand(exec.CommandContext(ctx, bin, "--version"))
+	if err != nil || !piVersionAtLeast(strings.TrimSpace(string(versionOut)), 0, 80, 10) {
+		return false
+	}
+
+	helpOut, err := shellenv.CombinedOutputShellCommand(exec.CommandContext(ctx, bin, "--help"))
+	if err != nil {
+		return false
+	}
+	advertised := make(map[string]bool)
+	for _, field := range strings.Fields(string(helpOut)) {
+		advertised[field] = true
+	}
+	for _, required := range piRequiredGateCapabilityFlags() {
+		if !advertised[required] {
+			return false
+		}
+	}
+	return true
+}
+
+func piVersionAtLeast(raw string, wantMajor, wantMinor, wantPatch int) bool {
+	matches := piVersionPattern.FindStringSubmatch(raw)
+	if matches == nil {
+		return false
+	}
+	major, errMajor := strconv.Atoi(matches[1])
+	minor, errMinor := strconv.Atoi(matches[2])
+	patch, errPatch := strconv.Atoi(matches[3])
+	if errMajor != nil || errMinor != nil || errPatch != nil {
+		return false
+	}
+	got := [3]int{major, minor, patch}
+	want := [3]int{wantMajor, wantMinor, wantPatch}
+	for i := range got {
+		if got[i] != want[i] {
+			return got[i] > want[i]
+		}
+	}
+	return matches[4] == ""
 }
 
 // piExtraArgsPreserveGateIsolation rejects configured arguments that can load a

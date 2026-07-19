@@ -69,6 +69,7 @@ func TestPiAgent_BuildArgs_GateIsolationAppendedAfterModelOverride(t *testing.T)
 }
 
 func TestPiAgent_GateIsolationRejectsConflictingOverrides(t *testing.T) {
+	bin := writeCapableFakePi(t, t.TempDir(), "0.80.10", true, "")
 	conflicts := []string{
 		"--", "install", "remove", "uninstall", "update", "list", "config",
 		"--extension", "-e", "-e./project.ts", "--extension=./project.ts",
@@ -87,7 +88,7 @@ func TestPiAgent_GateIsolationRejectsConflictingOverrides(t *testing.T) {
 	}
 	for _, conflict := range conflicts {
 		t.Run(strings.ReplaceAll(conflict, "/", "_"), func(t *testing.T) {
-			pa := &piAgent{bin: "pi", extraArgs: []string{conflict}, disableProjectSettings: true}
+			pa := &piAgent{bin: bin, extraArgs: []string{conflict}, disableProjectSettings: true}
 			if pa.NeutralizesGateInstructions() {
 				t.Fatalf("conflicting override %q must fail closed", conflict)
 			}
@@ -95,12 +96,50 @@ func TestPiAgent_GateIsolationRejectsConflictingOverrides(t *testing.T) {
 	}
 
 	pa := &piAgent{
-		bin:                    "pi",
+		bin:                    bin,
 		extraArgs:              []string{"--model", "openai-codex/gpt-5.6-sol", "--thinking", "medium"},
 		disableProjectSettings: true,
 	}
 	if !pa.NeutralizesGateInstructions() {
 		t.Fatal("model and thinking overrides must preserve Pi gate isolation")
+	}
+}
+
+func TestPiAgent_GateIsolationRequiresCompatibleCapabilities(t *testing.T) {
+	tests := []struct {
+		name         string
+		version      string
+		completeHelp bool
+		want         bool
+	}{
+		{name: "minimum", version: "0.80.10", completeHelp: true, want: true},
+		{name: "newer", version: "0.81.0", completeHelp: true, want: true},
+		{name: "older", version: "0.80.9", completeHelp: true},
+		{name: "minimum prerelease", version: "0.80.10-beta.1", completeHelp: true},
+		{name: "malformed", version: "development", completeHelp: true},
+		{name: "incomplete help", version: "0.81.0", completeHelp: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bin := writeCapableFakePi(t, t.TempDir(), tt.version, tt.completeHelp, "")
+			pa := &piAgent{bin: bin, disableProjectSettings: true}
+			if got := pa.NeutralizesGateInstructions(); got != tt.want {
+				t.Fatalf("NeutralizesGateInstructions() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPiAgent_GateIsolationCapabilityFailureRefusesRun(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "launched")
+	bin := writeCapableFakePi(t, dir, "0.80.9", true, marker)
+	pa := &piAgent{bin: bin, disableProjectSettings: true}
+	if _, err := pa.Run(context.Background(), RunOpts{Prompt: "must not launch", CWD: dir}); err == nil {
+		t.Fatal("Run() must reject an unsupported Pi")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("gate invocation launched despite failed capability check: %v", err)
 	}
 }
 
@@ -113,14 +152,7 @@ func TestPiAgent_RunGateIsolationUsesExactArgvAndStdinPrompt(t *testing.T) {
 	promptPath := filepath.Join(dir, "prompt")
 	t.Setenv("NM_PI_TEST_ARGS", argsPath)
 	t.Setenv("NM_PI_TEST_PROMPT", promptPath)
-	bin := writeFakePi(t, dir, `#!/bin/sh
-: > "$NM_PI_TEST_ARGS"
-for arg in "$@"; do
-  printf '%s\0' "$arg" >> "$NM_PI_TEST_ARGS"
-done
-cat > "$NM_PI_TEST_PROMPT"
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}'
-`, "")
+	bin := writeCapableFakePi(t, dir, "0.80.10", true, "")
 	pa := &piAgent{
 		bin:                    bin,
 		extraArgs:              []string{"--model", "openai-codex/gpt-5.6-sol", "--thinking", "medium"},
@@ -182,6 +214,47 @@ func TestPiAgent_BuildPromptOmitsContractWhenSchemaEmpty(t *testing.T) {
 	if prompt != "do a thing" {
 		t.Errorf("expected raw prompt when no schema, got: %q", prompt)
 	}
+}
+
+func writeCapableFakePi(t *testing.T, dir, version string, completeHelp bool, launchMarker string) string {
+	t.Helper()
+	help := strings.Join(piRequiredGateCapabilityFlags(), " ")
+	if !completeHelp {
+		help = strings.Replace(help, "--no-context-files", "", 1)
+	}
+	posixScript := `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '%s\n' '` + version + `'
+  exit 0
+fi
+if [ "$1" = "--help" ]; then
+  printf '%s\n' '` + help + `'
+  exit 0
+fi
+if [ -n '` + launchMarker + `' ]; then
+  : > '` + launchMarker + `'
+fi
+if [ -n "$NM_PI_TEST_ARGS" ]; then
+  : > "$NM_PI_TEST_ARGS"
+  for arg in "$@"; do
+    printf '%s\0' "$arg" >> "$NM_PI_TEST_ARGS"
+  done
+fi
+if [ -n "$NM_PI_TEST_PROMPT" ]; then
+  cat > "$NM_PI_TEST_PROMPT"
+else
+  cat > /dev/null
+fi
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}'
+`
+	windowsScript := strings.Join([]string{
+		"@echo off",
+		"if \"%~1\"==\"--version\" (echo " + version + "& exit /b 0)",
+		"if \"%~1\"==\"--help\" (echo " + help + "& exit /b 0)",
+		"more > nul",
+		"echo {\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}",
+	}, "\r\n")
+	return writeFakePi(t, dir, posixScript, windowsScript)
 }
 
 func writeFakePi(t *testing.T, dir, posixScript, windowsScript string) string {

@@ -11,7 +11,11 @@ import (
 // daemon constructs gate agents when disable_project_settings=true.
 func optOutAgent(t *testing.T, name types.AgentName, extraArgs []string) Agent {
 	t.Helper()
-	a, err := NewWithOptions(name, string(name), extraArgs, Options{DisableProjectSettings: true})
+	bin := string(name)
+	if name == types.AgentPi {
+		bin = writeCapableFakePi(t, t.TempDir(), "0.80.10", true, "")
+	}
+	a, err := NewWithOptions(name, bin, extraArgs, Options{DisableProjectSettings: true})
 	if err != nil {
 		t.Fatalf("NewWithOptions(%s): %v", name, err)
 	}
