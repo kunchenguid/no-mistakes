@@ -118,6 +118,70 @@ func TestPiAgent_GateIsolationRejectsConflictingOverrides(t *testing.T) {
 	}
 }
 
+func TestPiAgent_GateIsolationCapabilityProbeIsIsolated(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("capability probe capture fixture is POSIX-only")
+	}
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "help-args")
+	cwdPath := filepath.Join(dir, "help-cwd")
+	configPath := filepath.Join(dir, "help-config")
+	ambientConfig := filepath.Join(dir, "ambient-config")
+	t.Setenv("NM_PI_HELP_ARGS", argsPath)
+	t.Setenv("NM_PI_HELP_CWD", cwdPath)
+	t.Setenv("NM_PI_HELP_CONFIG", configPath)
+	t.Setenv("PI_CODING_AGENT_DIR", ambientConfig)
+	help := strings.Join(piRequiredGateCapabilityFlags(), " ")
+	bin := writeFakePi(t, dir, `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = "--version" ]; then
+    printf '0.80.10\n'
+    exit 0
+  fi
+done
+printf '%s\n' "$@" > "$NM_PI_HELP_ARGS"
+pwd > "$NM_PI_HELP_CWD"
+printf '%s' "$PI_CODING_AGENT_DIR" > "$NM_PI_HELP_CONFIG"
+printf '%s\n' '`+help+`'
+`, "")
+
+	if !piHasGateIsolationCapabilities(bin) {
+		t.Fatal("isolated capable Pi must be admitted")
+	}
+	gotArgs, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read help argv: %v", err)
+	}
+	wantArgs := append(piGateIsolationArgs(), "--help")
+	if got := strings.Split(strings.TrimSuffix(string(gotArgs), "\n"), "\n"); strings.Join(got, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("help argv = %q, want %q", got, wantArgs)
+	}
+	gotCWD, err := os.ReadFile(cwdPath)
+	if err != nil {
+		t.Fatalf("read help cwd: %v", err)
+	}
+	if strings.TrimSpace(string(gotCWD)) == dir {
+		t.Fatalf("help probe used ambient project cwd %q", dir)
+	}
+	gotConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read help config: %v", err)
+	}
+	if string(gotConfig) == ambientConfig || filepath.Dir(string(gotConfig)) != strings.TrimSpace(string(gotCWD)) {
+		t.Fatalf("help config dir = %q, cwd = %q", gotConfig, gotCWD)
+	}
+}
+
+func TestPiAgent_GateIsolationRejectsDanglingValueOverrides(t *testing.T) {
+	for _, arg := range []string{"--provider", "--model", "--api-key", "--session-dir", "--name", "-n", "--models", "--tools", "-t", "--exclude-tools", "-xt", "--thinking", "--export"} {
+		t.Run(strings.TrimLeft(arg, "-"), func(t *testing.T) {
+			if piExtraArgsPreserveGateIsolation([]string{arg}) {
+				t.Fatalf("dangling value option %q must fail closed", arg)
+			}
+		})
+	}
+}
+
 func TestPiAgent_GateIsolationRequiresCompatibleCapabilities(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -254,14 +318,18 @@ func writeCapableFakePi(t *testing.T, dir, version string, completeHelp bool, la
 		help = strings.Replace(help, "--no-context-files", "", 1)
 	}
 	posixScript := `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  printf '%s\n' '` + version + `'
-  exit 0
-fi
-if [ "$1" = "--help" ]; then
-  printf '%s\n' '` + help + `'
-  exit 0
-fi
+for arg in "$@"; do
+  if [ "$arg" = "--version" ]; then
+    printf '%s\n' '` + version + `'
+    exit 0
+  fi
+done
+for arg in "$@"; do
+  if [ "$arg" = "--help" ]; then
+    printf '%s\n' '` + help + `'
+    exit 0
+  fi
+done
 if [ -n '` + launchMarker + `' ]; then
   : > '` + launchMarker + `'
 fi
@@ -280,8 +348,8 @@ printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"
 `
 	windowsScript := strings.Join([]string{
 		"@echo off",
-		"if \"%~1\"==\"--version\" (echo " + version + "& exit /b 0)",
-		"if \"%~1\"==\"--help\" (echo " + help + "& exit /b 0)",
+		"echo %* | findstr /C:\"--version\" >nul && (echo " + version + "& exit /b 0)",
+		"echo %* | findstr /C:\"--help\" >nul && (echo " + help + "& exit /b 0)",
 		"more > nul",
 		"echo {\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}",
 	}, "\r\n")

@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -181,12 +183,25 @@ func piRequiredGateCapabilityFlags() []string {
 func piHasGateIsolationCapabilities(bin string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	versionOut, err := shellenv.CombinedOutputShellCommand(exec.CommandContext(ctx, bin, "--version"))
+	probeDir, err := os.MkdirTemp("", "no-mistakes-pi-capabilities-")
+	if err != nil {
+		return false
+	}
+	defer os.RemoveAll(probeDir)
+
+	runProbe := func(flag string) ([]byte, error) {
+		args := append(piGateIsolationArgs(), flag)
+		cmd := exec.CommandContext(ctx, bin, args...)
+		cmd.Dir = probeDir
+		cmd.Env = piCapabilityProbeEnv(probeDir)
+		return shellenv.CombinedOutputShellCommand(cmd)
+	}
+	versionOut, err := runProbe("--version")
 	if err != nil || !piVersionAtLeast(strings.TrimSpace(string(versionOut)), 0, 80, 10) {
 		return false
 	}
 
-	helpOut, err := shellenv.CombinedOutputShellCommand(exec.CommandContext(ctx, bin, "--help"))
+	helpOut, err := runProbe("--help")
 	if err != nil {
 		return false
 	}
@@ -200,6 +215,40 @@ func piHasGateIsolationCapabilities(bin string) bool {
 		}
 	}
 	return true
+}
+
+func piCapabilityProbeEnv(probeDir string) []string {
+	overrides := map[string]string{
+		"HOME":                  probeDir,
+		"USERPROFILE":           probeDir,
+		"XDG_CONFIG_HOME":       filepath.Join(probeDir, "config"),
+		"PI_CODING_AGENT_DIR":   filepath.Join(probeDir, "pi"),
+		"PI_OFFLINE":            "1",
+		"PI_SKIP_VERSION_CHECK": "1",
+		"PI_TELEMETRY":          "0",
+	}
+	env := gitSafeEnv(probeDir)
+	filtered := make([]string, 0, len(env)+len(overrides))
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			matched := false
+			for override := range overrides {
+				if strings.EqualFold(key, override) {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				continue
+			}
+		}
+		filtered = append(filtered, entry)
+	}
+	for key, value := range overrides {
+		filtered = append(filtered, key+"="+value)
+	}
+	return filtered
 }
 
 func piVersionAtLeast(raw string, wantMajor, wantMinor, wantPatch int) bool {
@@ -310,7 +359,7 @@ func piExtraArgsPreserveGateIsolation(extraArgs []string) bool {
 			expectsValue = true
 		}
 	}
-	return true
+	return !expectsValue
 }
 
 func piOptionConsumesNextValue(arg string) bool {
