@@ -392,7 +392,7 @@ func TestCIStep_AllChecksPassingKeepsMonitoringOpenPR(t *testing.T) {
 	}
 }
 
-func TestCIStep_ClearsReadinessWhenGitHubPRHeadChanges(t *testing.T) {
+func TestCIStep_ParksWhenGitHubPRHeadChangesExternally(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -401,7 +401,8 @@ func TestCIStep_ClearsReadinessWhenGitHubPRHeadChanges(t *testing.T) {
 		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
 	}, []string{headSHA, "external-head"})
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
@@ -414,16 +415,16 @@ func TestCIStep_ClearsReadinessWhenGitHubPRHeadChanges(t *testing.T) {
 		baseBranchTip: func(context.Context) (string, bool) { return "", false },
 		waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
 			polls++
-			if polls == 2 {
-				cancel()
-			}
 			return ctx.Err()
 		},
 	}
 
-	_, err := step.Execute(sctx)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("Execute() error = %v, want context.Canceled", err)
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want approval outcome", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("Execute() outcome = %#v, want approval after external PR head change", outcome)
 	}
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {
@@ -431,6 +432,12 @@ func TestCIStep_ClearsReadinessWhenGitHubPRHeadChanges(t *testing.T) {
 	}
 	if run.CIReadyAt != nil {
 		t.Fatalf("CI readiness = %v, want cleared after PR head change", run.CIReadyAt)
+	}
+	if polls != 1 {
+		t.Fatalf("polls = %d, want one wait before parking", polls)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("agent calls = %d, want no auto-fix after external PR head change", len(ag.calls))
 	}
 }
 

@@ -278,6 +278,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				lastMonitorLog = ""
 				s.lastFixedChecks = ""
 				s.lastFixedCompletedAt = nil
+				if pr.HeadSHA != sctx.Run.HeadSHA {
+					sctx.Log("PR head changed outside this run; stopping CI monitoring")
+					return ciForeignHeadOutcome(), nil
+				}
 			}
 			if pr.HeadSHA != "" {
 				lastObservedPRHead = pr.HeadSHA

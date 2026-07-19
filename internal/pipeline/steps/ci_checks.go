@@ -201,3 +201,19 @@ func ciMonitoringTimeoutOutcome() *pipeline.StepOutcome {
 		Findings:      string(findingsJSON),
 	}
 }
+
+func ciForeignHeadOutcome() *pipeline.StepOutcome {
+	findings := Findings{
+		Summary: "CI monitoring stopped after the PR head changed outside this run",
+		Items: []Finding{{
+			Severity:    "warning",
+			Description: "The PR head changed outside this run; rerun the pipeline on the new head before applying CI fixes",
+			Action:      types.ActionAskUser,
+		}},
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		Findings:      string(findingsJSON),
+	}
+}
