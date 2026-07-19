@@ -301,6 +301,24 @@ func TestGetChecksFailsClosedWhenProtectionReturnsArbitrary404(t *testing.T) {
 	}
 }
 
+func TestGetChecksRetainsClassicPolicyWhenRulesEndpointIsUnsupported(t *testing.T) {
+	t.Parallel()
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api repos/test/repo/branches/main/protection/required_status_checks": {stdout: `{"contexts":[],"checks":[{"context":"unit","app_id":17}]}` + "\n"},
+		"gh api --paginate repos/test/repo/rules/branches/main":                  {stderr: "HTTP 404: Not Found", code: 1},
+		"gh api --paginate repos/test/repo/commits/abc/check-runs?per_page=100":  {stdout: `{"check_runs":[{"name":"unit","status":"completed","conclusion":"success","app":{"id":17}}]}` + "\n"},
+		"gh api --paginate repos/test/repo/commits/abc/statuses?per_page=100":    {stdout: "[]\n"},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{HeadSHA: "abc", BaseBranch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checks) != 1 || checks[0].Name != "unit" || checks[0].Pending() {
+		t.Fatalf("checks = %+v, want completed classic required check", checks)
+	}
+}
+
 func TestGetChecksReadsEveryPaginatedNativeCheckPage(t *testing.T) {
 	t.Parallel()
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{

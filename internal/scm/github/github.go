@@ -576,6 +576,9 @@ func (h *Host) requiredStatusContexts(ctx context.Context, repo, branch string) 
 		} `json:"parameters"`
 	}
 	if err := h.apiJSONPages(ctx, "repos/"+repo+"/rules/branches/"+branch, &rulePages); err != nil {
+		if isUnsupportedRulesEndpointError(err) {
+			return required, true
+		}
 		return nil, false
 	}
 	for _, rules := range rulePages {
@@ -597,6 +600,10 @@ func (h *Host) requiredStatusContexts(ctx context.Context, repo, branch string) 
 func isUnprotectedBranchError(err error) bool {
 	message := strings.ToLower(err.Error())
 	return strings.Contains(message, "branch not protected")
+}
+
+func isUnsupportedRulesEndpointError(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "http 404")
 }
 
 func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {
