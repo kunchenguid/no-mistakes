@@ -140,6 +140,7 @@ func TestCommitAgentFixes_RefusesResetDuringCommit(t *testing.T) {
 		gitDir = filepath.Join(dir, gitDir)
 	}
 	hook := filepath.Join(gitDir, "hooks", "post-commit")
+	gitCmd(t, dir, "config", "core.hooksPath", filepath.Dir(hook))
 	hookBody := "#!/bin/sh\ngit reset --hard " + baseSHA + "\n"
 	if err := os.WriteFile(hook, []byte(hookBody), 0o755); err != nil {
 		t.Fatal(err)
