@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/cli"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/procguard"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/update"
 )
@@ -21,6 +22,13 @@ func main() {
 }
 
 func run() int {
+	// Process-scope guard: when this binary was launched via one of the
+	// kill/pkill/killall interposition shims (or the explicit __procguard
+	// subcommand), handle it before any other startup work. See internal/procguard.
+	if code, handled := procguard.Dispatch(os.Args); handled {
+		return code
+	}
+
 	if root, ok, err := daemonRunRootFromArgs(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

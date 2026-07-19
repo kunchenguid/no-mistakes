@@ -17,6 +17,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/procguard"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -36,6 +37,13 @@ func Run() error {
 	}
 	if err := p.EnsureDirs(); err != nil {
 		return fmt.Errorf("create directories: %w", err)
+	}
+	// Install the process-scope guard shims (kill/pkill/killall) so every gate
+	// agent spawned by this daemon inherits the interposition on its PATH (see
+	// internal/procguard and agent.gitSafeEnv). Best-effort: a failed install
+	// leaves the portable layer inactive but must not stop the daemon.
+	if err := procguard.Install(p.Root()); err != nil {
+		slog.Warn("procguard install failed; agent process-scope guard inactive on PATH", "err", err)
 	}
 	if err := prepareDaemonEnvironment(); err != nil {
 		return err

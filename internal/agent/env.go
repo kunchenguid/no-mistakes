@@ -1,6 +1,9 @@
 package agent
 
-import "github.com/kunchenguid/no-mistakes/internal/git"
+import (
+	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/procguard"
+)
 
 // GateRoleEnvVar is exported into every spawned gate agent's environment as an
 // unspoofable-from-outside marker that the process is a no-mistakes gate agent
@@ -24,8 +27,18 @@ const GateRoleEnvVar = "NO_MISTAKES_GATE"
 // target repo can recognize the gate agent and refuse to let it act as a fleet
 // operator. Appended last so it wins over any ambient value.
 //
+// It also prepends the procguard shim directory to PATH so the agent's
+// kill/pkill/killall resolve to no-mistakes' process-scope guard ahead of the
+// real tools. This is the single choke point every native agent launch shares
+// (claude/codex/copilot/pi/acpx/opencode all build their env here), so the
+// interposition covers every supported native launch path. See internal/procguard.
+//
 // dir must be the value assigned to cmd.Dir so PWD stays coupled to the working
 // directory; see git.NonInteractiveEnv for why this matters.
 func gitSafeEnv(dir string) []string {
-	return append(git.NonInteractiveEnv(dir), GateRoleEnvVar+"=1")
+	env := append(git.NonInteractiveEnv(dir), GateRoleEnvVar+"=1")
+	if binDir, err := procguard.DefaultBinDir(); err == nil {
+		env = procguard.AugmentPATH(env, binDir)
+	}
+	return env
 }

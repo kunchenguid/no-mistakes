@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"os"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/procguard"
 )
 
 func resolveAgentEnv(env []string) map[string]string {
@@ -64,6 +67,26 @@ func TestGitSafeEnv_StampsGateRoleMarker(t *testing.T) {
 	resolved := resolveAgentEnv(gitSafeEnv("/work/dir"))
 	if resolved[GateRoleEnvVar] != "1" {
 		t.Errorf("%s = %q, want \"1\"", GateRoleEnvVar, resolved[GateRoleEnvVar])
+	}
+}
+
+// TestGitSafeEnv_PrependsProcguardBinToPath locks in the process-scope guard
+// wiring: every native agent launch must resolve kill/pkill/killall through the
+// procguard shim directory first, so a broad kill is interposed regardless of
+// which native agent is running. This is the single choke point that covers all
+// supported native launch paths.
+func TestGitSafeEnv_PrependsProcguardBinToPath(t *testing.T) {
+	t.Setenv("NM_HOME", t.TempDir())
+	binDir, err := procguard.DefaultBinDir()
+	if err != nil {
+		t.Fatalf("DefaultBinDir: %v", err)
+	}
+
+	resolved := resolveAgentEnv(gitSafeEnv("/work/dir"))
+	path := resolved["PATH"]
+	prefix := binDir + string(os.PathListSeparator)
+	if path != binDir && !strings.HasPrefix(path, prefix) {
+		t.Fatalf("PATH = %q, want it to start with procguard bin dir %q", path, binDir)
 	}
 }
 

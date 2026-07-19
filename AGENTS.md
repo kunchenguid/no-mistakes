@@ -48,6 +48,13 @@ Safest local verification sequence after non-trivial changes:
 - On Windows the daemon runs console-less, so route every console child through `winproc.Harden(cmd)` (no-op elsewhere, idempotent, preserves existing creation flags) or a console window flashes per child (#287). `shellenv.ConfigureShellCommand` already calls it; one-shot commands built directly must call it themselves. Regressions: `TestHarden*` in `internal/winproc`.
 - Protect shared mutable state with the standard sync/atomic tools, and be explicit about ownership and cleanup of goroutines, worktrees, temp dirs, and channels.
 
+**Agent Process-Scope Guard (`internal/procguard`)**
+
+- `ConfigureShellCommand`'s process group is also the agent's *outbound* signal boundary: `internal/procguard` interposes `kill`/`pkill`/`killall` shims (symlinks to the no-mistakes binary, dispatched by `procguard.Dispatch` at the very top of `cmd/no-mistakes/main.go`) ahead of the real tools on every native agent's PATH, so a broad cleanup command (`pkill -f fm-watch.sh`) cannot signal a host process outside the run's process group. This exists because a fallible gate agent once killed a Firstmate watcher outside the worktree; prompt wording alone was insufficient.
+- The single wiring choke point is `agent.gitSafeEnv` (covers claude/codex/copilot/pi/acpx/opencode), which prepends `procguard.DefaultBinDir()` to PATH; `daemon.Run` calls `procguard.Install` at startup to (re)create the shims. `procguard.Decide` is the pure, exhaustively-tested decision core: it allows in-scope targets (so a run still reaps its own descendants), refuses when any target is out of scope or the invocation uses a selector it cannot bound (fail closed), and passes read-only ops (`-l`, `--help`) through to the real tool.
+- This is defence-in-depth for a *cooperative-but-fallible* agent, not a sandbox: the shell builtin `kill`, an absolute `/bin/kill`, and raw `kill(2)` bypass PATH. The kernel-enforced hardening layer is documented and evidenced by `procguard.SeatbeltSignalProfile` (macOS Seatbelt `signal` deny; Linux PID-ns/uid separation is the analog) but is not wired into the default launch. Windows has no pkill/killall analog and is not shimmed.
+- Regressions: `internal/procguard/procguard_test.go` (Decide incl. the `fm-watch.sh` reproduction), `run_unix_test.go` (real sentinel survives, scoped cleanup still works), `seatbelt_darwin_test.go` (OS-native evidence), `install_unix_test.go`, and `agent.TestGitSafeEnv_PrependsProcguardBinToPath`.
+
 **Filesystem and Paths**
 
 - Use `filepath.Join`; respect `NM_HOME` for app state; directories are `0o755` and files `0o644` by convention.
