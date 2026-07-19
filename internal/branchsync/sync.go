@@ -443,6 +443,24 @@ func (s *Service) Apply(ctx context.Context) State {
 // classification against the last push binding (pushed runs), both pointing at
 // run_pipeline as the next step. `no-mistakes rerun` remains the alternative
 // exit that resumes validating the preserved head instead of taking it back.
+//
+// Legacy (pre-provenance) rows follow the same decision matrix. A run created
+// by a v1.37-era binary predates the submitted_head_sha, push-binding, and
+// custody columns, so a later migration left them NULL even though the run has
+// the exact preserved head_sha, branch, repo, and terminal status. The
+// isLegacyStranded and legacyStrandedRun helpers identify such a row only when
+// no modern run matched the branch, so it never shadows real provenance or an
+// active run, and inspect then classifies it as pipeline_owned / recoverable
+// exactly like a modern stranded pre-push run. Because submitted_head_sha is
+// always populated for modern runs, this path can never fire for one, so every
+// modern provenance check is unchanged. The safety bar is deliberately
+// identical to the modern path and never infers custody from the mutable branch
+// name or head_sha alone: the same gate corroboration below requires the gate
+// branch to still point at exactly the recorded terminal head before any
+// movement, the preserved commits are anchored first, and any ambiguous
+// (multiple distinct legacy heads), missing, stale, mismatched, published (a
+// surviving push binding), active, or dirty state refuses without changing
+// files or refs.
 func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	state, run, _ := s.inspect(ctx)
 	if run != nil && run.CustodyReturnedAt != nil {
@@ -684,6 +702,25 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		}
 	}
 	if run == nil {
+		// Pre-provenance (v1.37) rows have NULL submitted_head_sha and NULL push
+		// binding, so the modern selection above never matches them. A terminal
+		// such row is legacy-recoverable through the guarded custody path; the
+		// gate corroboration and worktree relation are verified in Recover. This
+		// branch can never fire for a modern run (InsertRun always populates
+		// submitted_head_sha), so modern classification is untouched.
+		if legacy, ambiguous := legacyStrandedRun(runs, branch); ambiguous {
+			state.State = StateAmbiguousContext
+			state.Safety = "blocked_recover_ambiguous_legacy"
+			state.Error = "more than one pre-provenance terminal run preserves a different head for this branch; recovery cannot choose safely and changed nothing"
+			return state, nil, false
+		} else if legacy != nil {
+			state.Pipeline = PipelineState{RunID: legacy.ID, Status: string(legacy.Status), CurrentHead: legacy.HeadSHA}
+			state.Target = TargetState{URL: displayTarget(s.Repo.PushURL())}
+			state.Target.Remote = s.remoteName(ctx)
+			state.PRState = normalizePRState(legacy.PRState)
+			classifyPipelineOwned(&state, legacy, "")
+			return state, legacy, false
+		}
 		if len(runs) > 0 {
 			state.State = StateAmbiguousContext
 			state.Safety = "blocked_wrong_branch"
@@ -720,6 +757,13 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 			}
 			classifyPipelineOwned(&state, run, "the pipeline head has moved but has not been successfully pushed; do not make local follow-up commits yet")
 			return state, run, false
+		}
+		// A recovered pre-provenance run (NULL submitted_head_sha, custody
+		// stamped by the guarded legacy path) reports custody_returned so its
+		// branch reads as free, mirroring the modern never-pushed path above.
+		if run.SubmittedHeadSHA == nil && run.CustodyReturnedAt != nil {
+			s.classifyCustodyReturned(ctx, &state)
+			return state, run, true
 		}
 		state.State = StateLegacyUnbound
 		state.Safety = "blocked_legacy_unbound"
@@ -968,6 +1012,59 @@ func terminalRunStatus(status types.RunStatus) bool {
 	default:
 		return false
 	}
+}
+
+// isLegacyStranded reports whether run is a pre-provenance (v1.37) row eligible
+// for guarded legacy custody recovery. Such a row was created before the
+// submitted_head_sha / push-binding / custody columns existed, so a later
+// migration left them NULL while the run still carries the exact preserved
+// head_sha, branch, repo, and terminal status. It is recoverable only when it
+// has NO push binding of any kind and custody has not already been returned.
+//
+// submitted_head_sha is always populated by InsertRun for every run created by
+// a provenance-aware binary, so this predicate can never match a modern row -
+// which keeps the whole legacy path from touching modern classification. The
+// head_sha itself is not trusted here as proof of custody; it only identifies
+// the candidate. Recover independently corroborates it against the gate branch
+// before moving anything.
+func isLegacyStranded(run *db.Run) bool {
+	return run != nil &&
+		run.SubmittedHeadSHA == nil &&
+		run.LastPushedSHA == nil &&
+		run.PushTargetFingerprint == nil &&
+		run.PushRef == nil &&
+		run.PushGeneration == nil &&
+		run.CustodyReturnedAt == nil &&
+		terminalRunStatus(run.Status) &&
+		strings.TrimSpace(run.HeadSHA) != "" &&
+		!git.IsZeroSHA(run.HeadSHA)
+}
+
+// legacyStrandedRun selects the pre-provenance stranded terminal run for a
+// branch. It is consulted only when the modern selection matched nothing, so it
+// can never override a row that carries real push provenance or an active run.
+// runs is newest-first, so the first match is the latest relevant terminal run.
+// It reports ambiguous when the branch carries more than one distinct preserved
+// legacy head - a multiply-candidate state that must refuse rather than guess
+// which preserved head to return.
+func legacyStrandedRun(runs []*db.Run, branch string) (run *db.Run, ambiguous bool) {
+	heads := map[string]struct{}{}
+	for _, candidate := range runs {
+		if candidate.Branch != branch || !isLegacyStranded(candidate) {
+			continue
+		}
+		heads[candidate.HeadSHA] = struct{}{}
+		if run == nil {
+			run = candidate
+		}
+	}
+	if run == nil {
+		return nil, false
+	}
+	if len(heads) > 1 {
+		return nil, true
+	}
+	return run, false
 }
 
 // classifyPipelineOwned reports an unpublished pipeline head. While the run is

@@ -2,6 +2,7 @@ package branchsync
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+
+	_ "modernc.org/sqlite"
 )
 
 // recoverFixture reproduces the stranded custody state from the v1.38.1
@@ -19,6 +22,7 @@ type recoverFixture struct {
 	t         *testing.T
 	ctx       context.Context
 	db        *db.DB
+	dbPath    string
 	repo      *db.Repo
 	run       *db.Run
 	service   *Service
@@ -70,7 +74,8 @@ func newRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
 	preserved := mustRun(t, pipeline, "rev-parse", "HEAD")
 	mustRun(t, pipeline, "push", "origin", "HEAD:refs/heads/feature/recover")
 
-	database, err := db.Open(filepath.Join(root, "state.sqlite"))
+	dbPath := filepath.Join(root, "state.sqlite")
+	database, err := db.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,11 +96,60 @@ func newRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
 	}
 	run, _ = database.GetRun(run.ID)
 	return &recoverFixture{
-		t: t, ctx: ctx, db: database, repo: repo, run: run,
+		t: t, ctx: ctx, db: database, dbPath: dbPath, repo: repo, run: run,
 		service: &Service{DB: database, Repo: repo, WorkDir: local, GateDir: gate},
 		local:   local, gate: gate, remote: remote,
 		base: base, submitted: submitted, preserved: preserved,
 	}
+}
+
+// execRunSQL runs a single UPDATE against the fixture's SQLite file over an
+// independent connection. It exists to fabricate row states the production API
+// deliberately cannot produce - specifically a pre-provenance (v1.37) run row
+// whose submitted_head_sha and push-binding columns are NULL because they were
+// added by a later migration. WAL mode lets this second writer coexist with the
+// fixture's live *db.DB handle.
+func (f *recoverFixture) execRunSQL(query string, args ...any) {
+	f.t.Helper()
+	conn, err := sql.Open("sqlite", f.dbPath+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Exec(query, args...); err != nil {
+		f.t.Fatalf("exec %q: %v", query, err)
+	}
+}
+
+// makeLegacy strips a run down to the v1.37 pre-provenance shape: NULL
+// submitted_head_sha and NULL push-binding columns, exactly the production row
+// (terminal run 01KXVTX8C3S616PFB09NACWRS5) that regressed after the v1.40
+// upgrade. head_sha, branch, repo_id, and status are left intact.
+func (f *recoverFixture) makeLegacy(runID string) {
+	f.t.Helper()
+	f.execRunSQL(
+		`UPDATE runs SET submitted_head_sha = NULL, last_pushed_sha = NULL, push_target_kind = NULL, push_target_fingerprint = NULL, push_ref = NULL, last_pushed_at = NULL, push_generation = NULL, push_active = 0 WHERE id = ?`,
+		runID,
+	)
+}
+
+// newLegacyRecoverFixture is newRecoverFixture with the run downgraded to the
+// pre-provenance shape: the operator worktree sits at the submitted head, the
+// gate branch carries the preserved pipeline commits, and the terminal run row
+// has NULL submitted_head_sha and NULL push binding.
+func newLegacyRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
+	t.Helper()
+	f := newRecoverFixture(t, status)
+	f.makeLegacy(f.run.ID)
+	run, err := f.db.GetRun(f.run.ID)
+	if err != nil || run == nil {
+		t.Fatalf("reload legacy run: %#v, %v", run, err)
+	}
+	if run.SubmittedHeadSHA != nil || run.LastPushedSHA != nil || run.PushGeneration != nil {
+		t.Fatalf("legacy downgrade left provenance columns populated: %#v", run)
+	}
+	f.run = run
+	return f
 }
 
 func (f *recoverFixture) anchorRef() string { return "refs/no-mistakes/recover/" + f.run.ID }
@@ -516,5 +570,287 @@ func TestRecoverConcurrentGatePushLosesCleanly(t *testing.T) {
 	}
 	if f.custodyReturned() {
 		t.Fatal("racing recover stamped custody")
+	}
+}
+
+// --- Legacy (pre-provenance / v1.37) custody recovery ---------------------
+//
+// These tests pin the backward-compatibility gap reported for terminal run
+// 01KXVTX8C3S616PFB09NACWRS5: a v1.37 row whose submitted_head_sha and
+// push-binding columns are NULL (they were added by a later migration) still
+// has the exact repo/branch/status and a preserved head_sha, and the gate
+// branch still holds the unpublished commits, but v1.40 refused to recover it.
+
+// TestRecoverLegacyNullProvenanceSurfacesGuardedCustodyRecovery proves the
+// inspection-layer fix: the stranded legacy row must classify identically to a
+// modern stranded pre-push run (pipeline_owned / recoverable) instead of the
+// old ambiguous_context / blocked_recover_not_applicable dead end.
+func TestRecoverLegacyNullProvenanceSurfacesGuardedCustodyRecovery(t *testing.T) {
+	for _, status := range []types.RunStatus{types.RunCancelled, types.RunFailed, types.RunCompleted} {
+		t.Run(string(status), func(t *testing.T) {
+			f := newLegacyRecoverFixture(t, status)
+			state := f.service.InspectCached(f.ctx)
+			if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned_recoverable" {
+				t.Fatalf("legacy state = %s safety = %s, want pipeline_owned/blocked_pipeline_owned_recoverable", state.State, state.Safety)
+			}
+			if state.Pipeline.RunID != f.run.ID || state.Pipeline.Status != string(status) || state.Pipeline.Phase != "pre_push" {
+				t.Fatalf("legacy pipeline = %#v", state.Pipeline)
+			}
+			if state.Pipeline.CurrentHead != f.preserved {
+				t.Fatalf("legacy preserved head = %q, want %q", state.Pipeline.CurrentHead, f.preserved)
+			}
+			if state.NextAction == nil || state.NextAction.Code != "recover_custody" || !strings.Contains(state.NextAction.Command, "sync --recover") {
+				t.Fatalf("legacy next action = %#v", state.NextAction)
+			}
+			if !strings.Contains(state.Error, "preserved") {
+				t.Fatalf("legacy error does not explain preservation: %q", state.Error)
+			}
+		})
+	}
+}
+
+// TestRecoverLegacyCleanBehindFastForwardsAndReturnsCustody is the primary
+// legacy recovery journey and the deterministic regression for the production
+// record: exact immutable evidence (registered repo/worktree/branch, clean
+// worktree, single terminal run, gate branch still exactly at the recorded
+// head) yields a guarded fast-forward, anchor, custody stamp, and a freed
+// branch - with NULL provenance columns throughout.
+func TestRecoverLegacyCleanBehindFastForwardsAndReturnsCustody(t *testing.T) {
+	f := newLegacyRecoverFixture(t, types.RunCancelled)
+	state := f.service.Recover(f.ctx, false)
+	if !state.Recovered || !state.Changed {
+		t.Fatalf("legacy recover result = %#v", state)
+	}
+	if state.State != StateCustodyReturned || state.Safety != "custody_returned" || state.Relation != RelationEqual {
+		t.Fatalf("post-recover state = %s/%s relation %s", state.State, state.Safety, state.Relation)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "run_pipeline" {
+		t.Fatalf("post-recover next action = %#v", state.NextAction)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("HEAD = %s, want preserved %s", got, f.preserved)
+	}
+	if parents := strings.Fields(mustRun(t, f.local, "show", "-s", "--format=%P", f.preserved+"~1")); len(parents) != 1 || parents[0] != f.submitted {
+		t.Fatalf("recovery rewrote history: %v", parents)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("anchor ref = %s, want %s", got, f.preserved)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("custody not stamped")
+	}
+
+	// The branch is free again and reports custody_returned, and a fresh run
+	// takes over cleanly - the legacy row no longer shadows it.
+	after := f.service.InspectCached(f.ctx)
+	if after.State != StateCustodyReturned || after.NextAction == nil || after.NextAction.Code != "run_pipeline" {
+		t.Fatalf("post-recover inspection = %#v", after)
+	}
+	fresh, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.preserved, f.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatus(fresh.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if next := f.service.InspectCached(f.ctx); next.Pipeline.RunID != fresh.ID {
+		t.Fatalf("fresh run not selected after legacy recovery: %#v", next.Pipeline)
+	}
+}
+
+// TestRecoverLegacyIdempotentAfterSuccess: a repeated legacy recover is a safe
+// no-op that keeps reporting custody_returned.
+func TestRecoverLegacyIdempotentAfterSuccess(t *testing.T) {
+	f := newLegacyRecoverFixture(t, types.RunCancelled)
+	if first := f.service.Recover(f.ctx, false); !first.Recovered {
+		t.Fatalf("first legacy recover = %#v", first)
+	}
+	second := f.service.Recover(f.ctx, false)
+	if !second.Recovered || second.Changed || second.State != StateCustodyReturned {
+		t.Fatalf("second legacy recover = %#v", second)
+	}
+}
+
+// TestRecoverLegacyGateBranchMovedRefuses covers the branch/ref mismatch case:
+// the gate branch no longer points at the recorded terminal head, so the
+// preserved commits cannot be safely identified. Recovery must refuse without
+// touching files or refs, exactly as the modern path does.
+func TestRecoverLegacyGateBranchMovedRefuses(t *testing.T) {
+	f := newLegacyRecoverFixture(t, types.RunCancelled)
+	writer := filepath.Join(t.TempDir(), "writer")
+	mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
+	configureIdentity(t, writer)
+	mustRun(t, writer, "checkout", "feature/recover")
+	mustWrite(t, filepath.Join(writer, "other.txt"), "other\n")
+	mustRun(t, writer, "add", "other.txt")
+	mustRun(t, writer, "commit", "-m", "out of band gate commit")
+	mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Safety != "blocked_recover_gate_diverged" {
+		t.Fatalf("legacy recover with moved gate = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatal("moved-gate refusal mutated HEAD")
+	}
+	if f.custodyReturned() {
+		t.Fatal("moved-gate refusal stamped custody")
+	}
+}
+
+// TestRecoverLegacyGateUnavailableRefuses covers the missing-gate-head cases:
+// a deleted gate branch and a missing gate both fail closed.
+func TestRecoverLegacyGateUnavailableRefuses(t *testing.T) {
+	t.Run("gate branch deleted", func(t *testing.T) {
+		f := newLegacyRecoverFixture(t, types.RunCancelled)
+		mustRun(t, f.gate, "update-ref", "-d", "refs/heads/feature/recover")
+		state := f.service.Recover(f.ctx, false)
+		if state.Recovered || state.Safety != "blocked_recover_gate_unavailable" {
+			t.Fatalf("legacy recover with deleted gate branch = %#v", state)
+		}
+		if f.custodyReturned() {
+			t.Fatal("deleted-gate refusal stamped custody")
+		}
+	})
+	t.Run("gate missing", func(t *testing.T) {
+		f := newLegacyRecoverFixture(t, types.RunCancelled)
+		if err := os.RemoveAll(f.gate); err != nil {
+			t.Fatal(err)
+		}
+		state := f.service.Recover(f.ctx, false)
+		if state.Recovered || state.Safety != "blocked_recover_gate_unavailable" {
+			t.Fatalf("legacy recover with missing gate = %#v", state)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+			t.Fatal("missing-gate refusal mutated HEAD")
+		}
+		if f.custodyReturned() {
+			t.Fatal("missing-gate refusal stamped custody")
+		}
+	})
+}
+
+// TestRecoverLegacyDirtyWorktreeRefuses covers the behind+dirty cell: never
+// fast-forward over uncommitted changes, even for a legacy row.
+func TestRecoverLegacyDirtyWorktreeRefuses(t *testing.T) {
+	f := newLegacyRecoverFixture(t, types.RunCancelled)
+	mustWrite(t, filepath.Join(f.local, "file.txt"), "dirty\n")
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_dirty" {
+		t.Fatalf("legacy recover dirty = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatal("dirty refusal moved HEAD")
+	}
+	if f.custodyReturned() {
+		t.Fatal("dirty refusal stamped custody")
+	}
+}
+
+// TestRecoverLegacyActiveRunOnBranchRefuses covers the competing active-run
+// case: a newer active run on the same branch owns it, so the legacy terminal
+// row must never be recovered underneath it.
+func TestRecoverLegacyActiveRunOnBranchRefuses(t *testing.T) {
+	f := newLegacyRecoverFixture(t, types.RunCancelled)
+	active, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.submitted, f.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Move the active run's head off the submitted head so it is an
+	// unpublished, pipeline-owned, still-running run.
+	if err := f.db.UpdateRunHeadSHA(active.ID, f.preserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatus(active.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Safety != "blocked_recover_run_active" {
+		t.Fatalf("legacy recover with competing active run = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatal("active-run refusal moved HEAD")
+	}
+	if f.custodyReturned() {
+		t.Fatal("active-run refusal stamped legacy custody")
+	}
+}
+
+// TestRecoverLegacyAmbiguousMultipleHeadsRefuses covers the multiply-candidate
+// case: two pre-provenance terminal runs on the branch preserve different
+// heads, so recovery cannot choose safely and must refuse without mutation.
+func TestRecoverLegacyAmbiguousMultipleHeadsRefuses(t *testing.T) {
+	f := newLegacyRecoverFixture(t, types.RunCancelled)
+	// A second legacy terminal run on the same branch, preserving a different
+	// head (the submitted head).
+	second, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.submitted, f.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatus(second.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	f.makeLegacy(second.ID)
+
+	state := f.service.InspectCached(f.ctx)
+	if state.State != StateAmbiguousContext || state.Safety != "blocked_recover_ambiguous_legacy" {
+		t.Fatalf("ambiguous legacy inspection = %s/%s", state.State, state.Safety)
+	}
+	recovered := f.service.Recover(f.ctx, false)
+	if recovered.Recovered {
+		t.Fatalf("ambiguous legacy recover returned custody: %#v", recovered)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatal("ambiguous refusal moved HEAD")
+	}
+	if f.custodyReturned() {
+		t.Fatal("ambiguous refusal stamped custody")
+	}
+}
+
+// TestRecoverLegacyPublishedRunNotRecoverable covers the published case: a
+// pre-provenance row that nevertheless carries a push binding is not stranded
+// legacy state and must never be legacy-recovered.
+func TestRecoverLegacyPublishedRunNotRecoverable(t *testing.T) {
+	f := newLegacyRecoverFixture(t, types.RunCancelled)
+	// Simulate a published binding surviving on an otherwise pre-provenance row.
+	f.execRunSQL(`UPDATE runs SET last_pushed_sha = ? WHERE id = ?`, f.preserved, f.run.ID)
+
+	state := f.service.InspectCached(f.ctx)
+	if state.State == StatePipelineOwned && state.Safety == "blocked_pipeline_owned_recoverable" {
+		t.Fatalf("published legacy row was offered for recovery: %#v", state)
+	}
+	recovered := f.service.Recover(f.ctx, false)
+	if recovered.Recovered {
+		t.Fatalf("published legacy row was recovered: %#v", recovered)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatal("published-row refusal moved HEAD")
+	}
+	if f.custodyReturned() {
+		t.Fatal("published-row refusal stamped custody")
+	}
+}
+
+// TestRecoverLegacyEqualWorktreeReturnsCustodyWithoutGate covers the equal cell
+// for a legacy row: the preserved head is already reachable locally, so custody
+// returns by anchoring locally with no gate access at all.
+func TestRecoverLegacyEqualWorktreeReturnsCustodyWithoutMutation(t *testing.T) {
+	f := newLegacyRecoverFixture(t, types.RunFailed)
+	mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover")
+	mustRun(t, f.local, "merge", "--ff-only", f.preserved)
+	if err := os.RemoveAll(f.gate); err != nil {
+		t.Fatal(err)
+	}
+	state := f.service.Recover(f.ctx, false)
+	if !state.Recovered || state.Changed || state.State != StateCustodyReturned || state.Relation != RelationEqual {
+		t.Fatalf("legacy recover equal = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("anchor ref = %s, want %s", got, f.preserved)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("equal recover did not stamp custody")
 	}
 }
