@@ -273,7 +273,7 @@ Starts a persistent HTTP server (`opencode serve`) on first use and reuses it ac
 
 Spawns a `pi` subprocess for each invocation with `--mode json --no-session`.
 Any `agent_args_override.pi` flags are inserted before no-mistakes' managed flags.
-When the trusted repo config enables `disable_project_settings`, no-mistakes appends Pi's verified automatic-resource isolation block and refuses conflicting resource, trust, or system-prompt overrides; model and thinking overrides remain supported. See the [repo config reference](/no-mistakes/reference/repo-config/#disable_project_settings) for the contract.
+For Pi's behavior when the trusted repo config enables `disable_project_settings`, see the [repo config reference](/no-mistakes/reference/repo-config/#disable_project_settings).
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
 When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response.
 

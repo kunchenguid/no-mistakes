@@ -130,10 +130,10 @@ func ReportsAgentAttempts(a Agent) bool {
 // the checkout is itself an agent-orchestration harness (for example firstmate),
 // its AGENTS.md can otherwise convince the gate agent it is the fleet captain and
 // drive it to spawn a crew and reset the branch it is validating (the
-// ambient-authority incident). Only adapters whose suppression knob is
-// empirically verified implement this and return true, and only while that knob
-// is actually in effect for the invocation (an operator override that defeats the
-// knob must report false so the gate fails closed rather than launching
+// ambient-authority incident). Only adapters whose isolation contract is
+// empirically verified implement this and return true, and only while that
+// contract is actually in effect for the invocation (an operator override that
+// defeats it must report false so the gate fails closed rather than launching
 // unneutralized).
 type GateInstructionNeutralizer interface {
 	NeutralizesGateInstructions() bool

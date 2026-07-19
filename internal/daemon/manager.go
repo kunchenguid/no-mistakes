@@ -238,8 +238,8 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, lookPath func(str
 	}
 	ag := agent.NewFallback(created)
 	// Fail closed ONLY under the trusted opt-out (see startRun): refuse an
-	// unverified harness when the repo disabled project settings; otherwise run
-	// every adapter as before.
+	// unverified harness when the repo disabled project behavior resources;
+	// otherwise run every adapter as before.
 	if cfg.DisableProjectSettings {
 		if err := agent.EnsureGateNeutralized(ag); err != nil {
 			_ = ag.Close()
@@ -762,10 +762,10 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		}
 		ag = agent.NewFallback(created)
 		// Fail closed ONLY under the trusted opt-out: when the repo asked to
-		// disable project settings, refuse any resolved harness that lacks a
-		// verified suppression knob rather than launch it with the target repo's
-		// project instructions loaded. When the repo did not opt out, every
-		// adapter runs exactly as before (backward-compat).
+		// disable project behavior resources, refuse any resolved harness that
+		// lacks a verified isolation contract rather than launch it with behavior
+		// resources loaded. When the repo did not opt out, every adapter runs
+		// exactly as before (backward-compat).
 		if cfg.DisableProjectSettings {
 			if err := agent.EnsureGateNeutralized(ag); err != nil {
 				m.db.UpdateRunError(run.ID, err.Error())
