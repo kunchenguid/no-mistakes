@@ -474,7 +474,7 @@ func gateFields(gate stepView) []toon.Field {
 			"Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)",
 			"Run `no-mistakes axi respond --action skip` to skip this step",
 			fmt.Sprintf("Run `no-mistakes axi logs --step %s --full` to read the full step log", gate.Name),
-			"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.",
+			"A long-running call is working, not stalled. In Codex-supervised work, never put `axi run`, `axi respond`, `axi watch`, or status polling in a background terminal or `run_in_background` task. Keep one foreground process bound to the active turn. The run never advances past a gate on its own; on a `gate:`, respond; loop until an `outcome:`.",
 			preserveGateFixCommitsGuidance,
 		}},
 	}

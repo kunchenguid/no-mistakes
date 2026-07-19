@@ -296,7 +296,8 @@ func TestWriteGateShape(t *testing.T) {
 		// reminder so an agent reads them at the point of use.
 		"Review auto-fix is disabled by default",
 		"auto_fix.review > 0",
-		"the run never advances past a gate on its own",
+		"The run never advances past a gate on its own",
+		"never put `axi run`, `axi respond`, `axi watch`, or status polling in a background terminal",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("gate missing %q in:\n%s", want, out)
@@ -331,8 +332,11 @@ func TestGateNote_ReviewOnly(t *testing.T) {
 	if strings.Contains(lint, "Review auto-fix is disabled") {
 		t.Errorf("non-review gate should not carry the review note in:\n%s", lint)
 	}
-	if !strings.Contains(lint, "the run never advances past a gate on its own") {
+	if !strings.Contains(lint, "The run never advances past a gate on its own") {
 		t.Errorf("every gate should carry the keep-driving reminder in:\n%s", lint)
+	}
+	if strings.Contains(lint, "background it if your harness needs to") {
+		t.Errorf("gate guidance must not recommend backgrounding AXI calls:\n%s", lint)
 	}
 }
 

@@ -36,7 +36,7 @@ ci_timeout: "168h"
 
 step_quiet_warning: "10m"
 
-# Hook-native Codex supervision: 1 through 6, default 4.
+# Hook-native Codex and Claude Code supervision: 1 through 6, default 4.
 supervision_max_stale_heartbeats: 4
 
 daemon_connect_timeout: "3s"

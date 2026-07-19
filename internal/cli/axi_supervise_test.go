@@ -26,6 +26,19 @@ func TestCanonicalSupervisorCWD(t *testing.T) {
 	}
 }
 
+func TestAxiSuperviseHelpNamesBothSupportedNativeAgents(t *testing.T) {
+	for name, content := range map[string]string{
+		"supervise": newAxiSuperviseCmd().Short,
+		"arm":       newAxiSuperviseArmCmd().Short,
+	} {
+		for _, provider := range []string{"Codex", "Claude Code"} {
+			if !strings.Contains(content, provider) {
+				t.Errorf("%s help missing %q: %q", name, provider, content)
+			}
+		}
+	}
+}
+
 func TestSupervisionBranchMatchesCurrentWorktree(t *testing.T) {
 	repoDir := setupTestRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature/current")

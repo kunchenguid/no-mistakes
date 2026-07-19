@@ -73,7 +73,7 @@ const (
 )
 
 func newAxiSuperviseCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "supervise", Short: "Opt-in Codex CLI supervision for one AXI run", SilenceErrors: true, SilenceUsage: true}
+	cmd := &cobra.Command{Use: "supervise", Short: "Opt-in Codex and Claude Code supervision for one AXI run", SilenceErrors: true, SilenceUsage: true}
 	cmd.AddCommand(newAxiSuperviseArmCmd())
 	cmd.AddCommand(newAxiSuperviseStatusCmd())
 	return cmd
@@ -91,7 +91,7 @@ func newAxiSuperviseStatusCmd() *cobra.Command {
 
 func newAxiSuperviseArmCmd() *cobra.Command {
 	var runID string
-	cmd := &cobra.Command{Use: "arm", Short: "Arm one active run for an installed Codex Stop hook", Args: cobra.NoArgs, SilenceErrors: true, SilenceUsage: true}
+	cmd := &cobra.Command{Use: "arm", Short: "Arm one active run for an installed Codex or Claude Code Stop hook", Args: cobra.NoArgs, SilenceErrors: true, SilenceUsage: true}
 	cmd.Flags().StringVar(&runID, "run", "", "run id to supervise (required)")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		return runAxiSuperviseArm(cmd, strings.TrimSpace(runID))
@@ -166,7 +166,7 @@ func runAxiSuperviseArm(cmd *cobra.Command, runID string) error {
 		toonField("cwd", reg.CWD),
 		toonField("hook_required", true),
 		toonField("single_session_per_worktree_required", true),
-		toonField("help", []string{"Install the documented Codex Stop hook before ending this turn; it keeps this same turn alive for technical events and pauses for your decisions."}),
+		toonField("help", []string{"Install the documented Codex or Claude Code Stop hook before ending this turn; it keeps this same turn alive for technical events and pauses for your decisions."}),
 	)
 	return nil
 }
