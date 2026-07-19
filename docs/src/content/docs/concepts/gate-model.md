@@ -191,7 +191,7 @@ Everything lives under `~/.no-mistakes/` by default. Set `NM_HOME` to relocate i
 | `config.yaml`                    | Global configuration                                                                                                    |
 | `telemetry-gate.json`            | Persistent read-only telemetry dedupe state                                                                             |
 | `update-check.json`              | Cached update check result                                                                                              |
-| `supervision/`                   | Opt-in Codex-session registrations and claim coordination; local process coordination, never pipeline truth            |
+| `supervision/`                   | Opt-in native-agent session registrations and claim coordination; local process coordination, never pipeline truth     |
 | `servers/`                       | PID-tracking records for managed agent servers                                                                          |
 | `repos/<id>.git`                 | Bare gate repos                                                                                                         |
 | `repos/<id>.git/notify-push.log` | Persistent hook notification failure log                                                                                |

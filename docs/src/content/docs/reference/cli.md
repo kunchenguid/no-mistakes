@@ -108,7 +108,7 @@ Gates with no findings or only `action: no-op` findings are approved as-is, and 
 Without `--yes`, an agent driving `axi run` should stop when a gate contains `action: ask-user` findings and relay each finding's ID, file, and full description to the user before responding.
 Review gates include a `note` field reminding agents that `auto_fix.review` defaults to `0`, so blocking and ask-user review findings park for a decision unless configuration explicitly opts back into review auto-fix.
 Long-running `axi run` calls are working, not stalled; if one returns a `gate:`, read that output and answer it with `axi respond`.
-Backgrounding a call is fine for an agent harness, but the run never advances past a gate on its own.
+In an agent-supervised workflow, keep `axi run`, `axi respond`, `axi watch`, and status polling in the active turn's foreground. The run never advances past a gate on its own; the installed skill and live AXI help own the complete agent-driving protocol.
 When the CI step is still monitoring an open PR and checks are green, `axi run` exits successfully with `outcome: checks-passed` instead of waiting for a human merge.
 Treat that as the agent stopping point: ask the user to review and merge the PR from the `help` line.
 If that PR later falls behind the default branch or hits a merge conflict, do not run `axi run`, `rerun`, or a manual rebase while the CI monitor is still running.
@@ -222,7 +222,7 @@ no-mistakes axi watch --run <id> --until terminal
 
 `--until attention` exits successfully with one bounded TOON snapshot when the run reaches an approval or fix-review gate, reports `outcome: checks-passed`, becomes quiet for longer than `step_quiet_warning`, or terminates. The snapshot includes `watch.stop` so a supervisor can distinguish `gate`, `checks-passed`, `quiet`, and `terminal`.
 
-`--until terminal` keeps waiting through gates, checks-passed, and quiet warnings, and returns only for a terminal outcome. In either mode, Ctrl-C stops only the watch process (exit code `130`); it never cancels the run.
+`--until terminal` keeps waiting through gates, checks-passed, and quiet warnings, and returns only for a terminal outcome. A failed or cancelled terminal run exits with code `1`; other terminal outcomes exit successfully. In either mode, Ctrl-C stops only the watch process (exit code `130`); it never cancels the run.
 
 The command uses daemon events as a wake-up signal and re-reads the current run state before deciding. If that event stream ends, it performs one final read and reports `stream-interrupted` if the run is still non-terminal. Gate output is limited to ten findings; use `no-mistakes axi logs --step <step> --full` for full detail.
 

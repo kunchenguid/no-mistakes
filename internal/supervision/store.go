@@ -1,5 +1,5 @@
 // Package supervision persists the smallest possible amount of local state
-// needed to reconnect an explicitly armed No-Mistakes run to a Codex Stop hook.
+// needed to reconnect an explicitly armed No-Mistakes run to a native-agent Stop hook.
 package supervision
 
 import (
