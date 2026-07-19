@@ -10,6 +10,7 @@ import (
 	"io"
 	"os/exec"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -576,7 +577,7 @@ func (h *Host) requiredStatusContexts(ctx context.Context, repo, branch string) 
 		} `json:"parameters"`
 	}
 	if err := h.apiJSONPages(ctx, "repos/"+repo+"/rules/branches/"+branch, &rulePages); err != nil {
-		if isUnsupportedRulesEndpointError(err) {
+		if h.hasLegacyRulesEndpoint(ctx, err) {
 			return required, true
 		}
 		return nil, false
@@ -602,8 +603,36 @@ func isUnprotectedBranchError(err error) bool {
 	return strings.Contains(message, "branch not protected")
 }
 
-func isUnsupportedRulesEndpointError(err error) bool {
-	return strings.Contains(strings.ToLower(err.Error()), "http 404")
+func (h *Host) hasLegacyRulesEndpoint(ctx context.Context, err error) bool {
+	if !strings.Contains(strings.ToLower(err.Error()), "http 404") || h.host == "" || strings.EqualFold(h.host, "github.com") {
+		return false
+	}
+	var metadata struct {
+		InstalledVersion string `json:"installed_version"`
+	}
+	if err := h.apiJSON(ctx, "meta", &metadata); err != nil {
+		return false
+	}
+	return isLegacyEnterpriseVersion(metadata.InstalledVersion)
+}
+
+func isLegacyEnterpriseVersion(version string) bool {
+	parts := strings.Split(strings.TrimSpace(version), ".")
+	if len(parts) != 3 {
+		return false
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return false
+	}
+	if _, err := strconv.Atoi(parts[2]); err != nil {
+		return false
+	}
+	return major < 3 || major == 3 && minor < 9
 }
 
 func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {
