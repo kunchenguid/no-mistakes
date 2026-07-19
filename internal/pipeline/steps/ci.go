@@ -211,6 +211,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 		return ciMonitoringTimeoutOutcome(), nil
 	}
+	lastObservedPRHead := pr.HeadSHA
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -271,6 +272,19 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				return nil, err
 			}
 		}
+		if provider == scm.ProviderGitHub {
+			if pr.HeadSHA != "" && pr.HeadSHA != lastObservedPRHead {
+				clearCIMonitorReady(sctx)
+				lastMonitorLog = ""
+				s.lastFixedChecks = ""
+				s.lastFixedCompletedAt = nil
+			}
+			if pr.HeadSHA != "" {
+				lastObservedPRHead = pr.HeadSHA
+			}
+		} else {
+			pr.HeadSHA = sctx.Run.HeadSHA
+		}
 
 		// Check mergeable state if the provider supports it
 		mergeConflict := false
@@ -296,7 +310,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 		// Check CI status - wait for all checks to complete before fixing
 		ciFixLimit := sctx.Config.AutoFix.CI
-		pr.HeadSHA = sctx.Run.HeadSHA
 		checks, err := host.GetChecks(ctx, pr)
 		if err != nil {
 			clearCIMonitorReady(sctx)

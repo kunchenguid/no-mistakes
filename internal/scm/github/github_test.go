@@ -106,17 +106,21 @@ func TestGetPRStatePassesRepoFlag(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr view 123 --repo test/repo --json state --jq .state": {
-			stdout: "MERGED\n",
+		"gh pr view 123 --repo test/repo --json state,headRefOid": {
+			stdout: `{"state":"MERGED","headRefOid":"abc123"}` + "\n",
 		},
 	}), nil, "", "test/repo")
 
-	state, err := host.GetPRState(context.Background(), &scm.PR{Number: "123"})
+	pr := &scm.PR{Number: "123"}
+	state, err := host.GetPRState(context.Background(), pr)
 	if err != nil {
 		t.Fatalf("GetPRState() error = %v", err)
 	}
 	if state != scm.PRStateMerged {
 		t.Fatalf("GetPRState() = %q, want %q", state, scm.PRStateMerged)
+	}
+	if pr.HeadSHA != "abc123" {
+		t.Fatalf("GetPRState() HeadSHA = %q, want %q", pr.HeadSHA, "abc123")
 	}
 }
 
@@ -261,6 +265,24 @@ func TestGetChecksKeepsProtectedOrLinkedLegacyPendingBlocking(t *testing.T) {
 				t.Fatalf("checks = %+v, want blocking legacy pending", checks)
 			}
 		})
+	}
+}
+
+func TestGetChecksEscapesPolicyBranchPaths(t *testing.T) {
+	t.Parallel()
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api repos/test/repo/branches/release%2F1.0/protection/required_status_checks": {stderr: "Branch not protected", code: 1},
+		"gh api --paginate repos/test/repo/rules/branches/release%2F1.0":                  {stdout: "[]\n"},
+		"gh api --paginate repos/test/repo/commits/abc/check-runs?per_page=100":           {stdout: `{"check_runs":[]}` + "\n"},
+		"gh api --paginate repos/test/repo/commits/abc/statuses?per_page=100":             {stdout: "[]\n"},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{HeadSHA: "abc", BaseBranch: "release/1.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checks) != 0 {
+		t.Fatalf("checks = %+v, want no checks", checks)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os/exec"
 	"reflect"
 	"strings"
@@ -255,11 +256,21 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
 	args := append([]string{"pr", "view", pr.Number}, h.repoArgs()...)
-	args = append(args, "--json", "state", "--jq", ".state")
+	args = append(args, "--json", "state,headRefOid")
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("gh pr view: %w", err)
+	}
+	var view struct {
+		State      string `json:"state"`
+		HeadRefOID string `json:"headRefOid"`
+	}
+	if err := json.Unmarshal(out, &view); err == nil {
+		if view.HeadRefOID != "" {
+			pr.HeadSHA = view.HeadRefOID
+		}
+		return normalizePRState(view.State), nil
 	}
 	return normalizePRState(strings.TrimSpace(string(out))), nil
 }
@@ -452,13 +463,14 @@ func parseGitHubTime(value string) time.Time {
 
 func (h *Host) requiredStatusContexts(ctx context.Context, repo, branch string) (map[string]bool, bool) {
 	required := map[string]bool{}
+	escapedBranch := url.PathEscape(branch)
 	var protection struct {
 		Contexts []string `json:"contexts"`
 		Checks   []struct {
 			Context string `json:"context"`
 		} `json:"checks"`
 	}
-	if err := h.apiJSON(ctx, "repos/"+repo+"/branches/"+branch+"/protection/required_status_checks", &protection); err != nil {
+	if err := h.apiJSON(ctx, "repos/"+repo+"/branches/"+escapedBranch+"/protection/required_status_checks", &protection); err != nil {
 		if !isUnprotectedBranchError(err) {
 			return nil, false
 		}
@@ -481,7 +493,7 @@ func (h *Host) requiredStatusContexts(ctx context.Context, repo, branch string) 
 			} `json:"required_status_checks"`
 		} `json:"parameters"`
 	}
-	if err := h.apiJSONPages(ctx, "repos/"+repo+"/rules/branches/"+branch, &rulePages); err != nil {
+	if err := h.apiJSONPages(ctx, "repos/"+repo+"/rules/branches/"+escapedBranch, &rulePages); err != nil {
 		return nil, false
 	}
 	for _, rules := range rulePages {

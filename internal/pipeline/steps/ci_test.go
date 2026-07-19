@@ -392,6 +392,48 @@ func TestCIStep_AllChecksPassingKeepsMonitoringOpenPR(t *testing.T) {
 	}
 }
 
+func TestCIStep_ClearsReadinessWhenGitHubPRHeadChanges(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGHSequenceWithHeads(t, "OPEN", []string{
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
+		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
+	}, []string{headSHA, "external-head"})
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+	polls := 0
+	step := &CIStep{
+		baseBranchTip: func(context.Context) (string, bool) { return "", false },
+		waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
+			polls++
+			if polls == 2 {
+				cancel()
+			}
+			return ctx.Err()
+		},
+	}
+
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute() error = %v, want context.Canceled", err)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.CIReadyAt != nil {
+		t.Fatalf("CI readiness = %v, want cleared after PR head change", run.CIReadyAt)
+	}
+}
+
 func TestCIStep_UnprotectedLinklessLegacyPendingReportsChecksPassed(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

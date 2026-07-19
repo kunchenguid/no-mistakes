@@ -370,7 +370,12 @@ func fakeCIGHSequenceHandler(args []string) {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
-		fmt.Println(state)
+		if headsPath := os.Getenv("FAKE_CLI_HEADS_PATH"); headsPath != "" {
+			head := currentFakeCIGHHead(headsPath, indexPath)
+			fmt.Printf("{\"state\":%q,\"headRefOid\":%q}\n", state, head)
+		} else {
+			fmt.Println(state)
+		}
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "/check-runs?per_page=100") {
@@ -390,6 +395,28 @@ func fakeCIGHSequenceHandler(args []string) {
 		os.Exit(0)
 	}
 	os.Exit(1)
+}
+
+func currentFakeCIGHHead(headsPath, indexPath string) string {
+	data, err := os.ReadFile(headsPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	entries := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(entries) == 0 || entries[0] == "" {
+		return ""
+	}
+	index := 0
+	if rawIndex, err := os.ReadFile(indexPath); err == nil {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(string(rawIndex))); err == nil {
+			index = parsed
+		}
+	}
+	if index >= len(entries) {
+		index = len(entries) - 1
+	}
+	return entries[index]
 }
 
 func nextFakeCIGHChecks(checksPath, indexPath string) string {
