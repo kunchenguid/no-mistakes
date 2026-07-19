@@ -25,8 +25,6 @@ type piAgent struct {
 	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
 	// buildArgs suppresses every automatic Pi behavior-resource surface.
 	disableProjectSettings bool
-	gateCapabilityOnce     sync.Once
-	gateCapabilitiesOK     bool
 }
 
 func (a *piAgent) Name() string { return "pi" }
@@ -45,17 +43,17 @@ func (a *piAgent) NeutralizesGateInstructions() bool {
 	if !a.disableProjectSettings || !piExtraArgsPreserveGateIsolation(a.extraArgs) {
 		return false
 	}
-	a.gateCapabilityOnce.Do(func() {
-		a.gateCapabilitiesOK = piHasGateIsolationCapabilities(a.bin)
-	})
-	return a.gateCapabilitiesOK
+	return piHasGateIsolationCapabilities(a.bin)
 }
 
 func (a *piAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
-	if a.disableProjectSettings && !a.NeutralizesGateInstructions() {
-		return nil, fmt.Errorf("pi does not satisfy the required gate-isolation version and flag capabilities")
+	if a.disableProjectSettings && !piExtraArgsPreserveGateIsolation(a.extraArgs) {
+		return nil, fmt.Errorf("pi arguments do not preserve the required gate isolation")
 	}
 	return runWithRetry(ctx, "pi", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
+		if a.disableProjectSettings && !piHasGateIsolationCapabilities(a.bin) {
+			return nil, fmt.Errorf("pi does not satisfy the required gate-isolation version and flag capabilities")
+		}
 		return a.runOnce(ctx, opts)
 	})
 }
@@ -231,18 +229,18 @@ func piVersionAtLeast(raw string, wantMajor, wantMinor, wantPatch int) bool {
 // additive in Pi even when the corresponding --no-* discovery flag is present,
 // so appending the managed block alone is not sufficient.
 func piExtraArgsPreserveGateIsolation(extraArgs []string) bool {
-	conflicting := map[string]bool{
-		// A terminator would make every subsequently appended managed flag a
-		// positional message instead of an option.
-		"--": true,
-		// Pi package commands change CLI mode before the gate prompt is read.
+	packageCommands := map[string]bool{
 		"install":   true,
 		"remove":    true,
 		"uninstall": true,
 		"update":    true,
 		"list":      true,
 		"config":    true,
-
+	}
+	conflicting := map[string]bool{
+		// A terminator would make every subsequently appended managed flag a
+		// positional message instead of an option.
+		"--":                     true,
 		"--extension":            true,
 		"-e":                     true,
 		"--skill":                true,
@@ -282,7 +280,12 @@ func piExtraArgsPreserveGateIsolation(extraArgs []string) bool {
 		"--no-approve":          true,
 		"-na":                   true,
 	}
+	expectsValue := false
 	for _, arg := range extraArgs {
+		if expectsValue {
+			expectsValue = false
+			continue
+		}
 		if strings.HasPrefix(arg, "-e") && !strings.HasPrefix(arg, "--") {
 			// Reject every attached -e form conservatively rather than depending on
 			// whether a particular Pi parser version accepts or rejects it.
@@ -300,11 +303,26 @@ func piExtraArgsPreserveGateIsolation(extraArgs []string) bool {
 			base = arg[:idx]
 			hasValue = true
 		}
-		if conflicting[base] || (managedBooleans[base] && hasValue) {
+		if conflicting[base] || packageCommands[base] || (managedBooleans[base] && hasValue) {
 			return false
+		}
+		if !hasValue && piOptionConsumesNextValue(base) {
+			expectsValue = true
 		}
 	}
 	return true
+}
+
+func piOptionConsumesNextValue(arg string) bool {
+	switch arg {
+	case "--provider", "--model", "--api-key", "--system-prompt", "--append-system-prompt",
+		"--mode", "--session", "--session-id", "--fork", "--session-dir", "--name", "-n",
+		"--models", "--tools", "-t", "--exclude-tools", "-xt", "--thinking", "--extension", "-e",
+		"--skill", "--prompt-template", "--theme", "--export":
+		return true
+	default:
+		return false
+	}
 }
 
 // buildPiPrompt appends a JSON-output contract to the user prompt when a

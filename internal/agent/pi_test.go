@@ -95,13 +95,26 @@ func TestPiAgent_GateIsolationRejectsConflictingOverrides(t *testing.T) {
 		})
 	}
 
-	pa := &piAgent{
-		bin:                    bin,
-		extraArgs:              []string{"--model", "openai-codex/gpt-5.6-sol", "--thinking", "medium"},
-		disableProjectSettings: true,
+	for _, args := range [][]string{
+		{"--model", "openai-codex/gpt-5.6-sol", "--thinking", "medium"},
+		{"--model", "list"},
+		{"--model=list"},
+		{"--provider", "config", "--thinking", "update"},
+	} {
+		pa := &piAgent{bin: bin, extraArgs: args, disableProjectSettings: true}
+		if !pa.NeutralizesGateInstructions() {
+			t.Fatalf("option values %q must preserve Pi gate isolation", args)
+		}
 	}
-	if !pa.NeutralizesGateInstructions() {
-		t.Fatal("model and thinking overrides must preserve Pi gate isolation")
+
+	for _, args := range [][]string{
+		{"--model", "list", "install"},
+		{"--thinking=medium", "config"},
+	} {
+		pa := &piAgent{bin: bin, extraArgs: args, disableProjectSettings: true}
+		if pa.NeutralizesGateInstructions() {
+			t.Fatalf("positional package command in %q must fail closed", args)
+		}
 	}
 }
 
@@ -127,6 +140,24 @@ func TestPiAgent_GateIsolationRequiresCompatibleCapabilities(t *testing.T) {
 				t.Fatalf("NeutralizesGateInstructions() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPiAgent_GateIsolationRevalidatesReplacedBinaryBeforeRun(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeCapableFakePi(t, dir, "0.80.10", true, "")
+	pa := &piAgent{bin: bin, disableProjectSettings: true}
+	if !pa.NeutralizesGateInstructions() {
+		t.Fatal("initial capable Pi must be admitted")
+	}
+
+	marker := filepath.Join(dir, "launched-after-replacement")
+	writeCapableFakePi(t, dir, "0.80.9", true, marker)
+	if _, err := pa.Run(context.Background(), RunOpts{Prompt: "must not launch", CWD: dir}); err == nil {
+		t.Fatal("Run() must revalidate a replaced Pi binary")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("replacement gate invocation launched despite failed capability check: %v", err)
 	}
 }
 

@@ -120,7 +120,7 @@ This opt-in is intended for agent-orchestration repositories whose `AGENTS.md`, 
 When enabled, no-mistakes suppresses the target checkout's project settings for every agent-driven gate step while retaining the harness's ordinary authentication and model configuration.
 Codex, Claude, and Pi are the currently verified agents: Codex receives `project_doc_max_bytes=0` and `--ignore-rules`; Claude loads only its user setting source; and Pi receives `--no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --system-prompt '' --append-system-prompt ''` after configured overrides.
 For Pi, the empty system-prompt inputs suppress automatic global and project `SYSTEM.md`/`APPEND_SYSTEM.md` discovery while retaining Pi's generated base prompt.
-Pi must be version 0.80.10 or newer and advertise every managed transport and isolation flag; older, malformed, or incomplete binaries fail before the gate invocation starts, without pinning compatible newer releases to one exact version.
+Pi must be version 0.80.10 or newer and advertise every managed transport and isolation flag; this is revalidated immediately before each invocation, so older, malformed, incomplete, or replaced binaries fail before the gate starts without pinning compatible newer releases to one exact version.
 Pi themes are non-instruction TUI resources, but discovery is still disabled as part of the complete automatic-resource boundary.
 The setting applies to both new and resumed sessions where the adapter supports them.
 
