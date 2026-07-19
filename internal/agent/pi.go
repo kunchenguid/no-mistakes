@@ -19,11 +19,25 @@ import (
 type piAgent struct {
 	bin       string
 	extraArgs []string
+	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
+	// buildArgs suppresses every automatic Pi behavior-resource surface.
+	disableProjectSettings bool
 }
 
 func (a *piAgent) Name() string { return "pi" }
 
 func (a *piAgent) ReportsAgentAttempts() bool { return true }
+
+// NeutralizesGateInstructions reports whether Pi's complete gate-isolation
+// block is in effect and no operator override explicitly loads or re-enables a
+// behavior resource. Pi 0.80.10 was empirically verified with this block: it
+// suppresses extensions, skills, prompt templates, themes, context files, and
+// project-local settings/resources, while empty system-prompt overrides stop
+// automatic SYSTEM.md/APPEND_SYSTEM.md discovery without removing Pi's
+// generated base prompt.
+func (a *piAgent) NeutralizesGateInstructions() bool {
+	return a.disableProjectSettings && piExtraArgsPreserveGateIsolation(a.extraArgs)
+}
 
 func (a *piAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "pi", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
@@ -102,14 +116,118 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	return res, err
 }
 
-// buildArgs returns the Pi argv for one invocation. User extras come first
-// (so user --provider/--model take effect), then the managed flags that
-// no-mistakes requires for JSONL parsing.
+// buildArgs returns the Pi argv for one invocation. User extras come first so
+// model/provider/thinking selections take effect. Managed transport flags and,
+// under the trusted opt-out, the complete isolation block come last so an
+// override cannot remove them. NeutralizesGateInstructions independently fails
+// closed on explicit resource/trust/system-prompt overrides whose effects are
+// additive or otherwise unsafe to resolve by argument order.
 func (a *piAgent) buildArgs() []string {
-	args := make([]string, 0, len(a.extraArgs)+3)
+	args := make([]string, 0, len(a.extraArgs)+17)
 	args = append(args, a.extraArgs...)
 	args = append(args, "--mode", "json", "--no-session")
+	if a.disableProjectSettings {
+		args = append(args, piGateIsolationArgs()...)
+	}
 	return args
+}
+
+// piGateIsolationArgs is the empirically verified Pi 0.80.10 isolation block.
+// Keep its order stable: tests exercise both the exact argv contract and these
+// flags' effective behavior in a real no-model-call Pi resource probe.
+func piGateIsolationArgs() []string {
+	return []string{
+		"--no-extensions",
+		"--no-skills",
+		"--no-prompt-templates",
+		"--no-themes",
+		"--no-context-files",
+		"--no-approve",
+		"--system-prompt", "",
+		"--append-system-prompt", "",
+	}
+}
+
+// piExtraArgsPreserveGateIsolation rejects configured arguments that can load a
+// behavior resource explicitly, trust project-local resources, replace/append
+// the system prompt, or negate a managed isolation flag. Explicit resources are
+// additive in Pi even when the corresponding --no-* discovery flag is present,
+// so appending the managed block alone is not sufficient.
+func piExtraArgsPreserveGateIsolation(extraArgs []string) bool {
+	conflicting := map[string]bool{
+		// A terminator would make every subsequently appended managed flag a
+		// positional message instead of an option.
+		"--": true,
+		// Pi package commands change CLI mode before the gate prompt is read.
+		"install":   true,
+		"remove":    true,
+		"uninstall": true,
+		"update":    true,
+		"list":      true,
+		"config":    true,
+
+		"--extension":            true,
+		"-e":                     true,
+		"--skill":                true,
+		"--prompt-template":      true,
+		"--theme":                true,
+		"--approve":              true,
+		"-a":                     true,
+		"--system-prompt":        true,
+		"--append-system-prompt": true,
+		// Loading an old session imports prior instructions despite --no-session,
+		// which controls persistence rather than whether history is read.
+		"--continue":   true,
+		"-c":           true,
+		"--resume":     true,
+		"-r":           true,
+		"--session":    true,
+		"--session-id": true,
+		"--fork":       true,
+		// These positive forms are not part of Pi 0.80.10, but treating them as
+		// conflicts fails safely if a later Pi release introduces them.
+		"--extensions":       true,
+		"--skills":           true,
+		"--prompt-templates": true,
+		"--themes":           true,
+		"--context-files":    true,
+	}
+	managedBooleans := map[string]bool{
+		"--no-extensions":       true,
+		"-ne":                   true,
+		"--no-skills":           true,
+		"-ns":                   true,
+		"--no-prompt-templates": true,
+		"-np":                   true,
+		"--no-themes":           true,
+		"--no-context-files":    true,
+		"-nc":                   true,
+		"--no-approve":          true,
+		"-na":                   true,
+	}
+	for _, arg := range extraArgs {
+		if strings.HasPrefix(arg, "-e") && !strings.HasPrefix(arg, "--") {
+			// Reject every attached -e form conservatively rather than depending on
+			// whether a particular Pi parser version accepts or rejects it.
+			return false
+		}
+		if strings.HasPrefix(arg, "@") {
+			// Pi turns @path arguments into prompt attachments. Under the opt-out,
+			// do not permit an override to attach AGENTS.md or another behavior
+			// resource behind --no-context-files.
+			return false
+		}
+		base := arg
+		hasValue := false
+		if idx := strings.IndexByte(arg, '='); idx > 0 {
+			base = arg[:idx]
+			hasValue = true
+		}
+		if conflicting[base] || (managedBooleans[base] && hasValue) {
+			return false
+		}
+	}
+	return true
 }
 
 // buildPiPrompt appends a JSON-output contract to the user prompt when a

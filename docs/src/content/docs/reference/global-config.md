@@ -174,6 +174,7 @@ User-supplied flags are inserted ahead of no-mistakes' managed flags, so your ch
 
 For structured `codex` runs, no-mistakes also appends its own `--output-schema <tempfile>` after your overrides. Treat that flag as managed even though config validation does not currently reject it.
 The Claude and Codex session-control forms are reserved so no-mistakes can keep reviewer and fixer conversations role-isolated.
+When a repository's trusted config enables [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings), Pi's managed isolation block is appended after these overrides. Pi model/thinking overrides remain accepted, while an override that explicitly loads a behavior resource or session, changes the system prompt, or trusts project resources makes the gate fail before launch.
 
 Smart defaults:
 

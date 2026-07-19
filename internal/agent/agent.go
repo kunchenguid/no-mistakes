@@ -122,9 +122,9 @@ func ReportsAgentAttempts(a Agent) bool {
 }
 
 // GateInstructionNeutralizer is the optional adapter capability that reports the
-// adapter neutralizes the target repository's project agent-instruction files
-// (AGENTS.md/CLAUDE.md) for this invocation, so they cannot install a governing
-// identity on the gate agent.
+// adapter neutralizes the behavior resources covered by its verified gate
+// isolation contract (including target-repository instruction files), so those
+// resources cannot install a governing identity on the gate agent.
 //
 // A gate agent runs with cmd.Dir set to the target checkout and a free shell. If
 // the checkout is itself an agent-orchestration harness (for example firstmate),
@@ -140,9 +140,9 @@ type GateInstructionNeutralizer interface {
 }
 
 // NeutralizesGateInstructions reports whether a (possibly wrapped) agent
-// neutralizes the target repo's project agent-instruction files during a gate
-// run. It fails closed: an adapter that does not implement the capability, a
-// nil agent, or a wrapper any member of which does not neutralize, is reported
+// neutralizes the behavior resources required by its verified gate isolation
+// contract. It fails closed: an adapter that does not implement the capability,
+// a nil agent, or a wrapper any member of which does not neutralize, is reported
 // as NOT neutralized.
 func NeutralizesGateInstructions(a Agent) bool {
 	if a == nil {
@@ -153,11 +153,11 @@ func NeutralizesGateInstructions(a Agent) bool {
 }
 
 // EnsureGateNeutralized fails closed when the agent that will run gate steps in
-// the target checkout does not neutralize that checkout's project
-// agent-instruction files. Callers must invoke it before launching any gate
+// the target checkout does not neutralize the behavior resources required by its
+// verified isolation contract. Callers must invoke it before launching any gate
 // agent so an unverified harness is refused with a clear error rather than run
-// unneutralized in the target checkout. Only codex and claude have a verified
-// neutralization knob today.
+// unneutralized in the target checkout. Codex, Claude, and Pi have verified
+// neutralization contracts today.
 func EnsureGateNeutralized(a Agent) error {
 	if a == nil {
 		return fmt.Errorf("no gate agent configured")
@@ -165,10 +165,10 @@ func EnsureGateNeutralized(a Agent) error {
 	if NeutralizesGateInstructions(a) {
 		return nil
 	}
-	return fmt.Errorf("gate agent %q does not neutralize the target repository's project "+
-		"agent-instruction files (AGENTS.md/CLAUDE.md); refusing to launch it in the target "+
-		"checkout. Only codex and claude have a verified neutralization knob (and only when it "+
-		"is not overridden by agent_args_override); set 'agent' to codex or claude in "+
+	return fmt.Errorf("gate agent %q does not neutralize the required gate-agent "+
+		"behavior resources; refusing to launch it in the target checkout. Codex, "+
+		"Claude, and Pi have verified neutralization contracts (only when not defeated by "+
+		"agent_args_override); set 'agent' to codex, claude, or pi in "+
 		"~/.no-mistakes/config.yaml", a.Name())
 }
 
@@ -248,10 +248,11 @@ type InvocationWorkload struct {
 type Options struct {
 	ACPRegistryOverrides map[string]string
 	// DisableProjectSettings, when true, asks a supported adapter (codex,
-	// claude) to launch with the target repo's project-level agent
-	// settings/instructions suppressed. It is the resolved, trusted-only opt-out
-	// from config.Config; adapters without a verified suppression knob ignore it
-	// and are refused separately by EnsureGateNeutralized when the opt-out is on.
+	// claude, or pi) to launch with the behavior resources covered by its
+	// verified gate isolation contract suppressed. It is the resolved,
+	// trusted-only opt-out from config.Config; adapters without a verified
+	// suppression contract ignore it and are refused separately by
+	// EnsureGateNeutralized when the opt-out is on.
 	DisableProjectSettings bool
 }
 
@@ -805,7 +806,7 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	case types.AgentOpenCode:
 		return &opencodeAgent{bin: bin, extraArgs: extraArgs}, nil
 	case types.AgentPi:
-		return &piAgent{bin: bin, extraArgs: extraArgs}, nil
+		return &piAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
 	case types.AgentCopilot:
 		return &copilotAgent{bin: bin, extraArgs: extraArgs}, nil
 	default:

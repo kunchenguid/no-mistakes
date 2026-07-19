@@ -54,10 +54,10 @@ func (a *fallbackAgent) SupportsSessionProvider(provider string) bool {
 func (a *fallbackAgent) ReportsAgentAttempts() bool { return true }
 
 // NeutralizesGateInstructions fails closed over the whole fallback set: the
-// wrapper may invoke any member, so it neutralizes the target repo's project
-// agent-instruction files only if EVERY member does. A single unverified member
-// makes the wrapper report false so the gate is refused rather than risk that
-// member running unneutralized.
+// wrapper may invoke any member, so it neutralizes the required behavior
+// resources only if EVERY member does. A single unverified member makes the
+// wrapper report false so the gate is refused rather than risk that member
+// running unneutralized.
 func (a *fallbackAgent) NeutralizesGateInstructions() bool {
 	if len(a.agents) == 0 {
 		return false

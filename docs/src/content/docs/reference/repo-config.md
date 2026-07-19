@@ -109,7 +109,7 @@ This field is itself read **only from the trusted default-branch copy** of `.no-
 
 ### disable_project_settings
 
-Suppress project-level agent settings and instructions for every gate-agent start and resumed session.
+Suppress agent behavior resources through each adapter's verified isolation contract, including project-level settings and instructions, for every gate-agent start and resumed session.
 
 | | |
 |---|---|
@@ -117,12 +117,15 @@ Suppress project-level agent settings and instructions for every gate-agent star
 | Default | `false` |
 
 This opt-in is intended for agent-orchestration repositories whose `AGENTS.md`, `CLAUDE.md`, or harness-specific project settings would give a validation agent an operator identity and authority that it must not adopt.
-When enabled, no-mistakes suppresses the target checkout's project settings for every agent-driven gate step while preserving user-level agent configuration.
-Codex and Claude are the currently verified agents: Codex receives `project_doc_max_bytes=0` and `--ignore-rules`, while Claude loads only its user setting source.
-The setting applies to both new and resumed sessions.
+When enabled, no-mistakes suppresses the target checkout's project settings for every agent-driven gate step while retaining the harness's ordinary authentication and model configuration.
+Codex, Claude, and Pi are the currently verified agents: Codex receives `project_doc_max_bytes=0` and `--ignore-rules`; Claude loads only its user setting source; and Pi receives `--no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --system-prompt '' --append-system-prompt ''` after configured overrides.
+For Pi, the empty system-prompt inputs suppress automatic global and project `SYSTEM.md`/`APPEND_SYSTEM.md` discovery while retaining Pi's generated base prompt.
+Pi themes are non-instruction TUI resources, but discovery is still disabled as part of the complete automatic-resource boundary.
+The setting applies to both new and resumed sessions where the adapter supports them.
 
 The gate fails before launching an agent if any resolved agent or fallback lacks a verified suppression mechanism.
-It also fails if `agent_args_override` defeats suppression, such as a nonzero Codex `project_doc_max_bytes` or Claude setting sources that include `project` or `local`.
+It also fails if `agent_args_override` defeats suppression, such as a nonzero Codex `project_doc_max_bytes`, Claude setting sources that include `project` or `local`, or Pi arguments that explicitly load a resource/session, trust the project, or replace/append the system prompt.
+Pi model and thinking overrides remain valid because they do not alter resource isolation.
 When this option is `false`, missing, or `null`, all agents retain their existing project-setting behavior.
 
 This field is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`.

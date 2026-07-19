@@ -18,7 +18,7 @@ func fakeLookPath(bin string) (string, error) { return "/fake/bin/" + bin, nil }
 // opt-out (disable_project_settings=true), a verified harness passes the gate and
 // its pipeline agent reports neutralized.
 func TestNewPipelineAgent_OptOut_AdmitsVerifiedHarness(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude} {
+	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi} {
 		cfg := &config.Config{Agent: name, DisableProjectSettings: true}
 		ag, err := newPipelineAgent(context.Background(), cfg, fakeLookPath)
 		if err != nil {
@@ -36,7 +36,7 @@ func TestNewPipelineAgent_OptOut_AdmitsVerifiedHarness(t *testing.T) {
 // verified neutralization knob is refused rather than launched with project
 // instructions loaded.
 func TestNewPipelineAgent_OptOut_RefusesUnverifiedHarness(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentOpenCode, types.AgentPi, types.AgentCopilot} {
+	for _, name := range []types.AgentName{types.AgentOpenCode, types.AgentCopilot} {
 		cfg := &config.Config{Agent: name, DisableProjectSettings: true}
 		if _, err := newPipelineAgent(context.Background(), cfg, fakeLookPath); err == nil {
 			t.Fatalf("%s must be refused under opt-out", name)
@@ -66,16 +66,43 @@ func TestNewPipelineAgent_NoOptOut_AdmitsEveryHarness(t *testing.T) {
 // TestNewPipelineAgent_OptOut_RefusesDefeatedKnob proves the gate fails closed
 // even for a verified harness when an operator override defeats its knob.
 func TestNewPipelineAgent_OptOut_RefusesDefeatedKnob(t *testing.T) {
+	tests := []struct {
+		name     types.AgentName
+		override []string
+	}{
+		{name: types.AgentCodex, override: []string{"-c", "project_doc_max_bytes=8192"}},
+		{name: types.AgentPi, override: []string{"--extension", "./project.ts"}},
+		{name: types.AgentPi, override: []string{"--system-prompt", "project identity"}},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.name)+"_"+tt.override[0], func(t *testing.T) {
+			cfg := &config.Config{
+				Agent:                  tt.name,
+				DisableProjectSettings: true,
+				AgentArgsOverride:      map[string][]string{string(tt.name): tt.override},
+			}
+			if _, err := newPipelineAgent(context.Background(), cfg, fakeLookPath); err == nil {
+				t.Fatalf("%s with override %v must be refused under opt-out", tt.name, tt.override)
+			} else if !strings.Contains(err.Error(), "does not neutralize") {
+				t.Errorf("refusal should explain the reason, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestNewPipelineAgent_OptOut_PiModelThinkingOverrideAllowed(t *testing.T) {
 	cfg := &config.Config{
-		Agent:                  types.AgentCodex,
+		Agent:                  types.AgentPi,
 		DisableProjectSettings: true,
-		AgentArgsOverride:      map[string][]string{"codex": {"-c", "project_doc_max_bytes=8192"}},
+		AgentArgsOverride: map[string][]string{"pi": {
+			"--model", "openai-codex/gpt-5.6-sol", "--thinking", "medium",
+		}},
 	}
-	if _, err := newPipelineAgent(context.Background(), cfg, fakeLookPath); err == nil {
-		t.Fatal("codex with its knob overridden must be refused under opt-out")
-	} else if !strings.Contains(err.Error(), "does not neutralize") {
-		t.Errorf("refusal should explain the reason, got: %v", err)
+	ag, err := newPipelineAgent(context.Background(), cfg, fakeLookPath)
+	if err != nil {
+		t.Fatalf("pi model/thinking override must pass under opt-out: %v", err)
 	}
+	_ = ag.Close()
 }
 
 // TestNewPipelineAgent_OptOut_FallbackRefusesAnyUnverifiedMember proves an
@@ -85,7 +112,7 @@ func TestNewPipelineAgent_OptOut_FallbackRefusesAnyUnverifiedMember(t *testing.T
 	if _, err := newPipelineAgent(context.Background(), cfg, fakeLookPath); err == nil {
 		t.Fatal("a fallback list containing an unverified harness must be refused under opt-out")
 	}
-	cfg = &config.Config{Agents: []types.AgentName{types.AgentCodex, types.AgentClaude}, DisableProjectSettings: true}
+	cfg = &config.Config{Agents: []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi}, DisableProjectSettings: true}
 	if ag, err := newPipelineAgent(context.Background(), cfg, fakeLookPath); err != nil {
 		t.Fatalf("a fallback list of only verified harnesses must pass under opt-out, got: %v", err)
 	} else {

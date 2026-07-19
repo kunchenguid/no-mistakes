@@ -43,6 +43,126 @@ func TestPiAgent_BuildArgs_PrependsExtraArgs(t *testing.T) {
 	}
 }
 
+func TestPiAgent_BuildArgs_GateIsolationAppendedAfterModelOverride(t *testing.T) {
+	pa := &piAgent{
+		bin:                    "pi",
+		extraArgs:              []string{"--model", "openai-codex/gpt-5.6-sol", "--thinking", "medium"},
+		disableProjectSettings: true,
+	}
+	args := pa.buildArgs()
+
+	expected := []string{
+		"--model", "openai-codex/gpt-5.6-sol", "--thinking", "medium",
+		"--mode", "json", "--no-session",
+		"--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
+		"--no-context-files", "--no-approve",
+		"--system-prompt", "", "--append-system-prompt", "",
+	}
+	if len(args) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
+	}
+	for i, want := range expected {
+		if args[i] != want {
+			t.Errorf("arg[%d]: expected %q, got %q", i, want, args[i])
+		}
+	}
+}
+
+func TestPiAgent_GateIsolationRejectsConflictingOverrides(t *testing.T) {
+	conflicts := []string{
+		"--", "install", "remove", "uninstall", "update", "list", "config",
+		"--extension", "-e", "-e./project.ts", "--extension=./project.ts",
+		"--skill", "--skill=./project-skill",
+		"--prompt-template", "--prompt-template=./project.md",
+		"--theme", "--theme=./project.json",
+		"--approve", "-a", "--approve=true",
+		"--system-prompt", "--system-prompt=project",
+		"--append-system-prompt", "--append-system-prompt=project",
+		"--continue", "-c", "--resume", "-r", "--session", "--session-id", "--fork",
+		"--extensions", "--skills", "--prompt-templates", "--themes", "--context-files",
+		"--no-extensions=false", "--no-skills=false",
+		"--no-prompt-templates=false", "--no-themes=false",
+		"--no-context-files=false", "--no-approve=false",
+		"@AGENTS.md", "@CLAUDE.md",
+	}
+	for _, conflict := range conflicts {
+		t.Run(strings.ReplaceAll(conflict, "/", "_"), func(t *testing.T) {
+			pa := &piAgent{bin: "pi", extraArgs: []string{conflict}, disableProjectSettings: true}
+			if pa.NeutralizesGateInstructions() {
+				t.Fatalf("conflicting override %q must fail closed", conflict)
+			}
+		})
+	}
+
+	pa := &piAgent{
+		bin:                    "pi",
+		extraArgs:              []string{"--model", "openai-codex/gpt-5.6-sol", "--thinking", "medium"},
+		disableProjectSettings: true,
+	}
+	if !pa.NeutralizesGateInstructions() {
+		t.Fatal("model and thinking overrides must preserve Pi gate isolation")
+	}
+}
+
+func TestPiAgent_RunGateIsolationUsesExactArgvAndStdinPrompt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("argv NUL-capture fixture is POSIX-only")
+	}
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	promptPath := filepath.Join(dir, "prompt")
+	t.Setenv("NM_PI_TEST_ARGS", argsPath)
+	t.Setenv("NM_PI_TEST_PROMPT", promptPath)
+	bin := writeFakePi(t, dir, `#!/bin/sh
+: > "$NM_PI_TEST_ARGS"
+for arg in "$@"; do
+  printf '%s\0' "$arg" >> "$NM_PI_TEST_ARGS"
+done
+cat > "$NM_PI_TEST_PROMPT"
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}'
+`, "")
+	pa := &piAgent{
+		bin:                    bin,
+		extraArgs:              []string{"--model", "openai-codex/gpt-5.6-sol", "--thinking", "medium"},
+		disableProjectSettings: true,
+	}
+	result, err := pa.Run(context.Background(), RunOpts{Prompt: "NO_MISTAKES_GATE_PROMPT_SENTINEL", CWD: dir})
+	if err != nil {
+		t.Fatalf("Pi run: %v", err)
+	}
+	if result.Text != "done" {
+		t.Fatalf("Pi result = %q, want done", result.Text)
+	}
+
+	prompt, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("read captured prompt: %v", err)
+	}
+	if string(prompt) != "NO_MISTAKES_GATE_PROMPT_SENTINEL" {
+		t.Fatalf("Pi stdin prompt = %q", prompt)
+	}
+	encodedArgs, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read captured argv: %v", err)
+	}
+	gotArgs := strings.Split(strings.TrimSuffix(string(encodedArgs), "\x00"), "\x00")
+	wantArgs := []string{
+		"--model", "openai-codex/gpt-5.6-sol", "--thinking", "medium",
+		"--mode", "json", "--no-session",
+		"--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
+		"--no-context-files", "--no-approve",
+		"--system-prompt", "", "--append-system-prompt", "",
+	}
+	if len(gotArgs) != len(wantArgs) {
+		t.Fatalf("launched argv has %d args, want %d: %q", len(gotArgs), len(wantArgs), gotArgs)
+	}
+	for i, want := range wantArgs {
+		if gotArgs[i] != want {
+			t.Errorf("launched arg[%d] = %q, want %q", i, gotArgs[i], want)
+		}
+	}
+}
+
 func TestPiAgent_BuildPromptIncludesSchema(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`)
 	prompt := buildPiPrompt("do a thing", schema)

@@ -31,6 +31,11 @@ agent_args_override:
   opencode:
     - --model
     - gpt-5
+  pi:
+    - --model
+    - openai-codex/gpt-5.6-sol
+    - --thinking
+    - medium
 `
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
@@ -46,6 +51,7 @@ agent_args_override:
 		"codex":    {"-m", "gpt-5.4", "-c", `service_tier="priority"`, "-c", `model_reasoning_effort="low"`},
 		"rovodev":  {"--profile", "work"},
 		"opencode": {"--model", "gpt-5"},
+		"pi":       {"--model", "openai-codex/gpt-5.6-sol", "--thinking", "medium"},
 	}
 	for agent, want := range cases {
 		got := cfg.AgentArgsOverride[agent]

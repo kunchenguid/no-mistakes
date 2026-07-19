@@ -112,7 +112,9 @@ type RepoConfig struct {
 	Document DocumentRaw `yaml:"document"`
 	// DisableProjectSettings opts the repository out of loading project-level
 	// agent settings/instructions (AGENTS.md/CLAUDE.md and the equivalent
-	// per-harness project settings) into gate agents. It exists for
+	// per-harness behavior resources) into gate agents. A verified adapter may
+	// suppress a broader automatic-resource surface when that is required to
+	// make its project boundary effective. It exists for
 	// agent-orchestration repos (e.g. firstmate) whose project instructions
 	// would otherwise install a fleet-captain identity on a gate agent. It is a
 	// SECURITY boundary honored ONLY from the trusted default-branch copy of
@@ -212,9 +214,10 @@ type Config struct {
 	Test                 Test
 	Document             Document
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
-	// RepoConfig field). When true, gate agents are launched with their
-	// project-level settings/instructions suppressed; the daemon fails the run
-	// closed if the resolved harness has no verified suppression knob.
+	// RepoConfig field). When true, gate agents are launched with the behavior
+	// resources covered by their verified isolation contract suppressed; the
+	// daemon fails the run closed if the resolved harness has no verified
+	// suppression contract.
 	DisableProjectSettings bool
 }
 
