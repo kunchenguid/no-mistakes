@@ -110,7 +110,7 @@ Gates with no findings or only `action: no-op` findings are approved as-is, and 
 Without `--yes`, an agent driving `axi run` should stop when a gate contains `action: ask-user` findings and relay each finding's ID, file, and full description to the user before responding.
 Review gates include a `note` field reminding agents that `auto_fix.review` defaults to `0`, so blocking and ask-user review findings park for a decision unless configuration explicitly opts back into review auto-fix.
 Long-running `axi run` calls are working, not stalled; if one returns a `gate:`, read that output and answer it with `axi respond`.
-Backgrounding a call is fine for an agent harness, but the run never advances past a gate on its own.
+In an agent-supervised workflow, keep `axi run`, `axi respond`, `axi watch`, and status polling in the active turn's foreground. The run never advances past a gate on its own; the installed skill and live AXI help own the complete agent-driving protocol.
 When the CI step is still monitoring an open PR and checks are green, `axi run` exits successfully with `outcome: checks-passed` instead of waiting for a human merge.
 Treat that as the agent stopping point: ask the user to review and merge the PR from the `help` line.
 If that PR later falls behind the default branch or hits a merge conflict, do not run `axi run`, `rerun`, or a manual rebase while the CI monitor is still running.
@@ -207,6 +207,65 @@ A dirty or diverged worktree refuses with explicit choices.
 When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
 `no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
+
+## no-mistakes axi watch
+
+Wait on one existing run until it needs attention or reaches a terminal outcome. This is a read-only attachment: it never starts the daemon, sends `axi respond`, changes the worktree, or creates a run.
+
+```sh
+no-mistakes axi watch --run <id>
+no-mistakes axi watch --run <id> --until attention
+no-mistakes axi watch --run <id> --until terminal
+```
+
+| Flag | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--run` | `string` | (none) | Explicit run ID to observe; required |
+| `--until` | `string` | `attention` | `attention` or `terminal` |
+
+`--until attention` exits successfully with one bounded TOON snapshot when the run reaches an approval or fix-review gate, reports `outcome: checks-passed`, becomes quiet for longer than `step_quiet_warning`, or terminates. The snapshot includes `watch.stop` so a supervisor can distinguish `gate`, `checks-passed`, `quiet`, and `terminal`.
+
+`--until terminal` keeps waiting through gates, checks-passed, and quiet warnings, and returns only for a terminal outcome. A failed or cancelled terminal run exits with code `1`; other terminal outcomes exit successfully. In either mode, Ctrl-C stops only the watch process (exit code `130`); it never cancels the run.
+
+The command uses daemon events as a wake-up signal and re-reads the current run state before deciding. If that event stream ends, it performs one final read and reports `stream-interrupted` if the run is still non-terminal. Gate output is limited to ten findings; use `no-mistakes axi logs --step <step> --full` for full detail.
+
+In a Codex- or Claude-supervised flow, keep `axi watch` as a foreground tool call when the active turn is deliberately staying open. When it returns, that same turn decides whether to report, run an explicit `axi respond`, and attach a fresh `axi watch` for the same run. The command alone cannot continue a session that has already been closed or deliberately returned to the user.
+
+## no-mistakes axi supervise
+
+The optional native-agent supervisor fills that closed-turn gap. It is intentionally two-part: arm the known run, then install and trust one local Codex or Claude Code Stop hook yourself. No-Mistakes never edits `~/.codex/hooks.json` or `~/.claude/settings.json` automatically. Use one agent session per supervised worktree chain.
+
+```sh
+no-mistakes axi supervise arm --run <id>
+no-mistakes axi supervise status --run <id>
+```
+
+Merge this hook into your reviewed `~/.codex/hooks.json` configuration; do not replace any hooks you already use:
+
+```json
+{
+  "hooks": {
+    "Stop": [{ "hooks": [{ "type": "command", "command": "no-mistakes axi codex-hook" }] }]
+  }
+}
+```
+
+For Claude Code, merge this additional hook group into the existing `Stop` array
+of your reviewed `~/.claude/settings.json`; do not replace notification or other
+Stop hooks:
+
+```json
+{
+  "hooks": {
+    "Stop": [{ "hooks": [{ "type": "command", "command": "no-mistakes axi claude-hook", "timeout": 360 }] }]
+  }
+}
+```
+
+On a matching Codex or Claude Code turn end, the hook claims only the armed run in the same worktree, repository, and branch, then binds it to that agent session. Codex continuations use the native turn ID. Claude Code does not provide one, so the adapter derives a local-only opaque digest from the completed assistant message solely to suppress repeated delivery; it stores and returns neither message nor digest. The hook waits for an AXI event or a fixed five-minute heartbeat. Its stdout is either empty or one Stop-hook JSON object with `decision: "block"` and one fixed `nm_event=` reason: `technical_gate`, `checks_passed`, `terminal`, `watch_fault`, `heartbeat`, or `stale`. It never starts a second agent process and never exposes findings, logs, run IDs, session data, or Claude message content in the hook response. A terminal run completes the registration. A technical gate continues the session so the agent can inspect the bound AXI status; an `ask-user` gate is marked `awaiting_user` and lets the agent end for Simon's decision. Checks already passed move to `awaiting_merge_result`, while a watcher fault or too many unchanged heartbeats pauses the registration rather than retrying forever. Malformed or non-matching hook events produce no continuation.
+
+The hook reads the provider's lifecycle event from standard input. It is a local trust boundary: review and trust it before use. Before enabling it, check that the configured Stop-hook timeout is at least 360 seconds (five minutes plus reserve); no-mistakes does not install or change that timeout. Claude Code has an enforced eight-consecutive-continuation cap; the bounded stale-heartbeat budget must remain below it. Set `supervision_max_stale_heartbeats` to an integer from `1` through `6` to choose how many unchanged five-minute heartbeats are shown before the next heartbeat pauses supervision; the default and invalid-value fallback are `4`.
+`axi supervise status --run <id>` reports the local phase, stale-heartbeat count, and any bounded error without exposing the saved agent session ID.
 
 ## no-mistakes axi logs
 

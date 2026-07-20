@@ -518,6 +518,18 @@ func fakeCIGHSequence(t *testing.T, state string, checks []string) []string {
 	})
 }
 
+func fakeCIGHProvenance(t *testing.T, initialHead string) ([]string, string) {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "gh")
+	headLog := filepath.Join(t.TempDir(), "heads.log")
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":         "ci-gh-provenance",
+		"FAKE_CLI_INITIAL_HEAD": initialHead,
+		"FAKE_CLI_HEAD_LOG":     headLog,
+	}), headLog
+}
+
 func fakeCIGHNoChecks(t *testing.T) []string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)

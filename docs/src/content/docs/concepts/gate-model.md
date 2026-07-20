@@ -161,7 +161,7 @@ AXI renders that activity in `active_steps`, including a quiet prefix when no ac
 
 ### IPC
 
-Communication between the CLI and daemon uses JSON-RPC 2.0 over the Unix socket. The `subscribe` method streams real-time events (step progress, log chunks, findings) to the TUI, while the `axi` commands use request/response IPC for non-interactive agent control.
+Communication between the CLI and daemon uses JSON-RPC 2.0 over the Unix socket. The `subscribe` method streams real-time events (step progress, log chunks, findings) to the TUI and read-only `axi watch`; the other `axi` commands use request/response IPC for non-interactive agent control.
 
 ### Database
 
@@ -191,6 +191,7 @@ Everything lives under `~/.no-mistakes/` by default. Set `NM_HOME` to relocate i
 | `config.yaml`                    | Global configuration                                                                                                    |
 | `telemetry-gate.json`            | Persistent read-only telemetry dedupe state                                                                             |
 | `update-check.json`              | Cached update check result                                                                                              |
+| `supervision/`                   | Opt-in native-agent session registrations and claim coordination; local process coordination, never pipeline truth     |
 | `servers/`                       | PID-tracking records for managed agent servers                                                                          |
 | `repos/<id>.git`                 | Bare gate repos                                                                                                         |
 | `repos/<id>.git/notify-push.log` | Persistent hook notification failure log                                                                                |

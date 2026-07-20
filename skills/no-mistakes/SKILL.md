@@ -98,10 +98,32 @@ Run the pipeline and decide on its findings as they come up:
    return for a while. That is normal; allow a long timeout and do not cancel
    or re-issue the command because it seems slow. To check progress without
    disturbing the run, use `no-mistakes axi status` from a separate call.
-   A long-running call is working, not stalled - background it if your harness
-   needs to, but the run **never advances past a gate on its own**. Read every
+   A long-running call is working, not stalled. In Codex-supervised work, never
+   put `axi run`, `axi respond`, `axi watch`, or status polling in a
+   background terminal or `run_in_background` task. Keep one foreground process bound to
+   the active turn. The run **never advances past a gate on its own**: read every
    return; on a `gate:`, respond; loop until an `outcome:`. Never idle-wait
    for the run to move forward by itself.
+   In agent-supervised work, keep `no-mistakes axi watch --run <id> --until attention`
+   in the foreground when this turn is deliberately staying open. It waits for
+   a gate, checks-passed, a quiet active step, or a terminal outcome, then
+   returns one bounded TOON snapshot to this active agent turn. The watcher
+   itself never responds, edits, or starts the daemon.
+   If the active Codex or Claude Code session must survive a completed turn,
+   use the documented opt-in supervisor instead: after the run ID is known, run
+   `no-mistakes axi supervise arm --run <id>` and only when the matching
+   reviewed `Stop` hook is installed. Use `no-mistakes axi codex-hook` for
+   Codex and `no-mistakes axi claude-hook` for Claude Code. The hook may
+   keep this same session alive for a technical AXI event or a five-minute
+   heartbeat. It never starts another agent process, never answers a user gate,
+   and pauses after the configured stale-heartbeat budget. During one supervised
+   chain use only one agent session for that worktree. Before using it, verify
+   the installed hook timeout is at least 360 seconds. Claude's `Stop` hook
+   has an eight-consecutive-continuation safety cap; do not increase it or use
+   an unbounded retry loop. Without the reviewed, opt-in hook, never promise
+   that a background command or a closed turn will wake the agent automatically.
+   Use `--until terminal` only when this agent deliberately wants to ignore
+   intermediate attention.
    When that status output includes `awaiting_agent: parked <duration>` under the run,
    the run is parked at an approval or fix-review gate and waiting for you to
    send `axi respond`. The field is observability only: it does not change
@@ -277,7 +299,7 @@ help[6]:
   Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)
   Run `no-mistakes axi respond --action skip` to skip this step
   Run `no-mistakes axi logs --step review --full` to read the full step log
-  A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.
+  A long-running call is working, not stalled. In Codex-supervised work, never put `axi run`, `axi respond`, `axi watch`, or status polling in a background terminal or `run_in_background` task. Keep one foreground process bound to the active turn; on a `gate:`, respond; loop until an `outcome:`.
   Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits.
 ```
 

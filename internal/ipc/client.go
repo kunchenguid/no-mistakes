@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -169,10 +170,70 @@ func (c *Client) Close() error {
 // Returns an event channel, a cancel function (to stop and clean up), and an error.
 // The channel is closed when the run completes, the connection drops, or cancel is called.
 func Subscribe(socketPath string, params *SubscribeParams) (<-chan Event, func(), error) {
+	return SubscribeContext(context.Background(), socketPath, params)
+}
+
+// SubscribeContext opens a dedicated connection and subscribes to events for a
+// run. Cancellation closes the connection even while the server handshake is
+// pending, so callers can stop a watcher without affecting the pipeline run.
+func SubscribeContext(ctx context.Context, socketPath string, params *SubscribeParams) (<-chan Event, func(), error) {
+	return SubscribeWithHandshakeContext(ctx, ctx, socketPath, params)
+}
+
+func SubscribeWithHandshakeContext(handshakeCtx, streamCtx context.Context, socketPath string, params *SubscribeParams) (<-chan Event, func(), error) {
+	if err := handshakeCtx.Err(); err != nil {
+		return nil, nil, err
+	}
+	if err := streamCtx.Err(); err != nil {
+		return nil, nil, err
+	}
 	conn, err := dialEndpoint(socketPath)
 	if err != nil {
 		return nil, nil, err
 	}
+	stopContext := make(chan struct{})
+	var closeOnce sync.Once
+	closeConn := func() {
+		closeOnce.Do(func() {
+			close(stopContext)
+			_ = conn.Close()
+		})
+	}
+	go func() {
+		select {
+		case <-streamCtx.Done():
+			closeConn()
+		case <-stopContext:
+		}
+	}()
+	handshakeDone := make(chan struct{})
+	handshakeStopped := make(chan struct{})
+	var handshakeMu sync.Mutex
+	handshakeActive := true
+	finishHandshake := func() bool {
+		handshakeMu.Lock()
+		defer handshakeMu.Unlock()
+		if !handshakeActive {
+			return false
+		}
+		handshakeActive = false
+		close(handshakeDone)
+		return true
+	}
+	go func() {
+		defer close(handshakeStopped)
+		select {
+		case <-handshakeCtx.Done():
+			handshakeMu.Lock()
+			if handshakeActive {
+				handshakeActive = false
+				closeConn()
+			}
+			handshakeMu.Unlock()
+		case <-handshakeDone:
+		case <-stopContext:
+		}
+	}()
 	encoder := json.NewEncoder(conn)
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
@@ -180,17 +241,29 @@ func Subscribe(socketPath string, params *SubscribeParams) (<-chan Event, func()
 	// Send subscribe request.
 	req, err := NewRequest(MethodSubscribe, params)
 	if err != nil {
-		conn.Close()
+		closeConn()
 		return nil, nil, fmt.Errorf("marshal request: %w", err)
 	}
 	if err := encoder.Encode(req); err != nil {
-		conn.Close()
+		closeConn()
+		if ctxErr := handshakeCtx.Err(); ctxErr != nil {
+			return nil, nil, ctxErr
+		}
+		if ctxErr := streamCtx.Err(); ctxErr != nil {
+			return nil, nil, ctxErr
+		}
 		return nil, nil, fmt.Errorf("send request: %w", err)
 	}
 
 	// Read initial response.
 	if !scanner.Scan() {
-		conn.Close()
+		closeConn()
+		if ctxErr := handshakeCtx.Err(); ctxErr != nil {
+			return nil, nil, ctxErr
+		}
+		if ctxErr := streamCtx.Err(); ctxErr != nil {
+			return nil, nil, ctxErr
+		}
 		if err := scanner.Err(); err != nil {
 			return nil, nil, fmt.Errorf("read response: %w", err)
 		}
@@ -198,27 +271,26 @@ func Subscribe(socketPath string, params *SubscribeParams) (<-chan Event, func()
 	}
 	var resp Response
 	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
-		conn.Close()
+		closeConn()
 		return nil, nil, fmt.Errorf("parse response: %w", err)
 	}
 	if resp.Error != nil {
-		conn.Close()
+		closeConn()
 		return nil, nil, resp.Error
 	}
+	if !finishHandshake() {
+		closeConn()
+		return nil, nil, handshakeCtx.Err()
+	}
+	<-handshakeStopped
 
 	// Stream events.
 	ch := make(chan Event, 64)
-	done := make(chan struct{})
-	var once sync.Once
-	cancel := func() {
-		once.Do(func() {
-			close(done)
-			conn.Close()
-		})
-	}
+	cancel := closeConn
 
 	go func() {
 		defer close(ch)
+		defer closeConn()
 		for scanner.Scan() {
 			var event Event
 			if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
@@ -226,7 +298,7 @@ func Subscribe(socketPath string, params *SubscribeParams) (<-chan Event, func()
 			}
 			select {
 			case ch <- event:
-			case <-done:
+			case <-stopContext:
 				return
 			}
 		}

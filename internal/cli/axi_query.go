@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
@@ -129,13 +130,24 @@ func annotateRunView(env *axiEnv, rv *runView) {
 				step.PendingFixSource = stats.PendingFixSource
 			}
 		}
-		if step.LastActivityAt == nil {
-			logPath := filepath.Join(env.p.RunLogDir(rv.ID), step.Name+".log")
-			if info, err := os.Stat(logPath); err == nil {
-				ts := info.ModTime().Unix()
-				step.LastActivityAt = &ts
-				step.LastActivity = "step log updated"
-			}
+	}
+	applyLastActivityFallback(env.p, rv)
+}
+
+func applyLastActivityFallback(p *paths.Paths, rv *runView) {
+	if p == nil || rv == nil {
+		return
+	}
+	for i := range rv.Steps {
+		step := &rv.Steps[i]
+		if step.LastActivityAt != nil {
+			continue
+		}
+		logPath := filepath.Join(p.RunLogDir(rv.ID), step.Name+".log")
+		if info, err := os.Stat(logPath); err == nil {
+			ts := info.ModTime().Unix()
+			step.LastActivityAt = &ts
+			step.LastActivity = "step log updated"
 		}
 	}
 }

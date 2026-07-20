@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -29,6 +30,100 @@ func TestSubscribeServerError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "run not found") {
 		t.Errorf("error = %q, want to contain 'run not found'", err)
+	}
+}
+
+func TestSubscribeContextCancelsDuringHandshake(t *testing.T) {
+	sock := socketPath(t)
+	ln := rawListen(t, sock)
+	defer ln.Close()
+
+	accepted := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		scanner := bufio.NewScanner(conn)
+		if scanner.Scan() {
+			close(accepted)
+			<-release
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := ipc.SubscribeContext(ctx, sock, &ipc.SubscribeParams{RunID: "r1"})
+		done <- err
+	}()
+
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("subscribe request was not received")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("SubscribeContext() error = %v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SubscribeContext did not return after cancellation")
+	}
+	close(release)
+}
+
+func TestSubscribeHandshakeDeadlineKeepsLiveSubscriptionOpen(t *testing.T) {
+	sock := socketPath(t)
+	ln := rawListen(t, sock)
+	defer ln.Close()
+
+	release := make(chan struct{})
+	defer close(release)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		scanner := bufio.NewScanner(conn)
+		if !scanner.Scan() {
+			return
+		}
+		var req ipc.Request
+		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
+			return
+		}
+		result, err := json.Marshal(map[string]bool{"ok": true})
+		if err != nil {
+			return
+		}
+		if err := json.NewEncoder(conn).Encode(ipc.Response{JSONRPC: "2.0", ID: req.ID, Result: result}); err != nil {
+			return
+		}
+		<-release
+	}()
+
+	handshakeCtx, cancelHandshake := context.WithCancel(context.Background())
+	defer cancelHandshake()
+	events, cancel, err := ipc.SubscribeWithHandshakeContext(handshakeCtx, context.Background(), sock, &ipc.SubscribeParams{RunID: "r1"})
+	if err != nil {
+		t.Fatalf("SubscribeWithHandshakeContext() error = %v", err)
+	}
+	defer cancel()
+
+	cancelHandshake()
+	select {
+	case _, ok := <-events:
+		if !ok {
+			t.Fatal("subscription closed after handshake deadline")
+		}
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 

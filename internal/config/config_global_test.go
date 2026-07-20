@@ -52,6 +52,7 @@ func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 		"agent: auto",
 		"ci_timeout:",
 		"step_quiet_warning:",
+		"supervision_max_stale_heartbeats: 4",
 		"daemon_connect_timeout:",
 		"log_level: info",
 		"# agent_path_override:",
@@ -86,6 +87,9 @@ func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	if cfg.DaemonConnectTimeout != DefaultDaemonConnectTimeout {
 		t.Errorf("daemon_connect_timeout = %v, want %v", cfg.DaemonConnectTimeout, DefaultDaemonConnectTimeout)
 	}
+	if cfg.SupervisionMaxStaleHeartbeats != DefaultSupervisionMaxStaleHeartbeats {
+		t.Errorf("supervision_max_stale_heartbeats = %d, want %d", cfg.SupervisionMaxStaleHeartbeats, DefaultSupervisionMaxStaleHeartbeats)
+	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "info")
 	}
@@ -104,6 +108,37 @@ func TestLoadGlobal_StepQuietWarning(t *testing.T) {
 	}
 	if cfg.StepQuietWarning != 90*time.Second {
 		t.Fatalf("step_quiet_warning = %v, want 90s", cfg.StepQuietWarning)
+	}
+}
+
+func TestLoadGlobal_SupervisionMaxStaleHeartbeats(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want int
+	}{
+		{name: "default", want: 4},
+		{name: "minimum", yaml: "supervision_max_stale_heartbeats: 1\n", want: 1},
+		{name: "maximum", yaml: "supervision_max_stale_heartbeats: 6\n", want: 6},
+		{name: "below minimum falls back", yaml: "supervision_max_stale_heartbeats: 0\n", want: 4},
+		{name: "above maximum falls back", yaml: "supervision_max_stale_heartbeats: 7\n", want: 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if tt.yaml != "" {
+				if err := os.WriteFile(path, []byte(tt.yaml), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg, err := LoadGlobal(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.SupervisionMaxStaleHeartbeats != tt.want {
+				t.Fatalf("supervision_max_stale_heartbeats = %d, want %d", cfg.SupervisionMaxStaleHeartbeats, tt.want)
+			}
+		})
 	}
 }
 

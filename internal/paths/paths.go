@@ -52,6 +52,11 @@ func (p *Paths) TelemetryGateFile() string {
 	return filepath.Join(p.root, "telemetry-gate.json")
 }
 
+// SupervisionDir holds opt-in, local native-agent supervisor registrations.
+// It is deliberately separate from the pipeline database: a registration is
+// local process coordination, never pipeline truth.
+func (p *Paths) SupervisionDir() string { return filepath.Join(p.root, "supervision") }
+
 func (p *Paths) ReposDir() string { return filepath.Join(p.root, "repos") }
 func (p *Paths) RepoDir(repoID string) string {
 	return filepath.Join(p.root, "repos", repoID+".git")
@@ -82,6 +87,7 @@ func (p *Paths) EnsureDirs() error {
 		p.WorktreesDir(),
 		p.LogsDir(),
 		p.ServerPIDsDir(),
+		p.SupervisionDir(),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o755); err != nil {

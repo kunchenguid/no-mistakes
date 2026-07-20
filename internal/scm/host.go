@@ -87,8 +87,10 @@ func ExtractPRNumber(prURL string) (string, error) {
 
 // PR identifies a pull/merge request on a provider.
 type PR struct {
-	Number string
-	URL    string
+	Number     string
+	URL        string
+	HeadSHA    string
+	BaseBranch string
 }
 
 // PRContent is the title + body for creating or updating a PR.
@@ -135,18 +137,35 @@ const (
 	CheckBucketSkip    CheckBucket = "skipping"
 )
 
+// CheckSource preserves where a GitHub result originated. Native check runs
+// and legacy commit statuses have different safety semantics while pending.
+type CheckSource string
+
+const (
+	CheckSourceUnknown CheckSource = "unknown"
+	CheckSourceNative  CheckSource = "native"
+	CheckSourceLegacy  CheckSource = "legacy"
+)
+
 // Check is a single CI check result on a PR.
 type Check struct {
 	Name        string
 	Bucket      CheckBucket
 	CompletedAt time.Time // zero when unknown; used to detect CI re-runs between polls
+	Source      CheckSource
+	// BlocksPending is false only when a provider has positively established
+	// that this pending result cannot be a required check. The zero value is
+	// intentionally conservative for providers that do not expose provenance.
+	BlocksPending bool
 }
 
 // Failing reports whether the check is in a failed bucket.
 func (c Check) Failing() bool { return c.Bucket == CheckBucketFail }
 
 // Pending reports whether the check is still running or queued.
-func (c Check) Pending() bool { return c.Bucket == CheckBucketPending }
+func (c Check) Pending() bool {
+	return c.Bucket == CheckBucketPending && (c.Source != CheckSourceLegacy || c.BlocksPending)
+}
 
 // Capabilities declares which optional Host methods return meaningful data.
 // Callers must consult Capabilities before invoking optional methods.
