@@ -18,6 +18,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/repoexec"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -142,6 +143,9 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 // If the context is cancelled with a cause (via context.WithCancelCause),
 // the cause message is preserved as the run's error in the DB.
 func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
+	if repo != nil {
+		ctx = repoexec.WithGitHubContext(ctx, repo.GitHubContext)
+	}
 	// Mark run as running. Route write failures through failRun so the
 	// in-memory lifecycle and subscriber stream still become terminal instead
 	// of leaving a silent pending run.
@@ -250,6 +254,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	if repo == nil {
 		return fmt.Errorf("recovered run has no repository")
 	}
+	ctx = repoexec.WithGitHubContext(ctx, repo.GitHubContext)
 	if err := ValidateRecoveredRun(e.db, run, e.steps); err != nil {
 		return err
 	}
@@ -272,6 +277,10 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", "", &duration)
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1)
 	}
+	var recoveredEnv []string
+	if repo.GitHubContext != nil {
+		recoveredEnv = repo.GitHubContext.Environment(nil, workDir)
+	}
 	reconcileCtx := &StepContext{
 		Ctx:      ctx,
 		Run:      run,
@@ -279,7 +288,8 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		WorkDir:  workDir,
 		Config:   e.config,
 		DB:       e.db,
-		Agent:    e.agent,
+		Agent:    agent.WithEnvironment(e.agent, recoveredEnv),
+		Env:      recoveredEnv,
 		Sessions: e.sessions,
 		Shared:   e.shared,
 		Log: func(message string) {
@@ -638,7 +648,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	autoFixAttempts := state.autoFixAttempts
 	roundNum := state.roundNum
 
-	stepAgent := e.agent
+	var processEnv []string
+	if repo != nil && repo.GitHubContext != nil {
+		processEnv = repo.GitHubContext.Environment(nil, workDir)
+	}
+	stepAgent := agent.WithEnvironment(e.agent, processEnv)
 	if stepAgent != nil {
 		stepAgent = &lifecycleAgent{inner: stepAgent, onLifecycle: onAgentLifecycle}
 		stepAgent = &perfRecordingAgent{
@@ -664,6 +678,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		Shared:           e.shared,
 		Fixing:           state.fixing,
 		PreviousFindings: state.previousFindings,
+		Env:              processEnv,
 		Log:              writeLog,
 		LogChunk:         writeLogChunk,
 		LogFile: func(text string) {

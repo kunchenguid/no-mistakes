@@ -68,6 +68,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	if err := host.Available(ctx); err != nil {
+		if sctx.Repo.GitHubContext != nil && provider == scm.ProviderGitHub {
+			return nil, fmt.Errorf("strict GitHub context validation: %w", err)
+		}
 		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
@@ -88,6 +91,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
 		updated, err := host.UpdatePR(ctx, existing, scm.PRContent(content))
 		if err != nil {
+			if sctx.Repo.GitHubContext != nil && provider == scm.ProviderGitHub {
+				return nil, err
+			}
 			sctx.Log(fmt.Sprintf("warning: failed to update PR: %v", err))
 			updated = existing
 		}

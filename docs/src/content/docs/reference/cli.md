@@ -28,11 +28,14 @@ Initialize or refresh the gate for the current repository.
 ```sh
 no-mistakes init
 no-mistakes init --fork-url git@github.com:you/my-repo.git
+no-mistakes init --fork-url https://github.com/you/my-repo.git --github-context ~/.config/no-mistakes/work.json
 ```
 
-| Flag         | Type     | Default | Description                                                                   |
-| ------------ | -------- | ------- | ----------------------------------------------------------------------------- |
-| `--fork-url` | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin` |
+| Flag                     | Type     | Default | Description                                                                   |
+| ------------------------ | -------- | ------- | ----------------------------------------------------------------------------- |
+| `--fork-url`             | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin` |
+| `--github-context`       | `string` | (none)  | JSON file defining a strict non-secret GitHub/Git child context               |
+| `--clear-github-context` | `bool`   | `false` | Remove the recorded strict context and restore ambient behavior               |
 
 Creates or refreshes a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
 `init` writes no skill files into the repo; the user-level copies cover every supported agent (`~/.claude/skills` for Claude Code, `~/.agents/skills` for Codex, OpenCode, Rovo Dev, and Pi) across all repos.
@@ -48,10 +51,43 @@ Re-running `init` on an already-initialized repo succeeds and reports `Gate alre
 It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.
 When a fork URL is already recorded, re-running `init` without `--fork-url` preserves it.
 Passing `--fork-url` again replaces the stored fork URL after validation.
+The same preservation rule applies to a recorded GitHub context: plain `init` validates and preserves it, while `--github-context` validates and replaces it. Use `--clear-github-context` to remove it explicitly; it is mutually exclusive with `--github-context`.
 If you rename or move an initialized working directory and the old path no longer exists, re-running `init` from the new path reattaches the existing gate, preserves the repo ID and run history, and updates the stored working path.
 If you copy an initialized working directory while the original still exists, the copy is treated as a separate repo and gets a fresh gate.
 Fresh init rolls back gate setup when a required gate or daemon step fails; refresh does not eject a pre-existing gate if daemon startup fails.
 Skill installation is best-effort: if the skill write fails, init reports it and leaves the working gate in place.
+
+### Strict per-repository GitHub context
+
+`--github-context` is opt-in. Repositories initialized without it preserve the existing ambient Git/host behavior, and GitLab, Bitbucket, and Azure DevOps are unchanged. Version 1 intentionally supports only HTTPS remotes on `github.com`; both `origin` and a configured fork must use `https://github.com/<owner>/<repository>.git` (the `.git` suffix is optional).
+
+The input is a mode-`0600` JSON file with this exact schema:
+
+```json
+{
+  "version": 1,
+  "gh_path": "/absolute/path/to/gh",
+  "git_path": "/absolute/path/to/git",
+  "gh_config_dir": "/absolute/path/to/account-specific-gh-config",
+  "host": "github.com",
+  "expected_login": "octocat",
+  "git_protocol": "https",
+  "credential_helper": "gh",
+  "commit_author": {
+    "name": "Octo Cat",
+    "email": "octocat@example.com"
+  },
+  "label": "personal"
+}
+```
+
+All fields except `label` are required. Executable and config-directory paths must be absolute and present; `label` is a sanitized diagnostic label, not a selector. Unknown fields are rejected. In particular, the schema has no token, password, header, arbitrary environment, or shell-fragment field. Authentication stays in the operating-system credential store selected by `gh_config_dir`; no-mistakes never runs `gh auth token` or Git credential fill during validation.
+
+`init` checks the exact executables, selected login, parent read/push permission, optional fork push permission, and repository-local Git key names. It rejects SSH, URL userinfo, a wrong login, inaccessible or SSO-blocked repositories, unsafe local credential/header/URL-rewrite/push-URL/SSH keys, and a selected executable directory whose other `gh` or `git` would make descendant PATH resolution ambiguous. Validation captures and discards child output on failure rather than including it in the error.
+
+For every run, the daemon reloads the typed context from the repository record and revalidates it before work starts. Direct Git and GitHub subprocesses use the exact binaries. Descendant commands receive the selected executable directories first on `PATH`. The child environment removes ambient GitHub token variables, alternate gh selection, Git config injection, credential helpers, askpass, extra headers, URL rewrites, push URLs, SSH selection, author overrides, and interactive prompts before installing an isolated global/system Git config, an exact `gh auth git-credential` helper, and the selected commit identity. Repository-local routing keys are rejected by name without reading their values. Git network operations and GitHub provider calls re-check the expected login and fail closed; strict command failures omit child stderr so credential-helper bytes cannot enter logs or status.
+
+This boundary protects subprocesses launched by no-mistakes and ordinary descendant `git`/`gh` resolution. It is not an OS sandbox: a deliberately hostile project command or agent process can invoke an unrelated absolute executable or exfiltrate credentials it can independently access. Keep untrusted repository commands disabled and use the existing trusted-default-branch boundary.
 
 ## no-mistakes axi
 
@@ -384,6 +420,7 @@ Checks:
 - Agent runners: native binaries `claude`, `codex`, `acli`, `opencode`, `pi`, and `copilot`, plus the optional ACP bridge `acpx`
 - ACP alias default binaries: `cursor-agent` plus `acpx` for `cursor`
 - Effective global agent configuration, reported as `gate validation`; an unavailable configured runner is a failed check because the gate cannot validate without it
+- When invoked inside a registered repository with a strict GitHub context, the exact dependencies, expected login, repository permissions, and local Git override safety, reported as `repo context`
 
 Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem detected).
 

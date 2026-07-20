@@ -27,6 +27,10 @@ type RunOpts struct {
 	JSONSchema  json.RawMessage      // structured output schema (optional)
 	OnChunk     func(text string)    // streaming text callback (optional)
 	OnLifecycle func(LifecycleEvent) // native agent lifecycle callback (optional)
+	// Env is an optional exact child environment supplied by the pipeline for
+	// repository-scoped execution. Adapters must apply it before their standard
+	// non-interactive Git overrides.
+	Env []string
 	// Session, when non-nil, asks a session-capable adapter (see
 	// SessionResumer) to start or resume a durable native session. Adapters
 	// without session support ignore it and run cold; the caller detects the

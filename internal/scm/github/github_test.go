@@ -534,6 +534,50 @@ func TestAvailableFallsBackToUnscopedAuthWhenHostUnknown(t *testing.T) {
 	}
 }
 
+func TestStrictContextRejectsWrongLoginWithoutReturningObservedLogin(t *testing.T) {
+	t.Parallel()
+	host := NewWithForkAndContext(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status --hostname github.com":          {},
+		"gh api --hostname github.com user --jq .login": {stdout: "other-account\n"},
+	}), func() bool { return true }, "github.com", "parent/repo", "fork/repo", "expected-account", "GitHub context \"work\"")
+	err := host.Available(context.Background())
+	if err == nil {
+		t.Fatal("expected wrong-login error")
+	}
+	if !strings.Contains(err.Error(), "expected-account") || strings.Contains(err.Error(), "other-account") {
+		t.Fatalf("wrong-login error = %v", err)
+	}
+}
+
+func TestStrictContextRejectsPRURLOutsideConfiguredParent(t *testing.T) {
+	t.Parallel()
+	host := NewWithForkAndContext(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --hostname github.com user --jq .login": {stdout: "account-a\n"},
+		"gh pr create --head account-a:feature --base main --repo parent/repo --title feat: context --body-file -": {
+			stdout:    "https://github.com/other/repo/pull/42\n",
+			wantStdin: "body",
+		},
+	}), func() bool { return true }, "github.com", "parent/repo", "account-a/repo", "account-a", "GitHub context \"work\"")
+	_, err := host.CreatePR(context.Background(), "feature", "main", scm.PRContent{Title: "feat: context", Body: "body"})
+	if err == nil || strings.Contains(err.Error(), "other/repo") {
+		t.Fatalf("strict create error = %v", err)
+	}
+}
+
+func TestStrictContextSuppressesFailedChecksOutput(t *testing.T) {
+	t.Parallel()
+	host := NewWithForkAndContext(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --hostname github.com user --jq .login": {stderr: "credential-sentinel: no checks reported", code: 1},
+	}), func() bool { return true }, "github.com", "parent/repo", "", "account-a", "GitHub context \"work\"")
+	// Login validation fails before the checks command. This pins that strict
+	// errors never include arbitrary child output or fall through to the legacy
+	// "no checks reported" stderr parser.
+	_, err := host.GetChecks(context.Background(), &scm.PR{Number: "42"})
+	if err == nil || strings.Contains(err.Error(), "credential-sentinel") {
+		t.Fatalf("strict checks error = %v", err)
+	}
+}
+
 type githubTestResponse struct {
 	stdout    string
 	stderr    string

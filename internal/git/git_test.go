@@ -5,8 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/repoexec"
 )
 
 func TestMain(m *testing.M) {
@@ -73,6 +76,86 @@ func TestRun(t *testing.T) {
 	}
 	if out != "" {
 		t.Fatalf("expected clean status, got: %q", out)
+	}
+}
+
+func TestRunStrictContextUsesExactGitAndCommitIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses POSIX executable scripts")
+	}
+	dir := initTestRepo(t)
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "exact-git.log")
+	exactGit := filepath.Join(binDir, "selected-git")
+	script := "#!/bin/sh\nprintf '%s\\n' selected >> '" + marker + "'\nexec '" + realGit + "' \"$@\"\n"
+	if err := os.WriteFile(exactGit, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	selected := &repoexec.GitHubContext{
+		GitPath:     exactGit,
+		GHPath:      filepath.Join(binDir, "selected-gh"),
+		GHConfigDir: t.TempDir(),
+		Host:        "github.com", ExpectedLogin: "account-a", GitProtocol: "https", CredentialHelper: "gh",
+		CommitAuthor: repoexec.CommitAuthor{Name: "Selected Author", Email: "selected@example.test"},
+		Label:        "selected",
+	}
+	t.Setenv("GIT_AUTHOR_NAME", "Ambient Sentinel")
+	t.Setenv("GIT_AUTHOR_EMAIL", "credential-sentinel@example.test")
+	ctx := repoexec.WithGitHubContext(context.Background(), selected)
+	writeFile(t, filepath.Join(dir, "strict.txt"), "strict\n")
+	if _, err := Run(ctx, dir, "add", "strict.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, dir, "commit", "-m", "strict identity"); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || !strings.Contains(string(data), "selected") {
+		t.Fatalf("exact git marker = %q, err=%v", data, err)
+	}
+	author := run(t, dir, realGit, "show", "-s", "--format=%an <%ae>", "HEAD")
+	if author != "Selected Author <selected@example.test>" {
+		t.Fatalf("commit author = %q", author)
+	}
+}
+
+func TestRunStrictContextSuppressesCredentialHelperFailureOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses POSIX executable scripts")
+	}
+	dir := initTestRepo(t)
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	exactGit := filepath.Join(binDir, "selected-git")
+	gitScript := "#!/bin/sh\nif [ \"$1\" = ls-remote ]; then printf '%s\\n' credential-sentinel >&2; exit 1; fi\nexec '" + realGit + "' \"$@\"\n"
+	if err := os.WriteFile(exactGit, []byte(gitScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exactGH := filepath.Join(binDir, "selected-gh")
+	ghScript := "#!/bin/sh\nif [ \"$1\" = api ]; then printf '%s\\n' account-a; exit 0; fi\nexit 0\n"
+	if err := os.WriteFile(exactGH, []byte(ghScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	selected := &repoexec.GitHubContext{
+		GitPath: exactGit, GHPath: exactGH, GHConfigDir: t.TempDir(), Host: "github.com", ExpectedLogin: "account-a",
+		GitProtocol: "https", CredentialHelper: "gh", CommitAuthor: repoexec.CommitAuthor{Name: "A", Email: "a@example.test"}, Label: "selected",
+	}
+	ctx := repoexec.WithGitHubContext(context.Background(), selected)
+	_, err = Run(ctx, dir, "ls-remote", "https://github.com/owner/repo.git", "refs/heads/main")
+	if err == nil {
+		t.Fatal("expected network failure")
+	}
+	if strings.Contains(err.Error(), "credential-sentinel") {
+		t.Fatalf("strict git error leaked child output: %v", err)
+	}
+	if !strings.Contains(err.Error(), "selected") {
+		t.Fatalf("strict git error is not actionable: %v", err)
 	}
 }
 

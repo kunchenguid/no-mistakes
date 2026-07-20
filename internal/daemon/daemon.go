@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/repoexec"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -266,7 +268,7 @@ func writeDaemonPIDFile(path string, record daemonPIDFile) error {
 // supports config --worktree.
 func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	reapOrphanedServers(p)
-	migrateGateConfigs(context.Background(), p)
+	migrateGateConfigsWithDB(context.Background(), p, d)
 
 	plans := mgr.recoverableParkedRuns(context.Background())
 	preserved := make(map[string]struct{}, len(plans))
@@ -312,6 +314,10 @@ func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths) {
 		}
 		repoPath := filepath.Join(wtRoot, repoEntry.Name())
 		gateDir := p.RepoDir(repoEntry.Name())
+		repoCtx := ctx
+		if repo, repoErr := d.GetRepo(repoEntry.Name()); repoErr == nil && repo != nil {
+			repoCtx = repoexec.WithGitHubContext(repoCtx, repo.GitHubContext)
+		}
 		runEntries, err := os.ReadDir(repoPath)
 		if err != nil {
 			continue
@@ -326,7 +332,7 @@ func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths) {
 				slog.Info("skipping worktree cleanup", "path", wtPath, "reason", reason)
 				continue
 			}
-			if err := git.WorktreeRemove(ctx, gateDir, wtPath); err != nil {
+			if err := git.WorktreeRemove(repoCtx, gateDir, wtPath); err != nil {
 				slog.Warn("git worktree remove failed, falling back to os.RemoveAll", "path", wtPath, "error", err)
 				if err := os.RemoveAll(wtPath); err != nil {
 					slog.Warn("failed to remove orphaned worktree", "path", wtPath, "error", err)
@@ -370,6 +376,10 @@ func skipWorktreeCleanup(d *db.DB, runID string) (bool, string) {
 // supports config --worktree, so subsequent husky-style writes to shared local
 // config can no longer disable the post-receive hook.
 func migrateGateConfigs(ctx context.Context, p *paths.Paths) {
+	migrateGateConfigsWithDB(ctx, p, nil)
+}
+
+func migrateGateConfigsWithDB(ctx context.Context, p *paths.Paths, d *db.DB) {
 	entries, err := os.ReadDir(p.ReposDir())
 	if err != nil {
 		// Repos dir may not exist yet on a fresh install.
@@ -380,13 +390,20 @@ func migrateGateConfigs(ctx context.Context, p *paths.Paths) {
 			continue
 		}
 		bareDir := filepath.Join(p.ReposDir(), entry.Name())
+		repoCtx := ctx
+		if d != nil {
+			id := strings.TrimSuffix(entry.Name(), ".git")
+			if repo, repoErr := d.GetRepo(id); repoErr == nil && repo != nil {
+				repoCtx = repoexec.WithGitHubContext(repoCtx, repo.GitHubContext)
+			}
+		}
 		if _, err := git.RefreshManagedPostReceiveHook(bareDir); err != nil {
 			slog.Warn("refresh gate post-receive hook failed", "bare", bareDir, "error", err)
 		}
-		if _, err := git.Run(ctx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
+		if _, err := git.Run(repoCtx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
 			slog.Warn("enable gate push options failed", "bare", bareDir, "error", err)
 		}
-		if err := git.IsolateHooksPath(ctx, bareDir); err != nil {
+		if err := git.IsolateHooksPath(repoCtx, bareDir); err != nil {
 			slog.Warn("isolate gate hooks path failed", "bare", bareDir, "error", err)
 		}
 	}

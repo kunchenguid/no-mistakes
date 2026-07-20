@@ -89,8 +89,16 @@ func newDoctorCmd() *cobra.Command {
 							fail("database      ", fmt.Sprintf("error (%v)", err))
 							allOK = false
 						} else {
-							d.Close()
 							ok("database      ", "ok")
+							if repo, findErr := findRepo(d); findErr == nil && repo != nil && repo.GitHubContext != nil {
+								if validateErr := repo.GitHubContext.ValidateRuntime(cmd.Context(), repo.WorkingPath, repo.UpstreamURL, repo.ForkURL); validateErr != nil {
+									fail("repo context  ", validateErr.Error())
+									allOK = false
+								} else {
+									ok("repo context  ", repo.GitHubContext.LabelForDiagnostics()+" is valid")
+								}
+							}
+							d.Close()
 						}
 					}
 				}

@@ -53,6 +53,10 @@ Safest local verification sequence after non-trivial changes:
 - Use `filepath.Join`; respect `NM_HOME` for app state; directories are `0o755` and files `0o644` by convention.
 - On macOS, path comparisons may need symlink resolution (`/var` vs `/private/var`).
 
+**Per-Repository GitHub/Git Context (`internal/repoexec`)**
+
+- A repo's optional strict GitHub context is persisted as typed non-secret metadata and applied process-locally; never replace it with daemon-global account switching, raw tokens, arbitrary environment maps, or shell fragments. Daemon Git must keep routing through `git.Run`, provider commands through `stepCmd`, and gate agents through the executor's environment wrapper so exact binaries, login checks, HTTPS routing, credential-helper isolation, and commit identity remain per repo. The schema/security contract is owned by `docs/src/content/docs/reference/cli.md`; regressions live in `internal/repoexec`, `internal/git`, and e2e `TestConcurrentRepositoryExecutionContexts`.
+
 **Git on Bare Gate Repos (`safe.bareRepository`)**
 
 - Agent harnesses and hardened CI inject `safe.bareRepository=explicit`, which forbids cwd-based discovery of bare repositories. Route every gate git call through `git.Run`, which detects a bare git dir and prepends `--git-dir=<dir>`; never shell out to git in a bare gate repo relying on `cmd.Dir` or `-C` discovery (issue #362).

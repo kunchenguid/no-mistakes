@@ -38,8 +38,10 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if err := d.sql.QueryRow("SELECT count(*) FROM step_results").Scan(&count); err != nil {
 		t.Fatalf("step_results table missing: %v", err)
 	}
-	if !hasColumn(t, d, "repos", "fork_url") {
-		t.Fatal("repos.fork_url column missing from fresh schema")
+	for _, column := range []string{"fork_url", "github_context_json"} {
+		if !hasColumn(t, d, "repos", column) {
+			t.Fatalf("repos.%s column missing from fresh schema", column)
+		}
 	}
 	for _, column := range []string{"submitted_head_sha", "last_pushed_sha", "push_target_fingerprint", "push_ref", "last_pushed_at", "push_generation", "push_active", "pr_state", "pr_state_observed_at", "ci_ready_at", "custody_returned_at"} {
 		if !hasColumn(t, d, "runs", column) {
@@ -158,6 +160,46 @@ func TestOpenMigratesExistingStepRoundsColumns(t *testing.T) {
 		if !columns[name] {
 			t.Fatalf("expected migrated column %q to exist", name)
 		}
+	}
+}
+
+func TestOpenMigratesReposGitHubContextColumnWithoutBackfill(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy-context.sqlite")
+	legacyDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacyDB.Exec(`
+		CREATE TABLE repos (
+			id TEXT PRIMARY KEY,
+			working_path TEXT NOT NULL UNIQUE,
+			upstream_url TEXT NOT NULL,
+			default_branch TEXT NOT NULL DEFAULT 'main',
+			created_at INTEGER NOT NULL
+		);
+		INSERT INTO repos VALUES ('repo-1', '/work/repo', 'https://github.com/owner/repo.git', 'main', 123);
+	`); err != nil {
+		legacyDB.Close()
+		t.Fatal(err)
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if !hasColumn(t, d, "repos", "github_context_json") {
+		t.Fatal("expected migrated github_context_json column")
+	}
+	repo, err := d.GetRepo("repo-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo == nil || repo.GitHubContext != nil {
+		t.Fatalf("legacy repo context = %#v, want nil", repo)
 	}
 }
 

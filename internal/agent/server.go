@@ -72,10 +72,14 @@ func getAvailablePort() (int, error) {
 // ctx is only used for the health check timeout.
 // agentName tags the PID tracking file so crash-recovery can identify orphans.
 func startServerWithPort(ctx context.Context, agentName, bin string, args []string, cwd string, healthPath string, port int) (*managedServer, error) {
+	return startServerWithPortEnv(ctx, agentName, bin, args, cwd, healthPath, port, nil)
+}
+
+func startServerWithPortEnv(ctx context.Context, agentName, bin string, args []string, cwd string, healthPath string, port int, env []string) (*managedServer, error) {
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = cwd
 	cmd.Stdin = nil
-	cmd.Env = gitSafeEnv(cwd)
+	cmd.Env = gitSafeEnvFrom(env, cwd)
 	out := currentManagedServerOutput()
 	cmd.Stdout = out // server stdout goes to the configured sink for debugging
 	cmd.Stderr = out

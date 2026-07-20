@@ -1,7 +1,11 @@
 package db
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/repoexec"
 )
 
 func TestRepoInsertAndGet(t *testing.T) {
@@ -178,6 +182,73 @@ func TestRepoUniqueWorkingPath(t *testing.T) {
 	_, err = d.InsertRepo("/home/user/project", "git@github.com:c/d.git", "main")
 	if err == nil {
 		t.Fatal("expected error for duplicate working_path")
+	}
+}
+
+func TestRepoGitHubContextRoundTripAndClear(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/home/user/context-project", "https://github.com/parent/project.git", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	ctx := &repoexec.GitHubContext{
+		Version:          1,
+		GHPath:           filepath.Join("/opt", "tools", "gh"),
+		GitPath:          filepath.Join("/opt", "tools", "git"),
+		GHConfigDir:      filepath.Join("/home", "user", ".config", "gh-work"),
+		Host:             "github.com",
+		ExpectedLogin:    "work-user",
+		GitProtocol:      "https",
+		CredentialHelper: "gh",
+		CommitAuthor: repoexec.CommitAuthor{
+			Name:  "Work User",
+			Email: "work@example.test",
+		},
+		Label: "work",
+	}
+
+	updated, err := d.UpdateRepoGitHubContext(repo.ID, ctx)
+	if err != nil {
+		t.Fatalf("set GitHub context: %v", err)
+	}
+	if updated.GitHubContext == nil || updated.GitHubContext.ExpectedLogin != "work-user" {
+		t.Fatalf("updated context = %#v", updated.GitHubContext)
+	}
+	got, err := d.GetRepo(repo.ID)
+	if err != nil {
+		t.Fatalf("get repo: %v", err)
+	}
+	if got.GitHubContext == nil || *got.GitHubContext != *ctx {
+		t.Fatalf("round-trip context = %#v, want %#v", got.GitHubContext, ctx)
+	}
+
+	cleared, err := d.UpdateRepoGitHubContext(repo.ID, nil)
+	if err != nil {
+		t.Fatalf("clear GitHub context: %v", err)
+	}
+	if cleared.GitHubContext != nil {
+		t.Fatalf("context after clear = %#v, want nil", cleared.GitHubContext)
+	}
+}
+
+func TestRepoGitHubContextRejectsCredentialLikeDurableValues(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/home/user/secret-context-project", "https://github.com/parent/project.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := &repoexec.GitHubContext{Label: "ghp_credential-sentinel"}
+	if _, err := d.UpdateRepoGitHubContext(repo.ID, selected); err == nil {
+		t.Fatal("expected credential-like context to be rejected")
+	} else if strings.Contains(err.Error(), "ghp_credential-sentinel") {
+		t.Fatalf("error leaked rejected value: %v", err)
+	}
+	got, err := d.GetRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GitHubContext != nil {
+		t.Fatalf("rejected context was persisted: %#v", got.GitHubContext)
 	}
 }
 

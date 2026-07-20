@@ -11,6 +11,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/repoexec"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
@@ -149,7 +150,12 @@ func missingFromCustomPath(env []string, name string) string {
 func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd {
 	resolved := name
 	missingFromPath := false
-	if len(sctx.Env) > 0 && !strings.Contains(name, string(filepath.Separator)) {
+	selected := stepGitHubContext(sctx)
+	if selected != nil && name == "gh" {
+		resolved = selected.GHPath
+	} else if selected != nil && name == "git" {
+		resolved = selected.GitPath
+	} else if len(sctx.Env) > 0 && !strings.Contains(name, string(filepath.Separator)) {
 		if candidate := findInCustomPath(sctx.WorkDir, sctx.Env, name); candidate != "" {
 			resolved = candidate
 		} else if _, ok := envValue(sctx.Env, "PATH"); ok {
@@ -160,7 +166,9 @@ func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd 
 	cmd := exec.CommandContext(sctx.Ctx, resolved, args...)
 	cmd.Dir = sctx.WorkDir
 	winproc.Harden(cmd)
-	if len(sctx.Env) > 0 {
+	if selected != nil {
+		cmd.Env = selected.Environment(mergeEnv(sctx.Env), sctx.WorkDir)
+	} else if len(sctx.Env) > 0 {
 		cmd.Env = mergeEnv(sctx.Env)
 	}
 	if missingFromPath {
@@ -169,10 +177,29 @@ func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd 
 	return cmd
 }
 
+func stepGitHubContext(sctx *pipeline.StepContext) *repoexec.GitHubContext {
+	if sctx != nil && sctx.Repo != nil && sctx.Repo.GitHubContext != nil {
+		return sctx.Repo.GitHubContext
+	}
+	if sctx != nil {
+		if selected, ok := repoexec.GitHubContextFrom(sctx.Ctx); ok {
+			return selected
+		}
+	}
+	return nil
+}
+
 // stepGitRun runs git with the StepContext's environment plus the standard
 // non-interactive git overrides. It is like git.Run but respects sctx.Env so
 // step-scoped PATH and credential environment stay in effect.
 func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
+	if selected := stepGitHubContext(sctx); selected != nil {
+		if remote, network := git.NetworkRemote(args); network {
+			if err := selected.ValidateNetworkRemote(sctx.Ctx, sctx.WorkDir, remote); err != nil {
+				return "", err
+			}
+		}
+	}
 	cmd := stepCmd(sctx, "git", args...)
 	cmd.Env = git.NonInteractiveEnvFrom(cmd.Env, sctx.WorkDir)
 	out, err := cmd.Output()
@@ -180,6 +207,9 @@ func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
 		stderr := ""
 		if ee, ok := err.(*exec.ExitError); ok {
 			stderr = strings.TrimSpace(string(ee.Stderr))
+		}
+		if selected := stepGitHubContext(sctx); selected != nil {
+			return "", fmt.Errorf("git %s: %s failed: %w", safeurl.RedactText(strings.Join(args, " ")), selected.LabelForDiagnostics(), err)
 		}
 		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
 	}
@@ -210,6 +240,10 @@ func stepCLIAvailable(sctx *pipeline.StepContext, provider scm.Provider) bool {
 	name := provider.CLIName()
 	if name == "" {
 		return false
+	}
+	if selected := stepGitHubContext(sctx); selected != nil && provider == scm.ProviderGitHub {
+		info, err := os.Stat(selected.GHPath)
+		return err == nil && !info.IsDir()
 	}
 	if len(sctx.Env) == 0 {
 		return scm.CLIAvailable(provider)

@@ -45,7 +45,13 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 			// the plain slug (without host prefix) is correct here.
 			forkRepo = github.RepoSlug(sctx.Repo.ForkURL)
 		}
-		return github.NewWithFork(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, host, repo, forkRepo), ""
+		expectedLogin := ""
+		contextLabel := ""
+		if selected := stepGitHubContext(sctx); selected != nil {
+			expectedLogin = selected.ExpectedLogin
+			contextLabel = selected.LabelForDiagnostics()
+		}
+		return github.NewWithForkAndContext(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, host, repo, forkRepo, expectedLogin, contextLabel), ""
 	case scm.ProviderGitLab:
 		if sctx.Repo.ForkURL != "" {
 			// Fork MR routing for GitLab is intentionally not half-wired.

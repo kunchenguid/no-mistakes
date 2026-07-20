@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,11 +20,13 @@ type CmdFactory func(ctx context.Context, name string, args ...string) *exec.Cmd
 
 // Host talks to GitHub through the gh CLI.
 type Host struct {
-	cmd          CmdFactory
-	cliAvailable func() bool
-	host         string // repo's GitHub hostname; scopes the auth check
-	repo         string // "owner/name" slug for --repo; empty when unknown
-	forkOwner    string // fork owner for cross-repository PR heads
+	cmd           CmdFactory
+	cliAvailable  func() bool
+	host          string // repo's GitHub hostname; scopes the auth check
+	repo          string // "owner/name" slug for --repo; empty when unknown
+	forkOwner     string // fork owner for cross-repository PR heads
+	expectedLogin string // strict selected account; empty preserves legacy behavior
+	contextLabel  string // sanitized diagnostic only
 }
 
 // New builds a Host. cliAvailable reports whether the gh binary is
@@ -49,8 +53,16 @@ func New(cmd CmdFactory, cliAvailable func() bool, host, repo string) *Host {
 // because gh pr create expects --head <owner>:<branch>. host is optional; see
 // New for its role in scoping the auth check.
 func NewWithFork(cmd CmdFactory, cliAvailable func() bool, host, repo, forkRepo string) *Host {
+	return NewWithForkAndContext(cmd, cliAvailable, host, repo, forkRepo, "", "")
+}
+
+// NewWithForkAndContext adds a strict expected login to NewWithFork. Empty
+// expectedLogin preserves the legacy ambient-account behavior.
+func NewWithForkAndContext(cmd CmdFactory, cliAvailable func() bool, host, repo, forkRepo, expectedLogin, contextLabel string) *Host {
 	h := New(cmd, cliAvailable, host, repo)
 	h.forkOwner = repoOwner(forkRepo)
+	h.expectedLogin = strings.TrimSpace(expectedLogin)
+	h.contextLabel = strings.TrimSpace(contextLabel)
 	return h
 }
 
@@ -176,12 +188,47 @@ func (h *Host) Available(ctx context.Context) error {
 		authArgs = append(authArgs, "--hostname", h.host)
 	}
 	if err := h.cmd(ctx, "gh", authArgs...).Run(); err != nil {
+		if h.expectedLogin != "" {
+			return fmt.Errorf("%s: gh authentication is unavailable", h.strictDescription())
+		}
 		return errors.New("gh CLI is not authenticated")
+	}
+	return h.ensureExpectedLogin(ctx)
+}
+
+func (h *Host) ensureExpectedLogin(ctx context.Context) error {
+	if h.expectedLogin == "" {
+		return nil
+	}
+	cmd := h.cmd(ctx, "gh", "api", "--hostname", "github.com", "user", "--jq", ".login")
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("%s: could not verify selected GitHub login", h.strictDescription())
+	}
+	if !strings.EqualFold(strings.TrimSpace(string(out)), h.expectedLogin) {
+		return fmt.Errorf("%s: authenticated login does not match expected_login %q", h.strictDescription(), h.expectedLogin)
 	}
 	return nil
 }
 
+func (h *Host) strictDescription() string {
+	if h.contextLabel != "" {
+		return h.contextLabel
+	}
+	return "repository GitHub context"
+}
+
+func (h *Host) commandError(prefix string, out []byte, err error) error {
+	if h.expectedLogin != "" {
+		return fmt.Errorf("%s: %s failed: %w", h.strictDescription(), prefix, err)
+	}
+	return fmt.Errorf("%s: %s: %w", prefix, strings.TrimSpace(string(out)), err)
+}
+
 func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error) {
+	if err := h.ensureExpectedLogin(ctx); err != nil {
+		return nil, err
+	}
 	args := []string{"pr", "list", "--head", branch}
 	if strings.TrimSpace(base) != "" {
 		args = append(args, "--base", base)
@@ -195,7 +242,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("gh pr list: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, h.commandError("gh pr list", out, err)
 	}
 	var prs []struct {
 		Number              int    `json:"number"`
@@ -205,7 +252,13 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 			Login string `json:"login"`
 		} `json:"headRepositoryOwner"`
 	}
-	if err := json.Unmarshal(out, &prs); err != nil || len(prs) == 0 {
+	if err := json.Unmarshal(out, &prs); err != nil {
+		if h.expectedLogin != "" {
+			return nil, fmt.Errorf("%s: gh pr list returned invalid structured output", h.strictDescription())
+		}
+		return nil, nil
+	}
+	if len(prs) == 0 {
 		return nil, nil
 	}
 	for _, candidate := range prs {
@@ -220,6 +273,9 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		}
 		if pr.URL == "" {
 			return nil, nil
+		}
+		if h.expectedLogin != "" && !h.validStrictPRURL(pr.URL) {
+			return nil, fmt.Errorf("%s: gh pr list returned a pull request outside the configured parent repository", h.strictDescription())
 		}
 		return pr, nil
 	}
@@ -242,6 +298,9 @@ func (h *Host) matchesHead(headRefName string, owner *struct {
 }
 
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {
+	if err := h.ensureExpectedLogin(ctx); err != nil {
+		return nil, err
+	}
 	args := append([]string{"pr", "create",
 		"--head", h.headRef(branch),
 		"--base", base,
@@ -251,9 +310,12 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 	cmd.Stdin = strings.NewReader(content.Body)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("gh pr create: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, h.commandError("gh pr create", out, err)
 	}
 	url := strings.TrimSpace(string(out))
+	if h.expectedLogin != "" && !h.validStrictPRURL(url) {
+		return nil, fmt.Errorf("%s: gh pr create returned an invalid pull request URL", h.strictDescription())
+	}
 	pr := &scm.PR{URL: url}
 	if num, nerr := scm.ExtractPRNumber(url); nerr == nil {
 		pr.Number = num
@@ -261,9 +323,29 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 	return pr, nil
 }
 
+func (h *Host) validStrictPRURL(raw string) bool {
+	if h.repo == "" || !strings.Contains(h.repo, "/") || strings.ContainsAny(raw, "\r\n") {
+		return false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || !strings.EqualFold(parsed.Host, "github.com") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	repoParts := strings.Split(strings.Trim(h.repo, "/"), "/")
+	if len(parts) != 4 || len(repoParts) != 2 || !strings.EqualFold(parts[0], repoParts[0]) || !strings.EqualFold(parts[1], repoParts[1]) || parts[2] != "pull" {
+		return false
+	}
+	number, err := strconv.Atoi(parts[3])
+	return err == nil && number > 0
+}
+
 func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
 	selector, err := prSelector(pr)
 	if err != nil {
+		return nil, err
+	}
+	if err := h.ensureExpectedLogin(ctx); err != nil {
 		return nil, err
 	}
 	args := append([]string{"pr", "edit", selector}, h.repoArgs()...)
@@ -271,7 +353,7 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	cmd := h.cmd(ctx, "gh", args...)
 	cmd.Stdin = strings.NewReader(content.Body)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("gh pr edit: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, h.commandError("gh pr edit", out, err)
 	}
 	return pr, nil
 }
@@ -281,6 +363,9 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 	if err != nil {
 		return "", err
 	}
+	if err := h.ensureExpectedLogin(ctx); err != nil {
+		return "", err
+	}
 	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
 	args = append(args, "--json", "state", "--jq", ".state")
 	cmd := h.cmd(ctx, "gh", args...)
@@ -288,7 +373,11 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 	if err != nil {
 		return "", fmt.Errorf("gh pr view: %w", err)
 	}
-	return normalizePRState(strings.TrimSpace(string(out))), nil
+	state := normalizePRState(strings.TrimSpace(string(out)))
+	if h.expectedLogin != "" && state != scm.PRStateOpen && state != scm.PRStateMerged && state != scm.PRStateClosed {
+		return "", fmt.Errorf("%s: gh pr view returned an invalid state", h.strictDescription())
+	}
+	return state, nil
 }
 
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
@@ -296,11 +385,17 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := h.ensureExpectedLogin(ctx); err != nil {
+		return nil, err
+	}
 	args := append([]string{"pr", "checks", selector}, h.repoArgs()...)
 	args = append(args, "--json", "name,state,bucket,completedAt")
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if h.expectedLogin != "" {
+			return nil, h.commandError("gh pr checks", out, err)
+		}
 		if strings.Contains(string(out), "no checks reported") {
 			return nil, nil
 		}
@@ -333,6 +428,9 @@ func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.Mergeable
 	if err != nil {
 		return "", err
 	}
+	if err := h.ensureExpectedLogin(ctx); err != nil {
+		return "", err
+	}
 	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
 	args = append(args, "--json", "mergeable", "--jq", ".mergeable")
 	cmd := h.cmd(ctx, "gh", args...)
@@ -340,10 +438,17 @@ func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.Mergeable
 	if err != nil {
 		return "", fmt.Errorf("gh pr view mergeable: %w", err)
 	}
-	return normalizeMergeableState(strings.TrimSpace(string(out))), nil
+	state := normalizeMergeableState(strings.TrimSpace(string(out)))
+	if h.expectedLogin != "" && state != scm.MergeableOK && state != scm.MergeableConflict && state != scm.MergeablePending {
+		return "", fmt.Errorf("%s: gh pr view returned an invalid mergeable state", h.strictDescription())
+	}
+	return state, nil
 }
 
 func (h *Host) FetchFailedCheckLogs(ctx context.Context, _ *scm.PR, branch, headSHA string, failingNames []string) (string, error) {
+	if err := h.ensureExpectedLogin(ctx); err != nil {
+		return "", err
+	}
 	if len(failingNames) == 0 {
 		return "", nil
 	}

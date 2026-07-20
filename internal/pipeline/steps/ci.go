@@ -133,6 +133,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	if err := host.Available(ctx); err != nil {
+		if sctx.Repo.GitHubContext != nil && provider == scm.ProviderGitHub {
+			return nil, fmt.Errorf("strict GitHub context validation: %w", err)
+		}
 		sctx.Log(fmt.Sprintf("skipping CI: %v", err))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}

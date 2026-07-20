@@ -6,6 +6,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
+	"github.com/kunchenguid/no-mistakes/internal/repoexec"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/skill"
 	"github.com/spf13/cobra"
@@ -17,6 +18,8 @@ const banner = `_  _ ____    _  _ _ ____ ___ ____ _  _ ____ ____
 
 func newInitCmd() *cobra.Command {
 	var forkURL string
+	var githubContextFile string
+	var clearGitHubContext bool
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize no-mistakes gate for the current repository",
@@ -36,7 +39,20 @@ func newInitCmd() *cobra.Command {
 				if cmd.Flags().Changed("fork-url") && strings.TrimSpace(forkURL) == "" {
 					return fmt.Errorf("init: --fork-url must not be empty")
 				}
-				repo, created, err := gate.InitWithFork(cmd.Context(), d, p, ".", forkURL)
+				if cmd.Flags().Changed("github-context") && clearGitHubContext {
+					return fmt.Errorf("init: --github-context and --clear-github-context are mutually exclusive")
+				}
+				var selected *repoexec.GitHubContext
+				if cmd.Flags().Changed("github-context") {
+					if strings.TrimSpace(githubContextFile) == "" {
+						return fmt.Errorf("init: --github-context must name a context JSON file")
+					}
+					selected, err = repoexec.LoadGitHubContext(githubContextFile)
+					if err != nil {
+						return fmt.Errorf("init: %w", err)
+					}
+				}
+				repo, created, err := gate.InitWithGitHubContextChange(cmd.Context(), d, p, ".", forkURL, selected, clearGitHubContext)
 				if err != nil {
 					return fmt.Errorf("init: %w", err)
 				}
@@ -75,6 +91,9 @@ func newInitCmd() *cobra.Command {
 				if repo.ForkURL != "" {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  fork"), safeurl.Redact(repo.ForkURL))
 				}
+				if repo.GitHubContext != nil {
+					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("context"), repo.GitHubContext.LabelForDiagnostics())
+				}
 				if skillErr != nil {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" skill"), sYellow.Render("skipped: "+skillErr.Error()))
 				} else {
@@ -91,5 +110,7 @@ func newInitCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&forkURL, "fork-url", "", "GitHub fork remote URL to push branches to while opening PRs against origin")
+	cmd.Flags().StringVar(&githubContextFile, "github-context", "", "JSON file defining a strict non-secret GitHub/Git execution context for this repository")
+	cmd.Flags().BoolVar(&clearGitHubContext, "clear-github-context", false, "remove the recorded strict GitHub/Git context and restore ambient behavior")
 	return cmd
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/repoexec"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -199,6 +200,7 @@ func displayTarget(raw string) string {
 // InspectCached reads local Git and persisted provenance without fetching or
 // mutating refs, the index, or the worktree.
 func (s *Service) InspectCached(ctx context.Context) State {
+	ctx = s.executionContext(ctx)
 	state, _, _ := s.inspect(ctx)
 	return state
 }
@@ -206,6 +208,7 @@ func (s *Service) InspectCached(ctx context.Context) State {
 // Refresh explicitly verifies the exact configured push ref into a private
 // no-mistakes ref. It never updates an ordinary remote-tracking ref.
 func (s *Service) Refresh(ctx context.Context) State {
+	ctx = s.executionContext(ctx)
 	state, run, ok := s.inspect(ctx)
 	if !ok || !refreshable(state) {
 		return state
@@ -311,6 +314,7 @@ func (s *Service) Refresh(ctx context.Context) State {
 // use a strict fast-forward. Equivalent-diverged branches first anchor the
 // pre-sync head, then move to the verified equivalent pipeline head.
 func (s *Service) Apply(ctx context.Context) State {
+	ctx = s.executionContext(ctx)
 	plan := s.Refresh(ctx)
 	if plan.State == StateSynchronized || plan.State == StateMergedRemoteRemoved {
 		plan.Changed = false
@@ -444,6 +448,7 @@ func (s *Service) Apply(ctx context.Context) State {
 // run_pipeline as the next step. `no-mistakes rerun` remains the alternative
 // exit that resumes validating the preserved head instead of taking it back.
 func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
+	ctx = s.executionContext(ctx)
 	state, run, _ := s.inspect(ctx)
 	if run != nil && run.CustodyReturnedAt != nil {
 		state.Recovered = true
@@ -892,6 +897,13 @@ func (s *Service) remoteName(ctx context.Context) string {
 		return "fork"
 	}
 	return "origin"
+}
+
+func (s *Service) executionContext(ctx context.Context) context.Context {
+	if s == nil || s.Repo == nil {
+		return ctx
+	}
+	return repoexec.WithGitHubContext(ctx, s.Repo.GitHubContext)
 }
 
 func (s *Service) workDir() string {

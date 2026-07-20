@@ -46,7 +46,7 @@ func (a *rovodevAgent) recoverTransientRetry(label string) {
 
 func (a *rovodevAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	// Start server on first invocation (synchronized)
-	baseURL, err := a.ensureServer(ctx, opts.CWD)
+	baseURL, err := a.ensureServer(ctx, opts.CWD, opts.Env)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func (a *rovodevAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 	return finalizeTextResult("rovodev", text, opts.JSONSchema, usage)
 }
 
-func (a *rovodevAgent) ensureServer(ctx context.Context, cwd string) (string, error) {
+func (a *rovodevAgent) ensureServer(ctx context.Context, cwd string, env []string) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.server != nil {
@@ -94,7 +94,7 @@ func (a *rovodevAgent) ensureServer(ctx context.Context, cwd string) (string, er
 		return "", fmt.Errorf("rovodev port: %w", err)
 	}
 	args := buildRovodevServeArgs(a.extraArgs, port)
-	srv, err := startServerWithPort(ctx, "rovodev", a.bin, args, cwd, "/healthcheck", port)
+	srv, err := startServerWithPortEnv(ctx, "rovodev", a.bin, args, cwd, "/healthcheck", port, env)
 	if err != nil {
 		return "", fmt.Errorf("rovodev server: %w", err)
 	}

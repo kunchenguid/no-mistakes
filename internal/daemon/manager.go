@@ -20,6 +20,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/repoexec"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -114,6 +115,12 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	}
 	if repo == nil {
 		return nil, fmt.Errorf("run repository is missing")
+	}
+	ctx = repoexec.WithGitHubContext(ctx, repo.GitHubContext)
+	if repo.GitHubContext != nil {
+		if err := repo.GitHubContext.ValidateRuntime(ctx, repo.WorkingPath, repo.UpstreamURL, repo.ForkURL); err != nil {
+			return nil, err
+		}
 	}
 	workDir := m.paths.WorktreeDir(repo.ID, run.ID)
 	if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
@@ -280,7 +287,8 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		_ = plan.agent.Close()
 		return
 	}
-	runCtx, cancel := context.WithCancelCause(context.Background())
+	baseCtx := repoexec.WithGitHubContext(context.Background(), plan.repo.GitHubContext)
+	runCtx, cancel := context.WithCancelCause(baseCtx)
 	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
 	done := make(chan struct{})
 	m.mu.Lock()
@@ -306,7 +314,8 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			cancel(nil)
 			_ = plan.agent.Close()
 			m.closeSubscribers(plan.run.ID)
-			if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
+			cleanupCtx := repoexec.WithGitHubContext(context.Background(), plan.repo.GitHubContext)
+			if err := git.WorktreeRemove(cleanupCtx, plan.gateDir, plan.workDir); err != nil {
 				slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
 			}
 			m.mu.Lock()
@@ -550,6 +559,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 		return "", fmt.Errorf("unknown repo %s", repoID)
 	}
 
+	ctx = repoexec.WithGitHubContext(ctx, repo.GitHubContext)
 	gateDir := m.paths.RepoDir(repo.ID)
 	headSHA, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
 	if err != nil {
@@ -604,6 +614,13 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	if m.shuttingDown.Load() {
 		trackStartFailure("daemon_shutdown")
 		return "", fmt.Errorf("daemon is shutting down")
+	}
+	ctx = repoexec.WithGitHubContext(ctx, repo.GitHubContext)
+	if repo.GitHubContext != nil {
+		if err := repo.GitHubContext.ValidateRuntime(ctx, repo.WorkingPath, repo.UpstreamURL, repo.ForkURL); err != nil {
+			trackStartFailure("validate_repo_context")
+			return "", err
+		}
 	}
 
 	// Serialize per repo+branch to prevent two concurrent pushes from both
@@ -678,7 +695,8 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	bgOwnsWorktree := false
 	defer func() {
 		if !bgOwnsWorktree {
-			if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
+			cleanupCtx := repoexec.WithGitHubContext(context.Background(), repo.GitHubContext)
+			if rmErr := git.WorktreeRemove(cleanupCtx, gateDir, wtDir); rmErr != nil {
 				slog.Warn("failed to remove worktree during setup cleanup", "path", wtDir, "error", rmErr)
 			}
 		}
@@ -786,7 +804,8 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	})
 
 	// Create executor with event broadcast.
-	runCtx, cancel := context.WithCancelCause(context.Background())
+	baseRunCtx := repoexec.WithGitHubContext(context.Background(), repo.GitHubContext)
+	runCtx, cancel := context.WithCancelCause(baseRunCtx)
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
 	executor.SetSkippedSteps(skipSteps)
 
@@ -837,7 +856,8 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			// Close subscriber channels for this run.
 			m.closeSubscribers(run.ID)
 			// Clean up worktree.
-			if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
+			cleanupCtx := repoexec.WithGitHubContext(context.Background(), repo.GitHubContext)
+			if rmErr := git.WorktreeRemove(cleanupCtx, gateDir, wtDir); rmErr != nil {
 				slog.Warn("failed to remove worktree", "path", wtDir, "error", rmErr)
 			}
 			// Remove tracking.

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/repoexec"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
 )
@@ -34,15 +35,33 @@ func IsZeroSHA(sha string) bool {
 // and hardened CI inject that setting, so gate operations must never depend
 // on discovering a bare repo from the working directory (issue #362).
 func Run(ctx context.Context, dir string, args ...string) (string, error) {
+	selected, strict := repoexec.GitHubContextFrom(ctx)
+	if remote, network := NetworkRemote(args); strict && network {
+		if err := selected.ValidateNetworkRemote(ctx, dir, remote); err != nil {
+			return "", err
+		}
+	}
 	if isBareGitDir(dir) {
 		args = append([]string{"--git-dir=" + dir}, args...)
 	}
-	cmd := exec.CommandContext(ctx, "git", args...)
+	binary := "git"
+	var env []string
+	if strict {
+		binary = selected.GitPath
+		env = selected.Environment(nil, dir)
+	}
+	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = dir
-	cmd.Env = NonInteractiveEnv(dir)
+	cmd.Env = NonInteractiveEnvFrom(env, dir)
 	winproc.Harden(cmd)
 	out, err := cmd.Output()
 	if err != nil {
+		if strict {
+			// A credential helper or remote can write arbitrary bytes to stderr.
+			// Strict contexts return only our bounded diagnostic so token-like
+			// output can never be copied into logs, status, or database errors.
+			return "", fmt.Errorf("git %s: %s failed: %w", safeurl.RedactText(strings.Join(args, " ")), selected.LabelForDiagnostics(), err)
+		}
 		stderr := ""
 		if ee, ok := err.(*exec.ExitError); ok {
 			stderr = strings.TrimSpace(string(ee.Stderr))
@@ -50,6 +69,43 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// NetworkRemote returns the remote operand for daemon-side Git network
+// commands. The current callers use fetch, push, and ls-remote; unknown command
+// shapes are local operations and do not need an account preflight.
+func NetworkRemote(args []string) (string, bool) {
+	if len(args) == 0 {
+		return "", false
+	}
+	command := 0
+	for command < len(args) && strings.HasPrefix(args[command], "-") {
+		command++
+	}
+	if command >= len(args) {
+		return "", false
+	}
+	switch args[command] {
+	case "fetch", "ls-remote":
+		for i := command + 1; i < len(args); i++ {
+			if strings.HasPrefix(args[i], "-") {
+				continue
+			}
+			return args[i], true
+		}
+	case "push":
+		for i := command + 1; i < len(args); i++ {
+			if args[i] == "-o" || args[i] == "--push-option" {
+				i++
+				continue
+			}
+			if strings.HasPrefix(args[i], "-") {
+				continue
+			}
+			return args[i], true
+		}
+	}
+	return "", false
 }
 
 // isBareGitDir reports whether dir is itself a git directory (a bare repo),
@@ -72,10 +128,21 @@ func isBareGitDir(dir string) bool {
 
 // InitBare creates a new bare git repository at the given path.
 func InitBare(ctx context.Context, path string) error {
-	cmd := exec.CommandContext(ctx, "git", "init", "--bare", path)
+	binary := "git"
+	var env []string
+	selected, strict := repoexec.GitHubContextFrom(ctx)
+	if strict {
+		binary = selected.GitPath
+		env = selected.Environment(nil, "")
+	}
+	cmd := exec.CommandContext(ctx, binary, "init", "--bare", path)
+	cmd.Env = NonInteractiveEnvFrom(env, "")
 	winproc.Harden(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if strict {
+			return fmt.Errorf("git init --bare: %s failed: %w", selected.LabelForDiagnostics(), err)
+		}
 		return fmt.Errorf("git init --bare: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -118,13 +185,17 @@ func GetConfiguredRemoteURL(ctx context.Context, dir, name string) (string, erro
 // FindGitRoot walks up from path to find the git repository root.
 // Resolves symlinks for consistency on macOS (e.g. /tmp -> /private/tmp).
 func FindGitRoot(path string) (string, error) {
+	return FindGitRootContext(context.Background(), path)
+}
+
+// FindGitRootContext is FindGitRoot with an optional repository execution
+// context, used by strict init paths before a repo record exists.
+func FindGitRootContext(ctx context.Context, path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	cmd.Dir = abs
-	winproc.Harden(cmd)
+	cmd := gitCommand(ctx, abs, "rev-parse", "--show-toplevel")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("not a git repository: %s", abs)
@@ -158,15 +229,19 @@ func FindGitRoot(path string) (string, error) {
 // directory). Symlink resolution failures fall back to the unresolved
 // path, matching the historical behavior.
 func FindMainRepoRoot(path string) (string, error) {
+	return FindMainRepoRootContext(context.Background(), path)
+}
+
+// FindMainRepoRootContext is FindMainRepoRoot with an optional repository
+// execution context, used by strict init paths before persistence.
+func FindMainRepoRootContext(ctx context.Context, path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
 
 	// Resolve the git common dir.
-	commonDirCmd := exec.Command("git", "rev-parse", "--git-common-dir")
-	commonDirCmd.Dir = abs
-	winproc.Harden(commonDirCmd)
+	commonDirCmd := gitCommand(ctx, abs, "rev-parse", "--git-common-dir")
 	commonDirOut, err := commonDirCmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("not a git repository: %s", abs)
@@ -187,8 +262,7 @@ func FindMainRepoRoot(path string) (string, error) {
 	// itself for its core.worktree, which git writes when it absorbs a
 	// submodule's git dir. The value is typically relative (e.g.
 	// "../../../sub"); resolve it against the common dir.
-	worktreeCmd := exec.Command("git", "--git-dir", commonDir, "config", "--get", "core.worktree")
-	winproc.Harden(worktreeCmd)
+	worktreeCmd := gitCommand(ctx, "", "--git-dir", commonDir, "config", "--get", "core.worktree")
 	if worktreeOut, err := worktreeCmd.Output(); err == nil {
 		worktree := strings.TrimSpace(string(worktreeOut))
 		if worktree != "" {
@@ -201,9 +275,7 @@ func FindMainRepoRoot(path string) (string, error) {
 
 	// Branch 3: exotic GIT_DIR without a usable core.worktree. Defer to
 	// `git rev-parse --show-toplevel` from the original path.
-	topCmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	topCmd.Dir = abs
-	winproc.Harden(topCmd)
+	topCmd := gitCommand(ctx, abs, "rev-parse", "--show-toplevel")
 	topOut, err := topCmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("not a git repository: %s", abs)
@@ -213,6 +285,20 @@ func FindMainRepoRoot(path string) (string, error) {
 
 // resolveMainRoot applies filepath.EvalSymlinks to path, falling back to
 // the unresolved path when symlink resolution fails.
+func gitCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	binary := "git"
+	var env []string
+	if selected, ok := repoexec.GitHubContextFrom(ctx); ok {
+		binary = selected.GitPath
+		env = selected.Environment(nil, dir)
+	}
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Dir = dir
+	cmd.Env = NonInteractiveEnvFrom(env, dir)
+	winproc.Harden(cmd)
+	return cmd
+}
+
 func resolveMainRoot(path string) (string, error) {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
@@ -312,9 +398,7 @@ func CurrentBranch(ctx context.Context, dir string) (string, error) {
 // (HEAD points at a commit rather than a branch ref). Uses `git symbolic-ref`
 // which fails cleanly when HEAD is not a symbolic ref.
 func IsDetachedHEAD(ctx context.Context, dir string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "-q", "HEAD")
-	cmd.Dir = dir
-	winproc.Harden(cmd)
+	cmd := gitCommand(ctx, dir, "symbolic-ref", "-q", "HEAD")
 	if err := cmd.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			// Exit 1 means HEAD is not a symbolic ref — detached.
@@ -331,9 +415,20 @@ func IsDetachedHEAD(ctx context.Context, dir string) (bool, error) {
 // Uses git ls-remote --symref to read the remote's HEAD symref.
 // Falls back to "main" if detection fails (e.g. empty remote, unreachable).
 func DefaultBranch(ctx context.Context, dir, remote string) string {
+	branch, err := ResolveDefaultBranch(ctx, dir, remote)
+	if err != nil || branch == "" {
+		return "main"
+	}
+	return branch
+}
+
+// ResolveDefaultBranch returns the remote HEAD branch or an error. Strict init
+// uses this form so an account/helper failure cannot silently become "main";
+// legacy callers retain DefaultBranch's historical fallback.
+func ResolveDefaultBranch(ctx context.Context, dir, remote string) (string, error) {
 	out, err := Run(ctx, dir, "ls-remote", "--symref", remote, "HEAD")
 	if err != nil {
-		return "main"
+		return "", err
 	}
 	// Output format: "ref: refs/heads/main\tHEAD\n<sha>\tHEAD\n"
 	// Fields splits: ["ref:", "refs/heads/main", "HEAD"]
@@ -341,11 +436,11 @@ func DefaultBranch(ctx context.Context, dir, remote string) string {
 		if strings.HasPrefix(line, "ref: refs/heads/") {
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {
-				return strings.TrimPrefix(parts[1], "refs/heads/")
+				return strings.TrimPrefix(parts[1], "refs/heads/"), nil
 			}
 		}
 	}
-	return "main"
+	return "", fmt.Errorf("remote HEAD did not identify a default branch")
 }
 
 // FetchRemoteBranch fetches a single branch into a remote-tracking ref.
@@ -529,9 +624,7 @@ func ResolveRef(ctx context.Context, dir, ref string) (string, error) {
 // `git rev-parse --verify --quiet` so a missing ref is a clean (nil, false)
 // result rather than a loud error.
 func RefExists(ctx context.Context, dir, ref string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
-	cmd.Env = NonInteractiveEnv(dir)
-	winproc.Harden(cmd)
+	cmd := gitCommand(ctx, dir, "-C", dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && ee.ExitCode() == 1 {

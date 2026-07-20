@@ -1,9 +1,13 @@
 package db
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/kunchenguid/no-mistakes/internal/repoexec"
 )
 
 // Repo represents a registered repository.
@@ -13,6 +17,7 @@ type Repo struct {
 	UpstreamURL   string
 	ForkURL       string
 	DefaultBranch string
+	GitHubContext *repoexec.GitHubContext
 	CreatedAt     int64
 }
 
@@ -80,13 +85,17 @@ func (d *DB) InsertRepoWithFork(workingPath, upstreamURL, forkURL, defaultBranch
 // GetRepo returns a repo by ID.
 func (d *DB) GetRepo(id string) (*Repo, error) {
 	r := &Repo{}
+	var contextJSON sql.NullString
 	err := d.sql.QueryRow(
-		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos WHERE id = ?`, id,
-	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.CreatedAt)
+		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, github_context_json, created_at FROM repos WHERE id = ?`, id,
+	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &contextJSON, &r.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
+		return nil, fmt.Errorf("get repo: %w", err)
+	}
+	if err := decodeRepoGitHubContext(r, contextJSON); err != nil {
 		return nil, fmt.Errorf("get repo: %w", err)
 	}
 	return r, nil
@@ -95,13 +104,17 @@ func (d *DB) GetRepo(id string) (*Repo, error) {
 // GetRepoByPath returns a repo by its working path.
 func (d *DB) GetRepoByPath(workingPath string) (*Repo, error) {
 	r := &Repo{}
+	var contextJSON sql.NullString
 	err := d.sql.QueryRow(
-		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos WHERE working_path = ?`, workingPath,
-	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.CreatedAt)
+		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, github_context_json, created_at FROM repos WHERE working_path = ?`, workingPath,
+	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &contextJSON, &r.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
+		return nil, fmt.Errorf("get repo by path: %w", err)
+	}
+	if err := decodeRepoGitHubContext(r, contextJSON); err != nil {
 		return nil, fmt.Errorf("get repo by path: %w", err)
 	}
 	return r, nil
@@ -143,6 +156,44 @@ func (d *DB) UpdateRepoForkURL(id, forkURL string) (*Repo, error) {
 		return nil, fmt.Errorf("update repo fork URL: %w", err)
 	}
 	return d.GetRepo(id)
+}
+
+// UpdateRepoGitHubContext sets or clears the optional strict GitHub/Git child
+// context. The JSON contains typed non-secret metadata only.
+func (d *DB) UpdateRepoGitHubContext(id string, selected *repoexec.GitHubContext) (*Repo, error) {
+	var encoded any
+	if selected != nil {
+		if err := selected.ValidateForPersistence(); err != nil {
+			return nil, fmt.Errorf("encode repo GitHub context: %w", err)
+		}
+		data, err := json.Marshal(selected)
+		if err != nil {
+			return nil, fmt.Errorf("encode repo GitHub context: %w", err)
+		}
+		encoded = string(data)
+	}
+	if _, err := d.sql.Exec(`UPDATE repos SET github_context_json = ? WHERE id = ?`, encoded, id); err != nil {
+		return nil, fmt.Errorf("update repo GitHub context: %w", err)
+	}
+	return d.GetRepo(id)
+}
+
+func decodeRepoGitHubContext(repo *Repo, encoded sql.NullString) error {
+	if !encoded.Valid || strings.TrimSpace(encoded.String) == "" {
+		repo.GitHubContext = nil
+		return nil
+	}
+	var selected repoexec.GitHubContext
+	decoder := json.NewDecoder(bytes.NewReader([]byte(encoded.String)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&selected); err != nil {
+		return fmt.Errorf("decode GitHub context: %w", err)
+	}
+	if err := selected.ValidateForPersistence(); err != nil {
+		return fmt.Errorf("decode GitHub context: %w", err)
+	}
+	repo.GitHubContext = &selected
+	return nil
 }
 
 // UpdateRepoWorkingPath moves a repo record to a new working path, preserving

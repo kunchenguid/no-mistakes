@@ -12,6 +12,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/repoexec"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/scm/github"
 )
@@ -46,11 +47,30 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 // remains the parent repository used for PRs. When forkURL is empty, an
 // existing fork setting is preserved across idempotent refreshes.
 func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL string) (*db.Repo, bool, error) {
+	return InitWithGitHubContext(ctx, d, p, workDir, forkURL, nil)
+}
+
+// InitWithGitHubContext initializes or refreshes a gate and optionally replaces
+// its strict, typed GitHub/Git execution context. A nil context preserves an
+// existing one, matching the idempotent fork-url behavior.
+func InitWithGitHubContext(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL string, supplied *repoexec.GitHubContext) (*db.Repo, bool, error) {
+	return InitWithGitHubContextChange(ctx, d, p, workDir, forkURL, supplied, false)
+}
+
+// InitWithGitHubContextChange also supports explicitly clearing a recorded
+// context. Clearing is a typed state transition, not an empty context document.
+func InitWithGitHubContextChange(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL string, supplied *repoexec.GitHubContext, clearContext bool) (*db.Repo, bool, error) {
 	forkURL = strings.TrimSpace(forkURL)
+	if supplied != nil {
+		if err := supplied.ValidateDependencies(); err != nil {
+			return nil, false, err
+		}
+		ctx = repoexec.WithGitHubContext(ctx, supplied)
+	}
 
 	// Normalize worktrees back to the main repo root so one repo record works
 	// from either the main checkout or any attached worktree.
-	gitRoot, err := git.FindMainRepoRoot(workDir)
+	gitRoot, err := git.FindMainRepoRootContext(ctx, workDir)
 	if err != nil {
 		return nil, false, fmt.Errorf("find git root: %w", err)
 	}
@@ -71,11 +91,18 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 			return nil, false, err
 		}
 	}
+	selected := supplied
+	if selected == nil && existing != nil && !clearContext {
+		selected = existing.GitHubContext
+		if selected != nil {
+			ctx = repoexec.WithGitHubContext(ctx, selected)
+		}
+	}
 
 	// Read origin URL. Keep the historical rewritten value for non-fork repos,
 	// but preserve the literal parent URL when fork routing is configured.
 	getOriginURL := git.GetRemoteURL
-	if forkURL != "" || (existing != nil && strings.TrimSpace(existing.ForkURL) != "") {
+	if selected != nil || forkURL != "" || (existing != nil && strings.TrimSpace(existing.ForkURL) != "") {
 		getOriginURL = git.GetConfiguredRemoteURL
 	}
 	upstreamURL, err := getOriginURL(ctx, absRoot, "origin")
@@ -86,6 +113,28 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 		if err := validateForkRouting(ctx, upstreamURL, forkURL); err != nil {
 			return nil, false, err
 		}
+	}
+	effectiveFork := forkURL
+	if effectiveFork == "" && existing != nil {
+		effectiveFork = existing.ForkURL
+	}
+	if selected != nil {
+		if err := selected.ValidateRuntime(ctx, absRoot, upstreamURL, effectiveFork); err != nil {
+			return nil, false, err
+		}
+	}
+
+	// Detect default branch from upstream before mutating gate state. Strict
+	// contexts fail rather than silently treating an account/helper/network
+	// error as "main".
+	branch := ""
+	if selected != nil {
+		branch, err = git.ResolveDefaultBranch(ctx, absRoot, "origin")
+		if err != nil {
+			return nil, false, fmt.Errorf("detect default branch: %w", err)
+		}
+	} else {
+		branch = git.DefaultBranch(ctx, absRoot, "origin")
 	}
 
 	id := repoID(absRoot)
@@ -107,9 +156,6 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 		return nil, false, err
 	}
 
-	// Detect default branch from upstream remote.
-	branch := git.DefaultBranch(ctx, absRoot, "origin")
-
 	if existing != nil {
 		var repo *db.Repo
 		if forkURL != "" {
@@ -120,16 +166,26 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 		if err != nil {
 			return nil, false, fmt.Errorf("update repo metadata: %w", err)
 		}
+		if supplied != nil || clearContext {
+			repo, err = d.UpdateRepoGitHubContext(repo.ID, supplied)
+			if err != nil {
+				return nil, false, fmt.Errorf("update repo GitHub context: %w", err)
+			}
+		}
 		slog.Info("gate refreshed", "repo_id", repo.ID, "path", absRoot)
 		return repo, false, nil
 	}
 
 	// Insert repo record with deterministic ID.
 	repo, err := d.InsertRepoWithIDAndFork(id, absRoot, upstreamURL, forkURL, branch)
+	if err == nil && supplied != nil {
+		repo, err = d.UpdateRepoGitHubContext(repo.ID, supplied)
+	}
 	if err != nil {
 		// Rollback: remove remote and bare repo.
 		git.RemoveRemote(ctx, absRoot, RemoteName)
 		os.RemoveAll(bareDir)
+		_ = d.DeleteRepo(id)
 		return nil, false, fmt.Errorf("insert repo: %w", err)
 	}
 
