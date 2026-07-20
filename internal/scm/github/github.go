@@ -94,11 +94,17 @@ func RepoSlug(remoteURL string) string {
 // instances and plain "owner/name" for github.com. This is the format that
 // the gh CLI's --repo flag requires for GHE.
 func HostPrefixedSlug(remoteURL string) string {
+	return HostPrefixedSlugForHost(remoteURL, scm.ExtractHost(remoteURL))
+}
+
+// HostPrefixedSlugForHost is HostPrefixedSlug using an already-resolved host.
+// This lets callers honor SSH HostName aliases without rewriting the remote.
+func HostPrefixedSlugForHost(remoteURL, host string) string {
 	slug := RepoSlug(remoteURL)
 	if slug == "" {
 		return ""
 	}
-	host := scm.ExtractHost(remoteURL)
+	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" || strings.EqualFold(host, "github.com") {
 		return slug
 	}

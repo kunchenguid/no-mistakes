@@ -83,7 +83,7 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 		return nil, false, fmt.Errorf("get origin url: %w", err)
 	}
 	if forkURL != "" {
-		if err := validateForkRouting(upstreamURL, forkURL); err != nil {
+		if err := validateForkRouting(ctx, upstreamURL, forkURL); err != nil {
 			return nil, false, err
 		}
 	}
@@ -137,9 +137,9 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 	return repo, true, nil
 }
 
-func validateForkRouting(upstreamURL, forkURL string) error {
-	parentProvider := scm.DetectProvider(upstreamURL)
-	forkProvider := scm.DetectProvider(forkURL)
+func validateForkRouting(ctx context.Context, upstreamURL, forkURL string) error {
+	parentProvider := scm.DetectProviderContext(ctx, upstreamURL)
+	forkProvider := scm.DetectProviderContext(ctx, forkURL)
 	if parentProvider == scm.ProviderGitHub && forkProvider == scm.ProviderGitHub {
 		if github.RepoSlug(upstreamURL) == "" || github.RepoSlug(forkURL) == "" {
 			return fmt.Errorf("fork URL routing requires GitHub parent and fork remotes with owner/repo paths")

@@ -57,9 +57,9 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	if err := sctx.Ctx.Err(); err != nil {
 		return false, err
 	}
-	provider := scm.DetectProvider(sctx.Repo.UpstreamURL)
+	provider := scm.DetectProviderContext(sctx.Ctx, sctx.Repo.UpstreamURL)
 	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
-		provider = scm.DetectProvider(*sctx.Run.PRURL)
+		provider = scm.DetectProviderContext(sctx.Ctx, *sctx.Run.PRURL)
 	}
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
@@ -123,9 +123,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	provider := scm.DetectProvider(sctx.Repo.UpstreamURL)
+	provider := scm.DetectProviderContext(ctx, sctx.Repo.UpstreamURL)
 	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
-		provider = scm.DetectProvider(*sctx.Run.PRURL)
+		provider = scm.DetectProviderContext(ctx, *sctx.Run.PRURL)
 	}
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
