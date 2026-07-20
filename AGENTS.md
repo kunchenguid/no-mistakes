@@ -58,6 +58,11 @@ Safest local verification sequence after non-trivial changes:
 - Agent harnesses and hardened CI inject `safe.bareRepository=explicit`, which forbids cwd-based discovery of bare repositories. Route every gate git call through `git.Run`, which detects a bare git dir and prepends `--git-dir=<dir>`; never shell out to git in a bare gate repo relying on `cmd.Dir` or `-C` discovery (issue #362).
 - Regressions: `TestRunOnBareRepoUnderSafeBareRepositoryExplicit`, `TestWorktreeAddRemoveOnBareRepoUnderSafeBareRepositoryExplicit`, `TestInitUnderSafeBareRepositoryExplicit`.
 
+**`gh` PR-Targeting From the Bare Gate Repo (`internal/scm/github`)**
+
+- The daemon runs `gh` from the detached bare gate repo whose HEAD is the default branch, so every PR-targeting command must name the exact PR explicitly: an empty positional makes `gh pr <verb>` infer the cwd branch (`main`) and return `no pull requests found for branch main` even when the feature PR's checks are green. `GetChecks`, `GetPRState`, `GetMergeableState`, and `UpdatePR` route through the shared `prSelector` (number, else URL, else fail closed) — never append a bare `pr.Number`/`pr.URL` that can be empty. This is the `gh` analogue of the git bare-gate-repo trap above.
+- Regressions: `TestGetChecksTargetsKnownPRByURLWhenNumberMissing`, `TestPRTargetingReadsFailClosedWithoutIdentity`, `TestPRStateAndMergeableTargetKnownPRByURL`, `TestUpdatePRTargetsKnownPRByURLWhenNumberMissing`, `TestUpdatePRFailsClosedWithoutIdentity`.
+
 **Post-Receive Hook Gate Path Resolution (`internal/git/hook.go`)**
 
 - The hook's `--gate` value must never come from a bare `$(pwd)`: Git can invoke `post-receive` from a cwd that collapses to `.` (issue #269), which the daemon rejects and the pipeline silently never starts. The hook script resolves an absolute gate dir (git first, hook location fallback), and `normalizeNotifyGatePath` in `internal/cli/daemon_cmd.go` is an independent second layer that absolutizes whatever an already-installed older hook sends.
