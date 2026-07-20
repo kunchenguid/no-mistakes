@@ -2,11 +2,15 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/url"
 	"os/exec"
+	"reflect"
 	"strings"
 	"time"
 
@@ -252,16 +256,35 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
 	args := append([]string{"pr", "view", pr.Number}, h.repoArgs()...)
-	args = append(args, "--json", "state", "--jq", ".state")
+	args = append(args, "--json", "state,headRefOid")
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("gh pr view: %w", err)
 	}
+	var view struct {
+		State      string `json:"state"`
+		HeadRefOID string `json:"headRefOid"`
+	}
+	if err := json.Unmarshal(out, &view); err == nil {
+		if view.HeadRefOID != "" {
+			pr.HeadSHA = view.HeadRefOID
+		}
+		return normalizePRState(view.State), nil
+	}
 	return normalizePRState(strings.TrimSpace(string(out))), nil
 }
 
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
+	if pr != nil && pr.HeadSHA != "" && pr.BaseBranch != "" && githubAPIRepo(h.repo) != "" {
+		return h.getChecksWithProvenance(ctx, pr)
+	}
+	return h.getChecksFromPR(ctx, pr)
+}
+
+// getChecksFromPR is the compatibility path for providers and callers that
+// cannot supply the PR head and base branch needed for source-aware checks.
+func (h *Host) getChecksFromPR(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	args := append([]string{"pr", "checks", pr.Number}, h.repoArgs()...)
 	args = append(args, "--json", "name,state,bucket,completedAt")
 	cmd := h.cmd(ctx, "gh", args...)
@@ -289,9 +312,211 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 				completedAt = parsed
 			}
 		}
-		checks = append(checks, scm.Check{Name: r.Name, Bucket: normalizeCheckBucket(r.Bucket, r.State), CompletedAt: completedAt})
+		checks = append(checks, scm.Check{Name: r.Name, Bucket: normalizeCheckBucket(r.Bucket, r.State), CompletedAt: completedAt, Source: scm.CheckSourceUnknown, BlocksPending: true})
 	}
 	return checks, nil
+}
+
+// getChecksWithProvenance keeps native Check Runs and legacy commit statuses
+// separate. A linkless legacy pending status is advisory only after GitHub's
+// active protection rules positively show that its context is not required.
+func (h *Host) getChecksWithProvenance(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
+	repo := githubAPIRepo(h.repo)
+	required, policyKnown := h.requiredStatusContexts(ctx, repo, pr.BaseBranch)
+
+	var nativePages []struct {
+		CheckRuns []struct {
+			Name        string `json:"name"`
+			Status      string `json:"status"`
+			Conclusion  string `json:"conclusion"`
+			CompletedAt string `json:"completed_at"`
+		} `json:"check_runs"`
+	}
+	if err := h.apiJSONPages(ctx, "repos/"+repo+"/commits/"+pr.HeadSHA+"/check-runs?per_page=100", &nativePages); err != nil {
+		return nil, err
+	}
+
+	var legacyPages [][]struct {
+		Context   string `json:"context"`
+		State     string `json:"state"`
+		TargetURL string `json:"target_url"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := h.apiJSONPages(ctx, "repos/"+repo+"/commits/"+pr.HeadSHA+"/statuses?per_page=100", &legacyPages); err != nil {
+		return nil, err
+	}
+
+	checks := make([]scm.Check, 0)
+	for _, native := range nativePages {
+		for _, run := range native.CheckRuns {
+			bucket := normalizeCheckBucket("", run.Status)
+			if strings.EqualFold(run.Status, "completed") {
+				bucket = normalizeCheckBucket("", run.Conclusion)
+				if bucket == "" {
+					bucket = scm.CheckBucketPending
+				}
+			}
+			checks = append(checks, scm.Check{
+				Name: run.Name, Bucket: bucket,
+				CompletedAt: parseGitHubTime(run.CompletedAt), Source: scm.CheckSourceNative, BlocksPending: true,
+			})
+		}
+	}
+	seen := map[string]bool{}
+	for _, legacy := range legacyPages {
+		for _, status := range legacy {
+			if status.Context == "" || seen[status.Context] {
+				continue
+			}
+			seen[status.Context] = true // GitHub returns latest statuses first.
+			bucket := normalizeCheckBucket("", status.State)
+			blocksPending := true
+			if bucket == scm.CheckBucketPending && policyKnown && status.TargetURL == "" && !required[status.Context] {
+				blocksPending = false
+			}
+			checks = append(checks, scm.Check{
+				Name: status.Context, Bucket: bucket, CompletedAt: parseGitHubTime(status.CreatedAt),
+				Source: scm.CheckSourceLegacy, BlocksPending: blocksPending,
+			})
+		}
+	}
+	if !policyKnown {
+		// A required workflow can exist before GitHub has emitted its first
+		// check run. Keep CI conservatively pending rather than treating an
+		// unreadable or unresolvable requirement policy as "no checks passed".
+		checks = append(checks, scm.Check{
+			Name: "GitHub required-check policy unresolved", Bucket: scm.CheckBucketPending,
+			Source: scm.CheckSourceUnknown, BlocksPending: true,
+		})
+	}
+	return checks, nil
+}
+
+func githubAPIRepo(repo string) string {
+	parts := strings.Split(repo, "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	return strings.Join(parts[len(parts)-2:], "/")
+}
+
+func (h *Host) apiJSON(ctx context.Context, endpoint string, target any) error {
+	args := h.apiArgs(endpoint, false)
+	cmd := h.cmd(ctx, "gh", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("gh api %s: %s: %w", endpoint, strings.TrimSpace(string(out)), err)
+	}
+	if err := json.Unmarshal(out, target); err != nil {
+		return fmt.Errorf("parse GitHub API %s: %w", endpoint, err)
+	}
+	return nil
+}
+
+// apiJSONPages decodes every JSON page emitted by `gh api --paginate`.
+// This prevents a pending or failed check beyond GitHub's first page from
+// disappearing and producing a false green CI result.
+func (h *Host) apiJSONPages(ctx context.Context, endpoint string, target any) error {
+	args := h.apiArgs(endpoint, true)
+	cmd := h.cmd(ctx, "gh", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("gh api %s: %s: %w", endpoint, strings.TrimSpace(string(out)), err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(out))
+	value := reflect.ValueOf(target)
+	if value.Kind() != reflect.Ptr || value.Elem().Kind() != reflect.Slice {
+		return errors.New("paginated GitHub API target must be a slice pointer")
+	}
+	for {
+		page := reflect.New(value.Elem().Type().Elem())
+		err := decoder.Decode(page.Interface())
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse paginated GitHub API %s: %w", endpoint, err)
+		}
+		value.Elem().Set(reflect.Append(value.Elem(), page.Elem()))
+	}
+	return nil
+}
+
+func (h *Host) apiArgs(endpoint string, paginate bool) []string {
+	args := []string{"api"}
+	if paginate {
+		args = append(args, "--paginate")
+	}
+	if h.host != "" && !strings.EqualFold(h.host, "github.com") {
+		args = append(args, "--hostname", h.host)
+	}
+	return append(args, endpoint)
+}
+
+func parseGitHubTime(value string) time.Time {
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
+}
+
+func (h *Host) requiredStatusContexts(ctx context.Context, repo, branch string) (map[string]bool, bool) {
+	required := map[string]bool{}
+	escapedBranch := url.PathEscape(branch)
+	var protection struct {
+		Contexts []string `json:"contexts"`
+		Checks   []struct {
+			Context string `json:"context"`
+		} `json:"checks"`
+	}
+	if err := h.apiJSON(ctx, "repos/"+repo+"/branches/"+escapedBranch+"/protection/required_status_checks", &protection); err != nil {
+		if !isUnprotectedBranchError(err) {
+			return nil, false
+		}
+	} else {
+		for _, context := range protection.Contexts {
+			required[context] = true
+		}
+		for _, check := range protection.Checks {
+			if check.Context != "" {
+				required[check.Context] = true
+			}
+		}
+	}
+
+	var rulePages [][]struct {
+		Type       string `json:"type"`
+		Parameters struct {
+			RequiredStatusChecks []struct {
+				Context string `json:"context"`
+			} `json:"required_status_checks"`
+		} `json:"parameters"`
+	}
+	if err := h.apiJSONPages(ctx, "repos/"+repo+"/rules/branches/"+escapedBranch, &rulePages); err != nil {
+		return nil, false
+	}
+	for _, rules := range rulePages {
+		for _, rule := range rules {
+			if rule.Type == "workflows" {
+				return nil, false
+			}
+			if rule.Type != "required_status_checks" {
+				continue
+			}
+			for _, check := range rule.Parameters.RequiredStatusChecks {
+				if check.Context != "" {
+					required[check.Context] = true
+				}
+			}
+		}
+	}
+	return required, true
+}
+
+func isUnprotectedBranchError(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "branch not protected")
 }
 
 func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {

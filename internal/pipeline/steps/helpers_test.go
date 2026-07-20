@@ -496,6 +496,10 @@ func fakeCIGHSequenceMergeable(t *testing.T, state string, checks []string, merg
 }
 
 func fakeCIGHSequence(t *testing.T, state string, checks []string) []string {
+	return fakeCIGHSequenceWithHeads(t, state, checks, nil)
+}
+
+func fakeCIGHSequenceWithHeads(t *testing.T, state string, checks, heads []string) []string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)
 	linkTestBinary(t, binDir, "gh")
@@ -510,12 +514,32 @@ func fakeCIGHSequence(t *testing.T, state string, checks []string) []string {
 		t.Fatalf("write checks index: %v", err)
 	}
 
-	return fakeCLIEnv(binDir, map[string]string{
+	vars := map[string]string{
 		"FAKE_CLI_MODE":              "ci-gh-seq",
 		"FAKE_CLI_STATE":             state,
 		"FAKE_CLI_CHECKS_PATH":       checksPath,
 		"FAKE_CLI_CHECKS_INDEX_PATH": indexPath,
-	})
+	}
+	if len(heads) > 0 {
+		headPath := filepath.Join(t.TempDir(), "heads.txt")
+		if err := os.WriteFile(headPath, []byte(strings.Join(heads, "\n")), 0o644); err != nil {
+			t.Fatalf("write head sequence: %v", err)
+		}
+		vars["FAKE_CLI_HEADS_PATH"] = headPath
+	}
+	return fakeCLIEnv(binDir, vars)
+}
+
+func fakeCIGHProvenance(t *testing.T, initialHead string) ([]string, string) {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "gh")
+	headLog := filepath.Join(t.TempDir(), "heads.log")
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":         "ci-gh-provenance",
+		"FAKE_CLI_INITIAL_HEAD": initialHead,
+		"FAKE_CLI_HEAD_LOG":     headLog,
+	}), headLog
 }
 
 func fakeCIGHNoChecks(t *testing.T) []string {

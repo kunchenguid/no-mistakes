@@ -159,7 +159,12 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, fmt.Errorf("extract PR number: %w", err)
 	}
-	pr := &scm.PR{Number: prNumber, URL: prURL}
+	pr := &scm.PR{
+		Number:     prNumber,
+		URL:        prURL,
+		HeadSHA:    sctx.Run.HeadSHA,
+		BaseBranch: sctx.Repo.DefaultBranch,
+	}
 
 	// CITimeout semantics: <0 (or "unlimited" in config) means never
 	// self-terminate; 0 means the value was never configured, so fall back
@@ -206,6 +211,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 		return ciMonitoringTimeoutOutcome(), nil
 	}
+	lastObservedPRHead := pr.HeadSHA
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -265,6 +271,23 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "open"); err != nil {
 				return nil, err
 			}
+		}
+		if provider == scm.ProviderGitHub {
+			if pr.HeadSHA != "" && pr.HeadSHA != lastObservedPRHead {
+				clearCIMonitorReady(sctx)
+				lastMonitorLog = ""
+				if pr.HeadSHA != sctx.Run.HeadSHA {
+					s.lastFixedChecks = ""
+					s.lastFixedCompletedAt = nil
+					sctx.Log("PR head changed outside this run; stopping CI monitoring")
+					return ciForeignHeadOutcome(), nil
+				}
+			}
+			if pr.HeadSHA != "" {
+				lastObservedPRHead = pr.HeadSHA
+			}
+		} else {
+			pr.HeadSHA = sctx.Run.HeadSHA
 		}
 
 		// Check mergeable state if the provider supports it

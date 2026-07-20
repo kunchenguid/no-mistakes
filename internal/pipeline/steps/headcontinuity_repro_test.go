@@ -139,7 +139,11 @@ func TestCommitAgentFixes_RefusesResetDuringCommit(t *testing.T) {
 	if !filepath.IsAbs(gitDir) {
 		gitDir = filepath.Join(dir, gitDir)
 	}
-	hook := filepath.Join(gitDir, "hooks", "post-commit")
+	hooksDir := filepath.Join(gitDir, "hooks")
+	// The test must use its local hook rather than an ambient core.hooksPath
+	// configured by an agent harness or developer environment.
+	gitCmd(t, dir, "config", "core.hooksPath", hooksDir)
+	hook := filepath.Join(hooksDir, "post-commit")
 	hookBody := "#!/bin/sh\ngit reset --hard " + baseSHA + "\n"
 	if err := os.WriteFile(hook, []byte(hookBody), 0o755); err != nil {
 		t.Fatal(err)

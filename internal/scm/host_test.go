@@ -49,6 +49,7 @@ func TestCheckBucketHelpers(t *testing.T) {
 		{"pass", Check{Bucket: CheckBucketPass}, false, false},
 		{"fail", Check{Bucket: CheckBucketFail}, true, false},
 		{"pending", Check{Bucket: CheckBucketPending}, false, true},
+		{"advisory legacy pending", Check{Bucket: CheckBucketPending, Source: CheckSourceLegacy, BlocksPending: false}, false, false},
 		{"cancel", Check{Bucket: CheckBucketCancel}, false, false},
 		{"skip", Check{Bucket: CheckBucketSkip}, false, false},
 	}

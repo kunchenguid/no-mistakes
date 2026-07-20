@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -389,6 +390,92 @@ func TestCIStep_AllChecksPassingKeepsMonitoringOpenPR(t *testing.T) {
 	if !found {
 		t.Fatalf("expected continued-monitoring CI log, got: %v", logs)
 	}
+}
+
+func TestCIStep_ParksWhenGitHubPRHeadChangesExternally(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGHSequenceWithHeads(t, "OPEN", []string{
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
+		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
+	}, []string{headSHA, "external-head"})
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+	polls := 0
+	step := &CIStep{
+		baseBranchTip: func(context.Context) (string, bool) { return "", false },
+		waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
+			polls++
+			return ctx.Err()
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want approval outcome", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("Execute() outcome = %#v, want approval after external PR head change", outcome)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.CIReadyAt != nil {
+		t.Fatalf("CI readiness = %v, want cleared after PR head change", run.CIReadyAt)
+	}
+	if polls != 1 {
+		t.Fatalf("polls = %d, want one wait before parking", polls)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("agent calls = %d, want no auto-fix after external PR head change", len(ag.calls))
+	}
+}
+
+func TestCIStep_UnprotectedLinklessLegacyPendingReportsChecksPassed(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGH(t, "OPEN", "[]")
+	env = append(env, `FAKE_CLI_LEGACY_STATUSES=[{"context":"legacy-bot","state":"pending","target_url":null}]`)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}}
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected monitoring to continue after reporting readiness, got %v", err)
+	}
+	if !cimonitor.ChecksPassed(logs) {
+		t.Fatalf("expected the monitor to report checks passed, got logs: %v", logs)
+	}
+	for _, log := range logs {
+		if log == ciChecksRunningMsg {
+			t.Fatalf("advisory legacy status must not report checks still running: %v", logs)
+		}
+	}
+	t.Logf("CI monitor output: %s", cimonitor.ParseActivity(logs).LastEvent)
 }
 
 func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
