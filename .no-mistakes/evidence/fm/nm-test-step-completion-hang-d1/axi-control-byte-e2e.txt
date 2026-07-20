@@ -1,0 +1,92 @@
+Command: go test -tags=e2e ./internal/e2e -run '^TestAXIControlByteFailureGateRemainsReadable$' -count=1 -v
+
+End-user `no-mistakes axi status --run 01KY0S6XJN4XAWXTPQXHPTYAZN` output:
+
+run:
+  id: "01KY0S6XJN4XAWXTPQXHPTYAZN"
+  branch: control-byte-test-gate
+  status: running
+  awaiting_agent: parked 0s
+  head: ff000c41
+  findings: 2 info
+  steps[9]{step,status,findings,duration_ms}:
+    intent,skipped,0,44
+    rebase,completed,0,122
+    review,completed,1,213
+    test,awaiting_approval,1,111
+    document,pending,0,0
+    lint,pending,0,0
+    push,pending,0,0
+    pr,pending,0,0
+    ci,pending,0,0
+gate:
+  step: test
+  status: awaiting_approval
+  summary: "bad\\x1Fvalue\nlater-00\nlater-01\nlater-02\nlater-03\nlater-04\nlater-05\nlater-06\nlater-07\nlater-08\nlater-09\nlater-10\nlater-11\nlater-12\nlater-13\nlater-14\nlater-15\nlater-16\nlater-17\nlater-18\nlater-19\nlater-20\nlater-21\nlater-22\nlater-23\nlater-24\nlater-25\nlater-26\nlater-27\nlater-28\nlater-29\nlater-30\nlater-31\nlater-32\nlater-33\nlater-34\nlater-35\nlater-36\nlater-37\nlater-38\nlater-39\nlater-40\nlater-41\nlater-42\nlater-43\nlater-44\n"
+  findings[1]{id,severity,file,action,description}:
+    test-1,error,"","",tests failed with exit code 1
+help[6]: Run `no-mistakes axi respond --action approve` to accept this step and continue,Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself),Run `no-mistakes axi respond --action skip` to skip this step,Run `no-mistakes axi logs --step test --full` to read the full step log,"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.","Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits."
+
+End-user `no-mistakes axi logs --run 01KY0S6XJN4XAWXTPQXHPTYAZN --step test --full` output:
+
+step: test
+run: "01KY0S6XJN4XAWXTPQXHPTYAZN"
+lines: 48 total
+log[48]{line}:
+  "running tests: nm-control-byte-test-e2e"
+  ""
+  "bad\\x1Fvalue"
+  later-00
+  later-01
+  later-02
+  later-03
+  later-04
+  later-05
+  later-06
+  later-07
+  later-08
+  later-09
+  later-10
+  later-11
+  later-12
+  later-13
+  later-14
+  later-15
+  later-16
+  later-17
+  later-18
+  later-19
+  later-20
+  later-21
+  later-22
+  later-23
+  later-24
+  later-25
+  later-26
+  later-27
+  later-28
+  later-29
+  later-30
+  later-31
+  later-32
+  later-33
+  later-34
+  later-35
+  later-36
+  later-37
+  later-38
+  later-39
+  later-40
+  later-41
+  later-42
+  later-43
+  later-44
+
+Direct durable-state checks in the same isolated journey:
+
+raw test.log contains U+001F: true
+document: pending
+lint: pending
+push: pending
+
+Result: PASS
