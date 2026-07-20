@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"os"
@@ -50,6 +51,63 @@ func TestUserJourney(t *testing.T) {
 		t.Run(agentName, func(t *testing.T) {
 			runHappyPath(t, agentName)
 		})
+	}
+}
+
+func TestAXIControlByteFailureGateRemainsReadable(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: cleanReviewScenario(t)})
+	out, err := h.Run("init")
+	if err != nil {
+		t.Fatalf("nm init: %v\n%s", err, out)
+	}
+
+	failingCommand := filepath.Join(h.BinDir, "nm-control-byte-test-e2e")
+	script := "#!/bin/sh\nprintf 'bad\\037value\\n'\ni=0\nwhile [ \"$i\" -lt 45 ]; do printf 'later-%02d\\n' \"$i\"; i=$((i + 1)); done\nexit 1\n"
+	if err := os.WriteFile(failingCommand, []byte(script), 0o755); err != nil {
+		t.Fatalf("write control-byte test command: %v", err)
+	}
+	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-control-byte-test-e2e\n  lint: true\n"
+	h.CommitChange("control-byte-test-gate", ".no-mistakes.yaml", config, "configure control-byte test failure")
+	h.PushToGate("control-byte-test-gate")
+	run := waitForStepStatus(t, h, "control-byte-test-gate", types.StepTest, types.StepStatusAwaitingApproval, 60*time.Second)
+
+	statusOut, err := h.Run("axi", "status", "--run", run.ID)
+	if err != nil {
+		t.Fatalf("axi status should render the Test gate: %v\n%s", err, statusOut)
+	}
+	for _, want := range []string{"gate:", "step: test", "status: awaiting_approval", `bad\\x1Fvalue`} {
+		if !strings.Contains(statusOut, want) {
+			t.Fatalf("axi status missing %q in:\n%s", want, statusOut)
+		}
+	}
+	if strings.ContainsRune(statusOut, '\x1f') {
+		t.Fatalf("axi status retained raw U+001F: %q", statusOut)
+	}
+
+	logsOut, err := h.Run("axi", "logs", "--run", run.ID, "--step", "test", "--full")
+	if err != nil {
+		t.Fatalf("axi logs --full should render the raw-evidence escape: %v\n%s", err, logsOut)
+	}
+	if !strings.Contains(logsOut, `bad\\x1Fvalue`) || !strings.Contains(logsOut, "later-44") {
+		t.Fatalf("full logs should include escaped early failure and late tail:\n%s", logsOut)
+	}
+	if strings.ContainsRune(logsOut, '\x1f') {
+		t.Fatalf("full logs retained raw U+001F: %q", logsOut)
+	}
+
+	logPath := filepath.Join(h.NMHome, "logs", run.ID, "test.log")
+	rawLog, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read durable test log: %v", err)
+	}
+	if !bytes.Contains(rawLog, []byte("bad\x1fvalue")) {
+		t.Fatal("durable Test log should preserve the raw control byte")
+	}
+	for _, stepName := range []types.StepName{types.StepDocument, types.StepLint, types.StepPush} {
+		step, ok := findStep(run.Steps, stepName)
+		if !ok || step.Status != types.StepStatusPending {
+			t.Fatalf("%s should remain pending at the readable Test gate, got %+v", stepName, step)
+		}
 	}
 }
 
