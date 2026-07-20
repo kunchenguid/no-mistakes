@@ -114,6 +114,26 @@ func (h *Host) repoArgs() []string {
 	return []string{"--repo", h.repo}
 }
 
+// prSelector returns the explicit gh PR selector for pr, preferring the numeric
+// PR number and falling back to the canonical PR URL; both name the exact pull
+// request to gh regardless of the process working directory. It fails closed
+// when neither is known: an empty positional makes `gh pr <verb>` fall back to
+// resolving the current branch of the cwd, and the daemon runs from a detached
+// bare gate repo whose HEAD is the default branch (main), so an inferred
+// selector silently targets the wrong PR (or none — "no pull requests found for
+// branch main") instead of the feature PR the pipeline already knows.
+func prSelector(pr *scm.PR) (string, error) {
+	if pr != nil {
+		if n := strings.TrimSpace(pr.Number); n != "" {
+			return n, nil
+		}
+		if u := strings.TrimSpace(pr.URL); u != "" {
+			return u, nil
+		}
+	}
+	return "", errors.New("no PR number or URL known; refusing to run gh with a cwd-inferred branch")
+}
+
 func (h *Host) headRef(branch string) string {
 	if h.forkOwner == "" {
 		return branch
@@ -251,7 +271,11 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 }
 
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
-	args := append([]string{"pr", "view", pr.Number}, h.repoArgs()...)
+	selector, err := prSelector(pr)
+	if err != nil {
+		return "", err
+	}
+	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
 	args = append(args, "--json", "state", "--jq", ".state")
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
@@ -262,7 +286,11 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 }
 
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
-	args := append([]string{"pr", "checks", pr.Number}, h.repoArgs()...)
+	selector, err := prSelector(pr)
+	if err != nil {
+		return nil, err
+	}
+	args := append([]string{"pr", "checks", selector}, h.repoArgs()...)
 	args = append(args, "--json", "name,state,bucket,completedAt")
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
@@ -295,7 +323,11 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 }
 
 func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {
-	args := append([]string{"pr", "view", pr.Number}, h.repoArgs()...)
+	selector, err := prSelector(pr)
+	if err != nil {
+		return "", err
+	}
+	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
 	args = append(args, "--json", "mergeable", "--jq", ".mergeable")
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
