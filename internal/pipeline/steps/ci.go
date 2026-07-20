@@ -123,11 +123,12 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	provider := scm.DetectProvider(sctx.Repo.UpstreamURL)
+	upstreamURL := scm.CanonicalRemoteURL(sctx.Repo.UpstreamURL)
+	provider := scm.DetectProvider(upstreamURL)
 	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
 		provider = scm.DetectProvider(*sctx.Run.PRURL)
 	}
-	host, skipReason := buildHost(sctx, provider)
+	host, skipReason := buildHost(sctx, provider, upstreamURL)
 	if host == nil {
 		sctx.Log(fmt.Sprintf("skipping CI: %s", skipReason))
 		return &pipeline.StepOutcome{Skipped: true}, nil

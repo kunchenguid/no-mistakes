@@ -323,7 +323,7 @@ func TestCIStep_GetCIChecksNoChecksReported(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, "abc", "def", config.Commands{})
 	sctx.Env = env
 
-	host, skip := buildHost(sctx, scm.ProviderGitHub)
+	host, skip := buildHost(sctx, scm.ProviderGitHub, sctx.Repo.UpstreamURL)
 	if host == nil {
 		t.Fatalf("buildHost returned nil: %s", skip)
 	}

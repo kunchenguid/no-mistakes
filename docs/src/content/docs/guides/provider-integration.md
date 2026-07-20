@@ -205,6 +205,32 @@ Running `glab auth login --hostname your-gitlab.example.com` is enough to make d
 
 The GitLab backend is pinned against `glab v1.5x`. Self-hosted detection and the merge-request and CI steps rely on its current flag and API surface, so keep `glab` reasonably up to date.
 
+## SSH host aliases
+
+If your `origin` remote uses an SSH host alias (a `Host` block in `~/.ssh/config`
+that maps a made-up name to a real `HostName`), `no-mistakes` resolves the alias
+to its real host before detecting the provider, so PR creation and CI monitoring
+work instead of skipping.
+
+```
+# ~/.ssh/config
+Host github-work
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_work
+```
+
+```sh
+git remote set-url origin git@github-work:owner/repo.git
+```
+
+The push step already worked with aliases because git resolves them itself; the
+alias only tripped up the PR and CI steps, which now resolve it the same way git
+does (via `ssh -G`) and hand `gh`/`glab` the canonical host. Resolution is
+attempted only for `ssh://` and `git@host:path` remotes and fails closed: if the
+alias can't be resolved (for example `ssh` is unavailable), detection is left
+unchanged and the host is treated as-is.
+
 ## Unsupported hosts
 
 If your upstream isn't GitHub, GitLab, Bitbucket Cloud, or Azure DevOps:

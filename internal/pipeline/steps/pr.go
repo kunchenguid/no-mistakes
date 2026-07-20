@@ -61,8 +61,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("skipping PR creation on default branch %s", branch))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
-	provider := scm.DetectProvider(sctx.Repo.UpstreamURL)
-	host, skipReason := buildHost(sctx, provider)
+	upstreamURL := scm.CanonicalRemoteURL(sctx.Repo.UpstreamURL)
+	provider := scm.DetectProvider(upstreamURL)
+	host, skipReason := buildHost(sctx, provider, upstreamURL)
 	if host == nil {
 		sctx.Log(fmt.Sprintf("skipping PR creation: %s", skipReason))
 		return &pipeline.StepOutcome{Skipped: true}, nil

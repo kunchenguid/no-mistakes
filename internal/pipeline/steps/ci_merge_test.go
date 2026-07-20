@@ -284,7 +284,7 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}
 
 	step := &CIStep{}
-	host, skip := buildHost(sctx, scm.ProviderGitHub)
+	host, skip := buildHost(sctx, scm.ProviderGitHub, sctx.Repo.UpstreamURL)
 	if host == nil {
 		t.Fatalf("buildHost returned nil: %s", skip)
 	}
