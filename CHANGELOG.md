@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.40.1](https://github.com/kunchenguid/no-mistakes/compare/v1.40.0...v1.40.1) (2026-07-20)
+
+
+### Bug Fixes
+
+* **cli:** keep AXI output readable with control bytes ([#523](https://github.com/kunchenguid/no-mistakes/issues/523)) ([37864fe](https://github.com/kunchenguid/no-mistakes/commit/37864fe1053d9065b64522b515745793e7412f95))
+* **scm/azuredevops:** pass PR description via temp file ([#501](https://github.com/kunchenguid/no-mistakes/issues/501)) ([#510](https://github.com/kunchenguid/no-mistakes/issues/510)) ([2d10688](https://github.com/kunchenguid/no-mistakes/commit/2d10688c1753de85358ce6a74b72d90e696c4f05))
+
 ## [1.40.0](https://github.com/kunchenguid/no-mistakes/compare/v1.39.0...v1.40.0) (2026-07-18)
 
 
