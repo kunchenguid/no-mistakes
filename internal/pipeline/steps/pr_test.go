@@ -1647,6 +1647,7 @@ func TestPRStep_SkipsWhenProviderCLIUnavailable(t *testing.T) {
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+	sctx.Env = []string{"PATH=" + t.TempDir()}
 
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
