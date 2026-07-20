@@ -60,8 +60,8 @@ Safest local verification sequence after non-trivial changes:
 
 **`gh` PR-Targeting From the Bare Gate Repo (`internal/scm/github`)**
 
-- The daemon runs `gh` from the detached bare gate repo whose HEAD is the default branch, so PR-targeting reads must name the exact PR explicitly: an empty positional makes `gh pr <verb>` infer the cwd branch (`main`) and return `no pull requests found for branch main` even when the feature PR's checks are green. `GetChecks`, `GetPRState`, and `GetMergeableState` route through the shared `prSelector` (number, else URL, else fail closed) — never append a bare `pr.Number` that can be empty. This is the `gh` analogue of the git bare-gate-repo trap above.
-- Regressions: `TestGetChecksTargetsKnownPRByURLWhenNumberMissing`, `TestPRTargetingReadsFailClosedWithoutIdentity`, `TestPRStateAndMergeableTargetKnownPRByURL`.
+- The daemon runs `gh` from the detached bare gate repo whose HEAD is the default branch, so every PR-targeting command must name the exact PR explicitly: an empty positional makes `gh pr <verb>` infer the cwd branch (`main`) and return `no pull requests found for branch main` even when the feature PR's checks are green. `GetChecks`, `GetPRState`, `GetMergeableState`, and `UpdatePR` route through the shared `prSelector` (number, else URL, else fail closed) — never append a bare `pr.Number`/`pr.URL` that can be empty. This is the `gh` analogue of the git bare-gate-repo trap above.
+- Regressions: `TestGetChecksTargetsKnownPRByURLWhenNumberMissing`, `TestPRTargetingReadsFailClosedWithoutIdentity`, `TestPRStateAndMergeableTargetKnownPRByURL`, `TestUpdatePRTargetsKnownPRByURLWhenNumberMissing`, `TestUpdatePRFailsClosedWithoutIdentity`.
 
 **Post-Receive Hook Gate Path Resolution (`internal/git/hook.go`)**
 

@@ -166,6 +166,49 @@ func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
 	}
 }
 
+// UpdatePR shares the same explicit-PR selector boundary as the read methods:
+// when the number is absent it must target the canonical PR URL, never an empty
+// positional that makes `gh pr edit` resolve the cwd branch (main) from the
+// detached bare gate repo and edit the wrong PR.
+func TestUpdatePRTargetsKnownPRByURLWhenNumberMissing(t *testing.T) {
+	t.Parallel()
+
+	var recorded [][]string
+	host := New(recordingCmdFactory("", &recorded), nil, "", "test/repo")
+
+	prURL := "https://github.com/test/repo/pull/123"
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{URL: prURL}, scm.PRContent{
+		Title: "fix: cap body",
+		Body:  "body",
+	}); err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
+	}
+	got := recorded[0]
+	// argv is: gh pr edit <selector> --repo ...
+	if len(got) < 4 || got[1] != "pr" || got[2] != "edit" {
+		t.Fatalf("unexpected argv: %v", got)
+	}
+	if selector := got[3]; selector != prURL {
+		t.Fatalf("edit selector = %q, want the known PR URL %q (empty selector makes gh resolve the cwd branch)", selector, prURL)
+	}
+}
+
+// UpdatePR must fail closed exactly like the read methods: with neither number
+// nor URL it refuses to shell out rather than running an argument-less
+// `gh pr edit` that would edit the inferred cwd branch's PR.
+func TestUpdatePRFailsClosedWithoutIdentity(t *testing.T) {
+	t.Parallel()
+
+	host := New(failIfInvokedCmdFactory(t), nil, "", "test/repo")
+
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{}, scm.PRContent{Title: "t", Body: "b"}); err == nil {
+		t.Fatal("UpdatePR() with no PR identity: expected error, got nil")
+	}
+}
+
 func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	t.Parallel()
 

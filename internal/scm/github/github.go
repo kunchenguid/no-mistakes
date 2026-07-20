@@ -256,11 +256,11 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 }
 
 func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
-	id := pr.Number
-	if id == "" {
-		id = pr.URL
+	selector, err := prSelector(pr)
+	if err != nil {
+		return nil, err
 	}
-	args := append([]string{"pr", "edit", id}, h.repoArgs()...)
+	args := append([]string{"pr", "edit", selector}, h.repoArgs()...)
 	args = append(args, "--title", content.Title, "--body-file", "-")
 	cmd := h.cmd(ctx, "gh", args...)
 	cmd.Stdin = strings.NewReader(content.Body)
