@@ -396,7 +396,7 @@ func canRewriteUnpushedEvidenceHEAD(sctx *pipeline.StepContext, remoteSHA string
 	if remoteSHA == "" || remoteSHA == headSHA {
 		return false
 	}
-	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", remoteSHA, headSHA); err != nil {
+	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", headSHA, remoteSHA); err == nil {
 		return false
 	}
 	return true

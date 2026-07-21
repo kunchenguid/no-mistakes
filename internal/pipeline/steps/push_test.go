@@ -1135,6 +1135,155 @@ func TestPushStep_RecoversCorruptUnpushedEvidenceHEADOnRetry(t *testing.T) {
 	}
 }
 
+func TestPushStep_RecoversCorruptDivergedPublishedEvidenceHEADOnRetry(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, _ := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "config", "url."+upstream+".insteadOf", "https://github.com/example/widgets.git")
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "-u", "origin", "feature")
+	publishedTip := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	// Simulate a rebase/force-push rewrite: remote tip is no longer an ancestor of HEAD.
+	gitCmd(t, dir, "reset", "--hard", baseSHA)
+	if err := os.WriteFile(filepath.Join(dir, "rewritten.txt"), []byte("rewritten feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "rewritten feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	if _, err := exec.Command("git", "-C", dir, "merge-base", "--is-ancestor", publishedTip, headSHA).CombinedOutput(); err == nil {
+		t.Fatal("expected diverged HEAD where published tip is not an ancestor")
+	}
+	if tracking := gitCmd(t, dir, "rev-parse", "refs/remotes/origin/feature"); tracking != publishedTip {
+		t.Fatalf("origin/feature = %s, want published tip %s", tracking, publishedTip)
+	}
+
+	data := testPNGBytes()
+	sum := sha256.Sum256(data)
+	hash := fmt.Sprintf("%x", sum[:])
+	rel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", hash[:32]+".png"))
+	target := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	replacement := filepath.Join(dir, "replacement.png")
+	if err := os.WriteFile(replacement, coloredPNGBytes(91), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(dir, ".git", "hooks", "pre-commit")
+	script := fmt.Sprintf("#!/bin/sh\nobject=$(git hash-object -w -- %q)\ngit update-index --cacheinfo 100644,$object,%q\n", replacement, rel)
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/example/widgets.git"
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+	setTestEvidenceManifest(t, sctx, rel, hash, int64(len(data)))
+
+	if _, err := (&PushStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "verify committed test evidence") {
+		t.Fatalf("first Execute() error = %v, want committed evidence verification failure", err)
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "agent-fix.go"), []byte("package feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatalf("retry Execute() after corrupt diverged published HEAD: %v", err)
+	}
+	pushed := gitCmd(t, dir, "ls-remote", upstream, "refs/heads/feature")
+	if pushed == "" {
+		t.Fatal("retry did not push recovered evidence commit")
+	}
+	pushedSHA := strings.Fields(pushed)[0]
+	if pushedSHA == publishedTip {
+		t.Fatal("retry left the previously published tip unchanged")
+	}
+	gotHash := gitCmd(t, dir, "rev-parse", pushedSHA+":"+rel)
+	wantOID := gitCmd(t, dir, "hash-object", "--", target)
+	if gotHash != wantOID {
+		t.Fatalf("pushed evidence blob = %s, want %s", gotHash, wantOID)
+	}
+	clone := t.TempDir()
+	gitCmd(t, clone, "clone", "--branch", "feature", upstream, ".")
+	if data, err := os.ReadFile(filepath.Join(clone, "agent-fix.go")); err != nil || string(data) != "package feature\n" {
+		t.Fatalf("agent fix omitted after diverged evidence recovery: data=%q err=%v", data, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(clone, "rewritten.txt")); err != nil || string(data) != "rewritten feature\n" {
+		t.Fatalf("rewritten feature content omitted after recovery: data=%q err=%v", data, err)
+	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := types.ParseFindingsJSON(*steps[len(steps)-1].FindingsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact := manifest.Artifacts[0]; !artifact.Published || artifact.Path != rel || artifact.SHA256 != hash || artifact.Size != int64(len(data)) {
+		t.Fatalf("recovered diverged evidence identity = %#v", artifact)
+	}
+}
+
+func TestCanRewriteUnpushedEvidenceHEAD_RefusesEqualOrBehindAllowsAheadOrDiverged(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "-u", "origin", "feature")
+	publishedTip := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "feature"
+	if canRewriteUnpushedEvidenceHEAD(sctx, publishedTip, true) {
+		t.Fatal("equal HEAD must refuse rewrite")
+	}
+
+	gitCmd(t, dir, "reset", "--hard", baseSHA)
+	sctx.Run.HeadSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+	if canRewriteUnpushedEvidenceHEAD(sctx, publishedTip, true) {
+		t.Fatal("behind HEAD must refuse rewrite")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "ahead.txt"), []byte("ahead\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "ahead of published tip")
+	sctx.Run.HeadSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+	if canRewriteUnpushedEvidenceHEAD(sctx, publishedTip, true) != true {
+		t.Fatal("diverged HEAD must allow rewrite")
+	}
+
+	// Linear ahead: publish tip is ancestor of HEAD.
+	gitCmd(t, dir, "reset", "--hard", publishedTip)
+	if err := os.WriteFile(filepath.Join(dir, "linear-ahead.txt"), []byte("linear\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "linear ahead")
+	sctx.Run.HeadSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+	if canRewriteUnpushedEvidenceHEAD(sctx, publishedTip, true) != true {
+		t.Fatal("ahead HEAD must allow rewrite")
+	}
+	if canRewriteUnpushedEvidenceHEAD(sctx, "", false) != true {
+		t.Fatal("missing remote branch must allow rewrite")
+	}
+}
+
 func TestPushStep_VerifiesUnpublishedManifestArtifactInCandidateCommit(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	data := testPNGBytes()
