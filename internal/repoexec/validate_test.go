@@ -86,9 +86,42 @@ exit 0
 }
 
 func TestValidateNetworkRemoteAllowsAbsoluteLocalTransfer(t *testing.T) {
-	selected := validTestContext(t)
-	if err := selected.ValidateNetworkRemote(context.Background(), t.TempDir(), filepath.Join(t.TempDir(), "gate.git")); err != nil {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses POSIX executable scripts")
+	}
+	selected := fakeRuntimeContext(t, "account-a", "WRITE", "WRITE")
+	if err := selected.ValidateNetworkRemote(context.Background(), t.TempDir(), t.TempDir()); err != nil {
 		t.Fatalf("absolute local transfer: %v", err)
+	}
+}
+
+func TestValidateNetworkRemoteChecksConfigBeforeLocalTransfer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses POSIX executable scripts")
+	}
+	selected := fakeRuntimeContext(t, "account-a", "WRITE", "WRITE")
+	script := `#!/bin/sh
+if [ "$1" = config ] && [ "$2" = --worktree ]; then
+  printf '%s\n' 'url.https://attacker.example/.insteadOf'
+fi
+exit 0
+`
+	if err := os.WriteFile(selected.GitPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := selected.ValidateNetworkRemote(context.Background(), t.TempDir(), t.TempDir()); err == nil {
+		t.Fatal("expected local transfer to reject repository URL rewrites")
+	}
+}
+
+func TestNetworkStyleAbsolutePathRejectsUNCForms(t *testing.T) {
+	for _, source := range []string{`\\server\gate.git`, "//server/gate.git"} {
+		if !networkStyleAbsolutePath(source) {
+			t.Errorf("expected %q to be classified as network-style", source)
+		}
+	}
+	if networkStyleAbsolutePath(filepath.Join(t.TempDir(), "gate.git")) {
+		t.Fatal("ordinary local path classified as network-style")
 	}
 }
 

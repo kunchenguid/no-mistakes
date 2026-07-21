@@ -126,13 +126,27 @@ func (c *GitHubContext) ValidateNetworkRemote(ctx context.Context, workDir, remo
 		return nil
 	}
 	raw := strings.TrimSpace(remote)
+	if err := c.ValidateLocalGitConfig(ctx, workDir); err != nil {
+		return err
+	}
+	if networkStyleAbsolutePath(raw) {
+		return c.errorf("local Git transfer refused a network-style path")
+	}
 	if filepath.IsAbs(raw) {
+		resolved, err := filepath.EvalSymlinks(raw)
+		if err != nil {
+			return c.errorf("local Git transfer source could not be verified")
+		}
+		if networkStyleAbsolutePath(resolved) {
+			return c.errorf("local Git transfer refused a network-style path")
+		}
+		info, err := os.Stat(resolved)
+		if err != nil || !info.IsDir() {
+			return c.errorf("local Git transfer source must be an existing directory")
+		}
 		return nil
 	}
 	if err := c.ValidateLogin(ctx, workDir); err != nil {
-		return err
-	}
-	if err := c.ValidateLocalGitConfig(ctx, workDir); err != nil {
 		return err
 	}
 	if !strings.Contains(raw, "://") {
@@ -149,6 +163,10 @@ func (c *GitHubContext) ValidateNetworkRemote(ctx context.Context, workDir, remo
 		return c.errorf("network Git operation refused a non-HTTPS or non-github.com remote")
 	}
 	return nil
+}
+
+func networkStyleAbsolutePath(value string) bool {
+	return strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, "//")
 }
 
 func validRemoteName(value string) bool {

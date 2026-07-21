@@ -110,6 +110,15 @@ func TestGitHubContextValidateDependenciesRequiresCanonicalExecutableNames(t *te
 	}
 }
 
+func TestCanonicalExecutableNameUsesOSCaseRules(t *testing.T) {
+	if canonicalExecutableNameForOS("/tools/GH", "gh", "linux") {
+		t.Fatal("case-sensitive systems must reject uppercase executable names")
+	}
+	if !canonicalExecutableNameForOS(`C:\\tools\\GH.EXE`, "gh", "windows") {
+		t.Fatal("Windows must accept case-insensitive canonical executable names")
+	}
+}
+
 func TestGitHubContextEnvironmentRemovesAmbientCredentialOverrides(t *testing.T) {
 	ctx := validTestContext(t)
 	base := []string{
@@ -134,11 +143,18 @@ func TestGitHubContextEnvironmentRemovesAmbientCredentialOverrides(t *testing.T)
 		"GIT_DIR=/ambient/repository.git",
 		"GIT_AUTHOR_NAME=Ambient Author",
 		"GIT_AUTHOR_EMAIL=ambient@example.test",
+		"GIT_EDITOR=/ambient/editor",
+		"GIT_SEQUENCE_EDITOR=/ambient/sequence-editor",
+		"GIT_MERGE_AUTOEDIT=yes",
+		"EDITOR=/ambient/general-editor",
+		"VISUAL=/ambient/visual-editor",
+		"GIT_PAGER=/ambient/git-pager",
+		"PAGER=/ambient/pager",
 	}
 
 	env := ctx.Environment(base, "/work/repo")
 	joined := strings.Join(env, "\n")
-	if strings.Contains(joined, "credential-sentinel") || strings.Contains(joined, "/ambient/askpass") || strings.Contains(joined, "Ambient Author") {
+	if strings.Contains(joined, "credential-sentinel") || strings.Contains(joined, "/ambient/") || strings.Contains(joined, "Ambient Author") {
 		t.Fatalf("strict environment retained ambient credential or identity override:\n%s", joined)
 	}
 	for _, want := range []string{
@@ -147,6 +163,13 @@ func TestGitHubContextEnvironmentRemovesAmbientCredentialOverrides(t *testing.T)
 		"GH_PROMPT_DISABLED=1",
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_TERMINAL_PROMPT=0",
+		"GIT_EDITOR=true",
+		"GIT_SEQUENCE_EDITOR=true",
+		"GIT_MERGE_AUTOEDIT=no",
+		"EDITOR=true",
+		"VISUAL=true",
+		"GIT_PAGER=cat",
+		"PAGER=cat",
 	} {
 		if !containsEnv(env, want) {
 			t.Errorf("strict environment missing %q", want)

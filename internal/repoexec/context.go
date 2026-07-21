@@ -171,8 +171,18 @@ func (c *GitHubContext) ValidateDependencies() error {
 }
 
 func canonicalExecutableName(path, name string) bool {
-	base := strings.ToLower(filepath.Base(path))
-	return base == name || (runtime.GOOS == "windows" && base == name+".exe")
+	return canonicalExecutableNameForOS(path, name, runtime.GOOS)
+}
+
+func canonicalExecutableNameForOS(path, name, goos string) bool {
+	base := filepath.Base(path)
+	if goos == "windows" {
+		if separator := strings.LastIndexAny(path, `/\\`); separator >= 0 {
+			base = path[separator+1:]
+		}
+		return strings.EqualFold(base, name) || strings.EqualFold(base, name+".exe")
+	}
+	return base == name
 }
 
 // ValidateStatic validates dependencies and the initial HTTPS-only github.com
@@ -344,7 +354,8 @@ func (c *GitHubContext) Environment(base []string, dir string) []string {
 		"GIT_AUTHOR_NAME": true, "GIT_AUTHOR_EMAIL": true, "GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true, "EMAIL": true,
 		"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_COMMON_DIR": true, "GIT_INDEX_FILE": true, "GIT_OBJECT_DIRECTORY": true, "GIT_ALTERNATE_OBJECT_DIRECTORIES": true, "GIT_NAMESPACE": true,
 		"GIT_EXEC_PATH": true, "GIT_TEMPLATE_DIR": true, "GIT_CEILING_DIRECTORIES": true, "GIT_DISCOVERY_ACROSS_FILESYSTEM": true, "GIT_PROXY_COMMAND": true, "GIT_CURL_VERBOSE": true,
-		"GIT_TERMINAL_PROMPT": true, "GCM_INTERACTIVE": true, "PATH": true,
+		"GIT_TERMINAL_PROMPT": true, "GCM_INTERACTIVE": true, "GIT_EDITOR": true, "GIT_SEQUENCE_EDITOR": true, "GIT_MERGE_AUTOEDIT": true,
+		"EDITOR": true, "VISUAL": true, "GIT_PAGER": true, "PAGER": true, "PATH": true,
 	}
 	out := make([]string, 0, len(base)+32)
 	ambientPath := ""
@@ -384,6 +395,13 @@ func (c *GitHubContext) Environment(base []string, dir string) []string {
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_TERMINAL_PROMPT=0",
 		"GCM_INTERACTIVE=Never",
+		"GIT_EDITOR=true",
+		"GIT_SEQUENCE_EDITOR=true",
+		"GIT_MERGE_AUTOEDIT=no",
+		"EDITOR=true",
+		"VISUAL=true",
+		"GIT_PAGER=cat",
+		"PAGER=cat",
 	)
 
 	config := [][2]string{
