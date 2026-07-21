@@ -82,7 +82,12 @@ func TestPRNumberUsesURLWhenNumberIsAbsent(t *testing.T) {
 	}{
 		{name: "number", pr: &PR{Number: " 123 "}, want: "123", ok: true},
 		{name: "URL", pr: &PR{URL: "https://gitlab.example.test/group/project/-/merge_requests/42"}, want: "42", ok: true},
+		{name: "invalid number falls back to URL", pr: &PR{Number: "latest", URL: "https://gitlab.example.test/group/project/-/merge_requests/42"}, want: "42", ok: true},
 		{name: "invalid URL", pr: &PR{URL: "https://example.test/pull/latest"}, ok: false},
+		{name: "negative number", pr: &PR{Number: "-1"}, ok: false},
+		{name: "zero number", pr: &PR{Number: "0"}, ok: false},
+		{name: "number suffix", pr: &PR{Number: "12x"}, ok: false},
+		{name: "option-like number", pr: &PR{Number: "--help"}, ok: false},
 		{name: "empty", pr: &PR{}, ok: false},
 		{name: "nil", pr: nil, ok: false},
 	}

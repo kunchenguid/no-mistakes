@@ -79,10 +79,19 @@ func ExtractPRNumber(prURL string) (string, error) {
 	if num == "" {
 		return "", fmt.Errorf("invalid PR URL: %s", prURL)
 	}
-	if _, err := strconv.Atoi(num); err != nil {
+	if _, ok := positivePRNumber(num); !ok {
 		return "", fmt.Errorf("invalid PR number %q in URL: %s", num, prURL)
 	}
 	return num, nil
+}
+
+func positivePRNumber(raw string) (string, bool) {
+	number := strings.TrimSpace(raw)
+	value, err := strconv.ParseUint(number, 10, 64)
+	if err != nil || value == 0 {
+		return "", false
+	}
+	return number, true
 }
 
 // PR identifies a pull/merge request on a provider.
@@ -110,7 +119,7 @@ func PRSelector(pr *PR) (string, error) {
 // It reads the number first. It extracts the trailing number from the URL.
 func PRNumber(pr *PR) (string, error) {
 	if pr != nil {
-		if number := strings.TrimSpace(pr.Number); number != "" {
+		if number, ok := positivePRNumber(pr.Number); ok {
 			return number, nil
 		}
 		if url := strings.TrimSpace(pr.URL); url != "" {

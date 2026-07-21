@@ -138,6 +138,15 @@ func TestPRTargetingFailsClosedWithoutIdentity(t *testing.T) {
 	}
 }
 
+func TestPRTargetingRejectsInvalidNumberBeforeStartingGlab(t *testing.T) {
+	t.Parallel()
+
+	host := New(failIfGitLabCommandRuns(t), nil, "", "")
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{Number: "--help"}, scm.PRContent{}); err == nil {
+		t.Fatal("UpdatePR() error = nil, want invalid PR number error")
+	}
+}
+
 func TestGetChecksFallbackParsesMRJSONAfterPreamble(t *testing.T) {
 	t.Parallel()
 
