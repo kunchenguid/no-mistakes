@@ -19,10 +19,14 @@ func TestMain(m *testing.M) {
 		handleFakeCLI(mode)
 		return
 	}
-	// Agent harnesses inject git config (e.g. safe.bareRepository=explicit)
-	// via GIT_CONFIG_COUNT/KEY_n/VALUE_n; tests that need it re-set it with
-	// t.Setenv (issue #362).
+	// Agent harnesses inject git config (e.g. safe.bareRepository=explicit or
+	// an exact per-repository credential profile). Keep the package's ambient
+	// Git behavior independent of that harness; tests that need injected config
+	// re-set it with t.Setenv (issue #362).
 	os.Unsetenv("GIT_CONFIG_COUNT")
+	os.Unsetenv("GIT_CONFIG_GLOBAL")
+	os.Unsetenv("GIT_CONFIG_SYSTEM")
+	os.Unsetenv("GIT_CONFIG_NOSYSTEM")
 	os.Exit(m.Run())
 }
 
