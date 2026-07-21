@@ -587,7 +587,7 @@ func TestRunStepShellCommandPreservesExactRepositoryEnvironment(t *testing.T) {
 	}
 	ctx := &repoexec.GitHubContext{
 		Version: 1,
-		Host: "github.com",
+		Host:    "github.com",
 	}
 	t.Setenv("GH_TOKEN", "credential-sentinel")
 	sctx := &pipeline.StepContext{
