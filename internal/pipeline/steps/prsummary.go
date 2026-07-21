@@ -258,10 +258,17 @@ func githubRepositoryForRemote(ctx context.Context, remote string) (githubReposi
 	if canonicalHost == "ssh.github.com" && !aliasGitHubSSH443 && !explicitGitHubSSH443 {
 		return githubRepository{}, false
 	}
-	if !validGitHubHost(canonicalHost) {
+	if canonicalHost != "github.com" {
+		configuredHost, ok := scm.GitHubCanonicalWebHost(canonicalHost)
+		if !ok {
+			return githubRepository{}, false
+		}
+		canonicalHost = configuredHost
+	}
+	if !validGitHubHost(scm.ExtractHost(canonicalHost)) {
 		return githubRepository{}, false
 	}
-	if canonicalHost != "github.com" && !scm.GitHubHostConfigured(canonicalHost) {
+	if canonicalHost != "github.com" && !scm.GitHubWebHostConfigured(canonicalHost) {
 		return githubRepository{}, false
 	}
 	if !strings.Contains(remote, "://") {
@@ -307,7 +314,11 @@ func githubRepositoryForRemote(ctx context.Context, remote string) (githubReposi
 		return githubRepository{}, false
 	}
 	if port := parsed.Port(); port != "" {
-		if !strings.EqualFold(parsed.Scheme, "ssh") || !validSSHPort(port) {
+		if strings.EqualFold(parsed.Scheme, "https") {
+			if !scm.GitHubWebHostConfigured(parsed.Host) || !strings.EqualFold(parsed.Host, canonicalHost) {
+				return githubRepository{}, false
+			}
+		} else if !strings.EqualFold(parsed.Scheme, "ssh") || !validSSHPort(port) {
 			return githubRepository{}, false
 		}
 		if canonicalHost == "github.com" && !explicitGitHubSSH443 &&
@@ -403,7 +414,7 @@ func testingSummaryFromFindings(raw *string) string {
 	if err != nil {
 		return ""
 	}
-	return sanitizePromptMultilineText(findings.TestingSummary)
+	return sanitizeEvidenceTempReferences(sanitizePromptMultilineText(findings.TestingSummary))
 }
 
 func collectTestingDetails(sr *db.StepResult, rounds []*db.StepRound) []string {
@@ -456,11 +467,11 @@ func appendTestingArtifacts(artifacts []types.TestArtifact, seen map[string]bool
 		return artifacts
 	}
 	for _, artifact := range findings.Artifacts {
-		artifact.Label = sanitizePromptText(artifact.Label)
+		artifact.Label = sanitizeEvidenceTempReferences(sanitizePromptText(artifact.Label))
 		artifact.Kind = strings.ToLower(sanitizePromptText(artifact.Kind))
 		artifact.Path = sanitizeArtifactPath(artifact.Path, opts)
 		artifact.URL = sanitizeArtifactURL(artifact.URL)
-		artifact.Content = sanitizePromptMultilineText(artifact.Content)
+		artifact.Content = sanitizeEvidenceTempReferences(sanitizePromptMultilineText(artifact.Content))
 		key := artifact.Kind + "\x00" + artifact.Label + "\x00" + artifact.Path + "\x00" + artifact.URL + "\x00" + artifact.Content
 		if artifact.Label == "" || seen[key] {
 			continue
@@ -483,7 +494,7 @@ func appendTestingDetails(details []string, seen map[string]bool, raw *string) [
 		return details
 	}
 	for _, detail := range findings.Tested {
-		clean := sanitizePromptText(detail)
+		clean := sanitizeEvidenceTempReferences(sanitizePromptText(detail))
 		if clean == "" || seen[clean] {
 			continue
 		}
@@ -510,7 +521,7 @@ func renderTestedDetail(detail string) string {
 }
 
 func renderTestingSummary(summary string) string {
-	clean := sanitizePromptMultilineText(summary)
+	clean := sanitizeEvidenceTempReferences(sanitizePromptMultilineText(summary))
 	if clean == "" {
 		return ""
 	}
@@ -649,18 +660,25 @@ func nextValidationScreenshotLabel(state *testingArtifactRenderState) string {
 }
 
 func publishedRepoImageIsAvailable(artifact types.TestArtifact, opts testingSummaryOptions) bool {
-	repoPath := repoRelativeArtifactPath(artifact.Path, opts)
+	repoPath := lexicalRepoArtifactPath(artifact.Path)
 	if !artifact.Published || repoPath == "" || opts.repoRoot == "" || opts.githubRawBase == "" || opts.ref == "" {
 		return false
 	}
 	if opts.ctx == nil || opts.ctx.Err() != nil {
 		return false
 	}
-	filename := filepath.Join(opts.repoRoot, filepath.FromSlash(repoPath))
-	if _, ok := artifactPathRelativeToRoot(filename, opts.repoRoot); !ok {
-		return false
-	}
 	return matchesGitEvidenceBlob(opts.ctx, opts.repoRoot, opts.ref+":"+filepath.ToSlash(repoPath), artifact)
+}
+
+func lexicalRepoArtifactPath(target string) string {
+	if target == "" || filepath.IsAbs(target) || strings.Contains(target, "\\") {
+		return ""
+	}
+	clean := path.Clean(target)
+	if clean == "." || clean != target || clean == ".." || strings.HasPrefix(clean, "../") {
+		return ""
+	}
+	return clean
 }
 
 func matchesStagedEvidenceManifest(ctx context.Context, repoRoot, repoPath string, artifact types.TestArtifact) bool {
@@ -705,6 +723,11 @@ func matchesGitEvidenceBlob(parent context.Context, repoRoot, objectSpec string,
 		return false
 	}
 	return fmt.Sprintf("%x", hash.Sum(nil)) == artifact.SHA256
+}
+
+func gitEvidenceBlobExists(ctx context.Context, repoRoot, objectSpec string) bool {
+	_, err := git.Run(ctx, repoRoot, "cat-file", "-e", objectSpec)
+	return err == nil
 }
 
 // embeddedArtifactText reads a file artifact and returns its text content,
@@ -820,7 +843,12 @@ func trimUTF8Start(data []byte) []byte {
 }
 
 func artifactTargetForPath(artifact types.TestArtifact, opts testingSummaryOptions) string {
-	repoPath := repoRelativeArtifactPath(artifact.Path, opts)
+	repoPath := ""
+	if opts.compactArtifacts && artifact.Published && isImageArtifact(artifact.Kind, artifact.Path) {
+		repoPath = lexicalRepoArtifactPath(artifact.Path)
+	} else {
+		repoPath = repoRelativeArtifactPath(artifact.Path, opts)
+	}
 	if repoPath == "" {
 		return ""
 	}
@@ -1014,6 +1042,26 @@ func isVideoArtifact(kind, target string) bool {
 
 func escapeMarkdownFence(content string) string {
 	return strings.ReplaceAll(content, "```", "`` `")
+}
+
+func sanitizeEvidenceTempReferences(value string) string {
+	root := filepath.ToSlash(filepath.Clean(testEvidenceRoot()))
+	value = filepath.ToSlash(value)
+	for {
+		index := strings.Index(value, root)
+		if index < 0 {
+			return value
+		}
+		start := index
+		if strings.HasSuffix(value[:index], "file://") {
+			start -= len("file://")
+		}
+		end := index + len(root)
+		for end < len(value) && !strings.ContainsRune(" \t\r\n`'\"<>()[]{}", rune(value[end])) {
+			end++
+		}
+		value = value[:start] + "[image evidence]" + value[end:]
+	}
 }
 
 func buildTestingOutcomeLine(summaryLine string, rounds []*db.StepRound) string {
@@ -1396,7 +1444,7 @@ func writeTestedDetails(b *strings.Builder, sr *db.StepResult, findings *types.F
 		return
 	}
 	for _, detail := range findings.Tested {
-		rendered := renderTestedDetail(detail)
+		rendered := renderTestedDetail(sanitizeEvidenceTempReferences(detail))
 		if rendered == "" {
 			continue
 		}

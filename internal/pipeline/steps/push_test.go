@@ -99,7 +99,7 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 	gitCmd(t, dir, "checkout", "-b", "feature")
 	baseSHA := gitCmd(t, dir, "rev-parse", "main")
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	evidenceDir := filepath.Join(dir, "evidence", generatedEvidenceDir, "feature")
+	evidenceDir := filepath.Join(dir, fixedEvidenceRepoDir, generatedEvidenceDir, "feature")
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	findings := fmt.Sprintf(`{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Checkout","path":%q,"sha256":%q,"size":%d}]}`, filepath.ToSlash(filepath.Join("evidence", generatedEvidenceDir, "feature", publishedName)), imageHashText, len(imageData))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Checkout","path":%q,"sha256":%q,"size":%d}]}`, filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", publishedName)), imageHashText, len(imageData))
 	if err := sctx.DB.SetStepFindings(testResult.ID, findings); err != nil {
 		t.Fatal(err)
 	}
@@ -142,10 +142,10 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 
 	clone := t.TempDir()
 	gitCmd(t, clone, "clone", "--branch", "feature", upstream, ".")
-	if _, err := os.Stat(filepath.Join(clone, "evidence", generatedEvidenceDir, "feature", publishedName)); err != nil {
+	if _, err := os.Stat(filepath.Join(clone, fixedEvidenceRepoDir, generatedEvidenceDir, "feature", publishedName)); err != nil {
 		t.Fatalf("expected ignored evidence artifact to be pushed: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(clone, "evidence", generatedEvidenceDir, "feature", "unreferenced.png")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(clone, fixedEvidenceRepoDir, generatedEvidenceDir, "feature", "unreferenced.png")); !os.IsNotExist(err) {
 		t.Fatalf("ignored unreferenced evidence was pushed, stat error = %v", err)
 	}
 	if data, err := os.ReadFile(filepath.Join(clone, "evidence", "feature", "helper.go")); err != nil || string(data) != "package feature\n" {
@@ -254,7 +254,7 @@ func TestPushStep_DoesNotForceAddIgnoredEvidenceDirectory(t *testing.T) {
 	gitCmd(t, dir, "add", ".gitignore")
 	gitCmd(t, dir, "commit", "-m", "ignore evidence")
 	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
-	evidenceDir := filepath.Join(dir, "evidence", generatedEvidenceDir, "feature")
+	evidenceDir := filepath.Join(dir, fixedEvidenceRepoDir, generatedEvidenceDir, "feature")
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestPushStep_EvidenceStagingPreservesOverlappingSourceChanges(t *testing.T)
 	imageData := testPNGBytes()
 	imageHash := sha256.Sum256(imageData)
 	hash := fmt.Sprintf("%x", imageHash[:])
-	imageRel := filepath.ToSlash(filepath.Join("src", generatedEvidenceDir, "feature", hash[:32]+".png"))
+	imageRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", hash[:32]+".png"))
 	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, filepath.FromSlash(imageRel))), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestPushStep_AgentStagingPreservesUntrackedFilesInOverlappingEvidenceDirect
 	imageData := testPNGBytes()
 	imageHash := sha256.Sum256(imageData)
 	hash := fmt.Sprintf("%x", imageHash[:])
-	imageRel := filepath.ToSlash(filepath.Join("src", generatedEvidenceDir, "feature", hash[:32]+".png"))
+	imageRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", hash[:32]+".png"))
 	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, filepath.FromSlash(imageRel))), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +372,7 @@ func TestPushStep_AgentStagingReservesManagedSymlinkDestination(t *testing.T) {
 	data := testPNGBytes()
 	sum := sha256.Sum256(data)
 	hash := fmt.Sprintf("%x", sum[:])
-	rel := filepath.ToSlash(filepath.Join("evidence", generatedEvidenceDir, "feature", hash[:32]+".png"))
+	rel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", hash[:32]+".png"))
 	target := filepath.Join(dir, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		t.Fatal(err)
@@ -405,7 +405,7 @@ func TestPushStep_AgentStagingReservesManagedDirectorySubtree(t *testing.T) {
 	data := testPNGBytes()
 	sum := sha256.Sum256(data)
 	hash := fmt.Sprintf("%x", sum[:])
-	rel := filepath.ToSlash(filepath.Join("evidence", generatedEvidenceDir, "feature", hash[:32]+".png"))
+	rel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", hash[:32]+".png"))
 	target := filepath.Join(dir, filepath.FromSlash(rel))
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		t.Fatal(err)
@@ -432,21 +432,21 @@ func TestPushStep_AgentStagingReservesManagedDirectorySubtree(t *testing.T) {
 func TestPushStep_FinalStagingExcludesEvidenceManagedByPriorRounds(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	evidenceDir := filepath.Join(dir, "evidence", generatedEvidenceDir, "feature")
+	evidenceDir := filepath.Join(dir, fixedEvidenceRepoDir, generatedEvidenceDir, "feature")
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	staleData := coloredPNGBytes(41)
 	staleSum := sha256.Sum256(staleData)
 	staleHash := fmt.Sprintf("%x", staleSum[:])
-	staleRel := filepath.ToSlash(filepath.Join("evidence", generatedEvidenceDir, "feature", staleHash[:32]+".png"))
+	staleRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", staleHash[:32]+".png"))
 	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(staleRel)), staleData, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	currentData := coloredPNGBytes(42)
 	currentSum := sha256.Sum256(currentData)
 	currentHash := fmt.Sprintf("%x", currentSum[:])
-	currentRel := filepath.ToSlash(filepath.Join("evidence", generatedEvidenceDir, "feature", currentHash[:32]+".png"))
+	currentRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", currentHash[:32]+".png"))
 	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(currentRel)), currentData, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -487,13 +487,13 @@ func TestPushStep_FinalStagingExcludesEvidenceManagedByPriorRounds(t *testing.T)
 func TestPushStep_AgentStagingReservesGeneratedEvidenceAcrossRuns(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	generatedDir := filepath.Join(dir, "evidence", generatedEvidenceDir)
+	generatedDir := filepath.Join(dir, fixedEvidenceRepoDir, generatedEvidenceDir)
 	if err := os.MkdirAll(filepath.Join(generatedDir, "old-branch"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	trackedRel := filepath.ToSlash(filepath.Join("evidence", generatedEvidenceDir, "old-branch", strings.Repeat("a", 32)+".png"))
-	untrackedRel := filepath.ToSlash(filepath.Join("evidence", generatedEvidenceDir, "crashed-run", strings.Repeat("b", 32)+".png"))
-	siblingRel := filepath.ToSlash(filepath.Join("evidence", "helper.go"))
+	trackedRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "old-branch", strings.Repeat("a", 32)+".png"))
+	untrackedRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "crashed-run", strings.Repeat("b", 32)+".png"))
+	siblingRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, "helper.go"))
 	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(trackedRel)), testPNGBytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -558,17 +558,55 @@ func TestPushStep_AgentStagingPreservesUntrackedPathBytes(t *testing.T) {
 	}
 }
 
+func TestPushStep_AgentStagingBatchesLargeUntrackedTrees(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	for i := 0; i < 200; i++ {
+		rel := filepath.Join("generated", fmt.Sprintf("file-%03d.txt", i))
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte("generated"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	logFile := filepath.Join(t.TempDir(), "git.log")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_CLI_MODE", "git-passthrough")
+	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
+	t.Setenv("FAKE_CLI_LOG", logFile)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "branch-controlled-source"}
+
+	if err := (&PushStep{}).stageAgentChanges(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logged, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(string(logged), "add --"); count > 4 {
+		t.Fatalf("large tree used %d per-path git add commands:\n%s", count, logged)
+	}
+}
+
 func TestPushStep_RejectsDriftedPreparedEvidence(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	evidenceDir := filepath.Join(dir, "evidence", generatedEvidenceDir, "feature")
+	evidenceDir := filepath.Join(dir, fixedEvidenceRepoDir, generatedEvidenceDir, "feature")
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	original := testPNGBytes()
 	sum := sha256.Sum256(original)
 	hash := fmt.Sprintf("%x", sum[:])
-	rel := filepath.ToSlash(filepath.Join("evidence", generatedEvidenceDir, "feature", hash[:32]+".png"))
+	rel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", hash[:32]+".png"))
 	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(rel)), coloredPNGBytes(42), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -605,14 +643,14 @@ func TestPushStep_RejectsDriftedPreparedEvidence(t *testing.T) {
 func TestPushStep_RejectsSymlinkedPreparedEvidence(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	evidenceDir := filepath.Join(dir, "evidence", generatedEvidenceDir, "feature")
+	evidenceDir := filepath.Join(dir, fixedEvidenceRepoDir, generatedEvidenceDir, "feature")
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	data := testPNGBytes()
 	sum := sha256.Sum256(data)
 	hash := fmt.Sprintf("%x", sum[:])
-	rel := filepath.ToSlash(filepath.Join("evidence", generatedEvidenceDir, "feature", hash[:32]+".png"))
+	rel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", hash[:32]+".png"))
 	source := filepath.Join(dir, "source.png")
 	if err := os.WriteFile(source, data, 0o644); err != nil {
 		t.Fatal(err)
@@ -641,7 +679,7 @@ func TestPushStep_MarksVerifiedPreparedEvidencePublished(t *testing.T) {
 	data := testPNGBytes()
 	sum := sha256.Sum256(data)
 	hash := fmt.Sprintf("%x", sum[:])
-	rel := filepath.ToSlash(filepath.Join("evidence", generatedEvidenceDir, "feature", hash[:32]+".png"))
+	rel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", hash[:32]+".png"))
 	target := filepath.Join(dir, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		t.Fatal(err)
@@ -681,7 +719,7 @@ func TestPushStep_StagesDuplicatePreparedEvidenceExactlyOnce(t *testing.T) {
 	data := testPNGBytes()
 	sum := sha256.Sum256(data)
 	hash := fmt.Sprintf("%x", sum[:])
-	rel := filepath.ToSlash(filepath.Join("evidence", generatedEvidenceDir, "feature", hash[:32]+".png"))
+	rel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", hash[:32]+".png"))
 	target := filepath.Join(dir, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		t.Fatal(err)
@@ -730,7 +768,7 @@ func TestPushStep_RejectsEvidenceSwappedInIndexAfterAdd(t *testing.T) {
 	data := testPNGBytes()
 	sum := sha256.Sum256(data)
 	hash := fmt.Sprintf("%x", sum[:])
-	rel := filepath.ToSlash(filepath.Join("evidence", generatedEvidenceDir, "feature", hash[:32]+".png"))
+	rel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", hash[:32]+".png"))
 	target := filepath.Join(dir, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		t.Fatal(err)
@@ -792,7 +830,7 @@ func TestPushStep_RejectsEvidenceMutatedByCommitHook(t *testing.T) {
 	data := testPNGBytes()
 	sum := sha256.Sum256(data)
 	hash := fmt.Sprintf("%x", sum[:])
-	rel := filepath.ToSlash(filepath.Join("evidence", generatedEvidenceDir, "feature", hash[:32]+".png"))
+	rel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", hash[:32]+".png"))
 	target := filepath.Join(dir, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		t.Fatal(err)
@@ -835,6 +873,45 @@ func TestPushStep_RejectsEvidenceMutatedByCommitHook(t *testing.T) {
 	}
 }
 
+func TestPushStep_VerifiesUnpublishedManifestArtifactInCandidateCommit(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	data := testPNGBytes()
+	sum := sha256.Sum256(data)
+	hash := fmt.Sprintf("%x", sum[:])
+	rel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", hash[:32]+".png"))
+	target := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, coloredPNGBytes(77), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "--", rel)
+	gitCmd(t, dir, "commit", "-m", "invalid evidence")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "branch-controlled-source"}
+	setTestEvidenceManifest(t, sctx, rel, hash, int64(len(data)))
+
+	err := (&PushStep{}).verifyCommittedInRepoEvidence(sctx, gitCmd(t, dir, "rev-parse", "HEAD"))
+	if err == nil || !strings.Contains(err.Error(), "commit does not match prepared manifest") {
+		t.Fatalf("verification error = %v, want manifest mismatch", err)
+	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := types.ParseFindingsJSON(*steps[len(steps)-1].FindingsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := manifest.Artifacts[0]
+	if artifact.Published || artifact.Path != rel || artifact.SHA256 != hash || artifact.Size != int64(len(data)) {
+		t.Fatalf("retry identity changed: %#v", artifact)
+	}
+}
+
 func TestPushStep_CommitsWhitespaceOnlyFilename(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -865,7 +942,7 @@ func TestPushStep_DisablesEvidenceForUnsupportedRemote(t *testing.T) {
 	data := testPNGBytes()
 	sum := sha256.Sum256(data)
 	hash := fmt.Sprintf("%x", sum[:])
-	rel := filepath.ToSlash(filepath.Join("evidence", generatedEvidenceDir, "feature", hash[:32]+".png"))
+	rel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", hash[:32]+".png"))
 	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, filepath.FromSlash(rel))), 0o755); err != nil {
 		t.Fatal(err)
 	}

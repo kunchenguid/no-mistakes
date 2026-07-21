@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -98,6 +99,37 @@ func TestRunRawPreservesNULDelimitedPathBytes(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("RunRaw omitted or changed %q in %q", want, out)
+		}
+	}
+}
+
+func TestRunRawInputStagesNULDelimitedPathspecs(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	paths := []string{" leading.txt", "line\nbreak.txt"}
+	var input []byte
+	for _, rel := range paths {
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte("kept"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		input = append(input, rel...)
+		input = append(input, 0)
+	}
+
+	if _, err := RunRawInput(context.Background(), dir, input, "add", "--pathspec-from-file=-", "--pathspec-file-nul"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := RunRaw(context.Background(), dir, "diff", "--cached", "--name-only", "-z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range paths {
+		if !bytes.Contains(out, append([]byte(rel), 0)) {
+			t.Fatalf("staged output omitted %q: %q", rel, out)
 		}
 	}
 }

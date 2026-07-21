@@ -242,10 +242,9 @@ type Test struct {
 	Evidence Evidence
 }
 
-// Evidence is the resolved test-evidence config. When StoreInRepo is true, the
-// test step writes evidence artifacts into Dir (relative to the repo worktree)
-// so they are committed, pushed, and viewable directly on the PR. Otherwise
-// evidence stays temporary and is never exposed in generated PR content.
+// Evidence is the resolved test-evidence config. StoreInRepo is trusted
+// repository consent for publishing validated images in the fixed tool-owned
+// namespace. Dir is retained for configuration compatibility.
 type Evidence struct {
 	StoreInRepo bool
 	Dir         string

@@ -35,10 +35,26 @@ func TestResolveTestEvidenceDir_InRepoKeyedByBranch(t *testing.T) {
 	}
 }
 
+func TestResolveTestEvidenceLocation_UsesFixedToolOwnedPublicationNamespace(t *testing.T) {
+	workDir := t.TempDir()
+	location := resolveTestEvidenceLocation(workDir, "feature", "run-123", config.Evidence{
+		StoreInRepo: true,
+		Dir:         "branch-controlled-source",
+	})
+
+	wantGenerated := filepath.Join(workDir, fixedEvidenceRepoDir, generatedEvidenceDir)
+	if location.GeneratedRepoDir != wantGenerated {
+		t.Fatalf("generated directory = %q, want %q", location.GeneratedRepoDir, wantGenerated)
+	}
+	if strings.Contains(location.RepoDir, "branch-controlled-source") {
+		t.Fatalf("branch-controlled directory selected publication namespace: %q", location.RepoDir)
+	}
+}
+
 func TestResolveTestEvidenceDir_SanitizesUnsafeBranch(t *testing.T) {
 	location := resolveTestEvidenceLocation("/work/tree", "../../etc/pa ss~wd", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
 	wantSource := filepath.Join(os.TempDir(), "no-mistakes-evidence", "run-123")
-	wantDestination := filepath.Join("/work/tree", "evidence", generatedEvidenceDir, "etc", "pa-ss-wd")
+	wantDestination := filepath.Join("/work/tree", fixedEvidenceRepoDir, generatedEvidenceDir, "etc", "pa-ss-wd")
 	if location.Dir != wantSource || location.RepoDir != wantDestination {
 		t.Errorf("location = %#v, want source %q and destination %q", location, wantSource, wantDestination)
 	}
@@ -46,7 +62,7 @@ func TestResolveTestEvidenceDir_SanitizesUnsafeBranch(t *testing.T) {
 
 func TestResolveTestEvidenceDir_EmptyBranchFallsBack(t *testing.T) {
 	location := resolveTestEvidenceLocation("/work/tree", "///", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
-	want := filepath.Join("/work/tree", "evidence", generatedEvidenceDir, "run-123")
+	want := filepath.Join("/work/tree", fixedEvidenceRepoDir, generatedEvidenceDir, "run-123")
 	if location.RepoDir != want {
 		t.Errorf("empty-branch publication dir = %q, want %q", location.RepoDir, want)
 	}
@@ -94,7 +110,10 @@ func TestSafeRepoSubdirRejectsWindowsRootedPath(t *testing.T) {
 func TestResolveTestEvidenceDir_SymlinkConfigDirFallsBackToTemp(t *testing.T) {
 	workDir := t.TempDir()
 	externalDir := t.TempDir()
-	symlinkDir := filepath.Join(workDir, "evidence")
+	if err := os.MkdirAll(filepath.Join(workDir, ".no-mistakes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	symlinkDir := filepath.Join(workDir, fixedEvidenceRepoDir)
 	if err := os.Symlink(externalDir, symlinkDir); err != nil {
 		t.Skipf("create symlink: %v", err)
 	}
@@ -125,7 +144,7 @@ func TestPrepareTestEvidenceArtifacts_PublishesImageWithContentAddressedName(t *
 	}})
 
 	sum := sha256.Sum256(content)
-	wantRel := filepath.ToSlash(filepath.Join("evidence", generatedEvidenceDir, "feature", fmt.Sprintf("%x.png", sum[:16])))
+	wantRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", fmt.Sprintf("%x.png", sum[:16])))
 	if len(got) != 1 || got[0].Path != wantRel {
 		t.Fatalf("published artifact = %#v, want path %q", got, wantRel)
 	}

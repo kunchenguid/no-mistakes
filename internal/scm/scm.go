@@ -236,25 +236,41 @@ func glabConfigPath() string {
 // hosts.yml. Any read/parse error is treated as "not configured" so detection
 // fails closed to ProviderUnknown.
 func ghKnowsHost(host string) bool {
+	_, ok := ghCanonicalWebHost(host)
+	return ok
+}
+
+func ghCanonicalWebHost(host string) (string, bool) {
 	path := ghConfigPath()
 	if path == "" {
-		return false
+		return "", false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return false
+		return "", false
 	}
 	var hosts map[string]interface{}
 	if err := yaml.Unmarshal(data, &hosts); err != nil {
-		return false
+		return "", false
 	}
-	host = strings.ToLower(host)
+	host = strings.ToLower(ExtractHost(host))
+	match := ""
 	for key := range hosts {
-		if strings.ToLower(strings.TrimSpace(key)) == host {
-			return true
+		authority := strings.ToLower(strings.TrimSpace(key))
+		if ExtractHost(authority) != host {
+			continue
 		}
+		if match != "" && match != authority {
+			return "", false
+		}
+		match = authority
 	}
-	return false
+	return match, match != ""
+}
+
+func ghWebHostConfigured(authority string) bool {
+	canonical, ok := ghCanonicalWebHost(authority)
+	return ok && strings.EqualFold(canonical, strings.TrimSpace(authority))
 }
 
 // ghConfigPath resolves gh's hosts config file location, preferring

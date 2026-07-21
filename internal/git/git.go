@@ -42,12 +42,21 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 }
 
 func RunRaw(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return RunRawInput(ctx, dir, nil, args...)
+}
+
+// RunRawInput executes git with binary stdin and returns stdout without
+// trimming or text conversion.
+func RunRawInput(ctx context.Context, dir string, input []byte, args ...string) ([]byte, error) {
 	if isBareGitDir(dir) {
 		args = append([]string{"--git-dir=" + dir}, args...)
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = NonInteractiveEnv(dir)
+	if input != nil {
+		cmd.Stdin = strings.NewReader(string(input))
+	}
 	winproc.Harden(cmd)
 	out, err := cmd.Output()
 	if err != nil {

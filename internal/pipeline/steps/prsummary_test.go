@@ -769,6 +769,28 @@ func TestBuildTestingSummaryForPR_RendersGitHubEnterpriseImageInline(t *testing.
 	}
 }
 
+func TestBuildTestingSummaryForPR_RendersAuthenticatedGHESCustomPort(t *testing.T) {
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	ghConfig := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ghConfig, "hosts.yml"), []byte("github.corp.example:8443:\n  user: test\n  oauth_token: test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_CONFIG_DIR", ghConfig)
+	repoRoot := t.TempDir()
+	image, _ := writePublishedImageFixture(t, repoRoot, "evidence")
+	findings := findingsWithArtifacts(t, image)
+	ref := commitPRFixture(t, repoRoot)
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}}}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "https://github.corp.example:8443/team/widgets.git", ref, repoRoot)
+
+	want := "https://github.corp.example:8443/team/widgets/blob/" + ref + "/" + image.Path + "?raw=1"
+	if !strings.Contains(md, want) {
+		t.Fatalf("expected authenticated GHES custom-port URL %q, got:\n%s", want, md)
+	}
+}
+
 func TestBuildTestingSummaryForPR_RejectsUntrustedGitHubRemoteLayouts(t *testing.T) {
 	repoRoot := t.TempDir()
 	imagePath := filepath.Join(repoRoot, "evidence", "checkout.png")
@@ -914,6 +936,17 @@ func TestBuildTestingSummaryForPR_RetryUsesPushedImageBlob(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "symlinked worktree file",
+			run: func(t *testing.T, target string) {
+				if err := os.Remove(target); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(t.TempDir(), "outside.png"), target); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			},
+		},
 	} {
 		t.Run(mutation.name, func(t *testing.T) {
 			repoRoot := t.TempDir()
@@ -932,6 +965,31 @@ func TestBuildTestingSummaryForPR_RetryUsesPushedImageBlob(t *testing.T) {
 				t.Fatalf("retry did not render pushed image blob %q:\n%s", want, md)
 			}
 		})
+	}
+}
+
+func TestBuildTestingSummaryForPR_ScrubsTempPathsFromSummaryAndCommands(t *testing.T) {
+	root := testEvidenceRoot()
+	imagePath := filepath.Join(root, "run-secret", "checkout.png")
+	fileURL := "file://" + filepath.ToSlash(imagePath)
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":%q,"tested":[%q]}`,
+		"Captured "+imagePath+" and "+fileURL,
+		"playwright screenshot "+imagePath)
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}}}
+
+	pipeline, _ := BuildPipelineSummary(steps, rounds)
+	testing := BuildTestingSummaryForPR(steps, rounds, "https://github.com/example/widgets.git", "abc123", t.TempDir())
+
+	for name, rendered := range map[string]string{"pipeline": pipeline, "testing": testing} {
+		for _, leaked := range []string{root, "run-secret", "checkout.png", "file://"} {
+			if strings.Contains(rendered, leaked) {
+				t.Fatalf("%s output leaked %q:\n%s", name, leaked, rendered)
+			}
+		}
+		if !strings.Contains(rendered, "[image evidence]") {
+			t.Fatalf("%s output omitted generic placeholder:\n%s", name, rendered)
+		}
 	}
 }
 

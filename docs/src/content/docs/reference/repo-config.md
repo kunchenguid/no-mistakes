@@ -12,7 +12,7 @@ The daemon also reads `document.instructions` and `disable_project_settings` onl
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, and `test.evidence.dir`) are still read from the pushed branch.
+Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, and `intent`) are still read from the pushed branch.
 The `test.evidence.store_in_repo` consent field is read only from the trusted default branch.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
@@ -272,7 +272,7 @@ The publication consent setting is trusted repository configuration and never in
 | Field | Type | Default |
 |---|---|---|
 | `test.evidence.store_in_repo` | `bool` | `false` (repository-only opt-in) |
-| `test.evidence.dir` | `string` | Inherits from global (default `.no-mistakes/evidence`) |
+| `test.evidence.dir` | `string` | Legacy setting; does not redirect repository image publication |
 
 Test evidence is collected in a temporary run directory.
 Text evidence remains temporary and is embedded in generated PR content.
@@ -285,8 +285,9 @@ test:
     store_in_repo: true
 ```
 
-Validated images are then copied under `<dir>/.generated/<branch-slug>`.
-The `.generated` child is reserved for manifest-verified evidence; unrelated sibling files remain ordinary source changes.
+The opt-in takes effect only after that configuration lands on the trusted base branch; the proposed branch cannot enable publication for its own run.
+Validated images are copied under the fixed tool-owned `.no-mistakes/evidence/.generated/<branch-slug>` namespace.
+That namespace is reserved for manifest-verified evidence across runs; unrelated sibling files remain ordinary source changes.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
-If `dir` is absolute, escapes the worktree, points into `.git`, or crosses a symlink, image publication is disabled for that run.
+If the fixed namespace crosses a symlink, image publication is disabled for that run.
 Image format, size, naming, retention, and safe-fallback behavior are defined in the [global configuration reference](/no-mistakes/reference/global-config/#testevidence).

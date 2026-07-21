@@ -28,6 +28,7 @@ const (
 	maxEvidenceCandidateBytes             = 4 * maxPublishedImagesTotalBytes
 	unpublishedImageExplanation           = "Image evidence was not published."
 	disabledImagePublicationExplanation   = "Image evidence publication is disabled."
+	fixedEvidenceRepoDir                  = ".no-mistakes/evidence"
 	generatedEvidenceDir                  = ".generated"
 )
 
@@ -58,10 +59,7 @@ type testEvidenceLocation struct {
 
 func resolveTestEvidenceLocation(workDir, branch, runID string, ev config.Evidence) testEvidenceLocation {
 	sourceDir := testEvidenceDir(runID)
-	sub, ok := safeRepoSubdir(ev.Dir)
-	if !ok {
-		return testEvidenceLocation{Dir: sourceDir}
-	}
+	sub := filepath.FromSlash(fixedEvidenceRepoDir)
 	generatedRepoDir := filepath.Join(workDir, sub, generatedEvidenceDir)
 	if !ev.StoreInRepo {
 		return testEvidenceLocation{

@@ -204,6 +204,16 @@ func (s *PushStep) stageAgentChanges(sctx *pipeline.StepContext) error {
 	if err != nil {
 		return err
 	}
+	const maxPathspecBatchBytes = 256 * 1024
+	batch := make([]byte, 0, maxPathspecBatchBytes)
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		_, err := git.RunRawInput(sctx.Ctx, sctx.WorkDir, batch, "add", "--pathspec-from-file=-", "--pathspec-file-nul")
+		batch = batch[:0]
+		return err
+	}
 	for _, rawRel := range bytes.Split(untracked, []byte{0}) {
 		if len(rawRel) == 0 {
 			continue
@@ -212,9 +222,21 @@ func (s *PushStep) stageAgentChanges(sctx *pipeline.StepContext) error {
 		if isManagedEvidencePath(filepath.ToSlash(rel), managedPaths) {
 			continue
 		}
-		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "--", rel); err != nil {
-			return err
+		if len(batch) > 0 && len(batch)+len(rawRel)+1 > maxPathspecBatchBytes {
+			if err := flush(); err != nil {
+				return err
+			}
 		}
+		batch = append(batch, rawRel...)
+		batch = append(batch, 0)
+		if len(batch) >= maxPathspecBatchBytes {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+	}
+	if err := flush(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -485,11 +507,15 @@ func (s *PushStep) verifyCommittedInRepoEvidence(sctx *pipeline.StepContext, hea
 		}
 		changed := false
 		for i, artifact := range findings.Artifacts {
-			if !artifact.Published {
+			repoPath, ok := reservedEvidenceDestinationPath(sctx.WorkDir, location.RepoDir, artifact)
+			if !ok {
 				continue
 			}
-			repoPath, ok := preparedEvidenceDestinationPath(sctx.WorkDir, location.RepoDir, artifact)
-			if ok && matchesGitEvidenceBlob(sctx.Ctx, sctx.WorkDir, headSHA+":"+filepath.ToSlash(repoPath), artifact) {
+			objectSpec := headSHA + ":" + filepath.ToSlash(repoPath)
+			if matchesGitEvidenceBlob(sctx.Ctx, sctx.WorkDir, objectSpec, artifact) {
+				continue
+			}
+			if !artifact.Published && !gitEvidenceBlobExists(sctx.Ctx, sctx.WorkDir, objectSpec) {
 				continue
 			}
 			findings.Artifacts[i] = retryableUnpublishedImageArtifact(artifact)

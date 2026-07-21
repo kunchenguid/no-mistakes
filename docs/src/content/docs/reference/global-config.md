@@ -377,11 +377,11 @@ Image publication is disabled by default and requires explicit repository consen
 | Field                         | Type     | Default                 | Description                                                           |
 | ----------------------------- | -------- | ----------------------- | --------------------------------------------------------------------- |
 | `test.evidence.store_in_repo` | `bool`   | `false`                 | Ignored globally; publication requires trusted repository consent    |
-| `test.evidence.dir`           | `string` | `.no-mistakes/evidence` | Repo-relative image publication directory                            |
+| `test.evidence.dir`           | `string` | `.no-mistakes/evidence` | Legacy setting; image publication uses the fixed tool-owned namespace |
 
 The test step collects all evidence in its temporary run directory so readable UTF-8 text evidence keeps its existing inline PR rendering.
-When `store_in_repo` is true, validated images are copied to `<dir>/.generated/<branch-slug>`, and the push step stages only image paths recorded in the final test evidence manifest.
-The entire `<dir>/.generated` namespace is reserved for generated image evidence, so artifacts left by stale or crashed runs cannot be staged as ordinary source changes.
+When trusted repository configuration sets `store_in_repo` to true, validated images are copied to `.no-mistakes/evidence/.generated/<branch-slug>`, and the push step stages only image paths recorded in the final test evidence manifest.
+The entire `.no-mistakes/evidence/.generated` namespace is tool-owned and reserved for generated image evidence, so a proposed branch cannot redirect publication over source files and artifacts left by stale or crashed runs cannot be staged as ordinary source changes.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 If `dir` is absolute, escapes the worktree, points into `.git`, or crosses a symlink, image publication is disabled for that run while source evidence remains temporary.
 PNG and JPEG images are fully decoded, limited to 8,000,000 pixels and 10 MiB each, capped at 25 MiB and 20 unique images per run, and renamed using a content hash so duplicate evidence and retries are idempotent.
@@ -395,7 +395,7 @@ When publication is disabled, images produce a path-free disabled-publication ex
 Global configuration cannot enable publication across repositories.
 Set `store_in_repo: true` in a repository's `.no-mistakes.yaml` only when that repository consents to committing sanitized screenshot pixels; local paths are never included in generated PR content.
 
-Global configuration can set the default evidence directory.
+`test.evidence.dir` is retained for configuration compatibility but does not redirect repository image publication.
 Only trusted repository configuration can enable `store_in_repo`.
 
 ## Environment variables

@@ -294,7 +294,7 @@ func TestTestStep_InRepoEvidenceFallsBackWhenConfiguredDirEscapesWorktree(t *tes
 func TestTestStep_InRepoEvidenceFallsBackWhenEvidenceDirIsIgnored(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("evidence/\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".no-mistakes/evidence/\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -531,7 +531,7 @@ func TestTestStep_PublishesOnlyImagesAndPreservesTemporaryTextEvidence(t *testin
 	if findings.Artifacts[0].Path != textPath {
 		t.Fatalf("text evidence path changed: %#v", findings.Artifacts[0])
 	}
-	if filepath.IsAbs(findings.Artifacts[1].Path) || !strings.HasPrefix(findings.Artifacts[1].Path, "evidence/"+generatedEvidenceDir+"/feature/") {
+	if filepath.IsAbs(findings.Artifacts[1].Path) || !strings.HasPrefix(findings.Artifacts[1].Path, fixedEvidenceRepoDir+"/"+generatedEvidenceDir+"/feature/") {
 		t.Fatalf("image evidence was not published to a repository path: %#v", findings.Artifacts[1])
 	}
 	if _, err := os.Stat(textPath); err != nil {
