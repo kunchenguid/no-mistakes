@@ -61,7 +61,7 @@ Skill installation is best-effort: if the skill write fails, init reports it and
 
 `--github-context` is opt-in. Repositories initialized without it preserve the existing ambient Git/host behavior, and GitLab, Bitbucket, and Azure DevOps are unchanged. Version 1 intentionally supports only HTTPS remotes on `github.com`; both `origin` and a configured fork must use `https://github.com/<owner>/<repository>.git` (the `.git` suffix is optional).
 
-The input is a mode-`0600` JSON file with this exact schema:
+The input is an owner-only JSON file (normally mode `0600`) with this exact schema:
 
 ```json
 {
@@ -81,7 +81,7 @@ The input is a mode-`0600` JSON file with this exact schema:
 }
 ```
 
-All fields except `label` are required. Executable and config-directory paths must be absolute and present; `label` is a sanitized diagnostic label, not a selector. Unknown fields are rejected. In particular, the schema has no token, password, header, arbitrary environment, or shell-fragment field. Authentication stays in the operating-system credential store selected by `gh_config_dir`; no-mistakes never runs `gh auth token` or Git credential fill during validation.
+All fields except `label` are required. Executable and config-directory paths must be absolute and present; `label` is a sanitized diagnostic label, not a selector. Unknown fields are rejected. In particular, the schema has no token, password, header, arbitrary environment, or shell-fragment field. Authentication stays in the selected `gh` profile and its credential storage; no-mistakes persists only `gh_config_dir`, never credential bytes, and never runs `gh auth token` or Git credential fill during validation.
 
 `init` checks the exact executables, selected login, parent read/push permission, optional fork push permission, and repository local/worktree Git key names. It rejects SSH, URL userinfo, a wrong login, inaccessible or SSO-blocked repositories, unsafe local or worktree credential/header/URL-rewrite/push-URL/SSH keys, and non-canonical or conflicting `gh` and `git` executable selection. Validation captures and discards child output on failure rather than including it in the error.
 
