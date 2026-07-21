@@ -1,8 +1,14 @@
 package steps
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
+	"hash/crc32"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,27 +28,26 @@ func TestResolveTestEvidenceDir_DefaultUsesTempRunID(t *testing.T) {
 
 func TestResolveTestEvidenceDir_InRepoKeyedByBranch(t *testing.T) {
 	got := resolveTestEvidenceDir("/work/tree", "feature/add-login", "run-123", config.Evidence{StoreInRepo: true, Dir: ".no-mistakes/evidence"})
-	want := filepath.Join("/work/tree", ".no-mistakes", "evidence", "feature", "add-login")
+	want := filepath.Join(os.TempDir(), "no-mistakes-evidence", "run-123")
 	if got != want {
-		t.Errorf("in-repo dir = %q, want %q", got, want)
+		t.Errorf("evidence source dir = %q, want %q", got, want)
 	}
 }
 
 func TestResolveTestEvidenceDir_SanitizesUnsafeBranch(t *testing.T) {
-	got := resolveTestEvidenceDir("/work/tree", "../../etc/pa ss~wd", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
-	// Traversal segments dropped, spaces/unsafe chars replaced with dashes,
-	// result stays under <workdir>/evidence.
-	want := filepath.Join("/work/tree", "evidence", "etc", "pa-ss-wd")
-	if got != want {
-		t.Errorf("sanitized dir = %q, want %q", got, want)
+	location := resolveTestEvidenceLocation("/work/tree", "../../etc/pa ss~wd", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
+	wantSource := filepath.Join(os.TempDir(), "no-mistakes-evidence", "run-123")
+	wantDestination := filepath.Join("/work/tree", "evidence", "etc", "pa-ss-wd")
+	if location.Dir != wantSource || location.RepoDir != wantDestination {
+		t.Errorf("location = %#v, want source %q and destination %q", location, wantSource, wantDestination)
 	}
 }
 
 func TestResolveTestEvidenceDir_EmptyBranchFallsBack(t *testing.T) {
-	got := resolveTestEvidenceDir("/work/tree", "///", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
+	location := resolveTestEvidenceLocation("/work/tree", "///", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
 	want := filepath.Join("/work/tree", "evidence", "run-123")
-	if got != want {
-		t.Errorf("empty-branch dir = %q, want %q", got, want)
+	if location.RepoDir != want {
+		t.Errorf("empty-branch publication dir = %q, want %q", location.RepoDir, want)
 	}
 }
 
@@ -114,8 +119,38 @@ func TestPrepareTestEvidenceArtifacts_PublishesImageWithContentAddressedName(t *
 	if _, err := os.Stat(filepath.Join(workDir, filepath.FromSlash(wantRel))); err != nil {
 		t.Fatalf("published image missing: %v", err)
 	}
-	if _, err := os.Stat(source); !os.IsNotExist(err) {
-		t.Fatalf("source image should be replaced by deterministic publication, stat error = %v", err)
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("source image should remain intact after publication: %v", err)
+	}
+}
+
+func TestPrepareTestEvidenceArtifacts_PreservesUnrelatedDestinationFiles(t *testing.T) {
+	workDir := t.TempDir()
+	location := resolveTestEvidenceLocation(workDir, "feature", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
+	if err := os.MkdirAll(location.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(location.RepoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(location.Dir, "truncated.png")
+	unrelated := filepath.Join(location.RepoDir, "existing.png")
+	if err := os.WriteFile(source, []byte("\x89PNG\r\n\x1a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unrelated, testPNGBytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := prepareTestEvidenceArtifacts(workDir, location, []types.TestArtifact{{Kind: "screenshot", Label: "Broken", Path: source}})
+
+	if got[0].Path != "" {
+		t.Fatalf("malformed image was published: %#v", got[0])
+	}
+	for _, filename := range []string{source, unrelated} {
+		if _, err := os.Stat(filename); err != nil {
+			t.Fatalf("publication removed %q: %v", filename, err)
+		}
 	}
 }
 
@@ -140,7 +175,7 @@ func TestPrepareTestEvidenceArtifacts_RetryAndDuplicatesAreIdempotent(t *testing
 	if len(first) != 2 || len(second) != 2 || first[0].Path != first[1].Path || second[0].Path != first[0].Path || second[1].Path != first[0].Path {
 		t.Fatalf("duplicate/retry paths changed: first=%#v second=%#v", first, second)
 	}
-	entries, err := os.ReadDir(location.Dir)
+	entries, err := os.ReadDir(location.RepoDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +255,10 @@ func TestPrepareTestEvidenceArtifacts_PublishFailureDegradesSafely(t *testing.T)
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(content)
-	blockedTarget := filepath.Join(location.Dir, fmt.Sprintf("%x.png", sum[:16]))
+	if err := os.MkdirAll(location.RepoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	blockedTarget := filepath.Join(location.RepoDir, fmt.Sprintf("%x.png", sum[:16]))
 	if err := os.Mkdir(blockedTarget, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -237,4 +275,92 @@ func TestPrepareTestEvidenceArtifacts_PublishFailureDegradesSafely(t *testing.T)
 	if strings.Contains(got[0].Content, source) || strings.Contains(got[0].Content, workDir) {
 		t.Fatalf("publication failure exposed a private path: %#v", got[0])
 	}
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("publication failure removed source evidence: %v", err)
+	}
+}
+
+func TestPrepareTestEvidenceArtifacts_FullyValidatesSupportedImages(t *testing.T) {
+	workDir := t.TempDir()
+	location := resolveTestEvidenceLocation(workDir, "feature", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
+	if err := os.MkdirAll(location.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"truncated.png":       []byte("\x89PNG\r\n\x1a\n"),
+		"truncated.jpg":       {0xff, 0xd8, 0xff},
+		"truncated.gif":       []byte("GIF89a"),
+		"unsupported.webp":    append([]byte("RIFF\x04\x00\x00\x00WEBP"), []byte("VP8 ")...),
+		"too-many-pixels.png": oversizedDimensionPNG(50000, 50000),
+	}
+	var artifacts []types.TestArtifact
+	for name, data := range files {
+		filename := filepath.Join(location.Dir, name)
+		if err := os.WriteFile(filename, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		artifacts = append(artifacts, types.TestArtifact{Kind: "image", Label: name, Path: filename})
+	}
+
+	got := prepareTestEvidenceArtifacts(workDir, location, artifacts)
+
+	for _, artifact := range got {
+		if artifact.Path != "" || artifact.URL != "" || artifact.Content != unpublishedImageExplanation {
+			t.Fatalf("invalid image did not degrade safely: %#v", artifact)
+		}
+	}
+}
+
+func TestPrepareTestEvidenceArtifacts_DeduplicatesBeforeApplyingCaps(t *testing.T) {
+	workDir := t.TempDir()
+	location := resolveTestEvidenceLocation(workDir, "feature", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
+	if err := os.MkdirAll(location.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var artifacts []types.TestArtifact
+	for i := 0; i < maxPublishedImagesPerRun; i++ {
+		data := coloredPNGBytes(uint8(i))
+		filename := filepath.Join(location.Dir, fmt.Sprintf("%02d.png", i))
+		if err := os.WriteFile(filename, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		artifacts = append(artifacts, types.TestArtifact{Kind: "image", Label: fmt.Sprintf("image-%d", i), Path: filename})
+	}
+	duplicate := filepath.Join(location.Dir, "duplicate.png")
+	if err := os.WriteFile(duplicate, coloredPNGBytes(0), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	artifacts = append(artifacts, types.TestArtifact{Kind: "image", Label: "duplicate", Path: duplicate})
+
+	got := prepareTestEvidenceArtifacts(workDir, location, artifacts)
+
+	if got[len(got)-1].Path == "" || got[len(got)-1].Path != got[0].Path {
+		t.Fatalf("duplicate at publication cap was not reused: first=%#v duplicate=%#v", got[0], got[len(got)-1])
+	}
+}
+
+func coloredPNGBytes(value uint8) []byte {
+	var encoded bytes.Buffer
+	img := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.NRGBA{R: value, G: value ^ 0x5a, B: value ^ 0xa5, A: 0xff})
+	if err := png.Encode(&encoded, img); err != nil {
+		panic(err)
+	}
+	return encoded.Bytes()
+}
+
+func oversizedDimensionPNG(width, height uint32) []byte {
+	data := append([]byte{}, []byte("\x89PNG\r\n\x1a\n")...)
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:4], width)
+	binary.BigEndian.PutUint32(ihdr[4:8], height)
+	ihdr[8] = 8
+	ihdr[9] = 2
+	chunkType := []byte("IHDR")
+	chunk := make([]byte, 4+len(chunkType)+len(ihdr)+4)
+	binary.BigEndian.PutUint32(chunk[:4], uint32(len(ihdr)))
+	copy(chunk[4:8], chunkType)
+	copy(chunk[8:], ihdr)
+	binary.BigEndian.PutUint32(chunk[len(chunk)-4:], crc32.ChecksumIEEE(append(chunkType, ihdr...)))
+	return append(data, chunk...)
 }

@@ -406,10 +406,10 @@ intent:
   # disabled_readers: [codex]
 
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
-# gathers to demonstrate the change works). By default publishable images are
-# committed under a readable, branch-named directory so they are pushed and
-# render directly on the PR. Set store_in_repo to false to keep evidence local;
-# local paths are never included in generated PR content.
+# gathers to demonstrate the change works). Evidence is collected temporarily;
+# by default validated images are also committed under a readable, branch-named
+# directory so they render directly on the PR. Set store_in_repo to false to
+# disable image publication. Local paths are never included in PR content.
 # test:
 #   evidence:
 #     store_in_repo: false
@@ -1152,8 +1152,8 @@ func applyIntentOverrides(dst *Intent, src *IntentRaw) {
 	}
 }
 
-// testDefaults returns the default test-step settings. Publishable evidence
-// lands under .no-mistakes/evidence unless explicitly disabled.
+// testDefaults returns the default test-step settings. Publishable images land
+// under .no-mistakes/evidence unless explicitly disabled.
 func testDefaults() Test {
 	return Test{
 		Evidence: Evidence{

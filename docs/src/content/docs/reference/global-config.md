@@ -376,16 +376,17 @@ By default, publishable image evidence is committed with the validated branch so
 
 | Field                         | Type     | Default                 | Description                                                           |
 | ----------------------------- | -------- | ----------------------- | --------------------------------------------------------------------- |
-| `test.evidence.store_in_repo` | `bool`   | `true`                  | Commit and push test evidence artifacts from inside the repo worktree |
-| `test.evidence.dir`           | `string` | `.no-mistakes/evidence` | Repo-relative parent directory used when `store_in_repo` is true      |
+| `test.evidence.store_in_repo` | `bool`   | `true`                  | Publish validated image evidence with the branch                     |
+| `test.evidence.dir`           | `string` | `.no-mistakes/evidence` | Repo-relative image publication directory                            |
 
-When `store_in_repo` is true, the test step writes evidence under `<dir>/<branch-slug>` and the push step stages files from that directory before committing agent changes.
+The test step collects all evidence in its temporary run directory so readable UTF-8 text evidence keeps its existing inline PR rendering.
+When `store_in_repo` is true, validated images are copied to `<dir>/<branch-slug>`, and the push step stages only image paths recorded in the final test evidence manifest.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
-If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
-PNG, JPEG, GIF, and WebP images are validated, limited to 10 MiB each, 25 MiB and 20 images per run, and renamed using a content hash so duplicate evidence and retries are idempotent.
-The branch directory retains only the currently referenced supported images, while Git history retains images from earlier commits according to the repository's normal retention policy.
+If `dir` is absolute, escapes the worktree, points into `.git`, or crosses a symlink, image publication is disabled for that run while source evidence remains temporary.
+PNG, JPEG, and GIF images are fully decoded, limited to 40 Mi decoded pixels and 10 MiB each, capped at 25 MiB and 20 unique images per run, and renamed using a content hash so duplicate evidence and retries are idempotent.
+Publication never removes source evidence or unrelated files already present in the configured directory.
 Missing, unsupported, oversized, or unpublished images produce a concise explanation in the PR instead of a local path.
-Set `store_in_repo: false` to keep generated files local; local paths are never included in generated PR content.
+Set `store_in_repo: false` to disable image publication; local paths are never included in generated PR content.
 
 These are global defaults. Per-repo config can override either field.
 

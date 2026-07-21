@@ -1,7 +1,11 @@
 package steps
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +16,13 @@ import (
 )
 
 func testPNGBytes() []byte {
-	return []byte("\x89PNG\r\n\x1a\n")
+	var encoded bytes.Buffer
+	img := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.NRGBA{R: 0x2a, G: 0x6f, B: 0xd6, A: 0xff})
+	if err := png.Encode(&encoded, img); err != nil {
+		panic(err)
+	}
+	return encoded.Bytes()
 }
 
 func TestNoMistakesRequiredWorkflowChecksPipelineSignature(t *testing.T) {
@@ -494,6 +504,30 @@ func TestBuildTestingSummaryForPR_RendersForkHostedImageInline(t *testing.T) {
 	want := "![Checkout screenshot](https://raw.githubusercontent.com/fork-owner/widgets/abc123/evidence/checkout.png)"
 	if !strings.Contains(md, want) {
 		t.Fatalf("expected fork-hosted image markdown %q, got:\n%s", want, md)
+	}
+}
+
+func TestBuildTestingSummaryForPR_EscapesEveryImageURLPathSegment(t *testing.T) {
+	repoRoot := t.TempDir()
+	rel := filepath.Join("evidence #?", "snow 雪", "100%.png")
+	imagePath := filepath.Join(repoRoot, rel)
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imagePath, testPNGBytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Escaped screenshot","path":%q}]}`, filepath.ToSlash(rel))
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
+
+	want := "https://raw.githubusercontent.com/example/widgets/abc123/evidence%20%23%3F/snow%20%E9%9B%AA/100%25.png"
+	if !strings.Contains(md, want) {
+		t.Fatalf("expected escaped immutable image URL %q, got:\n%s", want, md)
 	}
 }
 

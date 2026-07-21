@@ -133,10 +133,6 @@ Previous test findings to address:
 	if useEvidenceAgent {
 		evidenceLocation := resolveTestEvidenceLocation(sctx.WorkDir, sctx.Run.Branch, sctx.Run.ID, sctx.Config.Test.Evidence)
 		evidenceDir := evidenceLocation.Dir
-		if evidenceLocation.StoreInRepo && gitIgnoresPath(ctx, sctx.WorkDir, evidenceDir) {
-			evidenceLocation = testEvidenceLocation{Dir: testEvidenceDir(sctx.Run.ID)}
-			evidenceDir = evidenceLocation.Dir
-		}
 		if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 			return nil, fmt.Errorf("create test evidence dir: %w", err)
 		}
@@ -147,9 +143,6 @@ Previous test findings to address:
 		}
 		reassessHistory := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
 		evidenceGuidance := fmt.Sprintf("- Write new evidence files into this temporary evidence directory: %s", evidenceDir)
-		if evidenceLocation.StoreInRepo {
-			evidenceGuidance = fmt.Sprintf("- Write new evidence files into this in-repo evidence directory; it is committed and pushed automatically, so artifacts render directly on the PR: %s", evidenceDir)
-		}
 		configuredTestCommand := ""
 		if testCmd != "" {
 			configuredTestCommand = fmt.Sprintf("\nConfigured test command already ran successfully as baseline: `%s`\n", testCmd)

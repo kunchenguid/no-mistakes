@@ -601,10 +601,11 @@ func artifactTargetForPath(artifact types.TestArtifact, opts testingSummaryOptio
 	if opts.githubBlobBase == "" || opts.githubRawBase == "" {
 		return repoPath
 	}
+	escapedPath := escapeURLPathSegments(repoPath)
 	if isImageArtifact(artifact.Kind, repoPath) || isVideoArtifact(artifact.Kind, repoPath) {
-		return opts.githubRawBase + repoPath
+		return opts.githubRawBase + escapedPath
 	}
-	return opts.githubBlobBase + repoPath
+	return opts.githubBlobBase + escapedPath
 }
 
 func artifactLinkTargetForPath(artifact types.TestArtifact, opts testingSummaryOptions) string {
@@ -615,7 +616,15 @@ func artifactLinkTargetForPath(artifact types.TestArtifact, opts testingSummaryO
 	if opts.githubBlobBase == "" {
 		return repoPath
 	}
-	return opts.githubBlobBase + repoPath
+	return opts.githubBlobBase + escapeURLPathSegments(repoPath)
+}
+
+func escapeURLPathSegments(target string) string {
+	segments := strings.Split(filepath.ToSlash(target), "/")
+	for i := range segments {
+		segments[i] = url.PathEscape(segments[i])
+	}
+	return strings.Join(segments, "/")
 }
 
 func sanitizeArtifactPath(target string, opts testingSummaryOptions) string {

@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -488,5 +489,55 @@ func TestTestStep_InitialAgent_NoTargetedEvidenceRequiresHonestFinding(t *testin
 		if !strings.Contains(prompt, want) {
 			t.Errorf("expected no-targeted-evidence guidance %q in prompt:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestTestStep_PublishesOnlyImagesAndPreservesTemporaryTextEvidence(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	var textPath string
+	var imagePath string
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			evidenceDir := filepath.Join(testEvidenceRoot(), "run-1")
+			textPath = filepath.Join(evidenceDir, "transcript.txt")
+			imagePath = filepath.Join(evidenceDir, "screen.png")
+			if err := os.WriteFile(textPath, []byte("checkout completed"), 0o644); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(imagePath, testPNGBytes(), 0o644); err != nil {
+				return nil, err
+			}
+			output := fmt.Sprintf(`{"findings":[],"summary":"","tested":["manual checkout"],"artifacts":[{"kind":"log","label":"Transcript","path":%q},{"kind":"screenshot","label":"Screen","path":%q}]}`, textPath, imagePath)
+			return &agent.Result{Output: json.RawMessage(output)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.ID = "run-1"
+	sctx.Run.Branch = "feature"
+	sctx.UserIntent = "Show checkout success"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(testEvidenceRoot(), sctx.Run.ID)) })
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatal(err)
+	}
+	if findings.Artifacts[0].Path != textPath {
+		t.Fatalf("text evidence path changed: %#v", findings.Artifacts[0])
+	}
+	if filepath.IsAbs(findings.Artifacts[1].Path) || !strings.HasPrefix(findings.Artifacts[1].Path, "evidence/feature/") {
+		t.Fatalf("image evidence was not published to a repository path: %#v", findings.Artifacts[1])
+	}
+	if _, err := os.Stat(textPath); err != nil {
+		t.Fatalf("temporary text evidence was not preserved: %v", err)
+	}
+	if _, err := os.Stat(imagePath); err != nil {
+		t.Fatalf("source image evidence was not preserved: %v", err)
 	}
 }

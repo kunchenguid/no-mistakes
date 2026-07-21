@@ -2,7 +2,6 @@ package steps
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -48,15 +47,23 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
 			return nil, fmt.Errorf("stage agent changes: %w", err)
 		}
-		_, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply agent fixes")
-		if err != nil {
-			return nil, fmt.Errorf("commit agent changes: %w", err)
+		if err := s.stageInRepoEvidence(sctx); err != nil {
+			return nil, err
 		}
-		headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+		stagedPaths, err := git.Run(ctx, sctx.WorkDir, "diff", "--cached", "--name-only")
 		if err != nil {
-			return nil, fmt.Errorf("resolve head after commit: %w", err)
+			return nil, fmt.Errorf("inspect staged agent changes: %w", err)
 		}
-		newHeadSHA = headSHA
+		if strings.TrimSpace(stagedPaths) != "" {
+			if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply agent fixes"); err != nil {
+				return nil, fmt.Errorf("commit agent changes: %w", err)
+			}
+			headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
+			if err != nil {
+				return nil, fmt.Errorf("resolve head after commit: %w", err)
+			}
+			newHeadSHA = headSHA
+		}
 	}
 
 	ref := normalizedBranchRef(sctx.Run.Branch)
@@ -147,32 +154,52 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 	if !location.StoreInRepo {
 		return nil
 	}
-	if gitIgnoresPath(ctx, sctx.WorkDir, location.Dir) {
-		return nil
-	}
-	if !dirHasFiles(location.Dir) {
-		return nil
-	}
-	rel, err := filepath.Rel(sctx.WorkDir, location.Dir)
+	rel, err := filepath.Rel(sctx.WorkDir, location.RepoDir)
 	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return nil
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-f", "--", filepath.ToSlash(rel)); err != nil {
-		return fmt.Errorf("stage test evidence: %w", err)
+	rel = filepath.ToSlash(rel)
+	if _, err := git.Run(ctx, sctx.WorkDir, "reset", "--quiet", "HEAD", "--", rel); err != nil {
+		return fmt.Errorf("clear staged test evidence: %w", err)
+	}
+
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		return fmt.Errorf("load test evidence manifest: %w", err)
+	}
+	staged := make(map[string]bool)
+	for _, result := range steps {
+		if result.StepName != types.StepTest || result.FindingsJSON == nil {
+			continue
+		}
+		findings, err := types.ParseFindingsJSON(*result.FindingsJSON)
+		if err != nil {
+			continue
+		}
+		for _, artifact := range findings.Artifacts {
+			if !isImageArtifact(artifact.Kind, artifact.Path) || filepath.IsAbs(artifact.Path) {
+				continue
+			}
+			target := filepath.Join(sctx.WorkDir, filepath.FromSlash(artifact.Path))
+			if _, ok := artifactPathRelativeToRoot(target, location.RepoDir); !ok {
+				continue
+			}
+			if _, _, ok := readPublishableImage(target); !ok {
+				continue
+			}
+			targetRel, ok := artifactPathRelativeToRoot(target, sctx.WorkDir)
+			if !ok {
+				continue
+			}
+			targetRel = filepath.ToSlash(targetRel)
+			if staged[targetRel] {
+				continue
+			}
+			if _, err := git.Run(ctx, sctx.WorkDir, "add", "-f", "--", targetRel); err != nil {
+				return fmt.Errorf("stage test evidence: %w", err)
+			}
+			staged[targetRel] = true
+		}
 	}
 	return nil
-}
-
-func dirHasFiles(dir string) bool {
-	found := false
-	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || found {
-			return nil
-		}
-		if !d.IsDir() {
-			found = true
-		}
-		return nil
-	})
-	return found
 }

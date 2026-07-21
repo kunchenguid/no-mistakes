@@ -4,6 +4,11 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"image"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +21,7 @@ const (
 	maxPublishedImageBytes       = 10 * 1024 * 1024
 	maxPublishedImagesTotalBytes = 25 * 1024 * 1024
 	maxPublishedImagesPerRun     = 20
+	maxPublishedImagePixels      = 40 * 1024 * 1024
 	unpublishedImageExplanation  = "Image evidence was not published."
 )
 
@@ -29,11 +35,8 @@ func testEvidenceDir(runID string) string {
 
 // resolveTestEvidenceDir picks where the test step writes evidence artifacts.
 //
-// Published evidence lands under a readable, branch-named directory inside the
-// worktree so it is committed, pushed, and rendered directly on the PR. When
-// repository storage is disabled, or the configured directory is unsafe,
-// evidence stays in a run-specific temporary directory and generated PR
-// content omits its local path.
+// Evidence is collected in a run-specific temporary directory. Validated
+// images may also be published under a branch-named directory in the worktree.
 func resolveTestEvidenceDir(workDir, branch, runID string, ev config.Evidence) string {
 	location := resolveTestEvidenceLocation(workDir, branch, runID, ev)
 	return location.Dir
@@ -41,16 +44,18 @@ func resolveTestEvidenceDir(workDir, branch, runID string, ev config.Evidence) s
 
 type testEvidenceLocation struct {
 	Dir         string
+	RepoDir     string
 	StoreInRepo bool
 }
 
 func resolveTestEvidenceLocation(workDir, branch, runID string, ev config.Evidence) testEvidenceLocation {
+	sourceDir := testEvidenceDir(runID)
 	if !ev.StoreInRepo {
-		return testEvidenceLocation{Dir: testEvidenceDir(runID)}
+		return testEvidenceLocation{Dir: sourceDir}
 	}
 	sub, ok := safeRepoSubdir(ev.Dir)
 	if !ok {
-		return testEvidenceLocation{Dir: testEvidenceDir(runID)}
+		return testEvidenceLocation{Dir: sourceDir}
 	}
 	segments := evidenceBranchSlug(branch)
 	if len(segments) == 0 {
@@ -59,10 +64,14 @@ func resolveTestEvidenceLocation(workDir, branch, runID string, ev config.Eviden
 	relParts := append([]string{sub}, segments...)
 	rel := filepath.Join(relParts...)
 	if repoPathHasSymlink(workDir, rel) {
-		return testEvidenceLocation{Dir: testEvidenceDir(runID)}
+		return testEvidenceLocation{Dir: sourceDir}
 	}
 	parts := append([]string{workDir}, relParts...)
-	return testEvidenceLocation{Dir: filepath.Join(parts...), StoreInRepo: true}
+	return testEvidenceLocation{
+		Dir:         sourceDir,
+		RepoDir:     filepath.Join(parts...),
+		StoreInRepo: true,
+	}
 }
 
 func repoPathHasSymlink(workDir, rel string) bool {
@@ -171,7 +180,6 @@ func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation,
 
 	publishedBySource := make(map[string]string)
 	publishedByHash := make(map[string]string)
-	keep := make(map[string]bool)
 	totalBytes := int64(0)
 	publishedCount := 0
 
@@ -186,22 +194,21 @@ func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation,
 			continue
 		}
 
-		source := evidenceArtifactFilesystemPath(artifact.Path, workDir, location.Dir)
+		source := evidenceArtifactFilesystemPath(artifact.Path, workDir, location.Dir, location.RepoDir)
 		if rel, ok := publishedBySource[source]; source != "" && ok {
 			prepared[i].Path = rel
 			prepared[i].URL = ""
-			keep[filepath.Join(workDir, filepath.FromSlash(rel))] = true
 			continue
 		}
 		data, ext, ok := readPublishableImage(source)
-		if !ok || publishedCount >= maxPublishedImagesPerRun || totalBytes+int64(len(data)) > maxPublishedImagesTotalBytes {
+		if !ok {
 			prepared[i] = unpublishedImageArtifact(artifact)
 			continue
 		}
 
 		sum := sha256.Sum256(data)
 		hash := fmt.Sprintf("%x", sum[:16])
-		target := filepath.Join(location.Dir, hash+ext)
+		target := filepath.Join(location.RepoDir, hash+ext)
 		rel, ok := artifactPathRelativeToRoot(target, workDir)
 		if !ok {
 			prepared[i] = unpublishedImageArtifact(artifact)
@@ -212,6 +219,19 @@ func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation,
 		if existing, ok := publishedByHash[hash]; ok {
 			target = existing
 		} else {
+			if publishedCount >= maxPublishedImagesPerRun || totalBytes+int64(len(data)) > maxPublishedImagesTotalBytes {
+				prepared[i] = unpublishedImageArtifact(artifact)
+				continue
+			}
+			if err := os.MkdirAll(location.RepoDir, 0o755); err != nil {
+				prepared[i] = unpublishedImageArtifact(artifact)
+				continue
+			}
+			destinationRel, err := filepath.Rel(workDir, location.RepoDir)
+			if !okRelativePath(destinationRel, err) || repoPathHasSymlink(workDir, destinationRel) {
+				prepared[i] = unpublishedImageArtifact(artifact)
+				continue
+			}
 			if err := writePublishedImage(target, data); err != nil {
 				prepared[i] = unpublishedImageArtifact(artifact)
 				continue
@@ -221,13 +241,15 @@ func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation,
 			totalBytes += int64(len(data))
 		}
 		publishedBySource[source] = rel
-		keep[target] = true
 		prepared[i].Path = rel
 		prepared[i].URL = ""
 	}
 
-	pruneUnreferencedEvidenceImages(location.Dir, keep)
 	return prepared
+}
+
+func okRelativePath(rel string, err error) bool {
+	return err == nil && rel != "." && rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func unpublishedImageArtifact(artifact types.TestArtifact) types.TestArtifact {
@@ -237,21 +259,28 @@ func unpublishedImageArtifact(artifact types.TestArtifact) types.TestArtifact {
 	return artifact
 }
 
-func evidenceArtifactFilesystemPath(target, workDir, evidenceDir string) string {
+func evidenceArtifactFilesystemPath(target, workDir string, evidenceRoots ...string) string {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return ""
 	}
 	candidates := []string{target}
 	if !filepath.IsAbs(target) {
-		candidates = []string{
-			filepath.Join(workDir, filepath.FromSlash(target)),
-			filepath.Join(evidenceDir, filepath.FromSlash(target)),
+		candidates = []string{filepath.Join(workDir, filepath.FromSlash(target))}
+		for _, root := range evidenceRoots {
+			candidates = append(candidates, filepath.Join(root, filepath.FromSlash(target)))
 		}
 	}
 	for _, candidate := range candidates {
 		candidate = filepath.Clean(candidate)
-		if _, ok := artifactPathRelativeToRoot(candidate, evidenceDir); !ok {
+		withinRoot := false
+		for _, root := range evidenceRoots {
+			if _, ok := artifactPathRelativeToRoot(candidate, root); ok {
+				withinRoot = true
+				break
+			}
+		}
+		if !withinRoot {
 			continue
 		}
 		if info, err := os.Lstat(candidate); err == nil && info.Mode().IsRegular() {
@@ -280,16 +309,46 @@ func readPublishableImage(filename string) ([]byte, string, bool) {
 func supportedImageExtension(ext string, data []byte) (string, bool) {
 	switch strings.ToLower(ext) {
 	case ".png":
-		return ".png", bytes.HasPrefix(data, []byte("\x89PNG\r\n\x1a\n"))
+		return ".png", fullyDecodeImage(data, png.DecodeConfig, png.Decode)
 	case ".jpg", ".jpeg":
-		return ".jpg", len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff
+		return ".jpg", fullyDecodeImage(data, jpeg.DecodeConfig, jpeg.Decode)
 	case ".gif":
-		return ".gif", bytes.HasPrefix(data, []byte("GIF87a")) || bytes.HasPrefix(data, []byte("GIF89a"))
-	case ".webp":
-		return ".webp", len(data) >= 12 && bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP"))
+		cfg, err := gif.DecodeConfig(bytes.NewReader(data))
+		if err != nil || !validImageDimensions(cfg, 1) {
+			return ".gif", false
+		}
+		decoded, err := gif.DecodeAll(bytes.NewReader(data))
+		if err != nil || len(decoded.Image) == 0 || !validImageDimensions(cfg, len(decoded.Image)) {
+			return ".gif", false
+		}
+		return ".gif", true
 	default:
 		return "", false
 	}
+}
+
+type imageConfigDecoder func(io.Reader) (image.Config, error)
+type imageDecoder func(io.Reader) (image.Image, error)
+
+func fullyDecodeImage(data []byte, decodeConfig imageConfigDecoder, decode imageDecoder) bool {
+	cfg, err := decodeConfig(bytes.NewReader(data))
+	if err != nil || !validImageDimensions(cfg, 1) {
+		return false
+	}
+	decoded, err := decode(bytes.NewReader(data))
+	if err != nil {
+		return false
+	}
+	bounds := decoded.Bounds()
+	return bounds.Dx() == cfg.Width && bounds.Dy() == cfg.Height
+}
+
+func validImageDimensions(cfg image.Config, frames int) bool {
+	if cfg.Width <= 0 || cfg.Height <= 0 || frames <= 0 {
+		return false
+	}
+	pixels := uint64(cfg.Width) * uint64(cfg.Height) * uint64(frames)
+	return pixels <= maxPublishedImagePixels
 }
 
 func writePublishedImage(target string, data []byte) error {
@@ -319,18 +378,4 @@ func writePublishedImage(target string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmpName, target)
-}
-
-func pruneUnreferencedEvidenceImages(dir string, keep map[string]bool) {
-	_ = filepath.WalkDir(dir, func(filename string, entry os.DirEntry, err error) error {
-		if err != nil || entry.IsDir() || keep[filename] {
-			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(filename))
-		switch ext {
-		case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg":
-			_ = os.Remove(filename)
-		}
-		return nil
-	})
 }

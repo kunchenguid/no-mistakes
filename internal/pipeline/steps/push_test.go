@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
@@ -97,7 +99,14 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(evidenceDir, "checkout.png"), []byte("png"), 0o644); err != nil {
+	publishedPath := filepath.Join(evidenceDir, "checkout.png")
+	if err := os.WriteFile(publishedPath, testPNGBytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(evidenceDir, "unreferenced.png"), testPNGBytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(evidenceDir, "sensitive.dump"), []byte("secret"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -106,6 +115,14 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "feature"
 	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+	testResult, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Checkout","path":%q}]}`, filepath.ToSlash(filepath.Join("evidence", "feature", "checkout.png")))
+	if err := sctx.DB.SetStepFindings(testResult.ID, findings); err != nil {
+		t.Fatal(err)
+	}
 
 	step := &PushStep{}
 	if _, err := step.Execute(sctx); err != nil {
@@ -116,6 +133,11 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 	gitCmd(t, clone, "clone", "--branch", "feature", upstream, ".")
 	if _, err := os.Stat(filepath.Join(clone, "evidence", "feature", "checkout.png")); err != nil {
 		t.Fatalf("expected ignored evidence artifact to be pushed: %v", err)
+	}
+	for _, name := range []string{"unreferenced.png", "sensitive.dump"} {
+		if _, err := os.Stat(filepath.Join(clone, "evidence", "feature", name)); !os.IsNotExist(err) {
+			t.Fatalf("unreferenced evidence %q was pushed, stat error = %v", name, err)
+		}
 	}
 }
 
