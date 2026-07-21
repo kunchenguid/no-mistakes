@@ -383,7 +383,8 @@ The test step collects all evidence in its temporary run directory so readable U
 When `store_in_repo` is true, validated images are copied to `<dir>/<branch-slug>`, and the push step stages only image paths recorded in the final test evidence manifest.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 If `dir` is absolute, escapes the worktree, points into `.git`, or crosses a symlink, image publication is disabled for that run while source evidence remains temporary.
-PNG and JPEG images are fully decoded, limited to 40 Mi decoded pixels and 10 MiB each, capped at 25 MiB and 20 unique images per run, and renamed using a content hash so duplicate evidence and retries are idempotent.
+PNG and JPEG images are fully decoded, limited to 8,000,000 pixels and 10 MiB each, capped at 25 MiB and 20 unique images per run, and renamed using a content hash so duplicate evidence and retries are idempotent.
+Images that exceed the bounded decoding limits fall back to sanitized text instead of being published.
 Immediately before staging, the push step rejects symlinks and verifies each image's size, SHA-256 digest, and content-addressed filename against the recorded manifest.
 Images are published only when a credential-free HTTPS or Git SSH remote resolves to github.com or a GitHub Enterprise host configured in `gh`.
 PR rendering additionally requires the staged manifest hash to match the exact image blob at the pushed commit.
