@@ -210,6 +210,16 @@ func TestRebaseStep_ForkSyncsPushBranchBeforeDefaultBranch(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "main")
 	gitCmd(t, dir, "push", fork, "main")
 
+	gitCmd(t, dir, "checkout", "-b", "staging")
+	if err := os.WriteFile(filepath.Join(dir, "staging.txt"), []byte("staging\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "staging base")
+	stagingSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "staging")
+	gitCmd(t, dir, "checkout", "main")
+
 	gitCmd(t, dir, "checkout", "-b", "feature")
 	gitCmd(t, dir, "push", "origin", "feature")
 	gitCmd(t, dir, "push", fork, "feature")
@@ -219,7 +229,6 @@ func TestRebaseStep_ForkSyncsPushBranchBeforeDefaultBranch(t *testing.T) {
 	}
 	gitCmd(t, dir, "add", "-A")
 	gitCmd(t, dir, "commit", "-m", "fork update")
-	forkOnlySHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", fork, "feature")
 
 	gitCmd(t, dir, "reset", "--hard", baseSHA)
@@ -235,6 +244,8 @@ func TestRebaseStep_ForkSyncsPushBranchBeforeDefaultBranch(t *testing.T) {
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Repo.UpstreamURL = parent
 	sctx.Repo.ForkURL = fork
+	sctx.Repo.BaseBranch = "release/v2"
+	sctx.Run.BaseBranch = "staging"
 
 	step := &RebaseStep{}
 	outcome, err := step.Execute(sctx)
@@ -250,8 +261,11 @@ func TestRebaseStep_ForkSyncsPushBranchBeforeDefaultBranch(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "local.txt")); err != nil {
 		t.Fatalf("expected local commit to remain after rebase: %v", err)
 	}
-	if mergeBase := gitCmd(t, dir, "merge-base", "HEAD", forkOnlySHA); mergeBase != forkOnlySHA {
-		t.Fatalf("merge-base = %s, want fork tip %s", mergeBase, forkOnlySHA)
+	if _, err := os.Stat(filepath.Join(dir, "staging.txt")); err != nil {
+		t.Fatalf("expected parent staging base to be included after rebase: %v", err)
+	}
+	if mergeBase := gitCmd(t, dir, "merge-base", "HEAD", stagingSHA); mergeBase != stagingSHA {
+		t.Fatalf("merge-base = %s, want staging tip %s", mergeBase, stagingSHA)
 	}
 }
 

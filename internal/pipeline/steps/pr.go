@@ -57,8 +57,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if strings.HasPrefix(branch, "refs/heads/") {
 		branch = strings.TrimPrefix(branch, "refs/heads/")
 	}
-	if branch == sctx.Repo.DefaultBranch {
-		sctx.Log(fmt.Sprintf("skipping PR creation on default branch %s", branch))
+	baseBranch := sctx.BaseBranch()
+	if branch == sctx.Repo.DefaultBranch || branch == baseBranch {
+		sctx.Log(fmt.Sprintf("skipping PR creation on protected branch %s", branch))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	provider := scm.DetectProviderContext(ctx, sctx.Repo.UpstreamURL)
@@ -73,14 +74,14 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 
 	// Resolve the branch base so PR summaries cover the full branch delta.
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
 	content, err := s.buildPRContent(sctx, branch, baseSHA, scm.MaxPRBodyChars(provider))
 	if err != nil {
 		return nil, err
 	}
 
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
-	existing, err := host.FindPR(ctx, branch, sctx.Repo.DefaultBranch)
+	existing, err := host.FindPR(ctx, branch, baseBranch)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +102,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 
 	sctx.Log("creating pull request...")
-	created, err := host.CreatePR(ctx, branch, sctx.Repo.DefaultBranch, scm.PRContent(content))
+	created, err := host.CreatePR(ctx, branch, baseBranch, scm.PRContent(content))
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +151,7 @@ Context:
 - branch: %s
 - base commit: %s
 - target commit: %s
-- default branch: %s
+- pipeline base: %s
 
 Rules:
 - Cover the full branch delta, not just the latest commit.
@@ -165,7 +166,7 @@ Commit history:
 %s
 
 Diff stat:
-%s%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, sctx.Repo.DefaultBranch, conventional.ReleaseTypeRule, commitLog, diffStat, pipelineContext, userIntentPromptSection(sctx), executionContextPromptSection())
+%s%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, sctx.BaseBranch(), conventional.ReleaseTypeRule, commitLog, diffStat, pipelineContext, userIntentPromptSection(sctx), executionContextPromptSection())
 
 	prompt += prBodyBudgetPromptSection(bodyLimit)
 

@@ -52,9 +52,9 @@ While the wizard is running, it also updates your terminal window title with the
 
 ### 1. Branch
 
-Shown when you're on the default branch or a detached `HEAD`. Prompts for a branch name.
+Shown when you're on the repository default, the configured pipeline base, or a detached `HEAD`. Both policy branches are protected sources, so the wizard prompts for a feature branch name.
 
-- Type a name to create a new branch.
+- Type a name to create a new branch. When the current branch is a distinct repository default, the wizard freshly fetches the pipeline base and starts the feature from `origin/<base>` rather than carrying default-only history into the PR.
 - Leave blank and press enter to ask the configured agent for a branch name suggestion based on your local changes.
 - Press `q` to quit.
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -40,14 +41,33 @@ func repoID(absPath string) string {
 // new path, preserving its run history. The returned bool reports whether a
 // new gate was created (true) or an existing one was refreshed (false).
 func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Repo, bool, error) {
-	return InitWithFork(ctx, d, p, workDir, "")
+	return InitWithOptions(ctx, d, p, workDir, InitOptions{})
+}
+
+// InitOptions carries explicit registration policy. BaseBranch distinguishes
+// an omitted flag (nil) from an explicitly supplied value; ClearBaseBranch
+// returns future runs to the freshly detected remote default.
+type InitOptions struct {
+	ForkURL         string
+	BaseBranch      *string
+	ClearBaseBranch bool
 }
 
 // InitWithFork is Init plus an optional GitHub fork push URL. The origin remote
 // remains the parent repository used for PRs. When forkURL is empty, an
 // existing fork setting is preserved across idempotent refreshes.
 func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL string) (*db.Repo, bool, error) {
-	forkURL = strings.TrimSpace(forkURL)
+	return InitWithOptions(ctx, d, p, workDir, InitOptions{ForkURL: forkURL})
+}
+
+// InitWithOptions initializes or refreshes repository registration. Base
+// policy is resolved before gate provisioning or database mutation so an
+// invalid trust-root change leaves the existing registration untouched.
+func InitWithOptions(ctx context.Context, d *db.DB, p *paths.Paths, workDir string, opts InitOptions) (*db.Repo, bool, error) {
+	forkURL := strings.TrimSpace(opts.ForkURL)
+	if opts.BaseBranch != nil && opts.ClearBaseBranch {
+		return nil, false, fmt.Errorf("base branch and clear base branch are mutually exclusive")
+	}
 
 	// Normalize worktrees back to the main repo root so one repo record works
 	// from either the main checkout or any attached worktree.
@@ -109,6 +129,14 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 	// from the worktree at run time instead of trusting the DB copy.
 	redactedUpstreamURL := safeurl.Redact(upstreamURL)
 
+	// Keep the remote default as host metadata. The separately resolved base
+	// governs integration and trusted configuration for future runs.
+	defaultBranch := git.DefaultBranch(ctx, absRoot, "origin")
+	baseBranch, err := resolveBaseBranchRegistration(ctx, absRoot, existing, defaultBranch, opts)
+	if err != nil {
+		return nil, false, err
+	}
+
 	id := repoID(absRoot)
 	if existing != nil {
 		id = existing.ID
@@ -128,15 +156,12 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 		return nil, false, err
 	}
 
-	// Detect default branch from upstream remote.
-	branch := git.DefaultBranch(ctx, absRoot, "origin")
-
 	if existing != nil {
 		var repo *db.Repo
 		if forkURL != "" {
-			repo, err = d.UpdateRepoMetadataWithFork(existing.ID, redactedUpstreamURL, forkURL, branch)
+			repo, err = d.UpdateRepoMetadataWithForkAndBase(existing.ID, redactedUpstreamURL, forkURL, defaultBranch, baseBranch)
 		} else {
-			repo, err = d.UpdateRepoMetadata(existing.ID, redactedUpstreamURL, branch)
+			repo, err = d.UpdateRepoMetadataAndBase(existing.ID, redactedUpstreamURL, defaultBranch, baseBranch)
 		}
 		if err != nil {
 			return nil, false, fmt.Errorf("update repo metadata: %w", err)
@@ -146,7 +171,7 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 	}
 
 	// Insert repo record with deterministic ID.
-	repo, err := d.InsertRepoWithIDAndFork(id, absRoot, redactedUpstreamURL, forkURL, branch)
+	repo, err := d.InsertRepoWithIDAndForkAndBase(id, absRoot, redactedUpstreamURL, forkURL, defaultBranch, baseBranch)
 	if err != nil {
 		// Rollback: remove remote and bare repo.
 		git.RemoveRemote(ctx, absRoot, RemoteName)
@@ -156,6 +181,131 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 
 	slog.Info("gate initialized", "repo_id", id, "path", absRoot, "upstream", redactedUpstreamURL)
 	return repo, true, nil
+}
+
+func resolveBaseBranchRegistration(ctx context.Context, workDir string, existing *db.Repo, defaultBranch string, opts InitOptions) (string, error) {
+	if opts.ClearBaseBranch {
+		if _, err := validateRemoteBaseBranch(ctx, workDir, defaultBranch); err != nil {
+			return "", fmt.Errorf("clear base branch: validate remote default %q: %w", defaultBranch, err)
+		}
+		return "", nil
+	}
+
+	if opts.BaseBranch != nil {
+		candidate := strings.TrimSpace(*opts.BaseBranch)
+		if candidate == "" {
+			return "", fmt.Errorf("base branch must not be empty")
+		}
+		if _, err := validateRemoteBaseBranch(ctx, workDir, candidate); err != nil {
+			return "", fmt.Errorf("validate base branch %q: %w", candidate, err)
+		}
+		if candidate == defaultBranch {
+			return "", nil
+		}
+		return candidate, nil
+	}
+
+	// A fresh repo begins with the remote default as its trust root. A refresh
+	// begins with the currently registered effective base. The checked-out
+	// feature copy never participates in this decision.
+	trustBranch := defaultBranch
+	if existing != nil {
+		trustBranch = existing.EffectiveBaseBranch()
+	}
+	trusted, err := readRemoteRepoConfig(ctx, workDir, trustBranch, "current-trust")
+	if err != nil {
+		// Preserve exact legacy init behavior when no override exists: default
+		// discovery may fall back to main for an empty or temporarily unreachable
+		// remote. An already configured override, however, must remain verifiable.
+		if existing != nil && strings.TrimSpace(existing.BaseBranch) != "" {
+			return "", fmt.Errorf("read trusted pipeline base %q: %w", trustBranch, err)
+		}
+		trusted = nil
+	}
+
+	candidate := ""
+	if trusted != nil && trusted.BaseBranchSet {
+		candidate = strings.TrimSpace(trusted.BaseBranch)
+		if candidate == "" {
+			return "", fmt.Errorf("trusted base_branch on %q must not be empty", trustBranch)
+		}
+	} else if existing != nil {
+		candidate = strings.TrimSpace(existing.BaseBranch)
+	}
+	if candidate == "" {
+		return "", nil
+	}
+	if _, err := validateRemoteBaseBranch(ctx, workDir, candidate); err != nil {
+		return "", fmt.Errorf("validate base branch %q: %w", candidate, err)
+	}
+	if candidate == defaultBranch {
+		return "", nil
+	}
+	return candidate, nil
+}
+
+func validateRemoteBaseBranch(ctx context.Context, workDir, branch string) (*config.RepoConfig, error) {
+	branch = strings.TrimSpace(branch)
+	if err := validateBaseBranchName(ctx, workDir, branch); err != nil {
+		return nil, err
+	}
+	sha, err := git.LsRemote(ctx, workDir, "origin", "refs/heads/"+branch)
+	if err != nil {
+		return nil, fmt.Errorf("query parent origin: %w", err)
+	}
+	if sha == "" {
+		return nil, fmt.Errorf("branch does not exist on parent origin")
+	}
+	return readRemoteRepoConfig(ctx, workDir, branch, "candidate")
+}
+
+func validateBaseBranchName(ctx context.Context, workDir, branch string) error {
+	if branch == "" {
+		return fmt.Errorf("branch name is empty")
+	}
+	if branch == "HEAD" || strings.HasPrefix(branch, "refs/") {
+		return fmt.Errorf("branch must be a short branch name, not %q", branch)
+	}
+	if _, err := git.Run(ctx, workDir, "check-ref-format", "--branch", branch); err != nil {
+		return fmt.Errorf("invalid branch name: %w", err)
+	}
+	return nil
+}
+
+func readRemoteRepoConfig(ctx context.Context, workDir, branch, purpose string) (*config.RepoConfig, error) {
+	branch = strings.TrimSpace(branch)
+	if err := validateBaseBranchName(ctx, workDir, branch); err != nil {
+		return nil, err
+	}
+	hash := sha256.Sum256([]byte(purpose + "\x00" + branch))
+	privateRef := fmt.Sprintf("refs/no-mistakes/init-base/%x", hash[:6])
+	defer func() { _, _ = git.Run(context.Background(), workDir, "update-ref", "-d", privateRef) }()
+	if err := git.FetchRemoteBranchToPrivateRef(ctx, workDir, "origin", branch, privateRef); err != nil {
+		return nil, fmt.Errorf("fetch parent origin branch: %w", err)
+	}
+	sha, err := git.ResolveRef(ctx, workDir, privateRef)
+	if err != nil {
+		return nil, fmt.Errorf("resolve fetched branch: %w", err)
+	}
+	if _, err := git.Run(ctx, workDir, "rev-parse", "-q", "--verify", sha+"^{commit}"); err != nil {
+		return nil, fmt.Errorf("fetched commit is not readable: %w", err)
+	}
+	entry, err := git.Run(ctx, workDir, "ls-tree", sha, "--", ".no-mistakes.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("fetched tree is not readable: %w", err)
+	}
+	if strings.TrimSpace(entry) == "" {
+		return &config.RepoConfig{}, nil
+	}
+	content, err := git.ShowFile(ctx, workDir, sha, ".no-mistakes.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("read trusted .no-mistakes.yaml: %w", err)
+	}
+	cfg, err := config.LoadRepoFromBytes([]byte(content))
+	if err != nil {
+		return nil, fmt.Errorf("parse trusted .no-mistakes.yaml: %w", err)
+	}
+	return cfg, nil
 }
 
 func validateForkRouting(ctx context.Context, upstreamURL, forkURL string) error {

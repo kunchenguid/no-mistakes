@@ -31,9 +31,11 @@ task along with the command:
      Preserve unrelated pre-existing uncommitted changes, and when you commit,
      commit only the changes that belong to the user's task.
   2. **Do the work.** Make the changes the task describes, then **commit them on
-     a feature branch**. If the user is on the repository's default branch,
-     create a feature branch first - the gate validates committed history on a
-     non-default branch, so the work must land there before you run.
+     a feature branch**. If the user is on the repository's default branch or
+     configured pipeline base, create a feature branch first - both policy
+     branches are protected sources, so the work must land elsewhere before you run.
+     When the repository default differs from the pipeline base, fetch and start
+     the feature from `origin/<base>` rather than from default-only history.
   3. **Then validate**, passing the user's task as your `--intent`. The task
      text is exactly what the user set out to accomplish, in their own words, so
      it *is* the intent - pass it through, enriched with the decisions and
@@ -47,7 +49,7 @@ the same way once the work is committed on a feature branch.
 
 - The work you want validated must be **committed** on a branch. The gate
   validates committed history, not your uncommitted working tree.
-- You must be on a **feature branch**, not the repository's default branch.
+- You must be on a **feature branch**, not the repository's default branch or configured pipeline base.
 - The repository must already be initialized with `no-mistakes init`.
 - The daemon must have a runnable configured pipeline agent: a supported native
   agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through
@@ -193,7 +195,7 @@ The CI step deliberately keeps watching the PR after checks pass, so
 `axi run` returns `checks-passed` the moment checks are green rather than
 blocking on the human merge. Never poll or re-run waiting for the merge yourself.
 
-Because that monitor stays live, a PR that falls behind the default branch or
+Because that monitor stays live, a PR that falls behind its pipeline base or
 hits a merge conflict after checks pass - commonly because another PR merged
 first - needs **no command from you**: never hand-rebase. When the CI monitor
 sees an actual conflict it **rebases onto the base, resolves it, and re-pushes

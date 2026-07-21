@@ -169,13 +169,19 @@ This means the live remote branch changed after the pipeline's last observed hea
 Fetch and inspect the configured push target, then rebase or merge the remote work into your branch before pushing through `no-mistakes` again.
 If the overwrite is intentional, push manually to the actual remote after reviewing the commits that would be discarded.
 
-### Rebase pauses because the branch carries unpushed default-branch commits
+### Rebase pauses because the branch carries unpushed pipeline-base commits
 
-This means the branch was created from a local default branch that is ahead of `origin/<default_branch>`, so its history includes commits that exist only on your local default branch.
+This means the branch was created from a local pipeline base that is ahead of `origin/<base_branch>`, so its history includes commits that exist only on your local base branch.
 `no-mistakes` pauses with an `ask-user` finding instead of silently bundling that unrelated local work into the PR.
 
-Push the default branch to `origin` if those commits belong in the shared base, or rebase your feature branch onto `origin/<default_branch>` to remove the unrelated work before running the gate again.
-Approve the finding only when you intentionally want that local default-branch work to stay in the branch.
+Push the base branch to `origin` if those commits belong in the shared integration base, or rebase your feature branch onto `origin/<base_branch>` to remove the unrelated work before running the gate again.
+Approve the finding only when you intentionally want that local base work to stay in the branch.
+
+### Init or run rejects the configured pipeline base
+
+`base_branch` is a trust-root setting, so no-mistakes does not guess another branch when its value is malformed, missing from the parent, present only in a fork, unreadable, or unparseable. Fix or create the intended parent branch, then run `no-mistakes init --base-branch <branch>` again. Use `--clear-base-branch` only when returning to the parent repository default is intentional.
+
+A changed trusted declaration takes effect when init applies it. Existing parked runs retain their frozen base; the new registration applies only to future runs.
 
 ## `git push no-mistakes` doesn't start a pipeline
 
@@ -229,16 +235,16 @@ Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requ
 - Self-hosted GitHub Enterprise on a hostname that is not `github.com` isn't detected because `gh` isn't configured for the host; run `gh auth login --hostname your-ghe.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`gh auth status --hostname your-ghe.example.com`), so a stale token on `github.com` or any other configured gh host can no longer falsely mark the GHE repo as unauthenticated.
 - Self-hosted GitLab on a hostname with no `gitlab` marker isn't detected because `glab` isn't configured for the host; run `glab auth login --hostname your-gitlab.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`glab auth status --hostname your-gitlab.example.com`), so a stale token on `gitlab.com` or any other configured glab host can no longer falsely mark the self-hosted repo as unauthenticated.
 - A GitLab, Bitbucket, or Azure DevOps repo record has a fork URL set; fork MR/PR routing is currently GitHub-only
-- You pushed the default branch (PR step always skips on the default branch)
+- The source is the repository default or configured pipeline base (new runs are refused on both protected branches)
 
 ## CI step stuck or timed out
 
 Symptom: CI step keeps monitoring an open PR longer than expected, or pauses after the idle timeout.
 
-Monitoring while the PR remains open - even after checks are currently healthy - is intended behavior, because a later default-branch update can make the PR conflict or rerun CI.
+Monitoring while the PR remains open - even after checks are currently healthy - is intended behavior, because a later pipeline-base update can make the PR conflict or rerun CI.
 Once checks are green and the PR is mergeable, the CI panel shows `✓ Checks passed` and the terminal title switches to `Checks passed`, so you can tell when to go merge the PR; the signal clears automatically if checks start re-running or a new failure appears.
 
-How long the monitor runs is controlled by `ci_timeout` in `~/.no-mistakes/config.yaml`, an idle timeout that re-arms whenever the upstream default branch advances; the [`ci_timeout` field reference](/no-mistakes/reference/global-config/#ci_timeout) owns the default, the `unlimited` keyword and its aliases, and the exact re-arm semantics.
+How long the monitor runs is controlled by `ci_timeout` in `~/.no-mistakes/config.yaml`, an idle timeout that re-arms whenever the run's frozen pipeline base advances; the [`ci_timeout` field reference](/no-mistakes/reference/global-config/#ci_timeout) owns the default, the `unlimited` keyword and its aliases, and the exact re-arm semantics.
 Older config files may still contain an explicit `ci_timeout: "4h"` value; update it if you want the newer default behavior.
 
 If the PR is still open at the timeout, the step pauses for approval with findings for the open monitoring state or any known unresolved failures.

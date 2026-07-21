@@ -5,20 +5,24 @@ description: All fields for .no-mistakes.yaml.
 
 Per-repo configuration lives in `.no-mistakes.yaml` at the root of your repository.
 
-:::caution[Security: gate-control fields are read from the default branch]
+:::caution[Security: gate-control fields are read from the pipeline base]
 `commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
-To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions` and `disable_project_settings` only from that trusted copy.
-If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
-A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
-Commit the gate-control settings you want to your default branch.
+To prevent a supply-chain attack where a contributor lands a hostile value on a gated feature branch, the daemon reads **`commands` and `agent` from the run's pipeline base**, never from the pushed SHA, at the exact commit resolved by a fresh fetch.
+The daemon also reads `base_branch`, `allow_repo_commands`, `document.instructions`, and `disable_project_settings` only from that trusted copy.
+If the pipeline base cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
+A readable pipeline-base tree with no `.no-mistakes.yaml` is valid and uses defaults.
+
+By default the pipeline base is the parent repository's detected default branch. Setting [`base_branch`](#base_branch) delegates executable-config trust to that branch as well as making it the integration and PR target. Protect it accordingly.
 Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`) are still read from the pushed branch.
 
-If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
+If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) on the pipeline base. This re-enables the previous behavior with eyes open. The switch is trusted-only, so a contributor cannot self-enable it from a pushed feature branch.
 :::
 
 ```yaml
 # .no-mistakes.yaml
+
+# Repository policy: integration, trust, rebase, diff, PR, and CI base.
+base_branch: staging
 
 agent: codex
 
@@ -31,13 +35,13 @@ ignore_patterns:
   - "*.generated.go"
   - "vendor/**"
 
-# Optional documentation ownership policy, read only from the trusted default branch.
+# Optional documentation ownership policy, read only from the trusted pipeline base.
 document:
   instructions: |
     docs/ owns detailed product guidance; README.md owns the introduction.
 
 # For orchestration repos whose project instructions would misidentify gate agents.
-# Read only from the trusted default branch. Defaults to false.
+# Read only from the trusted pipeline base. Defaults to false.
 disable_project_settings: true
 
 auto_fix:
@@ -64,6 +68,25 @@ test:
 ```
 
 ## Fields
+
+### base_branch
+
+Repository policy for the branch that owns the complete integration lifecycle and trusted gate configuration.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | Parent repository's detected default branch |
+
+A configured base controls trusted configuration loading, rebase and update targets, full-branch diff scope for intent/review/test/document/lint, PR lookup and creation, CI base-movement monitoring, merge-conflict repair, and recovered runs. It is not the current feature branch and does not change the provider's repository-default setting.
+
+The value is applied by `no-mistakes init` only after the short branch name is validated, the exact branch is found and freshly fetched from the parent `origin`, its commit and tree are readable, and any `.no-mistakes.yaml` there parses successfully. Branches that exist only in a configured fork do not qualify. Invalid, empty, missing, unreadable, or ambiguous values fail without changing the stored registration.
+
+Precedence during init is: an explicit `--base-branch` or `--clear-base-branch`, then `base_branch` from the currently trusted branch, then the existing stored override, then the freshly detected parent default. Fresh registration initially trusts the detected parent default; refresh reads declarations only from the currently registered effective base. A feature-branch copy cannot retarget trust. One init follows at most one delegation; it never chains declarations through multiple branches.
+
+Each new run freezes the effective base, so later init changes affect future runs only. When no override or trusted declaration is configured, remote-default discovery keeps its backward-compatible behavior exactly. Both the actual repository default and the pipeline base are protected source branches: put work on a feature branch before validation.
+
+Use `no-mistakes init --base-branch staging` to bootstrap or replace the policy without first changing the provider default. Use `no-mistakes init --clear-base-branch` to return future runs to the detected default.
 
 ### agent
 
@@ -94,18 +117,18 @@ After resolving `auto`, entries that resolve to the same ACP target are deduplic
 If no entry is available, the gate fails before its first pipeline step.
 If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
 Structured findings and schema/output validation problems do not trigger fallback.
-This per-repo `agent` value, including every fallback entry, is still read from the trusted default-branch `.no-mistakes.yaml` unless `allow_repo_commands` is enabled there.
+This per-repo `agent` value, including every fallback entry, is still read from the trusted pipeline-base `.no-mistakes.yaml` unless `allow_repo_commands` is enabled there.
 
 ### allow_repo_commands
 
-Opt in to honoring the code-executing selection fields (`commands.{test,lint,format}` and `agent`) from a contributor's pushed branch instead of the trusted default-branch copy.
+Opt in to honoring the code-executing selection fields (`commands.{test,lint,format}` and `agent`) from a contributor's pushed branch instead of the trusted pipeline-base copy.
 
 | | |
 |---|---|
 | Type | `bool` |
 | Default | `false` |
 
-This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
+This field is itself read **only from the trusted pipeline-base copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your pipeline base (for example `origin/staging`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
 
 ### disable_project_settings
 
@@ -125,7 +148,7 @@ The gate fails before launching an agent if any resolved agent or fallback lacks
 It also fails if `agent_args_override` defeats suppression, such as a nonzero Codex `project_doc_max_bytes` or Claude setting sources that include `project` or `local`.
 When this option is `false`, missing, or `null`, all agents retain their existing project-setting behavior.
 
-This field is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`.
+This field is honored **only from the trusted pipeline-base copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`.
 A pushed branch cannot enable it or disable a trusted opt-in.
 If the trusted commit or its present config file cannot be read and parsed, the run aborts rather than guessing that the option is disabled.
 
@@ -179,7 +202,7 @@ The document step always applies a built-in placement policy: every fact has exa
 `document.instructions` states this repository's ownership map or extra placement rules (for example, which file owns which class of facts).
 It augments or clarifies the built-in policy; it cannot disable documentation integrity.
 
-Like `commands.*` and `agent`, this field steers gate behavior, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`: a contributor's pushed branch cannot weaken the documentation rules that gate its own review.
+Like `commands.*` and `agent`, this field steers gate behavior, so it is honored **only from the trusted pipeline-base copy** of `.no-mistakes.yaml`: a contributor's pushed branch cannot weaken the documentation rules that gate its own review.
 
 ### Command process lifetime
 

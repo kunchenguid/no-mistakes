@@ -22,10 +22,14 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 		return false, err
 	}
 	defer func() { _ = sctx.DB.SetRunPushActive(sctx.Run.ID, false) }()
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
-	rebaseBaseSHA := resolveDefaultBranchTipSHA(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseBranch := sctx.BaseBranch()
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
+	rebaseBaseSHA, baseResolved := resolvePipelineBaseTip(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Run.BaseSHA, baseBranch)
 	promptBaseSHA := baseSHA
 	if mergeConflict {
+		if !baseResolved || strings.TrimSpace(rebaseBaseSHA) == "" {
+			return false, fmt.Errorf("resolve current pipeline base %q before merge-conflict repair", baseBranch)
+		}
 		promptBaseSHA = rebaseBaseSHA
 	}
 

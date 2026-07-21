@@ -38,7 +38,7 @@ func TestSubscribeReceivesEvents(t *testing.T) {
 	var pushResult ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate: p.RepoDir("testrepo-sub1"),
-		Ref:  "refs/heads/main",
+		Ref:  "refs/heads/feature/test",
 		Old:  "0000000000000000000000000000000000000000",
 		New:  headSHA,
 	}, &pushResult)
@@ -131,7 +131,7 @@ func TestSubscribeToSlowRunReceivesEvents(t *testing.T) {
 	var pushResult ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate: p.RepoDir("testrepo-sub2"),
-		Ref:  "refs/heads/main",
+		Ref:  "refs/heads/feature/test",
 		Old:  "0000000000000000000000000000000000000000",
 		New:  headSHA,
 	}, &pushResult)
@@ -160,7 +160,7 @@ func TestSubscribeToSlowRunReceivesEvents(t *testing.T) {
 	var pushResult2 ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate: p.RepoDir("testrepo-sub2"),
-		Ref:  "refs/heads/main",
+		Ref:  "refs/heads/feature/test",
 		Old:  "0000000000000000000000000000000000000000",
 		New:  headSHA,
 	}, &pushResult2)
@@ -204,7 +204,7 @@ func TestSubscribeToCompletedRunReturnsClosedChannel(t *testing.T) {
 	var pushResult ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate: p.RepoDir("testrepo-sub-done"),
-		Ref:  "refs/heads/main",
+		Ref:  "refs/heads/feature/test",
 		Old:  "0000000000000000000000000000000000000000",
 		New:  headSHA,
 	}, &pushResult)

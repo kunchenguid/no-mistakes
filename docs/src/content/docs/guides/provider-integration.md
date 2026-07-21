@@ -81,11 +81,13 @@ Keep `origin` pointed at the parent repository, then initialize with your fork U
 ```sh
 git remote set-url origin git@github.com:parent-owner/repo.git
 no-mistakes init --fork-url git@github.com:your-user/repo.git
+# Optional long-lived parent integration base:
+no-mistakes init --fork-url git@github.com:your-user/repo.git --base-branch staging
 ```
 
 With this setup, the push and CI auto-fix push steps update the fork, while the PR and CI steps stay scoped to the parent repository.
 The GitHub PR step opens PRs with a fork-qualified head such as `your-user:feature-branch`.
-Re-running `no-mistakes init` later preserves the stored fork URL unless you pass a new `--fork-url`.
+Re-running `no-mistakes init` later preserves the stored fork URL unless you pass a new `--fork-url`. A configured pipeline base is also preserved independently; it is always validated and fetched from the parent, never the fork.
 
 Fork routing currently requires both `origin` and `--fork-url` to be GitHub remotes with owner/repo paths.
 GitLab and Bitbucket fork MR/PR routing are not implemented yet; if a legacy or manually edited repo record has `fork_url` set for those providers, PR creation skips instead of opening an unsafe self PR.

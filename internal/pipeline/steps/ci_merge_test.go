@@ -222,10 +222,10 @@ func TestCIStep_MergeConflictOnly_AutoFix(t *testing.T) {
 
 func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	t.Parallel()
-	upstream := t.TempDir()
+	upstream := stableGitTempDir(t)
 	gitCmd(t, upstream, "init", "--bare")
 
-	dir := t.TempDir()
+	dir := stableGitTempDir(t)
 	gitCmd(t, dir, "init")
 	gitCmd(t, dir, "config", "user.name", "test")
 	gitCmd(t, dir, "config", "user.email", "test@test.com")
@@ -239,6 +239,8 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	gitCmd(t, dir, "remote", "add", "origin", upstream)
 	gitCmd(t, dir, "push", "origin", "main")
 
+	gitCmd(t, dir, "checkout", "-b", "staging")
+	gitCmd(t, dir, "push", "origin", "staging")
 	gitCmd(t, dir, "checkout", "-b", "feature")
 	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -256,6 +258,15 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	gitCmd(t, dir, "commit", "-m", "main update")
 	mainTip := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "staging")
+	if err := os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("staging updated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "shared.txt")
+	gitCmd(t, dir, "commit", "-m", "staging update")
+	stagingTip := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "staging")
 	gitCmd(t, dir, "checkout", "feature")
 
 	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
@@ -280,6 +291,8 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Repo.DefaultBranch = "main"
+	sctx.Repo.BaseBranch = "release/v2"
+	sctx.Run.BaseBranch = "staging"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}
 
@@ -296,8 +309,11 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	if capturedPrompt == "" {
 		t.Fatal("expected agent to receive a prompt")
 	}
-	if !strings.Contains(capturedPrompt, "base commit: "+mainTip) {
-		t.Fatalf("expected prompt to use base branch tip %s, got:\n%s", mainTip, capturedPrompt)
+	if !strings.Contains(capturedPrompt, "base commit: "+stagingTip) {
+		t.Fatalf("expected prompt to use frozen staging tip %s, got:\n%s", stagingTip, capturedPrompt)
+	}
+	if strings.Contains(capturedPrompt, "base commit: "+mainTip) {
+		t.Fatalf("expected prompt to ignore repository default tip %s, got:\n%s", mainTip, capturedPrompt)
 	}
 	if strings.Contains(capturedPrompt, "base commit: "+baseSHA) {
 		t.Fatalf("expected prompt to avoid merge-base %s, got:\n%s", baseSHA, capturedPrompt)

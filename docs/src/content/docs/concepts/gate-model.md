@@ -34,14 +34,16 @@ When you run `no-mistakes init` in a repo:
 3. It enables Git push options for the gate repo.
 4. It best-effort isolates the gate repo's hooks path from shared local Git config writes when Git supports `config --worktree`.
 5. It adds a `no-mistakes` remote to your working repo that points at the gate.
-6. When `--fork-url` is supplied, it records that GitHub fork as the branch push target while keeping `origin` as the parent repository used for PR bases.
-7. It installs or refreshes the `/no-mistakes` agent skill at user level, into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, on a best-effort basis, following existing symlinks between the home `.claude` and `.agents` skill directories. It writes no skill files into the repo; if the repo still carries a vendored copy from an older version, `init` prints a notice that the copy can be removed.
-8. It makes sure the daemon is running so incoming pushes can start runs.
+6. It records the parent repository's actual default branch separately from the pipeline base. `--base-branch` can select a different parent branch for integration and trusted configuration without changing the provider default; `--clear-base-branch` returns future runs to the detected default.
+7. When `--fork-url` is supplied, it records that GitHub fork as the branch push target while keeping `origin` as the parent repository used for base validation and PRs.
+8. It installs or refreshes the `/no-mistakes` agent skill at user level, into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, on a best-effort basis, following existing symlinks between the home `.claude` and `.agents` skill directories. It writes no skill files into the repo; if the repo still carries a vendored copy from an older version, `init` prints a notice that the copy can be removed.
+9. It makes sure the daemon is running so incoming pushes can start runs.
 
 `init` is idempotent.
 If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, origin/default-branch metadata, and the `/no-mistakes` agent skill are repaired or updated where needed.
 If the working repo was renamed or moved and the old path no longer exists, `init` reattaches the existing gate from the leftover `no-mistakes` remote, updates the stored working path, and preserves the repo ID plus run history.
 If the working repo was copied and the original path still exists, `init` treats the copy as a new repo and repoints the copied `no-mistakes` remote to a fresh gate.
+Base-branch changes are two-phase: init reads policy only from the current trust root, validates and freshly fetches one candidate from the parent, then updates registration. Invalid changes leave the prior database row unchanged, and one init never follows a chain of branch delegations.
 If daemon startup fails during a refresh, `init` reports the error but does not eject the pre-existing gate.
 
 After init, your original `origin` still points at the real upstream remote.
@@ -176,7 +178,9 @@ Legacy `user_fix` rounds are still read as `auto-fix` for backward compatibility
 Run records also store the nullable `awaiting_agent_since` timestamp used only to render the AXI parked signal while a gate is waiting for the driving agent, plus accumulated `parked_ms` for local performance reporting.
 Each agent invocation records local-only purpose, provider/model metadata, session mode and a truncated session-identity hash, timing, failure category, and token usage; prompts, outputs, diffs, and credentials are never stored there.
 Use `no-mistakes stats --agents` for aggregates or `no-mistakes stats --run <id>` for a run timeline and parked time.
-Repo records store the parent `upstream_url` and an optional `fork_url`; branch pushes use `fork_url` when present, while PR and CI provider context stays anchored to the parent.
+Repo records store the parent `upstream_url`, an optional `fork_url`, the provider's detected `default_branch`, and an optional `base_branch` override. Branch pushes use `fork_url` when present, while trusted base fetches, PRs, and CI provider context stay anchored to the parent. Every new run stores its effective pipeline base as immutable metadata, so re-init cannot change integration or trust underneath recovery or reused review sessions.
+
+Database upgrades add both base columns automatically. Existing repo and historical run rows remain nullable: an unset repo keeps the detected-default behavior, and a historical run without a snapshot falls back only to the repo's recorded default, never to a later base override. New runs always carry a snapshot.
 
 ## Local state
 

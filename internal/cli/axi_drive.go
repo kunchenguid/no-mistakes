@@ -201,13 +201,23 @@ func activeRunInfoForHead(run *ipc.RunInfo, headSHA string) *ipc.RunInfo {
 
 // preflightGuard returns an emitter for the first unmet pre-flight condition
 // when starting a new run, or nil when the branch is ready to validate. It
-// mirrors the wizard's branch/commit hygiene as detect-and-guide: refuse the
-// default branch, and refuse an uncommitted working tree, each with the
-// command the agent should run.
+// mirrors the wizard's branch/commit hygiene as detect-and-guide: refuse both
+// policy branches and an uncommitted working tree, each with the command the
+// agent should run.
 func preflightGuard(ctx context.Context, env *axiEnv, branch string) func(*cobra.Command) error {
 	if env.repo.DefaultBranch != "" && branch == env.repo.DefaultBranch {
 		return func(cmd *cobra.Command) error {
-			return emitError(cmd, 1, fmt.Sprintf("refusing to validate %q: it is the default branch", branch),
+			baseBranch := env.repo.EffectiveBaseBranch()
+			next := "Put your changes on a feature branch: `git switch -c <branch>`, then re-run"
+			if baseBranch != "" && baseBranch != env.repo.DefaultBranch {
+				next = fmt.Sprintf("Start the feature from the pipeline base: `git fetch origin %s && git switch -c <branch> origin/%s`, then re-run", baseBranch, baseBranch)
+			}
+			return emitError(cmd, 1, fmt.Sprintf("refusing to validate %q: it is the repository default branch", branch), next)
+		}
+	}
+	if baseBranch := env.repo.EffectiveBaseBranch(); baseBranch != "" && branch == baseBranch {
+		return func(cmd *cobra.Command) error {
+			return emitError(cmd, 1, fmt.Sprintf("refusing to validate %q: it is the pipeline base", branch),
 				"Put your changes on a feature branch: `git switch -c <branch>`, then re-run")
 		}
 	}

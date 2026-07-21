@@ -125,6 +125,10 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	// test, so subprocesses spawned by no-mistakes inherit these. The
 	// daemon re-execs itself, also inheriting them.
 	t.Setenv("PATH", h.BinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// Force daemon shell-environment resolution onto its inherited-environment
+	// fallback so the fake binaries stay ahead of any authenticated host tools.
+	// A real login shell can reorder PATH and defeat the gh guard rail above.
+	t.Setenv("SHELL", "/bin/false")
 	t.Setenv("HOME", h.HomeDir)
 	t.Setenv("NM_HOME", h.NMHome)
 	t.Setenv("FAKEAGENT_LOG", h.AgentLog)

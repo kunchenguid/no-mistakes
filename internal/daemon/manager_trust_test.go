@@ -21,8 +21,10 @@ func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
 	t.Cleanup(func() { recoveredConfigFetchTimeout = oldTimeout })
 
 	fetchResult := make(chan error, 1)
+	fetchedBranch := make(chan string, 1)
 	oldFetch := fetchRecoveredRemoteBranch
-	fetchRecoveredRemoteBranch = func(ctx context.Context, _, _, _ string) error {
+	fetchRecoveredRemoteBranch = func(ctx context.Context, _, _, branch string) error {
+		fetchedBranch <- branch
 		select {
 		case <-ctx.Done():
 			fetchResult <- ctx.Err()
@@ -50,15 +52,18 @@ func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
 	// disable_project_settings security boundary a trusted-config fetch failure
 	// must ABORT (not silently proceed as "not opted out"), so this now returns
 	// an error rather than a config with empty commands.
-	_, err := mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "run"}, &db.Repo{DefaultBranch: "main"}, workDir)
+	_, err := mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "run", BaseBranch: "staging"}, &db.Repo{DefaultBranch: "main", BaseBranch: "release/v2"}, workDir)
 	if err == nil {
 		t.Fatal("expected loadRecoveredConfig to abort on trusted-config fetch failure")
 	}
-	if !strings.Contains(err.Error(), "disable_project_settings") {
-		t.Fatalf("abort error should name the boundary, got: %v", err)
+	if !strings.Contains(err.Error(), "trusted repository policy") {
+		t.Fatalf("abort error should name the trust boundary, got: %v", err)
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("load recovered config took %s, want under 1s", elapsed)
+	}
+	if got := <-fetchedBranch; got != "staging" {
+		t.Fatalf("recovery fetched branch %q, want frozen staging", got)
 	}
 	if err := <-fetchResult; !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("fetch error = %v, want deadline exceeded", err)

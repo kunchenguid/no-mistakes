@@ -18,12 +18,37 @@ import (
 )
 
 func TestForkRouting(t *testing.T) {
-	h := NewHarness(t, SetupOpts{Agent: "claude"})
-	ctx := context.Background()
-
 	parentURL := "https://github.com/parent-owner/no-mistakes.git"
 	forkURL := "https://github.com/fork-owner/no-mistakes.git"
 	branch := "feature/fork-routing-e2e"
+	artifactsDir := t.TempDir()
+	ghLog := filepath.Join(artifactsDir, "gh-fork-routing.log")
+	commandMarker := filepath.Join(artifactsDir, "trusted-command-source")
+	t.Setenv("FAKEAGENT_GH_MODE", "fork-pr")
+	t.Setenv("FAKEAGENT_GH_LOG", ghLog)
+	t.Setenv("FAKEAGENT_GH_PARENT", "parent-owner/no-mistakes")
+
+	allowRepoCommands := false
+	h := NewHarness(t, SetupOpts{Agent: "claude", AllowRepoCommands: &allowRepoCommands})
+	ctx := context.Background()
+
+	writeConfig := func(source, base string) {
+		t.Helper()
+		body := fmt.Sprintf("allow_repo_commands: false\ncommands:\n  test: |\n    printf %s > %s\nbase_branch: %s\n", source, shellQuote(commandMarker), base)
+		if err := os.WriteFile(filepath.Join(h.WorkDir, ".no-mistakes.yaml"), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s repo config: %v", source, err)
+		}
+	}
+	writeConfig("main", "staging")
+	if out, err := h.runGit(ctx, h.WorkDir, "add", ".no-mistakes.yaml"); err != nil {
+		t.Fatalf("stage main config: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "commit", "-m", "declare staging pipeline base"); err != nil {
+		t.Fatalf("commit main config: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "push", "origin", "main"); err != nil {
+		t.Fatalf("push parent main config: %v\n%s", err, out)
+	}
 
 	forkDir := filepath.Join(filepath.Dir(h.UpstreamDir), "fork.git")
 	if err := os.MkdirAll(forkDir, 0o755); err != nil {
@@ -42,16 +67,34 @@ func TestForkRouting(t *testing.T) {
 		t.Fatalf("set parent origin: %v\n%s", err, out)
 	}
 
-	ghLog := filepath.Join(filepath.Dir(h.AgentLog), "gh-fork-routing.log")
-	t.Setenv("FAKEAGENT_GH_MODE", "fork-pr")
-	t.Setenv("FAKEAGENT_GH_LOG", ghLog)
-	t.Setenv("FAKEAGENT_GH_PARENT", "parent-owner/no-mistakes")
+	// The live provider default remains main. Seed a distinct trusted pipeline
+	// base in the parent and create the feature from that base.
+	if out, err := h.runGit(ctx, h.WorkDir, "checkout", "-b", "staging", "main"); err != nil {
+		t.Fatalf("create staging: %v\n%s", err, out)
+	}
+	writeConfig("staging", "staging")
+	if out, err := h.runGit(ctx, h.WorkDir, "add", ".no-mistakes.yaml"); err != nil {
+		t.Fatalf("stage staging config: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "commit", "-m", "configure staging base"); err != nil {
+		t.Fatalf("commit staging config: %v\n%s", err, out)
+	}
+	if out, err := h.runGit(ctx, h.WorkDir, "push", "origin", "staging"); err != nil {
+		t.Fatalf("push parent staging: %v\n%s", err, out)
+	}
 
-	out, err := h.Run("init", "--fork-url", forkURL)
+	out, err := h.Run("init", "--fork-url", forkURL, "--base-branch", "staging")
 	if err != nil {
 		t.Fatalf("init with fork URL: %v\n%s", err, out)
 	}
+	if !strings.Contains(out, "main") || !strings.Contains(out, "staging (trusted config source)") {
+		t.Fatalf("init output did not distinguish repository default and pipeline base:\n%s", out)
+	}
 
+	if out, err := h.runGit(ctx, h.WorkDir, "checkout", "-b", branch, "staging"); err != nil {
+		t.Fatalf("create feature from staging: %v\n%s", err, out)
+	}
+	writeConfig("feature", "main")
 	h.CommitChange(branch, "fork.txt", "fork route\n", "add fork route")
 	h.PushToGate(branch)
 
@@ -59,8 +102,25 @@ func TestForkRouting(t *testing.T) {
 	if run.Status != types.RunCompleted {
 		t.Fatalf("run did not complete: status=%s error=%v", run.Status, deref(run.Error))
 	}
+	marker, err := os.ReadFile(commandMarker)
+	if err != nil {
+		t.Fatalf("read trusted command marker: %v", err)
+	}
+	if got := strings.TrimSpace(string(marker)); got != "staging" {
+		t.Fatalf("test command came from %q, want frozen trusted staging config", got)
+	}
 	if run.PRURL == nil || !strings.HasPrefix(*run.PRURL, "https://github.com/parent-owner/no-mistakes/pull/") {
-		t.Fatalf("PR URL = %v, want parent repository PR URL", run.PRURL)
+		ghData, _ := os.ReadFile(ghLog)
+		daemonData, _ := os.ReadFile(filepath.Join(h.NMHome, "logs", "daemon.log"))
+		var stepLogs strings.Builder
+		_ = filepath.Walk(filepath.Join(h.NMHome, "logs", run.ID), func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr == nil && info != nil && !info.IsDir() {
+				data, _ := os.ReadFile(path)
+				fmt.Fprintf(&stepLogs, "\n%s:\n%s", filepath.Base(path), data)
+			}
+			return nil
+		})
+		t.Fatalf("PR URL = %v, want parent repository PR URL\ngh log:\n%s\ndaemon log:\n%s\nstep logs:%s", run.PRURL, ghData, daemonData, stepLogs.String())
 	}
 
 	forkSHA, err := h.runGit(ctx, forkDir, "rev-parse", "refs/heads/"+branch)
@@ -84,7 +144,7 @@ func TestForkRouting(t *testing.T) {
 			if inv.Repo == "fork-owner/no-mistakes" {
 				t.Fatalf("created silent self-PR against fork: %+v", inv)
 			}
-			if inv.Repo == "parent-owner/no-mistakes" && inv.Head == "fork-owner:"+branch && inv.Base == "main" {
+			if inv.Repo == "parent-owner/no-mistakes" && inv.Head == "fork-owner:"+branch && inv.Base == "staging" {
 				sawParentCreate = true
 			}
 		}

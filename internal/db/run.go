@@ -10,11 +10,14 @@ import (
 
 // Run represents a pipeline run.
 type Run struct {
-	ID                    string
-	RepoID                string
-	Branch                string
-	HeadSHA               string
-	BaseSHA               string
+	ID      string
+	RepoID  string
+	Branch  string
+	HeadSHA string
+	BaseSHA string
+	// BaseBranch freezes the effective pipeline integration and trusted-config
+	// branch for this run. Empty is reserved for migrated historical rows.
+	BaseBranch            string
 	SubmittedHeadSHA      *string
 	Status                types.RunStatus
 	PRURL                 *string
@@ -54,13 +57,13 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, COALESCE(base_branch, ''), submitted_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
 	return row.Scan(
-		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.SubmittedHeadSHA, &r.Status,
+		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.BaseBranch, &r.SubmittedHeadSHA, &r.Status,
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive,
@@ -70,8 +73,38 @@ func scanRun(row interface {
 	)
 }
 
-// InsertRun creates a new run record.
+// EffectiveBaseBranch returns this run's frozen pipeline base. Historical rows
+// without a snapshot fall back only to the repository's recorded remote
+// default, never to a newer repo base override.
+func (r *Run) EffectiveBaseBranch(repo *Repo) string {
+	if r != nil {
+		if base := strings.TrimSpace(r.BaseBranch); base != "" {
+			return base
+		}
+	}
+	if repo == nil {
+		return ""
+	}
+	return strings.TrimSpace(repo.DefaultBranch)
+}
+
+// InsertRun creates a compatibility run record without a base snapshot. New
+// production runs must use InsertRunWithBaseBranch.
 func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
+	return d.insertRun(repoID, branch, headSHA, baseSHA, "")
+}
+
+// InsertRunWithBaseBranch creates a run with an immutable effective-base
+// snapshot used by execution and crash recovery.
+func (d *DB) InsertRunWithBaseBranch(repoID, branch, headSHA, baseSHA, baseBranch string) (*Run, error) {
+	baseBranch = strings.TrimSpace(baseBranch)
+	if baseBranch == "" {
+		return nil, fmt.Errorf("insert run: base branch must not be empty")
+	}
+	return d.insertRun(repoID, branch, headSHA, baseSHA, baseBranch)
+}
+
+func (d *DB) insertRun(repoID, branch, headSHA, baseSHA, baseBranch string) (*Run, error) {
 	ts := now()
 	r := &Run{
 		ID:               newID(),
@@ -79,14 +112,15 @@ func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
 		Branch:           branch,
 		HeadSHA:          headSHA,
 		BaseSHA:          baseSHA,
+		BaseBranch:       baseBranch,
 		SubmittedHeadSHA: &headSHA,
 		Status:           types.RunPending,
 		CreatedAt:        ts,
 		UpdatedAt:        ts,
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.Status, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, base_branch, submitted_head_sha, status, pr_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, nullableString(r.BaseBranch), headSHA, r.Status, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)

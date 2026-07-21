@@ -505,6 +505,24 @@ func TestRerunParamsIncludeSkipSteps(t *testing.T) {
 	}
 }
 
+func TestPreflightGuardRejectsConfiguredPipelineBase(t *testing.T) {
+	env := &axiEnv{repo: &db.Repo{DefaultBranch: "main", BaseBranch: "staging"}}
+	guard := preflightGuard(context.Background(), env, "staging")
+	if guard == nil {
+		t.Fatal("expected configured pipeline base to be rejected")
+	}
+	cmd := &cobra.Command{}
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := guard(cmd); err == nil {
+		t.Fatal("expected refusal error")
+	}
+	if !strings.Contains(out.String(), "pipeline base") {
+		t.Fatalf("output = %q, want pipeline base guidance", out.String())
+	}
+}
+
 func TestPreflightGuardReportsWorkingTreeCheckError(t *testing.T) {
 	t.Chdir(t.TempDir())
 

@@ -315,6 +315,8 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	sctx.Env = env
 	sctx.Repo.UpstreamURL = "https://github.com/parent-owner/no-mistakes.git"
 	sctx.Repo.ForkURL = "https://github.com/fork-owner/no-mistakes.git"
+	sctx.Repo.BaseBranch = "release/v2"
+	sctx.Run.BaseBranch = "staging"
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &PRStep{}
@@ -327,13 +329,13 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	ghLog := string(logData)
-	if !strings.Contains(ghLog, "pr list --head feature --base main --repo parent-owner/no-mistakes --state open --json number,url,headRefName,headRepositoryOwner") {
+	if !strings.Contains(ghLog, "pr list --head feature --base staging --repo parent-owner/no-mistakes --state open --json number,url,headRefName,headRepositoryOwner") {
 		t.Fatalf("expected PR lookup to use parent repo and bare head branch, got:\n%s", ghLog)
 	}
 	if strings.Contains(ghLog, "pr list --head fork-owner:feature") {
 		t.Fatalf("PR lookup used unsupported owner-qualified --head, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "pr create --head fork-owner:feature --base main --repo parent-owner/no-mistakes") {
+	if !strings.Contains(ghLog, "pr create --head fork-owner:feature --base staging --repo parent-owner/no-mistakes") {
 		t.Fatalf("expected PR create to target parent repo with fork owner head, got:\n%s", ghLog)
 	}
 	if strings.Contains(ghLog, "--repo fork-owner/no-mistakes") {

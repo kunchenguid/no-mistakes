@@ -40,17 +40,17 @@ It can fail the run only if cleanup fails after the disambiguation agent leaves 
 Fetches the latest authoritative remote state, fetches the configured pushed-branch target, and rebases your branch onto those refs.
 
 **Behavior:**
-- Fetches `origin/<default_branch>` from the remote into the worktree, and also fetches the pushed branch for non-default branches unless the push rewrote branch history
+- Fetches the run's frozen `origin/<base_branch>` from the parent into the worktree, and also fetches the pushed feature branch unless the push rewrote branch history
 - Without fork routing, the pushed-branch target is `origin/<branch>`
 - With GitHub fork routing, the pushed-branch target is the fork branch fetched into `refs/remotes/no-mistakes-push/<branch>`
-- If the branch is not the default branch, tries rebasing onto the pushed-branch target first, then `origin/<default_branch>`
+- Tries rebasing onto the pushed-branch target first, then the parent `origin/<base_branch>`
 - If the push rewrote branch history, skips the pushed-branch rebase target so prior remote autofix commits do not get reintroduced
-- If the push rewrote the default branch and `origin/<default_branch>` advanced after that rewrite, pauses for manual approval before updating the branch
-- If the branch carries commits from the contributor's local default branch that are not on `origin/<default_branch>`, pauses with an `ask-user` finding instead of silently bundling that local work into the PR
-- The local-default check is best-effort and only fires when the local default tip is ahead of `origin/<default_branch>` and is an ancestor of the branch `HEAD`
+- If the push rewrote the pipeline base and `origin/<base_branch>` advanced after that rewrite, pauses for manual approval before updating the branch
+- If the branch carries commits from the contributor's local pipeline-base branch that are not on `origin/<base_branch>`, pauses with an `ask-user` finding instead of silently bundling that local work into the PR
+- The local-base check is best-effort and only fires when the local base tip is ahead of `origin/<base_branch>` and is an ancestor of the branch `HEAD`
 - Skips targets that don't exist or are already ancestors
 - If a fast-forward is possible, does a hard-reset instead of a rebase
-- If the diff against the default branch is empty after rebase, completes rebase and skips all remaining pipeline steps
+- If the diff against the frozen pipeline base is empty after rebase, completes rebase and skips all remaining pipeline steps
 - On conflict: records conflicting files, aborts the rebase, and reports findings
 
 **Auto-fix:** when enabled, the agent resolves conflict markers, stages files, and runs `git rebase --continue` in a non-interactive Git environment so Git accepts the existing commit message instead of opening an editor. The prompt includes user intent when available. Manual fix rounds also include any per-conflict user notes, any selected user-authored findings from the TUI or AXI interface, and sanitized prior-round history in the prompt. The Rebase step does not synthesize a fix commit subject; `git rebase --continue` preserves the rebased commits' subjects.
@@ -110,7 +110,7 @@ Updates matching documentation for code changes and reports only unresolved gaps
 - Diffs the base commit against head and skips the step if there are no non-ignored changed files to document
 - Asks the agent to find every documentation gap, update docs or doc comments for all gaps it can resolve, verify its edits, and commit any documentation changes under the placement policy
 - The placement policy gives each fact one authoritative owner, prefers removing stale duplicates or replacing them with pointers, avoids new documentation surfaces for perceived gaps, and keeps durable incident lessons near their owner instead of in `AGENTS.md`
-- `document.instructions` can add trusted default-branch ownership rules for the repository
+- `document.instructions` can add trusted pipeline-base ownership rules for the repository
 - When `commands.lint` is empty, performs documentation and agent-driven lint in one combined housekeeping invocation, categorizing findings for the document or lint gate; if that pass is skipped, its structured output is unusable, or a daemon restart loses the in-memory result, lint runs its own agent pass instead
 - Includes user intent when available
 - Returns findings only for unresolved documentation gaps or human judgment calls
@@ -166,7 +166,7 @@ This step never requires approval - it runs automatically after review, test, do
 Creates or updates a pull request.
 
 **Skipped when:**
-- The branch is the default branch
+- The branch is the repository default or pipeline base (new runs are refused on both before the pipeline starts)
 - The upstream host is not GitHub, GitLab, Bitbucket Cloud (`bitbucket.org`), or Azure DevOps (`dev.azure.com` / `*.visualstudio.com`)
 - The provider CLI (`gh` or `glab`) is not installed for GitHub or GitLab
 - The provider CLI is not authenticated for GitHub or GitLab
@@ -207,12 +207,12 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 - The [`ci_timeout` reference](/no-mistakes/reference/global-config/#ci_timeout) owns idle re-arming, unlimited monitoring, and fail-closed reconciliation while that gate is parked
 - On GitHub, GitLab, and Azure DevOps, polls provider mergeability alongside CI checks while the PR remains open
 - While the PR stays open, the TUI and terminal title show `Checks passed` once checks are green and known mergeability is clear, and `no-mistakes axi` returns `outcome: checks-passed` with successful-output reporting instructions so agents can summarize the run, ask the user to review and merge, and list any pipeline fixes instead of waiting
-- If the default branch moves after `checks-passed`, keeps watching the same PR; a clean behind PR needs no action, while an actual GitHub, GitLab, or Azure DevOps merge conflict is auto-fixed by rebasing onto the base and re-pushing through the force-push safety guard
+- If the frozen pipeline base moves after `checks-passed`, keeps watching the same PR; a clean behind PR needs no action, while an actual GitHub, GitLab, or Azure DevOps merge conflict is auto-fixed by rebasing onto that base and re-pushing through the force-push safety guard
 - The ready signal clears if checks start running again, new failures appear, provider state becomes uncertain, or the PR is merged, closed, or declined
 - Waits a 60s grace period before trusting empty results (CI checks may not have registered yet)
 - If CI failures or, on GitHub, GitLab, or Azure DevOps, a merge conflict are already known while other checks are still pending: waits for all checks to finish before attempting an auto-fix
 - On CI failure: fetches failed job logs (GitHub via `gh run view --log-failed`, GitLab via `glab ci trace`, Bitbucket Cloud via failed pipeline step logs; Azure DevOps has no first-class build-log command, so the agent fixes from the failing-check list without logs), sends them to the agent with user intent when available, and, if the agent produces changes, commits them and uses the same force-push safety guard as the push step
-- On GitHub, GitLab, or Azure DevOps merge conflict: asks the agent to rebase onto the latest default-branch tip and make the smallest correct root-cause fix for the conflicts, using user intent when available
+- On GitHub, GitLab, or Azure DevOps merge conflict: asks the agent to rebase onto the run's latest frozen pipeline-base tip and make the smallest correct root-cause fix for the conflicts, using user intent when available
 - If both CI failures and a GitHub, GitLab, or Azure DevOps merge conflict are present: fixes both in the same attempt
 - If a fix attempt produces no changes: automatic mode leaves the failure undeduplicated so it can retry until the auto-fix limit, while manual fix mode returns immediately for manual intervention
 - Deduplicates fix attempts only after a fix is actually committed and pushed

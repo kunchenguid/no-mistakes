@@ -136,19 +136,19 @@ func TestResolveDefaultBranchTipSHA_FetchesRemoteTip(t *testing.T) {
 
 	staleOriginTip := gitCmd(t, workDir, "rev-parse", "origin/main")
 	if staleOriginTip == remoteTip {
-		t.Fatal("expected origin/main to be stale before resolveDefaultBranchTipSHA")
+		t.Fatal("expected origin/main to be stale before resolvePipelineBaseTipSHA")
 	}
 
-	tip, resolved := resolveDefaultBranchTip(context.Background(), workDir, upstream, staleOriginTip, "main")
+	tip, resolved := resolvePipelineBaseTip(context.Background(), workDir, upstream, staleOriginTip, "main")
 	if !resolved {
-		t.Fatal("resolveDefaultBranchTip reported unresolved after fetching remote tip")
+		t.Fatal("resolvePipelineBaseTip reported unresolved after fetching remote tip")
 	}
 	if tip != remoteTip {
-		t.Fatalf("resolveDefaultBranchTip = %q, want remote tip %q", tip, remoteTip)
+		t.Fatalf("resolvePipelineBaseTip = %q, want remote tip %q", tip, remoteTip)
 	}
-	got := resolveDefaultBranchTipSHA(context.Background(), workDir, upstream, staleOriginTip, "main")
+	got := resolvePipelineBaseTipSHA(context.Background(), workDir, upstream, staleOriginTip, "main")
 	if got != remoteTip {
-		t.Fatalf("resolveDefaultBranchTipSHA = %q, want remote tip %q", got, remoteTip)
+		t.Fatalf("resolvePipelineBaseTipSHA = %q, want remote tip %q", got, remoteTip)
 	}
 
 	fetchedOriginTip := gitCmd(t, workDir, "rev-parse", "origin/main")
@@ -196,12 +196,12 @@ func TestResolveDefaultBranchTipSHA_UsesMatchingRemoteName(t *testing.T) {
 
 	staleRemoteTip := gitCmd(t, workDir, "rev-parse", "upstream/main")
 	if staleRemoteTip == remoteTip {
-		t.Fatal("expected upstream/main to be stale before resolveDefaultBranchTipSHA")
+		t.Fatal("expected upstream/main to be stale before resolvePipelineBaseTipSHA")
 	}
 
-	got := resolveDefaultBranchTipSHA(context.Background(), workDir, upstream, staleRemoteTip, "main")
+	got := resolvePipelineBaseTipSHA(context.Background(), workDir, upstream, staleRemoteTip, "main")
 	if got != remoteTip {
-		t.Fatalf("resolveDefaultBranchTipSHA = %q, want remote tip %q", got, remoteTip)
+		t.Fatalf("resolvePipelineBaseTipSHA = %q, want remote tip %q", got, remoteTip)
 	}
 
 	fetchedRemoteTip := gitCmd(t, workDir, "rev-parse", "upstream/main")
@@ -240,19 +240,19 @@ func TestResolveDefaultBranchTipSHA_FetchFailureAvoidsStaleOriginRef(t *testing.
 	gitCmd(t, workDir, "remote", "set-url", "origin", filepath.Join(upstream, "missing"))
 
 	fallbackBaseSHA := "abc123"
-	tip, resolved := resolveDefaultBranchTip(context.Background(), workDir, upstream, fallbackBaseSHA, "main")
+	tip, resolved := resolvePipelineBaseTip(context.Background(), workDir, upstream, fallbackBaseSHA, "main")
 	if resolved {
-		t.Fatal("resolveDefaultBranchTip reported resolved after fetch failure")
+		t.Fatal("resolvePipelineBaseTip reported resolved after fetch failure")
 	}
 	if tip != fallbackBaseSHA {
-		t.Fatalf("resolveDefaultBranchTip = %q, want fallback base %q when fetch fails", tip, fallbackBaseSHA)
+		t.Fatalf("resolvePipelineBaseTip = %q, want fallback base %q when fetch fails", tip, fallbackBaseSHA)
 	}
-	got := resolveDefaultBranchTipSHA(context.Background(), workDir, upstream, fallbackBaseSHA, "main")
+	got := resolvePipelineBaseTipSHA(context.Background(), workDir, upstream, fallbackBaseSHA, "main")
 	if got != fallbackBaseSHA {
-		t.Fatalf("resolveDefaultBranchTipSHA = %q, want fallback base %q when fetch fails", got, fallbackBaseSHA)
+		t.Fatalf("resolvePipelineBaseTipSHA = %q, want fallback base %q when fetch fails", got, fallbackBaseSHA)
 	}
 	if got == staleOriginTip {
-		t.Fatalf("resolveDefaultBranchTipSHA reused stale origin/main %q after fetch failure", got)
+		t.Fatalf("resolvePipelineBaseTipSHA reused stale origin/main %q after fetch failure", got)
 	}
 }
 
@@ -294,24 +294,24 @@ func TestResolveDefaultBranchTipSHA_FetchFailureAvoidsStaleLocalBranch(t *testin
 
 	staleLocalTip := gitCmd(t, workDir, "rev-parse", "main")
 	if staleLocalTip == remoteTip {
-		t.Fatal("expected local main to be stale before resolveDefaultBranchTipSHA")
+		t.Fatal("expected local main to be stale before resolvePipelineBaseTipSHA")
 	}
 	gitCmd(t, workDir, "remote", "set-url", "origin", filepath.Join(upstream, "missing"))
 
 	fallbackBaseSHA := "abc123"
-	tip, resolved := resolveDefaultBranchTip(context.Background(), workDir, upstream, fallbackBaseSHA, "main")
+	tip, resolved := resolvePipelineBaseTip(context.Background(), workDir, upstream, fallbackBaseSHA, "main")
 	if resolved {
-		t.Fatal("resolveDefaultBranchTip reported resolved after fetch failure")
+		t.Fatal("resolvePipelineBaseTip reported resolved after fetch failure")
 	}
 	if tip != fallbackBaseSHA {
-		t.Fatalf("resolveDefaultBranchTip = %q, want fallback base %q when fetch fails", tip, fallbackBaseSHA)
+		t.Fatalf("resolvePipelineBaseTip = %q, want fallback base %q when fetch fails", tip, fallbackBaseSHA)
 	}
-	got := resolveDefaultBranchTipSHA(context.Background(), workDir, upstream, fallbackBaseSHA, "main")
+	got := resolvePipelineBaseTipSHA(context.Background(), workDir, upstream, fallbackBaseSHA, "main")
 	if got != fallbackBaseSHA {
-		t.Fatalf("resolveDefaultBranchTipSHA = %q, want fallback base %q when fetch fails", got, fallbackBaseSHA)
+		t.Fatalf("resolvePipelineBaseTipSHA = %q, want fallback base %q when fetch fails", got, fallbackBaseSHA)
 	}
 	if got == staleLocalTip {
-		t.Fatalf("resolveDefaultBranchTipSHA reused stale local main %q after fetch failure", got)
+		t.Fatalf("resolvePipelineBaseTipSHA reused stale local main %q after fetch failure", got)
 	}
 }
 

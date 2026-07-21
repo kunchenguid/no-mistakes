@@ -74,9 +74,10 @@ func TestNeedsBranch(t *testing.T) {
 		state repoState
 		want  bool
 	}{
-		{"default branch", repoState{currentBranch: "main", defaultBranch: "main"}, true},
-		{"feature branch", repoState{currentBranch: "feat/x", defaultBranch: "main"}, false},
-		{"detached HEAD", repoState{currentBranch: "HEAD", defaultBranch: "main", detached: true}, true},
+		{"default branch", repoState{currentBranch: "main", defaultBranch: "main", baseBranch: "staging"}, true},
+		{"pipeline base", repoState{currentBranch: "staging", defaultBranch: "main", baseBranch: "staging"}, true},
+		{"feature branch", repoState{currentBranch: "feat/x", defaultBranch: "main", baseBranch: "staging"}, false},
+		{"detached HEAD", repoState{currentBranch: "HEAD", defaultBranch: "main", baseBranch: "staging", detached: true}, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,6 +85,17 @@ func TestNeedsBranch(t *testing.T) {
 				t.Fatalf("needsBranch() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestFeatureBranchStartPointUsesPipelineBaseFromRepositoryDefault(t *testing.T) {
+	state := repoState{currentBranch: "main", defaultBranch: "main", baseBranch: "staging"}
+	if got := state.featureBranchStartPoint(); got != "origin/staging" {
+		t.Fatalf("featureBranchStartPoint = %q, want origin/staging", got)
+	}
+	state.currentBranch = "staging"
+	if got := state.featureBranchStartPoint(); got != "" {
+		t.Fatalf("featureBranchStartPoint on pipeline base = %q, want current HEAD", got)
 	}
 }
 

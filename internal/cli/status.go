@@ -42,6 +42,8 @@ func newStatusCmd() *cobra.Command {
 				if repo.ForkURL != "" {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  fork:"), safeurl.Redact(repo.ForkURL))
 				}
+				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("default:"), repo.DefaultBranch)
+				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("   base:"), repo.EffectiveBaseBranch())
 				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  gate:"), p.RepoDir(repo.ID))
 
 				// Check daemon status.
@@ -73,6 +75,7 @@ func newStatusCmd() *cobra.Command {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("     id:"), activeRun.ID)
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" branch:"), activeRun.Branch)
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" status:"), runStatusStyle(activeRun.Status))
+					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("run base:"), activeRun.EffectiveBaseBranch(repo))
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("   head:"), sDim.Render(sha))
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("started:"), sDim.Render(ts))
 				} else {

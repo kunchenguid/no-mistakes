@@ -29,14 +29,24 @@ Initialize or refresh the gate for the current repository.
 
 ```sh
 no-mistakes init
-no-mistakes init --fork-url git@github.com:you/my-repo.git
+no-mistakes init --base-branch staging
+no-mistakes init --clear-base-branch
+no-mistakes init --fork-url git@github.com:you/my-repo.git --base-branch staging
 ```
 
-| Flag         | Type     | Default | Description                                                                   |
-| ------------ | -------- | ------- | ----------------------------------------------------------------------------- |
-| `--fork-url` | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin` |
+| Flag                  | Type     | Default | Description                                                                   |
+| --------------------- | -------- | ------- | ----------------------------------------------------------------------------- |
+| `--fork-url`          | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin` |
+| `--base-branch`       | `string` | (none)  | Parent branch used for integration and trusted gate configuration             |
+| `--clear-base-branch` | `bool`   | `false` | Return future runs to the detected parent repository default                  |
 
-Creates or refreshes a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
+Creates or refreshes a local bare repo, installs the post-receive hook, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the parent repository default, records repository policy in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
+
+`--base-branch` sets one repository policy for trusted configuration, rebase/update targets, diff and review scope, tests, PR base, CI monitoring, and merge-conflict repair. It does not change the provider's repository default. `--base-branch` and `--clear-base-branch` are mutually exclusive.
+
+The candidate must be a valid short branch name that exists in the parent `origin`. Init freshly fetches that exact branch, verifies its commit/tree and any present `.no-mistakes.yaml`, and updates registration only after validation succeeds. It never accepts a branch found only in a fork and never falls back to another branch after an invalid or missing override.
+
+Precedence is explicit init flag, trusted `base_branch` repo config, existing stored override, then detected parent default. Plain re-init preserves an existing override when trusted config omits the key. Each run freezes its effective base, so re-init affects future runs and never retargets a parked or resumed run. Init and status output show the repository default and pipeline base as separate facts.
 `init` writes no skill files into the repo; the user-level copies cover every supported agent (`~/.claude/skills` for Claude Code, `~/.agents/skills` for Codex, OpenCode, Rovo Dev, and Pi) across all repos.
 If the home `.claude` links to `.agents`, `.claude/skills` links to `.agents/skills`, or the reverse, `init` follows that layout and still makes the skill readable from both logical paths.
 If the repo still contains a vendored skill copy written by an older no-mistakes version, `init` leaves it untouched and prints a notice that it is no longer needed and can be removed.
@@ -50,6 +60,7 @@ Re-running `init` on an already-initialized repo succeeds and reports `Gate alre
 It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.
 When a fork URL is already recorded, re-running `init` without `--fork-url` preserves it.
 Passing `--fork-url` again replaces the stored fork URL after validation.
+An existing base override is similarly preserved unless a trusted declaration or explicit base flag replaces it; `--clear-base-branch` is the explicit reset.
 If you rename or move an initialized working directory and the old path no longer exists, re-running `init` from the new path reattaches the existing gate, preserves the repo ID and run history, and updates the stored working path.
 If you copy an initialized working directory while the original still exists, the copy is treated as a separate repo and gets a fresh gate.
 Fresh init rolls back gate setup when a required gate or daemon step fails; refresh does not eject a pre-existing gate if daemon startup fails.
@@ -99,7 +110,7 @@ no-mistakes axi run --intent "the user's goal" --yes
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
-When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
+When starting a new run, `axi run` refuses both the repository default and configured pipeline base, and refuses uncommitted working trees, with actionable errors instead of auto-branching or auto-committing.
 Reattaching to an in-flight run does not require `--intent`.
 Reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.
 When neither identity matches, `axi run` keeps the fresh-run path but refuses a gate push while `branch_sync` says the pipeline still owns the branch.
@@ -115,7 +126,7 @@ Long-running `axi run` calls are working, not stalled; if one returns a `gate:`,
 Backgrounding a call is fine for an agent harness, but the run never advances past a gate on its own.
 When the CI step is still monitoring an open PR and checks are green, `axi run` exits successfully with `outcome: checks-passed` instead of waiting for a human merge.
 Treat that as the agent stopping point: ask the user to review and merge the PR from the `help` line.
-If that PR later falls behind the default branch or hits a merge conflict, do not run `axi run`, `rerun`, or a manual rebase while the CI monitor is still running.
+If that PR later falls behind its pipeline base or hits a merge conflict, do not run `axi run`, `rerun`, or a manual rebase while the CI monitor is still running.
 The monitor auto-rebases onto the base, resolves actual conflicts, and re-pushes the branch; a PR that is merely behind but clean needs no command.
 Use `no-mistakes rerun` only after that monitor is no longer running, such as a closed PR, aborted or superseded run, idle timeout, or exhausted CI auto-fix attempts.
 Successful outcomes (`checks-passed` and `passed`) also carry `help` instructions telling the agent to summarize the run.
@@ -327,6 +338,7 @@ no-mistakes status
 Displays:
 
 - Repo path, upstream URL, and fork URL when configured
+- Provider default branch and effective pipeline base as separate repository-policy facts
 - Gate path
 - Daemon status (running/stopped, PID)
 - Active run details: ID, branch, status, head SHA, start time

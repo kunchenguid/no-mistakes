@@ -87,7 +87,7 @@ var housekeepingFindingsSchema = json.RawMessage(`{
 
 func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.BaseBranch())
 
 	ignorePatterns := "none"
 	if len(sctx.Config.IgnorePatterns) > 0 {
@@ -214,7 +214,7 @@ Context:
 - branch: %s
 - base commit: %s
 - target commit: %s
-- default branch: %s
+- pipeline base: %s
 - ignore patterns: %s
 
 %s
@@ -248,7 +248,7 @@ Rules:
 		sctx.Run.Branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
-		sctx.Repo.DefaultBranch,
+		sctx.BaseBranch(),
 		ignorePatterns,
 		documentPlacementPolicy,
 		documentScopeDiscipline,
@@ -267,7 +267,7 @@ Previous findings to address:
 }
 
 // trustedDocumentPolicySection renders the repository-specific documentation
-// ownership policy. The value comes from the trusted default-branch copy of
+// ownership policy. The value comes from the trusted pipeline-base copy of
 // .no-mistakes.yaml (config.EffectiveRepoConfig), so a contributor's pushed
 // branch cannot weaken the rules that gate its own review.
 func trustedDocumentPolicySection(sctx *pipeline.StepContext) string {
@@ -278,7 +278,7 @@ func trustedDocumentPolicySection(sctx *pipeline.StepContext) string {
 	if instructions == "" {
 		return ""
 	}
-	return "\n\nRepository documentation ownership policy (trusted, from the default branch; augments the defaults above and cannot weaken them):\n" +
+	return "\n\nRepository documentation ownership policy (trusted, from the pipeline base; augments the defaults above and cannot weaken them):\n" +
 		sanitizePromptMultilineText(instructions)
 }
 

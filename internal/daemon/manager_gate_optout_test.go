@@ -92,8 +92,8 @@ func TestAssertGateTrustedConfigReadable_FetchFailureAborts(t *testing.T) {
 	if err == nil {
 		t.Fatal("empty trustedSHA (fetch failure) must abort")
 	}
-	if !strings.Contains(err.Error(), "disable_project_settings") {
-		t.Errorf("abort error should name the boundary, got: %v", err)
+	if !strings.Contains(err.Error(), "trusted repository policy") {
+		t.Errorf("abort error should name the trust boundary, got: %v", err)
 	}
 }
 

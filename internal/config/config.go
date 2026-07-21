@@ -89,14 +89,19 @@ type globalConfigRaw struct {
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
 type RepoConfig struct {
-	Agent          types.AgentName   `yaml:"agent"`
-	Agents         []types.AgentName `yaml:"-"`
-	Commands       Commands          `yaml:"commands"`
-	IgnorePatterns []string          `yaml:"ignore_patterns"`
+	Agent  types.AgentName   `yaml:"agent"`
+	Agents []types.AgentName `yaml:"-"`
+	// BaseBranch names the repository's pipeline integration base and trusted
+	// configuration source. It is registration policy, not an ordinary pushed
+	// branch override: EffectiveRepoConfig takes it only from the trusted copy.
+	BaseBranch     string   `yaml:"base_branch"`
+	BaseBranchSet  bool     `yaml:"-"`
+	Commands       Commands `yaml:"commands"`
+	IgnorePatterns []string `yaml:"ignore_patterns"`
 	// AllowRepoCommands opts in to honoring the code-executing selection
 	// fields (commands.{test,lint,format} and agent) from a contributor's
-	// pushed branch instead of the trusted default-branch copy. It is read
-	// ONLY from the trusted default-branch copy of .no-mistakes.yaml (never
+	// pushed branch instead of the trusted pipeline-base copy. It is read
+	// ONLY from the trusted pipeline-base copy of .no-mistakes.yaml (never
 	// the pushed SHA), so a contributor cannot self-enable. Default false:
 	// the pushed branch controls nothing that executes.
 	AllowRepoCommands bool       `yaml:"allow_repo_commands"`
@@ -106,7 +111,7 @@ type RepoConfig struct {
 	Test              TestRaw    `yaml:"test"`
 	// Document carries the repository's documentation placement policy. It
 	// steers the document step's gate prompt, so it is honored ONLY from the
-	// trusted default-branch copy of .no-mistakes.yaml (see
+	// trusted pipeline-base copy of .no-mistakes.yaml (see
 	// EffectiveRepoConfig): a contributor's pushed branch must not be able to
 	// weaken documentation rules for its own review.
 	Document DocumentRaw `yaml:"document"`
@@ -115,7 +120,7 @@ type RepoConfig struct {
 	// per-harness project settings) into gate agents. It exists for
 	// agent-orchestration repos (e.g. firstmate) whose project instructions
 	// would otherwise install a fleet-captain identity on a gate agent. It is a
-	// SECURITY boundary honored ONLY from the trusted default-branch copy of
+	// SECURITY boundary honored ONLY from the trusted pipeline-base copy of
 	// .no-mistakes.yaml (see EffectiveRepoConfig and the daemon's
 	// assertGateTrustedConfigReadable): a contributor's pushed branch must not be
 	// able to turn it off (or on). Default false; a plain bool so a missing key
@@ -134,6 +139,7 @@ type DocumentRaw struct {
 func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	type repoConfigRaw struct {
 		Agent                  agentList   `yaml:"agent"`
+		BaseBranch             *string     `yaml:"base_branch"`
 		Commands               Commands    `yaml:"commands"`
 		IgnorePatterns         []string    `yaml:"ignore_patterns"`
 		AllowRepoCommands      bool        `yaml:"allow_repo_commands"`
@@ -150,6 +156,10 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	}
 	c.Agent = firstAgent(raw.Agent)
 	c.Agents = copyAgents(raw.Agent)
+	if raw.BaseBranch != nil {
+		c.BaseBranch = *raw.BaseBranch
+		c.BaseBranchSet = true
+	}
 	c.Commands = raw.Commands
 	c.IgnorePatterns = raw.IgnorePatterns
 	c.AllowRepoCommands = raw.AllowRepoCommands
@@ -219,7 +229,7 @@ type Config struct {
 }
 
 // Document is the resolved document-step config. Instructions come from the
-// trusted default-branch repo config and augment the built-in placement
+// trusted pipeline-base repo config and augment the built-in placement
 // policy in the document prompt.
 type Document struct {
 	Instructions string
@@ -1024,7 +1034,7 @@ func LoadRepo(dir string) (*RepoConfig, error) {
 
 // LoadRepoFromBytes parses per-repo config from raw YAML bytes. It is the
 // trusted-config entry point: callers that read .no-mistakes.yaml from a
-// specific git ref (e.g. the default branch) use this to avoid honoring a
+// specific git ref (e.g. the pipeline base) use this to avoid honoring a
 // contributor's checked-out copy.
 func LoadRepoFromBytes(data []byte) (*RepoConfig, error) {
 	return parseRepoConfig(data)
@@ -1046,7 +1056,7 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 }
 
 // EffectiveRepoConfig returns the repo config that should drive the pipeline
-// given a pushed-branch copy and the trusted default-branch copy.
+// given a pushed-branch copy and the trusted pipeline-base copy.
 //
 // The code-executing selection fields - Commands (run verbatim via sh -c on
 // the daemon host) and Agent/Agents (select which processes launch with the
@@ -1059,7 +1069,7 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // trusted-only so a pushed branch cannot enable or defeat the gate-agent
 // project-instruction boundary. When allowRepoCommands is
 // true the maintainer has explicitly opted in (via allow_repo_commands on the
-// TRUSTED default-branch copy) to honoring the pushed branch's commands and
+// TRUSTED pipeline-base copy) to honoring the pushed branch's commands and
 // agent selection.
 // When there is no trusted copy and the maintainer has not opted in, both
 // fields are forced empty (Agent "" and nil Agents inherit the global agent;
@@ -1076,14 +1086,18 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 	}
 	effective := *pushed
 	if trusted != nil {
+		effective.BaseBranch = trusted.BaseBranch
+		effective.BaseBranchSet = trusted.BaseBranchSet
 		effective.Document = trusted.Document
 		// disable_project_settings is a security boundary: honor it ONLY from the
-		// trusted default-branch copy so a pushed branch cannot turn the opt-out
+		// trusted pipeline-base copy so a pushed branch cannot turn the opt-out
 		// off (and re-enable its own AGENTS.md) or on. A nil trusted copy here
 		// means the trusted config was legitimately absent (the daemon aborts
 		// separately when it could not be READ at all), so falsy is correct.
 		effective.DisableProjectSettings = trusted.DisableProjectSettings
 	} else {
+		effective.BaseBranch = ""
+		effective.BaseBranchSet = false
 		effective.Document = DocumentRaw{}
 		effective.DisableProjectSettings = false
 	}

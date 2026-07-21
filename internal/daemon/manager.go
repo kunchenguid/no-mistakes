@@ -189,21 +189,22 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	if err != nil {
 		return nil, fmt.Errorf("load repo config: %w", err)
 	}
+	baseBranch := run.EffectiveBaseBranch(repo)
 	var trustedSHA string
-	if repo.DefaultBranch != "" {
+	if baseBranch != "" {
 		fetchCtx, cancel := context.WithTimeout(ctx, recoveredConfigFetchTimeout)
 		defer cancel()
-		if err := fetchRecoveredRemoteBranch(fetchCtx, workDir, "origin", repo.DefaultBranch); err != nil {
-			slog.Warn("failed to fetch default branch while recovering run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
-		} else if sha, err := git.ResolveRef(ctx, workDir, "refs/remotes/origin/"+repo.DefaultBranch); err != nil {
-			slog.Warn("failed to resolve default branch while recovering run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
+		if err := fetchRecoveredRemoteBranch(fetchCtx, workDir, "origin", baseBranch); err != nil {
+			slog.Warn("failed to fetch pipeline base while recovering run; trusted config disabled", "run_id", run.ID, "branch", baseBranch, "error", err)
+		} else if sha, err := git.ResolveRef(ctx, workDir, "refs/remotes/origin/"+baseBranch); err != nil {
+			slog.Warn("failed to resolve pipeline base while recovering run; trusted config disabled", "run_id", run.ID, "branch", baseBranch, "error", err)
 		} else {
 			trustedSHA = sha
 		}
 	}
 	// SECURITY: a trusted-config fetch failure must abort, not silently disable
 	// the disable_project_settings opt-out (see assertGateTrustedConfigReadable).
-	if err := assertGateTrustedConfigReadable(ctx, workDir, repo.DefaultBranch, trustedSHA); err != nil {
+	if err := assertGateTrustedConfigReadable(ctx, workDir, baseBranch, trustedSHA); err != nil {
 		return nil, err
 	}
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
@@ -331,7 +332,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			"action":      "finished",
 			"trigger":     "recovery",
 			"agent":       string(plan.cfg.Agent),
-			"branch_role": telemetryBranchRole(plan.run.Branch, plan.repo.DefaultBranch),
+			"branch_role": telemetryBranchRole(plan.run.Branch, plan.repo.DefaultBranch, plan.run.EffectiveBaseBranch(plan.repo)),
 			"status":      string(plan.run.Status),
 			"duration_ms": time.Since(startedAt).Milliseconds(),
 			"step_count":  len(plan.steps),
@@ -434,32 +435,43 @@ func branchFromRef(ref string) string {
 	return strings.TrimPrefix(ref, "refs/heads/")
 }
 
+func protectedSourceBranch(repo *db.Repo, branch string) bool {
+	if repo == nil {
+		return false
+	}
+	branch = strings.TrimSpace(strings.TrimPrefix(branch, "refs/heads/"))
+	if branch == "" {
+		return false
+	}
+	return branch == strings.TrimSpace(repo.DefaultBranch) || branch == repo.EffectiveBaseBranch()
+}
+
 // loadTrustedRepoConfig reads .no-mistakes.yaml from the trusted
-// default-branch commit (trustedSHA - the exact SHA startRun just fetched and
+// pipeline-base commit (trustedSHA - the exact SHA startRun just fetched and
 // resolved) in the worktree and parses it. Reading at a pinned SHA, rather
-// than the origin/<defaultBranch> remote-tracking ref, closes the stale-ref
+// than the origin/<baseBranch> remote-tracking ref, closes the stale-ref
 // hole: the gate worktree shares refs with the bare repo, so without a fresh
 // fetch + resolve the ref could point at a commit a previous run left behind.
 //
-// trustedSHA is empty when the default branch is unknown, the fetch failed,
+// trustedSHA is empty when the pipeline base is unknown, the fetch failed,
 // or the ref did not resolve. The caller must first reject those cases with
 // assertGateTrustedConfigReadable; returning nil here remains defensive and
 // ensures EffectiveRepoConfig never uses pushed gate-control fields.
 func loadTrustedRepoConfig(ctx context.Context, wtDir, trustedSHA, runID string) *config.RepoConfig {
 	if trustedSHA == "" {
-		// No trusted SHA means no freshly-fetched default-branch commit to
+		// No trusted SHA means no freshly fetched pipeline-base commit to
 		// read from. Return nil so EffectiveRepoConfig forces empty
 		// commands/agent - the secure default - instead of falling back to a
-		// potentially stale origin/<defaultBranch> ref.
+		// potentially stale origin/<baseBranch> ref.
 		return nil
 	}
 	content, err := git.ShowFile(ctx, wtDir, trustedSHA, ".no-mistakes.yaml")
 	if err != nil {
-		// Path absent on the default branch is the common "repo has no
+		// Path absent on the pipeline base is the common "repo has no
 		// trusted commands" case; log at debug so it isn't noisy. Other
 		// errors are surfaced at warn so a genuinely broken read isn't
 		// silent. Either way trusted is nil → fail closed.
-		slog.Debug("trusted repo config: not present on default branch", "run_id", runID, "sha", trustedSHA, "error", err)
+		slog.Debug("trusted repo config: not present on pipeline base", "run_id", runID, "sha", trustedSHA, "error", err)
 		return nil
 	}
 	trusted, err := config.LoadRepoFromBytes([]byte(content))
@@ -470,45 +482,36 @@ func loadTrustedRepoConfig(ctx context.Context, wtDir, trustedSHA, runID string)
 	return trusted
 }
 
-// assertGateTrustedConfigReadable fails a run LOUD when the trusted
-// default-branch copy of .no-mistakes.yaml could not be READ at all. This is the
-// security correction for disable_project_settings: that field is a boundary
-// honored only from the trusted copy, so an unreadable trusted config must NOT
-// be silently treated as "not opted out" - no-mistakes cannot know whether the
-// repo relies on the boundary, so it refuses to run rather than risk launching a
-// gate agent with the project instructions loaded.
-//
-// It distinguishes "could not read the trusted config at all" (abort) from
-// "read the trusted tree fine, there is simply no .no-mistakes.yaml on the
-// default branch" (the common ordinary-repo case, which is NOT opted out and
-// must proceed). Abort cases:
-//   - no known default branch to read a trusted copy from,
-//   - the default branch could not be fetched/resolved to a pinned SHA,
-//   - the pinned commit or tree is not readable (missing object / partial fetch),
-//   - the trusted .no-mistakes.yaml is present but unreadable or unparseable.
-func assertGateTrustedConfigReadable(ctx context.Context, wtDir, defaultBranch, trustedSHA string) error {
-	if defaultBranch == "" {
-		return fmt.Errorf("cannot evaluate disable_project_settings: repository has no known default branch to read trusted config from")
+// assertGateTrustedConfigReadable fails a run loudly when the pipeline-base
+// copy of .no-mistakes.yaml cannot be read at a freshly fetched pinned commit.
+// A readable tree with no config is valid; an unknown/missing base, unreadable
+// commit or tree, or unreadable/unparseable present config aborts before an
+// agent starts. This protects every trusted-only field, including executable
+// commands, agent selection, base policy, documentation policy, and project
+// settings suppression.
+func assertGateTrustedConfigReadable(ctx context.Context, wtDir, baseBranch, trustedSHA string) error {
+	if baseBranch == "" {
+		return fmt.Errorf("cannot read trusted repository policy: repository has no known pipeline base; run no-mistakes init")
 	}
 	if trustedSHA == "" {
-		return fmt.Errorf("cannot evaluate disable_project_settings: failed to fetch or resolve trusted default branch %q (refusing to run without reading the trusted config)", defaultBranch)
+		return fmt.Errorf("cannot read trusted repository policy: failed to fetch or resolve pipeline base %q (refusing to use another branch or stale config)", baseBranch)
 	}
 	if _, err := git.Run(ctx, wtDir, "rev-parse", "-q", "--verify", trustedSHA+"^{commit}"); err != nil {
-		return fmt.Errorf("cannot evaluate disable_project_settings: trusted default-branch commit %s is not readable: %w", trustedSHA, err)
+		return fmt.Errorf("cannot read trusted repository policy: pipeline-base commit %s is not readable: %w", trustedSHA, err)
 	}
 	entry, err := git.Run(ctx, wtDir, "ls-tree", trustedSHA, "--", ".no-mistakes.yaml")
 	if err != nil {
-		return fmt.Errorf("cannot evaluate disable_project_settings: trusted default-branch tree at %s is not readable: %w", trustedSHA, err)
+		return fmt.Errorf("cannot read trusted repository policy: pipeline-base tree at %s is not readable: %w", trustedSHA, err)
 	}
 	if entry == "" {
 		return nil
 	}
 	content, err := git.ShowFile(ctx, wtDir, trustedSHA, ".no-mistakes.yaml")
 	if err != nil {
-		return fmt.Errorf("cannot evaluate disable_project_settings: trusted .no-mistakes.yaml at %s is present but not readable: %w", trustedSHA, err)
+		return fmt.Errorf("cannot read trusted repository policy: .no-mistakes.yaml at %s is present but not readable: %w", trustedSHA, err)
 	}
 	if _, err := config.LoadRepoFromBytes([]byte(content)); err != nil {
-		return fmt.Errorf("cannot evaluate disable_project_settings: trusted .no-mistakes.yaml at %s is present but unparseable: %w", trustedSHA, err)
+		return fmt.Errorf("cannot read trusted repository policy: .no-mistakes.yaml at %s is present but unparseable: %w", trustedSHA, err)
 	}
 	return nil
 }
@@ -591,7 +594,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
 func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
-	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
+	branchRole := telemetryBranchRole(branch, repo.DefaultBranch, repo.EffectiveBaseBranch())
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
 			"action":      "start_failed",
@@ -604,6 +607,15 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	if m.shuttingDown.Load() {
 		trackStartFailure("daemon_shutdown")
 		return "", fmt.Errorf("daemon is shutting down")
+	}
+	if protectedSourceBranch(repo, branch) {
+		trackStartFailure("protected_source_branch")
+		return "", fmt.Errorf("refusing to validate protected source branch %q: use a feature branch (repository default %q, pipeline base %q)", branch, repo.DefaultBranch, repo.EffectiveBaseBranch())
+	}
+	baseBranch := repo.EffectiveBaseBranch()
+	if baseBranch == "" {
+		trackStartFailure("missing_base_branch")
+		return "", fmt.Errorf("repository has no known pipeline base branch; run no-mistakes init")
 	}
 
 	// Serialize per repo+branch to prevent two concurrent pushes from both
@@ -618,7 +630,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	m.cancelActiveRuns(repo.ID, branch)
 
 	// Create run record.
-	run, err := m.db.InsertRun(repo.ID, branch, headSHA, baseSHA)
+	run, err := m.db.InsertRunWithBaseBranch(repo.ID, branch, headSHA, baseSHA, baseBranch)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
@@ -653,21 +665,21 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		trackStartFailure("configure_worktree_identity")
 		return "", fmt.Errorf("configure worktree git identity: %w", err)
 	}
-	// Fetch the trusted default branch and resolve it to an exact commit SHA
+	// Fetch the trusted pipeline base and resolve it to an exact commit SHA
 	// before any read. Reading the trusted config at this pinned SHA (rather
-	// than the origin/<defaultBranch> remote-tracking ref) is what makes a
+	// than the origin/<baseBranch> remote-tracking ref) is what makes a
 	// fetch failure fail closed: if the fetch errors or the ref does not
 	// resolve, trustedSHA stays empty, loadTrustedRepoConfig returns nil, and
 	// EffectiveRepoConfig drops the pushed branch's commands/agent. Without
-	// the resolve, a stale origin/<defaultBranch> left in the shared bare
-	// repo by a previous run could serve a trusted copy that the live default
-	// branch has already removed - silently running stale shell.
+	// the resolve, a stale origin/<baseBranch> left in the shared bare
+	// repo by a previous run could serve a trusted copy that the live pipeline
+	// base has already removed - silently running stale shell.
 	var trustedSHA string
-	if repo.DefaultBranch != "" {
-		if err := git.FetchRemoteBranch(ctx, wtDir, "origin", repo.DefaultBranch); err != nil {
-			slog.Warn("failed to fetch default branch into worktree; trusted config disabled (commands/agent from pushed branch will be dropped)", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
-		} else if sha, err := git.ResolveRef(ctx, wtDir, "refs/remotes/origin/"+repo.DefaultBranch); err != nil {
-			slog.Warn("failed to resolve fetched default-branch ref; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
+	if baseBranch != "" {
+		if err := git.FetchRemoteBranch(ctx, wtDir, "origin", baseBranch); err != nil {
+			slog.Warn("failed to fetch pipeline base into worktree; trusted config disabled (commands/agent from pushed branch will be dropped)", "run_id", run.ID, "branch", baseBranch, "error", err)
+		} else if sha, err := git.ResolveRef(ctx, wtDir, "refs/remotes/origin/"+baseBranch); err != nil {
+			slog.Warn("failed to resolve fetched pipeline-base ref; trusted config disabled", "run_id", run.ID, "branch", baseBranch, "error", err)
 		} else {
 			trustedSHA = sha
 		}
@@ -697,14 +709,14 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		return "", fmt.Errorf("load repo config: %w", err)
 	}
 	// SECURITY: load the code-executing selection fields (commands.* and
-	// agent) from the trusted default-branch copy of .no-mistakes.yaml rather
+	// agent) from the trusted pipeline-base copy of .no-mistakes.yaml rather
 	// than the pushed SHA. The worktree is checked out at headSHA (the
 	// contributor's branch), so reading repoCfg above would honor a
 	// contributor's commands/agent and let any pushed SHA run arbitrary shell
 	// (sh -c) or pick the launched agent (incl. acp: targets) on the daemon
 	// host with the maintainer's env (GH_TOKEN, SSH agent, ...).
 	// EffectiveRepoConfig replaces commands + agent with the trusted
-	// default-branch values unless the maintainer has explicitly opted in.
+	// pipeline-base values unless the maintainer has explicitly opted in.
 	//
 	// allow_repo_commands is itself read ONLY from the trusted copy: a
 	// contributor cannot self-enable it from the pushed branch. A readable
@@ -712,7 +724,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// commands/agent empty. An unreadable trusted tree aborts below.
 	// SECURITY: a trusted-config fetch failure must abort, not silently disable
 	// the disable_project_settings opt-out (see assertGateTrustedConfigReadable).
-	if err := assertGateTrustedConfigReadable(ctx, wtDir, repo.DefaultBranch, trustedSHA); err != nil {
+	if err := assertGateTrustedConfigReadable(ctx, wtDir, baseBranch, trustedSHA); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("trusted_config_unreadable")
 		return "", err
@@ -721,12 +733,12 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	if allowRepoCommands {
-		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands/agent from pushed branch", "run_id", run.ID, "branch", branch)
+		slog.Warn("allow_repo_commands is enabled on the pipeline base: honoring commands/agent from pushed branch", "run_id", run.ID, "branch", branch)
 	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent || !agentListsEqual(repoCfg.Agents, effectiveRepoCfg.Agents) {
 		// Surface the silent override so a maintainer who shipped a commands.*
 		// or agent change on a feature branch understands why it did not run.
 		// This is not an error: it is the secure default in action.
-		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
+		slog.Info("repo commands/agent loaded from pipeline base, not pushed branch", "run_id", run.ID, "branch", branch, "base_branch", baseBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
 
@@ -899,12 +911,15 @@ func addRunPerformanceSummary(database *db.DB, runID string, fields telemetry.Fi
 	fields["fallback_invocations"] = summary.Fallback
 }
 
-func telemetryBranchRole(branch, defaultBranch string) string {
+func telemetryBranchRole(branch, defaultBranch, baseBranch string) string {
 	if branch == "" {
 		return "unknown"
 	}
 	if defaultBranch != "" && branch == defaultBranch {
 		return "default"
+	}
+	if baseBranch != "" && branch == baseBranch {
+		return "base"
 	}
 	return "feature"
 }

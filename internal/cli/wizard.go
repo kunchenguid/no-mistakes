@@ -134,14 +134,25 @@ type repoState struct {
 	workDir       string
 	currentBranch string
 	defaultBranch string
+	baseBranch    string
 	detached      bool
 	dirty         bool
 }
 
 // needsBranch reports whether the user has no feature branch to work on —
-// either they're on the default branch, or HEAD is detached.
+// either they're on a protected policy branch, or HEAD is detached.
 func (s *repoState) needsBranch() bool {
-	return s.detached || s.currentBranch == s.defaultBranch
+	return s.detached || s.currentBranch == s.defaultBranch || s.currentBranch == s.baseBranch
+}
+
+// featureBranchStartPoint returns an explicit freshly fetched base only when
+// the worktree is on a distinct repository default. Starting from current HEAD
+// in that state would bundle default-only production history into the base PR.
+func (s *repoState) featureBranchStartPoint() string {
+	if s == nil || s.detached || s.currentBranch != s.defaultBranch || s.baseBranch == "" || s.baseBranch == s.defaultBranch {
+		return ""
+	}
+	return "origin/" + s.baseBranch
 }
 
 // shouldRouteToWizard reports whether the active-run check should be
@@ -178,10 +189,15 @@ func detectRepoState(ctx context.Context, repo *db.Repo) (*repoState, error) {
 	if defaultBranch == "" {
 		defaultBranch = git.DefaultBranch(ctx, workDir, "origin")
 	}
+	baseBranch := repo.EffectiveBaseBranch()
+	if baseBranch == "" {
+		baseBranch = defaultBranch
+	}
 	return &repoState{
 		workDir:       workDir,
 		currentBranch: currentBranch,
 		defaultBranch: defaultBranch,
+		baseBranch:    baseBranch,
 		detached:      detached,
 		dirty:         dirty,
 	}, nil
@@ -226,14 +242,24 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, sk
 		Context:       ctx,
 		RepoDir:       workDir,
 		CurrentBranch: state.currentBranch,
-		DefaultBranch: state.defaultBranch,
+		DefaultBranch: state.baseBranch,
 		AutoAdvance:   auto && visible,
 		NeedsBranch:   state.needsBranch(),
 		IsDirty:       state.dirty,
 		GateRemote:    gate.RemoteName,
 
 		CreateBranch: func(ctx context.Context, name string) error {
-			return git.CreateBranch(ctx, workDir, name)
+			startPoint := state.featureBranchStartPoint()
+			if startPoint == "" {
+				return git.CreateBranch(ctx, workDir, name)
+			}
+			if err := git.FetchRemoteBranch(ctx, workDir, "origin", state.baseBranch); err != nil {
+				return fmt.Errorf("fetch pipeline base %s: %w", state.baseBranch, err)
+			}
+			if _, err := git.Run(ctx, workDir, "checkout", "-b", name, startPoint); err != nil {
+				return fmt.Errorf("create branch %s from pipeline base %s: %w", name, state.baseBranch, err)
+			}
+			return nil
 		},
 		CommitAll: func(ctx context.Context, msg string) error {
 			return git.CommitAll(ctx, workDir, msg)
@@ -263,7 +289,7 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, sk
 		"needs_branch":        state.needsBranch(),
 		"is_dirty":            state.dirty,
 		"detached":            state.detached,
-		"current_branch_role": wizardBranchRole(state.currentBranch, state.defaultBranch, state.detached),
+		"current_branch_role": wizardBranchRole(state.currentBranch, state.defaultBranch, state.baseBranch, state.detached),
 	})
 
 	run := wizardRun
@@ -362,12 +388,15 @@ func waitForActiveRun(ctx context.Context, client *ipc.Client, repoID, branch st
 	}
 }
 
-func wizardBranchRole(currentBranch, defaultBranch string, detached bool) string {
+func wizardBranchRole(currentBranch, defaultBranch, baseBranch string, detached bool) string {
 	if detached {
 		return "detached"
 	}
 	if currentBranch != "" && currentBranch == defaultBranch {
 		return "default"
+	}
+	if currentBranch != "" && currentBranch == baseBranch {
+		return "base"
 	}
 	return "feature"
 }

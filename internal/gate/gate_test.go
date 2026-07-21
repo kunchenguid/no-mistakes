@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
@@ -61,18 +62,43 @@ func copyDirTree(t *testing.T, src, dst string) {
 	}
 }
 
+// gateTestTempDir retries cleanup because APFS can briefly report Git object
+// directories as non-empty after rapid rename-heavy test operations.
+func gateTestTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", strings.ReplaceAll(t.Name(), "/", "-")+"-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			err := os.RemoveAll(dir)
+			if err == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Errorf("remove Git temp dir %s after retries: %v", dir, err)
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	})
+	return dir
+}
+
 // setupTestRepo creates a git repo with an origin remote and returns its resolved path.
 func setupTestRepo(t *testing.T) string {
 	t.Helper()
 
 	// Create an "upstream" bare repo to act as origin.
-	upstream := filepath.Join(resolveSymlinks(t, t.TempDir()), "upstream.git")
+	upstream := filepath.Join(resolveSymlinks(t, gateTestTempDir(t)), "upstream.git")
 	if out, err := exec.Command("git", "init", "--bare", upstream).CombinedOutput(); err != nil {
 		t.Fatalf("init upstream: %v: %s", err, out)
 	}
 
 	// Create working repo and add origin.
-	work := filepath.Join(resolveSymlinks(t, t.TempDir()), "work")
+	work := filepath.Join(resolveSymlinks(t, gateTestTempDir(t)), "work")
 	if out, err := exec.Command("git", "init", work).CombinedOutput(); err != nil {
 		t.Fatalf("init work: %v: %s", err, out)
 	}

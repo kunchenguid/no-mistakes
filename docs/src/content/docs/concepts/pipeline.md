@@ -48,8 +48,8 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 ## Why these steps, in this order
 
 - **Intent first** so downstream agent prompts and generated PR descriptions can include author intent supplied by the agent or inferred from transcripts.
-- **Rebase next** so everything else runs against the latest upstream and pushed-branch target.
-  It also stops when the branch would silently bundle commits from a local default branch that were never pushed to `origin/<default_branch>`.
+- **Rebase next** so everything else runs against the latest pipeline base and pushed-branch target.
+  It also stops when the branch would silently bundle commits from a local pipeline-base branch that were never pushed to `origin/<base_branch>`.
   If there's no diff left after the rebase, the pipeline skips the rest.
 - **Review before test** so the agent reads fresh code, not code it may have touched during fixes.
 - **Document after test** so docs are updated against code that's known to work.
@@ -81,6 +81,7 @@ You can't reorder steps. You *can*:
 - Control auto-fix limits per step.
 - Ignore paths during review and documentation checks.
 - Disable or tune transcript-based intent extraction when intent is not supplied directly.
+- Select one repository pipeline base for trusted configuration, rebase, full-branch validation, PR targeting, and CI monitoring.
 - Skip steps for one run with `no-mistakes --skip <steps>`, `git push -o no-mistakes.skip=<steps>`, `no-mistakes axi run --skip <steps>`, or from the TUI.
 
 See [Configuration](/no-mistakes/guides/configuration/).

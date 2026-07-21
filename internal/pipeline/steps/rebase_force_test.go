@@ -88,7 +88,7 @@ func TestRebaseStep_ForcePushSkipsOriginBranch(t *testing.T) {
 	}
 }
 
-func TestRebaseStep_ForcePushOnDefaultBranchSkipsRemoteSync(t *testing.T) {
+func TestRebaseStep_ForcePushOnPipelineBaseSkipsRemoteSync(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -146,7 +146,7 @@ func TestRebaseStep_ForcePushOnDefaultBranchSkipsRemoteSync(t *testing.T) {
 	}
 }
 
-func TestRebaseStep_ForcePushOnDefaultBranchAllowsRewrittenRemoteHead(t *testing.T) {
+func TestRebaseStep_ForcePushOnPipelineBaseAllowsRewrittenRemoteHead(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -203,7 +203,7 @@ func TestRebaseStep_ForcePushOnDefaultBranchAllowsRewrittenRemoteHead(t *testing
 	}
 }
 
-func TestRebaseStep_ForcePushOnDefaultBranchStopsWhenRemoteAdvanced(t *testing.T) {
+func TestRebaseStep_ForcePushOnPipelineBaseStopsWhenRemoteAdvanced(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")

@@ -47,6 +47,16 @@ type StepContext struct {
 	Shared *RunShared
 }
 
+// BaseBranch returns the immutable pipeline integration and trusted-config
+// branch for this run. Historical runs without a snapshot retain their old
+// behavior by falling back only to the repository's recorded remote default.
+func (sctx *StepContext) BaseBranch() string {
+	if sctx == nil || sctx.Run == nil {
+		return ""
+	}
+	return sctx.Run.EffectiveBaseBranch(sctx.Repo)
+}
+
 // RunAgentSession executes one turn of a durable review-loop role session,
 // running cold when sessions are unavailable. Only the review step's
 // reviewer/fixer turns use this; every other agent invocation goes through

@@ -17,7 +17,7 @@ func (s *LintStep) Name() types.StepName { return types.StepLint }
 
 func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.BaseBranch())
 	lintCmd := sctx.Config.Commands.Lint
 
 	if lintCmd == "" {

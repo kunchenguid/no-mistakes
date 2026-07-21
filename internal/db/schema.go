@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS repos (
     upstream_url   TEXT NOT NULL,
     fork_url       TEXT,
     default_branch TEXT NOT NULL DEFAULT 'main',
+    base_branch    TEXT,
     created_at     INTEGER NOT NULL
 );
 
@@ -16,6 +17,7 @@ CREATE TABLE IF NOT EXISTS runs (
     branch               TEXT NOT NULL,
     head_sha                TEXT NOT NULL,
     base_sha                TEXT NOT NULL,
+    base_branch             TEXT,
     submitted_head_sha      TEXT,
     status                  TEXT NOT NULL DEFAULT 'pending',
     pr_url                  TEXT,
@@ -136,6 +138,11 @@ CREATE TABLE IF NOT EXISTS intent_cache (
 // idempotent via its error being tolerated when the column already exists.
 var migrationStatements = []string{
 	`ALTER TABLE repos ADD COLUMN fork_url TEXT`,
+	// The repo value is an explicit future-run override. The run value is a
+	// frozen effective-base snapshot; historical rows remain NULL and preserve
+	// pre-feature behavior by falling back only to repos.default_branch.
+	`ALTER TABLE repos ADD COLUMN base_branch TEXT`,
+	`ALTER TABLE runs ADD COLUMN base_branch TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,

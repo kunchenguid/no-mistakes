@@ -38,10 +38,12 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if err := d.sql.QueryRow("SELECT count(*) FROM step_results").Scan(&count); err != nil {
 		t.Fatalf("step_results table missing: %v", err)
 	}
-	if !hasColumn(t, d, "repos", "fork_url") {
-		t.Fatal("repos.fork_url column missing from fresh schema")
+	for _, column := range []string{"fork_url", "base_branch"} {
+		if !hasColumn(t, d, "repos", column) {
+			t.Fatalf("repos.%s column missing from fresh schema", column)
+		}
 	}
-	for _, column := range []string{"submitted_head_sha", "last_pushed_sha", "push_target_fingerprint", "push_ref", "last_pushed_at", "push_generation", "push_active", "pr_state", "pr_state_observed_at", "ci_ready_at", "custody_returned_at"} {
+	for _, column := range []string{"base_branch", "submitted_head_sha", "last_pushed_sha", "push_target_fingerprint", "push_ref", "last_pushed_at", "push_generation", "push_active", "pr_state", "pr_state_observed_at", "ci_ready_at", "custody_returned_at"} {
 		if !hasColumn(t, d, "runs", column) {
 			t.Fatalf("runs.%s column missing from fresh schema", column)
 		}
@@ -89,6 +91,16 @@ func TestOpenMigratesRunSyncProvenanceWithoutBackfillingMutableHead(t *testing.T
 	}
 	if run.CustodyReturnedAt != nil {
 		t.Fatalf("legacy run gained a custody-return stamp: %#v", run)
+	}
+	if run.BaseBranch != "" {
+		t.Fatalf("legacy run gained a base snapshot: %#v", run)
+	}
+	repo, err := d.GetRepo("repo-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo == nil || repo.BaseBranch != "" || run.EffectiveBaseBranch(repo) != "main" {
+		t.Fatalf("legacy base compatibility = repo %#v run %#v", repo, run)
 	}
 }
 
@@ -204,6 +216,9 @@ func TestOpenMigratesReposForkURLColumn(t *testing.T) {
 	}
 	if repo.ForkURL != "" {
 		t.Fatalf("fork url = %q, want empty", repo.ForkURL)
+	}
+	if repo.BaseBranch != "" || repo.EffectiveBaseBranch() != "main" {
+		t.Fatalf("migrated base = %q effective %q, want empty/main", repo.BaseBranch, repo.EffectiveBaseBranch())
 	}
 	updated, err := d.UpdateRepoForkURL(repo.ID, "git@github.com:fork/repo.git")
 	if err != nil {

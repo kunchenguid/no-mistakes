@@ -42,7 +42,7 @@ type CIStep struct {
 	// baseBranchTip resolves the current tip SHA of the upstream default
 	// branch. The bool is false when the SHA is a fallback/unknown value and
 	// must not re-arm the timeout. Overridable for testing; defaults to
-	// fetching the upstream default branch.
+	// fetching the upstream pipeline base.
 	baseBranchTip func(context.Context) (string, bool)
 }
 
@@ -182,7 +182,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	baseBranchTip := s.baseBranchTip
 	if baseBranchTip == nil {
 		baseBranchTip = func(ctx context.Context) (string, bool) {
-			return resolveDefaultBranchTip(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+			return resolvePipelineBaseTip(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Run.BaseSHA, sctx.BaseBranch())
 		}
 	}
 	started := now()

@@ -17,6 +17,8 @@ const banner = `_  _ ____    _  _ _ ____ ___ ____ _  _ ____ ____
 
 func newInitCmd() *cobra.Command {
 	var forkURL string
+	var baseBranch string
+	var clearBaseBranch bool
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize no-mistakes gate for the current repository",
@@ -27,16 +29,32 @@ func newInitCmd() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackCommand("init", func() error {
+				baseChanged := cmd.Flags().Changed("base-branch")
+				if baseChanged && clearBaseBranch {
+					return fmt.Errorf("init: --base-branch and --clear-base-branch are mutually exclusive")
+				}
+				if baseChanged && strings.TrimSpace(baseBranch) == "" {
+					return fmt.Errorf("init: --base-branch must not be empty")
+				}
+				if cmd.Flags().Changed("fork-url") && strings.TrimSpace(forkURL) == "" {
+					return fmt.Errorf("init: --fork-url must not be empty")
+				}
+
 				p, d, err := openResources()
 				if err != nil {
 					return err
 				}
 				defer d.Close()
 
-				if cmd.Flags().Changed("fork-url") && strings.TrimSpace(forkURL) == "" {
-					return fmt.Errorf("init: --fork-url must not be empty")
+				var requestedBase *string
+				if baseChanged {
+					requestedBase = &baseBranch
 				}
-				repo, created, err := gate.InitWithFork(cmd.Context(), d, p, ".", forkURL)
+				repo, created, err := gate.InitWithOptions(cmd.Context(), d, p, ".", gate.InitOptions{
+					ForkURL:         forkURL,
+					BaseBranch:      requestedBase,
+					ClearBaseBranch: clearBaseBranch,
+				})
 				if err != nil {
 					return fmt.Errorf("init: %w", err)
 				}
@@ -75,6 +93,9 @@ func newInitCmd() *cobra.Command {
 				if repo.ForkURL != "" {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  fork"), safeurl.Redact(repo.ForkURL))
 				}
+				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("default"), repo.DefaultBranch)
+				baseLabel := repo.EffectiveBaseBranch() + " (trusted config source)"
+				fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  base"), baseLabel)
 				if skillErr != nil {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" skill"), sYellow.Render("skipped: "+skillErr.Error()))
 				} else {
@@ -91,5 +112,7 @@ func newInitCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&forkURL, "fork-url", "", "GitHub fork remote URL to push branches to while opening PRs against origin")
+	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "pipeline integration and trusted-config branch in the parent repository")
+	cmd.Flags().BoolVar(&clearBaseBranch, "clear-base-branch", false, "use the parent repository's detected default branch as the pipeline base")
 	return cmd
 }

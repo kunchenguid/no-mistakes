@@ -37,7 +37,7 @@ type recoverFixture struct {
 func newRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
 	t.Helper()
 	ctx := context.Background()
-	root := t.TempDir()
+	root := stableTempDir(t)
 	remote := filepath.Join(root, "upstream.git")
 	mustRun(t, root, "init", "--bare", remote)
 
@@ -402,7 +402,7 @@ func TestRecoverKeepLocalDirtyBehindReturnsCustodyWithoutTouchingWorktree(t *tes
 func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 	t.Run("gate branch moved", func(t *testing.T) {
 		f := newRecoverFixture(t, types.RunCancelled)
-		writer := filepath.Join(t.TempDir(), "writer")
+		writer := filepath.Join(stableTempDir(t), "writer")
 		mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
 		configureIdentity(t, writer)
 		mustRun(t, writer, "checkout", "feature/recover")
@@ -501,7 +501,7 @@ func TestRecoverConcurrentGatePushLosesCleanly(t *testing.T) {
 	mustRun(t, f.local, "add", "rescope.txt")
 	mustRun(t, f.local, "commit", "-m", "diverging rescope")
 	f.service.beforeGateReset = func() {
-		writer := filepath.Join(t.TempDir(), "racer")
+		writer := filepath.Join(stableTempDir(t), "racer")
 		mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
 		configureIdentity(t, writer)
 		mustRun(t, writer, "checkout", "feature/recover")
