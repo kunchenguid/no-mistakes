@@ -273,8 +273,23 @@ func validateEvidenceNamespaceOwnership(sctx *pipeline.StepContext, location tes
 	if err != nil {
 		return generatedEvidenceManifest{}, fmt.Errorf("generated evidence namespace is not tool-owned at trusted base: %w", err)
 	}
+	if remoteSHA, ok := resolvePushedBranchTipSHA(sctx); ok {
+		if _, _, err := loadGeneratedEvidenceManifestAtRef(sctx.Ctx, sctx.WorkDir, remoteSHA, location); err != nil {
+			return generatedEvidenceManifest{}, fmt.Errorf("generated evidence namespace is not tool-owned at pushed tip: %w", err)
+		}
+	}
 	headManifest, headExists, err := loadGeneratedEvidenceManifestAtRef(sctx.Ctx, sctx.WorkDir, "HEAD", location)
 	if err != nil {
+		if canRewriteUnpushedEvidenceHEAD(sctx) && hasPreservedEvidenceRewriteIdentity(sctx, location) {
+			prior := generatedEvidenceManifest{Version: 1}
+			if baseExists {
+				prior = baseManifest
+			}
+			if files, listErr := listGeneratedEvidencePathsAtRef(sctx.Ctx, sctx.WorkDir, "HEAD", location); listErr == nil {
+				prior = mergeGeneratedEvidencePriorPaths(prior, files)
+			}
+			return prior, nil
+		}
 		return generatedEvidenceManifest{}, fmt.Errorf("generated evidence namespace is not tool-owned at HEAD: %w", err)
 	}
 	if headExists {
@@ -284,6 +299,104 @@ func validateEvidenceNamespaceOwnership(sctx *pipeline.StepContext, location tes
 		return baseManifest, nil
 	}
 	return generatedEvidenceManifest{Version: 1}, nil
+}
+
+func hasPreservedEvidenceRewriteIdentity(sctx *pipeline.StepContext, location testEvidenceLocation) bool {
+	managed, err := managedEvidenceDestinationPaths(sctx, location)
+	if err != nil || len(managed) == 0 {
+		return false
+	}
+	return true
+}
+
+func resolvePushedBranchTipSHA(sctx *pipeline.StepContext) (string, bool) {
+	branch := strings.TrimPrefix(normalizedBranchRef(sctx.Run.Branch), "refs/heads/")
+	if branch == "" {
+		return "", false
+	}
+	pushURL := resolvePushURL(sctx)
+	if strings.TrimSpace(pushURL) == "" {
+		return "", false
+	}
+	out, err := git.Run(sctx.Ctx, sctx.WorkDir, "ls-remote", pushURL, "refs/heads/"+branch)
+	if err != nil || strings.TrimSpace(out) == "" {
+		return "", false
+	}
+	fields := strings.Fields(out)
+	if len(fields) == 0 || len(fields[0]) < 7 {
+		return "", false
+	}
+	return fields[0], true
+}
+
+func canRewriteUnpushedEvidenceHEAD(sctx *pipeline.StepContext) bool {
+	headSHA, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
+	if err != nil || headSHA == "" {
+		return false
+	}
+	remoteSHA, ok := resolvePushedBranchTipSHA(sctx)
+	if !ok {
+		return true
+	}
+	if remoteSHA == headSHA {
+		return false
+	}
+	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", remoteSHA, headSHA); err != nil {
+		return false
+	}
+	return true
+}
+
+func listGeneratedEvidencePathsAtRef(ctx context.Context, workDir, ref string, location testEvidenceLocation) ([]string, error) {
+	if strings.TrimSpace(ref) == "" {
+		return nil, nil
+	}
+	generatedRel, ok := lexicalRelativePath(workDir, location.GeneratedRepoDir)
+	if !ok {
+		return nil, fmt.Errorf("resolve generated namespace")
+	}
+	generatedRel = filepath.ToSlash(generatedRel)
+	var paths []string
+	pathBytes := 0
+	err := git.StreamRaw(ctx, workDir, func(stdout io.Reader) error {
+		reader := bufio.NewReader(stdout)
+		for {
+			raw, readErr := reader.ReadBytes(0)
+			if len(raw) > 0 {
+				if raw[len(raw)-1] != 0 {
+					return fmt.Errorf("unterminated generated namespace path")
+				}
+				raw = raw[:len(raw)-1]
+				pathBytes += len(raw)
+				if len(paths) > maxPublishedImagesPerRun+1 || pathBytes > 64*1024 {
+					return fmt.Errorf("generated namespace exceeds manifest bounds")
+				}
+				paths = append(paths, filepath.ToSlash(string(raw)))
+			}
+			if readErr == io.EOF {
+				return nil
+			}
+			if readErr != nil {
+				return readErr
+			}
+		}
+	}, "ls-tree", "-r", "-z", "--name-only", ref, "--", generatedRel)
+	return paths, err
+}
+
+func mergeGeneratedEvidencePriorPaths(prior generatedEvidenceManifest, paths []string) generatedEvidenceManifest {
+	seen := make(map[string]bool, len(prior.Files)+len(paths))
+	for _, file := range prior.Files {
+		seen[file.Path] = true
+	}
+	for _, path := range paths {
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		prior.Files = append(prior.Files, generatedEvidenceManifestFile{Path: path})
+	}
+	return prior
 }
 
 func loadGeneratedEvidenceManifestAtRef(ctx context.Context, workDir, ref string, location testEvidenceLocation) (generatedEvidenceManifest, bool, error) {

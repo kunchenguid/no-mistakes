@@ -1040,6 +1040,85 @@ func TestPushStep_RejectsEvidenceMutatedByCommitHook(t *testing.T) {
 	}
 }
 
+func TestPushStep_RecoversCorruptUnpushedEvidenceHEADOnRetry(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "config", "url."+upstream+".insteadOf", "https://github.com/example/widgets.git")
+	gitCmd(t, dir, "push", "origin", "main")
+
+	data := testPNGBytes()
+	sum := sha256.Sum256(data)
+	hash := fmt.Sprintf("%x", sum[:])
+	rel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", hash[:32]+".png"))
+	target := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	replacement := filepath.Join(dir, "replacement.png")
+	if err := os.WriteFile(replacement, coloredPNGBytes(91), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(dir, ".git", "hooks", "pre-commit")
+	script := fmt.Sprintf("#!/bin/sh\nobject=$(git hash-object -w -- %q)\ngit update-index --cacheinfo 100644,$object,%q\n", replacement, rel)
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/example/widgets.git"
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+	setTestEvidenceManifest(t, sctx, rel, hash, int64(len(data)))
+
+	if _, err := (&PushStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "verify committed test evidence") {
+		t.Fatalf("first Execute() error = %v, want committed evidence verification failure", err)
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "agent-fix.go"), []byte("package feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatalf("retry Execute() after corrupt unpushed HEAD: %v", err)
+	}
+	pushed := gitCmd(t, dir, "ls-remote", upstream, "refs/heads/feature")
+	if pushed == "" {
+		t.Fatal("retry did not push recovered evidence commit")
+	}
+	pushedSHA := strings.Fields(pushed)[0]
+	gotHash := gitCmd(t, dir, "rev-parse", pushedSHA+":"+rel)
+	wantOID := gitCmd(t, dir, "hash-object", "--", target)
+	if gotHash != wantOID {
+		t.Fatalf("pushed evidence blob = %s, want %s", gotHash, wantOID)
+	}
+	clone := t.TempDir()
+	gitCmd(t, clone, "clone", "--branch", "feature", upstream, ".")
+	if data, err := os.ReadFile(filepath.Join(clone, "agent-fix.go")); err != nil || string(data) != "package feature\n" {
+		t.Fatalf("agent fix omitted after evidence recovery: data=%q err=%v", data, err)
+	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := types.ParseFindingsJSON(*steps[len(steps)-1].FindingsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact := manifest.Artifacts[0]; !artifact.Published || artifact.Path != rel || artifact.SHA256 != hash || artifact.Size != int64(len(data)) {
+		t.Fatalf("recovered evidence identity = %#v", artifact)
+	}
+}
+
 func TestPushStep_VerifiesUnpublishedManifestArtifactInCandidateCommit(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	data := testPNGBytes()
