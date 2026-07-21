@@ -248,6 +248,7 @@ func TestPushStep_RedactsForkURLInGitErrors(t *testing.T) {
 func TestPushStep_DoesNotForceAddIgnoredEvidenceDirectory(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("evidence/\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -279,6 +280,7 @@ func TestPushStep_DoesNotForceAddIgnoredEvidenceDirectory(t *testing.T) {
 func TestPushStep_EvidenceStagingPreservesOverlappingSourceChanges(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	sourceDir := filepath.Join(dir, "src", "feature")
 	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -328,6 +330,7 @@ func TestPushStep_EvidenceStagingPreservesOverlappingSourceChanges(t *testing.T)
 func TestPushStep_AgentStagingPreservesUntrackedFilesInOverlappingEvidenceDirectory(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	destinationDir := filepath.Join(dir, "src", "feature")
 	if err := os.MkdirAll(destinationDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -369,6 +372,7 @@ func TestPushStep_AgentStagingPreservesUntrackedFilesInOverlappingEvidenceDirect
 func TestPushStep_AgentStagingReservesManagedSymlinkDestination(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	data := testPNGBytes()
 	sum := sha256.Sum256(data)
 	hash := fmt.Sprintf("%x", sum[:])
@@ -402,6 +406,7 @@ func TestPushStep_AgentStagingReservesManagedSymlinkDestination(t *testing.T) {
 func TestPushStep_AgentStagingReservesManagedDirectorySubtree(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	data := testPNGBytes()
 	sum := sha256.Sum256(data)
 	hash := fmt.Sprintf("%x", sum[:])
@@ -432,6 +437,7 @@ func TestPushStep_AgentStagingReservesManagedDirectorySubtree(t *testing.T) {
 func TestPushStep_FinalStagingExcludesEvidenceManagedByPriorRounds(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	evidenceDir := filepath.Join(dir, fixedEvidenceRepoDir, generatedEvidenceDir, "feature")
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -487,6 +493,7 @@ func TestPushStep_FinalStagingExcludesEvidenceManagedByPriorRounds(t *testing.T)
 func TestPushStep_ReplacesOnlyPriorManifestOwnedEvidence(t *testing.T) {
 	t.Parallel()
 	dir, _, _ := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	oldData := coloredPNGBytes(61)
 	oldSum := sha256.Sum256(oldData)
 	oldHash := fmt.Sprintf("%x", oldSum[:])
@@ -551,6 +558,7 @@ func TestPushStep_ReplacesOnlyPriorManifestOwnedEvidence(t *testing.T) {
 func TestPushStep_AgentStagingReservesGeneratedEvidenceAcrossRuns(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	generatedDir := filepath.Join(dir, fixedEvidenceRepoDir, generatedEvidenceDir)
 	if err := os.MkdirAll(filepath.Join(generatedDir, "old-branch"), 0o755); err != nil {
 		t.Fatal(err)
@@ -603,6 +611,7 @@ func TestPushStep_AgentStagingReservesGeneratedEvidenceAcrossRuns(t *testing.T) 
 func TestPushStep_AgentStagingPreservesUntrackedPathBytes(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	paths := []string{" leading.go", "line\nbreak.go"}
 	for _, rel := range paths {
 		if err := os.WriteFile(filepath.Join(dir, rel), []byte("package fixture\n"), 0o644); err != nil {
@@ -633,6 +642,7 @@ func TestPushStep_AgentStagingPreservesUntrackedPathBytes(t *testing.T) {
 func TestPushStep_AgentStagingTreatsUntrackedPathsLiterally(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	generatedRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", strings.Repeat("a", 32)+".png"))
 	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, filepath.FromSlash(generatedRel))), 0o755); err != nil {
 		t.Fatal(err)
@@ -726,6 +736,7 @@ func TestPushStep_FirstOptInRejectsUnownedGeneratedNamespace(t *testing.T) {
 
 func TestPushStep_AgentStagingBatchesLargeUntrackedTrees(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	for i := 0; i < 200; i++ {
 		rel := filepath.Join("generated", fmt.Sprintf("file-%03d.txt", i))
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0o755); err != nil {
@@ -765,6 +776,7 @@ func TestPushStep_AgentStagingBatchesLargeUntrackedTrees(t *testing.T) {
 func TestPushStep_RejectsDriftedPreparedEvidence(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	evidenceDir := filepath.Join(dir, fixedEvidenceRepoDir, generatedEvidenceDir, "feature")
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -809,6 +821,7 @@ func TestPushStep_RejectsDriftedPreparedEvidence(t *testing.T) {
 func TestPushStep_RejectsSymlinkedPreparedEvidence(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	evidenceDir := filepath.Join(dir, fixedEvidenceRepoDir, generatedEvidenceDir, "feature")
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -842,6 +855,7 @@ func TestPushStep_RejectsSymlinkedPreparedEvidence(t *testing.T) {
 func TestPushStep_MarksVerifiedPreparedEvidencePublished(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	data := testPNGBytes()
 	sum := sha256.Sum256(data)
 	hash := fmt.Sprintf("%x", sum[:])
@@ -882,6 +896,7 @@ func TestPushStep_MarksVerifiedPreparedEvidencePublished(t *testing.T) {
 func TestPushStep_StagesDuplicatePreparedEvidenceExactlyOnce(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	data := testPNGBytes()
 	sum := sha256.Sum256(data)
 	hash := fmt.Sprintf("%x", sum[:])
@@ -932,6 +947,7 @@ func TestPushStep_StagesDuplicatePreparedEvidenceExactlyOnce(t *testing.T) {
 
 func TestPushStep_RejectsEvidenceSwappedInIndexAfterAdd(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	data := testPNGBytes()
 	sum := sha256.Sum256(data)
 	hash := fmt.Sprintf("%x", sum[:])
@@ -1185,6 +1201,7 @@ func TestPushStep_CommitsWhitespaceOnlyFilename(t *testing.T) {
 func TestPushStep_DisablesEvidenceForUnsupportedRemote(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	attachLocalPushOrigin(t, dir)
 	data := testPNGBytes()
 	sum := sha256.Sum256(data)
 	hash := fmt.Sprintf("%x", sum[:])
@@ -1210,6 +1227,21 @@ func TestPushStep_DisablesEvidenceForUnsupportedRemote(t *testing.T) {
 	}
 }
 
+func attachLocalPushOrigin(t *testing.T, dir string) string {
+	t.Helper()
+	if out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").CombinedOutput(); err == nil {
+		url := strings.TrimSpace(string(out))
+		if url != "" {
+			return url
+		}
+	}
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "HEAD:refs/heads/main")
+	return upstream
+}
+
 func setTestEvidenceManifest(t *testing.T, sctx *pipeline.StepContext, rel, hash string, size int64) {
 	t.Helper()
 	testResult, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
@@ -1219,5 +1251,105 @@ func setTestEvidenceManifest(t *testing.T, sctx *pipeline.StepContext, rel, hash
 	findings := fmt.Sprintf(`{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Evidence","path":%q,"sha256":%q,"size":%d}]}`, rel, hash, size)
 	if err := sctx.DB.SetStepFindings(testResult.ID, findings); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPushStep_FetchesAbsentRemoteTipBeforeEvidenceOwnership(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	publisher := t.TempDir()
+	gitCmd(t, publisher, "init")
+	gitCmd(t, publisher, "config", "user.name", "test")
+	gitCmd(t, publisher, "config", "user.email", "test@test.com")
+	gitCmd(t, publisher, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(publisher, "init.txt"), []byte("init"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, publisher, "add", "-A")
+	gitCmd(t, publisher, "commit", "-m", "initial")
+	gitCmd(t, publisher, "remote", "add", "origin", upstream)
+	gitCmd(t, publisher, "push", "origin", "main")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "clone", "--branch", "main", "--single-branch", upstream, ".")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "local.txt"), []byte("local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "local feature")
+	baseSHA := gitCmd(t, dir, "rev-parse", "main")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, publisher, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(publisher, "remote-only.txt"), []byte("remote tip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, publisher, "add", "-A")
+	gitCmd(t, publisher, "commit", "-m", "remote feature tip")
+	gitCmd(t, publisher, "push", "origin", "feature")
+	remoteTip := gitCmd(t, publisher, "rev-parse", "HEAD")
+	if _, err := exec.Command("git", "-C", dir, "cat-file", "-e", remoteTip+"^{commit}").CombinedOutput(); err == nil {
+		t.Fatal("remote tip unexpectedly present locally before ownership fetch")
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true}
+
+	if err := (&PushStep{}).stageAgentChanges(sctx); err != nil {
+		t.Fatalf("stageAgentChanges with absent remote tip: %v", err)
+	}
+	if _, err := exec.Command("git", "-C", dir, "cat-file", "-e", remoteTip+"^{commit}").CombinedOutput(); err != nil {
+		t.Fatalf("ownership path did not fetch absent remote tip: %v", err)
+	}
+}
+
+func TestPushStep_LsRemoteFailureFailsClosedForEvidenceOwnership(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sourceRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "corrupt.png"))
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, filepath.FromSlash(sourceRel))), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(sourceRel)), []byte("not-an-image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "--", sourceRel)
+	gitCmd(t, dir, "commit", "-m", "corrupt generated namespace")
+	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_CLI_MODE", "git-remote-error")
+	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
+
+	data := testPNGBytes()
+	sum := sha256.Sum256(data)
+	hash := fmt.Sprintf("%x", sum[:])
+	rel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", hash[:32]+".png"))
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/example/widgets.git"
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true}
+	setTestEvidenceManifest(t, sctx, rel, hash, int64(len(data)))
+
+	err = (&PushStep{}).stageAgentChanges(sctx)
+	if err == nil {
+		t.Fatal("expected ls-remote failure to fail closed")
+	}
+	if !strings.Contains(err.Error(), "resolve pushed tip for evidence ownership") {
+		t.Fatalf("ls-remote failure error = %v, want resolve pushed tip failure", err)
+	}
+	if strings.Contains(err.Error(), "not tool-owned at HEAD") {
+		t.Fatalf("ls-remote failure incorrectly fell through to HEAD ownership rewrite: %v", err)
 	}
 }

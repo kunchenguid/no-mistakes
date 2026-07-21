@@ -273,14 +273,28 @@ func validateEvidenceNamespaceOwnership(sctx *pipeline.StepContext, location tes
 	if err != nil {
 		return generatedEvidenceManifest{}, fmt.Errorf("generated evidence namespace is not tool-owned at trusted base: %w", err)
 	}
-	if remoteSHA, ok := resolvePushedBranchTipSHA(sctx); ok {
+	remoteSHA, remoteExists, err := resolvePushedBranchTipSHA(sctx)
+	if err != nil {
+		return generatedEvidenceManifest{}, fmt.Errorf("resolve pushed tip for evidence ownership: %w", err)
+	}
+	if remoteExists {
+		fetchedSHA, err := fetchPushedBranchTipForOwnership(sctx)
+		if err != nil {
+			return generatedEvidenceManifest{}, fmt.Errorf("fetch pushed tip for evidence ownership: %w", err)
+		}
+		if fetchedSHA != "" {
+			remoteSHA = fetchedSHA
+		}
 		if _, _, err := loadGeneratedEvidenceManifestAtRef(sctx.Ctx, sctx.WorkDir, remoteSHA, location); err != nil {
+			if isMissingGitObjectError(err) {
+				return generatedEvidenceManifest{}, fmt.Errorf("fetch pushed tip for evidence ownership: %w", err)
+			}
 			return generatedEvidenceManifest{}, fmt.Errorf("generated evidence namespace is not tool-owned at pushed tip: %w", err)
 		}
 	}
 	headManifest, headExists, err := loadGeneratedEvidenceManifestAtRef(sctx.Ctx, sctx.WorkDir, "HEAD", location)
 	if err != nil {
-		if canRewriteUnpushedEvidenceHEAD(sctx) && hasPreservedEvidenceRewriteIdentity(sctx, location) {
+		if canRewriteUnpushedEvidenceHEAD(sctx, remoteSHA, remoteExists) && hasPreservedEvidenceRewriteIdentity(sctx, location) {
 			prior := generatedEvidenceManifest{Version: 1}
 			if baseExists {
 				prior = baseManifest
@@ -309,36 +323,77 @@ func hasPreservedEvidenceRewriteIdentity(sctx *pipeline.StepContext, location te
 	return true
 }
 
-func resolvePushedBranchTipSHA(sctx *pipeline.StepContext) (string, bool) {
+func resolvePushedBranchTipSHA(sctx *pipeline.StepContext) (string, bool, error) {
 	branch := strings.TrimPrefix(normalizedBranchRef(sctx.Run.Branch), "refs/heads/")
 	if branch == "" {
-		return "", false
+		return "", false, nil
 	}
 	pushURL := resolvePushURL(sctx)
 	if strings.TrimSpace(pushURL) == "" {
-		return "", false
+		return "", false, nil
 	}
-	out, err := git.Run(sctx.Ctx, sctx.WorkDir, "ls-remote", pushURL, "refs/heads/"+branch)
-	if err != nil || strings.TrimSpace(out) == "" {
-		return "", false
+	sha, err := git.LsRemote(sctx.Ctx, sctx.WorkDir, pushURL, "refs/heads/"+branch)
+	if err != nil {
+		return "", false, err
 	}
-	fields := strings.Fields(out)
-	if len(fields) == 0 || len(fields[0]) < 7 {
-		return "", false
+	if strings.TrimSpace(sha) == "" || len(sha) < 7 {
+		return "", false, nil
 	}
-	return fields[0], true
+	return sha, true, nil
 }
 
-func canRewriteUnpushedEvidenceHEAD(sctx *pipeline.StepContext) bool {
+func fetchPushedBranchTipForOwnership(sctx *pipeline.StepContext) (string, error) {
+	branch := strings.TrimPrefix(normalizedBranchRef(sctx.Run.Branch), "refs/heads/")
+	pushURL := resolvePushURL(sctx)
+	if branch == "" || strings.TrimSpace(pushURL) == "" {
+		return "", fmt.Errorf("missing push target for evidence ownership fetch")
+	}
+	localRef := evidenceOwnershipTipRef(sctx.Run.ID)
+	if err := git.FetchRemoteBranchToPrivateRef(sctx.Ctx, sctx.WorkDir, pushURL, branch, localRef); err != nil {
+		return "", err
+	}
+	defer func() {
+		_, _ = git.Run(sctx.Ctx, sctx.WorkDir, "update-ref", "-d", localRef)
+	}()
+	sha, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", localRef+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	sha = strings.TrimSpace(sha)
+	if sha == "" {
+		return "", fmt.Errorf("fetched pushed tip is empty")
+	}
+	return sha, nil
+}
+
+func evidenceOwnershipTipRef(runID string) string {
+	id := strings.TrimSpace(runID)
+	if id == "" {
+		id = "unknown"
+	}
+	return "refs/no-mistakes/evidence-tip/" + id
+}
+
+func isMissingGitObjectError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not a valid object name") ||
+		strings.Contains(msg, "bad object") ||
+		strings.Contains(msg, "missing object") ||
+		strings.Contains(msg, "unknown revision")
+}
+
+func canRewriteUnpushedEvidenceHEAD(sctx *pipeline.StepContext, remoteSHA string, remoteExists bool) bool {
 	headSHA, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
 	if err != nil || headSHA == "" {
 		return false
 	}
-	remoteSHA, ok := resolvePushedBranchTipSHA(sctx)
-	if !ok {
+	if !remoteExists {
 		return true
 	}
-	if remoteSHA == headSHA {
+	if remoteSHA == "" || remoteSHA == headSHA {
 		return false
 	}
 	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", remoteSHA, headSHA); err != nil {
