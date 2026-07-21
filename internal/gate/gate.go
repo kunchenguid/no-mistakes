@@ -81,6 +81,18 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 	}
 	upstreamURL, err := getOriginURL(ctx, absRoot, "origin")
 	if err != nil {
+		// A missing "origin" is a normal state for a fresh `git init` repo, so
+		// give an actionable message instead of leaking git plumbing. Only
+		// substitute it when origin is genuinely absent; any other git failure
+		// keeps its original error.
+		if !git.HasRemote(ctx, absRoot, "origin") {
+			return nil, false, fmt.Errorf(
+				"no 'origin' remote in %s\n\n"+
+					"no-mistakes pushes your branch and opens a pull request, so it needs a remote to push to.\n"+
+					"Add one, then re-run:\n\n"+
+					"  git remote add origin <url>",
+				absRoot)
+		}
 		return nil, false, fmt.Errorf("get origin url: %w", err)
 	}
 	if forkURL != "" {

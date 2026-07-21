@@ -771,6 +771,16 @@ func TestInitNoOrigin(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no origin remote")
 	}
+	// The error must be actionable, not a raw git-plumbing leak: a fresh
+	// `git init` repo with no remote yet is a normal state, so tell the user
+	// how to fix it instead of surfacing `git remote get-url` exit codes.
+	msg := err.Error()
+	if !strings.Contains(msg, "git remote add origin") {
+		t.Errorf("error should tell the user how to add an origin remote; got: %q", msg)
+	}
+	if strings.Contains(msg, "get origin url") || strings.Contains(msg, "exit status") {
+		t.Errorf("error leaked raw git plumbing; got: %q", msg)
+	}
 }
 
 func TestInitNotGitRepo(t *testing.T) {
