@@ -65,6 +65,8 @@ $ no-mistakes init
     repo  /Users/you/src/my-repo
     gate  no-mistakes → /Users/you/.no-mistakes/repos/abc123def456.git
   remote  git@github.com:you/my-repo.git
+ default  main
+    base  main (trusted config source)
    skill  /no-mistakes installed for agents at user level
 
   Push through the gate with:
@@ -88,6 +90,12 @@ git checkout -b feature/login-fix
 # do work, commit...
 git push no-mistakes
 ```
+
+If the configured pipeline base differs from the provider default, start the
+feature from the fetched base instead. For example, use
+`git fetch origin staging && git switch -c feature/login-fix origin/staging`.
+The setup wizard handles this automatically. See
+[Repo Config](/no-mistakes/reference/repo-config/#base_branch) for the policy.
 
 The push lands in the local bare repo, the hook notifies the daemon, and the daemon starts the pipeline in a disposable worktree.
 

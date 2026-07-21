@@ -76,9 +76,8 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 		}
 
 		// Skip the active-run check entirely when the state clearly calls
-		// for the wizard (detached HEAD, or default branch with pending
-		// changes) — pipelines for the user's current situation don't
-		// match any existing run.
+		// for the wizard because HEAD is detached. Pipelines for the user's
+		// current situation cannot match an existing branch run.
 		if !state.shouldRouteToWizard() {
 			var result ipc.GetActiveRunResult
 			if err := client.Call(ipc.MethodGetActiveRun, &ipc.GetActiveRunParams{RepoID: repo.ID, Branch: activeRunBranch(state, rootDefault)}, &result); err != nil {

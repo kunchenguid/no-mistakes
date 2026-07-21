@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the pipeline base]
 `commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated feature branch, the daemon reads **`commands` and `agent` from the run's pipeline base**, never from the pushed SHA, at the exact commit resolved by a fresh fetch.
-The daemon also reads `base_branch`, `allow_repo_commands`, `document.instructions`, and `disable_project_settings` only from that trusted copy.
+No-mistakes also reads `base_branch`, `allow_repo_commands`, `document.instructions`, and `disable_project_settings` only from the currently trusted copy. `base_branch` is resolved during init; the other fields are loaded for each run.
 If the pipeline base cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable pipeline-base tree with no `.no-mistakes.yaml` is valid and uses defaults.
 

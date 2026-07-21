@@ -147,8 +147,8 @@ On startup, the daemon validates crash-recovery state before resuming work.
 ### Pipeline executor
 
 The executor runs each step sequentially and manages the approval/fix loop. It
-can also end early after `rebase` if the branch has no diff against the default
-branch, marking the remaining steps as skipped.
+can also end early after `rebase` if the branch has no diff against the run's
+frozen pipeline base, marking the remaining steps as skipped.
 
 1. Execute the step
 2. If the step finds `action: auto-fix` findings, the step result is auto-fixable, and auto-fix is enabled, loop back with the agent to fix them (up to the configured limit)

@@ -486,7 +486,7 @@ func TestIntentStep_Integration_UsesPipelineWorkDirForGitState(t *testing.T) {
 
 // After a force push, Run.BaseSHA is the prior remote tip of the branch, which
 // may be unreachable in the worktree (rewritten away or never fetched). The
-// step must fall back to merge-base against the default branch instead of
+// step must fall back to merge-base against the frozen pipeline base instead of
 // trusting the orphaned SHA, otherwise `git diff <orphaned>..<head>` fails
 // with "Invalid revision range" and intent silently skips.
 func TestIntentStep_Integration_ForcePushedOrphanedBaseSHA(t *testing.T) {

@@ -24,6 +24,8 @@ type Config struct {
 	Context       context.Context
 	RepoDir       string
 	CurrentBranch string
+	// DefaultBranch is the protected branch the wizard uses as its feature
+	// starting policy. The CLI supplies the effective pipeline base here.
 	DefaultBranch string
 	// AutoAdvance automatically presses Enter on each active wizard step,
 	// preserving the interactive TUI while accepting the default path.
@@ -31,8 +33,8 @@ type Config struct {
 	// DisableInput disables Bubble Tea input, which is useful for headless runs
 	// and tests that drive cancellation through the caller context.
 	DisableInput bool
-	// NeedsBranch is true when the user has no usable feature branch yet -
-	// either they're on the default branch, or HEAD is detached. The branch
+	// NeedsBranch is true when the user has no usable feature branch yet,
+	// including either protected policy branch or a detached HEAD. The branch
 	// step is only active when this is true.
 	NeedsBranch bool
 	IsDirty     bool
@@ -137,9 +139,9 @@ type Result struct {
 }
 
 // NewModel constructs a wizard Model. Which steps end up active depends on
-// the supplied Config: if the current branch already differs from the default,
-// the branch step is skipped; if the working tree is clean, the commit step
-// is skipped; the push step always runs.
+// the supplied Config: if the caller says the current branch is already a
+// usable feature branch, the branch step is skipped; if the working tree is
+// clean, the commit step is skipped; the push step always runs.
 func NewModel(cfg Config) Model {
 	ti := textinput.New()
 	ti.Prompt = "› "

@@ -207,7 +207,7 @@ func TestDocumentStep_PromptAppliesPlacementPolicy(t *testing.T) {
 
 // TestDocumentStep_TrustedPolicyInstructionsAugmentPrompt proves a
 // repository's own ownership map (config document.instructions, loaded only
-// from the trusted default branch) reaches the prompt as an augmentation of
+// from the trusted pipeline base) reaches the prompt as an augmentation of
 // the built-in defaults, and that no-policy repositories keep the built-in
 // policy alone.
 func TestDocumentStep_TrustedPolicyInstructionsAugmentPrompt(t *testing.T) {
