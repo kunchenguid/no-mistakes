@@ -91,6 +91,37 @@ type PR struct {
 	URL    string
 }
 
+// PRSelector returns an explicit provider selector for a known PR.
+// It prefers the numeric identifier. It falls back to the canonical URL.
+// It rejects missing identity so providers never infer a PR from their cwd.
+func PRSelector(pr *PR) (string, error) {
+	if pr != nil {
+		if number := strings.TrimSpace(pr.Number); number != "" {
+			return number, nil
+		}
+		if url := strings.TrimSpace(pr.URL); url != "" {
+			return url, nil
+		}
+	}
+	return "", errors.New("no PR number or URL known")
+}
+
+// PRNumber returns a numeric provider identifier for a known PR.
+// It reads the number first. It extracts the trailing number from the URL.
+func PRNumber(pr *PR) (string, error) {
+	if pr != nil {
+		if number := strings.TrimSpace(pr.Number); number != "" {
+			return number, nil
+		}
+		if url := strings.TrimSpace(pr.URL); url != "" {
+			if number, err := ExtractPRNumber(url); err == nil {
+				return number, nil
+			}
+		}
+	}
+	return "", errors.New("no numeric PR identity known")
+}
+
 // PRContent is the title + body for creating or updating a PR.
 type PRContent struct {
 	Title string
