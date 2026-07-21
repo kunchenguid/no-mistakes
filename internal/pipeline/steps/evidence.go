@@ -30,6 +30,7 @@ const (
 	disabledImagePublicationExplanation   = "Image evidence publication is disabled."
 	fixedEvidenceRepoDir                  = ".no-mistakes/evidence"
 	generatedEvidenceDir                  = ".generated"
+	generatedEvidenceManifestName         = "manifest.json"
 )
 
 func testEvidenceRoot() string {

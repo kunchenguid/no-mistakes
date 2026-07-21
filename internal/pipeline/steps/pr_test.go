@@ -21,6 +21,28 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+func TestSanitizePRContentEvidenceReferencesScrubsEveryField(t *testing.T) {
+	tempPath := filepath.Join(testEvidenceRoot(), "run-1", "checkout secret.png")
+	content := sanitizePRContentEvidenceReferences(prContent{
+		Title: "fix: hide " + tempPath,
+		Body: strings.Join([]string{
+			"## What Changed",
+			"",
+			"- summary " + tempPath,
+			"- finding file://" + tempPath,
+			"- command `inspect " + tempPath + "`",
+		}, "\n"),
+	})
+	for name, value := range map[string]string{"title": content.Title, "body": content.Body} {
+		if strings.Contains(value, testEvidenceRoot()) || strings.Contains(value, "file://") || strings.Contains(value, "checkout secret.png") {
+			t.Fatalf("%s leaked temporary evidence path: %q", name, value)
+		}
+		if !strings.Contains(value, "[image evidence]") {
+			t.Fatalf("%s omitted generic replacement: %q", name, value)
+		}
+	}
+}
+
 func TestPRStep_GhNotAvailable(t *testing.T) {
 	t.Parallel()
 	// Verify the step skips gracefully when the required provider CLI is missing.

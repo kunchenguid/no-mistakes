@@ -236,8 +236,25 @@ func glabConfigPath() string {
 // hosts.yml. Any read/parse error is treated as "not configured" so detection
 // fails closed to ProviderUnknown.
 func ghKnowsHost(host string) bool {
-	_, ok := ghCanonicalWebHost(host)
-	return ok
+	path := ghConfigPath()
+	if path == "" {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var hosts map[string]interface{}
+	if err := yaml.Unmarshal(data, &hosts); err != nil {
+		return false
+	}
+	host = strings.ToLower(ExtractHost(host))
+	for key := range hosts {
+		if strings.EqualFold(ExtractHost(strings.TrimSpace(key)), host) {
+			return true
+		}
+	}
+	return false
 }
 
 func ghCanonicalWebHost(host string) (string, bool) {
@@ -268,8 +285,31 @@ func ghCanonicalWebHost(host string) (string, bool) {
 	return match, match != ""
 }
 
+func ghCanonicalWebAuthority(authority string) (string, bool) {
+	path := ghConfigPath()
+	if path == "" {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	var hosts map[string]interface{}
+	if err := yaml.Unmarshal(data, &hosts); err != nil {
+		return "", false
+	}
+	authority = strings.ToLower(strings.TrimSpace(authority))
+	for key := range hosts {
+		configured := strings.ToLower(strings.TrimSpace(key))
+		if configured == authority {
+			return configured, true
+		}
+	}
+	return "", false
+}
+
 func ghWebHostConfigured(authority string) bool {
-	canonical, ok := ghCanonicalWebHost(authority)
+	canonical, ok := ghCanonicalWebAuthority(authority)
 	return ok && strings.EqualFold(canonical, strings.TrimSpace(authority))
 }
 

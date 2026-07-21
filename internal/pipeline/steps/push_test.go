@@ -484,6 +484,70 @@ func TestPushStep_FinalStagingExcludesEvidenceManagedByPriorRounds(t *testing.T)
 	}
 }
 
+func TestPushStep_ReplacesOnlyPriorManifestOwnedEvidence(t *testing.T) {
+	t.Parallel()
+	dir, _, _ := setupGitRepo(t)
+	oldData := coloredPNGBytes(61)
+	oldSum := sha256.Sum256(oldData)
+	oldHash := fmt.Sprintf("%x", oldSum[:])
+	oldRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "old", oldHash[:32]+".png"))
+	manifestRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "manifest.json"))
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, filepath.FromSlash(oldRel))), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(oldRel)), oldData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldManifest := fmt.Sprintf("{\"version\":1,\"files\":[{\"path\":%q,\"sha256\":%q,\"size\":%d}]}\n", oldRel, oldHash, len(oldData))
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(manifestRel)), []byte(oldManifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-f", "--", filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir)))
+	gitCmd(t, dir, "commit", "-m", "publish old evidence")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	currentData := coloredPNGBytes(62)
+	currentSum := sha256.Sum256(currentData)
+	currentHash := fmt.Sprintf("%x", currentSum[:])
+	currentRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", currentHash[:32]+".png"))
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, filepath.FromSlash(currentRel))), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(currentRel)), currentData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, baseSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/example/widgets.git"
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true}
+	setTestEvidenceManifest(t, sctx, currentRel, currentHash, int64(len(currentData)))
+
+	step := &PushStep{}
+	if err := step.stageAgentChanges(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := step.stageInRepoEvidence(sctx); err != nil {
+		t.Fatal(err)
+	}
+	staged := strings.Split(gitCmd(t, dir, "diff", "--cached", "--name-only", "-z"), "\x00")
+	for _, want := range []string{oldRel, currentRel, manifestRel} {
+		if !slices.Contains(staged, want) {
+			t.Fatalf("manifest replacement did not stage %q: %q", want, staged)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(oldRel))); !os.IsNotExist(err) {
+		t.Fatalf("obsolete manifest-owned image remains: %v", err)
+	}
+	manifestData, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(manifestRel)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(manifestData), oldRel) || !strings.Contains(string(manifestData), currentRel) {
+		t.Fatalf("unexpected replacement manifest: %s", manifestData)
+	}
+}
+
 func TestPushStep_AgentStagingReservesGeneratedEvidenceAcrossRuns(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -491,13 +555,21 @@ func TestPushStep_AgentStagingReservesGeneratedEvidenceAcrossRuns(t *testing.T) 
 	if err := os.MkdirAll(filepath.Join(generatedDir, "old-branch"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	trackedRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "old-branch", strings.Repeat("a", 32)+".png"))
+	trackedData := testPNGBytes()
+	trackedSum := sha256.Sum256(trackedData)
+	trackedHash := fmt.Sprintf("%x", trackedSum[:])
+	trackedRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "old-branch", trackedHash[:32]+".png"))
 	untrackedRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "crashed-run", strings.Repeat("b", 32)+".png"))
 	siblingRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, "helper.go"))
-	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(trackedRel)), testPNGBytes(), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(trackedRel)), trackedData, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gitCmd(t, dir, "add", "--", trackedRel)
+	manifestRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, generatedEvidenceManifestName))
+	manifest := fmt.Sprintf("{\"version\":1,\"files\":[{\"path\":%q,\"sha256\":%q,\"size\":%d}]}\n", trackedRel, trackedHash, len(trackedData))
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(manifestRel)), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "--", trackedRel, manifestRel)
 	gitCmd(t, dir, "commit", "-m", "track old generated evidence")
 	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(trackedRel)), coloredPNGBytes(51), 0o644); err != nil {
 		t.Fatal(err)
@@ -555,6 +627,100 @@ func TestPushStep_AgentStagingPreservesUntrackedPathBytes(t *testing.T) {
 		if !slices.Contains(staged, rel) {
 			t.Fatalf("path %q was not staged byte-for-byte: %q", rel, raw)
 		}
+	}
+}
+
+func TestPushStep_AgentStagingTreatsUntrackedPathsLiterally(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	generatedRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", strings.Repeat("a", 32)+".png"))
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, filepath.FromSlash(generatedRel))), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(generatedRel)), testPNGBytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	magicRel := filepath.ToSlash(filepath.Join(":(top,glob).no-mistakes", "evidence", generatedEvidenceDir, "**"))
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, filepath.FromSlash(magicRel))), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(magicRel)), []byte("literal"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true}
+
+	if err := (&PushStep{}).stageAgentChanges(sctx); err != nil {
+		t.Fatal(err)
+	}
+	staged := strings.Split(gitCmd(t, dir, "diff", "--cached", "--name-only", "-z"), "\x00")
+	if !slices.Contains(staged, magicRel) {
+		t.Fatalf("literal pathspec-magic filename was not staged: %q", staged)
+	}
+	if slices.Contains(staged, generatedRel) {
+		t.Fatalf("pathspec magic staged reserved evidence: %q", staged)
+	}
+}
+
+func TestPushStep_PublicationDisabledDoesNotReserveGeneratedNamespace(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sourceRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "source.go"))
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, filepath.FromSlash(sourceRel))), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(sourceRel)), []byte("package generated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "--", sourceRel)
+	gitCmd(t, dir, "commit", "-m", "add generated namespace source")
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(sourceRel)), []byte("package generated\n\nconst Changed = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Test.Evidence = config.Evidence{}
+
+	if err := (&PushStep{}).stageAgentChanges(sctx); err != nil {
+		t.Fatal(err)
+	}
+	staged := strings.Split(gitCmd(t, dir, "diff", "--cached", "--name-only", "-z"), "\x00")
+	if !slices.Contains(staged, sourceRel) {
+		t.Fatalf("disabled publication omitted source change: %q", staged)
+	}
+}
+
+func TestPushStep_FirstOptInRejectsUnownedGeneratedNamespace(t *testing.T) {
+	t.Parallel()
+	dir, _, _ := setupGitRepo(t)
+	sourceRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "source.go"))
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, filepath.FromSlash(sourceRel))), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(sourceRel)), []byte("package generated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "--", sourceRel)
+	gitCmd(t, dir, "commit", "-m", "add namespace source")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(sourceRel)), []byte("package generated\n\nconst Changed = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, baseSHA, config.Commands{})
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true}
+
+	err := (&PushStep{}).stageAgentChanges(sctx)
+	if err == nil || !strings.Contains(err.Error(), "not tool-owned") {
+		t.Fatalf("expected namespace ownership failure, got %v", err)
+	}
+	if staged := gitCmd(t, dir, "diff", "--cached", "--name-only"); staged != "" {
+		t.Fatalf("ownership failure changed staging: %q", staged)
+	}
+	if got := gitCmd(t, dir, "diff", "--name-only"); got != sourceRel {
+		t.Fatalf("ownership failure lost source modification: %q", got)
 	}
 }
 
@@ -745,8 +911,9 @@ func TestPushStep_StagesDuplicatePreparedEvidenceExactlyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	staged := strings.Fields(gitCmd(t, dir, "diff", "--cached", "--name-only"))
-	if len(staged) != 1 || staged[0] != rel {
-		t.Fatalf("duplicate evidence staging = %v, want [%s]", staged, rel)
+	manifestRel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, generatedEvidenceManifestName))
+	if len(staged) != 2 || !slices.Contains(staged, rel) || !slices.Contains(staged, manifestRel) {
+		t.Fatalf("duplicate evidence staging = %v, want image and tool manifest", staged)
 	}
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {

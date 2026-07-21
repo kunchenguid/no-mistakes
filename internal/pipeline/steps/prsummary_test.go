@@ -791,6 +791,37 @@ func TestBuildTestingSummaryForPR_RendersAuthenticatedGHESCustomPort(t *testing.
 	}
 }
 
+func TestGitHubRepositoryForRemote_MatchesExactGHESWebAuthority(t *testing.T) {
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	ghConfig := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ghConfig, "hosts.yml"), []byte("github.corp.example:\n  user: default\n  oauth_token: default\ngithub.corp.example:8443:\n  user: custom\n  oauth_token: custom\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_CONFIG_DIR", ghConfig)
+
+	custom, ok := githubRepositoryForRemote(context.Background(), "https://github.corp.example:8443/team/widgets.git")
+	if !ok || custom.host != "github.corp.example:8443" {
+		t.Fatalf("custom-port repository = %#v, %v", custom, ok)
+	}
+	defaultPort, ok := githubRepositoryForRemote(context.Background(), "https://github.corp.example/team/widgets.git")
+	if !ok || defaultPort.host != "github.corp.example" {
+		t.Fatalf("default-port repository = %#v, %v", defaultPort, ok)
+	}
+}
+
+func TestGitHubRepositoryForRemote_RejectsGHESAuthorityWithWrongEffectivePort(t *testing.T) {
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	ghConfig := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ghConfig, "hosts.yml"), []byte("github.corp.example:8443:\n  user: custom\n  oauth_token: custom\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_CONFIG_DIR", ghConfig)
+
+	if repo, ok := githubRepositoryForRemote(context.Background(), "https://github.corp.example/team/widgets.git"); ok {
+		t.Fatalf("default-port remote used custom-port authorization: %#v", repo)
+	}
+}
+
 func TestBuildTestingSummaryForPR_RejectsUntrustedGitHubRemoteLayouts(t *testing.T) {
 	repoRoot := t.TempDir()
 	imagePath := filepath.Join(repoRoot, "evidence", "checkout.png")

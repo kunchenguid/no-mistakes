@@ -1,8 +1,11 @@
 package git
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,6 +103,43 @@ func TestRunRawPreservesNULDelimitedPathBytes(t *testing.T) {
 		if !found {
 			t.Fatalf("RunRaw omitted or changed %q in %q", want, out)
 		}
+	}
+}
+
+func TestStreamRawPreservesNULDelimitedPathBytes(t *testing.T) {
+	dir := initTestRepo(t)
+	const count = 3000
+	for i := 0; i < count; i++ {
+		name := filepath.Join("generated", fmt.Sprintf("file-%04d.txt", i))
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, name), name)
+	}
+	seen := 0
+	err := StreamRaw(context.Background(), dir, func(stdout io.Reader) error {
+		reader := bufio.NewReader(stdout)
+		for {
+			path, err := reader.ReadString(0)
+			if len(path) > 0 {
+				if path[len(path)-1] != 0 {
+					t.Fatalf("unterminated path %q", path)
+				}
+				seen++
+			}
+			if err == io.EOF {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen != count {
+		t.Fatalf("streamed %d paths, want %d", seen, count)
 	}
 }
 

@@ -78,6 +78,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, err
 	}
+	content = sanitizePRContentEvidenceReferences(content)
 
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
 	existing, err := host.FindPR(ctx, branch, sctx.Repo.DefaultBranch)
@@ -113,6 +114,12 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
+}
+
+func sanitizePRContentEvidenceReferences(content prContent) prContent {
+	content.Title = sanitizeEvidenceTempReferences(content.Title)
+	content.Body = sanitizeEvidenceTempReferences(content.Body)
+	return content
 }
 
 func describePR(pr *scm.PR) string {

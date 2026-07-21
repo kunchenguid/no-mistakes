@@ -383,13 +383,13 @@ The test step collects all evidence in its temporary run directory so readable U
 When trusted repository configuration sets `store_in_repo` to true, validated images are copied to `.no-mistakes/evidence/.generated/<branch-slug>`, and the push step stages only image paths recorded in the final test evidence manifest.
 The entire `.no-mistakes/evidence/.generated` namespace is tool-owned and reserved for generated image evidence, so a proposed branch cannot redirect publication over source files and artifacts left by stale or crashed runs cannot be staged as ordinary source changes.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
-If `dir` is absolute, escapes the worktree, points into `.git`, or crosses a symlink, image publication is disabled for that run while source evidence remains temporary.
 PNG and JPEG images are fully decoded, limited to 8,000,000 pixels and 10 MiB each, capped at 25 MiB and 20 unique images per run, and renamed using a content hash so duplicate evidence and retries are idempotent.
 Images that exceed the bounded decoding limits fall back to sanitized text instead of being published.
 Immediately before staging, the push step rejects symlinks and verifies each image's size, SHA-256 digest, and content-addressed filename against the recorded manifest.
+The generated namespace carries a tool-owned manifest; enabling publication fails safely if existing files are not covered by a valid manifest, and successful replacement removes only obsolete manifest-owned images.
 Images are published only when a credential-free HTTPS or Git SSH remote resolves to github.com or a GitHub Enterprise host configured in `gh`.
 PR rendering additionally requires the staged manifest hash to match the exact image blob at the pushed commit.
-Publication never removes source evidence or unrelated files already present in the configured directory.
+Publication never removes source evidence or files outside the fixed generated namespace.
 Missing, unsupported, oversized, or unpublished images produce a concise explanation in the PR instead of a local path.
 When publication is disabled, images produce a path-free disabled-publication explanation.
 Global configuration cannot enable publication across repositories.

@@ -1,9 +1,11 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
 )
 
@@ -55,7 +58,7 @@ func RunRawInput(ctx context.Context, dir string, input []byte, args ...string) 
 	cmd.Dir = dir
 	cmd.Env = NonInteractiveEnv(dir)
 	if input != nil {
-		cmd.Stdin = strings.NewReader(string(input))
+		cmd.Stdin = bytes.NewReader(input)
 	}
 	winproc.Harden(cmd)
 	out, err := cmd.Output()
@@ -67,6 +70,35 @@ func RunRawInput(ctx context.Context, dir string, input []byte, args ...string) 
 		return nil, fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
 	}
 	return out, nil
+}
+
+func StreamRaw(ctx context.Context, dir string, consume func(io.Reader) error, args ...string) error {
+	if isBareGitDir(dir) {
+		args = append([]string{"--git-dir=" + dir}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	cmd.Env = NonInteractiveEnv(dir)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("git %s: %w", safeurl.RedactText(strings.Join(args, " ")), err)
+	}
+	shellenv.ConfigureShellCommand(cmd)
+	if err := shellenv.StartShellCommand(cmd); err != nil {
+		return fmt.Errorf("git %s: %w", safeurl.RedactText(strings.Join(args, " ")), err)
+	}
+	defer shellenv.TerminateShellCommandGroup(cmd)
+	if err := consume(stdout); err != nil {
+		shellenv.TerminateShellCommandGroup(cmd)
+		_ = cmd.Wait()
+		return err
+	}
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(strings.TrimSpace(stderr.String())))
+	}
+	return nil
 }
 
 // isBareGitDir reports whether dir is itself a git directory (a bare repo),

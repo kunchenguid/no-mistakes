@@ -227,6 +227,13 @@ func githubRepositoryForRemote(ctx context.Context, remote string) (githubReposi
 	explicitGitHubSSH443 := isExplicitGitHubSSH443Remote(remote)
 	sshRemote := strings.HasPrefix(strings.ToLower(remote), "ssh://") || !strings.Contains(remote, "://")
 	inputHost := scm.ExtractHost(remote)
+	httpsAuthority := ""
+	if !sshRemote {
+		parsed, err := url.Parse(remote)
+		if err == nil && strings.EqualFold(parsed.Scheme, "https") {
+			httpsAuthority = parsed.Host
+		}
+	}
 	if sshRemote {
 		if !validSSHAlias(inputHost) {
 			return githubRepository{}, false
@@ -259,7 +266,12 @@ func githubRepositoryForRemote(ctx context.Context, remote string) (githubReposi
 		return githubRepository{}, false
 	}
 	if canonicalHost != "github.com" {
-		configuredHost, ok := scm.GitHubCanonicalWebHost(canonicalHost)
+		configuredHost, ok := "", false
+		if httpsAuthority != "" {
+			configuredHost, ok = scm.GitHubCanonicalWebAuthority(httpsAuthority)
+		} else {
+			configuredHost, ok = scm.GitHubCanonicalWebHost(canonicalHost)
+		}
 		if !ok {
 			return githubRepository{}, false
 		}

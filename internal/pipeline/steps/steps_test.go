@@ -179,7 +179,14 @@ func fakeGitSwapEvidenceIndexHandler(args []string) {
 		os.Exit(1)
 	}
 	evidencePath := os.Getenv("FAKE_CLI_EVIDENCE_PATH")
-	if len(args) == 0 || args[0] != "add" || evidencePath == "" || args[len(args)-1] != evidencePath {
+	addCommand := false
+	for _, arg := range args {
+		if arg == "add" {
+			addCommand = true
+			break
+		}
+	}
+	if !addCommand || evidencePath == "" || args[len(args)-1] != evidencePath {
 		return
 	}
 	replacementOID := os.Getenv("FAKE_CLI_REPLACEMENT_OID")

@@ -1,15 +1,18 @@
 package steps
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
@@ -175,18 +178,14 @@ func hasStagedGitChanges(ctx context.Context, workDir string) (bool, error) {
 
 func (s *PushStep) stageAgentChanges(sctx *pipeline.StepContext) error {
 	location := resolveTestEvidenceLocation(sctx.WorkDir, sctx.Run.Branch, sctx.Run.ID, sctx.Config.Test.Evidence)
-	if location.GeneratedRepoDir == "" {
+	if !location.StoreInRepo || location.GeneratedRepoDir == "" {
 		_, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "-A")
 		return err
 	}
-	managedPaths := make(map[string]bool)
-	if location.StoreInRepo {
-		var err error
-		managedPaths, err = managedEvidenceDestinationPaths(sctx, location)
-		if err != nil {
-			return err
-		}
+	if _, err := validateEvidenceNamespaceOwnership(sctx, location); err != nil {
+		return err
 	}
+	managedPaths := make(map[string]bool)
 	generatedRel, ok := lexicalRelativePath(sctx.WorkDir, location.GeneratedRepoDir)
 	if !ok {
 		return fmt.Errorf("resolve generated evidence namespace")
@@ -196,13 +195,9 @@ func (s *PushStep) stageAgentChanges(sctx *pipeline.StepContext) error {
 		return err
 	}
 	for targetRel := range managedPaths {
-		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "reset", "--quiet", "HEAD", "--", targetRel); err != nil {
+		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "--literal-pathspecs", "reset", "--quiet", "HEAD", "--", targetRel); err != nil {
 			return fmt.Errorf("clear staged test evidence: %w", err)
 		}
-	}
-	untracked, err := git.RunRaw(sctx.Ctx, sctx.WorkDir, "ls-files", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return err
 	}
 	const maxPathspecBatchBytes = 256 * 1024
 	batch := make([]byte, 0, maxPathspecBatchBytes)
@@ -210,35 +205,178 @@ func (s *PushStep) stageAgentChanges(sctx *pipeline.StepContext) error {
 		if len(batch) == 0 {
 			return nil
 		}
-		_, err := git.RunRawInput(sctx.Ctx, sctx.WorkDir, batch, "add", "--pathspec-from-file=-", "--pathspec-file-nul")
+		_, err := git.RunRawInput(sctx.Ctx, sctx.WorkDir, batch, "--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul")
 		batch = batch[:0]
 		return err
 	}
-	for _, rawRel := range bytes.Split(untracked, []byte{0}) {
-		if len(rawRel) == 0 {
-			continue
-		}
-		rel := string(rawRel)
-		if isManagedEvidencePath(filepath.ToSlash(rel), managedPaths) {
-			continue
-		}
-		if len(batch) > 0 && len(batch)+len(rawRel)+1 > maxPathspecBatchBytes {
-			if err := flush(); err != nil {
-				return err
+	err := git.StreamRaw(sctx.Ctx, sctx.WorkDir, func(stdout io.Reader) error {
+		reader := bufio.NewReader(stdout)
+		for {
+			rawRel, readErr := reader.ReadBytes(0)
+			if len(rawRel) > 0 {
+				if rawRel[len(rawRel)-1] != 0 {
+					return fmt.Errorf("unterminated untracked path")
+				}
+				rawRel = rawRel[:len(rawRel)-1]
+				rel := string(rawRel)
+				if !isManagedEvidencePath(filepath.ToSlash(rel), managedPaths) {
+					if len(batch) > 0 && len(batch)+len(rawRel)+1 > maxPathspecBatchBytes {
+						if err := flush(); err != nil {
+							return err
+						}
+					}
+					batch = append(batch, rawRel...)
+					batch = append(batch, 0)
+					if len(batch) >= maxPathspecBatchBytes {
+						if err := flush(); err != nil {
+							return err
+						}
+					}
+				}
+			}
+			if readErr == io.EOF {
+				return flush()
+			}
+			if readErr != nil {
+				return readErr
 			}
 		}
-		batch = append(batch, rawRel...)
-		batch = append(batch, 0)
-		if len(batch) >= maxPathspecBatchBytes {
-			if err := flush(); err != nil {
-				return err
-			}
-		}
-	}
-	if err := flush(); err != nil {
+	}, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
 		return err
 	}
 	return nil
+}
+
+type generatedEvidenceManifest struct {
+	Version int                             `json:"version"`
+	Files   []generatedEvidenceManifestFile `json:"files"`
+}
+
+type generatedEvidenceManifestFile struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+}
+
+func generatedEvidenceManifestPath(workDir string) (string, string, bool) {
+	rel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, generatedEvidenceManifestName))
+	target := filepath.Join(workDir, filepath.FromSlash(rel))
+	if _, ok := lexicalRelativePath(workDir, target); !ok {
+		return "", "", false
+	}
+	return rel, target, true
+}
+
+func validateEvidenceNamespaceOwnership(sctx *pipeline.StepContext, location testEvidenceLocation) (generatedEvidenceManifest, error) {
+	baseManifest, baseExists, err := loadGeneratedEvidenceManifestAtRef(sctx.Ctx, sctx.WorkDir, sctx.Run.BaseSHA, location)
+	if err != nil {
+		return generatedEvidenceManifest{}, fmt.Errorf("generated evidence namespace is not tool-owned at trusted base: %w", err)
+	}
+	headManifest, headExists, err := loadGeneratedEvidenceManifestAtRef(sctx.Ctx, sctx.WorkDir, "HEAD", location)
+	if err != nil {
+		return generatedEvidenceManifest{}, fmt.Errorf("generated evidence namespace is not tool-owned at HEAD: %w", err)
+	}
+	if headExists {
+		return headManifest, nil
+	}
+	if baseExists {
+		return baseManifest, nil
+	}
+	return generatedEvidenceManifest{Version: 1}, nil
+}
+
+func loadGeneratedEvidenceManifestAtRef(ctx context.Context, workDir, ref string, location testEvidenceLocation) (generatedEvidenceManifest, bool, error) {
+	if strings.TrimSpace(ref) == "" {
+		return generatedEvidenceManifest{}, false, nil
+	}
+	generatedRel, ok := lexicalRelativePath(workDir, location.GeneratedRepoDir)
+	if !ok {
+		return generatedEvidenceManifest{}, false, fmt.Errorf("resolve generated namespace")
+	}
+	generatedRel = filepath.ToSlash(generatedRel)
+	var paths []string
+	pathBytes := 0
+	err := git.StreamRaw(ctx, workDir, func(stdout io.Reader) error {
+		reader := bufio.NewReader(stdout)
+		for {
+			raw, readErr := reader.ReadBytes(0)
+			if len(raw) > 0 {
+				if raw[len(raw)-1] != 0 {
+					return fmt.Errorf("unterminated generated namespace path")
+				}
+				raw = raw[:len(raw)-1]
+				pathBytes += len(raw)
+				if len(paths) > maxPublishedImagesPerRun || pathBytes > 64*1024 {
+					return fmt.Errorf("generated namespace exceeds manifest bounds")
+				}
+				paths = append(paths, string(raw))
+			}
+			if readErr == io.EOF {
+				return nil
+			}
+			if readErr != nil {
+				return readErr
+			}
+		}
+	}, "ls-tree", "-r", "-z", "--name-only", ref, "--", generatedRel)
+	if err != nil {
+		return generatedEvidenceManifest{}, false, err
+	}
+	if len(paths) == 0 {
+		return generatedEvidenceManifest{}, false, nil
+	}
+	manifestRel, _, ok := generatedEvidenceManifestPath(workDir)
+	if !ok {
+		return generatedEvidenceManifest{}, false, fmt.Errorf("resolve generated evidence manifest")
+	}
+	raw, err := git.RunRaw(ctx, workDir, "show", ref+":"+manifestRel)
+	if err != nil {
+		return generatedEvidenceManifest{}, false, fmt.Errorf("missing tool manifest")
+	}
+	var manifest generatedEvidenceManifest
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&manifest); err != nil {
+		return generatedEvidenceManifest{}, false, fmt.Errorf("decode tool manifest: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF || manifest.Version != 1 || len(manifest.Files) > maxPublishedImagesPerRun {
+		return generatedEvidenceManifest{}, false, fmt.Errorf("invalid tool manifest")
+	}
+	expected := map[string]bool{manifestRel: true}
+	for _, file := range manifest.Files {
+		if expected[file.Path] || !validGeneratedEvidenceManifestFile(workDir, location.GeneratedRepoDir, file) {
+			return generatedEvidenceManifest{}, false, fmt.Errorf("invalid tool manifest entry")
+		}
+		expected[file.Path] = true
+		artifact := types.TestArtifact{Path: file.Path, SHA256: file.SHA256, Size: file.Size}
+		if !matchesGitEvidenceBlob(ctx, workDir, ref+":"+file.Path, artifact) {
+			return generatedEvidenceManifest{}, false, fmt.Errorf("tool manifest blob mismatch")
+		}
+	}
+	if len(paths) != len(expected) {
+		return generatedEvidenceManifest{}, false, fmt.Errorf("unowned files in generated namespace")
+	}
+	for _, rel := range paths {
+		if !expected[filepath.ToSlash(rel)] {
+			return generatedEvidenceManifest{}, false, fmt.Errorf("unowned file in generated namespace")
+		}
+	}
+	return manifest, true, nil
+}
+
+func validGeneratedEvidenceManifestFile(workDir, generatedDir string, file generatedEvidenceManifestFile) bool {
+	if file.Path == "" || filepath.IsAbs(file.Path) || strings.Contains(file.Path, "\\") ||
+		file.Size <= 0 || file.Size > maxPublishedImageBytes ||
+		len(file.SHA256) != sha256.Size*2 || file.SHA256 != strings.ToLower(file.SHA256) {
+		return false
+	}
+	target := filepath.Join(workDir, filepath.FromSlash(file.Path))
+	if _, ok := lexicalRelativePath(generatedDir, target); !ok {
+		return false
+	}
+	return filepath.Base(target) == file.SHA256[:32]+".png"
 }
 
 func managedEvidenceDestinationPaths(sctx *pipeline.StepContext, location testEvidenceLocation) (map[string]bool, error) {
@@ -368,6 +506,10 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 	if !location.StoreInRepo {
 		return nil
 	}
+	priorManifest, err := validateEvidenceNamespaceOwnership(sctx, location)
+	if err != nil {
+		return err
+	}
 	managedPaths, err := managedEvidenceDestinationPaths(sctx, location)
 	if err != nil {
 		return err
@@ -428,7 +570,7 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 	}
 
 	for targetRel := range managedPaths {
-		if _, err := git.Run(ctx, sctx.WorkDir, "reset", "--quiet", "HEAD", "--", targetRel); err != nil {
+		if _, err := git.Run(ctx, sctx.WorkDir, "--literal-pathspecs", "reset", "--quiet", "HEAD", "--", targetRel); err != nil {
 			return fmt.Errorf("clear staged test evidence: %w", err)
 		}
 	}
@@ -439,17 +581,37 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 			!matchesPreparedEvidenceManifest(target, destination.artifact) {
 			continue
 		}
-		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-f", "--", targetRel); err != nil {
+		if _, err := git.Run(ctx, sctx.WorkDir, "--literal-pathspecs", "add", "-f", "--", targetRel); err != nil {
 			return fmt.Errorf("stage test evidence: %w", err)
 		}
 		if !matchesStagedEvidenceManifest(ctx, sctx.WorkDir, targetRel, destination.artifact) {
-			if _, err := git.Run(ctx, sctx.WorkDir, "reset", "--quiet", "HEAD", "--", targetRel); err != nil {
+			if _, err := git.Run(ctx, sctx.WorkDir, "--literal-pathspecs", "reset", "--quiet", "HEAD", "--", targetRel); err != nil {
 				return fmt.Errorf("clear invalid staged test evidence: %w", err)
 			}
 			continue
 		}
 		destination.published = true
 		destinations[targetRel] = destination
+	}
+
+	currentManifest := generatedEvidenceManifest{Version: 1}
+	for targetRel, destination := range destinations {
+		if !destination.published {
+			continue
+		}
+		currentManifest.Files = append(currentManifest.Files, generatedEvidenceManifestFile{
+			Path:   targetRel,
+			SHA256: destination.artifact.SHA256,
+			Size:   destination.artifact.Size,
+		})
+	}
+	sort.Slice(currentManifest.Files, func(i, j int) bool {
+		return currentManifest.Files[i].Path < currentManifest.Files[j].Path
+	})
+	if githubRemote && (len(priorManifest.Files) > 0 || len(currentManifest.Files) > 0) {
+		if err := replaceGeneratedEvidenceManifest(sctx, location, priorManifest, currentManifest); err != nil {
+			return err
+		}
 	}
 
 	for _, manifest := range manifests {
@@ -487,6 +649,72 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 	return nil
 }
 
+func replaceGeneratedEvidenceManifest(sctx *pipeline.StepContext, location testEvidenceLocation, prior, current generatedEvidenceManifest) error {
+	currentPaths := make(map[string]bool, len(current.Files))
+	for _, file := range current.Files {
+		currentPaths[file.Path] = true
+	}
+	for _, file := range prior.Files {
+		if currentPaths[file.Path] {
+			continue
+		}
+		target := filepath.Join(sctx.WorkDir, filepath.FromSlash(file.Path))
+		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove obsolete generated evidence: %w", err)
+		}
+		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "--literal-pathspecs", "add", "-A", "--", file.Path); err != nil {
+			return fmt.Errorf("stage obsolete generated evidence removal: %w", err)
+		}
+	}
+	manifestRel, manifestPath, ok := generatedEvidenceManifestPath(sctx.WorkDir)
+	if !ok {
+		return fmt.Errorf("resolve generated evidence manifest")
+	}
+	if info, err := os.Lstat(manifestPath); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("generated evidence manifest is not a regular file")
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect generated evidence manifest: %w", err)
+	}
+	if err := os.MkdirAll(location.GeneratedRepoDir, 0o755); err != nil {
+		return fmt.Errorf("create generated evidence namespace: %w", err)
+	}
+	raw, err := json.Marshal(current)
+	if err != nil {
+		return fmt.Errorf("encode generated evidence manifest: %w", err)
+	}
+	raw = append(raw, '\n')
+	temp, err := os.CreateTemp(location.GeneratedRepoDir, ".manifest-*")
+	if err != nil {
+		return fmt.Errorf("create generated evidence manifest: %w", err)
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o644); err != nil {
+		temp.Close()
+		return fmt.Errorf("set generated evidence manifest mode: %w", err)
+	}
+	if _, err := temp.Write(raw); err != nil {
+		temp.Close()
+		return fmt.Errorf("write generated evidence manifest: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close generated evidence manifest: %w", err)
+	}
+	if err := os.Rename(tempPath, manifestPath); err != nil {
+		return fmt.Errorf("install generated evidence manifest: %w", err)
+	}
+	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "--literal-pathspecs", "add", "-f", "--", manifestRel); err != nil {
+		return fmt.Errorf("stage generated evidence manifest: %w", err)
+	}
+	staged, err := git.RunRaw(sctx.Ctx, sctx.WorkDir, "show", ":"+manifestRel)
+	if err != nil || !bytes.Equal(staged, raw) {
+		return fmt.Errorf("verify staged generated evidence manifest")
+	}
+	return nil
+}
+
 func (s *PushStep) verifyCommittedInRepoEvidence(sctx *pipeline.StepContext, headSHA string) error {
 	location := resolveTestEvidenceLocation(sctx.WorkDir, sctx.Run.Branch, sctx.Run.ID, sctx.Config.Test.Evidence)
 	if !location.StoreInRepo {
@@ -497,6 +725,7 @@ func (s *PushStep) verifyCommittedInRepoEvidence(sctx *pipeline.StepContext, hea
 		return fmt.Errorf("load committed test evidence manifest: %w", err)
 	}
 	invalid := false
+	expectedPublished := make(map[string]generatedEvidenceManifestFile)
 	for _, result := range steps {
 		if result.StepName != types.StepTest || result.FindingsJSON == nil {
 			continue
@@ -510,6 +739,9 @@ func (s *PushStep) verifyCommittedInRepoEvidence(sctx *pipeline.StepContext, hea
 			repoPath, ok := reservedEvidenceDestinationPath(sctx.WorkDir, location.RepoDir, artifact)
 			if !ok {
 				continue
+			}
+			if artifact.Published {
+				expectedPublished[repoPath] = generatedEvidenceManifestFile{Path: repoPath, SHA256: artifact.SHA256, Size: artifact.Size}
 			}
 			objectSpec := headSHA + ":" + filepath.ToSlash(repoPath)
 			if matchesGitEvidenceBlob(sctx.Ctx, sctx.WorkDir, objectSpec, artifact) {
@@ -531,6 +763,22 @@ func (s *PushStep) verifyCommittedInRepoEvidence(sctx *pipeline.StepContext, hea
 		}
 		if err := sctx.DB.SetStepFindings(result.ID, raw); err != nil {
 			return fmt.Errorf("update committed test evidence manifest: %w", err)
+		}
+	}
+	committedManifest, manifestExists, manifestErr := loadGeneratedEvidenceManifestAtRef(sctx.Ctx, sctx.WorkDir, headSHA, location)
+	if manifestErr != nil {
+		invalid = true
+	}
+	if len(expectedPublished) > 0 {
+		if !manifestExists || len(committedManifest.Files) != len(expectedPublished) {
+			invalid = true
+		} else {
+			for _, file := range committedManifest.Files {
+				if expectedPublished[file.Path] != file {
+					invalid = true
+					break
+				}
+			}
 		}
 	}
 	if invalid {

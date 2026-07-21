@@ -11,6 +11,10 @@ func GitHubCanonicalWebHost(host string) (string, bool) {
 	return ghCanonicalWebHost(ExtractHost(host))
 }
 
+func GitHubCanonicalWebAuthority(authority string) (string, bool) {
+	return ghCanonicalWebAuthority(authority)
+}
+
 // GitHubWebHostConfigured reports whether gh has an exact authenticated web
 // authority entry.
 func GitHubWebHostConfigured(authority string) bool {
