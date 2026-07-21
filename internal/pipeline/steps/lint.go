@@ -155,7 +155,7 @@ Previous lint findings to address:
 		return nil, fmt.Errorf("run lint command: %w", err)
 	}
 
-	sctx.Log(output)
+	projectedOutput := logConfiguredCommandOutput(sctx, output, types.StepLint)
 
 	if exitCode != 0 {
 		findings := Findings{
@@ -163,7 +163,7 @@ Previous lint findings to address:
 				Severity:    "warning",
 				Description: fmt.Sprintf("linter found issues (exit code %d)", exitCode),
 			}},
-			Summary: configuredCommandFailureSummary(output, types.StepLint),
+			Summary: projectedOutput,
 		}
 		findingsJSON, _ := json.Marshal(findings)
 		return &pipeline.StepOutcome{

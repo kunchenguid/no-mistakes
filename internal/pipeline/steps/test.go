@@ -92,7 +92,7 @@ Previous test findings to address:
 		}
 		tested = append(tested, testCmd)
 
-		sctx.Log(output)
+		projectedOutput := logConfiguredCommandOutput(sctx, output, types.StepTest)
 
 		if exitCode != 0 {
 			findings := Findings{
@@ -100,7 +100,7 @@ Previous test findings to address:
 					Severity:    "error",
 					Description: fmt.Sprintf("tests failed with exit code %d", exitCode),
 				}},
-				Summary: configuredCommandFailureSummary(output, types.StepTest),
+				Summary: projectedOutput,
 				Tested:  tested,
 			}
 			findingsJSON, _ := json.Marshal(findings)

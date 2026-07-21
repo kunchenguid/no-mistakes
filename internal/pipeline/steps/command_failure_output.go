@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -18,6 +19,17 @@ const configuredCommandFailureSummaryMaxBytes = 64 * 1024
 
 const configuredCommandFailureMarkerReserve = 512
 const configuredCommandFailureLineSearchBytes = 4 * 1024
+
+func logConfiguredCommandOutput(sctx *pipeline.StepContext, output string, step types.StepName) string {
+	projection := configuredCommandFailureSummary(output, step)
+	if projection == output {
+		sctx.Log(output)
+		return projection
+	}
+	sctx.LogFile(output)
+	sctx.Log(projection)
+	return projection
+}
 
 func configuredCommandFailureSummary(output string, step types.StepName) string {
 	if len(output) <= configuredCommandFailureSummaryMaxBytes {

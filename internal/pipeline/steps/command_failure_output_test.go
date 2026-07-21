@@ -7,8 +7,46 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestLogConfiguredCommandOutputKeepsFullFileLogAndBoundsIPC(t *testing.T) {
+	for _, step := range []types.StepName{types.StepTest, types.StepLint} {
+		t.Run(string(step), func(t *testing.T) {
+			middle := "IPC_MUST_OMIT_THIS_MIDDLE"
+			output := "HEAD\n" + strings.Repeat("a", configuredCommandFailureSummaryMaxBytes) + middle + strings.Repeat("b", configuredCommandFailureSummaryMaxBytes) + "\nTAIL🙂\n"
+			var fileLog strings.Builder
+			var ipcPayloads []string
+			sctx := &pipeline.StepContext{
+				Log: func(text string) {
+					ipcPayloads = append(ipcPayloads, text)
+					fileLog.WriteString(text)
+				},
+				LogFile: func(text string) {
+					fileLog.WriteString(text)
+				},
+			}
+
+			projection := logConfiguredCommandOutput(sctx, output, step)
+			if len(ipcPayloads) != 1 {
+				t.Fatalf("IPC payload count = %d, want 1", len(ipcPayloads))
+			}
+			if ipcPayloads[0] != projection {
+				t.Fatal("IPC payload differs from findings projection")
+			}
+			if len(ipcPayloads[0]) > configuredCommandFailureSummaryMaxBytes {
+				t.Fatalf("IPC payload has %d bytes, cap is %d", len(ipcPayloads[0]), configuredCommandFailureSummaryMaxBytes)
+			}
+			if strings.Contains(ipcPayloads[0], middle) {
+				t.Fatal("IPC payload contains omitted middle output")
+			}
+			if !strings.Contains(fileLog.String(), output) {
+				t.Fatal("file-backed step log does not contain complete output")
+			}
+		})
+	}
+}
 
 func TestConfiguredCommandFailureSummaryBoundsHeadTailAndUTF8(t *testing.T) {
 	head := "HEAD_MARKER context before failure\n"
