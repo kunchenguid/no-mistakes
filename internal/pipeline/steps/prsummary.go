@@ -33,6 +33,7 @@ const (
 
 type testingArtifactRenderState struct {
 	remainingEmbeddedBytes int
+	renderedImages         int
 }
 
 type testingSummaryOptions struct {
@@ -305,11 +306,22 @@ func githubRepositoryForRemote(ctx context.Context, remote string) (githubReposi
 	if strings.EqualFold(parsed.Scheme, "https") && !validGitHubHost(parsed.Hostname()) {
 		return githubRepository{}, false
 	}
-	if parsed.Port() != "" && !explicitGitHubSSH443 {
-		return githubRepository{}, false
+	if port := parsed.Port(); port != "" {
+		if !strings.EqualFold(parsed.Scheme, "ssh") || !validSSHPort(port) {
+			return githubRepository{}, false
+		}
+		if canonicalHost == "github.com" && !explicitGitHubSSH443 &&
+			(!strings.EqualFold(parsed.Hostname(), "github.com") || port != "22") {
+			return githubRepository{}, false
+		}
 	}
 	owner, name, ok := cleanGitHubRepoParts(strings.TrimPrefix(parsed.Path, "/"))
 	return githubRepository{host: canonicalHost, owner: owner, name: name}, ok
+}
+
+func validSSHPort(port string) bool {
+	value, err := strconv.Atoi(port)
+	return err == nil && value > 0 && value <= 65535 && strconv.Itoa(value) == port
 }
 
 func isExplicitGitHubSSH443Remote(remote string) bool {
@@ -522,6 +534,9 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 	if target == "" {
 		target = artifactTargetForPath(artifact, opts)
 	}
+	if isImageArtifact(artifact.Kind, target) || isImageArtifact(artifact.Kind, artifact.Path) {
+		label = nextValidationScreenshotLabel(state)
+	}
 	localPath := localArtifactPath(artifact.Path, opts)
 	fileText, hasFile := embeddedArtifactText(artifact, opts, state)
 	caption := artifact.Content
@@ -560,6 +575,9 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 
 func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptions, label string, state *testingArtifactRenderState) string {
 	image := isImageArtifact(artifact.Kind, artifact.URL) || isImageArtifact(artifact.Kind, artifact.Path)
+	if image {
+		label = nextValidationScreenshotLabel(state)
+	}
 	target := artifact.URL
 	if target == "" {
 		if image {
@@ -617,9 +635,17 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 
 func renderUnpublishedCompactImage(label, caption string) string {
 	if caption == disabledImagePublicationExplanation {
-		return fmt.Sprintf("- Evidence: %s was not published because image publication is disabled.\n", html.EscapeString(label))
+		return "- Evidence: Image evidence unavailable because publication is disabled.\n"
 	}
-	return fmt.Sprintf("- Evidence: %s was not published.\n", html.EscapeString(label))
+	return "- Evidence: Image evidence unavailable.\n"
+}
+
+func nextValidationScreenshotLabel(state *testingArtifactRenderState) string {
+	if state == nil {
+		return "Validation screenshot"
+	}
+	state.renderedImages++
+	return fmt.Sprintf("Validation screenshot %d", state.renderedImages)
 }
 
 func publishedRepoImageIsAvailable(artifact types.TestArtifact, opts testingSummaryOptions) bool {

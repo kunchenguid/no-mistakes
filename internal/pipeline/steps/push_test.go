@@ -593,8 +593,9 @@ func TestPushStep_RejectsDriftedPreparedEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if artifact := manifest.Artifacts[0]; artifact.Path != "" || artifact.Content != unpublishedImageExplanation {
-		t.Fatalf("drifted evidence remained publishable in manifest: %#v", artifact)
+	if artifact := manifest.Artifacts[0]; artifact.Path != rel || artifact.SHA256 != hash || artifact.Size != int64(len(original)) ||
+		artifact.Published || artifact.Content != unpublishedImageExplanation {
+		t.Fatalf("drifted evidence lost retry identity: %#v", artifact)
 	}
 	if strings.Contains(*steps[len(steps)-1].FindingsJSON, `"published":true`) {
 		t.Fatalf("drifted evidence remained marked published: %s", *steps[len(steps)-1].FindingsJSON)
@@ -776,8 +777,85 @@ func TestPushStep_RejectsEvidenceSwappedInIndexAfterAdd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if artifact := manifest.Artifacts[0]; artifact.Published || artifact.Path != "" {
-		t.Fatalf("index-swapped evidence remained publishable: %#v", artifact)
+	if artifact := manifest.Artifacts[0]; artifact.Published || artifact.Path != rel || artifact.SHA256 != hash || artifact.Size != int64(len(data)) {
+		t.Fatalf("index-swapped evidence lost retry identity: %#v", artifact)
+	}
+}
+
+func TestPushStep_RejectsEvidenceMutatedByCommitHook(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	data := testPNGBytes()
+	sum := sha256.Sum256(data)
+	hash := fmt.Sprintf("%x", sum[:])
+	rel := filepath.ToSlash(filepath.Join("evidence", generatedEvidenceDir, "feature", hash[:32]+".png"))
+	target := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	replacement := filepath.Join(dir, "replacement.png")
+	if err := os.WriteFile(replacement, coloredPNGBytes(91), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(dir, ".git", "hooks", "pre-commit")
+	script := fmt.Sprintf("#!/bin/sh\nobject=$(git hash-object -w -- %q)\ngit update-index --cacheinfo 100644,$object,%q\n", replacement, rel)
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/example/widgets.git"
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+	setTestEvidenceManifest(t, sctx, rel, hash, int64(len(data)))
+
+	if _, err := (&PushStep{}).Execute(sctx); err == nil || !strings.Contains(err.Error(), "verify committed test evidence") {
+		t.Fatalf("Execute() error = %v, want committed evidence verification failure", err)
+	}
+	if remote := gitCmd(t, dir, "ls-remote", upstream, "refs/heads/feature"); remote != "" {
+		t.Fatalf("mutated evidence commit was pushed: %q", remote)
+	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := types.ParseFindingsJSON(*steps[len(steps)-1].FindingsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact := manifest.Artifacts[0]; artifact.Published || artifact.Path != rel || artifact.SHA256 != hash || artifact.Size != int64(len(data)) {
+		t.Fatalf("commit-hook failure lost retry identity: %#v", artifact)
+	}
+}
+
+func TestPushStep_CommitsWhitespaceOnlyFilename(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	if err := os.WriteFile(filepath.Join(dir, " "), []byte("kept"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "feature"
+
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	clone := t.TempDir()
+	gitCmd(t, clone, "clone", "--branch", "feature", upstream, ".")
+	if data, err := os.ReadFile(filepath.Join(clone, " ")); err != nil || string(data) != "kept" {
+		t.Fatalf("whitespace filename was not pushed: data=%q err=%v", data, err)
 	}
 }
 

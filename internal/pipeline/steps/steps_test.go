@@ -65,6 +65,10 @@ func handleFakeCLI(mode string) {
 		fmt.Println("user git")
 		fmt.Println("hostname ssh.github.com")
 		fmt.Println("port 443")
+	case "ssh-resolve-ghes-custom-port":
+		fmt.Println("user git")
+		fmt.Println("hostname github.corp.example")
+		fmt.Println("port 2222")
 	case "ci-gh":
 		fakeCIGHHandler(args)
 	case "ci-gh-seq":

@@ -2,10 +2,13 @@ package steps
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -14,6 +17,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -48,23 +52,27 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err := s.stageInRepoEvidence(sctx); err != nil {
 		return nil, err
 	}
-	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
-	if strings.TrimSpace(status) != "" {
+	hasStagedChanges, err := hasStagedGitChanges(ctx, sctx.WorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("inspect staged agent changes: %w", err)
+	}
+	if hasStagedChanges {
 		sctx.Log("committing agent changes...")
-		stagedPaths, err := git.Run(ctx, sctx.WorkDir, "diff", "--cached", "--name-only")
+		if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply agent fixes"); err != nil {
+			return nil, fmt.Errorf("commit agent changes: %w", err)
+		}
+		headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 		if err != nil {
-			return nil, fmt.Errorf("inspect staged agent changes: %w", err)
+			return nil, fmt.Errorf("resolve head after commit: %w", err)
 		}
-		if strings.TrimSpace(stagedPaths) != "" {
-			if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply agent fixes"); err != nil {
-				return nil, fmt.Errorf("commit agent changes: %w", err)
-			}
-			headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
-			if err != nil {
-				return nil, fmt.Errorf("resolve head after commit: %w", err)
-			}
-			newHeadSHA = headSHA
-		}
+		newHeadSHA = headSHA
+	}
+	committedHead, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve head for test evidence verification: %w", err)
+	}
+	if err := s.verifyCommittedInRepoEvidence(sctx, committedHead); err != nil {
+		return nil, err
 	}
 
 	ref := normalizedBranchRef(sctx.Run.Branch)
@@ -147,6 +155,22 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 
 	sctx.Log("pushed successfully")
 	return &pipeline.StepOutcome{}, nil
+}
+
+func hasStagedGitChanges(ctx context.Context, workDir string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "diff", "--cached", "--quiet", "--no-ext-diff")
+	cmd.Dir = workDir
+	cmd.Env = git.NonInteractiveEnv(workDir)
+	shellenv.ConfigureShellCommand(cmd)
+	err := shellenv.RunShellCommand(cmd)
+	if err == nil {
+		return false, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return true, nil
+	}
+	return false, err
 }
 
 func (s *PushStep) stageAgentChanges(sctx *pipeline.StepContext) error {
@@ -414,13 +438,13 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 			}
 			targetRel, ok := evidenceDestinationPath(sctx.WorkDir, location.RepoDir, artifact)
 			if !ok {
-				manifest.findings.Artifacts[i] = unpublishedImageArtifact(artifact)
+				manifest.findings.Artifacts[i] = retryableUnpublishedImageArtifact(artifact)
 				manifestChanged = true
 				continue
 			}
 			destination := destinations[targetRel]
 			if !destination.published || artifact.SHA256 != destination.artifact.SHA256 || artifact.Size != destination.artifact.Size {
-				manifest.findings.Artifacts[i] = unpublishedImageArtifact(artifact)
+				manifest.findings.Artifacts[i] = retryableUnpublishedImageArtifact(artifact)
 				manifestChanged = true
 				continue
 			}
@@ -439,6 +463,61 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 		}
 	}
 	return nil
+}
+
+func (s *PushStep) verifyCommittedInRepoEvidence(sctx *pipeline.StepContext, headSHA string) error {
+	location := resolveTestEvidenceLocation(sctx.WorkDir, sctx.Run.Branch, sctx.Run.ID, sctx.Config.Test.Evidence)
+	if !location.StoreInRepo {
+		return nil
+	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		return fmt.Errorf("load committed test evidence manifest: %w", err)
+	}
+	invalid := false
+	for _, result := range steps {
+		if result.StepName != types.StepTest || result.FindingsJSON == nil {
+			continue
+		}
+		findings, err := types.ParseFindingsJSON(*result.FindingsJSON)
+		if err != nil {
+			continue
+		}
+		changed := false
+		for i, artifact := range findings.Artifacts {
+			if !artifact.Published {
+				continue
+			}
+			repoPath, ok := preparedEvidenceDestinationPath(sctx.WorkDir, location.RepoDir, artifact)
+			if ok && matchesGitEvidenceBlob(sctx.Ctx, sctx.WorkDir, headSHA+":"+filepath.ToSlash(repoPath), artifact) {
+				continue
+			}
+			findings.Artifacts[i] = retryableUnpublishedImageArtifact(artifact)
+			changed = true
+			invalid = true
+		}
+		if !changed {
+			continue
+		}
+		raw, err := types.MarshalFindingsJSON(findings)
+		if err != nil {
+			return fmt.Errorf("encode committed test evidence manifest: %w", err)
+		}
+		if err := sctx.DB.SetStepFindings(result.ID, raw); err != nil {
+			return fmt.Errorf("update committed test evidence manifest: %w", err)
+		}
+	}
+	if invalid {
+		return fmt.Errorf("verify committed test evidence: commit does not match prepared manifest")
+	}
+	return nil
+}
+
+func retryableUnpublishedImageArtifact(artifact types.TestArtifact) types.TestArtifact {
+	artifact.URL = ""
+	artifact.Content = unpublishedImageExplanation
+	artifact.Published = false
+	return artifact
 }
 
 func matchesPreparedEvidenceManifest(target string, artifact types.TestArtifact) bool {

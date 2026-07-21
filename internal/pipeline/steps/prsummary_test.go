@@ -435,13 +435,13 @@ func TestBuildTestingSummary_RendersEvidenceArtifacts(t *testing.T) {
 	md := BuildTestingSummary(steps, rounds)
 	t.Logf("rendered testing markdown:\n%s", md)
 
-	if !strings.Contains(md, "![Checkout success screenshot](artifacts/checkout-success.png)") {
+	if !strings.Contains(md, "![Validation screenshot 1](artifacts/checkout-success.png)") {
 		t.Fatalf("expected screenshot artifact to render inline, got:\n%s", md)
 	}
 	if !strings.Contains(md, "**Checkout server log**") || !strings.Contains(md, "```text\nPOST /checkout 200\nreceipt=ok\n```") {
 		t.Fatalf("expected log artifact content to render inline, got:\n%s", md)
 	}
-	if strings.Index(md, "Summary:") > strings.Index(md, "![Checkout success screenshot]") {
+	if strings.Index(md, "Summary:") > strings.Index(md, "![Validation screenshot 1]") {
 		t.Fatalf("expected summary before artifacts, got:\n%s", md)
 	}
 }
@@ -462,7 +462,7 @@ func TestBuildTestingSummary_UsesFinalSuccessfulRoundArtifacts(t *testing.T) {
 
 	md := BuildTestingSummary(steps, rounds)
 
-	if !strings.Contains(md, "Checkout passed after fix.") || !strings.Contains(md, "![Fixed checkout screenshot](artifacts/fixed-checkout.png)") {
+	if !strings.Contains(md, "Checkout passed after fix.") || !strings.Contains(md, "![Validation screenshot 1](artifacts/fixed-checkout.png)") {
 		t.Fatalf("expected final successful evidence, got:\n%s", md)
 	}
 	for _, stale := range []string{"Checkout failed before fix.", "broken checkout flow", "Broken checkout screenshot", "artifacts/broken-checkout.png"} {
@@ -489,7 +489,7 @@ func TestBuildTestingSummary_RejectsUnsafeArtifactTargets(t *testing.T) {
 			t.Fatalf("did not expect unsafe target content %q, got:\n%s", unsafe, md)
 		}
 	}
-	if !strings.Contains(md, "![Safe path](artifacts/safe.png)") || !strings.Contains(md, "[Safe URL](https://example.com/log.txt)") {
+	if !strings.Contains(md, "![Validation screenshot 1](artifacts/safe.png)") || !strings.Contains(md, "[Safe URL](https://example.com/log.txt)") {
 		t.Fatalf("expected safe artifact targets to render, got:\n%s", md)
 	}
 }
@@ -521,7 +521,7 @@ func TestBuildTestingSummaryForPR_RendersEvidenceArtifactsCompactly(t *testing.T
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", ref, repoRoot)
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
-	wantImage := "![Checkout screenshot](https://github.com/example/widgets/blob/" + ref + "/" + image.Path + "?raw=1)"
+	wantImage := "![Validation screenshot 1](https://github.com/example/widgets/blob/" + ref + "/" + image.Path + "?raw=1)"
 	if !strings.Contains(md, wantImage) {
 		t.Fatalf("expected screenshot path to render inline from GitHub, got:\n%s", md)
 	}
@@ -551,7 +551,7 @@ func TestBuildTestingSummaryForPR_RendersForkHostedImageInline(t *testing.T) {
 
 	md := BuildTestingSummaryForPR(steps, rounds, "https://github.com/fork-owner/widgets.git", ref, repoRoot)
 
-	want := "![Checkout screenshot](https://github.com/fork-owner/widgets/blob/" + ref + "/" + image.Path + "?raw=1)"
+	want := "![Validation screenshot 1](https://github.com/fork-owner/widgets/blob/" + ref + "/" + image.Path + "?raw=1)"
 	if !strings.Contains(md, want) {
 		t.Fatalf("expected fork-hosted image markdown %q, got:\n%s", want, md)
 	}
@@ -568,9 +568,12 @@ func TestBuildTestingSummaryForPR_UsesAuthenticatedImmutableImageURL(t *testing.
 
 	md := BuildTestingSummaryForPR(steps, rounds, "https://github.com/private-owner/widgets.git", ref, repoRoot)
 
-	want := "![Private screenshot](https://github.com/private-owner/widgets/blob/" + ref + "/" + image.Path + "?raw=1)"
+	want := "![Validation screenshot 1](https://github.com/private-owner/widgets/blob/" + ref + "/" + image.Path + "?raw=1)"
 	if !strings.Contains(md, want) {
 		t.Fatalf("expected authenticated immutable image URL %q, got:\n%s", want, md)
+	}
+	if strings.Contains(md, image.Label) {
+		t.Fatalf("published image leaked agent-controlled label %q:\n%s", image.Label, md)
 	}
 }
 
@@ -585,7 +588,7 @@ func TestBuildTestingSummaryForPR_AcceptsPersistedRedactedGitHubRemote(t *testin
 
 	md := BuildTestingSummaryForPR(steps, rounds, "https://redacted@github.com/example/widgets.git", ref, repoRoot)
 
-	want := "![Checkout screenshot](https://github.com/example/widgets/blob/" + ref + "/" + image.Path + "?raw=1)"
+	want := "![Validation screenshot 1](https://github.com/example/widgets/blob/" + ref + "/" + image.Path + "?raw=1)"
 	if !strings.Contains(md, want) {
 		t.Fatalf("expected redacted persisted remote to render %q, got:\n%s", want, md)
 	}
@@ -663,6 +666,42 @@ func TestGitHubRepositoryForRemote_AcceptsExplicitGitHubSSHOver443(t *testing.T)
 	}
 }
 
+func TestGitHubRepositoryForRemote_AcceptsGitHubSSHPort22(t *testing.T) {
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+
+	repo, ok := githubRepositoryForRemote(context.Background(), "ssh://git@github.com:22/example/widgets.git")
+
+	if !ok {
+		t.Fatal("GitHub SSH port 22 remote was rejected")
+	}
+	if repo.host != "github.com" || repo.owner != "example" || repo.name != "widgets" {
+		t.Fatalf("resolved repository = %#v", repo)
+	}
+}
+
+func TestGitHubRepositoryForRemote_AcceptsAuthenticatedGHESSHCustomPort(t *testing.T) {
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "ssh")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_CLI_MODE", "ssh-resolve-ghes-custom-port")
+	ghConfig := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ghConfig, "hosts.yml"), []byte("github.corp.example:\n  user: test\n  oauth_token: test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_CONFIG_DIR", ghConfig)
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+
+	repo, ok := githubRepositoryForRemote(context.Background(), "ssh://git@github.corp.example:2222/team/widgets.git")
+
+	if !ok {
+		t.Fatal("authenticated GHES SSH custom-port remote was rejected")
+	}
+	if repo.host != "github.corp.example" || repo.owner != "team" || repo.name != "widgets" {
+		t.Fatalf("resolved repository = %#v", repo)
+	}
+}
+
 func TestBuildTestingSummaryForPR_RejectsUnverifiedNonGitHubHost(t *testing.T) {
 	t.Setenv("GH_CONFIG_DIR", t.TempDir())
 	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
@@ -680,7 +719,7 @@ func TestBuildTestingSummaryForPR_RejectsUnverifiedNonGitHubHost(t *testing.T) {
 
 	md := BuildTestingSummaryForPR(steps, rounds, "https://gitlab.example.com/example/widgets.git", "abc123", repoRoot)
 
-	if !strings.Contains(md, "Checkout screenshot was not published.") {
+	if !strings.Contains(md, "Image evidence unavailable.") {
 		t.Fatalf("expected unverified host to degrade safely, got:\n%s", md)
 	}
 	if strings.Contains(md, "gitlab.example.com/example/widgets/raw/") {
@@ -755,7 +794,7 @@ func TestBuildTestingSummaryForPR_RejectsUntrustedGitHubRemoteLayouts(t *testing
 	} {
 		t.Run(remote, func(t *testing.T) {
 			md := BuildTestingSummaryForPR(steps, rounds, remote, "abc123", repoRoot)
-			if !strings.Contains(md, "Checkout screenshot was not published.") {
+			if !strings.Contains(md, "Image evidence unavailable.") {
 				t.Fatalf("expected safe fallback for %q, got:\n%s", remote, md)
 			}
 			for _, unsafe := range []string{"evidence/checkout.png", "raw.githubusercontent.com", "/raw/abc123/"} {
@@ -777,7 +816,7 @@ func TestBuildTestingSummaryForPR_MissingRepoImageDegradesSafely(t *testing.T) {
 
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
 
-	if !strings.Contains(md, "- Evidence: Missing screenshot was not published.") {
+	if !strings.Contains(md, "- Evidence: Image evidence unavailable.") {
 		t.Fatalf("expected safe missing-file explanation, got:\n%s", md)
 	}
 	for _, unsafe := range []string{"evidence/missing.png", "raw.githubusercontent.com", "local file"} {
@@ -810,7 +849,7 @@ func TestBuildTestingSummaryForPR_RequiresManifestBlobAtPushedCommit(t *testing.
 
 	md := BuildTestingSummaryForPR(steps, rounds, "https://github.com/example/widgets.git", ref, repoRoot)
 
-	if !strings.Contains(md, "Checkout screenshot was not published.") {
+	if !strings.Contains(md, "Image evidence unavailable.") {
 		t.Fatalf("expected image missing from pushed commit to degrade safely, got:\n%s", md)
 	}
 	if strings.Contains(md, "raw.githubusercontent.com") {
@@ -844,7 +883,7 @@ func TestBuildTestingSummaryForPR_CancellationStopsBlobVerification(t *testing.T
 
 	md := buildTestingSummaryForPR(ctx, steps, rounds, "https://github.com/example/widgets.git", "abc123", t.TempDir())
 
-	if !strings.Contains(md, "Checkout screenshot was not published.") {
+	if !strings.Contains(md, "Image evidence unavailable.") {
 		t.Fatalf("expected cancellation to degrade safely, got:\n%s", md)
 	}
 	if data, err := os.ReadFile(logFile); err == nil && len(data) > 0 {
@@ -888,7 +927,7 @@ func TestBuildTestingSummaryForPR_RetryUsesPushedImageBlob(t *testing.T) {
 
 			md := BuildTestingSummaryForPR(steps, rounds, "https://github.com/example/widgets.git", ref, repoRoot)
 
-			want := "![Checkout screenshot](https://github.com/example/widgets/blob/" + ref + "/" + image.Path + "?raw=1)"
+			want := "![Validation screenshot 1](https://github.com/example/widgets/blob/" + ref + "/" + image.Path + "?raw=1)"
 			if !strings.Contains(md, want) {
 				t.Fatalf("retry did not render pushed image blob %q:\n%s", want, md)
 			}
@@ -911,7 +950,7 @@ func TestBuildTestingSummaryForPR_ScrubsLocalTempVisualArtifactPath(t *testing.T
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
-	if !strings.Contains(md, "- Evidence: Checkout screenshot was not published.") {
+	if !strings.Contains(md, "- Evidence: Image evidence unavailable.") {
 		t.Fatalf("expected a safe publication explanation, got:\n%s", md)
 	}
 	for _, broken := range []string{"![Checkout screenshot]", "github.com/example/widgets/blob/abc123/", localPath, "/tmp/", "local file"} {
@@ -936,7 +975,7 @@ func TestBuildTestingSummaryForPR_ScrubsCaptionedLocalVisualArtifactPath(t *test
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
-	if !strings.Contains(md, "Checkout screenshot was not published.") {
+	if !strings.Contains(md, "Image evidence unavailable.") {
 		t.Fatalf("expected captioned local temp screenshot to degrade safely, got:\n%s", md)
 	}
 	if strings.Contains(md, "Checkout completed visually.") {
@@ -951,8 +990,24 @@ func TestBuildTestingSummaryForPR_ScrubsCaptionedLocalVisualArtifactPath(t *test
 
 func TestRenderUnpublishedCompactImage_ExplainsDisabledPublication(t *testing.T) {
 	got := renderUnpublishedCompactImage("Checkout screenshot", disabledImagePublicationExplanation)
-	if got != "- Evidence: Checkout screenshot was not published because image publication is disabled.\n" {
+	if got != "- Evidence: Image evidence unavailable because publication is disabled.\n" {
 		t.Fatalf("disabled image publication rendering = %q", got)
+	}
+}
+
+func TestBuildTestingSummaryForPR_DoesNotRenderImageLabel(t *testing.T) {
+	malicious := "/tmp/no-mistakes-evidence/run-secret/capture.png"
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":%q,"content":"Image evidence was not published."}]}`, malicious)
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}}}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "https://github.com/example/widgets.git", "abc123", t.TempDir())
+
+	if strings.Contains(md, malicious) || strings.Contains(md, "/tmp/") {
+		t.Fatalf("unpublished image leaked agent-controlled label:\n%s", md)
+	}
+	if !strings.Contains(md, "Image evidence unavailable") {
+		t.Fatalf("missing generic image fallback:\n%s", md)
 	}
 }
 
@@ -970,7 +1025,7 @@ func TestBuildTestingSummaryForPR_PrefersArtifactURLOverLocalPath(t *testing.T) 
 
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
 
-	if !strings.Contains(md, "![Checkout screenshot](https://example.com/checkout.png)") {
+	if !strings.Contains(md, "![Validation screenshot 1](https://example.com/checkout.png)") {
 		t.Fatalf("expected artifact URL to take precedence, got:\n%s", md)
 	}
 	if strings.Contains(md, "local file:") || strings.Contains(md, localPath) {
