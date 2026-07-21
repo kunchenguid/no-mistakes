@@ -277,7 +277,7 @@ The publication consent setting is trusted repository configuration and never in
 Test evidence is collected in a temporary run directory.
 Text evidence remains temporary and is embedded in generated PR content.
 When publication is disabled, images produce a path-free explanation and are not committed.
-To opt a repository such as Inspect.Properties into committing sanitized screenshot pixels for inline PR rendering, add:
+To opt a repository into committing sanitized screenshot pixels for inline PR rendering, add:
 
 ```yaml
 test:

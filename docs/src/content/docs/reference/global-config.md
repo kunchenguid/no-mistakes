@@ -59,9 +59,10 @@ intent:
   slack_days: 3
   disabled_readers: []
 
+# Image publication consent is repository-only; see repo config.
+# test.evidence.dir is retained for compatibility and does not redirect publication.
 test:
   evidence:
-    store_in_repo: false
     dir: .no-mistakes/evidence
 ```
 
@@ -384,7 +385,7 @@ When trusted repository configuration sets `store_in_repo` to true, validated im
 The entire `.no-mistakes/evidence/.generated` namespace is tool-owned and reserved for generated image evidence, so a proposed branch cannot redirect publication over source files and artifacts left by stale or crashed runs cannot be staged as ordinary source changes.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 PNG and JPEG images are fully decoded, limited to 8,000,000 pixels and 10 MiB each, capped at 25 MiB and 20 unique images per run, and renamed using a content hash so duplicate evidence and retries are idempotent.
-Images that exceed the bounded decoding limits fall back to sanitized text instead of being published.
+Images that exceed the bounded decoding limits are not published and fall back to a path-free explanation.
 Immediately before staging, the push step rejects symlinks and verifies each image's size, SHA-256 digest, and content-addressed filename against the recorded manifest.
 The generated namespace carries a tool-owned manifest; enabling publication fails safely if existing files are not covered by a valid manifest, and successful replacement removes only obsolete manifest-owned images.
 Images are published only when a credential-free HTTPS or Git SSH remote resolves to github.com or a GitHub Enterprise host configured in `gh`.

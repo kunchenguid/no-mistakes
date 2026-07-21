@@ -405,13 +405,14 @@ intent:
   # disabled_readers: [codex]
 
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
-# gathers to demonstrate the change works). Evidence is collected temporarily;
-# set store_in_repo to true to consent to committing sanitized screenshot pixels
-# under a generated, branch-named directory so they render directly on the PR.
-# Local paths are never included in PR content.
+# gathers to demonstrate the change works). Evidence is collected temporarily.
+# Global config cannot enable image publication; set store_in_repo: true in the
+# repository's trusted .no-mistakes.yaml to consent to committing sanitized
+# screenshot pixels under the fixed generated namespace so they render on the PR.
+# Local paths are never included in PR content. test.evidence.dir is retained
+# for compatibility and does not redirect publication.
 # test:
 #   evidence:
-#     store_in_repo: false
 #     dir: .no-mistakes/evidence
 `
 
