@@ -104,18 +104,27 @@ func LoadGitHubContext(path string) (*GitHubContext, error) {
 	if len(data) > maxContextFileBytes {
 		return nil, fmt.Errorf("GitHub context file exceeds %d bytes", maxContextFileBytes)
 	}
+	selected, err := DecodeGitHubContext(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse GitHub context file: %w", err)
+	}
+	return selected, nil
+}
+
+// DecodeGitHubContext decodes exactly one strict context JSON value.
+func DecodeGitHubContext(data []byte) (*GitHubContext, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var selected GitHubContext
 	if err := dec.Decode(&selected); err != nil {
-		return nil, fmt.Errorf("parse GitHub context file: %w", err)
+		return nil, err
 	}
 	var extra any
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return nil, errors.New("parse GitHub context file: multiple JSON values")
+			return nil, errors.New("multiple JSON values")
 		}
-		return nil, fmt.Errorf("parse GitHub context file: %w", err)
+		return nil, err
 	}
 	return &selected, nil
 }
@@ -364,6 +373,11 @@ func (c *GitHubContext) Environment(base []string, dir string) []string {
 		"GIT_AUTHOR_NAME": true, "GIT_AUTHOR_EMAIL": true, "GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true, "EMAIL": true,
 		"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_COMMON_DIR": true, "GIT_INDEX_FILE": true, "GIT_OBJECT_DIRECTORY": true, "GIT_ALTERNATE_OBJECT_DIRECTORIES": true, "GIT_NAMESPACE": true,
 		"GIT_EXEC_PATH": true, "GIT_TEMPLATE_DIR": true, "GIT_CEILING_DIRECTORIES": true, "GIT_DISCOVERY_ACROSS_FILESYSTEM": true, "GIT_PROXY_COMMAND": true, "GIT_CURL_VERBOSE": true,
+		"GIT_SSL_NO_VERIFY": true, "GIT_SSL_CAINFO": true, "GIT_SSL_CAPATH": true, "GIT_SSL_CERT": true, "GIT_SSL_KEY": true, "GIT_SSL_CERT_PASSWORD_PROTECTED": true,
+		"GIT_SSL_VERSION": true, "GIT_SSL_CIPHER_LIST": true, "GIT_HTTP_PROXY": true, "GIT_HTTPS_PROXY": true,
+		"HTTP_PROXY": true, "HTTPS_PROXY": true, "ALL_PROXY": true, "NO_PROXY": true,
+		"http_proxy": true, "https_proxy": true, "all_proxy": true, "no_proxy": true,
+		"CURL_CA_BUNDLE": true, "CURL_SSL_BACKEND": true, "SSL_CERT_FILE": true, "SSL_CERT_DIR": true, "OPENSSL_CONF": true, "OPENSSL_MODULES": true,
 		"GIT_TERMINAL_PROMPT": true, "GCM_INTERACTIVE": true, "GIT_EDITOR": true, "GIT_SEQUENCE_EDITOR": true, "GIT_MERGE_AUTOEDIT": true,
 		"EDITOR": true, "VISUAL": true, "GIT_PAGER": true, "PAGER": true, "PATH": true,
 	}

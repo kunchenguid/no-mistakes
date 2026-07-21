@@ -1,12 +1,35 @@
 package db
 
 import (
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/repoexec"
 )
+
+func TestDecodeRepoGitHubContextRejectsTrailingJSONValue(t *testing.T) {
+	repo := &Repo{}
+	encoded := sql.NullString{Valid: true, String: `{
+  "version": 1,
+  "gh_path": "/usr/bin/gh",
+  "git_path": "/usr/bin/git",
+  "gh_config_dir": "/tmp/gh-a",
+  "host": "github.com",
+  "expected_login": "account-a",
+  "git_protocol": "https",
+  "credential_helper": "gh",
+  "commit_author": {"name": "A", "email": "a@example.test"}
+} {"token":"credential-sentinel"}`}
+	err := decodeRepoGitHubContext(repo, encoded)
+	if err == nil {
+		t.Fatal("expected trailing persisted JSON value to be rejected")
+	}
+	if strings.Contains(err.Error(), "credential-sentinel") {
+		t.Fatalf("error leaked trailing credential value: %v", err)
+	}
+}
 
 func TestRepoInsertAndGet(t *testing.T) {
 	d := openTestDB(t)

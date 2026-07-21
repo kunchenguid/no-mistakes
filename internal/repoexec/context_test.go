@@ -71,6 +71,31 @@ func TestLoadGitHubContextRejectsSecretAndUnknownFields(t *testing.T) {
 	}
 }
 
+func TestLoadGitHubContextRejectsTrailingJSONValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "context.json")
+	contents := `{
+  "version": 1,
+  "gh_path": "/usr/bin/gh",
+  "git_path": "/usr/bin/git",
+  "gh_config_dir": "/tmp/gh-a",
+  "host": "github.com",
+  "expected_login": "account-a",
+  "git_protocol": "https",
+  "credential_helper": "gh",
+  "commit_author": {"name": "A", "email": "a@example.test"}
+} {"token":"credential-sentinel"}`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadGitHubContext(path)
+	if err == nil {
+		t.Fatal("expected trailing JSON value to be rejected")
+	}
+	if strings.Contains(err.Error(), "credential-sentinel") {
+		t.Fatalf("error leaked trailing credential value: %v", err)
+	}
+}
+
 func TestGitHubContextValidateStaticRequiresHTTPSGitHubDotCom(t *testing.T) {
 	ctx := validTestContext(t)
 	for _, tc := range []struct {
@@ -139,6 +164,30 @@ func TestGitHubContextEnvironmentRemovesAmbientCredentialOverrides(t *testing.T)
 		"GIT_SSH_COMMAND=ssh -i /ambient/key",
 		"SSH_AUTH_SOCK=/ambient/agent",
 		"GIT_TRACE_CURL=/tmp/credential-sentinel-trace",
+		"GIT_SSL_NO_VERIFY=true",
+		"GIT_SSL_CAINFO=/ambient/ca.pem",
+		"GIT_SSL_CAPATH=/ambient/certs",
+		"GIT_SSL_CERT=/ambient/client.pem",
+		"GIT_SSL_KEY=/ambient/client.key",
+		"GIT_SSL_CERT_PASSWORD_PROTECTED=true",
+		"GIT_SSL_VERSION=tlsv1.0",
+		"GIT_SSL_CIPHER_LIST=insecure",
+		"GIT_HTTP_PROXY=http://credential-sentinel@proxy.example",
+		"GIT_HTTPS_PROXY=http://credential-sentinel@proxy.example",
+		"HTTP_PROXY=http://credential-sentinel@proxy.example",
+		"HTTPS_PROXY=http://credential-sentinel@proxy.example",
+		"ALL_PROXY=socks5://credential-sentinel@proxy.example",
+		"NO_PROXY=github.com",
+		"http_proxy=http://credential-sentinel@proxy.example",
+		"https_proxy=http://credential-sentinel@proxy.example",
+		"all_proxy=socks5://credential-sentinel@proxy.example",
+		"no_proxy=github.com",
+		"CURL_CA_BUNDLE=/ambient/curl-ca.pem",
+		"CURL_SSL_BACKEND=ambient",
+		"SSL_CERT_FILE=/ambient/openssl-ca.pem",
+		"SSL_CERT_DIR=/ambient/openssl-certs",
+		"OPENSSL_CONF=/ambient/openssl.cnf",
+		"OPENSSL_MODULES=/ambient/openssl-modules",
 		"GIT_EXEC_PATH=/ambient/git-core",
 		"GIT_DIR=/ambient/repository.git",
 		"GIT_AUTHOR_NAME=Ambient Author",
@@ -192,6 +241,19 @@ func TestGitHubContextEnvironmentRemovesAmbientCredentialOverrides(t *testing.T)
 		if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 			t.Errorf("git config %s = %#v, want %#v", key, got, want)
 		}
+	}
+}
+
+func TestNilGitHubContextPreservesLegacyEnvironment(t *testing.T) {
+	base := []string{
+		"GIT_SSL_NO_VERIFY=true",
+		"HTTPS_PROXY=http://proxy.example",
+		"CURL_CA_BUNDLE=/custom/ca.pem",
+	}
+	var selected *GitHubContext
+	got := selected.Environment(base, "/work/repo")
+	if strings.Join(got, "\x00") != strings.Join(base, "\x00") {
+		t.Fatalf("legacy environment changed: got %#v, want %#v", got, base)
 	}
 }
 

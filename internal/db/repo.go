@@ -1,7 +1,6 @@
 package db
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -183,16 +182,14 @@ func decodeRepoGitHubContext(repo *Repo, encoded sql.NullString) error {
 		repo.GitHubContext = nil
 		return nil
 	}
-	var selected repoexec.GitHubContext
-	decoder := json.NewDecoder(bytes.NewReader([]byte(encoded.String)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&selected); err != nil {
+	selected, err := repoexec.DecodeGitHubContext([]byte(encoded.String))
+	if err != nil {
 		return fmt.Errorf("decode GitHub context: %w", err)
 	}
 	if err := selected.ValidateForPersistence(); err != nil {
 		return fmt.Errorf("decode GitHub context: %w", err)
 	}
-	repo.GitHubContext = &selected
+	repo.GitHubContext = selected
 	return nil
 }
 
