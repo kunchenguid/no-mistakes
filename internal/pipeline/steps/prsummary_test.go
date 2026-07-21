@@ -592,6 +592,24 @@ func TestGitHubRepositoryForRemote_AcceptsResolvedSSHAlias(t *testing.T) {
 	}
 }
 
+func TestGitHubRepositoryForRemote_PreservesGitHubWebHostForSSHOver443(t *testing.T) {
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "ssh")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_CLI_MODE", "ssh-resolve-github-over-443")
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+
+	repo, ok := githubRepositoryForRemote(context.Background(), "git@github.com:example/widgets.git")
+
+	if !ok {
+		t.Fatal("GitHub SSH-over-443 remote was rejected")
+	}
+	if repo.host != "github.com" || repo.owner != "example" || repo.name != "widgets" {
+		t.Fatalf("resolved repository = %#v", repo)
+	}
+}
+
 func TestBuildTestingSummaryForPR_RejectsUnverifiedNonGitHubHost(t *testing.T) {
 	t.Setenv("GH_CONFIG_DIR", t.TempDir())
 	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())

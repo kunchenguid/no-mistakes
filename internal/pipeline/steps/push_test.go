@@ -357,6 +357,91 @@ func TestPushStep_AgentStagingPreservesUntrackedFilesInOverlappingEvidenceDirect
 	}
 }
 
+func TestPushStep_FinalStagingExcludesEvidenceManagedByPriorRounds(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	evidenceDir := filepath.Join(dir, "evidence", "feature")
+	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	staleData := coloredPNGBytes(41)
+	staleSum := sha256.Sum256(staleData)
+	staleHash := fmt.Sprintf("%x", staleSum[:])
+	staleRel := filepath.ToSlash(filepath.Join("evidence", "feature", staleHash[:32]+".png"))
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(staleRel)), staleData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	currentData := coloredPNGBytes(42)
+	currentSum := sha256.Sum256(currentData)
+	currentHash := fmt.Sprintf("%x", currentSum[:])
+	currentRel := filepath.ToSlash(filepath.Join("evidence", "feature", currentHash[:32]+".png"))
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(currentRel)), currentData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/example/widgets.git"
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+	testResult, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior := fmt.Sprintf(`{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Stale","path":%q,"sha256":%q,"size":%d}]}`, staleRel, staleHash, len(staleData))
+	if _, err := sctx.DB.InsertStepRound(testResult.ID, 1, "initial", &prior, nil, 1); err != nil {
+		t.Fatal(err)
+	}
+	current := fmt.Sprintf(`{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Current","path":%q,"sha256":%q,"size":%d}]}`, currentRel, currentHash, len(currentData))
+	if err := sctx.DB.SetStepFindings(testResult.ID, current); err != nil {
+		t.Fatal(err)
+	}
+
+	step := &PushStep{}
+	if err := step.stageAgentChanges(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := step.stageInRepoEvidence(sctx); err != nil {
+		t.Fatal(err)
+	}
+	staged := strings.Split(gitCmd(t, dir, "diff", "--cached", "--name-only", "-z"), "\x00")
+	if slices.Contains(staged, staleRel) {
+		t.Fatalf("stale evidence from a prior round was staged: %v", staged)
+	}
+	if !slices.Contains(staged, currentRel) {
+		t.Fatalf("current evidence was not staged: %v", staged)
+	}
+}
+
+func TestPushStep_AgentStagingPreservesUntrackedPathBytes(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	paths := []string{" leading.go", "line\nbreak.go"}
+	for _, rel := range paths {
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte("package fixture\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+
+	if err := (&PushStep{}).stageAgentChanges(sctx); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "diff", "--cached", "--name-only", "-z")
+	cmd.Dir = dir
+	raw, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := strings.Split(string(raw), "\x00")
+	for _, rel := range paths {
+		if !slices.Contains(staged, rel) {
+			t.Fatalf("path %q was not staged byte-for-byte: %q", rel, raw)
+		}
+	}
+}
+
 func TestPushStep_RejectsDriftedPreparedEvidence(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

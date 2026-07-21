@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -161,14 +162,15 @@ func (s *PushStep) stageAgentChanges(sctx *pipeline.StepContext) error {
 	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "-u"); err != nil {
 		return err
 	}
-	untracked, err := git.Run(sctx.Ctx, sctx.WorkDir, "ls-files", "--others", "--exclude-standard", "-z")
+	untracked, err := git.RunRaw(sctx.Ctx, sctx.WorkDir, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return err
 	}
-	for _, rel := range strings.Split(untracked, "\x00") {
-		if rel == "" {
+	for _, rawRel := range bytes.Split(untracked, []byte{0}) {
+		if len(rawRel) == 0 {
 			continue
 		}
+		rel := string(rawRel)
 		if managedPaths[filepath.ToSlash(rel)] {
 			continue
 		}
@@ -186,20 +188,34 @@ func managedEvidenceDestinationPaths(sctx *pipeline.StepContext, location testEv
 	}
 	managed := make(map[string]bool)
 	for _, result := range steps {
-		if result.StepName != types.StepTest || result.FindingsJSON == nil {
+		if result.StepName != types.StepTest {
 			continue
 		}
-		findings, err := types.ParseFindingsJSON(*result.FindingsJSON)
+		addManagedEvidenceDestinationPaths(managed, sctx.WorkDir, location.RepoDir, result.FindingsJSON)
+		rounds, err := sctx.DB.GetRoundsByStep(result.ID)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("load test evidence rounds: %w", err)
 		}
-		for _, artifact := range findings.Artifacts {
-			if rel, ok := preparedEvidenceDestinationPath(sctx.WorkDir, location.RepoDir, artifact); ok {
-				managed[rel] = true
-			}
+		for _, round := range rounds {
+			addManagedEvidenceDestinationPaths(managed, sctx.WorkDir, location.RepoDir, round.FindingsJSON)
 		}
 	}
 	return managed, nil
+}
+
+func addManagedEvidenceDestinationPaths(managed map[string]bool, workDir, repoDir string, raw *string) {
+	if raw == nil {
+		return
+	}
+	findings, err := types.ParseFindingsJSON(*raw)
+	if err != nil {
+		return
+	}
+	for _, artifact := range findings.Artifacts {
+		if rel, ok := preparedEvidenceDestinationPath(workDir, repoDir, artifact); ok {
+			managed[rel] = true
+		}
+	}
 }
 
 func preparedEvidenceDestinationPath(workDir, repoDir string, artifact types.TestArtifact) (string, bool) {
@@ -239,6 +255,10 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 	location := resolveTestEvidenceLocation(sctx.WorkDir, sctx.Run.Branch, sctx.Run.ID, sctx.Config.Test.Evidence)
 	if !location.StoreInRepo {
 		return nil
+	}
+	managedPaths, err := managedEvidenceDestinationPaths(sctx, location)
+	if err != nil {
+		return err
 	}
 	evidenceRemote := sctx.Repo.UpstreamURL
 	if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
@@ -287,7 +307,7 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 		}
 	}
 
-	for targetRel := range destinations {
+	for targetRel := range managedPaths {
 		if _, err := git.Run(ctx, sctx.WorkDir, "reset", "--quiet", "HEAD", "--", targetRel); err != nil {
 			return fmt.Errorf("clear staged test evidence: %w", err)
 		}

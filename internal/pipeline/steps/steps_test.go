@@ -56,6 +56,9 @@ func handleFakeCLI(mode string) {
 		fakeGitRemoteErrorHandler(args)
 	case "ssh-resolve-github":
 		fmt.Println("hostname github.com")
+	case "ssh-resolve-github-over-443":
+		fmt.Println("hostname ssh.github.com")
+		fmt.Println("port 443")
 	case "ci-gh":
 		fakeCIGHHandler(args)
 	case "ci-gh-seq":

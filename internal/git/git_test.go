@@ -76,6 +76,32 @@ func TestRun(t *testing.T) {
 	}
 }
 
+func TestRunRawPreservesNULDelimitedPathBytes(t *testing.T) {
+	dir := initTestRepo(t)
+	for _, name := range []string{" leading.txt", "line\nbreak.txt"} {
+		writeFile(t, filepath.Join(dir, name), name)
+	}
+
+	out, err := RunRaw(context.Background(), dir, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	paths := strings.Split(string(out), "\x00")
+	for _, want := range []string{" leading.txt", "line\nbreak.txt"} {
+		found := false
+		for _, got := range paths {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("RunRaw omitted or changed %q in %q", want, out)
+		}
+	}
+}
+
 func TestRunError(t *testing.T) {
 	ctx := context.Background()
 	_, err := Run(ctx, t.TempDir(), "log")

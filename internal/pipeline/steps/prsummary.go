@@ -232,6 +232,10 @@ func githubRepositoryForRemote(ctx context.Context, remote string) (githubReposi
 		return githubRepository{}, false
 	}
 	canonicalHost := strings.ToLower(strings.TrimSpace(scm.ResolveHost(ctx, remote)))
+	logicalHost := strings.ToLower(strings.TrimSpace(inputHost))
+	if logicalHost == "github.com" || scm.GitHubHostConfigured(logicalHost) {
+		canonicalHost = logicalHost
+	}
 	if !validGitHubHost(canonicalHost) {
 		return githubRepository{}, false
 	}

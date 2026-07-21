@@ -34,6 +34,14 @@ func IsZeroSHA(sha string) bool {
 // and hardened CI inject that setting, so gate operations must never depend
 // on discovering a bare repo from the working directory (issue #362).
 func Run(ctx context.Context, dir string, args ...string) (string, error) {
+	out, err := RunRaw(ctx, dir, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func RunRaw(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	if isBareGitDir(dir) {
 		args = append([]string{"--git-dir=" + dir}, args...)
 	}
@@ -47,9 +55,9 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 		if ee, ok := err.(*exec.ExitError); ok {
 			stderr = strings.TrimSpace(string(ee.Stderr))
 		}
-		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
+		return nil, fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
 	}
-	return strings.TrimSpace(string(out)), nil
+	return out, nil
 }
 
 // isBareGitDir reports whether dir is itself a git directory (a bare repo),
