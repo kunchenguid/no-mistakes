@@ -331,6 +331,7 @@ func TestCIStep_CIAutoFixRetriesAfterChecksRerun(t *testing.T) {
 
 	pollCount := 0
 	step := &CIStep{
+		now: func() time.Time { return time.Time{} },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			return nil
@@ -778,6 +779,7 @@ func TestCIStep_RetriesMergeConflictAfterRerun(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	step := &CIStep{
+		now: func() time.Time { return time.Time{} },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			return nil
 		},
