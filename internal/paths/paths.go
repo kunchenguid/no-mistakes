@@ -1,8 +1,10 @@
 package paths
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"testing"
 )
 
 // Paths provides access to all no-mistakes filesystem locations.
@@ -16,6 +18,9 @@ type Paths struct {
 func New() (*Paths, error) {
 	if env := os.Getenv("NM_HOME"); env != "" {
 		return &Paths{root: env}, nil
+	}
+	if testing.Testing() && os.Getenv("NO_MISTAKES_ALLOW_DEFAULT_ROOT_IN_TESTS") != "1" {
+		return nil, fmt.Errorf("NM_HOME must be set under go test to avoid touching the real no-mistakes daemon root")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

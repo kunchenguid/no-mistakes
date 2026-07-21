@@ -94,6 +94,7 @@ Safest local verification sequence after non-trivial changes:
 - The e2e suite is behind the `e2e` build tag; `make e2e` sweeps `./internal/e2e/...` and `./internal/pipeline/steps/...`, so keep new step-local e2e tests behind the tag too.
 - Packages whose tests shell out to git unset `GIT_CONFIG_COUNT` in `TestMain` so ambient `GIT_CONFIG_*` injection from agent harnesses cannot leak in; a test exercising injected config re-sets it with `t.Setenv` (see `internal/git`, `internal/gate`, `internal/daemon`, `internal/pipeline/steps`).
 - Packages whose tests can start a daemon or touch ambient state (`cmd/no-mistakes`, `internal/cli`, `internal/update`) use a package-wide `TestMain` that points `NM_HOME` and `HOME` at fresh temp dirs and disables telemetry/update-check env vars, so a full test run never touches a real `~/.no-mistakes`. Follow the same pattern in new such packages.
+- `paths.New()` refuses the default `~/.no-mistakes` root under `go test`; tests that touch app state must set `NM_HOME` to a temp dir, and only the production-default path test may opt in with `NO_MISTAKES_ALLOW_DEFAULT_ROOT_IN_TESTS=1`.
 - Isolate filesystem and environment state with `t.TempDir()` and `t.Setenv()`.
 
 **Repo Config Trust Boundary (security)**
