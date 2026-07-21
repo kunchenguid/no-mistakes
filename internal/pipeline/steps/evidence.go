@@ -27,6 +27,8 @@ const (
 	maxEvidenceImageCandidates            = 64
 	maxEvidenceCandidateBytes             = 4 * maxPublishedImagesTotalBytes
 	unpublishedImageExplanation           = "Image evidence was not published."
+	disabledImagePublicationExplanation   = "Image evidence publication is disabled."
+	generatedEvidenceDir                  = ".generated"
 )
 
 func testEvidenceRoot() string {
@@ -47,34 +49,42 @@ func resolveTestEvidenceDir(workDir, branch, runID string, ev config.Evidence) s
 }
 
 type testEvidenceLocation struct {
-	Dir         string
-	RepoDir     string
-	StoreInRepo bool
+	Dir                 string
+	RepoDir             string
+	GeneratedRepoDir    string
+	StoreInRepo         bool
+	PublicationDisabled bool
 }
 
 func resolveTestEvidenceLocation(workDir, branch, runID string, ev config.Evidence) testEvidenceLocation {
 	sourceDir := testEvidenceDir(runID)
-	if !ev.StoreInRepo {
-		return testEvidenceLocation{Dir: sourceDir}
-	}
 	sub, ok := safeRepoSubdir(ev.Dir)
 	if !ok {
 		return testEvidenceLocation{Dir: sourceDir}
+	}
+	generatedRepoDir := filepath.Join(workDir, sub, generatedEvidenceDir)
+	if !ev.StoreInRepo {
+		return testEvidenceLocation{
+			Dir:                 sourceDir,
+			GeneratedRepoDir:    generatedRepoDir,
+			PublicationDisabled: true,
+		}
 	}
 	segments := evidenceBranchSlug(branch)
 	if len(segments) == 0 {
 		segments = []string{runID}
 	}
-	relParts := append([]string{sub}, segments...)
+	relParts := append([]string{sub, generatedEvidenceDir}, segments...)
 	rel := filepath.Join(relParts...)
 	if repoPathHasSymlink(workDir, rel) {
-		return testEvidenceLocation{Dir: sourceDir}
+		return testEvidenceLocation{Dir: sourceDir, GeneratedRepoDir: generatedRepoDir}
 	}
 	parts := append([]string{workDir}, relParts...)
 	return testEvidenceLocation{
-		Dir:         sourceDir,
-		RepoDir:     filepath.Join(parts...),
-		StoreInRepo: true,
+		Dir:              sourceDir,
+		RepoDir:          filepath.Join(parts...),
+		GeneratedRepoDir: generatedRepoDir,
+		StoreInRepo:      true,
 	}
 }
 
@@ -183,7 +193,11 @@ func prepareTestEvidenceArtifactsWithCanonicalizer(workDir string, location test
 	if !location.StoreInRepo {
 		for i := range prepared {
 			if isImageArtifact(prepared[i].Kind, prepared[i].Path) && sanitizeArtifactURL(prepared[i].URL) == "" {
-				prepared[i] = unpublishedImageArtifact(prepared[i])
+				explanation := unpublishedImageExplanation
+				if location.PublicationDisabled {
+					explanation = disabledImagePublicationExplanation
+				}
+				prepared[i] = unpublishedImageArtifactWithExplanation(prepared[i], explanation)
 			}
 		}
 		return prepared
@@ -299,9 +313,13 @@ func okRelativePath(rel string, err error) bool {
 }
 
 func unpublishedImageArtifact(artifact types.TestArtifact) types.TestArtifact {
+	return unpublishedImageArtifactWithExplanation(artifact, unpublishedImageExplanation)
+}
+
+func unpublishedImageArtifactWithExplanation(artifact types.TestArtifact, explanation string) types.TestArtifact {
 	artifact.Path = ""
 	artifact.URL = ""
-	artifact.Content = unpublishedImageExplanation
+	artifact.Content = explanation
 	artifact.SHA256 = ""
 	artifact.Size = 0
 	artifact.Published = false

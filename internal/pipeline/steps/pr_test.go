@@ -640,7 +640,7 @@ func TestPRStep_PublishesForkHostedImageEvidenceInline(t *testing.T) {
 	imageData := testPNGBytes()
 	imageHash := sha256.Sum256(imageData)
 	imageHashText := fmt.Sprintf("%x", imageHash[:])
-	imageRel := filepath.ToSlash(filepath.Join(".no-mistakes", "evidence", "feature", imageHashText[:32]+".png"))
+	imageRel := filepath.ToSlash(filepath.Join(".no-mistakes", "evidence", generatedEvidenceDir, "feature", imageHashText[:32]+".png"))
 	imagePath := filepath.Join(dir, filepath.FromSlash(imageRel))
 	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
 		t.Fatal(err)

@@ -913,6 +913,13 @@ func TestBuildTestingSummaryForPR_ScrubsCaptionedLocalVisualArtifactPath(t *test
 	}
 }
 
+func TestRenderUnpublishedCompactImage_ExplainsDisabledPublication(t *testing.T) {
+	got := renderUnpublishedCompactImage("Checkout screenshot", disabledImagePublicationExplanation)
+	if got != "- Evidence: Checkout screenshot was not published because image publication is disabled.\n" {
+		t.Fatalf("disabled image publication rendering = %q", got)
+	}
+}
+
 func TestBuildTestingSummaryForPR_PrefersArtifactURLOverLocalPath(t *testing.T) {
 	t.Parallel()
 	repoRoot := t.TempDir()

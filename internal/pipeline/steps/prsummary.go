@@ -609,7 +609,10 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	return b.String()
 }
 
-func renderUnpublishedCompactImage(label, _ string) string {
+func renderUnpublishedCompactImage(label, caption string) string {
+	if caption == disabledImagePublicationExplanation {
+		return fmt.Sprintf("- Evidence: %s was not published because image publication is disabled.\n", html.EscapeString(label))
+	}
 	return fmt.Sprintf("- Evidence: %s was not published.\n", html.EscapeString(label))
 }
 

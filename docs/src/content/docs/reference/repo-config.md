@@ -12,7 +12,8 @@ The daemon also reads `document.instructions` and `disable_project_settings` onl
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`) are still read from the pushed branch.
+Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, and `test.evidence.dir`) are still read from the pushed branch.
+The `test.evidence.store_in_repo` consent field is read only from the trusted default branch.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -270,12 +271,21 @@ Fields not set here inherit from global config and then the built-in defaults.
 
 | Field | Type | Default |
 |---|---|---|
-| `test.evidence.store_in_repo` | `bool` | Inherits from global (default `true`) |
+| `test.evidence.store_in_repo` | `bool` | Inherits from global (default `false`) |
 | `test.evidence.dir` | `string` | Inherits from global (default `.no-mistakes/evidence`) |
 
 Test evidence is collected in a temporary run directory.
-By default, validated images are copied under `<dir>/<branch-slug>` so push can publish them with the branch, while text evidence remains temporary and is embedded in generated PR content.
-Set `store_in_repo: false` to disable image publication without exposing local paths in generated PR content.
+Text evidence remains temporary and is embedded in generated PR content.
+To opt a repository such as Inspect.Properties into committing sanitized screenshot pixels for inline PR rendering, add:
+
+```yaml
+test:
+  evidence:
+    store_in_repo: true
+```
+
+Validated images are then copied under `<dir>/.generated/<branch-slug>`.
+The `.generated` child is reserved for manifest-verified evidence; unrelated sibling files remain ordinary source changes.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 If `dir` is absolute, escapes the worktree, points into `.git`, or crosses a symlink, image publication is disabled for that run.
 Image format, size, naming, retention, and safe-fallback behavior are defined in the [global configuration reference](/no-mistakes/reference/global-config/#testevidence).

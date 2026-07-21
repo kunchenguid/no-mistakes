@@ -407,9 +407,9 @@ intent:
 
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
 # gathers to demonstrate the change works). Evidence is collected temporarily;
-# by default validated images are also committed under a readable, branch-named
-# directory so they render directly on the PR. Set store_in_repo to false to
-# disable image publication. Local paths are never included in PR content.
+# set store_in_repo to true to consent to committing sanitized screenshot pixels
+# under a generated, branch-named directory so they render directly on the PR.
+# Local paths are never included in PR content.
 # test:
 #   evidence:
 #     store_in_repo: false
@@ -1057,7 +1057,8 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // trusted-only for the same reason: a pushed branch must not weaken the
 // documentation rules that gate itself. DisableProjectSettings is also
 // trusted-only so a pushed branch cannot enable or defeat the gate-agent
-// project-instruction boundary. When allowRepoCommands is
+// project-instruction boundary. Test.Evidence.StoreInRepo is trusted-only so
+// only the default branch can consent to publishing screenshot pixels. When allowRepoCommands is
 // true the maintainer has explicitly opted in (via allow_repo_commands on the
 // TRUSTED default-branch copy) to honoring the pushed branch's commands and
 // agent selection.
@@ -1067,16 +1068,20 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // branch - this blocks the supply-chain vector for repos that ship
 // .no-mistakes.yaml only on feature branches.
 //
-// Non-executing fields (ignore patterns, auto-fix, commit, intent, test) are
-// always taken from the pushed copy, matching prior behavior, since they cannot
-// run arbitrary shell or select a process.
+// Other non-executing fields (ignore patterns, auto-fix, commit, intent, and
+// test evidence directory) are taken from the pushed copy.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
 	if pushed == nil {
 		pushed = &RepoConfig{}
 	}
 	effective := *pushed
+	effective.Test.Evidence.StoreInRepo = nil
 	if trusted != nil {
 		effective.Document = trusted.Document
+		if trusted.Test.Evidence.StoreInRepo != nil {
+			storeInRepo := *trusted.Test.Evidence.StoreInRepo
+			effective.Test.Evidence.StoreInRepo = &storeInRepo
+		}
 		// disable_project_settings is a security boundary: honor it ONLY from the
 		// trusted default-branch copy so a pushed branch cannot turn the opt-out
 		// off (and re-enable its own AGENTS.md) or on. A nil trusted copy here
@@ -1152,12 +1157,12 @@ func applyIntentOverrides(dst *Intent, src *IntentRaw) {
 	}
 }
 
-// testDefaults returns the default test-step settings. Publishable images land
-// under .no-mistakes/evidence unless explicitly disabled.
+// testDefaults returns the default test-step settings. Image publication
+// requires an explicit opt-in.
 func testDefaults() Test {
 	return Test{
 		Evidence: Evidence{
-			StoreInRepo: true,
+			StoreInRepo: false,
 			Dir:         ".no-mistakes/evidence",
 		},
 	}
@@ -1242,6 +1247,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 
 	test := testDefaults()
 	applyTestOverrides(&test, &global.Test)
+	test.Evidence.StoreInRepo = false
 	applyTestOverrides(&test, &repo.Test)
 
 	commit := Commit{FixMessage: DefaultFixMessageTemplate}

@@ -531,7 +531,7 @@ func TestTestStep_PublishesOnlyImagesAndPreservesTemporaryTextEvidence(t *testin
 	if findings.Artifacts[0].Path != textPath {
 		t.Fatalf("text evidence path changed: %#v", findings.Artifacts[0])
 	}
-	if filepath.IsAbs(findings.Artifacts[1].Path) || !strings.HasPrefix(findings.Artifacts[1].Path, "evidence/feature/") {
+	if filepath.IsAbs(findings.Artifacts[1].Path) || !strings.HasPrefix(findings.Artifacts[1].Path, "evidence/"+generatedEvidenceDir+"/feature/") {
 		t.Fatalf("image evidence was not published to a repository path: %#v", findings.Artifacts[1])
 	}
 	if _, err := os.Stat(textPath); err != nil {

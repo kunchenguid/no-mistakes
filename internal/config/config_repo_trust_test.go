@@ -99,6 +99,26 @@ func TestEffectiveRepoConfig_TrustedEmptyAgentInheritsGlobal(t *testing.T) {
 	}
 }
 
+func TestEffectiveRepoConfig_ImagePublicationRequiresTrustedRepoConsent(t *testing.T) {
+	enabled := true
+	disabled := false
+	pushed := &RepoConfig{Test: TestRaw{Evidence: EvidenceRaw{StoreInRepo: &enabled}}}
+
+	withoutConsent := EffectiveRepoConfig(pushed, &RepoConfig{
+		Test: TestRaw{Evidence: EvidenceRaw{StoreInRepo: &disabled}},
+	}, false)
+	if got := Merge(&GlobalConfig{}, withoutConsent).Test.Evidence.StoreInRepo; got {
+		t.Fatal("pushed branch enabled image publication without trusted repository consent")
+	}
+
+	withConsent := EffectiveRepoConfig(&RepoConfig{}, &RepoConfig{
+		Test: TestRaw{Evidence: EvidenceRaw{StoreInRepo: &enabled}},
+	}, false)
+	if got := Merge(&GlobalConfig{}, withConsent).Test.Evidence.StoreInRepo; !got {
+		t.Fatal("trusted repository consent did not enable image publication")
+	}
+}
+
 func TestEffectiveRepoConfig_OptInHonorsPushedCommands(t *testing.T) {
 	pushed := &RepoConfig{
 		Agent:    types.AgentCodex,

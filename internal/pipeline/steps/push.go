@@ -151,16 +151,30 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 
 func (s *PushStep) stageAgentChanges(sctx *pipeline.StepContext) error {
 	location := resolveTestEvidenceLocation(sctx.WorkDir, sctx.Run.Branch, sctx.Run.ID, sctx.Config.Test.Evidence)
-	if !location.StoreInRepo {
+	if location.GeneratedRepoDir == "" {
 		_, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "-A")
 		return err
 	}
-	managedPaths, err := managedEvidenceDestinationPaths(sctx, location)
-	if err != nil {
-		return err
+	managedPaths := make(map[string]bool)
+	if location.StoreInRepo {
+		var err error
+		managedPaths, err = managedEvidenceDestinationPaths(sctx, location)
+		if err != nil {
+			return err
+		}
 	}
+	generatedRel, ok := lexicalRelativePath(sctx.WorkDir, location.GeneratedRepoDir)
+	if !ok {
+		return fmt.Errorf("resolve generated evidence namespace")
+	}
+	managedPaths[filepath.ToSlash(generatedRel)] = true
 	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "-u"); err != nil {
 		return err
+	}
+	for targetRel := range managedPaths {
+		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "reset", "--quiet", "HEAD", "--", targetRel); err != nil {
+			return fmt.Errorf("clear staged test evidence: %w", err)
+		}
 	}
 	untracked, err := git.RunRaw(sctx.Ctx, sctx.WorkDir, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
@@ -312,6 +326,14 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 	if err != nil {
 		return err
 	}
+	if location.GeneratedRepoDir == "" {
+		return nil
+	}
+	generatedRel, ok := lexicalRelativePath(sctx.WorkDir, location.GeneratedRepoDir)
+	if !ok {
+		return fmt.Errorf("resolve generated evidence namespace")
+	}
+	managedPaths[filepath.ToSlash(generatedRel)] = true
 	evidenceRemote := sctx.Repo.UpstreamURL
 	if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
 		evidenceRemote = sctx.Repo.ForkURL

@@ -61,7 +61,7 @@ intent:
 
 test:
   evidence:
-    store_in_repo: true
+    store_in_repo: false
     dir: .no-mistakes/evidence
 ```
 
@@ -368,7 +368,7 @@ Otherwise, accepted candidates are ranked by confidence, which combines the raw 
 ### test.evidence
 
 Test-step evidence storage settings.
-By default, publishable image evidence is committed with the validated branch so GitHub can render it in the pull request.
+Image publication is disabled by default and requires explicit repository consent because sanitized screenshot pixels are committed with the validated branch.
 
 |      |          |
 | ---- | -------- |
@@ -376,11 +376,12 @@ By default, publishable image evidence is committed with the validated branch so
 
 | Field                         | Type     | Default                 | Description                                                           |
 | ----------------------------- | -------- | ----------------------- | --------------------------------------------------------------------- |
-| `test.evidence.store_in_repo` | `bool`   | `true`                  | Publish validated image evidence with the branch                     |
+| `test.evidence.store_in_repo` | `bool`   | `false`                 | Image publication default; repository opt-in is still required       |
 | `test.evidence.dir`           | `string` | `.no-mistakes/evidence` | Repo-relative image publication directory                            |
 
 The test step collects all evidence in its temporary run directory so readable UTF-8 text evidence keeps its existing inline PR rendering.
-When `store_in_repo` is true, validated images are copied to `<dir>/<branch-slug>`, and the push step stages only image paths recorded in the final test evidence manifest.
+When `store_in_repo` is true, validated images are copied to `<dir>/.generated/<branch-slug>`, and the push step stages only image paths recorded in the final test evidence manifest.
+The entire `<dir>/.generated` namespace is reserved for generated image evidence, so artifacts left by stale or crashed runs cannot be staged as ordinary source changes.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 If `dir` is absolute, escapes the worktree, points into `.git`, or crosses a symlink, image publication is disabled for that run while source evidence remains temporary.
 PNG and JPEG images are fully decoded, limited to 8,000,000 pixels and 10 MiB each, capped at 25 MiB and 20 unique images per run, and renamed using a content hash so duplicate evidence and retries are idempotent.
@@ -390,7 +391,9 @@ Images are published only when a credential-free HTTPS or Git SSH remote resolve
 PR rendering additionally requires the staged manifest hash to match the exact image blob at the pushed commit.
 Publication never removes source evidence or unrelated files already present in the configured directory.
 Missing, unsupported, oversized, or unpublished images produce a concise explanation in the PR instead of a local path.
-Set `store_in_repo: false` to disable image publication; local paths are never included in generated PR content.
+When publication is disabled, images produce a path-free disabled-publication explanation.
+Global configuration cannot enable publication across repositories.
+Set `store_in_repo: true` in a repository's `.no-mistakes.yaml` only when that repository consents to committing sanitized screenshot pixels; local paths are never included in generated PR content.
 
 These are global defaults. Per-repo config can override either field.
 

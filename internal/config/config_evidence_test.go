@@ -8,22 +8,22 @@ import (
 
 func TestTestEvidenceDefaults(t *testing.T) {
 	got := testDefaults()
-	if !got.Evidence.StoreInRepo {
-		t.Error("default StoreInRepo should be true so image evidence is published")
+	if got.Evidence.StoreInRepo {
+		t.Error("default StoreInRepo should be false so image publication requires explicit consent")
 	}
 	if got.Evidence.Dir != ".no-mistakes/evidence" {
 		t.Errorf("default Dir = %q, want .no-mistakes/evidence", got.Evidence.Dir)
 	}
 }
 
-func TestTestEvidenceMerge_GlobalEnable(t *testing.T) {
+func TestTestEvidenceMerge_GlobalEnableRequiresRepoConsent(t *testing.T) {
 	enabled := true
 	global := &GlobalConfig{Test: TestRaw{Evidence: EvidenceRaw{StoreInRepo: &enabled}}}
 	repo := &RepoConfig{}
 
 	cfg := Merge(global, repo)
-	if !cfg.Test.Evidence.StoreInRepo {
-		t.Error("global enable should propagate")
+	if cfg.Test.Evidence.StoreInRepo {
+		t.Error("global enable should not publish images without per-repo consent")
 	}
 	// Default dir preserved when not overridden.
 	if cfg.Test.Evidence.Dir != ".no-mistakes/evidence" {
