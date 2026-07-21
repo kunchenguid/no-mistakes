@@ -127,38 +127,12 @@ func setupGitRepo(t *testing.T) (string, string, string) {
 	t.Helper()
 	ensureGitRepoTemplate(t)
 
-	dir := stableGitTempDir(t)
+	dir := t.TempDir()
 	if err := copyDirContents(gitRepoTemplate.dir, dir); err != nil {
 		t.Fatalf("copy template repo: %v", err)
 	}
 
 	return dir, gitRepoTemplate.baseSHA, gitRepoTemplate.headSHA
-}
-
-// stableGitTempDir retries cleanup because APFS can briefly report a Git
-// metadata directory as non-empty after rapid rename-heavy test operations.
-// The bounded retry still exposes a persistent writer as a test failure.
-func stableGitTempDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", strings.ReplaceAll(t.Name(), "/", "-")+"-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		deadline := time.Now().Add(5 * time.Second)
-		for {
-			err := os.RemoveAll(dir)
-			if err == nil {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Errorf("remove Git temp dir %s after retries: %v", dir, err)
-				return
-			}
-			time.Sleep(25 * time.Millisecond)
-		}
-	})
-	return dir
 }
 
 // newTestContext creates a StepContext for testing with optional config overrides.

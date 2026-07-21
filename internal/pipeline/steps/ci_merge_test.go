@@ -222,10 +222,10 @@ func TestCIStep_MergeConflictOnly_AutoFix(t *testing.T) {
 
 func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	t.Parallel()
-	upstream := stableGitTempDir(t)
+	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
-	dir := stableGitTempDir(t)
+	dir := t.TempDir()
 	gitCmd(t, dir, "init")
 	gitCmd(t, dir, "config", "user.name", "test")
 	gitCmd(t, dir, "config", "user.email", "test@test.com")

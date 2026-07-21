@@ -19,11 +19,20 @@ func TestMain(m *testing.M) {
 		handleFakeCLI(mode)
 		return
 	}
+	configDir, err := os.MkdirTemp("", "pipeline-steps-git-config-")
+	if err != nil {
+		panic(err)
+	}
+	_ = os.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(configDir, "gitconfig"))
+	_ = os.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	_ = os.Setenv("GIT_AI_SKIP_ALL_HOOKS", "1")
 	// Agent harnesses inject git config (e.g. safe.bareRepository=explicit)
 	// via GIT_CONFIG_COUNT/KEY_n/VALUE_n; tests that need it re-set it with
 	// t.Setenv (issue #362).
 	os.Unsetenv("GIT_CONFIG_COUNT")
-	os.Exit(m.Run())
+	code := m.Run()
+	_ = os.RemoveAll(configDir)
+	os.Exit(code)
 }
 
 func handleFakeCLI(mode string) {

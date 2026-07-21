@@ -427,7 +427,7 @@ func TestResolveIntentBaseSHAUsesPipelineBaseAfterSubsequentPush(t *testing.T) {
 
 func TestIntentStep_Integration_UsesPipelineWorkDirForGitState(t *testing.T) {
 	originRepo := t.TempDir()
-	gitCmd(t, originRepo, "init")
+	gitCmd(t, originRepo, "init", "-b", "main")
 	gitCmd(t, originRepo, "config", "user.email", "test@example.com")
 	gitCmd(t, originRepo, "config", "user.name", "Tester")
 	if err := os.WriteFile(filepath.Join(originRepo, "internal_foo.go"), []byte("package foo\n"), 0o644); err != nil {
@@ -455,6 +455,7 @@ func TestIntentStep_Integration_UsesPipelineWorkDirForGitState(t *testing.T) {
 	gitCmd(t, t.TempDir(), "clone", originRepo, pipelineWorkDir)
 	gitCmd(t, pipelineWorkDir, "config", "user.email", "test@example.com")
 	gitCmd(t, pipelineWorkDir, "config", "user.name", "Tester")
+	gitCmd(t, pipelineWorkDir, "checkout", "-b", "feature")
 	if err := os.WriteFile(filepath.Join(pipelineWorkDir, "internal_foo.go"), []byte("package foo\nfunc Bar() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

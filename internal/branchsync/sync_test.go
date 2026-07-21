@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
@@ -30,7 +29,7 @@ type syncFixture struct {
 func newSyncFixture(t *testing.T) *syncFixture {
 	t.Helper()
 	ctx := context.Background()
-	root := stableTempDir(t)
+	root := t.TempDir()
 	remote := filepath.Join(root, "upstream.git")
 	mustRun(t, root, "init", "--bare", remote)
 	local := filepath.Join(root, "operator")
@@ -677,7 +676,7 @@ func TestRemoteDeviationMissingAndOfflineFailClosed(t *testing.T) {
 func TestTargetChangeLegacyDetachedAndGenerationRaceRefuse(t *testing.T) {
 	t.Run("target changed", func(t *testing.T) {
 		f := newSyncFixture(t)
-		other := filepath.Join(stableTempDir(t), "other.git")
+		other := filepath.Join(t.TempDir(), "other.git")
 		mustRun(t, filepath.Dir(other), "init", "--bare", other)
 		updated, err := f.db.UpdateRepoMetadata(f.repo.ID, other, "main")
 		if err != nil {
@@ -729,7 +728,7 @@ func TestLinkedWorktreeMutatesOnlyInvokingWorktree(t *testing.T) {
 	f := newSyncFixture(t)
 	mustRun(t, f.local, "checkout", "main")
 	mainHead := mustRun(t, f.local, "rev-parse", "HEAD")
-	linked := filepath.Join(stableTempDir(t), "linked")
+	linked := filepath.Join(t.TempDir(), "linked")
 	mustRun(t, f.local, "worktree", "add", linked, "feature/sync")
 	service := &Service{DB: f.db, Repo: f.repo, WorkDir: linked}
 	state := service.Apply(f.ctx)
@@ -755,7 +754,7 @@ func TestWrongBranchRefusesAsAmbiguousContext(t *testing.T) {
 
 func TestForkTargetNeverReadsParentOrigin(t *testing.T) {
 	f := newSyncFixture(t)
-	parent := filepath.Join(stableTempDir(t), "parent.git")
+	parent := filepath.Join(t.TempDir(), "parent.git")
 	mustRun(t, filepath.Dir(parent), "init", "--bare", parent)
 	updated, err := f.db.UpdateRepoMetadataWithFork(f.repo.ID, parent, f.remote, "main")
 	if err != nil {
@@ -774,7 +773,7 @@ func TestForkTargetNeverReadsParentOrigin(t *testing.T) {
 
 func cloneRemoteBranch(t *testing.T, remote string) string {
 	t.Helper()
-	dir := filepath.Join(stableTempDir(t), "writer")
+	dir := filepath.Join(t.TempDir(), "writer")
 	mustRun(t, filepath.Dir(dir), "-c", "core.autocrlf=false", "clone", remote, dir)
 	configureIdentity(t, dir)
 	mustRun(t, dir, "checkout", "feature/sync")
@@ -801,32 +800,6 @@ func mustRun(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
 	}
 	return strings.TrimSpace(out)
-}
-
-// stableTempDir retries cleanup because APFS can briefly report a Git object
-// directory as non-empty immediately after pack and loose-object renames. The
-// bounded retry still fails the test for a real leaked writer.
-func stableTempDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", strings.ReplaceAll(t.Name(), "/", "-")+"-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		deadline := time.Now().Add(5 * time.Second)
-		for {
-			err := os.RemoveAll(dir)
-			if err == nil {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Errorf("remove temp dir %s after retries: %v", dir, err)
-				return
-			}
-			time.Sleep(25 * time.Millisecond)
-		}
-	})
-	return dir
 }
 
 func mustWrite(t *testing.T, path, content string) {
