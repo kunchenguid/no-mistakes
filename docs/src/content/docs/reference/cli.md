@@ -25,6 +25,8 @@ Valid step names are `intent`, `rebase`, `review`, `test`, `document`, `lint`, `
 
 Initialize or refresh the gate for the current repository.
 
+`init` requires an `origin` remote to identify the upstream repository: later pipeline steps push validated branches to the configured target and open pull requests against that upstream. If `origin` is missing, add it with `git remote add origin <url>`, replacing `<url>` with the upstream repository's URL, then re-run `init`.
+
 ```sh
 no-mistakes init
 no-mistakes init --fork-url git@github.com:you/my-repo.git
