@@ -66,6 +66,32 @@ func TestValidateRuntimeFailureSuppressesCredentialSentinel(t *testing.T) {
 	}
 }
 
+func TestValidateLocalGitConfigRejectsUnsafeWorktreeScope(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses POSIX executable scripts")
+	}
+	selected := fakeRuntimeContext(t, "account-a", "WRITE", "WRITE")
+	script := `#!/bin/sh
+if [ "$1" = config ] && [ "$2" = --worktree ]; then
+  printf '%s\n' 'http.https://github.com/.extraHeader'
+fi
+exit 0
+`
+	if err := os.WriteFile(selected.GitPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := selected.ValidateLocalGitConfig(context.Background(), t.TempDir()); err == nil {
+		t.Fatal("expected unsafe worktree config to be rejected")
+	}
+}
+
+func TestValidateNetworkRemoteAllowsAbsoluteLocalTransfer(t *testing.T) {
+	selected := validTestContext(t)
+	if err := selected.ValidateNetworkRemote(context.Background(), t.TempDir(), filepath.Join(t.TempDir(), "gate.git")); err != nil {
+		t.Fatalf("absolute local transfer: %v", err)
+	}
+}
+
 func fakeRuntimeContext(t *testing.T, login, parentPermission, forkPermission string) *GitHubContext {
 	t.Helper()
 	binDir := t.TempDir()
@@ -100,7 +126,7 @@ fi
 case "$1" in
   --version) printf '%s\n' 'git version fixture' ; exit 0 ;;
   config)
-    if [ "$2" = --local ]; then exit 0; fi
+    if [ "$2" = --local ] || [ "$2" = --worktree ]; then exit 0; fi
     ;;
 esac
 exit 92

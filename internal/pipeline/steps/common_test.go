@@ -6,14 +6,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/repoexec"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -575,6 +578,27 @@ func TestStepCmd_OverridesPathWithoutDuplicateEntries(t *testing.T) {
 	}
 	if pathCount != 1 {
 		t.Fatalf("expected exactly one PATH entry, got %d in %v", pathCount, cmd.Env)
+	}
+}
+
+func TestRunStepShellCommandPreservesExactRepositoryEnvironment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses POSIX shell syntax")
+	}
+	ctx := &repoexec.GitHubContext{
+		Version: 1,
+		Host: "github.com",
+	}
+	t.Setenv("GH_TOKEN", "credential-sentinel")
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Repo:    &db.Repo{GitHubContext: ctx},
+		Env:     []string{"PATH=" + os.Getenv("PATH"), "EXPECTED=present"},
+	}
+	out, code, err := runStepShellCommand(sctx, `if [ "${GH_TOKEN+x}" = x ]; then exit 91; fi; printf '%s' "$EXPECTED"`)
+	if err != nil || code != 0 || out != "present" {
+		t.Fatalf("exact repository environment: output=%q code=%d err=%v", out, code, err)
 	}
 }
 

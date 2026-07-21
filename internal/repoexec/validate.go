@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
-	"github.com/kunchenguid/no-mistakes/internal/winproc"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 const maxValidationOutputBytes = 4096
@@ -83,20 +84,22 @@ func (c *GitHubContext) ValidateLogin(ctx context.Context, workDir string) error
 }
 
 // ValidateLocalGitConfig rejects repository-controlled keys that could reroute
-// credentials or network destinations. Only key names are read; values (which
-// could contain headers or helper output) are never requested.
+// credentials or network destinations in the local and worktree scopes. Only
+// key names are read; values are never requested.
 func (c *GitHubContext) ValidateLocalGitConfig(ctx context.Context, workDir string) error {
 	if c == nil || strings.TrimSpace(workDir) == "" {
 		return nil
 	}
-	out, err := c.run(ctx, workDir, c.GitPath, "config", "--local", "--name-only", "--list")
-	if err != nil {
-		return c.errorf("could not inspect repository-local Git configuration")
-	}
-	for _, line := range strings.Split(out, "\n") {
-		key := strings.ToLower(strings.TrimSpace(line))
-		if unsafeLocalGitKey(key) {
-			return c.errorf("repository-local Git configuration contains a credential, header, URL rewrite, push URL, askpass, or SSH override; remove it or leave the repository context disabled")
+	for _, scope := range []string{"--local", "--worktree"} {
+		out, err := c.run(ctx, workDir, c.GitPath, "config", scope, "--name-only", "--list")
+		if err != nil {
+			return c.errorf("could not inspect repository-local Git configuration")
+		}
+		for _, line := range strings.Split(out, "\n") {
+			key := strings.ToLower(strings.TrimSpace(line))
+			if unsafeLocalGitKey(key) {
+				return c.errorf("repository-local Git configuration contains a credential, header, URL rewrite, push URL, askpass, or SSH override; remove it or leave the repository context disabled")
+			}
 		}
 	}
 	return nil
@@ -122,13 +125,16 @@ func (c *GitHubContext) ValidateNetworkRemote(ctx context.Context, workDir, remo
 	if c == nil {
 		return nil
 	}
+	raw := strings.TrimSpace(remote)
+	if filepath.IsAbs(raw) {
+		return nil
+	}
 	if err := c.ValidateLogin(ctx, workDir); err != nil {
 		return err
 	}
 	if err := c.ValidateLocalGitConfig(ctx, workDir); err != nil {
 		return err
 	}
-	raw := strings.TrimSpace(remote)
 	if !strings.Contains(raw, "://") {
 		if !validRemoteName(raw) {
 			return c.errorf("Git remote name is invalid")
@@ -206,8 +212,7 @@ func (c *GitHubContext) run(ctx context.Context, workDir, path string, args ...s
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Dir = workDir
 	cmd.Env = c.Environment(os.Environ(), workDir)
-	winproc.Harden(cmd)
-	out, err := cmd.Output()
+	out, err := shellenv.OutputShellCommand(cmd)
 	if err != nil {
 		return "", err
 	}

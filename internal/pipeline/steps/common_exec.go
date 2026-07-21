@@ -167,7 +167,7 @@ func stepCmd(sctx *pipeline.StepContext, name string, args ...string) *exec.Cmd 
 	cmd.Dir = sctx.WorkDir
 	winproc.Harden(cmd)
 	if selected != nil {
-		cmd.Env = selected.Environment(mergeEnv(sctx.Env), sctx.WorkDir)
+		cmd.Env = selected.Environment(sctx.Env, sctx.WorkDir)
 	} else if len(sctx.Env) > 0 {
 		cmd.Env = mergeEnv(sctx.Env)
 	}
@@ -276,10 +276,14 @@ func runShellCommand(ctx context.Context, dir, cmdStr string) (string, int, erro
 }
 
 func runStepShellCommand(sctx *pipeline.StepContext, cmdStr string) (string, int, error) {
-	return runShellCommandWithEnv(sctx.Ctx, sctx.WorkDir, sctx.Env, cmdStr)
+	return runShellCommandWithEnvMode(sctx.Ctx, sctx.WorkDir, sctx.Env, cmdStr, stepGitHubContext(sctx) != nil)
 }
 
 func runShellCommandWithEnv(ctx context.Context, dir string, env []string, cmdStr string) (string, int, error) {
+	return runShellCommandWithEnvMode(ctx, dir, env, cmdStr, false)
+}
+
+func runShellCommandWithEnvMode(ctx context.Context, dir string, env []string, cmdStr string, exactEnv bool) (string, int, error) {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		cmd = exec.CommandContext(ctx, "cmd.exe", "/c", cmdStr)
@@ -289,7 +293,10 @@ func runShellCommandWithEnv(ctx context.Context, dir string, env []string, cmdSt
 	shellenv.ConfigureShellCommand(cmd)
 	cmd.Dir = dir
 	if len(env) > 0 {
-		cmd.Env = mergeEnv(env)
+		cmd.Env = env
+		if !exactEnv {
+			cmd.Env = mergeEnv(env)
+		}
 	}
 	out, err := shellenv.CombinedOutputShellCommand(cmd)
 	if err != nil {

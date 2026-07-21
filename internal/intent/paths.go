@@ -4,11 +4,10 @@ import (
 	"context"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"github.com/kunchenguid/no-mistakes/internal/winproc"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 )
 
 // resolveHome returns the home directory to use, preferring an explicit
@@ -110,13 +109,11 @@ func gitRepoIdentity(ctx context.Context, dir string) repoIdentity {
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) string {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	winproc.Harden(cmd)
-	out, err := cmd.Output()
+	out, err := git.Run(ctx, dir, args...)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(out)
 }
 
 func normalizeGitRemote(remote string) string {

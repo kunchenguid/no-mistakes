@@ -152,6 +152,9 @@ func (c *GitHubContext) ValidateDependencies() error {
 			return c.errorf("%s must name an absolute executable file", name)
 		}
 	}
+	if !canonicalExecutableName(c.GHPath, "gh") || !canonicalExecutableName(c.GitPath, "git") {
+		return c.errorf("gh_path and git_path must use the canonical gh and git executable names")
+	}
 	if !filepath.IsAbs(c.GHConfigDir) {
 		return c.errorf("gh_config_dir must be absolute")
 	}
@@ -165,6 +168,11 @@ func (c *GitHubContext) ValidateDependencies() error {
 		return c.errorf("context contains credential-like material; store credentials only through gh auth")
 	}
 	return nil
+}
+
+func canonicalExecutableName(path, name string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	return base == name || (runtime.GOOS == "windows" && base == name+".exe")
 }
 
 // ValidateStatic validates dependencies and the initial HTTPS-only github.com

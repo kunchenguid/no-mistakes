@@ -98,6 +98,18 @@ func TestGitHubContextValidateStaticRequiresHTTPSGitHubDotCom(t *testing.T) {
 	}
 }
 
+func TestGitHubContextValidateDependenciesRequiresCanonicalExecutableNames(t *testing.T) {
+	ctx := validTestContext(t)
+	misnamed := filepath.Join(filepath.Dir(ctx.GHPath), "selected-gh")
+	if err := os.Rename(ctx.GHPath, misnamed); err != nil {
+		t.Fatal(err)
+	}
+	ctx.GHPath = misnamed
+	if err := ctx.ValidateDependencies(); err == nil {
+		t.Fatal("expected non-canonical gh executable name to be rejected")
+	}
+}
+
 func TestGitHubContextEnvironmentRemovesAmbientCredentialOverrides(t *testing.T) {
 	ctx := validTestContext(t)
 	base := []string{
