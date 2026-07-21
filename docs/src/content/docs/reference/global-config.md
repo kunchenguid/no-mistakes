@@ -61,7 +61,7 @@ intent:
 
 test:
   evidence:
-    store_in_repo: false
+    store_in_repo: true
     dir: .no-mistakes/evidence
 ```
 
@@ -368,7 +368,7 @@ Otherwise, accepted candidates are ranked by confidence, which combines the raw 
 ### test.evidence
 
 Test-step evidence storage settings.
-By default, evidence artifacts stay in a temporary directory keyed by run ID and are referenced by local path.
+By default, publishable image evidence is committed with the validated branch so GitHub can render it in the pull request.
 
 |      |          |
 | ---- | -------- |
@@ -376,12 +376,16 @@ By default, evidence artifacts stay in a temporary directory keyed by run ID and
 
 | Field                         | Type     | Default                 | Description                                                           |
 | ----------------------------- | -------- | ----------------------- | --------------------------------------------------------------------- |
-| `test.evidence.store_in_repo` | `bool`   | `false`                 | Commit and push test evidence artifacts from inside the repo worktree |
+| `test.evidence.store_in_repo` | `bool`   | `true`                  | Commit and push test evidence artifacts from inside the repo worktree |
 | `test.evidence.dir`           | `string` | `.no-mistakes/evidence` | Repo-relative parent directory used when `store_in_repo` is true      |
 
 When `store_in_repo` is true, the test step writes evidence under `<dir>/<branch-slug>` and the push step stages files from that directory before committing agent changes.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
+PNG, JPEG, GIF, and WebP images are validated, limited to 10 MiB each, 25 MiB and 20 images per run, and renamed using a content hash so duplicate evidence and retries are idempotent.
+The branch directory retains only the currently referenced supported images, while Git history retains images from earlier commits according to the repository's normal retention policy.
+Missing, unsupported, oversized, or unpublished images produce a concise explanation in the PR instead of a local path.
+Set `store_in_repo: false` to keep generated files local; local paths are never included in generated PR content.
 
 These are global defaults. Per-repo config can override either field.
 

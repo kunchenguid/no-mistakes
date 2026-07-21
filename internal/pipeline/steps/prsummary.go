@@ -388,7 +388,7 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 		if target != "" {
 			b.WriteString(fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target))
 		} else if localPath != "" {
-			b.WriteString(renderLocalArtifactLine(label, localPath))
+			b.WriteString(fmt.Sprintf("- Evidence: %s was not published.\n", html.EscapeString(label)))
 		}
 	}
 	if descriptionLine != "" {
@@ -408,13 +408,27 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 }
 
 func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptions, label string, state *testingArtifactRenderState) string {
+	image := isImageArtifact(artifact.Kind, artifact.URL) || isImageArtifact(artifact.Kind, artifact.Path)
 	target := artifact.URL
 	if target == "" {
-		target = artifactLinkTargetForPath(artifact, opts)
+		if image {
+			if repoImageIsPublishable(artifact.Path, opts) {
+				target = artifactTargetForPath(artifact, opts)
+			}
+		} else {
+			target = artifactLinkTargetForPath(artifact, opts)
+		}
 	}
 	localPath := localArtifactPath(artifact.Path, opts)
 	fileText, hasFile := embeddedArtifactText(artifact, opts, state)
 	caption := artifact.Content
+
+	if image {
+		if target != "" {
+			return fmt.Sprintf("**%s**\n\n![%s](%s)\n", html.EscapeString(label), markdownAltText(label), target)
+		}
+		return renderUnpublishedCompactImage(label, caption)
+	}
 
 	if target == "" && localPath == "" && caption == "" && !hasFile {
 		return ""
@@ -425,7 +439,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 		if target != "" {
 			return fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target)
 		}
-		return renderLocalArtifactLine(label, localPath)
+		return fmt.Sprintf("- Evidence: %s was not published.\n", html.EscapeString(label))
 	}
 
 	fenceBody, descriptionLine := caption, ""
@@ -439,8 +453,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	if target != "" {
 		b.WriteString(fmt.Sprintf("Source: [%s](%s)\n\n", html.EscapeString(label), target))
 	} else if !hasFile && localPath != "" {
-		b.WriteString(renderLocalArtifactReference("Source", label, localPath))
-		b.WriteString("\n")
+		b.WriteString(fmt.Sprintf("%s was not published.\n\n", html.EscapeString(label)))
 	}
 	if descriptionLine != "" {
 		b.WriteString(renderTestedDetail(descriptionLine))
@@ -449,6 +462,23 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	b.WriteString(fmt.Sprintf("```text\n%s\n```\n", escapeMarkdownFence(fenceBody)))
 	b.WriteString("</details>\n")
 	return b.String()
+}
+
+func renderUnpublishedCompactImage(label, _ string) string {
+	return fmt.Sprintf("- Evidence: %s was not published.\n", html.EscapeString(label))
+}
+
+func repoImageIsPublishable(target string, opts testingSummaryOptions) bool {
+	repoPath := repoRelativeArtifactPath(target, opts)
+	if repoPath == "" || opts.repoRoot == "" {
+		return false
+	}
+	filename := filepath.Join(opts.repoRoot, filepath.FromSlash(repoPath))
+	if _, ok := artifactPathRelativeToRoot(filename, opts.repoRoot); !ok {
+		return false
+	}
+	_, _, ok := readPublishableImage(filename)
+	return ok
 }
 
 // embeddedArtifactText reads a file artifact and returns its text content,
@@ -693,14 +723,6 @@ func resolveArtifactPathSymlinks(target string) string {
 
 func sameVolume(a, b string) bool {
 	return strings.EqualFold(filepath.VolumeName(a), filepath.VolumeName(b)) || filepath.VolumeName(a) == "" || filepath.VolumeName(b) == ""
-}
-
-func renderLocalArtifactLine(label, localPath string) string {
-	return renderLocalArtifactReference("- Evidence", label, localPath)
-}
-
-func renderLocalArtifactReference(prefix, label, localPath string) string {
-	return fmt.Sprintf("%s: %s (local file: <code>%s</code>)\n", prefix, html.EscapeString(label), html.EscapeString(localPath))
 }
 
 func sanitizeArtifactURL(target string) string {

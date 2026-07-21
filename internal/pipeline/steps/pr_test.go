@@ -633,6 +633,61 @@ func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
 	}
 }
 
+func TestPRStep_PublishesForkHostedImageEvidenceInline(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	imageRel := filepath.ToSlash(filepath.Join(".no-mistakes", "evidence", "feature", "checkout.png"))
+	imagePath := filepath.Join(dir, filepath.FromSlash(imageRel))
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imagePath, testPNGBytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	env, logFile := fakeGH(t, "")
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"title":"fix: publish image evidence","body":"## What Changed\n\n- publish screenshots"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = "https://github.com/parent-owner/widgets.git"
+	sctx.Repo.ForkURL = "https://github.com/fork-owner/widgets.git"
+
+	testFindings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Verified checkout visually.","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":%q}]}`, imageRel)
+	testStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(testStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(testStep.ID, testFindings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sctx.DB.InsertStepRound(testStep.ID, 1, "initial", &testFindings, nil, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	body := readFakeGHBodyArg(t, logFile)
+	want := fmt.Sprintf("![Checkout screenshot](https://raw.githubusercontent.com/fork-owner/widgets/%s/%s)", headSHA, imageRel)
+	if !strings.Contains(body, want) {
+		t.Fatalf("expected fork-hosted inline image %q, got:\n%s", want, body)
+	}
+	for _, unsafe := range []string{dir, "/tmp/", "raw.githubusercontent.com/parent-owner"} {
+		if strings.Contains(body, unsafe) {
+			t.Fatalf("PR body exposed unsafe or incorrect image source %q:\n%s", unsafe, body)
+		}
+	}
+}
+
 func TestPRStep_UnwrapsNestedJSONBody(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

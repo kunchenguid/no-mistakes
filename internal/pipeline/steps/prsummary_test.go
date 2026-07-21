@@ -2,7 +2,6 @@ package steps
 
 import (
 	"fmt"
-	"html"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +10,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func testPNGBytes() []byte {
+	return []byte("\x89PNG\r\n\x1a\n")
+}
 
 func TestNoMistakesRequiredWorkflowChecksPipelineSignature(t *testing.T) {
 	t.Parallel()
@@ -437,7 +440,13 @@ func TestBuildTestingSummary_RejectsUnsafeArtifactTargets(t *testing.T) {
 }
 
 func TestBuildTestingSummaryForPR_RendersEvidenceArtifactsCompactly(t *testing.T) {
-	t.Parallel()
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, "artifacts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "artifacts", "checkout.png"), testPNGBytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	findings := `{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":"artifacts/checkout.png"},{"kind":"log","label":"Server log","path":"artifacts/server.log"},{"kind":"log","label":"Placement rectangle evidence","content":"{\"button\":{\"top\":169,\"left\":248,\"right\":272,\"bottom\":193}}"}]}`
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
@@ -446,11 +455,11 @@ func TestBuildTestingSummaryForPR_RendersEvidenceArtifactsCompactly(t *testing.T
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
 	}
 
-	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir())
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
-	if !strings.Contains(md, "- Evidence: [Checkout screenshot](https://github.com/example/widgets/blob/abc123/artifacts/checkout.png)") {
-		t.Fatalf("expected screenshot path to render as compact GitHub blob link, got:\n%s", md)
+	if !strings.Contains(md, "![Checkout screenshot](https://raw.githubusercontent.com/example/widgets/abc123/artifacts/checkout.png)") {
+		t.Fatalf("expected screenshot path to render inline from GitHub, got:\n%s", md)
 	}
 	if !strings.Contains(md, "[Server log](https://github.com/example/widgets/blob/abc123/artifacts/server.log)") {
 		t.Fatalf("expected log path to render as GitHub blob URL, got:\n%s", md)
@@ -458,14 +467,57 @@ func TestBuildTestingSummaryForPR_RendersEvidenceArtifactsCompactly(t *testing.T
 	if !strings.Contains(md, "<details>\n<summary>Evidence: Placement rectangle evidence</summary>") || !strings.Contains(md, "```text\n{\"button\":{\"top\":169,\"left\":248,\"right\":272,\"bottom\":193}}\n```") {
 		t.Fatalf("expected content artifact to render in collapsible details, got:\n%s", md)
 	}
-	for _, broken := range []string{"![Checkout screenshot]", "raw.githubusercontent.com", "](artifacts/checkout.png)", "](artifacts/server.log)"} {
+	for _, broken := range []string{"](artifacts/checkout.png)", "](artifacts/server.log)"} {
 		if strings.Contains(md, broken) {
 			t.Fatalf("did not expect broken or noisy artifact rendering %q, got:\n%s", broken, md)
 		}
 	}
 }
 
-func TestBuildTestingSummaryForPR_RendersLocalTempVisualArtifactPath(t *testing.T) {
+func TestBuildTestingSummaryForPR_RendersForkHostedImageInline(t *testing.T) {
+	repoRoot := t.TempDir()
+	imagePath := filepath.Join(repoRoot, "evidence", "checkout.png")
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imagePath, testPNGBytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":"evidence/checkout.png"}]}`
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "https://github.com/fork-owner/widgets.git", "abc123", repoRoot)
+
+	want := "![Checkout screenshot](https://raw.githubusercontent.com/fork-owner/widgets/abc123/evidence/checkout.png)"
+	if !strings.Contains(md, want) {
+		t.Fatalf("expected fork-hosted image markdown %q, got:\n%s", want, md)
+	}
+}
+
+func TestBuildTestingSummaryForPR_MissingRepoImageDegradesSafely(t *testing.T) {
+	repoRoot := t.TempDir()
+	findings := `{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Missing screenshot","path":"evidence/missing.png"}]}`
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
+
+	if !strings.Contains(md, "- Evidence: Missing screenshot was not published.") {
+		t.Fatalf("expected safe missing-file explanation, got:\n%s", md)
+	}
+	for _, unsafe := range []string{"evidence/missing.png", "raw.githubusercontent.com", "local file"} {
+		if strings.Contains(md, unsafe) {
+			t.Fatalf("missing image exposed unsafe target %q:\n%s", unsafe, md)
+		}
+	}
+}
+
+func TestBuildTestingSummaryForPR_ScrubsLocalTempVisualArtifactPath(t *testing.T) {
 	t.Parallel()
 	repoRoot := t.TempDir()
 	localPath := filepath.Join(os.TempDir(), "no-mistakes-evidence", "run-123", "checkout.png")
@@ -480,18 +532,17 @@ func TestBuildTestingSummaryForPR_RendersLocalTempVisualArtifactPath(t *testing.
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
-	want := "- Evidence: Checkout screenshot (local file: <code>" + html.EscapeString(localPath) + "</code>)"
-	if !strings.Contains(md, want) {
-		t.Fatalf("expected local temp screenshot path to render as local evidence, got:\n%s", md)
+	if !strings.Contains(md, "- Evidence: Checkout screenshot was not published.") {
+		t.Fatalf("expected a safe publication explanation, got:\n%s", md)
 	}
-	for _, broken := range []string{"![Checkout screenshot]", "github.com/example/widgets/blob/abc123/"} {
+	for _, broken := range []string{"![Checkout screenshot]", "github.com/example/widgets/blob/abc123/", localPath, "/tmp/", "local file"} {
 		if strings.Contains(md, broken) {
 			t.Fatalf("did not expect local temp artifact to be rendered as a visual or GitHub link %q, got:\n%s", broken, md)
 		}
 	}
 }
 
-func TestBuildTestingSummaryForPR_PreservesCaptionedLocalVisualArtifactPath(t *testing.T) {
+func TestBuildTestingSummaryForPR_ScrubsCaptionedLocalVisualArtifactPath(t *testing.T) {
 	t.Parallel()
 	repoRoot := t.TempDir()
 	localPath := filepath.Join(os.TempDir(), "no-mistakes-evidence", "run-123", "checkout.png")
@@ -506,15 +557,16 @@ func TestBuildTestingSummaryForPR_PreservesCaptionedLocalVisualArtifactPath(t *t
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
-	wantSource := "Source: Checkout screenshot (local file: <code>" + html.EscapeString(localPath) + "</code>)"
-	if !strings.Contains(md, wantSource) {
-		t.Fatalf("expected captioned local temp screenshot path to be preserved, got:\n%s", md)
+	if !strings.Contains(md, "Checkout screenshot was not published.") {
+		t.Fatalf("expected captioned local temp screenshot to degrade safely, got:\n%s", md)
 	}
-	if !strings.Contains(md, "```text\nCheckout completed visually.\n```") {
-		t.Fatalf("expected caption to render safely in text fence, got:\n%s", md)
+	if strings.Contains(md, "Checkout completed visually.") {
+		t.Fatalf("did not expect unpublished image metadata to be echoed, got:\n%s", md)
 	}
-	if strings.Contains(md, "github.com/example/widgets/blob/abc123/") {
-		t.Fatalf("did not expect local temp artifact to be rendered as a GitHub link, got:\n%s", md)
+	for _, unsafe := range []string{localPath, "/tmp/", "local file", "github.com/example/widgets/blob/abc123/"} {
+		if strings.Contains(md, unsafe) {
+			t.Fatalf("did not expect unsafe local source %q, got:\n%s", unsafe, md)
+		}
 	}
 }
 
@@ -532,7 +584,7 @@ func TestBuildTestingSummaryForPR_PrefersArtifactURLOverLocalPath(t *testing.T) 
 
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
 
-	if !strings.Contains(md, "- Evidence: [Checkout screenshot](https://example.com/checkout.png)") {
+	if !strings.Contains(md, "![Checkout screenshot](https://example.com/checkout.png)") {
 		t.Fatalf("expected artifact URL to take precedence, got:\n%s", md)
 	}
 	if strings.Contains(md, "local file:") || strings.Contains(md, localPath) {
@@ -768,8 +820,11 @@ func TestBuildTestingSummaryForPR_LimitsTotalEmbeddedTextEvidence(t *testing.T) 
 	if strings.Contains(md, thirdBody) {
 		t.Fatalf("did not expect evidence beyond the total budget to be embedded")
 	}
-	if !strings.Contains(md, "- Evidence: Third log (local file: <code>"+html.EscapeString(thirdPath)+"</code>)") {
-		t.Fatalf("expected evidence beyond the total budget to fall back to a local source, got:\n%s", md)
+	if !strings.Contains(md, "- Evidence: Third log was not published.") {
+		t.Fatalf("expected evidence beyond the total budget to degrade safely, got:\n%s", md)
+	}
+	if strings.Contains(md, thirdPath) || strings.Contains(md, "local file") {
+		t.Fatalf("evidence beyond the total budget exposed a local path, got:\n%s", md)
 	}
 }
 
@@ -785,10 +840,13 @@ func TestBuildTestingSummaryForPR_FallsBackForBinaryEvidence(t *testing.T) {
 
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", t.TempDir())
 
-	if !strings.Contains(md, "- Evidence: Binary capture (local file: <code>"+html.EscapeString(localPath)+"</code>)") {
-		t.Fatalf("expected binary evidence to fall back to a local file reference, got:\n%s", md)
+	if !strings.Contains(md, "- Evidence: Binary capture was not published.") {
+		t.Fatalf("expected binary evidence to degrade safely, got:\n%s", md)
 	}
 	if strings.Contains(md, "```text") {
 		t.Fatalf("did not expect binary content to be embedded as text, got:\n%s", md)
+	}
+	if strings.Contains(md, localPath) || strings.Contains(md, "local file") {
+		t.Fatalf("binary evidence exposed a local path, got:\n%s", md)
 	}
 }

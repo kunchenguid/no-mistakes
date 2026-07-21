@@ -225,6 +225,7 @@ Rules:
 		if len(tested) > 0 {
 			findings.Tested = append(append([]string{}, tested...), findings.Tested...)
 		}
+		findings.Artifacts = prepareTestEvidenceArtifacts(sctx.WorkDir, evidenceLocation, findings.Artifacts)
 
 		needsApproval := hasBlockingFindings(findings.Items)
 		autoFixable := needsApproval

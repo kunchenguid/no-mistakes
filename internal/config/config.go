@@ -245,7 +245,7 @@ type Test struct {
 // Evidence is the resolved test-evidence config. When StoreInRepo is true, the
 // test step writes evidence artifacts into Dir (relative to the repo worktree)
 // so they are committed, pushed, and viewable directly on the PR. Otherwise
-// evidence stays in a temporary directory referenced only by local path.
+// evidence stays temporary and is never exposed in generated PR content.
 type Evidence struct {
 	StoreInRepo bool
 	Dir         string
@@ -406,13 +406,13 @@ intent:
   # disabled_readers: [codex]
 
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
-# gathers to demonstrate the change works). By default they are kept in a
-# temporary directory and referenced by local path. Opt in to store_in_repo to
-# commit them into the repo under a readable, branch-named directory so they are
-# pushed and render directly on the PR.
+# gathers to demonstrate the change works). By default publishable images are
+# committed under a readable, branch-named directory so they are pushed and
+# render directly on the PR. Set store_in_repo to false to keep evidence local;
+# local paths are never included in generated PR content.
 # test:
 #   evidence:
-#     store_in_repo: true
+#     store_in_repo: false
 #     dir: .no-mistakes/evidence
 `
 
@@ -1152,12 +1152,12 @@ func applyIntentOverrides(dst *Intent, src *IntentRaw) {
 	}
 }
 
-// testDefaults returns the default test-step settings. Evidence storage is
-// opt-in (off by default); when enabled it lands under .no-mistakes/evidence.
+// testDefaults returns the default test-step settings. Publishable evidence
+// lands under .no-mistakes/evidence unless explicitly disabled.
 func testDefaults() Test {
 	return Test{
 		Evidence: Evidence{
-			StoreInRepo: false,
+			StoreInRepo: true,
 			Dir:         ".no-mistakes/evidence",
 		},
 	}
