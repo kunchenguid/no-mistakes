@@ -114,7 +114,7 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(evidenceDir, "unreferenced.png"), testPNGBytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(evidenceDir, "sensitive.dump"), []byte("secret"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(evidenceDir, "helper.go"), []byte("package feature\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -142,10 +142,11 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(clone, "evidence", "feature", publishedName)); err != nil {
 		t.Fatalf("expected ignored evidence artifact to be pushed: %v", err)
 	}
-	for _, name := range []string{"unreferenced.png", "sensitive.dump"} {
-		if _, err := os.Stat(filepath.Join(clone, "evidence", "feature", name)); !os.IsNotExist(err) {
-			t.Fatalf("unreferenced evidence %q was pushed, stat error = %v", name, err)
-		}
+	if _, err := os.Stat(filepath.Join(clone, "evidence", "feature", "unreferenced.png")); !os.IsNotExist(err) {
+		t.Fatalf("ignored unreferenced evidence was pushed, stat error = %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(clone, "evidence", "feature", "helper.go")); err != nil || string(data) != "package feature\n" {
+		t.Fatalf("ordinary untracked file in overlapping evidence directory was omitted: data=%q err=%v", data, err)
 	}
 }
 
@@ -315,6 +316,44 @@ func TestPushStep_EvidenceStagingPreservesOverlappingSourceChanges(t *testing.T)
 	}
 	if !slices.Contains(staged, imageRel) {
 		t.Fatalf("manifest evidence was not staged: %v", staged)
+	}
+}
+
+func TestPushStep_AgentStagingPreservesUntrackedFilesInOverlappingEvidenceDirectory(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	destinationDir := filepath.Join(dir, "src", "feature")
+	if err := os.MkdirAll(destinationDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sourceRel := filepath.ToSlash(filepath.Join("src", "feature", "new_handler.go"))
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(sourceRel)), []byte("package feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	imageData := testPNGBytes()
+	imageHash := sha256.Sum256(imageData)
+	hash := fmt.Sprintf("%x", imageHash[:])
+	imageRel := filepath.ToSlash(filepath.Join("src", "feature", hash[:32]+".png"))
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(imageRel)), imageData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/example/widgets.git"
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "src"}
+	setTestEvidenceManifest(t, sctx, imageRel, hash, int64(len(imageData)))
+
+	step := &PushStep{}
+	if err := step.stageAgentChanges(sctx); err != nil {
+		t.Fatal(err)
+	}
+	staged := strings.Fields(gitCmd(t, dir, "diff", "--cached", "--name-only"))
+	if !slices.Contains(staged, sourceRel) {
+		t.Fatalf("untracked overlapping source file was not staged: %v", staged)
+	}
+	if slices.Contains(staged, imageRel) {
+		t.Fatalf("manifest evidence was staged as an ordinary source file: %v", staged)
 	}
 }
 

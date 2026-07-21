@@ -41,18 +41,15 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	}
 
 	// Commit any uncommitted changes from agent fixes
+	if err := s.stageAgentChanges(sctx); err != nil {
+		return nil, fmt.Errorf("stage agent changes: %w", err)
+	}
 	if err := s.stageInRepoEvidence(sctx); err != nil {
 		return nil, err
 	}
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if strings.TrimSpace(status) != "" {
 		sctx.Log("committing agent changes...")
-		if err := s.stageAgentChanges(sctx); err != nil {
-			return nil, fmt.Errorf("stage agent changes: %w", err)
-		}
-		if err := s.stageInRepoEvidence(sctx); err != nil {
-			return nil, err
-		}
 		stagedPaths, err := git.Run(ctx, sctx.WorkDir, "diff", "--cached", "--name-only")
 		if err != nil {
 			return nil, fmt.Errorf("inspect staged agent changes: %w", err)
@@ -157,6 +154,10 @@ func (s *PushStep) stageAgentChanges(sctx *pipeline.StepContext) error {
 		_, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "-A")
 		return err
 	}
+	managedPaths, err := managedEvidenceDestinationPaths(sctx, location)
+	if err != nil {
+		return err
+	}
 	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "-u"); err != nil {
 		return err
 	}
@@ -168,8 +169,7 @@ func (s *PushStep) stageAgentChanges(sctx *pipeline.StepContext) error {
 		if rel == "" {
 			continue
 		}
-		target := filepath.Join(sctx.WorkDir, filepath.FromSlash(rel))
-		if _, managedDestination := artifactPathRelativeToRoot(target, location.RepoDir); managedDestination {
+		if managedPaths[filepath.ToSlash(rel)] {
 			continue
 		}
 		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "--", rel); err != nil {
@@ -177,6 +177,49 @@ func (s *PushStep) stageAgentChanges(sctx *pipeline.StepContext) error {
 		}
 	}
 	return nil
+}
+
+func managedEvidenceDestinationPaths(sctx *pipeline.StepContext, location testEvidenceLocation) (map[string]bool, error) {
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load test evidence manifest: %w", err)
+	}
+	managed := make(map[string]bool)
+	for _, result := range steps {
+		if result.StepName != types.StepTest || result.FindingsJSON == nil {
+			continue
+		}
+		findings, err := types.ParseFindingsJSON(*result.FindingsJSON)
+		if err != nil {
+			continue
+		}
+		for _, artifact := range findings.Artifacts {
+			if rel, ok := preparedEvidenceDestinationPath(sctx.WorkDir, location.RepoDir, artifact); ok {
+				managed[rel] = true
+			}
+		}
+	}
+	return managed, nil
+}
+
+func preparedEvidenceDestinationPath(workDir, repoDir string, artifact types.TestArtifact) (string, bool) {
+	if !isImageArtifact(artifact.Kind, artifact.Path) || artifact.URL != "" || filepath.IsAbs(artifact.Path) ||
+		len(artifact.SHA256) != sha256.Size*2 || artifact.SHA256 != strings.ToLower(artifact.SHA256) {
+		return "", false
+	}
+	target := filepath.Join(workDir, filepath.FromSlash(artifact.Path))
+	if _, ok := artifactPathRelativeToRoot(target, repoDir); !ok {
+		return "", false
+	}
+	rel, ok := artifactPathRelativeToRoot(target, workDir)
+	if !ok {
+		return "", false
+	}
+	rel = filepath.ToSlash(rel)
+	if filepath.Base(target) != artifact.SHA256[:32]+".png" {
+		return "", false
+	}
+	return rel, true
 }
 
 func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {

@@ -420,14 +420,22 @@ func TestPrepareTestEvidenceArtifacts_RejectsValidGIFWithoutDecodingFrames(t *te
 	}
 }
 
-func TestPrepareTestEvidenceArtifacts_DeduplicatesBeforeApplyingCaps(t *testing.T) {
+func TestPrepareTestEvidenceArtifacts_DeduplicatesBeforeReachingCaps(t *testing.T) {
 	workDir := t.TempDir()
 	location := resolveTestEvidenceLocation(workDir, "feature", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
 	if err := os.MkdirAll(location.Dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	var artifacts []types.TestArtifact
-	for i := 0; i < maxPublishedImagesPerRun; i++ {
+	first := filepath.Join(location.Dir, "first.png")
+	duplicate := filepath.Join(location.Dir, "duplicate.png")
+	for _, filename := range []string{first, duplicate} {
+		if err := os.WriteFile(filename, coloredPNGBytes(0), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		artifacts = append(artifacts, types.TestArtifact{Kind: "image", Label: filepath.Base(filename), Path: filename})
+	}
+	for i := 1; i < maxPublishedImagesPerRun; i++ {
 		data := coloredPNGBytes(uint8(i))
 		filename := filepath.Join(location.Dir, fmt.Sprintf("%02d.png", i))
 		if err := os.WriteFile(filename, data, 0o644); err != nil {
@@ -435,16 +443,70 @@ func TestPrepareTestEvidenceArtifacts_DeduplicatesBeforeApplyingCaps(t *testing.
 		}
 		artifacts = append(artifacts, types.TestArtifact{Kind: "image", Label: fmt.Sprintf("image-%d", i), Path: filename})
 	}
-	duplicate := filepath.Join(location.Dir, "duplicate.png")
-	if err := os.WriteFile(duplicate, coloredPNGBytes(0), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	artifacts = append(artifacts, types.TestArtifact{Kind: "image", Label: "duplicate", Path: duplicate})
 
 	got := prepareTestEvidenceArtifacts(workDir, location, artifacts)
 
-	if got[len(got)-1].Path == "" || got[len(got)-1].Path != got[0].Path {
-		t.Fatalf("duplicate at publication cap was not reused: first=%#v duplicate=%#v", got[0], got[len(got)-1])
+	if got[1].Path == "" || got[1].Path != got[0].Path {
+		t.Fatalf("duplicate before publication cap was not reused: first=%#v duplicate=%#v", got[0], got[1])
+	}
+}
+
+func TestPrepareTestEvidenceArtifacts_StopsDecodingAtImageCountLimit(t *testing.T) {
+	workDir := t.TempDir()
+	location := resolveTestEvidenceLocation(workDir, "feature", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
+	if err := os.MkdirAll(location.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	artifacts := make([]types.TestArtifact, maxPublishedImagesPerRun+1)
+	for i := range artifacts {
+		filename := filepath.Join(location.Dir, fmt.Sprintf("%02d.png", i))
+		if err := os.WriteFile(filename, coloredPNGBytes(uint8(i)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		artifacts[i] = types.TestArtifact{Kind: "image", Label: fmt.Sprintf("image-%d", i), Path: filename}
+	}
+	decodeCount := 0
+	got := prepareTestEvidenceArtifactsWithCanonicalizer(workDir, location, artifacts, func(ext string, data []byte) ([]byte, bool) {
+		decodeCount++
+		return canonicalizePublishedImage(ext, data)
+	})
+
+	if decodeCount != maxPublishedImagesPerRun {
+		t.Fatalf("canonical image decodes = %d, want %d", decodeCount, maxPublishedImagesPerRun)
+	}
+	if got[maxPublishedImagesPerRun].Path != "" || got[maxPublishedImagesPerRun].Content != unpublishedImageExplanation {
+		t.Fatalf("image beyond count limit did not degrade safely: %#v", got[maxPublishedImagesPerRun])
+	}
+}
+
+func TestPrepareTestEvidenceArtifacts_StopsDecodingAfterByteLimitOverflow(t *testing.T) {
+	workDir := t.TempDir()
+	location := resolveTestEvidenceLocation(workDir, "feature", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
+	if err := os.MkdirAll(location.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const canonicalSize = 9 * 1024 * 1024
+	artifacts := make([]types.TestArtifact, 4)
+	for i := range artifacts {
+		filename := filepath.Join(location.Dir, fmt.Sprintf("%02d.png", i))
+		if err := os.WriteFile(filename, coloredPNGBytes(uint8(i)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		artifacts[i] = types.TestArtifact{Kind: "image", Label: fmt.Sprintf("image-%d", i), Path: filename}
+	}
+	decodeCount := 0
+	got := prepareTestEvidenceArtifactsWithCanonicalizer(workDir, location, artifacts, func(_ string, _ []byte) ([]byte, bool) {
+		decodeCount++
+		return bytes.Repeat([]byte{byte(decodeCount)}, canonicalSize), true
+	})
+
+	if decodeCount != 3 {
+		t.Fatalf("canonical image decodes = %d, want 3", decodeCount)
+	}
+	for i := 2; i < len(got); i++ {
+		if got[i].Path != "" || got[i].Content != unpublishedImageExplanation {
+			t.Fatalf("image %d beyond byte limit did not degrade safely: %#v", i, got[i])
+		}
 	}
 }
 

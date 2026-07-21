@@ -170,6 +170,10 @@ func sanitizeEvidenceSegment(s string) string {
 // retries therefore reuse the same file. Images that cannot be published lose
 // their path and degrade to a safe explanation in generated summaries.
 func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation, artifacts []types.TestArtifact) []types.TestArtifact {
+	return prepareTestEvidenceArtifactsWithCanonicalizer(workDir, location, artifacts, canonicalizePublishedImage)
+}
+
+func prepareTestEvidenceArtifactsWithCanonicalizer(workDir string, location testEvidenceLocation, artifacts []types.TestArtifact, canonicalize func(string, []byte) ([]byte, bool)) []types.TestArtifact {
 	prepared := append([]types.TestArtifact(nil), artifacts...)
 	for i := range prepared {
 		prepared[i].Published = false
@@ -189,6 +193,7 @@ func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation,
 	candidateBytes := int64(0)
 	candidateCount := 0
 	publishedCount := 0
+	publicationExhausted := false
 
 	for i := range prepared {
 		artifact := prepared[i]
@@ -216,17 +221,25 @@ func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation,
 			prepared[i].Size = published.Size
 			continue
 		}
+		if publicationExhausted || publishedCount >= maxPublishedImagesPerRun || totalBytes >= maxPublishedImagesTotalBytes {
+			prepared[i] = unpublishedImageArtifact(artifact)
+			continue
+		}
 		data, ext, _, ok := readBoundedImageCandidate(source, &candidateBytes)
 		if !ok {
 			prepared[i] = unpublishedImageArtifact(artifact)
 			continue
 		}
-		data, ok = canonicalizePublishedImage(ext, data)
+		data, ok = canonicalize(ext, data)
 		if !ok {
 			prepared[i] = unpublishedImageArtifact(artifact)
 			continue
 		}
 		size := int64(len(data))
+		if size <= 0 || size > maxPublishedImageBytes {
+			prepared[i] = unpublishedImageArtifact(artifact)
+			continue
+		}
 
 		sum := sha256.Sum256(data)
 		fullHash := fmt.Sprintf("%x", sum[:])
@@ -247,8 +260,9 @@ func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation,
 			publishedBySource[source] = prepared[i]
 			continue
 		} else {
-			if publishedCount >= maxPublishedImagesPerRun || totalBytes+size > maxPublishedImagesTotalBytes {
+			if totalBytes+size > maxPublishedImagesTotalBytes {
 				prepared[i] = unpublishedImageArtifact(artifact)
+				publicationExhausted = true
 				continue
 			}
 			if err := os.MkdirAll(location.RepoDir, 0o755); err != nil {
