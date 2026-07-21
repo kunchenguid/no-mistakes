@@ -109,13 +109,20 @@ func unsafeLocalGitKey(key string) bool {
 	if strings.HasPrefix(key, "credential.") || key == "http.extraheader" || key == "core.sshcommand" || key == "core.askpass" {
 		return true
 	}
-	if strings.HasPrefix(key, "http.") && strings.HasSuffix(key, ".extraheader") {
+	if strings.HasPrefix(key, "http.") && unsafeHTTPTransportKey(key) {
 		return true
 	}
 	if strings.HasPrefix(key, "url.") && (strings.HasSuffix(key, ".insteadof") || strings.HasSuffix(key, ".pushinsteadof")) {
 		return true
 	}
 	return strings.HasPrefix(key, "remote.") && strings.HasSuffix(key, ".pushurl")
+}
+
+func unsafeHTTPTransportKey(key string) bool {
+	leaf := key[strings.LastIndexByte(key, '.')+1:]
+	return leaf == "extraheader" || leaf == "proxy" || leaf == "noproxy" || leaf == "proxyauthmethod" ||
+		leaf == "pinnedpubkey" || leaf == "curloptresolve" || leaf == "followredirects" ||
+		strings.Contains(leaf, "ssl") || strings.Contains(leaf, "cert") || strings.Contains(leaf, "schannel")
 }
 
 // ValidateNetworkRemote resolves a named remote without applying URL rewrites,
@@ -129,20 +136,9 @@ func (c *GitHubContext) ValidateNetworkRemote(ctx context.Context, workDir, remo
 	if err := c.ValidateLocalGitConfig(ctx, workDir); err != nil {
 		return err
 	}
-	if networkStyleAbsolutePath(raw) {
-		return c.errorf("local Git transfer refused a network-style path")
-	}
-	if filepath.IsAbs(raw) {
-		resolved, err := filepath.EvalSymlinks(raw)
-		if err != nil {
-			return c.errorf("local Git transfer source could not be verified")
-		}
-		if networkStyleAbsolutePath(resolved) {
-			return c.errorf("local Git transfer refused a network-style path")
-		}
-		info, err := os.Stat(resolved)
-		if err != nil || !info.IsDir() {
-			return c.errorf("local Git transfer source must be an existing directory")
+	if trusted, ok := ctx.Value(localGitTransferKey{}).(localGitTransfer); ok {
+		if err := validateTrustedLocalGitTransfer(raw, workDir, trusted); err != nil {
+			return c.errorf("trusted local Git transfer endpoints could not be verified")
 		}
 		return nil
 	}
@@ -163,6 +159,45 @@ func (c *GitHubContext) ValidateNetworkRemote(ctx context.Context, workDir, remo
 		return c.errorf("network Git operation refused a non-HTTPS or non-github.com remote")
 	}
 	return nil
+}
+
+func validateTrustedLocalGitTransfer(source, destination string, trusted localGitTransfer) error {
+	actualSource, err := canonicalLocalGitTransferEndpoint(source)
+	if err != nil {
+		return err
+	}
+	actualDestination, err := canonicalLocalGitTransferEndpoint(destination)
+	if err != nil {
+		return err
+	}
+	expectedSource, err := canonicalLocalGitTransferEndpoint(trusted.source)
+	if err != nil {
+		return err
+	}
+	expectedDestination, err := canonicalLocalGitTransferEndpoint(trusted.destination)
+	if err != nil {
+		return err
+	}
+	if actualSource != expectedSource || actualDestination != expectedDestination {
+		return errors.New("endpoint mismatch")
+	}
+	return nil
+}
+
+func canonicalLocalGitTransferEndpoint(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if !filepath.IsAbs(value) || networkStyleAbsolutePath(value) {
+		return "", errors.New("not a local absolute path")
+	}
+	resolved, err := filepath.EvalSymlinks(value)
+	if err != nil || networkStyleAbsolutePath(resolved) {
+		return "", errors.New("unverifiable local path")
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		return "", errors.New("local path is not a directory")
+	}
+	return filepath.Clean(resolved), nil
 }
 
 func networkStyleAbsolutePath(value string) bool {

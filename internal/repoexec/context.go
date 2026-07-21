@@ -51,6 +51,12 @@ type GitHubContext struct {
 }
 
 type contextKey struct{}
+type localGitTransferKey struct{}
+
+type localGitTransfer struct {
+	source      string
+	destination string
+}
 
 // WithGitHubContext binds selected to ctx without mutating process-global state.
 func WithGitHubContext(ctx context.Context, selected *GitHubContext) context.Context {
@@ -68,6 +74,10 @@ func GitHubContextFrom(ctx context.Context) (*GitHubContext, bool) {
 	}
 	selected, ok := ctx.Value(contextKey{}).(*GitHubContext)
 	return selected, ok && selected != nil
+}
+
+func WithTrustedLocalGitTransfer(ctx context.Context, source, destination string) context.Context {
+	return context.WithValue(ctx, localGitTransferKey{}, localGitTransfer{source: source, destination: destination})
 }
 
 // LoadGitHubContext decodes a strict context document. Unknown fields are

@@ -85,13 +85,38 @@ exit 0
 	}
 }
 
-func TestValidateNetworkRemoteAllowsAbsoluteLocalTransfer(t *testing.T) {
+func TestValidateNetworkRemoteAllowsExplicitTrustedLocalTransfer(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fixture uses POSIX executable scripts")
 	}
 	selected := fakeRuntimeContext(t, "account-a", "WRITE", "WRITE")
-	if err := selected.ValidateNetworkRemote(context.Background(), t.TempDir(), t.TempDir()); err != nil {
+	source := t.TempDir()
+	destination := t.TempDir()
+	ctx := WithTrustedLocalGitTransfer(context.Background(), source, destination)
+	if err := selected.ValidateNetworkRemote(ctx, destination, source); err != nil {
 		t.Fatalf("absolute local transfer: %v", err)
+	}
+}
+
+func TestValidateNetworkRemoteRejectsUntrustedAbsoluteDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses POSIX executable scripts")
+	}
+	selected := fakeRuntimeContext(t, "account-a", "WRITE", "WRITE")
+	if err := selected.ValidateNetworkRemote(context.Background(), t.TempDir(), t.TempDir()); err == nil {
+		t.Fatal("expected generic absolute directory to be rejected")
+	}
+}
+
+func TestValidateNetworkRemoteRejectsMismatchedTrustedLocalEndpoint(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses POSIX executable scripts")
+	}
+	selected := fakeRuntimeContext(t, "account-a", "WRITE", "WRITE")
+	destination := t.TempDir()
+	ctx := WithTrustedLocalGitTransfer(context.Background(), t.TempDir(), destination)
+	if err := selected.ValidateNetworkRemote(ctx, destination, t.TempDir()); err == nil {
+		t.Fatal("expected mismatched trusted source to be rejected")
 	}
 }
 
@@ -109,8 +134,32 @@ exit 0
 	if err := os.WriteFile(selected.GitPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := selected.ValidateNetworkRemote(context.Background(), t.TempDir(), t.TempDir()); err == nil {
+	source := t.TempDir()
+	destination := t.TempDir()
+	ctx := WithTrustedLocalGitTransfer(context.Background(), source, destination)
+	if err := selected.ValidateNetworkRemote(ctx, destination, source); err == nil {
 		t.Fatal("expected local transfer to reject repository URL rewrites")
+	}
+}
+
+func TestUnsafeLocalGitKeyRejectsHTTPTransportOverrides(t *testing.T) {
+	for _, key := range []string{
+		"http.proxy",
+		"http.sslverify",
+		"http.sslcainfo",
+		"http.https://github.com/.proxy",
+		"http.https://github.com/.sslcert",
+		"http.https://github.com/.pinnedpubkey",
+		"http.https://github.com/.curloptresolve",
+	} {
+		if !unsafeLocalGitKey(key) {
+			t.Errorf("expected %q to be rejected", key)
+		}
+	}
+	for _, key := range []string{"http.postbuffer", "http.maxrequests"} {
+		if unsafeLocalGitKey(key) {
+			t.Errorf("expected repository-safe %q to remain allowed", key)
+		}
 	}
 }
 

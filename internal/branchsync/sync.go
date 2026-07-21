@@ -495,7 +495,8 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_diverged", fmt.Sprintf("the gate branch is at %s, not the preserved pipeline head %s recorded for this run; no files or refs were changed", gateHead, preserved))
 	}
 	if !anchored {
-		if fetchErr := git.FetchRemoteBranchToPrivateRef(ctx, wd, gateDir, branch, anchorRef); fetchErr != nil {
+		fetchCtx := repoexec.WithTrustedLocalGitTransfer(ctx, gateDir, wd)
+		if fetchErr := git.FetchRemoteBranchToPrivateRef(fetchCtx, wd, gateDir, branch, anchorRef); fetchErr != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; no files or refs were changed")
 		}
 		if fetched, fetchErr := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); fetchErr != nil || fetched != preserved {
@@ -553,7 +554,8 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the invoking worktree path could not be resolved; no files or refs were changed")
 		}
 		stagingRef := "refs/no-mistakes/custody-return/" + run.ID
-		if _, err := git.Run(ctx, s.GateDir, "fetch", "--no-tags", "--no-write-fetch-head", source, "+refs/heads/"+state.Local.Branch+":"+stagingRef); err != nil {
+		fetchCtx := repoexec.WithTrustedLocalGitTransfer(ctx, source, s.GateDir)
+		if _, err := git.Run(fetchCtx, s.GateDir, "fetch", "--no-tags", "--no-write-fetch-head", source, "+refs/heads/"+state.Local.Branch+":"+stagingRef); err != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the kept local head could not be staged into the gate; no files or refs were changed")
 		}
 		staged, err := git.Run(ctx, s.GateDir, "rev-parse", stagingRef+"^{commit}")
