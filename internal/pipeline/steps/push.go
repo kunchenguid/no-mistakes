@@ -207,6 +207,21 @@ func preparedEvidenceDestinationPath(workDir, repoDir string, artifact types.Tes
 		len(artifact.SHA256) != sha256.Size*2 || artifact.SHA256 != strings.ToLower(artifact.SHA256) {
 		return "", false
 	}
+	rel, ok := evidenceDestinationPath(workDir, repoDir, artifact)
+	if !ok {
+		return "", false
+	}
+	target := filepath.Join(workDir, filepath.FromSlash(rel))
+	if filepath.Base(target) != artifact.SHA256[:32]+".png" {
+		return "", false
+	}
+	return rel, true
+}
+
+func evidenceDestinationPath(workDir, repoDir string, artifact types.TestArtifact) (string, bool) {
+	if !isImageArtifact(artifact.Kind, artifact.Path) || artifact.URL != "" || filepath.IsAbs(artifact.Path) {
+		return "", false
+	}
 	target := filepath.Join(workDir, filepath.FromSlash(artifact.Path))
 	if _, ok := artifactPathRelativeToRoot(target, repoDir); !ok {
 		return "", false
@@ -216,9 +231,6 @@ func preparedEvidenceDestinationPath(workDir, repoDir string, artifact types.Tes
 		return "", false
 	}
 	rel = filepath.ToSlash(rel)
-	if filepath.Base(target) != artifact.SHA256[:32]+".png" {
-		return "", false
-	}
 	return rel, true
 }
 
@@ -238,7 +250,17 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 	if err != nil {
 		return fmt.Errorf("load test evidence manifest: %w", err)
 	}
-	staged := make(map[string]bool)
+	type manifestRecord struct {
+		id       string
+		findings types.Findings
+	}
+	type destinationRecord struct {
+		artifact   types.TestArtifact
+		consistent bool
+		published  bool
+	}
+	var manifests []manifestRecord
+	destinations := make(map[string]destinationRecord)
 	for _, result := range steps {
 		if result.StepName != types.StepTest || result.FindingsJSON == nil {
 			continue
@@ -247,54 +269,71 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 		if err != nil {
 			continue
 		}
+		manifests = append(manifests, manifestRecord{id: result.ID, findings: findings})
+		for _, artifact := range findings.Artifacts {
+			targetRel, ok := evidenceDestinationPath(sctx.WorkDir, location.RepoDir, artifact)
+			if !ok {
+				continue
+			}
+			destination, exists := destinations[targetRel]
+			if !exists {
+				destinations[targetRel] = destinationRecord{artifact: artifact, consistent: true}
+				continue
+			}
+			if artifact.SHA256 != destination.artifact.SHA256 || artifact.Size != destination.artifact.Size {
+				destination.consistent = false
+				destinations[targetRel] = destination
+			}
+		}
+	}
+
+	for targetRel := range destinations {
+		if _, err := git.Run(ctx, sctx.WorkDir, "reset", "--quiet", "HEAD", "--", targetRel); err != nil {
+			return fmt.Errorf("clear staged test evidence: %w", err)
+		}
+	}
+	for targetRel, destination := range destinations {
+		target := filepath.Join(sctx.WorkDir, filepath.FromSlash(targetRel))
+		preparedRel, prepared := preparedEvidenceDestinationPath(sctx.WorkDir, location.RepoDir, destination.artifact)
+		if !githubRemote || !destination.consistent || !prepared || preparedRel != targetRel ||
+			!matchesPreparedEvidenceManifest(target, destination.artifact) {
+			continue
+		}
+		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-f", "--", targetRel); err != nil {
+			return fmt.Errorf("stage test evidence: %w", err)
+		}
+		destination.published = true
+		destinations[targetRel] = destination
+	}
+
+	for _, manifest := range manifests {
 		manifestChanged := false
-		for i := range findings.Artifacts {
-			artifact := findings.Artifacts[i]
+		for i, artifact := range manifest.findings.Artifacts {
 			if !isImageArtifact(artifact.Kind, artifact.Path) || artifact.URL != "" || filepath.IsAbs(artifact.Path) {
 				continue
 			}
-			artifact.Published = false
-			target := filepath.Join(sctx.WorkDir, filepath.FromSlash(artifact.Path))
-			if _, ok := artifactPathRelativeToRoot(target, location.RepoDir); !ok {
-				findings.Artifacts[i] = unpublishedImageArtifact(artifact)
-				manifestChanged = true
-				continue
-			}
-			targetRel, ok := artifactPathRelativeToRoot(target, sctx.WorkDir)
+			targetRel, ok := evidenceDestinationPath(sctx.WorkDir, location.RepoDir, artifact)
 			if !ok {
-				findings.Artifacts[i] = unpublishedImageArtifact(artifact)
+				manifest.findings.Artifacts[i] = unpublishedImageArtifact(artifact)
 				manifestChanged = true
 				continue
 			}
-			targetRel = filepath.ToSlash(targetRel)
-			if _, err := git.Run(ctx, sctx.WorkDir, "reset", "--quiet", "HEAD", "--", targetRel); err != nil {
-				return fmt.Errorf("clear staged test evidence: %w", err)
-			}
-			if !githubRemote || !matchesPreparedEvidenceManifest(target, artifact) {
-				findings.Artifacts[i] = unpublishedImageArtifact(artifact)
+			destination := destinations[targetRel]
+			if !destination.published || artifact.SHA256 != destination.artifact.SHA256 || artifact.Size != destination.artifact.Size {
+				manifest.findings.Artifacts[i] = unpublishedImageArtifact(artifact)
 				manifestChanged = true
 				continue
 			}
-			if staged[targetRel] {
-				artifact.Published = true
-				findings.Artifacts[i] = artifact
-				manifestChanged = true
-				continue
-			}
-			if _, err := git.Run(ctx, sctx.WorkDir, "add", "-f", "--", targetRel); err != nil {
-				return fmt.Errorf("stage test evidence: %w", err)
-			}
-			staged[targetRel] = true
 			artifact.Published = true
-			findings.Artifacts[i] = artifact
+			manifest.findings.Artifacts[i] = artifact
 			manifestChanged = true
 		}
 		if manifestChanged {
-			raw, err := types.MarshalFindingsJSON(findings)
+			raw, err := types.MarshalFindingsJSON(manifest.findings)
 			if err != nil {
 				return fmt.Errorf("encode test evidence manifest: %w", err)
 			}
-			if err := sctx.DB.SetStepFindings(result.ID, raw); err != nil {
+			if err := sctx.DB.SetStepFindings(manifest.id, raw); err != nil {
 				return fmt.Errorf("update test evidence manifest: %w", err)
 			}
 		}

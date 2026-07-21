@@ -473,6 +473,56 @@ func TestPushStep_MarksVerifiedPreparedEvidencePublished(t *testing.T) {
 	}
 }
 
+func TestPushStep_StagesDuplicatePreparedEvidenceExactlyOnce(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	data := testPNGBytes()
+	sum := sha256.Sum256(data)
+	hash := fmt.Sprintf("%x", sum[:])
+	rel := filepath.ToSlash(filepath.Join("evidence", "feature", hash[:32]+".png"))
+	target := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/example/widgets.git"
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+	testResult, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"First","path":%q,"sha256":%q,"size":%d},{"kind":"screenshot","label":"Duplicate","path":%q,"sha256":%q,"size":%d}]}`, rel, hash, len(data), rel, hash, len(data))
+	if err := sctx.DB.SetStepFindings(testResult.ID, findings); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (&PushStep{}).stageInRepoEvidence(sctx); err != nil {
+		t.Fatal(err)
+	}
+	staged := strings.Fields(gitCmd(t, dir, "diff", "--cached", "--name-only"))
+	if len(staged) != 1 || staged[0] != rel {
+		t.Fatalf("duplicate evidence staging = %v, want [%s]", staged, rel)
+	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := types.ParseFindingsJSON(*steps[len(steps)-1].FindingsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, artifact := range manifest.Artifacts {
+		if !artifact.Published {
+			t.Fatalf("duplicate artifact %d was not marked published: %#v", i, artifact)
+		}
+	}
+}
+
 func TestPushStep_DisablesEvidenceForUnsupportedRemote(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

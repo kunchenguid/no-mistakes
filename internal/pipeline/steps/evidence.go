@@ -18,13 +18,15 @@ import (
 )
 
 const (
-	maxPublishedImageBytes       = 10 * 1024 * 1024
-	maxPublishedImagesTotalBytes = 25 * 1024 * 1024
-	maxPublishedImagesPerRun     = 20
-	maxPublishedImagePixels      = 40 * 1024 * 1024
-	maxEvidenceImageCandidates   = 64
-	maxEvidenceCandidateBytes    = 4 * maxPublishedImagesTotalBytes
-	unpublishedImageExplanation  = "Image evidence was not published."
+	maxPublishedImageBytes                = 10 * 1024 * 1024
+	maxPublishedImagesTotalBytes          = 25 * 1024 * 1024
+	maxPublishedImagesPerRun              = 20
+	maxPublishedImagePixels               = 8_000_000
+	maxPublishedImageWorkingBytes         = 128 * 1024 * 1024
+	maxPublishedImageWorkingBytesPerPixel = 12
+	maxEvidenceImageCandidates            = 64
+	maxEvidenceCandidateBytes             = 4 * maxPublishedImagesTotalBytes
+	unpublishedImageExplanation           = "Image evidence was not published."
 )
 
 func testEvidenceRoot() string {
@@ -410,6 +412,7 @@ func canonicalizePublishedImage(ext string, data []byte) ([]byte, bool) {
 	}
 	canonical := image.NewNRGBA(image.Rect(0, 0, cfg.Width, cfg.Height))
 	draw.Draw(canonical, canonical.Bounds(), decoded, bounds.Min, draw.Src)
+	decoded = nil
 	var encoded bytes.Buffer
 	if err := png.Encode(&encoded, canonical); err != nil || encoded.Len() <= 0 || encoded.Len() > maxPublishedImageBytes {
 		return nil, false
@@ -429,8 +432,15 @@ func validImageDimensions(cfg image.Config, frames int) bool {
 	if cfg.Width <= 0 || cfg.Height <= 0 || frames <= 0 {
 		return false
 	}
-	pixels := uint64(cfg.Width) * uint64(cfg.Height) * uint64(frames)
-	return pixels <= maxPublishedImagePixels
+	width := uint64(cfg.Width)
+	height := uint64(cfg.Height)
+	frameCount := uint64(frames)
+	if width > ^uint64(0)/height || width*height > ^uint64(0)/frameCount {
+		return false
+	}
+	pixels := width * height * frameCount
+	return pixels <= maxPublishedImagePixels &&
+		pixels <= maxPublishedImageWorkingBytes/maxPublishedImageWorkingBytesPerPixel
 }
 
 func writePublishedImage(target string, data []byte) error {
@@ -438,7 +448,11 @@ func writePublishedImage(target string, data []byte) error {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("published image target is not a regular file")
 		}
-		if existing, err := os.ReadFile(target); err == nil && bytes.Equal(existing, data) {
+		matches, err := publishedImageFileMatches(target, data)
+		if err != nil {
+			return err
+		}
+		if matches {
 			return nil
 		}
 		return fmt.Errorf("published image target already exists with different content")
@@ -464,4 +478,33 @@ func writePublishedImage(target string, data []byte) error {
 	}
 	complete = true
 	return nil
+}
+
+func publishedImageFileMatches(target string, expected []byte) (bool, error) {
+	info, err := os.Lstat(target)
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() != int64(len(expected)) {
+		return false, nil
+	}
+	file, err := os.Open(target)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	if !openedInfo.Mode().IsRegular() || openedInfo.Size() != int64(len(expected)) || !os.SameFile(info, openedInfo) {
+		return false, nil
+	}
+	expectedHash := sha256.Sum256(expected)
+	actualHash := sha256.New()
+	n, err := io.Copy(actualHash, io.LimitReader(file, int64(len(expected))+1))
+	if err != nil {
+		return false, err
+	}
+	return n == int64(len(expected)) && bytes.Equal(actualHash.Sum(nil), expectedHash[:]), nil
 }

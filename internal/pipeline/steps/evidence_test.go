@@ -398,6 +398,52 @@ func TestPrepareTestEvidenceArtifacts_FullyValidatesSupportedImages(t *testing.T
 	}
 }
 
+func TestValidImageDimensions_EnforcesDecodedMemoryBudget(t *testing.T) {
+	if !validImageDimensions(image.Config{Width: 4000, Height: 2000}, 1) {
+		t.Fatal("8 megapixel image was rejected")
+	}
+	if validImageDimensions(image.Config{Width: 4001, Height: 2000}, 1) {
+		t.Fatal("image above 8 megapixels was accepted")
+	}
+	if uint64(4000*2000*maxPublishedImageWorkingBytesPerPixel) > maxPublishedImageWorkingBytes {
+		t.Fatal("accepted image exceeds the decoded image memory budget")
+	}
+}
+
+func TestPublishedImageFileMatches_StreamsExactSizedContent(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "existing.png")
+	data := testPNGBytes()
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	matches, err := publishedImageFileMatches(target, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !matches {
+		t.Fatal("exact existing published image did not match")
+	}
+}
+
+func TestPublishedImageFileMatches_RejectsOversizedTargetBeforeReading(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "existing.png")
+	if err := os.WriteFile(target, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(target, maxPublishedImageBytes+1); err != nil {
+		t.Fatal(err)
+	}
+
+	matches, err := publishedImageFileMatches(target, testPNGBytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matches {
+		t.Fatal("oversized existing published image matched")
+	}
+}
+
 func TestPrepareTestEvidenceArtifacts_RejectsValidGIFWithoutDecodingFrames(t *testing.T) {
 	workDir := t.TempDir()
 	location := resolveTestEvidenceLocation(workDir, "feature", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
