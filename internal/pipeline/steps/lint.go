@@ -163,7 +163,7 @@ Previous lint findings to address:
 				Severity:    "warning",
 				Description: fmt.Sprintf("linter found issues (exit code %d)", exitCode),
 			}},
-			Summary: output,
+			Summary: configuredCommandFailureSummary(output, types.StepLint),
 		}
 		findingsJSON, _ := json.Marshal(findings)
 		return &pipeline.StepOutcome{

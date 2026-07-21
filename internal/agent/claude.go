@@ -69,10 +69,14 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	if opts.Session != nil {
 		resumeID = opts.Session.ID
 	}
-	args := a.buildArgs(opts.Prompt, opts.JSONSchema, resumeID)
+	args := a.buildArgs(opts.JSONSchema, resumeID)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Stdin = nil
+	// Claude Code print mode documents text stdin as its non-interactive
+	// prompt transport. Giving os/exec an in-memory reader keeps user prompt
+	// bytes out of argv and lets Cmd own the bounded concurrent copy, including
+	// EOF, early-child-exit, cancellation, and WaitDelay cleanup paths.
+	cmd.Stdin = strings.NewReader(opts.Prompt)
 	cmd.Env = gitSafeEnv(opts.CWD)
 	shellenv.ConfigureShellCommand(cmd)
 
@@ -166,11 +170,11 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 // is not added. A non-empty resumeID continues that session via --resume
 // (never --fork-session: the session identity must stay stable so later
 // turns keep resuming the same conversation).
-func (a *claudeAgent) buildArgs(prompt string, schema json.RawMessage, resumeID string) []string {
-	args := make([]string, 0, len(a.extraArgs)+12)
+func (a *claudeAgent) buildArgs(schema json.RawMessage, resumeID string) []string {
+	args := make([]string, 0, len(a.extraArgs)+11)
 	args = append(args, a.extraArgs...)
 	args = append(args,
-		"-p", prompt,
+		"-p",
 		"--verbose",
 		"--output-format", "stream-json",
 	)

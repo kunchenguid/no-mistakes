@@ -3,21 +3,30 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClaudeAgent_BuildArgs(t *testing.T) {
 	ca := &claudeAgent{bin: "/usr/bin/claude"}
 	schema := json.RawMessage(`{"type":"object"}`)
-	args := ca.buildArgs("do something", schema, "")
+	args := ca.buildArgs(schema, "")
 
 	// Default (no opt-out): pristine args, no setting-sources restriction -
 	// ordinary repos keep loading project CLAUDE.md/AGENTS.md (backward-compat).
 	expected := []string{
-		"-p", "do something",
+		"-p",
 		"--verbose",
 		"--output-format", "stream-json",
 		"--json-schema", `{"type":"object"}`,
@@ -36,7 +45,7 @@ func TestClaudeAgent_BuildArgs(t *testing.T) {
 
 func TestClaudeAgent_BuildArgs_NoSchema(t *testing.T) {
 	ca := &claudeAgent{bin: "claude"}
-	args := ca.buildArgs("prompt", nil, "")
+	args := ca.buildArgs(nil, "")
 
 	// Without schema, should not include --json-schema flag
 	for _, arg := range args {
@@ -45,18 +54,18 @@ func TestClaudeAgent_BuildArgs_NoSchema(t *testing.T) {
 		}
 	}
 	// Should still have core args
-	if args[0] != "-p" || args[1] != "prompt" {
+	if args[0] != "-p" {
 		t.Error("missing -p flag")
 	}
 }
 
 func TestClaudeAgent_BuildArgs_ExtraArgsPrepended(t *testing.T) {
 	ca := &claudeAgent{bin: "claude", extraArgs: []string{"--model", "sonnet"}}
-	args := ca.buildArgs("do it", nil, "")
+	args := ca.buildArgs(nil, "")
 
 	expected := []string{
 		"--model", "sonnet",
-		"-p", "do it",
+		"-p",
 		"--verbose",
 		"--output-format", "stream-json",
 		"--dangerously-skip-permissions",
@@ -79,7 +88,7 @@ func TestClaudeAgent_BuildArgs_UserPermissionModeSuppressesDefault(t *testing.T)
 	}
 	for _, extra := range tests {
 		ca := &claudeAgent{bin: "claude", extraArgs: extra}
-		args := ca.buildArgs("p", nil, "")
+		args := ca.buildArgs(nil, "")
 
 		dangerCount := 0
 		for _, a := range args {
@@ -458,7 +467,7 @@ func TestParseClaudeEvents_ResultCapturesRawEvent(t *testing.T) {
 // does not.
 func TestClaudeAgent_BuildArgs_SuppressesProjectMemoryUnderOptOut(t *testing.T) {
 	ca := &claudeAgent{bin: "claude", disableProjectSettings: true}
-	args := ca.buildArgs("review the diff", nil, "")
+	args := ca.buildArgs(nil, "")
 	if !claudeArgsContainPair(args, "--setting-sources", "user") {
 		t.Errorf("buildArgs = %v, want a `--setting-sources user` pair", args)
 	}
@@ -469,7 +478,7 @@ func TestClaudeAgent_BuildArgs_SuppressesProjectMemoryUnderOptOut(t *testing.T) 
 // loads its project memory exactly as before.
 func TestClaudeAgent_BuildArgs_NoSuppressionWithoutOptOut(t *testing.T) {
 	ca := &claudeAgent{bin: "claude"}
-	args := ca.buildArgs("review the diff", nil, "")
+	args := ca.buildArgs(nil, "")
 	for _, a := range args {
 		if a == "--setting-sources" {
 			t.Errorf("buildArgs = %v, must not restrict setting-sources when the repo did not opt out", args)
@@ -481,10 +490,244 @@ func TestClaudeAgent_BuildArgs_NoSuppressionWithoutOptOut(t *testing.T) {
 // who pinned their own --setting-sources is not double-set even under opt-out.
 func TestClaudeAgent_BuildArgs_UserSettingSourcesOverrideWins(t *testing.T) {
 	ca := &claudeAgent{bin: "claude", disableProjectSettings: true, extraArgs: []string{"--setting-sources", "user,project"}}
-	args := ca.buildArgs("p", nil, "")
+	args := ca.buildArgs(nil, "")
 	if claudeArgsContainPair(args, "--setting-sources", "user") {
 		t.Errorf("buildArgs = %v, must not add default over a user --setting-sources", args)
 	}
+}
+
+type claudeStdinObservation struct {
+	Args   []string `json:"args"`
+	Bytes  int      `json:"bytes"`
+	SHA256 string   `json:"sha256"`
+	EOF    bool     `json:"eof"`
+}
+
+func TestClaudeAgent_LargePromptUsesExactStdinForColdAndResumedRuns(t *testing.T) {
+	marker := "CLAUDE_STDIN_SECRET_MARKER_7f9c_"
+	prompt := marker + strings.Repeat("x", 2*1024*1024) + "_END"
+	sum := sha256.Sum256([]byte(prompt))
+	wantHash := hex.EncodeToString(sum[:])
+	schema := json.RawMessage(`{"type":"object","required":["ok"]}`)
+
+	for _, tc := range []struct {
+		name      string
+		sessionID string
+	}{
+		{name: "cold"},
+		{name: "resumed", sessionID: "session-123"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observationPath := filepath.Join(t.TempDir(), "observation.json")
+			t.Setenv("NM_CLAUDE_STDIN_HELPER", "read")
+			t.Setenv("NM_CLAUDE_STDIN_OBSERVATION", observationPath)
+			a := newClaudeStdinHelperAgent(t)
+			opts := RunOpts{Prompt: prompt, CWD: t.TempDir(), JSONSchema: schema}
+			if tc.sessionID != "" {
+				opts.Session = &SessionRef{ID: tc.sessionID}
+			}
+
+			result, err := a.runOnce(context.Background(), opts)
+			if err != nil {
+				t.Fatalf("runOnce with 2 MiB prompt: %v", err)
+			}
+			if result.SessionID != "helper-session" {
+				t.Fatalf("session ID = %q, want helper-session", result.SessionID)
+			}
+
+			data, err := os.ReadFile(observationPath)
+			if err != nil {
+				t.Fatalf("read helper observation: %v", err)
+			}
+			var got claudeStdinObservation
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatalf("parse helper observation: %v", err)
+			}
+			if got.Bytes != len(prompt) || got.SHA256 != wantHash || !got.EOF {
+				t.Fatalf("stdin observation = %+v, want bytes=%d sha256=%s EOF", got, len(prompt), wantHash)
+			}
+			for _, arg := range got.Args {
+				if strings.Contains(arg, marker) || strings.Contains(arg, prompt[len(prompt)-32:]) {
+					t.Fatalf("prompt bytes leaked into argv: arg length %d", len(arg))
+				}
+			}
+			for _, pair := range [][2]string{{"--output-format", "stream-json"}, {"--json-schema", string(schema)}, {"--setting-sources", "user"}} {
+				if !claudeArgsContainPair(got.Args, pair[0], pair[1]) {
+					t.Errorf("argv %v missing %q %q", got.Args, pair[0], pair[1])
+				}
+			}
+			for _, flag := range []string{"-p", "--verbose", "--dangerously-skip-permissions"} {
+				if !slicesContain(got.Args, flag) {
+					t.Errorf("argv %v missing %q", got.Args, flag)
+				}
+			}
+			if tc.sessionID == "" {
+				if slicesContain(got.Args, "--resume") {
+					t.Fatalf("cold argv unexpectedly contains --resume: %v", got.Args)
+				}
+			} else if !claudeArgsContainPair(got.Args, "--resume", tc.sessionID) {
+				t.Fatalf("resumed argv %v missing session ID", got.Args)
+			}
+		})
+	}
+}
+
+func TestClaudeAgent_EarlyExitWithoutReadingLargeStdinDoesNotLeakGoroutines(t *testing.T) {
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "exit-early")
+	a := newClaudeStdinHelperAgent(t)
+	prompt := strings.Repeat("e", 2*1024*1024)
+	before := runtime.NumGoroutine()
+
+	for i := 0; i < 8; i++ {
+		started := time.Now()
+		_, err := a.runOnce(context.Background(), RunOpts{Prompt: prompt, CWD: t.TempDir()})
+		if err == nil {
+			t.Fatal("early helper exit unexpectedly succeeded")
+		}
+		if time.Since(started) > 3*time.Second {
+			t.Fatalf("early helper exit took too long: %v", time.Since(started))
+		}
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for runtime.NumGoroutine() > before+2 && time.Now().Before(deadline) {
+		runtime.Gosched()
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := runtime.NumGoroutine(); got > before+2 {
+		t.Fatalf("goroutines grew from %d to %d after early stdin exits", before, got)
+	}
+}
+
+func TestClaudeAgent_CancellationWithBlockedStdinAndInheritedPipesIsBounded(t *testing.T) {
+	for _, mode := range []string{"block", "spawn-grandchild"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("NM_CLAUDE_STDIN_HELPER", mode)
+			ready := filepath.Join(t.TempDir(), "ready")
+			t.Setenv("NM_CLAUDE_STDIN_READY", ready)
+			t.Setenv("NM_CLAUDE_STDIN_PID", filepath.Join(t.TempDir(), "grandchild.pid"))
+			a := newClaudeStdinHelperAgent(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				_, err := a.runOnce(ctx, RunOpts{Prompt: strings.Repeat("p", 2*1024*1024), CWD: t.TempDir()})
+				done <- err
+			}()
+
+			waitForClaudeHelperFile(t, ready, 5*time.Second)
+			if mode == "block" {
+				cancel()
+			}
+			select {
+			case <-done:
+			case <-time.After(6 * time.Second):
+				cancel()
+				t.Fatal("Claude run did not complete after cancellation or clean leader exit")
+			}
+		})
+	}
+}
+
+func newClaudeStdinHelperAgent(t *testing.T) *claudeAgent {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("current test executable: %v", err)
+	}
+	return &claudeAgent{
+		bin:                    exe,
+		extraArgs:              []string{"-test.run=^TestClaudeStdinHelper$", "--"},
+		disableProjectSettings: true,
+	}
+}
+
+func TestClaudeStdinHelper(t *testing.T) {
+	mode := os.Getenv("NM_CLAUDE_STDIN_HELPER")
+	if mode == "" {
+		return
+	}
+	args := argsAfterDoubleDash(os.Args)
+	switch mode {
+	case "exit-early":
+		os.Exit(0)
+	case "block":
+		_ = os.WriteFile(os.Getenv("NM_CLAUDE_STDIN_READY"), []byte("ready"), 0o644)
+		for {
+			time.Sleep(time.Second)
+		}
+	case "spawn-grandchild":
+		child := exec.Command(os.Args[0], "-test.run=^TestClaudeStdinHelper$")
+		child.Env = append(os.Environ(), "NM_CLAUDE_STDIN_HELPER=grandchild")
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			os.Exit(2)
+		}
+		_ = os.WriteFile(os.Getenv("NM_CLAUDE_STDIN_PID"), []byte(strconv.Itoa(child.Process.Pid)), 0o644)
+		_ = os.WriteFile(os.Getenv("NM_CLAUDE_STDIN_READY"), []byte("ready"), 0o644)
+		emitClaudeHelperResult()
+		return
+	case "grandchild":
+		for {
+			time.Sleep(time.Second)
+		}
+	case "read":
+		prompt, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			os.Exit(3)
+		}
+		sum := sha256.Sum256(prompt)
+		observation := claudeStdinObservation{
+			Args:   args,
+			Bytes:  len(prompt),
+			SHA256: hex.EncodeToString(sum[:]),
+			EOF:    true,
+		}
+		data, _ := json.Marshal(observation)
+		if err := os.WriteFile(os.Getenv("NM_CLAUDE_STDIN_OBSERVATION"), data, 0o644); err != nil {
+			os.Exit(4)
+		}
+		emitClaudeHelperResult()
+		return
+	default:
+		os.Exit(5)
+	}
+}
+
+func emitClaudeHelperResult() {
+	_, _ = io.WriteString(os.Stdout, `{"type":"assistant","session_id":"helper-session","message":{"model":"helper-model","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"ok"}]}}`+"\n")
+	_, _ = io.WriteString(os.Stdout, `{"type":"result","subtype":"success","session_id":"helper-session","structured_output":{"ok":true}}`+"\n")
+}
+
+func argsAfterDoubleDash(args []string) []string {
+	for i, arg := range args {
+		if arg == "--" {
+			return append([]string(nil), args[i+1:]...)
+		}
+	}
+	return nil
+}
+
+func waitForClaudeHelperFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for helper file %s", path)
+}
+
+func slicesContain(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func claudeArgsContainPair(args []string, flag, value string) bool {

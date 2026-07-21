@@ -100,7 +100,7 @@ Previous test findings to address:
 					Severity:    "error",
 					Description: fmt.Sprintf("tests failed with exit code %d", exitCode),
 				}},
-				Summary: output,
+				Summary: configuredCommandFailureSummary(output, types.StepTest),
 				Tested:  tested,
 			}
 			findingsJSON, _ := json.Marshal(findings)
