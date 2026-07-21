@@ -43,7 +43,9 @@ func initIntentRepo(t *testing.T) (repoDir, fakeHome, base, head string) {
 	}
 	gitCmd(t, repoDir, "add", ".")
 	gitCmd(t, repoDir, "commit", "-m", "base")
+	gitCmd(t, repoDir, "branch", "-M", "main")
 	base = gitCmd(t, repoDir, "rev-parse", "HEAD")
+	gitCmd(t, repoDir, "checkout", "-b", "feature")
 	if err := os.WriteFile(filepath.Join(repoDir, "internal_foo.go"), []byte("package foo\nfunc Bar() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +233,9 @@ func TestIntentStep_Integration_DeletedFilesDoNotDiluteIntentMatch(t *testing.T)
 	}
 	gitCmd(t, repoDir, "add", ".")
 	gitCmd(t, repoDir, "commit", "-m", "base")
+	gitCmd(t, repoDir, "branch", "-M", "main")
 	base := gitCmd(t, repoDir, "rev-parse", "HEAD")
+	gitCmd(t, repoDir, "checkout", "-b", "feature")
 
 	for i := 0; i < 40; i++ {
 		if err := os.Remove(filepath.Join(repoDir, fmt.Sprintf("obsolete_%02d.go", i))); err != nil {
@@ -287,7 +291,7 @@ func TestIntentStep_Integration_ZeroBaseSHA_NewBranchPush(t *testing.T) {
 	repoDir, fakeHome, base, _ := initIntentRepo(t)
 	withFakeHome(t, fakeHome)
 
-	gitCmd(t, repoDir, "checkout", "-b", "feature", base)
+	gitCmd(t, repoDir, "checkout", "-B", "feature", base)
 	if err := os.WriteFile(filepath.Join(repoDir, "internal_foo.go"), []byte("package foo\nfunc Bar() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -488,10 +492,8 @@ func TestIntentStep_Integration_ForcePushedOrphanedBaseSHA(t *testing.T) {
 	repoDir, fakeHome, _, _ := initIntentRepo(t)
 	withFakeHome(t, fakeHome)
 
-	// Branch off main and add a feature commit that touches internal_foo.go.
-	// initIntentRepo's main HEAD already contains func Bar(), so vary the
-	// content here to produce a real diff between feature and main.
-	gitCmd(t, repoDir, "checkout", "-b", "feature")
+	// Add another feature commit that touches internal_foo.go. Vary the
+	// existing feature content to preserve a real diff from main.
 	if err := os.WriteFile(filepath.Join(repoDir, "internal_foo.go"), []byte("package foo\nfunc Bar() { /* feature */ }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
