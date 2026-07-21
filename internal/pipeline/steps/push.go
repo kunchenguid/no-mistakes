@@ -47,7 +47,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if strings.TrimSpace(status) != "" {
 		sctx.Log("committing agent changes...")
-		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+		if err := s.stageAgentChanges(sctx); err != nil {
 			return nil, fmt.Errorf("stage agent changes: %w", err)
 		}
 		if err := s.stageInRepoEvidence(sctx); err != nil {
@@ -151,19 +151,39 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	return &pipeline.StepOutcome{}, nil
 }
 
+func (s *PushStep) stageAgentChanges(sctx *pipeline.StepContext) error {
+	location := resolveTestEvidenceLocation(sctx.WorkDir, sctx.Run.Branch, sctx.Run.ID, sctx.Config.Test.Evidence)
+	if !location.StoreInRepo {
+		_, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "-A")
+		return err
+	}
+	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "-u"); err != nil {
+		return err
+	}
+	untracked, err := git.Run(sctx.Ctx, sctx.WorkDir, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return err
+	}
+	for _, rel := range strings.Split(untracked, "\x00") {
+		if rel == "" {
+			continue
+		}
+		target := filepath.Join(sctx.WorkDir, filepath.FromSlash(rel))
+		if _, managedDestination := artifactPathRelativeToRoot(target, location.RepoDir); managedDestination {
+			continue
+		}
+		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "--", rel); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 	ctx := sctx.Ctx
 	location := resolveTestEvidenceLocation(sctx.WorkDir, sctx.Run.Branch, sctx.Run.ID, sctx.Config.Test.Evidence)
 	if !location.StoreInRepo {
 		return nil
-	}
-	rel, err := filepath.Rel(sctx.WorkDir, location.RepoDir)
-	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return nil
-	}
-	rel = filepath.ToSlash(rel)
-	if _, err := git.Run(ctx, sctx.WorkDir, "reset", "--quiet", "HEAD", "--", rel); err != nil {
-		return fmt.Errorf("clear staged test evidence: %w", err)
 	}
 	evidenceRemote := sctx.Repo.UpstreamURL
 	if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
@@ -197,11 +217,6 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 				manifestChanged = true
 				continue
 			}
-			if !githubRemote || !matchesPreparedEvidenceManifest(target, artifact) {
-				findings.Artifacts[i] = unpublishedImageArtifact(artifact)
-				manifestChanged = true
-				continue
-			}
 			targetRel, ok := artifactPathRelativeToRoot(target, sctx.WorkDir)
 			if !ok {
 				findings.Artifacts[i] = unpublishedImageArtifact(artifact)
@@ -209,6 +224,14 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 				continue
 			}
 			targetRel = filepath.ToSlash(targetRel)
+			if _, err := git.Run(ctx, sctx.WorkDir, "reset", "--quiet", "HEAD", "--", targetRel); err != nil {
+				return fmt.Errorf("clear staged test evidence: %w", err)
+			}
+			if !githubRemote || !matchesPreparedEvidenceManifest(target, artifact) {
+				findings.Artifacts[i] = unpublishedImageArtifact(artifact)
+				manifestChanged = true
+				continue
+			}
 			if staged[targetRel] {
 				artifact.Published = true
 				findings.Artifacts[i] = artifact

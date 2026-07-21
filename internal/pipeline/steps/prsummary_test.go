@@ -2,6 +2,7 @@ package steps
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"image"
@@ -570,6 +571,24 @@ func TestBuildTestingSummaryForPR_AcceptsPersistedRedactedGitHubRemote(t *testin
 	want := "![Checkout screenshot](https://raw.githubusercontent.com/example/widgets/" + ref + "/" + image.Path + ")"
 	if !strings.Contains(md, want) {
 		t.Fatalf("expected redacted persisted remote to render %q, got:\n%s", want, md)
+	}
+}
+
+func TestGitHubRepositoryForRemote_AcceptsResolvedSSHAlias(t *testing.T) {
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "ssh")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_CLI_MODE", "ssh-resolve-github")
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+
+	repo, ok := githubRepositoryForRemote(context.Background(), "git@github_work:example/widgets.git")
+
+	if !ok {
+		t.Fatal("verified SSH alias was rejected")
+	}
+	if repo.host != "github.com" || repo.owner != "example" || repo.name != "widgets" {
+		t.Fatalf("resolved repository = %#v", repo)
 	}
 }
 

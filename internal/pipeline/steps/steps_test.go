@@ -54,6 +54,8 @@ func handleFakeCLI(mode string) {
 		fakeGitStatusErrorHandler(args)
 	case "git-remote-error":
 		fakeGitRemoteErrorHandler(args)
+	case "ssh-resolve-github":
+		fmt.Println("hostname github.com")
 	case "ci-gh":
 		fakeCIGHHandler(args)
 	case "ci-gh-seq":

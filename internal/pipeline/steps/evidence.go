@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"image"
+	"image/draw"
 	"image/jpeg"
 	"image/png"
 	"io"
@@ -215,16 +216,22 @@ func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation,
 			prepared[i].Size = published.Size
 			continue
 		}
-		data, ext, size, ok := readBoundedImageCandidate(source, &candidateBytes)
+		data, ext, _, ok := readBoundedImageCandidate(source, &candidateBytes)
 		if !ok {
 			prepared[i] = unpublishedImageArtifact(artifact)
 			continue
 		}
+		data, ok = canonicalizePublishedImage(ext, data)
+		if !ok {
+			prepared[i] = unpublishedImageArtifact(artifact)
+			continue
+		}
+		size := int64(len(data))
 
 		sum := sha256.Sum256(data)
 		fullHash := fmt.Sprintf("%x", sum[:])
 		hash := fullHash[:32]
-		target := filepath.Join(location.RepoDir, hash+ext)
+		target := filepath.Join(location.RepoDir, hash+".png")
 		rel, ok := artifactPathRelativeToRoot(target, workDir)
 		if !ok {
 			prepared[i] = unpublishedImageArtifact(artifact)
@@ -241,10 +248,6 @@ func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation,
 			continue
 		} else {
 			if publishedCount >= maxPublishedImagesPerRun || totalBytes+size > maxPublishedImagesTotalBytes {
-				prepared[i] = unpublishedImageArtifact(artifact)
-				continue
-			}
-			if _, ok := supportedImageExtension(ext, data); !ok {
 				prepared[i] = unpublishedImageArtifact(artifact)
 				continue
 			}
@@ -326,8 +329,8 @@ func readPublishableImage(filename string) ([]byte, string, bool) {
 	if !ok {
 		return nil, "", false
 	}
-	ext, ok = supportedImageExtension(ext, data)
-	return data, ext, ok
+	data, ok = canonicalizePublishedImage(ext, data)
+	return data, ".png", ok
 }
 
 func readBoundedImageCandidate(filename string, candidateBytes *int64) ([]byte, string, int64, bool) {
@@ -366,31 +369,46 @@ func readBoundedImageCandidate(filename string, candidateBytes *int64) ([]byte, 
 	return data, ext, info.Size(), true
 }
 
-func supportedImageExtension(ext string, data []byte) (string, bool) {
+func canonicalizePublishedImage(ext string, data []byte) ([]byte, bool) {
+	var decoded image.Image
+	var cfg image.Config
+	var err error
 	switch strings.ToLower(ext) {
 	case ".png":
-		return ".png", fullyDecodeImage(data, png.DecodeConfig, png.Decode)
+		cfg, err = png.DecodeConfig(bytes.NewReader(data))
+		if err == nil && validImageDimensions(cfg, 1) {
+			decoded, err = png.Decode(bytes.NewReader(data))
+		}
 	case ".jpg", ".jpeg":
-		return ".jpg", fullyDecodeImage(data, jpeg.DecodeConfig, jpeg.Decode)
+		cfg, err = jpeg.DecodeConfig(bytes.NewReader(data))
+		if err == nil && validImageDimensions(cfg, 1) {
+			decoded, err = jpeg.Decode(bytes.NewReader(data))
+		}
 	default:
-		return "", false
+		return nil, false
 	}
-}
-
-type imageConfigDecoder func(io.Reader) (image.Config, error)
-type imageDecoder func(io.Reader) (image.Image, error)
-
-func fullyDecodeImage(data []byte, decodeConfig imageConfigDecoder, decode imageDecoder) bool {
-	cfg, err := decodeConfig(bytes.NewReader(data))
-	if err != nil || !validImageDimensions(cfg, 1) {
-		return false
-	}
-	decoded, err := decode(bytes.NewReader(data))
-	if err != nil {
-		return false
+	if err != nil || decoded == nil {
+		return nil, false
 	}
 	bounds := decoded.Bounds()
-	return bounds.Dx() == cfg.Width && bounds.Dy() == cfg.Height
+	if bounds.Dx() != cfg.Width || bounds.Dy() != cfg.Height {
+		return nil, false
+	}
+	canonical := image.NewNRGBA(image.Rect(0, 0, cfg.Width, cfg.Height))
+	draw.Draw(canonical, canonical.Bounds(), decoded, bounds.Min, draw.Src)
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, canonical); err != nil || encoded.Len() <= 0 || encoded.Len() > maxPublishedImageBytes {
+		return nil, false
+	}
+	return encoded.Bytes(), true
+}
+
+func supportedImageExtension(ext string, data []byte) (string, bool) {
+	if strings.ToLower(ext) != ".png" {
+		return "", false
+	}
+	canonical, ok := canonicalizePublishedImage(ext, data)
+	return ".png", ok && bytes.Equal(canonical, data)
 }
 
 func validImageDimensions(cfg image.Config, frames int) bool {
@@ -409,23 +427,27 @@ func writePublishedImage(target string, data []byte) error {
 		if existing, err := os.ReadFile(target); err == nil && bytes.Equal(existing, data) {
 			return nil
 		}
+		return fmt.Errorf("published image target already exists with different content")
+	} else if !os.IsNotExist(err) {
+		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(target), ".image-*")
+	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err := tmp.Chmod(0o644); err != nil {
-		_ = tmp.Close()
+	complete := false
+	defer func() {
+		_ = file.Close()
+		if !complete {
+			_ = os.Remove(target)
+		}
+	}()
+	if _, err := file.Write(data); err != nil {
 		return err
 	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
+	if err := file.Close(); err != nil {
 		return err
 	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, target)
+	complete = true
+	return nil
 }

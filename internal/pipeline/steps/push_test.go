@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -268,6 +269,52 @@ func TestPushStep_DoesNotForceAddIgnoredEvidenceDirectory(t *testing.T) {
 	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("ignored evidence directory was staged: %q", status)
+	}
+}
+
+func TestPushStep_EvidenceStagingPreservesOverlappingSourceChanges(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sourceDir := filepath.Join(dir, "src", "feature")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(sourceDir, "handler.go")
+	if err := os.WriteFile(sourcePath, []byte("package feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "src/feature/handler.go")
+	gitCmd(t, dir, "commit", "-m", "add handler")
+	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+
+	if err := os.WriteFile(sourcePath, []byte("package feature\n\nconst fixed = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "src/feature/handler.go")
+
+	imageData := testPNGBytes()
+	imageHash := sha256.Sum256(imageData)
+	hash := fmt.Sprintf("%x", imageHash[:])
+	imageRel := filepath.ToSlash(filepath.Join("src", "feature", hash[:32]+".png"))
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(imageRel)), imageData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/example/widgets.git"
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "src"}
+	setTestEvidenceManifest(t, sctx, imageRel, hash, int64(len(imageData)))
+
+	if err := (&PushStep{}).stageInRepoEvidence(sctx); err != nil {
+		t.Fatal(err)
+	}
+	staged := strings.Fields(gitCmd(t, dir, "diff", "--cached", "--name-only"))
+	if !slices.Contains(staged, "src/feature/handler.go") {
+		t.Fatalf("overlapping source change was unstaged: %v", staged)
+	}
+	if !slices.Contains(staged, imageRel) {
+		t.Fatalf("manifest evidence was not staged: %v", staged)
 	}
 }
 

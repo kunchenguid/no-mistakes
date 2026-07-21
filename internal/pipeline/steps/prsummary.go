@@ -216,7 +216,19 @@ type githubRepository struct {
 
 func githubRepositoryForRemote(ctx context.Context, remote string) (githubRepository, bool) {
 	remote = strings.TrimSpace(remote)
-	if remote == "" || scm.DetectProviderContext(ctx, remote) != scm.ProviderGitHub {
+	if remote == "" {
+		return githubRepository{}, false
+	}
+	sshRemote := strings.HasPrefix(strings.ToLower(remote), "ssh://") || !strings.Contains(remote, "://")
+	inputHost := scm.ExtractHost(remote)
+	if sshRemote {
+		if !validSSHAlias(inputHost) {
+			return githubRepository{}, false
+		}
+	} else if !validGitHubHost(inputHost) {
+		return githubRepository{}, false
+	}
+	if scm.DetectProviderContext(ctx, remote) != scm.ProviderGitHub {
 		return githubRepository{}, false
 	}
 	canonicalHost := strings.ToLower(strings.TrimSpace(scm.ResolveHost(ctx, remote)))
@@ -232,7 +244,7 @@ func githubRepositoryForRemote(ctx context.Context, remote string) (githubReposi
 			return githubRepository{}, false
 		}
 		user, host, _ := strings.Cut(userHost, "@")
-		if user != "git" || !validGitHubHost(host) {
+		if user != "git" || !validSSHAlias(host) {
 			return githubRepository{}, false
 		}
 		owner, name, ok := cleanGitHubRepoParts(repoPath)
@@ -259,10 +271,13 @@ func githubRepositoryForRemote(ctx context.Context, remote string) (githubReposi
 		if _, hasPassword := parsed.User.Password(); hasPassword {
 			return githubRepository{}, false
 		}
+		if !validSSHAlias(parsed.Hostname()) {
+			return githubRepository{}, false
+		}
 	default:
 		return githubRepository{}, false
 	}
-	if !validGitHubHost(parsed.Hostname()) {
+	if strings.EqualFold(parsed.Scheme, "https") && !validGitHubHost(parsed.Hostname()) {
 		return githubRepository{}, false
 	}
 	if parsed.Port() != "" {
@@ -270,6 +285,18 @@ func githubRepositoryForRemote(ctx context.Context, remote string) (githubReposi
 	}
 	owner, name, ok := cleanGitHubRepoParts(strings.TrimPrefix(parsed.Path, "/"))
 	return githubRepository{host: canonicalHost, owner: owner, name: name}, ok
+}
+
+func validSSHAlias(host string) bool {
+	if host == "" || len(host) > 255 || host[0] == '-' {
+		return false
+	}
+	for _, r := range host {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '.' && r != '-' && r != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 func cleanGitHubRepoParts(repo string) (string, string, bool) {

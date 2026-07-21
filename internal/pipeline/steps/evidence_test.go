@@ -284,6 +284,89 @@ func TestPrepareTestEvidenceArtifacts_PublishFailureDegradesSafely(t *testing.T)
 	}
 }
 
+func TestPrepareTestEvidenceArtifacts_DoesNotOverwritePreexistingTarget(t *testing.T) {
+	workDir := t.TempDir()
+	location := resolveTestEvidenceLocation(workDir, "feature", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
+	if err := os.MkdirAll(location.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(location.RepoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sourceData := testPNGBytes()
+	source := filepath.Join(location.Dir, "checkout.png")
+	if err := os.WriteFile(source, sourceData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(sourceData)
+	target := filepath.Join(location.RepoDir, fmt.Sprintf("%x.png", sum[:16]))
+	existing := []byte("unrelated repository data")
+	if err := os.WriteFile(target, existing, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := prepareTestEvidenceArtifacts(workDir, location, []types.TestArtifact{{
+		Kind:  "screenshot",
+		Label: "Checkout",
+		Path:  source,
+	}})
+
+	if got[0].Path != "" || got[0].Content != unpublishedImageExplanation {
+		t.Fatalf("colliding target did not degrade safely: %#v", got[0])
+	}
+	after, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, existing) {
+		t.Fatalf("preexisting target was overwritten: got %q, want %q", after, existing)
+	}
+}
+
+func TestPrepareTestEvidenceArtifacts_CanonicalizesPixelsBeforePublishing(t *testing.T) {
+	workDir := t.TempDir()
+	location := resolveTestEvidenceLocation(workDir, "feature", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
+	if err := os.MkdirAll(location.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	base := testPNGBytes()
+	firstSource := filepath.Join(location.Dir, "first.png")
+	secondSource := filepath.Join(location.Dir, "second.png")
+	if err := os.WriteFile(firstSource, append(append([]byte{}, base...), []byte("hidden-first")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secondSource, append(append([]byte{}, base...), []byte("hidden-second")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := prepareTestEvidenceArtifacts(workDir, location, []types.TestArtifact{
+		{Kind: "screenshot", Label: "First", Path: firstSource},
+		{Kind: "screenshot", Label: "Second", Path: secondSource},
+	})
+
+	if got[0].Path == "" || got[1].Path != got[0].Path {
+		t.Fatalf("equivalent pixels were not deterministically deduplicated: %#v", got)
+	}
+	published, err := os.ReadFile(filepath.Join(workDir, filepath.FromSlash(got[0].Path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(published, []byte("hidden-first")) || bytes.Contains(published, []byte("hidden-second")) {
+		t.Fatal("published image retained trailing payload")
+	}
+	var canonical bytes.Buffer
+	decoded, err := png.Decode(bytes.NewReader(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(&canonical, decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(published, canonical.Bytes()) {
+		t.Fatal("published image was not deterministic canonical PNG")
+	}
+}
+
 func TestPrepareTestEvidenceArtifacts_FullyValidatesSupportedImages(t *testing.T) {
 	workDir := t.TempDir()
 	location := resolveTestEvidenceLocation(workDir, "feature", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
