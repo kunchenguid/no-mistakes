@@ -365,6 +365,61 @@ func TestPrepareTestEvidenceArtifacts_DeduplicatesBeforeApplyingCaps(t *testing.
 	}
 }
 
+func TestPrepareTestEvidenceArtifacts_BoundsCandidateReferences(t *testing.T) {
+	workDir := t.TempDir()
+	location := resolveTestEvidenceLocation(workDir, "feature", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
+	if err := os.MkdirAll(location.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(location.Dir, "duplicate.png")
+	if err := os.WriteFile(source, testPNGBytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	artifacts := make([]types.TestArtifact, 65)
+	for i := range artifacts {
+		artifacts[i] = types.TestArtifact{Kind: "image", Label: fmt.Sprintf("candidate-%d", i), Path: source}
+	}
+
+	got := prepareTestEvidenceArtifacts(workDir, location, artifacts)
+
+	if got[63].Path == "" {
+		t.Fatalf("candidate within reference budget was not published: %#v", got[63])
+	}
+	if got[64].Path != "" || got[64].Content != unpublishedImageExplanation {
+		t.Fatalf("candidate beyond reference budget did not degrade safely: %#v", got[64])
+	}
+}
+
+func TestPrepareTestEvidenceArtifacts_BoundsAggregateCandidateBytes(t *testing.T) {
+	workDir := t.TempDir()
+	location := resolveTestEvidenceLocation(workDir, "feature", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
+	if err := os.MkdirAll(location.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var artifacts []types.TestArtifact
+	for i := 0; i < int(maxEvidenceCandidateBytes/maxPublishedImageBytes); i++ {
+		filename := filepath.Join(location.Dir, fmt.Sprintf("invalid-%d.png", i))
+		if err := os.WriteFile(filename, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Truncate(filename, maxPublishedImageBytes); err != nil {
+			t.Fatal(err)
+		}
+		artifacts = append(artifacts, types.TestArtifact{Kind: "image", Label: fmt.Sprintf("invalid-%d", i), Path: filename})
+	}
+	valid := filepath.Join(location.Dir, "valid.png")
+	if err := os.WriteFile(valid, testPNGBytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	artifacts = append(artifacts, types.TestArtifact{Kind: "image", Label: "over-budget", Path: valid})
+
+	got := prepareTestEvidenceArtifacts(workDir, location, artifacts)
+
+	if artifact := got[len(got)-1]; artifact.Path != "" || artifact.Content != unpublishedImageExplanation {
+		t.Fatalf("candidate beyond aggregate stat budget did not degrade safely: %#v", artifact)
+	}
+}
+
 func coloredPNGBytes(value uint8) []byte {
 	var encoded bytes.Buffer
 	img := image.NewNRGBA(image.Rect(0, 0, 1, 1))

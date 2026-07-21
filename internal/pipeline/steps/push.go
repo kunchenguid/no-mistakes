@@ -169,9 +169,7 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 	if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
 		evidenceRemote = sctx.Repo.ForkURL
 	}
-	if _, ok := parseGitHubRepository(evidenceRemote); !ok {
-		return nil
-	}
+	_, githubRemote := githubRepositoryForRemote(ctx, evidenceRemote)
 
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
@@ -186,29 +184,53 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 		if err != nil {
 			continue
 		}
-		for _, artifact := range findings.Artifacts {
-			if !isImageArtifact(artifact.Kind, artifact.Path) || filepath.IsAbs(artifact.Path) {
+		manifestChanged := false
+		for i := range findings.Artifacts {
+			artifact := findings.Artifacts[i]
+			if !isImageArtifact(artifact.Kind, artifact.Path) || artifact.URL != "" || filepath.IsAbs(artifact.Path) {
 				continue
 			}
+			artifact.Published = false
 			target := filepath.Join(sctx.WorkDir, filepath.FromSlash(artifact.Path))
 			if _, ok := artifactPathRelativeToRoot(target, location.RepoDir); !ok {
+				findings.Artifacts[i] = unpublishedImageArtifact(artifact)
+				manifestChanged = true
 				continue
 			}
-			if !matchesPreparedEvidenceManifest(target, artifact) {
+			if !githubRemote || !matchesPreparedEvidenceManifest(target, artifact) {
+				findings.Artifacts[i] = unpublishedImageArtifact(artifact)
+				manifestChanged = true
 				continue
 			}
 			targetRel, ok := artifactPathRelativeToRoot(target, sctx.WorkDir)
 			if !ok {
+				findings.Artifacts[i] = unpublishedImageArtifact(artifact)
+				manifestChanged = true
 				continue
 			}
 			targetRel = filepath.ToSlash(targetRel)
 			if staged[targetRel] {
+				artifact.Published = true
+				findings.Artifacts[i] = artifact
+				manifestChanged = true
 				continue
 			}
 			if _, err := git.Run(ctx, sctx.WorkDir, "add", "-f", "--", targetRel); err != nil {
 				return fmt.Errorf("stage test evidence: %w", err)
 			}
 			staged[targetRel] = true
+			artifact.Published = true
+			findings.Artifacts[i] = artifact
+			manifestChanged = true
+		}
+		if manifestChanged {
+			raw, err := types.MarshalFindingsJSON(findings)
+			if err != nil {
+				return fmt.Errorf("encode test evidence manifest: %w", err)
+			}
+			if err := sctx.DB.SetStepFindings(result.ID, raw); err != nil {
+				return fmt.Errorf("update test evidence manifest: %w", err)
+			}
 		}
 	}
 	return nil

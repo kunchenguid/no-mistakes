@@ -2,6 +2,7 @@ package steps
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"image"
 	"image/color"
@@ -23,6 +24,49 @@ func testPNGBytes() []byte {
 		panic(err)
 	}
 	return encoded.Bytes()
+}
+
+func writePublishedImageFixture(t *testing.T, repoRoot string, dirs ...string) (types.TestArtifact, string) {
+	t.Helper()
+	data := testPNGBytes()
+	sum := sha256.Sum256(data)
+	name := fmt.Sprintf("%x.png", sum[:16])
+	parts := append(append([]string{}, dirs...), name)
+	rel := filepath.Join(parts...)
+	target := filepath.Join(repoRoot, rel)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return types.TestArtifact{
+		Kind:      "screenshot",
+		Label:     "Screenshot",
+		Path:      filepath.ToSlash(rel),
+		SHA256:    fmt.Sprintf("%x", sum[:]),
+		Size:      int64(len(data)),
+		Published: true,
+	}, target
+}
+
+func commitPRFixture(t *testing.T, repoRoot string) string {
+	t.Helper()
+	gitCmd(t, repoRoot, "init")
+	gitCmd(t, repoRoot, "config", "user.name", "test")
+	gitCmd(t, repoRoot, "config", "user.email", "test@example.com")
+	gitCmd(t, repoRoot, "add", "-A")
+	gitCmd(t, repoRoot, "commit", "-m", "evidence")
+	return gitCmd(t, repoRoot, "rev-parse", "HEAD")
+}
+
+func findingsWithArtifacts(t *testing.T, artifacts ...types.TestArtifact) string {
+	t.Helper()
+	raw, err := types.MarshalFindingsJSON(types.Findings{Artifacts: artifacts})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 func TestNoMistakesRequiredWorkflowChecksPipelineSignature(t *testing.T) {
@@ -451,13 +495,21 @@ func TestBuildTestingSummary_RejectsUnsafeArtifactTargets(t *testing.T) {
 
 func TestBuildTestingSummaryForPR_RendersEvidenceArtifactsCompactly(t *testing.T) {
 	repoRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(repoRoot, "artifacts"), 0o755); err != nil {
+	image, _ := writePublishedImageFixture(t, repoRoot, "artifacts")
+	image.Label = "Checkout screenshot"
+	findingsValue := types.Findings{
+		TestingSummary: "Evidence was collected.",
+		Artifacts: []types.TestArtifact{
+			image,
+			{Kind: "log", Label: "Server log", Path: "artifacts/server.log"},
+			{Kind: "log", Label: "Placement rectangle evidence", Content: `{"button":{"top":169,"left":248,"right":272,"bottom":193}}`},
+		},
+	}
+	findings, err := types.MarshalFindingsJSON(findingsValue)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repoRoot, "artifacts", "checkout.png"), testPNGBytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	findings := `{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":"artifacts/checkout.png"},{"kind":"log","label":"Server log","path":"artifacts/server.log"},{"kind":"log","label":"Placement rectangle evidence","content":"{\"button\":{\"top\":169,\"left\":248,\"right\":272,\"bottom\":193}}"}]}`
+	ref := commitPRFixture(t, repoRoot)
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
 	}
@@ -465,19 +517,20 @@ func TestBuildTestingSummaryForPR_RendersEvidenceArtifactsCompactly(t *testing.T
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
 	}
 
-	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", ref, repoRoot)
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
-	if !strings.Contains(md, "![Checkout screenshot](https://raw.githubusercontent.com/example/widgets/abc123/artifacts/checkout.png)") {
+	wantImage := "![Checkout screenshot](https://raw.githubusercontent.com/example/widgets/" + ref + "/" + image.Path + ")"
+	if !strings.Contains(md, wantImage) {
 		t.Fatalf("expected screenshot path to render inline from GitHub, got:\n%s", md)
 	}
-	if !strings.Contains(md, "[Server log](https://github.com/example/widgets/blob/abc123/artifacts/server.log)") {
+	if !strings.Contains(md, "[Server log](https://github.com/example/widgets/blob/"+ref+"/artifacts/server.log)") {
 		t.Fatalf("expected log path to render as GitHub blob URL, got:\n%s", md)
 	}
 	if !strings.Contains(md, "<details>\n<summary>Evidence: Placement rectangle evidence</summary>") || !strings.Contains(md, "```text\n{\"button\":{\"top\":169,\"left\":248,\"right\":272,\"bottom\":193}}\n```") {
 		t.Fatalf("expected content artifact to render in collapsible details, got:\n%s", md)
 	}
-	for _, broken := range []string{"](artifacts/checkout.png)", "](artifacts/server.log)"} {
+	for _, broken := range []string{"](" + image.Path + ")", "](artifacts/server.log)"} {
 		if strings.Contains(md, broken) {
 			t.Fatalf("did not expect broken or noisy artifact rendering %q, got:\n%s", broken, md)
 		}
@@ -485,6 +538,44 @@ func TestBuildTestingSummaryForPR_RendersEvidenceArtifactsCompactly(t *testing.T
 }
 
 func TestBuildTestingSummaryForPR_RendersForkHostedImageInline(t *testing.T) {
+	repoRoot := t.TempDir()
+	image, _ := writePublishedImageFixture(t, repoRoot, "evidence")
+	image.Label = "Checkout screenshot"
+	findings := findingsWithArtifacts(t, image)
+	ref := commitPRFixture(t, repoRoot)
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}},
+	}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "https://github.com/fork-owner/widgets.git", ref, repoRoot)
+
+	want := "![Checkout screenshot](https://raw.githubusercontent.com/fork-owner/widgets/" + ref + "/" + image.Path + ")"
+	if !strings.Contains(md, want) {
+		t.Fatalf("expected fork-hosted image markdown %q, got:\n%s", want, md)
+	}
+}
+
+func TestBuildTestingSummaryForPR_AcceptsPersistedRedactedGitHubRemote(t *testing.T) {
+	repoRoot := t.TempDir()
+	image, _ := writePublishedImageFixture(t, repoRoot, "evidence")
+	image.Label = "Checkout screenshot"
+	findings := findingsWithArtifacts(t, image)
+	ref := commitPRFixture(t, repoRoot)
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}}}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "https://redacted@github.com/example/widgets.git", ref, repoRoot)
+
+	want := "![Checkout screenshot](https://raw.githubusercontent.com/example/widgets/" + ref + "/" + image.Path + ")"
+	if !strings.Contains(md, want) {
+		t.Fatalf("expected redacted persisted remote to render %q, got:\n%s", want, md)
+	}
+}
+
+func TestBuildTestingSummaryForPR_RejectsUnverifiedNonGitHubHost(t *testing.T) {
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
 	repoRoot := t.TempDir()
 	imagePath := filepath.Join(repoRoot, "evidence", "checkout.png")
 	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
@@ -495,59 +586,55 @@ func TestBuildTestingSummaryForPR_RendersForkHostedImageInline(t *testing.T) {
 	}
 	findings := `{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":"evidence/checkout.png"}]}`
 	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
-	rounds := map[string][]*db.StepRound{
-		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}},
+	rounds := map[string][]*db.StepRound{"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}}}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "https://gitlab.example.com/example/widgets.git", "abc123", repoRoot)
+
+	if !strings.Contains(md, "Checkout screenshot was not published.") {
+		t.Fatalf("expected unverified host to degrade safely, got:\n%s", md)
 	}
-
-	md := BuildTestingSummaryForPR(steps, rounds, "https://github.com/fork-owner/widgets.git", "abc123", repoRoot)
-
-	want := "![Checkout screenshot](https://raw.githubusercontent.com/fork-owner/widgets/abc123/evidence/checkout.png)"
-	if !strings.Contains(md, want) {
-		t.Fatalf("expected fork-hosted image markdown %q, got:\n%s", want, md)
+	if strings.Contains(md, "gitlab.example.com/example/widgets/raw/") {
+		t.Fatalf("unverified host received a GitHub raw route:\n%s", md)
 	}
 }
 
 func TestBuildTestingSummaryForPR_EscapesEveryImageURLPathSegment(t *testing.T) {
 	repoRoot := t.TempDir()
-	rel := filepath.Join("evidence #?", "snow 雪", "100%.png")
-	imagePath := filepath.Join(repoRoot, rel)
-	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(imagePath, testPNGBytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	findings := fmt.Sprintf(`{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Escaped screenshot","path":%q}]}`, filepath.ToSlash(rel))
+	image, _ := writePublishedImageFixture(t, repoRoot, "evidence #?", "snow 雪", "100%")
+	image.Label = "Escaped screenshot"
+	findings := findingsWithArtifacts(t, image)
+	ref := commitPRFixture(t, repoRoot)
 	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}},
 	}
 
-	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", "abc123", repoRoot)
+	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", ref, repoRoot)
 
-	want := "https://raw.githubusercontent.com/example/widgets/abc123/evidence%20%23%3F/snow%20%E9%9B%AA/100%25.png"
+	want := "https://raw.githubusercontent.com/example/widgets/" + ref + "/evidence%20%23%3F/snow%20%E9%9B%AA/100%25/" + filepath.Base(image.Path)
 	if !strings.Contains(md, want) {
 		t.Fatalf("expected escaped immutable image URL %q, got:\n%s", want, md)
 	}
 }
 
 func TestBuildTestingSummaryForPR_RendersGitHubEnterpriseImageInline(t *testing.T) {
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	ghConfig := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ghConfig, "hosts.yml"), []byte("github.corp.example:\n  user: test\n  oauth_token: test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_CONFIG_DIR", ghConfig)
 	repoRoot := t.TempDir()
-	rel := filepath.Join("evidence #?", "snow 雪", "100%.png")
-	imagePath := filepath.Join(repoRoot, rel)
-	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(imagePath, testPNGBytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	findings := fmt.Sprintf(`{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Enterprise screenshot","path":%q}]}`, filepath.ToSlash(rel))
+	image, _ := writePublishedImageFixture(t, repoRoot, "evidence #?", "snow 雪", "100%")
+	image.Label = "Enterprise screenshot"
+	findings := findingsWithArtifacts(t, image)
+	ref := commitPRFixture(t, repoRoot)
 	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
 	rounds := map[string][]*db.StepRound{"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}}}
 
-	md := BuildTestingSummaryForPR(steps, rounds, "https://github.corp.example/team/widgets.git", "abc123", repoRoot)
+	md := BuildTestingSummaryForPR(steps, rounds, "https://github.corp.example/team/widgets.git", ref, repoRoot)
 
-	want := "https://github.corp.example/team/widgets/raw/abc123/evidence%20%23%3F/snow%20%E9%9B%AA/100%25.png"
+	want := "https://github.corp.example/team/widgets/raw/" + ref + "/evidence%20%23%3F/snow%20%E9%9B%AA/100%25/" + filepath.Base(image.Path)
 	if !strings.Contains(md, want) {
 		t.Fatalf("expected escaped immutable GHES image URL %q, got:\n%s", want, md)
 	}
@@ -568,7 +655,10 @@ func TestBuildTestingSummaryForPR_RejectsUntrustedGitHubRemoteLayouts(t *testing
 
 	for _, remote := range []string{
 		"http://github.corp.example/team/widgets.git",
+		"https://user@github.com/team/widgets.git",
 		"https://user:secret@github.corp.example/team/widgets.git",
+		"https://github.com:8443/team/widgets.git",
+		"https://evilgithub.com/team/widgets.git",
 		"https://github.corp.example/team/widgets/extra.git",
 		"https://github.corp.example/team/widgets.git?download=1",
 		"https://bad host/team/widgets.git",
@@ -604,6 +694,37 @@ func TestBuildTestingSummaryForPR_MissingRepoImageDegradesSafely(t *testing.T) {
 		if strings.Contains(md, unsafe) {
 			t.Fatalf("missing image exposed unsafe target %q:\n%s", unsafe, md)
 		}
+	}
+}
+
+func TestBuildTestingSummaryForPR_RequiresManifestBlobAtPushedCommit(t *testing.T) {
+	repoRoot := t.TempDir()
+	image, target := writePublishedImageFixture(t, repoRoot, "evidence")
+	image.Label = "Checkout screenshot"
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "tracked.txt"), []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref := commitPRFixture(t, repoRoot)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, testPNGBytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := findingsWithArtifacts(t, image)
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}}}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "https://github.com/example/widgets.git", ref, repoRoot)
+
+	if !strings.Contains(md, "Checkout screenshot was not published.") {
+		t.Fatalf("expected image missing from pushed commit to degrade safely, got:\n%s", md)
+	}
+	if strings.Contains(md, "raw.githubusercontent.com") {
+		t.Fatalf("missing pushed blob rendered an immutable URL:\n%s", md)
 	}
 }
 

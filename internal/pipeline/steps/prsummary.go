@@ -2,18 +2,25 @@ package steps
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"fmt"
 	"html"
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -35,6 +42,7 @@ type testingSummaryOptions struct {
 	summaryParagraph     bool
 	omitOutcome          bool
 	repoRoot             string
+	ref                  string
 }
 
 // BuildPipelineSummary produces a deterministic markdown section from step results and rounds.
@@ -181,7 +189,7 @@ func writeTestingSummary(b *strings.Builder, rendered string, opts testingSummar
 }
 
 func testingSummaryOptionsForGitHub(upstreamURL, ref string) testingSummaryOptions {
-	repo, ok := parseGitHubRepository(upstreamURL)
+	repo, ok := githubRepositoryForRemote(context.Background(), upstreamURL)
 	ref = strings.TrimSpace(ref)
 	if !ok || ref == "" || strings.ContainsAny(ref, "\n\r <>[]()\\") {
 		return testingSummaryOptions{}
@@ -196,6 +204,7 @@ func testingSummaryOptionsForGitHub(upstreamURL, ref string) testingSummaryOptio
 		githubBlobBase:       hostBase + "/blob/" + url.PathEscape(ref) + "/",
 		githubRawBase:        rawBase,
 		includeTestedDetails: false,
+		ref:                  ref,
 	}
 }
 
@@ -205,9 +214,16 @@ type githubRepository struct {
 	name  string
 }
 
-func parseGitHubRepository(remote string) (githubRepository, bool) {
+func githubRepositoryForRemote(ctx context.Context, remote string) (githubRepository, bool) {
 	remote = strings.TrimSpace(remote)
-	if remote == "" {
+	if remote == "" || scm.DetectProviderContext(ctx, remote) != scm.ProviderGitHub {
+		return githubRepository{}, false
+	}
+	canonicalHost := strings.ToLower(strings.TrimSpace(scm.ResolveHost(ctx, remote)))
+	if !validGitHubHost(canonicalHost) {
+		return githubRepository{}, false
+	}
+	if canonicalHost != "github.com" && !scm.GitHubHostConfigured(canonicalHost) {
 		return githubRepository{}, false
 	}
 	if !strings.Contains(remote, "://") {
@@ -220,7 +236,7 @@ func parseGitHubRepository(remote string) (githubRepository, bool) {
 			return githubRepository{}, false
 		}
 		owner, name, ok := cleanGitHubRepoParts(repoPath)
-		return githubRepository{host: strings.ToLower(host), owner: owner, name: name}, ok
+		return githubRepository{host: canonicalHost, owner: owner, name: name}, ok
 	}
 	parsed, err := url.Parse(remote)
 	if err != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
@@ -229,7 +245,12 @@ func parseGitHubRepository(remote string) (githubRepository, bool) {
 	switch strings.ToLower(parsed.Scheme) {
 	case "https":
 		if parsed.User != nil {
-			return githubRepository{}, false
+			if parsed.User.Username() != "redacted" {
+				return githubRepository{}, false
+			}
+			if _, hasPassword := parsed.User.Password(); hasPassword {
+				return githubRepository{}, false
+			}
 		}
 	case "ssh":
 		if parsed.User == nil || parsed.User.Username() != "git" {
@@ -245,12 +266,10 @@ func parseGitHubRepository(remote string) (githubRepository, bool) {
 		return githubRepository{}, false
 	}
 	if parsed.Port() != "" {
-		if _, err := net.LookupPort("tcp", parsed.Port()); err != nil {
-			return githubRepository{}, false
-		}
+		return githubRepository{}, false
 	}
 	owner, name, ok := cleanGitHubRepoParts(strings.TrimPrefix(parsed.Path, "/"))
-	return githubRepository{host: strings.ToLower(parsed.Host), owner: owner, name: name}, ok
+	return githubRepository{host: canonicalHost, owner: owner, name: name}, ok
 }
 
 func cleanGitHubRepoParts(repo string) (string, string, bool) {
@@ -481,7 +500,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 	target := artifact.URL
 	if target == "" {
 		if image {
-			if repoImageIsPublishable(artifact.Path, opts) {
+			if publishedRepoImageIsAvailable(artifact, opts) {
 				target = artifactTargetForPath(artifact, opts)
 			}
 		} else {
@@ -537,17 +556,50 @@ func renderUnpublishedCompactImage(label, _ string) string {
 	return fmt.Sprintf("- Evidence: %s was not published.\n", html.EscapeString(label))
 }
 
-func repoImageIsPublishable(target string, opts testingSummaryOptions) bool {
-	repoPath := repoRelativeArtifactPath(target, opts)
-	if repoPath == "" || opts.repoRoot == "" || opts.githubRawBase == "" {
+func publishedRepoImageIsAvailable(artifact types.TestArtifact, opts testingSummaryOptions) bool {
+	repoPath := repoRelativeArtifactPath(artifact.Path, opts)
+	if !artifact.Published || repoPath == "" || opts.repoRoot == "" || opts.githubRawBase == "" || opts.ref == "" {
 		return false
 	}
 	filename := filepath.Join(opts.repoRoot, filepath.FromSlash(repoPath))
-	if _, ok := artifactPathRelativeToRoot(filename, opts.repoRoot); !ok {
+	if _, ok := artifactPathRelativeToRoot(filename, opts.repoRoot); !ok || !matchesPreparedEvidenceManifest(filename, artifact) {
 		return false
 	}
-	_, _, ok := readPublishableImage(filename)
-	return ok
+	blob, ok := readPushedEvidenceBlob(opts.repoRoot, opts.ref, repoPath, artifact.Size)
+	if !ok {
+		return false
+	}
+	sum := sha256.Sum256(blob)
+	return fmt.Sprintf("%x", sum[:]) == artifact.SHA256
+}
+
+func readPushedEvidenceBlob(repoRoot, ref, repoPath string, expectedSize int64) ([]byte, bool) {
+	if expectedSize <= 0 || expectedSize > maxPublishedImageBytes {
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	oid, err := git.Run(ctx, repoRoot, "rev-parse", "--verify", ref+":"+filepath.ToSlash(repoPath))
+	if err != nil {
+		return nil, false
+	}
+	sizeText, err := git.Run(ctx, repoRoot, "cat-file", "-s", oid)
+	if err != nil {
+		return nil, false
+	}
+	size, err := strconv.ParseInt(sizeText, 10, 64)
+	if err != nil || size != expectedSize {
+		return nil, false
+	}
+	cmd := exec.CommandContext(ctx, "git", "cat-file", "blob", oid)
+	cmd.Dir = repoRoot
+	cmd.Env = git.NonInteractiveEnv(repoRoot)
+	shellenv.ConfigureShellCommand(cmd)
+	data, err := shellenv.OutputShellCommand(cmd)
+	if err != nil || int64(len(data)) != expectedSize {
+		return nil, false
+	}
+	return data, true
 }
 
 // embeddedArtifactText reads a file artifact and returns its text content,

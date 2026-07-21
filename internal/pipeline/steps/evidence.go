@@ -21,6 +21,8 @@ const (
 	maxPublishedImagesTotalBytes = 25 * 1024 * 1024
 	maxPublishedImagesPerRun     = 20
 	maxPublishedImagePixels      = 40 * 1024 * 1024
+	maxEvidenceImageCandidates   = 64
+	maxEvidenceCandidateBytes    = 4 * maxPublishedImagesTotalBytes
 	unpublishedImageExplanation  = "Image evidence was not published."
 )
 
@@ -168,6 +170,9 @@ func sanitizeEvidenceSegment(s string) string {
 // their path and degrade to a safe explanation in generated summaries.
 func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation, artifacts []types.TestArtifact) []types.TestArtifact {
 	prepared := append([]types.TestArtifact(nil), artifacts...)
+	for i := range prepared {
+		prepared[i].Published = false
+	}
 	if !location.StoreInRepo {
 		for i := range prepared {
 			if isImageArtifact(prepared[i].Kind, prepared[i].Path) && sanitizeArtifactURL(prepared[i].URL) == "" {
@@ -177,9 +182,11 @@ func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation,
 		return prepared
 	}
 
-	publishedBySource := make(map[string]string)
-	publishedByHash := make(map[string]string)
+	publishedBySource := make(map[string]types.TestArtifact)
+	publishedByHash := make(map[string]types.TestArtifact)
 	totalBytes := int64(0)
+	candidateBytes := int64(0)
+	candidateCount := 0
 	publishedCount := 0
 
 	for i := range prepared {
@@ -195,13 +202,20 @@ func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation,
 			continue
 		}
 
-		source := evidenceArtifactFilesystemPath(artifact.Path, workDir, location.Dir, location.RepoDir)
-		if rel, ok := publishedBySource[source]; source != "" && ok {
-			prepared[i].Path = rel
-			prepared[i].URL = ""
+		candidateCount++
+		if candidateCount > maxEvidenceImageCandidates {
+			prepared[i] = unpublishedImageArtifact(artifact)
 			continue
 		}
-		data, ext, ok := readPublishableImage(source)
+		source := evidenceArtifactFilesystemPath(artifact.Path, workDir, location.Dir, location.RepoDir)
+		if published, ok := publishedBySource[source]; source != "" && ok {
+			prepared[i].Path = published.Path
+			prepared[i].URL = ""
+			prepared[i].SHA256 = published.SHA256
+			prepared[i].Size = published.Size
+			continue
+		}
+		data, ext, size, ok := readBoundedImageCandidate(source, &candidateBytes)
 		if !ok {
 			prepared[i] = unpublishedImageArtifact(artifact)
 			continue
@@ -218,10 +232,19 @@ func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation,
 		}
 		rel = filepath.ToSlash(rel)
 
-		if existing, ok := publishedByHash[hash]; ok {
-			target = existing
+		if existing, ok := publishedByHash[fullHash]; ok {
+			prepared[i].Path = existing.Path
+			prepared[i].URL = ""
+			prepared[i].SHA256 = existing.SHA256
+			prepared[i].Size = existing.Size
+			publishedBySource[source] = prepared[i]
+			continue
 		} else {
-			if publishedCount >= maxPublishedImagesPerRun || totalBytes+int64(len(data)) > maxPublishedImagesTotalBytes {
+			if publishedCount >= maxPublishedImagesPerRun || totalBytes+size > maxPublishedImagesTotalBytes {
+				prepared[i] = unpublishedImageArtifact(artifact)
+				continue
+			}
+			if _, ok := supportedImageExtension(ext, data); !ok {
 				prepared[i] = unpublishedImageArtifact(artifact)
 				continue
 			}
@@ -238,15 +261,15 @@ func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation,
 				prepared[i] = unpublishedImageArtifact(artifact)
 				continue
 			}
-			publishedByHash[hash] = target
 			publishedCount++
-			totalBytes += int64(len(data))
+			totalBytes += size
 		}
-		publishedBySource[source] = rel
 		prepared[i].Path = rel
 		prepared[i].URL = ""
 		prepared[i].SHA256 = fullHash
-		prepared[i].Size = int64(len(data))
+		prepared[i].Size = size
+		publishedBySource[source] = prepared[i]
+		publishedByHash[fullHash] = prepared[i]
 	}
 
 	return prepared
@@ -262,6 +285,7 @@ func unpublishedImageArtifact(artifact types.TestArtifact) types.TestArtifact {
 	artifact.Content = unpublishedImageExplanation
 	artifact.SHA256 = ""
 	artifact.Size = 0
+	artifact.Published = false
 	return artifact
 }
 
@@ -297,19 +321,49 @@ func evidenceArtifactFilesystemPath(target, workDir string, evidenceRoots ...str
 }
 
 func readPublishableImage(filename string) ([]byte, string, bool) {
-	if filename == "" {
+	candidateBytes := int64(0)
+	data, ext, _, ok := readBoundedImageCandidate(filename, &candidateBytes)
+	if !ok {
 		return nil, "", false
 	}
-	info, err := os.Stat(filename)
-	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxPublishedImageBytes {
-		return nil, "", false
-	}
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, "", false
-	}
-	ext, ok := supportedImageExtension(filepath.Ext(filename), data)
+	ext, ok = supportedImageExtension(ext, data)
 	return data, ext, ok
+}
+
+func readBoundedImageCandidate(filename string, candidateBytes *int64) ([]byte, string, int64, bool) {
+	if filename == "" {
+		return nil, "", 0, false
+	}
+	info, err := os.Lstat(filename)
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxPublishedImageBytes {
+		return nil, "", 0, false
+	}
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".png":
+	case ".jpg", ".jpeg":
+		ext = ".jpg"
+	default:
+		return nil, "", 0, false
+	}
+	if candidateBytes == nil || *candidateBytes+info.Size() > maxEvidenceCandidateBytes {
+		return nil, "", 0, false
+	}
+	*candidateBytes += info.Size()
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, "", 0, false
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || openedInfo.Size() != info.Size() || !os.SameFile(info, openedInfo) {
+		return nil, "", 0, false
+	}
+	data, err := io.ReadAll(io.LimitReader(file, info.Size()+1))
+	if err != nil || int64(len(data)) != info.Size() {
+		return nil, "", 0, false
+	}
+	return data, ext, info.Size(), true
 }
 
 func supportedImageExtension(ext string, data []byte) (string, bool) {

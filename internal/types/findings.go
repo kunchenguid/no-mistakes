@@ -56,13 +56,14 @@ type Finding struct {
 
 // TestArtifact describes evidence produced by the test step for human review.
 type TestArtifact struct {
-	Kind    string `json:"kind,omitempty"`
-	Label   string `json:"label"`
-	Path    string `json:"path,omitempty"`
-	URL     string `json:"url,omitempty"`
-	Content string `json:"content,omitempty"`
-	SHA256  string `json:"sha256,omitempty"`
-	Size    int64  `json:"size,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Label     string `json:"label"`
+	Path      string `json:"path,omitempty"`
+	URL       string `json:"url,omitempty"`
+	Content   string `json:"content,omitempty"`
+	SHA256    string `json:"sha256,omitempty"`
+	Size      int64  `json:"size,omitempty"`
+	Published bool   `json:"published,omitempty"`
 }
 
 type findingWire struct {

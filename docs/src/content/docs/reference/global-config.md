@@ -385,7 +385,8 @@ Branch slashes become nested directories, unsafe branch characters are replaced,
 If `dir` is absolute, escapes the worktree, points into `.git`, or crosses a symlink, image publication is disabled for that run while source evidence remains temporary.
 PNG and JPEG images are fully decoded, limited to 40 Mi decoded pixels and 10 MiB each, capped at 25 MiB and 20 unique images per run, and renamed using a content hash so duplicate evidence and retries are idempotent.
 Immediately before staging, the push step rejects symlinks and verifies each image's size, SHA-256 digest, and content-addressed filename against the recorded manifest.
-Images are published only when a credential-free HTTPS or Git SSH GitHub remote proves an immutable github.com or GitHub Enterprise raw-at-commit URL.
+Images are published only when a credential-free HTTPS or Git SSH remote resolves to github.com or a GitHub Enterprise host configured in `gh`.
+PR rendering additionally requires the staged manifest hash to match the exact image blob at the pushed commit.
 Publication never removes source evidence or unrelated files already present in the configured directory.
 Missing, unsupported, oversized, or unpublished images produce a concise explanation in the PR instead of a local path.
 Set `store_in_repo: false` to disable image publication; local paths are never included in generated PR content.

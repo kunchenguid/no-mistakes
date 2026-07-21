@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -636,14 +637,20 @@ func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
 func TestPRStep_PublishesForkHostedImageEvidenceInline(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	imageRel := filepath.ToSlash(filepath.Join(".no-mistakes", "evidence", "feature", "checkout.png"))
+	imageData := testPNGBytes()
+	imageHash := sha256.Sum256(imageData)
+	imageHashText := fmt.Sprintf("%x", imageHash[:])
+	imageRel := filepath.ToSlash(filepath.Join(".no-mistakes", "evidence", "feature", imageHashText[:32]+".png"))
 	imagePath := filepath.Join(dir, filepath.FromSlash(imageRel))
 	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(imagePath, testPNGBytes(), 0o644); err != nil {
+	if err := os.WriteFile(imagePath, imageData, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	gitCmd(t, dir, "add", "-f", "--", imageRel)
+	gitCmd(t, dir, "commit", "-m", "publish evidence")
+	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
 
 	env, logFile := fakeGH(t, "")
 	ag := &mockAgent{
@@ -657,7 +664,7 @@ func TestPRStep_PublishesForkHostedImageEvidenceInline(t *testing.T) {
 	sctx.Repo.UpstreamURL = "https://github.com/parent-owner/widgets.git"
 	sctx.Repo.ForkURL = "https://github.com/fork-owner/widgets.git"
 
-	testFindings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Verified checkout visually.","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":%q}]}`, imageRel)
+	testFindings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Verified checkout visually.","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":%q,"sha256":%q,"size":%d,"published":true}]}`, imageRel, imageHashText, len(imageData))
 	testStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
 	if err != nil {
 		t.Fatal(err)

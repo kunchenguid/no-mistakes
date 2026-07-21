@@ -298,6 +298,20 @@ func TestPushStep_RejectsDriftedPreparedEvidence(t *testing.T) {
 	if staged := gitCmd(t, dir, "diff", "--cached", "--name-only"); staged != "" {
 		t.Fatalf("drifted evidence was staged: %q", staged)
 	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := types.ParseFindingsJSON(*steps[len(steps)-1].FindingsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact := manifest.Artifacts[0]; artifact.Path != "" || artifact.Content != unpublishedImageExplanation {
+		t.Fatalf("drifted evidence remained publishable in manifest: %#v", artifact)
+	}
+	if strings.Contains(*steps[len(steps)-1].FindingsJSON, `"published":true`) {
+		t.Fatalf("drifted evidence remained marked published: %s", *steps[len(steps)-1].FindingsJSON)
+	}
 }
 
 func TestPushStep_RejectsSymlinkedPreparedEvidence(t *testing.T) {
@@ -330,6 +344,46 @@ func TestPushStep_RejectsSymlinkedPreparedEvidence(t *testing.T) {
 	}
 	if staged := gitCmd(t, dir, "diff", "--cached", "--name-only"); staged != "" {
 		t.Fatalf("symlinked evidence was staged: %q", staged)
+	}
+}
+
+func TestPushStep_MarksVerifiedPreparedEvidencePublished(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	data := testPNGBytes()
+	sum := sha256.Sum256(data)
+	hash := fmt.Sprintf("%x", sum[:])
+	rel := filepath.ToSlash(filepath.Join("evidence", "feature", hash[:32]+".png"))
+	target := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/example/widgets.git"
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+	setTestEvidenceManifest(t, sctx, rel, hash, int64(len(data)))
+
+	if err := (&PushStep{}).stageInRepoEvidence(sctx); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := types.ParseFindingsJSON(*steps[len(steps)-1].FindingsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact := manifest.Artifacts[0]; artifact.Path != rel {
+		t.Fatalf("verified evidence was not marked published: %#v", artifact)
+	}
+	if !strings.Contains(*steps[len(steps)-1].FindingsJSON, `"published":true`) {
+		t.Fatalf("verified evidence manifest was not marked published: %s", *steps[len(steps)-1].FindingsJSON)
 	}
 }
 
