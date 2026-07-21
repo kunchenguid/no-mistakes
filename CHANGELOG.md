@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.40.2](https://github.com/kunchenguid/no-mistakes/compare/v1.40.1...v1.40.2) (2026-07-21)
+
+
+### Bug Fixes
+
+* handle oversized Claude repair prompts ([#526](https://github.com/kunchenguid/no-mistakes/issues/526)) ([857885f](https://github.com/kunchenguid/no-mistakes/commit/857885f7bcbbaf862eed3fe67acae5abef52ec7c))
+* **scm/github:** target known PR explicitly from bare gate repo ([#522](https://github.com/kunchenguid/no-mistakes/issues/522)) ([4ba40ae](https://github.com/kunchenguid/no-mistakes/commit/4ba40aee93e80f7e9ee82f510c12eb5d9e26f3ea))
+* **scm:** resolve SSH host aliases for provider routing ([#520](https://github.com/kunchenguid/no-mistakes/issues/520)) ([18456e4](https://github.com/kunchenguid/no-mistakes/commit/18456e4ef6b59a649ed6c537ec670b397225b92c))
+
 ## [1.40.1](https://github.com/kunchenguid/no-mistakes/compare/v1.40.0...v1.40.1) (2026-07-20)
 
 
