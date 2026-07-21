@@ -85,7 +85,8 @@ func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkUR
 		// give an actionable message instead of leaking git plumbing. Only
 		// substitute it when origin is genuinely absent; any other git failure
 		// keeps its original error.
-		if !git.HasRemote(ctx, absRoot, "origin") {
+		hasOrigin, listErr := git.HasRemote(ctx, absRoot, "origin")
+		if listErr == nil && !hasOrigin {
 			return nil, false, fmt.Errorf(
 				"no 'origin' remote in %s\n\n"+
 					"no-mistakes pushes your branch and opens a pull request, so it needs a remote to push to.\n"+

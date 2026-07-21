@@ -116,19 +116,18 @@ func GetConfiguredRemoteURL(ctx context.Context, dir, name string) (string, erro
 }
 
 // HasRemote reports whether a remote named name is configured in the repo at
-// dir. It lets callers distinguish a genuinely missing remote (an actionable
-// user error) from other git failures, without matching on git error text.
-func HasRemote(ctx context.Context, dir, name string) bool {
+// dir, returning an error if the remote list cannot be read.
+func HasRemote(ctx context.Context, dir, name string) (bool, error) {
 	out, err := Run(ctx, dir, "remote")
 	if err != nil {
-		return false
+		return false, err
 	}
 	for _, line := range strings.Split(out, "\n") {
 		if strings.TrimSpace(line) == name {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // FindGitRoot walks up from path to find the git repository root.
