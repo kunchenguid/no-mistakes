@@ -1,7 +1,10 @@
 package db
 
 import (
+	"bytes"
 	"database/sql"
+	"errors"
+	"log"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,8 +29,36 @@ func TestDecodeRepoGitHubContextRejectsTrailingJSONValue(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected trailing persisted JSON value to be rejected")
 	}
+	if !errors.Is(err, repoexec.ErrInvalidGitHubContextJSON) {
+		t.Fatalf("error = %v, want invalid context JSON", err)
+	}
 	if strings.Contains(err.Error(), "credential-sentinel") {
 		t.Fatalf("error leaked trailing credential value: %v", err)
+	}
+}
+
+func TestDecodeRepoGitHubContextDoesNotExposeUnknownFieldInLogs(t *testing.T) {
+	repo := &Repo{}
+	encoded := sql.NullString{Valid: true, String: `{
+  "version": 1,
+  "gh_path": "/usr/bin/gh",
+  "git_path": "/usr/bin/git",
+  "gh_config_dir": "/tmp/gh-a",
+  "host": "github.com",
+  "expected_login": "account-a",
+  "git_protocol": "https",
+  "credential_helper": "gh",
+  "commit_author": {"name": "A", "email": "a@example.test"},
+  "credential-sentinel": true
+}`}
+	err := decodeRepoGitHubContext(repo, encoded)
+	if !errors.Is(err, repoexec.ErrInvalidGitHubContextJSON) {
+		t.Fatalf("error = %v, want invalid context JSON", err)
+	}
+	var logged bytes.Buffer
+	log.New(&logged, "", 0).Printf("database load failed: %v", err)
+	if strings.Contains(logged.String(), "credential-sentinel") {
+		t.Fatalf("log leaked credential value: %s", logged.String())
 	}
 }
 

@@ -1,8 +1,11 @@
 package repoexec
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -57,7 +60,7 @@ func TestLoadGitHubContextRejectsSecretAndUnknownFields(t *testing.T) {
   "git_protocol": "https",
   "credential_helper": "gh",
   "commit_author": {"name": "A", "email": "a@example.test"},
-  "token": "credential-sentinel"
+	"credential-sentinel": true
 }`
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
@@ -66,8 +69,16 @@ func TestLoadGitHubContextRejectsSecretAndUnknownFields(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unknown credential field to be rejected")
 	}
+	if !errors.Is(err, ErrInvalidGitHubContextJSON) {
+		t.Fatalf("error = %v, want invalid context JSON", err)
+	}
 	if strings.Contains(err.Error(), "credential-sentinel") {
 		t.Fatalf("error leaked credential value: %v", err)
+	}
+	var logged bytes.Buffer
+	log.New(&logged, "", 0).Printf("context load failed: %v", err)
+	if strings.Contains(logged.String(), "credential-sentinel") {
+		t.Fatalf("log leaked credential value: %s", logged.String())
 	}
 }
 
@@ -90,6 +101,9 @@ func TestLoadGitHubContextRejectsTrailingJSONValue(t *testing.T) {
 	_, err := LoadGitHubContext(path)
 	if err == nil {
 		t.Fatal("expected trailing JSON value to be rejected")
+	}
+	if !errors.Is(err, ErrInvalidGitHubContextJSON) {
+		t.Fatalf("error = %v, want invalid context JSON", err)
 	}
 	if strings.Contains(err.Error(), "credential-sentinel") {
 		t.Fatalf("error leaked trailing credential value: %v", err)

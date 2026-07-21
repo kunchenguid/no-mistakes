@@ -27,6 +27,8 @@ const (
 	maxContextFileBytes  = 64 * 1024
 )
 
+var ErrInvalidGitHubContextJSON = errors.New("invalid GitHub context JSON")
+
 // CommitAuthor is the identity used for commits created by the pipeline.
 type CommitAuthor struct {
 	Name  string `json:"name"`
@@ -117,14 +119,11 @@ func DecodeGitHubContext(data []byte) (*GitHubContext, error) {
 	dec.DisallowUnknownFields()
 	var selected GitHubContext
 	if err := dec.Decode(&selected); err != nil {
-		return nil, err
+		return nil, ErrInvalidGitHubContextJSON
 	}
 	var extra any
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return nil, errors.New("multiple JSON values")
-		}
-		return nil, err
+		return nil, ErrInvalidGitHubContextJSON
 	}
 	return &selected, nil
 }
