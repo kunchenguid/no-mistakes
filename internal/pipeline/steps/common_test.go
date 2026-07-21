@@ -602,6 +602,43 @@ func TestRunStepShellCommandPreservesExactRepositoryEnvironment(t *testing.T) {
 	}
 }
 
+func TestRunStepShellCommandPreservesToolsAndPinsSelectedGitHubBinaries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses POSIX shell scripts")
+	}
+	selectedBin := t.TempDir()
+	ambientBin := t.TempDir()
+	writeExecutable := func(path, output string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '%s' "+output+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeExecutable(filepath.Join(selectedBin, "git"), "selected-git")
+	writeExecutable(filepath.Join(selectedBin, "gh"), "selected-gh")
+	writeExecutable(filepath.Join(ambientBin, "go"), "ambient-go")
+	writeExecutable(filepath.Join(ambientBin, "git"), "hostile-git")
+	writeExecutable(filepath.Join(ambientBin, "gh"), "hostile-gh")
+
+	selected := &repoexec.GitHubContext{
+		GHPath:  filepath.Join(selectedBin, "gh"),
+		GitPath: filepath.Join(selectedBin, "git"),
+	}
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Repo:    &db.Repo{GitHubContext: selected},
+		Env:     selected.Environment([]string{"PATH=" + ambientBin}, t.TempDir()),
+	}
+	out, code, err := runStepShellCommand(sctx, `printf '%s\n' "$(go)" "$(git)" "$(gh)"`)
+	if err != nil || code != 0 {
+		t.Fatalf("run configured command: output=%q code=%d err=%v", out, code, err)
+	}
+	if want := "ambient-go\nselected-git\nselected-gh\n"; out != want {
+		t.Fatalf("configured command output = %q, want %q", out, want)
+	}
+}
+
 func TestCommitAgentFixes_NoChanges(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
