@@ -357,6 +357,69 @@ func TestPushStep_AgentStagingPreservesUntrackedFilesInOverlappingEvidenceDirect
 	}
 }
 
+func TestPushStep_AgentStagingReservesManagedSymlinkDestination(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	data := testPNGBytes()
+	sum := sha256.Sum256(data)
+	hash := fmt.Sprintf("%x", sum[:])
+	rel := filepath.ToSlash(filepath.Join("evidence", "feature", hash[:32]+".png"))
+	target := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(dir, "unrelated.png")
+	if err := os.WriteFile(source, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(source, target); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+	setTestEvidenceManifest(t, sctx, rel, hash, int64(len(data)))
+
+	if err := (&PushStep{}).stageAgentChanges(sctx); err != nil {
+		t.Fatal(err)
+	}
+	staged := strings.Split(gitCmd(t, dir, "diff", "--cached", "--name-only", "-z"), "\x00")
+	if slices.Contains(staged, rel) {
+		t.Fatalf("managed symlink destination was staged as source: %v", staged)
+	}
+}
+
+func TestPushStep_AgentStagingReservesManagedDirectorySubtree(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	data := testPNGBytes()
+	sum := sha256.Sum256(data)
+	hash := fmt.Sprintf("%x", sum[:])
+	rel := filepath.ToSlash(filepath.Join("evidence", "feature", hash[:32]+".png"))
+	target := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	descendantRel := filepath.ToSlash(filepath.Join(rel, "payload.txt"))
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(descendantRel)), []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+	setTestEvidenceManifest(t, sctx, rel, hash, int64(len(data)))
+
+	if err := (&PushStep{}).stageAgentChanges(sctx); err != nil {
+		t.Fatal(err)
+	}
+	staged := strings.Split(gitCmd(t, dir, "diff", "--cached", "--name-only", "-z"), "\x00")
+	if slices.Contains(staged, descendantRel) {
+		t.Fatalf("managed directory descendant was staged as source: %v", staged)
+	}
+}
+
 func TestPushStep_FinalStagingExcludesEvidenceManagedByPriorRounds(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

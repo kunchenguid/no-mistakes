@@ -171,7 +171,7 @@ func (s *PushStep) stageAgentChanges(sctx *pipeline.StepContext) error {
 			continue
 		}
 		rel := string(rawRel)
-		if managedPaths[filepath.ToSlash(rel)] {
+		if isManagedEvidencePath(filepath.ToSlash(rel), managedPaths) {
 			continue
 		}
 		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "--", rel); err != nil {
@@ -212,23 +212,75 @@ func addManagedEvidenceDestinationPaths(managed map[string]bool, workDir, repoDi
 		return
 	}
 	for _, artifact := range findings.Artifacts {
-		if rel, ok := preparedEvidenceDestinationPath(workDir, repoDir, artifact); ok {
+		if rel, ok := reservedEvidenceDestinationPath(workDir, repoDir, artifact); ok {
 			managed[rel] = true
 		}
 	}
 }
 
-func preparedEvidenceDestinationPath(workDir, repoDir string, artifact types.TestArtifact) (string, bool) {
+func isManagedEvidencePath(rel string, managed map[string]bool) bool {
+	if managed[rel] {
+		return true
+	}
+	for destination := range managed {
+		if strings.HasPrefix(rel, destination+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func reservedEvidenceDestinationPath(workDir, repoDir string, artifact types.TestArtifact) (string, bool) {
 	if !isImageArtifact(artifact.Kind, artifact.Path) || artifact.URL != "" || filepath.IsAbs(artifact.Path) ||
 		len(artifact.SHA256) != sha256.Size*2 || artifact.SHA256 != strings.ToLower(artifact.SHA256) {
 		return "", false
 	}
-	rel, ok := evidenceDestinationPath(workDir, repoDir, artifact)
+	workAbs, err := filepath.Abs(workDir)
+	if err != nil {
+		return "", false
+	}
+	repoAbs, err := filepath.Abs(repoDir)
+	if err != nil {
+		return "", false
+	}
+	targetAbs, err := filepath.Abs(filepath.Join(workDir, filepath.FromSlash(artifact.Path)))
+	if err != nil {
+		return "", false
+	}
+	workRel, ok := lexicalRelativePath(workAbs, targetAbs)
+	if !ok {
+		return "", false
+	}
+	if _, ok := lexicalRelativePath(repoAbs, targetAbs); !ok {
+		return "", false
+	}
+	if filepath.Base(targetAbs) != artifact.SHA256[:32]+".png" {
+		return "", false
+	}
+	return filepath.ToSlash(workRel), true
+}
+
+func lexicalRelativePath(root, target string) (string, bool) {
+	if !sameVolume(root, target) {
+		return "", false
+	}
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(target))
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
+}
+
+func preparedEvidenceDestinationPath(workDir, repoDir string, artifact types.TestArtifact) (string, bool) {
+	rel, ok := reservedEvidenceDestinationPath(workDir, repoDir, artifact)
 	if !ok {
 		return "", false
 	}
 	target := filepath.Join(workDir, filepath.FromSlash(rel))
-	if filepath.Base(target) != artifact.SHA256[:32]+".png" {
+	if _, ok := artifactPathRelativeToRoot(target, repoDir); !ok {
+		return "", false
+	}
+	if _, ok := artifactPathRelativeToRoot(target, workDir); !ok {
 		return "", false
 	}
 	return rel, true

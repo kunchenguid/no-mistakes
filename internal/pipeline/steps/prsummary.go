@@ -196,13 +196,10 @@ func testingSummaryOptionsForGitHub(upstreamURL, ref string) testingSummaryOptio
 	}
 	repoPath := repo.owner + "/" + repo.name
 	hostBase := "https://" + repo.host + "/" + repoPath
-	rawBase := hostBase + "/raw/" + url.PathEscape(ref) + "/"
-	if strings.EqualFold(repo.host, "github.com") {
-		rawBase = "https://raw.githubusercontent.com/" + repoPath + "/" + url.PathEscape(ref) + "/"
-	}
+	blobBase := hostBase + "/blob/" + url.PathEscape(ref) + "/"
 	return testingSummaryOptions{
-		githubBlobBase:       hostBase + "/blob/" + url.PathEscape(ref) + "/",
-		githubRawBase:        rawBase,
+		githubBlobBase:       blobBase,
+		githubRawBase:        blobBase,
 		includeTestedDetails: false,
 		ref:                  ref,
 	}
@@ -219,6 +216,7 @@ func githubRepositoryForRemote(ctx context.Context, remote string) (githubReposi
 	if remote == "" {
 		return githubRepository{}, false
 	}
+	explicitGitHubSSH443 := isExplicitGitHubSSH443Remote(remote)
 	sshRemote := strings.HasPrefix(strings.ToLower(remote), "ssh://") || !strings.Contains(remote, "://")
 	inputHost := scm.ExtractHost(remote)
 	if sshRemote {
@@ -233,6 +231,9 @@ func githubRepositoryForRemote(ctx context.Context, remote string) (githubReposi
 	}
 	canonicalHost := strings.ToLower(strings.TrimSpace(scm.ResolveHost(ctx, remote)))
 	logicalHost := strings.ToLower(strings.TrimSpace(inputHost))
+	if explicitGitHubSSH443 {
+		logicalHost = "github.com"
+	}
 	if logicalHost == "github.com" || scm.GitHubHostConfigured(logicalHost) {
 		canonicalHost = logicalHost
 	}
@@ -284,11 +285,22 @@ func githubRepositoryForRemote(ctx context.Context, remote string) (githubReposi
 	if strings.EqualFold(parsed.Scheme, "https") && !validGitHubHost(parsed.Hostname()) {
 		return githubRepository{}, false
 	}
-	if parsed.Port() != "" {
+	if parsed.Port() != "" && !explicitGitHubSSH443 {
 		return githubRepository{}, false
 	}
 	owner, name, ok := cleanGitHubRepoParts(strings.TrimPrefix(parsed.Path, "/"))
 	return githubRepository{host: canonicalHost, owner: owner, name: name}, ok
+}
+
+func isExplicitGitHubSSH443Remote(remote string) bool {
+	parsed, err := url.Parse(remote)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "ssh") ||
+		!strings.EqualFold(parsed.Hostname(), "ssh.github.com") || parsed.Port() != "443" ||
+		parsed.User == nil || parsed.User.Username() != "git" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	_, hasPassword := parsed.User.Password()
+	return !hasPassword
 }
 
 func validSSHAlias(host string) bool {
@@ -758,7 +770,7 @@ func artifactTargetForPath(artifact types.TestArtifact, opts testingSummaryOptio
 	}
 	escapedPath := escapeURLPathSegments(repoPath)
 	if isImageArtifact(artifact.Kind, repoPath) || isVideoArtifact(artifact.Kind, repoPath) {
-		return opts.githubRawBase + escapedPath
+		return opts.githubRawBase + escapedPath + "?raw=1"
 	}
 	return opts.githubBlobBase + escapedPath
 }

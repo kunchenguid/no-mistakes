@@ -684,7 +684,7 @@ func TestPRStep_PublishesForkHostedImageEvidenceInline(t *testing.T) {
 	}
 
 	body := readFakeGHBodyArg(t, logFile)
-	want := fmt.Sprintf("![Checkout screenshot](https://raw.githubusercontent.com/fork-owner/widgets/%s/%s)", headSHA, imageRel)
+	want := fmt.Sprintf("![Checkout screenshot](https://github.com/fork-owner/widgets/blob/%s/%s?raw=1)", headSHA, imageRel)
 	if !strings.Contains(body, want) {
 		t.Fatalf("expected fork-hosted inline image %q, got:\n%s", want, body)
 	}

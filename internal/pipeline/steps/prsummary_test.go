@@ -521,7 +521,7 @@ func TestBuildTestingSummaryForPR_RendersEvidenceArtifactsCompactly(t *testing.T
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", ref, repoRoot)
 	t.Logf("rendered PR testing markdown:\n%s", md)
 
-	wantImage := "![Checkout screenshot](https://raw.githubusercontent.com/example/widgets/" + ref + "/" + image.Path + ")"
+	wantImage := "![Checkout screenshot](https://github.com/example/widgets/blob/" + ref + "/" + image.Path + "?raw=1)"
 	if !strings.Contains(md, wantImage) {
 		t.Fatalf("expected screenshot path to render inline from GitHub, got:\n%s", md)
 	}
@@ -551,9 +551,26 @@ func TestBuildTestingSummaryForPR_RendersForkHostedImageInline(t *testing.T) {
 
 	md := BuildTestingSummaryForPR(steps, rounds, "https://github.com/fork-owner/widgets.git", ref, repoRoot)
 
-	want := "![Checkout screenshot](https://raw.githubusercontent.com/fork-owner/widgets/" + ref + "/" + image.Path + ")"
+	want := "![Checkout screenshot](https://github.com/fork-owner/widgets/blob/" + ref + "/" + image.Path + "?raw=1)"
 	if !strings.Contains(md, want) {
 		t.Fatalf("expected fork-hosted image markdown %q, got:\n%s", want, md)
+	}
+}
+
+func TestBuildTestingSummaryForPR_UsesAuthenticatedImmutableImageURL(t *testing.T) {
+	repoRoot := t.TempDir()
+	image, _ := writePublishedImageFixture(t, repoRoot, "evidence")
+	image.Label = "Private screenshot"
+	findings := findingsWithArtifacts(t, image)
+	ref := commitPRFixture(t, repoRoot)
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}}}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "https://github.com/private-owner/widgets.git", ref, repoRoot)
+
+	want := "![Private screenshot](https://github.com/private-owner/widgets/blob/" + ref + "/" + image.Path + "?raw=1)"
+	if !strings.Contains(md, want) {
+		t.Fatalf("expected authenticated immutable image URL %q, got:\n%s", want, md)
 	}
 }
 
@@ -568,7 +585,7 @@ func TestBuildTestingSummaryForPR_AcceptsPersistedRedactedGitHubRemote(t *testin
 
 	md := BuildTestingSummaryForPR(steps, rounds, "https://redacted@github.com/example/widgets.git", ref, repoRoot)
 
-	want := "![Checkout screenshot](https://raw.githubusercontent.com/example/widgets/" + ref + "/" + image.Path + ")"
+	want := "![Checkout screenshot](https://github.com/example/widgets/blob/" + ref + "/" + image.Path + "?raw=1)"
 	if !strings.Contains(md, want) {
 		t.Fatalf("expected redacted persisted remote to render %q, got:\n%s", want, md)
 	}
@@ -604,6 +621,20 @@ func TestGitHubRepositoryForRemote_PreservesGitHubWebHostForSSHOver443(t *testin
 
 	if !ok {
 		t.Fatal("GitHub SSH-over-443 remote was rejected")
+	}
+	if repo.host != "github.com" || repo.owner != "example" || repo.name != "widgets" {
+		t.Fatalf("resolved repository = %#v", repo)
+	}
+}
+
+func TestGitHubRepositoryForRemote_AcceptsExplicitGitHubSSHOver443(t *testing.T) {
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+
+	repo, ok := githubRepositoryForRemote(context.Background(), "ssh://git@ssh.github.com:443/example/widgets.git")
+
+	if !ok {
+		t.Fatal("explicit GitHub SSH-over-443 remote was rejected")
 	}
 	if repo.host != "github.com" || repo.owner != "example" || repo.name != "widgets" {
 		t.Fatalf("resolved repository = %#v", repo)
@@ -648,7 +679,7 @@ func TestBuildTestingSummaryForPR_EscapesEveryImageURLPathSegment(t *testing.T) 
 
 	md := BuildTestingSummaryForPR(steps, rounds, "git@github.com:example/widgets.git", ref, repoRoot)
 
-	want := "https://raw.githubusercontent.com/example/widgets/" + ref + "/evidence%20%23%3F/snow%20%E9%9B%AA/100%25/" + filepath.Base(image.Path)
+	want := "https://github.com/example/widgets/blob/" + ref + "/evidence%20%23%3F/snow%20%E9%9B%AA/100%25/" + filepath.Base(image.Path) + "?raw=1"
 	if !strings.Contains(md, want) {
 		t.Fatalf("expected escaped immutable image URL %q, got:\n%s", want, md)
 	}
@@ -671,7 +702,7 @@ func TestBuildTestingSummaryForPR_RendersGitHubEnterpriseImageInline(t *testing.
 
 	md := BuildTestingSummaryForPR(steps, rounds, "https://github.corp.example/team/widgets.git", ref, repoRoot)
 
-	want := "https://github.corp.example/team/widgets/raw/" + ref + "/evidence%20%23%3F/snow%20%E9%9B%AA/100%25/" + filepath.Base(image.Path)
+	want := "https://github.corp.example/team/widgets/blob/" + ref + "/evidence%20%23%3F/snow%20%E9%9B%AA/100%25/" + filepath.Base(image.Path) + "?raw=1"
 	if !strings.Contains(md, want) {
 		t.Fatalf("expected escaped immutable GHES image URL %q, got:\n%s", want, md)
 	}
