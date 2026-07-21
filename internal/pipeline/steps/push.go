@@ -1,7 +1,10 @@
 package steps
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -162,6 +165,13 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 	if _, err := git.Run(ctx, sctx.WorkDir, "reset", "--quiet", "HEAD", "--", rel); err != nil {
 		return fmt.Errorf("clear staged test evidence: %w", err)
 	}
+	evidenceRemote := sctx.Repo.UpstreamURL
+	if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
+		evidenceRemote = sctx.Repo.ForkURL
+	}
+	if _, ok := parseGitHubRepository(evidenceRemote); !ok {
+		return nil
+	}
 
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
@@ -184,7 +194,7 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 			if _, ok := artifactPathRelativeToRoot(target, location.RepoDir); !ok {
 				continue
 			}
-			if _, _, ok := readPublishableImage(target); !ok {
+			if !matchesPreparedEvidenceManifest(target, artifact) {
 				continue
 			}
 			targetRel, ok := artifactPathRelativeToRoot(target, sctx.WorkDir)
@@ -202,4 +212,37 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 		}
 	}
 	return nil
+}
+
+func matchesPreparedEvidenceManifest(target string, artifact types.TestArtifact) bool {
+	if artifact.Size <= 0 || artifact.Size > maxPublishedImageBytes || len(artifact.SHA256) != sha256.Size*2 || artifact.SHA256 != strings.ToLower(artifact.SHA256) {
+		return false
+	}
+	info, err := os.Lstat(target)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() != artifact.Size {
+		return false
+	}
+	file, err := os.Open(target)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || openedInfo.Size() != artifact.Size || !os.SameFile(info, openedInfo) {
+		return false
+	}
+	data, err := io.ReadAll(io.LimitReader(file, artifact.Size+1))
+	if err != nil || int64(len(data)) != artifact.Size {
+		return false
+	}
+	ext, ok := supportedImageExtension(filepath.Ext(target), data)
+	if !ok {
+		return false
+	}
+	sum := sha256.Sum256(data)
+	actualHash := fmt.Sprintf("%x", sum[:])
+	if actualHash != artifact.SHA256 {
+		return false
+	}
+	return filepath.Base(target) == actualHash[:32]+ext
 }

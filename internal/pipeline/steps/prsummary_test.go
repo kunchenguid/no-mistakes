@@ -531,6 +531,62 @@ func TestBuildTestingSummaryForPR_EscapesEveryImageURLPathSegment(t *testing.T) 
 	}
 }
 
+func TestBuildTestingSummaryForPR_RendersGitHubEnterpriseImageInline(t *testing.T) {
+	repoRoot := t.TempDir()
+	rel := filepath.Join("evidence #?", "snow 雪", "100%.png")
+	imagePath := filepath.Join(repoRoot, rel)
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imagePath, testPNGBytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Enterprise screenshot","path":%q}]}`, filepath.ToSlash(rel))
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}}}
+
+	md := BuildTestingSummaryForPR(steps, rounds, "https://github.corp.example/team/widgets.git", "abc123", repoRoot)
+
+	want := "https://github.corp.example/team/widgets/raw/abc123/evidence%20%23%3F/snow%20%E9%9B%AA/100%25.png"
+	if !strings.Contains(md, want) {
+		t.Fatalf("expected escaped immutable GHES image URL %q, got:\n%s", want, md)
+	}
+}
+
+func TestBuildTestingSummaryForPR_RejectsUntrustedGitHubRemoteLayouts(t *testing.T) {
+	repoRoot := t.TempDir()
+	imagePath := filepath.Join(repoRoot, "evidence", "checkout.png")
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imagePath, testPNGBytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Checkout screenshot","path":"evidence/checkout.png"}]}`
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}}}
+
+	for _, remote := range []string{
+		"http://github.corp.example/team/widgets.git",
+		"https://user:secret@github.corp.example/team/widgets.git",
+		"https://github.corp.example/team/widgets/extra.git",
+		"https://github.corp.example/team/widgets.git?download=1",
+		"https://bad host/team/widgets.git",
+	} {
+		t.Run(remote, func(t *testing.T) {
+			md := BuildTestingSummaryForPR(steps, rounds, remote, "abc123", repoRoot)
+			if !strings.Contains(md, "Checkout screenshot was not published.") {
+				t.Fatalf("expected safe fallback for %q, got:\n%s", remote, md)
+			}
+			for _, unsafe := range []string{"evidence/checkout.png", "raw.githubusercontent.com", "/raw/abc123/"} {
+				if strings.Contains(md, unsafe) {
+					t.Fatalf("remote %q exposed unsupported image target %q:\n%s", remote, unsafe, md)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildTestingSummaryForPR_MissingRepoImageDegradesSafely(t *testing.T) {
 	repoRoot := t.TempDir()
 	findings := `{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Missing screenshot","path":"evidence/missing.png"}]}`

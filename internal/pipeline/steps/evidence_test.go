@@ -8,6 +8,7 @@ import (
 	"hash/crc32"
 	"image"
 	"image/color"
+	"image/gif"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -112,6 +113,9 @@ func TestPrepareTestEvidenceArtifacts_PublishesImageWithContentAddressedName(t *
 	wantRel := filepath.ToSlash(filepath.Join("evidence", "feature", fmt.Sprintf("%x.png", sum[:16])))
 	if len(got) != 1 || got[0].Path != wantRel {
 		t.Fatalf("published artifact = %#v, want path %q", got, wantRel)
+	}
+	if got[0].SHA256 != fmt.Sprintf("%x", sum[:]) || got[0].Size != int64(len(content)) {
+		t.Fatalf("published artifact manifest = %#v, want full hash and size", got[0])
 	}
 	if filepath.IsAbs(got[0].Path) || strings.Contains(got[0].Path, workDir) {
 		t.Fatalf("published artifact exposed a local path: %#v", got[0])
@@ -308,6 +312,28 @@ func TestPrepareTestEvidenceArtifacts_FullyValidatesSupportedImages(t *testing.T
 		if artifact.Path != "" || artifact.URL != "" || artifact.Content != unpublishedImageExplanation {
 			t.Fatalf("invalid image did not degrade safely: %#v", artifact)
 		}
+	}
+}
+
+func TestPrepareTestEvidenceArtifacts_RejectsValidGIFWithoutDecodingFrames(t *testing.T) {
+	workDir := t.TempDir()
+	location := resolveTestEvidenceLocation(workDir, "feature", "run-123", config.Evidence{StoreInRepo: true, Dir: "evidence"})
+	if err := os.MkdirAll(location.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var encoded bytes.Buffer
+	if err := gif.Encode(&encoded, image.NewPaletted(image.Rect(0, 0, 1, 1), color.Palette{color.Black}), nil); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(location.Dir, "animation.gif")
+	if err := os.WriteFile(source, encoded.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := prepareTestEvidenceArtifacts(workDir, location, []types.TestArtifact{{Kind: "gif", Label: "Animation", Path: source}})
+
+	if len(got) != 1 || got[0].Path != "" || got[0].SHA256 != "" || got[0].Size != 0 || got[0].Content != unpublishedImageExplanation {
+		t.Fatalf("GIF evidence did not degrade safely: %#v", got)
 	}
 }
 

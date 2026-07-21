@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"image"
-	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"io"
@@ -191,6 +190,8 @@ func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation,
 		if publicURL := sanitizeArtifactURL(artifact.URL); publicURL != "" {
 			prepared[i].URL = publicURL
 			prepared[i].Path = ""
+			prepared[i].SHA256 = ""
+			prepared[i].Size = 0
 			continue
 		}
 
@@ -207,7 +208,8 @@ func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation,
 		}
 
 		sum := sha256.Sum256(data)
-		hash := fmt.Sprintf("%x", sum[:16])
+		fullHash := fmt.Sprintf("%x", sum[:])
+		hash := fullHash[:32]
 		target := filepath.Join(location.RepoDir, hash+ext)
 		rel, ok := artifactPathRelativeToRoot(target, workDir)
 		if !ok {
@@ -243,6 +245,8 @@ func prepareTestEvidenceArtifacts(workDir string, location testEvidenceLocation,
 		publishedBySource[source] = rel
 		prepared[i].Path = rel
 		prepared[i].URL = ""
+		prepared[i].SHA256 = fullHash
+		prepared[i].Size = int64(len(data))
 	}
 
 	return prepared
@@ -256,6 +260,8 @@ func unpublishedImageArtifact(artifact types.TestArtifact) types.TestArtifact {
 	artifact.Path = ""
 	artifact.URL = ""
 	artifact.Content = unpublishedImageExplanation
+	artifact.SHA256 = ""
+	artifact.Size = 0
 	return artifact
 }
 
@@ -312,16 +318,6 @@ func supportedImageExtension(ext string, data []byte) (string, bool) {
 		return ".png", fullyDecodeImage(data, png.DecodeConfig, png.Decode)
 	case ".jpg", ".jpeg":
 		return ".jpg", fullyDecodeImage(data, jpeg.DecodeConfig, jpeg.Decode)
-	case ".gif":
-		cfg, err := gif.DecodeConfig(bytes.NewReader(data))
-		if err != nil || !validImageDimensions(cfg, 1) {
-			return ".gif", false
-		}
-		decoded, err := gif.DecodeAll(bytes.NewReader(data))
-		if err != nil || len(decoded.Image) == 0 || !validImageDimensions(cfg, len(decoded.Image)) {
-			return ".gif", false
-		}
-		return ".gif", true
 	default:
 		return "", false
 	}

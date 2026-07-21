@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -90,6 +92,7 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 	gitCmd(t, dir, "add", "-A")
 	gitCmd(t, dir, "commit", "-m", "initial")
 	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "config", "url."+upstream+".insteadOf", "https://github.com/example/widgets.git")
 	gitCmd(t, dir, "push", "origin", "main")
 
 	gitCmd(t, dir, "checkout", "-b", "feature")
@@ -99,8 +102,12 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	publishedPath := filepath.Join(evidenceDir, "checkout.png")
-	if err := os.WriteFile(publishedPath, testPNGBytes(), 0o644); err != nil {
+	imageData := testPNGBytes()
+	imageHash := sha256.Sum256(imageData)
+	imageHashText := fmt.Sprintf("%x", imageHash[:])
+	publishedName := imageHashText[:32] + ".png"
+	publishedPath := filepath.Join(evidenceDir, publishedName)
+	if err := os.WriteFile(publishedPath, imageData, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(evidenceDir, "unreferenced.png"), testPNGBytes(), 0o644); err != nil {
@@ -112,14 +119,14 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.UpstreamURL = "https://github.com/example/widgets.git"
 	sctx.Run.Branch = "feature"
 	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
 	testResult, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	findings := fmt.Sprintf(`{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Checkout","path":%q}]}`, filepath.ToSlash(filepath.Join("evidence", "feature", "checkout.png")))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Checkout","path":%q,"sha256":%q,"size":%d}]}`, filepath.ToSlash(filepath.Join("evidence", "feature", publishedName)), imageHashText, len(imageData))
 	if err := sctx.DB.SetStepFindings(testResult.ID, findings); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +138,7 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 
 	clone := t.TempDir()
 	gitCmd(t, clone, "clone", "--branch", "feature", upstream, ".")
-	if _, err := os.Stat(filepath.Join(clone, "evidence", "feature", "checkout.png")); err != nil {
+	if _, err := os.Stat(filepath.Join(clone, "evidence", "feature", publishedName)); err != nil {
 		t.Fatalf("expected ignored evidence artifact to be pushed: %v", err)
 	}
 	for _, name := range []string{"unreferenced.png", "sensitive.dump"} {
@@ -261,5 +268,107 @@ func TestPushStep_DoesNotForceAddIgnoredEvidenceDirectory(t *testing.T) {
 	}
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("ignored evidence directory was staged: %q", status)
+	}
+}
+
+func TestPushStep_RejectsDriftedPreparedEvidence(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	evidenceDir := filepath.Join(dir, "evidence", "feature")
+	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := testPNGBytes()
+	sum := sha256.Sum256(original)
+	hash := fmt.Sprintf("%x", sum[:])
+	rel := filepath.ToSlash(filepath.Join("evidence", "feature", hash[:32]+".png"))
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(rel)), coloredPNGBytes(42), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/example/widgets.git"
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+	setTestEvidenceManifest(t, sctx, rel, hash, int64(len(original)))
+
+	if err := (&PushStep{}).stageInRepoEvidence(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if staged := gitCmd(t, dir, "diff", "--cached", "--name-only"); staged != "" {
+		t.Fatalf("drifted evidence was staged: %q", staged)
+	}
+}
+
+func TestPushStep_RejectsSymlinkedPreparedEvidence(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	evidenceDir := filepath.Join(dir, "evidence", "feature")
+	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := testPNGBytes()
+	sum := sha256.Sum256(data)
+	hash := fmt.Sprintf("%x", sum[:])
+	rel := filepath.ToSlash(filepath.Join("evidence", "feature", hash[:32]+".png"))
+	source := filepath.Join(dir, "source.png")
+	if err := os.WriteFile(source, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(source, filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/example/widgets.git"
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+	setTestEvidenceManifest(t, sctx, rel, hash, int64(len(data)))
+
+	if err := (&PushStep{}).stageInRepoEvidence(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if staged := gitCmd(t, dir, "diff", "--cached", "--name-only"); staged != "" {
+		t.Fatalf("symlinked evidence was staged: %q", staged)
+	}
+}
+
+func TestPushStep_DisablesEvidenceForUnsupportedRemote(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	data := testPNGBytes()
+	sum := sha256.Sum256(data)
+	hash := fmt.Sprintf("%x", sum[:])
+	rel := filepath.ToSlash(filepath.Join("evidence", "feature", hash[:32]+".png"))
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, filepath.FromSlash(rel))), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(rel)), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "http://github.example.com/example/widgets.git"
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+	setTestEvidenceManifest(t, sctx, rel, hash, int64(len(data)))
+
+	if err := (&PushStep{}).stageInRepoEvidence(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if staged := gitCmd(t, dir, "diff", "--cached", "--name-only"); staged != "" {
+		t.Fatalf("evidence for unsupported remote was staged: %q", staged)
+	}
+}
+
+func setTestEvidenceManifest(t *testing.T, sctx *pipeline.StepContext, rel, hash string, size int64) {
+	t.Helper()
+	testResult, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","artifacts":[{"kind":"screenshot","label":"Evidence","path":%q,"sha256":%q,"size":%d}]}`, rel, hash, size)
+	if err := sctx.DB.SetStepFindings(testResult.ID, findings); err != nil {
+		t.Fatal(err)
 	}
 }

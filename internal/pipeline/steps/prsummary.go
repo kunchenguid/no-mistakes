@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"html"
+	"net"
 	"net/url"
 	"os"
 	"path"
@@ -180,44 +181,112 @@ func writeTestingSummary(b *strings.Builder, rendered string, opts testingSummar
 }
 
 func testingSummaryOptionsForGitHub(upstreamURL, ref string) testingSummaryOptions {
-	repoPath := githubRepoPath(upstreamURL)
+	repo, ok := parseGitHubRepository(upstreamURL)
 	ref = strings.TrimSpace(ref)
-	if repoPath == "" || ref == "" || strings.ContainsAny(ref, "\n\r <>[]()\\") {
+	if !ok || ref == "" || strings.ContainsAny(ref, "\n\r <>[]()\\") {
 		return testingSummaryOptions{}
 	}
+	repoPath := repo.owner + "/" + repo.name
+	hostBase := "https://" + repo.host + "/" + repoPath
+	rawBase := hostBase + "/raw/" + url.PathEscape(ref) + "/"
+	if strings.EqualFold(repo.host, "github.com") {
+		rawBase = "https://raw.githubusercontent.com/" + repoPath + "/" + url.PathEscape(ref) + "/"
+	}
 	return testingSummaryOptions{
-		githubBlobBase:       "https://github.com/" + repoPath + "/blob/" + url.PathEscape(ref) + "/",
-		githubRawBase:        "https://raw.githubusercontent.com/" + repoPath + "/" + url.PathEscape(ref) + "/",
+		githubBlobBase:       hostBase + "/blob/" + url.PathEscape(ref) + "/",
+		githubRawBase:        rawBase,
 		includeTestedDetails: false,
 	}
 }
 
-func githubRepoPath(remote string) string {
-	remote = strings.TrimSpace(remote)
-	if remote == "" {
-		return ""
-	}
-	if strings.HasPrefix(remote, "git@github.com:") {
-		repo := strings.TrimPrefix(remote, "git@github.com:")
-		return cleanGitHubRepoPath(repo)
-	}
-	parsed, err := url.Parse(remote)
-	if err != nil || !strings.EqualFold(parsed.Host, "github.com") {
-		return ""
-	}
-	return cleanGitHubRepoPath(strings.TrimPrefix(parsed.Path, "/"))
+type githubRepository struct {
+	host  string
+	owner string
+	name  string
 }
 
-func cleanGitHubRepoPath(repo string) string {
+func parseGitHubRepository(remote string) (githubRepository, bool) {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return githubRepository{}, false
+	}
+	if !strings.Contains(remote, "://") {
+		userHost, repoPath, ok := strings.Cut(remote, ":")
+		if !ok || strings.Count(userHost, "@") != 1 {
+			return githubRepository{}, false
+		}
+		user, host, _ := strings.Cut(userHost, "@")
+		if user != "git" || !validGitHubHost(host) {
+			return githubRepository{}, false
+		}
+		owner, name, ok := cleanGitHubRepoParts(repoPath)
+		return githubRepository{host: strings.ToLower(host), owner: owner, name: name}, ok
+	}
+	parsed, err := url.Parse(remote)
+	if err != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return githubRepository{}, false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "https":
+		if parsed.User != nil {
+			return githubRepository{}, false
+		}
+	case "ssh":
+		if parsed.User == nil || parsed.User.Username() != "git" {
+			return githubRepository{}, false
+		}
+		if _, hasPassword := parsed.User.Password(); hasPassword {
+			return githubRepository{}, false
+		}
+	default:
+		return githubRepository{}, false
+	}
+	if !validGitHubHost(parsed.Hostname()) {
+		return githubRepository{}, false
+	}
+	if parsed.Port() != "" {
+		if _, err := net.LookupPort("tcp", parsed.Port()); err != nil {
+			return githubRepository{}, false
+		}
+	}
+	owner, name, ok := cleanGitHubRepoParts(strings.TrimPrefix(parsed.Path, "/"))
+	return githubRepository{host: strings.ToLower(parsed.Host), owner: owner, name: name}, ok
+}
+
+func cleanGitHubRepoParts(repo string) (string, string, bool) {
 	repo = strings.TrimSuffix(strings.TrimSpace(repo), ".git")
 	parts := strings.Split(repo, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return ""
+		return "", "", false
 	}
-	if strings.ContainsAny(repo, "\n\r <>[]()\\") || strings.Contains(repo, "..") {
-		return ""
+	for i := range parts {
+		decoded, err := url.PathUnescape(parts[i])
+		if err != nil || decoded == "." || decoded == ".." || strings.ContainsAny(decoded, "/\\\n\r <>[]()") {
+			return "", "", false
+		}
+		parts[i] = url.PathEscape(decoded)
 	}
-	return url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1])
+	return parts[0], parts[1], true
+}
+
+func validGitHubHost(host string) bool {
+	if host == "" || strings.ContainsAny(host, " \t\r\n/?#@") {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func collectTestingSummary(sr *db.StepResult, rounds []*db.StepRound) string {
@@ -470,7 +539,7 @@ func renderUnpublishedCompactImage(label, _ string) string {
 
 func repoImageIsPublishable(target string, opts testingSummaryOptions) bool {
 	repoPath := repoRelativeArtifactPath(target, opts)
-	if repoPath == "" || opts.repoRoot == "" {
+	if repoPath == "" || opts.repoRoot == "" || opts.githubRawBase == "" {
 		return false
 	}
 	filename := filepath.Join(opts.repoRoot, filepath.FromSlash(repoPath))
@@ -596,6 +665,9 @@ func trimUTF8Start(data []byte) []byte {
 func artifactTargetForPath(artifact types.TestArtifact, opts testingSummaryOptions) string {
 	repoPath := repoRelativeArtifactPath(artifact.Path, opts)
 	if repoPath == "" {
+		return ""
+	}
+	if opts.compactArtifacts && (opts.githubBlobBase == "" || opts.githubRawBase == "") {
 		return ""
 	}
 	if opts.githubBlobBase == "" || opts.githubRawBase == "" {

@@ -61,6 +61,8 @@ type TestArtifact struct {
 	Path    string `json:"path,omitempty"`
 	URL     string `json:"url,omitempty"`
 	Content string `json:"content,omitempty"`
+	SHA256  string `json:"sha256,omitempty"`
+	Size    int64  `json:"size,omitempty"`
 }
 
 type findingWire struct {
