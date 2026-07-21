@@ -25,6 +25,12 @@ const (
 
 type sshHostnameLookup func(context.Context, string) (string, error)
 
+type SSHTransport struct {
+	Hostname string
+	User     string
+	Port     string
+}
+
 // DetectProvider identifies the SCM provider for url. SSH host aliases are
 // resolved through the user's SSH configuration before detection falls back to
 // ProviderUnknown.
@@ -130,6 +136,26 @@ func isSSHRemote(remote string) bool {
 }
 
 func lookupSSHHostname(ctx context.Context, alias string) (string, error) {
+	transport, err := lookupSSHTransport(ctx, alias)
+	if err != nil {
+		return "", err
+	}
+	return transport.Hostname, nil
+}
+
+func ResolveSSHTransport(ctx context.Context, remote string) (SSHTransport, bool) {
+	host := ExtractHost(remote)
+	if host == "" || !isSSHRemote(remote) {
+		return SSHTransport{}, false
+	}
+	transport, err := lookupSSHTransport(ctx, host)
+	if err != nil || transport.Hostname == "" {
+		return SSHTransport{}, false
+	}
+	return transport, true
+}
+
+func lookupSSHTransport(ctx context.Context, alias string) (SSHTransport, error) {
 	lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
@@ -137,15 +163,24 @@ func lookupSSHHostname(ctx context.Context, alias string) (string, error) {
 	shellenv.ConfigureShellCommand(cmd)
 	out, err := shellenv.OutputShellCommand(cmd)
 	if err != nil {
-		return "", err
+		return SSHTransport{}, err
 	}
+	var transport SSHTransport
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) >= 2 && strings.EqualFold(fields[0], "hostname") {
-			return fields[1], nil
+		if len(fields) < 2 {
+			continue
+		}
+		switch strings.ToLower(fields[0]) {
+		case "hostname":
+			transport.Hostname = strings.ToLower(fields[1])
+		case "user":
+			transport.User = fields[1]
+		case "port":
+			transport.Port = fields[1]
 		}
 	}
-	return "", nil
+	return transport, nil
 }
 
 // glabKnowsHost reports whether host appears in glab's configured hosts map,

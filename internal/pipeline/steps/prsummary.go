@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"html"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -234,8 +235,21 @@ func githubRepositoryForRemote(ctx context.Context, remote string) (githubReposi
 	if explicitGitHubSSH443 {
 		logicalHost = "github.com"
 	}
+	aliasGitHubSSH443 := false
+	if sshRemote && logicalHost != "github.com" && !explicitGitHubSSH443 {
+		if transport, ok := scm.ResolveSSHTransport(ctx, remote); ok &&
+			strings.EqualFold(transport.Hostname, "ssh.github.com") &&
+			transport.User == "git" && transport.Port == "443" &&
+			scm.GitHubHostConfigured("github.com") {
+			logicalHost = "github.com"
+			aliasGitHubSSH443 = true
+		}
+	}
 	if logicalHost == "github.com" || scm.GitHubHostConfigured(logicalHost) {
 		canonicalHost = logicalHost
+	}
+	if canonicalHost == "ssh.github.com" && !aliasGitHubSSH443 && !explicitGitHubSSH443 {
+		return githubRepository{}, false
 	}
 	if !validGitHubHost(canonicalHost) {
 		return githubRepository{}, false
@@ -605,44 +619,54 @@ func publishedRepoImageIsAvailable(artifact types.TestArtifact, opts testingSumm
 		return false
 	}
 	filename := filepath.Join(opts.repoRoot, filepath.FromSlash(repoPath))
-	if _, ok := artifactPathRelativeToRoot(filename, opts.repoRoot); !ok || !matchesPreparedEvidenceManifest(filename, artifact) {
+	if _, ok := artifactPathRelativeToRoot(filename, opts.repoRoot); !ok {
 		return false
 	}
-	blob, ok := readPushedEvidenceBlob(opts.repoRoot, opts.ref, repoPath, artifact.Size)
-	if !ok {
-		return false
-	}
-	sum := sha256.Sum256(blob)
-	return fmt.Sprintf("%x", sum[:]) == artifact.SHA256
+	return matchesGitEvidenceBlob(context.Background(), opts.repoRoot, opts.ref+":"+filepath.ToSlash(repoPath), artifact)
 }
 
-func readPushedEvidenceBlob(repoRoot, ref, repoPath string, expectedSize int64) ([]byte, bool) {
-	if expectedSize <= 0 || expectedSize > maxPublishedImageBytes {
-		return nil, false
+func matchesStagedEvidenceManifest(ctx context.Context, repoRoot, repoPath string, artifact types.TestArtifact) bool {
+	return matchesGitEvidenceBlob(ctx, repoRoot, ":"+filepath.ToSlash(repoPath), artifact)
+}
+
+func matchesGitEvidenceBlob(parent context.Context, repoRoot, objectSpec string, artifact types.TestArtifact) bool {
+	if artifact.Size <= 0 || artifact.Size > maxPublishedImageBytes ||
+		len(artifact.SHA256) != sha256.Size*2 || artifact.SHA256 != strings.ToLower(artifact.SHA256) {
+		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
-	oid, err := git.Run(ctx, repoRoot, "rev-parse", "--verify", ref+":"+filepath.ToSlash(repoPath))
+	oid, err := git.Run(ctx, repoRoot, "rev-parse", "--verify", objectSpec)
 	if err != nil {
-		return nil, false
+		return false
 	}
 	sizeText, err := git.Run(ctx, repoRoot, "cat-file", "-s", oid)
 	if err != nil {
-		return nil, false
+		return false
 	}
 	size, err := strconv.ParseInt(sizeText, 10, 64)
-	if err != nil || size != expectedSize {
-		return nil, false
+	if err != nil || size != artifact.Size {
+		return false
 	}
 	cmd := exec.CommandContext(ctx, "git", "cat-file", "blob", oid)
 	cmd.Dir = repoRoot
 	cmd.Env = git.NonInteractiveEnv(repoRoot)
 	shellenv.ConfigureShellCommand(cmd)
-	data, err := shellenv.OutputShellCommand(cmd)
-	if err != nil || int64(len(data)) != expectedSize {
-		return nil, false
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return false
 	}
-	return data, true
+	if err := shellenv.StartShellCommand(cmd); err != nil {
+		return false
+	}
+	defer shellenv.TerminateShellCommandGroup(cmd)
+	hash := sha256.New()
+	n, copyErr := io.Copy(hash, io.LimitReader(stdout, artifact.Size+1))
+	waitErr := cmd.Wait()
+	if copyErr != nil || waitErr != nil || n != artifact.Size {
+		return false
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)) == artifact.SHA256
 }
 
 // embeddedArtifactText reads a file artifact and returns its text content,

@@ -627,6 +627,28 @@ func TestGitHubRepositoryForRemote_PreservesGitHubWebHostForSSHOver443(t *testin
 	}
 }
 
+func TestGitHubRepositoryForRemote_PreservesGitHubWebHostForAliasOver443(t *testing.T) {
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "ssh")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_CLI_MODE", "ssh-resolve-github-alias-over-443")
+	ghConfig := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ghConfig, "hosts.yml"), []byte("github.com:\n  user: test\n  oauth_token: test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_CONFIG_DIR", ghConfig)
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+
+	repo, ok := githubRepositoryForRemote(context.Background(), "git@github_work:example/widgets.git")
+
+	if !ok {
+		t.Fatal("GitHub SSH alias over port 443 was rejected")
+	}
+	if repo.host != "github.com" || repo.owner != "example" || repo.name != "widgets" {
+		t.Fatalf("resolved repository = %#v", repo)
+	}
+}
+
 func TestGitHubRepositoryForRemote_AcceptsExplicitGitHubSSHOver443(t *testing.T) {
 	t.Setenv("GH_CONFIG_DIR", t.TempDir())
 	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
@@ -793,6 +815,48 @@ func TestBuildTestingSummaryForPR_RequiresManifestBlobAtPushedCommit(t *testing.
 	}
 	if strings.Contains(md, "raw.githubusercontent.com") {
 		t.Fatalf("missing pushed blob rendered an immutable URL:\n%s", md)
+	}
+}
+
+func TestBuildTestingSummaryForPR_RetryUsesPushedImageBlob(t *testing.T) {
+	for _, mutation := range []struct {
+		name string
+		run  func(*testing.T, string)
+	}{
+		{
+			name: "deleted worktree file",
+			run: func(t *testing.T, target string) {
+				if err := os.Remove(target); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "changed worktree file",
+			run: func(t *testing.T, target string) {
+				if err := os.WriteFile(target, coloredPNGBytes(99), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			image, target := writePublishedImageFixture(t, repoRoot, "evidence")
+			image.Label = "Checkout screenshot"
+			ref := commitPRFixture(t, repoRoot)
+			mutation.run(t, target)
+			findings := findingsWithArtifacts(t, image)
+			steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+			rounds := map[string][]*db.StepRound{"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}}}
+
+			md := BuildTestingSummaryForPR(steps, rounds, "https://github.com/example/widgets.git", ref, repoRoot)
+
+			want := "![Checkout screenshot](https://github.com/example/widgets/blob/" + ref + "/" + image.Path + "?raw=1)"
+			if !strings.Contains(md, want) {
+				t.Fatalf("retry did not render pushed image blob %q:\n%s", want, md)
+			}
+		})
 	}
 }
 

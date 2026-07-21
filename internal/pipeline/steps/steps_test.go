@@ -54,9 +54,15 @@ func handleFakeCLI(mode string) {
 		fakeGitStatusErrorHandler(args)
 	case "git-remote-error":
 		fakeGitRemoteErrorHandler(args)
+	case "git-swap-evidence-index":
+		fakeGitSwapEvidenceIndexHandler(args)
 	case "ssh-resolve-github":
 		fmt.Println("hostname github.com")
 	case "ssh-resolve-github-over-443":
+		fmt.Println("hostname ssh.github.com")
+		fmt.Println("port 443")
+	case "ssh-resolve-github-alias-over-443":
+		fmt.Println("user git")
 		fmt.Println("hostname ssh.github.com")
 		fmt.Println("port 443")
 	case "ci-gh":
@@ -157,6 +163,28 @@ func fakeGitStatusErrorHandler(args []string) {
 func fakeGitPassthroughHandler(args []string) {
 	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
 	fakeGitForward(args, realGit)
+}
+
+func fakeGitSwapEvidenceIndexHandler(args []string) {
+	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	cmd := exec.Command(realGit, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err != nil {
+		os.Exit(1)
+	}
+	evidencePath := os.Getenv("FAKE_CLI_EVIDENCE_PATH")
+	if len(args) == 0 || args[0] != "add" || evidencePath == "" || args[len(args)-1] != evidencePath {
+		return
+	}
+	replacementOID := os.Getenv("FAKE_CLI_REPLACEMENT_OID")
+	swap := exec.Command(realGit, "update-index", "--cacheinfo", "100644,"+replacementOID+","+evidencePath)
+	swap.Stdout = os.Stdout
+	swap.Stderr = os.Stderr
+	if err := swap.Run(); err != nil {
+		os.Exit(1)
+	}
 }
 
 func fakeGitRequireNonInteractiveEnvHandler(args []string) {

@@ -671,6 +671,63 @@ func TestPushStep_StagesDuplicatePreparedEvidenceExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestPushStep_RejectsEvidenceSwappedInIndexAfterAdd(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	data := testPNGBytes()
+	sum := sha256.Sum256(data)
+	hash := fmt.Sprintf("%x", sum[:])
+	rel := filepath.ToSlash(filepath.Join("evidence", "feature", hash[:32]+".png"))
+	target := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement := coloredPNGBytes(73)
+	replacementFile := filepath.Join(dir, "replacement.png")
+	if err := os.WriteFile(replacementFile, replacement, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	replacementOID := gitCmd(t, dir, "hash-object", "-w", "--", replacementFile)
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_CLI_MODE", "git-swap-evidence-index")
+	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
+	t.Setenv("FAKE_CLI_EVIDENCE_PATH", rel)
+	t.Setenv("FAKE_CLI_REPLACEMENT_OID", replacementOID)
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = "https://github.com/example/widgets.git"
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+	setTestEvidenceManifest(t, sctx, rel, hash, int64(len(data)))
+
+	if err := (&PushStep{}).stageInRepoEvidence(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if staged := gitCmd(t, dir, "diff", "--cached", "--name-only"); staged != "" {
+		t.Fatalf("index-swapped evidence remained staged: %q", staged)
+	}
+	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := types.ParseFindingsJSON(*steps[len(steps)-1].FindingsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact := manifest.Artifacts[0]; artifact.Published || artifact.Path != "" {
+		t.Fatalf("index-swapped evidence remained publishable: %#v", artifact)
+	}
+}
+
 func TestPushStep_DisablesEvidenceForUnsupportedRemote(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

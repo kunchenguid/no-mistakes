@@ -374,6 +374,12 @@ func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
 		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-f", "--", targetRel); err != nil {
 			return fmt.Errorf("stage test evidence: %w", err)
 		}
+		if !matchesStagedEvidenceManifest(ctx, sctx.WorkDir, targetRel, destination.artifact) {
+			if _, err := git.Run(ctx, sctx.WorkDir, "reset", "--quiet", "HEAD", "--", targetRel); err != nil {
+				return fmt.Errorf("clear invalid staged test evidence: %w", err)
+			}
+			continue
+		}
 		destination.published = true
 		destinations[targetRel] = destination
 	}
