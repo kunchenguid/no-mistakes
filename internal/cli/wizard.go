@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -169,10 +170,25 @@ func (s *repoState) createFeatureBranch(ctx context.Context, name string) error 
 }
 
 func featureBranchStartCommand(defaultBranch, baseBranch string) string {
-	if baseBranch != "" && baseBranch != defaultBranch {
-		return fmt.Sprintf("git fetch origin %s && git switch -c <branch> %s", git.ShellSingleQuote(baseBranch), git.ShellSingleQuote("origin/"+baseBranch))
+	command, err := featureBranchStartCommandForOS(runtime.GOOS, defaultBranch, baseBranch)
+	if err != nil {
+		return "no-mistakes init --clear-base-branch"
 	}
-	return "git switch -c <branch>"
+	return command
+}
+
+func featureBranchStartCommandForOS(goos, defaultBranch, baseBranch string) (string, error) {
+	if baseBranch != "" && baseBranch != defaultBranch {
+		if err := git.ValidatePortableBranchName(baseBranch); err != nil {
+			return "", err
+		}
+		quote := git.ShellSingleQuote
+		if goos == "windows" {
+			quote = func(value string) string { return `"` + value + `"` }
+		}
+		return fmt.Sprintf("git fetch origin %s && git switch -c <branch> %s", quote(baseBranch), quote("origin/"+baseBranch)), nil
+	}
+	return "git switch -c <branch>", nil
 }
 
 // shouldRouteToWizard reports whether the active-run check should be

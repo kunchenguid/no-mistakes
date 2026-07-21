@@ -363,6 +363,13 @@ func DefaultBranch(ctx context.Context, dir, remote string) string {
 	return "main"
 }
 
+func ValidatePortableBranchName(branch string) error {
+	if branch == "" || strings.TrimSpace(branch) != branch || strings.ContainsAny(branch, " \t\r\n;&|<>^()%!$`'\"") {
+		return fmt.Errorf("branch name contains command-unsafe characters")
+	}
+	return nil
+}
+
 // FetchRemoteBranch fetches a single branch into a remote-tracking ref.
 // Uses a force-update refspec (+) so non-fast-forward updates (e.g. after
 // a force push on the remote) are accepted instead of silently rejected.

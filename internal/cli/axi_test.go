@@ -524,15 +524,27 @@ func TestPreflightGuardRejectsConfiguredPipelineBase(t *testing.T) {
 }
 
 func TestFeatureBranchStartCommandUsesConfiguredPipelineBase(t *testing.T) {
-	if got := featureBranchStartCommand("main", "staging"); got != "git fetch origin 'staging' && git switch -c <branch> 'origin/staging'" {
-		t.Fatalf("featureBranchStartCommand = %q", got)
+	posix, err := featureBranchStartCommandForOS("linux", "main", "staging")
+	if err != nil {
+		t.Fatalf("POSIX featureBranchStartCommand: %v", err)
 	}
-	unsafeBase := "staging;echo$HOME`date`"
-	if got := featureBranchStartCommand("main", unsafeBase); got != "git fetch origin 'staging;echo$HOME`date`' && git switch -c <branch> 'origin/staging;echo$HOME`date`'" {
-		t.Fatalf("quoted featureBranchStartCommand = %q", got)
+	if posix != "git fetch origin 'staging' && git switch -c <branch> 'origin/staging'" {
+		t.Fatalf("POSIX featureBranchStartCommand = %q", posix)
 	}
-	if got := featureBranchStartCommand("main", "main"); got != "git switch -c <branch>" {
-		t.Fatalf("default featureBranchStartCommand = %q", got)
+	windows, err := featureBranchStartCommandForOS("windows", "main", "staging")
+	if err != nil {
+		t.Fatalf("Windows featureBranchStartCommand: %v", err)
+	}
+	if windows != `git fetch origin "staging" && git switch -c <branch> "origin/staging"` {
+		t.Fatalf("Windows featureBranchStartCommand = %q", windows)
+	}
+	for _, unsafeBase := range []string{"staging branch", "staging;echo", "staging$HOME", "staging%PATH%", "staging`date`"} {
+		if got, err := featureBranchStartCommandForOS("windows", "main", unsafeBase); err == nil || got != "" {
+			t.Fatalf("featureBranchStartCommandForOS(%q) = %q, %v; want rejection", unsafeBase, got, err)
+		}
+	}
+	if got, err := featureBranchStartCommandForOS("windows", "main", "main"); err != nil || got != "git switch -c <branch>" {
+		t.Fatalf("default featureBranchStartCommand = %q, %v", got, err)
 	}
 }
 

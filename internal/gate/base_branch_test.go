@@ -215,7 +215,18 @@ func TestInitWithOptionsRejectsMalformedConfigOnCandidateBase(t *testing.T) {
 }
 
 func TestInitWithOptionsRejectsMissingOrUnsafeBaseWithoutPersisting(t *testing.T) {
-	for _, candidate := range []string{"missing", "HEAD", "refs/heads/staging", "../staging"} {
+	for _, candidate := range []string{
+		"missing",
+		"HEAD",
+		"refs/heads/staging",
+		"../staging",
+		"staging branch",
+		"staging;echo",
+		"staging$HOME",
+		"staging%PATH%",
+		"staging!VAR!",
+		"staging`whoami`",
+	} {
 		t.Run(strings.ReplaceAll(candidate, "/", "_"), func(t *testing.T) {
 			work, _ := setupBaseBranchRepo(t, "")
 			p := paths.WithRoot(t.TempDir())

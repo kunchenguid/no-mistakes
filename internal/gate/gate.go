@@ -266,6 +266,9 @@ func validateBaseBranchName(ctx context.Context, workDir, branch string) error {
 	if branch == "HEAD" || strings.HasPrefix(branch, "refs/") {
 		return fmt.Errorf("branch must be a short branch name, not %q", branch)
 	}
+	if err := git.ValidatePortableBranchName(branch); err != nil {
+		return err
+	}
 	if _, err := git.Run(ctx, workDir, "check-ref-format", "--branch", branch); err != nil {
 		return fmt.Errorf("invalid branch name: %w", err)
 	}
