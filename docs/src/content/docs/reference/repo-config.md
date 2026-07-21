@@ -266,16 +266,17 @@ Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `p
 
 ### test.evidence
 
-Override where evidence artifacts from the test step are stored.
-Fields not set here inherit from global config and then the built-in defaults.
+Configure test-step evidence for this repository.
+The publication consent setting is trusted repository configuration and never inherits from global configuration.
 
 | Field | Type | Default |
 |---|---|---|
-| `test.evidence.store_in_repo` | `bool` | Inherits from global (default `false`) |
+| `test.evidence.store_in_repo` | `bool` | `false` (repository-only opt-in) |
 | `test.evidence.dir` | `string` | Inherits from global (default `.no-mistakes/evidence`) |
 
 Test evidence is collected in a temporary run directory.
 Text evidence remains temporary and is embedded in generated PR content.
+When publication is disabled, images produce a path-free explanation and are not committed.
 To opt a repository such as Inspect.Properties into committing sanitized screenshot pixels for inline PR rendering, add:
 
 ```yaml

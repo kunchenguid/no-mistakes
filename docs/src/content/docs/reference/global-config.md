@@ -376,7 +376,7 @@ Image publication is disabled by default and requires explicit repository consen
 
 | Field                         | Type     | Default                 | Description                                                           |
 | ----------------------------- | -------- | ----------------------- | --------------------------------------------------------------------- |
-| `test.evidence.store_in_repo` | `bool`   | `false`                 | Image publication default; repository opt-in is still required       |
+| `test.evidence.store_in_repo` | `bool`   | `false`                 | Ignored globally; publication requires trusted repository consent    |
 | `test.evidence.dir`           | `string` | `.no-mistakes/evidence` | Repo-relative image publication directory                            |
 
 The test step collects all evidence in its temporary run directory so readable UTF-8 text evidence keeps its existing inline PR rendering.
@@ -395,7 +395,8 @@ When publication is disabled, images produce a path-free disabled-publication ex
 Global configuration cannot enable publication across repositories.
 Set `store_in_repo: true` in a repository's `.no-mistakes.yaml` only when that repository consents to committing sanitized screenshot pixels; local paths are never included in generated PR content.
 
-These are global defaults. Per-repo config can override either field.
+Global configuration can set the default evidence directory.
+Only trusted repository configuration can enable `store_in_repo`.
 
 ## Environment variables
 

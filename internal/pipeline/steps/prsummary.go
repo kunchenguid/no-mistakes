@@ -44,6 +44,7 @@ type testingSummaryOptions struct {
 	omitOutcome          bool
 	repoRoot             string
 	ref                  string
+	ctx                  context.Context
 }
 
 // BuildPipelineSummary produces a deterministic markdown section from step results and rounds.
@@ -90,11 +91,16 @@ func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 }
 
 func BuildTestingSummaryForPR(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot string) string {
-	opts := testingSummaryOptionsForGitHub(upstreamURL, ref)
+	return buildTestingSummaryForPR(context.Background(), steps, rounds, upstreamURL, ref, repoRoot)
+}
+
+func buildTestingSummaryForPR(ctx context.Context, steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot string) string {
+	opts := testingSummaryOptionsForGitHub(ctx, upstreamURL, ref)
 	opts.compactArtifacts = true
 	opts.summaryParagraph = true
 	opts.omitOutcome = true
 	opts.repoRoot = repoRoot
+	opts.ctx = ctx
 	return buildTestingSummary(steps, rounds, opts)
 }
 
@@ -189,8 +195,8 @@ func writeTestingSummary(b *strings.Builder, rendered string, opts testingSummar
 	b.WriteString("\n")
 }
 
-func testingSummaryOptionsForGitHub(upstreamURL, ref string) testingSummaryOptions {
-	repo, ok := githubRepositoryForRemote(context.Background(), upstreamURL)
+func testingSummaryOptionsForGitHub(ctx context.Context, upstreamURL, ref string) testingSummaryOptions {
+	repo, ok := githubRepositoryForRemote(ctx, upstreamURL)
 	ref = strings.TrimSpace(ref)
 	if !ok || ref == "" || strings.ContainsAny(ref, "\n\r <>[]()\\") {
 		return testingSummaryOptions{}
@@ -621,11 +627,14 @@ func publishedRepoImageIsAvailable(artifact types.TestArtifact, opts testingSumm
 	if !artifact.Published || repoPath == "" || opts.repoRoot == "" || opts.githubRawBase == "" || opts.ref == "" {
 		return false
 	}
+	if opts.ctx == nil || opts.ctx.Err() != nil {
+		return false
+	}
 	filename := filepath.Join(opts.repoRoot, filepath.FromSlash(repoPath))
 	if _, ok := artifactPathRelativeToRoot(filename, opts.repoRoot); !ok {
 		return false
 	}
-	return matchesGitEvidenceBlob(context.Background(), opts.repoRoot, opts.ref+":"+filepath.ToSlash(repoPath), artifact)
+	return matchesGitEvidenceBlob(opts.ctx, opts.repoRoot, opts.ref+":"+filepath.ToSlash(repoPath), artifact)
 }
 
 func matchesStagedEvidenceManifest(ctx context.Context, repoRoot, repoPath string, artifact types.TestArtifact) bool {

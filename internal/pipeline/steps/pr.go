@@ -230,7 +230,7 @@ func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (string, strin
 	if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
 		evidenceRemote = sctx.Repo.ForkURL
 	}
-	testingMD := BuildTestingSummaryForPR(steps, rounds, evidenceRemote, sctx.Run.HeadSHA, sctx.WorkDir)
+	testingMD := buildTestingSummaryForPR(sctx.Ctx, steps, rounds, evidenceRemote, sctx.Run.HeadSHA, sctx.WorkDir)
 	return pipelineMD, riskLine, testingMD
 }
 

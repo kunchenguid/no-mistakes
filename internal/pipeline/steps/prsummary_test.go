@@ -818,6 +818,42 @@ func TestBuildTestingSummaryForPR_RequiresManifestBlobAtPushedCommit(t *testing.
 	}
 }
 
+func TestBuildTestingSummaryForPR_CancellationStopsBlobVerification(t *testing.T) {
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	logFile := filepath.Join(t.TempDir(), "git.log")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_CLI_MODE", "record-success")
+	t.Setenv("FAKE_CLI_LOG", logFile)
+
+	data := testPNGBytes()
+	sum := sha256.Sum256(data)
+	image := types.TestArtifact{
+		Kind:      "screenshot",
+		Label:     "Checkout screenshot",
+		Path:      "evidence/checkout.png",
+		SHA256:    fmt.Sprintf("%x", sum[:]),
+		Size:      int64(len(data)),
+		Published: true,
+	}
+	findings := findingsWithArtifacts(t, image)
+	steps := []*db.StepResult{{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings}}
+	rounds := map[string][]*db.StepRound{"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	md := buildTestingSummaryForPR(ctx, steps, rounds, "https://github.com/example/widgets.git", "abc123", t.TempDir())
+
+	if !strings.Contains(md, "Checkout screenshot was not published.") {
+		t.Fatalf("expected cancellation to degrade safely, got:\n%s", md)
+	}
+	if data, err := os.ReadFile(logFile); err == nil && len(data) > 0 {
+		t.Fatalf("cancellation launched git blob verification:\n%s", data)
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
 func TestBuildTestingSummaryForPR_RetryUsesPushedImageBlob(t *testing.T) {
 	for _, mutation := range []struct {
 		name string
