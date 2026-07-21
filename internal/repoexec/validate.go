@@ -98,7 +98,7 @@ func (c *GitHubContext) ValidateLocalGitConfig(ctx context.Context, workDir stri
 		for _, line := range strings.Split(out, "\n") {
 			key := strings.ToLower(strings.TrimSpace(line))
 			if unsafeLocalGitKey(key) {
-				return c.errorf("repository-local Git configuration contains a credential, header, URL rewrite, push URL, askpass, or SSH override; remove it or leave the repository context disabled")
+				return c.errorf("repository-local Git configuration contains a credential, HTTP transport, include, URL rewrite, push URL, proxy, askpass, or SSH override; remove it or leave the repository context disabled")
 			}
 		}
 	}
@@ -106,23 +106,16 @@ func (c *GitHubContext) ValidateLocalGitConfig(ctx context.Context, workDir stri
 }
 
 func unsafeLocalGitKey(key string) bool {
-	if strings.HasPrefix(key, "credential.") || key == "http.extraheader" || key == "core.sshcommand" || key == "core.askpass" {
+	if strings.HasPrefix(key, "credential.") || strings.HasPrefix(key, "http.") || key == "core.sshcommand" || key == "core.askpass" {
 		return true
 	}
-	if strings.HasPrefix(key, "http.") && unsafeHTTPTransportKey(key) {
+	if key == "include.path" || (strings.HasPrefix(key, "includeif.") && strings.HasSuffix(key, ".path")) {
 		return true
 	}
 	if strings.HasPrefix(key, "url.") && (strings.HasSuffix(key, ".insteadof") || strings.HasSuffix(key, ".pushinsteadof")) {
 		return true
 	}
-	return strings.HasPrefix(key, "remote.") && strings.HasSuffix(key, ".pushurl")
-}
-
-func unsafeHTTPTransportKey(key string) bool {
-	leaf := key[strings.LastIndexByte(key, '.')+1:]
-	return leaf == "extraheader" || leaf == "proxy" || leaf == "noproxy" || leaf == "proxyauthmethod" ||
-		leaf == "pinnedpubkey" || leaf == "curloptresolve" || leaf == "followredirects" ||
-		strings.Contains(leaf, "ssl") || strings.Contains(leaf, "cert") || strings.Contains(leaf, "schannel")
+	return strings.HasPrefix(key, "remote.") && (strings.HasSuffix(key, ".pushurl") || strings.HasSuffix(key, ".proxy") || strings.HasSuffix(key, ".proxyauthmethod"))
 }
 
 // ValidateNetworkRemote resolves a named remote without applying URL rewrites,

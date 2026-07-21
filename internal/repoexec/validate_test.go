@@ -142,23 +142,34 @@ exit 0
 	}
 }
 
-func TestUnsafeLocalGitKeyRejectsHTTPTransportOverrides(t *testing.T) {
+func TestUnsafeLocalGitKeyRejectsTransportAndIncludeOverrides(t *testing.T) {
 	for _, key := range []string{
 		"http.proxy",
 		"http.sslverify",
 		"http.sslcainfo",
+		"http.cookiefile",
+		"http.savecookies",
+		"http.delegation",
+		"http.postbuffer",
+		"http.maxrequests",
 		"http.https://github.com/.proxy",
 		"http.https://github.com/.sslcert",
+		"http.https://github.com/.cookiefile",
 		"http.https://github.com/.pinnedpubkey",
 		"http.https://github.com/.curloptresolve",
+		"remote.origin.proxy",
+		"remote.origin.proxyauthmethod",
+		"include.path",
+		"includeif.gitdir:/work/.path",
+		"includeif.onbranch:main.path",
 	} {
 		if !unsafeLocalGitKey(key) {
 			t.Errorf("expected %q to be rejected", key)
 		}
 	}
-	for _, key := range []string{"http.postbuffer", "http.maxrequests"} {
+	for _, key := range []string{"core.filemode", "remote.origin.url", "branch.main.remote"} {
 		if unsafeLocalGitKey(key) {
-			t.Errorf("expected repository-safe %q to remain allowed", key)
+			t.Errorf("expected safe non-transport %q to remain allowed", key)
 		}
 	}
 }
