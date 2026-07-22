@@ -8,8 +8,18 @@ import (
 	"strings"
 )
 
+func extractGeminiPrompt(args []string) (string, error) {
+	for i, arg := range args {
+		if arg == "-p" && i+1 < len(args) {
+			return args[i+1], nil
+		}
+	}
+	return "", fmt.Errorf("missing -p argument for gemini prompt")
+}
+
 func runGemini(args []string, promptReader io.Reader, scenario *Scenario) int {
-	prompt, err := extractClaudePrompt(args, promptReader) // gemini args shape is similar enough to reuse this
+	prompt, err := extractGeminiPrompt(args)
+
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fakeagent: gemini prompt: %v\n", err)
 		return 1
