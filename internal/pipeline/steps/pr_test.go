@@ -1493,6 +1493,43 @@ func TestPRStep_OmitsIntentSectionWhenIntentEmpty(t *testing.T) {
 	}
 }
 
+func TestPrependIntentSection_EscapesBareHTMLLikeTags(t *testing.T) {
+	t.Parallel()
+	// Regression: https://github.com/jbb-codes/expense-tracking-system/pull/11
+	// rendered as one unstructured block because the intent text contained a
+	// bare, unclosed-looking <select> that GitHub's markdown renderer treated
+	// as literal HTML, swallowing every later heading into the tag.
+	sctx := &pipeline.StepContext{UserIntent: "Add a <select> with <option> entries for the category dropdown"}
+
+	got := prependIntentSection("## What Changed\n\n- add dropdown", sctx)
+
+	if strings.Contains(got, "<select>") || strings.Contains(got, "<option>") {
+		t.Fatalf("expected bare HTML-like tags to be escaped, got:\n%s", got)
+	}
+	if !strings.Contains(got, "&lt;select&gt;") || !strings.Contains(got, "&lt;option&gt;") {
+		t.Fatalf("expected escaped tag entities in intent section, got:\n%s", got)
+	}
+	intentIdx := strings.Index(got, "## Intent")
+	whatChangedIdx := strings.Index(got, "## What Changed")
+	if intentIdx < 0 || whatChangedIdx < 0 || intentIdx > whatChangedIdx {
+		t.Fatalf("expected ## Intent before ## What Changed, got:\n%s", got)
+	}
+}
+
+func TestPrependIntentSection_PreservesBacktickWrappedTags(t *testing.T) {
+	t.Parallel()
+	sctx := &pipeline.StepContext{UserIntent: "Style the `<select>` element consistently with `<input>`"}
+
+	got := prependIntentSection("## What Changed\n\n- style dropdown", sctx)
+
+	if !strings.Contains(got, "`<select>`") || !strings.Contains(got, "`<input>`") {
+		t.Fatalf("expected backtick-wrapped tags to survive unescaped, got:\n%s", got)
+	}
+	if strings.Contains(got, "&lt;") {
+		t.Fatalf("expected no escaping inside existing code spans, got:\n%s", got)
+	}
+}
+
 func TestPRStep_StripsAgentEmittedIntentBeforePrepend(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

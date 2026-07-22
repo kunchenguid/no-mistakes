@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -940,11 +941,58 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	if cleaned == "" {
 		return body
 	}
-	section := "## Intent\n\n" + cleaned
+	section := "## Intent\n\n" + escapeBareAngleBrackets(cleaned)
 	if strings.TrimSpace(body) == "" {
 		return section
 	}
 	return section + "\n\n" + body
+}
+
+var inlineCodeSpanRe = regexp.MustCompile("`[^`\n]*`")
+
+// escapeBareAngleBrackets HTML-escapes "<" and ">" in text so a stray
+// HTML-like tag (e.g. a literal <select> pasted into free-form intent text)
+// cannot be interpreted as real HTML by GitHub's markdown renderer, which
+// otherwise swallows every later heading and paragraph break into an
+// unclosed tag. Angle brackets already inside an inline code span or a
+// fenced code block are left untouched, since those already render as
+// literal text.
+func escapeBareAngleBrackets(text string) string {
+	lines := strings.Split(text, "\n")
+	inFence := false
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		lines[i] = escapeAngleBracketsOutsideCodeSpans(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func escapeAngleBracketsOutsideCodeSpans(line string) string {
+	matches := inlineCodeSpanRe.FindAllStringIndex(line, -1)
+	if len(matches) == 0 {
+		return escapeAngleBrackets(line)
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range matches {
+		b.WriteString(escapeAngleBrackets(line[last:m[0]]))
+		b.WriteString(line[m[0]:m[1]])
+		last = m[1]
+	}
+	b.WriteString(escapeAngleBrackets(line[last:]))
+	return b.String()
+}
+
+func escapeAngleBrackets(s string) string {
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
 }
 
 func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, riskLine, testingMD, pipelineMD string, bodyLimit int) prContent {
