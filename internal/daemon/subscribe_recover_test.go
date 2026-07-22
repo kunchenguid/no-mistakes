@@ -707,6 +707,87 @@ func TestRecoverPreservesInterruptedCIMonitorWorktree(t *testing.T) {
 	}
 }
 
+// TestSkipWorktreeCleanup_CIMonitorInterrupted covers the reclamation rule for
+// runs marked RunCIMonitorInterrupted (issue #361): reclaim the worktree when
+// its HEAD is the already-pushed head, but preserve it when it may hold an
+// unpushed CI auto-fix commit (see steps/ci_fix.go) so recoverable work is
+// never discarded.
+func TestSkipWorktreeCleanup_CIMonitorInterrupted(t *testing.T) {
+	tmpDir := t.TempDir()
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	repo, headSHA := setupTestGitRepo(t, p, d, "ci-skip-repo")
+	ctx := context.Background()
+
+	newInterruptedWorktree := func(t *testing.T, recordedHead string) (string, string) {
+		t.Helper()
+		run, err := d.InsertRun(repo.ID, "feature", recordedHead, headSHA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := d.UpdateRunStatus(run.ID, types.RunCIMonitorInterrupted); err != nil {
+			t.Fatal(err)
+		}
+		wtPath := p.WorktreeDir(repo.ID, run.ID)
+		if err := gitpkg.WorktreeAdd(ctx, p.RepoDir(repo.ID), wtPath, headSHA); err != nil {
+			t.Fatal(err)
+		}
+		return run.ID, wtPath
+	}
+
+	t.Run("reclaims worktree at pushed head", func(t *testing.T) {
+		runID, wtPath := newInterruptedWorktree(t, headSHA)
+		skip, reason := skipWorktreeCleanup(ctx, d, runID, wtPath)
+		if skip {
+			t.Fatalf("worktree at pushed head should be reclaimed (skip=false), got skip=true: %s", reason)
+		}
+	})
+
+	t.Run("preserves worktree holding an unpushed commit", func(t *testing.T) {
+		runID, wtPath := newInterruptedWorktree(t, headSHA)
+		gitCmd(t, wtPath, "config", "user.email", "test@test.com")
+		gitCmd(t, wtPath, "config", "user.name", "Test")
+		if err := os.WriteFile(filepath.Join(wtPath, "fix.txt"), []byte("ci fix"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, wtPath, "add", "-A")
+		gitCmd(t, wtPath, "commit", "-m", "no-mistakes: apply CI fixes")
+		skip, reason := skipWorktreeCleanup(ctx, d, runID, wtPath)
+		if !skip {
+			t.Fatal("worktree with an unpushed commit must be preserved (skip=true)")
+		}
+		if !strings.Contains(reason, "unpushed") {
+			t.Fatalf("preserve reason = %q, want it to mention unpushed", reason)
+		}
+	})
+
+	t.Run("preserves worktree whose head is unreadable", func(t *testing.T) {
+		run, err := d.InsertRun(repo.ID, "feature", headSHA, headSHA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := d.UpdateRunStatus(run.ID, types.RunCIMonitorInterrupted); err != nil {
+			t.Fatal(err)
+		}
+		wtPath := p.WorktreeDir(repo.ID, run.ID)
+		if err := os.MkdirAll(wtPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		skip, _ := skipWorktreeCleanup(ctx, d, run.ID, wtPath)
+		if !skip {
+			t.Fatal("a non-git worktree dir for a ci-interrupted run must fail safe to preserve")
+		}
+	})
+}
+
 // TestRecoverIsolatesGateRepoHooksPath covers issue #122 for existing
 // installs: bare repos created before the fix have no per-worktree
 // core.hookspath, so a husky pollution still disables their hook.

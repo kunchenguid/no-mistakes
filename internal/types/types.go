@@ -28,6 +28,23 @@ const (
 	RunCIMonitorInterruptedReason = "ci monitor interrupted by daemon restart; PR remains open"
 )
 
+// Terminal reports whether the run has reached a final state the daemon will
+// never advance further. This is the single source of truth for "is this run
+// terminal": every enumeration of terminal statuses (branchsync custody
+// recovery, the axi drive outcome check, the e2e harness wait loop) routes
+// through it so a newly added terminal status can never drift out of sync.
+// RunCIMonitorInterrupted is terminal - the daemon restarted mid-CI-monitor
+// and the run is never resumed (issue #361) - so it must classify exactly like
+// completed/failed/cancelled.
+func (s RunStatus) Terminal() bool {
+	switch s {
+	case RunCompleted, RunFailed, RunCancelled, RunCIMonitorInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
 // StepName identifies a pipeline step.
 type StepName string
 

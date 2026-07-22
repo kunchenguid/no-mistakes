@@ -38,12 +38,7 @@ const abortStateWaitTimeout = 10 * time.Second
 
 // terminalStatus reports whether a run has reached a final state.
 func terminalStatus(status string) bool {
-	switch types.RunStatus(status) {
-	case types.RunCompleted, types.RunFailed, types.RunCancelled, types.RunCIMonitorInterrupted:
-		return true
-	default:
-		return false
-	}
+	return types.RunStatus(status).Terminal()
 }
 
 // outcomeFor maps a terminal run status onto an agent-facing outcome word.
