@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -78,7 +79,10 @@ func looksLikeDaemonRun(command string) bool {
 }
 
 func extractRoot(command string) (string, bool) {
-	tokens := splitTokens(command)
+	return extractRootTokens(splitTokens(command))
+}
+
+func extractRootTokens(tokens []string) (string, bool) {
 	for i := 0; i < len(tokens); i++ {
 		switch {
 		case tokens[i] == "--root":
@@ -94,6 +98,13 @@ func extractRoot(command string) (string, bool) {
 }
 
 func splitTokens(command string) []string {
+	if runtime.GOOS == "windows" {
+		return splitWindowsTokens(command)
+	}
+	return splitUnixTokens(command)
+}
+
+func splitUnixTokens(command string) []string {
 	var tokens []string
 	var cur strings.Builder
 	inQuotes := false
@@ -121,6 +132,55 @@ func splitTokens(command string) []string {
 		}
 	}
 	flush()
+	return tokens
+}
+
+func splitWindowsTokens(command string) []string {
+	var tokens []string
+	for i := 0; i < len(command); {
+		for i < len(command) && (command[i] == ' ' || command[i] == '\t') {
+			i++
+		}
+		if i == len(command) {
+			break
+		}
+
+		var cur strings.Builder
+		inQuotes := false
+		for i < len(command) {
+			if (command[i] == ' ' || command[i] == '\t') && !inQuotes {
+				break
+			}
+			if command[i] == '"' {
+				inQuotes = !inQuotes
+				i++
+				continue
+			}
+			if command[i] != '\\' {
+				cur.WriteByte(command[i])
+				i++
+				continue
+			}
+
+			start := i
+			for i < len(command) && command[i] == '\\' {
+				i++
+			}
+			backslashes := i - start
+			if i < len(command) && command[i] == '"' {
+				cur.WriteString(strings.Repeat(`\`, backslashes/2))
+				if backslashes%2 == 0 {
+					inQuotes = !inQuotes
+				} else {
+					cur.WriteByte('"')
+				}
+				i++
+				continue
+			}
+			cur.WriteString(strings.Repeat(`\`, backslashes))
+		}
+		tokens = append(tokens, cur.String())
+	}
 	return tokens
 }
 

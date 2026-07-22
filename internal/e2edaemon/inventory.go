@@ -44,7 +44,8 @@ type inventoryFile struct {
 type Inventory struct {
 	Dir string
 
-	mu sync.Mutex
+	mu          sync.Mutex
+	findDaemons func(string) ([]int, error)
 }
 
 // DirFromEnv returns the inventory directory from NM_E2E_DAEMON_INVENTORY,
@@ -77,7 +78,14 @@ func OpenDir(dir string) (*Inventory, error) {
 	if err := os.MkdirAll(filepath.Join(dir, slotsDirName), 0o700); err != nil {
 		return nil, fmt.Errorf("e2edaemon: mkdir slots: %w", err)
 	}
-	return &Inventory{Dir: dir}, nil
+	return &Inventory{Dir: dir, findDaemons: FindDaemonsForRoot}, nil
+}
+
+func (inv *Inventory) daemonsForRoot(nmHome string) ([]int, error) {
+	if inv.findDaemons != nil {
+		return inv.findDaemons(nmHome)
+	}
+	return FindDaemonsForRoot(nmHome)
 }
 
 func (inv *Inventory) path() string {

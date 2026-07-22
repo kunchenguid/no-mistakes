@@ -80,6 +80,43 @@ func TestCommandMatchesDaemonRoot(t *testing.T) {
 	}
 }
 
+func TestSplitWindowsTokensPreservesRootPath(t *testing.T) {
+	command := `"C:\Program Files\no-mistakes.exe" daemon run --root "C:\Users\tester\AppData\Local\Temp\nm-e2e-1\nmhome"`
+	tokens := splitWindowsTokens(command)
+	want := `C:\Users\tester\AppData\Local\Temp\nm-e2e-1\nmhome`
+	root, ok := extractRootTokens(tokens)
+	if !ok || root != want {
+		t.Fatalf("root = %q, %v; want %q, true; tokens=%q", root, ok, want, tokens)
+	}
+}
+
+func TestReapAllRetainsEntryWhenProcessCheckIsInconclusive(t *testing.T) {
+	dir := t.TempDir()
+	inv, err := OpenDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nmHome := filepath.Join(dir, "nm-e2e-retry", "nmhome")
+	if err := inv.Register("retry", nmHome, "", 0, os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	inv.findDaemons = func(string) ([]int, error) {
+		return nil, os.ErrPermission
+	}
+
+	result := inv.ReapAll()
+	if result.Removed != 0 || len(result.Errors) == 0 {
+		t.Fatalf("reap result = %+v", result)
+	}
+	entries, err := inv.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].ID != "retry" {
+		t.Fatalf("entry was not retained: %+v", entries)
+	}
+}
+
 func TestIsAllowedTempRoot(t *testing.T) {
 	cases := []struct {
 		path string

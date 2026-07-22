@@ -64,7 +64,7 @@ func (inv *Inventory) reapEntry(e Entry, result *ReapResult) error {
 	if e.PID > 0 && MatchesDaemonRoot(e.PID, e.NMHome) {
 		targets[e.PID] = struct{}{}
 	}
-	if found, err := FindDaemonsForRoot(e.NMHome); err == nil {
+	if found, err := inv.daemonsForRoot(e.NMHome); err == nil {
 		for _, pid := range found {
 			targets[pid] = struct{}{}
 		}
@@ -78,6 +78,13 @@ func (inv *Inventory) reapEntry(e Entry, result *ReapResult) error {
 			continue
 		}
 		result.Killed++
+	}
+	found, err := inv.daemonsForRoot(e.NMHome)
+	if err != nil {
+		return fmt.Errorf("confirm daemon exit: %w", err)
+	}
+	if len(found) > 0 {
+		return fmt.Errorf("matching daemon processes remain: %v", found)
 	}
 
 	if err := inv.Unregister(e.ID); err != nil {
@@ -226,22 +233,21 @@ func (o *Ownership) StopBestEffort() {
 }
 
 // Release stops best-effort, reaps any leftover matched process for this
-// home only, unregisters the inventory entry, and frees the slot.
+// home only, and frees the slot. Inconclusive cleanup remains inventoried.
 func (o *Ownership) Release() {
 	if o == nil {
 		return
 	}
-	o.StopBestEffort()
 	if o.Inv != nil {
-		// Targeted kill for this home only.
-		if found, err := FindDaemonsForRoot(o.NMHome); err == nil {
-			for _, pid := range found {
-				if MatchesDaemonRoot(pid, o.NMHome) {
-					_ = terminateMatched(pid)
+		entries, err := o.Inv.List()
+		if err == nil {
+			for _, entry := range entries {
+				if entry.ID == o.ID {
+					_ = o.Inv.reapEntry(entry, &ReapResult{})
+					break
 				}
 			}
 		}
-		_ = o.Inv.Unregister(o.ID)
 	}
 	if o.Slot != nil {
 		o.Slot.Release()
