@@ -25,6 +25,7 @@ type acpxAgent struct {
 	// mechanism that reaches the target agent; empty leaves the target on its
 	// configured default, exactly as before the common layer existed.
 	model string
+	subprocessContext
 }
 
 func (a *acpxAgent) Name() string { return "acp:" + a.target }
@@ -45,7 +46,7 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 	args := a.buildArgs(opts)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Env = gitSafeEnv(opts.CWD, opts.Env)
+	cmd.Env = a.gitSafeEnv(opts.CWD, opts.Env)
 	shellenv.ConfigureShellCommand(cmd)
 
 	stdin, err := cmd.StdinPipe()

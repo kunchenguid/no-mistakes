@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agentcfg"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -254,6 +255,7 @@ type InvocationWorkload struct {
 // targets, to raw ACP agent commands.
 type Options struct {
 	ACPRegistryOverrides map[string]string
+	Environment          runenv.Overlay
 	// DisableProjectSettings, when true, asks a supported adapter (codex,
 	// claude, pi) to launch with the target repo's project-level agent
 	// settings/instructions suppressed. It is the resolved, trusted-only opt-out
@@ -865,7 +867,7 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	}
 	if target, ok := types.ACPTargetFor(name); ok {
 		rawCommand := types.ACPRawCommand(target, opts.ACPRegistryOverrides)
-		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand, model: opts.Profile.Model}, nil
+		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand, model: opts.Profile.Model, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	}
 	// Mapped flags follow the operator's raw agent_args_override flags, so they
 	// still precede no-mistakes' managed flags in every adapter's argv. A knob
@@ -879,21 +881,26 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	}
 	switch name {
 	case types.AgentClaude:
-		return &claudeAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
+		return &claudeAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	case types.AgentCodex:
-		return &codexAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
+		return &codexAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	case types.AgentGrok:
-		return &grokAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
+		return &grokAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	case types.AgentRovoDev:
-		return &rovodevAgent{bin: bin, extraArgs: extraArgs}, nil
+		return &rovodevAgent{bin: bin, extraArgs: extraArgs, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	case types.AgentOpenCode:
-		return &opencodeAgent{bin: bin, extraArgs: extraArgs, profile: opts.Profile}, nil
+		return &opencodeAgent{bin: bin, extraArgs: extraArgs, profile: opts.Profile, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	case types.AgentPi:
-		return &piAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
+		return &piAgent{
+			bin:                    bin,
+			extraArgs:              extraArgs,
+			disableProjectSettings: opts.DisableProjectSettings,
+			subprocessContext:      newSubprocessContext(opts.Environment),
+		}, nil
 	case types.AgentCopilot:
-		return &copilotAgent{bin: bin, extraArgs: extraArgs}, nil
+		return &copilotAgent{bin: bin, extraArgs: extraArgs, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	case types.AgentAntigravity:
-		return &antigravityAgent{bin: bin, extraArgs: extraArgs}, nil
+		return &antigravityAgent{bin: bin, extraArgs: extraArgs, subprocessContext: newSubprocessContext(opts.Environment)}, nil
 	default:
 		return nil, fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, antigravity, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
 	}

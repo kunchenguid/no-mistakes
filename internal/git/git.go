@@ -84,7 +84,7 @@ func runInDirWithEnv(ctx context.Context, dir string, extraEnv []string, args ..
 func runInDirWithEnvRaw(ctx context.Context, dir string, extraEnv []string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(NonInteractiveEnv(dir), extraEnv...)
+	cmd.Env = append(nonInteractiveEnvForContext(ctx, dir), extraEnv...)
 	winproc.Harden(cmd)
 	// OutputShellCommand captures stdout only, so unlike cmd.Output it never
 	// fills ExitError.Stderr. Capture stderr explicitly or the git error text
@@ -151,6 +151,7 @@ func isBareGitDir(dir string) bool {
 // InitBare creates a new bare git repository at the given path.
 func InitBare(ctx context.Context, path string) error {
 	cmd := exec.CommandContext(ctx, "git", "init", "--bare", path)
+	cmd.Env = nonInteractiveEnvForContext(ctx, "")
 	winproc.Harden(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -681,7 +682,7 @@ func ExactRefTarget(ctx context.Context, dir, ref string) (string, bool, error) 
 // result rather than a loud error.
 func RefExists(ctx context.Context, dir, ref string) (bool, error) {
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
-	cmd.Env = NonInteractiveEnv(dir)
+	cmd.Env = nonInteractiveEnvForContext(ctx, dir)
 	winproc.Harden(cmd)
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
