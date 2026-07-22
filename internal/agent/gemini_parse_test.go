@@ -15,16 +15,16 @@ func TestParseGeminiEvents_IgnoresSystemEvents(t *testing.T) {
 
 	var usage TokenUsage
 	var result *geminiResult
-	
+
 	err := parseGeminiEvents(context.Background(), strings.NewReader(stream), nil, &usage, &result)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	
+
 	if result == nil {
 		t.Fatalf("expected result, got nil")
 	}
-	
+
 	if result.Text != "hello world" {
 		t.Errorf("expected text 'hello world', got %q", result.Text)
 	}
