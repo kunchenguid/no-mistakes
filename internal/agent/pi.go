@@ -23,6 +23,7 @@ type piAgent struct {
 	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
 	// buildArgs suppresses pi's project-level AGENTS.md/CLAUDE.md discovery.
 	disableProjectSettings bool
+	subprocessContext
 }
 
 func (a *piAgent) Name() string { return "pi" }
@@ -63,7 +64,7 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	args := a.buildArgs(opts.Session)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Env = gitSafeEnv(opts.CWD, opts.Env)
+	cmd.Env = a.gitSafeEnv(opts.CWD, opts.Env)
 	shellenv.ConfigureShellCommand(cmd)
 
 	stdin, err := cmd.StdinPipe()

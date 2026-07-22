@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/eval"
+	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -23,6 +24,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/procreap"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -100,6 +102,7 @@ type recoveredRunPlan struct {
 	cfg     *config.Config
 	agent   agent.Agent
 	steps   []pipeline.Step
+	forge   *forgecontext.Context
 }
 
 func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPlan {
@@ -164,7 +167,11 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err != nil {
 		return nil, err
 	}
-	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath)
+	forgeCtx, err := forgecontext.Resolve(ctx, cfg.ForgeProfiles, repo.UpstreamURL, repo.ForkURL)
+	if err != nil {
+		return nil, fmt.Errorf("resolve forge profile: %w", err)
+	}
+	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath, forgeEnvironment(forgeCtx))
 	if err != nil {
 		return nil, err
 	}
@@ -182,6 +189,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 		cfg:     cfg,
 		agent:   ag,
 		steps:   execSteps,
+		forge:   forgeCtx,
 	}, nil
 }
 
@@ -246,7 +254,7 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	return cfg, nil
 }
 
-func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error)) (agent.Agent, error) {
+func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot string, lookPath func(string) (string, error), environment runenv.Overlay) (agent.Agent, error) {
 	if steps.IsDemoMode() {
 		return agent.NewNoop(), nil
 	}
@@ -263,6 +271,7 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 			ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 			DisableProjectSettings: cfg.DisableProjectSettings,
 			Profile:                cfg.AgentProfileFor(name),
+			Environment:            environment,
 		})
 		if err != nil {
 			for _, existing := range created {
@@ -283,6 +292,13 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, evidenceRoot stri
 		}
 	}
 	return ag, nil
+}
+
+func forgeEnvironment(ctx *forgecontext.Context) runenv.Overlay {
+	if ctx == nil {
+		return runenv.Overlay{}
+	}
+	return ctx.Environment
 }
 
 func resolveGitPath(workDir, value string) string {
@@ -325,6 +341,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			m.relabelEvalRun(context.Background(), plan.cfg, runID)
 		}()
 	})
+	executor.SetForgeContext(plan.forge)
 	done := make(chan struct{})
 	m.mu.Lock()
 	m.executors[plan.run.ID] = executor
@@ -975,6 +992,12 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			return "", err
 		}
 	}
+	forgeCtx, err := forgecontext.Resolve(ctx, cfg.ForgeProfiles, repo.UpstreamURL, repo.ForkURL)
+	if err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("resolve forge profile: %s", err))
+		trackStartFailure("resolve_forge_profile")
+		return "", fmt.Errorf("resolve forge profile: %w", err)
+	}
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
 	var ag agent.Agent
@@ -996,6 +1019,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 				ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 				DisableProjectSettings: cfg.DisableProjectSettings,
 				Profile:                cfg.AgentProfileFor(name),
+				Environment:            forgeEnvironment(forgeCtx),
 			})
 			if agErr != nil {
 				m.db.UpdateRunError(run.ID, fmt.Sprintf("create agent %s: %s", name, agErr))
@@ -1035,6 +1059,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	// Create executor with event broadcast.
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
+	executor.SetForgeContext(forgeCtx)
 	executor.SetSkippedSteps(skipSteps)
 	executor.SetOnPRMerged(func(_ context.Context, runID string) {
 		m.wg.Add(1)

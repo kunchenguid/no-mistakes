@@ -16,6 +16,7 @@ import (
 
 // antigravityAgent spawns the agy CLI for each invocation.
 type antigravityAgent struct {
+	subprocessContext
 	bin       string
 	extraArgs []string
 }
@@ -73,7 +74,7 @@ func (a *antigravityAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, 
 	args := a.buildArgs(opts.Prompt, schemaPath)
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Env = gitSafeEnv(opts.CWD)
+	cmd.Env = a.gitSafeEnv(opts.CWD)
 	shellenv.ConfigureShellCommand(cmd)
 
 	started, err := startNativeAgentCommand(cmd)
