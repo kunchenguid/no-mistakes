@@ -29,6 +29,9 @@ type Context struct {
 // configured remotes. A nil result means profile routing is inactive for the
 // repository and callers must preserve ambient behavior.
 func Resolve(ctx context.Context, profiles config.ForgeProfiles, upstreamURL, forkURL string) (*Context, error) {
+	if len(profiles) == 0 {
+		return nil, nil
+	}
 	upstreamHost := scm.ExtractHost(upstreamURL)
 	forkHost := scm.ExtractHost(forkURL)
 	profile, profileHost, ok, err := selectProfile(profiles, upstreamHost, forkHost)
