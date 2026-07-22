@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -369,6 +371,101 @@ func TestPRStateAndMergeableTargetKnownPRByURL(t *testing.T) {
 	}
 	if len(mergeArgs) != 1 || len(mergeArgs[0]) < 4 || mergeArgs[0][3] != prURL {
 		t.Fatalf("GetMergeableState selector = %v, want %q at argv[3]", mergeArgs, prURL)
+	}
+}
+
+func TestGetChecksFailureIncludesSafeDiagnosticAndWrappedError(t *testing.T) {
+	t.Parallel()
+
+	const command = "gh pr checks 123 --json name,state,bucket,completedAt"
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		command: {
+			stderr: "\n  authentication failed for https://token:ghp_secret@example.com/org/repo  \nignored detail\n",
+			code:   1,
+		},
+	}), nil, "", "")
+
+	_, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err == nil {
+		t.Fatal("GetChecks() error = nil, want error")
+	}
+	const want = "gh pr checks: exit status 1: authentication failed for https://redacted@example.com/org/repo"
+	if got := err.Error(); got != want {
+		t.Fatalf("GetChecks() error = %q, want %q", got, want)
+	}
+	if strings.Contains(err.Error(), "ghp_secret") || strings.Contains(err.Error(), "ignored detail") {
+		t.Fatalf("GetChecks() error exposed unsafe or later output: %q", err)
+	}
+
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("errors.As(%T) = false, want wrapped *exec.ExitError", err)
+	}
+	if got := exitErr.ExitCode(); got != 1 {
+		t.Fatalf("wrapped exit code = %d, want 1", got)
+	}
+}
+
+func TestGetChecksFailureDiagnosticIsBoundedAndValidUTF8(t *testing.T) {
+	t.Parallel()
+
+	const maxDiagnosticBytes = 200
+	const command = "gh pr checks 123 --json name,state,bucket,completedAt"
+	line := "request failed: \xff" + strings.Repeat("界", 100)
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		command: {stderr: line + "\n", code: 1},
+	}), nil, "", "")
+
+	_, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err == nil {
+		t.Fatal("GetChecks() error = nil, want error")
+	}
+	detail := strings.TrimPrefix(err.Error(), "gh pr checks: exit status 1: ")
+	if detail == err.Error() {
+		t.Fatalf("GetChecks() error = %q, want diagnostic detail", err)
+	}
+	if got := len(detail); got > maxDiagnosticBytes {
+		t.Fatalf("diagnostic length = %d bytes, want <= %d", got, maxDiagnosticBytes)
+	}
+	if !utf8.ValidString(detail) {
+		t.Fatalf("diagnostic is invalid UTF-8: %q", detail)
+	}
+	if !strings.HasPrefix(detail, "request failed: �") {
+		t.Fatalf("diagnostic = %q, want useful prefix", detail)
+	}
+}
+
+func TestGetChecksFailureWithEmptyOutputFormatsCleanly(t *testing.T) {
+	t.Parallel()
+
+	const command = "gh pr checks 123 --json name,state,bucket,completedAt"
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		command: {code: 1},
+	}), nil, "", "")
+
+	_, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err == nil {
+		t.Fatal("GetChecks() error = nil, want error")
+	}
+	if got, want := err.Error(), "gh pr checks: exit status 1"; got != want {
+		t.Fatalf("GetChecks() error = %q, want %q", got, want)
+	}
+}
+
+func TestGetChecksNoChecksReportedStillReturnsEmptySuccess(t *testing.T) {
+	t.Parallel()
+
+	const command = "gh pr checks 123 --json name,state,bucket,completedAt"
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		command: {stderr: "no checks reported on the 'feature' branch\n", code: 1},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v, want nil", err)
+	}
+	if checks != nil {
+		t.Fatalf("GetChecks() checks = %+v, want nil", checks)
 	}
 }
 
