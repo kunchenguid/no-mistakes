@@ -172,7 +172,15 @@ func TestCopyEffectiveUserIdentityUsesConditionalConfig(t *testing.T) {
 	includePath := filepath.Join(t.TempDir(), "identity.gitconfig")
 	writeFile(t, includePath, "[user]\n\tname = Conditional User\n\temail = conditional@example.com\n")
 	globalPath := filepath.Join(t.TempDir(), "gitconfig")
-	writeFile(t, globalPath, fmt.Sprintf("[includeIf \"gitdir:%s\"]\n\tpath = %s\n", filepath.ToSlash(filepath.Join(src, ".git")), filepath.ToSlash(includePath)))
+	// Match the canonical git dir path. Git resolves the gitdir to its real path
+	// before matching includeIf "gitdir:" (symlinks on macOS: /var -> /private/var;
+	// 8.3 short names on Windows: RUNNER~1 -> runneradmin), so build the pattern
+	// from the resolved path or the condition never matches on those platforms.
+	gitDir, err := filepath.EvalSymlinks(filepath.Join(src, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, globalPath, fmt.Sprintf("[includeIf \"gitdir:%s\"]\n\tpath = %s\n", filepath.ToSlash(gitDir), filepath.ToSlash(includePath)))
 	t.Setenv("GIT_CONFIG_GLOBAL", globalPath)
 
 	if err := CopyEffectiveUserIdentity(ctx, src, dst); err != nil {

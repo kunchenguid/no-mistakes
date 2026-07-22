@@ -80,6 +80,12 @@ func TestMain(m *testing.M) {
 	_ = os.Setenv("HOME", home)
 	_ = os.Setenv("NO_MISTAKES_TELEMETRY", "off")
 	_ = os.Setenv("NO_MISTAKES_NO_UPDATE_CHECK", "1")
+	// Tests that start a real daemon poll for it to become responsive. The
+	// production default (5s) is too tight for loaded CI runners (macOS in
+	// particular has been seen taking ~6s), so give the package a generous
+	// default. Individual tests that assert on a short timeout still override
+	// this via t.Setenv.
+	_ = os.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "60s")
 
 	code := m.Run()
 
