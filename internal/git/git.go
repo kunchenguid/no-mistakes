@@ -463,8 +463,10 @@ func CommitAll(ctx context.Context, dir, message string) error {
 	return err
 }
 
-// CopyLocalUserIdentity copies local user.name and user.email from srcDir into
-// dstDir. Missing values in srcDir are ignored.
+// CopyEffectiveUserIdentity copies the effective user.name and user.email from
+// srcDir into dstDir. This honors Git's normal config precedence, including
+// conditional includes and repository-local overrides. Missing values in
+// srcDir are ignored.
 //
 // The write into dstDir uses per-worktree scope (`git config --worktree`) when
 // the repository has worktree config enabled. dstDir is typically a linked
@@ -475,9 +477,9 @@ func CommitAll(ctx context.Context, dir, message string) error {
 // config: File exists". Writing per-worktree puts each run's identity in its own
 // <bare>/worktrees/<id>/config.worktree, so concurrent startups never contend.
 // Older Git without `--worktree` support falls back to `--local`.
-func CopyLocalUserIdentity(ctx context.Context, srcDir, dstDir string) error {
+func CopyEffectiveUserIdentity(ctx context.Context, srcDir, dstDir string) error {
 	for _, key := range []string{"user.name", "user.email"} {
-		value, err := Run(ctx, srcDir, "config", "--local", "--get", "--default", "", key)
+		value, err := Run(ctx, srcDir, "config", "--get", "--default", "", key)
 		if err != nil {
 			return err
 		}
