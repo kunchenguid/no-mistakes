@@ -15,6 +15,12 @@ import (
 )
 
 func main() {
+	if os.Getenv("NM_E2E_REAP_ABANDONED") == "1" {
+		for _, err := range e2edaemon.ReapAbandoned(os.Getenv("NM_E2E_DAEMON_INVENTORY_PARENT"), os.Getenv(e2edaemon.EnvInventory)) {
+			fmt.Fprintf(os.Stderr, "e2e-reap: %v\n", err)
+		}
+		return
+	}
 	inv, err := e2edaemon.Open()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "e2e-reap: open inventory: %v\n", err)

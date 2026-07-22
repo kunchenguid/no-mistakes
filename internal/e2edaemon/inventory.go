@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -22,6 +24,7 @@ const (
 
 	inventoryFileName = "inventory.json"
 	lockFileName      = "inventory.lock"
+	ownerFileName     = "owner.pid"
 	slotsDirName      = "slots"
 )
 
@@ -263,4 +266,65 @@ func (inv *Inventory) writeUnlocked(file *inventoryFile) error {
 
 func sameHome(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+func ReapAbandoned(parent, activeDir string) []error {
+	if parent == "" || activeDir == "" {
+		return []error{fmt.Errorf("e2edaemon: inventory parent and active directory are required")}
+	}
+	parent, err := filepath.Abs(parent)
+	if err != nil {
+		return []error{err}
+	}
+	activeDir, err = filepath.Abs(activeDir)
+	if err != nil {
+		return []error{err}
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return []error{err}
+	}
+	var errs []error
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "run-") {
+			continue
+		}
+		dir := filepath.Join(parent, entry.Name())
+		if samePath(dir, activeDir) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, ownerFileName))
+		if err != nil {
+			continue
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil || pid <= 0 {
+			continue
+		}
+		alive, err := processAlive(pid)
+		if err != nil || alive {
+			continue
+		}
+		inv, err := OpenDir(dir)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", entry.Name(), err))
+			continue
+		}
+		result := inv.ReapAll()
+		if len(result.Errors) > 0 {
+			errs = append(errs, fmt.Errorf("%s: %s", entry.Name(), strings.Join(result.Errors, "; ")))
+			continue
+		}
+		remaining, err := inv.List()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", entry.Name(), err))
+			continue
+		}
+		if len(remaining) == 0 {
+			if err := os.RemoveAll(dir); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", entry.Name(), err))
+			}
+		}
+	}
+	return errs
 }

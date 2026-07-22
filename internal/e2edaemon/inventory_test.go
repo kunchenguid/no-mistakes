@@ -3,6 +3,7 @@ package e2edaemon
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -58,6 +59,48 @@ func TestInventoryCorruptFileRecoversEmpty(t *testing.T) {
 	}
 	if len(list) != 0 {
 		t.Fatalf("corrupt inventory should read as empty, got %+v", list)
+	}
+}
+
+func TestReapAbandonedInventories(t *testing.T) {
+	parent := t.TempDir()
+	active := filepath.Join(parent, "run-active")
+	live := filepath.Join(parent, "run-live")
+	stale := filepath.Join(parent, "run-stale")
+	for _, dir := range []string{active, live, stale} {
+		inv, err := OpenDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := inv.Register(filepath.Base(dir), filepath.Join(dir, "nm-e2e-case", "nmhome"), "", 0, os.Getpid()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(active, ownerFileName), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(live, ownerFileName), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, ownerFileName), []byte("999999999"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if errs := ReapAbandoned(parent, active); len(errs) > 0 {
+		t.Fatalf("ReapAbandoned: %v", errs)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale inventory still exists: %v", err)
+	}
+	for _, dir := range []string{active, live} {
+		inv, err := OpenDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries, err := inv.List()
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("live inventory %s changed: entries=%+v err=%v", dir, entries, err)
+		}
 	}
 }
 
