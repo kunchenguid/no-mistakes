@@ -175,11 +175,10 @@ func TestCopyEffectiveUserIdentityUsesConditionalConfig(t *testing.T) {
 	// Match the canonical git dir path. Git resolves the gitdir to its real path
 	// before matching includeIf "gitdir:" (symlinks on macOS: /var -> /private/var;
 	// 8.3 short names on Windows: RUNNER~1 -> runneradmin), so build the pattern
-	// from the resolved path or the condition never matches on those platforms.
-	gitDir, err := filepath.EvalSymlinks(filepath.Join(src, ".git"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	// from git's own reported git dir. Go's filepath.EvalSymlinks diverges from
+	// git's resolution on Windows (drive-letter case, short-name handling), so
+	// asking git for --absolute-git-dir is the only form guaranteed to match.
+	gitDir := run(t, src, "git", "rev-parse", "--absolute-git-dir")
 	writeFile(t, globalPath, fmt.Sprintf("[includeIf \"gitdir:%s\"]\n\tpath = %s\n", filepath.ToSlash(gitDir), filepath.ToSlash(includePath)))
 	t.Setenv("GIT_CONFIG_GLOBAL", globalPath)
 
