@@ -1,6 +1,9 @@
 package tui
 
-import "github.com/kunchenguid/no-mistakes/internal/ipc"
+import (
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
+)
 
 // eventMsg wraps an IPC event received from the daemon.
 type eventMsg struct {
@@ -30,6 +33,9 @@ type rerunErrMsg struct {
 }
 
 type spinnerTickMsg struct{}
+
+type syncRefreshedMsg struct{ state branchsync.State }
+type syncAppliedMsg struct{ state branchsync.State }
 
 // connectedMsg signals that the event subscription is ready.
 type connectedMsg struct {

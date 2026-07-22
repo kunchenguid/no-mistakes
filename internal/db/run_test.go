@@ -303,6 +303,35 @@ func TestUpdateRunStatus(t *testing.T) {
 	}
 }
 
+func TestRunPushBindingIsForwardOnlyAndLegacyRowsStayNullable(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/repo-sync-binding", "https://example.com/repo.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.SubmittedHeadSHA == nil || *run.SubmittedHeadSHA != "submitted" || run.LastPushedSHA != nil {
+		t.Fatalf("new run provenance = %#v", run)
+	}
+	binding := PushBinding{HeadSHA: "pushed-1", TargetKind: "fork", TargetFingerprint: "digest-only", Ref: "refs/heads/feature"}
+	if err := d.UpdateRunPushBinding(run.ID, binding); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPushBinding(run.ID, PushBinding{HeadSHA: "pushed-2", TargetKind: "fork", TargetFingerprint: "digest-only", Ref: "refs/heads/feature"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := d.GetRun(run.ID)
+	if got.LastPushedSHA == nil || *got.LastPushedSHA != "pushed-2" || got.PushGeneration == nil || *got.PushGeneration != 2 {
+		t.Fatalf("push binding = %#v", got)
+	}
+	if got.PushTargetFingerprint == nil || *got.PushTargetFingerprint != "digest-only" {
+		t.Fatalf("target fingerprint = %#v", got.PushTargetFingerprint)
+	}
+	if got.SubmittedHeadSHA == nil || *got.SubmittedHeadSHA != "submitted" {
+		t.Fatalf("submitted head was mutated: %#v", got.SubmittedHeadSHA)
+	}
+}
+
 func TestUpdateRunPRURL(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
@@ -501,5 +530,37 @@ func TestRecoverStaleRunsNoStaleRuns(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("recovered count = %d, want 0", count)
+	}
+}
+
+func TestSetRunCustodyReturnedStampsOnceAndSurvivesStatusUpdates(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/custody", "git@github.com:user/custody.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feat", "abc", "def")
+
+	got, err := d.GetRun(run.ID)
+	if err != nil || got.CustodyReturnedAt != nil {
+		t.Fatalf("fresh run custody = %#v, err %v", got.CustodyReturnedAt, err)
+	}
+
+	if err := d.SetRunCustodyReturned(run.ID); err != nil {
+		t.Fatalf("set custody returned: %v", err)
+	}
+	got, _ = d.GetRun(run.ID)
+	if got.CustodyReturnedAt == nil {
+		t.Fatal("custody stamp missing after set")
+	}
+	first := *got.CustodyReturnedAt
+
+	// Re-stamping is idempotent: the original recovery moment is preserved.
+	if err := d.SetRunCustodyReturned(run.ID); err != nil {
+		t.Fatalf("re-stamp: %v", err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+	got, _ = d.GetRun(run.ID)
+	if got.CustodyReturnedAt == nil || *got.CustodyReturnedAt != first {
+		t.Fatalf("custody stamp changed: %#v, want %d", got.CustodyReturnedAt, first)
 	}
 }

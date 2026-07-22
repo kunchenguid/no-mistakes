@@ -6,7 +6,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"gopkg.in/yaml.v3"
 )
@@ -21,7 +23,33 @@ const (
 	ProviderUnknown     Provider = "unknown"
 )
 
+type sshHostnameLookup func(context.Context, string) (string, error)
+
+// DetectProvider identifies the SCM provider for url. SSH host aliases are
+// resolved through the user's SSH configuration before detection falls back to
+// ProviderUnknown.
 func DetectProvider(url string) Provider {
+	return DetectProviderContext(context.Background(), url)
+}
+
+// DetectProviderContext is DetectProvider with caller-controlled cancellation.
+func DetectProviderContext(ctx context.Context, url string) Provider {
+	return detectProvider(ctx, url, lookupSSHHostname)
+}
+
+func detectProvider(ctx context.Context, url string, lookup sshHostnameLookup) Provider {
+	if provider := detectProviderWithoutSSH(url); provider != ProviderUnknown {
+		return provider
+	}
+
+	host := resolveHost(ctx, url, lookup)
+	if host == "" || strings.EqualFold(host, ExtractHost(url)) {
+		return ProviderUnknown
+	}
+	return detectProviderWithoutSSH(host)
+}
+
+func detectProviderWithoutSSH(url string) Provider {
 	lower := strings.ToLower(url)
 	switch {
 	case strings.Contains(lower, "github.com"):
@@ -55,6 +83,69 @@ func DetectProvider(url string) Provider {
 	}
 
 	return ProviderUnknown
+}
+
+// ResolveHost returns the canonical host for a remote. For SSH remotes it
+// honors HostName mappings from the user's SSH configuration while preserving
+// the original remote URL for all Git operations.
+func ResolveHost(ctx context.Context, remote string) string {
+	return resolveHost(ctx, remote, lookupSSHHostname)
+}
+
+func resolveHost(ctx context.Context, remote string, lookup sshHostnameLookup) string {
+	host := ExtractHost(remote)
+	if host == "" || !isSSHRemote(remote) || lookup == nil {
+		return host
+	}
+
+	resolved, err := lookup(ctx, host)
+	if err != nil {
+		return host
+	}
+	resolved = strings.ToLower(strings.TrimSpace(stripPort(resolved)))
+	if resolved == "" {
+		return host
+	}
+	return resolved
+}
+
+func isSSHRemote(remote string) bool {
+	remote = strings.TrimSpace(remote)
+	lower := strings.ToLower(remote)
+	if strings.HasPrefix(lower, "ssh://") {
+		return true
+	}
+	if strings.Contains(remote, "://") {
+		return false
+	}
+	colon := strings.IndexByte(remote, ':')
+	if colon <= 0 {
+		return false
+	}
+	if colon == 1 && len(remote) >= 3 && ((remote[0] >= 'a' && remote[0] <= 'z') || (remote[0] >= 'A' && remote[0] <= 'Z')) && (remote[2] == '/' || remote[2] == '\\') {
+		return false
+	}
+	slash := strings.IndexAny(remote, `/\\`)
+	return slash < 0 || colon < slash
+}
+
+func lookupSSHHostname(ctx context.Context, alias string) (string, error) {
+	lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(lookupCtx, "ssh", "-G", "--", alias)
+	shellenv.ConfigureShellCommand(cmd)
+	out, err := shellenv.OutputShellCommand(cmd)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && strings.EqualFold(fields[0], "hostname") {
+			return fields[1], nil
+		}
+	}
+	return "", nil
 }
 
 // glabKnowsHost reports whether host appears in glab's configured hosts map,

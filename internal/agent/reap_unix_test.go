@@ -154,6 +154,33 @@ exit 0
 	}
 }
 
+func TestClaudeAgent_LargeStdinReapsGrandchildHoldingPipesOnLeaderExit(t *testing.T) {
+	dir := t.TempDir()
+	readyFile := filepath.Join(dir, "ready")
+	pidFile := filepath.Join(dir, "grandchild.pid")
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "spawn-grandchild")
+	t.Setenv("NM_CLAUDE_STDIN_READY", readyFile)
+	t.Setenv("NM_CLAUDE_STDIN_PID", pidFile)
+
+	a := newClaudeStdinHelperAgent(t)
+	result, err := a.runOnce(context.Background(), RunOpts{
+		Prompt: strings.Repeat("p", 2*1024*1024),
+		CWD:    dir,
+	})
+	if err != nil {
+		t.Fatalf("Claude run with inherited-pipe holder: %v", err)
+	}
+	if result.Text != "ok" {
+		t.Fatalf("Claude result text = %q, want ok", result.Text)
+	}
+
+	grandchild := waitForPidFile(t, pidFile, 5*time.Second)
+	if !pidGoneWithin(grandchild, 5*time.Second) {
+		_ = syscall.Kill(grandchild, syscall.SIGKILL)
+		t.Fatalf("Claude grandchild pid %d survived clean leader exit", grandchild)
+	}
+}
+
 func TestCodexAgent_Run_ReapsGrandchildHoldingStdoutPipeOnLeaderExit(t *testing.T) {
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "grandchild.pid")

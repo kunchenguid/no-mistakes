@@ -1,0 +1,6 @@
+=== RUN   TestReapAll_ChildSIGKILL_WrapperReaps
+    reaper_test.go:319: after SIGKILL of the owning test child: detached daemon still live for exact temp root /private/tmp/nm-e2e-own-test-1009766108/nm-e2e-sigkill/nmhome at pids [92732]
+    reaper_test.go:333: after suite-role reap: result={Entries:1 Stopped:0 Killed:1 Removed:1 Skipped:0 Errors:[]} remaining_pids=[] find_error=<nil> inventory_entries=[] list_error=<nil>
+--- PASS: TestReapAll_ChildSIGKILL_WrapperReaps (1.03s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/e2edaemon	1.383s

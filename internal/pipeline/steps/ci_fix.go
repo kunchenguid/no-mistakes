@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -16,6 +18,10 @@ import (
 // when the agent produced no changes, or (false, err) on failure.
 func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, failingNames []string, mergeConflict bool) (bool, error) {
 	ctx := sctx.Ctx
+	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
+		return false, err
+	}
+	defer func() { _ = sctx.DB.SetRunPushActive(sctx.Run.ID, false) }()
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	rebaseBaseSHA := resolveDefaultBranchTipSHA(ctx, sctx.WorkDir, sctx.Repo.UpstreamURL, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	promptBaseSHA := baseSHA
@@ -142,7 +148,7 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 
 func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA string) (bool, error) {
 	ref := normalizedBranchRef(sctx.Run.Branch)
-	pushURL := sctx.Repo.PushURL()
+	pushURL := resolvePushURL(sctx)
 
 	// Anchor the force-with-lease to the head the run last recorded for this
 	// branch (what the pipeline last pushed/observed), NOT to a SHA freshly read
@@ -155,7 +161,34 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 	if err != nil {
 		return false, err
 	}
+	targetKind := "upstream"
+	if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
+		targetKind = "fork"
+	}
+	persistBinding := func() error {
+		remoteOut, err := stepGitRun(sctx, "ls-remote", pushURL, ref)
+		if err != nil {
+			return fmt.Errorf("verify successful push: %w", err)
+		}
+		fields := strings.Fields(remoteOut)
+		if len(fields) == 0 || fields[0] != newHeadSHA {
+			observed := "missing"
+			if len(fields) > 0 {
+				observed = fields[0]
+			}
+			return fmt.Errorf("verify successful push: remote head %s does not equal pushed head %s", observed, newHeadSHA)
+		}
+		return sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{
+			HeadSHA:           newHeadSHA,
+			TargetKind:        targetKind,
+			TargetFingerprint: branchsync.TargetFingerprint(pushURL),
+			Ref:               ref,
+		})
+	}
 	if decision.upToDate {
+		if err := persistBinding(); err != nil {
+			return false, err
+		}
 		if _, err := stepGitRun(sctx, "update-ref", ref, newHeadSHA); err != nil {
 			return false, fmt.Errorf("update local branch ref: %w", err)
 		}
@@ -167,6 +200,9 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 	}
 	if err := stepGitPush(sctx, pushURL, ref, decision.remoteSHA, !decision.newBranch); err != nil {
 		return false, fmt.Errorf("push: %w", err)
+	}
+	if err := persistBinding(); err != nil {
+		return false, err
 	}
 
 	if _, err := stepGitRun(sctx, "update-ref", ref, newHeadSHA); err != nil {

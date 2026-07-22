@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
@@ -20,6 +22,10 @@ func (s *PushStep) Name() types.StepName { return types.StepPush }
 func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	newHeadSHA := ""
+	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
+		return nil, err
+	}
+	defer func() { _ = sctx.DB.SetRunPushActive(sctx.Run.ID, false) }()
 
 	// Run format command if configured (before committing, so changes are formatted)
 	if fmtCmd := sctx.Config.Commands.Format; fmtCmd != "" {
@@ -56,7 +62,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	branch := strings.TrimPrefix(ref, "refs/heads/")
 
-	pushURL := sctx.Repo.PushURL()
+	pushURL := resolvePushURL(sctx)
 	pushTarget := "upstream"
 	usingFork := strings.TrimSpace(sctx.Repo.ForkURL) != ""
 	if usingFork {
@@ -90,12 +96,28 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 			return nil, fmt.Errorf("push to %s: %w", pushTarget, err)
 		}
 	case decision.upToDate:
-		// Remote already at this head: nothing to push, just reconcile refs below.
+		// Remote already at this exact head. This freshly verified equality is a
+		// successful binding even though no objects needed to move.
 	default:
 		// Existing branch: force-with-lease anchored to the verified remote head.
 		if err := git.Push(ctx, sctx.WorkDir, pushURL, ref, decision.remoteSHA, true); err != nil {
 			return nil, fmt.Errorf("push to %s: %w", pushTarget, err)
 		}
+	}
+	verifiedRemote, err := git.LsRemote(ctx, sctx.WorkDir, pushURL, ref)
+	if err != nil || verifiedRemote != headBeingPushed {
+		if err != nil {
+			return nil, fmt.Errorf("verify successful push to %s: %w", pushTarget, err)
+		}
+		return nil, fmt.Errorf("verify successful push to %s: remote head %s does not equal pushed head %s", pushTarget, verifiedRemote, headBeingPushed)
+	}
+	if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{
+		HeadSHA:           headBeingPushed,
+		TargetKind:        pushTarget,
+		TargetFingerprint: branchsync.TargetFingerprint(pushURL),
+		Ref:               ref,
+	}); err != nil {
+		return nil, err
 	}
 
 	if newHeadSHA != "" {

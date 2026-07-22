@@ -36,14 +36,17 @@ func TestSupportsSessionResume_PerAdapter(t *testing.T) {
 
 func TestClaudeAgent_BuildArgs_Resume(t *testing.T) {
 	ca := &claudeAgent{bin: "claude"}
-	args := ca.buildArgs("re-review the branch", nil, "sess-1234")
+	args := ca.buildArgs(nil, "sess-1234")
 
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--resume sess-1234") {
 		t.Fatalf("resume args missing --resume <id>: %v", args)
 	}
-	if !strings.Contains(joined, "-p re-review the branch") {
-		t.Fatalf("resume args must keep print-mode prompt: %v", args)
+	if !strings.Contains(joined, "-p") {
+		t.Fatalf("resume args must keep print mode: %v", args)
+	}
+	if strings.Contains(joined, "re-review the branch") {
+		t.Fatalf("resume prompt must not appear in argv: %v", args)
 	}
 	if strings.Contains(joined, "--fork-session") {
 		t.Fatalf("resume must continue the same session, not fork: %v", args)
@@ -52,7 +55,7 @@ func TestClaudeAgent_BuildArgs_Resume(t *testing.T) {
 
 func TestClaudeAgent_BuildArgs_NoResumeByDefault(t *testing.T) {
 	ca := &claudeAgent{bin: "claude"}
-	args := ca.buildArgs("review", nil, "")
+	args := ca.buildArgs(nil, "")
 	for _, a := range args {
 		if a == "--resume" {
 			t.Fatalf("cold invocation must not pass --resume: %v", args)
@@ -137,7 +140,7 @@ func TestParseCodexEvents_CapturesThreadID(t *testing.T) {
 `
 	var usage TokenUsage
 	var lastMessage, codexErr, threadID string
-	if err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, &codexErr, &threadID); err != nil {
+	if err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, &codexErr, &threadID, nil); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	if threadID != "019f4d4d-5dc0-75c1-8efe-adf4531bd733" {

@@ -26,11 +26,25 @@ var canonicalStaleMonitorPhrases = []string{
 }
 
 var canonicalPreserveGateFixPhrases = []string{
-	"no-mistakes axi run --intent",
-	"Never abort-and-restart",
-	"prior gate-fix commits",
-	"already-resolved findings do not re-surface",
+	"post-pipeline",
+	"on top",
+	"every pipeline fix commit",
 }
+
+var canonicalBranchSyncPhrases = []string{
+	"branch_sync",
+	"no-mistakes axi sync",
+	"blocked",
+	"reset, stash, merge, rebase, force, or branch replacement",
+	// Guarded custody recovery for a terminal run whose pipeline commits were
+	// never published (v1.38.1 dogfood catch): the action, its next_action
+	// code, and the preservation claim must stay on every guidance surface.
+	"recover_custody",
+	"no-mistakes axi sync --recover",
+	"preserved in the local gate",
+}
+
+const canonicalPipelineAgentPrerequisite = "a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`"
 
 // TestStaleMonitorGuidance_SyncedAcrossSurfaces guards the repo invariant that
 // agent-driving guidance stays in sync across its three surfaces: the skill
@@ -103,6 +117,42 @@ func TestPreserveGateFixGuidance_SyncedAcrossSurfaces(t *testing.T) {
 				t.Errorf("%s is missing the canonical preserve-gate-fix guidance phrase %q", name, phrase)
 			}
 		}
+	}
+}
+
+func TestBranchSyncGuidance_SyncedAcrossStaticAndLiveSurfaces(t *testing.T) {
+	surfaces := map[string]string{
+		"skill body":         skill.Markdown(),
+		"agents guide":       readAgentsGuide(t),
+		"live sync guidance": branchSyncAgentGuidance,
+	}
+	for name, content := range surfaces {
+		for _, phrase := range canonicalBranchSyncPhrases {
+			if !strings.Contains(content, phrase) {
+				t.Errorf("%s is missing branch-sync guidance phrase %q", name, phrase)
+			}
+		}
+	}
+}
+
+func TestPipelineAgentPrerequisiteGuidance_SyncedAcrossSurfaces(t *testing.T) {
+	surfaces := map[string]string{
+		"skill body":   skill.Markdown(),
+		"agents guide": readAgentsGuide(t),
+		"axi run help": newAxiRunCmd().Long,
+	}
+	for name, content := range surfaces {
+		normalized := strings.Join(strings.Fields(content), " ")
+		if !strings.Contains(normalized, canonicalPipelineAgentPrerequisite) {
+			t.Errorf("%s is missing the canonical pipeline-agent prerequisite %q", name, canonicalPipelineAgentPrerequisite)
+		}
+	}
+}
+
+func TestNormalDriveOutputDoesNotFloodBranchSyncGuidance(t *testing.T) {
+	got := renderDriveResultForGuidanceTest(t, true, types.RunRunning)
+	if strings.Contains(got, branchSyncAgentGuidance) || strings.Contains(got, "branch_sync.next_action") {
+		t.Fatalf("ordinary drive output included irrelevant branch-sync guidance:\n%s", got)
 	}
 }
 

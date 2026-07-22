@@ -48,6 +48,8 @@ func handleFakeCLI(mode string) {
 		fakeRecordSuccessHandler()
 	case "git-passthrough":
 		fakeGitPassthroughHandler(args)
+	case "git-require-noninteractive-env":
+		fakeGitRequireNonInteractiveEnvHandler(args)
 	case "git-status-error":
 		fakeGitStatusErrorHandler(args)
 	case "git-remote-error":
@@ -62,6 +64,8 @@ func handleFakeCLI(mode string) {
 		fakeCIGlabHandler(args)
 	case "ci-glab-seq":
 		fakeCIGlabSequenceHandler(args)
+	case "ci-gh-reconcile":
+		fakeCIGHReconcileHandler(args)
 	default:
 		os.Exit(1)
 	}
@@ -150,6 +154,30 @@ func fakeGitPassthroughHandler(args []string) {
 	fakeGitForward(args, realGit)
 }
 
+func fakeGitRequireNonInteractiveEnvHandler(args []string) {
+	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	required := map[string]string{
+		"GIT_EDITOR":          "true",
+		"GIT_SEQUENCE_EDITOR": "true",
+		"GIT_TERMINAL_PROMPT": "0",
+		"GIT_OPTIONAL_LOCKS":  "0",
+	}
+	for key, want := range required {
+		if got := os.Getenv(key); got != want {
+			fmt.Fprintf(os.Stderr, "%s=%q, want %q\n", key, got, want)
+			os.Exit(1)
+		}
+	}
+	helperCmd := exec.Command(realGit, "config", "--global", "--get-all", "credential.https://github.com.helper")
+	helperCmd.Env = os.Environ()
+	helperOut, err := helperCmd.Output()
+	if err != nil || !strings.Contains(string(helperOut), "gh auth git-credential") {
+		fmt.Fprintf(os.Stderr, "github credential helper = %q, err=%v; want inherited gh auth git-credential helper\n", strings.TrimSpace(string(helperOut)), err)
+		os.Exit(1)
+	}
+	fakeGitForward(args, realGit)
+}
+
 func fakeGitRemoteErrorHandler(args []string) {
 	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
 	if len(args) > 0 && (args[0] == "ls-remote" || args[0] == "push") {
@@ -225,6 +253,46 @@ func extractTrailingNumber(rawURL string) int {
 		return 0
 	}
 	return number
+}
+
+func fakeCIGHReconcileHandler(args []string) {
+	joined := strings.Join(args, " ")
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr list") {
+		fmt.Println("[]")
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr create") {
+		fmt.Println("https://github.com/test/repo/pull/42")
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
+		state, err := os.ReadFile(os.Getenv("FAKE_CLI_STATE_PATH"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		switch state := strings.TrimSpace(string(state)); state {
+		case "ERROR":
+			fmt.Fprintln(os.Stderr, "provider unavailable")
+			os.Exit(1)
+		default:
+			fmt.Println(state)
+			os.Exit(0)
+		}
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
+		fmt.Println("MERGEABLE")
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr checks") {
+		fmt.Println(`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
+		os.Exit(0)
+	}
+	fmt.Fprintln(os.Stderr, "unsupported reconcile gh argv:", joined)
+	os.Exit(1)
 }
 
 func fakeCIGHHandler(args []string) {

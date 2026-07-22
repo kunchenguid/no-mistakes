@@ -36,7 +36,7 @@ func run(argv []string) int {
 
 	switch name {
 	case "claude":
-		return runClaude(args, scenario)
+		return runClaude(args, os.Stdin, scenario)
 	case "codex":
 		return runCodex(args, scenario)
 	case "opencode":

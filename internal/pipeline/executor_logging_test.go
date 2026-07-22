@@ -344,6 +344,66 @@ func TestExecutor_LogFileWritten_OnStepError(t *testing.T) {
 	}
 }
 
+func TestExecutor_StepErrorRedactsCredentialURL(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	// A step error carrying a credentialled upstream URL (as a real git push
+	// rejection error would). It must be redacted before reaching the step log
+	// file, the DB error column, the returned executor error, and the IPC event.
+	const token = "ghp_secret_DO_NOT_LEAK"
+	credURL := "https://x-access-token:" + token + "@github.com/o/r.git"
+	stepErr := fmt.Errorf("push to upstream: git push %s: remote rejected: file exceeds 100.00 MB", credURL)
+
+	ec := &eventCollector{}
+	exec := NewExecutor(database, p, nil, nil, []Step{newFailStep(types.StepPush, stepErr)}, ec.handler)
+	err := exec.Execute(context.Background(), run, repo, workDir)
+	if err == nil {
+		t.Fatal("expected error from failing step")
+	}
+
+	// 1) Step log file must contain the redacted form, never the token.
+	logPath := filepath.Join(p.RunLogDir(run.ID), "push.log")
+	data, rerr := os.ReadFile(logPath)
+	if rerr != nil {
+		t.Fatalf("expected log file at %s: %v", logPath, rerr)
+	}
+	logContent := string(data)
+	if strings.Contains(logContent, token) {
+		t.Errorf("step log leaked credential: %s", logContent)
+	}
+	if !strings.Contains(logContent, "redacted@github.com/o/r.git") {
+		t.Errorf("step log missing redacted URL, got: %s", logContent)
+	}
+
+	// 2) DB step error column must not carry the token.
+	steps, _ := database.GetStepsByRun(run.ID)
+	if steps[0].Error == nil {
+		t.Fatal("expected step error to be persisted")
+	}
+	dbErr := *steps[0].Error
+	if strings.Contains(dbErr, token) {
+		t.Errorf("DB step error leaked credential: %q", dbErr)
+	}
+	if !strings.Contains(dbErr, "redacted@github.com/o/r.git") {
+		t.Errorf("DB step error missing redacted URL, got: %q", dbErr)
+	}
+
+	// 3) Returned executor error must not carry the token.
+	if strings.Contains(err.Error(), token) {
+		t.Errorf("returned error leaked credential: %q", err.Error())
+	}
+
+	// 4) IPC step-completed event error must not carry the token.
+	ev := ec.find(ipc.EventStepCompleted, types.StepPush)
+	if ev == nil {
+		t.Fatal("expected step completed event")
+	}
+	if ev.Error != nil && strings.Contains(*ev.Error, token) {
+		t.Errorf("IPC event error leaked credential: %q", *ev.Error)
+	}
+}
+
 func TestExecutor_LogFileMultipleSteps(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()

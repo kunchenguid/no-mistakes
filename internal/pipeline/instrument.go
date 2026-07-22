@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -72,6 +73,7 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 		purpose = string(a.stepName)
 	}
 
+	sessionKey := invocationSessionKey(opts, result)
 	inv := db.AgentInvocation{
 		RunID:       a.runID,
 		StepName:    string(a.stepName),
@@ -79,19 +81,22 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 		Purpose:     purpose,
 		Agent:       agentName,
 		SessionMode: invocationSessionMode(opts),
-		SessionKey:  invocationSessionKey(opts, result),
+		SessionKey:  sessionKey,
 		StartedAt:   startedAt.Unix(),
 		CompletedAt: completedAt.Unix(),
 		DurationMS:  completedAt.Sub(startedAt).Milliseconds(),
 		ExitStatus:  "ok",
 	}
-	if result != nil {
-		inv.Model = result.Model
-		inv.InputTokens = result.Usage.InputTokens
-		inv.OutputTokens = result.Usage.OutputTokens
-		inv.CacheReadTokens = result.Usage.CacheReadTokens
-		inv.CacheCreationTokens = result.Usage.CacheCreationTokens
+	if opts.SessionFallback && opts.SessionFallbackReason != "" {
+		reason := opts.SessionFallbackReason
+		inv.FallbackReason = &reason
 	}
+	if opts.Workload != nil {
+		files, lines := opts.Workload.Files, opts.Workload.Lines
+		inv.WorkloadFiles = &files
+		inv.WorkloadLines = &lines
+	}
+	a.recordResult(&inv, sessionKey, result)
 	if runErr != nil {
 		if ctx.Err() != nil || errors.Is(runErr, context.Canceled) {
 			inv.ExitStatus = "cancelled"
@@ -105,6 +110,101 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 	if _, dbErr := a.db.InsertAgentInvocation(inv); dbErr != nil {
 		slog.Warn("failed to record agent invocation", "step", a.stepName, "error", dbErr)
 	}
+}
+
+// recordResult folds a successful (or partially successful) result's identity,
+// usage, per-round token deltas, and bounded activity metrics into inv. Every
+// field the adapter did not report is left nil so it is stored as unknown
+// rather than a fabricated zero.
+func (a *perfRecordingAgent) recordResult(inv *db.AgentInvocation, sessionKey string, result *agent.Result) {
+	if result == nil {
+		return
+	}
+	inv.Model = result.Model
+	if result.ModelProvider != "" {
+		provider := result.ModelProvider
+		inv.ModelProvider = &provider
+	}
+	inv.InputTokens = result.Usage.InputTokens
+	inv.OutputTokens = result.Usage.OutputTokens
+	inv.CacheReadTokens = result.Usage.CacheReadTokens
+
+	if result.UsageReported {
+		fresh := agent.FreshInputTokens(result.Usage.InputTokens, result.Usage.CacheReadTokens)
+		inv.FreshInputTokens = &fresh
+	}
+
+	if result.CacheCreationReported {
+		cacheCreation := result.Usage.CacheCreationTokens
+		inv.CacheCreationTokens = &cacheCreation
+	}
+
+	// Per-round deltas: for a resumed session whose raw counters are cumulative,
+	// subtract the same session's prior cumulative so the row cannot be mistaken
+	// for per-round usage. Read the prior BEFORE this row is inserted.
+	if result.UsageReported {
+		priorInput, priorOutput, priorCache, _ := a.db.LatestSessionCumulative(a.runID, sessionKey)
+		deltaInput := agent.PerRoundTokens(result.Usage.InputTokens, priorInput, result.SessionUsageCumulative)
+		deltaOutput := agent.PerRoundTokens(result.Usage.OutputTokens, priorOutput, result.SessionUsageCumulative)
+		deltaCache := agent.PerRoundTokens(result.Usage.CacheReadTokens, priorCache, result.SessionUsageCumulative)
+		inv.DeltaInputTokens = &deltaInput
+		inv.DeltaOutputTokens = &deltaOutput
+		inv.DeltaCacheReadTokens = &deltaCache
+	}
+
+	if result.Metrics != nil {
+		m := result.Metrics
+		// Reasoning tokens are reported only by adapters that also report
+		// activity metrics (codex); a real zero there is meaningful.
+		if result.UsageReported {
+			reasoning := result.Usage.ReasoningTokens
+			inv.ReasoningTokens = &reasoning
+		}
+		roundtrips := m.ModelRoundtrips
+		inv.ModelRoundtrips = &roundtrips
+		toolCalls := m.ToolCalls
+		inv.ToolCalls = &toolCalls
+		wait := m.ToolCategories.Wait
+		testLint := m.ToolCategories.TestLint
+		edit := m.ToolCategories.Edit
+		read := m.ToolCategories.Read
+		git := m.ToolCategories.Git
+		other := m.ToolCategories.Other
+		inv.ToolWaitCalls = &wait
+		inv.ToolTestLintCalls = &testLint
+		inv.ToolEditCalls = &edit
+		inv.ToolReadCalls = &read
+		inv.ToolGitCalls = &git
+		inv.ToolOtherCalls = &other
+		subprocessWait := m.SubprocessWaitMS
+		inv.SubprocessWaitMS = &subprocessWait
+	}
+
+	if count, ok := countOutputFindings(result.Output); ok {
+		inv.FindingCount = &count
+	}
+}
+
+// countOutputFindings returns the number of findings in a structured output
+// payload and whether the payload was findings-shaped at all (had a "findings"
+// key). It never retains any finding content - only the count.
+func countOutputFindings(output json.RawMessage) (int, bool) {
+	if len(output) == 0 {
+		return 0, false
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(output, &envelope); err != nil {
+		return 0, false
+	}
+	raw, ok := envelope["findings"]
+	if !ok {
+		return 0, false
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return 0, false
+	}
+	return len(items), true
 }
 
 func invocationSessionMode(opts agent.RunOpts) string {
@@ -150,5 +250,32 @@ func classifyInvocationFailure(err error) string {
 		return "spawn"
 	default:
 		return "other"
+	}
+}
+
+// classifyFallbackReason buckets the error that failed a session resume into a
+// low-cardinality reason (see db.FallbackReason*). Like classifyInvocationFailure
+// it stores only the category, never the error text.
+func classifyFallbackReason(err error) string {
+	if err == nil {
+		return db.FallbackReasonOther
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "unexpected argument") || strings.Contains(msg, "unrecognized") ||
+		strings.Contains(msg, "unknown flag") || strings.Contains(msg, "unexpected flag"):
+		return db.FallbackReasonUnsupported
+	case strings.Contains(msg, "parse events") || strings.Contains(msg, "output parse"):
+		return db.FallbackReasonParse
+	case strings.Contains(msg, "exited"):
+		return db.FallbackReasonExit
+	case strings.Contains(msg, "start"):
+		return db.FallbackReasonSpawn
+	case strings.Contains(msg, "temporarily") || strings.Contains(msg, "capacity") ||
+		strings.Contains(msg, "rate limit") || strings.Contains(msg, "overloaded") ||
+		strings.Contains(msg, "timeout"):
+		return db.FallbackReasonTransient
+	default:
+		return db.FallbackReasonOther
 	}
 }

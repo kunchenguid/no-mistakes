@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -304,6 +305,45 @@ func TestWriteGateShape(t *testing.T) {
 	}
 }
 
+func TestGateSummaryUsesBoundedDisclosure(t *testing.T) {
+	summary := strings.Repeat("s", maxGateSummary+25)
+	gate := stepView{
+		Name:         "test",
+		Status:       "awaiting_approval",
+		FindingsJSON: findingsJSON(t, nil, summary),
+	}
+	out := axiDoc(gateFields(gate)...)
+
+	if strings.Contains(out, summary) {
+		t.Fatalf("gate status should not render the complete oversized summary:\n%s", out)
+	}
+	if !strings.Contains(out, strings.Repeat("s", maxGateSummary)) ||
+		!strings.Contains(out, fmt.Sprintf("truncated, %d chars total", len(summary))) {
+		t.Fatalf("gate status should disclose summary truncation:\n%s", out)
+	}
+	if !strings.Contains(out, "no-mistakes axi logs --step test --full") {
+		t.Fatalf("truncated gate should point to the complete step log:\n%s", out)
+	}
+}
+
+func TestEscapeUnsupportedTOONControlsPreservesSupportedBytesAndUnicode(t *testing.T) {
+	input := "π\tline\r\n😀\x00\x07\x1f\x7f"
+	want := "π\tline\r\n😀\\x00\\x07\\x1F\x7f"
+	if got := escapeUnsupportedTOONControls(input); got != want {
+		t.Fatalf("escaped control bytes = %q, want %q", got, want)
+	}
+}
+
+func TestAxiDocEncodingFailureIsNeverSilent(t *testing.T) {
+	out := axiDoc(toon.Field{Key: "unsupported", Value: make(chan int)})
+	if strings.TrimSpace(out) == "" {
+		t.Fatal("AXI encoding failure returned successful empty output")
+	}
+	if !strings.Contains(out, "error:") || !strings.Contains(out, "encode AXI output") {
+		t.Fatalf("AXI encoding failure should return a structured error, got:\n%s", out)
+	}
+}
+
 // TestGateNote_ReviewOnly verifies the review-auto-fix-disabled note appears
 // only at the review gate, while the keep-driving reminder appears at every
 // gate.
@@ -395,34 +435,50 @@ func TestActiveRunLookupParamsIncludeBranch(t *testing.T) {
 	}
 }
 
-func TestActiveRunIDForHeadRequiresMatchingHead(t *testing.T) {
-	active := &ipc.GetActiveRunResult{Run: &ipc.RunInfo{ID: "run-old", Status: types.RunRunning, HeadSHA: "old-head"}}
+func TestActiveRunIDForHeadMatchesSubmittedOrCurrentHead(t *testing.T) {
+	submitted := "submitted-head"
+	active := &ipc.GetActiveRunResult{Run: &ipc.RunInfo{
+		ID:               "run-managed-fix",
+		Status:           types.RunRunning,
+		HeadSHA:          "pipeline-fix-head",
+		SubmittedHeadSHA: &submitted,
+	}}
 
-	if got := activeRunIDForHead(active, "new-head"); got != "" {
+	if got := activeRunIDForHead(active, "new-operator-head"); got != "" {
 		t.Fatalf("mismatched active run ID = %q, want empty", got)
 	}
-	if got := activeRunIDForHead(active, "old-head"); got != "run-old" {
-		t.Fatalf("matching active run ID = %q, want run-old", got)
+	for _, head := range []string{submitted, "pipeline-fix-head"} {
+		if got := activeRunIDForHead(active, head); got != "run-managed-fix" {
+			t.Fatalf("active run ID for %s = %q, want run-managed-fix", head, got)
+		}
 	}
 
 	active.Run.Status = types.RunCompleted
-	if got := activeRunIDForHead(active, "old-head"); got != "" {
+	if got := activeRunIDForHead(active, submitted); got != "" {
 		t.Fatalf("terminal active run ID = %q, want empty", got)
 	}
 }
 
-func TestActiveRunInfoForHeadRequiresMatchingHead(t *testing.T) {
-	run := &ipc.RunInfo{ID: "run-old", Status: types.RunRunning, HeadSHA: "old-head"}
+func TestActiveRunInfoForHeadMatchesSubmittedOrCurrentHead(t *testing.T) {
+	submitted := "submitted-head"
+	run := &ipc.RunInfo{
+		ID:               "run-managed-fix",
+		Status:           types.RunRunning,
+		HeadSHA:          "pipeline-fix-head",
+		SubmittedHeadSHA: &submitted,
+	}
 
-	if got := activeRunInfoForHead(run, "new-head"); got != nil {
+	if got := activeRunInfoForHead(run, "new-operator-head"); got != nil {
 		t.Fatalf("mismatched active run = %#v, want nil", got)
 	}
-	if got := activeRunInfoForHead(run, "old-head"); got == nil || got.ID != "run-old" {
-		t.Fatalf("matching active run = %#v, want run-old", got)
+	for _, head := range []string{submitted, "pipeline-fix-head"} {
+		if got := activeRunInfoForHead(run, head); got == nil || got.ID != "run-managed-fix" {
+			t.Fatalf("active run for %s = %#v, want run-managed-fix", head, got)
+		}
 	}
 
 	run.Status = types.RunCompleted
-	if got := activeRunInfoForHead(run, "old-head"); got != nil {
+	if got := activeRunInfoForHead(run, submitted); got != nil {
 		t.Fatalf("terminal active run = %#v, want nil", got)
 	}
 }
@@ -577,6 +633,99 @@ func TestRenderedRunsFingerprintChangesForEveryDisplayedRun(t *testing.T) {
 	limitedAfter := renderedRunsFingerprint(runs, 1)
 	if limitedBefore != limitedAfter {
 		t.Fatal("a hidden run must not change the displayed-run fingerprint")
+	}
+}
+
+func TestAxiStatusEscapesControlBytesInAwaitingTestGate(t *testing.T) {
+	repoDir, p, database, repo := setupAxiQueryRepo(t)
+	chdir(t, repoDir)
+
+	dbRun, err := database.InsertRun(repo.ID, "feature/control-byte", "head", "base")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := database.UpdateRunStatus(dbRun.ID, types.RunRunning); err != nil {
+		t.Fatalf("mark run running: %v", err)
+	}
+	step, err := database.InsertStepResult(dbRun.ID, types.StepTest)
+	if err != nil {
+		t.Fatalf("insert step: %v", err)
+	}
+	if err := database.UpdateStepStatus(step.ID, types.StepStatusAwaitingApproval); err != nil {
+		t.Fatalf("mark step awaiting: %v", err)
+	}
+	findings := findingsJSON(t, []types.Finding{{
+		ID:          "test-1\x1fcontrol",
+		Severity:    "error",
+		File:        "test\x00.log",
+		Description: "bad\x1fvalue",
+	}}, "configured test failed: bad\x1fvalue")
+	if err := database.SetStepFindings(step.ID, findings); err != nil {
+		t.Fatalf("set findings: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&out)
+	if _, err := runAxiStatus(cmd, dbRun.ID); err != nil {
+		t.Fatalf("axi status: %v\n%s", err, out.String())
+	}
+	got := out.String()
+	for _, want := range []string{"gate:\n", "step: test", "status: awaiting_approval", `bad\\x1Fvalue`, `test-1\\x1Fcontrol`, `test\\x00.log`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("axi status missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.ContainsRune(got, '\x1f') || strings.ContainsRune(got, '\x00') {
+		t.Fatalf("axi status retained unsupported raw control bytes: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(p.LogsDir(), dbRun.ID)); err == nil {
+		t.Fatal("status rendering should not rewrite or create durable logs")
+	}
+}
+
+func TestAxiLogsFullEscapesControlByteOutsideTailWithoutRewritingLog(t *testing.T) {
+	repoDir, p, database, repo := setupAxiQueryRepo(t)
+	chdir(t, repoDir)
+
+	dbRun, err := database.InsertRun(repo.ID, "feature/control-log", "head", "base")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := database.UpdateRunStatus(dbRun.ID, types.RunRunning); err != nil {
+		t.Fatalf("mark run running: %v", err)
+	}
+	logDir := p.RunLogDir(dbRun.ID)
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatalf("mkdir log dir: %v", err)
+	}
+	raw := []byte("bad\x1fvalue\n" + strings.Repeat("later passing line\n", logTailLines+5))
+	logPath := filepath.Join(logDir, "test.log")
+	if err := os.WriteFile(logPath, raw, 0o644); err != nil {
+		t.Fatalf("write test log: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&out)
+	if _, err := runAxiLogs(cmd, "test", dbRun.ID, true); err != nil {
+		t.Fatalf("axi logs --full: %v\n%s", err, out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, `bad\\x1Fvalue`) || !strings.Contains(got, "lines: 46 total") {
+		t.Fatalf("full logs should visibly escape the control byte and retain all lines:\n%s", got)
+	}
+	if strings.ContainsRune(got, '\x1f') {
+		t.Fatalf("full logs retained the raw control byte: %q", got)
+	}
+	after, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read durable log: %v", err)
+	}
+	if !bytes.Equal(after, raw) {
+		t.Fatal("AXI rendering rewrote durable raw log evidence")
 	}
 }
 
@@ -740,6 +889,36 @@ func TestResolveRunPrefersCurrentBranchLatestRun(t *testing.T) {
 	if got == nil || got.ID != current.ID {
 		t.Fatalf("resolved run = %#v, want current branch run %s", got, current.ID)
 	}
+}
+
+func setupAxiQueryRepo(t *testing.T) (string, *paths.Paths, *db.DB, *db.Repo) {
+	t.Helper()
+	repoDir := t.TempDir()
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+	run(t, repoDir, "git", "init")
+	run(t, repoDir, "git", "config", "user.email", "test@test.com")
+	run(t, repoDir, "git", "config", "user.name", "Test")
+	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "initial")
+	rawRoot, err := filepath.EvalSymlinks(repoDir)
+	if err != nil {
+		rawRoot = repoDir
+	}
+
+	p := paths.WithRoot(nmHome)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	repo, err := database.InsertRepoWithID("repo-1", rawRoot, "origin", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	return rawRoot, p, database, repo
 }
 
 func openTestDB(t *testing.T) *db.DB {

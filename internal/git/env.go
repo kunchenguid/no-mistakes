@@ -26,10 +26,22 @@ import (
 // here to preserve symlinked working-directory paths (for example /tmp vs
 // /private/tmp on macOS, which os.Getwd reports differently depending on PWD).
 func NonInteractiveEnv(dir string) []string {
-	env := append(os.Environ(),
+	return NonInteractiveEnvFrom(os.Environ(), dir)
+}
+
+// NonInteractiveEnvFrom is NonInteractiveEnv applied to an explicit base
+// environment. A nil base means the current process environment.
+func NonInteractiveEnvFrom(base []string, dir string) []string {
+	if base == nil {
+		base = os.Environ()
+	}
+	env := append(append([]string(nil), base...),
 		"GIT_EDITOR=true",
 		"GIT_SEQUENCE_EDITOR=true",
 		"GIT_TERMINAL_PROMPT=0",
+		// Read-only commands such as status and rev-parse must not refresh the
+		// index as a side effect. Mutating commands still take required locks.
+		"GIT_OPTIONAL_LOCKS=0",
 	)
 	// Mirror os/exec, which only injects PWD when Cmd.Env is nil, skips it on
 	// these platforms, and absolutizes Cmd.Dir first (go.dev/issue/50599):

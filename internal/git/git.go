@@ -115,6 +115,21 @@ func GetConfiguredRemoteURL(ctx context.Context, dir, name string) (string, erro
 	return Run(ctx, dir, "config", "--get", "remote."+name+".url")
 }
 
+// HasRemote reports whether a remote named name is configured in the repo at
+// dir, returning an error if the remote list cannot be read.
+func HasRemote(ctx context.Context, dir, name string) (bool, error) {
+	out, err := Run(ctx, dir, "remote")
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // FindGitRoot walks up from path to find the git repository root.
 // Resolves symlinks for consistency on macOS (e.g. /tmp -> /private/tmp).
 func FindGitRoot(path string) (string, error) {
@@ -138,31 +153,85 @@ func FindGitRoot(path string) (string, error) {
 }
 
 // FindMainRepoRoot returns the root of the main working tree for a git
-// repository. For a regular repo this is the same as FindGitRoot. For a
-// worktree it resolves back to the main repository root by inspecting
-// git's common dir.
+// repository. Three layouts are supported:
+//
+//  1. A regular repository or a linked worktree: the git common dir is
+//     <root>/.git, so the main working tree is filepath.Dir(commonDir).
+//  2. An absorbed submodule (including nested .../modules/a/modules/b):
+//     the git common dir lives under the superproject's .git/modules/...
+//     and is detached from its working tree. Git writes core.worktree
+//     when it absorbs a submodule, pointing at the working tree whose
+//     remote.origin.url is the submodule's own origin (which is what
+//     callers like init and eject need).
+//  3. Exotic GIT_DIR layouts without a core.worktree: fall back to
+//     `git rev-parse --show-toplevel` from the original path, the same
+//     answer FindGitRoot returns.
+//
+// In every branch the returned path is run through filepath.EvalSymlinks
+// when possible so callers can compare it against other symlink-resolved
+// paths (notably on macOS, where /tmp and /private/tmp refer to the same
+// directory). Symlink resolution failures fall back to the unresolved
+// path, matching the historical behavior.
 func FindMainRepoRoot(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
-	cmd.Dir = abs
-	winproc.Harden(cmd)
-	out, err := cmd.Output()
+
+	// Resolve the git common dir.
+	commonDirCmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	commonDirCmd.Dir = abs
+	winproc.Harden(commonDirCmd)
+	commonDirOut, err := commonDirCmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("not a git repository: %s", abs)
 	}
-	commonDir := strings.TrimSpace(string(out))
-	// Make absolute if relative (e.g. ".git" in the main repo itself).
+	commonDir := strings.TrimSpace(string(commonDirOut))
 	if !filepath.IsAbs(commonDir) {
 		commonDir = filepath.Join(abs, commonDir)
 	}
-	// commonDir is the .git directory (e.g. /path/to/repo/.git); parent is the repo root.
-	root := filepath.Dir(filepath.Clean(commonDir))
-	resolved, err := filepath.EvalSymlinks(root)
+
+	// Branch 1: regular repo or linked worktree. Linked worktrees share
+	// the main repo's <root>/.git, so the common dir's basename is still
+	// ".git" and its parent is the main working tree.
+	if filepath.Base(commonDir) == ".git" {
+		return resolveMainRoot(filepath.Dir(commonDir))
+	}
+
+	// Branch 2: detached git dir (absorbed submodule). Ask the git dir
+	// itself for its core.worktree, which git writes when it absorbs a
+	// submodule's git dir. The value is typically relative (e.g.
+	// "../../../sub"); resolve it against the common dir.
+	worktreeCmd := exec.Command("git", "--git-dir", commonDir, "config", "--get", "core.worktree")
+	winproc.Harden(worktreeCmd)
+	if worktreeOut, err := worktreeCmd.Output(); err == nil {
+		worktree := strings.TrimSpace(string(worktreeOut))
+		if worktree != "" {
+			if !filepath.IsAbs(worktree) {
+				worktree = filepath.Join(commonDir, worktree)
+			}
+			return resolveMainRoot(worktree)
+		}
+	}
+
+	// Branch 3: exotic GIT_DIR without a usable core.worktree. Defer to
+	// `git rev-parse --show-toplevel` from the original path.
+	topCmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	topCmd.Dir = abs
+	winproc.Harden(topCmd)
+	topOut, err := topCmd.Output()
 	if err != nil {
-		return root, nil
+		return "", fmt.Errorf("not a git repository: %s", abs)
+	}
+	return resolveMainRoot(strings.TrimSpace(string(topOut)))
+}
+
+// resolveMainRoot applies filepath.EvalSymlinks to path, falling back to
+// the unresolved path when symlink resolution fails.
+func resolveMainRoot(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return path, nil
 	}
 	return resolved, nil
 }
@@ -186,6 +255,33 @@ func DiffNameOnly(ctx context.Context, dir, base, head string) ([]string, error)
 		}
 	}
 	return files, nil
+}
+
+// DiffStat returns the bounded size of the diff between base and head: the
+// number of changed files and the net changed lines (insertions + deletions)
+// from `git diff --numstat`. Binary files (numstat "-") contribute a changed
+// file but no line count. It carries no paths or content - just two counts.
+func DiffStat(ctx context.Context, dir, base, head string) (files, lines int, err error) {
+	out, err := Run(ctx, dir, "diff", "--numstat", base+".."+head)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		files++
+		added, aerr := strconv.Atoi(fields[0])
+		deleted, derr := strconv.Atoi(fields[1])
+		if aerr == nil {
+			lines += added
+		}
+		if derr == nil {
+			lines += deleted
+		}
+	}
+	return files, lines, nil
 }
 
 // CommitTime returns the committer timestamp for a SHA in UTC.
@@ -279,6 +375,14 @@ func FetchRemoteBranch(ctx context.Context, dir, remote, branch string) error {
 func FetchRemoteBranchToRef(ctx context.Context, dir, remote, branch, localRef string) error {
 	refspec := fmt.Sprintf("+refs/heads/%s:%s", branch, localRef)
 	_, err := Run(ctx, dir, "fetch", "--no-tags", remote, refspec)
+	return err
+}
+
+// FetchRemoteBranchToPrivateRef fetches one branch into a caller-owned private
+// ref without touching FETCH_HEAD or ordinary remote-tracking refs.
+func FetchRemoteBranchToPrivateRef(ctx context.Context, dir, remote, branch, localRef string) error {
+	refspec := fmt.Sprintf("+refs/heads/%s:%s", branch, localRef)
+	_, err := Run(ctx, dir, "fetch", "--no-tags", "--no-write-fetch-head", remote, refspec)
 	return err
 }
 

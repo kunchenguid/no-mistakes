@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -143,16 +144,54 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	return h.toPR(&prs[0]), nil
 }
 
-func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {
-	args := []string{"repos", "pr", "create",
-		"--source-branch", branch,
-		"--target-branch", base,
-		"--title", content.Title,
-		"--description", clampDescription(content.Body),
+// runWithDescription runs an az PR command whose description is supplied
+// out-of-band through a temp file referenced as `--description @<file>`, and
+// returns the command's JSON stdout. buildArgs receives the `@<file>` token and
+// returns the full az argv, placing that token where --description's value
+// belongs. The (clamped) body is written to the file before the command runs
+// and the file is always removed afterward.
+//
+// Why a file instead of passing the body inline as `--description <body>`: on
+// Windows the az CLI is a batch shim (az.cmd) that Go executes through cmd.exe.
+// cmd.exe terminates each argument at the first newline, so a multi-line body
+// was truncated to just its first line (e.g. "## Intent"), silently dropping the
+// rest of the PR description - a Windows-only data loss (#501). A file path is a
+// single newline-free token that survives cmd.exe intact, and az reads the
+// description from the file via the "@" convention (see `az repos pr create
+// --help`). The file form additionally sidesteps Python argparse misreading body
+// lines that begin with "-"/"--"/"---" (markdown horizontal rules, diff
+// "--- a/file" hunks) as new options, which a naive per-line split would break on.
+//
+// The body is clamped to Azure DevOps' description cap before it is written, so
+// az never sees an over-length description no matter how the body was produced.
+func (h *Host) runWithDescription(ctx context.Context, body string, buildArgs func(descArg string) []string) ([]byte, error) {
+	f, err := os.CreateTemp("", "nm-pr-desc-*.md")
+	if err != nil {
+		return nil, fmt.Errorf("create PR description temp file: %w", err)
 	}
-	args = append(args, h.scopeArgs()...)
-	args = append(args, "--output", "json")
-	out, err := outputJSON(h.cmd(ctx, "az", args...))
+	path := f.Name()
+	defer os.Remove(path)
+	if _, err := f.WriteString(clampDescription(body)); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("write PR description temp file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return nil, fmt.Errorf("close PR description temp file: %w", err)
+	}
+	return outputJSON(h.cmd(ctx, "az", buildArgs("@"+path)...))
+}
+
+func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {
+	out, err := h.runWithDescription(ctx, content.Body, func(descArg string) []string {
+		args := []string{"repos", "pr", "create",
+			"--source-branch", branch,
+			"--target-branch", base,
+			"--title", content.Title,
+			"--description", descArg,
+		}
+		args = append(args, h.scopeArgs()...)
+		return append(args, "--output", "json")
+	})
 	if err != nil {
 		return nil, fmt.Errorf("az repos pr create: %w", err)
 	}
@@ -168,13 +207,14 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 	if id == "" {
 		return nil, errors.New("az repos pr update: missing PR id")
 	}
-	args := []string{"repos", "pr", "update", "--id", id,
-		"--title", content.Title,
-		"--description", clampDescription(content.Body),
-	}
-	args = append(args, h.orgArgs()...)
-	args = append(args, "--output", "json")
-	if _, err := outputJSON(h.cmd(ctx, "az", args...)); err != nil {
+	if _, err := h.runWithDescription(ctx, content.Body, func(descArg string) []string {
+		args := []string{"repos", "pr", "update", "--id", id,
+			"--title", content.Title,
+			"--description", descArg,
+		}
+		args = append(args, h.orgArgs()...)
+		return append(args, "--output", "json")
+	}); err != nil {
 		return nil, fmt.Errorf("az repos pr update: %w", err)
 	}
 	return pr, nil

@@ -1,0 +1,16 @@
+=== RUN   TestReapAbandonedInventories
+--- PASS: TestReapAbandonedInventories (0.08s)
+=== RUN   TestCommandMatchesDaemonRoot
+--- PASS: TestCommandMatchesDaemonRoot (0.00s)
+=== RUN   TestConcurrencySlotCap
+--- PASS: TestConcurrencySlotCap (0.16s)
+=== RUN   TestReapAllRefusesSharedRoot
+--- PASS: TestReapAllRefusesSharedRoot (0.00s)
+=== RUN   TestReapAll_ChildSIGKILL_WrapperReaps
+--- PASS: TestReapAll_ChildSIGKILL_WrapperReaps (1.07s)
+=== RUN   TestReapAll_StaleInventoryRecovery
+--- PASS: TestReapAll_StaleInventoryRecovery (4.96s)
+=== RUN   TestReapAll_DoesNotTouchSharedDaemon
+--- PASS: TestReapAll_DoesNotTouchSharedDaemon (0.15s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/e2edaemon	6.623s

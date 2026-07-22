@@ -139,8 +139,8 @@ The `-y` / `--yes` flag answers that executable-path prompt non-interactively; i
 If the daemon executable path cannot be determined, `update` aborts before replacing anything.
 You can also manage it explicitly with `no-mistakes daemon start|stop|restart|status`; `daemon stop` and `daemon restart` apply the same active-run guard and `--force` override.
 
-On startup, the daemon first reconstructs only unambiguous runs that were fully recorded as parked at an approval gate, including their local reviewer/fixer session metadata when available.
-It fails every other stuck or incomplete active run closed as a crash recovery, reaps orphaned managed agent servers, cleans up orphaned worktrees (never one whose run is still pending or running), refreshes legacy no-mistakes-managed `post-receive` hooks, enables push options for older gate repos, and reapplies gate hook-path isolation when Git supports `config --worktree`.
+On startup, the daemon validates crash-recovery state before resuming work.
+[Daemon & Worktrees](/no-mistakes/concepts/daemon/#crash-recovery) owns the exact restart, parked-gate reconciliation, cleanup, and fail-closed behavior.
 
 ### Pipeline executor
 

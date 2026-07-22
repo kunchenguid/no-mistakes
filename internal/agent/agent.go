@@ -39,6 +39,15 @@ type RunOpts struct {
 	// review-fix, test-evidence, ...). Instrumentation only; adapters
 	// ignore it.
 	Purpose string
+	// SessionFallbackReason is the low-cardinality reason a failed resume forced
+	// this fresh-session retry (see db.FallbackReason*). Set only when
+	// SessionFallback is true. Instrumentation only; adapters ignore it.
+	SessionFallbackReason string
+	// Workload, when non-nil, records the bounded size of the change this
+	// invocation is working over (files and net lines), so review/fix telemetry
+	// can be normalized without external git archaeology. Instrumentation only;
+	// adapters ignore it.
+	Workload *InvocationWorkload
 	// OnAttempt receives each concrete adapter attempt, including retries and
 	// fallback-provider attempts, after it completes. It is instrumentation
 	// only and must not change invocation behavior.
@@ -112,6 +121,57 @@ func ReportsAgentAttempts(a Agent) bool {
 	return ok && r.ReportsAgentAttempts()
 }
 
+// GateInstructionNeutralizer is the optional adapter capability that reports the
+// adapter neutralizes the target repository's project agent-instruction files
+// (AGENTS.md/CLAUDE.md) for this invocation, so they cannot install a governing
+// identity on the gate agent.
+//
+// A gate agent runs with cmd.Dir set to the target checkout and a free shell. If
+// the checkout is itself an agent-orchestration harness (for example firstmate),
+// its AGENTS.md can otherwise convince the gate agent it is the fleet captain and
+// drive it to spawn a crew and reset the branch it is validating (the
+// ambient-authority incident). Only adapters whose suppression knob is
+// empirically verified implement this and return true, and only while that knob
+// is actually in effect for the invocation (an operator override that defeats the
+// knob must report false so the gate fails closed rather than launching
+// unneutralized).
+type GateInstructionNeutralizer interface {
+	NeutralizesGateInstructions() bool
+}
+
+// NeutralizesGateInstructions reports whether a (possibly wrapped) agent
+// neutralizes the target repo's project agent-instruction files during a gate
+// run. It fails closed: an adapter that does not implement the capability, a
+// nil agent, or a wrapper any member of which does not neutralize, is reported
+// as NOT neutralized.
+func NeutralizesGateInstructions(a Agent) bool {
+	if a == nil {
+		return false
+	}
+	n, ok := a.(GateInstructionNeutralizer)
+	return ok && n.NeutralizesGateInstructions()
+}
+
+// EnsureGateNeutralized fails closed when the agent that will run gate steps in
+// the target checkout does not neutralize that checkout's project
+// agent-instruction files. Callers must invoke it before launching any gate
+// agent so an unverified harness is refused with a clear error rather than run
+// unneutralized in the target checkout. Only codex and claude have a verified
+// neutralization knob today.
+func EnsureGateNeutralized(a Agent) error {
+	if a == nil {
+		return fmt.Errorf("no gate agent configured")
+	}
+	if NeutralizesGateInstructions(a) {
+		return nil
+	}
+	return fmt.Errorf("gate agent %q does not neutralize the target repository's project "+
+		"agent-instruction files (AGENTS.md/CLAUDE.md); refusing to launch it in the target "+
+		"checkout. Only codex and claude have a verified neutralization knob (and only when it "+
+		"is not overridden by agent_args_override); set 'agent' to codex or claude in "+
+		"~/.no-mistakes/config.yaml", a.Name())
+}
+
 // LifecycleEvent describes process-level activity for an agent invocation.
 // The pipeline records these as step log lines and active-step heartbeats.
 type LifecycleEvent struct {
@@ -130,7 +190,8 @@ type Result struct {
 	// Text is the raw text output.
 	Text string
 	// Usage tracks token consumption for the invocation.
-	Usage TokenUsage
+	Usage         TokenUsage
+	UsageReported bool
 	// SessionID is the adapter-native session identity of this invocation
 	// when the adapter reports one. Callers persist it to resume later.
 	SessionID string
@@ -139,9 +200,26 @@ type Result struct {
 	// Model is the model the adapter reported serving this invocation, when
 	// available. Instrumentation only.
 	Model string
+	// ModelProvider is the provider that served the model (e.g. "openai",
+	// "anthropic"), when the adapter can report it. Instrumentation only.
+	ModelProvider string
 	// Provider is the adapter provider that served this invocation. It lets
 	// fallback wrappers persist a session against the provider that minted it.
 	Provider string
+	// Metrics is the bounded per-invocation activity evidence the adapter
+	// extracted from its event stream (round-trips, tool calls + categories,
+	// subprocess wait time). Nil means the adapter reported nothing, which is
+	// recorded as unknown (NULL) rather than a fabricated zero.
+	Metrics *InvocationMetrics
+	// CacheCreationReported reports whether Usage.CacheCreationTokens is a
+	// meaningful value. Adapters whose provider does not surface cache-creation
+	// cost (codex) leave it false so the field is recorded as unknown instead of
+	// a fabricated zero.
+	CacheCreationReported bool
+	// SessionUsageCumulative reports that Usage accumulates across a resumed
+	// durable session, so round N's counters include rounds 1..N-1. The pipeline
+	// uses it to record correct per-round token deltas (see PerRoundTokens).
+	SessionUsageCumulative bool
 }
 
 // TokenUsage tracks token consumption for an agent invocation.
@@ -150,12 +228,31 @@ type TokenUsage struct {
 	OutputTokens        int
 	CacheReadTokens     int
 	CacheCreationTokens int
+	// ReasoningTokens is the output tokens the model spent on hidden reasoning,
+	// when the provider reports it separately. Zero when not reported.
+	ReasoningTokens       int
+	Reported              bool
+	CacheCreationReported bool
+}
+
+// InvocationWorkload is the bounded size of the change an invocation works
+// over: changed files and net changed lines. It carries no paths or content.
+type InvocationWorkload struct {
+	Files int
+	Lines int
 }
 
 // Options configures backend-specific agent construction behavior.
-// ACPRegistryOverrides maps acpx target names to raw ACP agent commands.
+// ACPRegistryOverrides maps acpx target names, including first-class alias
+// targets, to raw ACP agent commands.
 type Options struct {
 	ACPRegistryOverrides map[string]string
+	// DisableProjectSettings, when true, asks a supported adapter (codex,
+	// claude) to launch with the target repo's project-level agent
+	// settings/instructions suppressed. It is the resolved, trusted-only opt-out
+	// from config.Config; adapters without a verified suppression knob ignore it
+	// and are refused separately by EnsureGateNeutralized when the opt-out is on.
+	DisableProjectSettings bool
 }
 
 func finalizeTextResult(agentName, text string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
@@ -163,7 +260,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 		return nil, fmt.Errorf("%s returned no text output", agentName)
 	}
 	if len(schema) == 0 {
-		return &Result{Text: text, Usage: usage}, nil
+		return &Result{Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
 	}
 
 	output, err := parseStructuredTextOutput(text, schema)
@@ -171,7 +268,7 @@ func finalizeTextResult(agentName, text string, schema json.RawMessage, usage To
 		return nil, fmt.Errorf("%s output parse: %w (output snippet: %q)", agentName, err, outputSnippet(text))
 	}
 
-	return &Result{Output: output, Text: text, Usage: usage}, nil
+	return &Result{Output: output, Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
 }
 
 // outputSnippet returns a trimmed, length-capped excerpt of agent output for
@@ -678,30 +775,31 @@ func (u *TokenUsage) Add(other TokenUsage) {
 	u.OutputTokens += other.OutputTokens
 	u.CacheReadTokens += other.CacheReadTokens
 	u.CacheCreationTokens += other.CacheCreationTokens
+	u.ReasoningTokens += other.ReasoningTokens
+	u.Reported = u.Reported || other.Reported
+	u.CacheCreationReported = u.CacheCreationReported || other.CacheCreationReported
 }
 
 // New creates an agent by name with the given binary path.
 // For native agents, extraArgs are user CLI flags from agent_args_override that
 // are injected into the underlying tool's argv ahead of no-mistakes' managed flags.
-// ACP agents ignore extraArgs; use NewWithOptions to provide registry overrides.
+// ACP agents and aliases ignore extraArgs; use NewWithOptions to provide
+// registry overrides.
 func New(name types.AgentName, bin string, extraArgs []string) (Agent, error) {
 	return NewWithOptions(name, bin, extraArgs, Options{})
 }
 
 // NewWithOptions creates an agent by name with additional backend-specific options.
 func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts Options) (Agent, error) {
-	if target, ok := acpTarget(name); ok {
-		rawCommand := ""
-		if opts.ACPRegistryOverrides != nil {
-			rawCommand = opts.ACPRegistryOverrides[target]
-		}
+	if target, ok := types.ACPTargetFor(name); ok {
+		rawCommand := types.ACPRawCommand(target, opts.ACPRegistryOverrides)
 		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand}, nil
 	}
 	switch name {
 	case types.AgentClaude:
-		return &claudeAgent{bin: bin, extraArgs: extraArgs}, nil
+		return &claudeAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
 	case types.AgentCodex:
-		return &codexAgent{bin: bin, extraArgs: extraArgs}, nil
+		return &codexAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
 	case types.AgentRovoDev:
 		return &rovodevAgent{bin: bin, extraArgs: extraArgs}, nil
 	case types.AgentOpenCode:
@@ -711,20 +809,8 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	case types.AgentCopilot:
 		return &copilotAgent{bin: bin, extraArgs: extraArgs}, nil
 	default:
-		return nil, fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode, pi, copilot, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
+		return nil, fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode, pi, copilot, cursor, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
 	}
-}
-
-func acpTarget(name types.AgentName) (string, bool) {
-	value := string(name)
-	if !strings.HasPrefix(value, "acp:") {
-		return "", false
-	}
-	target := strings.TrimPrefix(value, "acp:")
-	if target == "" || strings.ContainsAny(target, " \t\r\n") {
-		return "", false
-	}
-	return target, true
 }
 
 // NewNoop returns an agent that does nothing. Used for demo mode where

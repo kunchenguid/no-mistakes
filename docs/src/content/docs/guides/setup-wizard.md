@@ -107,10 +107,9 @@ The wizard requires:
 
 - The gate to be initialized (`no-mistakes init` has run).
 - A clean enough state to commit and push.
-- A configured native agent binary available on `PATH` (or via `agent_path_override`), or `acpx` available on `PATH` (or via `acpx_path`) for `agent: acp:<target>`, only when the wizard needs to suggest a branch name or commit subject. For an ordered fallback list, at least one configured entry must be available.
+- A configured native or ACP agent, only when the wizard needs to suggest a branch name or commit subject. For an ordered fallback list, at least one configured entry must be available. See the [Global Config Reference](/no-mistakes/reference/global-config/) for ACP aliases such as `agent: cursor` and target requirements.
   If you already have a branch and clean working tree, or you enter those values yourself in the interactive flow, the wizard can continue without agent suggestions.
 
 If any of those are missing, the wizard reports the problem and exits.
 `no-mistakes doctor` is the fastest way to check whether the configured global runner can start a validation gate.
-For ACP targets, it verifies that `acpx_path` resolves but does not invoke the target or test its credentials.
 The wizard can proceed without an agent when it does not need a suggestion, but the pushed validation gate still fails before its first step unless the effective pipeline-agent configuration resolves to a runnable runner.

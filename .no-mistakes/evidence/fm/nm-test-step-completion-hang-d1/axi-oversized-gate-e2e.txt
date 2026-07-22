@@ -1,0 +1,36 @@
+Evidence-producing variation: the same isolated real-process journey emitted 145 test-output lines so the default Test gate summary exceeded its inline limit.
+
+End-user `no-mistakes axi status --run 01KY0S8104G0490XKB1G86XST8` output excerpt:
+
+run:
+  id: "01KY0S8104G0490XKB1G86XST8"
+  branch: control-byte-test-gate
+  status: running
+  awaiting_agent: parked 1s
+  findings: 2 info
+  steps[9]{step,status,findings,duration_ms}:
+    intent,skipped,0,45
+    rebase,completed,0,121
+    review,completed,1,272
+    test,awaiting_approval,1,253
+    document,pending,0,0
+    lint,pending,0,0
+    push,pending,0,0
+    pr,pending,0,0
+    ci,pending,0,0
+gate:
+  step: test
+  status: awaiting_approval
+  summary: "bad\\x1Fvalue\nlater-000\nlater-001\nlater-002\nlater-003\nlater-004\nlater-005\nlater-006\nlater-007\nlater-008\nlater-009\nlater-010\nlater-011\nlater-012\nlater-013\nlater-014\nlater-015\nlater-016\nlater-017\nlater-018\nlater-019\nlater-020\nlater-021\nlater-022\nlater-023\nlater-024\nlater-025\nlater-026\nlater-027\nlater-028\nlater-029\nlater-030\nlater-031\nlater-032\nlater-033\nlater-034\nlater-035\nlater-036\nlater-037\nlater-038\nlater-039\nlater-040\nlater-041\nlater-042\nlater-043\nlater-044\nlater-045\nlater-046\nlater-047\nlater-048\nlater-049\nlater-050\nlater-051\nlater-052\nlater-053\nlater-054\nlater-055\nlater-056\nlater-057\nlater-058\nlater-059\nlater-060\nlater-061\nlater-062\nlater-063\nlater-064\nlater-065\nlater-066\nlater-067\nlater-068\nlater-069\nlater-070\nlater-071\nlater-072\nlater-073\nlater-074\nlater-075\nlater-076\nlater-077\nlater-078\nlater-079\nlater-080\nlater-081\nlater-082\nlater-083\nlater-084\nlater-085\nlater-086\nlater-087\nlater-088\nlater-089\nlater-090\nlater-091\nlater-092\nlater-093\nlater-094\nlater-095\nlater-096\nlater-097\nlater-098\nlater-099\nlater-100\nlater-101\nlater-102\nlater-103\nlater-104\nlater-105\nlater-106\nlater-107\nlater-108\nlater-109\nlater-110\nlater-111\nlater-112\nlater-113\nlater-114\nlater-115\nlater-116\nlater-117\nlater-118\n… (truncated, 1460 chars total)"
+  findings[1]{id,severity,file,action,description}:
+    test-1,error,"","",tests failed with exit code 1
+help[6]: Run `no-mistakes axi respond --action approve` to accept this step and continue,Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself),Run `no-mistakes axi respond --action skip` to skip this step,Run `no-mistakes axi logs --step test --full` to read the full step log,"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.","Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits."
+
+Direct durable-state checks in the same isolated journey:
+
+raw test.log contains U+001F: true
+document: pending
+lint: pending
+push: pending
+
+Result: PASS

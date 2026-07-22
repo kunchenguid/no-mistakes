@@ -50,6 +50,9 @@ auto_fix:
   lint: 3
   ci: 3
 
+commit:
+  fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
+
 intent:
   enabled: true
   threshold: 0.2
@@ -68,17 +71,19 @@ test:
 
 Default agent for all repos and setup-wizard suggestions. Can be overridden per-repo.
 
-|         |                                                                                   |
-| ------- | --------------------------------------------------------------------------------- |
-| Type    | `string` or `string[]`                                                            |
-| Values  | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `acp:<target>` |
-| Default | `auto`                                                                            |
+|         |                                                                                             |
+| ------- | ------------------------------------------------------------------------------------------- |
+| Type    | `string` or `string[]`                                                                      |
+| Values  | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `cursor`, `acp:<target>` |
+| Default | `auto`                                                                                      |
 
-`auto` resolves to the first supported native agent found on `PATH` in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, then `copilot`.
-`acp:<target>` uses the user-installed `acpx` binary to run an ACP target, for example `acp:gemini`.
-ACP agents are opt-in and are not considered by `agent: auto`.
+`auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, then `cursor`.
+`cursor` is an ACP alias for the `cursor` target with default command `cursor-agent acp`.
+With default paths, `auto` only selects it when both `cursor-agent` and `acpx` resolve; `acp_registry_overrides.cursor` and `acpx_path` replace those respective defaults during availability checks.
+`acp:<target>` uses the user-installed `acpx` binary to run an ACP target, for example `acp:gemini`; `acp:cursor` uses the same default command as `cursor`.
+Arbitrary `acp:<target>` agents are opt-in and are not considered by `agent: auto`.
 The effective agent configuration must resolve to a runnable runner before a new validation gate starts.
-If an explicit agent is unavailable, `auto` finds no native agent, or no fallback-list entry is available, the gate fails before its first pipeline step rather than reporting a partial command-only validation as passed.
+If an explicit agent is unavailable, `auto` finds no native agent or ACP alias, or no fallback-list entry is available, the gate fails before its first pipeline step rather than reporting a partial command-only validation as passed.
 `no-mistakes doctor` checks the global configuration, while every run repeats resolution after applying any trusted repository-level `agent` override.
 
 You can also set an ordered fallback list:
@@ -88,13 +93,14 @@ agent: [codex, claude]
 ```
 
 The list is filtered to entries available to the daemon at run startup, and the first available entry becomes the primary agent.
+After resolving `auto`, entries that resolve to the same ACP target are deduplicated in list order, so `cursor` and `acp:cursor` provide one fallback and preserve whichever spelling appears first.
 If no entry is available, the gate fails before its first pipeline step.
 If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
 Structured findings and schema/output validation problems do not trigger fallback.
 
 ### acpx_path
 
-Path to the user-installed `acpx` binary used for `agent: acp:<target>`.
+Path to the user-installed `acpx` binary used for `agent: acp:<target>` and ACP aliases such as `agent: cursor`.
 
 |         |          |
 | ------- | -------- |
@@ -105,6 +111,9 @@ Path to the user-installed `acpx` binary used for `agent: acp:<target>`.
 
 Map an ACP target name to a raw ACP agent command.
 When `agent: acp:<target>` matches an override key, no-mistakes runs `acpx --agent <command>` instead of `acpx <target>`.
+ACP aliases use the same target keys. For example, `agent: cursor` and `agent: acp:cursor` resolve to the `cursor` target, so set `cursor` to override the default `cursor-agent acp` command.
+Values are trimmed; a blank or whitespace-only value behaves as no override, so an alias keeps its default command.
+Availability checks always resolve `acpx_path`. They also probe the executable named first in the effective non-blank raw command when it is a bare command name or clean absolute path. Relative, quoted, or escaped raw commands are not pre-probed; `acpx` executes them from the worktree. These checks do not invoke the ACP target or test its credentials.
 
 |         |                     |
 | ------- | ------------------- |
@@ -123,7 +132,7 @@ acp_registry_overrides:
 
 Custom binary paths for native agents.
 When set, `no-mistakes` uses this path instead of looking up the binary on `PATH`.
-ACP agents use `acpx_path` instead.
+ACP agents and aliases use `acpx_path` for the bridge; use `acp_registry_overrides` to replace a raw target command such as `cursor-agent acp`.
 
 |         |                                   |
 | ------- | --------------------------------- |
@@ -217,7 +226,9 @@ Accepts any Go `time.ParseDuration` string: `30m`, `2h`, `4h30m`, etc.
 This is an idle timeout, not an absolute deadline: every time the base branch advances, the monitor re-arms it.
 So an actively-updated green PR keeps its monitor no matter how long it stays open.
 If it later develops an actual GitHub, GitLab, or Azure DevOps merge conflict, the CI auto-fix path rebases and re-pushes it, while a clean behind PR needs no command.
-A genuinely idle/abandoned PR is still reaped after the timeout elapses.
+A genuinely idle/abandoned PR still parks at an approval gate after the timeout elapses.
+While that CI gate is parked, the daemon continues bounded read-only PR-state checks.
+If the PR is merged or closed externally, the stale gate completes automatically; an open, unknown, or temporarily unreachable PR remains parked for a user decision.
 
 Set it to `unlimited` (`none`, `off`, and `never` are accepted aliases), `0`, or any non-positive duration to monitor until the PR is merged, closed, or the run is aborted with `no-mistakes axi abort --run <id>`.
 
@@ -275,7 +286,7 @@ The roles never share a session, other pipeline steps stay session-isolated in t
 Every review turn still performs a full review of the complete branch diff; only the reviewer's own prior context is carried.
 When resume is unavailable or fails, the invocation falls back to a cold run or a fresh same-role session and the fallback is recorded in the local `agent_invocations` performance record.
 Session identities are persisted only as minimum local resume metadata, never as prompts or transcripts.
-After a daemon restart, no-mistakes resumes only fully recorded parked approval gates; incomplete or ambiguous active runs fail closed through normal crash recovery.
+The [daemon crash-recovery reference](/no-mistakes/concepts/daemon/#crash-recovery) owns which parked gates can resume or reconcile after a restart.
 Set `false` to force every agent invocation cold.
 
 ### auto_fix
@@ -300,6 +311,33 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 Legacy alias: `auto_fix.babysit`.
 
 These are global defaults. Per-repo config can override individual steps.
+
+### commit.fix_message
+
+Template for the subject of commits created by the shared Review, Test, Document, and Lint fix path.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | `no-mistakes({{.Step}}): {{.Summary}}` |
+
+The template supports literal text and two Go-style placeholders:
+
+| Variable | Value |
+|---|---|
+| `{{.Step}}` | Pipeline step name, such as `review`, `test`, `document`, or `lint` |
+| `{{.Summary}}` | Sanitized one-line summary returned by the fix agent, or the step's deterministic fallback summary |
+
+The value must be a valid UTF-8 template that renders to a non-empty, single-line commit subject.
+The template source is limited to 1,024 bytes and 16 placeholders.
+The fix-agent summary and final rendered subject are each limited to 4,096 bytes.
+Before rendering, no-mistakes predicts the subject size from the validated literal text and placeholders, then rejects oversized output without allocating the expanded message.
+Template functions, control actions, named templates, unknown placeholders, malformed syntax, control characters, unsafe Unicode format characters, and Unicode line or paragraph separators cause configuration loading to fail.
+The blocked format set includes every Unicode `Bidi_Control` code point plus `U+00AD`, `U+180E`, `U+200B`, `U+2060` through `U+2064`, the deprecated bidi controls `U+206A` through `U+206F`, `U+FEFF`, `U+FFF9` through `U+FFFB`, and Unicode tag characters in `U+E0000` through `U+E007F`.
+Legitimate `U+200C` zero-width non-joiner and `U+200D` zero-width joiner text shaping remains allowed.
+The final rendered subject is validated again, so unsafe characters in an agent-provided summary are also rejected.
+The setting does not change commit subjects created by the Rebase, CI, or Push steps.
+A per-repo [`commit.fix_message`](/no-mistakes/reference/repo-config/#commitfix_message) value overrides this global setting.
 
 ### intent
 

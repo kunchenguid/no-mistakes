@@ -19,6 +19,17 @@ const (
 	FindingSourceUser  = "user"
 )
 
+const (
+	FindingReviewScopeSource                = "source"
+	FindingReviewScopePipelineOwnedDelivery = "pipeline-owned-delivery"
+	FindingReviewScopeExternalDelivery      = "external-delivery"
+)
+
+const (
+	FindingsRiskScopeSourceOrExternal      = "source-or-external"
+	FindingsRiskScopePipelineOwnedDelivery = "pipeline-owned-delivery"
+)
+
 // Finding category constants for the combined document+lint housekeeping
 // pass. An empty Category on a housekeeping finding is treated as
 // documentation (the stricter gate).
@@ -37,6 +48,7 @@ type Finding struct {
 	Action           string `json:"action"`
 	Source           string `json:"source,omitempty"`
 	UserInstructions string `json:"user_instructions,omitempty"`
+	ReviewScope      string `json:"review_scope,omitempty"`
 	// Category separates the combined document+lint housekeeping pass's
 	// findings into their owning gates. Empty everywhere else.
 	Category string `json:"category,omitempty"`
@@ -60,6 +72,7 @@ type findingWire struct {
 	Action              string `json:"action"`
 	Source              string `json:"source,omitempty"`
 	UserInstructions    string `json:"user_instructions,omitempty"`
+	ReviewScope         string `json:"review_scope,omitempty"`
 	Category            string `json:"category,omitempty"`
 	RequiresHumanReview *bool  `json:"requires_human_review,omitempty"`
 }
@@ -73,6 +86,7 @@ type Findings struct {
 	Artifacts      []TestArtifact `json:"artifacts,omitempty"`
 	RiskLevel      string         `json:"risk_level"`
 	RiskRationale  string         `json:"risk_rationale"`
+	RiskScope      string         `json:"risk_scope,omitempty"`
 }
 
 type findingsWire struct {
@@ -84,6 +98,7 @@ type findingsWire struct {
 	Artifacts      []TestArtifact `json:"artifacts"`
 	RiskLevel      string         `json:"risk_level"`
 	RiskRationale  string         `json:"risk_rationale"`
+	RiskScope      string         `json:"risk_scope"`
 }
 
 // ParseFindingsJSON decodes findings JSON, accepting current and legacy item
@@ -97,7 +112,7 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 	if len(items) == 0 && len(wire.Legacy) > 0 {
 		items = wire.Legacy
 	}
-	return Findings{Items: items, Summary: wire.Summary, Tested: wire.Tested, TestingSummary: wire.TestingSummary, Artifacts: wire.Artifacts, RiskLevel: wire.RiskLevel, RiskRationale: wire.RiskRationale}, nil
+	return Findings{Items: items, Summary: wire.Summary, Tested: wire.Tested, TestingSummary: wire.TestingSummary, Artifacts: wire.Artifacts, RiskLevel: wire.RiskLevel, RiskRationale: wire.RiskRationale, RiskScope: wire.RiskScope}, nil
 }
 
 // NormalizeFindings assigns deterministic IDs to findings that do not have one yet.
@@ -120,7 +135,7 @@ func FilterFindings(findings Findings, ids []string) Findings {
 	for _, id := range ids {
 		selected[id] = true
 	}
-	filtered := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
+	filtered := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale, RiskScope: findings.RiskScope}
 	for _, item := range findings.Items {
 		if selected[item.ID] {
 			filtered.Items = append(filtered.Items, item)
@@ -141,7 +156,7 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 	for _, id := range ids {
 		excluded[id] = true
 	}
-	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
+	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale, RiskScope: findings.RiskScope}
 	for _, item := range findings.Items {
 		if !excluded[item.ID] {
 			result.Items = append(result.Items, item)
@@ -154,7 +169,7 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 // Action is "auto-fix". These are safe for automatic fixing without
 // user involvement.
 func AutoFixableFindings(findings Findings) Findings {
-	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale}
+	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale, RiskScope: findings.RiskScope}
 	for _, item := range findings.Items {
 		if item.actionOrDefault() == ActionAutoFix {
 			result.Items = append(result.Items, item)
@@ -175,6 +190,7 @@ func MergeUserOverrides(findings Findings, instructions map[string]string, added
 		Artifacts:      findings.Artifacts,
 		RiskLevel:      findings.RiskLevel,
 		RiskRationale:  findings.RiskRationale,
+		RiskScope:      findings.RiskScope,
 	}
 	if len(findings.Items) > 0 {
 		result.Items = make([]Finding, len(findings.Items))
@@ -212,10 +228,14 @@ func MergeUserOverrides(findings Findings, instructions map[string]string, added
 	return result
 }
 
-// HasAskUserFindings returns true if any finding has Action "ask-user".
+// HasAskUserFindings returns true if any finding has an effective action of
+// "ask-user". It uses actionOrDefault so an empty/missing action (which now
+// defaults to ask-user) parks for a human, keeping this in agreement with
+// AutoFixableFindings: an unclassified finding is never auto-fixed and is
+// always caught here as ask-user.
 func HasAskUserFindings(findings Findings) bool {
 	for _, item := range findings.Items {
-		if item.Action == ActionAskUser {
+		if item.actionOrDefault() == ActionAskUser {
 			return true
 		}
 	}
@@ -315,6 +335,7 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	f.Action = wire.Action
 	f.Source = wire.Source
 	f.UserInstructions = wire.UserInstructions
+	f.ReviewScope = wire.ReviewScope
 	f.Category = wire.Category
 	if f.Action == "" && wire.RequiresHumanReview != nil {
 		if *wire.RequiresHumanReview {
@@ -326,9 +347,17 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// actionOrDefault resolves a finding's effective action, defaulting an
+// empty/missing action to ask-user (park), not auto-fix. This closes a
+// fail-open hole: an unclassified finding on a non-schema path (a legacy
+// requires_human_review omission, an IPC- or user-supplied finding) must
+// route to a human rather than be silently auto-applied. It also matches the
+// review prompt's own "When in doubt, default to ask-user" instruction.
+// (MergeUserOverrides still stamps user-*added* findings auto-fix explicitly -
+// a user who hand-adds a finding is asking for a fix.)
 func (f Finding) actionOrDefault() string {
 	if f.Action == "" {
-		return ActionAutoFix
+		return ActionAskUser
 	}
 	return f.Action
 }

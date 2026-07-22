@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/bitbucket"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 )
 
 // resolveBitbucketRepoRef parses a Bitbucket repo reference from the upstream
@@ -16,7 +17,7 @@ func resolveBitbucketRepoRef(upstreamURL string, prURL *string) (bitbucket.RepoR
 	if prURL != nil && strings.TrimSpace(*prURL) != "" {
 		return bitbucket.ParseRepoRef(*prURL)
 	}
-	return bitbucket.RepoRef{}, fmt.Errorf("resolve Bitbucket repository from upstream %q", upstreamURL)
+	return bitbucket.RepoRef{}, fmt.Errorf("resolve Bitbucket repository from upstream %q", safeurl.Redact(upstreamURL))
 }
 
 // trimLogOutput truncates log output to the last maxBytes bytes, respecting

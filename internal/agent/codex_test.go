@@ -14,6 +14,8 @@ func TestCodexAgent_BuildArgs(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}
 	args := ca.buildArgs("fix the bug", "", "")
 
+	// Default (no opt-out): pristine args, no project-doc suppression - ordinary
+	// repos keep loading AGENTS.md (backward-compat).
 	expected := []string{
 		"exec", "fix the bug",
 		"--json",
@@ -357,6 +359,7 @@ func TestParseCodexEvents_AgentMessage(t *testing.T) {
 		&lastMessage,
 		nil,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -394,6 +397,7 @@ func TestParseCodexEvents_SeparatesMultipleMessages(t *testing.T) {
 		&lastMessage,
 		nil,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -428,6 +432,7 @@ func TestParseCodexEvents_DoesNotSeparateSplitTurnMessages(t *testing.T) {
 		&lastMessage,
 		nil,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -448,11 +453,96 @@ func TestParseCodexEvents_SkipsMalformedLines(t *testing.T) {
 
 	var usage TokenUsage
 	var lastMessage string
-	err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, nil, nil)
+	err := parseCodexEvents(context.Background(), strings.NewReader(events), nil, &usage, &lastMessage, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if usage.InputTokens != 10 {
 		t.Errorf("expected 10 input tokens, got %d", usage.InputTokens)
 	}
+}
+
+// TestCodexAgent_BuildArgs_SuppressesProjectDocUnderOptOut locks in the codex
+// project-settings contract UNDER the trusted opt-out: codex is told to read
+// zero bytes of AGENTS.md (project doc) and to ignore project execpolicy .rules,
+// so a gate agent validating an agent-orchestration repo (firstmate) does not
+// adopt its fleet-captain identity.
+//
+// Empirical Codex E2E canary, run manually with codex-cli 0.144: a
+// firstmate-shaped checkout contained AGENTS.md and CLAUDE.md requiring the
+// unique AYE_CAPTAIN_CANARY identity token in every reply if and only if the
+// project instructions governed the agent. Codex ran from that checkout in a
+// read-only sandbox. The default invocation's response to "pong" included the
+// token, proving that Codex loaded AGENTS.md and preserving ordinary-repo
+// compatibility. With -c project_doc_max_bytes=0 plus --ignore-rules, the
+// response was only "pong" and omitted the token, proving that AGENTS.md was
+// suppressed. Both flags were accepted on exec and resume.
+//
+// A real-Codex canary is excluded from CI because it requires authentication
+// and network access and would be flaky, while the e2e fakeagent cannot model
+// Codex's AGENTS.md loading. The argument-level Codex tests here and Claude
+// tests for --setting-sources user are the CI guarantee that the verified
+// suppression knobs are emitted under the opt-out.
+func TestCodexAgent_BuildArgs_SuppressesProjectDocUnderOptOut(t *testing.T) {
+	ca := &codexAgent{bin: "codex", disableProjectSettings: true}
+	args := ca.buildArgs("review the diff", "", "")
+	if !argsContainPair(args, "-c", "project_doc_max_bytes=0") {
+		t.Errorf("buildArgs = %v, want a `-c project_doc_max_bytes=0` pair", args)
+	}
+	if !argsContain(args, "--ignore-rules") {
+		t.Errorf("buildArgs = %v, want --ignore-rules for full project-settings coverage", args)
+	}
+}
+
+// TestCodexAgent_BuildArgs_NoSuppressionWithoutOptOut is the backward-compat
+// guarantee: without the opt-out, codex adds no suppression and loads AGENTS.md
+// exactly as before.
+func TestCodexAgent_BuildArgs_NoSuppressionWithoutOptOut(t *testing.T) {
+	ca := &codexAgent{bin: "codex"}
+	args := ca.buildArgs("review the diff", "", "")
+	if argsContainPair(args, "-c", "project_doc_max_bytes=0") || argsContain(args, "--ignore-rules") {
+		t.Errorf("buildArgs = %v, must add no suppression when the repo did not opt out", args)
+	}
+}
+
+// TestCodexAgent_BuildArgs_SuppressesOnResumeUnderOptOut ensures the contract
+// also applies to review-loop session resumes, whose flag surface is narrower
+// but still accepts the global -c and --ignore-rules.
+func TestCodexAgent_BuildArgs_SuppressesOnResumeUnderOptOut(t *testing.T) {
+	ca := &codexAgent{bin: "codex", disableProjectSettings: true}
+	args := ca.buildArgs("rereview", "", "thread-123")
+	if args[0] != "exec" || args[1] != "resume" || args[2] != "thread-123" {
+		t.Fatalf("resume positional prefix disturbed: %v", args)
+	}
+	if !argsContainPair(args, "-c", "project_doc_max_bytes=0") || !argsContain(args, "--ignore-rules") {
+		t.Errorf("resume buildArgs = %v, want project_doc_max_bytes=0 + --ignore-rules", args)
+	}
+}
+
+// TestCodexAgent_BuildArgs_UserProjectDocOverrideWins ensures an operator who
+// pinned their own project_doc_max_bytes is not double-set even under opt-out.
+func TestCodexAgent_BuildArgs_UserProjectDocOverrideWins(t *testing.T) {
+	ca := &codexAgent{bin: "codex", disableProjectSettings: true, extraArgs: []string{"-c", "project_doc_max_bytes=4096"}}
+	args := ca.buildArgs("p", "", "")
+	if argsContainPair(args, "-c", "project_doc_max_bytes=0") {
+		t.Errorf("buildArgs = %v, must not add project_doc_max_bytes=0 over a user pin", args)
+	}
+}
+
+func argsContain(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}
+
+func argsContainPair(args []string, flag, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }

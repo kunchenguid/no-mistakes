@@ -53,6 +53,23 @@ func (a *fallbackAgent) SupportsSessionProvider(provider string) bool {
 
 func (a *fallbackAgent) ReportsAgentAttempts() bool { return true }
 
+// NeutralizesGateInstructions fails closed over the whole fallback set: the
+// wrapper may invoke any member, so it neutralizes the target repo's project
+// agent-instruction files only if EVERY member does. A single unverified member
+// makes the wrapper report false so the gate is refused rather than risk that
+// member running unneutralized.
+func (a *fallbackAgent) NeutralizesGateInstructions() bool {
+	if len(a.agents) == 0 {
+		return false
+	}
+	for _, current := range a.agents {
+		if !NeutralizesGateInstructions(current) {
+			return false
+		}
+	}
+	return true
+}
+
 func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	candidates := a.agents
 	if opts.Session != nil && opts.Session.ID != "" && opts.Session.Agent != "" {

@@ -55,6 +55,8 @@ func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 		"daemon_connect_timeout:",
 		"log_level: info",
 		"# agent_path_override:",
+		"# commit:",
+		`#   fix_message: "no-mistakes({{.Step}}): {{.Summary}}"`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("default config missing %q", want)

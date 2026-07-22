@@ -1,6 +1,8 @@
 package scm
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,6 +34,85 @@ func TestDetectProvider(t *testing.T) {
 			t.Errorf("DetectProvider(%q) = %q, want %q", tt.url, got, tt.want)
 		}
 	}
+}
+
+func TestDetectProvider_SSHHostAlias(t *testing.T) {
+	t.Setenv("GLAB_CONFIG_DIR", t.TempDir())
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+
+	tests := []struct {
+		name     string
+		url      string
+		hostname string
+		want     Provider
+	}{
+		{
+			name:     "GitHub scp remote",
+			url:      "git@github-personal:owner/repo.git",
+			hostname: "github.com",
+			want:     ProviderGitHub,
+		},
+		{
+			name:     "GitLab SSH URL",
+			url:      "ssh://git@gitlab-work/group/repo.git",
+			hostname: "gitlab.com",
+			want:     ProviderGitLab,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := detectProvider(context.Background(), tt.url, func(context.Context, string) (string, error) {
+				return tt.hostname, nil
+			})
+			if got != tt.want {
+				t.Fatalf("detectProvider(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveHost_SSHConfigLookup(t *testing.T) {
+	t.Run("canonical hostname", func(t *testing.T) {
+		got := resolveHost(context.Background(), "git@github-personal:owner/repo.git", func(_ context.Context, alias string) (string, error) {
+			if alias != "github-personal" {
+				t.Fatalf("alias = %q, want github-personal", alias)
+			}
+			return "GitHub.COM", nil
+		})
+		if got != "github.com" {
+			t.Fatalf("resolveHost() = %q, want github.com", got)
+		}
+	})
+
+	t.Run("lookup failure preserves alias", func(t *testing.T) {
+		got := resolveHost(context.Background(), "git@github-personal:owner/repo.git", func(context.Context, string) (string, error) {
+			return "", errors.New("ssh unavailable")
+		})
+		if got != "github-personal" {
+			t.Fatalf("resolveHost() = %q, want github-personal", got)
+		}
+	})
+
+	t.Run("HTTPS does not invoke SSH", func(t *testing.T) {
+		got := resolveHost(context.Background(), "https://code.example.com/owner/repo.git", func(context.Context, string) (string, error) {
+			t.Fatal("SSH lookup invoked for HTTPS remote")
+			return "", nil
+		})
+		if got != "code.example.com" {
+			t.Fatalf("resolveHost() = %q, want code.example.com", got)
+		}
+	})
+
+	t.Run("Windows path does not invoke SSH", func(t *testing.T) {
+		got := resolveHost(context.Background(), `C:\repo`, func(context.Context, string) (string, error) {
+			t.Fatal("SSH lookup invoked for Windows path")
+			return "", nil
+		})
+		if got != "c" {
+			t.Fatalf("resolveHost() = %q, want c", got)
+		}
+	})
 }
 
 // writeGlabConfig writes a synthetic glab config.yml into a temp dir and points

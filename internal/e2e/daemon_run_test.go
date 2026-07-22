@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/e2edaemon"
 )
 
 func TestDaemonRunUsesProvidedRoot(t *testing.T) {
@@ -27,6 +29,14 @@ func TestDaemonRunUsesProvidedRoot(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(rootDir) })
 	wantRoot := filepath.Join(rootDir, "nm-home")
 
+	// Track this secondary root in the suite inventory so interrupt/reaper
+	// paths stop it without relying solely on this test's defer.
+	own, err := e2edaemon.Acquire(wantRoot, h.NMBin, 2*time.Minute)
+	if err != nil {
+		t.Fatalf("acquire ownership for daemon run root: %v", err)
+	}
+	t.Cleanup(own.Release)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cmd := exec.CommandContext(ctx, h.NMBin, "daemon", "run", "--root", wantRoot)
@@ -41,6 +51,7 @@ func TestDaemonRunUsesProvidedRoot(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start daemon run --root: %v", err)
 	}
+	_ = own.SyncPID(cmd.Process.Pid)
 
 	done := make(chan error, 1)
 	go func() {

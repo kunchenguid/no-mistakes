@@ -101,6 +101,137 @@ func TestFindMainRepoRootNotFound(t *testing.T) {
 	}
 }
 
+// addSubmodule wires up an absorbed submodule at <super>/<name> pointing at
+// the repo at <remoteDir>, commits the new submodule, and returns the
+// submodule's working tree. The path layout matches `git submodule add`:
+//   - <super>/<name>                        working tree
+//   - <super>/.git/modules/<name>           absorbed git dir
+//   - core.worktree = ../../../../<name>    relative inside the absorbed git dir
+func addSubmodule(t *testing.T, superDir, name, remoteDir string) string {
+	t.Helper()
+	// Use an absolute path so the clone does not depend on the superproject
+	// having an "origin" remote (which would change the relative path's
+	// resolution base).
+	absRemote, err := filepath.Abs(remoteDir)
+	if err != nil {
+		t.Fatalf("abs remote: %v", err)
+	}
+	// superDir may itself be a submodule checkout (nested case), which never
+	// had a commit identity configured; set one so the commit below does not
+	// fail with "empty ident name" on runners without an ambient git identity.
+	run(t, superDir, "git", "config", "user.email", "test@test.com")
+	run(t, superDir, "git", "config", "user.name", "Test")
+	run(t, superDir, "git", "-c", "protocol.file.allow=always", "submodule", "add", absRemote, name)
+	run(t, superDir, "git", "-c", "protocol.file.allow=always", "submodule", "init", name)
+	run(t, superDir, "git", "-c", "protocol.file.allow=always", "submodule", "update", name)
+	run(t, superDir, "git", "add", ".gitmodules", name)
+	run(t, superDir, "git", "commit", "-m", "add "+name+" submodule")
+	return filepath.Join(superDir, name)
+}
+
+// TestFindMainRepoRootSubmodule reproduces issue #328: in an absorbed
+// submodule checkout, the git common dir is <super>/.git/modules/<name>, so
+// the historical "parent of commonDir" heuristic points at the superproject's
+// modules directory. The function must instead resolve to the submodule's
+// own working tree (via core.worktree) so callers read the submodule's
+// remotes, not the superproject's.
+func TestFindMainRepoRootSubmodule(t *testing.T) {
+	ctx := context.Background()
+	superDir := initTestRepo(t)
+	// Give the superproject its own distinct origin so the assertion below
+	// can tell the two apart — the bug is that the gate ends up reading
+	// the superproject's origin instead of the submodule's.
+	if err := AddRemote(ctx, superDir, "origin", "https://github.com/example/superproject.git"); err != nil {
+		t.Fatalf("add super origin: %v", err)
+	}
+	subRemote := initTestRepo(t)
+
+	subWorktree := addSubmodule(t, superDir, "sub", subRemote)
+	// Set the submodule's own origin on its working tree (the helper above
+	// clones subRemote, so without this the cloned submodule's "origin"
+	// would be subRemote's path, not the URL the gate should record).
+	// `git submodule add` already created an "origin" remote pointing at
+	// subRemote, so use EnsureRemote to overwrite it idempotently.
+	if err := EnsureRemote(ctx, subWorktree, "origin", "https://github.com/example/submodule.git"); err != nil {
+		t.Fatalf("add submodule origin: %v", err)
+	}
+
+	got, err := FindMainRepoRoot(subWorktree)
+	if err != nil {
+		t.Fatalf("FindMainRepoRoot from submodule: %v", err)
+	}
+	wantResolved, _ := filepath.EvalSymlinks(subWorktree)
+	gotResolved, _ := filepath.EvalSymlinks(got)
+	if gotResolved != wantResolved {
+		t.Fatalf("FindMainRepoRoot from submodule = %q, want %q (superproject's .git/modules would be wrong)", gotResolved, wantResolved)
+	}
+
+	// The dangerous half: callers (init, eject) read remotes by running git
+	// with cwd set to the returned root. If that root resolves to the
+	// superproject instead, the gate records the superproject's origin
+	// instead of the submodule's.
+	url, err := Run(ctx, got, "remote", "get-url", "origin")
+	if err != nil {
+		t.Fatalf("read origin from returned root: %v", err)
+	}
+	if url != "https://github.com/example/submodule.git" {
+		t.Fatalf("origin read from returned root = %q, want the submodule's origin", url)
+	}
+}
+
+// TestFindMainRepoRootNestedSubmodule is the same fix one level deeper:
+// a submodule inside a submodule has its git dir at
+// <super>/.git/modules/a/modules/b. The function must still resolve to the
+// innermost submodule's working tree.
+func TestFindMainRepoRootNestedSubmodule(t *testing.T) {
+	ctx := context.Background()
+	superDir := initTestRepo(t)
+	outerRemote := initTestRepo(t)
+	innerRemote := initTestRepo(t)
+
+	outerWorktree := addSubmodule(t, superDir, "outer", outerRemote)
+	innerWorktree := addSubmodule(t, outerWorktree, "inner", innerRemote)
+	if err := AddRemote(ctx, innerRemote, "origin", "https://github.com/example/inner.git"); err != nil {
+		t.Fatalf("add inner origin: %v", err)
+	}
+
+	got, err := FindMainRepoRoot(innerWorktree)
+	if err != nil {
+		t.Fatalf("FindMainRepoRoot from nested submodule: %v", err)
+	}
+	wantResolved, _ := filepath.EvalSymlinks(innerWorktree)
+	gotResolved, _ := filepath.EvalSymlinks(got)
+	if gotResolved != wantResolved {
+		t.Fatalf("FindMainRepoRoot from nested submodule = %q, want %q", gotResolved, wantResolved)
+	}
+}
+
+// TestFindMainRepoRootFromWorktreeStillResolvesToMain is the linked-worktree
+// regression guard for the three-way fix. Linked worktrees keep their git
+// common dir at <main>/.git, so the historical "parent of commonDir" answer
+// stays correct and must not regress.
+func TestFindMainRepoRootFromWorktreeStillResolvesToMain(t *testing.T) {
+	ctx := context.Background()
+	mainRepo := initTestRepo(t)
+	run(t, mainRepo, "git", "checkout", "-b", "wt-branch")
+	run(t, mainRepo, "git", "checkout", "-")
+	wtDir := filepath.Join(t.TempDir(), "worktree")
+	if err := WorktreeAdd(ctx, mainRepo, wtDir, "wt-branch"); err != nil {
+		t.Fatalf("WorktreeAdd: %v", err)
+	}
+	t.Cleanup(func() { WorktreeRemove(ctx, mainRepo, wtDir) })
+
+	got, err := FindMainRepoRoot(wtDir)
+	if err != nil {
+		t.Fatalf("FindMainRepoRoot from worktree: %v", err)
+	}
+	want, _ := filepath.EvalSymlinks(mainRepo)
+	gotResolved, _ := filepath.EvalSymlinks(got)
+	if gotResolved != want {
+		t.Fatalf("FindMainRepoRoot from worktree = %q, want %q", gotResolved, want)
+	}
+}
+
 func TestPush(t *testing.T) {
 	ctx := context.Background()
 	src := initTestRepo(t)

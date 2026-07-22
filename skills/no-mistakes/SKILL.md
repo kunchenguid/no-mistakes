@@ -50,7 +50,8 @@ the same way once the work is committed on a feature branch.
 - You must be on a **feature branch**, not the repository's default branch.
 - The repository must already be initialized with `no-mistakes init`.
 - The daemon must have a runnable configured pipeline agent: a supported native
-  agent binary, or `acpx` for an `acp:<target>`. You are the AXI driver, not
+  agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through
+  `acpx`. You are the AXI driver, not
   an implicit pipeline-agent backend. If none is available, the run fails
   before its first step; `no-mistakes doctor` reports the configuration problem.
 
@@ -62,7 +63,7 @@ wrong.
 Before starting, run `no-mistakes axi` (home view).
 If it shows an active run on your current branch, inspect it with `no-mistakes axi status`.
 If it is parked at a gate, drive it with `no-mistakes axi respond`.
-Reattach an in-flight run by re-running `no-mistakes axi run` when it still matches your current `HEAD`.
+Reattach an in-flight run by re-running `no-mistakes axi run` when it still matches your current `HEAD` - either as the submitted head or as the current pipeline head.
 Only `no-mistakes axi abort` it when you mean to discard that run before starting over; aborting is a between-runs action, never a way to take over or bypass a gate while a run is still going (see [Validate and decide](#validate-and-decide)).
 If it shows an active run on another branch, leave that run alone and start validation for your current branch with `no-mistakes axi run --intent "..."`.
 
@@ -178,14 +179,15 @@ Run the pipeline and decide on its findings as they come up:
      never mid-run to circumvent a gate. Do not leave the user at a `failed`
      outcome without either retrying or explaining what blocks it.
 
-The same applies to any additional fix that comes after a gate round has
-already produced fix commits - a newly surfaced finding, a reviewer's
-pre-merge request, or any other post-completion change: commit it on top of
-the existing branch and re-run `no-mistakes axi run --intent "..."` with the original user intent.
-Never abort-and-restart, reset the branch, or open a new branch in a way that drops the prior gate-fix commits (including the pipeline's own
-`no-mistakes(review|document|lint): ...` commits) - a re-run only
-re-validates the branch's current state, so those commits stay on the branch
-and already-resolved findings do not re-surface.
+Before any post-pipeline local commit or fresh run, read the structured `branch_sync` object returned by AXI home, status, or a drive result.
+Only when its `next_action.code` is `sync`, run `no-mistakes axi sync` first.
+That guarded sync may be a strict fast-forward or a content-equivalent diverged advance that anchors the pre-sync head before moving the branch with reset semantics; genuine divergence stays blocked.
+If it reports `next_action.code` is `continue_active_run`, the pipeline still owns the branch: run the reported command, keep driving the active run, and do not make local follow-up commits.
+When `next_action.code` is `recover_custody`, a terminal run left unpublished pipeline commits preserved in the local gate: run `no-mistakes axi sync --recover` to return custody and fast-forward to the preserved head, or `no-mistakes rerun` to resume validating it instead.
+A dirty or diverged worktree makes the recovery refuse with explicit choices; `--keep-local` keeps your current head while the preserved commits stay anchored under `refs/no-mistakes/recover/<run>`.
+If synchronization is blocked, process that structured state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
+After synchronization, commit the follow-up on top and re-run `no-mistakes axi run --intent "..."` with the original user intent.
+This preserves every prior gate-fix commit regardless of its configured subject.
 
 The CI step deliberately keeps watching the PR after checks pass, so
 `axi run` returns `checks-passed` the moment checks are green rather than
@@ -244,7 +246,10 @@ run without checking back.
 
 ```sh
 no-mistakes axi               # home view: current branch, active runs, next steps
-no-mistakes axi status        # full detail of the resolved run
+no-mistakes axi status        # full detail plus cached branch_sync when relevant
+no-mistakes axi sync --check  # freshly verify an offered synchronization plan
+no-mistakes axi sync          # apply only an offered guarded synchronization
+no-mistakes axi sync --recover  # return custody after a terminal run left unpublished pipeline commits
 no-mistakes axi logs --step <name> --full   # full log output of one step
 no-mistakes axi abort         # cancel the current-branch active run
 no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside its worktree)
@@ -273,7 +278,7 @@ help[6]:
   Run `no-mistakes axi respond --action skip` to skip this step
   Run `no-mistakes axi logs --step review --full` to read the full step log
   A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.
-  When you make an additional fix after a gate round has already produced fix commits, commit it on top of the existing branch and run `no-mistakes axi run --intent "..."` with the original user intent. Never abort-and-restart, reset the branch, or open a new branch in a way that drops prior gate-fix commits. A fresh run re-validates the branch's current state, so already-resolved findings do not re-surface.
+  Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits.
 ```
 
 Read the `action` column per row: decide `r1` (auto-fix) on your own

@@ -24,11 +24,10 @@ no-mistakes doctor
 You need:
 
 - `git`
-- One supported agent binary (`claude`, `codex`, `acli` for Rovo Dev, `opencode`, `pi`, or `copilot`), or a separately installed `acpx` binary for `agent: acp:<target>`
+- One supported agent runner (`claude`, `codex`, `acli` for Rovo Dev, `opencode`, `pi`, or `copilot`), or a configured Cursor/ACP runner such as `agent: cursor`; see [Global Config](/no-mistakes/reference/global-config/) for ACP requirements
 - For PRs and CI: `gh` (GitHub), `glab` (GitLab), Bitbucket Cloud credentials, or `az` with the `azure-devops` extension (Azure DevOps)
 
 `no-mistakes doctor` reports whether the configured global runner can start a validation gate.
-For `agent: acp:<target>`, it verifies that `acpx` or `acpx_path` resolves, but does not invoke the target or test its credentials.
 Every validation gate requires a runnable pipeline agent and otherwise fails before its first pipeline step.
 
 See [Provider Integration](/no-mistakes/guides/provider-integration/) for PR/CI setup.

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"fmt"
+	"reflect"
+	"strings"
 	"time"
 
 	toon "github.com/toon-format/toon-go"
@@ -19,7 +21,10 @@ var nowUnix = func() int64 { return time.Now().Unix() }
 // maxFindingDesc caps a finding description rendered inline. Findings are the
 // decision content at a gate, so the limit is generous; only pathological
 // descriptions get truncated, with the full length disclosed.
-const maxFindingDesc = 600
+const (
+	maxFindingDesc = 600
+	maxGateSummary = 1200
+)
 
 // Row types carry `toon` tags so the encoder renders a []row slice as a
 // tabular array (name[N]{cols}:) with one comma-delimited line per element.
@@ -437,7 +442,7 @@ func gateFields(gate stepView) []toon.Field {
 		{Key: "status", Value: gate.Status},
 	}
 	if parsed.Summary != "" {
-		gfields = append(gfields, toon.Field{Key: "summary", Value: parsed.Summary})
+		gfields = append(gfields, toon.Field{Key: "summary", Value: truncate(parsed.Summary, maxGateSummary)})
 	}
 	if parsed.RiskLevel != "" {
 		gfields = append(gfields, toon.Field{Key: "risk", Value: parsed.RiskLevel})
@@ -486,12 +491,127 @@ func truncate(s string, limit int) string {
 // --- output helpers ---
 
 // axiDoc marshals an ordered set of TOON fields into a document with a trailing
-// newline. Encoding errors are impossible for the value shapes we build here,
-// so a failure degrades to an empty document rather than propagating.
+// newline. AXI fields can include arbitrary subprocess output, findings, and
+// provider data. TOON intentionally rejects most C0 controls, so make those
+// bytes visible before encoding instead of dropping the entire document.
 func axiDoc(fields ...toon.Field) string {
-	out, err := toon.MarshalString(toon.NewObject(fields...))
+	value := sanitizeTOONValue(toon.NewObject(fields...))
+	out, err := toon.MarshalString(value)
 	if err != nil {
-		return ""
+		return axiEncodingError(err)
+	}
+	return out + "\n"
+}
+
+// escapeUnsupportedTOONControls converts only C0 bytes the TOON encoder cannot
+// represent. Byte-wise copying preserves all printable Unicode and arbitrary
+// non-ASCII evidence exactly; tab, carriage return, and newline keep TOON's
+// supported escaping semantics.
+func escapeUnsupportedTOONControls(s string) string {
+	first := -1
+	for i := 0; i < len(s); i++ {
+		if unsupportedTOONControl(s[i]) {
+			first = i
+			break
+		}
+	}
+	if first < 0 {
+		return s
+	}
+
+	var b strings.Builder
+	b.Grow(len(s) + 3)
+	b.WriteString(s[:first])
+	for i := first; i < len(s); i++ {
+		if unsupportedTOONControl(s[i]) {
+			fmt.Fprintf(&b, `\x%02X`, s[i])
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+func unsupportedTOONControl(b byte) bool {
+	return b < 0x20 && b != '\t' && b != '\r' && b != '\n'
+}
+
+// sanitizeTOONValue recursively copies the render value while escaping strings.
+// Keeping each concrete type intact preserves TOON's existing ordered objects,
+// struct field names, and tabular-array rendering.
+func sanitizeTOONValue(value any) any {
+	return sanitizeTOONReflect(reflect.ValueOf(value)).Interface()
+}
+
+func sanitizeTOONReflect(value reflect.Value) reflect.Value {
+	if !value.IsValid() {
+		return value
+	}
+
+	switch value.Kind() {
+	case reflect.String:
+		out := reflect.New(value.Type()).Elem()
+		out.SetString(escapeUnsupportedTOONControls(value.String()))
+		return out
+	case reflect.Interface:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		out := reflect.New(value.Type()).Elem()
+		out.Set(sanitizeTOONReflect(value.Elem()))
+		return out
+	case reflect.Pointer:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		out := reflect.New(value.Type().Elem())
+		out.Elem().Set(sanitizeTOONReflect(value.Elem()))
+		return out
+	case reflect.Struct:
+		out := reflect.New(value.Type()).Elem()
+		out.Set(value)
+		for i := 0; i < value.NumField(); i++ {
+			if value.Type().Field(i).PkgPath != "" {
+				continue
+			}
+			out.Field(i).Set(sanitizeTOONReflect(value.Field(i)))
+		}
+		return out
+	case reflect.Slice:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		out := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
+		for i := 0; i < value.Len(); i++ {
+			out.Index(i).Set(sanitizeTOONReflect(value.Index(i)))
+		}
+		return out
+	case reflect.Array:
+		out := reflect.New(value.Type()).Elem()
+		for i := 0; i < value.Len(); i++ {
+			out.Index(i).Set(sanitizeTOONReflect(value.Index(i)))
+		}
+		return out
+	case reflect.Map:
+		if value.IsNil() {
+			return reflect.Zero(value.Type())
+		}
+		out := reflect.MakeMapWithSize(value.Type(), value.Len())
+		iter := value.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(iter.Key(), sanitizeTOONReflect(iter.Value()))
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func axiEncodingError(err error) string {
+	message := "encode AXI output: " + escapeUnsupportedTOONControls(err.Error())
+	out, fallbackErr := toon.MarshalString(toon.NewObject(toon.Field{Key: "error", Value: message}))
+	if fallbackErr != nil {
+		return "error: \"encode AXI output failed\"\n"
 	}
 	return out + "\n"
 }

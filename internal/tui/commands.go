@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -183,6 +184,61 @@ func (m Model) waitForEvent() tea.Cmd {
 			return subscriptionErrMsg{err: fmt.Errorf("event stream closed"), subscriptionID: m.subscriptionID}
 		}
 		return eventMsg{event: event, subscriptionID: m.subscriptionID}
+	}
+}
+
+func (m Model) refreshSyncCmd() tea.Cmd {
+	refresh := m.syncRefresh
+	if refresh == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		started := time.Now()
+		state := refresh()
+		result := "refused"
+		if branchsync.CanApply(state) || state.State == branchsync.StateSynchronized || state.State == branchsync.StateMergedRemoteRemoved {
+			result = "noop"
+		}
+		trackTUISyncAttempt("check", state, result, started)
+		return syncRefreshedMsg{state: state}
+	}
+}
+
+func (m Model) applySyncCmd() tea.Cmd {
+	apply := m.syncApply
+	if apply == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		started := time.Now()
+		state := apply()
+		result := "refused"
+		if state.Changed && state.State == branchsync.StateSynchronized {
+			result = "applied"
+		} else if state.State == branchsync.StateSynchronized || state.State == branchsync.StateMergedRemoteRemoved {
+			result = "noop"
+		}
+		trackTUISyncAttempt("apply", state, result, started)
+		return syncAppliedMsg{state: state}
+	}
+}
+
+func (m Model) applyRecoverCmd() tea.Cmd {
+	recover := m.syncRecover
+	if recover == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		started := time.Now()
+		state := recover()
+		result := "refused"
+		if state.Recovered && state.Changed {
+			result = "applied"
+		} else if state.Recovered {
+			result = "noop"
+		}
+		trackTUISyncAttempt("recover", state, result, started)
+		return syncAppliedMsg{state: state}
 	}
 }
 

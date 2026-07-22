@@ -85,7 +85,14 @@ Symptom: `update` refuses because active pipeline runs are in progress, prompts 
 
 `update`, `daemon stop`, and `daemon restart` all refuse by default while pipeline runs are active and list the affected runs; [Daemon & Worktrees](/no-mistakes/concepts/daemon/#starting-and-stopping) owns the guard's exact rules, including why `-y`/`--yes` does not bypass it.
 
-Fix, once you have confirmed it is fine for the listed active runs to fail:
+First inspect each listed run with `no-mistakes axi status --run <id>`.
+A parked CI gate can clear itself after its PR becomes terminal, including after a daemon restart.
+The [`ci_timeout` reference](/no-mistakes/reference/global-config/#ci_timeout) owns the exact fail-closed reconciliation rules, and [Daemon & Worktrees](/no-mistakes/concepts/daemon/#crash-recovery) owns restart behavior.
+
+When upgrading from an older release that left a merged/closed PR at a stale CI gate, verify the PR state independently, check out the matching branch, and run `no-mistakes axi respond --action approve --step ci` before retrying the update.
+Do not edit `state.sqlite` directly.
+
+Only when you have confirmed it is acceptable for every remaining listed active run to fail, force the lifecycle operation:
 
 ```sh
 no-mistakes daemon stop --force
@@ -110,10 +117,13 @@ agent_path_override:
   claude: /Users/you/.local/bin/claude
 ```
 
-For `agent: acp:<target>`, set `acpx_path` instead:
+For `agent: acp:<target>` and ACP aliases such as `agent: cursor`, set `acpx_path` for the bridge.
+If the raw target command is also outside `PATH`, set its target key in `acp_registry_overrides`; `agent_path_override` applies only to native agents:
 
 ```yaml
 acpx_path: /Users/you/.local/bin/acpx
+acp_registry_overrides:
+  cursor: /Users/you/.local/bin/cursor-agent acp
 ```
 
 For Antigravity or Gemini-based driving agents, install a supported native agent CLI separately or configure a working ACP target such as `agent: acp:gemini` with `acpx` installed.

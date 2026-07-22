@@ -1,0 +1,7 @@
+=== RUN   TestDaemonRunUsesProvidedRoot
+--- PASS: TestDaemonRunUsesProvidedRoot (1.83s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/e2e	2.111s
+inventory_mode=700
+inventory_after_TestMain={  "version": 1,  "entries": []}
+slot_files_after_TestMain=0

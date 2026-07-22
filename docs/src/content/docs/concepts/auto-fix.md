@@ -49,6 +49,9 @@ Agent-driven findings now use an `action` field instead of `requires_human_revie
 - `ask-user` - intent-sensitive or ambiguous issues that pause for approval instead of entering the normal auto-fix loop
 - `no-op` - informational notes that do not need a fix
 
+If an agent or integration omits `action`, no-mistakes fails closed by treating the finding as `ask-user`.
+An unclassified finding is never eligible for automatic fixing.
+
 `ask-user` is meant for findings that need human judgment - for example, questioning an intentional product or design choice, arguing that an intentional addition, removal, or guard should be undone, or reporting that the test step could not produce enough evidence for the available intent. Routine correctness, reliability, or security fixes still stay `auto-fix` even if the smallest fix reintroduces a small amount of previously deleted logic. Agents driving the AXI skill should relay `ask-user` findings to the user unless they have explicit `--yes` consent to resolve gates unattended.
 In the TUI, yolo mode is an explicit override that auto-resolves paused steps by treating `auto-fix` and `ask-user` findings as consent to run one fix round.
 Steps with only `no-op` findings are approved as-is.
@@ -76,17 +79,16 @@ Yolo and AXI `--yes` approve that fix review automatically after their one fix r
 
 ## Fix commits
 
-Each auto-fix cycle commits its changes with a descriptive message. The combined document-and-lint housekeeping pass runs in the Document step, so its documentation and safe lint fixes use the Document prefix; configured-command lint fixes use the Lint prefix:
+When the Review, Test, Document, or Lint step commits auto-fix changes, its subject comes from `commit.fix_message`.
+The [global config reference](/no-mistakes/reference/global-config/#commitfix_message) owns the template syntax, default, validation rules, size limits, and supported placeholders; the [repo config reference](/no-mistakes/reference/repo-config/#commitfix_message) owns the repository override and trust behavior.
+The pipeline validates the template, agent summary, predicted output size, and final rendered subject before `git add -A`, so a rejected value does not leave changes staged.
+The combined document-and-lint housekeeping pass runs in the Document step, so its documentation and safe lint fixes use the Document value for `{{.Step}}`; configured-command lint fixes use the Lint value.
 
-| Step | Commit prefix |
-|---|---|
-| Rebase | `no-mistakes(rebase): <summary>` |
-| Review | `no-mistakes(review): <summary>` |
-| Test | `no-mistakes(test): <summary>` |
-| Document | `no-mistakes(document): <summary>` |
-| Lint | `no-mistakes(lint): <summary>` |
+Before a step-specific fix commit, the pipeline verifies that the live worktree HEAD still descends from the head recorded after its previous commit.
+It allows a legitimate forward commit made by an agent, but aborts the run if an out-of-band backward or divergent reset would drop the reviewed history.
 
-The push step commits any remaining uncommitted changes with `no-mistakes: apply agent fixes`.
+The template does not control commits created by the Rebase, CI, or Push steps.
+The CI step uses `no-mistakes: apply CI fixes`, and the Push step uses `no-mistakes: apply agent fixes` for remaining uncommitted changes.
 
 ## Step rounds
 

@@ -406,6 +406,25 @@ func TestCIStep_BitbucketAutoFixUsesMatchingPipelineLogs(t *testing.T) {
 	}
 }
 
+func TestResolveBitbucketRepoRef_RedactsCredentialInError(t *testing.T) {
+	t.Parallel()
+	const token = "ghp_secret_DO_NOT_LEAK"
+	// A non-Bitbucket host with embedded credentials: ParseRepoRef rejects the
+	// host, no PR URL is set, so the function returns its fallback error. That
+	// error surfaces the upstream URL and must not leak the embedded credential.
+	credURL := "https://x-access-token:" + token + "@example.com/w/r.git"
+	_, err := resolveBitbucketRepoRef(credURL, nil)
+	if err == nil {
+		t.Fatal("expected error for unresolved non-Bitbucket upstream")
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Errorf("resolveBitbucketRepoRef error leaked credential: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "redacted@example.com/w/r.git") {
+		t.Errorf("error missing redacted URL, got: %q", err.Error())
+	}
+}
+
 func TestLatestBitbucketStatusesKeepsNewestStatusPerCheck(t *testing.T) {
 	t.Parallel()
 

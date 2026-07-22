@@ -144,11 +144,10 @@ func TestFindPRReportsParseError(t *testing.T) {
 func TestCreatePRConstructsURL(t *testing.T) {
 	t.Parallel()
 
-	h := newTestHost(map[string]azdoTestResponse{
-		"az repos pr create --source-branch feature --target-branch main --title T --description B --organization " + testOrg + " --project " + testProject + " --repository " + testRepo + " --output json": {
-			// az returns an _apis/... url in the top-level field; it must NOT be used.
-			stdout: `{"pullRequestId":7,"url":"https://dev.azure.com/myorg/_apis/git/repositories/abc/pullRequests/7"}` + "\n",
-		},
+	var rec []capturedCmd
+	h := newCapturingHost(&rec, azdoTestResponse{
+		// az returns an _apis/... url in the top-level field; it must NOT be used.
+		stdout: `{"pullRequestId":7,"url":"https://dev.azure.com/myorg/_apis/git/repositories/abc/pullRequests/7"}` + "\n",
 	})
 
 	pr, err := h.CreatePR(context.Background(), "feature", "main", scm.PRContent{Title: "T", Body: "B"})
@@ -161,25 +160,40 @@ func TestCreatePRConstructsURL(t *testing.T) {
 	if pr.URL != "https://dev.azure.com/myorg/myproject/_git/myrepo/pullrequest/7" {
 		t.Fatalf("CreatePR() URL = %q, want constructed browsable URL", pr.URL)
 	}
+	// The command still carries the full create scope; the description is now a
+	// temp-file reference (@<path>) rather than the inline body.
+	if len(rec) != 1 {
+		t.Fatalf("recorded %d commands, want 1", len(rec))
+	}
+	got := strings.Join(append([]string{rec[0].name}, rec[0].args...), " ")
+	wantPrefix := "az repos pr create --source-branch feature --target-branch main --title T --description @"
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Fatalf("command = %q, want prefix %q", got, wantPrefix)
+	}
+	wantSuffix := " --organization " + testOrg + " --project " + testProject + " --repository " + testRepo + " --output json"
+	if !strings.HasSuffix(got, wantSuffix) {
+		t.Fatalf("command = %q, want suffix %q", got, wantSuffix)
+	}
+	if rec[0].descContent != "B" {
+		t.Fatalf("description file content = %q, want %q", rec[0].descContent, "B")
+	}
 }
 
 func TestCreatePRTruncatesOverlongDescription(t *testing.T) {
 	t.Parallel()
 
-	// A body well over Azure DevOps' 4000-character description cap. Before the
-	// clamp, CreatePR passed this verbatim and az rejected it with
-	// "Invalid argument value. ... must not be longer than 4000 characters".
+	// A body well over Azure DevOps' 4000-character description cap. The
+	// connector clamps it before writing the temp file, so az never sees an
+	// over-length description ("Invalid argument value. ... must not be longer
+	// than 4000 characters").
 	body := strings.Repeat("x", 5000)
 	clamped := scm.ClampPRBody(body, scm.MaxPRBodyChars(scm.ProviderAzureDevOps))
 	if scm.PRBodyLen(clamped) > 4000 {
 		t.Fatalf("clamped description left %d units, want <= 4000", scm.PRBodyLen(clamped))
 	}
 
-	key := "az repos pr create --source-branch feature --target-branch main --title T --description " + clamped +
-		" --organization " + testOrg + " --project " + testProject + " --repository " + testRepo + " --output json"
-	h := newTestHost(map[string]azdoTestResponse{
-		key: {stdout: `{"pullRequestId":7}` + "\n"},
-	})
+	var rec []capturedCmd
+	h := newCapturingHost(&rec, azdoTestResponse{stdout: `{"pullRequestId":7}` + "\n"})
 
 	pr, err := h.CreatePR(context.Background(), "feature", "main", scm.PRContent{Title: "T", Body: body})
 	if err != nil {
@@ -187,6 +201,84 @@ func TestCreatePRTruncatesOverlongDescription(t *testing.T) {
 	}
 	if pr.Number != "7" {
 		t.Fatalf("CreatePR() number = %q, want 7", pr.Number)
+	}
+	if len(rec) != 1 {
+		t.Fatalf("recorded %d commands, want 1", len(rec))
+	}
+	if rec[0].descContent != clamped {
+		t.Fatalf("description file content len = %d, want clamped len %d", len(rec[0].descContent), len(clamped))
+	}
+}
+
+// multilineDescriptionBody is a realistic PR body that would break a naive
+// approach: a markdown heading, blank lines, prose, a bare horizontal rule
+// (`---`), and a diff-style line (`--- a/file.go`). Passed inline on Windows the
+// newlines truncate it; split per-line the `---`/`--- a/...` lines get misread
+// as az options.
+const multilineDescriptionBody = "## Intent\n" +
+	"\n" +
+	"Route the PR description through a temp file so multi-line bodies survive.\n" +
+	"\n" +
+	"---\n" +
+	"\n" +
+	"--- a/file.go\n" +
+	"+++ b/file.go\n"
+
+func TestCreatePRWritesMultilineDescriptionToFile(t *testing.T) {
+	t.Parallel()
+
+	var rec []capturedCmd
+	h := newCapturingHost(&rec, azdoTestResponse{stdout: `{"pullRequestId":7}` + "\n"})
+
+	if _, err := h.CreatePR(context.Background(), "feature", "main", scm.PRContent{Title: "T", Body: multilineDescriptionBody}); err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	assertDescriptionRoundTrips(t, rec, multilineDescriptionBody)
+}
+
+func TestUpdatePRWritesMultilineDescriptionToFile(t *testing.T) {
+	t.Parallel()
+
+	var rec []capturedCmd
+	h := newCapturingHost(&rec, azdoTestResponse{stdout: `{"pullRequestId":42}` + "\n"})
+
+	if _, err := h.UpdatePR(context.Background(), &scm.PR{Number: "42"}, scm.PRContent{Title: "T", Body: multilineDescriptionBody}); err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
+	}
+	assertDescriptionRoundTrips(t, rec, multilineDescriptionBody)
+}
+
+// assertDescriptionRoundTrips verifies the recorded az command passed its PR
+// description through a temp file (not inline): the --description value is an
+// @<file> reference, the file held exactly body while the command ran, no
+// argument contained a newline (which cmd.exe would truncate) or the raw body,
+// and the temp file was cleaned up once the call returned.
+func assertDescriptionRoundTrips(t *testing.T, rec []capturedCmd, body string) {
+	t.Helper()
+	if len(rec) != 1 {
+		t.Fatalf("recorded %d commands, want 1", len(rec))
+	}
+	c := rec[0]
+	if !strings.HasPrefix(c.descPath, "@") {
+		t.Fatalf("--description value = %q, want an @<file> reference", c.descPath)
+	}
+	if !c.descExists {
+		t.Fatal("description temp file did not exist while the command ran")
+	}
+	if c.descContent != body {
+		t.Fatalf("description file content = %q, want %q", c.descContent, body)
+	}
+	for _, a := range c.args {
+		if strings.Contains(a, "\n") {
+			t.Fatalf("arg %q contains a newline; cmd.exe would truncate it at the first line", a)
+		}
+		if strings.Contains(a, body) {
+			t.Fatalf("raw body leaked into arg %q; it must travel via the temp file", a)
+		}
+	}
+	path := strings.TrimPrefix(c.descPath, "@")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("temp file %q still exists after the call (stat err = %v); cleanup is missing", path, err)
 	}
 }
 
@@ -363,6 +455,50 @@ type azdoTestResponse struct {
 	stdout string
 	stderr string
 	code   int
+}
+
+// capturedCmd records one az invocation for tests that need to inspect how the
+// PR description was passed. descContent is read from the @<file> reference at
+// invocation time, while the temp file still exists (it is removed once the call
+// returns), so tests can assert the body round-tripped exactly.
+type capturedCmd struct {
+	name        string
+	args        []string
+	descPath    string // the value following --description, including the leading "@"
+	descContent string // contents of the temp file the description referenced
+	descExists  bool   // whether that file existed and was readable during the run
+}
+
+func newCapturingHost(rec *[]capturedCmd, response azdoTestResponse) *Host {
+	return New(capturingCmdFactory(rec, response), func() bool { return true }, testOrg, testProject, testRepo)
+}
+
+// capturingCmdFactory records every invocation (and the referenced description
+// file's contents) into rec, and answers each one with the same fixed response.
+func capturingCmdFactory(rec *[]capturedCmd, response azdoTestResponse) CmdFactory {
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		c := capturedCmd{name: name, args: append([]string(nil), args...)}
+		for i, a := range args {
+			if a == "--description" && i+1 < len(args) {
+				c.descPath = args[i+1]
+				if p := strings.TrimPrefix(c.descPath, "@"); p != c.descPath {
+					if data, err := os.ReadFile(p); err == nil {
+						c.descContent = string(data)
+						c.descExists = true
+					}
+				}
+			}
+		}
+		*rec = append(*rec, c)
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestAzdoHelperProcess", "--")
+		cmd.Env = append(os.Environ(),
+			"AZDO_TEST_HELPER=1",
+			"AZDO_TEST_STDOUT="+response.stdout,
+			"AZDO_TEST_STDERR="+response.stderr,
+			fmt.Sprintf("AZDO_TEST_EXIT_CODE=%d", response.code),
+		)
+		return cmd
+	}
 }
 
 func azdoTestCmdFactory(responses map[string]azdoTestResponse) CmdFactory {

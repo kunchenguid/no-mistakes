@@ -423,6 +423,7 @@ func renderHelpOverlay(width int, run *ipc.RunInfo, hasAwaitingStep bool, showDi
 		yoloDesc = "end yolo (auto-resolve)"
 	}
 	footerEntries = append(footerEntries, helpEntry{"y", yoloDesc})
+	footerEntries = append(footerEntries, helpEntry{"u", "refresh/sync local branch when offered"})
 	if canRerun(run) {
 		footerEntries = append(footerEntries, helpEntry{"r", "rerun pipeline"})
 	}

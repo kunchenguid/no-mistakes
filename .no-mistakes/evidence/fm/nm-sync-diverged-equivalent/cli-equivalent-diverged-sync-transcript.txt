@@ -1,0 +1,133 @@
+Manual end-to-end evidence for guarded branch sync equivalent divergence
+Repository under test: /Users/kunchen/.no-mistakes/worktrees/9cb975a68535/01KXNWXAQ8EZ3EM5ABQF6WDRQC
+Scenario: local feature branch diverged from the pipeline-pushed branch, but local work is represented in the live pipeline head and the pipeline added an extra commit.
+
+# Equivalent-but-diverged guarded advance
+pre_sync_local_head=6d3dec7397908f1f21addec2d653b74220a03635
+pipeline_pushed_head=0c4bcc7f8339024b14782d662bd72f546edb21bd
+run_id=01KXP0PW8N05SX9VMHB5B1KYXB
+
+$ go run /Users/kunchen/.no-mistakes/worktrees/9cb975a68535/01KXNWXAQ8EZ3EM5ABQF6WDRQC/cmd/no-mistakes axi sync --check
+branch_sync:
+  state: diverged
+  changed: false
+  local:
+    branch: feature/sync
+    head: 6d3dec7397908f1f21addec2d653b74220a03635
+    clean: true
+  pipeline:
+    run: "01KXP0PW8N05SX9VMHB5B1KYXB"
+    status: completed
+    phase: ""
+    submitted_head: 6d3dec7397908f1f21addec2d653b74220a03635
+    current_head: 0c4bcc7f8339024b14782d662bd72f546edb21bd
+    pushed_head: 0c4bcc7f8339024b14782d662bd72f546edb21bd
+    pushed_at: 1784224117
+    push_generation: 1
+  target:
+    kind: upstream
+    remote: origin
+    url: /Users/kunchen/.no-mistakes/worktrees/9cb975a68535/01KXNWXAQ8EZ3EM5ABQF6WDRQC/.no-mistakes/evidence/fm/nm-sync-diverged-equivalent/tmp-fixture/equivalent/upstream.git
+    ref: refs/heads/feature/sync
+  remote:
+    observed_head: 0c4bcc7f8339024b14782d662bd72f546edb21bd
+    freshness: live
+    observed_at: 1784224117
+  relation: diverged
+  safety: safe_equivalent_advance
+  pr_state: none
+  next_action:
+    code: sync
+    command: no-mistakes axi sync
+help[1]: Run `no-mistakes axi sync`
+
+$ go run /Users/kunchen/.no-mistakes/worktrees/9cb975a68535/01KXNWXAQ8EZ3EM5ABQF6WDRQC/cmd/no-mistakes axi sync
+branch_sync:
+  state: synchronized
+  changed: true
+  local:
+    branch: feature/sync
+    head: 0c4bcc7f8339024b14782d662bd72f546edb21bd
+    clean: true
+  pipeline:
+    run: "01KXP0PW8N05SX9VMHB5B1KYXB"
+    status: completed
+    phase: ""
+    submitted_head: 6d3dec7397908f1f21addec2d653b74220a03635
+    current_head: 0c4bcc7f8339024b14782d662bd72f546edb21bd
+    pushed_head: 0c4bcc7f8339024b14782d662bd72f546edb21bd
+    pushed_at: 1784224117
+    push_generation: 1
+  target:
+    kind: upstream
+    remote: origin
+    url: /Users/kunchen/.no-mistakes/worktrees/9cb975a68535/01KXNWXAQ8EZ3EM5ABQF6WDRQC/.no-mistakes/evidence/fm/nm-sync-diverged-equivalent/tmp-fixture/equivalent/upstream.git
+    ref: refs/heads/feature/sync
+  remote:
+    observed_head: 0c4bcc7f8339024b14782d662bd72f546edb21bd
+    freshness: live
+    observed_at: 1784224118
+  relation: equal
+  safety: already_synchronized
+  pr_state: none
+
+$ git rev-parse HEAD
+0c4bcc7f8339024b14782d662bd72f546edb21bd
+
+$ git rev-parse refs/no-mistakes/sync-anchor/01KXP0PW8N05SX9VMHB5B1KYXB
+6d3dec7397908f1f21addec2d653b74220a03635
+
+$ cat doc.txt
+pipeline doc
+
+# Genuine divergence refusal
+Scenario: pipeline head rewrites the feature content differently, so sync must refuse and leave HEAD unchanged.
+pre_sync_local_head=222acaf64d557ef6b462c1ae99f003f4231f6c29
+pipeline_pushed_head=f402d3a228a1accb2b53675e7ca90068701f2dcf
+run_id=01KXP0PYWV0FT6S2CKJQCDMEJM
+
+$ go run /Users/kunchen/.no-mistakes/worktrees/9cb975a68535/01KXNWXAQ8EZ3EM5ABQF6WDRQC/cmd/no-mistakes axi sync --check
+branch_sync:
+  state: diverged
+  changed: false
+  local:
+    branch: feature/sync
+    head: 222acaf64d557ef6b462c1ae99f003f4231f6c29
+    clean: true
+  pipeline:
+    run: "01KXP0PYWV0FT6S2CKJQCDMEJM"
+    status: completed
+    phase: ""
+    submitted_head: 222acaf64d557ef6b462c1ae99f003f4231f6c29
+    current_head: f402d3a228a1accb2b53675e7ca90068701f2dcf
+    pushed_head: f402d3a228a1accb2b53675e7ca90068701f2dcf
+    pushed_at: 1784224119
+    push_generation: 1
+  target:
+    kind: upstream
+    remote: origin
+    url: /Users/kunchen/.no-mistakes/worktrees/9cb975a68535/01KXNWXAQ8EZ3EM5ABQF6WDRQC/.no-mistakes/evidence/fm/nm-sync-diverged-equivalent/tmp-fixture/genuine/upstream.git
+    ref: refs/heads/feature/sync
+  remote:
+    observed_head: f402d3a228a1accb2b53675e7ca90068701f2dcf
+    freshness: live
+    observed_at: 1784224119
+  relation: diverged
+  safety: blocked_diverged
+  pr_state: none
+  note: local and pipeline-pushed histories have diverged; no files or refs were changed
+  next_action:
+    code: inspect_and_reconcile_manually
+    command: git log --oneline --left-right HEAD...f402d3a228a1accb2b53675e7ca90068701f2dcf
+error: local and pipeline-pushed histories have diverged; no files or refs were changed
+help[1]: Run `git log --oneline --left-right HEAD...f402d3a228a1accb2b53675e7ca90068701f2dcf`
+exit status 1
+[exit status: 1]
+
+$ git rev-parse HEAD
+222acaf64d557ef6b462c1ae99f003f4231f6c29
+
+$ git rev-parse --verify --quiet refs/no-mistakes/sync-anchor/01KXP0PYWV0FT6S2CKJQCDMEJM
+[exit status: 1]
+
+Transcript complete. Temporary fixture removed.

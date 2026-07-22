@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/daemon"
+	"github.com/kunchenguid/no-mistakes/internal/e2edaemon"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -42,6 +44,7 @@ type Harness struct {
 
 	agentName         string // claude / codex / opencode
 	allowRepoCommands *bool  // mirrors SetupOpts.AllowRepoCommands
+	daemonOwn         *e2edaemon.Ownership
 }
 
 // SetupOpts controls per-test setup.
@@ -156,6 +159,15 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 
 	h.writeGlobalConfig()
 	h.initGitRepos()
+
+	// Temporary-daemon ownership: inventory + concurrency slot. The suite
+	// wrapper (scripts/e2e.sh) and TestMain reaper recover if Cleanup never
+	// runs (timeout / SIGKILL of the test process).
+	own, err := e2edaemon.Acquire(h.NMHome, h.NMBin, 2*time.Minute)
+	if err != nil {
+		t.Fatalf("acquire e2e daemon ownership: %v", err)
+	}
+	h.daemonOwn = own
 
 	t.Cleanup(h.shutdown)
 	return h
@@ -276,7 +288,21 @@ func (h *Harness) RunInDirWithEnv(dir string, env map[string]string, args ...str
 	cmd.Dir = dir
 	cmd.Env = mergedEnv(os.Environ(), env)
 	out, err := cmd.CombinedOutput()
+	h.syncDaemonOwnership()
 	return string(out), err
+}
+
+// syncDaemonOwnership records a live daemon PID into the suite inventory when
+// a harness command has (possibly) started or restarted the detached daemon.
+func (h *Harness) syncDaemonOwnership() {
+	if h == nil || h.daemonOwn == nil || h.NMHome == "" {
+		return
+	}
+	pid, err := daemon.ReadPID(paths.WithRoot(h.NMHome))
+	if err != nil || pid <= 0 {
+		return
+	}
+	_ = h.daemonOwn.SyncPID(pid)
 }
 
 func mergedEnv(base []string, overrides map[string]string) []string {
@@ -675,7 +701,16 @@ func (h *Harness) repoID() string {
 // cleanup. Ignoring errors here is intentional: the daemon may already
 // be gone, the binary may have failed to build, etc. We just want the
 // next test (or the developer's real daemon) not to inherit our state.
+// Ownership release also unregisters the inventory entry and frees the
+// concurrency slot; suite-wrapper / TestMain reapers cover the path where
+// this Cleanup never runs.
 func (h *Harness) shutdown() {
+	if h.daemonOwn != nil {
+		h.daemonOwn.NMBin = h.NMBin
+		h.daemonOwn.Release()
+		h.daemonOwn = nil
+		return
+	}
 	if _, err := os.Stat(h.NMBin); err != nil {
 		return
 	}

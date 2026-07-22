@@ -1,0 +1,87 @@
+=== RUN   TestReviewPipelineOwnedPRCriterionDoesNotPark
+    review_pipeline_delivery_test.go:146: pipeline-owned PR axi output:
+        run: running
+          intent: completed
+          rebase: running
+          rebase: completed
+          review: running
+          review: completed
+          test: completed
+          document: completed
+          lint: completed
+          push: running
+        run: completed
+          push: completed
+          pr: completed
+          ci: completed
+        run:
+          id: "01KXM2MTNW6JXPP94NRVS27K04"
+          branch: feature/open-pr-a
+          status: completed
+          head: a9600284
+          pr: "https://github.com/example/no-mistakes/pull/99"
+          findings: none
+          steps[9]{step,status,findings,duration_ms}:
+            intent,completed,0,0
+            rebase,completed,0,136
+            review,completed,0,221
+            test,completed,0,26
+            document,completed,0,38
+            lint,completed,0,8
+            push,completed,0,99
+            pr,completed,0,46
+            ci,completed,0,63
+        outcome: passed
+        help[3]: "Open the PR: https://github.com/example/no-mistakes/pull/99","Summarize this pipeline run for the user in a concise, easily readable format: what was validated and what was found.","When you make an additional fix after a gate round has already produced fix commits, commit it on top of the existing branch and run `no-mistakes axi run --intent \"...\"` with the original user intent. Never abort-and-restart, reset the branch, or open a new branch in a way that drops prior gate-fix commits. A fresh run re-validates the branch's current state, so already-resolved findings do not re-surface."
+    review_pipeline_delivery_test.go:161: PR step logs:
+        step: pr
+        run: "01KXM2MTNW6JXPP94NRVS27K04"
+        lines: 10 total
+        log[10]{line}:
+          claude started pid=87216
+          ""
+          no issues foundno issues found
+          claude exited pid=87216 status=success
+          ""
+          checking for existing pull request on branch feature/open-pr-a...
+          ""
+          creating pull request...
+          ""
+          "created pull request: https://github.com/example/no-mistakes/pull/99"
+--- PASS: TestReviewPipelineOwnedPRCriterionDoesNotPark (3.00s)
+=== RUN   TestReviewExternalPRLifecycleStillParks
+    review_pipeline_delivery_test.go:250: external PR axi output:
+        run: running
+          intent: completed
+          rebase: running
+          rebase: completed
+          review: awaiting_approval
+        run:
+          id: "01KXM2MWHNPWC35CRRVWXGHAXC"
+          branch: feature/external-pr
+          status: running
+          awaiting_agent: parked 0s
+          head: 974363db
+          findings: 1 awaiting
+          steps[9]{step,status,findings,duration_ms}:
+            intent,completed,0,0
+            rebase,completed,0,134
+            review,awaiting_approval,1,30
+            test,pending,0,0
+            document,pending,0,0
+            lint,pending,0,0
+            push,pending,0,0
+            pr,pending,0,0
+            ci,pending,0,0
+        gate:
+          step: review
+          status: awaiting_approval
+          summary: external PR requirement violated
+          risk: high
+          note: "Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."
+          findings[1]{id,severity,file,action,description}:
+            external-pr-closed,error,"",ask-user,PR #456 must remain open and unmerged; it is currently closed
+        help[6]: Run `no-mistakes axi respond --action approve` to accept this step and continue,Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself),Run `no-mistakes axi respond --action skip` to skip this step,Run `no-mistakes axi logs --step review --full` to read the full step log,"A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.","When you make an additional fix after a gate round has already produced fix commits, commit it on top of the existing branch and run `no-mistakes axi run --intent \"...\"` with the original user intent. Never abort-and-restart, reset the branch, or open a new branch in a way that drops prior gate-fix commits. A fresh run re-validates the branch's current state, so already-resolved findings do not re-surface."
+--- PASS: TestReviewExternalPRLifecycleStillParks (1.38s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/e2e	4.679s

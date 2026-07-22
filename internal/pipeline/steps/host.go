@@ -30,12 +30,13 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		// the upstream remote URL is unavailable. The hostname also scopes
 		// the auth-status check so a stale token on any other configured gh
 		// host cannot make this repo look unauthenticated.
-		host := scm.ExtractHost(sctx.Repo.UpstreamURL)
-		repo := github.HostPrefixedSlug(sctx.Repo.UpstreamURL)
+		host := scm.ResolveHost(sctx.Ctx, sctx.Repo.UpstreamURL)
+		repo := github.HostPrefixedSlugForHost(sctx.Repo.UpstreamURL, host)
 		if repo == "" && sctx.Run.PRURL != nil {
-			repo = github.HostPrefixedSlug(*sctx.Run.PRURL)
+			prHost := scm.ResolveHost(sctx.Ctx, *sctx.Run.PRURL)
+			repo = github.HostPrefixedSlugForHost(*sctx.Run.PRURL, prHost)
 			if host == "" {
-				host = scm.ExtractHost(*sctx.Run.PRURL)
+				host = prHost
 			}
 		}
 		forkRepo := ""
@@ -55,7 +56,7 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		return gitlab.New(
 			cmdFactory,
 			func() bool { return stepCLIAvailable(sctx, provider) },
-			scm.ExtractHost(sctx.Repo.UpstreamURL),
+			scm.ResolveHost(sctx.Ctx, sctx.Repo.UpstreamURL),
 			gitlab.ProjectPath(sctx.Repo.UpstreamURL),
 		), ""
 	case scm.ProviderBitbucket:

@@ -84,6 +84,16 @@ func TestHostPrefixedSlug(t *testing.T) {
 	}
 }
 
+func TestHostPrefixedSlugForHost_SSHAlias(t *testing.T) {
+	remote := "git@github-personal:owner/repo.git"
+	if got := HostPrefixedSlugForHost(remote, "github.com"); got != "owner/repo" {
+		t.Fatalf("HostPrefixedSlugForHost() = %q, want owner/repo", got)
+	}
+	if got := HostPrefixedSlugForHost(remote, "ghe.example.com"); got != "ghe.example.com/owner/repo" {
+		t.Fatalf("HostPrefixedSlugForHost() = %q, want ghe.example.com/owner/repo", got)
+	}
+}
+
 func TestGetChecksPassesRepoFlag(t *testing.T) {
 	t.Parallel()
 
@@ -166,6 +176,49 @@ func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
 	}
 }
 
+// UpdatePR shares the same explicit-PR selector boundary as the read methods:
+// when the number is absent it must target the canonical PR URL, never an empty
+// positional that makes `gh pr edit` resolve the cwd branch (main) from the
+// detached bare gate repo and edit the wrong PR.
+func TestUpdatePRTargetsKnownPRByURLWhenNumberMissing(t *testing.T) {
+	t.Parallel()
+
+	var recorded [][]string
+	host := New(recordingCmdFactory("", &recorded), nil, "", "test/repo")
+
+	prURL := "https://github.com/test/repo/pull/123"
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{URL: prURL}, scm.PRContent{
+		Title: "fix: cap body",
+		Body:  "body",
+	}); err != nil {
+		t.Fatalf("UpdatePR() error = %v", err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
+	}
+	got := recorded[0]
+	// argv is: gh pr edit <selector> --repo ...
+	if len(got) < 4 || got[1] != "pr" || got[2] != "edit" {
+		t.Fatalf("unexpected argv: %v", got)
+	}
+	if selector := got[3]; selector != prURL {
+		t.Fatalf("edit selector = %q, want the known PR URL %q (empty selector makes gh resolve the cwd branch)", selector, prURL)
+	}
+}
+
+// UpdatePR must fail closed exactly like the read methods: with neither number
+// nor URL it refuses to shell out rather than running an argument-less
+// `gh pr edit` that would edit the inferred cwd branch's PR.
+func TestUpdatePRFailsClosedWithoutIdentity(t *testing.T) {
+	t.Parallel()
+
+	host := New(failIfInvokedCmdFactory(t), nil, "", "test/repo")
+
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{}, scm.PRContent{Title: "t", Body: "b"}); err == nil {
+		t.Fatal("UpdatePR() with no PR identity: expected error, got nil")
+	}
+}
+
 func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	t.Parallel()
 
@@ -187,6 +240,135 @@ func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	}
 	if checks[1].Name != "tests" || checks[1].Bucket != scm.CheckBucketPending {
 		t.Fatalf("checks[1] = %+v, want pending tests check", checks[1])
+	}
+}
+
+// recordingCmdFactory captures the argv of every gh invocation into recorded
+// and replies with a fixed successful stdout, so tests can assert exactly which
+// PR selector reached gh instead of matching a whole command string.
+func recordingCmdFactory(stdout string, recorded *[][]string) CmdFactory {
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		*recorded = append(*recorded, append([]string{name}, args...))
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestGitHubHelperProcess", "--", "recorded")
+		cmd.Env = append(os.Environ(),
+			"GITHUB_TEST_HELPER=1",
+			"GITHUB_TEST_STDOUT="+stdout,
+			"GITHUB_TEST_EXIT_CODE=0",
+		)
+		return cmd
+	}
+}
+
+// failIfInvokedCmdFactory fails the test if gh is invoked at all. It proves that
+// a PR-targeting call fails closed (never shelling out) when the PR identity is
+// unknown, instead of running an argument-less gh that infers the cwd branch.
+func failIfInvokedCmdFactory(t *testing.T) CmdFactory {
+	t.Helper()
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		t.Fatalf("gh should not be invoked without a known PR identity; got: %s %s", name, strings.Join(args, " "))
+		return nil
+	}
+}
+
+// The final CI check lookup must target the exact PR the pipeline already knows.
+//
+// Trigger: the CI monitor calls GetChecks with a PR the pipeline identifies by
+// URL (Number can be empty when the identity was carried as a URL only).
+// Masking condition: the daemon runs gh from the detached bare gate repo whose
+// HEAD is the default branch (main).
+// Symptom: appending an empty pr.Number produced an argument-less
+// `gh pr checks --repo <slug>`, so gh fell back to resolving the cwd branch
+// (main) and reported "no pull requests found for branch main" even though the
+// feature PR's exact-head checks are green — certification could never finish.
+//
+// The fix passes the canonical PR URL as the explicit selector when the number
+// is absent, so the target is always the known PR, never an inferred branch.
+func TestGetChecksTargetsKnownPRByURLWhenNumberMissing(t *testing.T) {
+	t.Parallel()
+
+	var recorded [][]string
+	host := New(recordingCmdFactory("[]\n", &recorded), nil, "", "test/repo")
+
+	prURL := "https://github.com/test/repo/pull/123"
+	if _, err := host.GetChecks(context.Background(), &scm.PR{URL: prURL}); err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
+	}
+	got := recorded[0]
+	// argv is: gh pr checks <selector> --repo ...
+	if len(got) < 4 || got[1] != "pr" || got[2] != "checks" {
+		t.Fatalf("unexpected argv: %v", got)
+	}
+	selector := got[3]
+	if selector != prURL {
+		t.Fatalf("check selector = %q, want the known PR URL %q (empty selector makes gh resolve the cwd branch)", selector, prURL)
+	}
+}
+
+// Compare with the proven explicit-PR invocation: when the number is known it is
+// passed verbatim as the selector, exactly as before.
+func TestGetChecksTargetsKnownPRByNumber(t *testing.T) {
+	t.Parallel()
+
+	var recorded [][]string
+	host := New(recordingCmdFactory("[]\n", &recorded), nil, "", "test/repo")
+
+	if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", URL: "https://github.com/test/repo/pull/123"}); err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(recorded) != 1 || len(recorded[0]) < 4 {
+		t.Fatalf("unexpected invocations: %v", recorded)
+	}
+	if selector := recorded[0][3]; selector != "123" {
+		t.Fatalf("check selector = %q, want %q", selector, "123")
+	}
+}
+
+// Missing/invalid PR identity must stop safely rather than checking main or some
+// other PR: with neither number nor URL, the PR-targeting reads refuse to shell
+// out at all.
+func TestPRTargetingReadsFailClosedWithoutIdentity(t *testing.T) {
+	t.Parallel()
+
+	host := New(failIfInvokedCmdFactory(t), nil, "", "test/repo")
+	pr := &scm.PR{}
+
+	if _, err := host.GetChecks(context.Background(), pr); err == nil {
+		t.Fatal("GetChecks() with no PR identity: expected error, got nil")
+	}
+	if _, err := host.GetPRState(context.Background(), pr); err == nil {
+		t.Fatal("GetPRState() with no PR identity: expected error, got nil")
+	}
+	if _, err := host.GetMergeableState(context.Background(), pr); err == nil {
+		t.Fatal("GetMergeableState() with no PR identity: expected error, got nil")
+	}
+}
+
+// GetPRState and GetMergeableState share the same selector boundary as
+// GetChecks, so a URL-only PR must target the URL there too.
+func TestPRStateAndMergeableTargetKnownPRByURL(t *testing.T) {
+	t.Parallel()
+
+	prURL := "https://github.com/test/repo/pull/123"
+
+	var stateArgs [][]string
+	stateHost := New(recordingCmdFactory("OPEN\n", &stateArgs), nil, "", "test/repo")
+	if _, err := stateHost.GetPRState(context.Background(), &scm.PR{URL: prURL}); err != nil {
+		t.Fatalf("GetPRState() error = %v", err)
+	}
+	if len(stateArgs) != 1 || len(stateArgs[0]) < 4 || stateArgs[0][3] != prURL {
+		t.Fatalf("GetPRState selector = %v, want %q at argv[3]", stateArgs, prURL)
+	}
+
+	var mergeArgs [][]string
+	mergeHost := New(recordingCmdFactory("MERGEABLE\n", &mergeArgs), nil, "", "test/repo")
+	if _, err := mergeHost.GetMergeableState(context.Background(), &scm.PR{URL: prURL}); err != nil {
+		t.Fatalf("GetMergeableState() error = %v", err)
+	}
+	if len(mergeArgs) != 1 || len(mergeArgs[0]) < 4 || mergeArgs[0][3] != prURL {
+		t.Fatalf("GetMergeableState selector = %v, want %q at argv[3]", mergeArgs, prURL)
 	}
 }
 

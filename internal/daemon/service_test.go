@@ -284,7 +284,14 @@ func TestStartStopsDetachedDaemonBeforeRestartingStaleManagedService(t *testing.
 		if serviceRestarted.Load() {
 			return true, nil
 		}
-		return oldHealthCheck(p)
+		alive, err := oldHealthCheck(p)
+		if err != nil {
+			// A racing Windows TCP connection can report an error after the
+			// in-process daemon has shut down. For this service-ordering test,
+			// that state deterministically means the old daemon is stopped.
+			return false, nil
+		}
+		return alive, nil
 	}
 
 	var restartedWhileOldDaemonAlive atomic.Bool

@@ -25,6 +25,8 @@ Valid step names are `intent`, `rebase`, `review`, `test`, `document`, `lint`, `
 
 Initialize or refresh the gate for the current repository.
 
+`init` requires an `origin` remote to identify the upstream repository: later pipeline steps push validated branches to the configured target and open pull requests against that upstream. If `origin` is missing, add it with `git remote add origin <url>`, replacing `<url>` with the upstream repository's URL, then re-run `init`.
+
 ```sh
 no-mistakes init
 no-mistakes init --fork-url git@github.com:you/my-repo.git
@@ -58,6 +60,8 @@ Skill installation is best-effort: if the skill write fails, init reports it and
 Agent eXperience Interface for non-interactive agents.
 Most agent workflows use the installed `/no-mistakes` skill, which drives this command surface underneath.
 It prints TOON to stdout, prints progress to stderr, and uses structured stdout errors with exit code `1` for operational failures and `2` for bad usage.
+At the TOON output boundary, unsupported C0 control bytes are rendered as visible `\xNN` escapes while tabs, carriage returns, newlines, printable Unicode, and the underlying durable logs remain unchanged.
+If TOON encoding still fails, AXI prints a structured error instead of returning successful empty stdout.
 The calling agent drives AXI approval gates but does not replace the configured pipeline agent that performs validation.
 
 ```sh
@@ -70,8 +74,9 @@ If an active run object is parked at a decision gate, it includes `awaiting_agen
 That field is observability only; the `gate:` object still tells the agent which response to send.
 If a step is actively `running` or `fixing`, the run object can also include an `active_steps` table with `active_for`, `last_activity`, native `agent_pid` when one is currently running, and the current execution or fix round.
 When only another branch has an active run, that run appears as `other_branch_active_run`; the help tells agents to leave it alone and start validation for the current branch.
-AXI help and outputs also repeat the preserve-prior-gate-progress contract: after a gate round has already produced fix commits, additional fixes belong on the same branch followed by a fresh `no-mistakes axi run --intent "..."` with the original user intent.
-Agents must not abort-and-restart, reset, or create a replacement branch in a way that drops prior gate-fix commits.
+AXI help and outputs always repeat the preserve-prior-gate-progress contract: after a gate round has already produced fix commits, additional fixes belong on the same branch.
+When a relevant `branch_sync` object is present, they also include version-matched synchronization guidance to follow before a post-pipeline local commit or fresh run.
+Agents must not abort-and-restart, reset, replace the branch, or improvise Git recovery in a way that drops prior gate-fix commits.
 A fresh run re-validates the current branch state, so already-resolved findings do not re-surface.
 
 ## no-mistakes axi run
@@ -96,9 +101,12 @@ It is the user's goal or request, and no-mistakes uses it verbatim instead of tr
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Reattaching to an in-flight run does not require `--intent`.
+Reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.
+When neither identity matches, `axi run` keeps the fresh-run path but refuses a gate push while `branch_sync` says the pipeline still owns the branch.
+That refusal returns the complete structured state and its `continue_active_run` or `recover_custody` next action instead of a raw Git non-fast-forward.
 Reattaching to an in-flight run can proceed while the daemon is already running even if the global config file has become invalid, but starting a fresh run still requires valid global config.
 Starting a fresh run also requires a runnable effective pipeline agent.
-If the configured native agent or ACP bridge is unavailable, the run fails before any pipeline step starts instead of reporting command-only validation as a passed gate.
+If the configured native agent or ACP runner is unavailable, the run fails before any pipeline step starts instead of reporting command-only validation as a passed gate.
 With `--yes`, `axi run` treats both `action: auto-fix` and `action: ask-user` findings as standing consent for the pipeline to fix them by selecting every finding, then accepts the resulting fix review.
 Gates with no findings or only `action: no-op` findings are approved as-is, and each step is fixed at most once so unresolved findings do not loop forever.
 Without `--yes`, an agent driving `axi run` should stop when a gate contains `action: ask-user` findings and relay each finding's ID, file, and full description to the user before responding.
@@ -158,6 +166,49 @@ When the resolved run has a `running` or `fixing` step, the run object includes 
 Each row reports how long the step has been active, the latest meaningful log or native-agent lifecycle activity, the native agent PID if one is currently running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
 If no activity arrives for longer than `step_quiet_warning`, `last_activity` is prefixed with `quiet`; this is only a liveness signal and does not cancel the step.
 For older active runs with no recorded activity timestamp, AXI falls back to the step log file modification time.
+Gate summaries and finding descriptions are bounded in this default status view; truncated values disclose their original length, and the gate help points to `no-mistakes axi logs --step <step> --full` for the complete step log.
+Relevant current-branch states also include a cached `branch_sync` object with full SHAs, the run's status, the persisted pipeline push binding, target kind and ref, relation, safety result, PR lifecycle, and a structured next action.
+Cached home and status rendering performs no network read and labels the remote observation `pipeline_push`; only explicit sync check or apply reports `live` freshness.
+
+## no-mistakes axi sync
+
+Freshly check or apply the guarded synchronization offered by a `branch_sync.next_action`.
+
+```sh
+no-mistakes axi sync --check
+no-mistakes axi sync
+no-mistakes axi sync --recover
+no-mistakes axi sync --recover --keep-local
+```
+
+| Flag           | Type   | Default | Description                                                                  |
+| -------------- | ------ | ------- | ---------------------------------------------------------------------------- |
+| `--check`      | `bool` | `false` | Verify the live target and exact plan without changing `HEAD`                |
+| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits |
+| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree   |
+
+The default command is an explicit non-interactive apply request and never prompts.
+All modes return the complete `branch_sync` object as TOON.
+Exit code `0` means an eligible check, applied synchronization or recovery, already-synchronized or custody-returned no-op, or expected merged-and-removed no-op; blocked operational states return `1`.
+The ordinary worktree mutation is either a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA, or an equivalent-diverged advance.
+When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and moves to the pipeline head with reset semantics.
+Genuine divergence still reports `safety: blocked_diverged` and changes nothing.
+Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head after relation-specific preservation checks.
+Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
+Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
+Run `axi sync` only when structured output offers `next_action.code: sync`; process any blocked state instead of substituting reset, stash, merge, rebase, force, or branch replacement.
+
+### Custody recovery
+
+A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head leaves the branch `pipeline_owned` with `safety: blocked_pipeline_owned_recoverable`, the run's terminal `pipeline.status`, and `next_action.code: recover_custody`.
+While the run is still active, the same state stays blocked and reports `next_action.code: continue_active_run` with `no-mistakes axi status`.
+`--recover` verifies the run is terminal, anchors the preserved head under `refs/no-mistakes/recover/<run>` in the invoking repository, and stamps custody returned so a fresh run can start.
+For equal or ahead worktrees where the preserved head is already locally reachable, recovery writes that anchor locally without gate access.
+For behind or diverged worktrees, recovery verifies the preserved head at the local gate branch and fetches it into the anchor before fast-forwarding only a clean behind worktree or refusing with the anchor named.
+A dirty or diverged worktree refuses with explicit choices.
+When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
+`no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
+A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
 
 ## no-mistakes axi logs
 
@@ -200,6 +251,8 @@ no-mistakes axi abort --run <id>
 Use it to reap an orphaned CI monitor whose worktree was torn down before the PR merged - the run id is shown in `axi run` output and in the `axi` home view.
 Aborting an id that is not an active run is a successful no-op.
 When the daemon is already running, `axi abort` can cancel an active run even if the global config file has become invalid, because it is not starting a fresh run.
+Branch-scoped abort waits for the cancellation state to persist, then renders the refreshed `branch_sync` object and its exact next action.
+Pipeline-created commits remain preserved in the gate and a recoverable cancellation points directly to `no-mistakes axi sync --recover`.
 While a run is active, do not use `axi abort` or `no-mistakes rerun` to go fix a finding yourself.
 That cancels the pipeline's in-flight work and forces a full re-validation; use `axi respond --action fix` at the gate so the pipeline applies and re-checks the fix.
 
@@ -240,9 +293,32 @@ Starts a new pipeline run using the last-known head SHA on the current branch.
 If another run is active on that branch, rerun cancels it before starting over.
 Treat rerun as a between-runs action after a failed or cancelled outcome, or after you have committed a separate fix outside an active run; do not use it to bypass a gate.
 
+## no-mistakes sync
+
+Freshly verify and, with confirmation, safely move the invoking branch to an exact pipeline-owned push binding.
+
+```sh
+no-mistakes sync
+no-mistakes sync --check
+no-mistakes sync --yes
+no-mistakes sync --recover
+no-mistakes sync --recover --keep-local
+```
+
+| Flag           | Type   | Default | Description                                                     |
+| -------------- | ------ | ------- | --------------------------------------------------------------- |
+| `--check`      | `bool` | `false` | Verify and print the fresh plan without changing `HEAD`         |
+| `-y`, `--yes`  | `bool` | `false` | Apply an eligible guarded synchronization without an interactive prompt |
+| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits |
+| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree |
+
+Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` prompts the same way before returning custody.
+A non-TTY apply or recovery refuses with a direct `--yes` hint.
+The command uses the same service and safety contract as `no-mistakes axi sync`, including the guarded equivalent advance and custody recovery documented there; it never stashes, rebases, creates a merge commit, switches branches, deletes a branch, or updates an external remote.
+
 ## no-mistakes status
 
-Show repo, daemon, and active run status.
+Show repo, daemon, active run, and relevant cached local-branch synchronization status.
 
 ```sh
 no-mistakes status
@@ -279,8 +355,9 @@ no-mistakes stats
 
 Displays total changes, rescued changes, rescue rate, reported and fixed mistakes, fixes by pipeline step, and the top repos by rescue activity.
 
-Use `--agents` for local, per-purpose agent performance aggregates, including duration, session mode, errors, and input, output, cache-read, and cache-creation tokens.
-Use `--run <id>` to inspect the individual agent invocations and total time parked at approval gates for one run; it implies `--agents`.
+Use `--agents` for local, per-purpose agent performance aggregates: duration and the subprocess-vs-model time split, session mode, errors, the token totals (input, output, cache-read, cache-creation, fresh input, reasoning), and the model round-trip and tool-category activity histogram, with a `METRICS` coverage count that tells a real zero apart from missing instrumentation.
+Use `--run <id>` to inspect the individual agent invocations for one run - including each invocation's per-round token deltas next to the raw (cumulative for resumed sessions) counters, tool-category breakdown, workload size, finding count, and fallback reason - plus the total time parked at approval gates; it implies `--agents`.
+Nullable fields an adapter did not report render as `-` (unknown), which is distinct from a recorded `0`; the legacy raw input, output, and cache-read counters remain numeric.
 
 ```sh
 no-mistakes stats --agents
@@ -288,6 +365,7 @@ no-mistakes stats --run <id>
 ```
 
 This detailed performance evidence stays local in `state.sqlite`; it is not sent to telemetry.
+The field definitions and their local/remote split are owned by [the environment reference](/reference/environment/#what-stays-local-and-what-leaves-the-machine).
 
 ## no-mistakes doctor
 
@@ -306,11 +384,13 @@ Checks:
 - SQLite database
 - Daemon status
 - Agent runners: native binaries `claude`, `codex`, `acli`, `opencode`, `pi`, and `copilot`, plus the optional ACP bridge `acpx`
+- ACP alias default binaries: `cursor-agent` plus `acpx` for `cursor`
 - Effective global agent configuration, reported as `gate validation`; an unavailable configured runner is a failed check because the gate cannot validate without it
 
 Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem detected).
 
-For `agent: acp:<target>`, `doctor` verifies that `acpx` resolves but does not invoke the target or test its credentials.
+The standalone runner rows inspect default binary names; the `cursor` row reports whichever of `cursor-agent` and `acpx` are missing.
+The [Global Config Reference](/no-mistakes/reference/global-config/) owns ACP gate-validation availability and probing semantics.
 Each validation run performs the authoritative agent resolution again after applying any trusted repository-level override.
 
 `doctor` checks `gh` and `az` availability. For GitLab PR and CI steps, install and authenticate `glab`. For Bitbucket Cloud PR and CI steps, set `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`. For Azure DevOps PR and CI steps, install the `azure-devops` extension and provide a PAT.

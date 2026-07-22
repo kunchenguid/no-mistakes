@@ -15,4 +15,10 @@
 // repo. The e2e suite consolidates the "user pushes a branch and the
 // pipeline runs to completion" journey into a single high-coverage test
 // that is meant to grow rather than fan out into many small e2e files.
+//
+// Temporary daemon ownership: each NewHarness acquires a slot in
+// internal/e2edaemon (inventory + concurrency cap). scripts/e2e.sh and
+// TestMain reap inventoried daemons when Cleanup cannot run. External
+// sleep-loop keepalives are out of scope. See internal/e2edaemon/doc.go
+// for the SIGKILL recovery boundary.
 package e2e

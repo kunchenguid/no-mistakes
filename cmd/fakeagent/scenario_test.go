@@ -163,7 +163,7 @@ func TestRunClaudeFailsWhenScenarioEditReplacementMissing(t *testing.T) {
 		Edits: []Edit{{Path: "note.txt", Old: "missing", New: "after"}},
 	}}}
 
-	if code := runClaude([]string{"-p", "fix it"}, scenario); code != 1 {
+	if code := runClaude([]string{"-p"}, strings.NewReader("fix it"), scenario); code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
 	}
 

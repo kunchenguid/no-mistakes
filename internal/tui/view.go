@@ -39,6 +39,7 @@ func (m Model) View() string {
 	}
 	pipelineView := renderPipelineView(m.run, pipelineSteps, leftWidth, m.spinnerFrame, pipelineHeight)
 	banner := renderOutcomeBanner(m.run, m.steps)
+	localBranch := renderLocalBranchStatus(m.branchSync, m.syncRefreshing, leftWidth)
 
 	// Action bar between pipeline box and findings/diff per DESIGN.md.
 	hasDiff := false
@@ -60,6 +61,9 @@ func (m Model) View() string {
 			baseSections = append(baseSections, pipelineView)
 			if banner != "" {
 				baseSections = append(baseSections, banner)
+			}
+			if localBranch != "" {
+				baseSections = append(baseSections, localBranch)
 			}
 			if actionBar != "" {
 				baseSections = append(baseSections, actionBar)
@@ -93,6 +97,12 @@ func (m Model) View() string {
 
 	if m.err != nil {
 		appendExtraSection(renderErrorBox(m.err, rightWidth))
+	}
+	if m.syncConfirm && m.branchSync != nil {
+		extraSections = append(extraSections, renderSyncConfirmation(*m.branchSync, rightWidth))
+	}
+	if m.recoverConfirm && m.branchSync != nil {
+		extraSections = append(extraSections, renderRecoverConfirmation(*m.branchSync, rightWidth))
 	}
 
 	// Modal editor takes priority over findings/logs so it always renders
@@ -237,6 +247,9 @@ func (m Model) View() string {
 		if banner != "" {
 			leftSections = append(leftSections, banner)
 		}
+		if localBranch != "" {
+			leftSections = append(leftSections, localBranch)
+		}
 		rightSections := make([]string, 0, len(extraSections)+1)
 		if actionBar != "" {
 			rightSections = append(rightSections, actionBar)
@@ -249,6 +262,9 @@ func (m Model) View() string {
 	sections := []string{pipelineView}
 	if banner != "" {
 		sections = append(sections, banner)
+	}
+	if localBranch != "" {
+		sections = append(sections, localBranch)
 	}
 	if actionBar != "" {
 		sections = append(sections, actionBar)

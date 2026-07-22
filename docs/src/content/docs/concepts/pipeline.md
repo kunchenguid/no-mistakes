@@ -38,7 +38,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 | 1 | **Intent** | Use supplied intent or infer it from recent local agent transcripts | n/a |
 | 2 | **Rebase** | Fetch fresh remote upstream and the configured branch target, then rebase your branch onto them | `3` |
 | 3 | **Review** | AI code review of your diff | `0` (requires approval) |
-| 4 | **Test** | Run baseline tests and gather evidence for available intent | `3` |
+| 4 | **Test** | Targeted local validation of the change and intent (not a full CI suite), plus evidence when intent is available | `3` |
 | 5 | **Document** | Update docs when needed and report unresolved gaps | initial pass |
 | 6 | **Lint** | Run lint/static analysis; shares the document step's initial housekeeping pass when no lint command is configured | `3` |
 | 7 | **Push** | Safely push the validated branch to the configured target | n/a |
@@ -76,7 +76,7 @@ See [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/) for how the fix cycle works
 You can't reorder steps. You *can*:
 
 - Swap the agent, or configure an ordered fallback list, globally or per-repo.
-- Set explicit `commands.test`, `commands.lint`, `commands.format`.
+- Set explicit `commands.lint`, `commands.format`, and an optional **targeted** `commands.test` (local intent validation only; not a full CI suite).
 - Store test evidence locally by default or opt into committed in-repo evidence with `test.evidence.store_in_repo`.
 - Control auto-fix limits per step.
 - Ignore paths during review and documentation checks.

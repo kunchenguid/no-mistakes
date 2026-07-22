@@ -10,9 +10,15 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"github.com/spf13/cobra"
 )
+
+type doctorAgentCheck struct {
+	name     string
+	binaries []string
+}
 
 func newDoctorCmd() *cobra.Command {
 	return &cobra.Command{
@@ -98,26 +104,26 @@ func newDoctorCmd() *cobra.Command {
 					}
 				}
 
-				agents := []struct {
-					name   string
-					binary string
-				}{
-					{"claude", "claude"},
-					{"codex", "codex"},
-					{"rovodev", "acli"},
-					{"opencode", "opencode"},
-					{"pi", "pi"},
-					{"copilot", "copilot"},
-					{"acpx", "acpx"},
-				}
+				agents := doctorAgentChecks()
 				fmt.Fprintln(w)
 				fmt.Fprintf(w, "  %s\n", sCyan.Render("Agents"))
 				for _, a := range agents {
 					label := fmt.Sprintf("%-14s", a.name)
-					if path, err := exec.LookPath(a.binary); err != nil {
+					var found, missing []string
+					for _, bin := range a.binaries {
+						if path, err := exec.LookPath(bin); err != nil {
+							missing = append(missing, bin)
+						} else {
+							found = append(found, path)
+						}
+					}
+					switch {
+					case len(missing) == 0:
+						ok(label, strings.Join(found, ", "))
+					case len(a.binaries) > 1:
+						warn(label, "not found ("+strings.Join(missing, ", ")+")")
+					default:
 						warn(label, "not found")
-					} else {
-						ok(label, path)
 					}
 				}
 
@@ -150,4 +156,26 @@ func newDoctorCmd() *cobra.Command {
 			})
 		},
 	}
+}
+
+func doctorAgentChecks() []doctorAgentCheck {
+	agents := []doctorAgentCheck{
+		{"claude", []string{"claude"}},
+		{"codex", []string{"codex"}},
+		{"rovodev", []string{"acli"}},
+		{"opencode", []string{"opencode"}},
+		{"pi", []string{"pi"}},
+		{"copilot", []string{"copilot"}},
+		{"acpx", []string{"acpx"}},
+	}
+	for _, alias := range types.ACPAliases() {
+		agents = append(agents, doctorAgentCheck{
+			name: string(alias.Name),
+			binaries: []string{
+				alias.DefaultCommandBinary(),
+				"acpx",
+			},
+		})
+	}
+	return agents
 }
