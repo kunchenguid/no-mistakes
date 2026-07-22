@@ -42,7 +42,7 @@ local.
 
 If you are not sure where to start, configure these in this order:
 
-1. Set `commands.test` and `commands.lint` in repo config so the gate runs the exact commands your repo expects.
+1. Set `commands.lint` (and a **targeted** `commands.test` only when you want a deterministic local baseline - not a full CI suite) so the gate runs the exact local checks your repo expects.
 2. Override `agent` per repo only when one codebase clearly works better with a different tool or fallback order.
 3. Tune `auto_fix` after you have seen how much automation you actually want.
 
@@ -60,10 +60,10 @@ The rest of this page covers only the cross-cutting rules that involve both file
 
 ## Explicit commands versus agent detection
 
-Explicit `commands.test` and `commands.lint` give you deterministic baseline behavior, while leaving either empty asks the configured agent to fill the gap: empty `commands.test` has the agent detect and run tests, and empty `commands.lint` folds lint into the document step's combined housekeeping pass.
+Explicit `commands.test` and `commands.lint` give you deterministic local baseline behavior, while leaving either empty asks the configured agent to fill the gap: empty `commands.test` has the agent select the smallest relevant tests under the targeted-validation contract (broad regression stays in remote CI), and empty `commands.lint` folds lint into the document step's combined housekeeping pass.
 An empty `commands.format` runs no separate formatter, so configure it explicitly when the push step must format agent changes.
 Either way, available user intent can trigger an evidence-oriented agent follow-up after a successful test baseline, and evidence stays in a temporary local directory unless the repo opts into `test.evidence.store_in_repo`.
-The [Repo Config Reference](/no-mistakes/reference/repo-config/) owns the exact per-command semantics, including command process lifetime and the `ignore_patterns` match rules.
+The [Repo Config Reference](/no-mistakes/reference/repo-config/) owns the exact per-command semantics (including that `commands.test` is targeted, not CI-parity), command process lifetime, and the `ignore_patterns` match rules.
 
 Before a new validation gate starts, its effective agent configuration must resolve to a runnable native agent or ACP runner; otherwise the gate fails before its first pipeline step, even when explicit commands are configured.
 Run `no-mistakes doctor` to check the global runner, and see [Choosing an Agent](/no-mistakes/guides/agents/) for how agent selection and fallback lists behave.

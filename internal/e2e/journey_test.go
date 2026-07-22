@@ -445,7 +445,7 @@ func cleanReviewScenario(t *testing.T) string {
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
       artifacts: []
-  - match: "You are validating a code change by testing it. Examine the repository and run the appropriate tests yourself.\n\nContext:\n- branch: test-agent-new-test-file"
+  - match: "You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself.\n\nContext:\n- branch: test-agent-new-test-file"
     text: "tests passed after adding a regression test"
     edits:
       - path: "agent_test.py"
@@ -459,13 +459,13 @@ func cleanReviewScenario(t *testing.T) string {
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
       artifacts: []
-  - match: "You are validating a code change by testing it. Examine the repository and run the appropriate tests yourself.\n\nContext:\n- branch: test-malformed-structured-output"
+  - match: "You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself.\n\nContext:\n- branch: test-malformed-structured-output"
     text: "tests found some issues"
     structured_raw: '{"summary":123}'
   - match: "Detect the linting and formatting tools for this project, run the relevant checks yourself, apply safe fixes, and verify the result.\n\nContext:\n- branch: lint-malformed-structured-output"
     text: "lint found some issues"
     structured_raw: '{"summary":123}'
-  - match: "You are validating a code change by testing it. Examine the repository and run the appropriate tests yourself.\n\nContext:\n- branch: test-agent-staged-new-test-file"
+  - match: "You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself.\n\nContext:\n- branch: test-agent-staged-new-test-file"
     text: "tests passed after staging a regression test"
     edits:
       - path: "agent_staged_test.go"
@@ -479,7 +479,7 @@ func cleanReviewScenario(t *testing.T) string {
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
       artifacts: []
-  - match: "You are validating a code change by testing it. Examine the repository and run the appropriate tests yourself."
+  - match: "You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself."
     text: "tests passed with no evidence artifacts"
     structured:
       findings: []

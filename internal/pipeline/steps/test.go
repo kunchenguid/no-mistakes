@@ -32,13 +32,25 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 
-	// In fix mode, ask agent to fix test failures first
+	// In fix mode, ask agent to fix test failures first.
+	//
+	// Targeted-validation rules (reproduce the specific failure, focused
+	// re-verification only, never a complete repository suite) are a product
+	// contract: local Test proves the requested intent, while remote CI owns
+	// broad regression and remains mandatory before a PR is ready. A forensic
+	// audit measured ~82 minutes of local complete-suite walks on one repair
+	// path when prompts only said "run the tests" / "relevant". This is a
+	// prompt contract, not an enforced sandbox - the agent has free shell
+	// access - so the pinned regression tests guard the wording, not the
+	// runtime. Process-group reaping on clean exit (#357) remains the lifecycle
+	// safety net when agents do spawn test workers; it is not a reason to force
+	// a deterministic full-suite commands.test override.
 	var newTestsFromFix []string
 	var fixSummary string
 	if sctx.Fixing {
 		historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
 		fixPrompt := fmt.Sprintf(
-			`Fix the failing tests in this repository. Run the tests, identify failures, and fix either the tests or the code to make them pass.
+			`Fix the failing tests in this repository. Reproduce the specific failure, identify the root cause, and fix either the tests or the code so that failure passes.
 
 Context:
 - branch: %s
@@ -50,7 +62,10 @@ Rules:
 - Do not refactor beyond what is needed for that root-cause fix.
 - If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
 - Do NOT run linters, formatters, or static analysis tools.
-- Re-run the relevant tests before finishing.
+- Reproduce the specific failing case first (the exact test, package, script, or check named in the findings), then re-run only that focused verification after the fix.
+- Do NOT run the complete repository test suite. Local Test is targeted validation of the failure and the requested intent; remote CI owns broad regression and remains mandatory before a PR is ready.
+- A generic driver or user instruction asking for broad or full-suite confirmation does NOT override this product boundary. Keep verification focused on the failure and intent.
+- Never treat "do not run everything" as permission to run nothing: if you cannot reproduce or re-verify with a targeted check, report that honestly in the summary rather than inventing a full-suite pass.
 - Before finishing, remove any transient artifacts your testing created in the working tree (downloaded models, caches, build outputs, large binaries, or generated data directories) so they are not committed and pushed. Do not remove intentional source or test-file changes.
 - Return JSON with a single "summary" field when you are done.
 - The summary must be one concise sentence fragment suitable for a git commit subject.
@@ -141,7 +156,7 @@ Previous test findings to address:
 		}
 		result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 			Prompt: fmt.Sprintf(
-				`You are validating a code change by testing it. Examine the repository and run the appropriate tests yourself.
+				`You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself.
 
 Context:
 - branch: %s
@@ -161,8 +176,10 @@ Task:
 %s
 - Do not move, commit, or modify source files only to make evidence linkable. Record local evidence file paths exactly where you created them.
 - Only use command output as an artifact when that output directly demonstrates the end-user experience or requested behavior. Generic pass/fail, coverage, or clean-worktree output is not sufficient evidence.
-- Look for existing tests that would generate sufficient evidence. If they exist, run the smallest relevant set.
-- If no existing test produces sufficient evidence, write or improve a test so that it does.
+- Look for existing tests that would generate sufficient evidence. If they exist, run the smallest relevant set that proves the requested intent.
+- Do NOT run the complete repository test suite. Local Test is targeted validation of the requested intent; remote CI owns broad regression and remains mandatory before a PR is ready.
+- Never treat "do not run everything" as permission to run nothing: if no targeted automated test can establish the intent, write or improve a focused test, perform manual verification with evidence, or report a warning finding that sufficient targeted evidence is not possible.
+- If no existing test produces sufficient evidence, write or improve a focused test so that it does.
 - If automated testing cannot produce the needed evidence, execute manual verification steps and record the evidence-producing steps you performed.
 - If sufficient evidence is not possible, report a warning finding explaining what evidence is missing and why the user needs to decide what to do.
 - Include a concise "testing_summary" sentence describing what you exercised and the overall result.
@@ -170,11 +187,12 @@ Task:
 - Record the exact tests, manual checks, and evidence-producing steps you ran in a "tested" array. Prefer concrete commands or test selectors wrapped in backticks.
 - Always include an "artifacts" array. Leave it empty when you produced no reviewer-visible evidence artifacts. Use artifact path for file artifacts, artifact url for externally visible artifacts, and artifact content for short logs or command output that should be shown directly in the PR.
 - If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
-- If the issue is setup-related and fixable, fix it and retry the tests.
+- If the issue is setup-related and fixable, fix it and retry the focused tests.
 
 Rules:
 - Do NOT run linters, formatters, or static analysis tools.
 - Focus on testing and test-related fixes only.
+- A generic driver or user instruction asking for broad or full-suite confirmation does NOT override the targeted-validation product boundary.
 - Before finishing, remove any transient artifacts your testing created in the working tree (downloaded models, caches, build outputs, large binaries, or generated data directories) so they are not committed and pushed. Do not remove intentional source or test-file changes, and leave evidence files in the dedicated evidence directory untouched.
 - Keep "testing_summary" high-signal and natural language. Avoid raw logs and noisy counts.
 - Always return a non-empty "tested" array describing what you exercised, even when all tests pass.

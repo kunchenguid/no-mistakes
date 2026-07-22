@@ -128,6 +128,15 @@ Safest local verification sequence after non-trivial changes:
   This is a prompt contract, not an enforced sandbox.
   Regression: `TestReviewStep_FixMode_FocusedVerificationContract`.
 
+**Local Test Is Targeted Validation (`internal/pipeline/steps/test.go`)**
+
+- Local Test (normal evidence agent and Test-repair agent) validates the requested intent with the smallest relevant checks and end-user-aligned evidence; it is never a repository-wide regression-suite walk.
+  Broad regression belongs to remote CI (`go test -race ./...` in `.github/workflows/ci.yml`) and remains mandatory before a PR is ready.
+  `commands.test` is the same contract when set: targeted baseline, not CI-parity complete-suite configuration; docs owner is `docs/src/content/docs/reference/repo-config.md` (`commands.test`), step behavior owner is `docs/src/content/docs/reference/pipeline-steps.md` (Test).
+  This repository dogfoods an empty `commands.test` so the agent-driven targeted path is the default; do not reintroduce `go test -race ./...` as a local Test override.
+  Process-group reaping on clean/error exit (#357) and Unix WaitDelay remain the lifecycle safety net when agents spawn test workers - restoring the agent-driven path must not revive the daemon OOM leak.
+  Regressions: `TestTestStep_InitialAgent_TargetedValidationContract`, `TestTestStep_FixMode_TargetedVerificationContract`, `TestTestStep_FixMode_DriverFullSuiteInstructionDoesNotOverrideContract`, `TestTestStep_InitialAgent_NoTargetedEvidenceRequiresHonestFinding`, `TestDogfoodConfig_NoBroadLocalTestCommand`, `TestCIWorkflow_RetainsFullRaceSuiteAsBroadRegressionOwner`, plus the existing #357 reap/WaitDelay tests.
+
 **Intent Provenance & Conformance (`internal/pipeline/steps/intent_prompt.go`)**
 
 - Intent carries provenance: an explicit `axi run --intent` persists `Source==db.RunIntentSourceAgent` ("agent", score 1); a transcript match persists the agent name ("claude"/"codex"/...). The executor propagates it as `StepContext.IntentSource` alongside `UserIntent` (`executor.go`).

@@ -24,7 +24,8 @@ agent: codex
 
 commands:
   lint: "golangci-lint run ./..."
-  test: "go test -race ./..."
+  # Targeted local validation only - not a full-repo CI-parity suite.
+  test: "go test ./internal/cli -run '^TestDoctor' -count=1"
   format: "gofmt -w ."
 
 ignore_patterns:
@@ -131,16 +132,20 @@ If the trusted commit or its present config file cannot be read and parsed, the 
 
 ### commands.test
 
-Explicit test command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /c` on Windows.
+Explicit **targeted** local test command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /c` on Windows.
 
 | | |
 |---|---|
 | Type | `string` |
-| Default | Empty (agent auto-detects tests and evidence checks) |
+| Default | Empty (agent selects the smallest relevant tests and evidence checks) |
+
+`commands.test` is local **targeted validation** of the change and requested intent, not a CI-parity repository-wide regression command.
+Broad regression belongs in remote CI and remains mandatory before a PR is ready; do not put a complete-suite walk here just to mirror CI.
+no-mistakes does not guess whether an arbitrary shell string is "too broad" - the contract is documented and dogfooded, not enforced with language- or filename-specific heuristics.
 
 When set, the test step runs this exact command first as the baseline and checks the exit code.
-When empty, the agent detects and runs relevant tests itself.
-When user intent is available, the agent may still run after a successful baseline command to gather evidence-oriented validation.
+When empty, the agent detects and runs the smallest relevant tests itself (and is instructed never to run the complete repository suite).
+When user intent is available, the agent may still run after a successful baseline command to gather evidence-oriented validation, still under the same targeted-validation contract.
 
 ### commands.lint
 
