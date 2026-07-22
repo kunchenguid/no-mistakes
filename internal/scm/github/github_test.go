@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -369,6 +370,226 @@ func TestPRStateAndMergeableTargetKnownPRByURL(t *testing.T) {
 	}
 	if len(mergeArgs) != 1 || len(mergeArgs[0]) < 4 || mergeArgs[0][3] != prURL {
 		t.Fatalf("GetMergeableState selector = %v, want %q at argv[3]", mergeArgs, prURL)
+	}
+}
+
+func TestGetChecksFallsBackWhenJSONFlagUnsupported(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt": {
+			stderr: "unknown flag: --json\n",
+			code:   1,
+		},
+		"gh pr view 123 --repo test/repo --json statusCheckRollup": {
+			stdout: `{"statusCheckRollup":[` +
+				`{"__typename":"CheckRun","name":"build","conclusion":"SUCCESS","completedAt":"2026-04-24T04:15:00Z"},` +
+				`{"__typename":"CheckRun","name":"deploy","status":"IN_PROGRESS"},` +
+				`{"__typename":"StatusContext","context":"ci/legacy","state":"FAILURE"}` +
+				`]}` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 3 {
+		t.Fatalf("len(checks) = %d, want 3: %+v", len(checks), checks)
+	}
+	if checks[0].Name != "build" || checks[0].Bucket != scm.CheckBucketPass {
+		t.Fatalf("checks[0] = %+v, want passing build check", checks[0])
+	}
+	wantCompletedAt := time.Date(2026, 4, 24, 4, 15, 0, 0, time.UTC)
+	if !checks[0].CompletedAt.Equal(wantCompletedAt) {
+		t.Fatalf("checks[0].CompletedAt = %v, want %v", checks[0].CompletedAt, wantCompletedAt)
+	}
+	if checks[1].Name != "deploy" || checks[1].Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks[1] = %+v, want pending deploy check", checks[1])
+	}
+	if checks[2].Name != "ci/legacy" || checks[2].Bucket != scm.CheckBucketFail {
+		t.Fatalf("checks[2] = %+v, want failing legacy status", checks[2])
+	}
+}
+
+func TestGetChecksMemoizesUnsupportedJSONFlag(t *testing.T) {
+	responses := map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt": {
+			stderr: "unknown flag: --json\n",
+			code:   1,
+		},
+		"gh pr view 123 --json statusCheckRollup": {
+			stdout: `{"statusCheckRollup":[]}` + "\n",
+		},
+	}
+	counts := map[string]int{}
+	baseFactory := githubTestCmdFactory(responses)
+	host := New(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		key := strings.TrimSpace(name + " " + strings.Join(args, " "))
+		counts[key]++
+		return baseFactory(ctx, name, args...)
+	}, nil, "", "")
+
+	for i := 0; i < 2; i++ {
+		if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"}); err != nil {
+			t.Fatalf("GetChecks() call %d error = %v", i+1, err)
+		}
+	}
+	if got := counts["gh pr checks 123 --json name,state,bucket,completedAt"]; got != 1 {
+		t.Fatalf("unsupported gh pr checks calls = %d, want 1", got)
+	}
+	if got := counts["gh pr view 123 --json statusCheckRollup"]; got != 2 {
+		t.Fatalf("fallback calls = %d, want 2", got)
+	}
+}
+
+func TestGetChecksLegacyFallbackPreservesExplicitPRTargeting(t *testing.T) {
+	t.Parallel()
+
+	const prURL = "https://github.com/parent/repo/pull/42"
+	cases := []struct {
+		name        string
+		pr          *scm.PR
+		repo        string
+		forkRepo    string
+		primaryKey  string
+		fallbackKey string
+	}{
+		{
+			name:        "URL selector when number missing",
+			pr:          &scm.PR{URL: prURL},
+			repo:        "parent/repo",
+			primaryKey:  "gh pr checks " + prURL + " --repo parent/repo --json name,state,bucket,completedAt",
+			fallbackKey: "gh pr view " + prURL + " --repo parent/repo --json statusCheckRollup",
+		},
+		{
+			name:        "fork PR scoped to parent repo",
+			pr:          &scm.PR{Number: "42", URL: prURL},
+			repo:        "parent/repo",
+			forkRepo:    "contributor/repo",
+			primaryKey:  "gh pr checks 42 --repo parent/repo --json name,state,bucket,completedAt",
+			fallbackKey: "gh pr view 42 --repo parent/repo --json statusCheckRollup",
+		},
+		{
+			name:        "enterprise host-prefixed repo",
+			pr:          &scm.PR{Number: "42", URL: "https://ghe.example/org/repo/pull/42"},
+			repo:        "ghe.example/org/repo",
+			primaryKey:  "gh pr checks 42 --repo ghe.example/org/repo --json name,state,bucket,completedAt",
+			fallbackKey: "gh pr view 42 --repo ghe.example/org/repo --json statusCheckRollup",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			responses := map[string]githubTestResponse{
+				tc.primaryKey:  {stderr: "unknown flag: --json\n", code: 1},
+				tc.fallbackKey: {stdout: `{"statusCheckRollup":[]}` + "\n"},
+			}
+			host := NewWithFork(githubTestCmdFactory(responses), nil, "", tc.repo, tc.forkRepo)
+			checks, err := host.GetChecks(context.Background(), tc.pr)
+			if err != nil {
+				t.Fatalf("GetChecks() error = %v", err)
+			}
+			if len(checks) != 0 {
+				t.Fatalf("checks = %+v, want empty rollup", checks)
+			}
+		})
+	}
+}
+
+func TestGetChecksUnknownStateRemainsPending(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		responses map[string]githubTestResponse
+	}{
+		{
+			name: "primary JSON",
+			responses: map[string]githubTestResponse{
+				"gh pr checks 123 --json name,state,bucket,completedAt": {
+					stdout: `[{"name":"future","state":"FUTURE_STATE","bucket":"future-bucket"}]` + "\n",
+				},
+			},
+		},
+		{
+			name: "status rollup fallback",
+			responses: map[string]githubTestResponse{
+				"gh pr checks 123 --json name,state,bucket,completedAt": {
+					stderr: "unknown flag: --json\n",
+					code:   1,
+				},
+				"gh pr view 123 --json statusCheckRollup": {
+					stdout: `{"statusCheckRollup":[{"__typename":"CheckRun","name":"future","conclusion":"FUTURE_STATE"}]}` + "\n",
+				},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			host := New(githubTestCmdFactory(tc.responses), nil, "", "")
+			checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+			if err != nil {
+				t.Fatalf("GetChecks() error = %v", err)
+			}
+			if len(checks) != 1 || checks[0].Bucket != scm.CheckBucketPending {
+				t.Fatalf("checks = %+v, want one pending check", checks)
+			}
+		})
+	}
+}
+
+func TestGetChecksErrorIncludesBoundedRedactedStderr(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		stderr     string
+		wantDetail string
+	}{
+		{
+			name:       "credentialled URL is redacted",
+			stderr:     "authentication failed for https://user:secret@example.com/org/repo\nsecond line is omitted\n",
+			wantDetail: "authentication failed for https://redacted@example.com/org/repo",
+		},
+		{
+			name:       "oversized UTF-8 is bounded",
+			stderr:     "provider rejected request " + strings.Repeat("é", 150) + "\n",
+			wantDetail: "provider rejected request",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			host := New(githubTestCmdFactory(map[string]githubTestResponse{
+				"gh pr checks 123 --json name,state,bucket,completedAt": {
+					stderr: tc.stderr,
+					code:   1,
+				},
+			}), nil, "", "")
+			_, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+			if err == nil {
+				t.Fatal("GetChecks() error = nil, want error")
+			}
+			got := err.Error()
+			if !strings.Contains(got, tc.wantDetail) {
+				t.Fatalf("GetChecks() error = %q, want useful detail %q", got, tc.wantDetail)
+			}
+			if strings.Contains(got, "secret") {
+				t.Fatalf("GetChecks() error leaked credential: %q", got)
+			}
+			detail := strings.TrimPrefix(got, "gh pr checks: exit status 1: ")
+			if len(detail) > 200 {
+				t.Fatalf("stderr detail length = %d, want <= 200", len(detail))
+			}
+			if !utf8.ValidString(detail) {
+				t.Fatalf("stderr detail is invalid UTF-8: %q", detail)
+			}
+			if strings.Contains(detail, "second line") {
+				t.Fatalf("stderr detail included later line: %q", detail)
+			}
+		})
 	}
 }
 
