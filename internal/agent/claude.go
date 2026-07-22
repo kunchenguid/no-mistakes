@@ -28,6 +28,7 @@ const claudeScannerMaxTokenSize = 256 * 1024 * 1024
 type claudeAgent struct {
 	bin       string
 	extraArgs []string
+	subprocessContext
 	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
 	// buildArgs suppresses claude's project-level settings/memory surface.
 	disableProjectSettings bool
@@ -77,7 +78,7 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	// bytes out of argv and lets Cmd own the bounded concurrent copy, including
 	// EOF, early-child-exit, cancellation, and WaitDelay cleanup paths.
 	cmd.Stdin = strings.NewReader(opts.Prompt)
-	cmd.Env = gitSafeEnv(opts.CWD)
+	cmd.Env = a.gitSafeEnv(opts.CWD)
 	shellenv.ConfigureShellCommand(cmd)
 
 	var stderrBuf []byte

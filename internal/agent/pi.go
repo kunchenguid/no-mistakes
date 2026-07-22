@@ -19,6 +19,7 @@ import (
 type piAgent struct {
 	bin       string
 	extraArgs []string
+	subprocessContext
 }
 
 func (a *piAgent) Name() string { return "pi" }
@@ -37,7 +38,7 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	args := a.buildArgs()
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
-	cmd.Env = gitSafeEnv(opts.CWD)
+	cmd.Env = a.gitSafeEnv(opts.CWD)
 	shellenv.ConfigureShellCommand(cmd)
 
 	stdin, err := cmd.StdinPipe()

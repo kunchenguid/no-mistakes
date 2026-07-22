@@ -42,6 +42,14 @@ log_level: info
 
 session_reuse: true
 
+forge_profiles:
+  github-personal:
+    gh_config_dir: ~/.config/gh-personal
+  github-work:
+    gh_config_dir: ~/.config/gh-work
+  gitlab-work:
+    glab_config_dir: ~/.config/glab-work
+
 auto_fix:
   rebase: 3
   review: 0
@@ -211,6 +219,30 @@ agent_args_override:
 ```
 
 For Codex, `service_tier` and `model_reasoning_effort` tune different things: `service_tier` selects the speed or priority lane, while `model_reasoning_effort` selects reasoning depth. no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
+
+### forge_profiles
+
+Optional machine-local routing for repositories that use different GitHub or GitLab identities. Keys are the raw host tokens recorded in the repository remote, including SSH aliases such as `github-personal`. Each entry must set exactly one provider config directory:
+
+```yaml
+forge_profiles:
+  github-personal:
+    gh_config_dir: ~/.config/gh-personal
+  github-work:
+    gh_config_dir: /Users/you/.config/gh-work
+  gitlab-work:
+    glab_config_dir: ~/.config/glab-work
+```
+
+Paths must be absolute or begin with `~/`; environment variables and other shell expansion are not supported. Host keys are case-insensitive.
+
+When a repository matches a profile, no-mistakes validates it before starting the pipeline and applies an immutable environment to every subprocess in that run: built-in provider commands, custom shell commands, agents, and managed agent servers. A GitHub profile sets `GH_CONFIG_DIR` and removes higher-precedence GitHub token, host, and repository variables; a GitLab profile does the equivalent for `GLAB_CONFIG_DIR` and GitLab variables. The daemon process environment is never changed.
+
+Each selected GitHub config must contain the target host and exactly one account for it, with that account active. A selected GitLab config must contain the target host. `no-mistakes doctor` validates every configured profile and its online authentication.
+
+Profile activation is provider-specific and fail-closed: after at least one GitHub profile is configured, a GitHub repository must match a GitHub profile; GitLab remains ambient unless a GitLab profile is also configured, and vice versa. With no `forge_profiles`, provider detection and ambient CLI authentication behave exactly as before.
+
+For a GitHub fork, no-mistakes considers both the parent and fork host tokens. A match on either side is sufficient. If both match, they must resolve to the same effective provider config directory; otherwise startup fails as ambiguous. Fork PR topology itself is unchanged.
 
 ### ci_timeout
 

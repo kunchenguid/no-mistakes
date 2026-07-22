@@ -61,11 +61,12 @@ type GlobalConfig struct {
 	// review loop (one durable reviewer session across full reviews, a
 	// separate durable fixer session across fix turns). Default true; set
 	// session_reuse: false to force every invocation cold.
-	SessionReuse bool `yaml:"-"`
-	AutoFix      AutoFixRaw
-	Commit       CommitRaw
-	Intent       IntentRaw
-	Test         TestRaw
+	SessionReuse  bool          `yaml:"-"`
+	ForgeProfiles ForgeProfiles `yaml:"forge_profiles"`
+	AutoFix       AutoFixRaw
+	Commit        CommitRaw
+	Intent        IntentRaw
+	Test          TestRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -81,11 +82,21 @@ type globalConfigRaw struct {
 	StepQuietWarning     string              `yaml:"step_quiet_warning"`
 	LogLevel             string              `yaml:"log_level"`
 	SessionReuse         *bool               `yaml:"session_reuse"`
+	ForgeProfiles        ForgeProfiles       `yaml:"forge_profiles"`
 	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
 	Commit               CommitRaw           `yaml:"commit"`
 	Intent               IntentRaw           `yaml:"intent"`
 	Test                 TestRaw             `yaml:"test"`
 }
+
+// ForgeProfile selects one isolated provider CLI configuration directory.
+type ForgeProfile struct {
+	GHConfigDir   string `yaml:"gh_config_dir"`
+	GLabConfigDir string `yaml:"glab_config_dir"`
+}
+
+// ForgeProfiles maps a remote host token to its machine-local provider profile.
+type ForgeProfiles map[string]ForgeProfile
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
 type RepoConfig struct {
@@ -204,6 +215,7 @@ type Config struct {
 	StepQuietWarning     time.Duration
 	LogLevel             string
 	SessionReuse         bool
+	ForgeProfiles        ForgeProfiles
 	Commands             Commands
 	IgnorePatterns       []string
 	AutoFix              AutoFix
@@ -964,6 +976,13 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	if raw.SessionReuse != nil {
 		cfg.SessionReuse = *raw.SessionReuse
 	}
+	if raw.ForgeProfiles != nil {
+		profiles, err := normalizeForgeProfiles(raw.ForgeProfiles)
+		if err != nil {
+			return nil, err
+		}
+		cfg.ForgeProfiles = profiles
+	}
 	if raw.AutoFix.CI == nil {
 		raw.AutoFix.CI = raw.AutoFix.Babysit
 	}
@@ -973,6 +992,58 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg.Test = raw.Test
 
 	return cfg, nil
+}
+
+func normalizeForgeProfiles(raw ForgeProfiles) (ForgeProfiles, error) {
+	profiles := make(ForgeProfiles, len(raw))
+	for host, profile := range raw {
+		host = strings.ToLower(strings.TrimSpace(host))
+		if host == "" {
+			return nil, fmt.Errorf("invalid forge_profiles: host must not be empty")
+		}
+		if _, exists := profiles[host]; exists {
+			return nil, fmt.Errorf("invalid forge_profiles: duplicate host %q after case normalization", host)
+		}
+		ghDir := strings.TrimSpace(profile.GHConfigDir)
+		glabDir := strings.TrimSpace(profile.GLabConfigDir)
+		if (ghDir == "") == (glabDir == "") {
+			return nil, fmt.Errorf("invalid forge_profiles.%s: exactly one of gh_config_dir or glab_config_dir is required", host)
+		}
+		profile.GHConfigDir = ghDir
+		profile.GLabConfigDir = glabDir
+		if ghDir != "" {
+			normalized, err := normalizeForgeProfilePath(ghDir)
+			if err != nil {
+				return nil, fmt.Errorf("invalid forge_profiles.%s.gh_config_dir: %w", host, err)
+			}
+			profile.GHConfigDir = normalized
+		} else {
+			normalized, err := normalizeForgeProfilePath(glabDir)
+			if err != nil {
+				return nil, fmt.Errorf("invalid forge_profiles.%s.glab_config_dir: %w", host, err)
+			}
+			profile.GLabConfigDir = normalized
+		}
+		profiles[host] = profile
+	}
+	return profiles, nil
+}
+
+func normalizeForgeProfilePath(value string) (string, error) {
+	if strings.HasPrefix(value, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		if home == "" {
+			return "", fmt.Errorf("resolve home directory: empty path")
+		}
+		return filepath.Clean(filepath.Join(home, filepath.FromSlash(strings.TrimPrefix(value, "~/")))), nil
+	}
+	if !filepath.IsAbs(value) {
+		return "", fmt.Errorf("path must be absolute or start with ~/")
+	}
+	return filepath.Clean(value), nil
 }
 
 // parseCITimeout interprets the ci_timeout config value. The keyword
@@ -1263,6 +1334,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		StepQuietWarning:     global.StepQuietWarning,
 		LogLevel:             global.LogLevel,
 		SessionReuse:         global.SessionReuse,
+		ForgeProfiles:        global.ForgeProfiles,
 		Commands:             repo.Commands,
 		IgnorePatterns:       repo.IgnorePatterns,
 		AutoFix:              af,

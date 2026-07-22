@@ -6,6 +6,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -17,6 +18,7 @@ type StepContext struct {
 	WorkDir          string
 	Agent            agent.Agent
 	Config           *config.Config
+	ForgeContext     *forgecontext.Context
 	DB               *db.DB
 	Log              func(string) // discrete log line (newline-terminated, user-visible + file)
 	LogChunk         func(string) // raw streaming chunk (user-visible + file)

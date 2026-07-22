@@ -8,7 +8,38 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 )
+
+func TestCodexAgentRunAppliesForgeEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "env.txt")
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+printf 'config:%s token:%s\n' "$GH_CONFIG_DIR" "${GH_TOKEN:+set}" > "$CAPTURE_FILE"
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+`, "@echo off\r\necho config:%GH_CONFIG_DIR% token:%GH_TOKEN%>\"%CAPTURE_FILE%\"\r\necho {\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}\r\necho {\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\r\n")
+	t.Setenv("GH_TOKEN", "ambient-must-not-leak")
+
+	ca := &codexAgent{bin: bin, subprocessContext: newSubprocessContext(runenv.Overlay{
+		Set: map[string]string{
+			"CAPTURE_FILE":  capture,
+			"GH_CONFIG_DIR": "/profiles/personal",
+		},
+		Unset: []string{"GH_TOKEN"},
+	})}
+	if _, err := ca.Run(context.Background(), RunOpts{Prompt: "test", CWD: dir}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	data, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "config:/profiles/personal token:" {
+		t.Fatalf("agent environment = %q", got)
+	}
+}
 
 func TestCodexAgent_BuildArgs(t *testing.T) {
 	ca := &codexAgent{bin: "codex"}

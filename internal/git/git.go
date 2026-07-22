@@ -54,7 +54,7 @@ func RunBare(ctx context.Context, bareDir string, args ...string) (string, error
 func runInDir(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = NonInteractiveEnv(dir)
+	cmd.Env = nonInteractiveEnvForContext(ctx, dir)
 	winproc.Harden(cmd)
 	out, err := cmd.Output()
 	if err != nil {
@@ -116,6 +116,7 @@ func isBareGitDir(dir string) bool {
 // InitBare creates a new bare git repository at the given path.
 func InitBare(ctx context.Context, path string) error {
 	cmd := exec.CommandContext(ctx, "git", "init", "--bare", path)
+	cmd.Env = nonInteractiveEnvForContext(ctx, "")
 	winproc.Harden(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -588,7 +589,7 @@ func ResolveRef(ctx context.Context, dir, ref string) (string, error) {
 // result rather than a loud error.
 func RefExists(ctx context.Context, dir, ref string) (bool, error) {
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
-	cmd.Env = NonInteractiveEnv(dir)
+	cmd.Env = nonInteractiveEnvForContext(ctx, dir)
 	winproc.Harden(cmd)
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
