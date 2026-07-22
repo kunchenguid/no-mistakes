@@ -1056,24 +1056,47 @@ func escapeMarkdownFence(content string) string {
 	return strings.ReplaceAll(content, "```", "`` `")
 }
 
-func sanitizeEvidenceTempReferences(value string) string {
-	root := filepath.ToSlash(filepath.Clean(testEvidenceRoot()))
-	value = filepath.ToSlash(value)
-	for {
-		index := strings.Index(value, root)
-		if index < 0 {
-			return value
+func evidenceTempScrubRoots() []string {
+	raw := filepath.Clean(testEvidenceRoot())
+	seen := make(map[string]bool)
+	var roots []string
+	add := func(p string) {
+		p = filepath.ToSlash(filepath.Clean(p))
+		if p == "" || p == "." || seen[p] {
+			return
 		}
-		start := index
-		if strings.HasSuffix(value[:index], "file://") {
-			start -= len("file://")
-		}
-		end := index + len(root)
-		for end < len(value) && !strings.ContainsRune(" \t\r\n`'\"<>()[]{}", rune(value[end])) {
-			end++
-		}
-		value = value[:start] + "[image evidence]" + value[end:]
+		seen[p] = true
+		roots = append(roots, p)
 	}
+	add(raw)
+	if resolved, err := filepath.EvalSymlinks(raw); err == nil {
+		add(resolved)
+	} else if resolvedTmp, err := filepath.EvalSymlinks(os.TempDir()); err == nil {
+		add(filepath.Join(resolvedTmp, "no-mistakes-evidence"))
+	}
+	return roots
+}
+
+func sanitizeEvidenceTempReferences(value string) string {
+	value = filepath.ToSlash(value)
+	for _, root := range evidenceTempScrubRoots() {
+		for {
+			index := strings.Index(value, root)
+			if index < 0 {
+				break
+			}
+			start := index
+			if strings.HasSuffix(value[:index], "file://") {
+				start -= len("file://")
+			}
+			end := index + len(root)
+			for end < len(value) && !strings.ContainsRune(" \t\r\n`'\"<>()[]{}", rune(value[end])) {
+				end++
+			}
+			value = value[:start] + "[image evidence]" + value[end:]
+		}
+	}
+	return value
 }
 
 func buildTestingOutcomeLine(summaryLine string, rounds []*db.StepRound) string {

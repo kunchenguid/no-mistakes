@@ -49,10 +49,11 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	}
 
 	// Commit any uncommitted changes from agent fixes
-	if err := s.stageAgentChanges(sctx); err != nil {
+	var ownership evidenceNamespaceOwnership
+	if err := s.stageAgentChangesOwned(sctx, &ownership); err != nil {
 		return nil, fmt.Errorf("stage agent changes: %w", err)
 	}
-	if err := s.stageInRepoEvidence(sctx); err != nil {
+	if err := s.stageInRepoEvidenceOwned(sctx, &ownership); err != nil {
 		return nil, err
 	}
 	hasStagedChanges, err := hasStagedGitChanges(ctx, sctx.WorkDir)
@@ -176,13 +177,37 @@ func hasStagedGitChanges(ctx context.Context, workDir string) (bool, error) {
 	return false, err
 }
 
+type evidenceNamespaceOwnership struct {
+	validated bool
+	manifest  generatedEvidenceManifest
+}
+
+func ensureEvidenceNamespaceOwnership(sctx *pipeline.StepContext, location testEvidenceLocation, ownership *evidenceNamespaceOwnership) (generatedEvidenceManifest, error) {
+	if ownership != nil && ownership.validated {
+		return ownership.manifest, nil
+	}
+	manifest, err := validateEvidenceNamespaceOwnership(sctx, location)
+	if err != nil {
+		return generatedEvidenceManifest{}, err
+	}
+	if ownership != nil {
+		ownership.manifest = manifest
+		ownership.validated = true
+	}
+	return manifest, nil
+}
+
 func (s *PushStep) stageAgentChanges(sctx *pipeline.StepContext) error {
+	return s.stageAgentChangesOwned(sctx, nil)
+}
+
+func (s *PushStep) stageAgentChangesOwned(sctx *pipeline.StepContext, ownership *evidenceNamespaceOwnership) error {
 	location := resolveTestEvidenceLocation(sctx.WorkDir, sctx.Run.Branch, sctx.Run.ID, sctx.Config.Test.Evidence)
 	if !location.StoreInRepo || location.GeneratedRepoDir == "" {
 		_, err := git.Run(sctx.Ctx, sctx.WorkDir, "add", "-A")
 		return err
 	}
-	if _, err := validateEvidenceNamespaceOwnership(sctx, location); err != nil {
+	if _, err := ensureEvidenceNamespaceOwnership(sctx, location, ownership); err != nil {
 		return err
 	}
 	managedPaths := make(map[string]bool)
@@ -669,12 +694,16 @@ func evidenceDestinationPath(workDir, repoDir string, artifact types.TestArtifac
 }
 
 func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
+	return s.stageInRepoEvidenceOwned(sctx, nil)
+}
+
+func (s *PushStep) stageInRepoEvidenceOwned(sctx *pipeline.StepContext, ownership *evidenceNamespaceOwnership) error {
 	ctx := sctx.Ctx
 	location := resolveTestEvidenceLocation(sctx.WorkDir, sctx.Run.Branch, sctx.Run.ID, sctx.Config.Test.Evidence)
 	if !location.StoreInRepo {
 		return nil
 	}
-	priorManifest, err := validateEvidenceNamespaceOwnership(sctx, location)
+	priorManifest, err := ensureEvidenceNamespaceOwnership(sctx, location, ownership)
 	if err != nil {
 		return err
 	}

@@ -475,10 +475,11 @@ func TestPushStep_FinalStagingExcludesEvidenceManagedByPriorRounds(t *testing.T)
 	}
 
 	step := &PushStep{}
-	if err := step.stageAgentChanges(sctx); err != nil {
+	var ownership evidenceNamespaceOwnership
+	if err := step.stageAgentChangesOwned(sctx, &ownership); err != nil {
 		t.Fatal(err)
 	}
-	if err := step.stageInRepoEvidence(sctx); err != nil {
+	if err := step.stageInRepoEvidenceOwned(sctx, &ownership); err != nil {
 		t.Fatal(err)
 	}
 	staged := strings.Split(gitCmd(t, dir, "diff", "--cached", "--name-only", "-z"), "\x00")
@@ -531,10 +532,11 @@ func TestPushStep_ReplacesOnlyPriorManifestOwnedEvidence(t *testing.T) {
 	setTestEvidenceManifest(t, sctx, currentRel, currentHash, int64(len(currentData)))
 
 	step := &PushStep{}
-	if err := step.stageAgentChanges(sctx); err != nil {
+	var ownership evidenceNamespaceOwnership
+	if err := step.stageAgentChangesOwned(sctx, &ownership); err != nil {
 		t.Fatal(err)
 	}
-	if err := step.stageInRepoEvidence(sctx); err != nil {
+	if err := step.stageInRepoEvidenceOwned(sctx, &ownership); err != nil {
 		t.Fatal(err)
 	}
 	staged := strings.Split(gitCmd(t, dir, "diff", "--cached", "--name-only", "-z"), "\x00")
@@ -1455,6 +1457,95 @@ func TestPushStep_FetchesAbsentRemoteTipBeforeEvidenceOwnership(t *testing.T) {
 	}
 	if _, err := exec.Command("git", "-C", dir, "cat-file", "-e", remoteTip+"^{commit}").CombinedOutput(); err != nil {
 		t.Fatalf("ownership path did not fetch absent remote tip: %v", err)
+	}
+}
+
+func TestPushStep_SharedOwnershipAvoidsDoubleFetchAcrossStaging(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	publisher := t.TempDir()
+	gitCmd(t, publisher, "init")
+	gitCmd(t, publisher, "config", "user.name", "test")
+	gitCmd(t, publisher, "config", "user.email", "test@test.com")
+	gitCmd(t, publisher, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(publisher, "init.txt"), []byte("init"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, publisher, "add", "-A")
+	gitCmd(t, publisher, "commit", "-m", "initial")
+	gitCmd(t, publisher, "remote", "add", "origin", upstream)
+	gitCmd(t, publisher, "push", "origin", "main")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "clone", "--branch", "main", "--single-branch", upstream, ".")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "local.txt"), []byte("local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "local feature")
+	baseSHA := gitCmd(t, dir, "rev-parse", "main")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, publisher, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(publisher, "remote-only.txt"), []byte("remote tip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, publisher, "add", "-A")
+	gitCmd(t, publisher, "commit", "-m", "remote feature tip")
+	gitCmd(t, publisher, "push", "origin", "feature")
+
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	logFile := filepath.Join(t.TempDir(), "git.log")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_CLI_MODE", "git-passthrough")
+	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
+	t.Setenv("FAKE_CLI_LOG", logFile)
+
+	data := testPNGBytes()
+	sum := sha256.Sum256(data)
+	hash := fmt.Sprintf("%x", sum[:])
+	rel := filepath.ToSlash(filepath.Join(fixedEvidenceRepoDir, generatedEvidenceDir, "feature", hash[:32]+".png"))
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, filepath.FromSlash(rel))), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(rel)), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "feature"
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true}
+	setTestEvidenceManifest(t, sctx, rel, hash, int64(len(data)))
+
+	step := &PushStep{}
+	var ownership evidenceNamespaceOwnership
+	if err := step.stageAgentChangesOwned(sctx, &ownership); err != nil {
+		t.Fatal(err)
+	}
+	if err := step.stageInRepoEvidenceOwned(sctx, &ownership); err != nil {
+		t.Fatal(err)
+	}
+
+	logged, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logged)
+	if got := strings.Count(logText, "ls-remote"); got != 1 {
+		t.Fatalf("shared ownership used %d ls-remote calls, want 1:\n%s", got, logText)
+	}
+	if got := strings.Count(logText, "fetch --no-tags --no-write-fetch-head"); got != 1 {
+		t.Fatalf("shared ownership used %d ownership fetches, want 1:\n%s", got, logText)
 	}
 }
 

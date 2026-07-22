@@ -999,6 +999,53 @@ func TestBuildTestingSummaryForPR_RetryUsesPushedImageBlob(t *testing.T) {
 	}
 }
 
+func TestSanitizeEvidenceTempReferences_ScrubsSymlinkResolvedTempRoot(t *testing.T) {
+	base := t.TempDir()
+	realTemp := filepath.Join(base, "real-tmp")
+	linkTemp := filepath.Join(base, "link-tmp")
+	if err := os.MkdirAll(realTemp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realTemp, linkTemp); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", linkTemp)
+
+	root := testEvidenceRoot()
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Clean(resolvedRoot) == filepath.Clean(root) {
+		t.Fatal("expected TMPDIR symlink to yield distinct unresolved and resolved evidence roots")
+	}
+
+	unresolvedPath := filepath.Join(root, "run-secret", "checkout.png")
+	resolvedPath := filepath.Join(resolvedRoot, "run-secret", "checkout.png")
+	for _, path := range []string{unresolvedPath, resolvedPath, "file://" + filepath.ToSlash(resolvedPath)} {
+		got := sanitizeEvidenceTempReferences("Captured " + path)
+		for _, leaked := range []string{
+			filepath.ToSlash(root),
+			filepath.ToSlash(resolvedRoot),
+			"run-secret",
+			"checkout.png",
+			"file://",
+			"real-tmp",
+			"link-tmp",
+		} {
+			if strings.Contains(got, leaked) {
+				t.Fatalf("sanitized %q still leaked %q: %q", path, leaked, got)
+			}
+		}
+		if !strings.Contains(got, "[image evidence]") {
+			t.Fatalf("sanitized %q omitted placeholder: %q", path, got)
+		}
+	}
+}
+
 func TestBuildTestingSummaryForPR_ScrubsTempPathsFromSummaryAndCommands(t *testing.T) {
 	root := testEvidenceRoot()
 	imagePath := filepath.Join(root, "run-secret", "checkout.png")
