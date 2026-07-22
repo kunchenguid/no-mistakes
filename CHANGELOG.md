@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.40.3](https://github.com/kunchenguid/no-mistakes/compare/v1.40.2...v1.40.3) (2026-07-22)
+
+
+### Bug Fixes
+
+* **gate:** make missing origin errors actionable ([#534](https://github.com/kunchenguid/no-mistakes/issues/534)) ([003b123](https://github.com/kunchenguid/no-mistakes/commit/003b123096fc18a48b9ee940102e01a1860ab850))
+* **gate:** redact embedded credentials from stored upstream URLs and error surfaces ([#469](https://github.com/kunchenguid/no-mistakes/issues/469)) ([9111e12](https://github.com/kunchenguid/no-mistakes/commit/9111e12dc77240331e3178a983583af045e9d056))
+* **paths:** guard default daemon root under go test ([#451](https://github.com/kunchenguid/no-mistakes/issues/451)) ([ba61aaa](https://github.com/kunchenguid/no-mistakes/commit/ba61aaa5a6451ca2b0191a063777c93c3e208bd1))
+* **pipeline:** don't gate the test step on informational new-test-file findings ([#417](https://github.com/kunchenguid/no-mistakes/issues/417)) ([987bb66](https://github.com/kunchenguid/no-mistakes/commit/987bb668ff4b93076270cca9bbd7cdd107940c2e)), closes [#140](https://github.com/kunchenguid/no-mistakes/issues/140)
+* **pipeline:** keep local Test validation targeted ([#540](https://github.com/kunchenguid/no-mistakes/issues/540)) ([d4d3e58](https://github.com/kunchenguid/no-mistakes/commit/d4d3e58cc3a1eb0c5734f57f43b6dd4537d3f6c4))
+
 ## [1.40.2](https://github.com/kunchenguid/no-mistakes/compare/v1.40.1...v1.40.2) (2026-07-21)
 
 
