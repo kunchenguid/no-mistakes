@@ -1,0 +1,8 @@
+=== RUN   TestReapAll_NormalCompletion
+--- PASS: TestReapAll_NormalCompletion (5.07s)
+=== RUN   TestReapAll_CallerInterrupt
+--- PASS: TestReapAll_CallerInterrupt (4.97s)
+=== RUN   TestReapAll_Timeout
+--- PASS: TestReapAll_Timeout (4.99s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/e2edaemon	15.263s
