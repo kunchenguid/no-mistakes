@@ -170,6 +170,52 @@ func TestReviewStep_FixMode_FocusedVerificationContract(t *testing.T) {
 	}
 }
 
+func TestReviewStep_DurableFixAdequacyContract(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 review call, got %d", len(ag.calls))
+	}
+	prompt := ag.calls[0].Prompt
+
+	for _, want := range []string{
+		"claims a durable fix or explicitly authorized short-term containment",
+		"reconstruct the concrete failing sequence and required invariant",
+		"inspect relevant sibling paths and shared state transitions",
+		"whether the same authorized failure remains reachable",
+		"source evidence proves the failure remains reachable",
+		"earliest supported shared boundary that would make the invariant hold",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt missing durable-fix evidence requirement %q:\n%s", want, prompt)
+		}
+	}
+
+	for _, want := range []string{
+		"Do not infer a systemic flaw from code shape, duplication, or architectural preference alone.",
+		"Do not demand a shared abstraction or broad redesign without a concrete reachable path, violated invariant, or immediately competing semantic owner.",
+		"Do not block explicitly authorized honest containment merely because a later durable fix is possible.",
+		"Do not expand user scope or turn optional broader improvements into blockers.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt missing scope guardrail %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestReviewStep_FixMode_RequiresPreviousFindings(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
