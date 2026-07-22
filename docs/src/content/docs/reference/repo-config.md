@@ -12,7 +12,7 @@ The daemon also reads `document.instructions` and `disable_project_settings` onl
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, and `intent`) are still read from the pushed branch.
+Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, and other `test` fields except `test.evidence.store_in_repo`) are still read from the pushed branch.
 The `test.evidence.store_in_repo` consent field is read only from the trusted default branch.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
@@ -62,6 +62,7 @@ intent:
 test:
   evidence:
     store_in_repo: true
+    # Legacy; does not redirect image publication (see test.evidence below).
     dir: .no-mistakes/evidence
 ```
 
@@ -290,4 +291,4 @@ Validated images are copied under the fixed tool-owned `.no-mistakes/evidence/.g
 That namespace is reserved for manifest-verified evidence across runs; unrelated sibling files remain ordinary source changes.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 If the fixed namespace crosses a symlink, image publication is disabled for that run.
-Image format, size, naming, retention, and safe-fallback behavior are defined in the [global configuration reference](/no-mistakes/reference/global-config/#testevidence).
+Image format, size, naming, retention, retry rewrite, and safe-fallback behavior are defined in the [global configuration reference](/no-mistakes/reference/global-config/#testevidence).

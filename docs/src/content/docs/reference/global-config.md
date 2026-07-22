@@ -388,6 +388,9 @@ PNG and JPEG images are fully decoded, limited to 8,000,000 pixels and 10 MiB ea
 Images that exceed the bounded decoding limits are not published and fall back to a path-free explanation.
 Immediately before staging, the push step rejects symlinks and verifies each image's size, SHA-256 digest, and content-addressed filename against the recorded manifest.
 The generated namespace carries a tool-owned manifest; enabling publication fails safely if existing files are not covered by a valid manifest, and successful replacement removes only obsolete manifest-owned images.
+Retry staging stays idempotent for an unpushed local HEAD even after a normal rebase or force-push rewrite where the remote tip is no longer an ancestor of HEAD.
+Evidence namespace rewrite is refused only when HEAD is already contained in the pushed tip (equal or behind).
+When a post-hook leaves a corrupted generated evidence tree on a diverged already-published branch, push restages and rewrites the fixed generated namespace from preserved manifest identity and verified bytes, then re-verifies commit blobs before push.
 Images are published only when a credential-free HTTPS or Git SSH remote resolves to github.com or a GitHub Enterprise host configured in `gh`.
 PR rendering additionally requires the staged manifest hash to match the exact image blob at the pushed commit.
 Publication never removes source evidence or files outside the fixed generated namespace.

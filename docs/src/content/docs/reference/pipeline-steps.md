@@ -147,7 +147,7 @@ Pushes the validated branch to the configured push target.
 
 **Behavior:**
 - If `commands.format` is set, runs it first
-- Stages only validated image paths from the test evidence manifest when `test.evidence.store_in_repo` is enabled
+- Stages only validated image paths from the test evidence manifest when `test.evidence.store_in_repo` is enabled; ownership checks, idempotent retry rewrite for unpushed HEAD, corruption recovery, and post-commit blob verification for that namespace are defined in the [global configuration reference](/no-mistakes/reference/global-config/#testevidence)
 - Commits any uncommitted agent changes with message `no-mistakes: apply agent fixes`
 - Without fork routing, the push target is the credentialled upstream URL resolved from the worktree's `origin` remote at run time (the DB stores a redacted copy)
 - With GitHub fork routing, the push target is `repos.fork_url`
