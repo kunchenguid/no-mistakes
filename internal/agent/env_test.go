@@ -5,7 +5,28 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 )
+
+func TestGitSafeEnvAppliesRunOverlayBeforeGateEnvironment(t *testing.T) {
+	t.Setenv("GH_TOKEN", "ambient-token")
+	env := gitSafeEnvWithOverlay("/work/dir", runenv.Overlay{
+		Set:   map[string]string{"GH_CONFIG_DIR": "/profiles/personal"},
+		Unset: []string{"GH_TOKEN"},
+	})
+	resolved := resolveAgentEnv(env)
+
+	if _, ok := resolved["GH_TOKEN"]; ok {
+		t.Fatal("GH_TOKEN remained in agent environment")
+	}
+	if got := resolved["GH_CONFIG_DIR"]; got != "/profiles/personal" {
+		t.Fatalf("GH_CONFIG_DIR = %q, want /profiles/personal", got)
+	}
+	if got := resolved[GateRoleEnvVar]; got != "1" {
+		t.Fatalf("%s = %q, want 1", GateRoleEnvVar, got)
+	}
+}
 
 func resolveAgentEnv(env []string) map[string]string {
 	m := map[string]string{}

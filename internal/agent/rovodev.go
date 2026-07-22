@@ -17,8 +17,9 @@ import (
 type rovodevAgent struct {
 	bin       string
 	extraArgs []string
-	mu        sync.Mutex
-	server    *managedServer
+	subprocessContext
+	mu     sync.Mutex
+	server *managedServer
 }
 
 func (a *rovodevAgent) Name() string { return "rovodev" }
@@ -94,7 +95,7 @@ func (a *rovodevAgent) ensureServer(ctx context.Context, cwd string) (string, er
 		return "", fmt.Errorf("rovodev port: %w", err)
 	}
 	args := buildRovodevServeArgs(a.extraArgs, port)
-	srv, err := startServerWithPort(ctx, "rovodev", a.bin, args, cwd, "/healthcheck", port)
+	srv, err := startServerWithPort(ctx, "rovodev", a.bin, args, cwd, "/healthcheck", port, a.overlay())
 	if err != nil {
 		return "", fmt.Errorf("rovodev server: %w", err)
 	}

@@ -21,6 +21,7 @@ import (
 type codexAgent struct {
 	bin       string
 	extraArgs []string
+	subprocessContext
 	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
 	// buildArgs suppresses codex's project-level settings/instructions surface.
 	disableProjectSettings bool
@@ -93,7 +94,7 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
-	cmd.Env = gitSafeEnv(opts.CWD)
+	cmd.Env = a.gitSafeEnv(opts.CWD)
 	shellenv.ConfigureShellCommand(cmd)
 
 	var stderrBuf []byte
