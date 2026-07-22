@@ -82,7 +82,7 @@ func (inv *Inventory) reclaimStaleSlots(max int) {
 			continue
 		}
 		alive, err := processAlive(pid)
-		if err != nil || !alive {
+		if err == nil && !alive {
 			_ = os.Remove(path)
 		}
 	}

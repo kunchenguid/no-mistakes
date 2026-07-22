@@ -1,46 +1,18 @@
 package e2edaemon
 
 import (
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 )
-
-// processCommandLine returns the command line for pid, or "" if unknown.
-func processCommandLine(pid int) (string, error) {
-	if pid <= 0 {
-		return "", fmt.Errorf("invalid pid")
-	}
-	cmd := exec.Command(psPath(), "-p", strconv.Itoa(pid), "-ww", "-o", "command=")
-	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
-}
 
 func processAlive(pid int) (bool, error) {
 	if pid <= 0 {
 		return false, nil
 	}
-	// Prefer signal 0 on unix; fall back to ps on platforms without it.
 	return processAliveOS(pid)
-}
-
-func psPath() string {
-	if p, err := exec.LookPath("ps"); err == nil {
-		return p
-	}
-	if _, err := os.Stat("/bin/ps"); err == nil {
-		return "/bin/ps"
-	}
-	return "ps"
 }
 
 // MatchesDaemonRoot reports whether pid's argv is a no-mistakes daemon run
@@ -187,7 +159,7 @@ func splitWindowsTokens(command string) []string {
 func samePath(a, b string) bool {
 	a = filepath.Clean(a)
 	b = filepath.Clean(b)
-	if a == b {
+	if a == b || runtime.GOOS == "windows" && strings.EqualFold(a, b) {
 		return true
 	}
 	// Resolve symlinks when both sides exist (macOS /var vs /private/var).
@@ -197,36 +169,6 @@ func samePath(a, b string) bool {
 		return filepath.Clean(ra) == filepath.Clean(rb)
 	}
 	return false
-}
-
-// FindDaemonsForRoot lists live PIDs whose argv is daemon run --root nmHome.
-func FindDaemonsForRoot(nmHome string) ([]int, error) {
-	cmd := exec.Command(psPath(), "-ww", "-eo", "pid=,command=")
-	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("enumerate processes: %w", err)
-	}
-	var pids []int
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		sep := strings.IndexAny(line, " \t")
-		if sep < 0 {
-			continue
-		}
-		pid, err := strconv.Atoi(line[:sep])
-		if err != nil || pid <= 0 {
-			continue
-		}
-		command := strings.TrimSpace(line[sep:])
-		if commandMatchesDaemonRoot(command, nmHome) {
-			pids = append(pids, pid)
-		}
-	}
-	return pids, nil
 }
 
 // signalProcess sends sig to pid. Used only after MatchesDaemonRoot.

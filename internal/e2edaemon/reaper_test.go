@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -92,9 +91,7 @@ func startDetachedTestDaemon(t *testing.T, bin, nmHome string) int {
 	)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	if runtime.GOOS != "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	}
+	detachTestProcess(cmd)
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
 		t.Fatalf("start daemon: %v", err)
@@ -306,7 +303,7 @@ func TestReapAll_ChildSIGKILL_WrapperReaps(t *testing.T) {
 		t.Fatalf("helper never registered a live daemon:\n%s", output.String())
 	}
 
-	if err := cmd.Process.Signal(syscall.SIGKILL); err != nil {
+	if err := cmd.Process.Kill(); err != nil {
 		t.Fatalf("SIGKILL helper: %v", err)
 	}
 	_ = cmd.Wait()
@@ -357,7 +354,7 @@ func runSigkillChildHelper() {
 	)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	detachTestProcess(cmd)
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
