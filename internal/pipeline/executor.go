@@ -236,23 +236,43 @@ type recoveredGate struct {
 	lastRoundID string
 }
 
+type recoveredCIMonitor struct {
+	index      int
+	step       Step
+	stepResult *db.StepResult
+}
+
 func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
-	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince == nil {
-		return fmt.Errorf("run is not a recoverable parked run")
+	if run == nil || run.Status != types.RunRunning {
+		return fmt.Errorf("run is not recoverable")
 	}
-	_, err := (&Executor{db: database, steps: steps}).recoveredGate(run.ID)
+	executor := &Executor{db: database, steps: steps}
+	if run.AwaitingAgentSince != nil {
+		_, err := executor.recoveredGate(run.ID)
+		return err
+	}
+	if run.PRURL == nil || strings.TrimSpace(*run.PRURL) == "" {
+		return fmt.Errorf("active CI monitor has no PR URL")
+	}
+	if run.LastPushedSHA == nil || strings.TrimSpace(*run.LastPushedSHA) == "" || *run.LastPushedSHA != run.HeadSHA {
+		return fmt.Errorf("active CI monitor has no exact successful push binding")
+	}
+	_, err := executor.recoveredCIMonitor(run.ID)
 	return err
 }
 
-// Resume restores a run that was durably parked at an approval gate when the
-// daemon stopped. It only accepts a fully recorded gate and otherwise returns
-// an error so startup recovery can fail the run rather than guessing.
+// Resume restores either a run that was durably parked at an approval gate or
+// an active post-push CI monitor. Both paths require a complete durable record;
+// otherwise startup recovery fails the run rather than guessing.
 func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
 	if repo == nil {
 		return fmt.Errorf("recovered run has no repository")
 	}
 	if err := ValidateRecoveredRun(e.db, run, e.steps); err != nil {
 		return err
+	}
+	if run.AwaitingAgentSince == nil {
+		return e.resumeRecoveredCIMonitor(ctx, run, repo, workDir)
 	}
 	gate, err := e.recoveredGate(run.ID)
 	if err != nil {
@@ -401,6 +421,63 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	}
 }
 
+func (e *Executor) resumeRecoveredCIMonitor(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
+	monitor, err := e.recoveredCIMonitor(run.ID)
+	if err != nil {
+		return err
+	}
+	logDir := e.paths.RunLogDir(run.ID)
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return e.failRun(run, repo, fmt.Errorf("create log dir: %w", err))
+	}
+	e.initializeRunScopes(run.ID)
+	reconcileCtx := &StepContext{
+		Ctx:      ctx,
+		Run:      run,
+		Repo:     repo,
+		WorkDir:  workDir,
+		Config:   e.config,
+		DB:       e.db,
+		Agent:    e.agent,
+		Sessions: e.sessions,
+		Shared:   e.shared,
+		Log: func(message string) {
+			slog.Info("recovered active CI monitor reconciliation", "run_id", run.ID, "message", message)
+		},
+		LogChunk: func(string) {},
+		LogFile:  func(string) {},
+	}
+	reconciled, reconcileErr := e.reconcileApprovalGate(ctx, monitor.step, reconcileCtx)
+	if reconcileErr != nil {
+		return e.failRun(run, repo, fmt.Errorf("reconcile recovered active CI monitor: %w", reconcileErr), ctx)
+	}
+	if reconciled {
+		fresh, dbErr := e.db.GetRun(run.ID)
+		if dbErr != nil {
+			return e.failRun(run, repo, fmt.Errorf("read reconciled active CI monitor: %w", dbErr), ctx)
+		}
+		if fresh != nil && fresh.PRState != nil && *fresh.PRState == "merged" && fresh.CIReadyAt == nil {
+			return e.failRun(run, repo, fmt.Errorf("reconciled merged PR lacks durable checks-passed evidence"), ctx)
+		}
+		duration := recoveredStepDuration(monitor.stepResult)
+		if dbErr := e.db.CompleteStepWithStatus(monitor.stepResult.ID, types.StepStatusCompleted, recoveredExitCode(monitor.stepResult), duration, recoveredLogPath(monitor.stepResult)); dbErr != nil {
+			return e.failRun(run, repo, fmt.Errorf("complete reconciled active CI monitor: %w", dbErr), ctx)
+		}
+		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, monitor.step.Name(), string(types.StepStatusCompleted), "", "", "", &duration)
+		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, monitor.index+1)
+	}
+	skipRemaining, err := e.executeStep(ctx, monitor.step, monitor.stepResult, run, repo, workDir, logDir, stepExecutionState{
+		executionMS: recoveredStepDuration(monitor.stepResult),
+	})
+	if err != nil {
+		return e.failRun(run, repo, err, ctx)
+	}
+	if skipRemaining {
+		return e.skipRecoveredRemainder(run, repo, monitor.index+1)
+	}
+	return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, monitor.index+1)
+}
+
 func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 	results, err := e.db.GetStepsByRun(runID)
 	if err != nil {
@@ -458,6 +535,47 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 		return nil, fmt.Errorf("recovered run has no approval gate")
 	}
 	return gate, nil
+}
+
+func (e *Executor) recoveredCIMonitor(runID string) (*recoveredCIMonitor, error) {
+	results, err := e.db.GetStepsByRun(runID)
+	if err != nil {
+		return nil, fmt.Errorf("get recovered steps: %w", err)
+	}
+	if len(results) != len(e.steps) {
+		return nil, fmt.Errorf("recovered run has %d step records for %d steps", len(results), len(e.steps))
+	}
+
+	var monitor *recoveredCIMonitor
+	for index, result := range results {
+		if result.StepName != e.steps[index].Name() {
+			return nil, fmt.Errorf("recovered step %d is %q, want %q", index, result.StepName, e.steps[index].Name())
+		}
+		if result.Status == types.StepStatusRunning {
+			if monitor != nil || result.StepName != types.StepCI || result.StartedAt == nil || result.AgentPID != nil {
+				return nil, fmt.Errorf("recovered active CI monitor is incomplete")
+			}
+			monitor = &recoveredCIMonitor{
+				index:      index,
+				step:       e.steps[index],
+				stepResult: result,
+			}
+			continue
+		}
+		if monitor == nil {
+			if result.Status != types.StepStatusCompleted && result.Status != types.StepStatusSkipped {
+				return nil, fmt.Errorf("recovered step %s is %s before active CI monitor", result.StepName, result.Status)
+			}
+			continue
+		}
+		if result.Status != types.StepStatusPending {
+			return nil, fmt.Errorf("recovered step %s is %s after active CI monitor", result.StepName, result.Status)
+		}
+	}
+	if monitor == nil {
+		return nil, fmt.Errorf("recovered run has no active CI monitor")
+	}
+	return monitor, nil
 }
 
 func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, repo *db.Repo, workDir, logDir string, start int) error {

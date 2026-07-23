@@ -78,7 +78,7 @@ type recoveredRunPlan struct {
 	steps   []pipeline.Step
 }
 
-func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPlan {
+func (m *RunManager) recoverableRuns(ctx context.Context) []recoveredRunPlan {
 	runs, err := m.db.GetActiveRuns()
 	if err != nil {
 		slog.Error("failed to list active runs for recovery", "error", err)
@@ -105,8 +105,8 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 }
 
 func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*recoveredRunPlan, error) {
-	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince == nil || run.Branch == "" {
-		return nil, fmt.Errorf("run is not a parked running run")
+	if run == nil || run.Status != types.RunRunning || run.Branch == "" {
+		return nil, fmt.Errorf("run is not an active running run")
 	}
 	repo, err := m.db.GetRepo(run.RepoID)
 	if err != nil {

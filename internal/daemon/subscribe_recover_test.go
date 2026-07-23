@@ -561,6 +561,238 @@ func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testin
 	}
 }
 
+func TestRecoverOnStartup_ResumesActiveCIMonitorBeforeFailingRun(t *testing.T) {
+	for _, state := range []string{"MERGED", "CLOSED"} {
+		t.Run(state, func(t *testing.T) {
+			assertActiveCIMonitorRecoveryState(t, state)
+		})
+	}
+}
+
+func assertActiveCIMonitorRecoveryState(t *testing.T, state string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	mockClaude := writeMockClaude(t, t.TempDir())
+	if err := os.WriteFile(p.ConfigFile(), []byte("agent: claude\nagent_path_override:\n  claude: "+mockClaude+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	repo, headSHA := setupTestGitRepo(t, p, d, "resume-active-ci-monitor")
+	run, err := d.InsertRun(repo.ID, "feature", headSHA, headSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPRURL(run.ID, "https://github.com/test/repo/pull/42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPushBinding(run.ID, db.PushBinding{
+		HeadSHA:           headSHA,
+		TargetKind:        "upstream",
+		TargetFingerprint: "test-target",
+		Ref:               "refs/heads/feature",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunCIReady(run.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	prURL := "https://github.com/test/repo/pull/42"
+	run.PRURL = &prURL
+
+	worktree := p.WorktreeDir(repo.ID, run.ID)
+	if err := gitpkg.WorktreeAdd(context.Background(), p.RepoDir(repo.ID), worktree, headSHA); err != nil {
+		t.Fatal(err)
+	}
+	step, err := d.InsertStepResult(run.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.StartStep(step.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	ghDir, ghLog := writeMockGHState(t, t.TempDir(), state)
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunWithOptions(p, d, func() []pipeline.Step { return []pipeline.Step{&steps.CIStep{}} })
+	}()
+	defer func() {
+		client, dialErr := ipc.Dial(p.Socket())
+		if dialErr == nil {
+			_ = client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
+			_ = client.Close()
+		}
+		select {
+		case <-errCh:
+		case <-time.After(3 * time.Second):
+			t.Error("daemon did not stop")
+		}
+	}()
+
+	completed := waitForRunTerminalState(t, d, run.ID)
+	if completed.Status != types.RunCompleted {
+		t.Fatalf("active CI monitor recovery status = %s, want completed; error = %v", completed.Status, completed.Error)
+	}
+	wantPRState := strings.ToLower(state)
+	if completed.PRState == nil || *completed.PRState != wantPRState {
+		t.Fatalf("active CI monitor recovery PR state = %v, want %s", completed.PRState, wantPRState)
+	}
+	logData, err := os.ReadFile(ghLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "pr view 42") {
+		t.Fatalf("active CI monitor recovery did not read current PR state: %s", logData)
+	}
+}
+
+func TestRecoverOnStartup_ActiveCIMonitorFailsClosedWhenPRStateUnavailable(t *testing.T) {
+	tmpDir := t.TempDir()
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	mockClaude := writeMockClaude(t, t.TempDir())
+	if err := os.WriteFile(p.ConfigFile(), []byte("agent: claude\nagent_path_override:\n  claude: "+mockClaude+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	repo, headSHA := setupTestGitRepo(t, p, d, "unavailable-active-ci-monitor")
+	run, err := d.InsertRun(repo.ID, "feature", headSHA, headSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPRURL(run.ID, "https://github.com/test/repo/pull/42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPushBinding(run.ID, db.PushBinding{
+		HeadSHA:           headSHA,
+		TargetKind:        "upstream",
+		TargetFingerprint: "test-target",
+		Ref:               "refs/heads/feature",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prURL := "https://github.com/test/repo/pull/42"
+	run.PRURL = &prURL
+
+	worktree := p.WorktreeDir(repo.ID, run.ID)
+	if err := gitpkg.WorktreeAdd(context.Background(), p.RepoDir(repo.ID), worktree, headSHA); err != nil {
+		t.Fatal(err)
+	}
+	step, err := d.InsertStepResult(run.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.StartStep(step.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	ghDir := t.TempDir()
+	ghLog := filepath.Join(ghDir, "gh.log")
+	ghPath := filepath.Join(ghDir, "gh.bat")
+	ghScript := "@echo off\r\necho %*>>\"" + ghLog + "\"\r\nexit /b 1\r\n"
+	if err := os.WriteFile(ghPath, []byte(ghScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- RunWithOptions(p, d, func() []pipeline.Step { return []pipeline.Step{&steps.CIStep{}} })
+	}()
+	defer func() {
+		client, dialErr := ipc.Dial(p.Socket())
+		if dialErr == nil {
+			_ = client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
+			_ = client.Close()
+		}
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+			t.Error("daemon did not stop")
+		}
+	}()
+
+	failed := waitForRunTerminalState(t, d, run.ID)
+	if failed.Status != types.RunFailed {
+		t.Fatalf("unavailable active CI monitor recovery status = %s, want failed", failed.Status)
+	}
+	if failed.Error == nil || !strings.Contains(*failed.Error, "reconcile recovered active CI monitor") {
+		t.Fatalf("unavailable active CI monitor recovery error = %v", failed.Error)
+	}
+}
+
+func TestValidateRecoveredRun_ActiveCIMonitorRequiresExactPushedHead(t *testing.T) {
+	tmpDir := t.TempDir()
+	p := paths.WithRoot(tmpDir)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	repo, headSHA := setupTestGitRepo(t, p, d, "mismatched-active-ci-monitor")
+	run, err := d.InsertRun(repo.ID, "feature", headSHA, headSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPRURL(run.ID, "https://github.com/test/repo/pull/42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPushBinding(run.ID, db.PushBinding{
+		HeadSHA:           strings.Repeat("f", len(headSHA)),
+		TargetKind:        "upstream",
+		TargetFingerprint: "test-target",
+		Ref:               "refs/heads/feature",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	step, err := d.InsertStepResult(run.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.StartStep(step.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	current, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = pipeline.ValidateRecoveredRun(d, current, []pipeline.Step{&steps.CIStep{}})
+	if err == nil || !strings.Contains(err.Error(), "exact successful push binding") {
+		t.Fatalf("mismatched active CI monitor recovery validation error = %v", err)
+	}
+}
+
 func TestRecoverCleansUpOrphanedWorktrees(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
 	if err != nil {

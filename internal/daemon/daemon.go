@@ -329,13 +329,13 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 		"failed", gateStats.Failed,
 	)
 
-	parkedStarted := time.Now()
-	plans := mgr.recoverableParkedRuns(context.Background())
+	recoveryPlanStarted := time.Now()
+	plans := mgr.recoverableRuns(context.Background())
 	preserved := make(map[string]struct{}, len(plans))
 	for _, plan := range plans {
 		preserved[plan.run.ID] = struct{}{}
 	}
-	logStartupPhase("parked_runs", parkedStarted, "preserved", len(plans))
+	logStartupPhase("recoverable_runs", recoveryPlanStarted, "preserved", len(plans))
 
 	staleStarted := time.Now()
 	count, err := d.RecoverStaleRunsExcept("daemon crashed during execution", preserved)
