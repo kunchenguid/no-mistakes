@@ -35,6 +35,7 @@ var renameDaemonPIDFile = os.Rename
 // or the shutdown IPC method is called. This is called via the hidden
 // `no-mistakes daemon run` entrypoint used by managed and detached services.
 func Run() (retErr error) {
+	startupStarted := time.Now()
 	p, err := paths.New()
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)
@@ -42,6 +43,11 @@ func Run() (retErr error) {
 	if err := p.EnsureDirs(); err != nil {
 		return fmt.Errorf("create directories: %w", err)
 	}
+	lock, err := acquireSingletonLock(p)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
 	bootstrapCapture, err := startBootstrapCapture(p)
 	if err != nil {
 		return fmt.Errorf("capture daemon bootstrap log: %w", err)
@@ -81,7 +87,7 @@ func Run() (retErr error) {
 	defer d.Close()
 	logStartupPhase("database", databaseStarted)
 
-	return RunWithResources(p, d)
+	return runWithOptionsLocked(p, d, nil, startupStarted)
 }
 
 func prepareDaemonEnvironment() error {
@@ -155,15 +161,17 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 	// bound, and held for the rest of the process lifetime - otherwise a
 	// second daemon racing to start against the same root can mark another
 	// live daemon's active runs as crashed and delete worktrees out from
-	// under it (see AGENTS.md "Daemon Singleton Lock"). Covers both the
-	// `daemon start` -> detached child path and a direct `daemon run --root`
-	// invocation, since both funnel through here.
+	// under it (see AGENTS.md "Daemon Singleton Lock").
 	lock, err := acquireSingletonLock(p)
 	if err != nil {
 		return err
 	}
 	defer lock.Release()
 
+	return runWithOptionsLocked(p, d, stepFactory, startupStarted)
+}
+
+func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, startupStarted time.Time) error {
 	managedServerLog, err := logstore.Open(p.ManagedServerLog(), logstore.ManagedServerPolicy())
 	if err != nil {
 		return fmt.Errorf("open managed server log: %w", err)
