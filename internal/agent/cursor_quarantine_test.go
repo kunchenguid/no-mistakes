@@ -131,6 +131,68 @@ func TestBeginCursorInstructionQuarantine_RestoreAfterSimulatedFailure(t *testin
 	}
 }
 
+func TestCursorInstructionQuarantine_RestoreDisplacesRecreatedDestination(t *testing.T) {
+	cwd := t.TempDir()
+	ruleBody := []byte("parked-rules-canary\n")
+	agentsBody := []byte("parked-agents-canary\n")
+	rulesDir := filepath.Join(cwd, ".cursor", "rules")
+	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rulesDir, "gate.mdc"), ruleBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "AGENTS.md"), agentsBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	q, err := beginCursorInstructionQuarantine(cwd)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if len(q.items) != 2 {
+		t.Fatalf("expected two quarantined surfaces, got %d", len(q.items))
+	}
+
+	// Agent recreates instruction surfaces during the run.
+	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rulesDir, "agent.mdc"), []byte("recreated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("recreated-agents\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.Restore(); err != nil {
+		t.Fatalf("restore with recreated destinations: %v", err)
+	}
+	gotRule, err := os.ReadFile(filepath.Join(rulesDir, "gate.mdc"))
+	if err != nil || string(gotRule) != string(ruleBody) {
+		t.Fatalf("rules after restore = %q err=%v, want %q", gotRule, err, ruleBody)
+	}
+	if _, err := os.Stat(filepath.Join(rulesDir, "agent.mdc")); !os.IsNotExist(err) {
+		t.Fatalf("recreated agent.mdc must be displaced by parked rules, err=%v", err)
+	}
+	gotAgents, err := os.ReadFile(filepath.Join(cwd, "AGENTS.md"))
+	if err != nil || string(gotAgents) != string(agentsBody) {
+		t.Fatalf("AGENTS.md after restore = %q err=%v, want %q", gotAgents, err, agentsBody)
+	}
+	if len(q.items) != 0 || q.dir != "" {
+		t.Fatalf("successful restore must clear items and dir; items=%d dir=%q", len(q.items), q.dir)
+	}
+	entries, err := os.ReadDir(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), cursorQuarantineDirPrefix) {
+			t.Errorf("quarantine dir %q left behind after restore", e.Name())
+		}
+	}
+}
+
 func TestCursorInstructionQuarantine_RestoreKeepsParkedOnPartialFailure(t *testing.T) {
 	cwd := t.TempDir()
 	ruleBody := []byte("parked-rules-canary\n")
@@ -150,46 +212,25 @@ func TestCursorInstructionQuarantine_RestoreKeepsParkedOnPartialFailure(t *testi
 		t.Fatalf("expected one quarantined surface, got %d", len(q.items))
 	}
 	parked := q.items[0].parked
+	quarantineDir := q.dir
 
-	// Agent recreates .cursor/rules during the run; rename-back then fails (EEXIST for dirs).
-	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(rulesDir, "agent.mdc"), []byte("recreated\n"), 0o644); err != nil {
+	// Parked path gone: rename cannot succeed; items and quarantine dir must remain.
+	if err := os.RemoveAll(parked); err != nil {
 		t.Fatal(err)
 	}
 
 	err = q.Restore()
 	if err == nil {
-		t.Fatal("expected restore error when destination directory blocks rename")
+		t.Fatal("expected restore error when parked path is missing")
 	}
 	if len(q.items) == 0 {
 		t.Fatal("failed restore must retain parked items for retry")
 	}
-	got, readErr := os.ReadFile(filepath.Join(parked, "gate.mdc"))
-	if readErr != nil || string(got) != string(ruleBody) {
-		t.Fatalf("parked rules destroyed after failed restore: got %q err=%v", got, readErr)
-	}
 	if q.dir == "" {
 		t.Fatal("quarantine dir must remain until every item is restored")
 	}
-	if _, statErr := os.Stat(q.dir); statErr != nil {
+	if _, statErr := os.Stat(quarantineDir); statErr != nil {
 		t.Fatalf("quarantine dir removed while parked items remain: %v", statErr)
-	}
-
-	// Clear the blocking destination and retry — bytes must come back.
-	if err := os.RemoveAll(rulesDir); err != nil {
-		t.Fatal(err)
-	}
-	if err := q.Restore(); err != nil {
-		t.Fatalf("retry restore: %v", err)
-	}
-	got, readErr = os.ReadFile(filepath.Join(rulesDir, "gate.mdc"))
-	if readErr != nil || string(got) != string(ruleBody) {
-		t.Fatalf("rules after retry = %q err=%v, want %q", got, readErr, ruleBody)
-	}
-	if len(q.items) != 0 || q.dir != "" {
-		t.Fatalf("successful restore must clear items and dir; items=%d dir=%q", len(q.items), q.dir)
 	}
 }
 

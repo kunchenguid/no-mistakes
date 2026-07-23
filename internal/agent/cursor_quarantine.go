@@ -93,9 +93,11 @@ func sanitizeQuarantineName(rel string, isDir bool) string {
 
 // Restore renames every quarantined surface back to its original path and
 // removes the quarantine directory only after every parked item is restored.
-// It is safe to call multiple times and on a nil receiver. Partial restore
-// failures are reported; failed items stay parked and remain in q.items so a
-// later Restore can retry without losing the only remaining bytes.
+// Parked bytes are authoritative: a destination recreated during the run is
+// displaced before rename. It is safe to call multiple times and on a nil
+// receiver. Partial restore failures are reported; failed items stay parked
+// and remain in q.items so a later Restore can retry without losing the only
+// remaining bytes.
 func (q *cursorInstructionQuarantine) Restore() error {
 	if q == nil {
 		return nil
@@ -106,6 +108,12 @@ func (q *cursorInstructionQuarantine) Restore() error {
 		if err := os.MkdirAll(filepath.Dir(item.original), 0o755); err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("restore mkdir %s: %w", item.original, err)
+			}
+			continue
+		}
+		if err := displaceRestoreDestination(item.original); err != nil {
+			if firstErr == nil {
+				firstErr = err
 			}
 			continue
 		}
@@ -125,6 +133,22 @@ func (q *cursorInstructionQuarantine) Restore() error {
 			return fmt.Errorf("remove quarantine dir: %w", err)
 		}
 		q.dir = ""
+	}
+	return nil
+}
+
+// displaceRestoreDestination removes an existing restore target so the parked
+// rename can proceed. Missing destinations are a no-op.
+func displaceRestoreDestination(original string) error {
+	_, err := os.Lstat(original)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("restore stat %s: %w", original, err)
+	}
+	if err := os.RemoveAll(original); err != nil {
+		return fmt.Errorf("restore clear %s: %w", original, err)
 	}
 	return nil
 }
