@@ -109,11 +109,15 @@ func startTestDaemon(t *testing.T) (*paths.Paths, *db.DB) {
 		errCh <- RunWithResources(p, d)
 	}()
 
-	// Wait for socket to appear.
+	// Wait for socket to appear and become connectable.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(p.Socket()); err == nil {
-			break
+			client, err := ipc.Dial(p.Socket())
+			if err == nil {
+				client.Close()
+				break
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -126,7 +130,10 @@ func startTestDaemon(t *testing.T) (*paths.Paths, *db.DB) {
 			client.Close()
 		}
 		select {
-		case <-errCh:
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("daemon exited with error: %v", err)
+			}
 		case <-time.After(3 * time.Second):
 			t.Error("daemon did not stop within 3s")
 		}
@@ -219,7 +226,11 @@ func startTestDaemonWithSteps(t *testing.T, sf StepFactory) (*paths.Paths, *db.D
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(p.Socket()); err == nil {
-			break
+			client, err := ipc.Dial(p.Socket())
+			if err == nil {
+				client.Close()
+				break
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -231,7 +242,10 @@ func startTestDaemonWithSteps(t *testing.T, sf StepFactory) (*paths.Paths, *db.D
 			client.Close()
 		}
 		select {
-		case <-errCh:
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("daemon exited with error: %v", err)
+			}
 		case <-time.After(3 * time.Second):
 			t.Error("daemon did not stop within 3s")
 		}

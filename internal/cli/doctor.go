@@ -161,6 +161,7 @@ func newDoctorCmd() *cobra.Command {
 func doctorAgentChecks() []doctorAgentCheck {
 	agents := []doctorAgentCheck{
 		{"claude", []string{"claude"}},
+		{"gemini", []string{"gemini"}},
 		{"codex", []string{"codex"}},
 		{"rovodev", []string{"acli"}},
 		{"opencode", []string{"opencode"}},
