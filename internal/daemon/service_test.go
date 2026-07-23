@@ -1612,11 +1612,15 @@ func stubServiceRuntime(t *testing.T) func() {
 	oldCurrentUser := serviceCurrentUser
 	oldExecutablePath := serviceExecutablePath
 	oldCommandRunner := serviceCommandRunner
+	oldPrepareManagedDaemonLaunch := prepareManagedDaemonLaunch
 	oldInspectManagedDaemonService := inspectManagedDaemonService
 	oldHealthCheck := daemonHealthCheck
 	oldServiceBypass := serviceManagerBypassed
 	serviceManagerBypassed = func() bool { return false }
-	inspectManagedDaemonService = func(*paths.Paths) (managedServiceState, error) {
+	prepareManagedDaemonLaunch = func(*paths.Paths) (managedServiceLaunch, error) {
+		return managedServiceLaunch{}, nil
+	}
+	inspectManagedDaemonService = func(*paths.Paths, managedServiceLaunch) (managedServiceState, error) {
 		return managedServiceUnknown, nil
 	}
 	return func() {
@@ -1625,6 +1629,7 @@ func stubServiceRuntime(t *testing.T) func() {
 		serviceCurrentUser = oldCurrentUser
 		serviceExecutablePath = oldExecutablePath
 		serviceCommandRunner = oldCommandRunner
+		prepareManagedDaemonLaunch = oldPrepareManagedDaemonLaunch
 		inspectManagedDaemonService = oldInspectManagedDaemonService
 		daemonHealthCheck = oldHealthCheck
 		serviceManagerBypassed = oldServiceBypass

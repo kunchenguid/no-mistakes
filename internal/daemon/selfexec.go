@@ -348,10 +348,14 @@ func startDetachedDaemon(p *paths.Paths) error {
 		}
 		exitCh <- waitErr
 	}()
-	return waitForDaemonStartWithProcess(p, cmd.Process, exitCh, pid, startedAt)
+	return waitForDaemonStartWithProcess(p, cmd.Process, exitCh, pid, startedAt, managedServiceLaunch{})
 }
 
 func startManagedDaemon(p *paths.Paths) error {
+	launch, err := prepareManagedDaemonLaunch(p)
+	if err != nil {
+		return fmt.Errorf("inspect managed daemon before launch: %w", err)
+	}
 	if _, err := startManagedService(p); err != nil {
 		if alive, _ := daemonHealthCheck(p); alive {
 			return nil
@@ -359,14 +363,14 @@ func startManagedDaemon(p *paths.Paths) error {
 		return err
 	}
 	slog.Info("managed daemon launched")
-	return waitForDaemonStart(p, 0, time.Time{})
+	return waitForDaemonStartWithProcess(p, nil, nil, 0, time.Time{}, launch)
 }
 
 func waitForDaemonStart(p *paths.Paths, pid int, startedAt time.Time) error {
-	return waitForDaemonStartWithProcess(p, nil, nil, pid, startedAt)
+	return waitForDaemonStartWithProcess(p, nil, nil, pid, startedAt, managedServiceLaunch{})
 }
 
-func waitForDaemonStartWithProcess(p *paths.Paths, proc *os.Process, exitCh <-chan error, pid int, startedAt time.Time) error {
+func waitForDaemonStartWithProcess(p *paths.Paths, proc *os.Process, exitCh <-chan error, pid int, startedAt time.Time, launch managedServiceLaunch) error {
 	timeout := daemonStartTimeout()
 	pollInterval := daemonStartPollInterval()
 	deadline := time.Now().Add(timeout)
@@ -392,7 +396,7 @@ func waitForDaemonStartWithProcess(p *paths.Paths, proc *os.Process, exitCh <-ch
 			default:
 			}
 		} else if pid == 0 {
-			if state, err := inspectManagedDaemonService(p); err == nil && state == managedServiceExited {
+			if state, err := inspectManagedDaemonService(p, launch); err == nil && state == managedServiceExited {
 				return fmt.Errorf("managed daemon exited before readiness")
 			}
 			// Managed services have no os.Process handle. The daemon publishes its

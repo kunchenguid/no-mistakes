@@ -39,9 +39,14 @@ var serviceCurrentUser = user.Current
 var serviceExecutablePath = os.Executable
 var serviceCommandRunner = runServiceCommand
 var serviceManagerBypassed = defaultServiceManagerBypassed
+var prepareManagedDaemonLaunch = managedDaemonLaunch
 var inspectManagedDaemonService = managedDaemonServiceState
 
 type managedServiceState int
+
+type managedServiceLaunch struct {
+	windowsRunGeneration string
+}
 
 const (
 	managedServiceUnknown managedServiceState = iota
@@ -49,7 +54,18 @@ const (
 	managedServiceExited
 )
 
-func managedDaemonServiceState(p *paths.Paths) (managedServiceState, error) {
+func managedDaemonLaunch(p *paths.Paths) (managedServiceLaunch, error) {
+	if serviceManagerBypassed() || runtimeGOOS != "windows" {
+		return managedServiceLaunch{}, nil
+	}
+	observation, err := inspectWindowsManagedDaemon(p)
+	if err != nil {
+		return managedServiceLaunch{}, err
+	}
+	return managedServiceLaunch{windowsRunGeneration: observation.runGeneration}, nil
+}
+
+func managedDaemonServiceState(p *paths.Paths, launch managedServiceLaunch) (managedServiceState, error) {
 	if serviceManagerBypassed() {
 		return managedServiceUnknown, nil
 	}
@@ -94,7 +110,7 @@ func managedDaemonServiceState(p *paths.Paths) (managedServiceState, error) {
 			return managedServiceExited, nil
 		}
 	case "windows":
-		return windowsManagedDaemonState(p)
+		return windowsManagedDaemonState(p, launch)
 	}
 	return managedServiceUnknown, nil
 }

@@ -112,7 +112,7 @@ func TestWaitForManagedDaemonStartDetectsExitAfterPIDFileRemoval(t *testing.T) {
 
 	oldInspect := inspectManagedDaemonService
 	checks := 0
-	inspectManagedDaemonService = func(*paths.Paths) (managedServiceState, error) {
+	inspectManagedDaemonService = func(*paths.Paths, managedServiceLaunch) (managedServiceState, error) {
 		checks++
 		if checks < 3 {
 			return managedServiceRunning, nil

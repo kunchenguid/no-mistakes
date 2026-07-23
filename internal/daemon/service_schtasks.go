@@ -59,9 +59,14 @@ func stopWindowsTask(p *paths.Paths) error {
 	return nil
 }
 
-func windowsManagedDaemonState(p *paths.Paths) (managedServiceState, error) {
+type windowsManagedDaemonObservation struct {
+	state         int
+	runGeneration string
+}
+
+func inspectWindowsManagedDaemon(p *paths.Paths) (windowsManagedDaemonObservation, error) {
 	taskName := strings.ReplaceAll(windowsTaskName(p), "'", "''")
-	command := "$task=Get-ScheduledTask -TaskName '" + taskName + "';[int]$task.State"
+	command := "$task=Get-ScheduledTask -TaskName '" + taskName + "';$info=Get-ScheduledTaskInfo -TaskName '" + taskName + "';Write-Output \"$([int]$task.State)|$($info.LastRunTime.Ticks)|$($info.LastTaskResult)\""
 	output, err := serviceCommandRunner(
 		"powershell.exe",
 		"-NoLogo",
@@ -71,17 +76,40 @@ func windowsManagedDaemonState(p *paths.Paths) (managedServiceState, error) {
 		command,
 	)
 	if err != nil {
+		return windowsManagedDaemonObservation{}, err
+	}
+	fields := strings.Split(strings.TrimSpace(string(output)), "|")
+	if len(fields) != 3 {
+		return windowsManagedDaemonObservation{}, fmt.Errorf("parse scheduled task state: unexpected field count %d", len(fields))
+	}
+	state, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return windowsManagedDaemonObservation{}, fmt.Errorf("parse scheduled task state: %w", err)
+	}
+	if _, err := strconv.ParseInt(fields[1], 10, 64); err != nil {
+		return windowsManagedDaemonObservation{}, fmt.Errorf("parse scheduled task last run: %w", err)
+	}
+	if _, err := strconv.ParseUint(fields[2], 10, 32); err != nil {
+		return windowsManagedDaemonObservation{}, fmt.Errorf("parse scheduled task result: %w", err)
+	}
+	return windowsManagedDaemonObservation{state: state, runGeneration: fields[1]}, nil
+}
+
+func windowsManagedDaemonState(p *paths.Paths, launch managedServiceLaunch) (managedServiceState, error) {
+	observation, err := inspectWindowsManagedDaemon(p)
+	if err != nil {
 		return managedServiceUnknown, err
 	}
-	state, err := strconv.Atoi(strings.TrimSpace(string(output)))
-	if err != nil {
-		return managedServiceUnknown, fmt.Errorf("parse scheduled task state: %w", err)
-	}
-	switch state {
+	switch observation.state {
 	case 4:
 		return managedServiceRunning, nil
-	case 1, 3:
+	case 1:
 		return managedServiceExited, nil
+	case 3:
+		if launch.windowsRunGeneration != "" && observation.runGeneration != launch.windowsRunGeneration {
+			return managedServiceExited, nil
+		}
+		return managedServiceUnknown, nil
 	default:
 		return managedServiceUnknown, nil
 	}
