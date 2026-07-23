@@ -1,0 +1,12 @@
+2026/07/23 10:41:30 INFO daemon environment ready path_entries=24 path=/opt/homebrew/Cellar/go/1.26.2/libexec/bin:/Users/kunchen/.codex/tmp/arg0/codex-arg0GZKToy:/Users/kunchen/.nvm/versions/node/v24.13.1/bin:/Users/kunchen/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/Users/kunchen/google-cloud-sdk/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/etc/profiles/per-user/kunchen/bin:/run/current-system/sw/bin:/Users/kunchen/.local/bin:/Users/kunchen/go/bin:/Library/Frameworks/Python.framework/Versions/3.13/bin:/Users/kunchen/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/libexec/mosh-signed:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/kunchen/.cargo/bin:/Users/kunchen/bin:/usr/local/sbin
+2026/07/23 10:41:30 INFO daemon startup phase complete phase=environment duration_ms=124
+time=2026-07-23T10:41:30.661-07:00 level=INFO msg="daemon startup phase complete" phase=database duration_ms=1
+time=2026-07-23T10:41:30.673-07:00 level=INFO msg="daemon process launched" pid=64122
+time=2026-07-23T10:41:30.674-07:00 level=INFO msg="daemon startup phase complete" phase=orphan_servers duration_ms=0
+time=2026-07-23T10:41:30.674-07:00 level=INFO msg="daemon startup phase complete" phase=gate_migration duration_ms=0 gate_count=0 current=0 migrated=0 rejected=0 failed=0
+time=2026-07-23T10:41:30.674-07:00 level=INFO msg="daemon startup phase complete" phase=parked_runs duration_ms=0 preserved=0
+time=2026-07-23T10:41:30.674-07:00 level=INFO msg="daemon startup phase complete" phase=stale_runs duration_ms=0 recovered=0
+time=2026-07-23T10:41:30.674-07:00 level=INFO msg="daemon startup phase complete" phase=worktree_cleanup duration_ms=0
+time=2026-07-23T10:41:30.675-07:00 level=INFO msg="daemon startup phase complete" phase=ipc_bind duration_ms=0
+time=2026-07-23T10:41:30.678-07:00 level=INFO msg="daemon startup phase complete" phase=ipc_health duration_ms=2
+time=2026-07-23T10:41:30.678-07:00 level=INFO msg="daemon ready" socket=/var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/nm-startup-0-3807259963/socket pid=64122 startup_ms=16

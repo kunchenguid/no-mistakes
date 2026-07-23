@@ -785,6 +785,28 @@ func TestStartStopsManagedServiceBeforeDetachedFallbackAfterTimeout(t *testing.T
 		return checks > 2, nil
 	}
 
+	oldListProcesses := daemonListDaemonProcesses
+	listChecks := 0
+	daemonListDaemonProcesses = func() ([]daemonProcessInfo, error) {
+		if !managedStopped {
+			return nil, nil
+		}
+		listChecks++
+		if listChecks < 3 {
+			return []daemonProcessInfo{{PID: 4242, Root: p.Root()}}, nil
+		}
+		return nil, nil
+	}
+	t.Cleanup(func() { daemonListDaemonProcesses = oldListProcesses })
+	oldStartTime := daemonProcessStartTime
+	daemonProcessStartTime = func(pid int) (time.Time, error) {
+		if listChecks < 3 {
+			t.Fatal("detached fallback launched before managed child exit was confirmed")
+		}
+		return oldStartTime(pid)
+	}
+	t.Cleanup(func() { daemonProcessStartTime = oldStartTime })
+
 	if err := Start(p); err != nil {
 		t.Fatalf("Start should fall back to detached mode after managed timeout: %v", err)
 	}
@@ -1590,15 +1612,25 @@ func stubServiceRuntime(t *testing.T) func() {
 	oldCurrentUser := serviceCurrentUser
 	oldExecutablePath := serviceExecutablePath
 	oldCommandRunner := serviceCommandRunner
+	oldPrepareManagedDaemonLaunch := prepareManagedDaemonLaunch
+	oldInspectManagedDaemonService := inspectManagedDaemonService
 	oldHealthCheck := daemonHealthCheck
 	oldServiceBypass := serviceManagerBypassed
 	serviceManagerBypassed = func() bool { return false }
+	prepareManagedDaemonLaunch = func(*paths.Paths) (managedServiceLaunch, error) {
+		return managedServiceLaunch{}, nil
+	}
+	inspectManagedDaemonService = func(*paths.Paths, managedServiceLaunch) (managedServiceState, error) {
+		return managedServiceUnknown, nil
+	}
 	return func() {
 		runtimeGOOS = oldGOOS
 		serviceUserHomeDir = oldUserHomeDir
 		serviceCurrentUser = oldCurrentUser
 		serviceExecutablePath = oldExecutablePath
 		serviceCommandRunner = oldCommandRunner
+		prepareManagedDaemonLaunch = oldPrepareManagedDaemonLaunch
+		inspectManagedDaemonService = oldInspectManagedDaemonService
 		daemonHealthCheck = oldHealthCheck
 		serviceManagerBypassed = oldServiceBypass
 	}

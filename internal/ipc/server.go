@@ -56,21 +56,47 @@ func (s *Server) HandleStream(method string, fn StreamHandlerFunc) {
 	s.streamHandlers[method] = fn
 }
 
-// Serve starts listening on the given IPC endpoint path.
-// It blocks until Close is called, then returns nil.
-func (s *Server) Serve(socketPath string) error {
+// Listen binds the IPC endpoint without starting the accept loop. It lets the
+// daemon measure bind separately, then start serving and prove real health
+// before announcing readiness.
+func (s *Server) Listen(socketPath string) error {
 	ln, err := listen(socketPath)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
+	if s.listener != nil {
+		s.mu.Unlock()
+		_ = ln.Close()
+		return errors.New("IPC server already listening")
+	}
 	s.listener = ln
 	s.mu.Unlock()
 
 	go func() {
 		<-s.done
-		ln.Close()
+		_ = ln.Close()
 	}()
+	return nil
+}
+
+// Serve starts listening on the given IPC endpoint path. It blocks until
+// Close is called, then returns nil.
+func (s *Server) Serve(socketPath string) error {
+	if err := s.Listen(socketPath); err != nil {
+		return err
+	}
+	return s.ServeReady()
+}
+
+// ServeReady accepts requests from an endpoint already bound by Listen.
+func (s *Server) ServeReady() error {
+	s.mu.RLock()
+	ln := s.listener
+	s.mu.RUnlock()
+	if ln == nil {
+		return errors.New("IPC server is not listening")
+	}
 
 	for {
 		conn, err := ln.Accept()

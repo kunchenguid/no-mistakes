@@ -39,6 +39,81 @@ var serviceCurrentUser = user.Current
 var serviceExecutablePath = os.Executable
 var serviceCommandRunner = runServiceCommand
 var serviceManagerBypassed = defaultServiceManagerBypassed
+var prepareManagedDaemonLaunch = managedDaemonLaunch
+var inspectManagedDaemonService = managedDaemonServiceState
+
+type managedServiceState int
+
+type managedServiceLaunch struct {
+	windowsRunGeneration string
+}
+
+const (
+	managedServiceUnknown managedServiceState = iota
+	managedServiceRunning
+	managedServiceExited
+)
+
+func managedDaemonLaunch(p *paths.Paths) (managedServiceLaunch, error) {
+	if serviceManagerBypassed() || runtimeGOOS != "windows" {
+		return managedServiceLaunch{}, nil
+	}
+	observation, err := inspectWindowsManagedDaemon(p)
+	if err != nil {
+		return managedServiceLaunch{}, err
+	}
+	return managedServiceLaunch{windowsRunGeneration: observation.runGeneration}, nil
+}
+
+func managedDaemonServiceState(p *paths.Paths, launch managedServiceLaunch) (managedServiceState, error) {
+	if serviceManagerBypassed() {
+		return managedServiceUnknown, nil
+	}
+	switch runtimeGOOS {
+	case "darwin":
+		domain, err := launchdDomainTarget()
+		if err != nil {
+			return managedServiceUnknown, err
+		}
+		output, err := serviceCommandRunner("launchctl", "print", domain+"/"+launchdServiceLabel(p))
+		if err != nil {
+			return managedServiceExited, nil
+		}
+		text := strings.ToLower(string(output))
+		if strings.Contains(text, "state = running") || strings.Contains(text, "pid =") {
+			return managedServiceRunning, nil
+		}
+		if strings.Contains(text, "last exit code =") || strings.Contains(text, "state = exited") {
+			return managedServiceExited, nil
+		}
+	case "linux":
+		output, err := serviceCommandRunner(
+			"systemctl", "--user", "show", systemdServiceName(p),
+			"--property=ActiveState", "--property=SubState", "--property=MainPID",
+			"--property=ExecMainCode", "--property=ExecMainStatus", "--property=Result",
+		)
+		if err != nil {
+			return managedServiceUnknown, err
+		}
+		values := make(map[string]string)
+		for _, line := range strings.Split(string(output), "\n") {
+			key, value, ok := strings.Cut(line, "=")
+			if ok {
+				values[key] = value
+			}
+		}
+		if values["ActiveState"] == "active" && values["MainPID"] != "" && values["MainPID"] != "0" {
+			return managedServiceRunning, nil
+		}
+		if values["ActiveState"] == "failed" || values["ActiveState"] == "inactive" ||
+			values["Result"] == "exit-code" || values["Result"] == "signal" {
+			return managedServiceExited, nil
+		}
+	case "windows":
+		return windowsManagedDaemonState(p, launch)
+	}
+	return managedServiceUnknown, nil
+}
 
 // proxyEnvKeys are the proxy-related variables forwarded into the managed
 // daemon's environment. A daemon started by systemd/launchd inherits only a

@@ -123,3 +123,47 @@ func TestInstallWindowsTaskKeepsLegacyTaskOnCreateFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowsManagedDaemonStateUsesRunGeneration(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "windows"
+
+	var command string
+	output := "3|100|0\r\n"
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command = name + " " + strings.Join(args, " ")
+		return []byte(output), nil
+	}
+
+	launch, err := managedDaemonLaunch(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launch.windowsRunGeneration != "100" {
+		t.Fatalf("launch generation = %q, want 100", launch.windowsRunGeneration)
+	}
+	state, err := managedDaemonServiceState(p, launch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != managedServiceUnknown {
+		t.Fatalf("unchanged Ready generation state = %v, want unknown", state)
+	}
+
+	output = "3|101|0\r\n"
+	state, err = managedDaemonServiceState(p, launch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != managedServiceExited {
+		t.Fatalf("completed new generation state = %v, want exited", state)
+	}
+	if !strings.HasPrefix(command, "powershell.exe -NoLogo -NoProfile -NonInteractive -Command ") {
+		t.Fatalf("unexpected task state command: %q", command)
+	}
+	if strings.Contains(command, "/FO LIST") {
+		t.Fatalf("task state command uses localized schtasks output: %q", command)
+	}
+}
