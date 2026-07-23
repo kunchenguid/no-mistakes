@@ -189,7 +189,7 @@ func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepCo
 	if workingPath == "" {
 		return nil
 	}
-	localTip, err := git.Run(ctx, workingPath, "rev-parse", "--verify", "--quiet", "refs/heads/"+defaultBranch+"^0")
+	localTip, err := git.Run(ctx, workingPath, "rev-parse", "--verify", "--quiet", "refs/heads/"+defaultBranch+"^{commit}")
 	if err != nil {
 		return nil
 	}
@@ -198,12 +198,12 @@ func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepCo
 		return nil
 	}
 	remoteRef := "origin/" + defaultBranch
-	if _, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", remoteRef+"^0"); err != nil {
+	if _, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", remoteRef+"^{commit}"); err != nil {
 		return nil
 	}
 	// The local default tip must be present in the gate's object store (it is
 	// when the branch carries it as an ancestor) for the reachability checks.
-	if _, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", localTip+"^0"); err != nil {
+	if _, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", localTip+"^{commit}"); err != nil {
 		return nil
 	}
 	// Already pushed (local default not ahead of remote) -> nothing bundled.

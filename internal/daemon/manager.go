@@ -551,7 +551,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 	}
 
 	gateDir := m.paths.RepoDir(repo.ID)
-	headSHA, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^0")
+	headSHA, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("resolve gate head: %w", err)
 	}

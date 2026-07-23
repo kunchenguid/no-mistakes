@@ -133,7 +133,7 @@ func remoteCommitsNotIncorporated(gitRun gitRunner, pushURL, ref, newHeadSHA, re
 	}
 	args := []string{"rev-list", "--cherry-pick", "--right-only", newHeadSHA + "..." + remoteSHA}
 	if baseSHA != "" && !git.IsZeroSHA(baseSHA) {
-		if _, err := gitRun("rev-parse", "--verify", "--quiet", baseSHA+"^0"); err == nil {
+		if _, err := gitRun("rev-parse", "--verify", "--quiet", baseSHA+"^{commit}"); err == nil {
 			args = append(args, "^"+baseSHA)
 		}
 	}

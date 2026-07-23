@@ -78,3 +78,23 @@ func TestGitSafeEnv_GateMarkerWinsOverAmbient(t *testing.T) {
 		t.Errorf("%s = %q, want \"1\" (managed stamp must win over ambient)", GateRoleEnvVar, resolved[GateRoleEnvVar])
 	}
 }
+
+// TestGitSafeEnv_KeepsCygwinGlobbing is the other half of the issue #427 scoping
+// decision: the noglob workaround that git.Run applies to its own git
+// subprocesses must NOT leak into the agent env. Agents shell out to arbitrary
+// Cygwin/MSYS2 tools that rely on argument globbing, so gitSafeEnv must leave
+// CYGWIN/MSYS untouched. noglob is scoped to git.gitSpawnEnv, never here.
+func TestGitSafeEnv_KeepsCygwinGlobbing(t *testing.T) {
+	t.Setenv("CYGWIN", "")
+	t.Setenv("MSYS", "")
+
+	resolved := resolveAgentEnv(gitSafeEnv("/work/dir"))
+
+	for _, key := range []string{"CYGWIN", "MSYS"} {
+		for _, field := range strings.Fields(resolved[key]) {
+			if field == "noglob" {
+				t.Errorf("%s = %q, want no \"noglob\" in the agent env", key, resolved[key])
+			}
+		}
+	}
+}

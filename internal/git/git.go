@@ -39,7 +39,7 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = NonInteractiveEnv(dir)
+	cmd.Env = gitSpawnEnv(dir)
 	winproc.Harden(cmd)
 	out, err := cmd.Output()
 	if err != nil {
@@ -528,15 +528,14 @@ func WorktreeRemove(ctx context.Context, repoDir, wtPath string) error {
 }
 
 // ResolveRef returns the commit SHA that ref resolves to via
-// `git rev-parse --verify <ref>^0`. Use it to pin an exact commit
+// `git rev-parse --verify <ref>^{commit}`. Use it to pin an exact commit
 // (e.g. the default-branch tip just fetched) before reading a file from it,
 // so a shared-ref worktree cannot serve a stale remote-tracking ref. Returns
-// an error if the ref does not resolve to a commit. The `^0` peel is the
-// brace-free equivalent of `^{commit}`: it dereferences an annotated tag to
-// its commit and errors on a non-commit, but avoids the `{ }` that a
-// Cygwin/MSYS2 git would strip from the argument on Windows (issue #427).
+// an error if the ref does not resolve to a commit. The `^{commit}` peel
+// dereferences an annotated tag to its commit; its `{ }` are safe on Windows
+// because Run spawns git with CYGWIN/MSYS=noglob (see gitSpawnEnv, issue #427).
 func ResolveRef(ctx context.Context, dir, ref string) (string, error) {
-	out, err := Run(ctx, dir, "rev-parse", "--verify", "--quiet", ref+"^0")
+	out, err := Run(ctx, dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("resolve ref %s: %w", ref, err)
 	}
@@ -547,8 +546,8 @@ func ResolveRef(ctx context.Context, dir, ref string) (string, error) {
 // `git rev-parse --verify --quiet` so a missing ref is a clean (nil, false)
 // result rather than a loud error.
 func RefExists(ctx context.Context, dir, ref string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", "--quiet", ref+"^0")
-	cmd.Env = NonInteractiveEnv(dir)
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	cmd.Env = gitSpawnEnv(dir)
 	winproc.Harden(cmd)
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError

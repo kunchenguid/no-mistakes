@@ -119,7 +119,7 @@ func lastFetchedBranchTip(ctx context.Context, workDir, branch string, fork bool
 	if fork {
 		trackingRef = forkBranchTrackingRef(branch)
 	}
-	sha, err := git.Run(ctx, workDir, "rev-parse", "--verify", "--quiet", trackingRef+"^0")
+	sha, err := git.Run(ctx, workDir, "rev-parse", "--verify", "--quiet", trackingRef+"^{commit}")
 	if err != nil {
 		return ""
 	}
