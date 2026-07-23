@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.41.0](https://github.com/kunchenguid/no-mistakes/compare/v1.40.3...v1.41.0) (2026-07-22)
+
+
+### Features
+
+* **pipeline:** assess durable bug fixes ([#550](https://github.com/kunchenguid/no-mistakes/issues/550)) ([92752c1](https://github.com/kunchenguid/no-mistakes/commit/92752c120c0cd071ce4ef04cf37caab7190e1049))
+
+
+### Bug Fixes
+
+* **e2e:** reclaim temporary daemons after interrupted runs ([#543](https://github.com/kunchenguid/no-mistakes/issues/543)) ([3d4691a](https://github.com/kunchenguid/no-mistakes/commit/3d4691aedba97d9f877c073e3e652a8fde69d574))
+
 ## [1.40.3](https://github.com/kunchenguid/no-mistakes/compare/v1.40.2...v1.40.3) (2026-07-22)
 
 
