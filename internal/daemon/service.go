@@ -94,17 +94,7 @@ func managedDaemonServiceState(p *paths.Paths) (managedServiceState, error) {
 			return managedServiceExited, nil
 		}
 	case "windows":
-		output, err := serviceCommandRunner("schtasks", "/Query", "/TN", windowsTaskName(p), "/FO", "LIST", "/V")
-		if err != nil {
-			return managedServiceExited, nil
-		}
-		text := strings.ToLower(string(output))
-		if strings.Contains(text, "status:") && strings.Contains(text, "running") {
-			return managedServiceRunning, nil
-		}
-		if strings.Contains(text, "status:") && (strings.Contains(text, "ready") || strings.Contains(text, "could not start")) {
-			return managedServiceExited, nil
-		}
+		return windowsManagedDaemonState(p)
 	}
 	return managedServiceUnknown, nil
 }

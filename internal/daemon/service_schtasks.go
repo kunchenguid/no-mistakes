@@ -59,6 +59,34 @@ func stopWindowsTask(p *paths.Paths) error {
 	return nil
 }
 
+func windowsManagedDaemonState(p *paths.Paths) (managedServiceState, error) {
+	taskName := strings.ReplaceAll(windowsTaskName(p), "'", "''")
+	command := "$task=Get-ScheduledTask -TaskName '" + taskName + "';[int]$task.State"
+	output, err := serviceCommandRunner(
+		"powershell.exe",
+		"-NoLogo",
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		command,
+	)
+	if err != nil {
+		return managedServiceUnknown, err
+	}
+	state, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		return managedServiceUnknown, fmt.Errorf("parse scheduled task state: %w", err)
+	}
+	switch state {
+	case 4:
+		return managedServiceRunning, nil
+	case 1, 3:
+		return managedServiceExited, nil
+	default:
+		return managedServiceUnknown, nil
+	}
+}
+
 func buildWindowsTaskCommand(exe, root string) string {
 	args := []string{quoteWindowsTaskArg(exe), "daemon", "run", "--root", quoteWindowsTaskArg(root)}
 	return strings.Join(args, " ")

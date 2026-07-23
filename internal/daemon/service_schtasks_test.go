@@ -123,3 +123,30 @@ func TestInstallWindowsTaskKeepsLegacyTaskOnCreateFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowsManagedDaemonStateUsesNumericTaskState(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	cleanup := stubServiceRuntime(t)
+	defer cleanup()
+	runtimeGOOS = "windows"
+
+	var command string
+	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command = name + " " + strings.Join(args, " ")
+		return []byte("3\r\n"), nil
+	}
+
+	state, err := managedDaemonServiceState(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != managedServiceExited {
+		t.Fatalf("managed service state = %v, want exited", state)
+	}
+	if !strings.HasPrefix(command, "powershell.exe -NoLogo -NoProfile -NonInteractive -Command ") {
+		t.Fatalf("unexpected task state command: %q", command)
+	}
+	if strings.Contains(command, "/FO LIST") {
+		t.Fatalf("task state command uses localized schtasks output: %q", command)
+	}
+}
