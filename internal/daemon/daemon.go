@@ -117,9 +117,9 @@ func prepareDaemonEnvironment() error {
 
 // logDaemonPathSummary records the effective PATH at daemon startup so that
 // "agent binary not in PATH" failures (see #143) can be diagnosed from the
-// daemon log alone. We emit it via slog.Default because this runs before
-// initLogger; the default handler still writes to stderr, which launchd and
-// systemd redirect into the daemon log file.
+// lifecycle log alone. The daemon installs its lifecycle handler at info
+// before environment preparation, then reapplies the configured level after
+// loading global config, so this startup diagnostic is always retained.
 func logDaemonPathSummary() {
 	path := os.Getenv("PATH")
 	entries := 0
