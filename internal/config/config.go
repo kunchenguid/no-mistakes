@@ -320,7 +320,7 @@ const defaultConfigYAML = `# no-mistakes global configuration
 
 # Agent to use for code generation. This may also be an ordered fallback list,
 # for example: agent: [codex, claude]
-# Options: auto, claude, codex, rovodev, opencode, pi, copilot, cursor, acp:<target>
+# Options: auto, claude, gemini, codex, rovodev, opencode, pi, copilot, cursor, acp:<target>
 # "auto" detects the first available native agent or ACP alias on your system
 # "cursor" is an ACP alias for acp:cursor using cursor-agent acp via acpx
 # "acp:cursor" also uses that Cursor default command
@@ -419,6 +419,7 @@ intent:
 // defaultBinary maps agent names to their default binary names.
 var defaultBinary = map[types.AgentName]string{
 	types.AgentClaude:   "claude",
+	types.AgentGemini:   "gemini",
 	types.AgentCodex:    "codex",
 	types.AgentRovoDev:  "acli",
 	types.AgentOpenCode: "opencode",
@@ -429,6 +430,7 @@ var defaultBinary = map[types.AgentName]string{
 // nativeAgentProbeOrder is the priority order for auto-detecting native agents.
 var nativeAgentProbeOrder = []types.AgentName{
 	types.AgentClaude,
+	types.AgentGemini,
 	types.AgentCodex,
 	types.AgentOpenCode,
 	types.AgentRovoDev,
@@ -619,7 +621,7 @@ func (c *Config) resolveConfiguredAgent(ctx context.Context, name types.AgentNam
 		return resolved, err == nil, "auto", err
 	}
 	if _, ok := defaultBinary[name]; !ok && !isACPAgent(name) {
-		return "", false, string(name), fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode, pi, copilot, cursor, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
+		return "", false, string(name), fmt.Errorf("unknown agent %q; valid options: auto, claude, gemini, codex, rovodev, opencode, pi, copilot, cursor, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
 	}
 	if isACPAgent(name) {
 		available, bins, err := c.acpAvailable(name, lookPath)
@@ -775,6 +777,7 @@ func (c *Config) AgentArgsFor(name types.AgentName) []string {
 // agent_args_override.
 var agentArgsOverrideAgents = map[string]bool{
 	string(types.AgentClaude):   true,
+	string(types.AgentGemini):   true,
 	string(types.AgentCodex):    true,
 	string(types.AgentRovoDev):  true,
 	string(types.AgentOpenCode): true,
@@ -786,6 +789,11 @@ var agentArgsOverrideAgents = map[string]bool{
 // users cannot override through agent_args_override. A flag is matched by its
 // bare form (e.g. "--color") as well as the "--color=value" form.
 var reservedAgentArgs = map[string]map[string]bool{
+	string(types.AgentGemini): {
+		"-p":              true,
+		"--output-format": true,
+	},
+
 	string(types.AgentClaude): {
 		"-p":              true,
 		"--print":         true,
@@ -840,7 +848,7 @@ var reservedAgentArgs = map[string]map[string]bool{
 func validateAgentArgsOverride(override map[string][]string) error {
 	for name, args := range override {
 		if !agentArgsOverrideAgents[name] {
-			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, codex, rovodev, opencode, pi, copilot)", name)
+			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, gemini, codex, rovodev, opencode, pi, copilot)", name)
 		}
 		reserved := reservedAgentArgs[name]
 		for i, arg := range args {

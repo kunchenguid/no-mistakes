@@ -22,6 +22,7 @@ type Host struct {
 	cliAvailable func() bool
 	host         string // repo's GitHub hostname; scopes the auth check
 	repo         string // "owner/name" slug for --repo; empty when unknown
+	forkRepo     string // fork "owner/name" slug for EMU fallback
 	forkOwner    string // fork owner for cross-repository PR heads
 }
 
@@ -50,6 +51,7 @@ func New(cmd CmdFactory, cliAvailable func() bool, host, repo string) *Host {
 // New for its role in scoping the auth check.
 func NewWithFork(cmd CmdFactory, cliAvailable func() bool, host, repo, forkRepo string) *Host {
 	h := New(cmd, cliAvailable, host, repo)
+	h.forkRepo = forkRepo
 	h.forkOwner = repoOwner(forkRepo)
 	return h
 }
@@ -251,7 +253,19 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 	cmd.Stdin = strings.NewReader(content.Body)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("gh pr create: %s: %w", strings.TrimSpace(string(out)), err)
+		if strings.Contains(string(out), "Enterprise Managed User") && h.forkRepo != "" {
+			// EMU users cannot create cross-repo PRs to the upstream. Fallback to creating the PR on the fork.
+			retryArgs := []string{"pr", "create", "--head", branch, "--base", base, "--repo", h.forkRepo, "--title", content.Title, "--body-file", "-"}
+			retryCmd := h.cmd(ctx, "gh", retryArgs...)
+			retryCmd.Stdin = strings.NewReader(content.Body)
+			retryOut, retryErr := retryCmd.CombinedOutput()
+			if retryErr != nil {
+				return nil, fmt.Errorf("gh pr create (EMU fallback): %s: %w", strings.TrimSpace(string(retryOut)), retryErr)
+			}
+			out = retryOut
+		} else {
+			return nil, fmt.Errorf("gh pr create: %s: %w", strings.TrimSpace(string(out)), err)
+		}
 	}
 	url := strings.TrimSpace(string(out))
 	pr := &scm.PR{URL: url}

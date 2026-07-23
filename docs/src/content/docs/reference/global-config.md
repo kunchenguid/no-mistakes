@@ -74,10 +74,10 @@ Default agent for all repos and setup-wizard suggestions. Can be overridden per-
 |         |                                                                                             |
 | ------- | ------------------------------------------------------------------------------------------- |
 | Type    | `string` or `string[]`                                                                      |
-| Values  | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `cursor`, `acp:<target>` |
+| Values  | `auto`, `claude`, `gemini`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `cursor`, `acp:<target>` |
 | Default | `auto`                                                                                      |
 
-`auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, then `cursor`.
+`auto` resolves to the first supported native agent or ACP alias in this order: `claude`, `gemini`, `codex`, `opencode`, `acli` with `rovodev` support, `pi`, `copilot`, then `cursor`.
 `cursor` is an ACP alias for the `cursor` target with default command `cursor-agent acp`.
 With default paths, `auto` only selects it when both `cursor-agent` and `acpx` resolve; `acp_registry_overrides.cursor` and `acpx_path` replace those respective defaults during availability checks.
 `acp:<target>` uses the user-installed `acpx` binary to run an ACP target, for example `acp:gemini`; `acp:cursor` uses the same default command as `cursor`.
@@ -144,6 +144,7 @@ Default native binary names when no override is set:
 | Agent      | Binary     |
 | ---------- | ---------- |
 | `claude`   | `claude`   |
+| `gemini`   | `gemini`   |
 | `codex`    | `codex`    |
 | `rovodev`  | `acli`     |
 | `opencode` | `opencode` |
@@ -158,14 +159,15 @@ Use this to set model selection, service tier, reasoning effort, permission mode
 |         |                                                           |
 | ------- | --------------------------------------------------------- |
 | Type    | `map[string][]string`                                     |
-| Keys    | `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot` |
+| Keys    | `claude`, `gemini`, `codex`, `rovodev`, `opencode`, `pi`, `copilot` |
 | Default | Empty (no extra flags)                                    |
 
 User-supplied flags are inserted ahead of no-mistakes' managed flags, so your choices usually take precedence. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
 
-| Agent      | Reserved flags                                                                                              |
+| Agent name | Reserved flags                                                                                              |
 | ---------- | ----------------------------------------------------------------------------------------------------------- |
 | `claude`   | `-p`, `--print`, `--verbose`, `--output-format`, `--json-schema`, `-r`, `--resume`, `--session-id`, `-c`, `--continue`, `--fork-session` |
+| `gemini`   | `-p`, `--output-format` |
 | `codex`    | `exec`, `resume`, `--resume`, `--session`, `--session-id`, `--thread`, `--thread-id`, `--last`, `--json`, `--color` |
 | `rovodev`  | `rovodev`, `serve`, `--disable-session-token`                                                               |
 | `opencode` | `serve`, `--hostname`, `--port`, `--print-logs`                                                             |
