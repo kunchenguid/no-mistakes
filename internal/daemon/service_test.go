@@ -1612,15 +1612,20 @@ func stubServiceRuntime(t *testing.T) func() {
 	oldCurrentUser := serviceCurrentUser
 	oldExecutablePath := serviceExecutablePath
 	oldCommandRunner := serviceCommandRunner
+	oldInspectManagedDaemonService := inspectManagedDaemonService
 	oldHealthCheck := daemonHealthCheck
 	oldServiceBypass := serviceManagerBypassed
 	serviceManagerBypassed = func() bool { return false }
+	inspectManagedDaemonService = func(*paths.Paths) (managedServiceState, error) {
+		return managedServiceUnknown, nil
+	}
 	return func() {
 		runtimeGOOS = oldGOOS
 		serviceUserHomeDir = oldUserHomeDir
 		serviceCurrentUser = oldCurrentUser
 		serviceExecutablePath = oldExecutablePath
 		serviceCommandRunner = oldCommandRunner
+		inspectManagedDaemonService = oldInspectManagedDaemonService
 		daemonHealthCheck = oldHealthCheck
 		serviceManagerBypassed = oldServiceBypass
 	}

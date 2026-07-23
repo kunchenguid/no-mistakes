@@ -230,25 +230,33 @@ func gateConfigStampContent() string {
 // Idempotent: safe to call on an already-configured bare repo to
 // migrate older installs when per-worktree config is available.
 func IsolateHooksPath(ctx context.Context, bareDir string) error {
+	_, err := EnsureHooksPathIsolation(ctx, bareDir)
+	return err
+}
+
+func EnsureHooksPathIsolation(ctx context.Context, bareDir string) (bool, error) {
 	if _, err := runGit(ctx, bareDir, "config", "--worktree", "--get", "core.hookspath"); err != nil {
 		if isWorktreeConfigUnsupported(err) {
-			return nil
+			return false, nil
 		}
 	}
 	if _, err := runGit(ctx, bareDir, "config", "extensions.worktreeConfig", "true"); err != nil {
-		return fmt.Errorf("enable worktree config: %w", err)
+		return false, fmt.Errorf("enable worktree config: %w", err)
 	}
 	hooksDir, err := filepath.Abs(filepath.Join(bareDir, "hooks"))
 	if err != nil {
-		return fmt.Errorf("resolve hooks dir: %w", err)
+		return false, fmt.Errorf("resolve hooks dir: %w", err)
 	}
 	if _, err := runGit(ctx, bareDir, "config", "--worktree", "core.hookspath", hooksDir); err != nil {
 		if isWorktreeConfigUnsupported(err) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("pin core.hookspath per-worktree: %w", err)
+		return false, fmt.Errorf("pin core.hookspath per-worktree: %w", err)
 	}
-	return relocateCoreBareToWorktreeScope(ctx, bareDir)
+	if err := relocateCoreBareToWorktreeScope(ctx, bareDir); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // relocateCoreBareToWorktreeScope moves core.bare out of shared local config

@@ -392,6 +392,9 @@ func waitForDaemonStartWithProcess(p *paths.Paths, proc *os.Process, exitCh <-ch
 			default:
 			}
 		} else if pid == 0 {
+			if state, err := inspectManagedDaemonService(p); err == nil && state == managedServiceExited {
+				return fmt.Errorf("managed daemon exited before readiness")
+			}
 			// Managed services have no os.Process handle. The daemon publishes its
 			// PID immediately after taking the singleton lock, before recovery, so
 			// observe that exact child and notice an early exit without waiting out

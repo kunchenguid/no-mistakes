@@ -98,6 +98,42 @@ func TestWaitForManagedDaemonStartDetectsPublishedChildExit(t *testing.T) {
 	}
 }
 
+func TestWaitForManagedDaemonStartDetectsExitAfterPIDFileRemoval(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "3s")
+	t.Setenv("NM_TEST_DAEMON_START_POLL_INTERVAL", "10ms")
+
+	oldHealth := daemonHealthCheck
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return false, nil }
+	t.Cleanup(func() { daemonHealthCheck = oldHealth })
+
+	oldInspect := inspectManagedDaemonService
+	checks := 0
+	inspectManagedDaemonService = func(*paths.Paths) (managedServiceState, error) {
+		checks++
+		if checks < 3 {
+			return managedServiceRunning, nil
+		}
+		return managedServiceExited, nil
+	}
+	t.Cleanup(func() { inspectManagedDaemonService = oldInspect })
+
+	started := time.Now()
+	err := waitForDaemonStart(p, 0, time.Time{})
+	if err == nil || !strings.Contains(err.Error(), "managed daemon exited before readiness") {
+		t.Fatalf("waitForDaemonStart error = %v, want managed service exit", err)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("managed service exit detection took %v, want prompt failure", elapsed)
+	}
+	if _, err := os.Stat(p.PIDFile()); !os.IsNotExist(err) {
+		t.Fatalf("PID file should remain absent, got %v", err)
+	}
+}
+
 func TestStartDetachedDaemonTimeoutKillsAndReapsChild(t *testing.T) {
 	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
 	if err := p.EnsureDirs(); err != nil {

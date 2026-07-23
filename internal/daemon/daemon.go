@@ -438,6 +438,8 @@ type gateMigrationStats struct {
 	Failed   int
 }
 
+var ensureGateHooksPathIsolation = git.EnsureHooksPathIsolation
+
 // migrateGateConfigs discovers gates from authoritative DB records plus legacy
 // directories with the strict <id>.git shape. Every unstamped candidate is
 // structurally checked and explicitly verified as bare before any hook or Git
@@ -521,8 +523,12 @@ func migrateGateConfig(ctx context.Context, bareDir string) error {
 	if _, err := git.RunBare(ctx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
 		return fmt.Errorf("enable push options: %w", err)
 	}
-	if err := git.IsolateHooksPath(ctx, bareDir); err != nil {
+	isolated, err := ensureGateHooksPathIsolation(ctx, bareDir)
+	if err != nil {
 		return fmt.Errorf("isolate hooks path: %w", err)
+	}
+	if !isolated {
+		return fmt.Errorf("isolate hooks path: git config --worktree is unsupported")
 	}
 	if err := git.MarkGateConfigCurrent(bareDir); err != nil {
 		return fmt.Errorf("stamp gate config: %w", err)

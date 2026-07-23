@@ -134,3 +134,43 @@ func TestMigrateGateConfigsRejectsInvalidDirectoriesAndSkipsCurrentGates(t *test
 		}
 	}
 }
+
+func TestMigrateGateConfigsDoesNotStampUnsupportedIsolation(t *testing.T) {
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	id := "unsupported"
+	if err := git.InitBare(ctx, p.RepoDir(id)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertRepoWithID(id, t.TempDir(), "https://example.com/unsupported.git", "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	oldEnsure := ensureGateHooksPathIsolation
+	ensureGateHooksPathIsolation = func(context.Context, string) (bool, error) {
+		return false, nil
+	}
+	t.Cleanup(func() { ensureGateHooksPathIsolation = oldEnsure })
+
+	first := migrateGateConfigs(ctx, database, p)
+	if first.Gates != 1 || first.Failed != 1 || first.Migrated != 0 || first.Current != 0 {
+		t.Fatalf("first migration stats = %+v, want unstamped failure", first)
+	}
+	if git.GateConfigCurrent(p.RepoDir(id)) {
+		t.Fatal("unsupported isolation must not be stamped current")
+	}
+
+	second := migrateGateConfigs(ctx, database, p)
+	if second.Gates != 1 || second.Failed != 1 || second.Migrated != 0 || second.Current != 0 {
+		t.Fatalf("second migration stats = %+v, want migration retry", second)
+	}
+}
