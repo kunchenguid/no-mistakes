@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -46,7 +47,7 @@ func run() int {
 			}
 		}
 		if err := daemon.Run(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			writeDaemonRunError(os.Stderr, err)
 			return 1
 		}
 		return 0
@@ -73,6 +74,20 @@ func run() int {
 	}()
 
 	return cli.Execute()
+}
+
+func writeDaemonRunError(stderr *os.File, err error) {
+	if errors.Is(err, daemon.ErrSingletonLockHeld) {
+		p, pathErr := paths.New()
+		if pathErr == nil {
+			stderrInfo, stderrErr := stderr.Stat()
+			bootstrapInfo, bootstrapErr := os.Stat(p.DaemonBootstrapLog())
+			if stderrErr == nil && bootstrapErr == nil && os.SameFile(stderrInfo, bootstrapInfo) {
+				return
+			}
+		}
+	}
+	fmt.Fprintln(stderr, err)
 }
 
 func daemonLogSinkRootFromArgs(args []string) (string, bool, error) {

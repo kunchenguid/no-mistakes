@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/daemon"
 )
 
 func TestMain(m *testing.M) {
@@ -133,6 +135,52 @@ func TestDaemonLogSinkRootFromArgs(t *testing.T) {
 		if root, ok, err := daemonLogSinkRootFromArgs(args); err != nil || ok || root != "" {
 			t.Fatalf("%v got (%q, %v, %v)", args, root, ok, err)
 		}
+	}
+}
+
+func TestWriteDaemonRunErrorPreservesBootstrapSinkOwnership(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("NM_HOME", root)
+	logDir := filepath.Join(root, "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bootstrapPath := filepath.Join(logDir, "daemon-bootstrap.log")
+	const existing = "active output\n"
+	if err := os.WriteFile(bootstrapPath, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := os.OpenFile(bootstrapPath, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeDaemonRunError(bootstrap, fmt.Errorf("startup rejected: %w", daemon.ErrSingletonLockHeld))
+	if err := bootstrap.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(bootstrapPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != existing {
+		t.Fatalf("bootstrap log = %q, want %q", got, existing)
+	}
+
+	terminalPath := filepath.Join(root, "terminal")
+	terminal, err := os.Create(terminalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeDaemonRunError(terminal, fmt.Errorf("startup rejected: %w", daemon.ErrSingletonLockHeld))
+	if err := terminal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	terminalOutput, err := os.ReadFile(terminalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(terminalOutput), daemon.ErrSingletonLockHeld.Error()) {
+		t.Fatalf("terminal output = %q", terminalOutput)
 	}
 }
 
