@@ -200,11 +200,21 @@ func (s *Server) handleConn(conn net.Conn) {
 				slog.Error("write stream response", "error", err)
 				return
 			}
+			peerClosed := make(chan struct{})
+			go func() {
+				defer close(peerClosed)
+				for scanner.Scan() {
+				}
+				cancel()
+			}()
 			send := func(event interface{}) error {
 				return encoder.Encode(event)
 			}
-			if err := stream(send); err != nil {
-				slog.Warn("ipc stream request failed", "method", req.Method, "error", err)
+			streamErr := stream(send)
+			_ = conn.Close()
+			<-peerClosed
+			if streamErr != nil {
+				slog.Warn("ipc stream request failed", "method", req.Method, "error", streamErr)
 			}
 			return // connection done after streaming
 		}

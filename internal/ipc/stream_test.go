@@ -126,6 +126,38 @@ func TestStreamAcknowledgesOnlyAfterPreparation(t *testing.T) {
 	}
 }
 
+func TestStreamContextCancelsWhenClientDisconnects(t *testing.T) {
+	sock := socketPath(t)
+	srv := startServer(t, sock)
+	streamDone := make(chan struct{})
+	srv.HandleStream("stream_test", func(ctx context.Context, _ json.RawMessage) (ipc.StreamFunc, error) {
+		return func(func(interface{}) error) error {
+			<-ctx.Done()
+			close(streamDone)
+			return nil
+		}, nil
+	})
+
+	conn := rawDial(t, sock)
+	req, _ := ipc.NewRequest("stream_test", nil)
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
+		t.Fatal(err)
+	}
+	var resp ipc.Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-streamDone:
+	case <-time.After(time.Second):
+		t.Fatal("stream context was not canceled after client disconnect")
+	}
+}
+
 func TestStreamRequestsLogAtInfo(t *testing.T) {
 	sock := socketPath(t)
 	srv := startServer(t, sock)
