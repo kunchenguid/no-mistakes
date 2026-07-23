@@ -2,6 +2,7 @@ package agent
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -73,14 +74,24 @@ func TestBuildOpencodeServeArgs_OptOutAddsNeutralizationFlags(t *testing.T) {
 
 // TestBuildOpencodeServeArgs_OptOutPreservesPinnedModel proves an explicit
 // operator model argument (e.g. --model ollama-cloud/glm-5.2 from
-// agent_args_override) is preserved AND the neutralization flags are still
-// appended after it, so model selection and project-instruction suppression
-// both take effect.
+// agent_args_override) is extracted from the serve argv (because opencode serve
+// does not accept --model) and the neutralization flags are still appended.
+// The model is routed to the session creation API by opencodeExtractModel +
+// createSession, not the serve argv.
 func TestBuildOpencodeServeArgs_OptOutPreservesPinnedModel(t *testing.T) {
-	got := buildOpencodeServeArgs([]string{"--model", "ollama-cloud/glm-5.2"}, 9999, true)
+	// --model is extracted before buildOpencodeServeArgs sees extraArgs.
+	serveArgs, model := opencodeExtractModel([]string{"--model", "ollama-cloud/glm-5.2"})
+	if model != "ollama-cloud/glm-5.2" {
+		t.Errorf("opencodeExtractModel must return the model value, got %q", model)
+	}
+	for _, a := range serveArgs {
+		if a == "--model" || strings.HasPrefix(a, "--model=") {
+			t.Errorf("--model must be stripped from serve args, got %v", serveArgs)
+		}
+	}
+	got := buildOpencodeServeArgs(serveArgs, 9999, true)
 	want := []string{
 		"serve",
-		"--model", "ollama-cloud/glm-5.2",
 		"--hostname", "127.0.0.1",
 		"--port", "9999",
 		"--print-logs",
@@ -88,15 +99,7 @@ func TestBuildOpencodeServeArgs_OptOutPreservesPinnedModel(t *testing.T) {
 		"--pure",
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("buildOpencodeServeArgs(opt-out+model) = %v, want %v", got, want)
-	}
-	// Sanity: the managed model arg survives and the neutralization flags
-	// come after it (last-wins ordering).
-	if i := indexOf(got, "--model"); i < 0 || i+1 >= len(got) || got[i+1] != "ollama-cloud/glm-5.2" {
-		t.Errorf("pinned model must be preserved, got %v", got)
-	}
-	if j := indexOf(got, "--no-project-instructions"); j < 0 || j <= indexOf(got, "--model") {
-		t.Errorf("--no-project-instructions must appear after the model arg, got %v", got)
+		t.Errorf("buildOpencodeServeArgs(opt-out, model extracted) = %v, want %v", got, want)
 	}
 }
 

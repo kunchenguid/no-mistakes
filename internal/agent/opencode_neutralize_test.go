@@ -116,6 +116,88 @@ func TestProbeOpencodeNoProjectInstructions_DiagnosticForMissingFlag(t *testing.
 	}
 }
 
+// TestOpencodeExtractModel proves --model is extracted from extraArgs (both
+// --model <value> and --model=<value> forms) and the remaining args are
+// returned without --model. This is critical because `opencode serve` does not
+// accept --model; passing it makes yargs print help and exit, breaking the
+// server.
+func TestOpencodeExtractModel(t *testing.T) {
+	cases := []struct {
+		name      string
+		extraArgs []string
+		wantArgs  []string
+		wantModel string
+	}{
+		{
+			name:      "split form --model value",
+			extraArgs: []string{"--model", "ollama-cloud/glm-5.2", "--log-level", "DEBUG"},
+			wantArgs:  []string{"--log-level", "DEBUG"},
+			wantModel: "ollama-cloud/glm-5.2",
+		},
+		{
+			name:      "equals form --model=value",
+			extraArgs: []string{"--model=ollama-cloud/glm-5.2", "--pure"},
+			wantArgs:  []string{"--pure"},
+			wantModel: "ollama-cloud/glm-5.2",
+		},
+		{
+			name:      "no model",
+			extraArgs: []string{"--log-level", "DEBUG"},
+			wantArgs:  []string{"--log-level", "DEBUG"},
+			wantModel: "",
+		},
+		{
+			name:      "empty args",
+			extraArgs: nil,
+			wantArgs:  []string{},
+			wantModel: "",
+		},
+		{
+			name:      "model only",
+			extraArgs: []string{"--model", "ollama-cloud/glm-5.2"},
+			wantArgs:  []string{},
+			wantModel: "ollama-cloud/glm-5.2",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotArgs, gotModel := opencodeExtractModel(c.extraArgs)
+			if gotModel != c.wantModel {
+				t.Errorf("model = %q, want %q", gotModel, c.wantModel)
+			}
+			if !equalStringSlices(gotArgs, c.wantArgs) {
+				t.Errorf("args = %v, want %v", gotArgs, c.wantArgs)
+			}
+		})
+	}
+}
+
+// TestParseOpencodeModel proves the "provider/model" parsing works correctly.
+func TestParseOpencodeModel(t *testing.T) {
+	cases := []struct {
+		model        string
+		wantProvider string
+		wantModel    string
+		wantOK       bool
+	}{
+		{"ollama-cloud/glm-5.2", "ollama-cloud", "glm-5.2", true},
+		{"test/test-model", "test", "test-model", true},
+		{"no-slash", "", "", false},
+		{"/leading-slash", "", "", false},
+		{"trailing-slash/", "", "", false},
+		{"", "", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.model, func(t *testing.T) {
+			provider, model, ok := parseOpencodeModel(c.model)
+			if provider != c.wantProvider || model != c.wantModel || ok != c.wantOK {
+				t.Errorf("parseOpencodeModel(%q) = (%q, %q, %v), want (%q, %q, %v)",
+					c.model, provider, model, ok, c.wantProvider, c.wantModel, c.wantOK)
+			}
+		})
+	}
+}
+
 // TestOpencodeAgent_NeutralizesGateInstructions_HonestAboutOptOut proves the
 // capability follows the opt-out flag honestly: true under opt-out, false
 // without it.
@@ -158,28 +240,36 @@ func TestOpencodeAgent_NewWithOptionsWiresOptOut(t *testing.T) {
 }
 
 // TestOpencodeAgent_PreservesModelArgsUnderOptOut proves explicit model args
-// from agent_args_override are preserved in the serve argv even under the
-// opt-out, alongside the neutralization flags.
+// from agent_args_override are extracted from the serve argv (because opencode
+// serve does not accept --model) and routed to the session creation API, while
+// the neutralization flags are still appended to the serve argv.
 func TestOpencodeAgent_PreservesModelArgsUnderOptOut(t *testing.T) {
+	// Simulate NewWithOptions extracting --model from extraArgs.
+	serveArgs, model := opencodeExtractModel([]string{"--model", "ollama-cloud/glm-5.2"})
 	oa := &opencodeAgent{
 		bin:                    "opencode",
-		extraArgs:              []string{"--model", "ollama-cloud/glm-5.2"},
+		extraArgs:              serveArgs,
 		disableProjectSettings: true,
+		sessionModel:           model,
+	}
+	if oa.sessionModel != "ollama-cloud/glm-5.2" {
+		t.Errorf("sessionModel must be set to the extracted model, got %q", oa.sessionModel)
 	}
 	args := buildOpencodeServeArgs(oa.extraArgs, 12345, oa.disableProjectSettings)
 	joined := strings.Join(args, " ")
-	for _, want := range []string{
-		"--model ollama-cloud/glm-5.2",
-		"--no-project-instructions",
-		"--pure",
-	} {
+	// --model must NOT be in the serve argv (it breaks opencode serve).
+	if strings.Contains(joined, "--model") {
+		t.Errorf("--model must NOT be in the serve argv, got: %s", joined)
+	}
+	// Neutralization flags must be present.
+	for _, want := range []string{"--no-project-instructions", "--pure"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("serve argv must contain %q, got: %s", want, joined)
 		}
 	}
-	if i := strings.Index(joined, "--model"); i < 0 {
-		t.Fatal("model arg missing")
-	} else if j := strings.Index(joined, "--no-project-instructions"); j < i {
-		t.Errorf("model arg must precede --no-project-instructions, got: %s", joined)
+	// The model must be parseable into provider/model for the session API.
+	providerID, modelID, ok := parseOpencodeModel(oa.sessionModel)
+	if !ok || providerID != "ollama-cloud" || modelID != "glm-5.2" {
+		t.Errorf("parseOpencodeModel(%q) = (%q, %q, %v), want (ollama-cloud, glm-5.2, true)", oa.sessionModel, providerID, modelID, ok)
 	}
 }

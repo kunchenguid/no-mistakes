@@ -19,8 +19,13 @@ type opencodeAgent struct {
 	// plugins, and project skill discovery. It is the analogue of
 	// codexAgent.disableProjectSettings and claudeAgent.disableProjectSettings.
 	disableProjectSettings bool
-	mu                     sync.Mutex
-	server                 *managedServer
+	// sessionModel is the operator-pinned model (from agent_args_override
+	// --model) parsed into provider/model, passed to the session creation API
+	// because `opencode serve` does not accept a --model flag (it is a `run`/
+	// TUI flag, not a serve flag). Empty means use the opencode default model.
+	sessionModel string
+	mu           sync.Mutex
+	server       *managedServer
 }
 
 func (a *opencodeAgent) Name() string { return "opencode" }

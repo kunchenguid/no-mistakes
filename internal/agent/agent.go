@@ -806,7 +806,13 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	case types.AgentRovoDev:
 		return &rovodevAgent{bin: bin, extraArgs: extraArgs}, nil
 	case types.AgentOpenCode:
-		return &opencodeAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
+		// `opencode serve` does not accept --model (it is a `run`/TUI flag, not
+		// a serve flag); passing it makes yargs print help and exit, breaking
+		// the server. Extract --model from extraArgs and pass it to the session
+		// creation API instead, so operator model pinning (agent_args_override)
+		// works without breaking the serve argv.
+		serveArgs, model := opencodeExtractModel(extraArgs)
+		return &opencodeAgent{bin: bin, extraArgs: serveArgs, disableProjectSettings: opts.DisableProjectSettings, sessionModel: model}, nil
 	case types.AgentPi:
 		return &piAgent{bin: bin, extraArgs: extraArgs}, nil
 	case types.AgentCopilot:

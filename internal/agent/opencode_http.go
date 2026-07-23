@@ -98,6 +98,12 @@ func opencodeHelpListsNoProjectInstructions(helpText string) bool {
 // buildOpencodeServeArgs builds `opencode serve`'s argv with user-supplied
 // extras inserted after the "serve" subcommand and before the managed flags.
 //
+// NOTE: --model is NOT a valid `opencode serve` flag (it is a `run`/TUI flag);
+// passing it makes yargs print help and exit. opencodeExtractModel (called in
+// NewWithOptions) strips --model from extraArgs before they reach this function
+// and routes the model to the session creation API instead. Other operator
+// extraArgs (e.g. --log-level) are preserved.
+//
 // Under the trusted opt-out (disableProjectSettings), the neutralization
 // flags --no-project-instructions and --pure are appended LAST so they win
 // over any operator override (yargs last-wins):
@@ -108,9 +114,7 @@ func opencodeHelpListsNoProjectInstructions(helpText string) bool {
 // Both are defense-in-depth: the pre-flight capability probe in ensureServer
 // already refused an older binary that lacks --no-project-instructions, and
 // even an older binary that somehow passed the probe would reject the unknown
-// flag and exit non-zero. Operator model args (e.g. --model) inserted via
-// extraArgs are preserved because they precede the managed neutralization
-// flags and do not conflict with them.
+// flag and exit non-zero.
 func buildOpencodeServeArgs(extraArgs []string, port int, disableProjectSettings bool) []string {
 	args := make([]string, 0, len(extraArgs)+8)
 	args = append(args, "serve")
@@ -126,12 +130,50 @@ func buildOpencodeServeArgs(extraArgs []string, port int, disableProjectSettings
 	return args
 }
 
+// opencodeExtractModel removes --model <value> (and --model=<value>) from
+// extraArgs and returns the remaining args plus the model value. `opencode
+// serve` does not accept --model (it is a `run`/TUI flag); passing it makes
+// yargs print help and exit 0, breaking the server. The model is instead
+// passed to the session creation API (see createSession). When --model is
+// absent, the remaining args are returned unchanged with an empty model.
+func opencodeExtractModel(extraArgs []string) ([]string, string) {
+	var model string
+	out := make([]string, 0, len(extraArgs))
+	for i := 0; i < len(extraArgs); i++ {
+		arg := extraArgs[i]
+		if arg == "--model" && i+1 < len(extraArgs) {
+			model = extraArgs[i+1]
+			i++ // skip the value
+			continue
+		}
+		if strings.HasPrefix(arg, "--model=") {
+			model = strings.TrimPrefix(arg, "--model=")
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out, model
+}
+
 func (a *opencodeAgent) createSession(ctx context.Context, baseURL, cwd string) (string, error) {
 	body := map[string]any{
 		"directory": cwd,
 		"permission": []map[string]string{
 			{"permission": "*", "pattern": "*", "action": "allow"},
 		},
+	}
+	// Pass the operator-pinned model to the session creation API when set.
+	// opencode serve does not accept --model as a CLI flag, so the model is
+	// selected per-session instead. The model format is "provider/model" (e.g.
+	// "ollama-cloud/glm-5.2"), which maps to model.id=model, model.providerID=
+	// provider.
+	if a.sessionModel != "" {
+		if providerID, modelID, ok := parseOpencodeModel(a.sessionModel); ok {
+			body["model"] = map[string]any{
+				"id":         modelID,
+				"providerID": providerID,
+			}
+		}
 	}
 	resp, err := doJSON(ctx, http.MethodPost, baseURL+"/session", nil, body)
 	if err != nil {
@@ -145,6 +187,16 @@ func (a *opencodeAgent) createSession(ctx context.Context, baseURL, cwd string) 
 		return "", fmt.Errorf("opencode create session parse: %w", err)
 	}
 	return result.ID, nil
+}
+
+// parseOpencodeModel splits a "provider/model" string into its provider and
+// model parts. Returns ok=false if the format is invalid (no slash).
+func parseOpencodeModel(model string) (providerID, modelID string, ok bool) {
+	idx := strings.Index(model, "/")
+	if idx <= 0 || idx >= len(model)-1 {
+		return "", "", false
+	}
+	return model[:idx], model[idx+1:], true
 }
 
 func (a *opencodeAgent) connectEventStream(ctx context.Context, baseURL string) (io.ReadCloser, error) {
