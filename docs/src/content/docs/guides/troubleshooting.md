@@ -203,7 +203,7 @@ ls -la <gate-path>/hooks/post-receive
 ```
 
 The hook should be executable. If it's missing or non-executable, `no-mistakes init` will reinstall it for an existing no-mistakes-managed gate.
-For existing gate repos, `no-mistakes daemon restart` also installs missing no-mistakes-managed hooks and refreshes legacy managed hooks without overwriting custom hooks.
+For validated registered gates and strictly named legacy gates, `no-mistakes daemon restart` also installs missing no-mistakes-managed hooks and refreshes legacy managed hooks without overwriting custom hooks.
 Current managed hooks resolve the gate as an absolute bare-repo path before notifying the daemon, so a shell with a bad `PWD` value cannot accidentally report the gate as `.`.
 If `notify-push.log` mentions `invalid gate path: .`, refresh the managed hook with `no-mistakes init` or `no-mistakes daemon restart`, then push again.
 
@@ -213,8 +213,8 @@ Also check `<gate-path>/notify-push.log`. The hook now appends daemon notificati
 
 The hook talks to the daemon over `~/.no-mistakes/socket`. If the daemon isn't running, the push still succeeds (the hook never blocks), but no pipeline starts. Start the daemon and push again.
 
-If the gate is older, re-running `no-mistakes init` or restarting the daemon also reapplies hook-path isolation for existing bare repos when Git supports `config --worktree`.
-That protects the gate hook if a tool such as Husky wrote `core.hookspath` into shared git config from inside a linked worktree.
+If the gate is older, re-running `no-mistakes init` or restarting the daemon also reapplies hook-path isolation when Git supports `config --worktree`.
+That protects the gate hook if a tool such as Husky wrote `core.hookspath` into shared git config from inside a linked worktree. [Crash recovery](/no-mistakes/concepts/daemon/#crash-recovery) owns the gate validation and migration rules used during restart.
 
 ## PR step is skipped
 

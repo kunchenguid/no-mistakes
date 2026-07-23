@@ -29,6 +29,7 @@ func TestColdDetachedStartupProductionGateCardinality(t *testing.T) {
 
 	zeroDuration := startColdDetachedFixture(t, 0, false)
 	seventyDuration := startColdDetachedFixture(t, 70, true)
+	t.Logf("cold detached startup: zero_gates=%v seventy_gates=%v", zeroDuration, seventyDuration)
 
 	if zeroDuration >= 5*time.Second {
 		t.Fatalf("zero-gate cold startup took %v, want below the former 5s deadline", zeroDuration)
@@ -117,6 +118,16 @@ func startColdDetachedFixture(t *testing.T, gateCount int, delayedGit bool) time
 	logData, err := os.ReadFile(p.DaemonLog())
 	if err != nil {
 		t.Fatalf("read isolated daemon log: %v", err)
+	}
+	if evidenceDir := os.Getenv("NM_TEST_STARTUP_EVIDENCE_DIR"); evidenceDir != "" {
+		if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+			t.Fatalf("create startup evidence directory: %v", err)
+		}
+		evidencePath := filepath.Join(evidenceDir, fmt.Sprintf("startup-%d-gates.log", gateCount))
+		if err := os.WriteFile(evidencePath, logData, 0o644); err != nil {
+			t.Fatalf("write startup evidence: %v", err)
+		}
+		t.Logf("startup evidence: %s", evidencePath)
 	}
 	for _, fragment := range []string{
 		"phase=environment",
