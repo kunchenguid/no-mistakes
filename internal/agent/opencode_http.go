@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
 	"strings"
 	"time"
 )
@@ -16,11 +17,26 @@ func (a *opencodeAgent) ensureServer(ctx context.Context, cwd string) (string, e
 	if a.server != nil {
 		return a.server.baseURL(), nil
 	}
+	// Under the trusted opt-out, the serve argv must carry
+	// --no-project-instructions. Older OpenCode binaries that do not recognize
+	// the flag exit non-zero and print help to stderr (verified on 1.18.4),
+	// so a blind start surfaces only "server exited before becoming healthy:
+	// exit status 1" - not a concrete diagnostic. Probe the binary's
+	// --help output for the flag BEFORE starting the server so an unsupported
+	// binary stops with a clear, actionable error rather than a generic
+	// health-check timeout. This is the OpenCode analogue of
+	// probeRovoDevSupport, scoped to the opt-out path so normal (non-review)
+	// OpenCode behavior is unchanged.
+	if a.disableProjectSettings {
+		if err := probeOpencodeNoProjectInstructions(ctx, a.bin); err != nil {
+			return "", err
+		}
+	}
 	port, err := getAvailablePort()
 	if err != nil {
 		return "", fmt.Errorf("opencode port: %w", err)
 	}
-	args := buildOpencodeServeArgs(a.extraArgs, port)
+	args := buildOpencodeServeArgs(a.extraArgs, port, a.disableProjectSettings)
 	srv, err := startServerWithPort(ctx, "opencode", a.bin, args, cwd, "/global/health", port)
 	if err != nil {
 		return "", fmt.Errorf("opencode server: %w", err)
@@ -29,13 +45,84 @@ func (a *opencodeAgent) ensureServer(ctx context.Context, cwd string) (string, e
 	return srv.baseURL(), nil
 }
 
+// probeOpencodeNoProjectInstructions reports whether the OpenCode binary at bin
+// supports the --no-project-instructions serve flag. It scans `opencode serve
+// --help` for the flag name: yargs lists recognized boolean flags in the help
+// output, so an older binary that rejects the flag omits it. The probe is
+// side-effect-free (help prints and exits 0) and bounded to 5s. A non-zero or
+// timed-out probe is surfaced as a concrete diagnostic so the operator knows to
+// upgrade OpenCode rather than guessing at a generic health-check timeout.
+//
+// The env-var analogue OPENCODE_DISABLE_PROJECT_INSTRUCTIONS is intentionally
+// NOT used: an older binary would silently ignore an unknown env var, which is
+// exactly the failure mode the CLI switch exists to prevent. The switch makes
+// an unsupported binary reject the invocation.
+var probeOpencodeNoProjectInstructions = func(ctx context.Context, bin string) error {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(probeCtx, bin, "serve", "--help")
+	configureManagedServerCmd(cmd)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("opencode at %q does not support the --no-project-instructions "+
+			"flag required by disable_project_settings (probe `serve --help` failed: %w); "+
+			"upgrade OpenCode to a version that supports --no-project-instructions or set "+
+			"'agent' to codex or claude in ~/.no-mistakes/config.yaml", bin, err)
+	}
+	if !opencodeHelpListsNoProjectInstructions(string(output)) {
+		return fmt.Errorf("opencode at %q does not support the --no-project-instructions "+
+			"flag required by disable_project_settings (the flag is absent from "+
+			"`serve --help`); upgrade OpenCode to a version that supports "+
+			"--no-project-instructions or set 'agent' to codex or claude in "+
+			"~/.no-mistakes/config.yaml", bin)
+	}
+	return nil
+}
+
+// opencodeHelpListsNoProjectInstructions reports whether the `opencode serve
+// --help` text advertises the --no-project-instructions flag. It matches the
+// bare flag name as a token so a flag like --no-project-instructions-foo does
+// not false-positive, and tolerates the leading "--" yargs emits.
+func opencodeHelpListsNoProjectInstructions(helpText string) bool {
+	for _, line := range strings.Split(helpText, "\n") {
+		// yargs indents flag rows; the flag name appears after the leading "--".
+		// Match "--no-project-instructions" as a whole-word token so a
+		// similarly-named flag does not false-match.
+		if strings.Contains(line, "--no-project-instructions") {
+			return true
+		}
+	}
+	return false
+}
+
 // buildOpencodeServeArgs builds `opencode serve`'s argv with user-supplied
 // extras inserted after the "serve" subcommand and before the managed flags.
-func buildOpencodeServeArgs(extraArgs []string, port int) []string {
-	args := make([]string, 0, len(extraArgs)+6)
+//
+// Under the trusted opt-out (disableProjectSettings), the neutralization
+// flags --no-project-instructions and --pure are appended LAST so they win
+// over any operator override (yargs last-wins):
+//   - --no-project-instructions disables project instructions (AGENTS.md /
+//     CLAUDE.md), project config (.opencode/), and project skill discovery.
+//   - --pure disables external/project plugins.
+//
+// Both are defense-in-depth: the pre-flight capability probe in ensureServer
+// already refused an older binary that lacks --no-project-instructions, and
+// even an older binary that somehow passed the probe would reject the unknown
+// flag and exit non-zero. Operator model args (e.g. --model) inserted via
+// extraArgs are preserved because they precede the managed neutralization
+// flags and do not conflict with them.
+func buildOpencodeServeArgs(extraArgs []string, port int, disableProjectSettings bool) []string {
+	args := make([]string, 0, len(extraArgs)+8)
 	args = append(args, "serve")
 	args = append(args, extraArgs...)
 	args = append(args, "--hostname", "127.0.0.1", "--port", fmt.Sprintf("%d", port), "--print-logs")
+	if disableProjectSettings {
+		// Managed neutralization flags are appended last so yargs last-wins
+		// enforces them over any operator attempt to defeat the opt-out. They
+		// are NOT taken from extraArgs (operator cannot remove them); if the
+		// operator already passed --pure we still re-assert it harmlessly.
+		args = append(args, "--no-project-instructions", "--pure")
+	}
 	return args
 }
 

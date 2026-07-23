@@ -12,13 +12,45 @@ import (
 type opencodeAgent struct {
 	bin       string
 	extraArgs []string
-	mu        sync.Mutex
-	server    *managedServer
+	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
+	// buildOpencodeServeArgs neutralizes every project-controlled context source
+	// OpenCode loads from the target checkout: project instructions
+	// (AGENTS.md/CLAUDE.md), project config (.opencode/), external/project
+	// plugins, and project skill discovery. It is the analogue of
+	// codexAgent.disableProjectSettings and claudeAgent.disableProjectSettings.
+	disableProjectSettings bool
+	mu                     sync.Mutex
+	server                 *managedServer
 }
 
 func (a *opencodeAgent) Name() string { return "opencode" }
 
 func (a *opencodeAgent) ReportsAgentAttempts() bool { return true }
+
+// NeutralizesGateInstructions reports whether opencode is currently launched
+// with the target repo's project-controlled context sources suppressed. It is
+// meaningful only under the opt-out (disableProjectSettings): the gate only
+// consults it when the repo opted out.
+//
+// OpenCode's neutralization is enforced by managed serve flags
+// (--no-project-instructions, --pure) appended LAST in buildOpencodeServeArgs
+// so they win over any operator override (yargs last-wins). There is no
+// operator flag that re-enables project instructions once
+// --no-project-instructions is in effect, so - unlike codex/claude - the
+// effective value cannot be defeated by agent_args_override; the only failure
+// mode is an older OpenCode binary that does not recognize the flag, which is
+// caught by the pre-flight capability probe in ensureServer (concrete
+// diagnostic) and again by the serve process exiting non-zero on the unknown
+// flag. Because the managed flags enforce neutralization unconditionally under
+// the opt-out, this reports true whenever disableProjectSettings is set.
+//
+// Verified empirically: an older opencode (1.18.4) without
+// --no-project-instructions rejects the unknown flag (exit 1, prints help),
+// so the server never starts healthy; an opencode with the flag serves with
+// project instructions, config, plugins, and skills disabled.
+func (a *opencodeAgent) NeutralizesGateInstructions() bool {
+	return a.disableProjectSettings
+}
 
 func (a *opencodeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "opencode", opts, claudeMaxRetries, classifyTransient, a.recoverTransientRetry, func() (*Result, error) {
