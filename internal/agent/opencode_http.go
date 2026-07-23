@@ -166,13 +166,19 @@ func (a *opencodeAgent) createSession(ctx context.Context, baseURL, cwd string) 
 	// opencode serve does not accept --model as a CLI flag, so the model is
 	// selected per-session instead. The model format is "provider/model" (e.g.
 	// "ollama-cloud/glm-5.2"), which maps to model.id=model, model.providerID=
-	// provider.
+	// provider. An invalid format (no slash) fails loudly here rather than
+	// silently falling back to the default model, so a misconfigured pin is
+	// obvious instead of a silent footgun.
 	if a.sessionModel != "" {
-		if providerID, modelID, ok := parseOpencodeModel(a.sessionModel); ok {
-			body["model"] = map[string]any{
-				"id":         modelID,
-				"providerID": providerID,
-			}
+		providerID, modelID, ok := parseOpencodeModel(a.sessionModel)
+		if !ok {
+			return "", fmt.Errorf("opencode create session: operator --model %q is not in 'provider/model' format "+
+				"(e.g. 'ollama-cloud/glm-5.2'); fix agent_args_override.opencode in ~/.no-mistakes/config.yaml",
+				a.sessionModel)
+		}
+		body["model"] = map[string]any{
+			"id":         modelID,
+			"providerID": providerID,
 		}
 	}
 	resp, err := doJSON(ctx, http.MethodPost, baseURL+"/session", nil, body)

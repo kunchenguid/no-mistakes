@@ -198,6 +198,24 @@ func TestParseOpencodeModel(t *testing.T) {
 	}
 }
 
+// TestOpencodeCreateSession_InvalidModelFailsLoudly proves an invalid model
+// format (no slash) makes createSession fail with a clear error rather than
+// silently falling back to the default model. This is the review-finding fix:
+// a misconfigured pin must be loud, not a silent footgun.
+func TestOpencodeCreateSession_InvalidModelFailsLoudly(t *testing.T) {
+	oa := &opencodeAgent{bin: "opencode", sessionModel: "gpt-5"}
+	_, err := oa.createSession(context.Background(), "http://127.0.0.1:0", t.TempDir())
+	if err == nil {
+		t.Fatal("createSession with invalid model format must fail")
+	}
+	msg := err.Error()
+	for _, want := range []string{"gpt-5", "provider/model", "agent_args_override"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error must mention %q, got: %v", want, err)
+		}
+	}
+}
+
 // TestOpencodeAgent_NeutralizesGateInstructions_HonestAboutOptOut proves the
 // capability follows the opt-out flag honestly: true under opt-out, false
 // without it.
