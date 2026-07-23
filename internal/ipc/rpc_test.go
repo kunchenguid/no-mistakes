@@ -207,15 +207,81 @@ func TestNilParams(t *testing.T) {
 	}
 }
 
-func TestHealthRequestsDoNotLogAtInfo(t *testing.T) {
+func TestSuccessfulReadRequestsDoNotLogAtInfo(t *testing.T) {
 	sock := socketPath(t)
 	srv := startServer(t, sock)
 
-	srv.Handle(ipc.MethodHealth, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
-		return ipc.HealthResult{Status: "ok"}, nil
+	readMethods := []string{
+		ipc.MethodHealth,
+		ipc.MethodGetRun,
+		ipc.MethodGetRuns,
+		ipc.MethodGetRunsForHead,
+		ipc.MethodGetActiveRun,
+	}
+	for _, method := range readMethods {
+		srv.Handle(method, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+			return map[string]bool{"ok": true}, nil
+		})
+	}
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	prev := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(prev)
+
+	c, err := ipc.Dial(sock)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+	for _, method := range readMethods {
+		var raw json.RawMessage
+		if err := c.Call(method, nil, &raw); err != nil {
+			t.Fatalf("%s call: %v", method, err)
+		}
+	}
+
+	if logOutput := logs.String(); logOutput != "" {
+		t.Fatalf("successful read requests wrote %d INFO bytes, want 0:\n%s", len(logOutput), logOutput)
+	}
+}
+
+func TestSuccessfulReadRequestsLogAtDebug(t *testing.T) {
+	sock := socketPath(t)
+	srv := startServer(t, sock)
+	srv.Handle(ipc.MethodGetRun, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return &ipc.GetRunResult{}, nil
 	})
-	srv.Handle("fail", func(_ context.Context, _ json.RawMessage) (interface{}, error) {
-		return nil, fmt.Errorf("something broke")
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	prev := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(prev)
+
+	c, err := ipc.Dial(sock)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+	var result ipc.GetRunResult
+	if err := c.Call(ipc.MethodGetRun, &ipc.GetRunParams{RunID: "run-1"}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if got := logs.String(); !strings.Contains(got, `level=DEBUG msg="ipc request" method=get_run`) {
+		t.Fatalf("successful read missing DEBUG record: %s", got)
+	}
+}
+
+func TestRequestLoggingKeepsMutationsAndFailuresVisible(t *testing.T) {
+	sock := socketPath(t)
+	srv := startServer(t, sock)
+	srv.Handle(ipc.MethodRerun, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return ipc.RerunResult{RunID: "run-1"}, nil
+	})
+	srv.Handle(ipc.MethodGetRun, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return nil, fmt.Errorf("database unavailable")
 	})
 
 	var logs bytes.Buffer
@@ -229,24 +295,27 @@ func TestHealthRequestsDoNotLogAtInfo(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 	defer c.Close()
-
-	var health ipc.HealthResult
-	if err := c.Call(ipc.MethodHealth, nil, &health); err != nil {
-		t.Fatalf("health call: %v", err)
+	var rerun ipc.RerunResult
+	if err := c.Call(ipc.MethodRerun, nil, &rerun); err != nil {
+		t.Fatalf("rerun call: %v", err)
 	}
-
 	var raw json.RawMessage
-	err = c.Call("fail", nil, &raw)
-	if err == nil {
-		t.Fatal("expected fail call error")
+	if err := c.Call(ipc.MethodGetRun, nil, &raw); err == nil {
+		t.Fatal("expected failed read call error")
+	}
+	if err := c.Call("unknown_method", nil, &raw); err == nil {
+		t.Fatal("expected unknown method error")
 	}
 
 	logOutput := logs.String()
-	if strings.Contains(logOutput, "method=health") {
-		t.Fatalf("health request should not log at info: %s", logOutput)
-	}
-	if !strings.Contains(logOutput, "msg=\"ipc request failed\" method=fail") {
-		t.Fatalf("failed request log missing: %s", logOutput)
+	for _, want := range []string{
+		"level=INFO msg=\"ipc request\" method=rerun",
+		"level=WARN msg=\"ipc request failed\" method=get_run error=\"database unavailable\"",
+		"level=WARN msg=\"ipc request failed\" method=unknown_method",
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Errorf("request log missing %q:\n%s", want, logOutput)
+		}
 	}
 }
 

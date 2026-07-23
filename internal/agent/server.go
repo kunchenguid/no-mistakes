@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -54,6 +55,7 @@ type managedServer struct {
 	exited        chan struct{} // closed exactly once when cmd.Wait returns
 	waitErr       error         // result of cmd.Wait; only read after exited is closed
 	healthTimeout time.Duration // health-check deadline; defaults to defaultHealthTimeout when zero
+	stopping      atomic.Bool
 }
 
 // getAvailablePort finds an ephemeral port by binding to :0 and releasing.
@@ -82,8 +84,10 @@ func startServerWithPort(ctx context.Context, agentName, bin string, args []stri
 	configureManagedServerCmd(cmd)
 
 	if err := cmd.Start(); err != nil {
+		slog.Warn("managed agent server failed to start", "agent", agentName, "error", err)
 		return nil, fmt.Errorf("start server %s: %w", bin, err)
 	}
+	slog.Info("managed agent server started", "agent", agentName, "pid", cmd.Process.Pid)
 
 	pidFile := writeServerPIDFile(currentServerPIDsDir(), ServerPIDInfo{
 		PID:            cmd.Process.Pid,
@@ -99,14 +103,23 @@ func startServerWithPort(ctx context.Context, agentName, bin string, args []stri
 	srv := &managedServer{cmd: cmd, port: port, pidFile: pidFile, exited: make(chan struct{}), healthTimeout: defaultHealthTimeout}
 	go func() {
 		srv.waitErr = cmd.Wait()
+		if srv.stopping.Load() {
+			slog.Info("managed agent server stopped", "agent", agentName, "pid", cmd.Process.Pid)
+		} else if srv.waitErr != nil {
+			slog.Warn("managed agent server exited", "agent", agentName, "pid", cmd.Process.Pid, "error", srv.waitErr)
+		} else {
+			slog.Warn("managed agent server exited", "agent", agentName, "pid", cmd.Process.Pid, "error", "unexpected clean exit")
+		}
 		close(srv.exited)
 	}()
 
-	// Wait for health check to pass
+	// Wait for health check to pass.
 	if err := srv.waitForHealth(ctx, healthPath); err != nil {
+		slog.Warn("managed agent server startup failed", "agent", agentName, "pid", cmd.Process.Pid, "error", err)
 		srv.shutdown()
 		return nil, err
 	}
+	slog.Info("managed agent server ready", "agent", agentName, "pid", cmd.Process.Pid, "port", port)
 
 	return srv, nil
 }
@@ -142,7 +155,7 @@ func (s *managedServer) waitForHealth(ctx context.Context, path string) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-s.exited:
-			return fmt.Errorf("server exited before becoming healthy: %w", s.waitErr)
+			return serverExitedBeforeHealthyError(s.waitErr)
 		case <-deadline:
 			return fmt.Errorf("server health check timed out after %s", formatHealthTimeout(timeout))
 		default:
@@ -158,10 +171,17 @@ func (s *managedServer) waitForHealth(ctx context.Context, path string) error {
 
 		select {
 		case <-s.exited:
-			return fmt.Errorf("server exited before becoming healthy: %w", s.waitErr)
+			return serverExitedBeforeHealthyError(s.waitErr)
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+}
+
+func serverExitedBeforeHealthyError(waitErr error) error {
+	if waitErr == nil {
+		return fmt.Errorf("server exited before becoming healthy with status 0")
+	}
+	return fmt.Errorf("server exited before becoming healthy: %w", waitErr)
 }
 
 // shutdown gracefully stops the server process. The long-running goroutine
@@ -171,6 +191,7 @@ func (s *managedServer) waitForHealth(ctx context.Context, path string) error {
 // exited - if SIGKILL fails to reap it, the file is left on disk so a
 // future daemon can finish the job.
 func (s *managedServer) shutdown() {
+	s.stopping.Store(true)
 	if s.cmd == nil || s.cmd.Process == nil {
 		removeServerPIDFile(s.pidFile)
 		return

@@ -37,16 +37,18 @@ func TestSubscribeMalformedEvent(t *testing.T) {
 	srv := startServer(t, sock)
 
 	// Stream handler sends one valid event, one malformed JSON, one valid event.
-	srv.HandleStream(ipc.MethodSubscribe, func(_ context.Context, _ json.RawMessage, send func(interface{}) error) error {
-		s1 := "first"
-		if err := send(ipc.Event{Type: ipc.EventRunUpdated, RunID: "r1", Status: &s1}); err != nil {
-			return err
-		}
-		// Send raw malformed JSON by encoding a special string that the encoder wraps.
-		// We need to write raw bytes — use send with a type that produces invalid Event JSON.
-		// Actually, the send function calls encoder.Encode which always produces valid JSON.
-		// So we need to write directly to the connection. Instead, we'll test this via a raw socket.
-		return nil
+	srv.HandleStream(ipc.MethodSubscribe, func(_ context.Context, _ json.RawMessage) (ipc.StreamFunc, error) {
+		return func(send func(interface{}) error) error {
+			s1 := "first"
+			if err := send(ipc.Event{Type: ipc.EventRunUpdated, RunID: "r1", Status: &s1}); err != nil {
+				return err
+			}
+			// Send raw malformed JSON by encoding a special string that the encoder wraps.
+			// We need to write raw bytes - use send with a type that produces invalid Event JSON.
+			// Actually, the send function calls encoder.Encode which always produces valid JSON.
+			// So we need to write directly to the connection. Instead, we'll test this via a raw socket.
+			return nil
+		}, nil
 	})
 
 	// This approach won't work for malformed events since send always produces valid JSON.
@@ -150,23 +152,25 @@ func TestSubscribeClient(t *testing.T) {
 	srv := startServer(t, sock)
 
 	// Set up a stream handler that sends 3 events.
-	srv.HandleStream(ipc.MethodSubscribe, func(_ context.Context, raw json.RawMessage, send func(interface{}) error) error {
+	srv.HandleStream(ipc.MethodSubscribe, func(_ context.Context, raw json.RawMessage) (ipc.StreamFunc, error) {
 		var p ipc.SubscribeParams
 		if err := json.Unmarshal(raw, &p); err != nil {
-			return err
+			return nil, err
 		}
-		for i := 0; i < 3; i++ {
-			status := fmt.Sprintf("event-%d", i)
-			event := ipc.Event{
-				Type:   ipc.EventRunUpdated,
-				RunID:  p.RunID,
-				Status: &status,
+		return func(send func(interface{}) error) error {
+			for i := 0; i < 3; i++ {
+				status := fmt.Sprintf("event-%d", i)
+				event := ipc.Event{
+					Type:   ipc.EventRunUpdated,
+					RunID:  p.RunID,
+					Status: &status,
+				}
+				if err := send(event); err != nil {
+					return err
+				}
 			}
-			if err := send(event); err != nil {
-				return err
-			}
-		}
-		return nil // handler returns → connection closes → channel closes
+			return nil // handler returns → connection closes → channel closes
+		}, nil
 	})
 
 	ch, cancel, err := ipc.Subscribe(sock, &ipc.SubscribeParams{RunID: "run123"})

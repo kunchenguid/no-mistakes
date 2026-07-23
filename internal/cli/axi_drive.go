@@ -23,11 +23,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// drivePollInterval is how often the drive loop re-reads run state. Short
-// enough to feel responsive to an agent, long enough to avoid hammering the
-// daemon during long agent steps.
-const drivePollInterval = 250 * time.Millisecond
-
 // triggerWaitTimeout bounds how long we wait for the daemon to register a run
 // after pushing to the gate before falling back to a rerun.
 const triggerWaitTimeout = 5 * time.Second
@@ -157,7 +152,7 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 		}
 	}
 
-	run, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, runID, autoYes, ciLogReader(env.p))
+	run, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, autoYes, ciLogReader(env.p))
 	if err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}
@@ -404,8 +399,9 @@ func rerunParams(repoID, branch string, skipSteps []types.StepName, intent strin
 	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent}
 }
 
-// driveRun polls a run until it reaches an approval gate, a terminal state, or
-// CI checks pass, streaming step transitions to progress (stderr). When
+// driveRun subscribes to a run and reconciles authoritative state on transition
+// events until it reaches an approval gate, a terminal state, or CI checks
+// pass, streaming step transitions to progress (stderr). When
 // autoApprove is set it resolves each gate and continues; otherwise it returns
 // at the first gate so the caller can surface it for a human/agent decision.
 //
@@ -422,14 +418,18 @@ func rerunParams(repoID, branch string, skipSteps []types.StepName, intent strin
 // ready for a human to merge. The daemon keeps monitoring in the background.
 // readCILog reads the CI step's log lines for runID; it may be nil (no early
 // stop) and returns nil when no log exists yet.
-func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, runID string, autoApprove bool, readCILog func(string) []string) (run *ipc.RunInfo, ciReady bool, err error) {
+func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, socketPath, runID string, autoApprove bool, readCILog func(string) []string) (run *ipc.RunInfo, ciReady bool, err error) {
+	reconciler := newRunReconciler(&ipcRunStateSource{socketPath: socketPath}, runID)
+	defer reconciler.Close()
+	return driveRunWithReconciler(ctx, progress, client, reconciler, runID, autoApprove, readCILog)
+}
+
+func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc.Client, reconciler *runReconciler, runID string, autoApprove bool, readCILog func(string) []string) (run *ipc.RunInfo, ciReady bool, err error) {
 	pp := &progressPrinter{w: progress, seen: map[string]string{}}
 	fixedSteps := map[string]bool{}
+	pendingGate := ""
 	for {
-		if err := ctx.Err(); err != nil {
-			return nil, false, err
-		}
-		run, err := getRunInfo(client, runID)
+		run, err := reconciler.Next(ctx)
 		if err != nil {
 			return nil, false, err
 		}
@@ -446,6 +446,13 @@ func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, runID
 			if !autoApprove {
 				return run, false, nil
 			}
+			gateKey := gate.Name + "\x00" + gate.Status
+			if pendingGate == gateKey {
+				// Duplicate or delayed events can race persistence after a response.
+				// Keep waiting for an authoritative transition rather than answering
+				// the same gate twice.
+				continue
+			}
 			action, findingIDs := gateResolution(gate, fixedSteps[gate.Name])
 			if action == types.ActionFix {
 				fixedSteps[gate.Name] = true
@@ -453,19 +460,15 @@ func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, runID
 			if err := sendRespond(client, runID, types.StepName(gate.Name), action, findingIDs, nil, nil); err != nil {
 				return nil, false, fmt.Errorf("auto-resolve %s: %w", gate.Name, err)
 			}
-			if err := waitStepLeavesGate(ctx, client, runID, gate.Name, gate.Status); err != nil {
-				return nil, false, err
-			}
+			pendingGate = gateKey
 			continue
 		}
+		pendingGate = ""
 		// CI is green but the PR is unmerged: hand control back rather than
 		// waiting on a human merge. This holds even under autoApprove, since
 		// the agent cannot approve away a human's merge.
 		if readCILog != nil && ciReadyToMerge(rv, readCILog(runID)) {
 			return run, true, nil
-		}
-		if err := sleepCtx(ctx, drivePollInterval); err != nil {
-			return nil, false, err
 		}
 	}
 }
@@ -525,13 +528,12 @@ func gateResolution(gate stepView, alreadyFixed bool) (types.ApprovalAction, []s
 // waitStepLeavesGate blocks until the named step's status changes away from the
 // gate status we just answered, or the run terminates. This prevents a
 // double-approve race: respond is asynchronous, so without waiting the next
-// poll could still observe the same gate and approve it twice.
-func waitStepLeavesGate(ctx context.Context, client *ipc.Client, runID, step, gateStatus string) error {
+// event reconciliation could still observe the same gate and approve it twice.
+func waitStepLeavesGate(ctx context.Context, socketPath, runID, step, gateStatus string) error {
+	reconciler := newRunReconciler(&ipcRunStateSource{socketPath: socketPath}, runID)
+	defer reconciler.Close()
 	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		run, err := getRunInfo(client, runID)
+		run, err := reconciler.Next(ctx)
 		if err != nil {
 			return err
 		}
@@ -545,9 +547,6 @@ func waitStepLeavesGate(ctx context.Context, client *ipc.Client, runID, step, ga
 				}
 				break
 			}
-		}
-		if err := sleepCtx(ctx, drivePollInterval); err != nil {
-			return err
 		}
 	}
 }
@@ -578,17 +577,6 @@ func sendRespond(client *ipc.Client, runID string, step types.StepName, action t
 		return fmt.Errorf("daemon rejected the response")
 	}
 	return nil
-}
-
-func sleepCtx(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
 }
 
 // renderDriveResult prints the run snapshot plus one of: the active gate (exit
@@ -814,11 +802,11 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 
 	// Let the executor consume the response before we re-read state, so we
 	// don't immediately observe the same gate we just answered.
-	if err := waitStepLeavesGate(ctx, env.client, runID, string(stepName), gateStatusFor(rv, string(stepName))); err != nil {
+	if err := waitStepLeavesGate(ctx, env.p.Socket(), runID, string(stepName), gateStatusFor(rv, string(stepName))); err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("wait for %s: %v", stepName, err))
 	}
 
-	final, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, runID, ra.autoYes, ciLogReader(env.p))
+	final, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes, ciLogReader(env.p))
 	if err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}

@@ -74,14 +74,14 @@ func TestWaitForDaemonStopKeepsArtifactsWhenKillFails(t *testing.T) {
 	}
 }
 
-func TestDaemonStartTimeoutDefaultsToLongerWindowOnWindows(t *testing.T) {
+func TestDaemonStartTimeoutCoversColdProductionWork(t *testing.T) {
 	t.Setenv("NM_TEST_DAEMON_START_TIMEOUT", "")
 	oldGOOS := runtimeGOOS
 	runtimeGOOS = "windows"
 	t.Cleanup(func() { runtimeGOOS = oldGOOS })
 
-	if got := daemonStartTimeout(); got != 15*time.Second {
-		t.Fatalf("daemonStartTimeout() = %v, want 15s", got)
+	if got := daemonStartTimeout(); got != 45*time.Second {
+		t.Fatalf("daemonStartTimeout() = %v, want 45s", got)
 	}
 }
 

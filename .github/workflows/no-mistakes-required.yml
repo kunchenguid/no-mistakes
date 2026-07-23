@@ -1,4 +1,5 @@
 name: Require no-mistakes
+run-name: "PR #${{ github.event.pull_request.number }} body compliance - ${{ github.event.action }} - event ${{ github.run_number }} (run ${{ github.run_id }})"
 
 on:
   pull_request:
@@ -9,8 +10,12 @@ on:
 permissions:
   contents: read
 
+# GitHub concurrency groups retain at most one pending run, replacing older
+# pending runs even when cancel-in-progress is false. Give body-bearing events
+# an immutable per-event group so first-time-fork approvals can never collapse
+# opened/edited checks. Keep synchronize/reopened coalescing as before.
 concurrency:
-  group: no-mistakes-required-${{ github.event.pull_request.number }}
+  group: no-mistakes-required-${{ github.event.pull_request.number }}-${{ (github.event.action == 'opened' || github.event.action == 'edited') && github.run_id || 'head-change' }}
   cancel-in-progress: true
 
 jobs:

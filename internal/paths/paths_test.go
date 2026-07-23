@@ -64,6 +64,12 @@ func TestLogPaths(t *testing.T) {
 	if got := p.DaemonLog(); got != filepath.Join(root, "logs", "daemon.log") {
 		t.Errorf("DaemonLog() = %q", got)
 	}
+	if got := p.DaemonBootstrapLog(); got != filepath.Join(root, "logs", "daemon-bootstrap.log") {
+		t.Errorf("DaemonBootstrapLog() = %q", got)
+	}
+	if got := p.ManagedServerLog(); got != filepath.Join(root, "logs", "managed-server.log") {
+		t.Errorf("ManagedServerLog() = %q", got)
+	}
 }
 
 func TestNewWithEnvOverride(t *testing.T) {

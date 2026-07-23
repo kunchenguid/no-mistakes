@@ -17,6 +17,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm/github"
 )
 
+var ensureGateHooksPathIsolation = git.EnsureHooksPathIsolation
+
 // RemoteName is the name of the git remote that points to the local gate.
 const RemoteName = "no-mistakes"
 
@@ -179,7 +181,7 @@ func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL, reposDir 
 	if err := git.InitBare(ctx, bareDir); err != nil {
 		return fmt.Errorf("create bare repo: %w", err)
 	}
-	if _, err := git.Run(ctx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
+	if _, err := git.RunBare(ctx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
 		return fmt.Errorf("enable push options: %w", err)
 	}
 
@@ -190,8 +192,14 @@ func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL, reposDir 
 	// Pin core.hookspath in the bare's per-worktree config so subprocess
 	// writes to shared local config (e.g. husky during pnpm install) can't
 	// disable the gate hook. See git.IsolateHooksPath for details.
-	if err := git.IsolateHooksPath(ctx, bareDir); err != nil {
+	isolated, err := ensureGateHooksPathIsolation(ctx, bareDir)
+	if err != nil {
 		return fmt.Errorf("isolate hooks path: %w", err)
+	}
+	if isolated {
+		if err := git.MarkGateConfigCurrent(bareDir); err != nil {
+			return fmt.Errorf("stamp gate config: %w", err)
+		}
 	}
 
 	// Record upstream as origin on the gate repo so gh can resolve repository

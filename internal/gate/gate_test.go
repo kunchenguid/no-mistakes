@@ -23,6 +23,33 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestProvisionGateDoesNotStampUnsupportedHookIsolation(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work")
+	if out, err := exec.Command("git", "init", workDir).CombinedOutput(); err != nil {
+		t.Fatalf("init worktree: %v: %s", err, out)
+	}
+	reposDir := filepath.Join(root, "repos")
+	if err := os.MkdirAll(reposDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bareDir := filepath.Join(reposDir, "repo.git")
+
+	oldEnsure := ensureGateHooksPathIsolation
+	ensureGateHooksPathIsolation = func(context.Context, string) (bool, error) {
+		return false, nil
+	}
+	t.Cleanup(func() { ensureGateHooksPathIsolation = oldEnsure })
+
+	if err := provisionGate(ctx, bareDir, workDir, "https://example.com/repo.git", reposDir, false); err != nil {
+		t.Fatal(err)
+	}
+	if gitpkg.GateConfigCurrent(bareDir) {
+		t.Fatal("gate with unsupported hook isolation must not be stamped current")
+	}
+}
+
 // resolveSymlinks resolves symlinks in a path (needed on macOS where
 // /var → /private/var but git returns resolved paths).
 func resolveSymlinks(t *testing.T, p string) string {
