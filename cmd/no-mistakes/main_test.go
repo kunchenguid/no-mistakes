@@ -120,6 +120,22 @@ func TestDaemonRunRootFromArgs(t *testing.T) {
 	}
 }
 
+func TestDaemonLogSinkRootFromArgs(t *testing.T) {
+	root, ok, err := daemonLogSinkRootFromArgs([]string{"daemon", "log-sink", "--root", "/tmp/nm"})
+	if err != nil || !ok || root != "/tmp/nm" {
+		t.Fatalf("got (%q, %v, %v)", root, ok, err)
+	}
+	for _, args := range [][]string{
+		{"daemon", "status"},
+		{"daemon", "log-sink"},
+		{"daemon", "log-sink", "--root=/tmp/nm"},
+	} {
+		if root, ok, err := daemonLogSinkRootFromArgs(args); err != nil || ok || root != "" {
+			t.Fatalf("%v got (%q, %v, %v)", args, root, ok, err)
+		}
+	}
+}
+
 func TestDaemonRunRootFromArgs_EnvDoesNotForceDaemonModeForProbes(t *testing.T) {
 	t.Setenv("NM_DAEMON", "1")
 

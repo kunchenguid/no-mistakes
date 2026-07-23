@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -41,9 +42,11 @@ func Run() (retErr error) {
 	if err := p.EnsureDirs(); err != nil {
 		return fmt.Errorf("create directories: %w", err)
 	}
-	if err := logstore.RotateAtStartup(p.DaemonBootstrapLog(), logstore.BootstrapPolicy()); err != nil {
-		return fmt.Errorf("rotate daemon bootstrap log: %w", err)
+	bootstrapCapture, err := startBootstrapCapture(p)
+	if err != nil {
+		return fmt.Errorf("capture daemon bootstrap log: %w", err)
 	}
+	defer func() { retErr = errors.Join(retErr, bootstrapCapture.Close()) }()
 	lifecycleLog, err := logstore.Open(p.DaemonLog(), logstore.LifecyclePolicy())
 	if err != nil {
 		return fmt.Errorf("open daemon lifecycle log: %w", err)
