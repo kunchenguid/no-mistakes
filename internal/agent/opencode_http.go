@@ -81,18 +81,46 @@ var probeOpencodeNoProjectInstructions = func(ctx context.Context, bin string) e
 
 // opencodeHelpListsNoProjectInstructions reports whether the `opencode serve
 // --help` text advertises the --no-project-instructions flag. It matches the
-// bare flag name as a token so a flag like --no-project-instructions-foo does
-// not false-positive, and tolerates the leading "--" yargs emits.
+// flag as a whole-word token so a similarly-named flag like
+// --no-project-instructions-foo does not false-positive, and tolerates the
+// leading "--" yargs emits.
 func opencodeHelpListsNoProjectInstructions(helpText string) bool {
+	const flag = "--no-project-instructions"
 	for _, line := range strings.Split(helpText, "\n") {
 		// yargs indents flag rows; the flag name appears after the leading "--".
 		// Match "--no-project-instructions" as a whole-word token so a
-		// similarly-named flag does not false-match.
-		if strings.Contains(line, "--no-project-instructions") {
+		// similarly-named flag does not false-match: the token must be
+		// bounded by non-flag-name characters (whitespace, ',', '[', or end).
+		// A bare substring match would false-positive on
+		// --no-project-instructions-foo.
+		if helpLineHasFlagToken(line, flag) {
 			return true
 		}
 	}
 	return false
+}
+
+// helpLineHasFlagToken reports whether line contains flag as a whole-word
+// token. A token boundary is any char that cannot appear inside a yargs long
+// flag name (anything other than [A-Za-z0-9-]) or the start/end of the line,
+// so "--no-project-instructions-foo" does not match "--no-project-instructions".
+func helpLineHasFlagToken(line, flag string) bool {
+	idx := strings.Index(line, flag)
+	if idx < 0 {
+		return false
+	}
+	end := idx + len(flag)
+	leftOK := idx == 0 || !isFlagNameChar(line[idx-1])
+	rightOK := end == len(line) || !isFlagNameChar(line[end])
+	return leftOK && rightOK
+}
+
+// isFlagNameChar reports whether c may appear inside a yargs long flag name
+// (letters, digits, and hyphens). A hyphen is included because yargs long
+// flags are kebab-case; any other char (space, comma, '[', '=', ':') is a
+// boundary that delimits the flag token.
+func isFlagNameChar(c byte) bool {
+	return c == '-' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 // buildOpencodeServeArgs builds `opencode serve`'s argv with user-supplied
@@ -136,12 +164,24 @@ func buildOpencodeServeArgs(extraArgs []string, port int, disableProjectSettings
 // yargs print help and exit 0, breaking the server. The model is instead
 // passed to the session creation API (see createSession). When --model is
 // absent, the remaining args are returned unchanged with an empty model.
-func opencodeExtractModel(extraArgs []string) ([]string, string) {
+//
+// A bare trailing `--model` with no following value is a malformed operator
+// config (agent_args_override); rather than passing the dangling flag through
+// to opencode serve (where yargs would either reject it or silently consume
+// the next flag as its value), it is surfaced as an explicit error here so
+// the operator gets a clear "missing --model value" diagnostic at agent
+// construction time.
+func opencodeExtractModel(extraArgs []string) ([]string, string, error) {
 	var model string
 	out := make([]string, 0, len(extraArgs))
 	for i := 0; i < len(extraArgs); i++ {
 		arg := extraArgs[i]
-		if arg == "--model" && i+1 < len(extraArgs) {
+		if arg == "--model" {
+			if i+1 >= len(extraArgs) {
+				return nil, "", fmt.Errorf("opencode agent_args_override: --model requires a value " +
+					"(e.g. --model ollama-cloud/glm-5.2); fix agent_args_override.opencode in " +
+					"~/.no-mistakes/config.yaml")
+			}
 			model = extraArgs[i+1]
 			i++ // skip the value
 			continue
@@ -152,7 +192,7 @@ func opencodeExtractModel(extraArgs []string) ([]string, string) {
 		}
 		out = append(out, arg)
 	}
-	return out, model
+	return out, model, nil
 }
 
 func (a *opencodeAgent) createSession(ctx context.Context, baseURL, cwd string) (string, error) {

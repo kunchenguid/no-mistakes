@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -91,21 +92,8 @@ func TestProbeOpencodeNoProjectInstructions_RealProbeRefusesUnsupported(t *testi
 		t.Fatal("unsupported binary must fail the real probe")
 	}
 	for _, want := range []string{"--no-project-instructions", "disable_project_settings", "upgrade OpenCode"} {
-		if !contains(err.Error(), want) {
+		if !strings.Contains(err.Error(), want) {
 			t.Errorf("diagnostic must mention %q, got: %v", want, err)
 		}
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || indexOfString(s, substr) >= 0)
-}
-
-func indexOfString(s, substr string) int {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }

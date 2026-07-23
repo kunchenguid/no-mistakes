@@ -29,6 +29,16 @@ func TestOpencodeHelpListsNoProjectInstructions(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "similarly-named flag does not false-match",
+			help: "      --no-project-instructions-foo  some other flag   [boolean]\n",
+			want: false,
+		},
+		{
+			name: "prose mention does not false-match",
+			help: "runs without --no-project-instructions-foo support\n",
+			want: false,
+		},
+		{
 			name: "flag absent (older binary)",
 			help: "opencode serve\n\nOptions:\n      --pure         run without external plugins   [boolean]\n",
 			want: false,
@@ -158,10 +168,19 @@ func TestOpencodeExtractModel(t *testing.T) {
 			wantArgs:  []string{},
 			wantModel: "ollama-cloud/glm-5.2",
 		},
+		{
+			name:      "empty model value (equals form)",
+			extraArgs: []string{"--model="},
+			wantArgs:  []string{},
+			wantModel: "",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			gotArgs, gotModel := opencodeExtractModel(c.extraArgs)
+			gotArgs, gotModel, err := opencodeExtractModel(c.extraArgs)
+			if err != nil {
+				t.Fatalf("opencodeExtractModel unexpected error: %v", err)
+			}
 			if gotModel != c.wantModel {
 				t.Errorf("model = %q, want %q", gotModel, c.wantModel)
 			}
@@ -169,6 +188,26 @@ func TestOpencodeExtractModel(t *testing.T) {
 				t.Errorf("args = %v, want %v", gotArgs, c.wantArgs)
 			}
 		})
+	}
+}
+
+// TestOpencodeExtractModel_DanglingModelReturnsError proves a trailing bare
+// --model with no following value is surfaced as a clear error rather than
+// passed through to opencode serve where yargs would break the server.
+func TestOpencodeExtractModel_DanglingModelReturnsError(t *testing.T) {
+	_, _, err := opencodeExtractModel([]string{"--log-level", "DEBUG", "--model"})
+	if err == nil {
+		t.Fatal("dangling --model must return an error")
+	}
+	for _, want := range []string{"--model", "requires a value", "agent_args_override"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must mention %q, got: %v", want, err)
+		}
+	}
+
+	_, _, err = opencodeExtractModel([]string{"--model"})
+	if err == nil {
+		t.Fatal("bare --model must return an error")
 	}
 }
 
@@ -263,7 +302,10 @@ func TestOpencodeAgent_NewWithOptionsWiresOptOut(t *testing.T) {
 // the neutralization flags are still appended to the serve argv.
 func TestOpencodeAgent_PreservesModelArgsUnderOptOut(t *testing.T) {
 	// Simulate NewWithOptions extracting --model from extraArgs.
-	serveArgs, model := opencodeExtractModel([]string{"--model", "ollama-cloud/glm-5.2"})
+	serveArgs, model, err := opencodeExtractModel([]string{"--model", "ollama-cloud/glm-5.2"})
+	if err != nil {
+		t.Fatalf("opencodeExtractModel: %v", err)
+	}
 	oa := &opencodeAgent{
 		bin:                    "opencode",
 		extraArgs:              serveArgs,

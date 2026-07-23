@@ -811,7 +811,10 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 		// the server. Extract --model from extraArgs and pass it to the session
 		// creation API instead, so operator model pinning (agent_args_override)
 		// works without breaking the serve argv.
-		serveArgs, model := opencodeExtractModel(extraArgs)
+		serveArgs, model, err := opencodeExtractModel(extraArgs)
+		if err != nil {
+			return nil, err
+		}
 		return &opencodeAgent{bin: bin, extraArgs: serveArgs, disableProjectSettings: opts.DisableProjectSettings, sessionModel: model}, nil
 	case types.AgentPi:
 		return &piAgent{bin: bin, extraArgs: extraArgs}, nil

@@ -80,7 +80,10 @@ func TestBuildOpencodeServeArgs_OptOutAddsNeutralizationFlags(t *testing.T) {
 // createSession, not the serve argv.
 func TestBuildOpencodeServeArgs_OptOutPreservesPinnedModel(t *testing.T) {
 	// --model is extracted before buildOpencodeServeArgs sees extraArgs.
-	serveArgs, model := opencodeExtractModel([]string{"--model", "ollama-cloud/glm-5.2"})
+	serveArgs, model, err := opencodeExtractModel([]string{"--model", "ollama-cloud/glm-5.2"})
+	if err != nil {
+		t.Fatalf("opencodeExtractModel: %v", err)
+	}
 	if model != "ollama-cloud/glm-5.2" {
 		t.Errorf("opencodeExtractModel must return the model value, got %q", model)
 	}
