@@ -35,8 +35,23 @@ func IsZeroSHA(sha string) bool {
 // on discovering a bare repo from the working directory (issue #362).
 func Run(ctx context.Context, dir string, args ...string) (string, error) {
 	if isBareGitDir(dir) {
-		args = append([]string{"--git-dir=" + dir}, args...)
+		return RunBare(ctx, dir, args...)
 	}
+	return runInDir(ctx, dir, args...)
+}
+
+// RunBare executes Git against exactly bareDir. Unlike Run, it never falls
+// back to cwd-based repository discovery when bareDir is malformed. Gate
+// recovery uses this after structural validation so an invalid directory under
+// NM_HOME cannot discover or mutate an ancestor worktree.
+func RunBare(ctx context.Context, bareDir string, args ...string) (string, error) {
+	if bareDir == "" {
+		return "", fmt.Errorf("bare git directory is empty")
+	}
+	return runInDir(ctx, bareDir, append([]string{"--git-dir=" + bareDir}, args...)...)
+}
+
+func runInDir(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = NonInteractiveEnv(dir)
@@ -52,12 +67,40 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// ValidateBareRepository verifies both the filesystem shape and Git's own bare
+// repository classification. The Git query is explicitly scoped with
+// --git-dir, so validation itself cannot discover an ancestor repository.
+func ValidateBareRepository(ctx context.Context, bareDir string) error {
+	if !isBareGitDir(bareDir) {
+		return fmt.Errorf("not a structurally valid bare repository: %s", bareDir)
+	}
+	out, err := RunBare(ctx, bareDir, "rev-parse", "--is-bare-repository")
+	if err != nil {
+		return fmt.Errorf("validate bare repository: %w", err)
+	}
+	if strings.TrimSpace(out) != "true" {
+		return fmt.Errorf("repository is not bare: %s", bareDir)
+	}
+	return nil
+}
+
+// LooksLikeBareRepository performs the non-mutating structural half of bare
+// repository validation. Call ValidateBareRepository before mutating an
+// unstamped directory discovered from the filesystem.
+func LooksLikeBareRepository(dir string) bool {
+	return isBareGitDir(dir)
+}
+
 // isBareGitDir reports whether dir is itself a git directory (a bare repo),
 // as opposed to a working tree or linked worktree, which carry a .git entry
 // and keep using normal discovery. The check mirrors git's own git-dir
 // heuristic: a HEAD file plus an objects directory.
 func isBareGitDir(dir string) bool {
 	if dir == "" {
+		return false
+	}
+	root, err := os.Lstat(dir)
+	if err != nil || !root.IsDir() || root.Mode()&os.ModeSymlink != 0 {
 		return false
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {

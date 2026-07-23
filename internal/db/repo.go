@@ -77,6 +77,30 @@ func (d *DB) InsertRepoWithFork(workingPath, upstreamURL, forkURL, defaultBranch
 	return r, nil
 }
 
+// GetRepos returns every authoritative repository record ordered by ID.
+func (d *DB) GetRepos() ([]*Repo, error) {
+	rows, err := d.sql.Query(
+		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos ORDER BY id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get repos: %w", err)
+	}
+	defer rows.Close()
+
+	var repos []*Repo
+	for rows.Next() {
+		r := &Repo{}
+		if err := rows.Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan repo: %w", err)
+		}
+		repos = append(repos, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate repos: %w", err)
+	}
+	return repos, nil
+}
+
 // GetRepo returns a repo by ID.
 func (d *DB) GetRepo(id string) (*Repo, error) {
 	r := &Repo{}

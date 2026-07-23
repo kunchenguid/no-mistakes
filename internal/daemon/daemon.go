@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,9 +39,11 @@ func Run() error {
 	if err := p.EnsureDirs(); err != nil {
 		return fmt.Errorf("create directories: %w", err)
 	}
+	environmentStarted := time.Now()
 	if err := prepareDaemonEnvironment(); err != nil {
 		return err
 	}
+	logStartupPhase("environment", environmentStarted)
 
 	// Ensure default config exists, then load it.
 	config.EnsureDefaultGlobalConfig(p.ConfigFile())
@@ -49,11 +53,13 @@ func Run() error {
 	}
 	initLogger(globalCfg.LogLevel)
 
+	databaseStarted := time.Now()
 	d, err := db.Open(p.DB())
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer d.Close()
+	logStartupPhase("database", databaseStarted)
 
 	return RunWithResources(p, d)
 }
@@ -107,6 +113,12 @@ func initLogger(level string) {
 	slog.SetDefault(slog.New(handler))
 }
 
+func logStartupPhase(phase string, started time.Time, attrs ...any) {
+	fields := []any{"phase", phase, "duration_ms", time.Since(started).Milliseconds()}
+	fields = append(fields, attrs...)
+	slog.Info("daemon startup phase complete", fields...)
+}
+
 // RunWithResources starts the daemon with pre-initialized paths and DB.
 // Useful for testing where the caller controls resource setup.
 func RunWithResources(p *paths.Paths, d *db.DB) error {
@@ -116,6 +128,7 @@ func RunWithResources(p *paths.Paths, d *db.DB) error {
 // RunWithOptions starts the daemon with optional overrides.
 // stepFactory overrides the default pipeline steps (for testing).
 func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
+	startupStarted := time.Now()
 	// Singleton guard: only one live daemon may own this NM_HOME at a time.
 	// This must be acquired before recoverOnStartup (global stale-run
 	// recovery and orphan-worktree cleanup) and before the IPC socket is
@@ -144,7 +157,27 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 
 	mgr := NewRunManager(d, p, stepFactory)
 
-	// Recover stale runs from a previous daemon crash.
+	// Publish process identity as soon as the singleton lock is held. Startup
+	// callers can now distinguish a launched child from IPC readiness and detect
+	// an early managed-child exit while exclusive recovery is still running.
+	pidPath := p.PIDFile()
+	pidRecord, err := currentDaemonPIDRecord(processStartTime, func() time.Time { return time.Now().UTC() })
+	if err != nil {
+		return fmt.Errorf("build pid file: %w", err)
+	}
+	if err := writeDaemonPIDFile(pidPath, pidRecord); err != nil {
+		return fmt.Errorf("write pid file: %w", err)
+	}
+	defer func() {
+		if pidData, err := os.ReadFile(pidPath); err == nil {
+			if current, readErr := readDaemonPIDFileData(pidData); readErr == nil && current.PID == pidRecord.PID && current.StartedAt.Equal(pidRecord.StartedAt) {
+				_ = os.Remove(pidPath)
+			}
+		}
+	}()
+	slog.Info("daemon process launched", "pid", pidRecord.PID)
+
+	// Recovery remains exclusive and completes before IPC is bound.
 	recoverOnStartup(d, p, mgr)
 
 	srv := ipc.NewServer()
@@ -164,23 +197,6 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 
 	registerHandlers(srv, mgr, d, func() { doShutdown("ipc request") })
 
-	// Write PID file
-	pidPath := p.PIDFile()
-	pidRecord, err := currentDaemonPIDRecord(processStartTime, func() time.Time { return time.Now().UTC() })
-	if err != nil {
-		return fmt.Errorf("build pid file: %w", err)
-	}
-	if err := writeDaemonPIDFile(pidPath, pidRecord); err != nil {
-		return fmt.Errorf("write pid file: %w", err)
-	}
-	defer func() {
-		if pidData, err := os.ReadFile(pidPath); err == nil {
-			if current, readErr := readDaemonPIDFileData(pidData); readErr == nil && current.PID == pidRecord.PID && current.StartedAt.Equal(pidRecord.StartedAt) {
-				os.Remove(pidPath)
-			}
-		}
-	}()
-
 	// Handle OS signals
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, daemonSignals()...)
@@ -194,9 +210,24 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 	}()
 
 	socketPath := p.Socket()
-	slog.Info("daemon starting", "socket", socketPath, "pid", os.Getpid())
+	bindStarted := time.Now()
+	if err := srv.Listen(socketPath); err != nil {
+		return fmt.Errorf("bind IPC: %w", err)
+	}
+	logStartupPhase("ipc_bind", bindStarted)
 
-	if err := srv.Serve(socketPath); err != nil {
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- srv.ServeReady() }()
+	healthStarted := time.Now()
+	if err := confirmLocalIPCHealth(p, 2*time.Second); err != nil {
+		srv.Close()
+		<-serveErrCh
+		return fmt.Errorf("confirm IPC health: %w", err)
+	}
+	logStartupPhase("ipc_health", healthStarted)
+	slog.Info("daemon ready", "socket", socketPath, "pid", os.Getpid(), "startup_ms", time.Since(startupStarted).Milliseconds())
+
+	if err := <-serveErrCh; err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
 	doShutdown("listener closed")
@@ -211,6 +242,25 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 	}
 	slog.Info("daemon stopped")
 	return nil
+}
+
+func confirmLocalIPCHealth(p *paths.Paths, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		alive, err := daemonIsRunningViaIPC(p)
+		if err == nil && alive {
+			return nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("health did not report ready within %v", timeout)
 }
 
 func currentDaemonPIDRecord(startTime func(int) (time.Time, error), now func() time.Time) (daemonPIDFile, error) {
@@ -265,17 +315,33 @@ func writeDaemonPIDFile(path string, record daemonPIDFile) error {
 // the per-worktree hookspath isolation introduced for issue #122 when Git
 // supports config --worktree.
 func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
+	orphanStarted := time.Now()
 	reapOrphanedServers(p)
-	migrateGateConfigs(context.Background(), p)
+	logStartupPhase("orphan_servers", orphanStarted)
 
+	gateStarted := time.Now()
+	gateStats := migrateGateConfigs(context.Background(), d, p)
+	logStartupPhase("gate_migration", gateStarted,
+		"gate_count", gateStats.Gates,
+		"current", gateStats.Current,
+		"migrated", gateStats.Migrated,
+		"rejected", gateStats.Rejected,
+		"failed", gateStats.Failed,
+	)
+
+	parkedStarted := time.Now()
 	plans := mgr.recoverableParkedRuns(context.Background())
 	preserved := make(map[string]struct{}, len(plans))
 	for _, plan := range plans {
 		preserved[plan.run.ID] = struct{}{}
 	}
+	logStartupPhase("parked_runs", parkedStarted, "preserved", len(plans))
+
+	staleStarted := time.Now()
 	count, err := d.RecoverStaleRunsExcept("daemon crashed during execution", preserved)
 	if err != nil {
 		slog.Error("failed to recover stale runs", "error", err)
+		logStartupPhase("stale_runs", staleStarted, "failed", true)
 		for _, plan := range plans {
 			_ = plan.agent.Close()
 		}
@@ -284,8 +350,11 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	if count > 0 {
 		slog.Info("recovered stale runs from previous crash", "count", count)
 	}
+	logStartupPhase("stale_runs", staleStarted, "recovered", count)
 
+	worktreeStarted := time.Now()
 	cleanupOrphanWorktrees(d, p)
+	logStartupPhase("worktree_cleanup", worktreeStarted)
 	mgr.resumeRecoveredRuns(plans)
 }
 
@@ -361,35 +430,104 @@ func skipWorktreeCleanup(d *db.DB, runID string) (bool, string) {
 	return false, ""
 }
 
-// migrateGateConfigs walks every bare repo under p.ReposDir() and refreshes
-// no-mistakes-managed post-receive hooks, enables push options, and applies
-// git.IsolateHooksPath. The operation is idempotent: bare repos already
-// configured by gate.Init are left effectively unchanged, and custom hooks are
-// preserved. Older bare repos (from before issue #122 was fixed) best-effort
-// get their managed hook updated and per-worktree hookspath pinned when Git
-// supports config --worktree, so subsequent husky-style writes to shared local
-// config can no longer disable the post-receive hook.
-func migrateGateConfigs(ctx context.Context, p *paths.Paths) {
-	entries, err := os.ReadDir(p.ReposDir())
+type gateMigrationStats struct {
+	Gates    int
+	Current  int
+	Migrated int
+	Rejected int
+	Failed   int
+}
+
+// migrateGateConfigs discovers gates from authoritative DB records plus legacy
+// directories with the strict <id>.git shape. Every unstamped candidate is
+// structurally checked and explicitly verified as bare before any hook or Git
+// mutation. A completed, content-versioned stamp makes normal restarts a cheap
+// filesystem-only pass instead of six Git subprocesses per gate.
+func migrateGateConfigs(ctx context.Context, d *db.DB, p *paths.Paths) gateMigrationStats {
+	var stats gateMigrationStats
+	candidates := make(map[string]struct{})
+	reposDir := filepath.Clean(p.ReposDir())
+
+	repos, err := d.GetRepos()
 	if err != nil {
-		// Repos dir may not exist yet on a fresh install.
-		return
+		slog.Warn("list authoritative gates for migration failed", "error", err)
+		stats.Failed++
+	} else {
+		for _, repo := range repos {
+			bareDir := filepath.Clean(p.RepoDir(repo.ID))
+			if filepath.Dir(bareDir) != reposDir || filepath.Base(bareDir) != repo.ID+".git" {
+				stats.Rejected++
+				slog.Warn("rejecting unsafe authoritative gate path", "repo_id", repo.ID)
+				continue
+			}
+			candidates[bareDir] = struct{}{}
+		}
+	}
+
+	entries, readErr := os.ReadDir(reposDir)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		slog.Warn("scan gate directory for migration failed", "error", readErr)
+		stats.Failed++
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		bareDir := filepath.Join(p.ReposDir(), entry.Name())
-		if _, err := git.RefreshManagedPostReceiveHook(bareDir); err != nil {
-			slog.Warn("refresh gate post-receive hook failed", "bare", bareDir, "error", err)
+		name := entry.Name()
+		id := strings.TrimSuffix(name, ".git")
+		if id == name || id == "" || filepath.Base(name) != name {
+			stats.Rejected++
+			continue
 		}
-		if _, err := git.Run(ctx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
-			slog.Warn("enable gate push options failed", "bare", bareDir, "error", err)
-		}
-		if err := git.IsolateHooksPath(ctx, bareDir); err != nil {
-			slog.Warn("isolate gate hooks path failed", "bare", bareDir, "error", err)
-		}
+		candidates[filepath.Join(reposDir, name)] = struct{}{}
 	}
+
+	dirs := make([]string, 0, len(candidates))
+	for bareDir := range candidates {
+		dirs = append(dirs, bareDir)
+	}
+	sort.Strings(dirs)
+	for _, bareDir := range dirs {
+		if !git.LooksLikeBareRepository(bareDir) {
+			stats.Rejected++
+			slog.Warn("rejecting invalid gate directory", "bare", bareDir)
+			continue
+		}
+		if git.GateConfigCurrent(bareDir) {
+			stats.Gates++
+			stats.Current++
+			continue
+		}
+		if err := git.ValidateBareRepository(ctx, bareDir); err != nil {
+			stats.Rejected++
+			slog.Warn("rejecting non-bare gate directory", "bare", bareDir, "error", err)
+			continue
+		}
+		stats.Gates++
+		if err := migrateGateConfig(ctx, bareDir); err != nil {
+			stats.Failed++
+			slog.Warn("migrate gate config failed", "bare", bareDir, "error", err)
+			continue
+		}
+		stats.Migrated++
+	}
+	return stats
+}
+
+func migrateGateConfig(ctx context.Context, bareDir string) error {
+	if _, err := git.RefreshManagedPostReceiveHook(bareDir); err != nil {
+		return fmt.Errorf("refresh managed post-receive hook: %w", err)
+	}
+	if _, err := git.RunBare(ctx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
+		return fmt.Errorf("enable push options: %w", err)
+	}
+	if err := git.IsolateHooksPath(ctx, bareDir); err != nil {
+		return fmt.Errorf("isolate hooks path: %w", err)
+	}
+	if err := git.MarkGateConfigCurrent(bareDir); err != nil {
+		return fmt.Errorf("stamp gate config: %w", err)
+	}
+	return nil
 }
 
 func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func()) {

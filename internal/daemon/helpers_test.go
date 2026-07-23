@@ -25,9 +25,21 @@ func TestMain(m *testing.M) {
 		if capturePath := os.Getenv("NM_CAPTURE_NM_HOME_FILE"); capturePath != "" {
 			_ = os.WriteFile(capturePath, []byte(os.Getenv("NM_HOME")), 0o644)
 		}
+		// Stay alive long enough for tests with a synthetic health transition
+		// to distinguish launch from readiness. The production exit regression
+		// uses the explicit "exit" mode below.
+		time.Sleep(500 * time.Millisecond)
 		os.Exit(0)
+	case "exit":
+		os.Exit(23)
 	case "block":
 		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	case "daemon":
+		if err := Run(); err != nil {
+			_, _ = os.Stderr.WriteString(err.Error() + "\n")
+			os.Exit(2)
+		}
 		os.Exit(0)
 	}
 	// The post-receive hook embeds os.Executable() as NM_BIN. In tests that

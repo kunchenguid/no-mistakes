@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -10,7 +11,9 @@ import (
 	"strings"
 )
 
-var runGit = Run
+var runGit = RunBare
+
+const gateConfigStampFile = "no-mistakes-gate-config"
 
 // PostReceiveHookScript returns the shell script for the post-receive hook.
 // The hook notifies the daemon via the CLI so it works across platforms.
@@ -150,8 +153,12 @@ func RefreshManagedPostReceiveHook(bareDir string) (bool, error) {
 }
 
 func writeHookFileAtomic(path string, content []byte) error {
+	return writeGateFileAtomic(path, content, 0o755, ".post-receive-*")
+}
+
+func writeGateFileAtomic(path string, content []byte, mode os.FileMode, pattern string) error {
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".post-receive-*")
+	tmp, err := os.CreateTemp(dir, pattern)
 	if err != nil {
 		return err
 	}
@@ -161,7 +168,7 @@ func writeHookFileAtomic(path string, content []byte) error {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(0o755); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -169,6 +176,31 @@ func writeHookFileAtomic(path string, content []byte) error {
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+// GateConfigCurrent is a subprocess-free restart check for a gate that has
+// completed the current hook and config migration. The stamp includes the
+// rendered managed hook and a version marker for the non-hook config contract.
+// Bump the marker when receive or worktree config requirements change.
+func GateConfigCurrent(bareDir string) bool {
+	content, err := os.ReadFile(filepath.Join(bareDir, gateConfigStampFile))
+	return err == nil && string(content) == gateConfigStampContent()
+}
+
+// MarkGateConfigCurrent atomically records a fully completed gate migration.
+// Callers must validate the gate and finish every mutation before marking it.
+func MarkGateConfigCurrent(bareDir string) error {
+	return writeGateFileAtomic(
+		filepath.Join(bareDir, gateConfigStampFile),
+		[]byte(gateConfigStampContent()),
+		0o644,
+		".no-mistakes-gate-config-*",
+	)
+}
+
+func gateConfigStampContent() string {
+	sum := sha256.Sum256([]byte("gate-config-v1\x00" + PostReceiveHookScript()))
+	return fmt.Sprintf("v1:%x\n", sum)
 }
 
 // IsolateHooksPath protects the gate's post-receive hook from being

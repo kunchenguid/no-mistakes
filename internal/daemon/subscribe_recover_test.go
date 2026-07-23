@@ -643,7 +643,12 @@ func TestRecoverIsolatesGateRepoHooksPath(t *testing.T) {
 		t.Fatalf("seed poisoned config: %v: %s", err, out)
 	}
 
-	migrateGateConfigs(ctx, p)
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	migrateGateConfigs(ctx, database, p)
 
 	// Effective core.hookspath should now resolve to the bare's hooks dir.
 	out, err := exec.Command("git", "-C", bareDir, "config", "--get", "core.hookspath").Output()
@@ -696,7 +701,12 @@ exit 0
 		t.Fatal(err)
 	}
 
-	migrateGateConfigs(ctx, p)
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	migrateGateConfigs(ctx, database, p)
 
 	data, err := os.ReadFile(hookPath)
 	if err != nil {

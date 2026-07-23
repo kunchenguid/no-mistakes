@@ -179,7 +179,7 @@ func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL, reposDir 
 	if err := git.InitBare(ctx, bareDir); err != nil {
 		return fmt.Errorf("create bare repo: %w", err)
 	}
-	if _, err := git.Run(ctx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
+	if _, err := git.RunBare(ctx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
 		return fmt.Errorf("enable push options: %w", err)
 	}
 
@@ -192,6 +192,9 @@ func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL, reposDir 
 	// disable the gate hook. See git.IsolateHooksPath for details.
 	if err := git.IsolateHooksPath(ctx, bareDir); err != nil {
 		return fmt.Errorf("isolate hooks path: %w", err)
+	}
+	if err := git.MarkGateConfigCurrent(bareDir); err != nil {
+		return fmt.Errorf("stamp gate config: %w", err)
 	}
 
 	// Record upstream as origin on the gate repo so gh can resolve repository
