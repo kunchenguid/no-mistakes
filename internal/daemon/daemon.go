@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -18,6 +19,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/logstore"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -31,7 +33,7 @@ var renameDaemonPIDFile = os.Rename
 // Run starts the daemon process. It blocks until a shutdown signal is received
 // or the shutdown IPC method is called. This is called via the hidden
 // `no-mistakes daemon run` entrypoint used by managed and detached services.
-func Run() error {
+func Run() (retErr error) {
 	p, err := paths.New()
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)
@@ -39,6 +41,21 @@ func Run() error {
 	if err := p.EnsureDirs(); err != nil {
 		return fmt.Errorf("create directories: %w", err)
 	}
+	if err := logstore.RotateAtStartup(p.DaemonBootstrapLog(), logstore.BootstrapPolicy()); err != nil {
+		return fmt.Errorf("rotate daemon bootstrap log: %w", err)
+	}
+	lifecycleLog, err := logstore.Open(p.DaemonLog(), logstore.LifecyclePolicy())
+	if err != nil {
+		return fmt.Errorf("open daemon lifecycle log: %w", err)
+	}
+	defer lifecycleLog.Close()
+	initLogger(lifecycleLog, "info")
+	defer func() {
+		if retErr != nil {
+			slog.Error("daemon failed", "error", retErr)
+		}
+	}()
+
 	environmentStarted := time.Now()
 	if err := prepareDaemonEnvironment(); err != nil {
 		return err
@@ -51,7 +68,7 @@ func Run() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	initLogger(globalCfg.LogLevel)
+	initLogger(lifecycleLog, globalCfg.LogLevel)
 
 	databaseStarted := time.Now()
 	d, err := db.Open(p.DB())
@@ -107,9 +124,9 @@ func logDaemonPathSummary() {
 }
 
 // initLogger sets up the global slog handler with the configured log level.
-func initLogger(level string) {
+func initLogger(w io.Writer, level string) {
 	lvl := config.ParseLogLevel(level)
-	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl})
+	handler := slog.NewTextHandler(w, &slog.HandlerOptions{Level: lvl})
 	slog.SetDefault(slog.New(handler))
 }
 
@@ -143,6 +160,14 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 		return err
 	}
 	defer lock.Release()
+
+	managedServerLog, err := logstore.Open(p.ManagedServerLog(), logstore.ManagedServerPolicy())
+	if err != nil {
+		return fmt.Errorf("open managed server log: %w", err)
+	}
+	agent.SetManagedServerOutput(managedServerLog)
+	defer managedServerLog.Close()
+	defer agent.SetManagedServerOutput(nil)
 
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
@@ -671,28 +696,38 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.CancelRunResult{OK: true}, nil
 	})
 
-	srv.HandleStream(ipc.MethodSubscribe, func(ctx context.Context, params json.RawMessage, send func(interface{}) error) error {
+	srv.HandleStream(ipc.MethodSubscribe, func(ctx context.Context, params json.RawMessage) (ipc.StreamFunc, error) {
 		var p ipc.SubscribeParams
 		if err := json.Unmarshal(params, &p); err != nil {
-			return fmt.Errorf("invalid params: %w", err)
+			return nil, fmt.Errorf("invalid params: %w", err)
 		}
 
+		// Register before returning the prepared stream. The IPC server sends
+		// its acknowledgement only after this point, so a client's immediate
+		// full reconciliation cannot race an unregistered subscription.
 		ch, unsub := mgr.Subscribe(p.RunID)
-		defer unsub()
-
-		for {
-			select {
-			case event, ok := <-ch:
-				if !ok {
-					return nil // channel closed (run completed)
+		var unsubscribeOnce sync.Once
+		cleanup := func() { unsubscribeOnce.Do(unsub) }
+		go func() {
+			<-ctx.Done()
+			cleanup()
+		}()
+		return func(send func(interface{}) error) error {
+			defer cleanup()
+			for {
+				select {
+				case event, ok := <-ch:
+					if !ok {
+						return nil // channel closed (run completed)
+					}
+					if err := send(event); err != nil {
+						return err // client disconnected
+					}
+				case <-ctx.Done():
+					return nil
 				}
-				if err := send(event); err != nil {
-					return err // client disconnected
-				}
-			case <-ctx.Done():
-				return ctx.Err()
 			}
-		}
+		}, nil
 	})
 }
 

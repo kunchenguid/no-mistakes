@@ -72,7 +72,18 @@ func (p *Paths) RunLogDir(runID string) string {
 	return filepath.Join(p.root, "logs", runID)
 }
 func (p *Paths) DaemonLog() string { return filepath.Join(p.root, "logs", "daemon.log") }
-func (p *Paths) CLILog() string    { return filepath.Join(p.root, "logs", "cli.log") }
+
+// DaemonBootstrapLog captures service-manager output before the daemon logger
+// is ready, plus crash diagnostics written directly to stdout or stderr.
+func (p *Paths) DaemonBootstrapLog() string {
+	return filepath.Join(p.root, "logs", "daemon-bootstrap.log")
+}
+
+// ManagedServerLog holds raw output from daemon-managed agent servers.
+func (p *Paths) ManagedServerLog() string {
+	return filepath.Join(p.root, "logs", "managed-server.log")
+}
+func (p *Paths) CLILog() string { return filepath.Join(p.root, "logs", "cli.log") }
 
 // ServerPIDsDir holds PID-tracking files for managed agent servers
 // (opencode, rovodev) so a freshly started daemon can reap orphans left

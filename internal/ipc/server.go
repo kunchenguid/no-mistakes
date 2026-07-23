@@ -13,11 +13,18 @@ import (
 // HandlerFunc processes a JSON-RPC request and returns a result or error.
 type HandlerFunc func(ctx context.Context, params json.RawMessage) (interface{}, error)
 
-// StreamHandlerFunc takes over a connection for streaming.
-// send writes a JSON object to the connection. The function should block
-// until streaming is complete. When send returns an error (client disconnected),
-// the handler should return.
-type StreamHandlerFunc func(ctx context.Context, params json.RawMessage, send func(interface{}) error) error
+// StreamFunc owns a prepared streaming connection. send writes a JSON object;
+// the function should block until streaming is complete and return when send
+// reports a disconnected client.
+type StreamFunc func(send func(interface{}) error) error
+
+// StreamHandlerFunc prepares a stream before the server acknowledges the
+// subscription. This closes the subscribe-then-reconcile race: callers cannot
+// perform their first reconciliation until the handler has registered its
+// event source. The returned StreamFunc runs after the acknowledgement;
+// preparation resources must also be released when ctx is cancelled because
+// an acknowledgement write can fail before StreamFunc starts.
+type StreamHandlerFunc func(ctx context.Context, params json.RawMessage) (StreamFunc, error)
 
 // Server listens on an IPC endpoint and dispatches JSON-RPC requests.
 type Server struct {
@@ -167,6 +174,7 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		var req Request
 		if err := json.Unmarshal(line, &req); err != nil {
+			slog.Warn("ipc request failed", "method", "<parse>", "error", "invalid json")
 			resp := NewErrorResponse(0, ErrParseError, "invalid json")
 			encoder.Encode(resp)
 			continue
@@ -178,19 +186,25 @@ func (s *Server) handleConn(conn net.Conn) {
 		s.mu.RUnlock()
 
 		if isStream {
+			stream, err := streamHandler(ctx, req.Params)
+			if err != nil {
+				slog.Warn("ipc stream request failed", "method", req.Method, "error", err)
+				_ = encoder.Encode(NewErrorResponse(req.ID, ErrInternal, err.Error()))
+				return
+			}
 			slog.Info("ipc stream request", "method", req.Method)
-			// Send initial OK response.
+			// Acknowledge only after stream preparation has registered its event
+			// source, so the client can safely reconcile as soon as this arrives.
 			resp, _ := NewResponse(req.ID, map[string]bool{"ok": true})
 			if err := encoder.Encode(resp); err != nil {
 				slog.Error("write stream response", "error", err)
 				return
 			}
-			// Hand connection to stream handler. It blocks until done.
 			send := func(event interface{}) error {
 				return encoder.Encode(event)
 			}
-			if err := streamHandler(ctx, req.Params, send); err != nil {
-				slog.Debug("stream handler ended", "method", req.Method, "error", err)
+			if err := stream(send); err != nil {
+				slog.Warn("ipc stream request failed", "method", req.Method, "error", err)
 			}
 			return // connection done after streaming
 		}
@@ -209,23 +223,39 @@ func (s *Server) dispatch(ctx context.Context, req Request) *Response {
 	s.mu.RUnlock()
 
 	if !ok {
-		return NewErrorResponse(req.ID, ErrMethodNotFound, "method not found: "+req.Method)
+		err := "method not found: " + req.Method
+		slog.Warn("ipc request failed", "method", req.Method, "error", err)
+		return NewErrorResponse(req.ID, ErrMethodNotFound, err)
 	}
 
-	if req.Method == MethodHealth {
-		slog.Debug("ipc request", "method", req.Method)
-	} else {
-		slog.Info("ipc request", "method", req.Method)
-	}
 	result, err := handler(ctx, req.Params)
 	if err != nil {
-		slog.Info("ipc request failed", "method", req.Method, "error", err)
+		slog.Warn("ipc request failed", "method", req.Method, "error", err)
 		return NewErrorResponse(req.ID, ErrInternal, err.Error())
 	}
 
 	resp, err := NewResponse(req.ID, result)
 	if err != nil {
+		slog.Warn("ipc request failed", "method", req.Method, "error", err)
 		return NewErrorResponse(req.ID, ErrInternal, "failed to marshal result")
 	}
+	if readOnlyMethod(req.Method) {
+		slog.Debug("ipc request", "method", req.Method)
+	} else {
+		slog.Info("ipc request", "method", req.Method)
+	}
 	return resp
+}
+
+// readOnlyMethod is the single request-log policy for successful RPCs that
+// only inspect daemon state. They can be called by health checks, dashboards,
+// and recovery heartbeats without amplifying the lifecycle log. Failed reads
+// still take the WARN path above.
+func readOnlyMethod(method string) bool {
+	switch method {
+	case MethodHealth, MethodGetRun, MethodGetRuns, MethodGetRunsForHead, MethodGetActiveRun:
+		return true
+	default:
+		return false
+	}
 }

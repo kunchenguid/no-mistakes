@@ -12,7 +12,6 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
-	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
@@ -115,7 +114,24 @@ func startColdDetachedFixture(t *testing.T, gateCount int, delayedGit bool) time
 	if err != nil {
 		t.Fatalf("read isolated daemon pid: %v", err)
 	}
-	logData, err := os.ReadFile(p.DaemonLog())
+	stopped := false
+	t.Cleanup(func() {
+		if !stopped {
+			shutdownIsolatedDaemon(t, p, pid)
+		}
+	})
+	// The caller's health response can arrive just before the daemon appends
+	// its post-health phase and ready summaries. Wait for that explicit log
+	// contract instead of racing the final writes after readiness.
+	var logData []byte
+	logDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(logDeadline) {
+		logData, err = os.ReadFile(p.DaemonLog())
+		if err == nil && strings.Contains(string(logData), `msg="daemon ready"`) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err != nil {
 		t.Fatalf("read isolated daemon log: %v", err)
 	}
@@ -144,23 +160,7 @@ func startColdDetachedFixture(t *testing.T, gateCount int, delayedGit bool) time
 			t.Fatalf("startup log with %d gates missing %q:\n%s", gateCount, fragment, logData)
 		}
 	}
-	client, err := ipc.Dial(p.Socket())
-	if err != nil {
-		t.Fatalf("dial isolated daemon for cleanup: %v", err)
-	}
-	callErr := client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, &ipc.ShutdownResult{})
-	_ = client.Close()
-	if callErr != nil {
-		t.Fatalf("stop isolated daemon: %v", callErr)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		running, runErr := daemonProcessRunning(pid)
-		if runErr == nil && !running {
-			return elapsed
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("isolated daemon pid %d survived shutdown", pid)
-	return 0
+	shutdownIsolatedDaemon(t, p, pid)
+	stopped = true
+	return elapsed
 }

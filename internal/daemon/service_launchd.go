@@ -245,7 +245,7 @@ func renderLaunchAgentWithProxyEnv(exe string, p *paths.Paths, home string, prox
   <true/>
 </dict>
 </plist>
-`, xmlEscaped(launchdServiceLabel(p)), args.String(), xmlEscaped(p.Root()), envDict.String(), xmlEscaped(p.DaemonLog()), xmlEscaped(p.DaemonLog()))
+`, xmlEscaped(launchdServiceLabel(p)), args.String(), xmlEscaped(p.Root()), envDict.String(), xmlEscaped(p.DaemonBootstrapLog()), xmlEscaped(p.DaemonBootstrapLog()))
 }
 
 // managedServicePath returns a default PATH for daemons started by a service

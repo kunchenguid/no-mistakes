@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -28,8 +29,11 @@ func TestStartServerWithPort_DetectsEarlyExit(t *testing.T) {
 		srv.shutdown()
 		t.Fatal("expected error when server exits before becoming healthy")
 	}
-	if !strings.Contains(err.Error(), "exit") {
-		t.Errorf("error should mention early exit, got: %v", err)
+	if !strings.Contains(err.Error(), "exit") || !strings.Contains(err.Error(), "status 0") {
+		t.Errorf("error should mention the early clean exit status, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "%!") {
+		t.Errorf("error contains an invalid formatting diagnostic: %v", err)
 	}
 	if elapsed > 5*time.Second {
 		t.Errorf("should fail fast on early exit, waited %v", elapsed)
@@ -112,6 +116,51 @@ func TestSetManagedServerOutput_RoutesSubprocessOutput(t *testing.T) {
 	got := buf.String()
 	if !strings.Contains(got, "hello-out") || !strings.Contains(got, "hello-err") {
 		t.Fatalf("managed-server writer did not capture subprocess output, got: %q", got)
+	}
+}
+
+func TestManagedServerOutputIsSeparatedFromLifecycleFailureSummary(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not available")
+	}
+
+	var managedOutput bytes.Buffer
+	SetManagedServerOutput(&managedOutput)
+	t.Cleanup(func() { SetManagedServerOutput(nil) })
+	var lifecycle bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&lifecycle, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	_, err = startServerWithPort(
+		context.Background(),
+		"opencode",
+		sh,
+		[]string{"-c", "echo verbose-managed-output; echo managed-failure 1>&2; exit 17"},
+		t.TempDir(),
+		"/healthcheck",
+		1,
+	)
+	if err == nil {
+		t.Fatal("expected managed server startup failure")
+	}
+	for _, want := range []string{"verbose-managed-output", "managed-failure"} {
+		if !strings.Contains(managedOutput.String(), want) {
+			t.Errorf("managed output missing %q: %s", want, managedOutput.String())
+		}
+		if strings.Contains(lifecycle.String(), want) {
+			t.Errorf("lifecycle log leaked raw managed output %q: %s", want, lifecycle.String())
+		}
+	}
+	for _, want := range []string{
+		"managed agent server started",
+		"managed agent server exited",
+		"managed agent server startup failed",
+	} {
+		if !strings.Contains(lifecycle.String(), want) {
+			t.Errorf("lifecycle log missing %q: %s", want, lifecycle.String())
+		}
 	}
 }
 

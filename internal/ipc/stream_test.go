@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 )
@@ -23,17 +24,19 @@ func TestStreamHandler(t *testing.T) {
 		Index int `json:"index"`
 	}
 
-	srv.HandleStream("stream_test", func(_ context.Context, raw json.RawMessage, send func(interface{}) error) error {
+	srv.HandleStream("stream_test", func(_ context.Context, raw json.RawMessage) (ipc.StreamFunc, error) {
 		var p streamParams
 		if err := json.Unmarshal(raw, &p); err != nil {
-			return err
+			return nil, err
 		}
-		for i := 0; i < p.Count; i++ {
-			if err := send(streamEvent{Index: i}); err != nil {
-				return err
+		return func(send func(interface{}) error) error {
+			for i := 0; i < p.Count; i++ {
+				if err := send(streamEvent{Index: i}); err != nil {
+					return err
+				}
 			}
-		}
-		return nil
+			return nil
+		}, nil
 	})
 
 	// Dial and send the subscribe-like request manually.
@@ -88,6 +91,41 @@ func TestStreamHandler(t *testing.T) {
 	}
 }
 
+func TestStreamAcknowledgesOnlyAfterPreparation(t *testing.T) {
+	sock := socketPath(t)
+	srv := startServer(t, sock)
+	preparing := make(chan struct{})
+	allowPrepared := make(chan struct{})
+	srv.HandleStream("stream_test", func(_ context.Context, _ json.RawMessage) (ipc.StreamFunc, error) {
+		close(preparing)
+		<-allowPrepared
+		return func(func(interface{}) error) error { return nil }, nil
+	})
+
+	conn := rawDial(t, sock)
+	defer conn.Close()
+	req, _ := ipc.NewRequest("stream_test", nil)
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
+		t.Fatal(err)
+	}
+	<-preparing
+
+	response := make(chan error, 1)
+	go func() {
+		var resp ipc.Response
+		response <- json.NewDecoder(conn).Decode(&resp)
+	}()
+	select {
+	case err := <-response:
+		t.Fatalf("stream acknowledged before preparation completed: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(allowPrepared)
+	if err := <-response; err != nil {
+		t.Fatalf("read prepared stream acknowledgement: %v", err)
+	}
+}
+
 func TestStreamRequestsLogAtInfo(t *testing.T) {
 	sock := socketPath(t)
 	srv := startServer(t, sock)
@@ -96,8 +134,10 @@ func TestStreamRequestsLogAtInfo(t *testing.T) {
 		Index int `json:"index"`
 	}
 
-	srv.HandleStream("stream_test", func(_ context.Context, _ json.RawMessage, send func(interface{}) error) error {
-		return send(streamEvent{Index: 0})
+	srv.HandleStream("stream_test", func(_ context.Context, _ json.RawMessage) (ipc.StreamFunc, error) {
+		return func(send func(interface{}) error) error {
+			return send(streamEvent{Index: 0})
+		}, nil
 	})
 
 	var logs bytes.Buffer
@@ -140,8 +180,10 @@ func TestStreamHandlerAndRegularCoexist(t *testing.T) {
 	srv.Handle("echo", func(_ context.Context, raw json.RawMessage) (interface{}, error) {
 		return map[string]string{"echo": "hello"}, nil
 	})
-	srv.HandleStream("stream_noop", func(_ context.Context, _ json.RawMessage, send func(interface{}) error) error {
-		return nil // stream handler that completes immediately
+	srv.HandleStream("stream_noop", func(_ context.Context, _ json.RawMessage) (ipc.StreamFunc, error) {
+		return func(func(interface{}) error) error {
+			return nil // stream handler that completes immediately
+		}, nil
 	})
 
 	// Regular handler should still work.
