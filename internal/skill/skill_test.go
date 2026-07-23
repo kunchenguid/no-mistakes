@@ -36,6 +36,21 @@ func TestMarkdownFrontmatter(t *testing.T) {
 	}
 }
 
+func TestGeneratedSkillUsesNarrowRiskTrigger(t *testing.T) {
+	generated := Markdown()
+	assertNarrowRiskTrigger(t, generated)
+
+	committedPath := filepath.Join("..", "..", "skills", Name, "SKILL.md")
+	committed, err := os.ReadFile(committedPath)
+	if err != nil {
+		t.Fatalf("read committed skill: %v", err)
+	}
+	if string(committed) != generated {
+		t.Fatalf("committed skill does not match Markdown(); run `go run ./cmd/genskill`")
+	}
+	assertNarrowRiskTrigger(t, string(committed))
+}
+
 func TestBodyDocumentsTaskFirstFlow(t *testing.T) {
 	md := Markdown()
 	for _, want := range []string{
@@ -98,9 +113,10 @@ func TestInstallWritesBothPaths(t *testing.T) {
 	}
 }
 
-// TestInstallUserWritesUnderHome proves the init entry point resolves the
-// user's home directory and installs there, never into the working directory.
-func TestInstallUserWritesUnderHome(t *testing.T) {
+// TestInstallUserWritesSourceIdenticalNarrowSkill proves the init entry point
+// resolves the user's home directory and installs the canonical narrow skill,
+// never a stale broad-trigger copy or content from the working directory.
+func TestInstallUserWritesSourceIdenticalNarrowSkill(t *testing.T) {
 	home := t.TempDir()
 	// os.UserHomeDir reads HOME on Unix and USERPROFILE on Windows; set both
 	// so the test isolates the real home directory on every platform.
@@ -122,6 +138,7 @@ func TestInstallUserWritesUnderHome(t *testing.T) {
 		if string(data) != Markdown() {
 			t.Errorf("%s content does not match Markdown()", base)
 		}
+		assertNarrowRiskTrigger(t, string(data))
 	}
 }
 
@@ -257,6 +274,60 @@ func TestInstallRejectsSymlinkCycle(t *testing.T) {
 
 	if _, err := Install(root); err == nil {
 		t.Fatalf("Install succeeded with cyclic skill directory symlinks")
+	}
+}
+
+func assertNarrowRiskTrigger(t *testing.T, md string) {
+	t.Helper()
+
+	const prefix = "description: "
+	var description string
+	for line := range strings.SplitSeq(md, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			description = strings.TrimPrefix(line, prefix)
+			break
+		}
+	}
+	if description == "" {
+		t.Fatal("skill frontmatter has no description")
+	}
+
+	lower := strings.ToLower(description)
+	for _, forbidden := range []string{
+		"commit",
+		"push",
+		"push safely",
+		"ship",
+		"open pr",
+		"open-pr",
+		"validate their changes",
+		"task and then validate",
+	} {
+		if strings.Contains(lower, forbidden) {
+			t.Errorf("skill description restores broad trigger phrase %q: %q", forbidden, description)
+		}
+	}
+	for _, required := range []string{
+		"explicitly",
+		"/no-mistakes",
+		"full no-mistakes gate",
+		"automatically",
+		"high-risk",
+		"security",
+		"authentication/authorization",
+		"privacy/phi",
+		"destructive data or schema",
+		"billing/payments",
+		"migrations",
+		"production deploy or infrastructure",
+		"complex workflows",
+		"broad high-blast-radius",
+		"review-only lane",
+		"repository-native checks and ci",
+	} {
+		if !strings.Contains(lower, required) {
+			t.Errorf("skill description missing narrow trigger phrase %q: %q", required, description)
+		}
 	}
 }
 

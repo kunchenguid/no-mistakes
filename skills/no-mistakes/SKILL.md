@@ -1,6 +1,6 @@
 ---
 name: no-mistakes
-description: Validate your code changes through the no-mistakes pipeline - automated code review, tests, lint, docs, push, PR, and CI - before they reach the configured push target. Use when the user asks to run no-mistakes, gate or ship or validate their changes, push safely, asks you to do a task and then validate it, or invokes /no-mistakes.
+description: Use this skill when the user explicitly invokes /no-mistakes or explicitly requests the full no-mistakes gate, and automatically for high-risk changes involving security, authentication/authorization, privacy/PHI, destructive data or schema behavior, billing/payments, migrations, production deploy or infrastructure, complex workflows, or broad high-blast-radius changes. Medium-risk behavior changes use the review-only lane. Routine work uses repository-native checks and CI.
 user-invocable: true
 ---
 
