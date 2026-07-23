@@ -858,6 +858,13 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		case types.ActionApprove:
 			// Approved - execution already frozen in executionMS, reset phaseStart
 			// so the done label computes no additional elapsed.
+			// An approve that leaves actionable findings behind is a deliberate
+			// adjudication by the approver; record it durably in the step log so
+			// a "passed" run carrying unapplied findings is always attributable
+			// to an explicit decision, never a silent default.
+			if n := actionableFindingsCountJSON(outcome.Findings); n > 0 {
+				writeLog(fmt.Sprintf("gate approved with %d unresolved actionable %s; approval recorded as explicit adjudication", n, pluralize(n, "finding", "findings")))
+			}
 			phaseStart = time.Now()
 			goto done
 

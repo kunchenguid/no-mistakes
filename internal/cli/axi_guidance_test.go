@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,11 @@ var canonicalPreserveGateFixPhrases = []string{
 	"post-pipeline",
 	"on top",
 	"every pipeline fix commit",
+}
+
+var canonicalYesFixBudgetPhrases = []string{
+	fmt.Sprintf("up to %d fix rounds per step", maxYesFixRoundsPerStep),
+	"leaves the run parked",
 }
 
 var canonicalBranchSyncPhrases = []string{
@@ -149,6 +155,33 @@ func TestPipelineAgentPrerequisiteGuidance_SyncedAcrossSurfaces(t *testing.T) {
 	}
 }
 
+func TestYesFixBudgetGuidance_SyncedAcrossSurfaces(t *testing.T) {
+	surfaces := map[string]string{
+		"skill body":       skill.Markdown(),
+		"axi run help":     newAxiRunCmd().Long,
+		"axi respond help": newAxiRespondCmd().Long,
+		"CLI reference":    readGuidanceDoc(t, "reference", "cli.md"),
+		"auto-fix concept": readGuidanceDoc(t, "concepts", "auto-fix.md"),
+	}
+	for name, content := range surfaces {
+		for _, phrase := range canonicalYesFixBudgetPhrases {
+			if !strings.Contains(content, phrase) {
+				t.Errorf("%s is missing --yes fix-budget guidance phrase %q", name, phrase)
+			}
+		}
+	}
+
+	selectionSurfaces := map[string]string{
+		"skill body":    skill.Markdown(),
+		"CLI reference": readGuidanceDoc(t, "reference", "cli.md"),
+	}
+	for name, content := range selectionSurfaces {
+		if !strings.Contains(content, "selects every current finding") {
+			t.Errorf("%s is missing --yes finding-selection guidance", name)
+		}
+	}
+}
+
 func TestNormalDriveOutputDoesNotFloodBranchSyncGuidance(t *testing.T) {
 	got := renderDriveResultForGuidanceTest(t, true, types.RunRunning)
 	if strings.Contains(got, branchSyncAgentGuidance) || strings.Contains(got, "branch_sync.next_action") {
@@ -209,6 +242,16 @@ func readAgentsGuide(t *testing.T) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read agents guide %s: %v", path, err)
+	}
+	return string(data)
+}
+
+func readGuidanceDoc(t *testing.T, section, name string) string {
+	t.Helper()
+	path := filepath.Join("..", "..", "docs", "src", "content", "docs", section, name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read guidance document %s: %v", path, err)
 	}
 	return string(data)
 }

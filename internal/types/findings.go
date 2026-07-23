@@ -249,12 +249,19 @@ func HasAskUserFindings(findings Findings) bool {
 // yolo / auto-resolve uses to decide whether to fix a gate's findings or just
 // accept the step as-is.
 func HasActionableFindings(findings Findings) bool {
+	return CountActionableFindings(findings) > 0
+}
+
+// CountActionableFindings returns how many findings warrant a fix or an
+// explicit adjudication - every finding whose effective action is not "no-op".
+func CountActionableFindings(findings Findings) int {
+	count := 0
 	for _, item := range findings.Items {
 		if item.actionOrDefault() != ActionNoOp {
-			return true
+			count++
 		}
 	}
-	return false
+	return count
 }
 
 func summarizeSelectedFindings(count int) string {

@@ -596,6 +596,100 @@ func TestCommitAgentFixes_NoChanges(t *testing.T) {
 	}
 }
 
+func TestCommitAgentFixes_AdoptsAgentSelfCommit(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	// The fix agent commits its own work (many repos' agent instructions
+	// require it), leaving the worktree clean but HEAD ahead of the recorded
+	// run head.
+	os.WriteFile(filepath.Join(dir, "agent-change.txt"), []byte("change"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "fix: agent committed directly")
+	selfCommitSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	if err := commitAgentFixes(sctx, types.StepReview, "unused", "fallback"); err != nil {
+		t.Fatal(err)
+	}
+	if sctx.Run.HeadSHA != selfCommitSHA {
+		t.Errorf("run head = %s, want adopted agent commit %s", sctx.Run.HeadSHA, selfCommitSHA)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); got != selfCommitSHA {
+		t.Errorf("branch ref = %s, want adopted agent commit %s", got, selfCommitSHA)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.HeadSHA != selfCommitSHA {
+		t.Errorf("db run head = %s, want adopted agent commit %s", dbRun.HeadSHA, selfCommitSHA)
+	}
+}
+
+func TestCommitAgentFixes_AdoptsSelfCommitPlusDirtyChanges(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	// The agent commits some work itself and leaves more uncommitted.
+	os.WriteFile(filepath.Join(dir, "agent-change.txt"), []byte("change"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "fix: agent committed directly")
+	os.WriteFile(filepath.Join(dir, "leftover.txt"), []byte("more"), 0o644)
+
+	if err := commitAgentFixes(sctx, types.StepReview, "wrap up", "fallback"); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastCommitMessage(t, dir); got != "no-mistakes(review): wrap up" {
+		t.Errorf("commit message = %q, want driver fix commit on top of agent commit", got)
+	}
+	wantHead := gitCmd(t, dir, "rev-parse", "HEAD")
+	if sctx.Run.HeadSHA != wantHead {
+		t.Errorf("run head = %s, want %s", sctx.Run.HeadSHA, wantHead)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); got != wantHead {
+		t.Errorf("branch ref = %s, want %s", got, wantHead)
+	}
+	if gitStatusPorcelain(t, dir) != "" {
+		t.Error("worktree should be clean after adoption")
+	}
+}
+
+func TestCommitAgentFixes_RefusesDivergentHead(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	// Something reset the worktree to a commit that does not contain the
+	// recorded run head (e.g. a sibling process). Adopting it would ship a
+	// tree the pipeline never reviewed.
+	gitCmd(t, dir, "checkout", "--detach", baseSHA)
+	os.WriteFile(filepath.Join(dir, "divergent.txt"), []byte("divergent"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "divergent work")
+
+	err := commitAgentFixes(sctx, types.StepReview, "unused", "fallback")
+	if err == nil {
+		t.Fatal("expected refusal for divergent HEAD, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a descendant") {
+		t.Errorf("error = %v, want descendant refusal", err)
+	}
+	if sctx.Run.HeadSHA != headSHA {
+		t.Errorf("run head = %s, want unchanged %s", sctx.Run.HeadSHA, headSHA)
+	}
+}
+
 func TestCommitAgentFixes_InvalidTemplateDoesNotStageChanges(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

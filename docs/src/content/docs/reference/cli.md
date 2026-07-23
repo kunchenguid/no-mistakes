@@ -93,7 +93,7 @@ no-mistakes axi run --intent "the user's goal" --yes
 | Flag          | Type     | Default | Description                                                      |
 | ------------- | -------- | ------- | ---------------------------------------------------------------- |
 | `--intent`    | `string` | (none)  | What the user set out to accomplish; required to start a new run |
-| `-y`, `--yes` | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome        |
+| `-y`, `--yes` | `bool`   | `false` | Auto-fix up to 3 rounds per step; park unresolved findings       |
 | `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip                           |
 
 `--intent` is not a description of the diff.
@@ -107,8 +107,8 @@ That refusal returns the complete structured state and its `continue_active_run`
 Reattaching to an in-flight run can proceed while the daemon is already running even if the global config file has become invalid, but starting a fresh run still requires valid global config.
 Starting a fresh run also requires a runnable effective pipeline agent.
 If the configured native agent or ACP runner is unavailable, the run fails before any pipeline step starts instead of reporting command-only validation as a passed gate.
-With `--yes`, `axi run` treats both `action: auto-fix` and `action: ask-user` findings as standing consent for the pipeline to fix them by selecting every finding, then accepts the resulting fix review.
-Gates with no findings or only `action: no-op` findings are approved as-is, and each step is fixed at most once so unresolved findings do not loop forever.
+With `--yes`, `axi run` treats both `action: auto-fix` and `action: ask-user` findings as standing consent to fix them. The pipeline selects every current finding when all actionable findings have IDs and funds up to 3 fix rounds per step. The budget uses the persisted round count, so reattaching cannot reset it.
+Gates with no findings or only `action: no-op` findings are approved as-is. If an actionable finding has no ID and cannot be selected, or actionable findings survive the budget, `--yes` leaves the run parked for explicit adjudication instead of silently approving them.
 Without `--yes`, an agent driving `axi run` should stop when a gate contains `action: ask-user` findings and relay each finding's ID, file, and full description to the user before responding.
 Review gates include a `note` field reminding agents that `auto_fix.review` defaults to `0`, so blocking and ask-user review findings park for a decision unless configuration explicitly opts back into review auto-fix.
 Long-running `axi run` calls are working, not stalled; if one returns a `gate:`, read that output and answer it with `axi respond`.
@@ -139,9 +139,9 @@ no-mistakes axi respond --action skip
 | `--findings`     | `string` | (none)        | Comma-separated finding IDs for `--action fix`                       |
 | `--instructions` | `string` | (none)        | Guidance applied to selected findings                                |
 | `--add-finding`  | `string` | (none)        | JSON finding object to add and fix                                   |
-| `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve every subsequent gate until a decision point or outcome |
+| `-y`, `--yes`    | `bool`   | `false`       | Auto-fix up to 3 rounds per step; park unresolved findings           |
 
-After the explicit response, `--yes` uses the same auto-resolution behavior as `axi run --yes`: have the pipeline fix `auto-fix` and `ask-user` findings once, approve the fix review, approve gates that only contain non-actionable `no-op` findings, and stop at `outcome: checks-passed` when CI is green but the PR still needs a human merge.
+After the explicit response, `--yes` uses the same auto-resolution behavior as `axi run --yes`: fund up to 3 fix rounds per step for `auto-fix` and `ask-user` findings, approve clean gates and gates that only contain non-actionable `no-op` findings, and stop at `outcome: checks-passed` when CI is green but the PR still needs a human merge. If actionable findings survive the budget, it leaves the run parked for explicit adjudication.
 Each `axi respond` blocks until the next gate, CI-ready decision point, or final outcome.
 If it returns another `gate:`, answer that gate; do not idle-wait for the run to move forward by itself.
 When the daemon is already running, `axi respond` can continue an active run even if the global config file has become invalid, because it is not starting a fresh run.
@@ -229,6 +229,7 @@ no-mistakes axi logs --step review --run <id>
 Without `--full`, long logs show the last 40 lines and a help hint for the full log.
 Step logs include native subprocess agent lifecycle lines such as `codex started pid=4242`, `codex exited pid=4242 status=success`, and transient retry messages when the selected agent supports lifecycle events.
 They also include fix-loop markers such as `auto-fix round 1/3 starting after round 1` and `user-fix round starting after round 2`.
+When an explicit approval completes a gate that still has actionable findings, the log records their count and identifies the approval as explicit adjudication.
 
 ## no-mistakes axi abort
 

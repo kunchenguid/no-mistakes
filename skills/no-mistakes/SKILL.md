@@ -232,15 +232,16 @@ it to the user before you respond:
   `--instructions`), `--action approve`, or `--action skip`.
 
 The one exception is `--yes` (below): it is the user's standing consent to
-drive every gate unattended, so under `--yes` you resolve `ask-user`
-findings automatically instead of stopping to ask.
+attempt automatic resolution, so under `--yes` you send `ask-user` findings
+through bounded fix rounds instead of stopping before the first attempt.
 
 If you have clear consent to drive the run automatically, pass `--yes` to `axi run`
 or `axi respond`. It treats every actionable finding - `auto-fix` and
-`ask-user` alike - as consent to fix it, selects every current finding for one
-fix round, accepts the resulting fix review, and approves gates with only
-`no-op` findings. Only use it when the user has asked you to drive the whole
-run without checking back.
+`ask-user` alike - as consent to fix it, selects every current finding, and
+funds up to 3 fix rounds per step. It approves clean gates and gates with only
+`no-op` findings. If actionable findings survive that budget, it leaves the run parked
+for explicit adjudication instead of approving them. Only use it when the user
+has asked you to drive the whole run without checking back unless fixing stalls.
 
 ## Inspecting state
 
