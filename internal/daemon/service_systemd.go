@@ -123,12 +123,14 @@ Type=simple
 ExecStart=%s
 WorkingDirectory=%s
 %s
+StandardOutput=%s
+StandardError=%s
 Restart=always
 RestartSec=2
 
 [Install]
 WantedBy=default.target
-`, command, systemdEscapeArg(p.Root()), strings.Join(envLines, "\n"))
+`, command, systemdEscapeArg(p.Root()), strings.Join(envLines, "\n"), systemdEscapeArg("append:"+p.DaemonBootstrapLog()), systemdEscapeArg("append:"+p.DaemonBootstrapLog()))
 }
 
 // systemdEnvironmentLine renders one `Environment=` directive. systemd runs

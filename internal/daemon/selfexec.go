@@ -310,9 +310,9 @@ func startDetachedDaemon(p *paths.Paths) error {
 		return fmt.Errorf("resolve executable: %w", err)
 	}
 
-	logFile, err := os.OpenFile(p.DaemonLog(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logFile, err := os.OpenFile(p.DaemonBootstrapLog(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return fmt.Errorf("open daemon log: %w", err)
+		return fmt.Errorf("open daemon bootstrap log: %w", err)
 	}
 	defer logFile.Close()
 
@@ -335,7 +335,7 @@ func startDetachedDaemon(p *paths.Paths) error {
 		}
 		return fmt.Errorf("inspect daemon process %d: %w", pid, err)
 	}
-	slog.Info("daemon process launched", "pid", pid, "log", p.DaemonLog())
+	slog.Info("daemon process launched", "pid", pid, "log", p.DaemonLog(), "bootstrap_log", p.DaemonBootstrapLog())
 
 	// Own Wait in a goroutine from launch onward. This reports a genuine child
 	// exit immediately and guarantees timeout cleanup reaps the exact child,

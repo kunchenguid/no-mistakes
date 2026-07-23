@@ -101,6 +101,26 @@ func TestRenderSystemdUnitIncludesManagedPath(t *testing.T) {
 	}
 }
 
+func TestManagedServicesRouteRawOutputToBootstrapSink(t *testing.T) {
+	t.Parallel()
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm home"))
+
+	plist := renderLaunchAgent("/opt/no-mistakes/bin/no-mistakes", p, "/Users/test")
+	for _, key := range []string{"StandardOutPath", "StandardErrorPath"} {
+		if got := extractPlistValue(t, plist, key); got != p.DaemonBootstrapLog() {
+			t.Errorf("launchd %s = %q, want %q", key, got, p.DaemonBootstrapLog())
+		}
+	}
+
+	unit := renderSystemdUnit("/usr/local/bin/no-mistakes", p, "/home/test")
+	want := "append:" + p.DaemonBootstrapLog()
+	for _, directive := range []string{"StandardOutput=" + strconv.Quote(want), "StandardError=" + strconv.Quote(want)} {
+		if !strings.Contains(unit, directive) {
+			t.Errorf("systemd unit missing %q:\n%s", directive, unit)
+		}
+	}
+}
+
 func TestManagedServicePathUsesSharedWellKnownDirs(t *testing.T) {
 	t.Parallel()
 	home := "/Users/test"

@@ -196,7 +196,9 @@ Everything lives under `~/.no-mistakes/` by default. Set `NM_HOME` to relocate i
 | `repos/<id>.git/notify-push.log` | Persistent hook notification failure log                                                                                |
 | `worktrees/<repoID>/<runID>/`    | Disposable worktrees (cleaned up after each run)                                                                        |
 | `logs/<runID>/<step>.log`        | Per-step log files                                                                                                      |
-| `logs/daemon.log`                | Daemon log                                                                                                              |
+| `logs/daemon.log`                | Bounded daemon lifecycle log                                                                                            |
+| `logs/daemon-bootstrap.log`      | Bounded pre-logger bootstrap and direct crash output                                                                    |
+| `logs/managed-server.log`        | Bounded stdout and stderr from daemon-managed Rovo Dev and OpenCode servers                                             |
 | `logs/wizard-agent.log`          | Managed agent-server output captured during setup wizard runs                                                           |
 | `logs/cli.log`                   | Caller attribution (PID, parent PID, parent command line) for `daemon stop`, `daemon restart`, and `update` invocations |
 

@@ -1,0 +1,14 @@
+End-user-shaped isolated daemon verification
+============================================
+Process: real no-mistakes binary, foreground daemon, disposable NM_HOME
+Healthy RPCs sent: 20 health + 20 get_runs
+Healthy RPC responses received: 40
+Lifecycle log records for successful health/get_runs: 0 (expected 0)
+Unknown RPC response: {"jsonrpc":"2.0","error":{"code":-32601,"message":"method not found: broken_method"},"id":999}
+Lifecycle failure records for broken_method: 1 (expected 1)
+Managed-server sink exists: yes (0 bytes before any managed server starts)
+Rotated bootstrap backup: previous crash diagnostic
+
+Lifecycle evidence:
+time=2026-07-23T12:27:43.029-07:00 level=INFO msg="daemon ready" socket=/var/folders/5x/4nqprlbx0518k3ybcb1sz6gr0000gn/T/no-mistakes-evidence/nm-log-r1/socket pid=30250 startup_ms=714
+time=2026-07-23T12:27:43.081-07:00 level=WARN msg="ipc request failed" method=broken_method error="method not found: broken_method"

@@ -3,7 +3,9 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -18,6 +20,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/logstore"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
@@ -31,7 +34,8 @@ var renameDaemonPIDFile = os.Rename
 // Run starts the daemon process. It blocks until a shutdown signal is received
 // or the shutdown IPC method is called. This is called via the hidden
 // `no-mistakes daemon run` entrypoint used by managed and detached services.
-func Run() error {
+func Run() (retErr error) {
+	startupStarted := time.Now()
 	p, err := paths.New()
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)
@@ -39,6 +43,28 @@ func Run() error {
 	if err := p.EnsureDirs(); err != nil {
 		return fmt.Errorf("create directories: %w", err)
 	}
+	lock, err := acquireSingletonLock(p)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	bootstrapCapture, err := startBootstrapCapture(p)
+	if err != nil {
+		return fmt.Errorf("capture daemon bootstrap log: %w", err)
+	}
+	defer func() { retErr = errors.Join(retErr, bootstrapCapture.Close()) }()
+	lifecycleLog, err := logstore.Open(p.DaemonLog(), logstore.LifecyclePolicy())
+	if err != nil {
+		return fmt.Errorf("open daemon lifecycle log: %w", err)
+	}
+	defer lifecycleLog.Close()
+	initLogger(lifecycleLog, "info")
+	defer func() {
+		if retErr != nil {
+			slog.Error("daemon failed", "error", retErr)
+		}
+	}()
+
 	environmentStarted := time.Now()
 	if err := prepareDaemonEnvironment(); err != nil {
 		return err
@@ -51,7 +77,7 @@ func Run() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	initLogger(globalCfg.LogLevel)
+	initLogger(lifecycleLog, globalCfg.LogLevel)
 
 	databaseStarted := time.Now()
 	d, err := db.Open(p.DB())
@@ -61,7 +87,7 @@ func Run() error {
 	defer d.Close()
 	logStartupPhase("database", databaseStarted)
 
-	return RunWithResources(p, d)
+	return runWithOptionsLocked(p, d, nil, startupStarted)
 }
 
 func prepareDaemonEnvironment() error {
@@ -91,9 +117,9 @@ func prepareDaemonEnvironment() error {
 
 // logDaemonPathSummary records the effective PATH at daemon startup so that
 // "agent binary not in PATH" failures (see #143) can be diagnosed from the
-// daemon log alone. We emit it via slog.Default because this runs before
-// initLogger; the default handler still writes to stderr, which launchd and
-// systemd redirect into the daemon log file.
+// lifecycle log alone. The daemon installs its lifecycle handler at info
+// before environment preparation, then reapplies the configured level after
+// loading global config, so this startup diagnostic is always retained.
 func logDaemonPathSummary() {
 	path := os.Getenv("PATH")
 	entries := 0
@@ -107,9 +133,9 @@ func logDaemonPathSummary() {
 }
 
 // initLogger sets up the global slog handler with the configured log level.
-func initLogger(level string) {
+func initLogger(w io.Writer, level string) {
 	lvl := config.ParseLogLevel(level)
-	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl})
+	handler := slog.NewTextHandler(w, &slog.HandlerOptions{Level: lvl})
 	slog.SetDefault(slog.New(handler))
 }
 
@@ -135,14 +161,24 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 	// bound, and held for the rest of the process lifetime - otherwise a
 	// second daemon racing to start against the same root can mark another
 	// live daemon's active runs as crashed and delete worktrees out from
-	// under it (see AGENTS.md "Daemon Singleton Lock"). Covers both the
-	// `daemon start` -> detached child path and a direct `daemon run --root`
-	// invocation, since both funnel through here.
+	// under it (see AGENTS.md "Daemon Singleton Lock").
 	lock, err := acquireSingletonLock(p)
 	if err != nil {
 		return err
 	}
 	defer lock.Release()
+
+	return runWithOptionsLocked(p, d, stepFactory, startupStarted)
+}
+
+func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, startupStarted time.Time) error {
+	managedServerLog, err := logstore.Open(p.ManagedServerLog(), logstore.ManagedServerPolicy())
+	if err != nil {
+		return fmt.Errorf("open managed server log: %w", err)
+	}
+	agent.SetManagedServerOutput(managedServerLog)
+	defer managedServerLog.Close()
+	defer agent.SetManagedServerOutput(nil)
 
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
@@ -671,28 +707,38 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.CancelRunResult{OK: true}, nil
 	})
 
-	srv.HandleStream(ipc.MethodSubscribe, func(ctx context.Context, params json.RawMessage, send func(interface{}) error) error {
+	srv.HandleStream(ipc.MethodSubscribe, func(ctx context.Context, params json.RawMessage) (ipc.StreamFunc, error) {
 		var p ipc.SubscribeParams
 		if err := json.Unmarshal(params, &p); err != nil {
-			return fmt.Errorf("invalid params: %w", err)
+			return nil, fmt.Errorf("invalid params: %w", err)
 		}
 
+		// Register before returning the prepared stream. The IPC server sends
+		// its acknowledgement only after this point, so a client's immediate
+		// full reconciliation cannot race an unregistered subscription.
 		ch, unsub := mgr.Subscribe(p.RunID)
-		defer unsub()
-
-		for {
-			select {
-			case event, ok := <-ch:
-				if !ok {
-					return nil // channel closed (run completed)
+		var unsubscribeOnce sync.Once
+		cleanup := func() { unsubscribeOnce.Do(unsub) }
+		go func() {
+			<-ctx.Done()
+			cleanup()
+		}()
+		return func(send func(interface{}) error) error {
+			defer cleanup()
+			for {
+				select {
+				case event, ok := <-ch:
+					if !ok {
+						return nil // channel closed (run completed)
+					}
+					if err := send(event); err != nil {
+						return err // client disconnected
+					}
+				case <-ctx.Done():
+					return nil
 				}
-				if err := send(event); err != nil {
-					return err // client disconnected
-				}
-			case <-ctx.Done():
-				return ctx.Err()
 			}
-		}
+		}, nil
 	})
 }
 

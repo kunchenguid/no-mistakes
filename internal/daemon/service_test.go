@@ -628,8 +628,8 @@ func TestStartFallsBackToDetachedDaemonWhenManagedStartFails(t *testing.T) {
 	if !managedStopped {
 		t.Fatal("managed service should be stopped before detached fallback")
 	}
-	if _, err := os.Stat(p.DaemonLog()); err != nil {
-		t.Fatalf("detached fallback should open daemon log: %v", err)
+	if _, err := os.Stat(p.DaemonBootstrapLog()); err != nil {
+		t.Fatalf("detached fallback should open daemon bootstrap log: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".config", "systemd", "user", systemdServiceName(p))); err != nil {
 		t.Fatalf("managed service install should still write unit file: %v", err)
@@ -829,8 +829,8 @@ func TestStartStopsManagedServiceBeforeDetachedFallbackAfterTimeout(t *testing.T
 	if !managedStopped {
 		t.Fatal("managed service should be stopped before detached fallback")
 	}
-	if _, err := os.Stat(p.DaemonLog()); err != nil {
-		t.Fatalf("detached fallback should open daemon log: %v", err)
+	if _, err := os.Stat(p.DaemonBootstrapLog()); err != nil {
+		t.Fatalf("detached fallback should open daemon bootstrap log: %v", err)
 	}
 	if checks < 3 {
 		t.Fatalf("expected health checks during managed timeout and detached wait, got %d", checks)
@@ -1602,7 +1602,7 @@ func renderLaunchAgentWithoutEnvironment(exe string, p *paths.Paths) string {
   <true/>
 </dict>
 </plist>
-`, xmlEscaped(launchdServiceLabel(p)), args.String(), xmlEscaped(p.Root()), xmlEscaped(p.DaemonLog()), xmlEscaped(p.DaemonLog()))
+`, xmlEscaped(launchdServiceLabel(p)), args.String(), xmlEscaped(p.Root()), xmlEscaped(p.DaemonBootstrapLog()), xmlEscaped(p.DaemonBootstrapLog()))
 }
 
 func stubServiceRuntime(t *testing.T) func() {
