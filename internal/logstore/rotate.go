@@ -163,7 +163,12 @@ func (w *RotatingWriter) rotateLocked() error {
 			return fmt.Errorf("snapshot current log: %w", err)
 		}
 	}
-	if err := w.file.Truncate(0); err != nil {
+	// On Windows an O_APPEND handle intentionally lacks FILE_WRITE_DATA, so
+	// SetEndOfFile on that handle fails with access denied. Truncate through
+	// the stable current path instead; os.OpenFile shares writes on Windows,
+	// and truncating the path preserves the inode/file identity held by
+	// service-manager and subprocess descriptors.
+	if err := os.Truncate(w.path, 0); err != nil {
 		return fmt.Errorf("truncate current log: %w", err)
 	}
 	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
@@ -221,7 +226,7 @@ func (w *RotatingWriter) normalizeExistingLocked() error {
 	if _, err := w.file.ReadAt(latest, latestStart); err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("read latest log segment: %w", err)
 	}
-	if err := w.file.Truncate(0); err != nil {
+	if err := os.Truncate(w.path, 0); err != nil {
 		return fmt.Errorf("truncate oversized current log: %w", err)
 	}
 	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
