@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.41.1](https://github.com/kunchenguid/no-mistakes/compare/v1.41.0...v1.41.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* **daemon:** bound startup recovery and harden gate migration ([#562](https://github.com/kunchenguid/no-mistakes/issues/562)) ([680a268](https://github.com/kunchenguid/no-mistakes/commit/680a268947dd0d9fa58d279f1941e9ce56d41880))
+* execute every PR body compliance event ([#558](https://github.com/kunchenguid/no-mistakes/issues/558)) ([912bc75](https://github.com/kunchenguid/no-mistakes/commit/912bc756a44c1b78fa29c5c9c2c722cf92f3aef8))
+* stop AXI polling and bound daemon logs ([#565](https://github.com/kunchenguid/no-mistakes/issues/565)) ([83750b9](https://github.com/kunchenguid/no-mistakes/commit/83750b9c52fff8abae8d2f96d8e296186bad6eec))
+
 ## [1.41.0](https://github.com/kunchenguid/no-mistakes/compare/v1.40.3...v1.41.0) (2026-07-22)
 
 
