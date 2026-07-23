@@ -92,9 +92,10 @@ func sanitizeQuarantineName(rel string, isDir bool) string {
 }
 
 // Restore renames every quarantined surface back to its original path and
-// removes the quarantine directory. It is safe to call multiple times and on a
-// nil receiver. Partial restore failures are reported; remaining items are still
-// attempted.
+// removes the quarantine directory only after every parked item is restored.
+// It is safe to call multiple times and on a nil receiver. Partial restore
+// failures are reported; failed items stay parked and remain in q.items so a
+// later Restore can retry without losing the only remaining bytes.
 func (q *cursorInstructionQuarantine) Restore() error {
 	if q == nil {
 		return nil
@@ -112,14 +113,18 @@ func (q *cursorInstructionQuarantine) Restore() error {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("restore %s: %w", item.original, err)
 			}
+			continue
 		}
+		q.items = append(q.items[:i], q.items[i+1:]...)
 	}
-	q.items = nil
+	if len(q.items) > 0 {
+		return firstErr
+	}
 	if q.dir != "" {
-		if err := os.RemoveAll(q.dir); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("remove quarantine dir: %w", err)
+		if err := os.RemoveAll(q.dir); err != nil {
+			return fmt.Errorf("remove quarantine dir: %w", err)
 		}
 		q.dir = ""
 	}
-	return firstErr
+	return nil
 }
