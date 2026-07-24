@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -275,6 +276,9 @@ func TestCIGateReconciliationRefusesHeadClobberAtEntry(t *testing.T) {
 	reconciled, err := (&CIStep{}).ReconcileApprovalGate(sctx)
 	if err == nil || !strings.Contains(err.Error(), "not a descendant") {
 		t.Fatalf("CI gate reconciliation must reject a backward reset at entry, got reconciled=%v err=%v", reconciled, err)
+	}
+	if !errors.Is(err, pipeline.ErrFatalGateReconciliation) {
+		t.Fatalf("CI gate reconciliation error = %v, want fatal classification", err)
 	}
 	if reconciled {
 		t.Fatal("CI gate reconciliation reported success after a backward reset")

@@ -55,7 +55,7 @@ func (s *CIStep) Name() types.StepName { return types.StepCI }
 // parked so reconciliation never guesses success.
 func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error) {
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
-		return false, err
+		return false, fmt.Errorf("%w: %w", pipeline.ErrFatalGateReconciliation, err)
 	}
 	if err := sctx.Ctx.Err(); err != nil {
 		return false, err
