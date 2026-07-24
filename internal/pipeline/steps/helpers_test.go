@@ -393,6 +393,15 @@ func fakeGlab(t *testing.T, mrViewJSON string) (env []string, logFile string) {
 
 // newTestContextWithDBRecords is like newTestContext but also inserts
 // repo and run records into the database so GetRun works after updates.
+func recordReviewApproval(t *testing.T, sctx *pipeline.StepContext, headSHA string) {
+	t.Helper()
+	if err := sctx.DB.UpdateRunReviewApprovedHeadSHA(sctx.Run.ID, headSHA); err != nil {
+		t.Fatal(err)
+	}
+	approved := headSHA
+	sctx.Run.ReviewApprovedHeadSHA = &approved
+}
+
 func newTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA string, cmds config.Commands) *pipeline.StepContext {
 	t.Helper()
 	sctx := newTestContext(t, ag, workDir, baseSHA, headSHA, cmds)

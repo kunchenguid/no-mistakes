@@ -228,13 +228,14 @@ type stepExecutionState struct {
 }
 
 type recoveredGate struct {
-	index       int
-	step        Step
-	stepResult  *db.StepResult
-	findings    string
-	round       int
-	autoFixes   int
-	lastRoundID string
+	index           int
+	step            Step
+	stepResult      *db.StepResult
+	findings        string
+	round           int
+	autoFixes       int
+	lastRoundID     string
+	reviewedHeadSHA string
 }
 
 func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
@@ -267,8 +268,22 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 
 	parkStart := time.Unix(*run.AwaitingAgentSince, 0)
 	duration := recoveredStepDuration(gate.stepResult)
+	completeRecoveredGate := func() error {
+		if gate.step.Name() == types.StepReview {
+			if gate.reviewedHeadSHA == "" {
+				return fmt.Errorf("recovered review has no durable reviewed head candidate")
+			}
+			if err := e.db.CompleteReviewStep(gate.stepResult.ID, run.ID, gate.reviewedHeadSHA, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
+				return err
+			}
+			reviewedHead := gate.reviewedHeadSHA
+			run.ReviewApprovedHeadSHA = &reviewedHead
+			return nil
+		}
+		return e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusCompleted, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult))
+	}
 	completeReconciledGate := func() error {
-		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusCompleted, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
+		if err := completeRecoveredGate(); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("complete reconciled step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", "", &duration)
@@ -344,7 +359,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	telemetry.Track("approval", approvalFields)
 	switch response.action {
 	case types.ActionApprove:
-		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusCompleted, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
+		if err := completeRecoveredGate(); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("complete recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", "", &duration)
@@ -442,6 +457,9 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 				round:       latest.Round,
 				autoFixes:   autoFixes,
 				lastRoundID: latest.ID,
+			}
+			if latest.ReviewedHeadSHA != nil {
+				gate.reviewedHeadSHA = *latest.ReviewedHeadSHA
 			}
 			continue
 		}
@@ -682,6 +700,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	skipRemaining := false
 	stepSkipped := false
 	currentRoundID := state.currentRoundID
+	var reviewApprovedHeadSHA string
 
 	// Execute with possible fix loop
 	for {
@@ -706,6 +725,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			return false, fmt.Errorf("step %s failed: %s", stepName, redactedErr)
 		}
 
+		if stepName == types.StepReview {
+			reviewApprovedHeadSHA = outcome.ReviewApprovedHeadSHA
+		}
 		outcome.Findings = normalizeFindingsJSON(outcome.Findings, string(stepName))
 		finalExitCode = outcome.ExitCode
 		durationOverrideMS += outcome.DurationOverrideMS
@@ -730,7 +752,14 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			s := outcome.FixSummary
 			fixSummaryPtr = &s
 		}
-		if inserted, dbErr := e.db.InsertStepRound(sr.ID, roundNum, nextTrigger, findingsPtr, fixSummaryPtr, roundDuration); dbErr != nil {
+		var inserted *db.StepRound
+		var dbErr error
+		if stepName == types.StepReview {
+			inserted, dbErr = e.db.InsertReviewStepRound(sr.ID, roundNum, nextTrigger, findingsPtr, fixSummaryPtr, reviewApprovedHeadSHA, roundDuration)
+		} else {
+			inserted, dbErr = e.db.InsertStepRound(sr.ID, roundNum, nextTrigger, findingsPtr, fixSummaryPtr, roundDuration)
+		}
+		if dbErr != nil {
 			currentRoundID = roundInsertID(currentRoundID, inserted, dbErr)
 			slog.Warn("failed to insert step round", "step", stepName, "round", roundNum, "error", dbErr)
 		} else {
@@ -922,7 +951,17 @@ done:
 	if stepSkipped {
 		status = types.StepStatusSkipped
 	}
-	if err := e.db.CompleteStepWithStatus(sr.ID, status, finalExitCode, durationMS, logPath); err != nil {
+	// A review round's captured head becomes authority only when the review
+	// actually completes. Parked outcomes stay in the loop above, failures
+	// return earlier, and skipped reviews deliberately leave the binding empty.
+	// Completion and authority replacement are one DB transaction.
+	if stepName == types.StepReview && status == types.StepStatusCompleted && reviewApprovedHeadSHA != "" {
+		if err := e.db.CompleteReviewStep(sr.ID, run.ID, reviewApprovedHeadSHA, finalExitCode, durationMS, logPath); err != nil {
+			return false, fmt.Errorf("complete step %s: %w", stepName, err)
+		}
+		reviewedHead := reviewApprovedHeadSHA
+		run.ReviewApprovedHeadSHA = &reviewedHead
+	} else if err := e.db.CompleteStepWithStatus(sr.ID, status, finalExitCode, durationMS, logPath); err != nil {
 		return false, fmt.Errorf("complete step %s: %w", stepName, err)
 	}
 	e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", "", &durationMS)

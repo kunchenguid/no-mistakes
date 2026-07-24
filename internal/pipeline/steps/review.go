@@ -148,10 +148,10 @@ Previous review findings to address:
 			RiskRationale: "no reviewable changes",
 		}
 		findingsJSON, _ := json.Marshal(noChangeFindings)
-		return &pipeline.StepOutcome{
+		return approvedReviewOutcome(sctx, &pipeline.StepOutcome{
 			Findings:   string(findingsJSON),
 			FixSummary: fixSummary,
-		}, nil
+		})
 	}
 
 	// Ask agent to review
@@ -271,12 +271,25 @@ Risk assessment (after listing all findings):
 	needsApproval := hasBlockingFindings(findings.Items)
 	findingsJSON, _ := json.Marshal(findings)
 
-	return &pipeline.StepOutcome{
+	return approvedReviewOutcome(sctx, &pipeline.StepOutcome{
 		NeedsApproval: needsApproval,
 		AutoFixable:   len(findings.Items) > 0,
 		Findings:      string(findingsJSON),
 		FixSummary:    fixSummary,
-	}, nil
+	})
+}
+
+// approvedReviewOutcome captures the immutable commit examined by this full
+// review round. The executor persists it only if this outcome ultimately
+// completes the review step, so parked, failed, skipped, and superseded rounds
+// cannot gain or advance approval authority.
+func approvedReviewOutcome(sctx *pipeline.StepContext, outcome *pipeline.StepOutcome) (*pipeline.StepOutcome, error) {
+	headSHA, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve review-approved head: %w", err)
+	}
+	outcome.ReviewApprovedHeadSHA = headSHA
+	return outcome, nil
 }
 
 func sanitizedPreviousFindingsForPrompt(raw string) string {

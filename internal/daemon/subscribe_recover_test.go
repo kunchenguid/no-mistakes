@@ -476,7 +476,7 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 	if err := d.SetStepFindings(step.ID, findings); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.InsertStepRound(step.ID, 1, "initial", &findings, nil, 1); err != nil {
+	if _, err := d.InsertReviewStepRound(step.ID, 1, "initial", &findings, nil, headSHA, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.UpdateStepStatusWithDuration(step.ID, types.StepStatusAwaitingApproval, 1); err != nil {
@@ -537,6 +537,9 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 	}
 	if completed.AwaitingAgentSince != nil {
 		t.Fatal("recovered run remained parked after approval")
+	}
+	if completed.ReviewApprovedHeadSHA == nil || *completed.ReviewApprovedHeadSHA != headSHA {
+		t.Fatalf("recovered review approval = %#v, want %s", completed.ReviewApprovedHeadSHA, headSHA)
 	}
 	// The executor marks the run terminal before its owner goroutine performs
 	// worktree cleanup. Wait for that cleanup rather than assuming it completed

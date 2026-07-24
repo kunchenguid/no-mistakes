@@ -111,6 +111,9 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if branchSHA := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); branchSHA != sctx.Run.HeadSHA {
 		t.Fatalf("branch SHA = %s, want %s", branchSHA, sctx.Run.HeadSHA)
 	}
+	if outcome.ReviewApprovedHeadSHA != sctx.Run.HeadSHA {
+		t.Fatalf("rereview captured approved head %s, want %s", outcome.ReviewApprovedHeadSHA, sctx.Run.HeadSHA)
+	}
 }
 
 // The review fixer must apply every fix first, then run one focused

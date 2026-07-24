@@ -145,6 +145,7 @@ func TestPushStep_RefusesToClobberAdvancedUpstreamBranch(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Run.HeadSHA = h3
+	recordReviewApproval(t, sctx, h3)
 
 	step := &PushStep{}
 	_, err := step.Execute(sctx)
@@ -231,6 +232,7 @@ func TestForcePushRun_RefusesToClobberOutOfBandBranchCommit(t *testing.T) {
 	if rebaseOutcome != nil && rebaseOutcome.NeedsApproval {
 		t.Fatalf("unexpected approval from rebase on a clean force push: %s", rebaseOutcome.Findings)
 	}
+	recordReviewApproval(t, sctx, gitCmd(t, dir, "rev-parse", "HEAD"))
 
 	// Push step must refuse: origin/feature carries a commit the rewrite dropped.
 	_, err = (&PushStep{}).Execute(sctx)

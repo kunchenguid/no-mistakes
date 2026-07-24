@@ -429,14 +429,24 @@ func FetchRemoteBranchToPrivateRef(ctx context.Context, dir, remote, branch, loc
 	return err
 }
 
-// Push pushes a ref to a remote. If forceWithLease is true, uses
-// --force-with-lease with the expectedSHA for safe force-push.
+// Push pushes HEAD to a remote ref. If forceWithLease is true, it uses an
+// explicit expected remote SHA for safe force-push.
 func Push(ctx context.Context, dir, remote, ref, expectedSHA string, forceWithLease bool) error {
 	return PushWithOptions(ctx, dir, remote, ref, expectedSHA, forceWithLease, nil)
 }
 
-// PushWithOptions pushes a ref to a remote with per-push options.
+// PushCommit pushes one immutable commit object to a remote ref. Unlike Push,
+// a concurrent worktree HEAD move cannot change the source selected by git.
+func PushCommit(ctx context.Context, dir, remote, commitSHA, ref, expectedSHA string, forceWithLease bool) error {
+	return pushSourceWithOptions(ctx, dir, remote, commitSHA, ref, expectedSHA, forceWithLease, nil)
+}
+
+// PushWithOptions pushes HEAD to a remote with per-push options.
 func PushWithOptions(ctx context.Context, dir, remote, ref, expectedSHA string, forceWithLease bool, pushOptions []string) error {
+	return pushSourceWithOptions(ctx, dir, remote, "HEAD", ref, expectedSHA, forceWithLease, pushOptions)
+}
+
+func pushSourceWithOptions(ctx context.Context, dir, remote, source, ref, expectedSHA string, forceWithLease bool, pushOptions []string) error {
 	args := []string{"push"}
 	for _, option := range pushOptions {
 		args = append(args, "-o", option)
@@ -449,7 +459,7 @@ func PushWithOptions(ctx context.Context, dir, remote, ref, expectedSHA string, 
 			args = append(args, "--force-with-lease")
 		}
 	}
-	args = append(args, "HEAD:"+ref)
+	args = append(args, source+":"+ref)
 	_, err := Run(ctx, dir, args...)
 	return err
 }

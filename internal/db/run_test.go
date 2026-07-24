@@ -510,6 +510,31 @@ func TestReconcileTerminalPRRunsFinalizesLegacyActiveRows(t *testing.T) {
 	}
 }
 
+func TestUpdateRunReviewApprovedHeadSHAReplacesAuthority(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "mutable", "base")
+	if run.ReviewApprovedHeadSHA != nil {
+		t.Fatalf("new run inferred review authority: %#v", run.ReviewApprovedHeadSHA)
+	}
+	if err := d.UpdateRunReviewApprovedHeadSHA(run.ID, "reviewed-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunReviewApprovedHeadSHA(run.ID, "reviewed-2"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReviewApprovedHeadSHA == nil || *got.ReviewApprovedHeadSHA != "reviewed-2" {
+		t.Fatalf("review-approved head = %#v, want reviewed-2", got.ReviewApprovedHeadSHA)
+	}
+	if got.HeadSHA != "mutable" {
+		t.Fatalf("review authority update mutated run head to %s", got.HeadSHA)
+	}
+}
+
 func TestUpdateRunHeadSHA(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
