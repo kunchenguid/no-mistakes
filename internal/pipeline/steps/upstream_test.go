@@ -51,6 +51,23 @@ func TestResolveUpstreamURL_PreservesCredential(t *testing.T) {
 	}
 }
 
+func TestResolveUpstreamURL_PrefersRefreshedRegistration(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", dir, "remote", "add", "origin", "git@example.com:owner/project.git").CombinedOutput(); err != nil {
+		t.Fatalf("git remote add: %v: %s", err, out)
+	}
+	refreshed := "https://example.com/owner/project.git"
+	sctx := minimalStepContext(t, dir, refreshed)
+	sctx.Repo.URLsVerified = true
+	if got := resolveUpstreamURL(sctx); got != refreshed {
+		t.Fatalf("resolveUpstreamURL = %q, want refreshed registration %q", got, refreshed)
+	}
+}
+
 // TestResolveUpstreamURL_FallsBackToRecordedURL verifies that when a worktree
 // has no resolvable "origin" remote, resolveUpstreamURL falls back to the repo
 // record's upstream URL (the path old gates whose DB still carries the full URL

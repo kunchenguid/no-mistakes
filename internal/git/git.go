@@ -158,6 +158,24 @@ func GetConfiguredRemoteURL(ctx context.Context, dir, name string) (string, erro
 	return Run(ctx, dir, "config", "--get", "remote."+name+".url")
 }
 
+// GetConfiguredRemoteURLs returns every literal URL configured for a remote.
+// Callers that require an authoritative source can reject zero or multiple
+// values rather than letting git silently select one.
+func GetConfiguredRemoteURLs(ctx context.Context, dir, name string) ([]string, error) {
+	out, err := Run(ctx, dir, "config", "--get-all", "remote."+name+".url")
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	urls := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if line != "" {
+			urls = append(urls, line)
+		}
+	}
+	return urls, nil
+}
+
 // HasRemote reports whether a remote named name is configured in the repo at
 // dir, returning an error if the remote list cannot be read.
 func HasRemote(ctx context.Context, dir, name string) (bool, error) {

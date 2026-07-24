@@ -7,6 +7,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 )
 
 // reviewWorkload returns the bounded change size (files + net lines) between
@@ -133,18 +134,23 @@ func normalizedBranchRef(ref string) string {
 	return ref
 }
 
-// resolveUpstreamURL returns the credentialled upstream URL to push or query.
-// It prefers the worktree's configured "origin" remote, which inherits the
-// full upstream URL (including any embedded credentials) from the gate's bare
-// repo via the shared common config. It falls back to the repo record's
-// upstream URL when origin cannot be resolved (e.g. a test worktree without
-// origin, or an older gate whose DB still carries the full URL).
+// resolveUpstreamURL returns the upstream URL to push or query. Ordinarily it
+// prefers the worktree's configured "origin" remote, which inherits any
+// embedded credentials from the gate's bare repo. When run-start discovery
+// verified a different current clone URL, it prefers that refreshed repo value
+// instead. It also falls back to the repo record when origin cannot be read.
 //
 // This separation lets the database and logs store a redacted URL while the
 // credential still reaches the git push/ls-remote argv that needs it.
 func resolveUpstreamURL(sctx *pipeline.StepContext) string {
 	if url, err := git.GetRemoteURL(sctx.Ctx, sctx.WorkDir, "origin"); err == nil && strings.TrimSpace(url) != "" {
-		return url
+		// A matching redacted value means origin may carry credentials that the
+		// database intentionally omits. A different registration was refreshed
+		// from the working clone at run start, so prefer it without rewriting
+		// either clone or gate remote configuration.
+		if sctx.Repo == nil || !sctx.Repo.URLsVerified || safeurl.Redact(url) == sctx.Repo.UpstreamURL {
+			return url
+		}
 	}
 	return sctx.Repo.UpstreamURL
 }

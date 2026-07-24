@@ -15,11 +15,13 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -587,6 +589,20 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent)
 }
 
+// fetchRunDefaultBranch fetches the trusted branch from the refreshed
+// registration when it differs from the gate worktree's inherited origin. It
+// updates only the run worktree's existing origin tracking ref and never
+// rewrites clone or gate remote configuration. When the values agree after
+// redaction, origin remains authoritative so embedded credentials retained in
+// the gate can still authenticate without ever entering the database.
+func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) error {
+	originURL, err := git.GetRemoteURL(ctx, workDir, "origin")
+	if !repo.URLsVerified || (err == nil && safeurl.Redact(originURL) == repo.UpstreamURL) {
+		return git.FetchRemoteBranch(ctx, workDir, "origin", repo.DefaultBranch)
+	}
+	return git.FetchRemoteBranchToRef(ctx, workDir, repo.UpstreamURL, repo.DefaultBranch, "refs/remotes/origin/"+repo.DefaultBranch)
+}
+
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
@@ -613,6 +629,17 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	branchMu := lockVal.(*sync.Mutex)
 	branchMu.Lock()
 	defer branchMu.Unlock()
+
+	// Best-effort only: a clone's remotes may change after init. Refresh the
+	// registered URLs before constructing any run-owned Git operation, but keep
+	// the exact prior repo value and continue when discovery, validation, or the
+	// atomic database replacement fails. The reason is deliberately bounded and
+	// URL-free so neither credentials nor sensitive remote material reach logs.
+	if refreshed, _, refreshErr := gate.RefreshRepoURLs(ctx, m.db, repo); refreshErr != nil {
+		slog.Warn("repository URL refresh skipped; continuing with existing registration", "repo_id", repo.ID, "reason", gate.ReasonForRefreshFailure(refreshErr))
+	} else {
+		repo = refreshed
+	}
 
 	// Cancel any active run for this repo+branch.
 	m.cancelActiveRuns(repo.ID, branch)
@@ -664,8 +691,9 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// branch has already removed - silently running stale shell.
 	var trustedSHA string
 	if repo.DefaultBranch != "" {
-		if err := git.FetchRemoteBranch(ctx, wtDir, "origin", repo.DefaultBranch); err != nil {
-			slog.Warn("failed to fetch default branch into worktree; trusted config disabled (commands/agent from pushed branch will be dropped)", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
+		fetchErr := fetchRunDefaultBranch(ctx, wtDir, repo)
+		if fetchErr != nil {
+			slog.Warn("failed to fetch default branch into worktree; trusted config disabled (commands/agent from pushed branch will be dropped)", "run_id", run.ID, "branch", repo.DefaultBranch, "error", fetchErr)
 		} else if sha, err := git.ResolveRef(ctx, wtDir, "refs/remotes/origin/"+repo.DefaultBranch); err != nil {
 			slog.Warn("failed to resolve fetched default-branch ref; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
 		} else {
