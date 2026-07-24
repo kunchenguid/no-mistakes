@@ -54,6 +54,7 @@ func TestTerminalPRRunDisappearsFromActiveListing(t *testing.T) {
 			if err != nil {
 				t.Fatalf("runs: %v\n%s", err, out)
 			}
+			t.Logf("no-mistakes runs after %s PR observation:\n%s", state, out)
 			if !strings.Contains(out, "completed") || strings.Contains(out, "running") {
 				t.Fatalf("terminal PR remained visibly active:\n%s", out)
 			}
