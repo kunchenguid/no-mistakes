@@ -564,6 +564,12 @@ func WorktreeAdd(ctx context.Context, repoDir, wtPath, sha string) error {
 	return err
 }
 
+// SubmoduleUpdate recursively initializes and updates git submodules in a worktree.
+func SubmoduleUpdate(ctx context.Context, wtPath string) error {
+	_, err := Run(ctx, wtPath, "submodule", "update", "--init", "--recursive")
+	return err
+}
+
 // WorktreeRemove removes a worktree at the given path.
 func WorktreeRemove(ctx context.Context, repoDir, wtPath string) error {
 	_, err := Run(ctx, repoDir, "worktree", "remove", "--force", wtPath)
