@@ -110,6 +110,9 @@ type RepoConfig struct {
 	// EffectiveRepoConfig): a contributor's pushed branch must not be able to
 	// weaken documentation rules for its own review.
 	Document DocumentRaw `yaml:"document"`
+	// Gate carries compact project context for gate agents. It is trusted-only
+	// because these instructions govern every agent invocation.
+	Gate GateRaw `yaml:"gate"`
 	// DisableProjectSettings opts the repository out of loading project-level
 	// agent settings/instructions (AGENTS.md/CLAUDE.md and the equivalent
 	// per-harness project settings) into gate agents. It exists for
@@ -131,6 +134,13 @@ type DocumentRaw struct {
 	Instructions string `yaml:"instructions"`
 }
 
+// GateRaw is the YAML representation of gate-agent context settings.
+type GateRaw struct {
+	// Instructions are compact, maintainer-authored project invariants prepended
+	// to every gate-agent prompt.
+	Instructions string `yaml:"instructions"`
+}
+
 func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	type repoConfigRaw struct {
 		Agent                  agentList   `yaml:"agent"`
@@ -142,6 +152,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Intent                 IntentRaw   `yaml:"intent"`
 		Test                   TestRaw     `yaml:"test"`
 		Document               DocumentRaw `yaml:"document"`
+		Gate                   GateRaw     `yaml:"gate"`
 		DisableProjectSettings bool        `yaml:"disable_project_settings"`
 	}
 	var raw repoConfigRaw
@@ -158,6 +169,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Intent = raw.Intent
 	c.Test = raw.Test
 	c.Document = raw.Document
+	c.Gate = raw.Gate
 	c.DisableProjectSettings = raw.DisableProjectSettings
 	return nil
 }
@@ -211,6 +223,7 @@ type Config struct {
 	Intent               Intent
 	Test                 Test
 	Document             Document
+	Gate                 Gate
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -222,6 +235,12 @@ type Config struct {
 // trusted default-branch repo config and augment the built-in placement
 // policy in the document prompt.
 type Document struct {
+	Instructions string
+}
+
+// Gate is the resolved gate-agent context. Instructions come from the trusted
+// default-branch repo config and are prepended to every agent prompt.
+type Gate struct {
 	Instructions string
 }
 
@@ -1055,7 +1074,8 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // pushed branch cannot inject shell or pick an agent. Document (the
 // documentation placement policy injected into the document gate prompt) is
 // trusted-only for the same reason: a pushed branch must not weaken the
-// documentation rules that gate itself. DisableProjectSettings is also
+// documentation rules that gate itself. Gate instructions and
+// DisableProjectSettings are also
 // trusted-only so a pushed branch cannot enable or defeat the gate-agent
 // project-instruction boundary. When allowRepoCommands is
 // true the maintainer has explicitly opted in (via allow_repo_commands on the
@@ -1077,6 +1097,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 	effective := *pushed
 	if trusted != nil {
 		effective.Document = trusted.Document
+		effective.Gate = trusted.Gate
 		// disable_project_settings is a security boundary: honor it ONLY from the
 		// trusted default-branch copy so a pushed branch cannot turn the opt-out
 		// off (and re-enable its own AGENTS.md) or on. A nil trusted copy here
@@ -1085,6 +1106,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.DisableProjectSettings = trusted.DisableProjectSettings
 	} else {
 		effective.Document = DocumentRaw{}
+		effective.Gate = GateRaw{}
 		effective.DisableProjectSettings = false
 	}
 	if allowRepoCommands {
@@ -1270,6 +1292,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Intent:               intent,
 		Test:                 test,
 		Document:             Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
+		Gate:                 Gate{Instructions: strings.TrimSpace(repo.Gate.Instructions)},
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,

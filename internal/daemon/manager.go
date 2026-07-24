@@ -234,7 +234,7 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, lookPath func(str
 			}
 			return nil, fmt.Errorf("create agent %s: %w", name, err)
 		}
-		created = append(created, agent.WithSteering(next))
+		created = append(created, agent.WithSteering(agent.WithGateInstructions(next, cfg.Gate.Instructions)))
 	}
 	ag := agent.NewFallback(created)
 	// Fail closed ONLY under the trusted opt-out (see startRun): refuse an
@@ -758,7 +758,7 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			// Steer every pipeline agent to keep writes inside the worktree and
 			// avoid mutating system state (e.g. brew/Homebrew touching
 			// /Applications), which triggers macOS App Management prompts.
-			created = append(created, agent.WithSteering(next))
+			created = append(created, agent.WithSteering(agent.WithGateInstructions(next, cfg.Gate.Instructions)))
 		}
 		ag = agent.NewFallback(created)
 		// Fail closed ONLY under the trusted opt-out: when the repo asked to

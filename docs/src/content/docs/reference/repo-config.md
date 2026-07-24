@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions` and `disable_project_settings` only from that trusted copy.
+The daemon also reads `document.instructions`, `gate.instructions`, and `disable_project_settings` only from that trusted copy.
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
@@ -36,6 +36,13 @@ ignore_patterns:
 document:
   instructions: |
     docs/ owns detailed product guidance; README.md owns the introduction.
+
+# Compact context prepended to every gate-agent prompt.
+# Read only from the trusted default branch.
+gate:
+  instructions: |
+    Never edit generated files directly; change their source and regenerate.
+    Read docs/architecture.md before changing package boundaries.
 
 # For orchestration repos whose project instructions would misidentify gate agents.
 # Read only from the trusted default branch. Defaults to false.
@@ -129,6 +136,20 @@ When this option is `false`, missing, or `null`, all agents retain their existin
 This field is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`.
 A pushed branch cannot enable it or disable a trusted opt-in.
 If the trusted commit or its present config file cannot be read and parsed, the run aborts rather than guessing that the option is disabled.
+
+### gate.instructions
+
+Prepend compact maintainer-authored project context to every agent-driven gate step and fix round.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | Empty |
+
+This field is read only from the trusted default-branch `.no-mistakes.yaml`, regardless of `allow_repo_commands`.
+It is intended to pair with `disable_project_settings: true`: keep only load-bearing invariants inline, and point agents to detailed documents they should read when relevant.
+The same instructions reach direct agents, provider fallbacks, fresh sessions, and resumed sessions.
+When empty, no prompt preamble is added.
 
 ### commands.test
 

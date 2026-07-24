@@ -276,6 +276,33 @@ func TestLoadRepo_DocumentInstructions(t *testing.T) {
 	}
 }
 
+func TestGateInstructionsAreTrustedOnlyAndMerged(t *testing.T) {
+	pushed, err := LoadRepoFromBytes([]byte("gate:\n  instructions: contributor context\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted, err := LoadRepoFromBytes([]byte("gate:\n  instructions: |\n    Never edit generated files.\n    Read docs/architecture.md when relevant.\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	effective := EffectiveRepoConfig(pushed, trusted, false)
+	if strings.Contains(effective.Gate.Instructions, "contributor") || !strings.Contains(effective.Gate.Instructions, "Never edit") {
+		t.Fatalf("effective Gate.Instructions = %q, want trusted copy only", effective.Gate.Instructions)
+	}
+	if got := EffectiveRepoConfig(pushed, nil, false).Gate.Instructions; got != "" {
+		t.Fatalf("Gate.Instructions without trusted config = %q, want empty", got)
+	}
+	if got := EffectiveRepoConfig(pushed, trusted, true).Gate.Instructions; !strings.Contains(got, "Never edit") {
+		t.Fatalf("allow_repo_commands leaked pushed gate instructions: %q", got)
+	}
+
+	resolved := Merge(&GlobalConfig{}, effective)
+	if strings.HasPrefix(resolved.Gate.Instructions, " ") || !strings.Contains(resolved.Gate.Instructions, "docs/architecture.md") {
+		t.Fatalf("resolved Gate.Instructions = %q", resolved.Gate.Instructions)
+	}
+}
+
 // TestParseRepoConfig_DisableProjectSettings_Semantics locks in the locked
 // spec: missing / null / false are all falsy (preserve project-setting loading);
 // only an explicit true opts out.
