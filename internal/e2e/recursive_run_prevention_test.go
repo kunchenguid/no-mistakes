@@ -23,8 +23,16 @@ import (
 // and a direct gate push. Every attempt must fail before creating a repo, run,
 // remote, worktree, or gate ref.
 func TestGateStepCannotStartRecursivePipeline(t *testing.T) {
-	h := NewHarness(t, SetupOpts{Agent: "codex", Scenario: cleanReviewScenario(t)})
-	installRecursiveIncidentAgent(t, h)
+	for _, agentName := range []string{"claude", "codex", "opencode"} {
+		t.Run(agentName, func(t *testing.T) {
+			runRecursiveIncident(t, agentName)
+		})
+	}
+}
+
+func runRecursiveIncident(t *testing.T, agentName string) {
+	h := NewHarness(t, SetupOpts{Agent: agentName, Scenario: cleanReviewScenario(t)})
+	installRecursiveIncidentAgent(t, h, agentName)
 
 	descendantRepo := filepath.Join(t.TempDir(), "independent-clone")
 	if out, err := h.runGit(context.Background(), t.TempDir(), "clone", h.UpstreamDir, descendantRepo); err != nil {
@@ -86,9 +94,13 @@ func TestGateStepCannotStartRecursivePipeline(t *testing.T) {
 	if got := strings.Count(output, "code: nested_gate_context"); got < 14 {
 		t.Fatalf("structured refusals = %d, want at least 14:\n%s", got, output)
 	}
+	expectedPhase := "document"
+	if agentName == "opencode" {
+		expectedPhase = "review"
+	}
 	for _, want := range []string{
 		outer.ID,
-		"phase: document",
+		"phase: " + expectedPhase,
 		"Return control to the outer executor",
 		"no-mistakes axi status",
 	} {
@@ -156,7 +168,7 @@ func incidentAttemptSection(output, label string) string {
 	return rest
 }
 
-func installRecursiveIncidentAgent(t *testing.T, h *Harness) {
+func installRecursiveIncidentAgent(t *testing.T, h *Harness, agentName string) {
 	t.Helper()
 	if err := os.Symlink(h.NMBin, filepath.Join(h.BinDir, "no-mistakes")); err != nil {
 		t.Fatalf("symlink no-mistakes: %v", err)
@@ -165,15 +177,24 @@ func installRecursiveIncidentAgent(t *testing.T, h *Harness) {
 	if err := os.MkdirAll(realDir, 0o755); err != nil {
 		t.Fatalf("mkdir real agent dir: %v", err)
 	}
-	if err := os.Symlink(h.FakeAgent, filepath.Join(realDir, "codex")); err != nil {
-		t.Fatalf("symlink real codex fake: %v", err)
+	if err := os.Symlink(h.FakeAgent, filepath.Join(realDir, agentName)); err != nil {
+		t.Fatalf("symlink real %s fake: %v", agentName, err)
 	}
-	wrapper := filepath.Join(h.BinDir, "codex")
+	wrapper := filepath.Join(h.BinDir, agentName)
 	if err := os.Remove(wrapper); err != nil {
-		t.Fatalf("remove codex symlink: %v", err)
+		t.Fatalf("remove %s symlink: %v", agentName, err)
+	}
+	promptSource := `prompt="$*"`
+	execAgent := fmt.Sprintf(`exec %s "$@"`, shellQuote(filepath.Join(realDir, agentName)))
+	switch agentName {
+	case "claude":
+		promptSource = `prompt=$(cat)`
+		execAgent = fmt.Sprintf(`printf '%%s' "$prompt" | exec %s "$@"`, shellQuote(filepath.Join(realDir, agentName)))
+	case "opencode":
+		promptSource = `prompt="combined documentation and lint housekeeping pass"`
 	}
 	script := fmt.Sprintf(`#!/bin/sh
-prompt="$*"
+%s
 case "$prompt" in
   *"combined documentation and lint housekeeping pass"*)
     if mkdir "$NM_HOME/recursive-incident-claimed" 2>/dev/null; then
@@ -214,8 +235,8 @@ case "$prompt" in
     fi
     ;;
 esac
-exec %s "$@"
-`, shellQuote(filepath.Join(realDir, "codex")))
+%s
+`, promptSource, execAgent)
 	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
 		t.Fatalf("write recursive incident agent: %v", err)
 	}
