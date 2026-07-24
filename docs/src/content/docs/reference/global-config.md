@@ -204,13 +204,15 @@ agent_args_override:
     - work
   opencode:
     - --model
-    - gpt-5
+    - openai/gpt-5
   pi:
     - --provider
     - google
 ```
 
 For Codex, `service_tier` and `model_reasoning_effort` tune different things: `service_tier` selects the speed or priority lane, while `model_reasoning_effort` selects reasoning depth. no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
+
+For OpenCode, `--model` is not a valid `opencode serve` flag (it is a `run`/TUI flag), so no-mistakes extracts `--model` from `agent_args_override.opencode` and passes it to the per-session creation API instead. The value must be in `provider/model` form (for example `openai/gpt-5`); a value without a slash fails loudly at session creation rather than silently falling back to the default model.
 
 ### ci_timeout
 

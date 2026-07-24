@@ -18,7 +18,7 @@ func fakeLookPath(bin string) (string, error) { return "/fake/bin/" + bin, nil }
 // opt-out (disable_project_settings=true), a verified harness passes the gate and
 // its pipeline agent reports neutralized.
 func TestNewPipelineAgent_OptOut_AdmitsVerifiedHarness(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude} {
+	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentOpenCode} {
 		cfg := &config.Config{Agent: name, DisableProjectSettings: true}
 		ag, err := newPipelineAgent(context.Background(), cfg, fakeLookPath)
 		if err != nil {
@@ -34,9 +34,10 @@ func TestNewPipelineAgent_OptOut_AdmitsVerifiedHarness(t *testing.T) {
 // TestNewPipelineAgent_OptOut_RefusesUnverifiedHarness is the captain-mandated
 // fail-closed contract at the daemon wiring: under the opt-out, a harness with no
 // verified neutralization knob is refused rather than launched with project
-// instructions loaded.
+// instructions loaded. opencode is verified (it passes the gate); the binary
+// capability is checked separately at server-start time.
 func TestNewPipelineAgent_OptOut_RefusesUnverifiedHarness(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentOpenCode, types.AgentPi, types.AgentCopilot} {
+	for _, name := range []types.AgentName{types.AgentPi, types.AgentCopilot} {
 		cfg := &config.Config{Agent: name, DisableProjectSettings: true}
 		if _, err := newPipelineAgent(context.Background(), cfg, fakeLookPath); err == nil {
 			t.Fatalf("%s must be refused under opt-out", name)
@@ -80,12 +81,13 @@ func TestNewPipelineAgent_OptOut_RefusesDefeatedKnob(t *testing.T) {
 
 // TestNewPipelineAgent_OptOut_FallbackRefusesAnyUnverifiedMember proves an
 // ordered fallback list fails closed under opt-out if any member is unverified.
+// A list of all-verified harnesses (codex, claude, opencode) passes.
 func TestNewPipelineAgent_OptOut_FallbackRefusesAnyUnverifiedMember(t *testing.T) {
-	cfg := &config.Config{Agents: []types.AgentName{types.AgentCodex, types.AgentOpenCode}, DisableProjectSettings: true}
+	cfg := &config.Config{Agents: []types.AgentName{types.AgentCodex, types.AgentPi}, DisableProjectSettings: true}
 	if _, err := newPipelineAgent(context.Background(), cfg, fakeLookPath); err == nil {
 		t.Fatal("a fallback list containing an unverified harness must be refused under opt-out")
 	}
-	cfg = &config.Config{Agents: []types.AgentName{types.AgentCodex, types.AgentClaude}, DisableProjectSettings: true}
+	cfg = &config.Config{Agents: []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentOpenCode}, DisableProjectSettings: true}
 	if ag, err := newPipelineAgent(context.Background(), cfg, fakeLookPath); err != nil {
 		t.Fatalf("a fallback list of only verified harnesses must pass under opt-out, got: %v", err)
 	} else {

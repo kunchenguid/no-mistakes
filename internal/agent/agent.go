@@ -156,8 +156,10 @@ func NeutralizesGateInstructions(a Agent) bool {
 // the target checkout does not neutralize that checkout's project
 // agent-instruction files. Callers must invoke it before launching any gate
 // agent so an unverified harness is refused with a clear error rather than run
-// unneutralized in the target checkout. Only codex and claude have a verified
-// neutralization knob today.
+// unneutralized in the target checkout. Codex, claude, and opencode have a
+// verified neutralization knob today (opencode requires a binary that supports
+// the --no-project-instructions serve flag; older binaries are rejected by the
+// adapter's capability probe).
 func EnsureGateNeutralized(a Agent) error {
 	if a == nil {
 		return fmt.Errorf("no gate agent configured")
@@ -167,8 +169,9 @@ func EnsureGateNeutralized(a Agent) error {
 	}
 	return fmt.Errorf("gate agent %q does not neutralize the target repository's project "+
 		"agent-instruction files (AGENTS.md/CLAUDE.md); refusing to launch it in the target "+
-		"checkout. Only codex and claude have a verified neutralization knob (and only when it "+
-		"is not overridden by agent_args_override); set 'agent' to codex or claude in "+
+		"checkout. Only codex, claude, and opencode (with --no-project-instructions support) "+
+		"have a verified neutralization knob (and only when it is not overridden by "+
+		"agent_args_override); set 'agent' to codex, claude, or opencode in "+
 		"~/.no-mistakes/config.yaml", a.Name())
 }
 
@@ -803,7 +806,16 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	case types.AgentRovoDev:
 		return &rovodevAgent{bin: bin, extraArgs: extraArgs}, nil
 	case types.AgentOpenCode:
-		return &opencodeAgent{bin: bin, extraArgs: extraArgs}, nil
+		// `opencode serve` does not accept --model (it is a `run`/TUI flag, not
+		// a serve flag); passing it makes yargs print help and exit, breaking
+		// the server. Extract --model from extraArgs and pass it to the session
+		// creation API instead, so operator model pinning (agent_args_override)
+		// works without breaking the serve argv.
+		serveArgs, model, err := opencodeExtractModel(extraArgs)
+		if err != nil {
+			return nil, err
+		}
+		return &opencodeAgent{bin: bin, extraArgs: serveArgs, disableProjectSettings: opts.DisableProjectSettings, sessionModel: model}, nil
 	case types.AgentPi:
 		return &piAgent{bin: bin, extraArgs: extraArgs}, nil
 	case types.AgentCopilot:
