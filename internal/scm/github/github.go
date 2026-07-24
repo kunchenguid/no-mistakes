@@ -120,26 +120,6 @@ func (h *Host) repoArgs() []string {
 	return []string{"--repo", h.repo}
 }
 
-// prSelector returns the explicit gh PR selector for pr, preferring the numeric
-// PR number and falling back to the canonical PR URL; both name the exact pull
-// request to gh regardless of the process working directory. It fails closed
-// when neither is known: an empty positional makes `gh pr <verb>` fall back to
-// resolving the current branch of the cwd, and the daemon runs from a detached
-// bare gate repo whose HEAD is the default branch (main), so an inferred
-// selector silently targets the wrong PR (or none — "no pull requests found for
-// branch main") instead of the feature PR the pipeline already knows.
-func prSelector(pr *scm.PR) (string, error) {
-	if pr != nil {
-		if n := strings.TrimSpace(pr.Number); n != "" {
-			return n, nil
-		}
-		if u := strings.TrimSpace(pr.URL); u != "" {
-			return u, nil
-		}
-	}
-	return "", errors.New("no PR number or URL known; refusing to run gh with a cwd-inferred branch")
-}
-
 func (h *Host) headRef(branch string) string {
 	if h.forkOwner == "" {
 		return branch
@@ -262,7 +242,7 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 }
 
 func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
-	selector, err := prSelector(pr)
+	selector, err := scm.PRSelector(pr)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +257,7 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 }
 
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
-	selector, err := prSelector(pr)
+	selector, err := scm.PRSelector(pr)
 	if err != nil {
 		return "", err
 	}
@@ -292,7 +272,7 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 }
 
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
-	selector, err := prSelector(pr)
+	selector, err := scm.PRSelector(pr)
 	if err != nil {
 		return nil, err
 	}
@@ -329,7 +309,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 }
 
 func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {
-	selector, err := prSelector(pr)
+	selector, err := scm.PRSelector(pr)
 	if err != nil {
 		return "", err
 	}

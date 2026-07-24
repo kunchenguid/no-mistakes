@@ -57,9 +57,9 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 }
 
 func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
-	id, err := strconv.Atoi(pr.Number)
+	id, err := bitbucketPRID(pr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid Bitbucket PR number %q: %w", pr.Number, err)
+		return nil, err
 	}
 	updated, err := h.client.UpdatePR(ctx, h.repo, id, content.Title, content.Body)
 	if err != nil {
@@ -69,7 +69,7 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 }
 
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
-	id, err := strconv.Atoi(pr.Number)
+	id, err := bitbucketPRID(pr)
 	if err != nil {
 		return "", err
 	}
@@ -84,7 +84,7 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 }
 
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
-	id, err := strconv.Atoi(pr.Number)
+	id, err := bitbucketPRID(pr)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +111,7 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, h
 	if h.client == nil {
 		return "", nil
 	}
-	id, err := strconv.Atoi(pr.Number)
+	id, err := bitbucketPRID(pr)
 	if err != nil {
 		return "", err
 	}
@@ -152,6 +152,18 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, h
 		}
 	}
 	return "", nil
+}
+
+func bitbucketPRID(pr *scm.PR) (int, error) {
+	number, err := scm.PRNumber(pr)
+	if err != nil {
+		return 0, err
+	}
+	id, err := strconv.Atoi(number)
+	if err != nil {
+		return 0, fmt.Errorf("invalid Bitbucket PR number %q: %w", number, err)
+	}
+	return id, nil
 }
 
 func (h *Host) toPR(pr *PullRequest) *scm.PR {

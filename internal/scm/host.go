@@ -79,16 +79,56 @@ func ExtractPRNumber(prURL string) (string, error) {
 	if num == "" {
 		return "", fmt.Errorf("invalid PR URL: %s", prURL)
 	}
-	if _, err := strconv.Atoi(num); err != nil {
+	if _, ok := positivePRNumber(num); !ok {
 		return "", fmt.Errorf("invalid PR number %q in URL: %s", num, prURL)
 	}
 	return num, nil
+}
+
+func positivePRNumber(raw string) (string, bool) {
+	number := strings.TrimSpace(raw)
+	value, err := strconv.ParseUint(number, 10, 64)
+	if err != nil || value == 0 {
+		return "", false
+	}
+	return number, true
 }
 
 // PR identifies a pull/merge request on a provider.
 type PR struct {
 	Number string
 	URL    string
+}
+
+// PRSelector returns an explicit provider selector for a known PR.
+// It prefers the numeric identifier. It falls back to the canonical URL.
+// It rejects missing identity so providers never infer a PR from their cwd.
+func PRSelector(pr *PR) (string, error) {
+	if pr != nil {
+		if number := strings.TrimSpace(pr.Number); number != "" {
+			return number, nil
+		}
+		if url := strings.TrimSpace(pr.URL); url != "" {
+			return url, nil
+		}
+	}
+	return "", errors.New("no PR number or URL known")
+}
+
+// PRNumber returns a numeric provider identifier for a known PR.
+// It reads the number first. It extracts the trailing number from the URL.
+func PRNumber(pr *PR) (string, error) {
+	if pr != nil {
+		if number, ok := positivePRNumber(pr.Number); ok {
+			return number, nil
+		}
+		if url := strings.TrimSpace(pr.URL); url != "" {
+			if number, err := ExtractPRNumber(url); err == nil {
+				return number, nil
+			}
+		}
+	}
+	return "", errors.New("no numeric PR identity known")
 }
 
 // PRContent is the title + body for creating or updating a PR.

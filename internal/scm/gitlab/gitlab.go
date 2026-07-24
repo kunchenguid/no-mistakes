@@ -211,14 +211,9 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 }
 
 func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
-	id := pr.Number
-	if id == "" && pr != nil {
-		if num, err := scm.ExtractPRNumber(pr.URL); err == nil {
-			id = num
-		}
-	}
-	if id == "" && pr != nil {
-		id = pr.URL
+	id, err := scm.PRNumber(pr)
+	if err != nil {
+		return nil, err
 	}
 	cmd := h.cmd(ctx, "glab", "mr", "update", id,
 		"--title", content.Title,
@@ -232,7 +227,11 @@ func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) 
 }
 
 func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) {
-	mr, err := h.viewMR(ctx, pr.Number)
+	id, err := scm.PRNumber(pr)
+	if err != nil {
+		return "", err
+	}
+	mr, err := h.viewMR(ctx, id)
 	if err != nil {
 		return "", err
 	}
@@ -240,7 +239,11 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 }
 
 func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {
-	mr, err := h.viewMR(ctx, pr.Number)
+	id, err := scm.PRNumber(pr)
+	if err != nil {
+		return "", err
+	}
+	mr, err := h.viewMR(ctx, id)
 	if err != nil {
 		return "", err
 	}
@@ -278,15 +281,19 @@ func (h *Host) viewMR(ctx context.Context, id string) (mrPayload, error) {
 }
 
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
+	id, err := scm.PRNumber(pr)
+	if err != nil {
+		return nil, err
+	}
 	// glab ci status --mr <id> --output json lists jobs for the MR's latest pipeline.
 	// Not all glab versions support --mr; fall back to listing pipelines by branch via view.
-	cmd := h.cmd(ctx, "glab", "ci", "status", "--mr", pr.Number, "--output", "json")
+	cmd := h.cmd(ctx, "glab", "ci", "status", "--mr", id, "--output", "json")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if !isUnsupportedMRFlagError(out) {
 			return nil, fmt.Errorf("glab ci status: %s: %w", strings.TrimSpace(string(out)), err)
 		}
-		return h.getChecksFallback(ctx, pr)
+		return h.getChecksFallback(ctx, id)
 	}
 	return parseGitlabJobs(out)
 }
@@ -315,9 +322,9 @@ func isUnsupportedMRFlagError(out []byte) bool {
 	return false
 }
 
-func (h *Host) getChecksFallback(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
+func (h *Host) getChecksFallback(ctx context.Context, id string) ([]scm.Check, error) {
 	// Try fetching the MR's pipeline and listing its jobs.
-	cmd := h.cmd(ctx, "glab", "mr", "view", pr.Number, "--output", "json")
+	cmd := h.cmd(ctx, "glab", "mr", "view", id, "--output", "json")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("glab mr view: %s: %w", strings.TrimSpace(string(out)), err)
@@ -349,8 +356,12 @@ func (h *Host) FetchFailedCheckLogs(ctx context.Context, pr *scm.PR, _ string, _
 	if len(failingNames) == 0 {
 		return "", nil
 	}
+	id, err := scm.PRNumber(pr)
+	if err != nil {
+		return "", err
+	}
 	// Get the MR's pipeline jobs, find a failed one whose name matches, trace it.
-	viewCmd := h.cmd(ctx, "glab", "mr", "view", pr.Number, "--output", "json")
+	viewCmd := h.cmd(ctx, "glab", "mr", "view", id, "--output", "json")
 	viewOut, err := viewCmd.CombinedOutput()
 	if err != nil {
 		return "", nil

@@ -83,6 +83,70 @@ func TestGetMergeableStateTreatsBlockedStatusesAsResolved(t *testing.T) {
 	}
 }
 
+func TestPRTargetingFailsClosedWithoutIdentity(t *testing.T) {
+	t.Parallel()
+
+	host := New(failIfGitLabCommandRuns(t), nil, "", "")
+	ctx := context.Background()
+	pr := &scm.PR{}
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "update",
+			run: func() error {
+				_, err := host.UpdatePR(ctx, pr, scm.PRContent{})
+				return err
+			},
+		},
+		{
+			name: "state",
+			run: func() error {
+				_, err := host.GetPRState(ctx, pr)
+				return err
+			},
+		},
+		{
+			name: "checks",
+			run: func() error {
+				_, err := host.GetChecks(ctx, pr)
+				return err
+			},
+		},
+		{
+			name: "mergeable state",
+			run: func() error {
+				_, err := host.GetMergeableState(ctx, pr)
+				return err
+			},
+		},
+		{
+			name: "failed logs",
+			run: func() error {
+				_, err := host.FetchFailedCheckLogs(ctx, pr, "", "", []string{"build"})
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.run(); err == nil {
+				t.Fatal("expected missing PR identity error")
+			}
+		})
+	}
+}
+
+func TestPRTargetingRejectsInvalidNumberBeforeStartingGlab(t *testing.T) {
+	t.Parallel()
+
+	host := New(failIfGitLabCommandRuns(t), nil, "", "")
+	if _, err := host.UpdatePR(context.Background(), &scm.PR{Number: "--help"}, scm.PRContent{}); err == nil {
+		t.Fatal("UpdatePR() error = nil, want invalid PR number error")
+	}
+}
+
 func TestGetChecksFallbackParsesMRJSONAfterPreamble(t *testing.T) {
 	t.Parallel()
 
@@ -95,7 +159,7 @@ func TestGetChecksFallbackParsesMRJSONAfterPreamble(t *testing.T) {
 		},
 	}), nil, "", "")
 
-	checks, err := host.getChecksFallback(context.Background(), &scm.PR{Number: "123"})
+	checks, err := host.getChecksFallback(context.Background(), "123")
 	if err != nil {
 		t.Fatalf("getChecksFallback() error = %v", err)
 	}
@@ -312,7 +376,7 @@ func TestGetChecksFallbackRequestsJobDetails(t *testing.T) {
 		},
 	}), nil, "", "")
 
-	checks, err := host.getChecksFallback(context.Background(), &scm.PR{Number: "123"})
+	checks, err := host.getChecksFallback(context.Background(), "123")
 	if err != nil {
 		t.Fatalf("getChecksFallback() error = %v", err)
 	}
@@ -599,6 +663,14 @@ type gitlabTestResponse struct {
 	stdout string
 	stderr string
 	code   int
+}
+
+func failIfGitLabCommandRuns(t *testing.T) CmdFactory {
+	t.Helper()
+	return func(_ context.Context, name string, args ...string) *exec.Cmd {
+		t.Fatalf("glab should not run without a known PR identity; got: %s %s", name, strings.Join(args, " "))
+		return nil
+	}
 }
 
 func gitlabTestCmdFactory(responses map[string]gitlabTestResponse) CmdFactory {

@@ -38,6 +38,78 @@ func TestExtractHost(t *testing.T) {
 	}
 }
 
+func TestPRSelectorPrefersNumberAndFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		pr   *PR
+		want string
+		ok   bool
+	}{
+		{name: "number", pr: &PR{Number: " 123 ", URL: "https://example.test/pull/456"}, want: "123", ok: true},
+		{name: "URL", pr: &PR{URL: " https://example.test/pull/123 "}, want: "https://example.test/pull/123", ok: true},
+		{name: "empty", pr: &PR{}, ok: false},
+		{name: "nil", pr: nil, ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := PRSelector(tt.pr)
+			if tt.ok {
+				if err != nil {
+					t.Fatalf("PRSelector() error = %v", err)
+				}
+				if got != tt.want {
+					t.Fatalf("PRSelector() = %q, want %q", got, tt.want)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("PRSelector() = %q, want error", got)
+			}
+		})
+	}
+}
+
+func TestPRNumberUsesURLWhenNumberIsAbsent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		pr   *PR
+		want string
+		ok   bool
+	}{
+		{name: "number", pr: &PR{Number: " 123 "}, want: "123", ok: true},
+		{name: "URL", pr: &PR{URL: "https://gitlab.example.test/group/project/-/merge_requests/42"}, want: "42", ok: true},
+		{name: "invalid number falls back to URL", pr: &PR{Number: "latest", URL: "https://gitlab.example.test/group/project/-/merge_requests/42"}, want: "42", ok: true},
+		{name: "invalid URL", pr: &PR{URL: "https://example.test/pull/latest"}, ok: false},
+		{name: "negative number", pr: &PR{Number: "-1"}, ok: false},
+		{name: "zero number", pr: &PR{Number: "0"}, ok: false},
+		{name: "number suffix", pr: &PR{Number: "12x"}, ok: false},
+		{name: "option-like number", pr: &PR{Number: "--help"}, ok: false},
+		{name: "empty", pr: &PR{}, ok: false},
+		{name: "nil", pr: nil, ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := PRNumber(tt.pr)
+			if tt.ok {
+				if err != nil {
+					t.Fatalf("PRNumber() error = %v", err)
+				}
+				if got != tt.want {
+					t.Fatalf("PRNumber() = %q, want %q", got, tt.want)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("PRNumber() = %q, want error", got)
+			}
+		})
+	}
+}
+
 func TestCheckBucketHelpers(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -294,16 +294,8 @@ func (h *Host) showPR(ctx context.Context, pr *scm.PR) (*azPR, error) {
 }
 
 func (h *Host) prID(pr *scm.PR) string {
-	if pr == nil {
-		return ""
-	}
-	if id := strings.TrimSpace(pr.Number); id != "" {
-		return id
-	}
-	if num, err := scm.ExtractPRNumber(pr.URL); err == nil {
-		return num
-	}
-	return ""
+	id, _ := scm.PRNumber(pr)
+	return id
 }
 
 func (h *Host) toPR(raw *azPR) *scm.PR {
