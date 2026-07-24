@@ -238,6 +238,8 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 		"If automated testing cannot produce the needed evidence, execute manual verification steps",
 		"Always include an \"artifacts\" array",
 		"If sufficient evidence is not possible, report a warning finding",
+		"When the blocker is a host capability or OS permission the agent's own process lacks",
+		"name the specific capability or permission and how to grant it",
 		"remove any transient artifacts your testing created in the working tree",
 	} {
 		if !strings.Contains(prompt, want) {
