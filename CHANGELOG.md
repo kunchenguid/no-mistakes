@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.41.3](https://github.com/kunchenguid/no-mistakes/compare/v1.41.2...v1.41.3) (2026-07-24)
+
+
+### Bug Fixes
+
+* **db:** finalize runs on terminal PR outcomes ([#570](https://github.com/kunchenguid/no-mistakes/issues/570)) ([62ab989](https://github.com/kunchenguid/no-mistakes/commit/62ab9899d7cd0ef0c0f1e171bc65ad916bcfa613))
+* **pipeline:** bind pushes to the reviewed commit ([#573](https://github.com/kunchenguid/no-mistakes/issues/573)) ([574e3aa](https://github.com/kunchenguid/no-mistakes/commit/574e3aa651b2ce9bd0bb51cc72eaaa223cb6d3ce))
+* **pipeline:** enforce post-review HEAD continuity ([#574](https://github.com/kunchenguid/no-mistakes/issues/574)) ([88dc204](https://github.com/kunchenguid/no-mistakes/commit/88dc204f933bbccee5fd144f2fa1e74cb52704c2))
+
 ## [1.41.2](https://github.com/kunchenguid/no-mistakes/compare/v1.41.1...v1.41.2) (2026-07-24)
 
 
