@@ -191,8 +191,9 @@ Explicit lint command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /
 | Default | Empty (agent auto-detects) |
 
 When set, the lint step runs this exact command and checks the exit code.
-When empty, the agent-driven lint duty is folded into the document step's combined housekeeping pass: one agent invocation covers both documentation and lint, and the lint step consumes that result, reporting lint-category findings with the same gate semantics (blocking findings park for a decision).
-Neither responsibility is skipped: when the document step has nothing to run against (or its structured output cannot be trusted), the lint step runs its own agent pass as before.
+When empty under legacy certification, the agent-driven lint duty is folded into the document step's combined housekeeping pass: one agent invocation covers both documentation and lint, and the lint step consumes that result, reporting lint-category findings with the same gate semantics (blocking findings park for a decision).
+Neither responsibility is skipped in that mode: when the document step has nothing to run against (or its structured output cannot be trusted), the lint step runs its own agent pass as before.
+With `certification.mode: ci_authoritative`, this field is replaced by `certification.local_fast.lint`, which the Test step runs with the other local-fast certification commands.
 
 ### commands.format
 
@@ -203,7 +204,7 @@ Formatter command run before the push step commits agent fixes.
 | Type | `string` |
 | Default | Empty (no separate push-step formatter) |
 
-This does not prevent empty `commands.lint` from detecting and running formatters during the combined housekeeping pass, or during the lint step when that pass cannot provide a result.
+This does not prevent empty `commands.lint` from detecting and running formatters during the legacy combined housekeeping pass, or during the lint step when that pass cannot provide a result.
 
 ### document.instructions
 
@@ -262,7 +263,7 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 
 Set to `0` to disable the follow-up auto-fix loop for a step (findings require manual approval).
 The document step attempts documentation fixes during its initial pass, so unresolved documentation findings pause for approval instead of using an automatic follow-up loop.
-For empty `commands.lint`, the document step's combined housekeeping pass also attempts safe lint fixes, and the lint step consumes its result; unresolved blocking lint findings pause for approval instead of starting another automatic fix loop.
+Under legacy certification with empty `commands.lint`, the document step's combined housekeeping pass also attempts safe lint fixes, and the lint step consumes its result; unresolved blocking lint findings pause for approval instead of starting another automatic fix loop. In `ci_authoritative` split mode, local-fast lint failures are handled by the Test step's fix loop.
 
 `auto_fix.ci` covers the CI step's CI failure and merge-conflict auto-fix attempts.
 

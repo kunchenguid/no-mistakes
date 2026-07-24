@@ -97,9 +97,9 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 		ignorePatterns = strings.Join(sctx.Config.IgnorePatterns, ", ")
 	}
 
-	// Combine the agent-driven lint duty into this pass when no deterministic
-	// lint command is configured; the lint step then consumes the result
-	// instead of paying its own cold agent invocation.
+	// In legacy certification, combine the agent-driven lint duty into this
+	// pass when no deterministic lint command is configured; the lint step then
+	// consumes the result instead of paying its own cold agent invocation.
 	combinedLint := sctx.Config.Commands.Lint == "" && !sctx.Config.Certification.IsCIAuthoritative()
 	if combinedLint {
 		sctx.Shared.ClearHousekeepingLint()
