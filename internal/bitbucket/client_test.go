@@ -165,6 +165,44 @@ func TestFindOpenPRBySourceAndDestinationBranchFiltersSourceRepo(t *testing.T) {
 	}
 }
 
+func TestFindOpenPRBySourceBranchRejectsInvalidResponse(t *testing.T) {
+	repo := RepoRef{Workspace: "test", RepoSlug: "repo"}
+
+	for _, tc := range []struct {
+		name     string
+		response string
+	}{
+		{name: "null", response: "null"},
+		{name: "missing values", response: `{}`},
+		{name: "trailing data", response: `{"values":[]}garbage`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.response))
+			}))
+			defer server.Close()
+
+			client := &Client{
+				baseURL: server.URL,
+				email:   "test@example.com",
+				token:   "token",
+				httpClient: &http.Client{
+					Timeout: time.Second,
+				},
+			}
+
+			pr, err := client.FindOpenPRBySourceBranch(context.Background(), repo, "feature", "main")
+			if err == nil {
+				t.Fatal("FindOpenPRBySourceBranch() error = nil, want response error")
+			}
+			if pr != nil {
+				t.Fatalf("FindOpenPRBySourceBranch() = %#v, want nil", pr)
+			}
+		})
+	}
+}
+
 func TestListPipelinesByCommitFollowsPagination(t *testing.T) {
 	repo := RepoRef{Workspace: "test", RepoSlug: "repo"}
 	var pageCalls int

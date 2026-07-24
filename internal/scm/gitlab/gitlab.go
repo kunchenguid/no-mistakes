@@ -177,10 +177,13 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	}
 	trimmed := bytesTrimToJSON(out)
 	if len(trimmed) == 0 {
-		return nil, nil
+		return nil, errors.New("parse glab mr list JSON: no JSON found")
 	}
 	var mrs []mrPayload
-	if err := json.Unmarshal(trimmed, &mrs); err != nil || len(mrs) == 0 {
+	if err := json.Unmarshal(trimmed, &mrs); err != nil {
+		return nil, fmt.Errorf("parse glab mr list JSON: %w", err)
+	}
+	if len(mrs) == 0 {
 		return nil, nil
 	}
 	pr := mrs[0].toPR()

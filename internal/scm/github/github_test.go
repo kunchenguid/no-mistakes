@@ -503,6 +503,29 @@ func TestFindPRReturnsCLIError(t *testing.T) {
 	}
 }
 
+func TestFindPRReturnsJSONError(t *testing.T) {
+	t.Parallel()
+
+	for _, output := range []string{"[{\n", "null\n"} {
+		host := New(githubTestCmdFactory(map[string]githubTestResponse{
+			"gh pr list --head feature/refactor --base main --state open --json number,url": {
+				stdout: output,
+			},
+		}), nil, "", "")
+
+		pr, err := host.FindPR(context.Background(), "feature/refactor", "main")
+		if err == nil {
+			t.Fatal("FindPR() error = nil, want JSON error")
+		}
+		if !strings.Contains(err.Error(), "parse gh pr list") {
+			t.Fatalf("FindPR() error = %v, want parse context", err)
+		}
+		if pr != nil {
+			t.Fatalf("FindPR() PR = %+v, want nil", pr)
+		}
+	}
+}
+
 func TestAvailableScopesAuthToConfiguredHost(t *testing.T) {
 	t.Parallel()
 

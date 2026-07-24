@@ -205,7 +205,13 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 			Login string `json:"login"`
 		} `json:"headRepositoryOwner"`
 	}
-	if err := json.Unmarshal(out, &prs); err != nil || len(prs) == 0 {
+	if err := json.Unmarshal(out, &prs); err != nil {
+		return nil, fmt.Errorf("parse gh pr list JSON: %w", err)
+	}
+	if prs == nil {
+		return nil, errors.New("parse gh pr list JSON: expected array")
+	}
+	if len(prs) == 0 {
 		return nil, nil
 	}
 	for _, candidate := range prs {

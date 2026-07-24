@@ -182,6 +182,7 @@ Creates or updates a pull request.
 **Behavior:**
 - Checks for an existing PR on the branch
 - If one exists, updates it. If not, creates a new one.
+- If existing-PR discovery fails or its provider response cannot be decoded as the expected PR listing, stops instead of treating the result as no PR and creating a duplicate.
 - Uses the provider CLI for GitHub/GitLab, the `az` CLI for Azure DevOps, and the Bitbucket API for Bitbucket Cloud
 - For GitHub fork routing, keeps `gh --repo` pointed at the parent repository from `origin`, checks existing PRs with the bare branch name, filters matching PRs by head owner, and creates PRs with `--head <fork-owner>:<branch>`
 - PR title: agent-generated with user intent when available, in conventional commit format (`type(scope): description` or `type: description`); user-facing product impact should use `feat` or `fix` so release automation can pick it up; when a scope is used, it should be the primary affected real module/package from the changed paths and kept broad rather than file-level
