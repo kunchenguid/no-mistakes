@@ -6,6 +6,28 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+func TestInsertReviewStepRoundPersistsNonAuthoritativeCandidate(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/review-round", "https://example.com/repo.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "head", "base")
+	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	const reviewedHead = "1111111111111111111111111111111111111111"
+	if _, err := d.InsertReviewStepRound(step.ID, 1, "initial", nil, nil, reviewedHead, 10); err != nil {
+		t.Fatal(err)
+	}
+	rounds, err := d.GetRoundsByStep(step.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rounds) != 1 || rounds[0].ReviewedHeadSHA == nil || *rounds[0].ReviewedHeadSHA != reviewedHead {
+		t.Fatalf("reviewed candidate round = %#v", rounds)
+	}
+	gotRun, _ := d.GetRun(run.ID)
+	if gotRun.ReviewApprovedHeadSHA != nil {
+		t.Fatalf("round candidate granted approval authority: %#v", gotRun.ReviewApprovedHeadSHA)
+	}
+}
+
 func TestStepRoundInsertAndGet(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

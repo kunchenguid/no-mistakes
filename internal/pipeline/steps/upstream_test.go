@@ -49,6 +49,9 @@ func TestResolveUpstreamURL_PreservesCredential(t *testing.T) {
 	if !strings.Contains(got, token) {
 		t.Errorf("resolveUpstreamURL stripped the credential: got %q", got)
 	}
+	if pushURL := resolvePushURL(sctx); pushURL != credURL {
+		t.Errorf("resolvePushURL = %q, want credential-preserving upstream route %q", pushURL, credURL)
+	}
 }
 
 // TestResolveUpstreamURL_FallsBackToRecordedURL verifies that when a worktree

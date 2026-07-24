@@ -9,11 +9,12 @@ const (
 
 // StepRound represents one execution round within a pipeline step.
 type StepRound struct {
-	ID           string
-	StepResultID string
-	Round        int
-	Trigger      string  // "initial", "auto_fix"; legacy "user_fix" is treated as "auto_fix"
-	FindingsJSON *string // nullable - findings produced by this round
+	ID              string
+	StepResultID    string
+	Round           int
+	Trigger         string  // "initial", "auto_fix"; legacy "user_fix" is treated as "auto_fix"
+	FindingsJSON    *string // nullable - findings produced by this round
+	ReviewedHeadSHA *string // non-authoritative commit candidate captured by a review round
 	// UserFindingsJSON, when non-nil, is the merged finding list that was
 	// dispatched to the fix agent after the user edited per-finding
 	// instructions or added their own findings. It includes both the
@@ -117,19 +118,35 @@ func (d *DB) StepRoundStats(stepResultID string) (StepRoundStats, error) {
 // InsertStepRound creates a new round record for a step result. fixSummary may
 // be nil for non-fix rounds or when the agent produced no summary.
 func (d *DB) InsertStepRound(stepResultID string, round int, trigger string, findingsJSON *string, fixSummary *string, durationMS int64) (*StepRound, error) {
+	return d.insertStepRound(stepResultID, round, trigger, findingsJSON, fixSummary, nil, durationMS)
+}
+
+// InsertReviewStepRound persists a review round's examined commit as a
+// non-authoritative candidate. A recovered parked gate can promote this exact
+// candidate only after approval; merely storing it grants no push authority.
+func (d *DB) InsertReviewStepRound(stepResultID string, round int, trigger string, findingsJSON *string, fixSummary *string, reviewedHeadSHA string, durationMS int64) (*StepRound, error) {
+	var reviewed *string
+	if reviewedHeadSHA != "" {
+		reviewed = &reviewedHeadSHA
+	}
+	return d.insertStepRound(stepResultID, round, trigger, findingsJSON, fixSummary, reviewed, durationMS)
+}
+
+func (d *DB) insertStepRound(stepResultID string, round int, trigger string, findingsJSON *string, fixSummary, reviewedHeadSHA *string, durationMS int64) (*StepRound, error) {
 	r := &StepRound{
-		ID:           newID(),
-		StepResultID: stepResultID,
-		Round:        round,
-		Trigger:      trigger,
-		FindingsJSON: findingsJSON,
-		FixSummary:   fixSummary,
-		DurationMS:   durationMS,
-		CreatedAt:    now(),
+		ID:              newID(),
+		StepResultID:    stepResultID,
+		Round:           round,
+		Trigger:         trigger,
+		FindingsJSON:    findingsJSON,
+		ReviewedHeadSHA: reviewedHeadSHA,
+		FixSummary:      fixSummary,
+		DurationMS:      durationMS,
+		CreatedAt:       now(),
 	}
 	_, err := d.sql.Exec(
-		`INSERT INTO step_rounds (id, step_result_id, round, trigger_type, findings_json, user_findings_json, selected_finding_ids, selection_source, fix_summary, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.StepResultID, r.Round, r.Trigger, r.FindingsJSON, r.UserFindingsJSON, r.SelectedFindingIDs, r.SelectionSource, r.FixSummary, r.DurationMS, r.CreatedAt,
+		`INSERT INTO step_rounds (id, step_result_id, round, trigger_type, findings_json, reviewed_head_sha, user_findings_json, selected_finding_ids, selection_source, fix_summary, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.StepResultID, r.Round, r.Trigger, r.FindingsJSON, r.ReviewedHeadSHA, r.UserFindingsJSON, r.SelectedFindingIDs, r.SelectionSource, r.FixSummary, r.DurationMS, r.CreatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert step round: %w", err)
@@ -177,7 +194,7 @@ func (d *DB) SetStepRoundUserFindings(id string, userFindingsJSON *string) error
 // GetRoundsByStep returns all rounds for a step result, ordered by round number.
 func (d *DB) GetRoundsByStep(stepResultID string) ([]*StepRound, error) {
 	rows, err := d.sql.Query(
-		`SELECT id, step_result_id, round, trigger_type, findings_json, user_findings_json, selected_finding_ids, selection_source, fix_summary, duration_ms, created_at FROM step_rounds WHERE step_result_id = ? ORDER BY round`,
+		`SELECT id, step_result_id, round, trigger_type, findings_json, reviewed_head_sha, user_findings_json, selected_finding_ids, selection_source, fix_summary, duration_ms, created_at FROM step_rounds WHERE step_result_id = ? ORDER BY round`,
 		stepResultID,
 	)
 	if err != nil {
@@ -187,7 +204,7 @@ func (d *DB) GetRoundsByStep(stepResultID string) ([]*StepRound, error) {
 	var rounds []*StepRound
 	for rows.Next() {
 		r := &StepRound{}
-		if err := rows.Scan(&r.ID, &r.StepResultID, &r.Round, &r.Trigger, &r.FindingsJSON, &r.UserFindingsJSON, &r.SelectedFindingIDs, &r.SelectionSource, &r.FixSummary, &r.DurationMS, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.StepResultID, &r.Round, &r.Trigger, &r.FindingsJSON, &r.ReviewedHeadSHA, &r.UserFindingsJSON, &r.SelectedFindingIDs, &r.SelectionSource, &r.FixSummary, &r.DurationMS, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan step round: %w", err)
 		}
 		rounds = append(rounds, r)

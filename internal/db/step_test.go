@@ -234,6 +234,37 @@ func TestUpdateStepStatusWithDuration(t *testing.T) {
 	}
 }
 
+func TestCompleteReviewStepIsAtomic(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/review-atomic", "https://example.com/repo.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "head", "base")
+	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	if err := d.StartStep(step.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.CompleteReviewStep(step.ID, "missing-run", "approved", 0, 10, "review.log"); err == nil {
+		t.Fatal("expected missing run to roll back review completion")
+	}
+	gotStep, _ := d.GetStepResult(step.ID)
+	if gotStep.Status != types.StepStatusRunning || gotStep.CompletedAt != nil {
+		t.Fatalf("failed transaction partially completed review: %#v", gotStep)
+	}
+	gotRun, _ := d.GetRun(run.ID)
+	if gotRun.ReviewApprovedHeadSHA != nil {
+		t.Fatalf("failed transaction created review authority: %#v", gotRun.ReviewApprovedHeadSHA)
+	}
+
+	if err := d.CompleteReviewStep(step.ID, run.ID, "approved", 0, 10, "review.log"); err != nil {
+		t.Fatal(err)
+	}
+	gotStep, _ = d.GetStepResult(step.ID)
+	gotRun, _ = d.GetRun(run.ID)
+	if gotStep.Status != types.StepStatusCompleted || gotRun.ReviewApprovedHeadSHA == nil || *gotRun.ReviewApprovedHeadSHA != "approved" {
+		t.Fatalf("atomic review completion = step %#v run %#v", gotStep, gotRun)
+	}
+}
+
 func TestFailStep(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

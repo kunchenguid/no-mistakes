@@ -111,6 +111,37 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if branchSHA := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); branchSHA != sctx.Run.HeadSHA {
 		t.Fatalf("branch SHA = %s, want %s", branchSHA, sctx.Run.HeadSHA)
 	}
+	if outcome.ReviewApprovedHeadSHA != sctx.Run.HeadSHA {
+		t.Fatalf("rereview captured approved head %s, want %s", outcome.ReviewApprovedHeadSHA, sctx.Run.HeadSHA)
+	}
+}
+
+func TestReviewStep_ConcurrentHeadResetCannotGainApproval(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, reviewedHead := setupGitRepo(t)
+	tree := gitCmd(t, dir, "rev-parse", baseSHA+"^{tree}")
+	divergentHead := gitCmd(t, dir, "commit-tree", tree, "-p", baseSHA, "-m", "divergent replacement")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			gitCmd(t, dir, "reset", "--hard", divergentHead)
+			findings, _ := json.Marshal(Findings{Summary: "all clear"})
+			return &agent.Result{Output: findings}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, reviewedHead, config.Commands{})
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != divergentHead {
+		t.Fatalf("HEAD = %s, want concurrent replacement %s", got, divergentHead)
+	}
+	if outcome.ReviewApprovedHeadSHA != reviewedHead {
+		t.Fatalf("approved head = %s, want review target %s", outcome.ReviewApprovedHeadSHA, reviewedHead)
+	}
 }
 
 // The review fixer must apply every fix first, then run one focused

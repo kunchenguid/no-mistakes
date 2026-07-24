@@ -109,6 +109,7 @@ Previous review findings to address:
 		}
 		fixSummary = summary
 	}
+	reviewTargetSHA := sctx.Run.HeadSHA
 
 	// Check whether there are any reviewable changed files after applying ignore patterns.
 	var args []string
@@ -148,10 +149,10 @@ Previous review findings to address:
 			RiskRationale: "no reviewable changes",
 		}
 		findingsJSON, _ := json.Marshal(noChangeFindings)
-		return &pipeline.StepOutcome{
+		return approvedReviewOutcome(reviewTargetSHA, &pipeline.StepOutcome{
 			Findings:   string(findingsJSON),
 			FixSummary: fixSummary,
-		}, nil
+		})
 	}
 
 	// Ask agent to review
@@ -271,12 +272,21 @@ Risk assessment (after listing all findings):
 	needsApproval := hasBlockingFindings(findings.Items)
 	findingsJSON, _ := json.Marshal(findings)
 
-	return &pipeline.StepOutcome{
+	return approvedReviewOutcome(reviewTargetSHA, &pipeline.StepOutcome{
 		NeedsApproval: needsApproval,
 		AutoFixable:   len(findings.Items) > 0,
 		Findings:      string(findingsJSON),
 		FixSummary:    fixSummary,
-	}, nil
+	})
+}
+
+// approvedReviewOutcome captures the immutable commit examined by this full
+// review round. The executor persists it only if this outcome ultimately
+// completes the review step, so parked, failed, skipped, and superseded rounds
+// cannot gain or advance approval authority.
+func approvedReviewOutcome(reviewTargetSHA string, outcome *pipeline.StepOutcome) (*pipeline.StepOutcome, error) {
+	outcome.ReviewApprovedHeadSHA = reviewTargetSHA
+	return outcome, nil
 }
 
 func sanitizedPreviousFindingsForPrompt(raw string) string {

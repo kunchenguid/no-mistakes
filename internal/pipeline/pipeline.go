@@ -72,6 +72,10 @@ type StepOutcome struct {
 	// mode so the executor can persist it on the round record and later
 	// rounds can reference what was previously attempted.
 	FixSummary string
+	// ReviewApprovedHeadSHA is set only by a successfully executed full review
+	// round. The executor durably records it only when the review step actually
+	// completes, never while that outcome is parked or after a failed round.
+	ReviewApprovedHeadSHA string
 
 	// DurationOverrideMS, when positive, replaces the wall-clock duration
 	// reported for this step. Used by demo mode to show realistic durations

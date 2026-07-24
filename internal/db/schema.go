@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS runs (
     head_sha                TEXT NOT NULL,
     base_sha                TEXT NOT NULL,
     submitted_head_sha      TEXT,
+    review_approved_head_sha TEXT,
     status                  TEXT NOT NULL DEFAULT 'pending',
     pr_url                  TEXT,
     pr_state                TEXT,
@@ -61,6 +62,7 @@ CREATE TABLE IF NOT EXISTS step_rounds (
     round                INTEGER NOT NULL,
     trigger_type         TEXT NOT NULL,
     findings_json        TEXT,
+    reviewed_head_sha    TEXT,
     user_findings_json   TEXT,
     selected_finding_ids TEXT,
     selection_source     TEXT,
@@ -140,6 +142,9 @@ var migrationStatements = []string{
 	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN user_findings_json TEXT`,
+	// A parked round may retain the reviewed commit as a non-authoritative
+	// candidate. Only atomic review completion promotes it onto the run.
+	`ALTER TABLE step_rounds ADD COLUMN reviewed_head_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,
@@ -149,6 +154,9 @@ var migrationStatements = []string{
 	// Branch synchronization provenance is intentionally nullable. Historical
 	// rows stay unbound because mutable head_sha cannot prove a successful push.
 	`ALTER TABLE runs ADD COLUMN submitted_head_sha TEXT`,
+	// Review authority is nullable and never backfilled. A historical mutable
+	// head_sha cannot prove which exact commit a completed review approved.
+	`ALTER TABLE runs ADD COLUMN review_approved_head_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN last_pushed_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN push_target_kind TEXT`,
 	`ALTER TABLE runs ADD COLUMN push_target_fingerprint TEXT`,
