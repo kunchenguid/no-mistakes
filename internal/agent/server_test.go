@@ -179,6 +179,7 @@ func TestManagedServerOutputIsSeparatedFromLifecycleFailureSummary(t *testing.T)
 		t.TempDir(),
 		"/healthcheck",
 		1,
+		runenv.Overlay{},
 	)
 	if err == nil {
 		t.Fatal("expected managed server startup failure")
