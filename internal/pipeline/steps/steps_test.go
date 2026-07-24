@@ -48,6 +48,8 @@ func handleFakeCLI(mode string) {
 		fakeRecordSuccessHandler()
 	case "git-passthrough":
 		fakeGitPassthroughHandler(args)
+	case "git-move-head-passthrough":
+		fakeGitMoveHeadPassthroughHandler(args)
 	case "git-require-noninteractive-env":
 		fakeGitRequireNonInteractiveEnvHandler(args)
 	case "git-status-error":
@@ -151,6 +153,25 @@ func fakeGitStatusErrorHandler(args []string) {
 
 func fakeGitPassthroughHandler(args []string) {
 	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	fakeGitForward(args, realGit)
+}
+
+func fakeGitMoveHeadPassthroughHandler(args []string) {
+	realGit := os.Getenv("FAKE_CLI_REAL_GIT")
+	if len(args) > 0 && args[0] == "push" {
+		replacementHead := os.Getenv("FAKE_CLI_REPLACEMENT_HEAD")
+		if replacementHead == "" {
+			fmt.Fprintln(os.Stderr, "missing FAKE_CLI_REPLACEMENT_HEAD")
+			os.Exit(1)
+		}
+		cmd := exec.Command(realGit, "reset", "--hard", replacementHead)
+		cmd.Stdout = io.Discard
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
 	fakeGitForward(args, realGit)
 }
 

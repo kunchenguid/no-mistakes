@@ -194,19 +194,11 @@ func TestPushStep_BindsRemoteAndDatabaseToVerifiedCommitWhenHEADMovesDuringPush(
 	if err != nil {
 		t.Fatal(err)
 	}
-	binDir := t.TempDir()
-	shim := filepath.Join(binDir, "git")
-	shimBody := `#!/bin/sh
-if [ "$1" = "push" ]; then
-  "$NM_TEST_REAL_GIT" reset --hard "$NM_TEST_REPLACEMENT_HEAD" >/dev/null
-fi
-exec "$NM_TEST_REAL_GIT" "$@"
-`
-	if err := os.WriteFile(shim, []byte(shimBody), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("NM_TEST_REAL_GIT", realGit)
-	t.Setenv("NM_TEST_REPLACEMENT_HEAD", replacementHead)
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	t.Setenv("FAKE_CLI_MODE", "git-move-head-passthrough")
+	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
+	t.Setenv("FAKE_CLI_REPLACEMENT_HEAD", replacementHead)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, submittedHead, config.Commands{})
