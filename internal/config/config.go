@@ -1079,9 +1079,6 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	if err := validateCommitRaw(cfg.Commit); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
-	if err := validateCertification(cfg.Certification); err != nil {
-		return nil, fmt.Errorf("parse repo config: %w", err)
-	}
 	if cfg.AutoFix.CI == nil {
 		cfg.AutoFix.CI = cfg.AutoFix.Babysit
 	}
@@ -1128,6 +1125,16 @@ func validateCertification(c CertificationRaw) error {
 			return fmt.Errorf("certification.required_checks contains duplicate required check %q", name)
 		}
 		seenChecks[key] = true
+	}
+	return nil
+}
+
+func ValidateEffectiveRepoConfig(repo *RepoConfig) error {
+	if repo == nil {
+		return nil
+	}
+	if err := validateCertification(repo.Certification); err != nil {
+		return fmt.Errorf("parse repo config: %w", err)
 	}
 	return nil
 }

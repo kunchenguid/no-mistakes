@@ -54,7 +54,7 @@ func TestLoadRepoFromBytes_CIAuthoritativeCertification(t *testing.T) {
 	}
 }
 
-func TestLoadRepoFromBytes_CertificationValidation(t *testing.T) {
+func TestValidateEffectiveRepoConfig_CertificationValidation(t *testing.T) {
 	tests := []struct {
 		name string
 		yaml string
@@ -70,11 +70,55 @@ func TestLoadRepoFromBytes_CertificationValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := LoadRepoFromBytes([]byte(tt.yaml))
+			cfg, err := LoadRepoFromBytes([]byte(tt.yaml))
+			if err != nil {
+				t.Fatalf("LoadRepoFromBytes error = %v, want semantic certification validation deferred", err)
+			}
+			err = ValidateEffectiveRepoConfig(cfg)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want substring %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestEffectiveRepoConfig_UntrustedCertificationSemanticsCannotFailGate(t *testing.T) {
+	pushed, err := LoadRepoFromBytes([]byte(`certification:
+  mode: ci_authoritative
+  local_fast:
+    lint: make lint-fast
+  required_checks: []
+`))
+	if err != nil {
+		t.Fatalf("LoadRepoFromBytes rejected untrusted pushed policy before trust merge: %v", err)
+	}
+	effective := EffectiveRepoConfig(pushed, nil, false)
+	if err := ValidateEffectiveRepoConfig(effective); err != nil {
+		t.Fatalf("untrusted pushed certification affected effective gate policy: %v", err)
+	}
+	merged := Merge(DefaultGlobalConfig(), effective)
+	if merged.Certification.Mode != CertificationModeLocalHeavy {
+		t.Fatalf("effective certification mode = %q, want local_heavy", merged.Certification.Mode)
+	}
+}
+
+func TestEffectiveRepoConfig_InvalidTrustedCertificationFailsValidation(t *testing.T) {
+	pushed := &RepoConfig{}
+	trusted, err := LoadRepoFromBytes([]byte(`certification:
+  mode: ci_authoritative
+  local_fast:
+    lint: make lint-fast
+    typecheck: make typecheck
+    test: make focused-test
+  required_checks: []
+`))
+	if err != nil {
+		t.Fatalf("LoadRepoFromBytes error = %v, want semantic certification validation deferred", err)
+	}
+	effective := EffectiveRepoConfig(pushed, trusted, false)
+	err = ValidateEffectiveRepoConfig(effective)
+	if err == nil || !strings.Contains(err.Error(), "required_checks") {
+		t.Fatalf("trusted invalid certification validation error = %v, want required_checks", err)
 	}
 }
 
