@@ -40,7 +40,7 @@ Navigate to any git repo with an `origin` remote:
 no-mistakes init
 ```
 
-This creates or refreshes a local bare repo at `~/.no-mistakes/repos/<id>.git`, installs a post-receive hook, best-effort isolates the gate's hooks path from shared local Git config writes when Git supports `config --worktree`, adds or repairs a `no-mistakes` git remote in your working repo, installs the `/no-mistakes` agent skill, and ensures the daemon is running.
+This creates or refreshes a local bare repo at `~/.no-mistakes/repos/<id>.git`, installs managed pre- and post-receive hooks, best-effort isolates the gate's hooks path from shared local Git config writes when Git supports `config --worktree`, adds or repairs a `no-mistakes` git remote in your working repo, installs the `/no-mistakes` agent skill, and ensures the daemon is running.
 
 For GitHub fork contributions, keep `origin` pointed at the parent repository and pass your fork as the push target:
 
