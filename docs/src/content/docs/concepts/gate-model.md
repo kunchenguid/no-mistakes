@@ -142,11 +142,12 @@ The installer prefers setting up the daemon as a managed background service, and
 Bare `no-mistakes` then attaches to the active run on the current branch when one exists, or routes to the setup wizard when it needs to create a new branch/run.
 If managed service install or startup is unavailable or fails, startup falls back to a detached daemon process.
 `update` resets the daemon after replacing the binary when the daemon is running or stale daemon artifacts exist.
-If pending or running pipeline runs exist, `update` refuses to restart the daemon by default and prints each active run's ID, status, branch, and short head SHA; pass `--force` to restart it anyway and accept that those runs may fail.
 If the daemon is already running from a different executable path, `update` prompts before replacing it.
-The `-y` / `--yes` flag answers that executable-path prompt non-interactively; it does not bypass the active-run `--force` guard.
 If the daemon executable path cannot be determined, `update` aborts before replacing anything.
-You can also manage it explicitly with `no-mistakes daemon start|stop|restart|status`; `daemon stop` and `daemon restart` apply the same active-run guard and `--force` override.
+You can also manage it explicitly with `no-mistakes daemon start|stop|restart|status`.
+[Daemon & Worktrees](/no-mistakes/concepts/daemon/#starting-and-stopping)
+owns the active-run guard, the scope of `--force` and `--yes`, and recursive
+validation-step containment for lifecycle commands.
 
 On startup, the daemon validates crash-recovery state before resuming work.
 [Daemon & Worktrees](/no-mistakes/concepts/daemon/#crash-recovery) owns the exact restart, parked-gate reconciliation, cleanup, and fail-closed behavior.
