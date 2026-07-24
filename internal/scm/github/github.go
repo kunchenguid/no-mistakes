@@ -603,8 +603,10 @@ func normalizeCheckRunBucket(status, conclusion string) scm.CheckBucket {
 		return scm.CheckBucketPending
 	}
 	switch strings.ToLower(strings.TrimSpace(conclusion)) {
-	case "success", "neutral":
+	case "success":
 		return scm.CheckBucketPass
+	case "neutral":
+		return scm.CheckBucketSkip
 	case "failure", "timed_out", "action_required", "startup_failure":
 		return scm.CheckBucketFail
 	case "cancelled":

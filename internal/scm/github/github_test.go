@@ -133,21 +133,25 @@ func TestGetChecksForRefTargetsCommitSHA(t *testing.T) {
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
 		"gh api repos/test/repo/commits/" + sha + `/check-runs --paginate --jq .check_runs[] | {name: .name, status: .status, conclusion: .conclusion, completedAt: .completed_at}`: {
 			stdout: `{"name":"build","status":"completed","conclusion":"success","completedAt":"2026-04-24T04:15:00Z"}` + "\n" +
-				`{"name":"test","status":"in_progress","conclusion":"","completedAt":""}` + "\n",
+				`{"name":"test","status":"in_progress","conclusion":"","completedAt":""}` + "\n" +
+				`{"name":"docs","status":"completed","conclusion":"neutral","completedAt":""}` + "\n",
 		},
 	}), nil, "", "test/repo")
 	checks, err := host.GetChecksForRef(context.Background(), sha)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(checks) != 2 {
-		t.Fatalf("len(checks) = %d, want 2", len(checks))
+	if len(checks) != 3 {
+		t.Fatalf("len(checks) = %d, want 3", len(checks))
 	}
 	if checks[0].Name != "build" || checks[0].Bucket != scm.CheckBucketPass {
 		t.Fatalf("checks[0] = %+v, want passing build", checks[0])
 	}
 	if checks[1].Name != "test" || checks[1].Bucket != scm.CheckBucketPending {
 		t.Fatalf("checks[1] = %+v, want pending test", checks[1])
+	}
+	if checks[2].Name != "docs" || checks[2].Bucket != scm.CheckBucketSkip {
+		t.Fatalf("checks[2] = %+v, want skipped neutral docs", checks[2])
 	}
 }
 
