@@ -347,6 +347,169 @@ func TestUpdateRunPRURL(t *testing.T) {
 	}
 }
 
+func TestUpdateRunPRStateFinalizesActiveTerminalOutcomes(t *testing.T) {
+	for _, state := range []string{"merged", "closed"} {
+		t.Run(state, func(t *testing.T) {
+			d := openTestDB(t)
+			repo, _ := d.InsertRepo("/home/user/pr-terminal-"+state, "git@github.com:user/project.git", "main")
+			run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+			if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.SetRunAwaitingAgent(run.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.SetRunPushActive(run.ID, true); err != nil {
+				t.Fatal(err)
+			}
+			ci, _ := d.InsertStepResult(run.ID, types.StepCI)
+			if err := d.StartStep(ci.ID); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := d.UpdateRunPRState(run.ID, state); err != nil {
+				t.Fatal(err)
+			}
+
+			got, _ := d.GetRun(run.ID)
+			if got.Status != types.RunCompleted || got.PRState == nil || *got.PRState != state {
+				t.Fatalf("terminal PR run = status %s pr_state %v, want completed/%s", got.Status, got.PRState, state)
+			}
+			if got.AwaitingAgentSince != nil || got.PushActive {
+				t.Fatalf("terminal PR run retained active markers: awaiting=%v push_active=%t", got.AwaitingAgentSince, got.PushActive)
+			}
+			parkedMS := got.ParkedMS
+			if err := d.CompleteRunAwaitingAgent(run.ID, 1234); err != nil {
+				t.Fatal(err)
+			}
+			got, _ = d.GetRun(run.ID)
+			if got.ParkedMS != parkedMS {
+				t.Fatalf("duplicate gate completion changed parked_ms from %d to %d", parkedMS, got.ParkedMS)
+			}
+			gotCI, _ := d.GetStepResult(ci.ID)
+			if gotCI.Status != types.StepStatusCompleted {
+				t.Fatalf("CI status = %s, want completed", gotCI.Status)
+			}
+			active, err := d.GetActiveRuns()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(active) != 0 {
+				t.Fatalf("terminal PR remains active: %+v", active)
+			}
+		})
+	}
+}
+
+func TestUpdateRunPRStateKeepsOpenRunActive(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/pr-open", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPRState(run.ID, "open"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := d.GetRun(run.ID)
+	if got.Status != types.RunRunning || got.PRState == nil || *got.PRState != "open" {
+		t.Fatalf("open PR run = status %s pr_state %v, want running/open", got.Status, got.PRState)
+	}
+}
+
+func TestUpdateRunPRStateIgnoresDuplicateAndDelayedRegressions(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/pr-notifications", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []string{"merged", "merged", "open", "closed"} {
+		if err := d.UpdateRunPRState(run.ID, state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.UpdateRunPRURL(run.ID, "https://github.com/user/project/pull/1"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := d.GetRun(run.ID)
+	if got.Status != types.RunCompleted || got.PRState == nil || *got.PRState != "merged" {
+		t.Fatalf("duplicate/delayed PR observations regressed run: status=%s pr_state=%v", got.Status, got.PRState)
+	}
+	active, _ := d.GetActiveRuns()
+	if len(active) != 0 {
+		t.Fatalf("duplicate/delayed PR observations reactivated run: %+v", active)
+	}
+}
+
+func TestUpdateRunPRStateDoesNotRewriteAlreadyTerminalStatus(t *testing.T) {
+	for _, status := range []types.RunStatus{types.RunCompleted, types.RunFailed, types.RunCancelled} {
+		t.Run(string(status), func(t *testing.T) {
+			d := openTestDB(t)
+			repo, _ := d.InsertRepo("/home/user/pr-idempotent-"+string(status), "git@github.com:user/project.git", "main")
+			run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+			if err := d.UpdateRunErrorStatus(run.ID, "original terminal outcome", status); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.UpdateRunPRState(run.ID, "closed"); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := d.GetRun(run.ID)
+			if got.Status != status {
+				t.Fatalf("status = %s, want preserved %s", got.Status, status)
+			}
+			if got.Error == nil || *got.Error != "original terminal outcome" {
+				t.Fatalf("terminal error changed: %v", got.Error)
+			}
+		})
+	}
+}
+
+func TestReconcileTerminalPRRunsFinalizesLegacyActiveRows(t *testing.T) {
+	for _, state := range []string{"merged", "closed"} {
+		t.Run(state, func(t *testing.T) {
+			d := openTestDB(t)
+			repo, _ := d.InsertRepo("/home/user/pr-recovery-"+state, "git@github.com:user/project.git", "main")
+			run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+			if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+			ci, _ := d.InsertStepResult(run.ID, types.StepCI)
+			if err := d.StartStep(ci.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.SetRunAwaitingAgent(run.ID); err != nil {
+				t.Fatal(err)
+			}
+			// Simulate a row written by an older daemon after it observed a terminal
+			// PR but before its separate run-status finalization write.
+			if _, err := d.sql.Exec(`UPDATE runs SET pr_state = ? WHERE id = ?`, state, run.ID); err != nil {
+				t.Fatal(err)
+			}
+
+			count, err := d.ReconcileTerminalPRRuns()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if count != 1 {
+				t.Fatalf("reconciled count = %d, want 1", count)
+			}
+			got, _ := d.GetRun(run.ID)
+			if got.Status != types.RunCompleted || got.AwaitingAgentSince != nil {
+				t.Fatalf("reconciled run = status %s awaiting %v", got.Status, got.AwaitingAgentSince)
+			}
+			gotCI, _ := d.GetStepResult(ci.ID)
+			if gotCI.Status != types.StepStatusCompleted {
+				t.Fatalf("reconciled CI status = %s, want completed", gotCI.Status)
+			}
+			count, err = d.ReconcileTerminalPRRuns()
+			if err != nil || count != 0 {
+				t.Fatalf("idempotent reconciliation = count %d err %v, want 0/nil", count, err)
+			}
+		})
+	}
+}
+
 func TestUpdateRunHeadSHA(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
