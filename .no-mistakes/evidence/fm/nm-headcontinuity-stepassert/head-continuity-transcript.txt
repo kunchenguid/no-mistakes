@@ -1,0 +1,95 @@
+=== RUN   TestPostReviewStepsRefuseHeadClobberAtEntry
+=== RUN   TestPostReviewStepsRefuseHeadClobberAtEntry/test/backward_reset
+    headcontinuity_repro_test.go:266: test refused backward_reset before agent, HEAD, or recorded-head mutation: refusing to run test step: worktree HEAD 07d0009294854d302fc99d114ac3ad6723dae7e2 is not a descendant of the pipeline's recorded head 80131f5010905adb451f33ba99c16766991b8b2a; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+=== RUN   TestPostReviewStepsRefuseHeadClobberAtEntry/test/sibling_reset
+    headcontinuity_repro_test.go:266: test refused sibling_reset before agent, HEAD, or recorded-head mutation: refusing to run test step: worktree HEAD d09d15ce25c1fefa6626da6ffaca0f6bf1c46d82 is not a descendant of the pipeline's recorded head 80131f5010905adb451f33ba99c16766991b8b2a; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+=== RUN   TestPostReviewStepsRefuseHeadClobberAtEntry/document/backward_reset
+    headcontinuity_repro_test.go:266: document refused backward_reset before agent, HEAD, or recorded-head mutation: refusing to run document step: worktree HEAD 07d0009294854d302fc99d114ac3ad6723dae7e2 is not a descendant of the pipeline's recorded head 80131f5010905adb451f33ba99c16766991b8b2a; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+=== RUN   TestPostReviewStepsRefuseHeadClobberAtEntry/document/sibling_reset
+    headcontinuity_repro_test.go:266: document refused sibling_reset before agent, HEAD, or recorded-head mutation: refusing to run document step: worktree HEAD d09d15ce25c1fefa6626da6ffaca0f6bf1c46d82 is not a descendant of the pipeline's recorded head 80131f5010905adb451f33ba99c16766991b8b2a; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+=== RUN   TestPostReviewStepsRefuseHeadClobberAtEntry/lint/backward_reset
+    headcontinuity_repro_test.go:266: lint refused backward_reset before agent, HEAD, or recorded-head mutation: refusing to run lint step: worktree HEAD 07d0009294854d302fc99d114ac3ad6723dae7e2 is not a descendant of the pipeline's recorded head 80131f5010905adb451f33ba99c16766991b8b2a; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+=== RUN   TestPostReviewStepsRefuseHeadClobberAtEntry/lint/sibling_reset
+    headcontinuity_repro_test.go:266: lint refused sibling_reset before agent, HEAD, or recorded-head mutation: refusing to run lint step: worktree HEAD d09d15ce25c1fefa6626da6ffaca0f6bf1c46d82 is not a descendant of the pipeline's recorded head 80131f5010905adb451f33ba99c16766991b8b2a; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+=== RUN   TestPostReviewStepsRefuseHeadClobberAtEntry/push/backward_reset
+    headcontinuity_repro_test.go:266: push refused backward_reset before agent, HEAD, or recorded-head mutation: refusing to run push step: worktree HEAD 07d0009294854d302fc99d114ac3ad6723dae7e2 is not a descendant of the pipeline's recorded head 80131f5010905adb451f33ba99c16766991b8b2a; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+=== RUN   TestPostReviewStepsRefuseHeadClobberAtEntry/push/sibling_reset
+    headcontinuity_repro_test.go:266: push refused sibling_reset before agent, HEAD, or recorded-head mutation: refusing to run push step: worktree HEAD d09d15ce25c1fefa6626da6ffaca0f6bf1c46d82 is not a descendant of the pipeline's recorded head 80131f5010905adb451f33ba99c16766991b8b2a; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+=== RUN   TestPostReviewStepsRefuseHeadClobberAtEntry/pr/backward_reset
+    headcontinuity_repro_test.go:266: pr refused backward_reset before agent, HEAD, or recorded-head mutation: refusing to run pr step: worktree HEAD 07d0009294854d302fc99d114ac3ad6723dae7e2 is not a descendant of the pipeline's recorded head 80131f5010905adb451f33ba99c16766991b8b2a; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+=== RUN   TestPostReviewStepsRefuseHeadClobberAtEntry/pr/sibling_reset
+    headcontinuity_repro_test.go:266: pr refused sibling_reset before agent, HEAD, or recorded-head mutation: refusing to run pr step: worktree HEAD d09d15ce25c1fefa6626da6ffaca0f6bf1c46d82 is not a descendant of the pipeline's recorded head 80131f5010905adb451f33ba99c16766991b8b2a; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+=== RUN   TestPostReviewStepsRefuseHeadClobberAtEntry/ci/backward_reset
+    headcontinuity_repro_test.go:266: ci refused backward_reset before agent, HEAD, or recorded-head mutation: refusing to run ci step: worktree HEAD 07d0009294854d302fc99d114ac3ad6723dae7e2 is not a descendant of the pipeline's recorded head 80131f5010905adb451f33ba99c16766991b8b2a; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+=== RUN   TestPostReviewStepsRefuseHeadClobberAtEntry/ci/sibling_reset
+    headcontinuity_repro_test.go:266: ci refused sibling_reset before agent, HEAD, or recorded-head mutation: refusing to run ci step: worktree HEAD d09d15ce25c1fefa6626da6ffaca0f6bf1c46d82 is not a descendant of the pipeline's recorded head 80131f5010905adb451f33ba99c16766991b8b2a; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+--- PASS: TestPostReviewStepsRefuseHeadClobberAtEntry (0.69s)
+    --- PASS: TestPostReviewStepsRefuseHeadClobberAtEntry/test/backward_reset (0.13s)
+    --- PASS: TestPostReviewStepsRefuseHeadClobberAtEntry/test/sibling_reset (0.06s)
+    --- PASS: TestPostReviewStepsRefuseHeadClobberAtEntry/document/backward_reset (0.04s)
+    --- PASS: TestPostReviewStepsRefuseHeadClobberAtEntry/document/sibling_reset (0.06s)
+    --- PASS: TestPostReviewStepsRefuseHeadClobberAtEntry/lint/backward_reset (0.03s)
+    --- PASS: TestPostReviewStepsRefuseHeadClobberAtEntry/lint/sibling_reset (0.06s)
+    --- PASS: TestPostReviewStepsRefuseHeadClobberAtEntry/push/backward_reset (0.04s)
+    --- PASS: TestPostReviewStepsRefuseHeadClobberAtEntry/push/sibling_reset (0.06s)
+    --- PASS: TestPostReviewStepsRefuseHeadClobberAtEntry/pr/backward_reset (0.04s)
+    --- PASS: TestPostReviewStepsRefuseHeadClobberAtEntry/pr/sibling_reset (0.06s)
+    --- PASS: TestPostReviewStepsRefuseHeadClobberAtEntry/ci/backward_reset (0.04s)
+    --- PASS: TestPostReviewStepsRefuseHeadClobberAtEntry/ci/sibling_reset (0.06s)
+=== RUN   TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry
+=== RUN   TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry/test
+    headcontinuity_repro_test.go:301: test failed closed before agent or HEAD mutation: refusing to run test step: worktree HEAD 80131f5010905adb451f33ba99c16766991b8b2a is not a descendant of the pipeline's recorded head ffffffffffffffffffffffffffffffffffffffff; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+=== RUN   TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry/document
+    headcontinuity_repro_test.go:301: document failed closed before agent or HEAD mutation: refusing to run document step: worktree HEAD 80131f5010905adb451f33ba99c16766991b8b2a is not a descendant of the pipeline's recorded head ffffffffffffffffffffffffffffffffffffffff; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+=== RUN   TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry/lint
+    headcontinuity_repro_test.go:301: lint failed closed before agent or HEAD mutation: refusing to run lint step: worktree HEAD 80131f5010905adb451f33ba99c16766991b8b2a is not a descendant of the pipeline's recorded head ffffffffffffffffffffffffffffffffffffffff; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+=== RUN   TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry/push
+    headcontinuity_repro_test.go:301: push failed closed before agent or HEAD mutation: refusing to run push step: worktree HEAD 80131f5010905adb451f33ba99c16766991b8b2a is not a descendant of the pipeline's recorded head ffffffffffffffffffffffffffffffffffffffff; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+=== RUN   TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry/pr
+    headcontinuity_repro_test.go:301: pr failed closed before agent or HEAD mutation: refusing to run pr step: worktree HEAD 80131f5010905adb451f33ba99c16766991b8b2a is not a descendant of the pipeline's recorded head ffffffffffffffffffffffffffffffffffffffff; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+=== RUN   TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry/ci
+    headcontinuity_repro_test.go:301: ci failed closed before agent or HEAD mutation: refusing to run ci step: worktree HEAD 80131f5010905adb451f33ba99c16766991b8b2a is not a descendant of the pipeline's recorded head ffffffffffffffffffffffffffffffffffffffff; the reviewed change was rewritten out-of-band and would be lost - aborting to protect it
+--- PASS: TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry (0.16s)
+    --- PASS: TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry/test (0.03s)
+    --- PASS: TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry/document (0.03s)
+    --- PASS: TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry/lint (0.03s)
+    --- PASS: TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry/push (0.03s)
+    --- PASS: TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry/pr (0.03s)
+    --- PASS: TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry/ci (0.03s)
+=== RUN   TestCIGateReconciliationRefusesHeadClobberAtEntry
+--- PASS: TestCIGateReconciliationRefusesHeadClobberAtEntry (0.03s)
+=== RUN   TestPostReviewStepEntryAllowsEqualAndPipelineDescendantHeads
+    headcontinuity_repro_test.go:342: test allowed HEAD equal to recorded head 80131f5010905adb451f33ba99c16766991b8b2a
+    headcontinuity_repro_test.go:342: document allowed HEAD equal to recorded head 80131f5010905adb451f33ba99c16766991b8b2a
+    headcontinuity_repro_test.go:342: lint allowed HEAD equal to recorded head 80131f5010905adb451f33ba99c16766991b8b2a
+    headcontinuity_repro_test.go:342: push allowed HEAD equal to recorded head 80131f5010905adb451f33ba99c16766991b8b2a
+    headcontinuity_repro_test.go:342: pr allowed HEAD equal to recorded head 80131f5010905adb451f33ba99c16766991b8b2a
+    headcontinuity_repro_test.go:342: ci allowed HEAD equal to recorded head 80131f5010905adb451f33ba99c16766991b8b2a
+    headcontinuity_repro_test.go:354: test allowed descendant HEAD while preserving recorded ancestor 80131f5010905adb451f33ba99c16766991b8b2a
+    headcontinuity_repro_test.go:354: document allowed descendant HEAD while preserving recorded ancestor 80131f5010905adb451f33ba99c16766991b8b2a
+    headcontinuity_repro_test.go:354: lint allowed descendant HEAD while preserving recorded ancestor 80131f5010905adb451f33ba99c16766991b8b2a
+    headcontinuity_repro_test.go:354: push allowed descendant HEAD while preserving recorded ancestor 80131f5010905adb451f33ba99c16766991b8b2a
+    headcontinuity_repro_test.go:354: pr allowed descendant HEAD while preserving recorded ancestor 80131f5010905adb451f33ba99c16766991b8b2a
+    headcontinuity_repro_test.go:354: ci allowed descendant HEAD while preserving recorded ancestor 80131f5010905adb451f33ba99c16766991b8b2a
+--- PASS: TestPostReviewStepEntryAllowsEqualAndPipelineDescendantHeads (0.13s)
+=== RUN   TestPushStep_RefusesPostReviewClobberWithoutLaterPipelineCommit
+    push_test.go:68: review-approved=9b06fdf86a76a3d953ffaf0406c6452ab0942b3e clobbered-HEAD=f14eb7b26da7f18d7e193247449932c95fa3d939 push-refused="refusing to push: proposed head f14eb7b26da7 violates continuity with review-approved head 9b06fdf86a76 (it is not an equal or descendant commit)" remote-still=80131f5010905adb451f33ba99c16766991b8b2a unreviewed-file-shipped=false
+--- PASS: TestPushStep_RefusesPostReviewClobberWithoutLaterPipelineCommit (0.24s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/pipeline/steps	1.927s
+=== RUN   TestExecutor_FatalReconcileErrorFailsRun
+--- PASS: TestExecutor_FatalReconcileErrorFailsRun (0.01s)
+=== RUN   TestExecutor_ResumeFatalReconcileErrorFailsRun
+--- PASS: TestExecutor_ResumeFatalReconcileErrorFailsRun (0.01s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/pipeline	0.397s
+=== RUN   TestPushStep_BindsRemoteAndDatabaseToVerifiedCommitWhenHEADMovesDuringPush
+    push_test.go:226: review-approved=d1e0a55ec43e43674cb37866c0b0c93aa17c417f concurrent-HEAD=294dd287a0c8ffa886fc4072e1c00afe448833b4 remote-delivered=d1e0a55ec43e43674cb37866c0b0c93aa17c417f durable-head=d1e0a55ec43e43674cb37866c0b0c93aa17c417f durable-last-pushed=d1e0a55ec43e43674cb37866c0b0c93aa17c417f
+--- PASS: TestPushStep_BindsRemoteAndDatabaseToVerifiedCommitWhenHEADMovesDuringPush (0.65s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/pipeline/steps	0.976s
+=== RUN   TestExecutor_FullRereviewReplacesApprovalWithoutAuthorizingParkedRound
+2026/07/24 01:56:50 INFO step fix requested, re-executing step=review
+--- PASS: TestExecutor_FullRereviewReplacesApprovalWithoutAuthorizingParkedRound (0.02s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/pipeline	0.529s

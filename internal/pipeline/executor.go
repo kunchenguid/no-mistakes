@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -311,6 +312,16 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		}
 		return completeReconciledGate()
 	} else if reconcileErr != nil && ctx.Err() == nil {
+		if errors.Is(reconcileErr, ErrFatalGateReconciliation) {
+			if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
+				return e.failRun(run, repo, fmt.Errorf("complete fatal reconciliation awaiting-agent state: %w", dbErr), ctx)
+			}
+			if dbErr := e.db.FailStep(gate.stepResult.ID, reconcileErr.Error(), duration); dbErr != nil {
+				slog.Warn("failed to mark recovered step as failed in db", "step", gate.step.Name(), "error", dbErr)
+			}
+			e.emitStepEventWithFindingsDiffAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", "", reconcileErr.Error(), &duration)
+			return e.failRun(run, repo, fmt.Errorf("step %s: reconcile approval gate: %w", gate.step.Name(), reconcileErr), ctx)
+		}
 		slog.Warn("could not reconcile recovered approval gate; preserving it", "run_id", run.ID, "step", gate.step.Name(), "error", reconcileErr)
 	}
 
@@ -1135,6 +1146,9 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 					return approvalResponse{}, true, nil
 				}
 				return <-e.approvalCh, false, nil
+			}
+			if errors.Is(err, ErrFatalGateReconciliation) {
+				return approvalResponse{}, false, err
 			}
 			if err != nil && ctx.Err() == nil {
 				if sctx != nil && sctx.Log != nil {

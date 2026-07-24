@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -79,7 +80,14 @@ func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 func TestCIStep_UsesStepEnvForCLIStartupChecks(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	hiddenPath := t.TempDir()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hiddenPath := fakeCLIBinDir(t)
+	linkTestBinary(t, hiddenPath, "git")
+	t.Setenv("FAKE_CLI_MODE", "git-passthrough")
+	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
 	t.Setenv("PATH", hiddenPath)
 
 	env := fakeCIGH(t, "MERGED", "[]")

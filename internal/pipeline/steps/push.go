@@ -20,6 +20,9 @@ type PushStep struct{}
 func (s *PushStep) Name() types.StepName { return types.StepPush }
 
 func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
+		return nil, err
+	}
 	ctx := sctx.Ctx
 	newHeadSHA := ""
 	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {

@@ -54,6 +54,9 @@ func (s *CIStep) Name() types.StepName { return types.StepCI }
 // the normal CI polling loop. Open, unknown, and provider-error states remain
 // parked so reconciliation never guesses success.
 func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error) {
+	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
+		return false, fmt.Errorf("%w: %w", pipeline.ErrFatalGateReconciliation, err)
+	}
 	if err := sctx.Ctx.Err(); err != nil {
 		return false, err
 	}
@@ -119,6 +122,9 @@ func (s *CIStep) gracePeriod() time.Duration {
 }
 
 func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
+		return nil, err
+	}
 	ctx := sctx.Ctx
 	if err := ctx.Err(); err != nil {
 		return nil, err
