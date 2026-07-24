@@ -103,6 +103,39 @@ func TestGitSafeEnvIsObservedBySpawnedProcess(t *testing.T) {
 	}
 }
 
+// TestGitSafeEnv_GateMarkerWinsOverAmbient guards that a target repo (or a
+// confused parent) cannot pre-empt the marker with its own ambient value: the
+// stamp is appended last, and exec resolves duplicate keys to the last
+// occurrence.
+func TestEverySupportedAdapterPropagatesGateMarkerThroughCanonicalEnv(t *testing.T) {
+	// Native one-shot adapters own their command in the named file. OpenCode
+	// and Rovo Dev use the shared managed-server launcher, while Cursor and
+	// arbitrary ACP targets use acpx. Every route must stay on the overlay-aware
+	// canonical helper (gitSafeEnvWithOverlay, reached directly or via the
+	// subprocessContext.gitSafeEnv method) so both marker propagation and the
+	// run-scoped forge overlay cannot drift adapter by adapter.
+	owners := map[string]struct {
+		path string
+		want string
+	}{
+		"claude":                          {"claude.go", ".Env = a.gitSafeEnv("},
+		"codex":                           {"codex.go", ".Env = a.gitSafeEnv("},
+		"copilot":                         {"copilot.go", ".Env = a.gitSafeEnv("},
+		"pi":                              {"pi.go", ".Env = a.gitSafeEnv("},
+		"cursor/acp":                      {"acpx.go", ".Env = a.gitSafeEnv("},
+		"opencode/rovodev managed server": {"server.go", ".Env = gitSafeEnvWithOverlay("},
+	}
+	for adapter, owner := range owners {
+		data, err := os.ReadFile(owner.path)
+		if err != nil {
+			t.Fatalf("read %s owner %s: %v", adapter, owner.path, err)
+		}
+		if !strings.Contains(string(data), owner.want) {
+			t.Errorf("%s no longer propagates the gate marker and forge overlay through the canonical env helper (%s)", adapter, owner.path)
+		}
+	}
+}
+
 func TestAgentEnvProbe(t *testing.T) {
 	if os.Getenv("NM_TEST_ENV_PROBE") != "1" {
 		return
