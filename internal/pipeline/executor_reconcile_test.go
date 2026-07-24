@@ -253,8 +253,8 @@ func TestExecutor_ResumeFatalReconcileErrorFailsRun(t *testing.T) {
 	if dbErr != nil {
 		t.Fatal(dbErr)
 	}
-	if got.Status != types.RunFailed {
-		t.Fatalf("recovered run status = %s, want %s", got.Status, types.RunFailed)
+	if got.Status != types.RunFailed || got.AwaitingAgentSince != nil || got.ParkedMS <= 0 {
+		t.Fatalf("recovered run after fatal reconciliation = status %s awaiting %v parked_ms %d", got.Status, got.AwaitingAgentSince, got.ParkedMS)
 	}
 	steps, dbErr := database.GetStepsByRun(run.ID)
 	if dbErr != nil {
