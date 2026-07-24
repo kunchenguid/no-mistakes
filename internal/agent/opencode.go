@@ -12,8 +12,9 @@ import (
 type opencodeAgent struct {
 	bin       string
 	extraArgs []string
-	mu        sync.Mutex
-	server    *managedServer
+	subprocessContext
+	mu     sync.Mutex
+	server *managedServer
 }
 
 func (a *opencodeAgent) Name() string { return "opencode" }

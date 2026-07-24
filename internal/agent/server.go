@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 )
 
 // managedServerOutput holds the writer used for managed-server stdout and
@@ -73,11 +75,11 @@ func getAvailablePort() (int, error) {
 // The process is not tied to ctx - it outlives individual Run calls and is stopped via shutdown().
 // ctx is only used for the health check timeout.
 // agentName tags the PID tracking file so crash-recovery can identify orphans.
-func startServerWithPort(ctx context.Context, agentName, bin string, args []string, cwd string, healthPath string, port int) (*managedServer, error) {
+func startServerWithPort(ctx context.Context, agentName, bin string, args []string, cwd string, healthPath string, port int, environment runenv.Overlay) (*managedServer, error) {
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = cwd
 	cmd.Stdin = nil
-	cmd.Env = gitSafeEnv(cwd)
+	cmd.Env = gitSafeEnvWithOverlay(cwd, environment)
 	out := currentManagedServerOutput()
 	cmd.Stdout = out // server stdout goes to the configured sink for debugging
 	cmd.Stderr = out

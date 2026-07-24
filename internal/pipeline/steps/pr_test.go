@@ -15,7 +15,9 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -84,6 +86,61 @@ func TestPRStep_UpdatesExistingPR(t *testing.T) {
 	}
 	if run.PRURL == nil || *run.PRURL != "https://github.com/test/repo/pull/42" {
 		t.Errorf("PR URL = %v, want https://github.com/test/repo/pull/42", run.PRURL)
+	}
+}
+
+func TestPRStep_UsesResolvedForgeProviderForSelfHostedRemote(t *testing.T) {
+	t.Parallel()
+	const credentialSentinel = "credential-must-not-enter-pr-artifacts"
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, logFile := fakeGH(t, "https://code.example.test/test/repo/pull/42")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = append(env, "GH_TOKEN="+credentialSentinel)
+	sctx.Repo.UpstreamURL = "git@work-code:test/repo.git"
+	sctx.ForgeContext = &forgecontext.Context{
+		Provider: scm.ProviderGitHub,
+		Host:     "code.example.test",
+		Environment: runenv.Overlay{
+			Set:   map[string]string{"GH_CONFIG_DIR": "/profiles/work"},
+			Unset: []string{"GH_TOKEN"},
+		},
+	}
+
+	step := &PRStep{}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Skipped {
+		t.Fatal("expected configured forge provider to handle an otherwise unknown remote host")
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "pr edit") {
+		t.Fatalf("expected gh to update the existing PR, got:\n%s", logData)
+	}
+	if !strings.Contains(string(logData), "auth status --hostname code.example.test") {
+		t.Fatalf("expected gh auth to use the frozen profile host, got:\n%s", logData)
+	}
+	if strings.Contains(string(logData), credentialSentinel) {
+		t.Fatalf("credential sentinel leaked into provider arguments or PR content:\n%s", logData)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := json.Marshal(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(persisted), credentialSentinel) {
+		t.Fatalf("credential sentinel leaked into run record: %s", persisted)
 	}
 }
 
@@ -302,6 +359,10 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	profileDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(profileDir, "hosts.yml"), []byte("github.com:\n    user: fork-user\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	env, logFile := fakeGH(t, "")
 	ag := &mockAgent{
@@ -316,6 +377,13 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	sctx.Repo.UpstreamURL = "https://github.com/parent-owner/no-mistakes.git"
 	sctx.Repo.ForkURL = "https://github.com/fork-owner/no-mistakes.git"
 	sctx.Run.Branch = "refs/heads/feature"
+	forgeCtx, err := forgecontext.Resolve(context.Background(), config.ForgeProfiles{
+		"github.com": {GHConfigDir: profileDir},
+	}, sctx.Repo.UpstreamURL, sctx.Repo.ForkURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx.ForgeContext = forgeCtx
 
 	step := &PRStep{}
 	if _, err := step.Execute(sctx); err != nil {
@@ -341,6 +409,9 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	}
 	if strings.Contains(ghLog, "pr create --head feature --") {
 		t.Fatalf("expected PR create to avoid bare fork head, got:\n%s", ghLog)
+	}
+	if forgeCtx == nil || forgeCtx.ConfigDir != profileDir {
+		t.Fatalf("fork PR used forge context %#v, want %s", forgeCtx, profileDir)
 	}
 }
 

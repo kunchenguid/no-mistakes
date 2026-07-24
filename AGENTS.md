@@ -22,6 +22,12 @@ Safest local verification sequence after non-trivial changes:
 - GitHub PR code must keep `--repo` pointed at the parent and use `--head <fork_owner>:<branch>` when `fork_url` is set; existing-PR lookup must list by the bare branch and filter head-owner fields, never pass `<owner>:<branch>` to `gh pr list --head`.
 - GitLab and Bitbucket fork MR/PR routing is intentionally out of scope until implemented end to end; if a legacy row has `fork_url` for those hosts, PR creation must skip instead of opening a self PR.
 
+**Repository Forge Identity (`internal/forgecontext`)**
+
+- Optional global `forge_profiles` map raw remote host tokens/SSH aliases to one isolated `gh` or `glab` config directory. The resolver owns profile selection, validation, parent/fork ambiguity, provider-specific fail-closed activation, and the immutable run environment; do not add ambient account switching or per-step routing.
+- A resolved context must reach built-in provider commands, configured shell commands, native agents, managed agent servers, and recovered approval reconciliation. Never mutate the daemon environment or persist credentials/profile selection in the DB; recovery re-resolves from current global config.
+- No configured profiles means exact legacy ambient behavior. Online auth failures keep provider steps' existing skip behavior; deterministic config/routing errors fail before the pipeline. The public contract lives in `docs/src/content/docs/reference/global-config.md`.
+
 **Credential Redaction in Stored URLs and Errors (security)**
 
 - `gate.InitWithFork` runs the upstream URL through `safeurl.Redact` before every DB persist (`UpdateRepoMetadata*`, `InsertRepoWithIDAndFork`) and the "gate initialized" log line; the bare gate's `origin` remote still carries the full credentialled URL (via `provisionGate`) so carved worktrees authenticate. Because the DB copy is redacted, push and CI auto-fix push must recover the credential from the worktree's `origin` remote at run time (`resolvePushURL`/`resolveUpstreamURL`), never from `Repo.UpstreamURL`/`Repo.PushURL()`.

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -192,6 +194,248 @@ func TestPushReceivedAllowsDifferentBranchRunsConcurrently(t *testing.T) {
 type notifyBlockStep struct {
 	name    types.StepName
 	started chan<- string
+}
+
+type capturedForgeContext struct {
+	repoID   string
+	provider scm.Provider
+	env      map[string]string
+	gitEnv   string
+}
+
+type captureForgeContextStep struct {
+	contexts chan<- capturedForgeContext
+}
+
+func (s *captureForgeContextStep) Name() types.StepName { return types.StepReview }
+func (s *captureForgeContextStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if sctx.ForgeContext == nil {
+		return nil, fmt.Errorf("forge context is missing")
+	}
+	gitEnv, err := captureGitForgeEnvironment(sctx)
+	if err != nil {
+		return nil, err
+	}
+	s.contexts <- capturedForgeContext{
+		repoID:   sctx.Repo.ID,
+		provider: sctx.ForgeContext.Provider,
+		env:      testEnvMap(sctx.ForgeContext.Environment.Apply([]string{"GH_TOKEN=ambient"})),
+		gitEnv:   gitEnv,
+	}
+	return &pipeline.StepOutcome{}, nil
+}
+
+type barrierForgeContextStep struct {
+	contexts chan<- capturedForgeContext
+	release  <-chan struct{}
+}
+
+func (s *barrierForgeContextStep) Name() types.StepName { return types.StepReview }
+func (s *barrierForgeContextStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if sctx.ForgeContext == nil {
+		return nil, fmt.Errorf("forge context is missing")
+	}
+	gitEnv, err := captureGitForgeEnvironment(sctx)
+	if err != nil {
+		return nil, err
+	}
+	s.contexts <- capturedForgeContext{
+		repoID:   sctx.Repo.ID,
+		provider: sctx.ForgeContext.Provider,
+		env:      testEnvMap(sctx.ForgeContext.Environment.Apply([]string{"GH_TOKEN=ambient"})),
+		gitEnv:   gitEnv,
+	}
+	select {
+	case <-s.release:
+		return &pipeline.StepOutcome{}, nil
+	case <-sctx.Ctx.Done():
+		return nil, sctx.Ctx.Err()
+	}
+}
+
+func captureGitForgeEnvironment(sctx *pipeline.StepContext) (string, error) {
+	return git.Run(
+		sctx.Ctx,
+		sctx.WorkDir,
+		"-c",
+		"alias.show-forge=!printf 'config:%s token:%s' \"$GH_CONFIG_DIR\" \"${GH_TOKEN:+set}\"",
+		"show-forge",
+	)
+}
+
+func TestPushReceivedResolvesForgeProfileIntoRunContext(t *testing.T) {
+	const credentialSentinel = "forge-secret-must-not-persist"
+	t.Setenv("GH_TOKEN", credentialSentinel)
+	contexts := make(chan capturedForgeContext, 1)
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&captureForgeContextStep{contexts: contexts}}
+	})
+
+	profileDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(profileDir, "hosts.yml"), []byte("github.com:\n    users:\n        test-user:\n    user: test-user\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	globalConfig, err := os.ReadFile(p.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	globalConfig = append(globalConfig, []byte(fmt.Sprintf("forge_profiles:\n  github.com:\n    gh_config_dir: %s\n", profileDir))...)
+	if err := os.WriteFile(p.ConfigFile(), globalConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repo, headSHA := setupTestGitRepo(t, p, d, "forge-profile-run-repo")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &result); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case resolved := <-contexts:
+		if resolved.provider != scm.ProviderGitHub {
+			t.Fatalf("provider = %q, want %q", resolved.provider, scm.ProviderGitHub)
+		}
+		if resolved.env["GH_CONFIG_DIR"] != profileDir {
+			t.Fatalf("GH_CONFIG_DIR = %q, want %q", resolved.env["GH_CONFIG_DIR"], profileDir)
+		}
+		if _, exists := resolved.env["GH_TOKEN"]; exists {
+			t.Fatal("ambient GH_TOKEN survived run context")
+		}
+		if resolved.gitEnv != "config:"+profileDir+" token:" {
+			t.Fatalf("git subprocess environment = %q", resolved.gitEnv)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("pipeline did not report its forge context")
+	}
+	if run := waitForRunTerminalState(t, d, result.RunID); run.Status != types.RunCompleted {
+		t.Fatalf("run status = %q, want %q", run.Status, types.RunCompleted)
+	}
+	// Terminal status is persisted before the daemon removes the run worktree.
+	// Stop the daemon first so the credential scan cannot race that cleanup.
+	shutdownTestDaemonAndWaitForCleanup(t, p)
+	if err := filepath.WalkDir(p.Root(), func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil || !entry.Type().IsRegular() {
+			return walkErr
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(data), credentialSentinel) {
+			return fmt.Errorf("credential sentinel persisted in %s", path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPushReceivedKeepsConcurrentForgeProfilesIsolated(t *testing.T) {
+	contexts := make(chan capturedForgeContext, 2)
+	release := make(chan struct{})
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&barrierForgeContextStep{contexts: contexts, release: release}}
+	})
+
+	personalDir := t.TempDir()
+	workDir := t.TempDir()
+	for dir, host := range map[string]string{personalDir: "personal.example.test", workDir: "work.example.test"} {
+		if err := os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(host+":\n    user: test-user\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	globalConfig, err := os.ReadFile(p.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	globalConfig = append(globalConfig, []byte(fmt.Sprintf(
+		"forge_profiles:\n  personal.example.test:\n    gh_config_dir: %s\n  work.example.test:\n    gh_config_dir: %s\n",
+		personalDir, workDir,
+	))...)
+	if err := os.WriteFile(p.ConfigFile(), globalConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	type runRef struct {
+		id     string
+		result ipc.PushReceivedResult
+	}
+	runs := make([]runRef, 0, 2)
+	for _, tc := range []struct {
+		id   string
+		host string
+	}{
+		{id: "personal-forge-run", host: "personal.example.test"},
+		{id: "work-forge-run", host: "work.example.test"},
+	} {
+		repo, headSHA := setupTestGitRepo(t, p, d, tc.id)
+		if _, err := d.UpdateRepoMetadata(repo.ID, "https://"+tc.host+"/test/repo.git", "main"); err != nil {
+			t.Fatal(err)
+		}
+		client, err := ipc.Dial(p.Socket())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result ipc.PushReceivedResult
+		err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+			Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", New: headSHA,
+		}, &result)
+		_ = client.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		runs = append(runs, runRef{id: repo.ID, result: result})
+	}
+
+	observed := make(map[string]capturedForgeContext, 2)
+	for range 2 {
+		select {
+		case captured := <-contexts:
+			observed[captured.repoID] = captured
+		case <-time.After(3 * time.Second):
+			t.Fatal("concurrent forge runs did not reach barrier")
+		}
+	}
+	for repoID, wantDir := range map[string]string{"personal-forge-run": personalDir, "work-forge-run": workDir} {
+		captured := observed[repoID]
+		if got := captured.env["GH_CONFIG_DIR"]; got != wantDir {
+			t.Fatalf("%s GH_CONFIG_DIR = %q, want %q", repoID, got, wantDir)
+		}
+		if _, exists := captured.env["GH_TOKEN"]; exists {
+			t.Fatalf("%s retained ambient GH_TOKEN", repoID)
+		}
+		if captured.gitEnv != "config:"+wantDir+" token:" {
+			t.Fatalf("%s git subprocess environment = %q", repoID, captured.gitEnv)
+		}
+	}
+	close(release)
+	for _, run := range runs {
+		if completed := waitForRunTerminalState(t, d, run.result.RunID); completed.Status != types.RunCompleted {
+			t.Fatalf("%s status = %s", run.id, completed.Status)
+		}
+	}
+}
+
+func testEnvMap(env []string) map[string]string {
+	result := make(map[string]string, len(env))
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			result[key] = value
+		}
+	}
+	return result
 }
 
 func (s *notifyBlockStep) Name() types.StepName { return s.name }

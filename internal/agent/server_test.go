@@ -6,9 +6,13 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 )
 
 // TestStartServerWithPort_DetectsEarlyExit verifies that when the spawned
@@ -22,7 +26,7 @@ func TestStartServerWithPort_DetectsEarlyExit(t *testing.T) {
 	}
 
 	start := time.Now()
-	srv, err := startServerWithPort(context.Background(), "test", bin, nil, t.TempDir(), "/healthcheck", 1)
+	srv, err := startServerWithPort(context.Background(), "test", bin, nil, t.TempDir(), "/healthcheck", 1, runenv.Overlay{})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -37,6 +41,40 @@ func TestStartServerWithPort_DetectsEarlyExit(t *testing.T) {
 	}
 	if elapsed > 5*time.Second {
 		t.Errorf("should fail fast on early exit, waited %v", elapsed)
+	}
+}
+
+func TestStartServerWithPortAppliesForgeEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "env.txt")
+	name := "fake-server"
+	script := "#!/bin/sh\nprintf 'config:%s token:%s\\n' \"$GLAB_CONFIG_DIR\" \"${GITLAB_TOKEN:+set}\" > \"$CAPTURE_FILE\"\nexit 1\n"
+	if runtime.GOOS == "windows" {
+		name += ".cmd"
+		script = "@echo off\r\necho config:%GLAB_CONFIG_DIR% token:%GITLAB_TOKEN%>\"%CAPTURE_FILE%\"\r\nexit /b 1\r\n"
+	}
+	bin := filepath.Join(dir, name)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GITLAB_TOKEN", "ambient-must-not-leak")
+
+	_, err := startServerWithPort(context.Background(), "test", bin, nil, dir, "/healthcheck", 1, runenv.Overlay{
+		Set: map[string]string{
+			"CAPTURE_FILE":    capture,
+			"GLAB_CONFIG_DIR": "/profiles/work",
+		},
+		Unset: []string{"GITLAB_TOKEN"},
+	})
+	if err == nil {
+		t.Fatal("expected fake server to exit")
+	}
+	data, readErr := os.ReadFile(capture)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if got := strings.TrimSpace(string(data)); got != "config:/profiles/work token:" {
+		t.Fatalf("managed server environment = %q", got)
 	}
 }
 
@@ -141,6 +179,7 @@ func TestManagedServerOutputIsSeparatedFromLifecycleFailureSummary(t *testing.T)
 		t.TempDir(),
 		"/healthcheck",
 		1,
+		runenv.Overlay{},
 	)
 	if err == nil {
 		t.Fatal("expected managed server startup failure")
@@ -185,7 +224,7 @@ func TestStartServerWithPort_RemovesPIDFileOnEarlyExit(t *testing.T) {
 	SetServerPIDsDir(pidsDir)
 	t.Cleanup(func() { SetServerPIDsDir("") })
 
-	srv, err := startServerWithPort(context.Background(), "test", bin, nil, t.TempDir(), "/healthcheck", 1)
+	srv, err := startServerWithPort(context.Background(), "test", bin, nil, t.TempDir(), "/healthcheck", 1, runenv.Overlay{})
 	if err == nil {
 		srv.shutdown()
 		t.Fatal("expected error when server exits before becoming healthy")

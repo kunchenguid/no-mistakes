@@ -568,7 +568,13 @@ func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testin
 				t.Fatal(err)
 			}
 			mockClaude := writeMockClaude(t, t.TempDir())
-			if err := os.WriteFile(p.ConfigFile(), []byte("agent: claude\nagent_path_override:\n  claude: "+mockClaude+"\n"), 0o644); err != nil {
+			profileDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(profileDir, "hosts.yml"), []byte("github.com:\n    user: recovery-user\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			globalConfig := "agent: claude\nagent_path_override:\n  claude: " + mockClaude +
+				"\nforge_profiles:\n  github.com:\n    gh_config_dir: " + profileDir + "\n"
+			if err := os.WriteFile(p.ConfigFile(), []byte(globalConfig), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			d, err := db.Open(p.DB())
@@ -616,6 +622,7 @@ func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testin
 
 			ghDir, ghLog := writeMockGHState(t, t.TempDir(), state)
 			t.Setenv("PATH", ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("GH_TOKEN", "ambient-must-not-leak")
 			errCh := make(chan error, 1)
 			go func() {
 				errCh <- RunWithOptions(p, d, func() []pipeline.Step { return []pipeline.Step{&steps.CIStep{}} })
@@ -650,6 +657,9 @@ func TestRecoverOnStartup_ReconcilesHistoricalCIGateFromCurrentPRState(t *testin
 			}
 			if !strings.Contains(string(logData), "pr view 42") {
 				t.Fatalf("startup reconciliation did not read current PR state: %s", logData)
+			}
+			if !strings.Contains(string(logData), "env:"+profileDir+" token:") {
+				t.Fatalf("startup reconciliation did not use the recovered forge environment: %s", logData)
 			}
 		})
 	}
