@@ -54,6 +54,9 @@ func (s *CIStep) Name() types.StepName { return types.StepCI }
 // the normal CI polling loop. Open, unknown, and provider-error states remain
 // parked so reconciliation never guesses success.
 func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error) {
+	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
+		return false, err
+	}
 	if err := sctx.Ctx.Err(); err != nil {
 		return false, err
 	}

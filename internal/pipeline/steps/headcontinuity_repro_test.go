@@ -267,6 +267,23 @@ func TestPostReviewStepsRefuseHeadClobberAtEntry(t *testing.T) {
 	}
 }
 
+func TestCIGateReconciliationRefusesHeadClobberAtEntry(t *testing.T) {
+	dir, baseSHA, reviewedHead := setupGitRepo(t)
+	sctx := newTestContext(t, &mockAgent{name: "codex"}, dir, baseSHA, reviewedHead, config.Commands{})
+	gitCmd(t, dir, "reset", "--hard", baseSHA)
+
+	reconciled, err := (&CIStep{}).ReconcileApprovalGate(sctx)
+	if err == nil || !strings.Contains(err.Error(), "not a descendant") {
+		t.Fatalf("CI gate reconciliation must reject a backward reset at entry, got reconciled=%v err=%v", reconciled, err)
+	}
+	if reconciled {
+		t.Fatal("CI gate reconciliation reported success after a backward reset")
+	}
+	if sctx.Run.HeadSHA != reviewedHead {
+		t.Fatalf("CI gate reconciliation changed recorded reviewed head: got %s, want %s", sctx.Run.HeadSHA, reviewedHead)
+	}
+}
+
 func TestPostReviewStepEntryAllowsEqualAndPipelineDescendantHeads(t *testing.T) {
 	dir, baseSHA, recordedHead := setupGitRepo(t)
 	sctx := newTestContext(t, &mockAgent{name: "codex"}, dir, baseSHA, recordedHead, config.Commands{})
