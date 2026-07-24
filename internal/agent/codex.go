@@ -90,7 +90,10 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		resumeID = opts.Session.ID
 	}
 	args := a.buildArgs(opts.Prompt, schemaPath, resumeID)
-	cmd := exec.CommandContext(ctx, a.bin, args...)
+	// Resolve a Windows npm .cmd shim to the native exe so exec bypasses cmd.exe,
+	// whose %* forwarding corrupts arguments and stalls the daemon (issue #427).
+	bin := resolveAgentBinary(a.bin)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
 	cmd.Env = gitSafeEnv(opts.CWD)

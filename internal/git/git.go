@@ -54,7 +54,7 @@ func RunBare(ctx context.Context, bareDir string, args ...string) (string, error
 func runInDir(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = NonInteractiveEnv(dir)
+	cmd.Env = gitSpawnEnv(dir)
 	winproc.Harden(cmd)
 	out, err := cmd.Output()
 	if err != nil {
@@ -574,7 +574,9 @@ func WorktreeRemove(ctx context.Context, repoDir, wtPath string) error {
 // `git rev-parse --verify <ref>^{commit}`. Use it to pin an exact commit
 // (e.g. the default-branch tip just fetched) before reading a file from it,
 // so a shared-ref worktree cannot serve a stale remote-tracking ref. Returns
-// an error if the ref does not resolve to a commit.
+// an error if the ref does not resolve to a commit. The `^{commit}` peel
+// dereferences an annotated tag to its commit; its `{ }` are safe on Windows
+// because Run spawns git with CYGWIN/MSYS=noglob (see gitSpawnEnv, issue #427).
 func ResolveRef(ctx context.Context, dir, ref string) (string, error) {
 	out, err := Run(ctx, dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	if err != nil {
@@ -588,7 +590,7 @@ func ResolveRef(ctx context.Context, dir, ref string) (string, error) {
 // result rather than a loud error.
 func RefExists(ctx context.Context, dir, ref string) (bool, error) {
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
-	cmd.Env = NonInteractiveEnv(dir)
+	cmd.Env = gitSpawnEnv(dir)
 	winproc.Harden(cmd)
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError

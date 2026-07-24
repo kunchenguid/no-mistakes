@@ -162,6 +162,25 @@ func TestPostReceiveHookScript(t *testing.T) {
 	}
 }
 
+// TestHookBinPath locks in the issue #427 fix: on Windows the executable path
+// baked into the POSIX hook must use forward slashes, since a backslash path
+// like C:\Users\me\no-mistakes.exe fails under Cygwin/Git-for-Windows sh with
+// "command not found". Off Windows the path is passed through unchanged.
+func TestHookBinPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		got := hookBinPath(`C:\Users\me\AppData\Local\no-mistakes\no-mistakes.exe`)
+		want := "C:/Users/me/AppData/Local/no-mistakes/no-mistakes.exe"
+		if got != want {
+			t.Errorf("hookBinPath = %q, want %q", got, want)
+		}
+		return
+	}
+	const posix = "/opt/no-mistakes/no-mistakes"
+	if got := hookBinPath(posix); got != posix {
+		t.Errorf("hookBinPath = %q, want unchanged %q off Windows", got, posix)
+	}
+}
+
 func TestShellSingleQuote(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -271,7 +290,7 @@ func TestInstallPostReceiveHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(content) != postReceiveHookScript(exe) {
+	if string(content) != postReceiveHookScript(hookBinPath(exe)) {
 		t.Fatal("hook content doesn't match template")
 	}
 }
