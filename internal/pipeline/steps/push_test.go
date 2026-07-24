@@ -64,6 +64,13 @@ func TestPushStep_RefusesPostReviewClobberWithoutLaterPipelineCommit(t *testing.
 	if fileAtRef(t, upstream, "refs/heads/feature", "unreviewed.txt") {
 		t.Fatal("remote contains the unreviewed replacement")
 	}
+	t.Logf(
+		"review-approved=%s clobbered-HEAD=%s push-refused=%q remote-still=%s unreviewed-file-shipped=false",
+		reviewedHead,
+		clobberedHead,
+		err,
+		remoteHead,
+	)
 }
 
 func TestAssertReviewApprovedPushHead(t *testing.T) {
@@ -223,6 +230,14 @@ exec "$NM_TEST_REAL_GIT" "$@"
 	if dbRun.HeadSHA != approvedHead || dbRun.LastPushedSHA == nil || *dbRun.LastPushedSHA != approvedHead {
 		t.Fatalf("durable push binding did not retain verified commit %s: %#v", approvedHead, dbRun)
 	}
+	t.Logf(
+		"review-approved=%s concurrent-HEAD=%s remote-delivered=%s durable-head=%s durable-last-pushed=%s",
+		approvedHead,
+		replacementHead,
+		gitCmd(t, upstream, "rev-parse", "refs/heads/feature"),
+		dbRun.HeadSHA,
+		*dbRun.LastPushedSHA,
+	)
 }
 
 func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
