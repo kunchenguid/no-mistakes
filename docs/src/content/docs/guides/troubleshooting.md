@@ -300,5 +300,6 @@ Wedged state often means a run is stuck `pending` or `running`, so `daemon stop`
 ## Still stuck
 
 - Check `~/.no-mistakes/logs/daemon.log` at `log_level: debug`
+- Debugging a native agent that fails to spawn (especially on Windows/Cygwin)? Enable [`NM_SPAWN_DIAG`](/no-mistakes/reference/environment/#nm_spawn_diag), or drop a `<NM_HOME>/spawn-diag` file to toggle it against the running daemon, then reproduce and read the `spawn-diag[claude]` lines in the step and daemon logs.
 - File an issue: <https://github.com/kunchenguid/no-mistakes/issues>
 - Discord: <https://discord.gg/Wsy2NpnZDu>

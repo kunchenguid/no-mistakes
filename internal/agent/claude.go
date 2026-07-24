@@ -80,14 +80,18 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	cmd.Env = gitSafeEnv(opts.CWD)
 	shellenv.ConfigureShellCommand(cmd)
 
+	diag := newSpawnDiag("claude", a.bin, args, opts)
+
 	var stderrBuf []byte
 	var stderrWG sync.WaitGroup
 	started, err := startNativeAgentCommand(cmd)
 	if err != nil {
+		diag.logStartError(err)
 		return nil, fmt.Errorf("claude start: %w", err)
 	}
 	defer started.closePipes()
 	pid := started.pid()
+	diag.logStarted(pid)
 	emitAgentStarted(opts, "claude", pid)
 
 	stderrWG.Add(1)
@@ -98,9 +102,10 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 
 	var usage TokenUsage
 	var result *claudeResult
-	if err := parseClaudeEvents(ctx, started.stdout, opts.OnChunk, &usage, &result); err != nil {
+	if err := parseClaudeEvents(ctx, diag.wrapStdout(started.stdout), opts.OnChunk, &usage, &result); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
+		diag.logExit(pid, "parse-error", err, result != nil, stderrBuf)
 		retErr := fmt.Errorf("claude parse events: %w", err)
 		emitAgentExited(opts, "claude", pid, retErr)
 		return nil, retErr
@@ -109,16 +114,20 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	waitErr := started.wait()
 	stderrWG.Wait()
 	if waitErr != nil {
+		diag.logExit(pid, "wait-error", waitErr, result != nil, stderrBuf)
 		retErr := fmt.Errorf("claude exited: %w: %s", waitErr, string(stderrBuf))
 		emitAgentExited(opts, "claude", pid, retErr)
 		return nil, retErr
 	}
 
 	if result == nil {
+		diag.logExit(pid, "no-result-event", nil, false, stderrBuf)
 		retErr := fmt.Errorf("claude returned no result event")
 		emitAgentExited(opts, "claude", pid, retErr)
 		return nil, retErr
 	}
+
+	diag.logExit(pid, "ok", nil, true, stderrBuf)
 
 	res, err := finalizeClaudeResult(result, opts.JSONSchema, usage)
 	if res != nil {
