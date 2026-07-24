@@ -53,6 +53,28 @@ func TestCopilotAgent_BuildArgs_ExtraArgsFirst(t *testing.T) {
 	}
 }
 
+func TestCopilotAgent_BuildArgs_DisableProjectSettings(t *testing.T) {
+	ca := &copilotAgent{bin: "copilot", disableProjectSettings: true}
+	args := ca.buildArgs("fix the bug")
+
+	expected := []string{
+		"-p", "fix the bug",
+		"--output-format", "json",
+		"--no-color",
+		"--no-ask-user",
+		"--allow-all-tools",
+		"--no-custom-instructions",
+	}
+	if len(args) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
+	}
+	for i, want := range expected {
+		if args[i] != want {
+			t.Errorf("arg[%d]: expected %q, got %q", i, want, args[i])
+		}
+	}
+}
+
 func TestCopilotAgent_BuildArgs_UserPermissionSuppressesDefault(t *testing.T) {
 	tests := []struct {
 		name     string

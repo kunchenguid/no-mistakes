@@ -20,11 +20,25 @@ import (
 type copilotAgent struct {
 	bin       string
 	extraArgs []string
+	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
+	// buildArgs suppresses Copilot's custom project instructions.
+	disableProjectSettings bool
 }
 
 func (a *copilotAgent) Name() string { return "copilot" }
 
 func (a *copilotAgent) ReportsAgentAttempts() bool { return true }
+
+// NeutralizesGateInstructions reports whether Copilot is currently launched
+// with the target repo's custom project instructions suppressed. It is
+// meaningful only under the opt-out (disableProjectSettings): buildArgs appends
+// --no-custom-instructions to every invocation, after user extraArgs, so the
+// effective command cannot load AGENTS.md or CLAUDE.md. Verified empirically:
+// with custom instructions loaded Copilot adopts the target repository's agent
+// identity; with --no-custom-instructions it honors the pipeline prompt instead.
+func (a *copilotAgent) NeutralizesGateInstructions() bool {
+	return a.disableProjectSettings
+}
 
 func (a *copilotAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "copilot", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
@@ -144,7 +158,7 @@ func copilotErrorDetail(copilotErr, stderr string) string {
 // added; --no-ask-user is always added so the agent never blocks waiting for
 // interactive input.
 func (a *copilotAgent) buildArgs(prompt string) []string {
-	args := make([]string, 0, len(a.extraArgs)+8)
+	args := make([]string, 0, len(a.extraArgs)+9)
 	args = append(args, a.extraArgs...)
 	args = append(args,
 		"-p", prompt,
@@ -156,6 +170,15 @@ func (a *copilotAgent) buildArgs(prompt string) []string {
 	}
 	if !copilotUserSetPermissionMode(a.extraArgs) {
 		args = append(args, "--allow-all-tools")
+	}
+	// Project-settings opt-out (trusted-only; see config.DisableProjectSettings):
+	// --no-custom-instructions suppresses the target checkout's AGENTS.md and
+	// CLAUDE.md, which could otherwise install a governing identity on the gate
+	// agent. Append it after user extraArgs so every opt-out invocation has the
+	// verified suppression, while non-opt-out invocations retain Copilot's
+	// existing project-instruction behavior.
+	if a.disableProjectSettings {
+		args = append(args, "--no-custom-instructions")
 	}
 	return args
 }
