@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -47,6 +48,94 @@ type CIStep struct {
 }
 
 func (s *CIStep) Name() types.StepName { return types.StepCI }
+
+type prHeadResolver interface {
+	GetPRHeadSHA(context.Context, *scm.PR) (string, error)
+}
+
+type refChecksResolver interface {
+	GetChecksForRef(context.Context, string) ([]scm.Check, error)
+}
+
+type requiredCheckResult struct {
+	Pending bool
+	Failing []string
+}
+
+// evaluateRequiredChecks is deliberately fail-closed. Every configured name
+// must be present on the exact published head; skipped and cancelled checks
+// are terminal failures rather than successful completion.
+//
+// A revision mismatch is terminal on the spot rather than a state the monitor
+// waits out: the run may only certify the revision it verifiably published, and
+// a PR whose head is some other commit is outside this run's custody. Waiting
+// would either time out anyway or, worse, certify whatever the PR drifted to.
+// The pipeline never creates this divergence silently - a fix push that cannot
+// record its published revision stops the run at that point (see
+// errPublishedRevisionUnbound) - so reaching here means the PR moved out of
+// band and needs a human.
+func evaluateRequiredChecks(checks []scm.Check, required []string, expectedHead, observedHead string) (requiredCheckResult, error) {
+	expected := strings.TrimSpace(expectedHead)
+	observed := strings.TrimSpace(observedHead)
+	if expected == "" || observed == "" || !strings.EqualFold(expected, observed) {
+		return requiredCheckResult{}, fmt.Errorf("refusing to certify: PR head %q is not this run's verified published revision %q, so its required CI checks cannot certify this run", observedHead, expectedHead)
+	}
+	byName := make(map[string][]scm.Check, len(checks))
+	for _, check := range checks {
+		key := strings.ToLower(strings.TrimSpace(check.Name))
+		byName[key] = append(byName[key], check)
+	}
+	result := requiredCheckResult{}
+	for _, requiredName := range required {
+		matches := byName[strings.ToLower(strings.TrimSpace(requiredName))]
+		if len(matches) == 0 {
+			result.Pending = true // may not have registered yet; timeout still fails closed
+			continue
+		}
+		for _, check := range matches {
+			switch check.Bucket {
+			case scm.CheckBucketPass:
+			case scm.CheckBucketPending:
+				result.Pending = true
+			default: // fail, skip, cancel, and unknown terminal buckets
+				result.Failing = append(result.Failing, requiredName)
+			}
+		}
+	}
+	return result, nil
+}
+
+func checksWithNames(checks []scm.Check, names []string) []scm.Check {
+	wanted := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key != "" {
+			wanted[key] = struct{}{}
+		}
+	}
+	filtered := make([]scm.Check, 0, len(checks))
+	for _, check := range checks {
+		key := strings.ToLower(strings.TrimSpace(check.Name))
+		if _, ok := wanted[key]; ok {
+			filtered = append(filtered, check)
+		}
+	}
+	return filtered
+}
+
+// unboundPublishedRevisionError converts a CI fix that advanced the PR branch
+// without recording its published revision into a terminal step error under
+// ci_authoritative certification. Continuing to poll would only produce the
+// revision mismatch on the next observation, one poll interval later and
+// attributed to the PR rather than to the fix push that actually caused it.
+// Legacy certification keeps the tolerant warn-and-keep-polling behavior: it
+// never compares the observed head against the binding.
+func unboundPublishedRevisionError(sctx *pipeline.StepContext, err error) error {
+	if err == nil || !sctx.Config.Certification.IsCIAuthoritative() || !errors.Is(err, errPublishedRevisionUnbound) {
+		return nil
+	}
+	return fmt.Errorf("refusing to certify: the CI fix advanced the PR branch but its published revision could not be recorded: %w", err)
+}
 
 // ReconcileApprovalGate re-checks the PR after the CI step has parked at an
 // approval gate. A PR can be merged or closed after a timeout/failure gate was
@@ -133,12 +222,21 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
 		provider = scm.DetectProviderContext(ctx, *sctx.Run.PRURL)
 	}
+	if sctx.Config.Certification.IsCIAuthoritative() && provider != scm.ProviderGitHub {
+		return nil, fmt.Errorf("ci_authoritative certification requires GitHub Actions; detected provider %q", provider)
+	}
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
+		if sctx.Config.Certification.IsCIAuthoritative() {
+			return nil, fmt.Errorf("cannot run authoritative CI certification: %s", skipReason)
+		}
 		sctx.Log(fmt.Sprintf("skipping CI: %s", skipReason))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	if err := host.Available(ctx); err != nil {
+		if sctx.Config.Certification.IsCIAuthoritative() {
+			return nil, fmt.Errorf("cannot run authoritative CI certification: %w", err)
+		}
 		sctx.Log(fmt.Sprintf("skipping CI: %v", err))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
@@ -157,6 +255,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 	}
 	if prURL == "" {
+		if sctx.Config.Certification.IsCIAuthoritative() {
+			return nil, fmt.Errorf("cannot run authoritative CI certification without a PR URL")
+		}
 		sctx.Log("no PR URL found, skipping CI")
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
@@ -297,14 +398,64 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 		// Check CI status - wait for all checks to complete before fixing
 		ciFixLimit := sctx.Config.AutoFix.CI
-		checks, err := host.GetChecks(ctx, pr)
-		if err != nil {
-			clearCIMonitorReady(sctx)
-			lastMonitorLog = ""
-			sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
+		var checks []scm.Check
+		var pending bool
+		var failing []string
+		checksReady := false
+		if sctx.Config.Certification.IsCIAuthoritative() {
+			resolver, ok := host.(prHeadResolver)
+			if !ok {
+				return nil, fmt.Errorf("GitHub host cannot resolve the exact PR head for ci_authoritative certification")
+			}
+			checkResolver, ok := host.(refChecksResolver)
+			if !ok {
+				return nil, fmt.Errorf("GitHub host cannot resolve checks for the exact published revision for ci_authoritative certification")
+			}
+			latestRun, runErr := sctx.DB.GetRun(sctx.Run.ID)
+			if runErr != nil {
+				return nil, fmt.Errorf("load published revision binding: %w", runErr)
+			}
+			if latestRun == nil || latestRun.LastPushedSHA == nil || strings.TrimSpace(*latestRun.LastPushedSHA) == "" {
+				return nil, fmt.Errorf("ci_authoritative certification has no verified published revision binding")
+			}
+			expectedHead := strings.TrimSpace(*latestRun.LastPushedSHA)
+			var err error
+			checks, err = checkResolver.GetChecksForRef(ctx, expectedHead)
+			if err != nil {
+				clearCIMonitorReady(sctx)
+				lastMonitorLog = ""
+				sctx.Log(fmt.Sprintf("warning: could not check CI for published revision: %v", err))
+				goto waitForPoll
+			}
+			observedHead, headErr := resolver.GetPRHeadSHA(ctx, pr)
+			if headErr != nil {
+				clearCIMonitorReady(sctx)
+				lastMonitorLog = ""
+				sctx.Log(fmt.Sprintf("warning: could not verify CI revision: %v", headErr))
+				goto waitForPoll
+			}
+			required, requiredErr := evaluateRequiredChecks(checks, sctx.Config.Certification.RequiredChecks, expectedHead, observedHead)
+			if requiredErr != nil {
+				return nil, requiredErr
+			}
+			pending = required.Pending
+			failing = required.Failing
+			checks = checksWithNames(checks, sctx.Config.Certification.RequiredChecks)
+			checksReady = true
 		} else {
-			pending := hasPendingChecks(checks)
-			failing := failingCheckNames(checks)
+			var err error
+			checks, err = host.GetChecks(ctx, pr)
+			if err != nil {
+				clearCIMonitorReady(sctx)
+				lastMonitorLog = ""
+				sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
+				goto waitForPoll
+			}
+			pending = hasPendingChecks(checks)
+			failing = failingCheckNames(checks)
+			checksReady = true
+		}
+		if checksReady {
 			sort.Strings(failing)
 			hasFailures := len(failing) > 0
 			hasIssues := hasFailures || mergeConflict
@@ -350,7 +501,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					sctx.Log(fmt.Sprintf("issues detected: %s - manual fix requested...", issueDesc))
 					previousHeadSHA := sctx.Run.HeadSHA
 					pushed, err := s.autoFixCI(sctx, host, pr, failing, mergeConflict)
-					if err != nil {
+					if unbound := unboundPublishedRevisionError(sctx, err); unbound != nil {
+						return nil, unbound
+					} else if err != nil {
 						sctx.Log(fmt.Sprintf("warning: CI manual fix failed: %v", err))
 					} else if pushed || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
@@ -374,7 +527,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					sctx.Log(fmt.Sprintf("issues detected: %s - auto-fixing (attempt %d/%d)...", issueDesc, s.ciFixAttempts, ciFixLimit))
 					previousHeadSHA := sctx.Run.HeadSHA
 					pushed, err := s.autoFixCI(sctx, host, pr, failing, mergeConflict)
-					if err != nil {
+					if unbound := unboundPublishedRevisionError(sctx, err); unbound != nil {
+						return nil, unbound
+					} else if err != nil {
 						sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
 					} else if pushed || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
@@ -410,6 +565,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			}
 		}
 
+	waitForPoll:
 		// Sleep for poll interval
 		interval := s.pollIntervalOverride
 		if interval == 0 {

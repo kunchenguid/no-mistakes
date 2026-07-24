@@ -12,6 +12,39 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
 
+func TestLintStep_CIAuthoritativeSkipsLocalFastLintOwnedByTestStep(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	heavy := filepath.Join(dir, "heavy-lint-ran")
+	fast := filepath.Join(dir, "fast-lint-ran")
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "touch " + heavy})
+	sctx.Config.Certification = config.Certification{
+		Mode: config.CertificationModeCIAuthoritative,
+		LocalFast: config.LocalFastCommands{
+			Lint:      "touch " + fast,
+			Typecheck: "true",
+			Test:      "true",
+		},
+		RequiredChecks: []string{"full-suite"},
+	}
+	outcome, err := (&LintStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Skipped {
+		t.Fatalf("lint step outcome = %+v, want skipped because TestStep owns local-fast certification", outcome)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("lint step invoked agent in ci_authoritative mode: %d call(s)", len(ag.calls))
+	}
+	for _, path := range []string{fast, heavy} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("lint step unexpectedly touched %s: %v", path, err)
+		}
+	}
+}
+
 func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

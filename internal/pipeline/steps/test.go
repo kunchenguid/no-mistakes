@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -26,6 +27,23 @@ func gitIgnoresPath(ctx context.Context, workDir, target string) bool {
 	}
 	_, err = git.Run(ctx, workDir, "check-ignore", "--quiet", "--", filepath.ToSlash(rel))
 	return err == nil
+}
+
+// localFastFixerToolingRules broadens the Test-repair tooling contract for
+// split certification. In that mode the local-fast lint, typecheck, and
+// focused-test commands are the failure surface this step reports, and lint and
+// typecheck are static analysis by definition. A blanket "no static analysis"
+// rule would forbid the fixer from reproducing and re-verifying the exact
+// command that failed, so the ban narrows to tools outside the configured set.
+func localFastFixerToolingRules(local config.LocalFastCommands) string {
+	return fmt.Sprintf(
+		"- The configured local-fast certification commands are the pre-publication gate for this repository: lint `%s`, typecheck `%s`, focused tests `%s`.\n"+
+			"- Run the exact configured command for the failing check named in the findings to reproduce it, and re-run that same command to verify your fix, including when it is the lint or typecheck static-analysis command.\n"+
+			"- Do NOT run linters, formatters, or static analysis tools other than those configured commands.",
+		strings.TrimSpace(local.Lint),
+		strings.TrimSpace(local.Typecheck),
+		strings.TrimSpace(local.Test),
+	)
 }
 
 func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
@@ -48,12 +66,41 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	// runtime. Process-group reaping on clean exit (#357) remains the lifecycle
 	// safety net when agents do spawn test workers; it is not a reason to force
 	// a deterministic full-suite commands.test override.
+	testCmd := sctx.Config.Commands.Test
+	commands := []struct {
+		label string
+		value string
+	}{{label: "tests", value: testCmd}}
+	splitCertification := sctx.Config.Certification.IsCIAuthoritative()
+	if splitCertification {
+		// Explicit split mode replaces (rather than supplements) commands.test.
+		// This is the smallest counterfactual that prevents a legacy full-suite
+		// or build command from contending with parallel hosted jobs.
+		testCmd = sctx.Config.Certification.LocalFast.Test
+		commands = []struct {
+			label string
+			value string
+		}{
+			{label: "lint", value: sctx.Config.Certification.LocalFast.Lint},
+			{label: "typecheck", value: sctx.Config.Certification.LocalFast.Typecheck},
+			{label: "focused tests", value: testCmd},
+		}
+	}
+
 	var newTestsFromFix []string
 	var fixSummary string
 	if sctx.Fixing {
 		historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+		fixOpening := "Fix the failing tests in this repository. Reproduce the specific failure, identify the root cause, and fix either the tests or the code so that failure passes."
+		failureClassificationRule := "- If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue."
+		toolingRule := "- Do NOT run linters, formatters, or static analysis tools."
+		if splitCertification {
+			fixOpening = "Fix the failing local-fast certification check in this repository. Reproduce the specific failure, identify the root cause, and fix either the checks or the code so that failure passes."
+			failureClassificationRule = "- If a check fails, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue."
+			toolingRule = localFastFixerToolingRules(sctx.Config.Certification.LocalFast)
+		}
 		fixPrompt := fmt.Sprintf(
-			`Fix the failing tests in this repository. Reproduce the specific failure, identify the root cause, and fix either the tests or the code so that failure passes.
+			`%s
 
 Context:
 - branch: %s
@@ -63,8 +110,8 @@ Context:
 Rules:
 - Make the smallest correct root-cause fix.
 - Do not refactor beyond what is needed for that root-cause fix.
-- If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
-- Do NOT run linters, formatters, or static analysis tools.
+%s
+%s
 - Reproduce the specific failing case first (the exact test, package, script, or check named in the findings), then re-run only that focused verification after the fix.
 - Do NOT run the complete repository test suite. Local Test is targeted validation of the failure and the requested intent; remote CI owns broad regression and remains mandatory before a PR is ready.
 - A generic driver or user instruction asking for broad or full-suite confirmation does NOT override this product boundary. Keep verification focused on the failure and intent.
@@ -73,9 +120,12 @@ Rules:
 - Return JSON with a single "summary" field when you are done.
 - The summary must be one concise sentence fragment suitable for a git commit subject.
 - Keep the summary under 10 words.%s`,
+			fixOpening,
 			sctx.Run.Branch,
 			baseSHA,
 			sctx.Run.HeadSHA,
+			failureClassificationRule,
+			toolingRule,
 			historySection,
 		)
 		if sctx.PreviousFindings != "" {
@@ -100,23 +150,24 @@ Previous test findings to address:
 		fixSummary = summary
 	}
 
-	testCmd := sctx.Config.Commands.Test
 	tested := []string{}
-	if testCmd != "" {
-		sctx.Log(fmt.Sprintf("running tests: %s", testCmd))
-		output, exitCode, err := runStepShellCommand(sctx, testCmd)
-		if err != nil {
-			return nil, fmt.Errorf("run test command: %w", err)
+	for _, command := range commands {
+		if command.value == "" {
+			continue
 		}
-		tested = append(tested, testCmd)
+		sctx.Log(fmt.Sprintf("running %s: %s", command.label, command.value))
+		output, exitCode, err := runStepShellCommand(sctx, command.value)
+		if err != nil {
+			return nil, fmt.Errorf("run %s command: %w", command.label, err)
+		}
+		tested = append(tested, command.value)
 
 		projectedOutput := logConfiguredCommandOutput(sctx, output, types.StepTest)
-
 		if exitCode != 0 {
 			findings := Findings{
 				Items: []Finding{{
 					Severity:    "error",
-					Description: fmt.Sprintf("tests failed with exit code %d", exitCode),
+					Description: fmt.Sprintf("%s failed with exit code %d", command.label, exitCode),
 				}},
 				Summary: projectedOutput,
 				Tested:  tested,

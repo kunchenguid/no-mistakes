@@ -29,6 +29,110 @@ func TestLoadRepoFromBytes_InvalidYAML(t *testing.T) {
 	}
 }
 
+func TestLoadRepoFromBytes_CIAuthoritativeCertification(t *testing.T) {
+	cfg, err := LoadRepoFromBytes([]byte(`certification:
+  mode: ci_authoritative
+  local_fast:
+    lint: make lint-fast
+    typecheck: make typecheck
+    test: go test ./internal/config ./internal/pipeline/steps
+  required_checks:
+    - full-suite
+    - production-build
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Certification.Mode != CertificationModeCIAuthoritative {
+		t.Fatalf("mode = %q", cfg.Certification.Mode)
+	}
+	if cfg.Certification.LocalFast.Typecheck != "make typecheck" {
+		t.Fatalf("typecheck = %q", cfg.Certification.LocalFast.Typecheck)
+	}
+	if got := cfg.Certification.RequiredChecks; len(got) != 2 || got[0] != "full-suite" {
+		t.Fatalf("required checks = %v", got)
+	}
+}
+
+func TestValidateEffectiveRepoConfig_CertificationValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"unknown mode", "certification:\n  mode: fastish\n", "certification.mode"},
+		{"missing lint", "certification:\n  mode: ci_authoritative\n  local_fast:\n    typecheck: make typecheck\n    test: make test-fast\n  required_checks: [full-suite]\n", "local_fast.lint"},
+		{"missing typecheck", "certification:\n  mode: ci_authoritative\n  local_fast:\n    lint: make lint-fast\n    test: make test-fast\n  required_checks: [full-suite]\n", "local_fast.typecheck"},
+		{"missing focused test", "certification:\n  mode: ci_authoritative\n  local_fast:\n    lint: make lint-fast\n    typecheck: make typecheck\n  required_checks: [full-suite]\n", "local_fast.test"},
+		{"missing required checks", "certification:\n  mode: ci_authoritative\n  local_fast:\n    lint: make lint-fast\n    typecheck: make typecheck\n    test: make test-fast\n", "required_checks"},
+		{"duplicate local command", "certification:\n  mode: ci_authoritative\n  local_fast:\n    lint: make check\n    typecheck: make check\n    test: make test-fast\n  required_checks: [full-suite]\n", "must be distinct"},
+		{"duplicate check", "certification:\n  mode: ci_authoritative\n  local_fast:\n    lint: make lint-fast\n    typecheck: make typecheck\n    test: make test-fast\n  required_checks: [Full-Suite, full-suite]\n", "duplicate required check"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := LoadRepoFromBytes([]byte(tt.yaml))
+			if err != nil {
+				t.Fatalf("LoadRepoFromBytes error = %v, want semantic certification validation deferred", err)
+			}
+			err = ValidateEffectiveRepoConfig(cfg)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestEffectiveRepoConfig_UntrustedCertificationSemanticsCannotFailGate(t *testing.T) {
+	pushed, err := LoadRepoFromBytes([]byte(`certification:
+  mode: ci_authoritative
+  local_fast:
+    lint: make lint-fast
+  required_checks: []
+`))
+	if err != nil {
+		t.Fatalf("LoadRepoFromBytes rejected untrusted pushed policy before trust merge: %v", err)
+	}
+	effective := EffectiveRepoConfig(pushed, nil, false)
+	if err := ValidateEffectiveRepoConfig(effective); err != nil {
+		t.Fatalf("untrusted pushed certification affected effective gate policy: %v", err)
+	}
+	merged := Merge(DefaultGlobalConfig(), effective)
+	if merged.Certification.Mode != CertificationModeLocalHeavy {
+		t.Fatalf("effective certification mode = %q, want local_heavy", merged.Certification.Mode)
+	}
+}
+
+func TestEffectiveRepoConfig_InvalidTrustedCertificationFailsValidation(t *testing.T) {
+	pushed := &RepoConfig{}
+	trusted, err := LoadRepoFromBytes([]byte(`certification:
+  mode: ci_authoritative
+  local_fast:
+    lint: make lint-fast
+    typecheck: make typecheck
+    test: make focused-test
+  required_checks: []
+`))
+	if err != nil {
+		t.Fatalf("LoadRepoFromBytes error = %v, want semantic certification validation deferred", err)
+	}
+	effective := EffectiveRepoConfig(pushed, trusted, false)
+	err = ValidateEffectiveRepoConfig(effective)
+	if err == nil || !strings.Contains(err.Error(), "required_checks") {
+		t.Fatalf("trusted invalid certification validation error = %v, want required_checks", err)
+	}
+}
+
+func TestLoadRepoFromBytes_CertificationAbsentPreservesLegacyCommands(t *testing.T) {
+	cfg, err := LoadRepoFromBytes([]byte("commands:\n  test: make full-suite\n  lint: make lint\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := Merge(DefaultGlobalConfig(), cfg)
+	if merged.Certification.Mode != CertificationModeLocalHeavy || merged.Commands.Test != "make full-suite" {
+		t.Fatalf("absent mode changed legacy behavior: mode=%q test=%q", merged.Certification.Mode, merged.Commands.Test)
+	}
+}
+
 func TestEffectiveRepoConfig_TrustedOverridesPushedCommands(t *testing.T) {
 	pushedTemplate := "fix({{.Step}}): {{.Summary}}"
 	trustedTemplate := "trusted({{.Step}}): {{.Summary}}"
@@ -88,6 +192,25 @@ func TestEffectiveRepoConfig_TrustedOverridesPushedCommands(t *testing.T) {
 // TestEffectiveRepoConfig_TrustedEmptyAgentInheritsGlobal proves that when the
 // trusted copy does not pin an agent, the effective agent is empty so Merge
 // falls back to the global agent — the pushed-branch agent never wins.
+func TestEffectiveRepoConfig_CertificationAlwaysComesFromTrustedDefaultBranch(t *testing.T) {
+	pushed := &RepoConfig{Certification: CertificationRaw{
+		Mode:           CertificationModeCIAuthoritative,
+		LocalFast:      LocalFastCommands{Lint: "true", Typecheck: "true  ", Test: "true   "},
+		RequiredChecks: []string{"attacker-chosen-check"},
+	}}
+	trusted := &RepoConfig{Certification: CertificationRaw{
+		Mode:           CertificationModeCIAuthoritative,
+		LocalFast:      LocalFastCommands{Lint: "make lint-fast", Typecheck: "make typecheck", Test: "make test-fast"},
+		RequiredChecks: []string{"full-suite", "production-build"},
+	}}
+	for _, allowRepoCommands := range []bool{false, true} {
+		got := EffectiveRepoConfig(pushed, trusted, allowRepoCommands)
+		if len(got.Certification.RequiredChecks) != 2 || got.Certification.RequiredChecks[0] != "full-suite" {
+			t.Fatalf("allow=%v certification was not trusted-only: %+v", allowRepoCommands, got.Certification)
+		}
+	}
+}
+
 func TestEffectiveRepoConfig_TrustedEmptyAgentInheritsGlobal(t *testing.T) {
 	pushed := &RepoConfig{Agent: types.AgentCodex}
 	trusted := &RepoConfig{Commands: Commands{Lint: "golangci-lint run"}}

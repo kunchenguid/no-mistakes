@@ -142,6 +142,10 @@ Safest local verification sequence after non-trivial changes:
   This is a prompt contract, not an enforced sandbox.
   Regression: `TestReviewStep_FixMode_FocusedVerificationContract`.
 
+**Split Certification (`certification.mode: ci_authoritative`)**
+
+- `docs/src/content/docs/reference/repo-config.md` is the schema owner. The opt-in replaces legacy local test/lint commands with validated lint, typecheck, and focused-test commands; GitHub required checks on the durable `last_pushed_sha` become the fail-closed ready condition. Missing, stale, skipped, cancelled, or failed required checks never certify a run. The absent mode preserves legacy command execution. A PR head that is not the run's verified published revision is terminal on the first observation, never waited out; the only way the pipeline could create that divergence itself - a CI fix push whose published revision could not be recorded - stops the run at the push (`errPublishedRevisionUnbound`). Because Test then owns the typecheck and focused-test gates, its repair prompt names the configured local-fast commands and narrows the blanket static-analysis ban to tools outside that set. Core regressions: `internal/config/config_repo_trust_test.go`, `internal/pipeline/steps/ci_required_test.go`, and the split counterfactual tests in `test_test.go`/`lint_test.go`.
+
 **Local Test Is Targeted Validation (`internal/pipeline/steps/test.go`)**
 
 - Local Test (normal evidence agent and Test-repair agent) validates the requested intent with the smallest relevant checks and end-user-aligned evidence; it is never a repository-wide regression-suite walk.
@@ -162,7 +166,7 @@ Safest local verification sequence after non-trivial changes:
 
 **Combined Document+Lint Housekeeping Pass**
 
-- When `commands.lint` is empty, the document step performs both duties in one agent invocation and stashes the lint half on `RunShared` (consume-once); the lint step consumes it instead of paying a second cold pass. Neither duty is ever silently dropped: a skipped pass, untrusted structured output, or a lint fix round falls back to lint's own agent pass. Configured `commands.lint` stays a first-class deterministic gate. Uncategorized findings fail safe to the stricter documentation gate.
+- Under legacy certification, when `commands.lint` is empty, the document step performs both duties in one agent invocation and stashes the lint half on `RunShared` (consume-once); the lint step consumes it instead of paying a second cold pass. Neither duty is ever silently dropped: a skipped pass, untrusted structured output, or a lint fix round falls back to lint's own agent pass. Configured `commands.lint` stays a first-class deterministic gate. In `ci_authoritative` split mode, Test owns local-fast lint and the combined lint duty stays off. Uncategorized findings fail safe to the stricter documentation gate.
 - The document prompt enforces the placement policy (one owner per fact, stale duplicates become pointers, no AGENTS.md postmortems, scope limited to docs the change made stale). Do not reintroduce exhaustive-corpus-sweep language; it caused doc commits in 90 of 121 audited PRs. Contract test: `TestDocumentStep_PromptAppliesPlacementPolicy`; behavior tests: `internal/pipeline/steps/housekeeping_test.go`.
 
 **Telemetry Shape**
