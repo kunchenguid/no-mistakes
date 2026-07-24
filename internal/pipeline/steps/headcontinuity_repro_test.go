@@ -263,8 +263,43 @@ func TestPostReviewStepsRefuseHeadClobberAtEntry(t *testing.T) {
 				if sctx.Run.HeadSHA != reviewedHead {
 					t.Fatalf("%s changed recorded reviewed head before rejecting %s: got %s, want %s", step.Name(), reset.name, sctx.Run.HeadSHA, reviewedHead)
 				}
+				t.Logf("%s refused %s before agent, HEAD, or recorded-head mutation: %v", step.Name(), reset.name, err)
 			})
 		}
+	}
+}
+
+func TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry(t *testing.T) {
+	postReviewSteps := []pipeline.Step{
+		&TestStep{},
+		&DocumentStep{},
+		&LintStep{},
+		&PushStep{},
+		&PRStep{},
+		&CIStep{},
+	}
+
+	for _, step := range postReviewSteps {
+		t.Run(string(step.Name()), func(t *testing.T) {
+			dir, baseSHA, currentHead := setupGitRepo(t)
+			ag := &mockAgent{name: "codex"}
+			sctx := newTestContext(t, ag, dir, baseSHA, strings.Repeat("f", 40), config.Commands{})
+
+			_, err := step.Execute(sctx)
+			if err == nil || !strings.Contains(err.Error(), "not a descendant") {
+				t.Fatalf("%s must reject an unverifiable recorded head at entry, got %v", step.Name(), err)
+			}
+			if len(ag.calls) != 0 {
+				t.Fatalf("%s invoked an agent before rejecting an unverifiable recorded head", step.Name())
+			}
+			if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != currentHead {
+				t.Fatalf("%s performed work before rejecting an unverifiable recorded head: HEAD moved from %s to %s", step.Name(), currentHead, got)
+			}
+			if sctx.Run.HeadSHA != strings.Repeat("f", 40) {
+				t.Fatalf("%s changed the unverifiable recorded head on refusal: got %s", step.Name(), sctx.Run.HeadSHA)
+			}
+			t.Logf("%s failed closed before agent or HEAD mutation: %v", step.Name(), err)
+		})
 	}
 }
 
@@ -304,6 +339,7 @@ func TestPostReviewStepEntryAllowsEqualAndPipelineDescendantHeads(t *testing.T) 
 		if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 			t.Fatalf("%s rejected equal HEAD: %v", stepName, err)
 		}
+		t.Logf("%s allowed HEAD equal to recorded head %s", stepName, recordedHead)
 	}
 
 	if err := os.WriteFile(filepath.Join(dir, "pipeline-descendant.txt"), []byte("pipeline work\n"), 0o644); err != nil {
@@ -315,6 +351,7 @@ func TestPostReviewStepEntryAllowsEqualAndPipelineDescendantHeads(t *testing.T) 
 		if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 			t.Fatalf("%s rejected pipeline-descendant HEAD: %v", stepName, err)
 		}
+		t.Logf("%s allowed descendant HEAD while preserving recorded ancestor %s", stepName, recordedHead)
 	}
 }
 
