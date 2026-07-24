@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -194,6 +195,91 @@ type notifyBlockStep struct {
 	started chan<- string
 }
 
+type capturedGitIdentity struct {
+	name  string
+	email string
+}
+
+type captureGitIdentityStep struct {
+	identity chan<- capturedGitIdentity
+}
+
+func (s *captureGitIdentityStep) Name() types.StepName { return types.StepReview }
+func (s *captureGitIdentityStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	name, err := git.Run(sctx.Ctx, sctx.WorkDir, "config", "--get", "user.name")
+	if err != nil {
+		return nil, err
+	}
+	email, err := git.Run(sctx.Ctx, sctx.WorkDir, "config", "--get", "user.email")
+	if err != nil {
+		return nil, err
+	}
+	s.identity <- capturedGitIdentity{name: name, email: email}
+	return &pipeline.StepOutcome{}, nil
+}
+
+func TestPushReceivedCopiesEffectiveConditionalGitIdentity(t *testing.T) {
+	identities := make(chan capturedGitIdentity, 1)
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&captureGitIdentityStep{identity: identities}}
+	})
+
+	repo, headSHA := setupTestGitRepo(t, p, d, "conditional-identity-repo")
+	gitCmd(t, repo.WorkingPath, "config", "--local", "--unset", "user.name")
+	gitCmd(t, repo.WorkingPath, "config", "--local", "--unset", "user.email")
+
+	includePath := filepath.Join(t.TempDir(), "identity.gitconfig")
+	if err := os.WriteFile(includePath, []byte("[user]\n\tname = Conditional User\n\temail = conditional@example.com\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	globalPath := filepath.Join(t.TempDir(), "gitconfig")
+	// Match the canonical git dir path. Git resolves the gitdir to its real path
+	// before matching includeIf "gitdir:" (symlinks on macOS: /var -> /private/var;
+	// 8.3 short names on Windows: RUNNER~1 -> runneradmin), so build the pattern
+	// from git's own reported git dir. Go's filepath.EvalSymlinks diverges from
+	// git's resolution on Windows (drive-letter case, short-name handling), so
+	// asking git for --absolute-git-dir is the only form guaranteed to match.
+	gitDir := gitOutput(t, repo.WorkingPath, "rev-parse", "--absolute-git-dir")
+	globalConfig := fmt.Sprintf("[includeIf \"gitdir:%s\"]\n\tpath = %s\n", filepath.ToSlash(gitDir), filepath.ToSlash(includePath))
+	if err := os.WriteFile(globalPath, []byte(globalConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalPath)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &result); err != nil {
+		t.Fatal(err)
+	}
+
+	var identity capturedGitIdentity
+	select {
+	case identity = <-identities:
+	case <-time.After(3 * time.Second):
+		t.Fatal("pipeline did not report its Git identity")
+	}
+	if identity.name != "Conditional User" {
+		t.Fatalf("pipeline user.name = %q, want %q", identity.name, "Conditional User")
+	}
+	if identity.email != "conditional@example.com" {
+		t.Fatalf("pipeline user.email = %q, want %q", identity.email, "conditional@example.com")
+	}
+	if run := waitForRunTerminalState(t, d, result.RunID); run.Status != types.RunCompleted {
+		t.Fatalf("run status = %q, want %q", run.Status, types.RunCompleted)
+	}
+}
+
 func (s *notifyBlockStep) Name() types.StepName { return s.name }
 
 func (s *notifyBlockStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
@@ -225,7 +311,7 @@ func waitForStartedBranch(t *testing.T, started <-chan string, branch string) {
 // creation and git-identity setup concurrently. All runs share one gate bare
 // repo, so writing identity with `git config --local` (which targets the bare's
 // shared config) made the two startups race on <bare>/config.lock and fail one
-// run with "could not lock config file ...: File exists". CopyLocalUserIdentity
+// run with "could not lock config file ...: File exists". CopyEffectiveUserIdentity
 // now writes per-worktree, so the startups no longer contend. The race window
 // is during synchronous startRun, so a failure surfaces directly as the
 // push_received call's error. macOS-only in practice (Linux file locking and

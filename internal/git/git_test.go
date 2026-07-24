@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -138,7 +139,7 @@ func TestRemoveRemote(t *testing.T) {
 	}
 }
 
-func TestCopyLocalUserIdentity(t *testing.T) {
+func TestCopyEffectiveUserIdentityFromLocalConfig(t *testing.T) {
 	ctx := context.Background()
 	src := initTestRepo(t)
 	dst := initTestRepo(t)
@@ -146,8 +147,8 @@ func TestCopyLocalUserIdentity(t *testing.T) {
 	run(t, dst, "git", "config", "--local", "--unset", "user.name")
 	run(t, dst, "git", "config", "--local", "--unset", "user.email")
 
-	if err := CopyLocalUserIdentity(ctx, src, dst); err != nil {
-		t.Fatalf("CopyLocalUserIdentity failed: %v", err)
+	if err := CopyEffectiveUserIdentity(ctx, src, dst); err != nil {
+		t.Fatalf("CopyEffectiveUserIdentity failed: %v", err)
 	}
 
 	if got := run(t, dst, "git", "config", "--local", "--get", "user.name"); got != "Test" {
@@ -155,6 +156,41 @@ func TestCopyLocalUserIdentity(t *testing.T) {
 	}
 	if got := run(t, dst, "git", "config", "--local", "--get", "user.email"); got != "test@test.com" {
 		t.Fatalf("user.email = %q, want %q", got, "test@test.com")
+	}
+}
+
+func TestCopyEffectiveUserIdentityUsesConditionalConfig(t *testing.T) {
+	ctx := context.Background()
+	src := initTestRepo(t)
+	dst := initTestRepo(t)
+
+	run(t, src, "git", "config", "--local", "--unset", "user.name")
+	run(t, src, "git", "config", "--local", "--unset", "user.email")
+	run(t, dst, "git", "config", "--local", "--unset", "user.name")
+	run(t, dst, "git", "config", "--local", "--unset", "user.email")
+
+	includePath := filepath.Join(t.TempDir(), "identity.gitconfig")
+	writeFile(t, includePath, "[user]\n\tname = Conditional User\n\temail = conditional@example.com\n")
+	globalPath := filepath.Join(t.TempDir(), "gitconfig")
+	// Match the canonical git dir path. Git resolves the gitdir to its real path
+	// before matching includeIf "gitdir:" (symlinks on macOS: /var -> /private/var;
+	// 8.3 short names on Windows: RUNNER~1 -> runneradmin), so build the pattern
+	// from git's own reported git dir. Go's filepath.EvalSymlinks diverges from
+	// git's resolution on Windows (drive-letter case, short-name handling), so
+	// asking git for --absolute-git-dir is the only form guaranteed to match.
+	gitDir := run(t, src, "git", "rev-parse", "--absolute-git-dir")
+	writeFile(t, globalPath, fmt.Sprintf("[includeIf \"gitdir:%s\"]\n\tpath = %s\n", filepath.ToSlash(gitDir), filepath.ToSlash(includePath)))
+	t.Setenv("GIT_CONFIG_GLOBAL", globalPath)
+
+	if err := CopyEffectiveUserIdentity(ctx, src, dst); err != nil {
+		t.Fatalf("CopyEffectiveUserIdentity failed: %v", err)
+	}
+
+	if got := run(t, dst, "git", "config", "--local", "--get", "user.name"); got != "Conditional User" {
+		t.Fatalf("user.name = %q, want %q", got, "Conditional User")
+	}
+	if got := run(t, dst, "git", "config", "--local", "--get", "user.email"); got != "conditional@example.com" {
+		t.Fatalf("user.email = %q, want %q", got, "conditional@example.com")
 	}
 }
 
