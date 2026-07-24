@@ -12,6 +12,36 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
 
+func TestLintStep_CIAuthoritativeRunsLocalFastLintInsteadOfLegacyCommand(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	heavy := filepath.Join(dir, "heavy-lint-ran")
+	fast := filepath.Join(dir, "fast-lint-ran")
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{Lint: "touch " + heavy})
+	sctx.Config.Certification = config.Certification{
+		Mode: config.CertificationModeCIAuthoritative,
+		LocalFast: config.LocalFastCommands{
+			Lint:      "touch " + fast,
+			Typecheck: "true",
+			Test:      "true",
+		},
+		RequiredChecks: []string{"full-suite"},
+	}
+	outcome, err := (&LintStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatalf("fast lint unexpectedly needs approval: %+v", outcome)
+	}
+	if _, err := os.Stat(fast); err != nil {
+		t.Fatalf("fast lint did not run: %v", err)
+	}
+	if _, err := os.Stat(heavy); !os.IsNotExist(err) {
+		t.Fatalf("legacy heavy lint ran in ci_authoritative mode: %v", err)
+	}
+}
+
 func TestLintStep_FixMode_CommitsChanges(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

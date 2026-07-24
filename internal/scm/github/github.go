@@ -291,6 +291,27 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 	return normalizePRState(strings.TrimSpace(string(out))), nil
 }
 
+// GetPRHeadSHA returns the exact revision currently attached to the PR. Split
+// certification uses it after reading checks so a stale check set can never
+// certify a different published revision.
+func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR) (string, error) {
+	selector, err := prSelector(pr)
+	if err != nil {
+		return "", err
+	}
+	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
+	args = append(args, "--json", "headRefOid", "--jq", ".headRefOid")
+	out, err := h.cmd(ctx, "gh", args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("gh pr view head revision: %w", err)
+	}
+	sha := strings.TrimSpace(string(out))
+	if sha == "" {
+		return "", fmt.Errorf("gh pr view returned an empty head revision")
+	}
+	return sha, nil
+}
+
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	selector, err := prSelector(pr)
 	if err != nil {

@@ -101,22 +101,41 @@ Previous test findings to address:
 	}
 
 	testCmd := sctx.Config.Commands.Test
-	tested := []string{}
-	if testCmd != "" {
-		sctx.Log(fmt.Sprintf("running tests: %s", testCmd))
-		output, exitCode, err := runStepShellCommand(sctx, testCmd)
-		if err != nil {
-			return nil, fmt.Errorf("run test command: %w", err)
+	commands := []struct {
+		label string
+		value string
+	}{{label: "tests", value: testCmd}}
+	if sctx.Config.Certification.IsCIAuthoritative() {
+		// Explicit split mode replaces (rather than supplements) commands.test.
+		// This is the smallest counterfactual that prevents a legacy full-suite
+		// or build command from contending with parallel hosted jobs.
+		testCmd = sctx.Config.Certification.LocalFast.Test
+		commands = []struct {
+			label string
+			value string
+		}{
+			{label: "typecheck", value: sctx.Config.Certification.LocalFast.Typecheck},
+			{label: "focused tests", value: testCmd},
 		}
-		tested = append(tested, testCmd)
+	}
+	tested := []string{}
+	for _, command := range commands {
+		if command.value == "" {
+			continue
+		}
+		sctx.Log(fmt.Sprintf("running %s: %s", command.label, command.value))
+		output, exitCode, err := runStepShellCommand(sctx, command.value)
+		if err != nil {
+			return nil, fmt.Errorf("run %s command: %w", command.label, err)
+		}
+		tested = append(tested, command.value)
 
 		projectedOutput := logConfiguredCommandOutput(sctx, output, types.StepTest)
-
 		if exitCode != 0 {
 			findings := Findings{
 				Items: []Finding{{
 					Severity:    "error",
-					Description: fmt.Sprintf("tests failed with exit code %d", exitCode),
+					Description: fmt.Sprintf("%s failed with exit code %d", command.label, exitCode),
 				}},
 				Summary: projectedOutput,
 				Tested:  tested,

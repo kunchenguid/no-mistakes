@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions` and `disable_project_settings` only from that trusted copy.
+The daemon also reads `certification`, `document.instructions`, and `disable_project_settings` only from that trusted copy.
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
@@ -129,6 +129,40 @@ When this option is `false`, missing, or `null`, all agents retain their existin
 This field is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`.
 A pushed branch cannot enable it or disable a trusted opt-in.
 If the trusted commit or its present config file cannot be read and parsed, the run aborts rather than guessing that the option is disabled.
+
+### certification
+
+Opt in to splitting fast local certification from authoritative GitHub Actions certification. This block is the single schema owner for the split.
+
+| Field | Type | Default |
+|---|---|---|
+| `certification.mode` | `ci_authoritative` | Absent (`local_heavy` legacy behavior) |
+| `certification.local_fast.lint` | `string` | Required in split mode |
+| `certification.local_fast.typecheck` | `string` | Required in split mode |
+| `certification.local_fast.test` | `string` | Required in split mode |
+| `certification.required_checks` | `string[]` | Required, non-empty in split mode |
+
+```yaml
+certification:
+  mode: ci_authoritative
+  local_fast:
+    lint: "golangci-lint run ./internal/changed/..."
+    typecheck: "go test -run '^$' ./internal/changed/..."
+    test: "go test ./internal/changed/... -run 'TestTouchedBehavior'"
+  required_checks:
+    - full-suite
+    - production-build
+    - integration
+    - security
+```
+
+This mode keeps independent Review and replaces the legacy `commands.lint` and `commands.test` execution with all three `local_fast` commands. Put only bounded lint, typecheck, and explicitly focused tests there. Put full-suite tests, production and container builds, integration or migration checks, security scans, and other whole-repository work in GitHub Actions. The push and PR steps remain unchanged: pipeline fix commits stay append-only and the exact resulting revision is published to the existing PR.
+
+The CI step succeeds only after every configured required check is present and green on that exact published revision. Missing or pending checks keep waiting; failed, skipped, or cancelled checks fail the gate; a PR head that does not match the published revision fails closed as stale. Optional checks do not become required merely because GitHub reports them. Required names are therefore a security boundary: list every heavy safety check whose absence would under-certify the change.
+
+Configuration is rejected before execution when the mode is unknown, any local-fast command is empty, local-fast commands overlap exactly, or required check names are empty or duplicated. `certification` always comes from the trusted default branch, even with `allow_repo_commands: true`, so a feature branch cannot select weaker commands or remove required checks.
+
+**Migration:** first create GitHub Actions jobs for every heavy responsibility and note their stable check names. Then add the complete split block to the default branch. Keep `commands.*` during rollout if other tooling uses them; no-mistakes omits their test/lint values only after the explicit mode is active. Removing the mode immediately restores legacy command behavior. Split mode allows each PR's hosted jobs to run in parallel, but does not promise unlimited local concurrency or remove daemon resource limits.
 
 ### commands.test
 

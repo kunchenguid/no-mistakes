@@ -181,6 +181,60 @@ func TestTestStep_FixMode_AgentWritesNewTests_ProceedsAutomatically(t *testing.T
 	}
 }
 
+// Regression model for the resource-contention path: the trigger is a legacy
+// commands.test full-suite/build process; concurrent unrelated work can mask
+// which process exhausted memory, and the operator sees only a daemon/agent
+// crash. Marker commands are controlled doubles: the successful counterfactual
+// proves explicit split mode runs typecheck + focused tests without launching
+// the heavy command. No daemon, fleet, credentials, or remote PR is involved.
+func TestSplitCertificationRunsTypecheckAndFocusedTestButOmitsLegacyHeavyTest(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	heavy := filepath.Join(dir, "heavy-ran")
+	typechecked := filepath.Join(dir, "typecheck-ran")
+	focused := filepath.Join(dir, "focused-ran")
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "touch " + heavy})
+	sctx.Config.Certification = config.Certification{
+		Mode: config.CertificationModeCIAuthoritative,
+		LocalFast: config.LocalFastCommands{
+			Lint:      "true",
+			Typecheck: "touch " + typechecked,
+			Test:      "touch " + focused,
+		},
+		RequiredChecks: []string{"full-suite"},
+	}
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatalf("fast checks unexpectedly need approval: %+v", outcome)
+	}
+	for _, path := range []string{typechecked, focused} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("fast command did not run (%s): %v", path, err)
+		}
+	}
+	if _, err := os.Stat(heavy); !os.IsNotExist(err) {
+		t.Fatalf("legacy heavy command ran in ci_authoritative mode: %v", err)
+	}
+}
+
+func TestLegacyCertificationStillRunsConfiguredHeavyTestByDefault(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	heavy := filepath.Join(dir, "legacy-command-ran")
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{Test: "touch " + heavy})
+	if _, err := (&TestStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(heavy); err != nil {
+		t.Fatalf("legacy configured command no longer runs by default: %v", err)
+	}
+}
+
 func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

@@ -339,6 +339,10 @@ func fakeCIGHHandler(args []string) {
 		fmt.Println(mergeable)
 		os.Exit(0)
 	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid") {
+		fmt.Println(os.Getenv("FAKE_CLI_HEAD_SHA"))
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
 		if stateErr != "" {
 			fmt.Fprintln(os.Stderr, stateErr)

@@ -112,6 +112,21 @@ func TestGetChecksPassesRepoFlag(t *testing.T) {
 	}
 }
 
+func TestGetPRHeadSHATargetsExactPR(t *testing.T) {
+	t.Parallel()
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: sha + "\n"},
+	}), nil, "", "test/repo")
+	got, err := host.GetPRHeadSHA(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != sha {
+		t.Fatalf("head SHA = %q, want %q", got, sha)
+	}
+}
+
 func TestGetPRStatePassesRepoFlag(t *testing.T) {
 	t.Parallel()
 

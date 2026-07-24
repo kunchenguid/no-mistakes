@@ -22,6 +22,9 @@ func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	lintCmd := sctx.Config.Commands.Lint
+	if sctx.Config.Certification.IsCIAuthoritative() {
+		lintCmd = sctx.Config.Certification.LocalFast.Lint
+	}
 
 	if lintCmd == "" {
 		// The combined document+lint housekeeping pass already performed the

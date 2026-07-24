@@ -48,6 +48,47 @@ type CIStep struct {
 
 func (s *CIStep) Name() types.StepName { return types.StepCI }
 
+type prHeadResolver interface {
+	GetPRHeadSHA(context.Context, *scm.PR) (string, error)
+}
+
+type requiredCheckResult struct {
+	Pending bool
+	Failing []string
+}
+
+// evaluateRequiredChecks is deliberately fail-closed. Every configured name
+// must be present on the exact published head; skipped and cancelled checks
+// are terminal failures rather than successful completion.
+func evaluateRequiredChecks(checks []scm.Check, required []string, expectedHead, observedHead string) (requiredCheckResult, error) {
+	if strings.TrimSpace(expectedHead) == "" || strings.TrimSpace(observedHead) == "" || !strings.EqualFold(strings.TrimSpace(expectedHead), strings.TrimSpace(observedHead)) {
+		return requiredCheckResult{}, fmt.Errorf("required CI checks belong to PR head %q, not the exact published revision %q", observedHead, expectedHead)
+	}
+	byName := make(map[string][]scm.Check, len(checks))
+	for _, check := range checks {
+		key := strings.ToLower(strings.TrimSpace(check.Name))
+		byName[key] = append(byName[key], check)
+	}
+	result := requiredCheckResult{}
+	for _, requiredName := range required {
+		matches := byName[strings.ToLower(strings.TrimSpace(requiredName))]
+		if len(matches) == 0 {
+			result.Pending = true // may not have registered yet; timeout still fails closed
+			continue
+		}
+		for _, check := range matches {
+			switch check.Bucket {
+			case scm.CheckBucketPass:
+			case scm.CheckBucketPending:
+				result.Pending = true
+			default: // fail, skip, cancel, and unknown terminal buckets
+				result.Failing = append(result.Failing, requiredName)
+			}
+		}
+	}
+	return result, nil
+}
+
 // ReconcileApprovalGate re-checks the PR after the CI step has parked at an
 // approval gate. A PR can be merged or closed after a timeout/failure gate was
 // recorded; either terminal state supersedes the stale gate just as it does in
@@ -133,12 +174,21 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
 		provider = scm.DetectProviderContext(ctx, *sctx.Run.PRURL)
 	}
+	if sctx.Config.Certification.IsCIAuthoritative() && provider != scm.ProviderGitHub {
+		return nil, fmt.Errorf("ci_authoritative certification requires GitHub Actions; detected provider %q", provider)
+	}
 	host, skipReason := buildHost(sctx, provider)
 	if host == nil {
+		if sctx.Config.Certification.IsCIAuthoritative() {
+			return nil, fmt.Errorf("cannot run authoritative CI certification: %s", skipReason)
+		}
 		sctx.Log(fmt.Sprintf("skipping CI: %s", skipReason))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	if err := host.Available(ctx); err != nil {
+		if sctx.Config.Certification.IsCIAuthoritative() {
+			return nil, fmt.Errorf("cannot run authoritative CI certification: %w", err)
+		}
 		sctx.Log(fmt.Sprintf("skipping CI: %v", err))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
@@ -157,6 +207,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 	}
 	if prURL == "" {
+		if sctx.Config.Certification.IsCIAuthoritative() {
+			return nil, fmt.Errorf("cannot run authoritative CI certification without a PR URL")
+		}
 		sctx.Log("no PR URL found, skipping CI")
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
@@ -305,6 +358,34 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		} else {
 			pending := hasPendingChecks(checks)
 			failing := failingCheckNames(checks)
+			if sctx.Config.Certification.IsCIAuthoritative() {
+				resolver, ok := host.(prHeadResolver)
+				if !ok {
+					return nil, fmt.Errorf("GitHub host cannot resolve the exact PR head for ci_authoritative certification")
+				}
+				// Resolve after reading checks. If the PR advances during either
+				// request, it cannot accidentally certify the run's older SHA.
+				observedHead, headErr := resolver.GetPRHeadSHA(ctx, pr)
+				if headErr != nil {
+					clearCIMonitorReady(sctx)
+					lastMonitorLog = ""
+					sctx.Log(fmt.Sprintf("warning: could not verify CI revision: %v", headErr))
+					goto waitForPoll
+				}
+				latestRun, runErr := sctx.DB.GetRun(sctx.Run.ID)
+				if runErr != nil {
+					return nil, fmt.Errorf("load published revision binding: %w", runErr)
+				}
+				if latestRun == nil || latestRun.LastPushedSHA == nil || strings.TrimSpace(*latestRun.LastPushedSHA) == "" {
+					return nil, fmt.Errorf("ci_authoritative certification has no verified published revision binding")
+				}
+				required, requiredErr := evaluateRequiredChecks(checks, sctx.Config.Certification.RequiredChecks, *latestRun.LastPushedSHA, observedHead)
+				if requiredErr != nil {
+					return nil, requiredErr
+				}
+				pending = required.Pending
+				failing = required.Failing
+			}
 			sort.Strings(failing)
 			hasFailures := len(failing) > 0
 			hasIssues := hasFailures || mergeConflict
@@ -410,6 +491,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			}
 		}
 
+	waitForPoll:
 		// Sleep for poll interval
 		interval := s.pollIntervalOverride
 		if interval == 0 {
