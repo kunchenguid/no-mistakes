@@ -121,6 +121,7 @@ Safest local verification sequence after non-trivial changes:
 
 - `ci_timeout` is an idle timeout, not an absolute deadline: only `timeoutAnchor` re-arms when the upstream default-branch tip advances, `started` stays fixed for poll pacing, and re-arm only ever extends the deadline (fail-safe on transient base-tip failures). Value semantics (`0` unset, negative unlimited sentinel, keyword parsing) live in `config.go`; keep `config.DefaultCITimeout` and `defaultConfigYAML` in sync (`TestDefaultConfigYAML_MatchesGoDefaults`). User-facing semantics are owned by `docs/src/content/docs/reference/global-config.md`.
 - Reap an orphaned monitor from outside its worktree with `no-mistakes axi abort --run <id>`; it needs only `NM_HOME` plus the daemon, and an unknown id or stopped daemon is an idempotent no-op, not an error. Bare `axi abort` stays worktree/branch-scoped.
+- A merged or closed PR observation transactionally completes an active run and its CI step; PR lifecycle state is monotonic, so duplicate or delayed observations cannot reactivate or regress a terminal run. Startup reconciles legacy `pending` or `running` rows that already hold terminal PR state before parked-run planning and generic crash recovery. Regressions: `TestUpdateRunPRStateFinalizesActiveTerminalOutcomes`, `TestUpdateRunPRStateIgnoresDuplicateAndDelayedRegressions`, `TestReconcileTerminalPRRunsFinalizesLegacyActiveRows`, `TestRecoverOnStartup_FinalizesLegacyTerminalPRRun`, e2e `TestTerminalPRRunDisappearsFromActiveListing`.
 
 **Parked / Awaiting-Agent Signal**
 

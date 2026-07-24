@@ -206,9 +206,11 @@ func (d *DB) UpdateRunStatus(id string, status types.RunStatus) error {
 	return nil
 }
 
-// UpdateRunPRURL sets the PR URL on a run.
+// UpdateRunPRURL sets the PR URL on a run. A delayed PR-step write must not
+// regress terminal lifecycle truth already observed by the CI monitor.
 func (d *DB) UpdateRunPRURL(id, prURL string) error {
-	_, err := d.sql.Exec(`UPDATE runs SET pr_url = ?, pr_state = 'open', pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, prURL, now(), now(), id)
+	ts := now()
+	_, err := d.sql.Exec(`UPDATE runs SET pr_url = ?, pr_state = CASE WHEN pr_state IN ('merged', 'closed') THEN pr_state ELSE 'open' END, pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, prURL, ts, ts, id)
 	if err != nil {
 		return fmt.Errorf("update run pr url: %w", err)
 	}
@@ -264,11 +266,127 @@ func (d *DB) SetRunPushActive(id string, active bool) error {
 }
 
 // UpdateRunPRState persists normalized lifecycle truth independently of logs.
+// A merged or closed PR is also the terminal outcome of the final CI monitor
+// step, so the PR observation and active-run finalization are committed in one
+// transaction. This makes the database authoritative even if execution stops
+// before the executor's ordinary follow-up completion write.
 func (d *DB) UpdateRunPRState(id, state string) error {
+	state = strings.ToLower(strings.TrimSpace(state))
 	ts := now()
-	_, err := d.sql.Exec(`UPDATE runs SET pr_state = ?, pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, state, ts, ts, id)
+	tx, err := d.sql.Begin()
 	if err != nil {
+		return fmt.Errorf("update run PR state: begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var current sql.NullString
+	if err := tx.QueryRow(`SELECT pr_state FROM runs WHERE id = ?`, id).Scan(&current); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return fmt.Errorf("update run PR state: read current state: %w", err)
+	}
+	state = monotonicPRState(current.String, state)
+	if _, err := tx.Exec(`UPDATE runs SET pr_state = ?, pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, state, ts, ts, id); err != nil {
 		return fmt.Errorf("update run PR state: %w", err)
+	}
+	if terminalPRState(state) {
+		if err := finalizeTerminalPRRun(tx, id, ts); err != nil {
+			return fmt.Errorf("update run PR state: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("update run PR state: commit: %w", err)
+	}
+	return nil
+}
+
+// ReconcileTerminalPRRuns repairs active rows written by an older or
+// interrupted daemon after terminal PR truth became durable but before the
+// separate run completion write. It is called during exclusive daemon startup
+// before parked-run planning and generic crash recovery.
+func (d *DB) ReconcileTerminalPRRuns() (int, error) {
+	ts := now()
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("reconcile terminal PR runs: begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT id FROM runs WHERE status IN (?, ?) AND pr_state IN ('merged', 'closed')`, types.RunPending, types.RunRunning)
+	if err != nil {
+		return 0, fmt.Errorf("reconcile terminal PR runs: list runs: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("reconcile terminal PR runs: scan run: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("reconcile terminal PR runs: close rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("reconcile terminal PR runs: list runs: %w", err)
+	}
+
+	for _, id := range ids {
+		if err := finalizeTerminalPRRun(tx, id, ts); err != nil {
+			return 0, fmt.Errorf("reconcile terminal PR runs: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("reconcile terminal PR runs: commit: %w", err)
+	}
+	return len(ids), nil
+}
+
+func monotonicPRState(current, observed string) string {
+	current = strings.ToLower(strings.TrimSpace(current))
+	observed = strings.ToLower(strings.TrimSpace(observed))
+	switch {
+	case current == "merged":
+		return current
+	case observed == "merged":
+		return observed
+	case current == "closed":
+		return current
+	default:
+		return observed
+	}
+}
+
+func terminalPRState(state string) bool {
+	return state == "merged" || state == "closed"
+}
+
+func finalizeTerminalPRRun(tx *sql.Tx, id string, ts int64) error {
+	if _, err := tx.Exec(
+		`UPDATE step_results SET status = ?, exit_code = COALESCE(exit_code, 0), completed_at = COALESCE(completed_at, ?),
+			last_activity_at = ?, last_activity = ?, agent_pid = NULL
+		 WHERE run_id = ? AND step_name = ? AND status IN (?, ?, ?, ?)
+		   AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND status IN (?, ?))`,
+		types.StepStatusCompleted, ts, ts, "status: completed", id, types.StepCI,
+		types.StepStatusRunning, types.StepStatusAwaitingApproval, types.StepStatusFixing, types.StepStatusFixReview,
+		id, types.RunPending, types.RunRunning,
+	); err != nil {
+		return fmt.Errorf("complete terminal CI step: %w", err)
+	}
+	if _, err := tx.Exec(
+		`UPDATE runs SET
+			status = CASE WHEN status IN (?, ?) THEN ? ELSE status END,
+			push_active = 0,
+			parked_ms = COALESCE(parked_ms, 0) + CASE
+				WHEN awaiting_agent_since IS NOT NULL AND ? > awaiting_agent_since
+				THEN (? - awaiting_agent_since) * 1000 ELSE 0 END,
+			awaiting_agent_since = NULL, updated_at = ?
+		 WHERE id = ?`,
+		types.RunPending, types.RunRunning, types.RunCompleted, ts, ts, ts, id,
+	); err != nil {
+		return fmt.Errorf("finalize terminal PR run: %w", err)
 	}
 	return nil
 }
@@ -381,7 +499,9 @@ func (d *DB) CompleteRunAwaitingAgent(id string, ms int64) error {
 		ms = 0
 	}
 	_, err := d.sql.Exec(
-		`UPDATE runs SET awaiting_agent_since = NULL, parked_ms = COALESCE(parked_ms, 0) + ?, updated_at = ? WHERE id = ?`,
+		`UPDATE runs SET awaiting_agent_since = NULL,
+			parked_ms = COALESCE(parked_ms, 0) + CASE WHEN awaiting_agent_since IS NOT NULL THEN ? ELSE 0 END,
+			updated_at = ? WHERE id = ?`,
 		ms, now(), id,
 	)
 	if err != nil {
