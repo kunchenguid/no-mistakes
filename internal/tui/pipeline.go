@@ -72,6 +72,8 @@ func runStatusStyled(status types.RunStatus) string {
 		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiGreen))
 	case types.RunFailed, types.RunCancelled:
 		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiRed))
+	case types.RunCIMonitorInterrupted:
+		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiYellow))
 	default:
 		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiBrightBlack))
 	}
@@ -312,6 +314,9 @@ func renderOutcomeBanner(run *ipc.RunInfo, steps []ipc.StepResultInfo) string {
 	case types.RunCancelled:
 		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiRed))
 		return style.Render("✗ Pipeline cancelled") + elapsed
+	case types.RunCIMonitorInterrupted:
+		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiYellow))
+		return style.Render("CI monitor interrupted") + elapsed
 	default:
 		return ""
 	}

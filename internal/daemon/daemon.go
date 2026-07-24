@@ -428,7 +428,7 @@ func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths) {
 			}
 			runID := runEntry.Name()
 			wtPath := filepath.Join(repoPath, runID)
-			if skip, reason := skipWorktreeCleanup(d, runID); skip {
+			if skip, reason := skipWorktreeCleanup(ctx, d, runID, wtPath); skip {
 				slog.Info("skipping worktree cleanup", "path", wtPath, "reason", reason)
 				continue
 			}
@@ -456,13 +456,33 @@ func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths) {
 // run row before creating the worktree directory, so on a single daemon a
 // "no matching run" directory is never one whose insert simply hasn't landed
 // yet - it is safe to remove immediately.
-func skipWorktreeCleanup(d *db.DB, runID string) (bool, string) {
+//
+// A run marked RunCIMonitorInterrupted (the daemon restarted while monitoring
+// CI for an already-open PR, issue #361) is terminal and would otherwise leak
+// its checkout on every future restart. Such a worktree is reclaimed like any
+// other terminal-run leftover EXCEPT when it may hold unpushed work: a CI
+// auto-fix commits locally before pushing (see steps/ci_fix.go), so a crash in
+// that window leaves the only copy of the fix commit in this checkout. We
+// reclaim only when the worktree HEAD equals the head the run already pushed -
+// run.HeadSHA advances solely after a verified push, so a match proves nothing
+// local is unpushed - and fail safe to preservation on any mismatch or
+// unreadable HEAD so recoverable commits are never discarded.
+func skipWorktreeCleanup(ctx context.Context, d *db.DB, runID, wtPath string) (bool, string) {
 	run, err := d.GetRun(runID)
 	if err != nil {
 		return true, fmt.Sprintf("failed to look up run %s: %v", runID, err)
 	}
 	if run != nil && (run.Status == types.RunPending || run.Status == types.RunRunning) {
 		return true, fmt.Sprintf("run %s is %s", runID, run.Status)
+	}
+	if run != nil && run.Status == types.RunCIMonitorInterrupted {
+		head, err := git.HeadSHA(ctx, wtPath)
+		if err != nil {
+			return true, fmt.Sprintf("run %s ci monitor interrupted; worktree head unreadable (%v); preserving", runID, err)
+		}
+		if strings.TrimSpace(head) != run.HeadSHA {
+			return true, fmt.Sprintf("run %s ci monitor interrupted; worktree may hold unpushed commits; preserving", runID)
+		}
 	}
 	return false, ""
 }

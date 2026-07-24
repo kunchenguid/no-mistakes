@@ -81,7 +81,7 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		runID:               run.ID,
 		subscriptionID:      1,
 		run:                 run,
-		done:                run.Status == types.RunCompleted || run.Status == types.RunFailed || run.Status == types.RunCancelled,
+		done:                run.Status.Terminal(),
 		steps:               steps,
 		stepFindings:        make(map[types.StepName]string),
 		stepDiffs:           make(map[types.StepName]string),
@@ -303,6 +303,8 @@ func (m Model) terminalTitle() string {
 			return "✗ Failed" + suffix
 		case m.run.Status == types.RunCancelled:
 			return "✗ Cancelled" + suffix
+		case m.run.Status == types.RunCIMonitorInterrupted:
+			return "CI monitor interrupted" + suffix
 		}
 	}
 
