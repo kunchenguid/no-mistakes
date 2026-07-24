@@ -321,6 +321,9 @@ func TestPushReceivedResolvesForgeProfileIntoRunContext(t *testing.T) {
 	if run := waitForRunTerminalState(t, d, result.RunID); run.Status != types.RunCompleted {
 		t.Fatalf("run status = %q, want %q", run.Status, types.RunCompleted)
 	}
+	// Terminal status is persisted before the daemon removes the run worktree.
+	// Stop the daemon first so the credential scan cannot race that cleanup.
+	shutdownTestDaemonAndWaitForCleanup(t, p)
 	if err := filepath.WalkDir(p.Root(), func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil || !entry.Type().IsRegular() {
 			return walkErr
