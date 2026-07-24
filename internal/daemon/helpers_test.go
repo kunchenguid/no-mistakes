@@ -451,3 +451,32 @@ func waitForDaemonReady(t *testing.T, p *paths.Paths) {
 	}
 	t.Fatalf("daemon at %s never became ready", p.Socket())
 }
+
+// shutdownTestDaemonAndWaitForCleanup turns daemon shutdown into a lifecycle
+// barrier for tests that inspect its filesystem. A run's terminal DB status is
+// persisted before its owner goroutine removes the worktree, while shutdown
+// waits for every run goroutine before removing the socket.
+func shutdownTestDaemonAndWaitForCleanup(t *testing.T, p *paths.Paths) {
+	t.Helper()
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatalf("dial daemon for shutdown: %v", err)
+	}
+	if err := client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil); err != nil {
+		client.Close()
+		t.Fatalf("shut down daemon: %v", err)
+	}
+	client.Close()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(p.Socket()); os.IsNotExist(err) {
+			return
+		} else if err != nil {
+			t.Fatalf("stat daemon socket during shutdown: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("daemon did not finish cleanup within 3s")
+}
