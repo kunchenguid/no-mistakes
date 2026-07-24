@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -321,6 +322,9 @@ func fakeCIGHHandler(args []string) {
 	stateErr := os.Getenv("FAKE_CLI_STATE_ERR")
 	checksJSON := os.Getenv("FAKE_CLI_CHECKS")
 	checksErr := os.Getenv("FAKE_CLI_CHECKS_ERR")
+	prChecksErr := os.Getenv("FAKE_CLI_PR_CHECKS_ERR")
+	refChecksJSON := os.Getenv("FAKE_CLI_REF_CHECKS")
+	refChecksErr := os.Getenv("FAKE_CLI_REF_CHECKS_ERR")
 	mergeable := os.Getenv("FAKE_CLI_MERGEABLE")
 	mergeableErr := os.Getenv("FAKE_CLI_MERGEABLE_ERR")
 	joined := strings.Join(args, " ")
@@ -351,7 +355,52 @@ func fakeCIGHHandler(args []string) {
 		fmt.Println(state)
 		os.Exit(0)
 	}
+	if len(args) >= 2 && args[0] == "api" && strings.Contains(args[1], "/check-runs") {
+		if refChecksErr != "" {
+			fmt.Fprintln(os.Stderr, refChecksErr)
+			os.Exit(1)
+		}
+		if refChecksJSON == "" {
+			refChecksJSON = checksJSON
+		}
+		var raw []struct {
+			Name        string `json:"name"`
+			State       string `json:"state"`
+			Bucket      string `json:"bucket"`
+			CompletedAt string `json:"completedAt"`
+		}
+		if err := json.Unmarshal([]byte(checksJSON), &raw); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		for _, check := range raw {
+			status := "completed"
+			conclusion := strings.ToLower(check.State)
+			if conclusion == "" {
+				conclusion = strings.ToLower(check.Bucket)
+			}
+			switch check.Bucket {
+			case "pass":
+				conclusion = "success"
+			case "fail":
+				conclusion = "failure"
+			case "pending":
+				status = "in_progress"
+				conclusion = ""
+			case "cancel":
+				conclusion = "cancelled"
+			case "skipping":
+				conclusion = "skipped"
+			}
+			fmt.Printf(`{"name":%q,"status":%q,"conclusion":%q,"completedAt":%q}`+"\n", check.Name, status, conclusion, check.CompletedAt)
+		}
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "pr checks") {
+		if prChecksErr != "" {
+			fmt.Fprintln(os.Stderr, prChecksErr)
+			os.Exit(1)
+		}
 		if checksErr != "" {
 			fmt.Fprintln(os.Stderr, checksErr)
 			os.Exit(1)

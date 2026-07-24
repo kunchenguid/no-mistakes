@@ -187,10 +187,11 @@ func TestTestStep_FixMode_AgentWritesNewTests_ProceedsAutomatically(t *testing.T
 // crash. Marker commands are controlled doubles: the successful counterfactual
 // proves explicit split mode runs typecheck + focused tests without launching
 // the heavy command. No daemon, fleet, credentials, or remote PR is involved.
-func TestSplitCertificationRunsTypecheckAndFocusedTestButOmitsLegacyHeavyTest(t *testing.T) {
+func TestSplitCertificationRunsUnifiedLocalFastChecksButOmitsLegacyHeavyTest(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	heavy := filepath.Join(dir, "heavy-ran")
+	linted := filepath.Join(dir, "lint-ran")
 	typechecked := filepath.Join(dir, "typecheck-ran")
 	focused := filepath.Join(dir, "focused-ran")
 	ag := &mockAgent{name: "test"}
@@ -198,7 +199,7 @@ func TestSplitCertificationRunsTypecheckAndFocusedTestButOmitsLegacyHeavyTest(t 
 	sctx.Config.Certification = config.Certification{
 		Mode: config.CertificationModeCIAuthoritative,
 		LocalFast: config.LocalFastCommands{
-			Lint:      "true",
+			Lint:      "touch " + linted,
 			Typecheck: "touch " + typechecked,
 			Test:      "touch " + focused,
 		},
@@ -212,7 +213,10 @@ func TestSplitCertificationRunsTypecheckAndFocusedTestButOmitsLegacyHeavyTest(t 
 	if outcome.NeedsApproval {
 		t.Fatalf("fast checks unexpectedly need approval: %+v", outcome)
 	}
-	for _, path := range []string{typechecked, focused} {
+	if len(ag.calls) != 0 {
+		t.Fatalf("test step invoked agent despite passing configured local-fast commands: %d call(s)", len(ag.calls))
+	}
+	for _, path := range []string{linted, typechecked, focused} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("fast command did not run (%s): %v", path, err)
 		}

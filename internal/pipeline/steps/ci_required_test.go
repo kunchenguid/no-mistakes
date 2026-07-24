@@ -33,6 +33,8 @@ func TestCIStep_CIAuthoritativeRevisionMismatchIsTerminalOnFirstObservation(t *t
 	env = append(env, "FAKE_CLI_HEAD_SHA="+driftedHead)
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	logs := []string{}
+	sctx.Log = func(s string) { logs = append(logs, s) }
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.Certification = splitCertificationConfig()
@@ -197,6 +199,44 @@ func TestCIStep_CIAuthoritativeMarksReadyOnlyForRequiredChecksOnPublishedHead(t 
 	}
 	if run.CIReadyAt == nil {
 		t.Fatal("exact-head green required check did not mark CI ready")
+	}
+}
+
+func TestCIStep_CIAuthoritativeUsesPublishedSHAChecksNotPRChecks(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env := fakeCIGH(t, "OPEN", `[{"name":"full-suite","state":"SUCCESS","bucket":"pass"}]`)
+	env = append(env,
+		"FAKE_CLI_HEAD_SHA="+headSHA,
+		"FAKE_CLI_PR_CHECKS_ERR=pr-current checks should not be used",
+	)
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.Certification = splitCertificationConfig()
+	sctx.Config.CITimeout = time.Minute
+	if err := sctx.DB.UpdateRunPushBinding(sctx.Run.ID, db.PushBinding{
+		HeadSHA: headSHA, TargetKind: "upstream", TargetFingerprint: "github:test/repo", Ref: "refs/heads/feature",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	sctx.Ctx = ctx
+	step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+		cancel()
+		return context.Canceled
+	}}
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute error = %v, want cancellation after SHA-bound check reconciliation", err)
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.CIReadyAt == nil {
+		t.Fatal("published-SHA required check did not mark CI ready")
 	}
 }
 

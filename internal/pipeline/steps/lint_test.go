@@ -12,12 +12,13 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
 
-func TestLintStep_CIAuthoritativeRunsLocalFastLintInsteadOfLegacyCommand(t *testing.T) {
+func TestLintStep_CIAuthoritativeSkipsLocalFastLintOwnedByTestStep(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	heavy := filepath.Join(dir, "heavy-lint-ran")
 	fast := filepath.Join(dir, "fast-lint-ran")
-	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{Lint: "touch " + heavy})
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Lint: "touch " + heavy})
 	sctx.Config.Certification = config.Certification{
 		Mode: config.CertificationModeCIAuthoritative,
 		LocalFast: config.LocalFastCommands{
@@ -31,14 +32,16 @@ func TestLintStep_CIAuthoritativeRunsLocalFastLintInsteadOfLegacyCommand(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome.NeedsApproval {
-		t.Fatalf("fast lint unexpectedly needs approval: %+v", outcome)
+	if !outcome.Skipped {
+		t.Fatalf("lint step outcome = %+v, want skipped because TestStep owns local-fast certification", outcome)
 	}
-	if _, err := os.Stat(fast); err != nil {
-		t.Fatalf("fast lint did not run: %v", err)
+	if len(ag.calls) != 0 {
+		t.Fatalf("lint step invoked agent in ci_authoritative mode: %d call(s)", len(ag.calls))
 	}
-	if _, err := os.Stat(heavy); !os.IsNotExist(err) {
-		t.Fatalf("legacy heavy lint ran in ci_authoritative mode: %v", err)
+	for _, path := range []string{fast, heavy} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("lint step unexpectedly touched %s: %v", path, err)
+		}
 	}
 }
 

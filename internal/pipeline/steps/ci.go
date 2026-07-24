@@ -53,6 +53,10 @@ type prHeadResolver interface {
 	GetPRHeadSHA(context.Context, *scm.PR) (string, error)
 }
 
+type refChecksResolver interface {
+	GetChecksForRef(context.Context, string) ([]scm.Check, error)
+}
+
 type requiredCheckResult struct {
 	Pending bool
 	Failing []string
@@ -99,6 +103,24 @@ func evaluateRequiredChecks(checks []scm.Check, required []string, expectedHead,
 		}
 	}
 	return result, nil
+}
+
+func checksWithNames(checks []scm.Check, names []string) []scm.Check {
+	wanted := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key != "" {
+			wanted[key] = struct{}{}
+		}
+	}
+	filtered := make([]scm.Check, 0, len(checks))
+	for _, check := range checks {
+		key := strings.ToLower(strings.TrimSpace(check.Name))
+		if _, ok := wanted[key]; ok {
+			filtered = append(filtered, check)
+		}
+	}
+	return filtered
 }
 
 // unboundPublishedRevisionError converts a CI fix that advanced the PR branch
@@ -376,42 +398,64 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 		// Check CI status - wait for all checks to complete before fixing
 		ciFixLimit := sctx.Config.AutoFix.CI
-		checks, err := host.GetChecks(ctx, pr)
-		if err != nil {
-			clearCIMonitorReady(sctx)
-			lastMonitorLog = ""
-			sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
-		} else {
-			pending := hasPendingChecks(checks)
-			failing := failingCheckNames(checks)
-			if sctx.Config.Certification.IsCIAuthoritative() {
-				resolver, ok := host.(prHeadResolver)
-				if !ok {
-					return nil, fmt.Errorf("GitHub host cannot resolve the exact PR head for ci_authoritative certification")
-				}
-				// Resolve after reading checks. If the PR advances during either
-				// request, it cannot accidentally certify the run's older SHA.
-				observedHead, headErr := resolver.GetPRHeadSHA(ctx, pr)
-				if headErr != nil {
-					clearCIMonitorReady(sctx)
-					lastMonitorLog = ""
-					sctx.Log(fmt.Sprintf("warning: could not verify CI revision: %v", headErr))
-					goto waitForPoll
-				}
-				latestRun, runErr := sctx.DB.GetRun(sctx.Run.ID)
-				if runErr != nil {
-					return nil, fmt.Errorf("load published revision binding: %w", runErr)
-				}
-				if latestRun == nil || latestRun.LastPushedSHA == nil || strings.TrimSpace(*latestRun.LastPushedSHA) == "" {
-					return nil, fmt.Errorf("ci_authoritative certification has no verified published revision binding")
-				}
-				required, requiredErr := evaluateRequiredChecks(checks, sctx.Config.Certification.RequiredChecks, *latestRun.LastPushedSHA, observedHead)
-				if requiredErr != nil {
-					return nil, requiredErr
-				}
-				pending = required.Pending
-				failing = required.Failing
+		var checks []scm.Check
+		var pending bool
+		var failing []string
+		checksReady := false
+		if sctx.Config.Certification.IsCIAuthoritative() {
+			resolver, ok := host.(prHeadResolver)
+			if !ok {
+				return nil, fmt.Errorf("GitHub host cannot resolve the exact PR head for ci_authoritative certification")
 			}
+			checkResolver, ok := host.(refChecksResolver)
+			if !ok {
+				return nil, fmt.Errorf("GitHub host cannot resolve checks for the exact published revision for ci_authoritative certification")
+			}
+			latestRun, runErr := sctx.DB.GetRun(sctx.Run.ID)
+			if runErr != nil {
+				return nil, fmt.Errorf("load published revision binding: %w", runErr)
+			}
+			if latestRun == nil || latestRun.LastPushedSHA == nil || strings.TrimSpace(*latestRun.LastPushedSHA) == "" {
+				return nil, fmt.Errorf("ci_authoritative certification has no verified published revision binding")
+			}
+			expectedHead := strings.TrimSpace(*latestRun.LastPushedSHA)
+			var err error
+			checks, err = checkResolver.GetChecksForRef(ctx, expectedHead)
+			if err != nil {
+				clearCIMonitorReady(sctx)
+				lastMonitorLog = ""
+				sctx.Log(fmt.Sprintf("warning: could not check CI for published revision: %v", err))
+				goto waitForPoll
+			}
+			observedHead, headErr := resolver.GetPRHeadSHA(ctx, pr)
+			if headErr != nil {
+				clearCIMonitorReady(sctx)
+				lastMonitorLog = ""
+				sctx.Log(fmt.Sprintf("warning: could not verify CI revision: %v", headErr))
+				goto waitForPoll
+			}
+			required, requiredErr := evaluateRequiredChecks(checks, sctx.Config.Certification.RequiredChecks, expectedHead, observedHead)
+			if requiredErr != nil {
+				return nil, requiredErr
+			}
+			pending = required.Pending
+			failing = required.Failing
+			checks = checksWithNames(checks, sctx.Config.Certification.RequiredChecks)
+			checksReady = true
+		} else {
+			var err error
+			checks, err = host.GetChecks(ctx, pr)
+			if err != nil {
+				clearCIMonitorReady(sctx)
+				lastMonitorLog = ""
+				sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
+				goto waitForPoll
+			}
+			pending = hasPendingChecks(checks)
+			failing = failingCheckNames(checks)
+			checksReady = true
+		}
+		if checksReady {
 			sort.Strings(failing)
 			hasFailures := len(failing) > 0
 			hasIssues := hasFailures || mergeConflict

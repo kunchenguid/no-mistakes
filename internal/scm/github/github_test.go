@@ -127,6 +127,30 @@ func TestGetPRHeadSHATargetsExactPR(t *testing.T) {
 	}
 }
 
+func TestGetChecksForRefTargetsCommitSHA(t *testing.T) {
+	t.Parallel()
+	const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api repos/test/repo/commits/" + sha + `/check-runs --paginate --jq .check_runs[] | {name: .name, status: .status, conclusion: .conclusion, completedAt: .completed_at}`: {
+			stdout: `{"name":"build","status":"completed","conclusion":"success","completedAt":"2026-04-24T04:15:00Z"}` + "\n" +
+				`{"name":"test","status":"in_progress","conclusion":"","completedAt":""}` + "\n",
+		},
+	}), nil, "", "test/repo")
+	checks, err := host.GetChecksForRef(context.Background(), sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checks) != 2 {
+		t.Fatalf("len(checks) = %d, want 2", len(checks))
+	}
+	if checks[0].Name != "build" || checks[0].Bucket != scm.CheckBucketPass {
+		t.Fatalf("checks[0] = %+v, want passing build", checks[0])
+	}
+	if checks[1].Name != "test" || checks[1].Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks[1] = %+v, want pending test", checks[1])
+	}
+}
+
 func TestGetPRStatePassesRepoFlag(t *testing.T) {
 	t.Parallel()
 

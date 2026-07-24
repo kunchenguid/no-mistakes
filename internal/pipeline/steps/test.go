@@ -81,6 +81,7 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 			label string
 			value string
 		}{
+			{label: "lint", value: sctx.Config.Certification.LocalFast.Lint},
 			{label: "typecheck", value: sctx.Config.Certification.LocalFast.Typecheck},
 			{label: "focused tests", value: testCmd},
 		}
