@@ -6,12 +6,55 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
+
+// copilotMaxInlinePromptWindows caps how large a prompt is passed inline via the
+// -p argument on Windows. Windows CreateProcess rejects a command line longer
+// than ~32,767 chars with "The filename or extension is too long"; the Copilot
+// CLI has no stdin prompt mode (-p - is treated as the literal prompt "-"), so a
+// prompt that would overflow the limit is instead written to a temp file that
+// the agent reads with its own tools. The cap leaves ample headroom for the
+// other managed flags and shell quoting overhead. Non-Windows platforms have a
+// far larger ARG_MAX and keep passing the prompt inline unchanged.
+const copilotMaxInlinePromptWindows = 28000
+
+// copilotPromptArg returns the value to pass to the copilot -p flag for the
+// given prompt, whether the prompt was spilled to a temp file, and a cleanup
+// func to remove that file. On Windows a prompt that would overflow the
+// command-line limit is written to a temp file and replaced with a short
+// instruction telling the agent to read that file and follow it exactly, so the
+// full text is delivered off the command line. Everywhere else the prompt is
+// returned unchanged.
+func copilotPromptArg(prompt string) (arg string, spilled bool, cleanup func(), err error) {
+	if runtime.GOOS != "windows" || len(prompt) <= copilotMaxInlinePromptWindows {
+		return prompt, false, nil, nil
+	}
+	f, err := os.CreateTemp("", "no-mistakes-copilot-prompt-*.md")
+	if err != nil {
+		return "", false, nil, err
+	}
+	name := f.Name()
+	if _, err := f.WriteString(prompt); err != nil {
+		f.Close()
+		os.Remove(name)
+		return "", false, nil, err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(name)
+		return "", false, nil, err
+	}
+	instr := "Your complete task prompt, including the required final output contract, is stored in this file:\n" +
+		name + "\n\nRead that entire file now and follow it exactly, as if its full contents had been given to you directly here. " +
+		"Base your work and your final response solely on the instructions in that file."
+	return instr, true, func() { os.Remove(name) }, nil
+}
 
 // copilotAgent spawns the GitHub Copilot CLI for each invocation. Copilot
 // runs non-interactively with `copilot -p <prompt> --output-format json`,
@@ -36,7 +79,19 @@ func (a *copilotAgent) Close() error { return nil }
 
 func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	prompt := buildCopilotPrompt(opts.Prompt, opts.JSONSchema)
-	args := a.buildArgs(prompt)
+	promptArg, spilled, cleanup, err := copilotPromptArg(prompt)
+	if err != nil {
+		return nil, fmt.Errorf("copilot prompt: %w", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	args := a.buildArgs(promptArg)
+	if spilled {
+		// The spilled prompt lives in a temp file outside the working dir, so the
+		// agent needs unrestricted path access to read it.
+		args = append(args, "--allow-all-paths")
+	}
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
