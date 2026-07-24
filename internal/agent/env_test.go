@@ -96,23 +96,28 @@ func TestGitSafeEnv_StampsGateRoleMarker(t *testing.T) {
 func TestEverySupportedAdapterPropagatesGateMarkerThroughCanonicalEnv(t *testing.T) {
 	// Native one-shot adapters own their command in the named file. OpenCode
 	// and Rovo Dev use the shared managed-server launcher, while Cursor and
-	// arbitrary ACP targets use acpx. Every route must stay on gitSafeEnv so
-	// marker propagation cannot drift adapter by adapter.
-	owners := map[string]string{
-		"claude":                          "claude.go",
-		"codex":                           "codex.go",
-		"copilot":                         "copilot.go",
-		"pi":                              "pi.go",
-		"cursor/acp":                      "acpx.go",
-		"opencode/rovodev managed server": "server.go",
+	// arbitrary ACP targets use acpx. Every route must stay on the overlay-aware
+	// canonical helper (gitSafeEnvWithOverlay, reached directly or via the
+	// subprocessContext.gitSafeEnv method) so both marker propagation and the
+	// run-scoped forge overlay cannot drift adapter by adapter.
+	owners := map[string]struct {
+		path string
+		want string
+	}{
+		"claude":                          {"claude.go", ".Env = a.gitSafeEnv("},
+		"codex":                           {"codex.go", ".Env = a.gitSafeEnv("},
+		"copilot":                         {"copilot.go", ".Env = a.gitSafeEnv("},
+		"pi":                              {"pi.go", ".Env = a.gitSafeEnv("},
+		"cursor/acp":                      {"acpx.go", ".Env = a.gitSafeEnv("},
+		"opencode/rovodev managed server": {"server.go", ".Env = gitSafeEnvWithOverlay("},
 	}
-	for adapter, path := range owners {
-		data, err := os.ReadFile(path)
+	for adapter, owner := range owners {
+		data, err := os.ReadFile(owner.path)
 		if err != nil {
-			t.Fatalf("read %s owner %s: %v", adapter, path, err)
+			t.Fatalf("read %s owner %s: %v", adapter, owner.path, err)
 		}
-		if !strings.Contains(string(data), ".Env = gitSafeEnv(") {
-			t.Errorf("%s no longer propagates the gate marker through gitSafeEnv (%s)", adapter, path)
+		if !strings.Contains(string(data), owner.want) {
+			t.Errorf("%s no longer propagates the gate marker and forge overlay through the canonical env helper (%s)", adapter, owner.path)
 		}
 	}
 }
