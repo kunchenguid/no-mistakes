@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.41.2](https://github.com/kunchenguid/no-mistakes/compare/v1.41.1...v1.41.2) (2026-07-24)
+
+
+### Bug Fixes
+
+* prevent recursive validation runs ([#567](https://github.com/kunchenguid/no-mistakes/issues/567)) ([a732435](https://github.com/kunchenguid/no-mistakes/commit/a7324354f8fd019ee359b99d82939ae7f433660f))
+
 ## [1.41.1](https://github.com/kunchenguid/no-mistakes/compare/v1.41.0...v1.41.1) (2026-07-23)
 
 
