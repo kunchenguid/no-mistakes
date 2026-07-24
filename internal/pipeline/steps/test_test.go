@@ -475,6 +475,91 @@ func TestTestStep_FixMode_TargetedVerificationContract(t *testing.T) {
 	}
 }
 
+// Under split certification the Test step reports lint-adjacent failures
+// (typecheck) and focused-test failures alike, so the repair contract must name
+// the configured local-fast commands and allow the fixer to re-run the exact
+// one that failed. A blanket static-analysis ban would forbid reproducing and
+// verifying a typecheck failure at all.
+func TestTestStep_FixMode_LocalFastContractCoversLintTypecheckAndFocusedTests(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix typecheck failure"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 1"})
+	sctx.Config.Certification = config.Certification{
+		Mode: config.CertificationModeCIAuthoritative,
+		LocalFast: config.LocalFastCommands{
+			Lint:      "npm run lint:changed",
+			Typecheck: "tsc --noEmit",
+			Test:      "npm run test:changed",
+		},
+		RequiredChecks: []string{"full-suite"},
+	}
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"id":"test-1","severity":"error","description":"typecheck failed with exit code 2","action":"auto-fix"}],"summary":"error TS2322"}`
+
+	if _, err := (&TestStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) == 0 {
+		t.Fatal("expected the local-fast repair agent to be invoked")
+	}
+	fixPrompt := ag.calls[0].Prompt
+
+	for _, want := range []string{
+		"lint `npm run lint:changed`",
+		"typecheck `tsc --noEmit`",
+		"focused tests `npm run test:changed`",
+		"re-run that same command to verify your fix, including when it is the lint or typecheck static-analysis command",
+		"Do NOT run linters, formatters, or static analysis tools other than those configured commands",
+		"Reproduce the specific failing case first",
+		"Do NOT run the complete repository test suite",
+	} {
+		if !strings.Contains(fixPrompt, want) {
+			t.Errorf("expected local-fast fixer prompt to contain %q, got:\n%s", want, fixPrompt)
+		}
+	}
+	if strings.Contains(fixPrompt, "- Do NOT run linters, formatters, or static analysis tools.") {
+		t.Errorf("local-fast fixer prompt still forbids running the configured typecheck command:\n%s", fixPrompt)
+	}
+}
+
+// The legacy repair contract must keep the blanket tooling ban: without split
+// certification the Test step never reports a lint or typecheck failure.
+func TestTestStep_FixMode_LegacyContractKeepsBlanketToolingBan(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix targeted failure"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
+	sctx.Fixing = true
+
+	if _, err := (&TestStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	fixPrompt := ag.calls[0].Prompt
+	if !strings.Contains(fixPrompt, "- Do NOT run linters, formatters, or static analysis tools.") {
+		t.Fatalf("legacy repair prompt lost the blanket tooling ban:\n%s", fixPrompt)
+	}
+	if strings.Contains(fixPrompt, "local-fast certification commands") {
+		t.Fatalf("legacy repair prompt leaked split-certification tooling rules:\n%s", fixPrompt)
+	}
+}
+
 // A driver/user instruction that asks for full-suite confirmation must still
 // be accompanied by the hard product boundary so the repair agent does not
 // treat that instruction as license to expand scope.

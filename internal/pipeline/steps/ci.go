@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -60,9 +61,20 @@ type requiredCheckResult struct {
 // evaluateRequiredChecks is deliberately fail-closed. Every configured name
 // must be present on the exact published head; skipped and cancelled checks
 // are terminal failures rather than successful completion.
+//
+// A revision mismatch is terminal on the spot rather than a state the monitor
+// waits out: the run may only certify the revision it verifiably published, and
+// a PR whose head is some other commit is outside this run's custody. Waiting
+// would either time out anyway or, worse, certify whatever the PR drifted to.
+// The pipeline never creates this divergence silently - a fix push that cannot
+// record its published revision stops the run at that point (see
+// errPublishedRevisionUnbound) - so reaching here means the PR moved out of
+// band and needs a human.
 func evaluateRequiredChecks(checks []scm.Check, required []string, expectedHead, observedHead string) (requiredCheckResult, error) {
-	if strings.TrimSpace(expectedHead) == "" || strings.TrimSpace(observedHead) == "" || !strings.EqualFold(strings.TrimSpace(expectedHead), strings.TrimSpace(observedHead)) {
-		return requiredCheckResult{}, fmt.Errorf("required CI checks belong to PR head %q, not the exact published revision %q", observedHead, expectedHead)
+	expected := strings.TrimSpace(expectedHead)
+	observed := strings.TrimSpace(observedHead)
+	if expected == "" || observed == "" || !strings.EqualFold(expected, observed) {
+		return requiredCheckResult{}, fmt.Errorf("refusing to certify: PR head %q is not this run's verified published revision %q, so its required CI checks cannot certify this run", observedHead, expectedHead)
 	}
 	byName := make(map[string][]scm.Check, len(checks))
 	for _, check := range checks {
@@ -87,6 +99,20 @@ func evaluateRequiredChecks(checks []scm.Check, required []string, expectedHead,
 		}
 	}
 	return result, nil
+}
+
+// unboundPublishedRevisionError converts a CI fix that advanced the PR branch
+// without recording its published revision into a terminal step error under
+// ci_authoritative certification. Continuing to poll would only produce the
+// revision mismatch on the next observation, one poll interval later and
+// attributed to the PR rather than to the fix push that actually caused it.
+// Legacy certification keeps the tolerant warn-and-keep-polling behavior: it
+// never compares the observed head against the binding.
+func unboundPublishedRevisionError(sctx *pipeline.StepContext, err error) error {
+	if err == nil || !sctx.Config.Certification.IsCIAuthoritative() || !errors.Is(err, errPublishedRevisionUnbound) {
+		return nil
+	}
+	return fmt.Errorf("refusing to certify: the CI fix advanced the PR branch but its published revision could not be recorded: %w", err)
 }
 
 // ReconcileApprovalGate re-checks the PR after the CI step has parked at an
@@ -431,7 +457,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					sctx.Log(fmt.Sprintf("issues detected: %s - manual fix requested...", issueDesc))
 					previousHeadSHA := sctx.Run.HeadSHA
 					pushed, err := s.autoFixCI(sctx, host, pr, failing, mergeConflict)
-					if err != nil {
+					if unbound := unboundPublishedRevisionError(sctx, err); unbound != nil {
+						return nil, unbound
+					} else if err != nil {
 						sctx.Log(fmt.Sprintf("warning: CI manual fix failed: %v", err))
 					} else if pushed || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
@@ -455,7 +483,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					sctx.Log(fmt.Sprintf("issues detected: %s - auto-fixing (attempt %d/%d)...", issueDesc, s.ciFixAttempts, ciFixLimit))
 					previousHeadSHA := sctx.Run.HeadSHA
 					pushed, err := s.autoFixCI(sctx, host, pr, failing, mergeConflict)
-					if err != nil {
+					if unbound := unboundPublishedRevisionError(sctx, err); unbound != nil {
+						return nil, unbound
+					} else if err != nil {
 						sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
 					} else if pushed || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey

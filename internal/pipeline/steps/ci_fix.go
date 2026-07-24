@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -11,6 +12,13 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
+
+// errPublishedRevisionUnbound marks the narrow window where a CI auto-fix
+// advanced the remote branch but could not record the published revision. The
+// remote head and runs.last_pushed_sha have diverged through the pipeline's own
+// action, so any later observation of the PR head is a mismatch the run can
+// never resolve by waiting. Callers must stop rather than keep polling.
+var errPublishedRevisionUnbound = errors.New("published revision binding not recorded after push")
 
 // autoFixCI runs the agent to fix CI failures and/or merge conflicts, then
 // commits and pushes to the configured push remote.
@@ -187,7 +195,7 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 	}
 	if decision.upToDate {
 		if err := persistBinding(); err != nil {
-			return false, err
+			return false, fmt.Errorf("%w: %w", errPublishedRevisionUnbound, err)
 		}
 		if _, err := stepGitRun(sctx, "update-ref", ref, newHeadSHA); err != nil {
 			return false, fmt.Errorf("update local branch ref: %w", err)
@@ -202,7 +210,7 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 		return false, fmt.Errorf("push: %w", err)
 	}
 	if err := persistBinding(); err != nil {
-		return false, err
+		return false, fmt.Errorf("%w: %w", errPublishedRevisionUnbound, err)
 	}
 
 	if _, err := stepGitRun(sctx, "update-ref", ref, newHeadSHA); err != nil {
