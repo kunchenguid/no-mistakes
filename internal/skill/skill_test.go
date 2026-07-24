@@ -88,7 +88,7 @@ func TestBodyDocumentsAxiGateGuidance(t *testing.T) {
 
 func TestInstallWritesBothPaths(t *testing.T) {
 	root := t.TempDir()
-	written, err := Install(root)
+	result, err := Install(root)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -96,12 +96,12 @@ func TestInstallWritesBothPaths(t *testing.T) {
 		filepath.Join(".claude", "skills", Name, "SKILL.md"),
 		filepath.Join(".agents", "skills", Name, "SKILL.md"),
 	}
-	if len(written) != len(wantRel) {
-		t.Fatalf("written = %v, want %v", written, wantRel)
+	if len(result.Written) != len(wantRel) {
+		t.Fatalf("written = %v, want %v", result.Written, wantRel)
 	}
 	for i, rel := range wantRel {
-		if written[i] != rel {
-			t.Errorf("written[%d] = %q, want %q", i, written[i], rel)
+		if result.Written[i] != rel {
+			t.Errorf("written[%d] = %q, want %q", i, result.Written[i], rel)
 		}
 		data, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
@@ -126,8 +126,8 @@ func TestInstallUserWritesUnderHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InstallUser: %v", err)
 	}
-	if len(written) != len(InstallBases) {
-		t.Fatalf("written = %v, want one path per base", written)
+	if len(written.Written) != len(InstallBases) {
+		t.Fatalf("written = %v, want one path per base", written.Written)
 	}
 	for _, base := range InstallBases {
 		data, err := os.ReadFile(filepath.Join(home, base, Name, "SKILL.md"))
@@ -211,13 +211,13 @@ func TestInstallSymlinkLayouts(t *testing.T) {
 			root := t.TempDir()
 			tt.setup(t, root)
 
-			written, err := Install(root)
+			result, err := Install(root)
 			if err != nil {
 				t.Fatalf("Install: %v", err)
 			}
 
 			// Every reported path must be readable with current content.
-			for _, rel := range written {
+			for _, rel := range result.Written {
 				data, err := os.ReadFile(filepath.Join(root, rel))
 				if err != nil {
 					t.Fatalf("read reported %s: %v", rel, err)
@@ -240,6 +240,64 @@ func TestInstallSymlinkLayouts(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestInstallLeavesPerSkillSymlinkTargetsUnchanged(t *testing.T) {
+	root := t.TempDir()
+	external := filepath.Join(t.TempDir(), "canonical-no-mistakes")
+	mkdirAll(t, external)
+	original := []byte("---\nname: no-mistakes\n---\nexternally managed\n")
+	if err := os.WriteFile(filepath.Join(external, "SKILL.md"), original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(external, "manager-marker")
+	if err := os.WriteFile(marker, []byte("unchanged"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mkdirAll(t, filepath.Join(root, ".claude", "skills"))
+	symlink(t, external, filepath.Join(root, ".claude", "skills", Name))
+
+	result, err := Install(root)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	wantManaged := filepath.Join(".claude", "skills", Name)
+	if len(result.Managed) != 1 || result.Managed[0] != wantManaged {
+		t.Fatalf("managed = %v, want [%s]", result.Managed, wantManaged)
+	}
+	if data, err := os.ReadFile(filepath.Join(external, "SKILL.md")); err != nil {
+		t.Fatal(err)
+	} else if string(data) != string(original) {
+		t.Fatalf("external SKILL.md changed: %q", data)
+	}
+	if data, err := os.ReadFile(marker); err != nil {
+		t.Fatal(err)
+	} else if string(data) != "unchanged" {
+		t.Fatalf("external marker changed: %q", data)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, wantManaged, "SKILL.md")); err != nil {
+		t.Fatalf("managed skill is not readable through logical path: %v", err)
+	} else if string(data) != string(original) {
+		t.Fatalf("logical managed skill content = %q", data)
+	}
+
+	// The other, real install base is still refreshed normally.
+	if data, err := os.ReadFile(filepath.Join(root, ".agents", "skills", Name, "SKILL.md")); err != nil {
+		t.Fatalf("read regular install: %v", err)
+	} else if string(data) != Markdown() {
+		t.Fatalf("regular install was not refreshed")
+	}
+}
+
+func TestInstallRejectsUnreadablePerSkillSymlink(t *testing.T) {
+	root := t.TempDir()
+	mkdirAll(t, filepath.Join(root, ".claude", "skills"))
+	symlink(t, filepath.Join(t.TempDir(), "missing"), filepath.Join(root, ".claude", "skills", Name))
+
+	if _, err := Install(root); err == nil || !strings.Contains(err.Error(), "externally managed skill") {
+		t.Fatalf("Install error = %v, want externally managed skill readability error", err)
 	}
 }
 
