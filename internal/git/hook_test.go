@@ -10,6 +10,78 @@ import (
 	"testing"
 )
 
+func TestPreReceiveHookScript(t *testing.T) {
+	script := preReceiveHookScript("/opt/No Mistakes/no-mistakes")
+	for _, want := range []string{
+		"#!/bin/sh",
+		"NM_BIN='/opt/No Mistakes/no-mistakes'",
+		"git rev-parse --absolute-git-dir",
+		"daemon admit-push --gate \"$GATE_DIR\"",
+		"gate push refused before ref mutation",
+		preservedPreReceiveHook,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("pre-receive hook missing %q", want)
+		}
+	}
+	if strings.Contains(script, "read oldrev") {
+		t.Fatal("admission wrapper must leave stdin untouched for a preserved user hook")
+	}
+	if !strings.Contains(script, "exit $status") {
+		t.Fatal("admission failure must reject the ref update")
+	}
+}
+
+func TestRefreshManagedPreReceiveHookPreservesCustomHook(t *testing.T) {
+	bare := t.TempDir()
+	hooks := filepath.Join(bare, "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	custom := []byte("#!/bin/sh\necho custom\n")
+	if err := os.WriteFile(filepath.Join(hooks, "pre-receive"), custom, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := RefreshManagedPreReceiveHook(bare)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected managed wrapper installation")
+	}
+	preserved, err := os.ReadFile(filepath.Join(hooks, preservedPreReceiveHook))
+	if err != nil {
+		t.Fatalf("read preserved hook: %v", err)
+	}
+	if string(preserved) != string(custom) {
+		t.Fatalf("preserved hook changed: %q", preserved)
+	}
+	managed, err := os.ReadFile(filepath.Join(hooks, "pre-receive"))
+	if err != nil || !isManagedPreReceiveHook(managed) {
+		t.Fatalf("managed admission hook missing: %v", err)
+	}
+}
+
+func TestGateConfigCurrentRejectsMissingOrTamperedAdmissionHook(t *testing.T) {
+	bare := t.TempDir()
+	if err := RefreshManagedGateHooks(bare); err != nil {
+		t.Fatalf("install hooks: %v", err)
+	}
+	if err := MarkGateConfigCurrent(bare); err != nil {
+		t.Fatalf("mark current: %v", err)
+	}
+	if !GateConfigCurrent(bare) {
+		t.Fatal("fresh managed admission hook should be current")
+	}
+	pre := filepath.Join(bare, "hooks", "pre-receive")
+	if err := os.WriteFile(pre, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if GateConfigCurrent(bare) {
+		t.Fatal("tampered admission hook must invalidate the gate stamp")
+	}
+}
+
 func TestPostReceiveHookScript(t *testing.T) {
 	script := postReceiveHookScript("/opt/No Mistakes/no-mistakes")
 

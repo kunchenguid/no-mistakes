@@ -98,7 +98,7 @@ func openSyncService() (*branchsync.Service, func(), error) {
 		d.Close()
 		return nil, nil, err
 	}
-	return &branchsync.Service{DB: d, Repo: repo, WorkDir: ".", GateDir: p.RepoDir(repo.ID)}, func() { _ = d.Close() }, nil
+	return &branchsync.Service{DB: d, Repo: repo, WorkDir: ".", GateDir: p.RepoDir(repo.ID), Paths: p}, func() { _ = d.Close() }, nil
 }
 
 func runHumanSync(cmd *cobra.Command, check, yes bool) error {

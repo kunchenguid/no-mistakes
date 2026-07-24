@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
+	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/lifecycle"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -34,8 +35,53 @@ func newDaemonCmd() *cobra.Command {
 	cmd.AddCommand(newDaemonRestartCmd())
 	cmd.AddCommand(newDaemonStatusCmd())
 	cmd.AddCommand(newDaemonRunCmd())
+	cmd.AddCommand(newDaemonAdmitPushCmd())
 	cmd.AddCommand(newDaemonNotifyPushCmd())
 
+	return cmd
+}
+
+func newDaemonAdmitPushCmd() *cobra.Command {
+	var gate string
+	cmd := &cobra.Command{
+		Use:    "admit-push",
+		Short:  "Authorize a managed gate ref update",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			gatePath, err := normalizeNotifyGatePath(gate)
+			if err != nil {
+				return err
+			}
+			p, err := paths.New()
+			if err != nil {
+				return err
+			}
+			client, err := ipc.Dial(p.Socket())
+			if err != nil {
+				return fmt.Errorf("connect to daemon: %w", err)
+			}
+			defer client.Close()
+			var result ipc.AdmitPushResult
+			if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath}, &result); err != nil {
+				return err
+			}
+			if !result.Context.Nested {
+				return nil
+			}
+			return emitGateContextRefusal(cmd, gatecontext.Result{
+				Nested:           result.Context.Nested,
+				ManagedGit:       result.Context.ManagedGit,
+				AgentDescendant:  result.Context.AgentDescendant,
+				DaemonDescendant: result.Context.DaemonDescendant,
+				MarkerPresent:    result.Context.MarkerPresent,
+				RunID:            result.Context.RunID,
+				Phase:            result.Context.Phase,
+			})
+		},
+	}
+	cmd.Flags().StringVar(&gate, "gate", "", "bare repo path that is about to receive a push")
+	_ = cmd.MarkFlagRequired("gate")
 	return cmd
 }
 
