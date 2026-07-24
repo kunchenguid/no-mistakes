@@ -45,8 +45,9 @@ func TestPushStep_RefusesPostReviewClobberWithoutLaterPipelineCommit(t *testing.
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, submittedHead, config.Commands{})
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
-	// This models the current in-memory run state left by the review-fix commit.
-	sctx.Run.HeadSHA = reviewedHead
+	// Let the entry guard pass so this regression continues to isolate the
+	// independent durable review-approved binding added at the push boundary.
+	sctx.Run.HeadSHA = clobberedHead
 	recordReviewApproval(t, sctx, reviewedHead)
 
 	_, err := (&PushStep{}).Execute(sctx)

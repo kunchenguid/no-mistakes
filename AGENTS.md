@@ -181,8 +181,9 @@ Safest local verification sequence after non-trivial changes:
   The full relation matrix and fail-safe rules live in the `Recover` doc comment in `internal/branchsync/sync.go`.
 - Public guidance is owned by `internal/skill/skill.go` plus live AXI strings, then regenerated with `make skill`. Core regressions live in `internal/branchsync` (incl. `recover_test.go`), `internal/cli/sync_test.go`, `internal/tui/branch_sync_test.go`, and e2e `TestAxiBranchSyncJourney` / `TestAxiCustodyRecoveryJourney`.
 
-**Review-to-Push Head Binding**
+**Post-Review Head Continuity and Push Binding**
 
+- Every step after Review in the fixed pipeline order (Test, Document, Lint, Push, PR, CI) calls `assertPipelineHeadContinuity` at entry. The helper is the single semantic owner: equal or descendant live heads continue; backward, sibling, and unverifiable heads fail before the step performs work. Regression: `TestPostReviewStepsRefuseHeadClobberAtEntry`.
 - A successfully completed full review atomically records `runs.review_approved_head_sha`; parked, failed, skipped, and legacy reviews carry no inferred authority. Push reads that durable binding, permits only the exact commit or a descendant, and pushes the verified immutable SHA rather than mutable `HEAD`. Never infer approval from `runs.head_sha`, a worktree, gate ref, or remote branch. Regressions: `TestPushStep_RefusesPostReviewClobberWithoutLaterPipelineCommit`, `TestPushStep_BindsRemoteAndDatabaseToVerifiedCommitWhenHEADMovesDuringPush`, `TestExecutor_FullRereviewReplacesApprovalWithoutAuthorizingParkedRound`.
 
 **Rebase Base & Force-Push Safety (data-loss prevention)**

@@ -8,6 +8,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -192,6 +193,107 @@ func TestCommitAgentFixes_AllowsForwardAgentCommit(t *testing.T) {
 	}
 	if _, err := git.Run(sctx.Ctx, dir, "merge-base", "--is-ancestor", forward, sctx.Run.HeadSHA); err != nil {
 		t.Fatalf("expected forward commit %s to be an ancestor of new head %s", forward, sctx.Run.HeadSHA)
+	}
+}
+
+func TestPostReviewStepsRefuseHeadClobberAtEntry(t *testing.T) {
+	postReviewSteps := []pipeline.Step{
+		&TestStep{},
+		&DocumentStep{},
+		&LintStep{},
+		&PushStep{},
+		&PRStep{},
+		&CIStep{},
+	}
+	allSteps := types.AllSteps()
+	if len(postReviewSteps) != len(allSteps)-types.StepReview.Order() {
+		t.Fatalf("covered post-review steps = %d, want %d from fixed pipeline order", len(postReviewSteps), len(allSteps)-types.StepReview.Order())
+	}
+	for i, step := range postReviewSteps {
+		want := allSteps[types.StepReview.Order()+i]
+		if step.Name() != want {
+			t.Fatalf("covered post-review step %d = %s, want %s from fixed pipeline order", i, step.Name(), want)
+		}
+	}
+
+	resetHeads := []struct {
+		name string
+		move func(t *testing.T, dir, baseSHA string) string
+	}{
+		{
+			name: "backward_reset",
+			move: func(t *testing.T, dir, baseSHA string) string {
+				gitCmd(t, dir, "reset", "--hard", baseSHA)
+				return baseSHA
+			},
+		},
+		{
+			name: "sibling_reset",
+			move: func(t *testing.T, dir, baseSHA string) string {
+				gitCmd(t, dir, "reset", "--hard", baseSHA)
+				if err := os.WriteFile(filepath.Join(dir, "sibling.txt"), []byte("out-of-band sibling\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				gitCmd(t, dir, "add", "-A")
+				gitCmd(t, dir, "commit", "-m", "out-of-band sibling")
+				return gitCmd(t, dir, "rev-parse", "HEAD")
+			},
+		},
+	}
+
+	for _, step := range postReviewSteps {
+		for _, reset := range resetHeads {
+			t.Run(string(step.Name())+"/"+reset.name, func(t *testing.T) {
+				dir, baseSHA, reviewedHead := setupGitRepo(t)
+				ag := &mockAgent{name: "codex"}
+				sctx := newTestContext(t, ag, dir, baseSHA, reviewedHead, config.Commands{})
+				clobberedHead := reset.move(t, dir, baseSHA)
+
+				_, err := step.Execute(sctx)
+				if err == nil || !strings.Contains(err.Error(), "not a descendant") {
+					t.Fatalf("%s must reject %s at entry, got %v", step.Name(), reset.name, err)
+				}
+				if len(ag.calls) != 0 {
+					t.Fatalf("%s invoked an agent before rejecting %s", step.Name(), reset.name)
+				}
+				if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != clobberedHead {
+					t.Fatalf("%s performed work before rejecting %s: HEAD moved from %s to %s", step.Name(), reset.name, clobberedHead, got)
+				}
+				if sctx.Run.HeadSHA != reviewedHead {
+					t.Fatalf("%s changed recorded reviewed head before rejecting %s: got %s, want %s", step.Name(), reset.name, sctx.Run.HeadSHA, reviewedHead)
+				}
+			})
+		}
+	}
+}
+
+func TestPostReviewStepEntryAllowsEqualAndPipelineDescendantHeads(t *testing.T) {
+	dir, baseSHA, recordedHead := setupGitRepo(t)
+	sctx := newTestContext(t, &mockAgent{name: "codex"}, dir, baseSHA, recordedHead, config.Commands{})
+	postReviewSteps := []types.StepName{
+		types.StepTest,
+		types.StepDocument,
+		types.StepLint,
+		types.StepPush,
+		types.StepPR,
+		types.StepCI,
+	}
+
+	for _, stepName := range postReviewSteps {
+		if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
+			t.Fatalf("%s rejected equal HEAD: %v", stepName, err)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "pipeline-descendant.txt"), []byte("pipeline work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "pipeline descendant")
+	for _, stepName := range postReviewSteps {
+		if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
+			t.Fatalf("%s rejected pipeline-descendant HEAD: %v", stepName, err)
+		}
 	}
 }
 

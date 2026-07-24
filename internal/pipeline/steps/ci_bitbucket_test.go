@@ -270,7 +270,9 @@ func TestCIStep_BitbucketAutoFixUsesLivePRHeadSHAForLogs(t *testing.T) {
 	api.stepLog = "error log output"
 	api.prSourceSHA = headSHA
 
-	staleHeadSHA := strings.Repeat("a", 40)
+	// Keep the recorded head stale enough to prove CI uses the live PR source,
+	// but on the valid pipeline lineage so the post-review entry guard permits it.
+	staleHeadSHA := baseSHA
 	var capturedPrompt string
 	ag := &mockAgent{
 		name: "test",

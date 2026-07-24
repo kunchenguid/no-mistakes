@@ -119,6 +119,9 @@ func (s *CIStep) gracePeriod() time.Duration {
 }
 
 func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
+		return nil, err
+	}
 	ctx := sctx.Ctx
 	if err := ctx.Err(); err != nil {
 		return nil, err

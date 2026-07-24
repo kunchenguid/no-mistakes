@@ -86,6 +86,10 @@ Follow-up review passes use the history to avoid re-reporting user-ignored findi
 
 **Default auto-fix limit:** `0`.
 
+### Post-review HEAD continuity
+
+At entry to every remaining step in the fixed pipeline order - Test, Document, Lint, Push, PR, and CI - no-mistakes compares the live worktree `HEAD` with the pipeline-recorded head. An equal head or a pipeline-descendant commit continues. A backward reset, divergent sibling, or unverifiable relationship fails the run before that step performs work, including for steps that would not create a commit.
+
 ## Test
 
 Runs **targeted** local validation of the change and requested intent, then gathers evidence for that intent.
