@@ -36,6 +36,21 @@ func TestMarkdownFrontmatter(t *testing.T) {
 	}
 }
 
+func TestBodyIncludesGeneratedGateStepGuard(t *testing.T) {
+	md := Markdown()
+	for _, want := range []string{
+		"## Active validation-step boundary",
+		"must inspect, fix, and return only its assigned phase",
+		"`error.code: nested_gate_context`",
+		"return control to the outer executor",
+		"`no-mistakes axi status`",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("installed skill guard snapshot missing %q", want)
+		}
+	}
+}
+
 func TestBodyDocumentsTaskFirstFlow(t *testing.T) {
 	md := Markdown()
 	for _, want := range []string{

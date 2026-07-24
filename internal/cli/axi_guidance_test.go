@@ -10,6 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
+	"github.com/kunchenguid/no-mistakes/internal/gateguidance"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/skill"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -145,6 +147,32 @@ func TestPipelineAgentPrerequisiteGuidance_SyncedAcrossSurfaces(t *testing.T) {
 		normalized := strings.Join(strings.Fields(content), " ")
 		if !strings.Contains(normalized, canonicalPipelineAgentPrerequisite) {
 			t.Errorf("%s is missing the canonical pipeline-agent prerequisite %q", name, canonicalPipelineAgentPrerequisite)
+		}
+	}
+}
+
+func TestGateStepBoundaryGuidance_SyncedAcrossSurfaces(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	_ = emitGateContextRefusal(cmd, gatecontext.Result{Nested: true, RunID: "run-1", Phase: types.StepDocument})
+	surfaces := map[string]string{
+		"prompt boundary": gateguidance.PromptBoundary("document"),
+		"skill body":      skill.Markdown(),
+		"agents guide":    readAgentsGuide(t),
+		"live refusal":    out.String(),
+	}
+	phrases := []string{"assigned phase", "outer executor", "push", "PR", "CI"}
+	for name, content := range surfaces {
+		for _, phrase := range phrases {
+			if !strings.Contains(content, phrase) {
+				t.Errorf("%s is missing gate-step boundary phrase %q", name, phrase)
+			}
+		}
+	}
+	for _, name := range []string{"skill body", "agents guide", "live refusal"} {
+		if !strings.Contains(surfaces[name], "nested_gate_context") {
+			t.Errorf("%s is missing structured nested-context error code", name)
 		}
 	}
 }

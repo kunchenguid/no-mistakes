@@ -14,8 +14,10 @@ validation can happen before a branch is shared.
 ```mermaid
 flowchart TD
   repo["Working repo"] -->|"git push no-mistakes"| gate["Local bare gate repo"]
-  gate --> hook["post-receive hook"]
-  hook --> daemon["Daemon"]
+  gate --> admission["pre-receive admission"]
+  admission --> hook["post-receive notification"]
+  admission --> daemon["Daemon"]
+  hook --> daemon
   daemon --> worktree["Disposable worktree"]
   worktree --> pipeline["intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci"]
   pipeline --> target["Push target"]
@@ -30,7 +32,7 @@ flowchart TD
 When you run `no-mistakes init` in a repo:
 
 1. It creates a local bare gate repo under `~/.no-mistakes/repos/<id>.git`.
-2. It installs a `post-receive` hook in that gate repo.
+2. It installs a `pre-receive` admission hook and a `post-receive` notification hook in that gate repo.
 3. It enables Git push options for the gate repo.
 4. It best-effort isolates the gate repo's hooks path from shared local Git config writes when Git supports `config --worktree`.
 5. It adds a `no-mistakes` remote to your working repo that points at the gate.
@@ -51,22 +53,24 @@ That is a core design choice, not an implementation detail.
 ## How a push flows
 
 1. You run `git push no-mistakes <branch>`.
-2. Git writes the push into the local bare gate repo, so the push itself stays fast.
-3. The gate repo's `post-receive` hook notifies the daemon.
-4. The daemon creates a detached worktree for this run.
-5. The pipeline runs in order: `intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci`.
-6. If a step pauses, you can attach with the TUI or use `no-mistakes axi respond` to approve, fix, or skip.
+2. The gate repo's `pre-receive` hook asks the daemon to admit the update before Git changes any gate ref. An active validation-step descendant is refused, including a direct push that bypasses the CLI.
+3. Git writes an admitted push into the local bare gate repo.
+4. The gate repo's `post-receive` hook notifies the daemon.
+5. The daemon creates a detached worktree for this run.
+6. The pipeline runs in order: `intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci`.
+7. If a step pauses, you can attach with the TUI or use `no-mistakes axi respond` to approve, fix, or skip.
    Use `no-mistakes axi abort` only when you mean to cancel the whole run.
    AXI run objects show `awaiting_agent: parked <duration>` while a non-terminal run is parked at that gate, so a supervising agent can distinguish a waiting run from active work in one status read.
    While a step is actively running or fixing, AXI run objects can also show `active_steps` with the active duration, latest activity, native agent PID, and current execution or fix round.
-7. After local checks pass, the push step forwards the branch to the configured push target only after verifying that the update will not discard unincorporated commits already on that target, and the PR step creates or updates the pull request.
+8. After local checks pass, the push step forwards the branch to the configured push target only after verifying that the update will not discard unincorporated commits already on that target, and the PR step creates or updates the pull request.
    For GitHub fork routing, the push target is the fork and the PR base repository is the parent from `origin`.
-8. The CI step keeps watching the open PR until it is merged, closed, or its configured idle timeout elapses with no base-branch movement, and can auto-fix failures or merge conflicts when supported.
+9. The CI step keeps watching the open PR until it is merged, closed, or its configured idle timeout elapses with no base-branch movement, and can auto-fix failures or merge conflicts when supported.
    While it watches, the TUI and terminal title surface a `Checks passed` signal once checks are green and the PR is mergeable, and `no-mistakes axi` returns `outcome: checks-passed` with instructions to summarize the run and list any pipeline fixes, so agents stop and ask you to review and merge it.
 
 **Key design decisions:**
 
 - **Named remote** - `origin` is never hijacked. You push to `no-mistakes` on purpose, so regular `git push` still works normally.
+- **Recursive-run containment** - managed gate identity and authenticated daemon peer ancestry prevent active validation steps from starting or controlling another pipeline. `NO_MISTAKES_GATE` is diagnostic evidence only, not authorization.
 - **Disposable worktrees** - each run happens in its own detached worktree under `~/.no-mistakes/worktrees/`. The daemon can safely modify files, run tests, and commit fixes without touching your working directory.
 - **Fixed pipeline** - the step order is opinionated and not configurable: `intent → rebase → review → test → document → lint → push → pr → ci`. What you _can_ configure is the commands each step runs, how many auto-fix attempts are allowed, and whether transcript-based intent extraction is used when intent is not supplied directly.
 - **Remote data-loss guard** - force-pushes are checked against the live push target and refused when they would discard commits the run did not incorporate.
@@ -80,9 +84,9 @@ not a trap door that silently rewires normal Git behavior.
 
 ### Bare gate repo
 
-The local bare repo gives Git a normal place to receive pushes. That keeps the
-push path simple and lets a standard `post-receive` hook hand work off to the
-daemon.
+The local bare repo gives Git a normal place to receive pushes. A managed
+`pre-receive` hook asks the daemon to authorize the update before any gate ref
+changes, and a `post-receive` hook hands an admitted push off to the daemon.
 
 Git operations on the gate name the bare repo explicitly with `--git-dir`
 instead of relying on working-directory discovery, so hardened environments
@@ -102,7 +106,13 @@ agent edit files, and commit fixes. Your day-to-day working tree stays clean.
 
 ## Component overview
 
-### Post-receive hook
+### Receive hooks
+
+Before Git changes a managed gate ref, the `pre-receive` hook asks the daemon
+to authorize the pushing process. The daemon refuses descendants of an active
+validation step before mutation, including direct pushes, and safely omits run
+or phase details when authenticated ancestry cannot identify them uniquely.
+An existing custom `pre-receive` hook is preserved and runs after admission.
 
 When `git push no-mistakes <branch>` lands, the bare repo's `post-receive` hook
 fires. It resolves the gate to an absolute bare-repo path using Git's own view
@@ -111,10 +121,9 @@ of the repository, falling back to the hook location if needed, then calls
 and any Git push options such as `no-mistakes.skip=test,lint`.
 For compatibility with older managed hooks, `notify-push` also normalizes
 relative gate paths before handing them to the daemon.
-The hook never blocks the push - Git ignores `post-receive` exit status, so
-pushes still succeed - but notification failures are surfaced to the pushing
-client on stderr and appended to `notify-push.log` in the bare repo for later
-inspection.
+The post-receive hook never blocks an already admitted push - Git ignores its
+exit status - but notification failures are surfaced to the pushing client on
+stderr and appended to `notify-push.log` in the bare repo for later inspection.
 
 ### Daemon
 
@@ -133,11 +142,12 @@ The installer prefers setting up the daemon as a managed background service, and
 Bare `no-mistakes` then attaches to the active run on the current branch when one exists, or routes to the setup wizard when it needs to create a new branch/run.
 If managed service install or startup is unavailable or fails, startup falls back to a detached daemon process.
 `update` resets the daemon after replacing the binary when the daemon is running or stale daemon artifacts exist.
-If pending or running pipeline runs exist, `update` refuses to restart the daemon by default and prints each active run's ID, status, branch, and short head SHA; pass `--force` to restart it anyway and accept that those runs may fail.
 If the daemon is already running from a different executable path, `update` prompts before replacing it.
-The `-y` / `--yes` flag answers that executable-path prompt non-interactively; it does not bypass the active-run `--force` guard.
 If the daemon executable path cannot be determined, `update` aborts before replacing anything.
-You can also manage it explicitly with `no-mistakes daemon start|stop|restart|status`; `daemon stop` and `daemon restart` apply the same active-run guard and `--force` override.
+You can also manage it explicitly with `no-mistakes daemon start|stop|restart|status`.
+[Daemon & Worktrees](/no-mistakes/concepts/daemon/#starting-and-stopping)
+owns the active-run guard, the scope of `--force` and `--yes`, and recursive
+validation-step containment for lifecycle commands.
 
 On startup, the daemon validates crash-recovery state before resuming work.
 [Daemon & Worktrees](/no-mistakes/concepts/daemon/#crash-recovery) owns the exact restart, parked-gate reconciliation, cleanup, and fail-closed behavior.

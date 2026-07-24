@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
@@ -125,6 +126,7 @@ type Service struct {
 	Repo    *db.Repo
 	WorkDir string
 	GateDir string
+	Paths   *paths.Paths
 
 	beforeApply              func()
 	beforeGateReset          func()
@@ -162,7 +164,7 @@ func OpenCurrent() (*Service, func(), error) {
 		database.Close()
 		return nil, nil, fmt.Errorf("repo not initialized")
 	}
-	return &Service{DB: database, Repo: repo, WorkDir: root, GateDir: p.RepoDir(repo.ID)}, func() { _ = database.Close() }, nil
+	return &Service{DB: database, Repo: repo, WorkDir: root, GateDir: p.RepoDir(repo.ID), Paths: p}, func() { _ = database.Close() }, nil
 }
 
 // TargetFingerprint returns a stable one-way identity for a credential-free,
@@ -306,11 +308,35 @@ func (s *Service) Refresh(ctx context.Context) State {
 	return state
 }
 
+func (s *Service) gateContextRefusal(ctx context.Context) (State, bool) {
+	p := s.Paths
+	if p == nil && strings.TrimSpace(s.GateDir) != "" {
+		p = paths.WithRoot(filepath.Dir(filepath.Dir(filepath.Clean(s.GateDir))))
+	}
+	if p == nil {
+		// Manually constructed services without a gate path are used by pure
+		// branch-sync callers and tests. Production entrypoints always provide
+		// Paths/GateDir and are classified before mutation.
+		return State{}, false
+	}
+	result, err := (gatecontext.Inspector{DB: s.DB, Paths: p}).Inspect(ctx, gatecontext.Request{CWD: s.workDir(), MarkerPresent: gatecontext.MarkerPresent()})
+	if err != nil {
+		return State{State: StateAmbiguousContext, Safety: "blocked_gate_context_unknown", Error: "could not verify gate execution context; no files or refs were changed"}, true
+	}
+	if !result.Nested {
+		return State{}, false
+	}
+	return State{State: StateAmbiguousContext, Safety: gatecontext.ErrorCode, Error: gatecontext.RefusalMessage(result)}, true
+}
+
 // Apply repeats remote and mutable-precondition checks, then advances the clean
 // checked-out branch to the exact pipeline-bound SHA. Ordinary behind branches
 // use a strict fast-forward. Equivalent-diverged branches first anchor the
 // pre-sync head, then move to the verified equivalent pipeline head.
 func (s *Service) Apply(ctx context.Context) State {
+	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
+		return refusal
+	}
 	plan := s.Refresh(ctx)
 	if plan.State == StateSynchronized || plan.State == StateMergedRemoteRemoved {
 		plan.Changed = false
@@ -444,6 +470,9 @@ func (s *Service) Apply(ctx context.Context) State {
 // run_pipeline as the next step. `no-mistakes rerun` remains the alternative
 // exit that resumes validating the preserved head instead of taking it back.
 func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
+	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
+		return refusal
+	}
 	state, run, _ := s.inspect(ctx)
 	if run != nil && run.CustodyReturnedAt != nil {
 		state.Recovered = true

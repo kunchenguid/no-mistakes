@@ -18,6 +18,8 @@ const (
 	MethodSubscribe      = "subscribe"
 	MethodRespond        = "respond"
 	MethodCancelRun      = "cancel_run"
+	MethodGateContext    = "gate_context"
+	MethodAdmitPush      = "admit_push"
 	MethodHealth         = "health"
 	MethodShutdown       = "shutdown"
 )
@@ -134,6 +136,19 @@ type CancelRunParams struct {
 	RunID string `json:"run_id"`
 }
 
+// GateContextParams asks the daemon to classify the authenticated caller.
+// CWD and MarkerPresent are evidence only; peer PID comes from the transport.
+type GateContextParams struct {
+	CWD           string `json:"cwd,omitempty"`
+	MarkerPresent bool   `json:"marker_present,omitempty"`
+}
+
+// AdmitPushParams asks whether a local receive hook's authenticated process
+// ancestry is allowed to mutate a managed gate ref.
+type AdmitPushParams struct {
+	Gate string `json:"gate"`
+}
+
 // HealthParams has no fields but exists for consistency.
 type HealthParams struct{}
 
@@ -175,6 +190,22 @@ type RespondResult struct {
 // CancelRunResult confirms the run cancellation request was accepted.
 type CancelRunResult struct {
 	OK bool `json:"ok"`
+}
+
+// GateContextResult is the privacy-safe execution-context classification.
+type GateContextResult struct {
+	Nested           bool           `json:"nested"`
+	ManagedGit       bool           `json:"managed_git,omitempty"`
+	AgentDescendant  bool           `json:"agent_descendant,omitempty"`
+	DaemonDescendant bool           `json:"daemon_descendant,omitempty"`
+	MarkerPresent    bool           `json:"marker_present,omitempty"`
+	RunID            string         `json:"run_id,omitempty"`
+	Phase            types.StepName `json:"phase,omitempty"`
+}
+
+// AdmitPushResult is returned before a receive hook permits ref mutation.
+type AdmitPushResult struct {
+	Context GateContextResult `json:"context"`
 }
 
 // HealthResult confirms the daemon is alive.

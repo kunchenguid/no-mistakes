@@ -18,6 +18,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/logstore"
@@ -553,8 +554,8 @@ func migrateGateConfigs(ctx context.Context, d *db.DB, p *paths.Paths) gateMigra
 }
 
 func migrateGateConfig(ctx context.Context, bareDir string) error {
-	if _, err := git.RefreshManagedPostReceiveHook(bareDir); err != nil {
-		return fmt.Errorf("refresh managed post-receive hook: %w", err)
+	if err := git.RefreshManagedGateHooks(bareDir); err != nil {
+		return fmt.Errorf("refresh managed receive hooks: %w", err)
 	}
 	if _, err := git.RunBare(ctx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
 		return fmt.Errorf("enable push options: %w", err)
@@ -573,11 +574,34 @@ func migrateGateConfig(ctx context.Context, bareDir string) error {
 }
 
 func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func()) {
+	classify := func(ctx context.Context, cwd string, markerPresent, skipManagedGit bool) (gatecontext.Result, error) {
+		return (gatecontext.Inspector{DB: d, Paths: mgr.paths}).Inspect(ctx, gatecontext.Request{
+			CWD:            cwd,
+			PeerPID:        ipc.PeerPID(ctx),
+			DaemonPID:      os.Getpid(),
+			MarkerPresent:  markerPresent,
+			SkipManagedGit: skipManagedGit,
+		})
+	}
+	refuseNested := func(ctx context.Context, skipManagedGit bool) error {
+		result, err := classify(ctx, "", false, skipManagedGit)
+		if err != nil {
+			return err
+		}
+		if result.Nested {
+			return fmt.Errorf("%s", gatecontext.RefusalMessage(result))
+		}
+		return nil
+	}
+
 	srv.Handle(ipc.MethodHealth, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
 		return &ipc.HealthResult{Status: "ok"}, nil
 	})
 
-	srv.Handle(ipc.MethodShutdown, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+	srv.Handle(ipc.MethodShutdown, func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
 		go shutdown()
 		return &ipc.ShutdownResult{OK: true}, nil
 	})
@@ -660,7 +684,37 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.GetActiveRunResult{Run: runToInfo(d, run, steps)}, nil
 	})
 
+	srv.Handle(ipc.MethodGateContext, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.GateContextParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		result, err := classify(ctx, p.CWD, p.MarkerPresent, false)
+		if err != nil {
+			return nil, err
+		}
+		return gateContextResult(result), nil
+	})
+
+	srv.Handle(ipc.MethodAdmitPush, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.AdmitPushParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		if strings.TrimSpace(p.Gate) == "" {
+			return nil, fmt.Errorf("gate path is required")
+		}
+		result, err := classify(ctx, "", false, true)
+		if err != nil {
+			return nil, err
+		}
+		return &ipc.AdmitPushResult{Context: gateContextResult(result)}, nil
+	})
+
 	srv.Handle(ipc.MethodRerun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
 		var p ipc.RerunParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
@@ -673,6 +727,11 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 	})
 
 	srv.Handle(ipc.MethodPushReceived, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		// Hooks execute in a managed bare gate by definition, so only the
+		// authenticated peer ancestry is meaningful at this ingress.
+		if err := refuseNested(ctx, true); err != nil {
+			return nil, err
+		}
 		var p ipc.PushReceivedParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
@@ -685,7 +744,10 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.PushReceivedResult{RunID: runID}, nil
 	})
 
-	srv.Handle(ipc.MethodRespond, func(_ context.Context, params json.RawMessage) (interface{}, error) {
+	srv.Handle(ipc.MethodRespond, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
 		var p ipc.RespondParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
@@ -696,7 +758,10 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.RespondResult{OK: true}, nil
 	})
 
-	srv.Handle(ipc.MethodCancelRun, func(_ context.Context, params json.RawMessage) (interface{}, error) {
+	srv.Handle(ipc.MethodCancelRun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
 		var p ipc.CancelRunParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
@@ -740,6 +805,18 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 			}
 		}, nil
 	})
+}
+
+func gateContextResult(result gatecontext.Result) ipc.GateContextResult {
+	return ipc.GateContextResult{
+		Nested:           result.Nested,
+		ManagedGit:       result.ManagedGit,
+		AgentDescendant:  result.AgentDescendant,
+		DaemonDescendant: result.DaemonDescendant,
+		MarkerPresent:    result.MarkerPresent,
+		RunID:            result.RunID,
+		Phase:            result.Phase,
+	}
 }
 
 func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {

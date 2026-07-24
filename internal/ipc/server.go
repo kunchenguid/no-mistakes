@@ -155,8 +155,12 @@ func (s *Server) handleConn(conn net.Conn) {
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 	encoder := json.NewEncoder(conn)
 
+	// Bind OS-authenticated peer identity to every request on this connection.
+	// Handlers use it for process-ancestry authorization; it is never accepted
+	// from request parameters or environment variables.
+	ctx := withPeerPID(context.Background(), authenticatedPeerPID(conn))
 	// Create a context that cancels when the server shuts down.
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	go func() {
 		select {
 		case <-s.done:
@@ -263,7 +267,7 @@ func (s *Server) dispatch(ctx context.Context, req Request) *Response {
 // still take the WARN path above.
 func readOnlyMethod(method string) bool {
 	switch method {
-	case MethodHealth, MethodGetRun, MethodGetRuns, MethodGetRunsForHead, MethodGetActiveRun:
+	case MethodHealth, MethodGetRun, MethodGetRuns, MethodGetRunsForHead, MethodGetActiveRun, MethodGateContext, MethodAdmitPush:
 		return true
 	default:
 		return false

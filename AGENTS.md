@@ -54,6 +54,11 @@ Safest local verification sequence after non-trivial changes:
 - On Windows the daemon runs console-less, so route every console child through `winproc.Harden(cmd)` (no-op elsewhere, idempotent, preserves existing creation flags) or a console window flashes per child (#287). `shellenv.ConfigureShellCommand` already calls it; one-shot commands built directly must call it themselves. Regressions: `TestHarden*` in `internal/winproc`.
 - Protect shared mutable state with the standard sync/atomic tools, and be explicit about ownership and cleanup of goroutines, worktrees, temp dirs, and channels.
 
+**Recursive Gate-Execution Containment**
+
+- `internal/gatecontext` is the single classifier for recursive pipeline control. It combines canonical registered gate common-directory identity with OS-authenticated IPC peer ancestry; `NO_MISTAKES_GATE` is diagnostic only. CLI preflight, daemon mutation ingress, gate init/eject, branch-sync mutation, and the managed pre-receive hook must all keep using that owner so marker removal, cwd changes, and direct pushes cannot bypass refusal. Read-only AXI status/logs, help, and doctor remain available. Regressions: `internal/gatecontext`, `TestGateStepCannotStartRecursivePipeline`.
+- Every pipeline agent prompt receives the phase boundary from `internal/gateguidance`, and the generated user-level skill reuses the same owner. Step agents return only their assigned phase; the outer executor alone controls other validation, push, PR, and CI phases. Edit `internal/skill/skill.go`, then run `make skill`; never edit the generated skill directly.
+
 **Filesystem and Paths**
 
 - Use `filepath.Join`; respect `NM_HOME` for app state; directories are `0o755` and files `0o644` by convention.

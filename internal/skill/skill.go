@@ -8,7 +8,11 @@
 // The CLI's axi home view reuses Description so the two never drift.
 package skill
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/kunchenguid/no-mistakes/internal/gateguidance"
+)
 
 // Name is the skill directory name and frontmatter name. It must match the
 // installed directory so the agent exposes it as the /no-mistakes command.
@@ -49,6 +53,8 @@ const body = `
 (intent, rebase, review, test, document, lint, push, PR, CI) before they reach
 the configured push target. You drive it through the ` + "`no-mistakes axi`" + ` command family, which prints
 machine-readable [TOON](https://toonformat.dev) to stdout and progress to stderr.
+
+` + gateguidance.SkillBoundary + `
 
 When the user invokes ` + "`/no-mistakes`" + `, report the outcome at the end. If the user
 asks for something specific, translate that request into the matching ` + "`axi run`" + `

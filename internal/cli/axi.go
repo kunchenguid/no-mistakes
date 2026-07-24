@@ -66,6 +66,7 @@ type axiEnv struct {
 type axiEnvOptions struct {
 	ensureDaemonConn                       bool
 	deferGlobalConfigErrorForRunningDaemon bool
+	explicitRunID                          string
 }
 
 func (e *axiEnv) close() {
@@ -113,12 +114,28 @@ func openAxiEnvWithOptions(opts axiEnvOptions) (*axiEnv, error) {
 		globalCfg = config.DefaultGlobalConfig()
 	}
 	env := &axiEnv{p: p, d: d, cfg: globalCfg, globalConfigErr: err}
-	repo, err := findRepo(d)
-	if err != nil {
-		d.Close()
-		return nil, err
+	if opts.explicitRunID != "" {
+		run, lookupErr := d.GetRun(opts.explicitRunID)
+		if lookupErr != nil {
+			d.Close()
+			return nil, fmt.Errorf("get run: %w", lookupErr)
+		}
+		if run != nil {
+			repo, repoErr := d.GetRepo(run.RepoID)
+			if repoErr != nil {
+				d.Close()
+				return nil, fmt.Errorf("get run repository: %w", repoErr)
+			}
+			env.repo = repo
+		}
+	} else {
+		repo, findErr := findRepo(d)
+		if findErr != nil {
+			d.Close()
+			return nil, findErr
+		}
+		env.repo = repo
 	}
-	env.repo = repo
 	if opts.ensureDaemonConn {
 		if err := daemon.EnsureDaemon(p); err != nil {
 			env.close()
@@ -132,6 +149,10 @@ func openAxiEnvWithOptions(opts axiEnvOptions) (*axiEnv, error) {
 		env.client = client
 	}
 	return env, nil
+}
+
+func openAxiQueryEnv(explicitRunID string) (*axiEnv, error) {
+	return openAxiEnvWithOptions(axiEnvOptions{explicitRunID: strings.TrimSpace(explicitRunID)})
 }
 
 // runAxiHome renders the content-first home view: tool identity, repo, daemon

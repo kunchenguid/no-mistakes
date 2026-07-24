@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -22,6 +23,40 @@ func TestOpenAndClose(t *testing.T) {
 	d := openTestDB(t)
 	if d == nil {
 		t.Fatal("expected non-nil db")
+	}
+}
+
+func TestOpenReadOnlyRequiresExistingDBAndDoesNotMigrate(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.sqlite")
+	if _, err := OpenReadOnly(missing); !os.IsNotExist(err) {
+		t.Fatalf("OpenReadOnly missing error = %v, want not-exist", err)
+	}
+	path := filepath.Join(t.TempDir(), "state.sqlite")
+	database, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close writable db: %v", err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readonly, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	defer readonly.Close()
+	if _, err := readonly.GetRepos(); err != nil {
+		t.Fatalf("read repos: %v", err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() != before.Size() {
+		t.Fatalf("read-only open changed DB size from %d to %d", before.Size(), after.Size())
 	}
 }
 

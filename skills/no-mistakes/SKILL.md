@@ -11,6 +11,25 @@ user-invocable: true
 the configured push target. You drive it through the `no-mistakes axi` command family, which prints
 machine-readable [TOON](https://toonformat.dev) to stdout and progress to stderr.
 
+
+## Active validation-step boundary
+
+A no-mistakes validation-step agent is already inside an active outer run. It
+must inspect, fix, and return only its assigned phase. It must never initialize,
+start, reattach, rerun, respond to, synchronize, abort, eject, or directly push
+a no-mistakes pipeline. Delivery requirements in user intent remain
+acceptance context, but the outer executor alone performs the other validation,
+push, PR, and CI phases.
+
+`NO_MISTAKES_GATE` is fast diagnostic evidence, not authorization by
+itself. The runtime combines managed Git identity with authenticated process
+ancestry. If a pipeline-control command returns
+`error.code: nested_gate_context`, stop immediately and
+return control to the outer executor. Safe inspection remains available through
+`no-mistakes axi status`, `no-mistakes axi logs`, help, and
+`no-mistakes doctor`.
+
+
 When the user invokes `/no-mistakes`, report the outcome at the end. If the user
 asks for something specific, translate that request into the matching `axi run`
 flags yourself - for example, "skip the lint step" becomes `--skip=lint`. Run

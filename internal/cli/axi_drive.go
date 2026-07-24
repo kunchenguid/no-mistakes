@@ -259,6 +259,7 @@ func inspectAxiBranchSync(ctx context.Context, env *axiEnv) branchsync.State {
 		Repo:    env.repo,
 		WorkDir: ".",
 		GateDir: env.p.RepoDir(env.repo.ID),
+		Paths:   env.p,
 	}
 	return service.InspectCached(ctx)
 }
