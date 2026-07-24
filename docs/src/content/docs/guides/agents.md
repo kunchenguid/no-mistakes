@@ -292,6 +292,8 @@ ACP aliases are first-class agent names that resolve to ACP targets.
 `agent: cursor` is the first alias: it is shorthand for the `cursor` ACP target with the default raw command `cursor-agent acp`, not a separate native backend.
 `agent: acp:cursor` uses that same default command, so either spelling works without an `acp_registry_overrides.cursor` entry.
 
+Under trusted `disable_project_settings: true`, Cursor is a verified gate-instruction neutralizer; generic `acp:<other>` targets are not. See [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings).
+
 Because aliases still run through acpx, they use `acpx_path` for the bridge binary and share the same ACP prompt and structured-output behavior as `agent: acp:<target>`.
 Unlike arbitrary `acp:<target>` entries, aliases may participate in `agent: auto` when their availability checks pass.
 The [Global Config Reference](/no-mistakes/reference/global-config/) owns ACP availability, bridge-path, command-override, and equivalent-spelling deduplication rules.

@@ -120,21 +120,21 @@ func startColdDetachedFixture(t *testing.T, gateCount int, delayedGit bool) time
 			shutdownIsolatedDaemon(t, p, pid)
 		}
 	})
-	// The caller's health response can arrive just before the daemon appends
-	// its post-health phase and ready summaries. Wait for that explicit log
-	// contract instead of racing the final writes after readiness.
-	var logData []byte
-	logDeadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(logDeadline) {
-		logData, err = os.ReadFile(p.DaemonLog())
-		if err == nil && strings.Contains(string(logData), `msg="daemon ready"`) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	// Parent readiness observes ServeReady before the child finishes its own
+	// confirmLocalIPCHealth and emits phase=ipc_health / "daemon ready". Poll
+	// so a fast parent cannot race the log assertion.
+	requiredFragments := []string{
+		"phase=environment",
+		"phase=database",
+		"phase=gate_migration",
+		fmt.Sprintf("gate_count=%d", gateCount),
+		"phase=stale_runs",
+		"phase=worktree_cleanup",
+		"phase=ipc_bind",
+		"phase=ipc_health",
+		"msg=\"daemon ready\"",
 	}
-	if err != nil {
-		t.Fatalf("read isolated daemon log: %v", err)
-	}
+	logData := waitForDaemonLogFragments(t, p.DaemonLog(), requiredFragments, 2*time.Second)
 	if evidenceDir := os.Getenv("NM_TEST_STARTUP_EVIDENCE_DIR"); evidenceDir != "" {
 		if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 			t.Fatalf("create startup evidence directory: %v", err)
@@ -145,22 +145,36 @@ func startColdDetachedFixture(t *testing.T, gateCount int, delayedGit bool) time
 		}
 		t.Logf("startup evidence: %s", evidencePath)
 	}
-	for _, fragment := range []string{
-		"phase=environment",
-		"phase=database",
-		"phase=gate_migration",
-		fmt.Sprintf("gate_count=%d", gateCount),
-		"phase=stale_runs",
-		"phase=worktree_cleanup",
-		"phase=ipc_bind",
-		"phase=ipc_health",
-		"msg=\"daemon ready\"",
-	} {
-		if !strings.Contains(string(logData), fragment) {
-			t.Fatalf("startup log with %d gates missing %q:\n%s", gateCount, fragment, logData)
-		}
-	}
 	shutdownIsolatedDaemon(t, p, pid)
 	stopped = true
 	return elapsed
+}
+
+func waitForDaemonLogFragments(t *testing.T, logPath string, fragments []string, timeout time.Duration) []byte {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last []byte
+	var lastErr error
+	for {
+		last, lastErr = os.ReadFile(logPath)
+		if lastErr == nil {
+			text := string(last)
+			missing := ""
+			for _, fragment := range fragments {
+				if !strings.Contains(text, fragment) {
+					missing = fragment
+					break
+				}
+			}
+			if missing == "" {
+				return last
+			}
+			if !time.Now().Before(deadline) {
+				t.Fatalf("startup log missing %q after %v:\n%s", missing, timeout, last)
+			}
+		} else if !time.Now().Before(deadline) {
+			t.Fatalf("read daemon log: %v", lastErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

@@ -156,8 +156,8 @@ func NeutralizesGateInstructions(a Agent) bool {
 // the target checkout does not neutralize that checkout's project
 // agent-instruction files. Callers must invoke it before launching any gate
 // agent so an unverified harness is refused with a clear error rather than run
-// unneutralized in the target checkout. Only codex and claude have a verified
-// neutralization knob today.
+// unneutralized in the target checkout. Verified harnesses today: codex, claude,
+// and cursor (acp:cursor via instruction-file quarantine).
 func EnsureGateNeutralized(a Agent) error {
 	if a == nil {
 		return fmt.Errorf("no gate agent configured")
@@ -167,9 +167,9 @@ func EnsureGateNeutralized(a Agent) error {
 	}
 	return fmt.Errorf("gate agent %q does not neutralize the target repository's project "+
 		"agent-instruction files (AGENTS.md/CLAUDE.md); refusing to launch it in the target "+
-		"checkout. Only codex and claude have a verified neutralization knob (and only when it "+
-		"is not overridden by agent_args_override); set 'agent' to codex or claude in "+
-		"~/.no-mistakes/config.yaml", a.Name())
+		"checkout. Only codex, claude, and cursor have a verified neutralization path (and only "+
+		"when it is not overridden by agent_args_override for native agents); set 'agent' to "+
+		"codex, claude, or cursor in ~/.no-mistakes/config.yaml", a.Name())
 }
 
 // LifecycleEvent describes process-level activity for an agent invocation.
@@ -248,7 +248,7 @@ type InvocationWorkload struct {
 type Options struct {
 	ACPRegistryOverrides map[string]string
 	// DisableProjectSettings, when true, asks a supported adapter (codex,
-	// claude) to launch with the target repo's project-level agent
+	// claude, cursor) to launch with the target repo's project-level agent
 	// settings/instructions suppressed. It is the resolved, trusted-only opt-out
 	// from config.Config; adapters without a verified suppression knob ignore it
 	// and are refused separately by EnsureGateNeutralized when the opt-out is on.
@@ -793,7 +793,12 @@ func New(name types.AgentName, bin string, extraArgs []string) (Agent, error) {
 func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts Options) (Agent, error) {
 	if target, ok := types.ACPTargetFor(name); ok {
 		rawCommand := types.ACPRawCommand(target, opts.ACPRegistryOverrides)
-		return &acpxAgent{bin: bin, target: target, rawCommand: rawCommand}, nil
+		return &acpxAgent{
+			bin:                    bin,
+			target:                 target,
+			rawCommand:             rawCommand,
+			disableProjectSettings: opts.DisableProjectSettings,
+		}, nil
 	}
 	switch name {
 	case types.AgentClaude:
