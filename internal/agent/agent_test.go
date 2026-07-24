@@ -62,7 +62,7 @@ func TestNewWithOptions_ACPRegistryOverride(t *testing.T) {
 	if !ok {
 		t.Fatalf("agent type = %T, want *acpxAgent", a)
 	}
-	args := acpx.buildArgs(RunOpts{Prompt: "do work", CWD: "/repo"})
+	args := acpx.buildArgs(RunOpts{Prompt: "do work", CWD: "/repo"}, "/tmp/prompt.txt")
 	joined := strings.Join(args, "\x00")
 	if !strings.Contains(joined, "--agent\x00node /tmp/mock-acp.mjs") {
 		t.Fatalf("args = %q, want raw --agent override", args)
@@ -150,10 +150,11 @@ func TestACPAliasBlankRegistryOverrideUsesDefaultCommand(t *testing.T) {
 
 func TestACPAgentBuildArgsUsesExecMode(t *testing.T) {
 	a := &acpxAgent{target: "gemini"}
-	args := a.buildArgs(RunOpts{Prompt: "do work"})
+	args := a.buildArgs(RunOpts{Prompt: "do work"}, "/tmp/prompt.txt")
 
-	if got, want := args[len(args)-3:], []string{"gemini", "exec", "do work"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("trailing args = %q, want %q", got, want)
+	// Trailing args should be: ... gemini exec -f /tmp/prompt.txt
+	if got, want := args[len(args)-4:], []string{"gemini", "exec", "-f", "/tmp/prompt.txt"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("trailing args[-4:] = %q, want %q", got, want)
 	}
 }
 
@@ -258,7 +259,17 @@ func TestACPAgentRunParsesAcpxJSONOutput(t *testing.T) {
 	argLog := filepath.Join(dir, "args.txt")
 	t.Setenv("ARG_LOG", argLog)
 	contents := `#!/bin/sh
+# Log all CLI args.
 printf '%s\n' "$@" > "$ARG_LOG"
+# Also log the prompt file content (the arg after -f) so we can assert on it.
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-f" ]; then
+    cat "$arg" >> "$ARG_LOG"
+    break
+  fi
+  prev="$arg"
+done
 printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":123,"size":1000}}}'
 printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"done\":true}"}}}}'
 `
@@ -298,7 +309,9 @@ printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"s
 		t.Fatalf("read args: %v", err)
 	}
 	argsText := string(argsData)
-	for _, want := range []string{"--cwd\n" + dir, "--format\njson", "--json-strict", "gemini", "do work"} {
+	// The prompt is now written to a temp file and passed via -f; the file
+	// content is also appended to ARG_LOG by the test script above.
+	for _, want := range []string{"--cwd\n" + dir, "--format\njson", "--json-strict", "gemini", "-f", "do work"} {
 		if !strings.Contains(argsText, want) {
 			t.Errorf("args missing %q in:\n%s", want, argsText)
 		}
