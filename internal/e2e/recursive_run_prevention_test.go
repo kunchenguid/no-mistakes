@@ -23,16 +23,33 @@ import (
 // and a direct gate push. Every attempt must fail before creating a repo, run,
 // remote, worktree, or gate ref.
 func TestGateStepCannotStartRecursivePipeline(t *testing.T) {
-	for _, agentName := range []string{"claude", "codex", "opencode"} {
-		t.Run(agentName, func(t *testing.T) {
-			runRecursiveIncident(t, agentName)
+	adapters := []struct {
+		name          string
+		agent         string
+		executable    string
+		expectedPhase string
+		completes     bool
+	}{
+		{name: "claude", agent: "claude", executable: "claude", expectedPhase: "document", completes: true},
+		{name: "codex", agent: "codex", executable: "codex", expectedPhase: "document", completes: true},
+		{name: "rovodev", agent: "rovodev", executable: "rovodev", expectedPhase: "review"},
+		{name: "opencode", agent: "opencode", executable: "opencode", expectedPhase: "review", completes: true},
+		{name: "pi", agent: "pi", executable: "pi", expectedPhase: "review"},
+		{name: "copilot", agent: "copilot", executable: "copilot", expectedPhase: "review"},
+		{name: "cursor", agent: "cursor", executable: "acpx", expectedPhase: "review"},
+		{name: "explicit-acp", agent: "acp:fixture", executable: "acpx", expectedPhase: "review"},
+	}
+	for _, adapter := range adapters {
+		t.Run(adapter.name, func(t *testing.T) {
+			runRecursiveIncident(t, adapter.agent, adapter.executable, adapter.expectedPhase, adapter.completes)
 		})
 	}
 }
 
-func runRecursiveIncident(t *testing.T, agentName string) {
+func runRecursiveIncident(t *testing.T, agentName, executable, expectedPhase string, completes bool) {
 	h := NewHarness(t, SetupOpts{Agent: agentName, Scenario: cleanReviewScenario(t)})
-	installRecursiveIncidentAgent(t, h, agentName)
+	installRecursiveIncidentAgent(t, h, agentName, executable, completes)
+	configureRecursiveIncidentAdapter(t, h, agentName, executable)
 
 	descendantRepo := filepath.Join(t.TempDir(), "independent-clone")
 	if out, err := h.runGit(context.Background(), t.TempDir(), "clone", h.UpstreamDir, descendantRepo); err != nil {
@@ -53,8 +70,12 @@ func runRecursiveIncident(t *testing.T, agentName string) {
 	h.CommitChange("feature/recursive-incident", "incident.txt", "reproduce recursive run\n", "reproduce recursive run")
 	h.PushToGate("feature/recursive-incident")
 	outer := h.WaitForRun("feature/recursive-incident", 90*time.Second)
-	if outer.Status != types.RunCompleted {
-		t.Fatalf("outer run status = %s, want completed (error=%v)", outer.Status, outer.Error)
+	expectedStatus := types.RunFailed
+	if completes {
+		expectedStatus = types.RunCompleted
+	}
+	if outer.Status != expectedStatus {
+		t.Fatalf("outer run status = %s, want %s (error=%v)", outer.Status, expectedStatus, outer.Error)
 	}
 
 	attempts, err := os.ReadFile(attemptLog)
@@ -93,10 +114,6 @@ func runRecursiveIncident(t *testing.T, agentName string) {
 	}
 	if got := strings.Count(output, "code: nested_gate_context"); got < 14 {
 		t.Fatalf("structured refusals = %d, want at least 14:\n%s", got, output)
-	}
-	expectedPhase := "document"
-	if agentName == "opencode" {
-		expectedPhase = "review"
 	}
 	for _, want := range []string{
 		outer.ID,
@@ -168,7 +185,7 @@ func incidentAttemptSection(output, label string) string {
 	return rest
 }
 
-func installRecursiveIncidentAgent(t *testing.T, h *Harness, agentName string) {
+func installRecursiveIncidentAgent(t *testing.T, h *Harness, agentName, executable string, completes bool) {
 	t.Helper()
 	if err := os.Symlink(h.NMBin, filepath.Join(h.BinDir, "no-mistakes")); err != nil {
 		t.Fatalf("symlink no-mistakes: %v", err)
@@ -177,23 +194,37 @@ func installRecursiveIncidentAgent(t *testing.T, h *Harness, agentName string) {
 	if err := os.MkdirAll(realDir, 0o755); err != nil {
 		t.Fatalf("mkdir real agent dir: %v", err)
 	}
-	if err := os.Symlink(h.FakeAgent, filepath.Join(realDir, agentName)); err != nil {
-		t.Fatalf("symlink real %s fake: %v", agentName, err)
+	if err := os.Symlink(h.FakeAgent, filepath.Join(realDir, executable)); err != nil {
+		t.Fatalf("symlink real %s fake: %v", executable, err)
 	}
-	wrapper := filepath.Join(h.BinDir, agentName)
-	if err := os.Remove(wrapper); err != nil {
-		t.Fatalf("remove %s symlink: %v", agentName, err)
+	wrapper := filepath.Join(h.BinDir, executable)
+	if err := os.Remove(wrapper); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove %s symlink: %v", executable, err)
 	}
 	promptSource := `prompt="$*"`
-	execAgent := fmt.Sprintf(`exec %s "$@"`, shellQuote(filepath.Join(realDir, agentName)))
+	execAgent := `exit 1`
+	probeGuard := ""
+	if completes {
+		execAgent = fmt.Sprintf(`exec %s "$@"`, shellQuote(filepath.Join(realDir, executable)))
+	}
 	switch agentName {
 	case "claude":
 		promptSource = `prompt=$(cat)`
-		execAgent = fmt.Sprintf(`printf '%%s' "$prompt" | exec %s "$@"`, shellQuote(filepath.Join(realDir, agentName)))
+		execAgent = fmt.Sprintf(`printf '%%s' "$prompt" | exec %s "$@"`, shellQuote(filepath.Join(realDir, executable)))
 	case "opencode":
 		promptSource = `prompt="combined documentation and lint housekeeping pass"`
+	case "rovodev":
+		probeGuard = `case "$*" in
+  "rovodev --help") exit 0 ;;
+esac`
+		promptSource = `prompt="combined documentation and lint housekeeping pass"`
+	default:
+		if !completes {
+			promptSource = `prompt="combined documentation and lint housekeeping pass"`
+		}
 	}
 	script := fmt.Sprintf(`#!/bin/sh
+%s
 %s
 case "$prompt" in
   *"combined documentation and lint housekeeping pass"*)
@@ -236,8 +267,34 @@ case "$prompt" in
     ;;
 esac
 %s
-`, promptSource, execAgent)
+`, probeGuard, promptSource, execAgent)
 	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
 		t.Fatalf("write recursive incident agent: %v", err)
+	}
+}
+
+func configureRecursiveIncidentAdapter(t *testing.T, h *Harness, agentName, executable string) {
+	t.Helper()
+	if executable != "acpx" {
+		return
+	}
+	if agentName == "cursor" {
+		if err := os.Symlink(h.FakeAgent, filepath.Join(h.BinDir, "cursor-agent")); err != nil {
+			t.Fatalf("symlink cursor agent: %v", err)
+		}
+	}
+	config := fmt.Sprintf(`agent: %s
+log_level: debug
+acpx_path: %s
+auto_fix:
+  rebase: 0
+  lint: 0
+  test: 0
+  review: 0
+  document: 0
+  ci: 0
+`, agentName, filepath.Join(h.BinDir, executable))
+	if err := os.WriteFile(filepath.Join(h.NMHome, "config.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatalf("write %s config: %v", agentName, err)
 	}
 }
