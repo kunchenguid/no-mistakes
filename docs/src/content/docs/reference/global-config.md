@@ -210,7 +210,57 @@ agent_args_override:
     - google
 ```
 
-For Codex, `service_tier` and `model_reasoning_effort` tune different things: `service_tier` selects the speed or priority lane, while `model_reasoning_effort` selects reasoning depth. no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
+For Codex, `service_tier` and `model_reasoning_effort` tune different things: `service_tier` selects the speed or priority lane, while `model_reasoning_effort` selects reasoning depth. no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. To vary the profile per pipeline step within one run, use [`agent_args_override_per_step`](#agent_args_override_per_step).
+
+### agent_args_override_per_step
+
+Per-pipeline-step agent flag profiles.
+Use this to pay for a strong model where the work is hard, such as review, while cheap housekeeping steps such as document and lint run on a small one.
+
+|         |                                                          |
+| ------- | -------------------------------------------------------- |
+| Type    | `map[string]map[string][]string` (step -> agent -> flags) |
+| Steps   | `intent`, `rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, `ci` |
+| Agents  | `claude`, `codex`, `pi`, `copilot`                        |
+| Default | Empty (every step uses `agent_args_override`)             |
+
+A listed step and agent **replaces** that agent's `agent_args_override` entry for the duration of that step; it is not appended to it, so each profile must list every flag that step needs.
+Steps that are not listed, and agents that a listed step does not name, keep their global `agent_args_override` flags.
+That per-agent keying matters when several `agent` values are configured as a fallback chain: a profile for `codex` does not leak onto a `claude` fallback invocation.
+
+Only agents whose command line is rebuilt on every invocation are accepted.
+`rovodev` and `opencode` start one persistent server per run and fix their flags there, and ACP targets ignore extra flags entirely, so naming them here is a config error rather than a silently ignored setting.
+
+The reserved-flag rules from [`agent_args_override`](#agent_args_override) apply unchanged.
+Two more flags are rejected here because they participate in the [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings) security boundary, which the daemon verifies once per run against the global flags: `--setting-sources` for `claude` and `project_doc_max_bytes` for `codex`.
+Set those in `agent_args_override` instead.
+
+Example:
+
+```yaml
+agent_args_override:
+  codex:
+    - -m
+    - gpt-5.4-mini
+
+agent_args_override_per_step:
+  review:
+    codex:
+      - -m
+      - gpt-5.4
+      - -c
+      - model_reasoning_effort="high"
+  test:
+    codex:
+      - -m
+      - gpt-5.4
+  document:
+    codex:
+      - -m
+      - gpt-5.4-mini
+```
+
+In that example review and test run on the strong profile, document runs on the cheap one, and every other step falls back to the global `gpt-5.4-mini`.
 
 ### ci_timeout
 

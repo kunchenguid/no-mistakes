@@ -64,7 +64,23 @@ func (a *claudeAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	})
 }
 
+// withStepArgs returns the adapter to build this invocation's argv from: the
+// receiver, or a copy carrying the per-step arg profile (see
+// RunOpts.StepArgsOverride). The adapter is an immutable value holder, so the
+// copy keeps every extraArgs-derived decision in buildArgs consistent with the
+// args actually passed, without threading a parameter through each helper.
+func (a *claudeAgent) withStepArgs(opts RunOpts) *claudeAgent {
+	args := opts.resolveExtraArgs("claude", a.extraArgs)
+	if sameArgs(args, a.extraArgs) {
+		return a
+	}
+	next := *a
+	next.extraArgs = args
+	return &next
+}
+
 func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+	a = a.withStepArgs(opts)
 	resumeID := ""
 	if opts.Session != nil {
 		resumeID = opts.Session.ID

@@ -671,6 +671,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 
 	stepAgent := e.agent
 	if stepAgent != nil {
+		if stepArgs := e.config.AgentArgsForStep(stepName); len(stepArgs) > 0 {
+			stepAgent = &stepArgsAgent{inner: stepAgent, args: stepArgs}
+		}
 		stepAgent = &gateStepBoundaryAgent{inner: stepAgent, phase: stepName}
 		stepAgent = &lifecycleAgent{inner: stepAgent, onLifecycle: onAgentLifecycle}
 		stepAgent = &perfRecordingAgent{
@@ -984,6 +987,42 @@ func roundInsertID(_ string, inserted *db.StepRound, err error) string {
 		return ""
 	}
 	return inserted.ID
+}
+
+// stepArgsAgent applies the operator's per-step agent flag profile (global
+// config agent_args_override_per_step) to every invocation made by one step, so
+// an expensive step such as review can run on a strong model while cheap
+// housekeeping steps run on a small one. The map is keyed by agent name and
+// each adapter picks out its own entry, so a fallback provider the profile does
+// not name keeps its globally configured args.
+type stepArgsAgent struct {
+	inner agent.Agent
+	args  map[string][]string
+}
+
+func (a *stepArgsAgent) Name() string { return a.inner.Name() }
+
+func (a *stepArgsAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	opts.StepArgsOverride = a.args
+	return a.inner.Run(ctx, opts)
+}
+
+func (a *stepArgsAgent) Close() error { return a.inner.Close() }
+
+func (a *stepArgsAgent) SupportsSessionResume() bool {
+	return agent.SupportsSessionResume(a.inner)
+}
+
+func (a *stepArgsAgent) SupportsSessionProvider(provider string) bool {
+	return agent.SupportsSessionProvider(a.inner, provider)
+}
+
+func (a *stepArgsAgent) ReportsAgentAttempts() bool {
+	return agent.ReportsAgentAttempts(a.inner)
+}
+
+func (a *stepArgsAgent) NeutralizesGateInstructions() bool {
+	return agent.NeutralizesGateInstructions(a.inner)
 }
 
 type gateStepBoundaryAgent struct {

@@ -57,7 +57,22 @@ func (a *codexAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	})
 }
 
+// withStepArgs returns the adapter to build this invocation's argv from: the
+// receiver, or a copy carrying the per-step arg profile (see
+// RunOpts.StepArgsOverride). See the claude adapter's withStepArgs for why a
+// copy is used instead of a buildArgs parameter.
+func (a *codexAgent) withStepArgs(opts RunOpts) *codexAgent {
+	args := opts.resolveExtraArgs("codex", a.extraArgs)
+	if sameArgs(args, a.extraArgs) {
+		return a
+	}
+	next := *a
+	next.extraArgs = args
+	return &next
+}
+
 func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+	a = a.withStepArgs(opts)
 	schemaPath := ""
 	validationSchema := opts.JSONSchema
 	if len(opts.JSONSchema) > 0 {
