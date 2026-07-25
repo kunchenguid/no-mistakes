@@ -19,13 +19,46 @@ type acpxAgent struct {
 	bin        string
 	target     string
 	rawCommand string
+	// disableProjectSettings is the resolved, trusted-only opt-out. When true
+	// and this agent is Cursor, Run quarantines Cursor's auto-loaded project
+	// instruction surfaces for the duration of the invocation.
+	disableProjectSettings bool
 }
 
 func (a *acpxAgent) Name() string { return "acp:" + a.target }
 
 func (a *acpxAgent) ReportsAgentAttempts() bool { return true }
 
-func (a *acpxAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
+// NeutralizesGateInstructions reports whether this ACP agent suppresses the
+// target repo's project agent-instruction files during a gate run. Only Cursor
+// (cursor / acp:cursor) has a verified neutralization path today: managed
+// quarantine of AGENTS.md, CLAUDE.md, and .cursor/rules while the opt-out is
+// on. Generic acp:<other> targets always report false. Honest when the opt-out
+// is off: false even for Cursor.
+func (a *acpxAgent) NeutralizesGateInstructions() bool {
+	return a.disableProjectSettings && isCursorGateTarget(a.target)
+}
+
+func (a *acpxAgent) shouldQuarantineCursorInstructions() bool {
+	return a.NeutralizesGateInstructions()
+}
+
+func (a *acpxAgent) Run(ctx context.Context, opts RunOpts) (res *Result, err error) {
+	if a.shouldQuarantineCursorInstructions() {
+		q, qerr := beginCursorInstructionQuarantine(opts.CWD)
+		if qerr != nil {
+			return nil, fmt.Errorf("cursor gate instruction quarantine: %w", qerr)
+		}
+		defer func() {
+			if rerr := q.Restore(); rerr != nil {
+				if err != nil {
+					err = fmt.Errorf("%w (also restore quarantine: %v)", err, rerr)
+				} else {
+					err = fmt.Errorf("restore cursor gate instruction quarantine: %w", rerr)
+				}
+			}
+		}()
+	}
 	return runWithRetry(ctx, a.Name(), opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
 		return a.runOnce(ctx, opts)
 	})
