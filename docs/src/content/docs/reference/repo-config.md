@@ -119,11 +119,12 @@ Suppress project-level agent settings and instructions for every gate-agent star
 
 This opt-in is intended for agent-orchestration repositories whose `AGENTS.md`, `CLAUDE.md`, or harness-specific project settings would give a validation agent an operator identity and authority that it must not adopt.
 When enabled, no-mistakes suppresses the target checkout's project settings for every agent-driven gate step while preserving user-level agent configuration.
-Codex and Claude are the currently verified agents: Codex receives `project_doc_max_bytes=0` and `--ignore-rules`, while Claude loads only its user setting source.
+Codex, Claude, and OpenCode are the currently verified agents: Codex receives `project_doc_max_bytes=0` and `--ignore-rules`, Claude loads only its user setting source, and OpenCode is launched with `--no-project-instructions` and `--pure` (which require an OpenCode binary that supports the `--no-project-instructions` serve flag; an older binary is rejected with an upgrade diagnostic).
 The setting applies to both new and resumed sessions.
 
 The gate fails before launching an agent if any resolved agent or fallback lacks a verified suppression mechanism.
 It also fails if `agent_args_override` defeats suppression, such as a nonzero Codex `project_doc_max_bytes` or Claude setting sources that include `project` or `local`.
+OpenCode's managed flags are appended last so yargs last-wins enforces them, so `agent_args_override` cannot defeat its suppression.
 When this option is `false`, missing, or `null`, all agents retain their existing project-setting behavior.
 
 This field is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`.
