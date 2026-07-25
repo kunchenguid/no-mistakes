@@ -165,6 +165,7 @@ func doctorAgentChecks() []doctorAgentCheck {
 		{"rovodev", []string{"acli"}},
 		{"opencode", []string{"opencode"}},
 		{"pi", []string{"pi"}},
+		{"omp", []string{"omp"}},
 		{"copilot", []string{"copilot"}},
 		{"acpx", []string{"acpx"}},
 	}

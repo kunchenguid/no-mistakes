@@ -10,6 +10,7 @@ func AllReaders(disabled map[string]bool) []Reader {
 		NewOpenCodeReader(),
 		NewRovoDevReader(),
 		NewPiReader(),
+		NewOMPReader(),
 		NewCopilotReader(),
 	}
 	if len(disabled) == 0 {

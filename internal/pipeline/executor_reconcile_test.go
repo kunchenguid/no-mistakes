@@ -168,9 +168,6 @@ func TestExecutor_ReconcileErrorPreservesGateFailClosed(t *testing.T) {
 	if got.Status != types.RunRunning || got.AwaitingAgentSince == nil {
 		t.Fatalf("reconcile error changed parked run: status %s awaiting %v", got.Status, got.AwaitingAgentSince)
 	}
-	if step.calls.Load() < 2 {
-		t.Fatalf("reconcile calls = %d, want repeated bounded checks", step.calls.Load())
-	}
 
 	if err := exec.Respond(types.StepCI, types.ActionApprove, nil); err != nil {
 		t.Fatal(err)

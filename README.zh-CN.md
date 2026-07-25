@@ -38,7 +38,7 @@
 把分支推给 `no-mistakes` 而不是 `origin`，它会拉起一个用完即弃的 worktree，跑一条 AI 驱动的校验流水线，**只有每一项检查都通过后**才把分支转发到配置的推送目标，并自动开出一个干净的 PR。
 
 - **不阻塞** —— 流水线在隔离的 worktree 里跑，不打断你手头的工作。
-- **不挑 agent** —— 支持 `claude`、`codex`、`rovodev`、`opencode`、`pi`、`copilot`，也可通过 `acpx` 使用 `cursor` / `acp:<target>`，并支持有序 fallback。
+- **不挑 agent** —— 支持 `claude`、`codex`、`rovodev`、`opencode`、`pi`、`omp`、`copilot`，也可通过 `acpx` 使用 `cursor` / `acp:<target>`，并支持有序 fallback。
 - **agent 原生** —— `/no-mistakes` 既能让编码 agent 完成一个任务再过网关，也能直接为已提交的工作过网关：它跑完流水线、让流水线应用安全的修复，剩下的升级给你。
 - **人始终说了算** —— 自动修复，还是逐条审查 findings，你决定。
 - **默认就是干净 PR** —— 推送、开 PR、盯 CI、自动修复失败，一气呵成。

@@ -47,7 +47,7 @@ make install
 ## Prerequisites
 
 - **git** - required
-- **One supported agent runner** - `claude`, `codex`, `acli` (Rovo Dev), `opencode`, `pi`, or `copilot`, or a configured Cursor/ACP runner such as `agent: cursor`; see [Global Config](/no-mistakes/reference/global-config/) for ACP requirements
+- **One supported agent runner** - `claude`, `codex`, `acli` (Rovo Dev), `opencode`, `pi`, `omp` (Oh My Pi), or `copilot`, or a configured Cursor/ACP runner such as `agent: cursor`; see [Global Config](/no-mistakes/reference/global-config/) for ACP requirements
 - **Optional, for PRs and CI:**
   - `gh` CLI (GitHub)
   - `glab` CLI (GitLab)

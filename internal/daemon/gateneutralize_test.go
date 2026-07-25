@@ -36,7 +36,7 @@ func TestNewPipelineAgent_OptOut_AdmitsVerifiedHarness(t *testing.T) {
 // verified neutralization knob is refused rather than launched with project
 // instructions loaded.
 func TestNewPipelineAgent_OptOut_RefusesUnverifiedHarness(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentOpenCode, types.AgentPi, types.AgentCopilot} {
+	for _, name := range []types.AgentName{types.AgentOpenCode, types.AgentPi, types.AgentOMP, types.AgentCopilot} {
 		cfg := &config.Config{Agent: name, DisableProjectSettings: true}
 		if _, err := newPipelineAgent(context.Background(), cfg, fakeLookPath); err == nil {
 			t.Fatalf("%s must be refused under opt-out", name)
@@ -53,7 +53,7 @@ func TestNewPipelineAgent_NoOptOut_AdmitsEveryHarness(t *testing.T) {
 	// rovodev is omitted: its resolution runs a real version probe that a fake
 	// binary path cannot satisfy. opencode/pi/copilot already prove that an
 	// unverified adapter is admitted when the repo did not opt out.
-	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentOpenCode, types.AgentPi, types.AgentCopilot} {
+	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentOpenCode, types.AgentPi, types.AgentOMP, types.AgentCopilot} {
 		cfg := &config.Config{Agent: name} // DisableProjectSettings defaults false
 		ag, err := newPipelineAgent(context.Background(), cfg, fakeLookPath)
 		if err != nil {

@@ -46,6 +46,7 @@ By default that directory is temporary and local to the machine; repos can opt i
 | Rovo Dev | `acli` | Persistent HTTP server, SSE streaming |
 | OpenCode | `opencode` | Persistent HTTP server, SSE streaming |
 | Pi | `pi` | Subprocess per invocation, JSONL events |
+| OMP (Oh My Pi) | `omp` | Subprocess per invocation, JSONL events (Pi fork) |
 | Copilot | `copilot` | Subprocess per invocation, JSONL events |
 | Cursor | `cursor-agent` + `acpx` | `cursor-agent acp` through the ACP bridge |
 | ACP target | `acpx` | Optional user-installed ACP bridge |
@@ -235,11 +236,11 @@ Transient API and network failures are retried up to three times with exponentia
 
 When an agent starts a run through `no-mistakes axi run --intent`, no-mistakes uses that supplied intent verbatim as authoritative acceptance criteria and skips transcript-based inference, even if `intent.enabled` is false.
 Review checks the diff against those criteria, and a change that removes required behavior or adds forbidden behavior becomes an `ask-user` finding instead of being resolved automatically.
-Otherwise, when `intent.enabled` is true, no-mistakes reads recent local transcripts from Claude Code, Codex, OpenCode, Rovo Dev, Pi, and the GitHub Copilot CLI during the `intent` pipeline step.
+Otherwise, when `intent.enabled` is true, no-mistakes reads recent local transcripts from Claude Code, Codex, OpenCode, Rovo Dev, Pi, OMP, and the GitHub Copilot CLI during the `intent` pipeline step.
 It matches sessions against non-deleted changed files when present, falls back to all changed files for all-deletion diffs, summarizes the likely author intent with the configured pipeline agent, includes that summary as an untrusted, low-confidence hint in rebase fixes, review checks and fixes, test detection, evidence validation, and fixes, lint detection and fixes, documentation checks and fixes, CI auto-fixes, and PR prompts, and renders it in generated PR descriptions.
 
 Transcript readers collect user and assistant text messages but exclude tool call output.
-They read Claude Code transcripts from `~/.claude/projects`, Codex metadata from `~/.codex/state_*.sqlite` plus referenced rollout files, OpenCode messages from `$XDG_DATA_HOME/opencode/opencode.db` or `~/.local/share/opencode/opencode.db`, Rovo Dev sessions from `~/.rovodev/sessions`, Pi transcripts from `~/.pi/agent/sessions`, and GitHub Copilot CLI sessions from `~/.copilot/session-state`.
+They read Claude Code transcripts from `~/.claude/projects`, Codex metadata from `~/.codex/state_*.sqlite` plus referenced rollout files, OpenCode messages from `$XDG_DATA_HOME/opencode/opencode.db` or `~/.local/share/opencode/opencode.db`, Rovo Dev sessions from `~/.rovodev/sessions`, Pi transcripts from `~/.pi/agent/sessions`, OMP transcripts from `~/.omp/agent/sessions`, and GitHub Copilot CLI sessions from `~/.copilot/session-state`.
 Sessions are eligible when they come from the same working directory or an equivalent Git checkout with the same common Git directory or normalized remote URL.
 ACP transcripts are not currently read for intent extraction.
 When deterministic matching leaves multiple plausible sessions, no-mistakes may ask the configured pipeline agent to choose among them using the matching file paths and sanitized transcript packet files.
@@ -275,6 +276,15 @@ Starts a persistent HTTP server (`opencode serve`) on first use and reuses it ac
 
 Spawns a `pi` subprocess for each invocation with `--mode json --no-session`.
 Any `agent_args_override.pi` flags are inserted before no-mistakes' managed flags.
+Reads JSONL events from stdout and streams incremental text deltas to the TUI.
+When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response.
+
+## OMP (Oh My Pi)
+
+Spawns an `omp` subprocess for each invocation with `-p --mode json --no-session --no-extensions --no-skills --no-rules @<prompt-file>`.
+These flags stop OMP from auto-discovering the contributor worktree's project extensions, skills, and rules; MCP servers, hooks, and commands under the worktree's `.omp/`/`.claude/` still load (as with the claude and pi agents), so this is best-effort isolation and full fix-agent isolation from untrusted-worktree config is a separate, no-mistakes-wide concern. Explicit `agent_args_override.omp` `-e` paths still load.
+OMP is a Pi fork and emits the same JSONL event stream, so it shares Pi's streaming parser and prompt-injected structured-output contract; the difference is that OMP ignores stdin under `-p`, so the prompt (review instructions plus the full branch diff) is written to a temp file and passed as an `@<file>` message argument rather than inline. This avoids the Linux `MAX_ARG_STRLEN` (128 KiB) per-argument cap that a large positional prompt would hit as E2BIG, silently failing review/fix on exactly the big diffs that most need gating.
+Any `agent_args_override.omp` flags are inserted before no-mistakes' managed flags.
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
 When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response.
 
@@ -322,6 +332,7 @@ $ no-mistakes doctor
   – rovodev (not found)
   – opencode (not found)
   – pi (not found)
+  – omp (not found)
   – copilot (not found)
   – acpx (not found)
   – cursor (not found (cursor-agent, acpx))

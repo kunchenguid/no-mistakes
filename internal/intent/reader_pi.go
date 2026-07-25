@@ -16,6 +16,11 @@ import (
 // PiReaderName is the agent name used in cache keys and DB rows.
 const PiReaderName = "pi"
 
+// OMPReaderName is the agent name for Oh My Pi transcripts. OMP is a Pi fork
+// and writes the same session-file format, so both readers share the
+// pi-format discovery and parsing helpers below.
+const OMPReaderName = "omp"
+
 const piScannerMaxTokenSize = 256 * 1024 * 1024
 
 // piReader reads Pi coding-agent transcripts from ~/.pi/agent/sessions/.
@@ -27,17 +32,25 @@ func NewPiReader() Reader { return &piReader{} }
 func (r *piReader) Name() string { return PiReaderName }
 
 func (r *piReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Session, error) {
+	return discoverPiStyleSessions(ctx, opts, PiReaderName, ".pi", "agent", "sessions")
+}
+
+// discoverPiStyleSessions scans <home>/<rootParts...> for pi-format session
+// transcripts (one .jsonl per session, grouped by repo directory) and returns
+// the sessions whose recorded cwd matches the origin repository. Pi and OMP
+// share this on-disk layout; only the root directory and reader name differ.
+func discoverPiStyleSessions(ctx context.Context, opts DiscoverOpts, agentName string, rootParts ...string) ([]*Session, error) {
 	home, err := resolveHome(opts.HomeDir)
 	if err != nil {
 		return nil, err
 	}
-	root := filepath.Join(home, ".pi", "agent", "sessions")
+	root := filepath.Join(append([]string{home}, rootParts...)...)
 	repoDirs, err := os.ReadDir(root)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("pi sessions: %w", err)
+		return nil, fmt.Errorf("%s sessions: %w", agentName, err)
 	}
 
 	matcher := newRepoMatcher(ctx, opts.OriginCWD)
@@ -82,7 +95,7 @@ func (r *piReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Session,
 				sessionID = strings.TrimSuffix(f.Name(), ".jsonl")
 			}
 			session := &Session{
-				AgentName:     PiReaderName,
+				AgentName:     agentName,
 				SessionID:     sessionID,
 				CWD:           meta.cwd,
 				StartedAt:     meta.startedAt,
@@ -98,12 +111,19 @@ func (r *piReader) Discover(ctx context.Context, opts DiscoverOpts) ([]*Session,
 }
 
 func (r *piReader) Load(_ context.Context, s *Session) error {
+	return loadPiStyleSession(s, PiReaderName)
+}
+
+// loadPiStyleSession reads a pi-format transcript file into s.Messages,
+// deduping live streamed messages against the aggregated agent_end batch.
+// Shared by the Pi and OMP readers.
+func loadPiStyleSession(s *Session, agentName string) error {
 	if s.startedAtPath == "" {
-		return fmt.Errorf("pi: session has no path")
+		return fmt.Errorf("%s: session has no path", agentName)
 	}
 	f, err := os.Open(s.startedAtPath)
 	if err != nil {
-		return fmt.Errorf("pi open: %w", err)
+		return fmt.Errorf("%s open: %w", agentName, err)
 	}
 	defer f.Close()
 
@@ -149,7 +169,7 @@ func (r *piReader) Load(_ context.Context, s *Session) error {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("pi scan: %w", err)
+		return fmt.Errorf("%s scan: %w", agentName, err)
 	}
 	if lastID != "" {
 		s.LastMsgKey = lastID

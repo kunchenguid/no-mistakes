@@ -29,7 +29,7 @@ func TestNeutralizesGateInstructions_OnlyVerifiedHarnessesUnderOptOut(t *testing
 			t.Errorf("%s must neutralize under the opt-out with its default knob", name)
 		}
 	}
-	unverified := []types.AgentName{types.AgentOpenCode, types.AgentPi, types.AgentCopilot, types.AgentRovoDev}
+	unverified := []types.AgentName{types.AgentOpenCode, types.AgentPi, types.AgentOMP, types.AgentCopilot, types.AgentRovoDev}
 	for _, name := range unverified {
 		if NeutralizesGateInstructions(optOutAgent(t, name, nil)) {
 			t.Errorf("%s has no verified knob; must NOT report neutralized", name)
