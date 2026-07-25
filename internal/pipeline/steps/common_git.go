@@ -51,6 +51,24 @@ func resolveDefaultBranchTipSHA(ctx context.Context, workDir, upstreamURL, fallb
 	return sha
 }
 
+func resolveRunDefaultBranchTipSHA(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, defaultBranch string) string {
+	sha, _ := resolveRunDefaultBranchTip(ctx, sctx, fallbackBaseSHA, defaultBranch)
+	return sha
+}
+
+func resolveRunDefaultBranchTip(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, defaultBranch string) (string, bool) {
+	if strings.TrimSpace(defaultBranch) != "" {
+		if err := fetchRunUpstreamBranch(ctx, sctx, defaultBranch); err != nil {
+			return unresolvedDefaultBranchTip(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch), false
+		}
+		sha, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "origin/"+defaultBranch)
+		if err == nil && strings.TrimSpace(sha) != "" {
+			return strings.TrimSpace(sha), true
+		}
+	}
+	return resolveBaseSHA(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch), false
+}
+
 func resolveDefaultBranchTip(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, defaultBranch string) (string, bool) {
 	if strings.TrimSpace(defaultBranch) != "" {
 		remoteName := resolveUpstreamRemoteName(ctx, workDir, upstreamURL)
@@ -153,6 +171,15 @@ func resolveUpstreamURL(sctx *pipeline.StepContext) string {
 		}
 	}
 	return sctx.Repo.UpstreamURL
+}
+
+func fetchRunUpstreamBranch(ctx context.Context, sctx *pipeline.StepContext, branch string) error {
+	upstreamURL := resolveUpstreamURL(sctx)
+	originURL, err := git.GetRemoteURL(ctx, sctx.WorkDir, "origin")
+	if err == nil && upstreamURL == originURL {
+		return git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", branch)
+	}
+	return git.FetchRemoteBranchToRef(ctx, sctx.WorkDir, upstreamURL, branch, "refs/remotes/origin/"+branch)
 }
 
 // resolvePushURL returns the URL to push to: the fork when one is configured
