@@ -162,18 +162,11 @@ func GetConfiguredRemoteURL(ctx context.Context, dir, name string) (string, erro
 // Callers that require an authoritative source can reject zero or multiple
 // values rather than letting git silently select one.
 func GetConfiguredRemoteURLs(ctx context.Context, dir, name string) ([]string, error) {
-	out, err := Run(ctx, dir, "config", "--get-all", "remote."+name+".url")
+	out, err := Run(ctx, dir, "config", "--null", "--get-all", "remote."+name+".url")
 	if err != nil {
 		return nil, err
 	}
-	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	urls := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if line != "" {
-			urls = append(urls, line)
-		}
-	}
-	return urls, nil
+	return strings.Split(strings.TrimSuffix(out, "\x00"), "\x00"), nil
 }
 
 // HasRemote reports whether a remote named name is configured in the repo at

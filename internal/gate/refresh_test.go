@@ -95,6 +95,15 @@ func TestRefreshRepoURLsFailurePreservesExactRegistration(t *testing.T) {
 			wantReason: RefreshAmbiguousRemote,
 		},
 		{
+			name:   "blank secondary origin URL",
+			origin: "git@example.com:owner/project.git",
+			addRemotes: func(t *testing.T, dir string) {
+				gitTestCmd(t, dir, "remote", "add", "origin", "https://example.com/owner/project.git")
+				gitTestCmd(t, dir, "config", "--add", "remote.origin.url", "")
+			},
+			wantReason: RefreshAmbiguousRemote,
+		},
+		{
 			name:   "malformed origin",
 			origin: "git@example.com:owner/project.git",
 			addRemotes: func(t *testing.T, dir string) {

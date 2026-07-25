@@ -60,6 +60,13 @@ func TestRunStartRefreshesCloneURLWithoutMutatingRemotes(t *testing.T) {
 	if gateURL, err := git.GetConfiguredRemoteURL(context.Background(), p.RepoDir(repo.ID), "origin"); err != nil || gateURL != oldURL {
 		t.Fatalf("gate origin = %q, %v; want unchanged %q", gateURL, err, oldURL)
 	}
+	t.Logf(
+		"observable run-start result: status=%s persisted_upstream=%q clone_origin=%q gate_origin=%q clone_and_gate_remotes_unchanged=true",
+		types.RunCompleted,
+		stored.UpstreamURL,
+		currentURL,
+		oldURL,
+	)
 }
 
 func TestRunStartURLRefreshFailuresWarnSafelyAndContinueWithOldRegistration(t *testing.T) {
@@ -162,6 +169,11 @@ func TestRunStartURLRefreshFailuresWarnSafelyAndContinueWithOldRegistration(t *t
 					t.Fatalf("warning exposed sensitive remote material %q: %s", sensitive, warning)
 				}
 			}
+			t.Logf(
+				"observable fail-open result: status=%s prior_registration_preserved=true warning=%q",
+				types.RunCompleted,
+				strings.TrimSpace(warning),
+			)
 		})
 	}
 }
