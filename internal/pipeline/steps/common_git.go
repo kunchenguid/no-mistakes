@@ -183,12 +183,12 @@ func fetchRunUpstreamBranch(ctx context.Context, sctx *pipeline.StepContext, bra
 }
 
 // resolvePushURL returns the URL to push to: the fork when one is configured
-// (fork-based contributions, Repo.ForkURL set), else the credentialled upstream
-// resolved from the worktree's "origin" remote. The non-fork path resolves the
-// credential at run time so the redacted DB copy is never placed on the
-// push/ls-remote argv. Fork URLs carry no embedded credentials today, so the
-// fork path uses the repo record directly. In both cases callers wrap the URL
-// in safeurl.Redact before logging it.
+// (fork-based contributions, Repo.ForkURL set), else the upstream selected by
+// resolveUpstreamURL. A matching worktree origin can retain credentials outside
+// the database; a different URL verified from the working clone at run start
+// takes precedence without rewriting the worktree remote. Fork URLs carry no
+// embedded credentials today, so the fork path uses the repo record directly.
+// In both cases callers wrap the URL in safeurl.Redact before logging it.
 func resolvePushURL(sctx *pipeline.StepContext) string {
 	if sctx.Repo != nil && strings.TrimSpace(sctx.Repo.ForkURL) != "" {
 		return sctx.Repo.ForkURL
