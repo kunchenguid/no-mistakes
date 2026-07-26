@@ -43,6 +43,43 @@ func TestPiAgent_BuildArgs_PrependsExtraArgs(t *testing.T) {
 	}
 }
 
+func TestPiAgent_BuildArgs_OptOutAddsNoContextFiles(t *testing.T) {
+	pa := &piAgent{bin: "pi", disableProjectSettings: true}
+	args := pa.buildArgs()
+	expected := []string{"--no-context-files", "--mode", "json", "--no-session"}
+	if len(args) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
+	}
+	for i, want := range expected {
+		if args[i] != want {
+			t.Errorf("arg[%d]: expected %q, got %q", i, want, args[i])
+		}
+	}
+}
+
+func TestPiAgent_BuildArgs_OptOutDoesNotDuplicateNoContextFiles(t *testing.T) {
+	pa := &piAgent{bin: "pi", extraArgs: []string{"-nc"}, disableProjectSettings: true}
+	args := pa.buildArgs()
+	expected := []string{"-nc", "--mode", "json", "--no-session"}
+	if len(args) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
+	}
+	for i, want := range expected {
+		if args[i] != want {
+			t.Errorf("arg[%d]: expected %q, got %q", i, want, args[i])
+		}
+	}
+}
+
+func TestPiAgent_NeutralizesGateInstructions(t *testing.T) {
+	if NeutralizesGateInstructions(&piAgent{bin: "pi"}) {
+		t.Error("pi must not report neutralized without the opt-out")
+	}
+	if !NeutralizesGateInstructions(&piAgent{bin: "pi", disableProjectSettings: true}) {
+		t.Error("pi must report neutralized under the opt-out")
+	}
+}
+
 func TestPiAgent_BuildPromptIncludesSchema(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`)
 	prompt := buildPiPrompt("do a thing", schema)
