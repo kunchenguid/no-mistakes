@@ -228,8 +228,8 @@ Before any post-pipeline local commit or fresh run, read the structured ` + "`br
 Only when its ` + "`next_action.code`" + ` is ` + "`sync`" + `, run ` + "`no-mistakes axi sync`" + ` first.
 That guarded sync may be a strict fast-forward or a content-equivalent diverged advance that anchors the pre-sync head before moving the branch with reset semantics; genuine divergence stays blocked.
 If it reports ` + "`next_action.code`" + ` is ` + "`continue_active_run`" + `, the pipeline still owns the branch: run the reported command, keep driving the active run, and do not make local follow-up commits.
-When ` + "`next_action.code`" + ` is ` + "`recover_custody`" + `, a terminal run left unpublished pipeline commits preserved in the local gate: run ` + "`no-mistakes axi sync --recover`" + ` to return custody and fast-forward to the preserved head, or ` + "`no-mistakes rerun`" + ` to resume validating it instead.
-A dirty or diverged worktree makes the recovery refuse with explicit choices; ` + "`--keep-local`" + ` keeps your current head while the preserved commits stay anchored under ` + "`refs/no-mistakes/recover/<run>`" + `.
+When ` + "`next_action.code`" + ` is ` + "`recover_custody`" + `, a terminal run left unpublished pipeline commits preserved in the local gate: run ` + "`no-mistakes axi sync --recover`" + ` to return custody when the guarded recovery can do so, or ` + "`no-mistakes rerun`" + ` to resume validating the preserved head instead.
+Recovery anchors the preserved commits under ` + "`refs/no-mistakes/recover/<run>`" + ` before it fast-forwards a clean behind worktree or refuses with explicit choices; ` + "`--keep-local`" + ` keeps your current head.
 If synchronization is blocked, process that structured state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
 After synchronization, commit the follow-up on top and re-run ` + "`no-mistakes axi run --intent \"...\"`" + ` with the original user intent.
 This preserves every prior gate-fix commit regardless of its configured subject.
