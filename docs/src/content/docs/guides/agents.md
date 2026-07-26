@@ -40,7 +40,7 @@ By default that directory is temporary and local to the machine; repos can opt i
 ## Supported agents
 
 | Agent | Binary | Protocol |
-|---|---|---|
+| --- | --- | --- |
 | Claude | `claude` | Subprocess per invocation, JSONL streaming |
 | Codex | `codex` | Subprocess per invocation, JSONL events |
 | Rovo Dev | `acli` | Persistent HTTP server, SSE streaming |
@@ -57,7 +57,7 @@ The daemon resolves the effective agent before creating pipeline step records, a
 This refusal also applies when deterministic test or lint commands are configured because review and documentation always require agent judgment, while rebase, PR, and CI paths may need an agent to resolve conflicts, generate content, or fix failures.
 
 | Surface or capability | Works without a runnable pipeline agent? | Behavior |
-|---|---:|---|
+| --- | ---: | --- |
 | Install, `init`, daemon lifecycle, `status`, `runs`, and `doctor` | Yes | Local setup and diagnostics remain available. `doctor` reports that gate validation is unavailable. |
 | Start or rerun a validation gate | No | The run fails before any pipeline step starts. |
 | Review | No | Requires agent judgment and structured findings. |
@@ -274,7 +274,7 @@ Starts a persistent HTTP server (`opencode serve`) on first use and reuses it ac
 ## Pi
 
 Spawns a `pi` subprocess for each invocation with `--mode json --no-session`.
-Any `agent_args_override.pi` flags are inserted before no-mistakes' managed flags.
+See [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) for Pi override precedence.
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
 When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response.
 

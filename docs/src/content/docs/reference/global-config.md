@@ -161,7 +161,7 @@ Use this to set model selection, service tier, reasoning effort, permission mode
 | Keys    | `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot` |
 | Default | Empty (no extra flags)                                    |
 
-User-supplied flags are inserted ahead of no-mistakes' managed flags, so your choices usually take precedence. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
+User-supplied flags are normally inserted ahead of no-mistakes' managed flags, so your choices usually take precedence. Security suppression selected by trusted [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings) may be placed first while preserving a compatible operator pin. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
 
 | Agent      | Reserved flags                                                                                              |
 | ---------- | ----------------------------------------------------------------------------------------------------------- |
@@ -317,14 +317,14 @@ These are global defaults. Per-repo config can override individual steps.
 Template for the subject of commits created by the shared Review, Test, Document, and Lint fix path.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `string` |
 | Default | `no-mistakes({{.Step}}): {{.Summary}}` |
 
 The template supports literal text and two Go-style placeholders:
 
 | Variable | Value |
-|---|---|
+| --- | --- |
 | `{{.Step}}` | Pipeline step name, such as `review`, `test`, `document`, or `lint` |
 | `{{.Summary}}` | Sanitized one-line summary returned by the fix agent, or the step's deterministic fallback summary |
 

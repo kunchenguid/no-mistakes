@@ -71,7 +71,7 @@ test:
 Override the default agent for this repo and its setup-wizard suggestions.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `string` or `string[]` |
 | Values | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `cursor`, `acp:<target>` |
 | Default | Inherits from global config |
@@ -102,7 +102,7 @@ This per-repo `agent` value, including every fallback entry, is still read from 
 Opt in to honoring the code-executing selection fields (`commands.{test,lint,format}` and `agent`) from a contributor's pushed branch instead of the trusted default-branch copy.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `bool` |
 | Default | `false` |
 
@@ -113,13 +113,13 @@ This field is itself read **only from the trusted default-branch copy** of `.no-
 Suppress project-level agent settings and instructions for every gate-agent start and resumed session.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `bool` |
 | Default | `false` |
 
 This opt-in is intended for agent-orchestration repositories whose `AGENTS.md`, `CLAUDE.md`, or harness-specific project settings would give a validation agent an operator identity and authority that it must not adopt.
 When enabled, no-mistakes suppresses the target checkout's project settings for every agent-driven gate step while preserving user-level agent configuration.
-Codex and Claude are the currently verified agents: Codex receives `project_doc_max_bytes=0` and `--ignore-rules`, while Claude loads only its user setting source.
+Codex, Claude, and Pi are the currently verified agents: Codex receives `project_doc_max_bytes=0` and `--ignore-rules`, Claude loads only its user setting source, and Pi runs with `--no-context-files` (preserving a pinned `--no-context-files` or `-nc` spelling).
 The setting applies to both new and resumed sessions.
 
 The gate fails before launching an agent if any resolved agent or fallback lacks a verified suppression mechanism.
@@ -135,7 +135,7 @@ If the trusted commit or its present config file cannot be read and parsed, the 
 Explicit **targeted** local test command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /c` on Windows.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `string` |
 | Default | Empty (agent selects the smallest relevant tests and evidence checks) |
 
@@ -152,7 +152,7 @@ When user intent is available, the agent may still run after a successful baseli
 Explicit lint command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /c` on Windows.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `string` |
 | Default | Empty (agent auto-detects) |
 
@@ -165,7 +165,7 @@ Neither responsibility is skipped: when the document step has nothing to run aga
 Formatter command run before the push step commits agent fixes.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `string` |
 | Default | Empty (no separate push-step formatter) |
 
@@ -176,7 +176,7 @@ This does not prevent empty `commands.lint` from detecting and running formatter
 Repository-specific documentation ownership policy for the document step.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `string` (multiline) |
 | Default | Empty (built-in placement policy only) |
 
@@ -197,14 +197,14 @@ Do not rely on a configured command to leave a background server or watcher runn
 Paths to exclude from review and documentation checks.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `string[]` |
 | Default | Empty (no ignores) |
 
 Pattern matching rules:
 
 | Pattern | Rule |
-|---|---|
+| --- | --- |
 | `*.generated.go` | No slash - matches by basename |
 | `vendor/**` | Ends with `/**` - matches entire subtree |
 | `some/path/file.go` | Contains a slash - full path glob |
@@ -218,7 +218,7 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 | Type | `object` |
 
 | Field | Type | Default |
-|---|---|---|
+| --- | --- | --- |
 | `auto_fix.rebase` | `int` | Inherits from global (default `3`) |
 | `auto_fix.review` | `int` | Inherits from global (default `0`) |
 | `auto_fix.test` | `int` | Inherits from global (default `3`) |
@@ -239,7 +239,7 @@ Legacy alias: `auto_fix.babysit`.
 Override the auto-fix commit subject template for this repository.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `string` |
 | Default | Inherits from global config, whose default is `no-mistakes({{.Step}}): {{.Summary}}` |
 
@@ -255,7 +255,7 @@ Override transcript-based user-intent extraction settings for this repo.
 Fields not set here inherit from global config and then the built-in defaults.
 
 | Field | Type | Default |
-|---|---|---|
+| --- | --- | --- |
 | `intent.enabled` | `bool` | Inherits from global (default `true`) |
 | `intent.threshold` | `float` | Inherits from global (default `0.2`) |
 | `intent.slack_days` | `int` | Inherits from global (default `3`) |
@@ -269,7 +269,7 @@ Override where evidence artifacts from the test step are stored.
 Fields not set here inherit from global config and then the built-in defaults.
 
 | Field | Type | Default |
-|---|---|---|
+| --- | --- | --- |
 | `test.evidence.store_in_repo` | `bool` | Inherits from global (default `false`) |
 | `test.evidence.dir` | `string` | Inherits from global (default `.no-mistakes/evidence`) |
 

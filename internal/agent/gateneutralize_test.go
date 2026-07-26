@@ -50,8 +50,8 @@ func TestNeutralizesGateInstructions_OnlyVerifiedHarnessesUnderOptOut(t *testing
 	}
 }
 
-// TestNeutralizesGateInstructions_FalseWithoutOptOut proves codex/claude do NOT
-// claim neutralization when the repo did not opt out - the gate only consults
+// TestNeutralizesGateInstructions_FalseWithoutOptOut proves codex, claude, and pi
+// do NOT claim neutralization when the repo did not opt out - the gate only consults
 // this under the opt-out, but the value must be honest.
 func TestNeutralizesGateInstructions_FalseWithoutOptOut(t *testing.T) {
 	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi} {
@@ -66,7 +66,7 @@ func TestNeutralizesGateInstructions_FalseWithoutOptOut(t *testing.T) {
 }
 
 // TestEnsureGateNeutralized_RefusesUnsupportedUnderOptOut proves the gate fails
-// closed for an unsupported harness with a clear error, and admits codex/claude.
+// closed for an unsupported harness and admits codex, claude, and pi.
 func TestEnsureGateNeutralized_RefusesUnsupportedUnderOptOut(t *testing.T) {
 	if err := EnsureGateNeutralized(optOutAgent(t, types.AgentCodex, nil)); err != nil {
 		t.Errorf("codex must pass the gate under opt-out: %v", err)
@@ -117,8 +117,8 @@ func TestNeutralizesGateInstructions_ThroughProductionWrapping(t *testing.T) {
 }
 
 // TestNeutralizesGateInstructions_HonestOnEffectiveOverride proves the capability
-// is honest about the EFFECTIVE knob value: a preserving operator override is
-// admitted; a defeating one fails closed - even for codex/claude.
+// is honest about the EFFECTIVE knob value: preserving operator overrides are
+// admitted, while available defeating overrides fail closed.
 func TestNeutralizesGateInstructions_HonestOnEffectiveOverride(t *testing.T) {
 	// codex: project_doc_max_bytes=0 preserves suppression -> admitted.
 	if !NeutralizesGateInstructions(optOutAgent(t, types.AgentCodex, []string{"-c", "project_doc_max_bytes=0"})) {

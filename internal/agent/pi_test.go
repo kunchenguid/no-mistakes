@@ -132,6 +132,40 @@ func writeFakePi(t *testing.T, dir, posixScript, windowsScript string) string {
 	return bin
 }
 
+func TestPiAgent_RunOptOutPassesNoContextFilesToCLI(t *testing.T) {
+	workDir := t.TempDir()
+	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
+printf '%s\n' "$*" > pi-argv.txt
+cat > /dev/null
+printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":"ok"}]}'
+`, strings.Join([]string{
+		"@echo off",
+		"echo %* > pi-argv.txt",
+		"more > nul",
+		"echo {\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":\"ok\"}]}",
+	}, "\r\n"))
+
+	pa := &piAgent{
+		bin:                    bin,
+		extraArgs:              []string{"--provider", "google"},
+		disableProjectSettings: true,
+	}
+	if _, err := pa.Run(context.Background(), RunOpts{Prompt: "review", CWD: workDir}); err != nil {
+		t.Fatalf("run pi: %v", err)
+	}
+
+	argv, err := os.ReadFile(filepath.Join(workDir, "pi-argv.txt"))
+	if err != nil {
+		t.Fatalf("read captured pi argv: %v", err)
+	}
+	got := strings.TrimSpace(string(argv))
+	want := "--no-context-files --provider google --mode json --no-session"
+	if got != want {
+		t.Fatalf("pi argv = %q, want %q", got, want)
+	}
+	t.Logf("pi received argv: %s", got)
+}
+
 func TestPiAgent_RunParsesAssistantContentAndUsage(t *testing.T) {
 	dir := t.TempDir()
 	// Fake pi that emits a streaming text_delta plus a final message_end with
