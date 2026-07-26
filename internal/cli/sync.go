@@ -27,12 +27,12 @@ func newSyncCmd() *cobra.Command {
 			"branch to the verified pipeline head with reset semantics. It never stashes,\n" +
 			"merges genuine divergence, rebases, switches branches, or updates a remote.\n" +
 			"--check performs the fresh proof without applying it.\n" +
-			"--recover returns custody of a branch whose run went terminal with unpublished\n" +
-			"pipeline commits: it anchors the preserved head, fast-forwards a clean behind\n" +
-			"worktree to it, and frees the branch for a fresh run. A run cancelled before\n" +
-			"the pipeline changed anything releases the branch by itself (user_owned) and\n" +
-			"makes --recover a no-op. --recover --keep-local keeps the current local head\n" +
-			"instead and never touches the worktree.",
+			"--recover handles a branch whose run went terminal with unpublished\n" +
+			"pipeline commits: it anchors the preserved head before returning custody,\n" +
+			"fast-forwarding a clean behind worktree only when the guarded recovery can\n" +
+			"do so. A run cancelled before the pipeline changed anything releases the\n" +
+			"branch by itself (user_owned) and makes --recover a no-op. --recover --keep-local keeps\n" +
+			"the current local head instead and never touches the worktree.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if check && yes {
