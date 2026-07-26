@@ -58,9 +58,23 @@ func TestPiAgent_BuildArgs_OptOutAddsNoContextFiles(t *testing.T) {
 }
 
 func TestPiAgent_BuildArgs_OptOutDoesNotDuplicateNoContextFiles(t *testing.T) {
+	pa := &piAgent{bin: "pi", extraArgs: []string{"--provider", "google", "-nc"}, disableProjectSettings: true}
+	args := pa.buildArgs()
+	expected := []string{"-nc", "--provider", "google", "--mode", "json", "--no-session"}
+	if len(args) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
+	}
+	for i, want := range expected {
+		if args[i] != want {
+			t.Errorf("arg[%d]: expected %q, got %q", i, want, args[i])
+		}
+	}
+}
+
+func TestPiAgent_BuildArgs_OptOutPreservesNoContextFilesOptionValue(t *testing.T) {
 	pa := &piAgent{bin: "pi", extraArgs: []string{"--system-prompt", "-nc"}, disableProjectSettings: true}
 	args := pa.buildArgs()
-	expected := []string{"-nc", "--system-prompt", "--mode", "json", "--no-session"}
+	expected := []string{"--no-context-files", "--system-prompt", "-nc", "--mode", "json", "--no-session"}
 	if len(args) != len(expected) {
 		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
 	}

@@ -128,18 +128,17 @@ func (a *piAgent) buildArgs() []string {
 	// Preserve an operator-pinned -nc/--no-context-files spelling, but place it
 	// first. When the repo did not opt out, nothing is added and pi loads project
 	// instruction files exactly as before (backward-compat).
+	pinIndex := -1
 	if a.disableProjectSettings {
+		pinIndex = piNoContextFilesArgIndex(a.extraArgs)
 		contextFlag := "--no-context-files"
-		for _, arg := range a.extraArgs {
-			if piNoContextFilesArg(arg) {
-				contextFlag = arg
-				break
-			}
+		if pinIndex >= 0 {
+			contextFlag = a.extraArgs[pinIndex]
 		}
 		args = append(args, contextFlag)
 	}
-	for _, arg := range a.extraArgs {
-		if !a.disableProjectSettings || !piNoContextFilesArg(arg) {
+	for i, arg := range a.extraArgs {
+		if i != pinIndex {
 			args = append(args, arg)
 		}
 	}
@@ -147,8 +146,33 @@ func (a *piAgent) buildArgs() []string {
 	return args
 }
 
+func piNoContextFilesArgIndex(args []string) int {
+	for i := 0; i < len(args); i++ {
+		if piNoContextFilesArg(args[i]) {
+			return i
+		}
+		if piArgTakesValue(args[i]) {
+			i++
+		}
+	}
+	return -1
+}
+
 func piNoContextFilesArg(arg string) bool {
 	return arg == "--no-context-files" || arg == "-nc"
+}
+
+func piArgTakesValue(arg string) bool {
+	switch arg {
+	case "--mode", "--provider", "--model", "--api-key", "--system-prompt",
+		"--append-system-prompt", "--name", "-n", "--session", "--session-id",
+		"--fork", "--session-dir", "--models", "--tools", "-t", "--exclude-tools",
+		"-xt", "--thinking", "--export", "--extension", "-e", "--skill",
+		"--prompt-template", "--theme":
+		return true
+	default:
+		return false
+	}
 }
 
 // buildPiPrompt appends a JSON-output contract to the user prompt when a
