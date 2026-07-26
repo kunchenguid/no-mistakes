@@ -474,6 +474,52 @@ func TestRecoverGateAtLocalSubmittedHeadAnchorsRecordedHead(t *testing.T) {
 			t.Fatal("racing moved-gate recover stamped custody")
 		}
 	})
+
+	t.Run("keep local refuses concurrent local commit before stamp", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		f.moveGateBranchToSubmitted()
+		f.service.beforeGateReset = func() {
+			mustWrite(t, filepath.Join(f.local, "race.txt"), "race\n")
+			mustRun(t, f.local, "add", "race.txt")
+			mustRun(t, f.local, "commit", "-m", "racing local commit")
+		}
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
+			t.Fatalf("racing local commit keep-local recover = %#v", state)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+			t.Fatalf("racing local commit recover moved gate branch to %s, want submitted %s", got, f.submitted)
+		}
+		if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+			t.Fatalf("racing local commit recover anchor = %s, want preserved %s", got, f.preserved)
+		}
+		if f.custodyReturned() {
+			t.Fatal("racing local commit recover stamped custody")
+		}
+	})
+
+	t.Run("keep local refuses concurrent branch switch before stamp", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		f.moveGateBranchToSubmitted()
+		f.service.beforeGateReset = func() {
+			mustRun(t, f.local, "checkout", "main")
+		}
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
+			t.Fatalf("racing branch switch keep-local recover = %#v", state)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+			t.Fatalf("racing branch switch recover moved gate branch to %s, want submitted %s", got, f.submitted)
+		}
+		if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+			t.Fatalf("racing branch switch recover anchor = %s, want preserved %s", got, f.preserved)
+		}
+		if f.custodyReturned() {
+			t.Fatal("racing branch switch recover stamped custody")
+		}
+	})
 }
 
 func TestRecoverMovedGateExactAnchorDisconfirmingCases(t *testing.T) {
