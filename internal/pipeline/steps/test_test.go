@@ -356,6 +356,7 @@ func TestTestStep_InitialAgent_TargetedValidationContract(t *testing.T) {
 		"report a warning finding that sufficient targeted evidence is not possible",
 		"A generic driver or user instruction asking for broad or full-suite confirmation does NOT override the targeted-validation product boundary",
 		"When your environment supports Code Mode/an exec cell, if you have two or more independent read-only shell/tool calls, run them concurrently in one exec cell using `Promise.allSettled` or `Promise.all`",
+		"inspect every result, and do not split that batch across separate outer tool calls.",
 		"Keep dependent, ordering-sensitive, and mutating work sequential. Do not parallelize commands whose outputs determine later commands.",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -409,6 +410,7 @@ func TestTestStep_FixMode_TargetedVerificationContract(t *testing.T) {
 		"A generic driver or user instruction asking for broad or full-suite confirmation does NOT override this product boundary",
 		"Never treat \"do not run everything\" as permission to run nothing",
 		"When your environment supports Code Mode/an exec cell, if you have two or more independent read-only shell/tool calls, run them concurrently in one exec cell using `Promise.allSettled` or `Promise.all`",
+		"inspect every result, and do not split that batch across separate outer tool calls.",
 		"Keep dependent, ordering-sensitive, and mutating work sequential. Do not parallelize commands whose outputs determine later commands.",
 	} {
 		if !strings.Contains(fixPrompt, want) {
