@@ -205,9 +205,10 @@ A run that goes terminal (cancelled, failed, or completed without a push stage) 
 A run whose terminalization verifies that the managed worktree head never changed from the submitted head releases the branch instead: the terminal outcome, including cancellation, ends ownership; status reports `state: user_owned` with the same exact ownership facts and no `next_action`; the branch and head are immediately usable for any separately authorized delivery; and nothing blocks a direct push or PR.
 Without that positive terminal head evidence, custody stays recoverable rather than being guessed away.
 While a run is still active, it reports `state: pipeline_owned`, the exact submitted/current heads and their relation, and `next_action.code: continue_active_run` with `no-mistakes axi status`, even when its head has not moved yet.
-`--recover` verifies the run is terminal, anchors the preserved head under `refs/no-mistakes/recover/<run>` in the invoking repository, and stamps custody returned so a fresh run can start.
+`--recover` verifies the run is terminal and anchors the preserved head under `refs/no-mistakes/recover/<run>` in the invoking repository before it can stamp custody returned.
 For equal or ahead worktrees where the preserved head is already locally reachable, recovery writes that anchor locally without gate access.
 For behind or diverged worktrees, recovery verifies the preserved head at the local gate branch and fetches it into the anchor before fast-forwarding only a clean behind worktree or refusing with the anchor named.
+If a terminal run's gate branch moved back to the recorded submitted local head, recovery may instead fetch the preserved head from the local gate by exact object ID: non-`--keep-local` refuses with the anchor and explicit reconcile choices, while `--keep-local` stamps custody at the current head without moving the worktree or gate branch.
 A dirty or diverged worktree refuses with explicit choices.
 When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
 `no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
