@@ -139,6 +139,7 @@ type Service struct {
 
 	beforeApply              func()
 	beforeGateReset          func()
+	beforeRecoverStamp       func()
 	beforeRecoverFastForward func()
 }
 
@@ -627,16 +628,11 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 	if s.beforeGateReset != nil {
 		s.beforeGateReset()
 	}
-	currentGateHead, err := git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+state.Local.Branch+"^{commit}")
-	if err != nil || currentGateHead != gateHead {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the gate branch changed while custody was being returned; re-run the recovery; no local files or refs were changed")
+	precheck, currentGateHead, ok := s.recheckRecoverKeepLocal(ctx, state, gateHead)
+	if !ok {
+		return precheck
 	}
 	gateHead = currentGateHead
-	branch, branchErr := git.CurrentBranch(ctx, s.workDir())
-	head, headErr := git.HeadSHA(ctx, s.workDir())
-	if branchErr != nil || branch != state.Local.Branch || headErr != nil || head != state.Local.Head {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch head changed while custody was being returned; no files or refs were changed")
-	}
 	if gateHead != state.Local.Head {
 		// The fetch source must be absolute: the command runs inside the gate
 		// directory, where a relative invoking-worktree path would resolve to
@@ -660,7 +656,27 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the gate branch changed while custody was being returned; re-run the recovery; no local files or refs were changed")
 		}
 	}
+	if s.beforeRecoverStamp != nil {
+		s.beforeRecoverStamp()
+	}
+	precheck, _, ok = s.recheckRecoverKeepLocal(ctx, state, state.Local.Head)
+	if !ok {
+		return precheck
+	}
 	return s.finishRecover(ctx, run, false)
+}
+
+func (s *Service) recheckRecoverKeepLocal(ctx context.Context, state State, expectedGateHead string) (State, string, bool) {
+	currentGateHead, err := git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+state.Local.Branch+"^{commit}")
+	if err != nil || currentGateHead != expectedGateHead {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the gate branch changed while custody was being returned; re-run the recovery; no local files or refs were changed"), "", false
+	}
+	branch, branchErr := git.CurrentBranch(ctx, s.workDir())
+	head, headErr := git.HeadSHA(ctx, s.workDir())
+	if branchErr != nil || branch != state.Local.Branch || headErr != nil || head != state.Local.Head {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch head changed while custody was being returned; no files or refs were changed"), "", false
+	}
+	return State{}, currentGateHead, true
 }
 
 // recoverFastForward advances the clean checked-out branch to the preserved

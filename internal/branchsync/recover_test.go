@@ -1288,3 +1288,83 @@ func TestRecoverConcurrentGatePushLosesCleanly(t *testing.T) {
 		t.Fatal("racing recover stamped custody")
 	}
 }
+
+func TestRecoverKeepLocalRechecksAfterGateCASBeforeStamp(t *testing.T) {
+	t.Run("refuses gate update after CAS", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunCancelled)
+		mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
+		mustRun(t, f.local, "add", "rescope.txt")
+		mustRun(t, f.local, "commit", "-m", "diverging rescope")
+		kept := mustRun(t, f.local, "rev-parse", "HEAD")
+		f.service.beforeRecoverStamp = func() {
+			writer := filepath.Join(t.TempDir(), "racer")
+			mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
+			configureIdentity(t, writer)
+			mustRun(t, writer, "checkout", "feature/recover")
+			mustWrite(t, filepath.Join(writer, "race.txt"), "race\n")
+			mustRun(t, writer, "add", "race.txt")
+			mustRun(t, writer, "commit", "-m", "post-cas racing push")
+			mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
+		}
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Changed || state.Safety != "blocked_recover_gate_race" {
+			t.Fatalf("post-cas gate race recover = %#v", state)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != kept {
+			t.Fatalf("post-cas gate race moved HEAD to %s, want %s", got, kept)
+		}
+		if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+			t.Fatalf("post-cas gate race anchor = %s, want preserved %s", got, f.preserved)
+		}
+		if f.custodyReturned() {
+			t.Fatal("post-cas gate race stamped custody")
+		}
+	})
+
+	t.Run("refuses local commit after CAS", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunCancelled)
+		mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
+		mustRun(t, f.local, "add", "rescope.txt")
+		mustRun(t, f.local, "commit", "-m", "diverging rescope")
+		kept := mustRun(t, f.local, "rev-parse", "HEAD")
+		f.service.beforeRecoverStamp = func() {
+			mustWrite(t, filepath.Join(f.local, "race.txt"), "race\n")
+			mustRun(t, f.local, "add", "race.txt")
+			mustRun(t, f.local, "commit", "-m", "post-cas local commit")
+		}
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
+			t.Fatalf("post-cas local commit recover = %#v", state)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != kept {
+			t.Fatalf("post-cas local commit gate = %s, want kept %s", got, kept)
+		}
+		if f.custodyReturned() {
+			t.Fatal("post-cas local commit stamped custody")
+		}
+	})
+
+	t.Run("refuses branch switch after CAS", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunCancelled)
+		mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
+		mustRun(t, f.local, "add", "rescope.txt")
+		mustRun(t, f.local, "commit", "-m", "diverging rescope")
+		kept := mustRun(t, f.local, "rev-parse", "HEAD")
+		f.service.beforeRecoverStamp = func() {
+			mustRun(t, f.local, "checkout", "main")
+		}
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
+			t.Fatalf("post-cas branch switch recover = %#v", state)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != kept {
+			t.Fatalf("post-cas branch switch gate = %s, want kept %s", got, kept)
+		}
+		if f.custodyReturned() {
+			t.Fatal("post-cas branch switch stamped custody")
+		}
+	})
+}
