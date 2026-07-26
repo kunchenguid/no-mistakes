@@ -32,12 +32,12 @@ func (a *piAgent) ReportsAgentAttempts() bool { return true }
 // target repo's project agent-instruction files suppressed. It is meaningful
 // only under the opt-out (disableProjectSettings): the gate only consults it
 // when the repo opted out. Pi's --no-context-files (-nc) disables AGENTS.md and
-// CLAUDE.md discovery for the session. buildArgs appends --no-context-files when
-// the operator did not pin their own -nc/--no-context-files. Verified against
-// current pi --help: "--no-context-files, -nc Disable AGENTS.md and CLAUDE.md
-// discovery and loading".
+// CLAUDE.md discovery for the session. buildArgs places the suppression flag
+// before user arguments so it cannot be consumed as another flag's value.
+// Verified against current pi --help: "--no-context-files, -nc Disable AGENTS.md
+// and CLAUDE.md discovery and loading".
 func (a *piAgent) NeutralizesGateInstructions() bool {
-	return a.disableProjectSettings && piEffectiveContextFilesSuppressed(a.extraArgs)
+	return a.disableProjectSettings
 }
 
 func (a *piAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
@@ -117,47 +117,38 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	return res, err
 }
 
-// buildArgs returns the Pi argv for one invocation. User extras come first
-// (so user --provider/--model take effect), then the managed flags that
-// no-mistakes requires for JSONL parsing.
+// buildArgs returns the Pi argv for one invocation. Under the project-settings
+// opt-out, the context-file suppression flag comes first. User extras otherwise
+// precede the managed flags that no-mistakes requires for JSONL parsing.
 func (a *piAgent) buildArgs() []string {
 	args := make([]string, 0, len(a.extraArgs)+5)
-	args = append(args, a.extraArgs...)
 	// Project-settings opt-out (trusted-only; see config.DisableProjectSettings):
 	// disable AGENTS.md/CLAUDE.md discovery so an agent-orchestration target
 	// (firstmate) cannot install a fleet-captain identity on the gate agent.
-	// Suppressed only when the operator did not pin their own -nc/--no-context-files.
-	// When the repo did not opt out, nothing is added and pi loads project
+	// Preserve an operator-pinned -nc/--no-context-files spelling, but place it
+	// first. When the repo did not opt out, nothing is added and pi loads project
 	// instruction files exactly as before (backward-compat).
-	if a.disableProjectSettings && !piUserSetNoContextFiles(a.extraArgs) {
-		args = append(args, "--no-context-files")
+	if a.disableProjectSettings {
+		contextFlag := "--no-context-files"
+		for _, arg := range a.extraArgs {
+			if piNoContextFilesArg(arg) {
+				contextFlag = arg
+				break
+			}
+		}
+		args = append(args, contextFlag)
+	}
+	for _, arg := range a.extraArgs {
+		if !a.disableProjectSettings || !piNoContextFilesArg(arg) {
+			args = append(args, arg)
+		}
 	}
 	args = append(args, "--mode", "json", "--no-session")
 	return args
 }
 
-// piUserSetNoContextFiles reports whether extraArgs already pin the context-file
-// suppression flag (-nc or --no-context-files), in which case buildArgs does not
-// add its own.
-func piUserSetNoContextFiles(extraArgs []string) bool {
-	for _, arg := range extraArgs {
-		if arg == "--no-context-files" || arg == "-nc" {
-			return true
-		}
-	}
-	return false
-}
-
-// piEffectiveContextFilesSuppressed reports whether the EFFECTIVE pi argv will
-// suppress AGENTS.md/CLAUDE.md discovery: true when the operator did not pin
-// -nc/--no-context-files (buildArgs appends --no-context-files) or pinned either
-// form of the flag.
-func piEffectiveContextFilesSuppressed(extraArgs []string) bool {
-	// Pi has no re-enable flag that defeats -nc once present. Under the opt-out
-	// buildArgs always ensures the flag is present (appended, or already pinned
-	// by the operator), so the effective surface is suppressed.
-	_ = extraArgs
-	return true
+func piNoContextFilesArg(arg string) bool {
+	return arg == "--no-context-files" || arg == "-nc"
 }
 
 // buildPiPrompt appends a JSON-output contract to the user prompt when a
