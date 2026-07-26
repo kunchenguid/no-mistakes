@@ -501,6 +501,35 @@ func TestRecoverGateAtLocalSubmittedHeadAnchorsRecordedHead(t *testing.T) {
 			t.Fatal("keep-local did not stamp custody")
 		}
 	})
+
+	t.Run("keep local refuses concurrent moved gate update before stamp", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		f.moveGateBranchToSubmitted()
+		f.service.beforeGateReset = func() {
+			writer := filepath.Join(t.TempDir(), "racer")
+			mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
+			configureIdentity(t, writer)
+			mustRun(t, writer, "checkout", "feature/recover")
+			mustWrite(t, filepath.Join(writer, "race.txt"), "race\n")
+			mustRun(t, writer, "add", "race.txt")
+			mustRun(t, writer, "commit", "-m", "racing moved-gate push")
+			mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
+		}
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Changed || state.Safety != "blocked_recover_gate_race" {
+			t.Fatalf("racing moved-gate keep-local recover = %#v", state)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+			t.Fatalf("racing moved-gate recover moved HEAD to %s, want submitted %s", got, f.submitted)
+		}
+		if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+			t.Fatalf("racing moved-gate recover anchor = %s, want preserved %s", got, f.preserved)
+		}
+		if f.custodyReturned() {
+			t.Fatal("racing moved-gate recover stamped custody")
+		}
+	})
 }
 
 func TestRecoverMovedGateExactAnchorDisconfirmingCases(t *testing.T) {

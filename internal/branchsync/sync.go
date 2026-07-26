@@ -582,7 +582,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 	if gateHead != preserved && movedGateAtSubmitted {
 		if keepLocal {
-			return s.finishRecover(ctx, run, false)
+			return s.recoverKeepLocal(ctx, run, state, gateHead)
 		}
 		state.Relation = RelationDiverged
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_diverged", fmt.Sprintf("the gate branch has moved to the submitted local head while the preserved pipeline head is anchored at %s; re-run with `no-mistakes axi sync --recover --keep-local` to return custody at the current head, run `no-mistakes rerun` to restart validation from the current gate branch, or inspect with `git log --oneline --left-right HEAD...%s`; no files or refs were changed except the recovery anchor", anchorRef, anchorRef))
@@ -627,6 +627,11 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 	if s.beforeGateReset != nil {
 		s.beforeGateReset()
 	}
+	currentGateHead, err := git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+state.Local.Branch+"^{commit}")
+	if err != nil || currentGateHead != gateHead {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the gate branch changed while custody was being returned; re-run the recovery; no local files or refs were changed")
+	}
+	gateHead = currentGateHead
 	if gateHead != state.Local.Head {
 		head, err := git.HeadSHA(ctx, s.workDir())
 		if err != nil || head != state.Local.Head {
