@@ -40,9 +40,16 @@ func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	workDir := t.TempDir()
+	gitCmd(t, workDir, "init", "--initial-branch=main")
+	gitCmd(t, workDir, "config", "user.email", "test@test.com")
+	gitCmd(t, workDir, "config", "user.name", "Test")
+	gitCmd(t, workDir, "config", "commit.gpgsign", "false")
 	if err := os.WriteFile(filepath.Join(workDir, ".no-mistakes.yaml"), []byte("commands:\n  lint: echo pushed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	gitCmd(t, workDir, "add", ".no-mistakes.yaml")
+	gitCmd(t, workDir, "commit", "-m", "candidate config")
+	submittedSHA := gitOutput(t, workDir, "rev-parse", "HEAD")
 
 	mgr := NewRunManager(nil, p, nil)
 	started := time.Now()
@@ -50,7 +57,7 @@ func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
 	// disable_project_settings security boundary a trusted-config fetch failure
 	// must ABORT (not silently proceed as "not opted out"), so this now returns
 	// an error rather than a config with empty commands.
-	_, err := mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "run"}, &db.Repo{DefaultBranch: "main"}, workDir)
+	_, err := mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "run", HeadSHA: submittedSHA, SubmittedHeadSHA: &submittedSHA}, &db.Repo{DefaultBranch: "main"}, workDir)
 	if err == nil {
 		t.Fatal("expected loadRecoveredConfig to abort on trusted-config fetch failure")
 	}
@@ -66,18 +73,14 @@ func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
 }
 
 // TestLoadTrustedRepoConfig_FailClosedOnFetchFailure is the regression test for
-// the supply-chain RCE review item #1: when the default-branch fetch fails,
-// startRun passes an empty trustedSHA, and loadTrustedRepoConfig MUST return
-// nil even though a (potentially stale) origin/<default> ref is still present
-// in the worktree's shared refs. Reading that stale ref would run a command
-// the live default branch has already removed. EffectiveRepoConfig then forces
-// empty commands, so the stale command does not run.
+// the trusted gate-boundary fix: when the default-branch fetch fails, startRun
+// passes an empty trustedSHA, and loadTrustedRepoConfig MUST return nil even
+// though a stale origin/<default> ref remains in the shared refs. Agent,
+// document, and project-setting boundaries must never borrow that stale copy.
 func TestLoadTrustedRepoConfig_FailClosedOnFetchFailure(t *testing.T) {
 	ctx := context.Background()
 
-	// Source repo whose default branch carries a "stale" lint command — the
-	// kind of command a maintainer has since removed but a stale ref would
-	// still serve.
+	// Source repo whose default branch carries stale trusted config.
 	src := filepath.Join(t.TempDir(), "src")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
@@ -127,19 +130,25 @@ func TestLoadTrustedRepoConfig_FailClosedOnFetchFailure(t *testing.T) {
 	}
 
 	// THE REGRESSION: fetch "failed" → startRun passes an empty trustedSHA.
-	// Even with origin/main present and carrying the stale command, the
-	// trusted config must be nil so the stale command cannot run.
+	// Even with origin/main present, the trusted config must be nil.
 	got := loadTrustedRepoConfig(ctx, wt, "", "test-run")
 	if got != nil {
 		t.Fatalf("expected nil trusted config on empty SHA (fetch failure); got commands.lint=%q", got.Commands.Lint)
 	}
 
-	// And the effective config drops the pushed-branch command too — the
-	// secure default, not a fallback to a stale or hostile copy.
-	pushed := &config.RepoConfig{Commands: config.Commands{Lint: "echo pushed-branch-command"}}
+	// Candidate commands are independent run-owned state and survive this
+	// value-level merge; startRun still aborts separately because the trusted
+	// security boundaries could not be evaluated.
+	pushed := &config.RepoConfig{
+		Agent:    "pushed-agent",
+		Commands: config.Commands{Lint: "echo pushed-branch-command"},
+	}
 	eff := config.EffectiveRepoConfig(pushed, got, false)
-	if eff.Commands.Lint != "" {
-		t.Fatalf("SECURITY REGRESSION: command would run after fetch failure: %q", eff.Commands.Lint)
+	if eff.Commands.Lint != "echo pushed-branch-command" {
+		t.Fatalf("candidate command was replaced after trusted fetch failure: %q", eff.Commands.Lint)
+	}
+	if eff.Agent != "" {
+		t.Fatalf("pushed agent should remain disabled without trusted config: %q", eff.Agent)
 	}
 }
 

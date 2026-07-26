@@ -187,9 +187,9 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	if err != nil {
 		return nil, fmt.Errorf("load global config: %w", err)
 	}
-	repoCfg, err := config.LoadRepo(workDir)
+	repoCfg, err := loadSubmittedRepoConfig(ctx, workDir, run)
 	if err != nil {
-		return nil, fmt.Errorf("load repo config: %w", err)
+		return nil, err
 	}
 	var trustedSHA string
 	if repo.DefaultBranch != "" {
@@ -450,23 +450,28 @@ func branchFromRef(ref string) string {
 func loadTrustedRepoConfig(ctx context.Context, wtDir, trustedSHA, runID string) *config.RepoConfig {
 	if trustedSHA == "" {
 		// No trusted SHA means no freshly-fetched default-branch commit to
-		// read from. Return nil so EffectiveRepoConfig forces empty
-		// commands/agent - the secure default - instead of falling back to a
-		// potentially stale origin/<defaultBranch> ref.
+		// read from. Return nil so EffectiveRepoConfig disables pushed agent
+		// selection instead of falling back to a potentially stale
+		// origin/<defaultBranch> ref. Candidate commands are independent.
+		return nil
+	}
+	entry, err := git.Run(ctx, wtDir, "ls-tree", trustedSHA, "--", ".no-mistakes.yaml")
+	if err != nil {
+		slog.Warn("trusted repo config: tree lookup failed", "run_id", runID, "sha", trustedSHA, "error", err)
+		return nil
+	}
+	if strings.TrimSpace(entry) == "" {
+		slog.Debug("trusted repo config: not present on default branch", "run_id", runID, "sha", trustedSHA)
 		return nil
 	}
 	content, err := git.ShowFile(ctx, wtDir, trustedSHA, ".no-mistakes.yaml")
 	if err != nil {
-		// Path absent on the default branch is the common "repo has no
-		// trusted commands" case; log at debug so it isn't noisy. Other
-		// errors are surfaced at warn so a genuinely broken read isn't
-		// silent. Either way trusted is nil → fail closed.
-		slog.Debug("trusted repo config: not present on default branch", "run_id", runID, "sha", trustedSHA, "error", err)
+		slog.Warn("trusted repo config: read failed", "run_id", runID, "sha", trustedSHA, "error", err)
 		return nil
 	}
 	trusted, err := config.LoadRepoFromBytes([]byte(content))
 	if err != nil {
-		slog.Warn("trusted repo config: parse failed; commands/agent from pushed branch will be disabled", "run_id", runID, "sha", trustedSHA, "error", err)
+		slog.Warn("trusted repo config: parse failed; pushed agent selection will be disabled", "run_id", runID, "sha", trustedSHA, "error", err)
 		return nil
 	}
 	return trusted
@@ -684,16 +689,16 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// before any read. Reading the trusted config at this pinned SHA (rather
 	// than the origin/<defaultBranch> remote-tracking ref) is what makes a
 	// fetch failure fail closed: if the fetch errors or the ref does not
-	// resolve, trustedSHA stays empty, loadTrustedRepoConfig returns nil, and
-	// EffectiveRepoConfig drops the pushed branch's commands/agent. Without
-	// the resolve, a stale origin/<defaultBranch> left in the shared bare
-	// repo by a previous run could serve a trusted copy that the live default
-	// branch has already removed - silently running stale shell.
+	// resolve, trustedSHA stays empty and loadTrustedRepoConfig returns nil.
+	// Without the resolve, a stale origin/<defaultBranch> left in the shared
+	// bare repo by a previous run could serve agent/document/security settings
+	// that the live default branch has already removed. Candidate commands do
+	// not use this remote-keyed path.
 	var trustedSHA string
 	if repo.DefaultBranch != "" {
 		fetchErr := fetchRunDefaultBranch(ctx, wtDir, repo)
 		if fetchErr != nil {
-			slog.Warn("failed to fetch default branch into worktree; trusted config disabled (commands/agent from pushed branch will be dropped)", "run_id", run.ID, "branch", repo.DefaultBranch, "error", fetchErr)
+			slog.Warn("failed to fetch default branch into worktree; trusted config disabled (pushed agent selection will be dropped)", "run_id", run.ID, "branch", repo.DefaultBranch, "error", fetchErr)
 		} else if sha, err := git.ResolveRef(ctx, wtDir, "refs/remotes/origin/"+repo.DefaultBranch); err != nil {
 			slog.Warn("failed to resolve fetched default-branch ref; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
 		} else {
@@ -718,26 +723,23 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		trackStartFailure("load_global_config")
 		return "", fmt.Errorf("load global config: %w", err)
 	}
-	repoCfg, err := config.LoadRepo(wtDir)
+	repoCfg, err := loadRepoConfigAtCommit(ctx, wtDir, headSHA)
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
 		trackStartFailure("load_repo_config")
-		return "", fmt.Errorf("load repo config: %w", err)
+		return "", err
 	}
-	// SECURITY: load the code-executing selection fields (commands.* and
-	// agent) from the trusted default-branch copy of .no-mistakes.yaml rather
-	// than the pushed SHA. The worktree is checked out at headSHA (the
-	// contributor's branch), so reading repoCfg above would honor a
-	// contributor's commands/agent and let any pushed SHA run arbitrary shell
-	// (sh -c) or pick the launched agent (incl. acp: targets) on the daemon
-	// host with the maintainer's env (GH_TOKEN, SSH agent, ...).
-	// EffectiveRepoConfig replaces commands + agent with the trusted
-	// default-branch values unless the maintainer has explicitly opted in.
+	// Commands are run-owned compatibility state: repoCfg was read from the
+	// exact submitted head above, so another clone, remote-tracking branch, or
+	// later worktree edit cannot replace the command set for this run.
 	//
-	// allow_repo_commands is itself read ONLY from the trusted copy: a
-	// contributor cannot self-enable it from the pushed branch. A readable
-	// trusted tree with no config leaves the opt-in false and forces
-	// commands/agent empty. An unreadable trusted tree aborts below.
+	// SECURITY: agent selection remains sourced from the trusted default-branch
+	// copy unless the maintainer explicitly opts in. A pushed SHA therefore
+	// cannot select a different process (including acp: targets) to launch with
+	// the maintainer's credentials.
+	//
+	// allow_repo_commands is retained as the compatibility key for opting into
+	// pushed agent selection and is itself read ONLY from the trusted copy.
 	// SECURITY: a trusted-config fetch failure must abort, not silently disable
 	// the disable_project_settings opt-out (see assertGateTrustedConfigReadable).
 	if err := assertGateTrustedConfigReadable(ctx, wtDir, repo.DefaultBranch, trustedSHA); err != nil {
@@ -749,12 +751,11 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	if allowRepoCommands {
-		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands/agent from pushed branch", "run_id", run.ID, "branch", branch)
-	} else if repoCfg.Commands != effectiveRepoCfg.Commands || repoCfg.Agent != effectiveRepoCfg.Agent || !agentListsEqual(repoCfg.Agents, effectiveRepoCfg.Agents) {
-		// Surface the silent override so a maintainer who shipped a commands.*
-		// or agent change on a feature branch understands why it did not run.
-		// This is not an error: it is the secure default in action.
-		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
+		slog.Warn("allow_repo_commands is enabled on the default branch: honoring agent selection from pushed branch", "run_id", run.ID, "branch", branch)
+	} else if repoCfg.Agent != effectiveRepoCfg.Agent || !agentListsEqual(repoCfg.Agents, effectiveRepoCfg.Agents) {
+		// Surface the silent agent override so a maintainer who shipped an
+		// agent change on a feature branch understands why it did not apply.
+		slog.Info("repo agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
 

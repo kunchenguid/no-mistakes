@@ -59,14 +59,11 @@ type SetupOpts struct {
 	// fake agent uses its built-in clean-response default.
 	Scenario string
 
-	// AllowRepoCommands controls the per-repo allow_repo_commands opt-in
-	// committed to the trusted default-branch .no-mistakes.yaml (never the
-	// global config, and never the pushed branch). The harness models a
-	// trusted single-developer environment (the same user owns the working
-	// clone, gate, and daemon), so it defaults to true: feature-branch
-	// commands run as before. Tests that verify the supply-chain hardening
-	// (commands must come from the trusted default branch) pass a pointer
-	// to false to exercise the secure default.
+	// AllowRepoCommands controls the legacy-named per-repo opt-in for candidate
+	// agent selection. It is committed to the trusted default-branch
+	// .no-mistakes.yaml (never global and never candidate-controlled). Candidate
+	// commands always come from the run's submitted commit. The harness defaults
+	// the flag to true so candidate agent settings work as in older e2e tests.
 	AllowRepoCommands *bool
 }
 
@@ -248,9 +245,8 @@ func (h *Harness) initGitRepos() {
 	}
 	// allow_repo_commands is committed to the trusted default-branch copy of
 	// .no-mistakes.yaml (never global, never the pushed branch). The harness
-	// models a trusted single-developer environment where the same user owns
-	// every branch, so it defaults to true: feature-branch commands run as
-	// before. Security tests override via SetupOpts.AllowRepoCommands = false.
+	// defaults it to true for backward-compatible candidate agent selection;
+	// command resolution is always bound to each run's submitted commit.
 	allowRepoCommands := true
 	if h.allowRepoCommands != nil {
 		allowRepoCommands = *h.allowRepoCommands

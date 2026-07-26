@@ -93,12 +93,12 @@ type RepoConfig struct {
 	Agents         []types.AgentName `yaml:"-"`
 	Commands       Commands          `yaml:"commands"`
 	IgnorePatterns []string          `yaml:"ignore_patterns"`
-	// AllowRepoCommands opts in to honoring the code-executing selection
-	// fields (commands.{test,lint,format} and agent) from a contributor's
-	// pushed branch instead of the trusted default-branch copy. It is read
-	// ONLY from the trusted default-branch copy of .no-mistakes.yaml (never
-	// the pushed SHA), so a contributor cannot self-enable. Default false:
-	// the pushed branch controls nothing that executes.
+	// AllowRepoCommands is the legacy-named opt-in for honoring agent selection
+	// from a contributor's pushed branch instead of the trusted default-branch
+	// copy. Commands always come from the exact candidate commit being
+	// validated. The key is retained for config compatibility and is read ONLY
+	// from the trusted default-branch copy, so a contributor cannot self-enable
+	// pushed agent selection.
 	AllowRepoCommands bool       `yaml:"allow_repo_commands"`
 	AutoFix           AutoFixRaw `yaml:"auto_fix"`
 	Commit            CommitRaw  `yaml:"commit"`
@@ -1022,10 +1022,9 @@ func LoadRepo(dir string) (*RepoConfig, error) {
 	return parseRepoConfig(data)
 }
 
-// LoadRepoFromBytes parses per-repo config from raw YAML bytes. It is the
-// trusted-config entry point: callers that read .no-mistakes.yaml from a
-// specific git ref (e.g. the default branch) use this to avoid honoring a
-// contributor's checked-out copy.
+// LoadRepoFromBytes parses per-repo config from raw YAML bytes. Callers use it
+// after reading .no-mistakes.yaml from an exact git commit, whether that commit
+// is the run-owned candidate snapshot or the trusted default-branch snapshot.
 func LoadRepoFromBytes(data []byte) (*RepoConfig, error) {
 	return parseRepoConfig(data)
 }
@@ -1048,24 +1047,20 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // EffectiveRepoConfig returns the repo config that should drive the pipeline
 // given a pushed-branch copy and the trusted default-branch copy.
 //
-// The code-executing selection fields - Commands (run verbatim via sh -c on
-// the daemon host) and Agent/Agents (select which processes launch with the
-// maintainer's credentials, including fallback lists and acp: targets) - are
-// taken only from the trusted copy when it is present, so a contributor's
-// pushed branch cannot inject shell or pick an agent. Document (the
-// documentation placement policy injected into the document gate prompt) is
-// trusted-only for the same reason: a pushed branch must not weaken the
-// documentation rules that gate itself. DisableProjectSettings is also
-// trusted-only so a pushed branch cannot enable or defeat the gate-agent
-// project-instruction boundary. When allowRepoCommands is
-// true the maintainer has explicitly opted in (via allow_repo_commands on the
-// TRUSTED default-branch copy) to honoring the pushed branch's commands and
-// agent selection.
-// When there is no trusted copy and the maintainer has not opted in, both
-// fields are forced empty (Agent "" and nil Agents inherit the global agent;
-// Commands{} yields built-in defaults) rather than falling back to the pushed
-// branch - this blocks the supply-chain vector for repos that ship
-// .no-mistakes.yaml only on feature branches.
+// Commands are always taken from pushed, which callers load from the exact
+// immutable candidate commit for the run. This keeps command resolution
+// repository- and run-local: a default branch, another clone, or a shared
+// remote cannot replace the command set of the candidate being validated.
+//
+// Agent/Agents select which processes launch with the maintainer's credentials
+// (including fallback lists and acp: targets), so they remain trusted-only
+// unless allowRepoCommands is true. Document (the documentation placement
+// policy injected into the document gate prompt) and DisableProjectSettings
+// are always trusted-only so a pushed branch cannot weaken either boundary.
+// When there is no trusted copy and the maintainer has not opted in, Agent ""
+// and nil Agents inherit the global agent rather than trusting the pushed
+// selection. A candidate with no .no-mistakes.yaml has empty Commands and does
+// not borrow commands from the trusted copy.
 //
 // Non-executing fields (ignore patterns, auto-fix, commit, intent, test) are
 // always taken from the pushed copy, matching prior behavior, since they cannot
@@ -1091,11 +1086,9 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		return &effective
 	}
 	if trusted != nil {
-		effective.Commands = trusted.Commands
 		effective.Agent = trusted.Agent
 		effective.Agents = copyAgents(trusted.Agents)
 	} else {
-		effective.Commands = Commands{}
 		effective.Agent = ""
 		effective.Agents = nil
 	}

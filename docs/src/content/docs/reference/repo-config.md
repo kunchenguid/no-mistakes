@@ -5,16 +5,23 @@ description: All fields for .no-mistakes.yaml.
 
 Per-repo configuration lives in `.no-mistakes.yaml` at the root of your repository.
 
-:::caution[Security: gate-control fields are read from the default branch]
-`commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
-To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions` and `disable_project_settings` only from that trusted copy.
+:::caution[Security: candidate commands execute on the daemon host]
+`commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`.
+The daemon reads them from the exact immutable candidate commit submitted for the run and keeps that command snapshot for recovery.
+Another clone, a linked worktree's primary checkout, a later local edit, and the remote default branch cannot replace those commands.
+Review candidate `.no-mistakes.yaml` changes with the same care as executable code.
+
+`agent` selects which process launches with the maintainer's credentials (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets), so it remains trusted-default-only by default.
+The daemon reads `agent`, `document.instructions`, `disable_project_settings`, and the `allow_repo_commands` compatibility switch from the default branch at the exact commit a fresh fetch resolved.
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
-A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
+A readable candidate tree with no `.no-mistakes.yaml` has empty commands and never borrows commands from the default branch or another clone.
+A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses trusted-field defaults.
 Commit the gate-control settings you want to your default branch.
 Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`) are still read from the pushed branch.
 
-If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
+If you genuinely want per-branch `agent` selection, opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. The legacy key name is retained for configuration compatibility; candidate commands no longer depend on it. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable candidate agent selection.
+
+Upgrade compatibility: there is no schema migration or mutable config backfill. Current run rows already retain `submitted_head_sha`, so recovery reconstructs their command snapshot from that commit. A legacy active row without `submitted_head_sha` falls back to its retained `head_sha`, the only commit identity available; it never guesses commands from another checkout or the remote default branch.
 :::
 
 ```yaml
@@ -95,18 +102,18 @@ After resolving `auto`, entries that resolve to the same ACP target are deduplic
 If no entry is available, the gate fails before its first pipeline step.
 If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
 Structured findings and schema/output validation problems do not trigger fallback.
-This per-repo `agent` value, including every fallback entry, is still read from the trusted default-branch `.no-mistakes.yaml` unless `allow_repo_commands` is enabled there.
+This per-repo `agent` value, including every fallback entry, is read from the trusted default-branch `.no-mistakes.yaml` unless `allow_repo_commands` is enabled there.
 
 ### allow_repo_commands
 
-Opt in to honoring the code-executing selection fields (`commands.{test,lint,format}` and `agent`) from a contributor's pushed branch instead of the trusted default-branch copy.
+Legacy-named opt-in to honoring `agent` selection from the candidate branch instead of the trusted default-branch copy.
 
 | | |
 |---|---|
 | Type | `bool` |
 | Default | `false` |
 
-This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
+This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the candidate SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `agent` from your default branch so a candidate cannot pick the launched process. Candidate `commands.*` always come from the exact submitted commit and are unaffected by this flag. Leave this `false` for any repo that accepts contributions. Set it to `true` only when you also trust candidate branches to choose the gate agent.
 
 ### disable_project_settings
 
@@ -184,7 +191,7 @@ The document step always applies a built-in placement policy: every fact has exa
 `document.instructions` states this repository's ownership map or extra placement rules (for example, which file owns which class of facts).
 It augments or clarifies the built-in policy; it cannot disable documentation integrity.
 
-Like `commands.*` and `agent`, this field steers gate behavior, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`: a contributor's pushed branch cannot weaken the documentation rules that gate its own review.
+Like `agent`, this field steers a trusted gate boundary, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`: a contributor's pushed branch cannot weaken the documentation rules that gate its own review.
 
 ### Command process lifetime
 
