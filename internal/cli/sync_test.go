@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -426,7 +427,11 @@ func newCLIRecoverFixture(t *testing.T) cliRecoverFixture {
 		t.Fatal(err)
 	}
 	chdir(t, local)
-	return cliRecoverFixture{local: local, gate: gate, submitted: submitted, preserved: preserved}
+	return cliRecoverFixture{local: local, gate: gate, submitted: submitted, preserved: preserved, runID: run.ID}
+}
+
+func (f cliRecoverFixture) anchorRef() string {
+	return "refs/no-mistakes/recover/" + f.runID
 }
 
 // newCLIUnmovedAbortFixture reproduces the pre-push abort taken when delivery
@@ -921,6 +926,46 @@ func TestAxiSyncRecoverDivergedRefusesThenKeepLocalSucceeds(t *testing.T) {
 	}
 }
 
+func TestAxiSyncRecoverMovedGateAnchorsAndReturnsActionableHelp(t *testing.T) {
+	f := newCLIRecoverFixture(t)
+	cliGit(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted)
+	beforeLocalRefs := cliRefSnapshot(t, f.local)
+	beforeGateRefs := cliRefSnapshot(t, f.gate)
+	beforeStatus := cliGit(t, f.local, "status", "--porcelain=v1")
+
+	out, err := executeCmd("axi", "sync", "--recover")
+	var ee *exitError
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("moved-gate recover should exit 1, got %#v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"safety: blocked_recover_diverged",
+		"relation: diverged",
+		f.anchorRef(),
+		"no-mistakes axi sync --recover --keep-local",
+		"no-mistakes rerun",
+		"git log --oneline --left-right HEAD..." + f.anchorRef(),
+		"no files or refs were changed except the recovery anchor",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("moved-gate recover output missing %q:\n%s", want, out)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("non-keep-local moved HEAD to %s, want submitted %s", got, f.submitted)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("non-keep-local moved gate branch to %s, want submitted %s", got, f.submitted)
+	}
+	if got := cliGit(t, f.local, "status", "--porcelain=v1"); got != beforeStatus {
+		t.Fatalf("non-keep-local touched worktree status: before %q after %q", beforeStatus, got)
+	}
+	assertOnlyCLIRefChange(t, beforeLocalRefs, cliRefSnapshot(t, f.local), f.anchorRef(), f.preserved)
+	if afterGateRefs := cliRefSnapshot(t, f.gate); !reflect.DeepEqual(beforeGateRefs, afterGateRefs) {
+		t.Fatalf("non-keep-local touched gate refs:\nbefore=%v\nafter=%v", beforeGateRefs, afterGateRefs)
+	}
+}
+
 func TestSyncRecoverFlagValidation(t *testing.T) {
 	newCLIRecoverFixture(t)
 	for _, args := range [][]string{
@@ -972,6 +1017,40 @@ func cliGit(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
 	}
 	return strings.TrimSpace(out)
+}
+
+func cliRefSnapshot(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	out := cliGit(t, dir, "for-each-ref", "--format=%(refname)=%(objectname)")
+	refs := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		name, sha, ok := strings.Cut(line, "=")
+		if !ok {
+			t.Fatalf("malformed ref line %q", line)
+		}
+		refs[name] = sha
+	}
+	return refs
+}
+
+func assertOnlyCLIRefChange(t *testing.T, before, after map[string]string, changedRef, changedSHA string) {
+	t.Helper()
+	if got := after[changedRef]; got != changedSHA {
+		t.Fatalf("changed ref %s = %s, want %s", changedRef, got, changedSHA)
+	}
+	withoutChanged := make(map[string]string, len(after))
+	for name, sha := range after {
+		if name == changedRef {
+			continue
+		}
+		withoutChanged[name] = sha
+	}
+	if !reflect.DeepEqual(before, withoutChanged) {
+		t.Fatalf("unexpected ref changes:\nbefore=%v\nafter=%v", before, after)
+	}
 }
 
 func asExitError(err error, target **exitError) bool {

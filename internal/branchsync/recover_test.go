@@ -157,6 +157,11 @@ func newRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
 
 func (f *recoverFixture) anchorRef() string { return "refs/no-mistakes/recover/" + f.run.ID }
 
+func (f *recoverFixture) moveGateBranchToSubmitted() {
+	f.t.Helper()
+	mustRun(f.t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted)
+}
+
 func (f *recoverFixture) custodyReturned() bool {
 	f.t.Helper()
 	run, err := f.db.GetRun(f.run.ID)
@@ -164,6 +169,13 @@ func (f *recoverFixture) custodyReturned() bool {
 		f.t.Fatalf("reload run: %#v, %v", run, err)
 	}
 	return run.CustodyReturnedAt != nil
+}
+
+func assertNoRecoverAnchor(t *testing.T, f *recoverFixture) {
+	t.Helper()
+	if got, err := gitpkg.Run(f.ctx, f.local, "rev-parse", "--verify", "--quiet", f.anchorRef()+"^{commit}"); err == nil {
+		t.Fatalf("unexpected recovery anchor %s at %s", f.anchorRef(), got)
+	}
 }
 
 // TestTerminalPrePushRunSurfacesGuardedCustodyRecovery is the regression test
@@ -427,6 +439,151 @@ func TestRecoverDivergedRefusesButKeepLocalReturnsCustody(t *testing.T) {
 	if !f.custodyReturned() {
 		t.Fatal("keep-local did not stamp custody")
 	}
+}
+
+// TestRecoverGateAtLocalSubmittedHeadAnchorsRecordedHead covers the recovery
+// gap diagnosed for Firstmate PR #983: the terminal run recorded preserved
+// head P, the operator and gate branch have moved back to the submitted head
+// A, and P still exists only in the local gate object database.
+func TestRecoverGateAtLocalSubmittedHeadAnchorsRecordedHead(t *testing.T) {
+	t.Run("default anchors and refuses with actionable custody choices", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		f.moveGateBranchToSubmitted()
+		beforeStatus := mustRun(t, f.local, "status", "--porcelain=v1")
+
+		state := f.service.Recover(f.ctx, false)
+		if state.Recovered || state.Changed || state.Safety != "blocked_recover_diverged" || state.Relation != RelationDiverged {
+			t.Fatalf("moved-gate default recover = %#v", state)
+		}
+		for _, want := range []string{f.anchorRef(), "no-mistakes axi sync --recover --keep-local", "no-mistakes rerun", "git log --oneline --left-right HEAD..." + f.anchorRef()} {
+			if !strings.Contains(state.Error, want) {
+				t.Fatalf("moved-gate refusal missing %q: %q", want, state.Error)
+			}
+		}
+		if state.NextAction == nil || state.NextAction.Code != "inspect_and_reconcile_manually" || !strings.Contains(state.NextAction.Command, f.anchorRef()) {
+			t.Fatalf("moved-gate next action = %#v", state.NextAction)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+			t.Fatalf("default recover moved HEAD to %s, want submitted %s", got, f.submitted)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+			t.Fatalf("default recover moved gate branch to %s, want submitted %s", got, f.submitted)
+		}
+		if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+			t.Fatalf("default recover anchor = %s, want preserved %s", got, f.preserved)
+		}
+		if got := mustRun(t, f.local, "status", "--porcelain=v1"); got != beforeStatus {
+			t.Fatalf("default recover touched worktree status: before %q after %q", beforeStatus, got)
+		}
+		if f.custodyReturned() {
+			t.Fatal("default moved-gate refusal stamped custody")
+		}
+	})
+
+	t.Run("keep local stamps custody without moving worktree or gate", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		f.moveGateBranchToSubmitted()
+
+		state := f.service.Recover(f.ctx, true)
+		if !state.Recovered || state.Changed {
+			t.Fatalf("moved-gate keep-local recover = %#v", state)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+			t.Fatalf("keep-local moved HEAD to %s, want submitted %s", got, f.submitted)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+			t.Fatalf("keep-local moved gate branch to %s, want submitted %s", got, f.submitted)
+		}
+		if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+			t.Fatalf("keep-local anchor = %s, want preserved %s", got, f.preserved)
+		}
+		if !f.custodyReturned() {
+			t.Fatal("keep-local did not stamp custody")
+		}
+	})
+}
+
+func TestRecoverMovedGateExactAnchorDisconfirmingCases(t *testing.T) {
+	t.Run("local differs from moved gate", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		f.moveGateBranchToSubmitted()
+		mustWrite(t, filepath.Join(f.local, "local.txt"), "local\n")
+		mustRun(t, f.local, "add", "local.txt")
+		mustRun(t, f.local, "commit", "-m", "local followup")
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Safety != "blocked_recover_gate_diverged" {
+			t.Fatalf("local-differs moved gate recover = %#v", state)
+		}
+		assertNoRecoverAnchor(t, f)
+		if f.custodyReturned() {
+			t.Fatal("local-differs moved gate stamped custody")
+		}
+	})
+
+	t.Run("recorded head absent from gate object database", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		f.moveGateBranchToSubmitted()
+		missing := strings.Repeat("1", 40)
+		if err := f.db.UpdateRunHeadSHA(f.run.ID, missing); err != nil {
+			t.Fatal(err)
+		}
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Safety != "blocked_recover_preserve_failed" {
+			t.Fatalf("missing-preserved moved gate recover = %#v", state)
+		}
+		assertNoRecoverAnchor(t, f)
+		if f.custodyReturned() {
+			t.Fatal("missing-preserved moved gate stamped custody")
+		}
+	})
+
+	t.Run("wrong checked out branch", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		f.moveGateBranchToSubmitted()
+		mustRun(t, f.local, "checkout", "main")
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Safety != "blocked_recover_not_applicable" {
+			t.Fatalf("wrong-branch moved gate recover = %#v", state)
+		}
+		assertNoRecoverAnchor(t, f)
+		if f.custodyReturned() {
+			t.Fatal("wrong-branch recover stamped custody")
+		}
+	})
+
+	t.Run("nonterminal run", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunRunning)
+		f.moveGateBranchToSubmitted()
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Safety != "blocked_recover_run_active" {
+			t.Fatalf("active moved gate recover = %#v", state)
+		}
+		assertNoRecoverAnchor(t, f)
+		if f.custodyReturned() {
+			t.Fatal("active moved gate stamped custody")
+		}
+	})
+
+	t.Run("gate unavailable", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		f.moveGateBranchToSubmitted()
+		if err := os.RemoveAll(f.gate); err != nil {
+			t.Fatal(err)
+		}
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Safety != "blocked_recover_gate_unavailable" {
+			t.Fatalf("unavailable moved gate recover = %#v", state)
+		}
+		assertNoRecoverAnchor(t, f)
+		if f.custodyReturned() {
+			t.Fatal("unavailable moved gate stamped custody")
+		}
+	})
 }
 
 // TestRecoverKeepLocalDirtyBehindReturnsCustodyWithoutTouchingWorktree covers
