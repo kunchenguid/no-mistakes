@@ -1,9 +1,11 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
@@ -70,6 +72,24 @@ func checkFailedTerminally(check scm.Check) bool {
 	return check.Failing() || check.Bucket == scm.CheckBucketCancel
 }
 
+// rerunRollupGracePolls is how many polls a check gets to show its rerun after
+// one was requested for it. `gh run rerun` returns as soon as the provider
+// accepts the request, while the new attempt replaces the cancelled check in
+// the status rollup asynchronously, so the very next poll can still be reading
+// the outcome the rerun was meant to replace. Without a grace the run would
+// escalate a check it never actually re-ran; without a bound on that grace, a
+// request the provider accepted but never reflected would keep the monitor
+// waiting until its idle timeout.
+const rerunRollupGracePolls = 2
+
+// rerunRollupState is what a check looked like when its rerun was requested, so
+// a later poll can tell the re-run job ending cancelled again from the rollup
+// simply not having refreshed yet.
+type rerunRollupState struct {
+	completedAt    time.Time
+	graceRemaining int
+}
+
 // checkRerunBudget records how many reruns each check has consumed during this
 // run. It is keyed by check name so one flaky job cannot spend another job's
 // budget, and it is spent on the attempt rather than on success, so a provider
@@ -79,7 +99,8 @@ func checkFailedTerminally(check scm.Check) bool {
 // key and therefore one budget. Selection must reserve against that shared key
 // (see transientRerunCandidates) or a single poll could spend it more than once.
 type checkRerunBudget struct {
-	spent map[string]int
+	spent  map[string]int
+	rollup map[string]rerunRollupState
 }
 
 func (b *checkRerunBudget) remaining(name string, limit int) int {
@@ -91,12 +112,77 @@ func (b *checkRerunBudget) remaining(name string, limit int) int {
 
 func (b *checkRerunBudget) used(name string) int { return b.spent[name] }
 
-func (b *checkRerunBudget) spend(name string) int {
+// spend records one rerun against check's name, along with the completion the
+// check reported at that moment. That timestamp is the only evidence a later
+// poll has that it is reading a refreshed rollup rather than the same outcome
+// the rerun was requested for.
+func (b *checkRerunBudget) spend(check scm.Check) int {
 	if b.spent == nil {
 		b.spent = map[string]int{}
 	}
-	b.spent[name]++
-	return b.spent[name]
+	if b.rollup == nil {
+		b.rollup = map[string]rerunRollupState{}
+	}
+	b.spent[check.Name]++
+	b.rollup[check.Name] = rerunRollupState{completedAt: check.CompletedAt, graceRemaining: rerunRollupGracePolls}
+	return b.spent[check.Name]
+}
+
+// cancelledAfterRerun partitions the checks this run already spent a rerun on
+// into the ones the provider cancelled again (unresolved: nothing but a
+// decision can clear them) and the ones whose rerun it has not published yet
+// (awaiting: the monitor keeps waiting rather than escalating an outcome the
+// rerun was meant to replace).
+//
+// It consumes rollup grace as it goes, so it must be called at most once per
+// poll. A check whose grace runs out is reported as unresolved: a provider that
+// accepted a rerun and never reflected it must not stall the run.
+func (b *checkRerunBudget) cancelledAfterRerun(checks []scm.Check) (unresolved, awaiting []string) {
+	refreshed := map[string]bool{}
+	var order []string
+	for _, check := range checks {
+		if check.Bucket != scm.CheckBucketCancel || b.used(check.Name) == 0 {
+			continue
+		}
+		if _, seen := refreshed[check.Name]; !seen {
+			order = append(order, check.Name)
+		}
+		// Same-named checks share one budget key, so one refreshed instance is
+		// enough to say the name's rollup has moved on.
+		refreshed[check.Name] = refreshed[check.Name] || !b.rollupUnchanged(check)
+	}
+	for _, name := range order {
+		if refreshed[name] || !b.consumeRollupGrace(name) {
+			unresolved = append(unresolved, name)
+			continue
+		}
+		awaiting = append(awaiting, name)
+	}
+	return unresolved, awaiting
+}
+
+// rollupUnchanged reports whether check still carries the exact completion it
+// reported when its rerun was requested. An unknown completion on either side
+// is not evidence of anything, so it reads as changed and the check is treated
+// exactly as it was before rollup lag was accounted for.
+func (b *checkRerunBudget) rollupUnchanged(check scm.Check) bool {
+	state, ok := b.rollup[check.Name]
+	if !ok || state.completedAt.IsZero() || check.CompletedAt.IsZero() {
+		return false
+	}
+	return check.CompletedAt.Equal(state.completedAt)
+}
+
+// consumeRollupGrace spends one poll of a check's rollup grace and reports
+// whether any was left to spend.
+func (b *checkRerunBudget) consumeRollupGrace(name string) bool {
+	state, ok := b.rollup[name]
+	if !ok || state.graceRemaining <= 0 {
+		return false
+	}
+	state.graceRemaining--
+	b.rollup[name] = state
+	return true
 }
 
 // transientRerunCandidates returns the checks that should be re-run before any
@@ -134,30 +220,25 @@ func transientRerunCandidates(checks []scm.Check, budget *checkRerunBudget, limi
 	return candidates
 }
 
-// mergeUnresolvedCancelledChecks returns failing plus the names of checks that
-// are still terminally cancelled after this run already spent a rerun on them.
-//
-// A cancelled check is not a failing check, so on its own it never reaches the
-// gate a failing check does, and the monitor would report a PR carrying it as
-// green. Once a rerun has been spent and the check came back cancelled anyway,
-// it is an unresolved issue and belongs with the failing checks. Checks this run
-// never re-ran - reruns disabled, or a provider with no rerun capability - are
-// left exactly as they were before this policy existed.
-func mergeUnresolvedCancelledChecks(failing []string, checks []scm.Check, budget *checkRerunBudget) []string {
-	seen := make(map[string]struct{}, len(failing))
-	for _, name := range failing {
+// mergeCheckNames appends the names in extra that base does not already carry.
+// It is how a cancelled check the provider never resolved joins the issues the
+// step reports: a cancelled check is not a failing check, so on its own it
+// never reaches a gate and the monitor would report a PR carrying it as green.
+func mergeCheckNames(base, extra []string) []string {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	for _, name := range base {
 		seen[name] = struct{}{}
 	}
-	merged := failing
-	for _, check := range checks {
-		if check.Bucket != scm.CheckBucketCancel || budget.used(check.Name) == 0 {
+	merged := base
+	for _, name := range extra {
+		if _, ok := seen[name]; ok {
 			continue
 		}
-		if _, ok := seen[check.Name]; ok {
-			continue
-		}
-		seen[check.Name] = struct{}{}
-		merged = append(merged, check.Name)
+		seen[name] = struct{}{}
+		merged = append(merged, name)
 	}
 	return merged
 }
@@ -204,7 +285,7 @@ func (s *CIStep) rerunTransientChecks(sctx *pipeline.StepContext, host scm.Host,
 
 	issued := false
 	for _, check := range candidates {
-		used := s.transientReruns.spend(check.Name)
+		used := s.transientReruns.spend(check)
 		if err := rerunner.RerunCheck(sctx.Ctx, pr, check); err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not re-run transient CI check %s: %v", check.Name, err))
 			continue
@@ -221,9 +302,19 @@ func (s *CIStep) rerunTransientChecks(sctx *pipeline.StepContext, host scm.Host,
 // target - the commit the provider's checks actually ran on. A branch that is
 // missing there is an error like any other unreadable remote, never a SHA the
 // caller could mistake for a real head.
+//
+// The ls-remote is bounded on its own deadline rather than the run's context,
+// exactly like the base-branch tip resolution in the same poll loop: this runs
+// once per poll, its failure path just declines the rerun, and the CI timeout is
+// only evaluated at the top of the loop, so a git transport that hangs while the
+// status API stays healthy would otherwise defer timeout detection indefinitely.
 func publishedBranchHead(sctx *pipeline.StepContext) (string, error) {
 	ref := normalizedBranchRef(sctx.Run.Branch)
-	out, err := stepGitRun(sctx, "ls-remote", resolvePushURL(sctx), ref)
+	ctx, cancel := context.WithTimeout(sctx.Ctx, defaultPublishedHeadResolveWindow)
+	defer cancel()
+	bounded := *sctx
+	bounded.Ctx = ctx
+	out, err := stepGitRun(&bounded, "ls-remote", resolvePushURL(sctx), ref)
 	if err != nil {
 		return "", err
 	}
@@ -239,6 +330,30 @@ func transientStateLabel(check scm.Check) string {
 		return state
 	}
 	return string(check.Bucket)
+}
+
+// ciUnresolvedCancelledOutcome parks the run for checks the provider cancelled
+// again after this run already spent their rerun budget.
+//
+// A cancellation is never a verdict on the code, so there is nothing for the fix
+// agent to repair: routing it into the auto_fix.ci loop would spend an agent
+// round - and let that agent edit code the provider never tested - chasing an
+// outcome only the provider can clear. The findings are ask-user for the same
+// reason, so a fix loop cannot pick them up later either.
+func ciUnresolvedCancelledOutcome(names []string) *pipeline.StepOutcome {
+	findings := Findings{Summary: "CI checks were cancelled again after their rerun"}
+	for _, name := range names {
+		findings.Items = append(findings.Items, Finding{
+			Severity:    "warning",
+			Description: fmt.Sprintf("CI check cancelled again after its rerun: %s - the provider cancelled it rather than reporting a job failure, so it needs a decision rather than a code fix", name),
+			Action:      types.ActionAskUser,
+		})
+	}
+	findingsJSON, _ := json.Marshal(findings)
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		Findings:      string(findingsJSON),
+	}
 }
 
 func ciRerunHeadMismatchOutcome(expected, observed string) *pipeline.StepOutcome {

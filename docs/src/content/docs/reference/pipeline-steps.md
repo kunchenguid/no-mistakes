@@ -225,11 +225,11 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 - The ready signal clears if checks start running again, new failures appear, provider state becomes uncertain, or the PR is merged, closed, or declined
 - Waits a 60s grace period before trusting empty results (CI checks may not have registered yet)
 - If CI failures or, on GitHub, GitLab, or Azure DevOps, a merge conflict are already known while other checks are still pending: waits for all checks to finish before attempting an auto-fix
-- Once every check has finished, classifies each terminally failed check by the provider's own reported outcome before anything escalates: `cancelled` is the provider reporting itself, while `failure`, `error`, `timed_out`, `action_required`, and `startup_failure` are the job's verdict on the commit
-- On GitHub, re-runs a cancelled check for the same commit instead of escalating it, up to [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_transient) times per check per run (default `1`), targeting the exact job behind the check and naming each rerun in the step log so a run waiting on one is visible in the TUI and `axi`
-- Escalates every other failure, and any merge conflict, on its first observation with no added latency: a cancelled check in the same poll is not re-run, because the fix agent is needed regardless and no rerun can clear a merge conflict. An outcome no-mistakes cannot classify, a check with no single re-runnable job, and a provider with no rerun API all escalate exactly as they did before
-- Reports a check that is still cancelled after its rerun as a failing check, so it reaches the approval gate instead of leaving the PR looking green
-- Never re-runs checks across a head change: if the published branch head no longer equals the commit the run delivered, the step pauses for user approval with the expected and observed commits, because re-running checks would certify a revision this run never produced
+- Once every check has finished, classifies each terminally failed check by the provider's own reported outcome before anything escalates; [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_transient) owns which outcomes count as the provider reporting itself
+- On GitHub, re-runs such a check for the same commit instead of escalating it, targeting the exact job behind the check and naming each rerun in the step log so a run waiting on one is visible in the TUI and `axi`
+- Escalates every other failure, and any merge conflict, on its first observation with no added latency, and waits out the poll or two a provider can take to publish an accepted rerun rather than escalating the outcome that rerun was meant to replace
+- Pauses for user approval, without spending an auto-fix attempt, when a re-run check is cancelled again: a cancellation is not a verdict on the code, so there is nothing for the fix agent to repair, and the PR must not look green either
+- Never re-runs checks across a head change: if the published branch head no longer equals the commit the run delivered, the step clears any ready-to-merge signal and pauses for user approval with the expected and observed commits, because re-running checks would certify a revision this run never produced
 - On CI failure: fetches failed job logs (GitHub via `gh run view --log-failed`, GitLab via `glab ci trace`, Bitbucket Cloud via failed pipeline step logs; Azure DevOps has no first-class build-log command, so the agent fixes from the failing-check list without logs), sends them to the agent with user intent when available, and, if the agent produces changes, commits them and uses the same force-push safety guard as the push step
 - On GitHub, GitLab, or Azure DevOps merge conflict: asks the agent to rebase onto the latest default-branch tip and make the smallest correct root-cause fix for the conflicts, using user intent when available
 - If both CI failures and a GitHub, GitLab, or Azure DevOps merge conflict are present: fixes both in the same attempt
@@ -243,7 +243,7 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 
 **Default auto-fix limit:** `3` total CI auto-fix attempts.
 
-**Default transient rerun budget:** `1` rerun per cancelled check per run, before that check reaches the fix agent.
+**Default transient rerun budget:** `1` rerun per cancelled check per run, before that check reaches an approval gate.
 
 ## Step statuses
 

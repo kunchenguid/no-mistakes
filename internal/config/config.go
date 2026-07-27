@@ -44,9 +44,9 @@ const (
 	// "off", and "never", resolves to this.
 	CITimeoutUnlimited = time.Duration(-1)
 	// DefaultCIRerunTransient is the per-check rerun budget the CI step uses
-	// when ci.rerun_transient is unset. One rerun is enough to clear a
-	// cancelled or timed-out job; a check that keeps ending the same way is a
-	// failure the provider keeps reproducing.
+	// when ci.rerun_transient is unset. One rerun is enough to clear a job the
+	// provider cancelled; a check that keeps ending cancelled is an outcome
+	// the provider keeps reproducing.
 	DefaultCIRerunTransient = 1
 	// MaxCIRerunTransient caps ci.rerun_transient. Reruns are cheap compared
 	// with an agent round, but they are not free: each one keeps the monitor
@@ -72,9 +72,14 @@ type GlobalConfig struct {
 	// session_reuse: false to force every invocation cold.
 	SessionReuse bool `yaml:"-"`
 	AutoFix      AutoFixRaw
-	Commit       CommitRaw
-	Intent       IntentRaw
-	Test         TestRaw
+	// CI is the operator's own CI-step floor. It is the only place the rerun
+	// budget can be set for a repository whose default branch this machine's
+	// user does not control (the common case when contributing to someone
+	// else's project), and a trusted repo value still wins over it.
+	CI     CIRaw
+	Commit CommitRaw
+	Intent IntentRaw
+	Test   TestRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -91,6 +96,7 @@ type globalConfigRaw struct {
 	LogLevel             string              `yaml:"log_level"`
 	SessionReuse         *bool               `yaml:"session_reuse"`
 	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
+	CI                   CIRaw               `yaml:"ci"`
 	Commit               CommitRaw           `yaml:"commit"`
 	Intent               IntentRaw           `yaml:"intent"`
 	Test                 TestRaw             `yaml:"test"`
@@ -202,9 +208,10 @@ type CIRaw struct {
 // CI holds the resolved CI-step settings.
 type CI struct {
 	// RerunTransient is how many times the CI step may re-run a single check
-	// the provider reported as transient (cancelled, timed out, stale) before
-	// that check's failure escalates to the fix agent. 0 disables reruns and
-	// restores the behavior of escalating every failure on sight.
+	// the provider reported as cancelled - the one terminal outcome it
+	// attributes to itself rather than to the job - before that check reaches
+	// an approval gate. 0 disables reruns and restores the behavior of
+	// escalating every failure on sight.
 	RerunTransient int
 }
 
@@ -416,6 +423,14 @@ auto_fix:
   review: 0
   document: 3
   ci: 3
+
+# How many times the CI step may re-run a single check the provider reported as
+# cancelled before that check reaches an approval gate instead of the fix agent.
+# Each rerun is another workflow run billed to the repository being contributed
+# to, so set 0 to never spend someone else's CI minutes. A repository that sets
+# ci.rerun_transient on its own default branch overrides this value.
+ci:
+  rerun_transient: 1
 
 # Auto-fix commit subject template. Available variables: {{.Step}} and {{.Summary}}.
 # Repo config may override this value.
@@ -996,6 +1011,7 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 		raw.AutoFix.CI = raw.AutoFix.Babysit
 	}
 	cfg.AutoFix = raw.AutoFix
+	cfg.CI = raw.CI
 	cfg.Commit = raw.Commit
 	cfg.Intent = raw.Intent
 	cfg.Test = raw.Test
@@ -1221,10 +1237,9 @@ func autoFixDefaults() AutoFix {
 	}
 }
 
-// ciDefaults returns the default CI-step settings. One rerun per transient
+// ciDefaults returns the default CI-step settings. One rerun per cancelled
 // check is on by default: it costs a poll interval, while escalating a
-// cancelled or timed-out job costs an agent round and can edit code that was
-// never broken.
+// cancelled job costs an agent round and can edit code that was never broken.
 func ciDefaults() CI {
 	return CI{RerunTransient: DefaultCIRerunTransient}
 }
@@ -1292,6 +1307,11 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	applyAutoFixOverrides(&af, &repo.AutoFix)
 
 	ci := ciDefaults()
+	// The operator's global value is a machine-wide floor they can always set;
+	// the repo value is trusted-only (EffectiveRepoConfig sourced it from the
+	// default branch), so the maintainer of the repository still has the last
+	// word on how many workflow runs their project is billed for.
+	applyCIOverrides(&ci, &global.CI)
 	applyCIOverrides(&ci, &repo.CI)
 
 	intent := intentDefaults()

@@ -450,6 +450,9 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	if raw.AutoFix.Rebase == nil || *raw.AutoFix.Rebase != defaults.Rebase {
 		t.Errorf("YAML auto_fix.rebase = %v, Go default = %d", raw.AutoFix.Rebase, defaults.Rebase)
 	}
+	if raw.CI.RerunTransient == nil || *raw.CI.RerunTransient != ciDefaults().RerunTransient {
+		t.Errorf("YAML ci.rerun_transient = %v, Go default = %d", raw.CI.RerunTransient, ciDefaults().RerunTransient)
+	}
 }
 
 func TestLoadGlobal_AutoFixDefaults(t *testing.T) {

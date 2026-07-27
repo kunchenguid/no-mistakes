@@ -218,6 +218,46 @@ func TestMerge_CIRerunTransientFromRepoConfig(t *testing.T) {
 	}
 }
 
+// The budget is trusted-only per repository, so contributing to a project whose
+// default branch this operator does not control would otherwise leave them no
+// way to decline spending someone else's CI minutes. The global value is that
+// switch, and a repository that states its own preference still overrides it.
+func TestMerge_CIRerunTransientGlobalOverrideYieldsToTrustedRepoValue(t *testing.T) {
+	globalOff := 0
+	global := DefaultGlobalConfig()
+	global.CI.RerunTransient = &globalOff
+
+	if got := Merge(global, &RepoConfig{}).CI.RerunTransient; got != globalOff {
+		t.Fatalf("ci.rerun_transient with no repo value = %d, want the global %d", got, globalOff)
+	}
+
+	repoBudget := 2
+	repo := &RepoConfig{}
+	repo.CI.RerunTransient = &repoBudget
+	if got := Merge(global, repo).CI.RerunTransient; got != repoBudget {
+		t.Fatalf("ci.rerun_transient = %d, want the trusted repo value %d", got, repoBudget)
+	}
+}
+
+func TestLoadGlobal_CIRerunTransientFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("ci:\n  rerun_transient: 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.CI.RerunTransient == nil {
+		t.Fatal("global ci.rerun_transient override was not loaded")
+	}
+	if *cfg.CI.RerunTransient != 0 {
+		t.Fatalf("global ci.rerun_transient = %d, want 0", *cfg.CI.RerunTransient)
+	}
+}
+
 // Every rerun ci.rerun_transient authorizes is another provider-side workflow
 // run billed to the repository, so the budget is read only from the trusted
 // default-branch copy: a pushed branch must not be able to raise its own.

@@ -240,7 +240,7 @@ Legacy alias: `auto_fix.babysit`.
 
 ### ci.rerun_transient
 
-How many times the CI step may re-run a single check the provider reported as cancelled before that check escalates to the fix agent.
+How many times the CI step may re-run a single check the provider reported as cancelled before that check reaches an approval gate.
 
 | | |
 |---|---|
@@ -250,8 +250,11 @@ How many times the CI step may re-run a single check the provider reported as ca
 | Trust | Read only from the trusted default branch |
 
 Every rerun this budget authorizes is another provider-side workflow run billed to the repository, so the value is read only from the trusted default-branch copy of this file, exactly like `document.instructions` and `disable_project_settings`.
-A pushed branch cannot raise its own rerun budget, and with no trusted copy the built-in default applies.
+A pushed branch cannot raise its own rerun budget.
 Set `0` to disable reruns and escalate every failure on sight.
+
+With no trusted copy of this file, the operator's own [`ci.rerun_transient`](/no-mistakes/reference/global-config/#cirerun_transient) applies, then the built-in default.
+A value set here always wins over the global one, so the maintainer of the repository has the last word on how many workflow runs their project is billed for.
 
 A rerun is requested only when the provider itself reported the outcome as `cancelled`, which is the one terminal outcome it attributes to itself rather than to the job:
 
@@ -264,7 +267,13 @@ A single non-cancelled failure, or a merge conflict, suppresses the rerun for th
 
 The budget is per check per run and is spent when the rerun is requested, so a provider that refuses the request cannot be retried in a loop.
 Check names are not unique on a pull request, so same-named checks share one budget.
-A cancelled check that comes back cancelled after its rerun is reported as a failing check, so it reaches the same approval gate instead of leaving the pull request looking green.
+
+A rerun request returns as soon as the provider accepts it, while the new attempt replaces the cancelled check in the status rollup a moment later.
+A poll that still reads the exact completion the rerun was requested for has observed nothing new, so the monitor waits for a bounded couple of polls rather than escalating a check it never actually re-ran.
+A provider that accepts a rerun and never publishes it cannot stall the run past that.
+
+A cancelled check that comes back cancelled after its rerun pauses the step for user approval, so the pull request never looks green.
+It does not enter the `auto_fix.ci` loop and never consumes an auto-fix attempt: a cancellation is the provider reporting itself, so there is nothing for the fix agent to repair and no reason to let it edit code the provider never tested.
 
 Reruns are also skipped, with no change in behavior, when:
 

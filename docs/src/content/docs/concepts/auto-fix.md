@@ -44,10 +44,12 @@ A check the provider reports as `cancelled` is the provider telling you about it
 That deterministic rerun sits strictly before the agent rounds described above:
 
 1. Every check finishes and at least one has failed.
-2. If all of those failures are cancelled checks and the pull request has no merge conflict, each one is re-run (see [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_transient) for the budget and the exact classification) and the monitor keeps polling. No `auto_fix.ci` attempt is consumed.
-3. Otherwise the failure escalates into the `auto_fix.ci` loop exactly as it always has, on its first observation. That covers a real job failure, a job that exceeded its own timeout, an outcome no-mistakes can classify neither way, a merge conflict, a check with no single re-runnable job, a provider with no rerun API, and a cancelled check that has already spent its budget.
+2. If all of those failures are cancelled checks and the pull request has no merge conflict, each one is re-run and the monitor keeps polling. No `auto_fix.ci` attempt is consumed.
+3. Otherwise the failure escalates into the `auto_fix.ci` loop exactly as it always has, on its first observation.
 
-A rerun costs another CI run of that job, so the budget is deliberately small and is spent when the rerun is requested, which bounds the loop by construction. Each rerun is announced in the step log, so a run that is waiting on one says so instead of looking stalled. Reruns never cross a head change: if the published branch head no longer matches the commit the run delivered, the step pauses with the expected and observed commits rather than re-running checks against a revision it never produced.
+[`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_transient) owns the budget, the exact classification, and every case that skips the rerun.
+
+Nothing that survives a rerun falls into the agent loop either. A check the provider cancels again is still not a verdict on the code, so it pauses for a decision instead of spending a fix round on a run that never tested anything. A rerun costs another CI run of that job, so the budget is deliberately small and is spent when the rerun is requested, which bounds the loop by construction. Each rerun is announced in the step log, so a run that is waiting on one says so instead of looking stalled. Reruns never cross a head change: if the published branch head no longer matches the commit the run delivered, the step pauses with the expected and observed commits rather than re-running checks against a revision it never produced.
 
 ## Configuration
 

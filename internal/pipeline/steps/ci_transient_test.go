@@ -2,6 +2,7 @@ package steps
 
 import (
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -210,7 +211,7 @@ func TestTransientRerunSelectionCannotExceedTheBudget(t *testing.T) {
 	reruns := 0
 	for poll := 0; poll < 5; poll++ {
 		for _, candidate := range transientRerunCandidates(checks, &budget, limit) {
-			if used := budget.spend(candidate.Name); used > limit {
+			if used := budget.spend(candidate); used > limit {
 				t.Fatalf("poll %d spent rerun %d of a %d rerun budget for %q", poll, used, limit, candidate.Name)
 			}
 			reruns++
@@ -233,7 +234,7 @@ func TestCheckRerunBudgetAccounting(t *testing.T) {
 	if got := budget.used("test"); got != 0 {
 		t.Fatalf("used before any attempt = %d, want 0", got)
 	}
-	if got := budget.spend("test"); got != 1 {
+	if got := budget.spend(scm.Check{Name: "test"}); got != 1 {
 		t.Fatalf("spend = %d, want 1", got)
 	}
 	if got := budget.remaining("test", 1); got != 0 {
@@ -250,71 +251,128 @@ func TestCheckRerunBudgetAccounting(t *testing.T) {
 	}
 }
 
-func TestMergeUnresolvedCancelledChecks(t *testing.T) {
+func TestCancelledChecksAfterRerun(t *testing.T) {
 	t.Parallel()
 
 	cancelled := scm.Check{Name: "test", Bucket: scm.CheckBucketCancel, State: "CANCELLED"}
-	failing := scm.Check{Name: "lint", Bucket: scm.CheckBucketFail, State: "FAILURE"}
 
 	cases := []struct {
-		name    string
-		failing []string
-		checks  []scm.Check
-		spent   map[string]int
-		want    []string
+		name           string
+		checks         []scm.Check
+		spent          map[string]int
+		wantUnresolved []string
+		wantAwaiting   []string
 	}{
 		{
 			// Nothing was spent on it, so behavior is what it was before this
 			// policy existed: a cancelled check is not a failing check.
 			name:   "never re-run",
 			checks: []scm.Check{cancelled},
-			want:   nil,
 		},
 		{
-			name:   "still cancelled after its rerun",
-			checks: []scm.Check{cancelled},
-			spent:  map[string]int{"test": 1},
-			want:   []string{"test"},
+			// No completion timestamp on either side is no evidence at all, so
+			// the check escalates exactly as it did before rollup lag was
+			// accounted for.
+			name:           "still cancelled after its rerun with no completion reported",
+			checks:         []scm.Check{cancelled},
+			spent:          map[string]int{"test": 1},
+			wantUnresolved: []string{"test"},
 		},
 		{
-			name:    "joins the existing failing checks",
-			failing: []string{"lint"},
-			checks:  []scm.Check{failing, cancelled},
-			spent:   map[string]int{"test": 1},
-			want:    []string{"lint", "test"},
-		},
-		{
-			name:    "never duplicates a name the failing set already carries",
-			failing: []string{"test"},
-			checks:  []scm.Check{cancelled},
-			spent:   map[string]int{"test": 1},
-			want:    []string{"test"},
-		},
-		{
-			name:   "same name twice is reported once",
-			checks: []scm.Check{cancelled, cancelled},
-			spent:  map[string]int{"test": 1},
-			want:   []string{"test"},
+			name:           "same name twice is reported once",
+			checks:         []scm.Check{cancelled, cancelled},
+			spent:          map[string]int{"test": 1},
+			wantUnresolved: []string{"test"},
 		},
 		{
 			name:   "a check that passed after its rerun is not an issue",
 			checks: []scm.Check{{Name: "test", Bucket: scm.CheckBucketPass, State: "SUCCESS"}},
 			spent:  map[string]int{"test": 1},
-			want:   nil,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			budget := checkRerunBudget{spent: tc.spent}
-			got := mergeUnresolvedCancelledChecks(tc.failing, tc.checks, &budget)
-			if len(got) != len(tc.want) {
-				t.Fatalf("merged = %v, want %v", got, tc.want)
-			}
-			for i := range tc.want {
-				if got[i] != tc.want[i] {
-					t.Fatalf("merged = %v, want %v", got, tc.want)
-				}
-			}
+			unresolved, awaiting := budget.cancelledAfterRerun(tc.checks)
+			assertNames(t, "unresolved", unresolved, tc.wantUnresolved)
+			assertNames(t, "awaiting", awaiting, tc.wantAwaiting)
 		})
+	}
+}
+
+// `gh run rerun` returns as soon as the provider accepts the request, while the
+// new attempt replaces the cancelled check asynchronously. A poll that still
+// reads the exact completion the rerun was requested for has observed nothing
+// new, so it must not escalate a check that was never actually re-run.
+func TestCancelledCheckAwaitsItsRerunBeforeBeingCalledUnresolved(t *testing.T) {
+	t.Parallel()
+
+	completed := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	check := scm.Check{Name: "test", Bucket: scm.CheckBucketCancel, State: "CANCELLED", CompletedAt: completed}
+
+	budget := checkRerunBudget{}
+	budget.spend(check)
+
+	for poll := 1; poll <= rerunRollupGracePolls; poll++ {
+		unresolved, awaiting := budget.cancelledAfterRerun([]scm.Check{check})
+		assertNames(t, "unresolved", unresolved, nil)
+		assertNames(t, "awaiting", awaiting, []string{"test"})
+	}
+
+	// A provider that accepted the rerun and never published it must not stall
+	// the monitor until its idle timeout.
+	unresolved, awaiting := budget.cancelledAfterRerun([]scm.Check{check})
+	assertNames(t, "unresolved after the grace ran out", unresolved, []string{"test"})
+	assertNames(t, "awaiting after the grace ran out", awaiting, nil)
+}
+
+// Once the rerun's own attempt is visible, a check that came back cancelled is
+// the provider reporting a second cancellation, not a stale rollup.
+func TestRerunThatEndsCancelledAgainIsUnresolvedImmediately(t *testing.T) {
+	t.Parallel()
+
+	completed := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	check := scm.Check{Name: "test", Bucket: scm.CheckBucketCancel, State: "CANCELLED", CompletedAt: completed}
+
+	budget := checkRerunBudget{}
+	budget.spend(check)
+
+	rerun := check
+	rerun.CompletedAt = completed.Add(4 * time.Minute)
+	unresolved, awaiting := budget.cancelledAfterRerun([]scm.Check{rerun})
+	assertNames(t, "unresolved", unresolved, []string{"test"})
+	assertNames(t, "awaiting", awaiting, nil)
+}
+
+func TestMergeCheckNames(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		base  []string
+		extra []string
+		want  []string
+	}{
+		{name: "nothing to merge", base: []string{"lint"}, want: []string{"lint"}},
+		{name: "joins the existing failing checks", base: []string{"lint"}, extra: []string{"test"}, want: []string{"lint", "test"}},
+		{name: "never duplicates a name the base already carries", base: []string{"test"}, extra: []string{"test"}, want: []string{"test"}},
+		{name: "deduplicates within extra", extra: []string{"test", "test"}, want: []string{"test"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertNames(t, "merged", mergeCheckNames(tc.base, tc.extra), tc.want)
+		})
+	}
+}
+
+func assertNames(t *testing.T, label string, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s = %v, want %v", label, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s = %v, want %v", label, got, want)
+		}
 	}
 }
