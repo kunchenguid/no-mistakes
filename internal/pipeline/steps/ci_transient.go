@@ -173,6 +173,18 @@ func (b *checkRerunBudget) rollupUnchanged(check scm.Check) bool {
 	return check.CompletedAt.Equal(state.completedAt)
 }
 
+// awaitingRollupPublication reports whether check is still showing the exact
+// outcome its last rerun was requested for, with grace left for the provider to
+// publish that rerun.
+//
+// It only reads the recorded state. cancelledAfterRerun owns spending grace,
+// which must happen once per poll rather than once per decision that consults
+// it, so every other caller asks this question without answering it.
+func (b *checkRerunBudget) awaitingRollupPublication(check scm.Check) bool {
+	state, ok := b.rollup[check.Name]
+	return ok && state.graceRemaining > 0 && b.rollupUnchanged(check)
+}
+
 // consumeRollupGrace spends one poll of a check's rollup grace and reports
 // whether any was left to spend.
 func (b *checkRerunBudget) consumeRollupGrace(name string) bool {
@@ -211,6 +223,16 @@ func transientRerunCandidates(checks []scm.Check, budget *checkRerunBudget, limi
 		}
 		if classifyCheckFailure(check) != classTransient {
 			return nil
+		}
+		// A rerun was already requested for this exact observation and the
+		// provider has not published it yet, so the spent-count alone would
+		// read a budget of two or more as licence to ask again: the job is
+		// already re-running, and the request either bounces or bills the
+		// repository a duplicate workflow run. Declining leaves the poll with
+		// no candidates, which is what routes the check to cancelledAfterRerun
+		// to spend a poll of its grace instead.
+		if budget.awaitingRollupPublication(check) {
+			continue
 		}
 		if budget.remaining(check.Name, limit)-reserved[check.Name] > 0 {
 			reserved[check.Name]++

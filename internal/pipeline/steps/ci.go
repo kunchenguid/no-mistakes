@@ -34,7 +34,7 @@ const (
 // timeout elapses, auto-fixing CI failures.
 type CIStep struct {
 	lastFixedChecks      string               // sorted check names from last fix attempt, to avoid re-fixing
-	lastFixedCompletedAt map[string]time.Time // failing check completion times seen before the last fix attempt
+	lastFixedCompletedAt map[string]time.Time // terminally failed check completion times seen before the last fix attempt
 	ciFixAttempts        int                  // number of CI auto-fix attempts made
 	transientReruns      checkRerunBudget     // per-check rerun budget spent on provider-reported transient failures
 	checksGracePeriod    time.Duration        // minimum wait before trusting empty CI checks (0 = default 60s)
@@ -308,12 +308,12 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			pending := hasPendingChecks(checks)
 			failing := failingCheckNames(checks)
 
-			// If a failing check completed after our last fix push, CI has
-			// already re-run since we pushed (possibly too fast to observe
-			// as pending between polls). Treat this as a new iteration so
-			// the retry path can fire rather than looping on "fix already
+			// If a terminally failed check completed after our last fix push,
+			// CI has already re-run since we pushed (possibly too fast to
+			// observe as pending between polls). Treat this as a new iteration
+			// so the retry path can fire rather than looping on "fix already
 			// attempted" until timeout.
-			if failingCheckCompletedAfter(checks, s.lastFixedCompletedAt) {
+			if terminalFailureCompletedAfter(checks, s.lastFixedCompletedAt) {
 				s.lastFixedChecks = ""
 				s.lastFixedCompletedAt = nil
 			}
@@ -396,7 +396,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					fixTargets = reportedIssues
 				}
 				fixKey := encodeLastFixedChecks(fixTargets, mergeConflict)
-				fixCompletedAt := failingCheckCompletionTimes(checks)
+				fixCompletedAt := terminalFailureCompletionTimes(checks)
 				issueDesc := strings.Join(fixTargets, ", ")
 				if mergeConflict {
 					if issueDesc != "" {

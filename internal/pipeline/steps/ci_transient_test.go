@@ -222,6 +222,70 @@ func TestTransientRerunSelectionCannotExceedTheBudget(t *testing.T) {
 	}
 }
 
+// A budget of two or more must not let a lagging rollup buy a second rerun of a
+// job that is already re-running: the request either bounces or bills the
+// repository a duplicate workflow run. Selection declines while the recorded
+// completion is still the one being observed, and the check spends rollup grace
+// instead of budget.
+func TestTransientRerunSelectionDeclinesWhileTheRollupIsUnrefreshed(t *testing.T) {
+	t.Parallel()
+
+	const limit = 2
+	completed := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	check := scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, State: "CANCELLED", CompletedAt: completed}
+
+	budget := checkRerunBudget{}
+	first := transientRerunCandidates([]scm.Check{check}, &budget, limit)
+	if len(first) != 1 {
+		t.Fatalf("first poll candidates = %+v, want the cancelled check", first)
+	}
+	budget.spend(first[0])
+
+	for poll := 1; poll <= rerunRollupGracePolls; poll++ {
+		if got := transientRerunCandidates([]scm.Check{check}, &budget, limit); len(got) != 0 {
+			t.Fatalf("poll %d selected %+v against an unrefreshed rollup, want none", poll, got)
+		}
+		// The grace this poll would have spent belongs to cancelledAfterRerun,
+		// so selection must not have consumed any of it.
+		unresolved, awaiting := budget.cancelledAfterRerun([]scm.Check{check})
+		assertNames(t, "unresolved", unresolved, nil)
+		assertNames(t, "awaiting", awaiting, []string{"build"})
+	}
+
+	// Once the grace is gone the first rerun is presumed never published, and
+	// the remaining budget is free to try again.
+	after := transientRerunCandidates([]scm.Check{check}, &budget, limit)
+	if len(after) != 1 {
+		t.Fatalf("candidates after the grace ran out = %+v, want the remaining budget to be usable", after)
+	}
+	if used := budget.spend(after[0]); used != limit {
+		t.Fatalf("spend after the grace ran out = %d, want %d", used, limit)
+	}
+	if got := budget.remaining("build", limit); got != 0 {
+		t.Fatalf("remaining = %d, want the budget fully spent", got)
+	}
+}
+
+// A refreshed rollup is a real second cancellation, so the remaining budget is
+// available immediately rather than after the grace.
+func TestTransientRerunSelectionResumesOnceTheRollupRefreshes(t *testing.T) {
+	t.Parallel()
+
+	const limit = 2
+	completed := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	check := scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, State: "CANCELLED", CompletedAt: completed}
+
+	budget := checkRerunBudget{}
+	budget.spend(check)
+
+	rerun := check
+	rerun.CompletedAt = completed.Add(3 * time.Minute)
+	got := transientRerunCandidates([]scm.Check{rerun}, &budget, limit)
+	if len(got) != 1 {
+		t.Fatalf("candidates = %+v, want the refreshed check to be selectable", got)
+	}
+}
+
 // The accounting primitives only. The cap that matters is enforced by selection,
 // which TestTransientRerunSelectionCannotExceedTheBudget covers.
 func TestCheckRerunBudgetAccounting(t *testing.T) {
