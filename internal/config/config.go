@@ -53,10 +53,14 @@ type GlobalConfig struct {
 	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
 	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
-	CITimeout            time.Duration       `yaml:"-"`
-	StepQuietWarning     time.Duration       `yaml:"-"`
-	DaemonConnectTimeout time.Duration       `yaml:"-"`
-	LogLevel             string              `yaml:"log_level"`
+	// AgentArgsOverrideStep is the per-pipeline-step profile map, keyed
+	// step -> agent -> args. An entry REPLACES AgentArgsOverride for that
+	// step and agent; steps and agents without an entry keep the global one.
+	AgentArgsOverrideStep map[string]map[string][]string `yaml:"agent_args_override_per_step"`
+	CITimeout             time.Duration                  `yaml:"-"`
+	StepQuietWarning      time.Duration                  `yaml:"-"`
+	DaemonConnectTimeout  time.Duration                  `yaml:"-"`
+	LogLevel              string                         `yaml:"log_level"`
 	// SessionReuse controls per-run, per-role agent session reuse in the
 	// review loop (one durable reviewer session across full reviews, a
 	// separate durable fixer session across fix turns). Default true; set
@@ -70,21 +74,22 @@ type GlobalConfig struct {
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
-	Agent                agentList           `yaml:"agent"`
-	ACPXPath             string              `yaml:"acpx_path"`
-	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
-	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
-	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
-	CITimeout            string              `yaml:"ci_timeout"`
-	DaemonConnectTimeout string              `yaml:"daemon_connect_timeout"`
-	BabysitTimeout       string              `yaml:"babysit_timeout"`
-	StepQuietWarning     string              `yaml:"step_quiet_warning"`
-	LogLevel             string              `yaml:"log_level"`
-	SessionReuse         *bool               `yaml:"session_reuse"`
-	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
-	Commit               CommitRaw           `yaml:"commit"`
-	Intent               IntentRaw           `yaml:"intent"`
-	Test                 TestRaw             `yaml:"test"`
+	Agent                 agentList                      `yaml:"agent"`
+	ACPXPath              string                         `yaml:"acpx_path"`
+	ACPRegistryOverrides  map[string]string              `yaml:"acp_registry_overrides"`
+	AgentPathOverride     map[string]string              `yaml:"agent_path_override"`
+	AgentArgsOverride     map[string][]string            `yaml:"agent_args_override"`
+	AgentArgsOverrideStep map[string]map[string][]string `yaml:"agent_args_override_per_step"`
+	CITimeout             string                         `yaml:"ci_timeout"`
+	DaemonConnectTimeout  string                         `yaml:"daemon_connect_timeout"`
+	BabysitTimeout        string                         `yaml:"babysit_timeout"`
+	StepQuietWarning      string                         `yaml:"step_quiet_warning"`
+	LogLevel              string                         `yaml:"log_level"`
+	SessionReuse          *bool                          `yaml:"session_reuse"`
+	AutoFix               AutoFixRaw                     `yaml:"auto_fix"`
+	Commit                CommitRaw                      `yaml:"commit"`
+	Intent                IntentRaw                      `yaml:"intent"`
+	Test                  TestRaw                        `yaml:"test"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -200,17 +205,20 @@ type Config struct {
 	ACPRegistryOverrides map[string]string
 	AgentPathOverride    map[string]string
 	AgentArgsOverride    map[string][]string
-	CITimeout            time.Duration
-	StepQuietWarning     time.Duration
-	LogLevel             string
-	SessionReuse         bool
-	Commands             Commands
-	IgnorePatterns       []string
-	AutoFix              AutoFix
-	Commit               Commit
-	Intent               Intent
-	Test                 Test
-	Document             Document
+	// AgentArgsOverrideStep carries per-step agent arg profiles, keyed
+	// step -> agent -> args. Read it through AgentArgsForStep.
+	AgentArgsOverrideStep map[string]map[string][]string
+	CITimeout             time.Duration
+	StepQuietWarning      time.Duration
+	LogLevel              string
+	SessionReuse          bool
+	Commands              Commands
+	IgnorePatterns        []string
+	AutoFix               AutoFix
+	Commit                Commit
+	Intent                Intent
+	Test                  Test
+	Document              Document
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -378,6 +386,24 @@ log_level: info
 #     - service_tier="priority"
 #     - -c
 #     - model_reasoning_effort="low"
+#
+# Per-step agent flag profiles (optional, global only). Keyed step -> agent ->
+# flags; a listed step/agent REPLACES its agent_args_override entry for that
+# step only, so you can pay for a strong model where it matters and a cheap one
+# elsewhere. Steps and agents without an entry keep the global flags.
+# Supported for claude, codex, pi, and copilot (agents whose argv is rebuilt on
+# every invocation).
+# agent_args_override_per_step:
+#   review:
+#     codex:
+#       - -m
+#       - gpt-5.4
+#       - -c
+#       - model_reasoning_effort="high"
+#   document:
+#     codex:
+#       - -m
+#       - gpt-5.4-mini
 #
 # Maximum follow-up auto-fix attempts per step (0 = disabled after the initial pass)
 # Document fixes are attempted during the initial document pass.
@@ -771,6 +797,25 @@ func (c *Config) AgentArgsFor(name types.AgentName) []string {
 	return c.AgentArgsOverride[string(name)]
 }
 
+// AgentArgsForStep returns the per-step agent arg profile for step, keyed by
+// agent name. A present entry REPLACES the global agent_args_override entry for
+// that agent for the duration of that step; agents absent from the returned map
+// keep their global args. Returns nil when the step has no profile.
+func (c *Config) AgentArgsForStep(step types.StepName) map[string][]string {
+	if c == nil || c.AgentArgsOverrideStep == nil {
+		return nil
+	}
+	byAgent := c.AgentArgsOverrideStep[string(step)]
+	if len(byAgent) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(byAgent))
+	for name, args := range byAgent {
+		out[name] = append([]string(nil), args...)
+	}
+	return out
+}
+
 // agentArgsOverrideAgents lists native agent names accepted as keys in
 // agent_args_override.
 var agentArgsOverrideAgents = map[string]bool{
@@ -859,6 +904,77 @@ func validateAgentArgsOverride(override map[string][]string) error {
 	return nil
 }
 
+// perStepArgsOverrideAgents lists the agents whose argv is rebuilt on every
+// invocation, so a per-step profile can actually take effect. Server-backed
+// adapters (rovodev, opencode) bake their extra args into a persistent server
+// started once per run, and ACP targets ignore extra args entirely; accepting a
+// per-step key for them would silently do nothing, so it is rejected instead.
+var perStepArgsOverrideAgents = map[string]bool{
+	string(types.AgentClaude):  true,
+	string(types.AgentCodex):   true,
+	string(types.AgentPi):      true,
+	string(types.AgentCopilot): true,
+}
+
+// projectSettingsPinnedArgs lists, per agent, the flags that participate in the
+// trusted disable_project_settings opt-out. The daemon verifies suppression once
+// per run against the run-level agent args (agent.EnsureGateNeutralized), so a
+// per-step profile must never be able to re-enable a project-instruction surface
+// after that check has passed. Pinning them per step is rejected; the adapters
+// still add their own suppression flags when the opt-out is active.
+var projectSettingsPinnedArgs = map[string]map[string]bool{
+	string(types.AgentClaude): {"--setting-sources": true},
+	string(types.AgentCodex):  {"project_doc_max_bytes": true},
+}
+
+// validateAgentArgsOverridePerStep ensures each key is a known pipeline step,
+// each nested key is an agent that supports per-invocation args, and each arg
+// clears the same reserved-flag rules as the global override.
+func validateAgentArgsOverridePerStep(override map[string]map[string][]string) error {
+	validSteps := make(map[string]bool, len(types.AllSteps()))
+	for _, step := range types.AllSteps() {
+		validSteps[string(step)] = true
+	}
+	for step, byAgent := range override {
+		if !validSteps[step] {
+			return fmt.Errorf("invalid step name in agent_args_override_per_step: %q (valid: %s)", step, stepNameList())
+		}
+		for name, args := range byAgent {
+			if !perStepArgsOverrideAgents[name] {
+				return fmt.Errorf("invalid agent name in agent_args_override_per_step.%s: %q (valid: claude, codex, pi, copilot)", step, name)
+			}
+			reserved := reservedAgentArgs[name]
+			pinned := projectSettingsPinnedArgs[name]
+			for i, arg := range args {
+				if strings.TrimSpace(arg) == "" {
+					return fmt.Errorf("invalid agent_args_override_per_step.%s.%s[%d]: empty arg", step, name, i)
+				}
+				base := arg
+				if idx := strings.Index(arg, "="); idx > 0 {
+					base = arg[:idx]
+				}
+				if reserved[base] {
+					return fmt.Errorf("invalid agent_args_override_per_step.%s.%s[%d]: %q is managed by no-mistakes and cannot be overridden", step, name, i, arg)
+				}
+				for flag := range pinned {
+					if base == flag || strings.Contains(arg, flag) {
+						return fmt.Errorf("invalid agent_args_override_per_step.%s.%s[%d]: %q affects project-settings suppression and can only be set in agent_args_override", step, name, i, arg)
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func stepNameList() string {
+	names := make([]string, 0, len(types.AllSteps()))
+	for _, step := range types.AllSteps() {
+		names = append(names, string(step))
+	}
+	return strings.Join(names, ", ")
+}
+
 // EnsureDefaultGlobalConfig writes the default config file at path if it does
 // not already exist. Failures are logged at debug level and silently ignored.
 func EnsureDefaultGlobalConfig(path string) {
@@ -930,6 +1046,12 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 			return nil, err
 		}
 		cfg.AgentArgsOverride = raw.AgentArgsOverride
+	}
+	if raw.AgentArgsOverrideStep != nil {
+		if err := validateAgentArgsOverridePerStep(raw.AgentArgsOverrideStep); err != nil {
+			return nil, err
+		}
+		cfg.AgentArgsOverrideStep = raw.AgentArgsOverrideStep
 	}
 	timeoutValue := raw.CITimeout
 	if timeoutValue == "" {
@@ -1259,17 +1381,20 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		ACPRegistryOverrides: global.ACPRegistryOverrides,
 		AgentPathOverride:    global.AgentPathOverride,
 		AgentArgsOverride:    global.AgentArgsOverride,
-		CITimeout:            global.CITimeout,
-		StepQuietWarning:     global.StepQuietWarning,
-		LogLevel:             global.LogLevel,
-		SessionReuse:         global.SessionReuse,
-		Commands:             repo.Commands,
-		IgnorePatterns:       repo.IgnorePatterns,
-		AutoFix:              af,
-		Commit:               commit,
-		Intent:               intent,
-		Test:                 test,
-		Document:             Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
+		// Per-step profiles are global-only, like agent_args_override: they
+		// describe the operator's local agent setup, not repo policy.
+		AgentArgsOverrideStep: global.AgentArgsOverrideStep,
+		CITimeout:             global.CITimeout,
+		StepQuietWarning:      global.StepQuietWarning,
+		LogLevel:              global.LogLevel,
+		SessionReuse:          global.SessionReuse,
+		Commands:              repo.Commands,
+		IgnorePatterns:        repo.IgnorePatterns,
+		AutoFix:               af,
+		Commit:                commit,
+		Intent:                intent,
+		Test:                  test,
+		Document:              Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,

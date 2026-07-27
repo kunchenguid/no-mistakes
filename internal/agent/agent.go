@@ -52,6 +52,41 @@ type RunOpts struct {
 	// fallback-provider attempts, after it completes. It is instrumentation
 	// only and must not change invocation behavior.
 	OnAttempt func(Attempt)
+	// StepArgsOverride carries the per-pipeline-step agent flag profile for
+	// this invocation, keyed by agent name (see config
+	// agent_args_override_per_step). An adapter that finds its OWN name in the
+	// map uses those args INSTEAD of the extraArgs it was constructed with;
+	// every other adapter (notably a fallback provider that is not the one the
+	// profile names) keeps its constructed args. Adapters whose argv is fixed
+	// when a persistent server starts, and ACP targets, ignore it.
+	StepArgsOverride map[string][]string
+}
+
+// resolveExtraArgs returns the extra CLI args an adapter named name should use
+// for this invocation: the per-step profile when the caller supplied one for
+// that agent, otherwise the args the adapter was constructed with.
+func (o RunOpts) resolveExtraArgs(name string, configured []string) []string {
+	if o.StepArgsOverride == nil {
+		return configured
+	}
+	args, ok := o.StepArgsOverride[name]
+	if !ok {
+		return configured
+	}
+	return args
+}
+
+// sameArgs reports whether two arg lists are element-wise equal.
+func sameArgs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Attempt describes one completed concrete adapter attempt for an agent

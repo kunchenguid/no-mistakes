@@ -34,7 +34,21 @@ func (a *copilotAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 
 func (a *copilotAgent) Close() error { return nil }
 
+// withStepArgs returns the adapter to build this invocation's argv from: the
+// receiver, or a copy carrying the per-step arg profile (see
+// RunOpts.StepArgsOverride).
+func (a *copilotAgent) withStepArgs(opts RunOpts) *copilotAgent {
+	args := opts.resolveExtraArgs("copilot", a.extraArgs)
+	if sameArgs(args, a.extraArgs) {
+		return a
+	}
+	next := *a
+	next.extraArgs = args
+	return &next
+}
+
 func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+	a = a.withStepArgs(opts)
 	prompt := buildCopilotPrompt(opts.Prompt, opts.JSONSchema)
 	args := a.buildArgs(prompt)
 	cmd := exec.CommandContext(ctx, a.bin, args...)

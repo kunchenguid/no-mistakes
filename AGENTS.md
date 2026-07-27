@@ -47,6 +47,12 @@ Safest local verification sequence after non-trivial changes:
 - Agent-driving guidance is owned by the skill body and the live `axi` output strings (`internal/cli/axi*.go`); `docs/src/content/docs/guides/agents.md` carries only the canonical invariant sentences pinned by `internal/cli/axi_guidance_test.go` plus a pointer to the skill. When you change driving guidance, change the skill body and the point-of-use `axi` strings together; that drift test is the sync check.
 - Review auto-fix is disabled by default (`auto_fix.review: 0` in `config.go` `autoFixDefaults`), so blocking and ask-user review findings park for an agent decision; keep the skill, the live `axi` gate `note`, and docs qualified if you touch review auto-fix.
 
+**Per-Step Agent Arg Profiles**
+
+- The daemon builds one agent per run (`internal/daemon/manager.go` `startRun`), so per-step model/effort selection is carried per invocation, not per process: `Config.AgentArgsForStep` feeds the `stepArgsAgent` decorator in `internal/pipeline/executor.go` (alongside the existing gate-boundary/lifecycle/perf wrappers), which sets `agent.RunOpts.StepArgsOverride`, and each argv-per-invocation adapter swaps in its own entry via `withStepArgs`. There is no IPC or protocol change.
+- The map is keyed step -> agent so a fallback provider the profile does not name keeps its global args, and a listed entry REPLACES `agent_args_override` for that step rather than appending. `--setting-sources` (claude) and `project_doc_max_bytes` (codex) are rejected per step because `agent.EnsureGateNeutralized` verifies `disable_project_settings` once per run against the run-level args.
+- Global config is parsed with `KnownFields(true)`, so a config carrying `agent_args_override_per_step` fails to load on a binary that predates it: install the binary before adding the key. Docs owner is `docs/src/content/docs/reference/global-config.md`; regressions are `internal/config/config_step_args_override_test.go`, `internal/agent/step_args_test.go`, `internal/pipeline/executor_step_args_test.go`, and e2e `TestPerStepAgentArgsProfile`.
+
 **Context, Concurrency, and Processes**
 
 - Thread `context.Context` through long-running, subprocess, and networked work; prefer `exec.CommandContext`; use derived contexts and timeouts for cleanup and HTTP calls.

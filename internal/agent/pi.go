@@ -33,7 +33,21 @@ func (a *piAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 
 func (a *piAgent) Close() error { return nil }
 
+// withStepArgs returns the adapter to build this invocation's argv from: the
+// receiver, or a copy carrying the per-step arg profile (see
+// RunOpts.StepArgsOverride).
+func (a *piAgent) withStepArgs(opts RunOpts) *piAgent {
+	args := opts.resolveExtraArgs("pi", a.extraArgs)
+	if sameArgs(args, a.extraArgs) {
+		return a
+	}
+	next := *a
+	next.extraArgs = args
+	return &next
+}
+
 func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
+	a = a.withStepArgs(opts)
 	args := a.buildArgs()
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
