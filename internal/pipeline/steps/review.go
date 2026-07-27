@@ -111,7 +111,10 @@ Previous review findings to address:
 	}
 	reviewTargetSHA := sctx.Run.HeadSHA
 
-	// Check whether there are any reviewable changed files after applying ignore patterns.
+	// The changed-file set is read twice on purpose: the ignore-filtered subset
+	// decides whether there is anything to review, while trusted path
+	// instructions are selected against the complete set (see
+	// matchPathInstructions).
 	var args []string
 	if sctx.Fixing {
 		args = []string{"diff", "--name-only", baseSHA}
@@ -123,26 +126,7 @@ Previous review findings to address:
 		return nil, fmt.Errorf("get changed files: %w", err)
 	}
 
-	hasReviewableChanges := false
-	for _, path := range strings.Split(changedFiles, "\n") {
-		path = strings.TrimSpace(path)
-		if path == "" {
-			continue
-		}
-		ignored := false
-		for _, pattern := range sctx.Config.IgnorePatterns {
-			if matchIgnorePattern(path, pattern) {
-				ignored = true
-				break
-			}
-		}
-		if !ignored {
-			hasReviewableChanges = true
-			break
-		}
-	}
-
-	if !hasReviewableChanges {
+	if len(reviewablePaths(changedFiles, sctx.Config.IgnorePatterns)) == 0 {
 		sctx.Log("no changes to review")
 		noChangeFindings := Findings{
 			RiskLevel:     "low",
@@ -176,6 +160,18 @@ Previous review findings to address:
 	// class - a fixer round that net-deletes author-added lines parks
 	// regardless of intent source. Held pending a scope decision.
 	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause()
+
+	// Path-scoped repository review guidance, taken from the trusted
+	// default-branch config copy (regardless of allow_repo_commands) so a pushed
+	// branch cannot steer the reviewer that gates it. Selection runs against the
+	// complete changed-file set, never the ignore-filtered one, so a pushed
+	// ignore_patterns entry cannot suppress a trusted rule. Only blocks whose
+	// glob matches a changed path are appended, so a repository with none
+	// configured - or none relevant to this diff - gets the prompt above
+	// unchanged.
+	pathInstructionMatches := matchPathInstructions(changedPathList(changedFiles), sctx.Config.Review.PathInstructions)
+	logPathInstructions(sctx.Log, pathInstructionMatches)
+	pathInstructions := reviewPathInstructionsSection(pathInstructionMatches)
 
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
@@ -224,7 +220,7 @@ Risk assessment (after listing all findings):
 - Set risk_level to "medium" if the change has room to improve but is safe to merge first with concerns addressed as follow-ups.
 - Set risk_level to "high" if the change should not be merged without explicit human approval - it is fundamental, risky, ambiguous, or has strong negative signals.
 - Provide a one-sentence risk_rationale explaining why you chose that risk level.
-- Set risk_scope to "source-or-external" when the assessment reflects source risk or enforceable external state, and to "pipeline-owned-delivery" only when it is based solely on a deferred outcome this run owns.%s`,
+- Set risk_scope to "source-or-external" when the assessment reflects source risk or enforceable external state, and to "pipeline-owned-delivery" only when it is based solely on a deferred outcome this run owns.%s%s`,
 		branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
@@ -232,6 +228,7 @@ Risk assessment (after listing all findings):
 		sctx.Repo.DefaultBranch,
 		ignorePatterns,
 		historySection,
+		pathInstructions,
 	)
 
 	// Every review turn - the initial review and every post-fix rereview -

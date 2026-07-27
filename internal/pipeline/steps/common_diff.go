@@ -94,6 +94,42 @@ func matchIgnorePattern(path, pattern string) bool {
 	return matched
 }
 
+// changedPathList splits a `git diff --name-only` payload into trimmed paths,
+// keeping git's order and dropping blank lines. The result is the complete
+// changed set: callers that want the ignore-filtered subset use reviewablePaths.
+func changedPathList(changedFiles string) []string {
+	var paths []string
+	for _, path := range strings.Split(changedFiles, "\n") {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	return paths
+}
+
+// reviewablePaths returns the changed paths that survive the repo's ignore
+// patterns. ignore_patterns is a pushed-branch field, so this subset decides
+// only whether a step has anything to work on; it must never decide which
+// trusted configuration applies to a run.
+func reviewablePaths(changedFiles string, ignorePatterns []string) []string {
+	var paths []string
+	for _, path := range changedPathList(changedFiles) {
+		ignored := false
+		for _, pattern := range ignorePatterns {
+			if matchIgnorePattern(path, pattern) {
+				ignored = true
+				break
+			}
+		}
+		if !ignored {
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
 // filterDiff removes diff sections for files matching any of the ignore patterns.
 // Input is a unified diff; output is the same diff with matching file sections removed.
 // Returns the original diff unchanged if patterns is empty.
