@@ -205,7 +205,7 @@ func TestMatchPathInstructions_PushedIgnorePatternsCannotSuppressTrustedRule(t *
 	}
 
 	// Proof the vector is real if the filtered set is used instead.
-	suppressed := matchPathInstructions(reviewablePaths(changedFiles, contributorIgnores), []config.PathInstruction{rule})
+	suppressed := matchPathInstructions(reviewablePaths(changedPathList(changedFiles), contributorIgnores), []config.PathInstruction{rule})
 	if len(suppressed.Blocks) != 0 {
 		t.Fatalf("the ignore-filtered set unexpectedly kept the rule; this test no longer proves the vector: %+v", suppressed.Blocks)
 	}
@@ -214,13 +214,15 @@ func TestMatchPathInstructions_PushedIgnorePatternsCannotSuppressTrustedRule(t *
 func TestReviewablePaths(t *testing.T) {
 	t.Parallel()
 
-	got := reviewablePaths("internal/scm/github/github.go\n\n  vendor/dep/dep.go  \nschema.generated.go\ndocs/index.md\n", []string{"vendor/**", "*.generated.go"})
+	got := reviewablePaths(
+		changedPathList("internal/scm/github/github.go\n\n  vendor/dep/dep.go  \nschema.generated.go\ndocs/index.md\n"),
+		[]string{"vendor/**", "*.generated.go"})
 	assertIDs(t, "reviewablePaths", got, []string{"internal/scm/github/github.go", "docs/index.md"})
 
-	if got := reviewablePaths("", nil); len(got) != 0 {
-		t.Fatalf("reviewablePaths(\"\") = %q, want none", got)
+	if got := reviewablePaths(changedPathList(""), nil); len(got) != 0 {
+		t.Fatalf("reviewablePaths(nil) = %q, want none", got)
 	}
-	if got := reviewablePaths("vendor/dep/dep.go\n", []string{"vendor/**"}); len(got) != 0 {
+	if got := reviewablePaths(changedPathList("vendor/dep/dep.go\n"), []string{"vendor/**"}); len(got) != 0 {
 		t.Fatalf("reviewablePaths() = %q, want none when everything is ignored", got)
 	}
 }
@@ -402,12 +404,13 @@ func TestReviewPathInstructionsSectionStaysWithinAccountedBytes(t *testing.T) {
 func TestPathInstructionRenderingAgreesWithConfigValidation(t *testing.T) {
 	t.Parallel()
 
-	for _, raw := range []string{
+	nonEmpty := []string{
 		"Credential-carrying URLs must go through internal/safeurl.",
 		"  spaced   out  ",
 		"line one\nline two",
 		"marker <<<<<<< inside real prose",
-	} {
+	}
+	for _, raw := range nonEmpty {
 		if config.RenderedInstructions(raw) == "" {
 			t.Fatalf("config would reject %q, so it must not render as usable text", raw)
 		}
@@ -416,12 +419,31 @@ func TestPathInstructionRenderingAgreesWithConfigValidation(t *testing.T) {
 		}
 	}
 
-	for _, raw := range []string{"=======", "<<<<<<<", ">>>>>>>", " <<<<<<<  ======= ", "   "} {
+	empty := []string{"=======", "<<<<<<<", ">>>>>>>", " <<<<<<<  ======= ", "   "}
+	for _, raw := range empty {
 		if config.RenderedInstructions(raw) != "" {
 			t.Fatalf("test input %q is not an empty-rendering value", raw)
 		}
 		if sanitizePromptMultilineText(raw) != "" {
 			t.Errorf("config rejects %q but the prompt renderer keeps %q", raw, sanitizePromptMultilineText(raw))
+		}
+	}
+
+	// The second invariant config.RenderedInstructions documents: the prompt
+	// renderer never lengthens text. config.ReviewPathInstructionsBytes charges
+	// the raw trimmed instructions, so a renderer that could grow its input
+	// (escaping, wrapping) would turn the validated byte cap into an
+	// underestimate and let an over-budget section reach the review prompt.
+	grow := append(append([]string{}, nonEmpty...), empty...)
+	grow = append(grow,
+		"carriage\r\nreturn\rline",
+		"<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch",
+		"tabs\tand    wide   gaps\n\n\n   trailing   ",
+		"unicode ✓ stays ✓ intact",
+	)
+	for _, raw := range grow {
+		if got, limit := len(sanitizePromptMultilineText(raw)), len(strings.TrimSpace(raw)); got > limit {
+			t.Errorf("sanitizePromptMultilineText(%q) is %d bytes, longer than the %d bytes config.ReviewPathInstructionsBytes accounts for", raw, got, limit)
 		}
 	}
 }

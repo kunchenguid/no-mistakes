@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -233,9 +234,24 @@ func ReviewPathInstructionsBytes(entries []PathInstruction) int {
 // here instead of disappearing from the prompt without a word.
 var promptConflictMarkers = strings.NewReplacer("<<<<<<<", " ", "=======", " ", ">>>>>>>", " ")
 
-// RenderedInstructions returns instruction text as the review prompt will see
-// it, so callers on both sides of the config boundary agree on whether an entry
-// has any content left.
+// RenderedInstructions is the emptiness-agreement helper for instruction text,
+// not a second copy of the prompt renderer. The real renderer is
+// sanitizePromptMultilineText in internal/pipeline/steps, which additionally
+// normalizes CR and collapses each line's runs of whitespace; internal/config
+// cannot import that package, which is why the conflict-marker replacer above is
+// duplicated here at all. Two invariants tie the two together, and the rest of
+// this feature silently depends on both:
+//
+//   - Emptiness agrees exactly. This returns "" for precisely the inputs the
+//     prompt renderer reduces to "", so validation can reject a value that would
+//     otherwise reach the reviewer as an empty block.
+//   - The prompt renderer never lengthens text, so the rendered instructions are
+//     no longer than strings.TrimSpace of the raw value and
+//     ReviewPathInstructionsBytes stays an upper bound on the assembled section.
+//
+// A change to sanitizePromptMultilineText that can lengthen text (escaping,
+// wrapping) or that strips a token this replacer keeps breaks one of them;
+// TestPathInstructionRenderingAgreesWithConfigValidation is the drift check.
 func RenderedInstructions(instructions string) string {
 	return strings.TrimSpace(promptConflictMarkers.Replace(instructions))
 }
@@ -1198,6 +1214,13 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // overrun the review prompt budget. Rejecting the config aborts the run before
 // an agent starts, which is preferable to silently dropping guidance the
 // maintainer expects the reviewer to apply.
+//
+// This deliberately also runs on the PUSHED copy, even though EffectiveRepoConfig
+// discards a pushed review block: the trusted-copy read
+// (assertGateTrustedConfigReadable in internal/daemon) aborts EVERY run whose
+// default-branch .no-mistakes.yaml fails these checks, so a branch carrying an
+// invalid block has to fail here, before it merges, rather than brick the
+// repository's pipeline afterwards. Do not scope this to the trusted copy.
 func validateReviewRaw(review ReviewRaw) error {
 	if len(review.PathInstructions) > MaxReviewPathInstructions {
 		return fmt.Errorf("review.path_instructions has %d entries, at most %d are allowed", len(review.PathInstructions), MaxReviewPathInstructions)
@@ -1225,8 +1248,11 @@ func validateReviewRaw(review ReviewRaw) error {
 
 // validatePathInstructionGlob mirrors how ignore_patterns are matched: a
 // trailing "/**" is a literal subtree prefix rather than a glob, and everything
-// else goes through filepath.Match, so only patterns Match can compile are
-// accepted.
+// else goes through path.Match, so only patterns Match can compile are accepted.
+// It must stay path.Match rather than filepath.Match for the same reason the
+// matcher does (matchIgnorePattern in internal/pipeline/steps): filepath.Match
+// is separator-dependent, so on Windows the validator would accept patterns the
+// matcher rejects and read a "\" as a path separator instead of an escape.
 func validatePathInstructionGlob(pattern string) error {
 	if prefix, ok := strings.CutSuffix(pattern, "/**"); ok {
 		if prefix == "" {
@@ -1234,7 +1260,7 @@ func validatePathInstructionGlob(pattern string) error {
 		}
 		return nil
 	}
-	if _, err := filepath.Match(pattern, "a"); err != nil {
+	if _, err := path.Match(pattern, "a"); err != nil {
 		return err
 	}
 	return nil

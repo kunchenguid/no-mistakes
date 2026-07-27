@@ -111,9 +111,9 @@ Previous review findings to address:
 	}
 	reviewTargetSHA := sctx.Run.HeadSHA
 
-	// The changed-file set is read twice on purpose: the ignore-filtered subset
-	// decides whether there is anything to review, while trusted path
-	// instructions are selected against the complete set (see
+	// The changed-file set is read once and viewed two ways on purpose: the
+	// ignore-filtered subset decides whether there is anything to review, while
+	// trusted path instructions are selected against the complete set (see
 	// matchPathInstructions).
 	var args []string
 	if sctx.Fixing {
@@ -125,8 +125,9 @@ Previous review findings to address:
 	if err != nil {
 		return nil, fmt.Errorf("get changed files: %w", err)
 	}
+	changed := changedPathList(changedFiles)
 
-	if len(reviewablePaths(changedFiles, sctx.Config.IgnorePatterns)) == 0 {
+	if len(reviewablePaths(changed, sctx.Config.IgnorePatterns)) == 0 {
 		sctx.Log("no changes to review")
 		noChangeFindings := Findings{
 			RiskLevel:     "low",
@@ -169,7 +170,7 @@ Previous review findings to address:
 	// glob matches a changed path are appended, so a repository with none
 	// configured - or none relevant to this diff - gets the prompt above
 	// unchanged.
-	pathInstructionMatches := matchPathInstructions(changedPathList(changedFiles), sctx.Config.Review.PathInstructions)
+	pathInstructionMatches := matchPathInstructions(changed, sctx.Config.Review.PathInstructions)
 	logPathInstructions(sctx.Log, pathInstructionMatches)
 	pathInstructions := reviewPathInstructionsSection(pathInstructionMatches)
 

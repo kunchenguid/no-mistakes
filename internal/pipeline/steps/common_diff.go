@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -76,21 +77,26 @@ func detectNewTestFiles(ctx context.Context, dir string) []string {
 // Patterns follow gitignore-like semantics:
 //   - No slash: match against filename only (e.g., "*.generated.go" matches "pkg/foo.generated.go")
 //   - Ends with "/**": match any file under that directory (e.g., "vendor/**" matches "vendor/pkg/foo.go")
-//   - Otherwise: filepath.Match against the full path
-func matchIgnorePattern(path, pattern string) bool {
+//   - Otherwise: path.Match against the full path
+//
+// file is always a git path, which is "/"-separated on every platform, so the
+// slash-based path.Match is the matcher rather than filepath.Match: the latter
+// splits on os.PathSeparator, so on Windows its "*" would run straight through
+// "/" and silently widen "docs/*.md" into the whole docs subtree. The documented
+// rule - "*" never crosses a "/" - is therefore the rule on every host.
+func matchIgnorePattern(file, pattern string) bool {
 	// "vendor/**" → matches anything under "vendor/"
 	if strings.HasSuffix(pattern, "/**") {
 		prefix := strings.TrimSuffix(pattern, "/**")
-		return path == prefix || strings.HasPrefix(path, prefix+"/")
+		return file == prefix || strings.HasPrefix(file, prefix+"/")
 	}
 	// No slash in pattern → match against basename only
 	if !strings.Contains(pattern, "/") {
-		base := filepath.Base(path)
-		matched, _ := filepath.Match(pattern, base)
+		matched, _ := path.Match(pattern, path.Base(file))
 		return matched
 	}
 	// Full path match
-	matched, _ := filepath.Match(pattern, path)
+	matched, _ := path.Match(pattern, file)
 	return matched
 }
 
@@ -99,12 +105,12 @@ func matchIgnorePattern(path, pattern string) bool {
 // changed set: callers that want the ignore-filtered subset use reviewablePaths.
 func changedPathList(changedFiles string) []string {
 	var paths []string
-	for _, path := range strings.Split(changedFiles, "\n") {
-		path = strings.TrimSpace(path)
-		if path == "" {
+	for _, file := range strings.Split(changedFiles, "\n") {
+		file = strings.TrimSpace(file)
+		if file == "" {
 			continue
 		}
-		paths = append(paths, path)
+		paths = append(paths, file)
 	}
 	return paths
 }
@@ -113,18 +119,22 @@ func changedPathList(changedFiles string) []string {
 // patterns. ignore_patterns is a pushed-branch field, so this subset decides
 // only whether a step has anything to work on; it must never decide which
 // trusted configuration applies to a run.
-func reviewablePaths(changedFiles string, ignorePatterns []string) []string {
+//
+// changed is the already-split complete set from changedPathList, so a step
+// that needs both views splits the `git diff --name-only` payload once and
+// feeds the same slice to both this and matchPathInstructions.
+func reviewablePaths(changed []string, ignorePatterns []string) []string {
 	var paths []string
-	for _, path := range changedPathList(changedFiles) {
+	for _, file := range changed {
 		ignored := false
 		for _, pattern := range ignorePatterns {
-			if matchIgnorePattern(path, pattern) {
+			if matchIgnorePattern(file, pattern) {
 				ignored = true
 				break
 			}
 		}
 		if !ignored {
-			paths = append(paths, path)
+			paths = append(paths, file)
 		}
 	}
 	return paths
