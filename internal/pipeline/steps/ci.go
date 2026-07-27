@@ -35,6 +35,7 @@ type CIStep struct {
 	lastFixedChecks      string               // sorted check names from last fix attempt, to avoid re-fixing
 	lastFixedCompletedAt map[string]time.Time // failing check completion times seen before the last fix attempt
 	ciFixAttempts        int                  // number of CI auto-fix attempts made
+	transientReruns      checkRerunBudget     // per-check rerun budget spent on provider-reported transient failures
 	checksGracePeriod    time.Duration        // minimum wait before trusting empty CI checks (0 = default 60s)
 	pollIntervalOverride time.Duration        // if set, overrides computed poll interval (for testing)
 	waitForNextPoll      func(context.Context, time.Duration) error
@@ -305,10 +306,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		} else {
 			pending := hasPendingChecks(checks)
 			failing := failingCheckNames(checks)
-			sort.Strings(failing)
-			hasFailures := len(failing) > 0
-			hasIssues := hasFailures || mergeConflict
-			timeoutFailingChecks = append(timeoutFailingChecks[:0], failing...)
 
 			// If a failing check completed after our last fix push, CI has
 			// already re-run since we pushed (possibly too fast to observe
@@ -320,12 +317,45 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				s.lastFixedCompletedAt = nil
 			}
 
+			// Before any failure reaches the fix agent, re-run the checks the
+			// provider itself reported as cancelled rather than as a job
+			// failure. A rerun costs another CI run of that job; escalating one
+			// costs an agent round that can edit code which was never broken.
+			// Genuine failures never take this path, and a merge conflict is
+			// excluded outright: no rerun can ever clear one, so it must reach
+			// the fix agent on its first observation.
+			rerunIssued := false
+			if !pending && !mergeConflict {
+				issued, rerunOutcome := s.rerunTransientChecks(sctx, host, pr, checks)
+				if rerunOutcome != nil {
+					return rerunOutcome, nil
+				}
+				rerunIssued = issued
+			}
+			if !rerunIssued {
+				// A check that stayed cancelled after this run spent a rerun on
+				// it is unresolved, not green: it joins the failing checks so it
+				// reaches the same gate instead of certifying the PR.
+				failing = mergeUnresolvedCancelledChecks(failing, checks, &s.transientReruns)
+			}
+			sort.Strings(failing)
+			hasFailures := len(failing) > 0
+			hasIssues := hasFailures || mergeConflict
+			timeoutFailingChecks = append(timeoutFailingChecks[:0], failing...)
+
 			if hasIssues {
 				if err := sctx.DB.SetRunCIReady(sctx.Run.ID, false); err != nil {
 					return nil, err
 				}
 			}
-			if hasIssues && pending {
+			if rerunIssued {
+				// The re-run checks are running again for the same commit, so
+				// the monitor waits rather than escalating. This also clears any
+				// previous passed-checks signal, which matters for a cancelled
+				// check: it never counted as a failing check, so nothing above
+				// cleared it.
+				lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
+			} else if hasIssues && pending {
 				lastMonitorLog = ""
 				if pendingCheckMatchesLastFixed(checks, s.lastFixedChecks) {
 					s.lastFixedChecks = ""

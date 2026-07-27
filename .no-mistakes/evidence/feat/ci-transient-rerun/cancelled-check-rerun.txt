@@ -1,0 +1,156 @@
+=== RUN   TestCIStep_CancelledCheckIsRerunBeforeEscalating
+=== PAUSE TestCIStep_CancelledCheckIsRerunBeforeEscalating
+=== RUN   TestCIStep_CancelledCheckStaysUnresolvedAfterItsBudget
+=== PAUSE TestCIStep_CancelledCheckStaysUnresolvedAfterItsBudget
+=== RUN   TestCIStep_SameNamedCancelledChecksShareOneRerunBudget
+=== PAUSE TestCIStep_SameNamedCancelledChecksShareOneRerunBudget
+=== RUN   TestCIStep_GenuineCheckFailureEscalatesOnFirstFailure
+=== PAUSE TestCIStep_GenuineCheckFailureEscalatesOnFirstFailure
+=== RUN   TestCIStep_MergeConflictEscalatesWithoutRerunningChecks
+=== PAUSE TestCIStep_MergeConflictEscalatesWithoutRerunningChecks
+=== RUN   TestCIStep_TimedOutCheckEscalatesWithoutRerunning
+=== PAUSE TestCIStep_TimedOutCheckEscalatesWithoutRerunning
+=== RUN   TestCIStep_ZeroRerunBudgetRestoresPreviousBehavior
+=== PAUSE TestCIStep_ZeroRerunBudgetRestoresPreviousBehavior
+=== RUN   TestCIStep_MovedPublishedHeadTerminatesInsteadOfRerunning
+=== PAUSE TestCIStep_MovedPublishedHeadTerminatesInsteadOfRerunning
+=== RUN   TestCIStep_RefusedRerunSpendsBudgetAndEscalates
+=== PAUSE TestCIStep_RefusedRerunSpendsBudgetAndEscalates
+=== RUN   TestClassifyCheckFailure
+=== PAUSE TestClassifyCheckFailure
+=== RUN   TestCheckFailedTerminallyMatchesTheBucketMapping
+=== PAUSE TestCheckFailedTerminallyMatchesTheBucketMapping
+=== RUN   TestTransientRerunCandidates
+=== PAUSE TestTransientRerunCandidates
+=== RUN   TestTransientRerunSelectionCannotExceedTheBudget
+=== PAUSE TestTransientRerunSelectionCannotExceedTheBudget
+=== RUN   TestCheckRerunBudgetAccounting
+=== PAUSE TestCheckRerunBudgetAccounting
+=== RUN   TestMergeUnresolvedCancelledChecks
+=== PAUSE TestMergeUnresolvedCancelledChecks
+=== CONT  TestCIStep_CancelledCheckIsRerunBeforeEscalating
+    ci_test.go:1253: CI step log:
+    ci_test.go:1255:     monitoring CI for PR #42 (timeout: 30m0s)...
+    ci_test.go:1255:     re-running CI check test (1/1): provider reported cancelled, not a job failure
+    ci_test.go:1255:     CI checks running, waiting for results...
+    ci_test.go:1255:     all CI checks passed - still monitoring until merged or closed
+    ci_test.go:1257: gh commands the monitor issued:
+    ci_test.go:1259:     gh auth status
+    ci_test.go:1259:     gh pr view 42 --repo var/folders --json state --jq .state
+    ci_test.go:1259:     gh pr view 42 --repo var/folders --json mergeable --jq .mergeable
+    ci_test.go:1259:     gh pr checks 42 --repo var/folders --json name,state,bucket,completedAt,link
+    ci_test.go:1259:     gh run rerun --job 901 --repo var/folders
+    ci_test.go:1259:     gh pr view 42 --repo var/folders --json state --jq .state
+    ci_test.go:1259:     gh pr view 42 --repo var/folders --json mergeable --jq .mergeable
+    ci_test.go:1259:     gh pr checks 42 --repo var/folders --json name,state,bucket,completedAt,link
+    ci_test.go:1259:     gh pr view 42 --repo var/folders --json state --jq .state
+    ci_test.go:1259:     gh pr view 42 --repo var/folders --json mergeable --jq .mergeable
+    ci_test.go:1259:     gh pr checks 42 --repo var/folders --json name,state,bucket,completedAt,link
+    ci_test.go:1261: fix-agent rounds consumed: 0
+--- PASS: TestCIStep_CancelledCheckIsRerunBeforeEscalating (0.76s)
+=== CONT  TestCIStep_RefusedRerunSpendsBudgetAndEscalates
+--- PASS: TestCIStep_RefusedRerunSpendsBudgetAndEscalates (0.78s)
+=== CONT  TestMergeUnresolvedCancelledChecks
+=== RUN   TestMergeUnresolvedCancelledChecks/never_re-run
+=== RUN   TestMergeUnresolvedCancelledChecks/still_cancelled_after_its_rerun
+=== RUN   TestMergeUnresolvedCancelledChecks/joins_the_existing_failing_checks
+=== RUN   TestMergeUnresolvedCancelledChecks/never_duplicates_a_name_the_failing_set_already_carries
+=== RUN   TestMergeUnresolvedCancelledChecks/same_name_twice_is_reported_once
+=== RUN   TestMergeUnresolvedCancelledChecks/a_check_that_passed_after_its_rerun_is_not_an_issue
+--- PASS: TestMergeUnresolvedCancelledChecks (0.00s)
+    --- PASS: TestMergeUnresolvedCancelledChecks/never_re-run (0.00s)
+    --- PASS: TestMergeUnresolvedCancelledChecks/still_cancelled_after_its_rerun (0.00s)
+    --- PASS: TestMergeUnresolvedCancelledChecks/joins_the_existing_failing_checks (0.00s)
+    --- PASS: TestMergeUnresolvedCancelledChecks/never_duplicates_a_name_the_failing_set_already_carries (0.00s)
+    --- PASS: TestMergeUnresolvedCancelledChecks/same_name_twice_is_reported_once (0.00s)
+    --- PASS: TestMergeUnresolvedCancelledChecks/a_check_that_passed_after_its_rerun_is_not_an_issue (0.00s)
+=== CONT  TestCheckRerunBudgetAccounting
+--- PASS: TestCheckRerunBudgetAccounting (0.00s)
+=== CONT  TestTransientRerunSelectionCannotExceedTheBudget
+--- PASS: TestTransientRerunSelectionCannotExceedTheBudget (0.00s)
+=== CONT  TestTransientRerunCandidates
+=== RUN   TestTransientRerunCandidates/cancelled_check_alongside_passing_checks
+=== RUN   TestTransientRerunCandidates/genuine_failure_present
+=== RUN   TestTransientRerunCandidates/timed-out_check_present
+=== RUN   TestTransientRerunCandidates/indeterminate_failure_present
+=== RUN   TestTransientRerunCandidates/budget_already_spent
+=== RUN   TestTransientRerunCandidates/budget_spent_for_one_check_only
+=== RUN   TestTransientRerunCandidates/same_name_twice_shares_one_budget
+=== RUN   TestTransientRerunCandidates/same_name_three_times_with_a_budget_of_two
+=== RUN   TestTransientRerunCandidates/same_name_twice_with_the_budget_partly_spent
+=== RUN   TestTransientRerunCandidates/larger_budget_allows_a_second_rerun_of_the_same_check
+=== RUN   TestTransientRerunCandidates/reruns_disabled
+=== RUN   TestTransientRerunCandidates/no_terminal_failures
+--- PASS: TestTransientRerunCandidates (0.00s)
+    --- PASS: TestTransientRerunCandidates/cancelled_check_alongside_passing_checks (0.00s)
+    --- PASS: TestTransientRerunCandidates/genuine_failure_present (0.00s)
+    --- PASS: TestTransientRerunCandidates/timed-out_check_present (0.00s)
+    --- PASS: TestTransientRerunCandidates/indeterminate_failure_present (0.00s)
+    --- PASS: TestTransientRerunCandidates/budget_already_spent (0.00s)
+    --- PASS: TestTransientRerunCandidates/budget_spent_for_one_check_only (0.00s)
+    --- PASS: TestTransientRerunCandidates/same_name_twice_shares_one_budget (0.00s)
+    --- PASS: TestTransientRerunCandidates/same_name_three_times_with_a_budget_of_two (0.00s)
+    --- PASS: TestTransientRerunCandidates/same_name_twice_with_the_budget_partly_spent (0.00s)
+    --- PASS: TestTransientRerunCandidates/larger_budget_allows_a_second_rerun_of_the_same_check (0.00s)
+    --- PASS: TestTransientRerunCandidates/reruns_disabled (0.00s)
+    --- PASS: TestTransientRerunCandidates/no_terminal_failures (0.00s)
+=== CONT  TestCheckFailedTerminallyMatchesTheBucketMapping
+--- PASS: TestCheckFailedTerminallyMatchesTheBucketMapping (0.00s)
+=== CONT  TestClassifyCheckFailure
+=== RUN   TestClassifyCheckFailure/cancelled_job
+=== RUN   TestClassifyCheckFailure/cancelled_job_in_the_fail_bucket
+=== RUN   TestClassifyCheckFailure/american_spelling
+=== RUN   TestClassifyCheckFailure/lowercase_state
+=== RUN   TestClassifyCheckFailure/job_failure
+=== RUN   TestClassifyCheckFailure/job_error
+=== RUN   TestClassifyCheckFailure/action_required
+=== RUN   TestClassifyCheckFailure/startup_failure
+=== RUN   TestClassifyCheckFailure/timed_out_job
+=== RUN   TestClassifyCheckFailure/failed_with_no_reported_state
+=== RUN   TestClassifyCheckFailure/failed_with_an_unrecognized_state
+=== RUN   TestClassifyCheckFailure/stale_check_as_the_normalizer_maps_it
+=== RUN   TestClassifyCheckFailure/stale_check_in_the_fail_bucket
+=== RUN   TestClassifyCheckFailure/still_pending
+=== RUN   TestClassifyCheckFailure/passing
+=== RUN   TestClassifyCheckFailure/skipped
+--- PASS: TestClassifyCheckFailure (0.00s)
+    --- PASS: TestClassifyCheckFailure/cancelled_job (0.00s)
+    --- PASS: TestClassifyCheckFailure/cancelled_job_in_the_fail_bucket (0.00s)
+    --- PASS: TestClassifyCheckFailure/american_spelling (0.00s)
+    --- PASS: TestClassifyCheckFailure/lowercase_state (0.00s)
+    --- PASS: TestClassifyCheckFailure/job_failure (0.00s)
+    --- PASS: TestClassifyCheckFailure/job_error (0.00s)
+    --- PASS: TestClassifyCheckFailure/action_required (0.00s)
+    --- PASS: TestClassifyCheckFailure/startup_failure (0.00s)
+    --- PASS: TestClassifyCheckFailure/timed_out_job (0.00s)
+    --- PASS: TestClassifyCheckFailure/failed_with_no_reported_state (0.00s)
+    --- PASS: TestClassifyCheckFailure/failed_with_an_unrecognized_state (0.00s)
+    --- PASS: TestClassifyCheckFailure/stale_check_as_the_normalizer_maps_it (0.00s)
+    --- PASS: TestClassifyCheckFailure/stale_check_in_the_fail_bucket (0.00s)
+    --- PASS: TestClassifyCheckFailure/still_pending (0.00s)
+    --- PASS: TestClassifyCheckFailure/passing (0.00s)
+    --- PASS: TestClassifyCheckFailure/skipped (0.00s)
+=== CONT  TestCIStep_MergeConflictEscalatesWithoutRerunningChecks
+--- PASS: TestCIStep_MergeConflictEscalatesWithoutRerunningChecks (0.69s)
+=== CONT  TestCIStep_MovedPublishedHeadTerminatesInsteadOfRerunning
+--- PASS: TestCIStep_MovedPublishedHeadTerminatesInsteadOfRerunning (0.89s)
+=== CONT  TestCIStep_ZeroRerunBudgetRestoresPreviousBehavior
+--- PASS: TestCIStep_ZeroRerunBudgetRestoresPreviousBehavior (0.53s)
+=== CONT  TestCIStep_TimedOutCheckEscalatesWithoutRerunning
+--- PASS: TestCIStep_TimedOutCheckEscalatesWithoutRerunning (0.70s)
+=== CONT  TestCIStep_SameNamedCancelledChecksShareOneRerunBudget
+--- PASS: TestCIStep_SameNamedCancelledChecksShareOneRerunBudget (0.85s)
+=== CONT  TestCIStep_GenuineCheckFailureEscalatesOnFirstFailure
+--- PASS: TestCIStep_GenuineCheckFailureEscalatesOnFirstFailure (0.53s)
+=== CONT  TestCIStep_CancelledCheckStaysUnresolvedAfterItsBudget
+    ci_test.go:1334: CI step log:
+    ci_test.go:1336:     monitoring CI for PR #42 (timeout: 30m0s)...
+    ci_test.go:1336:     re-running CI check test (1/1): provider reported cancelled, not a job failure
+    ci_test.go:1336:     CI checks running, waiting for results...
+    ci_test.go:1336:     issues detected: test - auto-fix disabled, waiting for manual intervention...
+    ci_test.go:1338: outcome: needs_approval=true summary="CI failures require manual intervention" finding="CI check failing: test"
+    ci_test.go:1339: rerun requests: 1
+    ci_test.go:1340: ci ready: not set
+--- PASS: TestCIStep_CancelledCheckStaysUnresolvedAfterItsBudget (0.85s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/pipeline/steps	6.943s

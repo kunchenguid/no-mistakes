@@ -1,0 +1,320 @@
+package steps
+
+import (
+	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/scm"
+)
+
+func TestClassifyCheckFailure(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		check scm.Check
+		want  failureClass
+	}{
+		{"cancelled job", scm.Check{Name: "test", Bucket: scm.CheckBucketCancel, State: "CANCELLED"}, classTransient},
+		{"cancelled job in the fail bucket", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "CANCELLED"}, classTransient},
+		{"american spelling", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "CANCELED"}, classTransient},
+		{"lowercase state", scm.Check{Name: "test", Bucket: scm.CheckBucketCancel, State: "cancelled"}, classTransient},
+
+		{"job failure", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "FAILURE"}, classGenuine},
+		{"job error", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "ERROR"}, classGenuine},
+		{"action required", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "ACTION_REQUIRED"}, classGenuine},
+		// A workflow that cannot start is reproducible (bad workflow file), not
+		// something a rerun clears.
+		{"startup failure", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "STARTUP_FAILURE"}, classGenuine},
+		// A job that exceeds its own timeout-minutes is usually the branch's own
+		// code hanging, and a rerun burns another full timeout window
+		// reproducing it.
+		{"timed out job", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "TIMED_OUT"}, classGenuine},
+
+		{"failed with no reported state", scm.Check{Name: "test", Bucket: scm.CheckBucketFail}, classUnknown},
+		{"failed with an unrecognized state", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "QUARANTINED"}, classUnknown},
+		// STALE has one owner: normalizeCheckBucket treats it as skipped, so it
+		// is not a terminal failure at all. The fail-bucket pairing a provider
+		// could still report must not become a rerun either, or the outcome
+		// would depend on whether a bucket was reported.
+		{"stale check as the normalizer maps it", scm.Check{Name: "test", Bucket: scm.CheckBucketSkip, State: "STALE"}, classUnknown},
+		{"stale check in the fail bucket", scm.Check{Name: "test", Bucket: scm.CheckBucketFail, State: "STALE"}, classUnknown},
+		{"still pending", scm.Check{Name: "test", Bucket: scm.CheckBucketPending, State: "IN_PROGRESS"}, classUnknown},
+		{"passing", scm.Check{Name: "test", Bucket: scm.CheckBucketPass, State: "SUCCESS"}, classUnknown},
+		{"skipped", scm.Check{Name: "test", Bucket: scm.CheckBucketSkip, State: "SKIPPED"}, classUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyCheckFailure(tc.check); got != tc.want {
+				t.Fatalf("classifyCheckFailure(%+v) = %q, want %q", tc.check, got, tc.want)
+			}
+		})
+	}
+}
+
+// A stale check must also stay non-terminal, so the classifier's verdict for it
+// cannot be reached through a path that counts it as a failure.
+func TestCheckFailedTerminallyMatchesTheBucketMapping(t *testing.T) {
+	t.Parallel()
+
+	for _, check := range []scm.Check{
+		{Name: "test", Bucket: scm.CheckBucketSkip, State: "STALE"},
+		{Name: "test", Bucket: scm.CheckBucketSkip, State: "SKIPPED"},
+		{Name: "test", Bucket: scm.CheckBucketPass, State: "SUCCESS"},
+		{Name: "test", Bucket: scm.CheckBucketPending, State: "QUEUED"},
+	} {
+		if checkFailedTerminally(check) {
+			t.Fatalf("checkFailedTerminally(%+v) = true, want false", check)
+		}
+	}
+	for _, check := range []scm.Check{
+		{Name: "test", Bucket: scm.CheckBucketFail, State: "FAILURE"},
+		{Name: "test", Bucket: scm.CheckBucketCancel, State: "CANCELLED"},
+	} {
+		if !checkFailedTerminally(check) {
+			t.Fatalf("checkFailedTerminally(%+v) = false, want true", check)
+		}
+	}
+}
+
+func TestTransientRerunCandidates(t *testing.T) {
+	t.Parallel()
+
+	transient := scm.Check{Name: "test", Bucket: scm.CheckBucketCancel, State: "CANCELLED"}
+	genuine := scm.Check{Name: "lint", Bucket: scm.CheckBucketFail, State: "FAILURE"}
+	timedOut := scm.Check{Name: "slow", Bucket: scm.CheckBucketFail, State: "TIMED_OUT"}
+	unknown := scm.Check{Name: "audit", Bucket: scm.CheckBucketFail}
+	passing := scm.Check{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS"}
+
+	cases := []struct {
+		name   string
+		checks []scm.Check
+		limit  int
+		spent  map[string]int
+		want   []string
+	}{
+		{
+			name:   "cancelled check alongside passing checks",
+			checks: []scm.Check{passing, transient},
+			limit:  1,
+			want:   []string{"test"},
+		},
+		{
+			// The genuine failure needs the fix agent on its first failure, so a
+			// cancelled sibling must not buy it another CI cycle.
+			name:   "genuine failure present",
+			checks: []scm.Check{transient, genuine},
+			limit:  1,
+			want:   nil,
+		},
+		{
+			name:   "timed-out check present",
+			checks: []scm.Check{transient, timedOut},
+			limit:  1,
+			want:   nil,
+		},
+		{
+			name:   "indeterminate failure present",
+			checks: []scm.Check{transient, unknown},
+			limit:  1,
+			want:   nil,
+		},
+		{
+			name:   "budget already spent",
+			checks: []scm.Check{transient},
+			limit:  1,
+			spent:  map[string]int{"test": 1},
+			want:   nil,
+		},
+		{
+			name:   "budget spent for one check only",
+			checks: []scm.Check{transient, {Name: "e2e", Bucket: scm.CheckBucketCancel, State: "CANCELLED"}},
+			limit:  1,
+			spent:  map[string]int{"test": 1},
+			want:   []string{"e2e"},
+		},
+		{
+			// Check names are not unique on a PR: the same job name can come
+			// from two workflow files, or from a matrix leg the provider reports
+			// without a distinguishing suffix. Same-named checks share one budget
+			// key, so a single poll must not select both and spend it twice.
+			name:   "same name twice shares one budget",
+			checks: []scm.Check{transient, transient},
+			limit:  1,
+			want:   []string{"test"},
+		},
+		{
+			name:   "same name three times with a budget of two",
+			checks: []scm.Check{transient, transient, transient},
+			limit:  2,
+			want:   []string{"test", "test"},
+		},
+		{
+			name:   "same name twice with the budget partly spent",
+			checks: []scm.Check{transient, transient},
+			limit:  2,
+			spent:  map[string]int{"test": 1},
+			want:   []string{"test"},
+		},
+		{
+			name:   "larger budget allows a second rerun of the same check",
+			checks: []scm.Check{transient},
+			limit:  2,
+			spent:  map[string]int{"test": 1},
+			want:   []string{"test"},
+		},
+		{
+			name:   "reruns disabled",
+			checks: []scm.Check{transient},
+			limit:  0,
+			want:   nil,
+		},
+		{
+			name:   "no terminal failures",
+			checks: []scm.Check{passing},
+			limit:  1,
+			want:   nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			budget := checkRerunBudget{spent: tc.spent}
+			got := transientRerunCandidates(tc.checks, &budget, tc.limit)
+			if len(got) != len(tc.want) {
+				t.Fatalf("candidates = %+v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i].Name != tc.want[i] {
+					t.Fatalf("candidates = %+v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// Selection and spending together are the whole cap, so they are walked
+// together here: no sequence of polls may spend more reruns than the limit for
+// one check name, which selecting purely on already-spent counts would allow
+// within a single poll.
+func TestTransientRerunSelectionCannotExceedTheBudget(t *testing.T) {
+	t.Parallel()
+
+	const limit = 2
+	// Three same-named cancelled checks, offered again on every poll.
+	checks := []scm.Check{
+		{Name: "build", Bucket: scm.CheckBucketCancel, State: "CANCELLED"},
+		{Name: "build", Bucket: scm.CheckBucketCancel, State: "CANCELLED"},
+		{Name: "build", Bucket: scm.CheckBucketCancel, State: "CANCELLED"},
+	}
+
+	budget := checkRerunBudget{}
+	reruns := 0
+	for poll := 0; poll < 5; poll++ {
+		for _, candidate := range transientRerunCandidates(checks, &budget, limit) {
+			if used := budget.spend(candidate.Name); used > limit {
+				t.Fatalf("poll %d spent rerun %d of a %d rerun budget for %q", poll, used, limit, candidate.Name)
+			}
+			reruns++
+		}
+	}
+	if reruns != limit {
+		t.Fatalf("total reruns = %d, want %d", reruns, limit)
+	}
+}
+
+// The accounting primitives only. The cap that matters is enforced by selection,
+// which TestTransientRerunSelectionCannotExceedTheBudget covers.
+func TestCheckRerunBudgetAccounting(t *testing.T) {
+	t.Parallel()
+
+	budget := checkRerunBudget{}
+	if got := budget.remaining("test", 1); got != 1 {
+		t.Fatalf("remaining before any attempt = %d, want 1", got)
+	}
+	if got := budget.used("test"); got != 0 {
+		t.Fatalf("used before any attempt = %d, want 0", got)
+	}
+	if got := budget.spend("test"); got != 1 {
+		t.Fatalf("spend = %d, want 1", got)
+	}
+	if got := budget.remaining("test", 1); got != 0 {
+		t.Fatalf("remaining after the attempt = %d, want 0", got)
+	}
+	if got := budget.used("test"); got != 1 {
+		t.Fatalf("used after the attempt = %d, want 1", got)
+	}
+	if got := budget.remaining("lint", 1); got != 1 {
+		t.Fatalf("remaining for another check = %d, want 1 (budgets are per check name)", got)
+	}
+	if got := budget.remaining("test", 0); got != 0 {
+		t.Fatalf("remaining with reruns disabled = %d, want 0", got)
+	}
+}
+
+func TestMergeUnresolvedCancelledChecks(t *testing.T) {
+	t.Parallel()
+
+	cancelled := scm.Check{Name: "test", Bucket: scm.CheckBucketCancel, State: "CANCELLED"}
+	failing := scm.Check{Name: "lint", Bucket: scm.CheckBucketFail, State: "FAILURE"}
+
+	cases := []struct {
+		name    string
+		failing []string
+		checks  []scm.Check
+		spent   map[string]int
+		want    []string
+	}{
+		{
+			// Nothing was spent on it, so behavior is what it was before this
+			// policy existed: a cancelled check is not a failing check.
+			name:   "never re-run",
+			checks: []scm.Check{cancelled},
+			want:   nil,
+		},
+		{
+			name:   "still cancelled after its rerun",
+			checks: []scm.Check{cancelled},
+			spent:  map[string]int{"test": 1},
+			want:   []string{"test"},
+		},
+		{
+			name:    "joins the existing failing checks",
+			failing: []string{"lint"},
+			checks:  []scm.Check{failing, cancelled},
+			spent:   map[string]int{"test": 1},
+			want:    []string{"lint", "test"},
+		},
+		{
+			name:    "never duplicates a name the failing set already carries",
+			failing: []string{"test"},
+			checks:  []scm.Check{cancelled},
+			spent:   map[string]int{"test": 1},
+			want:    []string{"test"},
+		},
+		{
+			name:   "same name twice is reported once",
+			checks: []scm.Check{cancelled, cancelled},
+			spent:  map[string]int{"test": 1},
+			want:   []string{"test"},
+		},
+		{
+			name:   "a check that passed after its rerun is not an issue",
+			checks: []scm.Check{{Name: "test", Bucket: scm.CheckBucketPass, State: "SUCCESS"}},
+			spent:  map[string]int{"test": 1},
+			want:   nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			budget := checkRerunBudget{spent: tc.spent}
+			got := mergeUnresolvedCancelledChecks(tc.failing, tc.checks, &budget)
+			if len(got) != len(tc.want) {
+				t.Fatalf("merged = %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("merged = %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}

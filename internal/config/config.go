@@ -43,6 +43,15 @@ const (
 	// Any non-positive ci_timeout, or the keywords "unlimited", "none",
 	// "off", and "never", resolves to this.
 	CITimeoutUnlimited = time.Duration(-1)
+	// DefaultCIRerunTransient is the per-check rerun budget the CI step uses
+	// when ci.rerun_transient is unset. One rerun is enough to clear a
+	// cancelled or timed-out job; a check that keeps ending the same way is a
+	// failure the provider keeps reproducing.
+	DefaultCIRerunTransient = 1
+	// MaxCIRerunTransient caps ci.rerun_transient. Reruns are cheap compared
+	// with an agent round, but they are not free: each one keeps the monitor
+	// polling the same commit, so the budget stays small by construction.
+	MaxCIRerunTransient = 5
 )
 
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
@@ -101,6 +110,7 @@ type RepoConfig struct {
 	// the pushed branch controls nothing that executes.
 	AllowRepoCommands bool       `yaml:"allow_repo_commands"`
 	AutoFix           AutoFixRaw `yaml:"auto_fix"`
+	CI                CIRaw      `yaml:"ci"`
 	Commit            CommitRaw  `yaml:"commit"`
 	Intent            IntentRaw  `yaml:"intent"`
 	Test              TestRaw    `yaml:"test"`
@@ -138,6 +148,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		IgnorePatterns         []string    `yaml:"ignore_patterns"`
 		AllowRepoCommands      bool        `yaml:"allow_repo_commands"`
 		AutoFix                AutoFixRaw  `yaml:"auto_fix"`
+		CI                     CIRaw       `yaml:"ci"`
 		Commit                 CommitRaw   `yaml:"commit"`
 		Intent                 IntentRaw   `yaml:"intent"`
 		Test                   TestRaw     `yaml:"test"`
@@ -154,6 +165,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.IgnorePatterns = raw.IgnorePatterns
 	c.AllowRepoCommands = raw.AllowRepoCommands
 	c.AutoFix = raw.AutoFix
+	c.CI = raw.CI
 	c.Commit = raw.Commit
 	c.Intent = raw.Intent
 	c.Test = raw.Test
@@ -179,6 +191,21 @@ type AutoFixRaw struct {
 	CI       *int `yaml:"ci"`
 	Babysit  *int `yaml:"babysit"`
 	Rebase   *int `yaml:"rebase"`
+}
+
+// CIRaw is the YAML representation of CI-step settings.
+// Pointer fields distinguish "not set" (nil) from "set to 0" (disabled).
+type CIRaw struct {
+	RerunTransient *int `yaml:"rerun_transient"`
+}
+
+// CI holds the resolved CI-step settings.
+type CI struct {
+	// RerunTransient is how many times the CI step may re-run a single check
+	// the provider reported as transient (cancelled, timed out, stale) before
+	// that check's failure escalates to the fix agent. 0 disables reruns and
+	// restores the behavior of escalating every failure on sight.
+	RerunTransient int
 }
 
 // AutoFix holds resolved per-step auto-fix attempt limits.
@@ -207,6 +234,7 @@ type Config struct {
 	Commands             Commands
 	IgnorePatterns       []string
 	AutoFix              AutoFix
+	CI                   CI
 	Commit               Commit
 	Intent               Intent
 	Test                 Test
@@ -1057,7 +1085,9 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // trusted-only for the same reason: a pushed branch must not weaken the
 // documentation rules that gate itself. DisableProjectSettings is also
 // trusted-only so a pushed branch cannot enable or defeat the gate-agent
-// project-instruction boundary. When allowRepoCommands is
+// project-instruction boundary, and CI (the transient-rerun budget) is
+// trusted-only because every rerun it authorizes is another provider-side
+// workflow run billed to the repository. When allowRepoCommands is
 // true the maintainer has explicitly opted in (via allow_repo_commands on the
 // TRUSTED default-branch copy) to honoring the pushed branch's commands and
 // agent selection.
@@ -1069,7 +1099,7 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 //
 // Non-executing fields (ignore patterns, auto-fix, commit, intent, test) are
 // always taken from the pushed copy, matching prior behavior, since they cannot
-// run arbitrary shell or select a process.
+// run arbitrary shell, select a process, or spend the maintainer's CI minutes.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
 	if pushed == nil {
 		pushed = &RepoConfig{}
@@ -1083,9 +1113,15 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// means the trusted config was legitimately absent (the daemon aborts
 		// separately when it could not be READ at all), so falsy is correct.
 		effective.DisableProjectSettings = trusted.DisableProjectSettings
+		// ci.rerun_transient spends the maintainer's resources rather than the
+		// contributor's: every rerun is another provider-side workflow run
+		// billed to the repository. It is trusted-only for that reason, so a
+		// pushed branch cannot raise its own rerun budget to the cap.
+		effective.CI = trusted.CI
 	} else {
 		effective.Document = DocumentRaw{}
 		effective.DisableProjectSettings = false
+		effective.CI = CIRaw{}
 	}
 	if allowRepoCommands {
 		return &effective
@@ -1185,6 +1221,25 @@ func autoFixDefaults() AutoFix {
 	}
 }
 
+// ciDefaults returns the default CI-step settings. One rerun per transient
+// check is on by default: it costs a poll interval, while escalating a
+// cancelled or timed-out job costs an agent round and can edit code that was
+// never broken.
+func ciDefaults() CI {
+	return CI{RerunTransient: DefaultCIRerunTransient}
+}
+
+// applyCIOverrides applies non-nil raw values onto resolved defaults, clamping
+// the rerun budget into range: a negative value disables reruns rather than
+// inverting the bound, and anything above MaxCIRerunTransient is capped so a
+// typo cannot keep a run polling one commit indefinitely.
+func applyCIOverrides(dst *CI, src *CIRaw) {
+	if src.RerunTransient == nil {
+		return
+	}
+	dst.RerunTransient = min(max(*src.RerunTransient, 0), MaxCIRerunTransient)
+}
+
 // applyAutoFixOverrides applies non-nil raw values onto resolved defaults.
 func applyAutoFixOverrides(dst *AutoFix, src *AutoFixRaw) {
 	if src.Lint != nil {
@@ -1236,6 +1291,9 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	applyAutoFixOverrides(&af, &global.AutoFix)
 	applyAutoFixOverrides(&af, &repo.AutoFix)
 
+	ci := ciDefaults()
+	applyCIOverrides(&ci, &repo.CI)
+
 	intent := intentDefaults()
 	applyIntentOverrides(&intent, &global.Intent)
 	applyIntentOverrides(&intent, &repo.Intent)
@@ -1266,6 +1324,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Commands:             repo.Commands,
 		IgnorePatterns:       repo.IgnorePatterns,
 		AutoFix:              af,
+		CI:                   ci,
 		Commit:               commit,
 		Intent:               intent,
 		Test:                 test,
