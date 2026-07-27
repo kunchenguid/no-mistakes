@@ -61,25 +61,9 @@ The rest of this page covers only the cross-cutting rules that involve both file
 
 ## House rules for part of the tree
 
-Most review guidance belongs in the repository's own agent instructions, which every gate agent already reads. Use `review.path_instructions` for the rules that only apply to some paths, so the reviewer sees them exactly when the change touches those paths:
+Most review guidance belongs in the repository's own agent instructions, which every gate agent already reads. Use `review.path_instructions` for the rules that apply to only part of the tree: each entry pairs a path glob with guidance, and the review step appends only the entries whose glob matches a file the change actually touched, each labelled with the path and files it was selected for. A branch that matches nothing, or a repo with nothing configured, gets the review prompt it would get without the setting.
 
-```yaml
-# <repo>/.no-mistakes.yaml, committed on your default branch
-review:
-  path_instructions:
-    - path: "internal/scm/**"
-      instructions: |
-        Any URL or error string that can carry credentials must go through internal/safeurl.
-    - path: "docs/**"
-      instructions: |
-        Prose changes only. Do not request test coverage.
-```
-
-A branch that only edits `docs/` gets the second block and never the first. A branch that touches neither path gets the review prompt it would get with nothing configured at all. Every injected block carries the `path` it was selected for and the files it matched, so the reviewer applies each rule to its own scope rather than to the whole diff.
-
-Watch the glob semantics: `*` does not cross a `/`, so `**/*.go` covers only one directory level. Use `*.go` for "every Go file" and `internal/**` for a whole subtree.
-
-These blocks steer a gate agent, so they are read from your default branch rather than from the branch being reviewed, and `allow_repo_commands` does not change that. Commit them to the default branch before expecting a run to honor them. The [Repo Config Reference](/no-mistakes/reference/repo-config/#reviewpath_instructions) owns the glob rules, the size limits, and the exact trust semantics.
+These blocks steer a gate agent, so they are read from your default branch rather than from the branch being reviewed, and `allow_repo_commands` does not change that. Commit them to the default branch before expecting a run to honor them. The [Repo Config Reference](/no-mistakes/reference/repo-config/#reviewpath_instructions) owns the syntax, the glob rules, the size limits, and the exact trust semantics.
 
 ## Explicit commands versus agent detection
 

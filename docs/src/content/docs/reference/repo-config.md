@@ -230,16 +230,7 @@ Prose changes only. Do not request test coverage.
 
 #### Matching
 
-`path` follows the same match rules as [`ignore_patterns`](#ignore_patterns): no slash matches by basename, a trailing `/**` matches an entire subtree, and anything else is a full-path glob.
-
-| Pattern | Matches |
-|---|---|
-| `*.go` | any `.go` file at any depth, by basename |
-| `internal/**` | everything under `internal/`, at any depth |
-| `internal/config/config.go` | that exact path |
-| `**/*.go` | **only one directory level** - `internal/main.go`, not `internal/scm/github/github.go` |
-
-`*` does not cross a `/`, so `**/*.go` is not "every Go file"; it behaves as a single-segment wildcard. Use `*.go` to match by extension at any depth, or `internal/**` to cover a subtree.
+`path` uses the same matcher and syntax as [`ignore_patterns`](#ignore_patterns), including the rule that `*` never crosses a `/`, so `**/*.go` covers a single directory level rather than every Go file.
 
 The review step appends only the blocks whose `path` matches at least one changed file, in the order they appear in the file.
 Two entries with the same `path` **and** the same `instructions` are injected once. The same instruction text under two different `path` values is injected once per path, because each block states its own scope. Two entries with the same `path` and different `instructions` are both injected.
@@ -257,6 +248,7 @@ At most 32 entries are allowed, and the assembled prompt section may not exceed 
 The size is measured on what is actually injected: the heading, and for every entry its labels, its `path`, its `instructions`, and a 192-byte allowance for its matched-file list. A block whose matched-file list would exceed that allowance is truncated with a `+N more` suffix, so the measured limit holds for any diff.
 
 A missing `path` or `instructions` value, an `instructions` value that renders empty, a `path` that is not a valid glob, or a config over either limit fails when the config is parsed, so the run aborts before an agent starts instead of silently dropping guidance.
+These checks run on whichever copy of the file is parsed, including the pushed branch's. A pushed branch's blocks are ignored when the review prompt is built (see [Trust](#trust) below), but an invalid block on that branch still fails its own run, so a broken rule surfaces before it merges and becomes the trusted copy.
 
 #### Trust
 
@@ -277,13 +269,16 @@ Paths to exclude from review and documentation checks.
 | Type | `string[]` |
 | Default | Empty (no ignores) |
 
-Pattern matching rules:
+Pattern matching rules. [`review.path_instructions`](#reviewpath_instructions) uses the same matcher, so there is one path syntax to learn:
 
 | Pattern | Rule |
 | --- | --- |
-| `*.generated.go` | No slash - matches by basename |
-| `vendor/**` | Ends with `/**` - matches entire subtree |
-| `some/path/file.go` | Contains a slash - full path glob |
+| `*.generated.go` | No slash - matches by basename, at any depth |
+| `vendor/**` | Ends with `/**` - matches that directory and everything under it |
+| `some/path/file.go` | Contains a slash - full path glob against the whole path |
+| `**/*.go` | Also a full path glob, so **only one directory level** - `internal/main.go`, not `internal/scm/github/github.go` |
+
+`*` never crosses a `/`, on every platform, so `**/*.go` is not "every Go file"; it behaves as a single-segment wildcard. Use `*.go` to match by extension at any depth, or `internal/**` to cover a subtree.
 
 ### auto_fix
 
