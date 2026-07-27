@@ -727,6 +727,84 @@ func TestReviewStep_PushedIgnorePatternsCannotSuppressPathInstructions(t *testin
 	}
 }
 
+// PERSONAL: the review turn must delegate to the comprehensive-code-review
+// skill; an inline review is rejected outright rather than accepted as a
+// degraded pass. Adapters that do not report skill use are exempt, since
+// absence of evidence there is not evidence of an inline review.
+func TestReviewStep_RejectsReviewThatSkippedRequiredSkill(t *testing.T) {
+	t.Parallel()
+	clean, _ := json.Marshal(Findings{RiskLevel: "low", RiskRationale: "clean"})
+
+	tests := []struct {
+		name       string
+		skillsUsed []string
+		wantErr    bool
+	}{
+		{"inline review is rejected", []string{}, true},
+		{"wrong skill is rejected", []string{"some-other-skill"}, true},
+		{"required skill is accepted", []string{requiredReviewSkill}, false},
+		{"adapter reporting nothing is exempt", nil, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+			ag := &mockAgent{
+				name: "test",
+				runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+					return &agent.Result{Output: clean, SkillsUsed: tc.skillsUsed}, nil
+				},
+			}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+			outcome, err := (&ReviewStep{}).Execute(sctx)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected the step to fail, got outcome %+v", outcome)
+				}
+				if !strings.Contains(err.Error(), requiredReviewSkill) {
+					t.Errorf("error should name the required skill, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected the step to succeed, got: %v", err)
+			}
+		})
+	}
+}
+
+// PERSONAL: the mandate lives in the review prompt, not only in a memory file
+// a step agent may never load.
+func TestReviewStep_PromptMandatesComprehensiveReviewSkill(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	var prompt string
+	clean, _ := json.Marshal(Findings{RiskLevel: "low", RiskRationale: "clean"})
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			prompt = opts.Prompt
+			return &agent.Result{Output: clean, SkillsUsed: []string{requiredReviewSkill}}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{requiredReviewSkill, "per-aspect review agents", "inline review is never an acceptable substitute"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func hasAskUserFindings(t *testing.T, raw string) bool {
 	t.Helper()
 	findings, err := types.ParseFindingsJSON(raw)

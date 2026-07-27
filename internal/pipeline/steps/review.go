@@ -3,6 +3,7 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -11,6 +12,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/testguidance"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+// requiredReviewSkill is the skill every review turn must invoke. PERSONAL
+// local patch: enforced in code because the prompt-level mandate alone drifts.
+const requiredReviewSkill = "comprehensive-code-review"
 
 // ReviewStep reviews the diff for bugs, security issues, and doc gaps.
 type ReviewStep struct{}
@@ -187,7 +192,8 @@ Context:
 - ignore patterns: %s
 
 Task:
-- Read the relevant history and diff yourself.
+- Run the review by invoking the `+"`comprehensive-code-review`"+` skill (Skill tool, no arguments) against the review scope above, and follow its procedure as written - including spawning the per-aspect review agents it prescribes rather than collapsing them into one inline pass. Compile what it returns into the structured findings below, mapping its severities onto this schema: Critical -> "error", Important -> "warning", Suggestion -> "info". An inline review is never an acceptable substitute: if the skill is unavailable or fails, stop and say so rather than reviewing the diff yourself - the step fails and the run parks.
+- Read enough of the history and diff yourself to frame the review scope and to judge the findings that come back.
 - Focus findings on risks introduced by changed code, but inspect surrounding code, call sites, shared helpers, tests, and invariants when needed to understand root cause.
 - Determine from the stated intent and relevant evidence whether a bug-fix change claims a durable fix or explicitly authorized short-term containment.
 - For a claimed durable fix, reconstruct the concrete failing sequence and required invariant, inspect relevant sibling paths and shared state transitions, and ask whether the same authorized failure remains reachable.
@@ -254,6 +260,18 @@ Risk assessment (after listing all findings):
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent review: %w", err)
+	}
+
+	// PERSONAL: the review prompt mandates the comprehensive-code-review skill,
+	// but prompt text is discretionary - measured drift had roughly half of
+	// review turns collapse into a single inline pass, silently skipping every
+	// per-aspect reviewer. Fail the step instead of accepting that review.
+	// SkillsUsed is nil for adapters that do not report skill use; only enforce
+	// when the adapter actually reports.
+	if result.SkillsUsed != nil && !slices.Contains(result.SkillsUsed, requiredReviewSkill) {
+		return nil, fmt.Errorf(
+			"review did not invoke the %s skill (skills used: %v); inline review is not accepted",
+			requiredReviewSkill, result.SkillsUsed)
 	}
 
 	// Parse structured findings

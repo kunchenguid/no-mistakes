@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -378,6 +379,47 @@ func TestParseClaudeEvents_ContextCancellation(t *testing.T) {
 	err := parseClaudeEvents(ctx, strings.NewReader(events), nil, &usage, nil)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
+	}
+}
+
+// PERSONAL: skill use is captured from the stream so steps can require a
+// specific skill instead of trusting the prompt. An empty (non-nil) slice is
+// the load-bearing case - it is what lets a caller prove nothing was invoked.
+func TestParseClaudeEvents_CapturesSkillInvocations(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    []string
+	}{{
+		name:    "skill calls captured in order",
+		content: `{"type":"tool_use","name":"Skill","input":{"skill":"comprehensive-code-review"}},{"type":"tool_use","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","name":"Skill","input":{"skill":"coding-standards"}}`,
+		want:    []string{"comprehensive-code-review", "coding-standards"},
+	}, {
+		name:    "no skill calls yields empty, not nil",
+		content: `{"type":"tool_use","name":"Bash","input":{"command":"ls"}},{"type":"text","text":"done"}`,
+		want:    []string{},
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			events := `{"type":"assistant","message":{"usage":{"input_tokens":1,"output_tokens":1},"content":[` + tc.content + `]}}
+{"type":"result","subtype":"success","usage":{"input_tokens":1,"output_tokens":1}}
+`
+			var usage TokenUsage
+			var result *claudeResult
+			if err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, &result); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result == nil {
+				t.Fatal("expected result")
+			}
+			if result.skillsUsed == nil {
+				t.Fatal("skillsUsed must be non-nil so callers can distinguish it from an adapter that reports nothing")
+			}
+			if !slices.Equal(result.skillsUsed, tc.want) {
+				t.Errorf("skillsUsed = %v, want %v", result.skillsUsed, tc.want)
+			}
+		})
 	}
 }
 

@@ -206,6 +206,10 @@ type Result struct {
 	// Provider is the adapter provider that served this invocation. It lets
 	// fallback wrappers persist a session against the provider that minted it.
 	Provider string
+	// SkillsUsed lists, in call order, the skills the invocation ran via the
+	// Skill tool. Nil means the adapter does not report skill use at all; a
+	// non-nil empty slice means the adapter reports it and none were used.
+	SkillsUsed []string
 	// Metrics is the bounded per-invocation activity evidence the adapter
 	// extracted from its event stream (round-trips, tool calls + categories,
 	// subprocess wait time). Nil means the adapter reported nothing, which is

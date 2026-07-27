@@ -125,6 +125,7 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 		res.SessionID = result.sessionID
 		res.Resumed = resumeID != ""
 		res.Model = result.model
+		res.SkillsUsed = result.skillsUsed
 		// Claude reports cache-creation cost per message, so the accumulated
 		// value is meaningful (recorded as a real number, not unknown). Its
 		// stream-json usage is per-invocation, not cumulative across --resume,
@@ -282,6 +283,10 @@ type claudeResult struct {
 	rawEvent         json.RawMessage
 	sessionID        string // durable session identity from the event stream
 	model            string // model reported by assistant events
+	// skillsUsed lists, in call order, the skill names the turn invoked via
+	// the Skill tool. Non-nil (possibly empty) whenever the stream parsed,
+	// so callers can tell "invoked nothing" from "adapter reports nothing".
+	skillsUsed []string
 }
 
 type claudeUsage struct {
@@ -298,8 +303,10 @@ type claudeMessage struct {
 }
 
 type claudeContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type  string          `json:"type"`
+	Text  string          `json:"text"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
 }
 
 // parseClaudeEvents reads JSONL from the reader and dispatches events.
@@ -310,6 +317,7 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 	var textBuf string
 	var lastSessionID string
 	var lastModel string
+	skillsUsed := []string{}
 
 	for scanner.Scan() {
 		select {
@@ -355,6 +363,14 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 						onChunk(c.Text)
 					}
 				}
+				if c.Type == "tool_use" && c.Name == "Skill" {
+					var in struct {
+						Skill string `json:"skill"`
+					}
+					if err := json.Unmarshal(c.Input, &in); err == nil && in.Skill != "" {
+						skillsUsed = append(skillsUsed, in.Skill)
+					}
+				}
 			}
 
 		case "result":
@@ -369,6 +385,7 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 					rawEvent:         raw,
 					sessionID:        lastSessionID,
 					model:            lastModel,
+					skillsUsed:       skillsUsed,
 				}
 			}
 		}
