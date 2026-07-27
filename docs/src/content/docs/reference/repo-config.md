@@ -274,11 +274,12 @@ A provider that accepts a rerun and never publishes it cannot stall the run past
 
 A cancelled check that comes back cancelled after its rerun pauses the step for user approval, so the pull request never looks green.
 It does not enter the `auto_fix.ci` loop and never consumes an auto-fix attempt: a cancellation is the provider reporting itself, so there is nothing for the fix agent to repair and no reason to let it edit code the provider never tested.
+Answering that gate with `fix` is still honored, and the fix round you asked for is told about the cancelled check alongside any other issue.
 
 Reruns are also skipped, with no change in behavior, when:
 
 - The provider has no rerun API (only GitHub implements one today; GitLab, Bitbucket Cloud, and Azure DevOps escalate as before).
-- The check names no single re-runnable job, for example a third-party status whose details link points at an external dashboard. A link that cannot be resolved to one job is never widened into re-running the whole workflow run.
+- The check's details link names nothing the provider can re-run, for example a third-party status pointing at an external dashboard, or a link under a workflow run that names no job the API accepts. A link naming one job re-runs that job; a link naming only the workflow run re-runs that run's failed jobs; an unrecognized link is widened into neither.
 - The published branch head no longer equals the commit the run delivered. That case terminates with the expected and observed commits instead: re-running checks against a different head would certify a revision this run never produced. See [pipeline steps: CI](/no-mistakes/reference/pipeline-steps/#ci).
 
 ### commit.fix_message

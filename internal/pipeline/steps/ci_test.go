@@ -1262,6 +1262,88 @@ func TestCIStep_CancelledCheckIsRerunBeforeEscalating(t *testing.T) {
 	t.Logf("fix-agent rounds consumed: %d", len(ag.calls))
 }
 
+// `gh run rerun` returns as soon as the provider accepts the request, while the
+// new attempt replaces the cancelled check in the status rollup asynchronously.
+// A poll that still reads the pre-rerun outcome must keep waiting: parking there
+// would escalate the very check this run just re-ran, and asking again would
+// bill the repository a duplicate workflow run.
+func TestCIStep_LaggingRerunRollupKeepsWaitingForTheRepublishedCheck(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	// The identical completedAt is what makes the second poll a stale read of
+	// the same cancellation rather than the re-run job ending cancelled again.
+	cancelled := `[{"name":"test","state":"CANCELLED","bucket":"cancel","completedAt":"2026-07-26T12:00:00Z","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`
+	env, logFile := fakeCIGHLoggedSequence(t, "OPEN", []string{
+		cancelled,
+		cancelled,
+		`[{"name":"test","state":"IN_PROGRESS","bucket":"pending"}]`,
+		`[{"name":"test","state":"SUCCESS","bucket":"pass","completedAt":"2026-07-26T12:06:00Z"}]`,
+	}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 30 * time.Minute
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 4 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected monitoring to continue while the rollup caught up, got outcome %+v err %v", outcome, err)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected no fix-agent round while the rerun was still publishing, got %d", len(ag.calls))
+	}
+	if got := strings.Count(ghLog(t, logFile), "run rerun"); got != 1 {
+		t.Fatalf("rerun requests = %d, want exactly one across the unrefreshed polls, gh log:\n%s", got, ghLog(t, logFile))
+	}
+	for _, l := range logs {
+		if strings.Contains(l, "auto-fixing") || strings.Contains(l, "manual intervention") {
+			t.Fatalf("a check whose rerun had not published yet escalated; logs: %v", logs)
+		}
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt == nil {
+		t.Fatal("expected CI readiness once the re-run check reported success")
+	}
+
+	t.Log("CI step log:")
+	for _, l := range logs {
+		t.Logf("    %s", l)
+	}
+	t.Log("gh commands the monitor issued:")
+	for _, l := range strings.Split(strings.TrimSpace(ghLog(t, logFile)), "\n") {
+		t.Logf("    gh %s", l)
+	}
+	t.Logf("fix-agent rounds consumed: %d", len(ag.calls))
+}
+
 // A check that comes back cancelled after its rerun is unresolved, not green: it
 // must reach the same gate a failing check does, and it must never produce a
 // ready-to-merge signal.
@@ -1551,6 +1633,9 @@ func TestCIStep_GenuineCheckFailureEscalatesOnFirstFailure(t *testing.T) {
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 	sctx.Config.CI = config.CI{RerunTransient: 1}
 
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sctx.Ctx = ctx
@@ -1581,6 +1666,17 @@ func TestCIStep_GenuineCheckFailureEscalatesOnFirstFailure(t *testing.T) {
 	if strings.Contains(ghLog(t, logFile), "run rerun") {
 		t.Fatalf("a genuine failure must never be re-run, gh log:\n%s", ghLog(t, logFile))
 	}
+
+	t.Log("CI step log:")
+	for _, l := range logs {
+		t.Logf("    %s", l)
+	}
+	t.Log("gh commands the monitor issued:")
+	for _, l := range strings.Split(strings.TrimSpace(ghLog(t, logFile)), "\n") {
+		t.Logf("    gh %s", l)
+	}
+	t.Logf("extra polls waited before escalating: %d", pollCalls)
+	t.Logf("outcome: needs_approval=%v findings=%s", outcome.NeedsApproval, outcome.Findings)
 }
 
 // A merge conflict is the one CI-step issue no rerun can ever clear, so a
@@ -1837,6 +1933,17 @@ func TestCIStep_MovedPublishedHeadTerminatesInsteadOfRerunning(t *testing.T) {
 	if !mismatchLogged {
 		t.Fatalf("expected the head mismatch to be reported, got: %v", logs)
 	}
+
+	t.Log("CI step log:")
+	for _, l := range logs {
+		t.Logf("    %s", l)
+	}
+	t.Log("gh commands the monitor issued:")
+	for _, l := range strings.Split(strings.TrimSpace(ghLog(t, logFile)), "\n") {
+		t.Logf("    gh %s", l)
+	}
+	t.Logf("outcome: needs_approval=%v finding=%q", outcome.NeedsApproval, findings.Items[0].Description)
+	t.Logf("rerun requests: %d", strings.Count(ghLog(t, logFile), "run rerun"))
 }
 
 // A provider that refuses the rerun must not stall the run: the budget is spent

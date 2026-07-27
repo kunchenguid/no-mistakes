@@ -50,6 +50,9 @@ auto_fix:
   lint: 3
   ci: 3
 
+ci:
+  rerun_transient: 1
+
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
 
