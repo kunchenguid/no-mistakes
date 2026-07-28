@@ -998,6 +998,34 @@ func TestTestFindingsSchema_IncludesEvidenceArtifacts(t *testing.T) {
 	}
 }
 
+func TestTestFindingsSchema_IncludesDeferredEvidence(t *testing.T) {
+	t.Parallel()
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(testFindingsSchema, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	props := parsed["properties"].(map[string]interface{})
+	deferred, ok := props["deferred_evidence"].(map[string]interface{})
+	if !ok {
+		t.Fatal("testFindingsSchema missing deferred_evidence property")
+	}
+	if deferred["type"] != "array" {
+		t.Fatalf("expected deferred_evidence to be an array, got %#v", deferred["type"])
+	}
+	items := deferred["items"].(map[string]interface{})
+	itemProps := items["properties"].(map[string]interface{})
+	for _, name := range []string{"kind", "label", "instructions"} {
+		if _, ok := itemProps[name]; !ok {
+			t.Fatalf("deferred_evidence item missing %s property", name)
+		}
+	}
+	for _, name := range parsed["required"].([]interface{}) {
+		if name == "deferred_evidence" {
+			t.Fatal("deferred_evidence must remain optional for agents that have no preview-only evidence")
+		}
+	}
+}
+
 func TestReviewFindingsSchema_ActionAtItemLevel(t *testing.T) {
 	t.Parallel()
 	var parsed map[string]interface{}

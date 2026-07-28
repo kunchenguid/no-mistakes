@@ -176,6 +176,9 @@ Task:
 - Prefer screenshots, images, videos, GIFs, or rendered HTML artifacts that show the actual end-user surface.
 - DOM snapshots, selector assertions, and text-only render summaries are not substitutes for visual evidence when a rendered surface is available.
 - If a UI-facing change has no screenshot, image, video, GIF, or rendered HTML artifact, state why in testing_summary.
+- When the only missing prerequisite is a same-run deployed PR preview that does not exist yet, defer that visual evidence to the deployed PR preview instead of failing or asking for approval now.
+- Do not report missing local runtime configuration as an ask-user finding when the deployed PR preview can provide the required rendered surface later. Add one or more "deferred_evidence" entries with the artifact kind, a concise label, and exact preview verification instructions.
+- Only defer evidence that genuinely requires pipeline-owned deployment. Local test failures, missing credentials unrelated to the preview, and evidence that remains impossible after deployment are still actionable findings.
 %s
 - Do not move, commit, or modify source files only to make evidence linkable. Record local evidence file paths exactly where you created them.
 - Only use command output as an artifact when that output directly demonstrates the end-user experience or requested behavior. Generic pass/fail, coverage, or clean-worktree output is not sufficient evidence.
@@ -189,6 +192,7 @@ Task:
 - The "testing_summary" must account for the complete test step: baseline commands that already ran, automated tests, manual or evidence-producing checks, artifacts gathered, and the overall result.
 - Record the exact tests, manual checks, and evidence-producing steps you ran in a "tested" array. Prefer concrete commands or test selectors wrapped in backticks.
 - Always include an "artifacts" array. Leave it empty when you produced no reviewer-visible evidence artifacts. Use artifact path for file artifacts, artifact url for externally visible artifacts, and artifact content for short logs or command output that should be shown directly in the PR.
+- Always include a "deferred_evidence" array. Leave it empty when no evidence needs the deployed PR preview.
 - If tests fail, determine whether the problem is a real product/code failure, a setup/environment problem you can fix, or a flaky/infrastructure issue.
 - If the issue is setup-related and fixable, fix it and retry the focused tests.
 

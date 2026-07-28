@@ -69,6 +69,33 @@ func TestParseFindingsJSON_TestingSummary(t *testing.T) {
 	}
 }
 
+func TestParseFindingsJSON_DeferredEvidence(t *testing.T) {
+	raw := `{
+		"findings": [],
+		"summary": "visual evidence deferred",
+		"deferred_evidence": [{
+			"kind": "screenshot",
+			"label": "review queue labels",
+			"instructions": "Capture the rendered admin review queue from the deployed PR preview."
+		}]
+	}`
+
+	findings, err := ParseFindingsJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings.DeferredEvidence) != 1 {
+		t.Fatalf("DeferredEvidence = %+v, want one request", findings.DeferredEvidence)
+	}
+	got := findings.DeferredEvidence[0]
+	if got.Kind != "screenshot" || got.Label != "review queue labels" {
+		t.Fatalf("DeferredEvidence[0] = %+v", got)
+	}
+	if !strings.Contains(got.Instructions, "deployed PR preview") {
+		t.Fatalf("DeferredEvidence[0].Instructions = %q", got.Instructions)
+	}
+}
+
 func TestFilterFindings_PreservesRiskFields(t *testing.T) {
 	f := Findings{
 		Items: []Finding{

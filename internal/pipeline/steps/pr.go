@@ -2,6 +2,7 @@ package steps
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -17,7 +18,12 @@ import (
 )
 
 // PRStep creates or updates a pull request via the provider CLI or API.
-type PRStep struct{}
+type PRStep struct {
+	// requireExistingUpdate is used when CI republishes deferred preview
+	// evidence. That path must fail closed instead of silently skipping,
+	// creating a replacement PR, or treating a failed update as success.
+	requireExistingUpdate bool
+}
 
 type prContent struct {
 	Title string `json:"title"`
@@ -91,6 +97,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
 		updated, err := host.UpdatePR(ctx, existing, scm.PRContent(content))
 		if err != nil {
+			if s.requireExistingUpdate {
+				return nil, fmt.Errorf("update existing pull request: %w", err)
+			}
 			sctx.Log(fmt.Sprintf("warning: failed to update PR: %v", err))
 			updated = existing
 		}
@@ -100,7 +109,13 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			}
 			return &pipeline.StepOutcome{PRURL: updated.URL}, nil
 		}
+		if s.requireExistingUpdate {
+			return nil, errors.New("update existing pull request returned no URL")
+		}
 		return &pipeline.StepOutcome{}, nil
+	}
+	if s.requireExistingUpdate {
+		return nil, errors.New("existing pull request not found while publishing preview evidence")
 	}
 
 	sctx.Log("creating pull request...")

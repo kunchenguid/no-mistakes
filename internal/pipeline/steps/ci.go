@@ -44,6 +44,9 @@ type CIStep struct {
 	// must not re-arm the timeout. Overridable for testing; defaults to
 	// fetching the upstream default branch.
 	baseBranchTip func(context.Context) (string, bool)
+	// refreshPREvidence updates the existing PR after deferred preview
+	// artifacts are merged into the Test result. Overridable for tests.
+	refreshPREvidence func(*pipeline.StepContext) error
 }
 
 func (s *CIStep) Name() types.StepName { return types.StepCI }
@@ -403,8 +406,22 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					lastMonitorLog = ""
 					sctx.Log("no CI checks reported yet, waiting for checks to register...")
 				case len(checks) == 0:
+					previewOutcome, previewErr := s.captureDeferredPreviewEvidence(sctx, prURL, checks)
+					if previewErr != nil {
+						return nil, previewErr
+					}
+					if previewOutcome != nil {
+						return previewOutcome, nil
+					}
 					lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
 				default:
+					previewOutcome, previewErr := s.captureDeferredPreviewEvidence(sctx, prURL, checks)
+					if previewErr != nil {
+						return nil, previewErr
+					}
+					if previewOutcome != nil {
+						return previewOutcome, nil
+					}
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
 				}
 			}

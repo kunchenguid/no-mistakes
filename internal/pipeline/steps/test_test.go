@@ -261,6 +261,56 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 	}
 }
 
+func TestTestStep_DefersPreviewOnlyVisualEvidenceWithoutEarlyApproval(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{
+				"findings": [],
+				"summary": "rendered evidence requires the deployed preview",
+				"tested": ["focused component test"],
+				"testing_summary": "Source-level validation passed; visual evidence is deferred to the deployed PR preview.",
+				"artifacts": [],
+				"deferred_evidence": [{
+					"kind": "screenshot",
+					"label": "review queue labels",
+					"instructions": "Capture the rendered admin review queue from the deployed PR preview."
+				}]
+			}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.UserIntent = "Show new labels in the review queue"
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatal("preview-only evidence should be deferred to CI, not gate the pre-push Test step")
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatal(err)
+	}
+	if len(findings.DeferredEvidence) != 1 {
+		t.Fatalf("DeferredEvidence = %+v, want one preview request", findings.DeferredEvidence)
+	}
+	prompt := ag.calls[0].Prompt
+	for _, want := range []string{
+		"defer that visual evidence to the deployed PR preview",
+		"Do not report missing local runtime configuration as an ask-user finding",
+		"deferred_evidence",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt to contain %q, got:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestTestStep_InRepoEvidenceFallsBackWhenConfiguredDirEscapesWorktree(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

@@ -415,6 +415,7 @@ func cleanReviewScenario(t *testing.T) string {
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
       artifacts: []
+      deferred_evidence: []
       title: "docs: update README"
       body: "## Summary\ndocumentation update"
   - match: "branch: review-warning"
@@ -445,6 +446,7 @@ func cleanReviewScenario(t *testing.T) string {
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
       artifacts: []
+      deferred_evidence: []
   - match: "You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself.\n\nContext:\n- branch: test-agent-new-test-file"
     text: "tests passed after adding a regression test"
     edits:
@@ -459,6 +461,7 @@ func cleanReviewScenario(t *testing.T) string {
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
       artifacts: []
+      deferred_evidence: []
   - match: "You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself.\n\nContext:\n- branch: test-malformed-structured-output"
     text: "tests found some issues"
     structured_raw: '{"summary":123}'
@@ -479,6 +482,7 @@ func cleanReviewScenario(t *testing.T) string {
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
       artifacts: []
+      deferred_evidence: []
   - match: "You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself."
     text: "tests passed with no evidence artifacts"
     structured:
@@ -488,6 +492,7 @@ func cleanReviewScenario(t *testing.T) string {
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
       artifacts: []
+      deferred_evidence: []
   - match: "Review the code changes and return structured findings with a risk assessment.\n\nContext:\n- branch: feature/e2e"
     text: "looks good"
     delay_ms: 1500

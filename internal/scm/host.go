@@ -140,6 +140,7 @@ type Check struct {
 	Name        string
 	Bucket      CheckBucket
 	CompletedAt time.Time // zero when unknown; used to detect CI re-runs between polls
+	DetailsURL  string    // optional provider URL for the check or deployment
 }
 
 // Failing reports whether the check is in a failed bucket.

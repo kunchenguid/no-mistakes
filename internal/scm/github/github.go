@@ -297,7 +297,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		return nil, err
 	}
 	args := append([]string{"pr", "checks", selector}, h.repoArgs()...)
-	args = append(args, "--json", "name,state,bucket,completedAt")
+	args = append(args, "--json", "name,state,bucket,completedAt,link")
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -311,6 +311,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		State       string `json:"state"`
 		Bucket      string `json:"bucket"`
 		CompletedAt string `json:"completedAt"`
+		Link        string `json:"link"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return nil, fmt.Errorf("parse CI checks: %w", err)
@@ -323,7 +324,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 				completedAt = parsed
 			}
 		}
-		checks = append(checks, scm.Check{Name: r.Name, Bucket: normalizeCheckBucket(r.Bucket, r.State), CompletedAt: completedAt})
+		checks = append(checks, scm.Check{Name: r.Name, Bucket: normalizeCheckBucket(r.Bucket, r.State), CompletedAt: completedAt, DetailsURL: strings.TrimSpace(r.Link)})
 	}
 	return checks, nil
 }

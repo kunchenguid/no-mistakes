@@ -83,6 +83,18 @@ var testFindingsSchema = json.RawMessage(`{
 				},
 				"required": ["label"]
 			}
+		},
+		"deferred_evidence": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"kind": {"type": "string", "description": "deferred artifact type such as screenshot, gif, image, video, or rendered-html"},
+					"label": {"type": "string"},
+					"instructions": {"type": "string", "description": "what to verify against the deployed PR preview after deployment checks pass"}
+				},
+				"required": ["label", "instructions"]
+			}
 		}
 	},
 	"required": ["findings", "summary", "tested", "testing_summary", "artifacts"]
