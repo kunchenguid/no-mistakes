@@ -11,9 +11,10 @@
       stamp = self.lastModifiedDate;
       inherit (nixpkgs.lib) substring;
       date = "${substring 0 4 stamp}-${substring 4 2 stamp}-${substring 6 2 stamp}T${substring 8 2 stamp}:${substring 10 2 stamp}:${substring 12 2 stamp}Z";
+      # Nixpkgs 26.11 dropped x86_64-darwin, so advertising it here would hand
+      # an Intel Mac user an evaluation throw instead of a binary.
       systems = [
         "aarch64-darwin"
-        "x86_64-darwin"
         "aarch64-linux"
         "x86_64-linux"
       ];
