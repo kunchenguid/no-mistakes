@@ -54,6 +54,13 @@ func TestPRStep_UpdatesExistingPR(t *testing.T) {
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
 
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
@@ -75,6 +82,9 @@ func TestPRStep_UpdatesExistingPR(t *testing.T) {
 	}
 	if !strings.Contains(ghLog, "--body") {
 		t.Errorf("expected --body flag in gh pr edit, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, noMistakesPRSignature) {
+		t.Errorf("expected updated PR body to include no-mistakes signature, got:\n%s", ghLog)
 	}
 
 	// Verify PR URL was stored
