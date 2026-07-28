@@ -25,6 +25,10 @@ func TestMain(m *testing.M) {
 	_ = os.Setenv("NM_HOME", root)
 	_ = os.Setenv("HOME", home)
 	_ = os.Setenv("NO_MISTAKES_TELEMETRY", "off")
+	// A developer running a locally built binary exports this to stop `update`
+	// from clobbering it; inherited, it silently short-circuits the notify and
+	// cache-read paths under test. Tests that want it set it themselves.
+	_ = os.Unsetenv(noUpdateCheckEnv)
 
 	code := m.Run()
 
