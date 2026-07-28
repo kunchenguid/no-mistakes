@@ -226,6 +226,11 @@ func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (pipelineMD, r
 
 	pipelineMD, riskLine = BuildPipelineSummary(steps, rounds)
 	testingMD = BuildTestingSummaryForPR(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir)
+	// pr.pipeline_summary: false suppresses only the "## Pipeline" section;
+	// the Risk Assessment, Testing, and Intent sections still render.
+	if sctx.Config != nil && !sctx.Config.PR.PipelineSummary {
+		pipelineMD = ""
+	}
 	return pipelineMD, riskLine, testingMD
 }
 

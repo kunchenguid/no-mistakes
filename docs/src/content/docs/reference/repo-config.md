@@ -12,7 +12,7 @@ The daemon also reads `document.instructions`, `review.path_instructions`, `disa
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`) are still read from the pushed branch.
+Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`, `pr`) are still read from the pushed branch.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -81,6 +81,9 @@ test:
   evidence:
     store_in_repo: true
     dir: .no-mistakes/evidence
+
+pr:
+  pipeline_summary: true
 ```
 
 ## Fields
@@ -421,3 +424,16 @@ By default, test evidence stays in a temporary directory keyed by run ID and is 
 Set `store_in_repo: true` to write evidence under `<dir>/<branch-slug>` inside the worktree so push can commit and publish it with the branch.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
+
+### pr.pipeline_summary
+
+Override whether the PR step appends the generated `## Pipeline` section to the PR description for this repository.
+
+| | |
+|---|---|
+| Type | `bool` |
+| Default | Inherits from global (default `true`) |
+
+See the [global `pr.pipeline_summary`](/no-mistakes/reference/global-config/#prpipeline_summary) reference for what the section contains and what is unaffected.
+This non-executing field is read from the pushed branch, so it does not require `allow_repo_commands`.
+Repositories that gate contributions on the no-mistakes PR signature (like the no-mistakes repo itself) should leave it `true`.

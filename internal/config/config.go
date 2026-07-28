@@ -86,6 +86,7 @@ type GlobalConfig struct {
 	Commit CommitRaw
 	Intent IntentRaw
 	Test   TestRaw
+	PR     PRRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -106,6 +107,7 @@ type globalConfigRaw struct {
 	Commit               CommitRaw           `yaml:"commit"`
 	Intent               IntentRaw           `yaml:"intent"`
 	Test                 TestRaw             `yaml:"test"`
+	PR                   PRRaw               `yaml:"pr"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -126,6 +128,7 @@ type RepoConfig struct {
 	Commit            CommitRaw  `yaml:"commit"`
 	Intent            IntentRaw  `yaml:"intent"`
 	Test              TestRaw    `yaml:"test"`
+	PR                PRRaw      `yaml:"pr"`
 	// Document carries the repository's documentation placement policy. It
 	// steers the document step's gate prompt, so it is honored ONLY from the
 	// trusted default-branch copy of .no-mistakes.yaml (see
@@ -161,6 +164,23 @@ type RepoConfig struct {
 	// registered pending or failing check. No inference from workflow files,
 	// prior history, branch names, or grace-period expiry.
 	NoCI bool `yaml:"no_ci"`
+}
+
+// PRRaw is the YAML representation of PR-step settings. The pointer
+// distinguishes "not set" (nil, inherit) from an explicit false.
+type PRRaw struct {
+	// PipelineSummary controls whether the PR step appends the generated
+	// "## Pipeline" section (the no-mistakes signature plus per-step status
+	// details) to the PR description. Default true. The Intent, Risk
+	// Assessment, and Testing sections are unaffected. Note the upstream
+	// no-mistakes repository itself requires the signature via its
+	// "Require no-mistakes" check, so leave this on when contributing there.
+	PipelineSummary *bool `yaml:"pipeline_summary"`
+}
+
+// PR is the resolved PR-step config.
+type PR struct {
+	PipelineSummary bool
 }
 
 // DocumentRaw is the YAML representation of document-step settings.
@@ -299,6 +319,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Commit                 CommitRaw   `yaml:"commit"`
 		Intent                 IntentRaw   `yaml:"intent"`
 		Test                   TestRaw     `yaml:"test"`
+		PR                     PRRaw       `yaml:"pr"`
 		Document               DocumentRaw `yaml:"document"`
 		Review                 ReviewRaw   `yaml:"review"`
 		DisableProjectSettings bool        `yaml:"disable_project_settings"`
@@ -318,6 +339,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Commit = raw.Commit
 	c.Intent = raw.Intent
 	c.Test = raw.Test
+	c.PR = raw.PR
 	c.Document = raw.Document
 	c.Review = raw.Review
 	c.DisableProjectSettings = raw.DisableProjectSettings
@@ -390,6 +412,7 @@ type Config struct {
 	Commit               Commit
 	Intent               Intent
 	Test                 Test
+	PR                   PR
 	Document             Document
 	Review               Review
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
@@ -641,6 +664,14 @@ intent:
 #   evidence:
 #     store_in_repo: true
 #     dir: .no-mistakes/evidence
+
+# PR description sections. pipeline_summary controls the generated
+# "## Pipeline" section (the no-mistakes signature plus per-step status
+# details) appended to every PR body. Default true; set false for a clean PR
+# description. The Intent, Risk Assessment, and Testing sections are
+# unaffected. Repo config may override this value.
+# pr:
+#   pipeline_summary: true
 `
 
 // defaultBinary maps agent names to their default binary names.
@@ -1199,6 +1230,7 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg.Commit = raw.Commit
 	cfg.Intent = raw.Intent
 	cfg.Test = raw.Test
+	cfg.PR = raw.PR
 
 	return cfg, nil
 }
@@ -1363,9 +1395,10 @@ func validatePathInstructionGlob(pattern string) error {
 // branch - this blocks the supply-chain vector for repos that ship
 // .no-mistakes.yaml only on feature branches.
 //
-// Non-executing fields (ignore patterns, auto-fix, commit, intent, test) are
-// always taken from the pushed copy, matching prior behavior, since they cannot
-// run arbitrary shell, select a process, or spend the maintainer's CI minutes.
+// Non-executing fields (ignore patterns, auto-fix, commit, intent, test, pr)
+// are always taken from the pushed copy, matching prior behavior, since they
+// cannot run arbitrary shell, select a process, or spend the maintainer's CI
+// minutes.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
 	if pushed == nil {
 		pushed = &RepoConfig{}
@@ -1488,6 +1521,19 @@ func applyTestOverrides(dst *Test, src *TestRaw) {
 	}
 }
 
+// prDefaults returns the default PR-step settings: the generated Pipeline
+// section is appended, matching the tool's historical behavior.
+func prDefaults() PR {
+	return PR{PipelineSummary: true}
+}
+
+// applyPROverrides applies non-nil raw values onto resolved defaults.
+func applyPROverrides(dst *PR, src *PRRaw) {
+	if src.PipelineSummary != nil {
+		dst.PipelineSummary = *src.PipelineSummary
+	}
+}
+
 // autoFixDefaults returns the default auto-fix configuration.
 func autoFixDefaults() AutoFix {
 	return AutoFix{
@@ -1587,6 +1633,10 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	applyTestOverrides(&test, &global.Test)
 	applyTestOverrides(&test, &repo.Test)
 
+	pr := prDefaults()
+	applyPROverrides(&pr, &global.PR)
+	applyPROverrides(&pr, &repo.PR)
+
 	commit := Commit{FixMessage: DefaultFixMessageTemplate}
 	if global.Commit.FixMessage != nil {
 		commit.FixMessage = *global.Commit.FixMessage
@@ -1613,6 +1663,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Commit:               commit,
 		Intent:               intent,
 		Test:                 test,
+		PR:                   pr,
 		Document:             Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		Review:               Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
 		// repo is the EffectiveRepoConfig result, so this value is already
