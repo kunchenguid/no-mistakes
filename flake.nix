@@ -4,9 +4,13 @@
   };
 
   outputs =
-    { nixpkgs, ... }:
+    { self, nixpkgs, ... }:
     let
       version = "1.41.2"; # x-release-please-version
+      commit = self.shortRev or self.dirtyShortRev or "unknown";
+      stamp = self.lastModifiedDate;
+      inherit (nixpkgs.lib) substring;
+      date = "${substring 0 4 stamp}-${substring 4 2 stamp}-${substring 6 2 stamp}T${substring 8 2 stamp}:${substring 10 2 stamp}:${substring 12 2 stamp}Z";
       systems = [
         "aarch64-darwin"
         "x86_64-darwin"
@@ -30,20 +34,13 @@
             subPackages = [ "cmd/no-mistakes" ];
             ldflags = [
               "-X github.com/kunchenguid/no-mistakes/internal/buildinfo.Version=v${version}"
+              "-X github.com/kunchenguid/no-mistakes/internal/buildinfo.Commit=${commit}"
+              "-X github.com/kunchenguid/no-mistakes/internal/buildinfo.Date=${date}"
               "-X github.com/kunchenguid/no-mistakes/internal/buildinfo.TelemetryWebsiteID=f959e889-92f5-4121-8a1f-571b10861198"
             ];
-            # go test ./... was run in the sandbox (nativeCheckInputs = [ pkgs.git
-            # pkgs.perl pkgs.procps ]; checkPhase overridden past the subPackages
-            # narrowing) and reduced most failures, but three are structural
-            # sandbox mismatches rather than code bugs: TestPRStep_GhNotAvailable
-            # needs a real .git directory (the flake source has none, since Nix
-            # only copies git-tracked files); TestDefaultShellCommandOutput_*
-            # and login-shell resolution need a real /bin/bash FHS path; and
-            # TestColdDetachedStartupProductionGateCardinality asserts a
-            # wall-clock deadline crossing calibrated for real hardware. Full
-            # regression coverage already runs in CI (.github/workflows/ci.yml)
-            # on ubuntu/macos/windows runners, so it is not skipped, only not
-            # duplicated inside this hermetic build.
+            # Parts of the suite need a real .git directory, an FHS /bin/bash,
+            # and real-hardware wall-clock timing, none of which the hermetic
+            # sandbox provides. Full regression runs in CI, not here.
             doCheck = false;
           };
         }

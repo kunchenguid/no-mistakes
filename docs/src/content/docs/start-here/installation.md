@@ -33,6 +33,19 @@ go install github.com/kunchenguid/no-mistakes/cmd/no-mistakes@latest
 
 `go install` builds the CLI without an embedded telemetry website ID, so telemetry stays off by default unless you later set `NO_MISTAKES_UMAMI_WEBSITE_ID` at runtime.
 
+## Nix
+
+```sh
+nix run github:kunchenguid/no-mistakes -- --version
+nix profile install github:kunchenguid/no-mistakes
+```
+
+The flake embeds the default telemetry website ID, so a Nix-built binary reports to the default self-hosted host exactly like an official release binary.
+Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
+
+`no-mistakes update` does not apply to a Nix install, because the binary lives in the read-only Nix store.
+Update the flake input and rebuild instead.
+
 ## From source
 
 ```sh
