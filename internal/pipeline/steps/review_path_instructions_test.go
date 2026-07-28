@@ -2,6 +2,7 @@ package steps
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -192,7 +193,7 @@ func TestMatchPathInstructions_PushedIgnorePatternsCannotSuppressTrustedRule(t *
 	t.Parallel()
 
 	rule := config.PathInstruction{Path: "internal/scm/**", Instructions: "Credential-carrying URLs must go through internal/safeurl."}
-	changedFiles := "internal/scm/github/github.go\ninternal/cli/root.go\n"
+	changedFiles := "internal/scm/github/github.go\x00internal/cli/root.go\x00"
 	contributorIgnores := []string{"internal/scm/**"}
 
 	// What the review step feeds the matcher: the complete changed set.
@@ -215,14 +216,14 @@ func TestReviewablePaths(t *testing.T) {
 	t.Parallel()
 
 	got := reviewablePaths(
-		changedPathList("internal/scm/github/github.go\n\n  vendor/dep/dep.go  \nschema.generated.go\ndocs/index.md\n"),
+		changedPathList("internal/scm/github/github.go\x00vendor/dep/dep.go\x00schema.generated.go\x00docs/index.md\x00"),
 		[]string{"vendor/**", "*.generated.go"})
 	assertIDs(t, "reviewablePaths", got, []string{"internal/scm/github/github.go", "docs/index.md"})
 
 	if got := reviewablePaths(changedPathList(""), nil); len(got) != 0 {
 		t.Fatalf("reviewablePaths(nil) = %q, want none", got)
 	}
-	if got := reviewablePaths(changedPathList("vendor/dep/dep.go\n"), []string{"vendor/**"}); len(got) != 0 {
+	if got := reviewablePaths(changedPathList("vendor/dep/dep.go\x00"), []string{"vendor/**"}); len(got) != 0 {
 		t.Fatalf("reviewablePaths() = %q, want none when everything is ignored", got)
 	}
 }
@@ -230,10 +231,32 @@ func TestReviewablePaths(t *testing.T) {
 func TestChangedPathList(t *testing.T) {
 	t.Parallel()
 	assertIDs(t, "changedPathList",
-		changedPathList("internal/scm/github/github.go\n\n  vendor/dep/dep.go  \n"),
+		changedPathList("internal/scm/github/github.go\x00vendor/dep/dep.go\x00"),
 		[]string{"internal/scm/github/github.go", "vendor/dep/dep.go"})
 	if got := changedPathList(""); len(got) != 0 {
 		t.Fatalf("changedPathList(\"\") = %q, want none", got)
+	}
+}
+
+func TestChangedPathList_RenameAndUnusualNames(t *testing.T) {
+	dir, _, _ := setupGitRepo(t)
+	oldPath := dir + "/internal/scm/legacy.go"
+	os.MkdirAll(dir+"/internal/scm", 0o755)
+	os.WriteFile(oldPath, []byte("package scm\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "base")
+	base := gitCmd(t, dir, "rev-parse", "HEAD")
+	os.MkdirAll(dir+"/docs", 0o755)
+	os.Rename(oldPath, dir+"/docs/legacy.go")
+	oddPath := "internal/scm/über\n.go"
+	os.WriteFile(dir+"/"+oddPath, []byte("package scm\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "rename and unicode")
+	changed := changedPathList(gitCmd(t, dir, "diff", "--name-only", "-z", "--no-renames", base+"..HEAD"))
+	matches := matchPathInstructions(changed, []config.PathInstruction{{Path: "internal/scm/**", Instructions: "keep"}})
+	assertIDs(t, "matched paths", matches.Blocks[0].Files, []string{"internal/scm/legacy.go", oddPath})
+	if got := matchedFilesSummary(matches.Blocks[0].Files); got != `internal/scm/legacy.go, "internal/scm/über\n.go"` {
+		t.Fatalf("matched files summary = %q", got)
 	}
 }
 
@@ -497,7 +520,7 @@ func TestEvidence_ReviewPathInstructionsMatchedPrompt(t *testing.T) {
 		{Path: "docs/**", Instructions: "Prose changes only. Do not request test coverage."},
 		{Path: "cmd/**", Instructions: "Flag changes need a docs update in the same change."},
 	}
-	changed := changedPathList("internal/scm/github/github.go\ninternal/scm/github/github_test.go\ndocs/notes.md\n")
+	changed := changedPathList("internal/scm/github/github.go\x00internal/scm/github/github_test.go\x00docs/notes.md\x00")
 
 	matches := matchPathInstructions(changed, rules)
 	section := reviewPathInstructionsSection(matches)

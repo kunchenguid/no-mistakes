@@ -2,6 +2,7 @@ package steps
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -98,9 +99,11 @@ func matchingChangedPaths(changed []string, pattern string) []string {
 // git's order and states how many files it left out.
 func matchedFilesSummary(files []string) string {
 	const sep = ", "
+	var rendered []string
 	shown := 0
 	used := 0
 	for i, file := range files {
+		file = promptPath(file)
 		add := len(file)
 		if shown > 0 {
 			add += len(sep)
@@ -116,8 +119,9 @@ func matchedFilesSummary(files []string) string {
 		}
 		shown++
 		used += add
+		rendered = append(rendered, file)
 	}
-	summary := strings.Join(files[:shown], sep)
+	summary := strings.Join(rendered, sep)
 	if dropped := len(files) - shown; dropped > 0 {
 		if summary != "" {
 			summary += sep
@@ -125,6 +129,13 @@ func matchedFilesSummary(files []string) string {
 		summary += fmt.Sprintf("+%d more", dropped)
 	}
 	return summary
+}
+
+func promptPath(path string) string {
+	if strings.IndexFunc(path, func(r rune) bool { return !strconv.IsGraphic(r) }) >= 0 {
+		return strconv.QuoteToGraphic(path)
+	}
+	return path
 }
 
 // reviewPathInstructionsSection renders the matched blocks for the review

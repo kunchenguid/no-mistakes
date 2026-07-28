@@ -100,17 +100,13 @@ func matchIgnorePattern(file, pattern string) bool {
 	return matched
 }
 
-// changedPathList splits a `git diff --name-only` payload into trimmed paths,
-// keeping git's order and dropping blank lines. The result is the complete
-// changed set: callers that want the ignore-filtered subset use reviewablePaths.
+// changedPathList splits a NUL-delimited `git diff --name-only -z` payload,
+// preserving raw paths and git's order. The result is the complete changed set:
+// callers that want the ignore-filtered subset use reviewablePaths.
 func changedPathList(changedFiles string) []string {
-	var paths []string
-	for _, file := range strings.Split(changedFiles, "\n") {
-		file = strings.TrimSpace(file)
-		if file == "" {
-			continue
-		}
-		paths = append(paths, file)
+	paths := strings.Split(changedFiles, "\x00")
+	if paths[len(paths)-1] == "" {
+		paths = paths[:len(paths)-1]
 	}
 	return paths
 }

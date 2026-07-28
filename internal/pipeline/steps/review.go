@@ -117,9 +117,9 @@ Previous review findings to address:
 	// matchPathInstructions).
 	var args []string
 	if sctx.Fixing {
-		args = []string{"diff", "--name-only", baseSHA}
+		args = []string{"diff", "--name-only", "-z", "--no-renames", baseSHA}
 	} else {
-		args = []string{"diff", "--name-only", baseSHA + ".." + sctx.Run.HeadSHA}
+		args = []string{"diff", "--name-only", "-z", "--no-renames", baseSHA + ".." + sctx.Run.HeadSHA}
 	}
 	changedFiles, err := git.Run(ctx, sctx.WorkDir, args...)
 	if err != nil {
