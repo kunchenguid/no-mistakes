@@ -408,6 +408,54 @@ If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlin
 
 These are global defaults. Per-repo config can override either field.
 
+### scm
+
+|      |          |
+| ---- | -------- |
+| Type | `object` |
+
+| Field              | Type       | Default | Description                                                          |
+| ------------------ | ---------- | ------- | -------------------------------------------------------------------- |
+| `scm.cli_wrapper`  | `[]string` | empty   | Command prefix applied to every SCM CLI invocation                    |
+| `scm.gh_config_dir`| `string`   | empty   | Overrides `GH_CONFIG_DIR` for daemon `gh` invocations                 |
+
+The daemon execs the SCM CLI directly and never sources a login shell, so a credential manager wired up as a shell alias is invisible to it.
+`cli_wrapper` reapplies that wrapper: `["op", "plugin", "run", "--"]` turns `gh pr create` into `op plugin run -- gh pr create`.
+The wrapper runs from the repo's working path rather than the daemon's fixed working directory, so a credential manager that scopes secrets by directory resolves the identity belonging to that repo.
+
+`gh_config_dir` points `gh` at a configuration directory holding no stored accounts, making its auth state exactly the token the wrapper injects.
+Without it, an expired account left in the user's own `hosts.yml` makes `gh auth status` exit non-zero even when a valid token is present, and the Push, PR, and CI steps skip the host as unauthenticated.
+
+Both fields are global-only, since they select which credentials the daemon authenticates with; a repo config cannot set them.
+
+### trust_working_path_config
+
+|         |           |
+| ------- | --------- |
+| Type    | `boolean` |
+| Default | `false`   |
+
+Reads the gate-control fields of `.no-mistakes.yaml` from each repo's registered working path — your own checkout — and layers them over the trusted default-branch copy.
+
+The normal rule is that `commands`, `agent`, `document.instructions`, and `disable_project_settings` come only from a fresh fetch of the default branch, so a contributor cannot choose what the daemon executes by pushing a branch. That rule assumes you can commit those settings to the default branch. This field exists for the case where you cannot: a repo owned by a team that does not run no-mistakes, where there is nowhere trusted to put the commands.
+
+The merge is field-by-field, and only fields the working-path copy actually sets take precedence. A working-path file setting just `commands.test` leaves a default-branch `commands.lint` in force; an absent or empty file changes nothing.
+
+Two fields are deliberately excluded:
+
+- **`allow_repo_commands`** stays default-branch-only. A local convenience override must not be able to widen the trust boundary for pushed branches.
+- **`disable_project_settings`** merges as "true wins". The working-path copy can turn the opt-out on but not off, because a plain boolean cannot distinguish "set to false" from "absent".
+
+Everything arriving over a push is unaffected: the default-branch rule still applies to the pushed SHA, whether or not this field is set.
+
+```yaml
+trust_working_path_config: true
+```
+
+Keep the working-path file untracked (`.git/info/exclude`). A tracked file is a footgun: checking out a contributor's branch in your primary worktree would put their commands into a trusted position, which is what the default-branch rule prevents. The daemon logs a warning when it finds the file tracked, but honors it — you opted in.
+
+This is global-only and therefore maintainer-owned. The working path is on the daemon host, and anyone who can write it can already set `agent_path_override` or `scm.cli_wrapper`, both of which choose what the daemon executes; honoring the working-path config grants no privilege that is not already held.
+
 ## Environment variables
 
 See [Environment Variables](/no-mistakes/reference/environment/) for `NM_HOME`, `NM_DAEMON_CONNECT_TIMEOUT`, Bitbucket Cloud credentials, and update-check suppression.

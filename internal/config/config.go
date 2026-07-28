@@ -86,26 +86,61 @@ type GlobalConfig struct {
 	Commit CommitRaw
 	Intent IntentRaw
 	Test   TestRaw
+	SCM    SCMRaw `yaml:"scm"`
+	// TrustWorkingPathConfig honors the gate-control fields from
+	// .no-mistakes.yaml in the repo's registered working path (the
+	// maintainer's own checkout) on top of the trusted default-branch copy.
+	// It exists for gated repos whose gate config cannot be committed - the
+	// default branch is owned by a team that does not run no-mistakes, so
+	// there is nowhere trusted to put commands.
+	//
+	// This is global-only and therefore maintainer-owned: the working path is
+	// on the daemon host, and anyone who can write it can already set
+	// agent_path_override or scm.cli_wrapper, both of which choose what the
+	// daemon executes. Honoring it grants no privilege that is not already
+	// held. The default-branch rule is unchanged for everything that arrives
+	// over a push. Default false, preserving current behavior.
+	TrustWorkingPathConfig bool `yaml:"trust_working_path_config"`
+}
+
+// SCMRaw is the YAML representation of SCM CLI settings. They exist because
+// the daemon execs the SCM CLI binary directly and never sees a login shell,
+// so a credential manager wired up through a shell alias (1Password's
+// `op plugin run -- gh`, for example) is invisible to it.
+type SCMRaw struct {
+	// CLIWrapper prefixes every SCM CLI invocation, so
+	// ["op", "plugin", "run", "--"] turns `gh pr create` into
+	// `op plugin run -- gh pr create`. The wrapper runs in the repo's working
+	// path so credential managers that scope secrets by directory resolve the
+	// identity that matches the repo. Empty runs the CLI directly.
+	CLIWrapper []string `yaml:"cli_wrapper"`
+	// GHConfigDir overrides GH_CONFIG_DIR for daemon gh invocations. Pointing
+	// it at a directory with no stored accounts makes `gh auth status` depend
+	// solely on the token the wrapper injects, so an expired account left in
+	// the user's own gh config cannot make the host look unauthenticated.
+	GHConfigDir string `yaml:"gh_config_dir"`
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
-	Agent                agentList           `yaml:"agent"`
-	ACPXPath             string              `yaml:"acpx_path"`
-	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
-	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
-	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
-	CITimeout            string              `yaml:"ci_timeout"`
-	DaemonConnectTimeout string              `yaml:"daemon_connect_timeout"`
-	BabysitTimeout       string              `yaml:"babysit_timeout"`
-	StepQuietWarning     string              `yaml:"step_quiet_warning"`
-	LogLevel             string              `yaml:"log_level"`
-	SessionReuse         *bool               `yaml:"session_reuse"`
-	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
-	CI                   CIRaw               `yaml:"ci"`
-	Commit               CommitRaw           `yaml:"commit"`
-	Intent               IntentRaw           `yaml:"intent"`
-	Test                 TestRaw             `yaml:"test"`
+	Agent                  agentList           `yaml:"agent"`
+	ACPXPath               string              `yaml:"acpx_path"`
+	ACPRegistryOverrides   map[string]string   `yaml:"acp_registry_overrides"`
+	AgentPathOverride      map[string]string   `yaml:"agent_path_override"`
+	AgentArgsOverride      map[string][]string `yaml:"agent_args_override"`
+	CITimeout              string              `yaml:"ci_timeout"`
+	DaemonConnectTimeout   string              `yaml:"daemon_connect_timeout"`
+	BabysitTimeout         string              `yaml:"babysit_timeout"`
+	StepQuietWarning       string              `yaml:"step_quiet_warning"`
+	LogLevel               string              `yaml:"log_level"`
+	SessionReuse           *bool               `yaml:"session_reuse"`
+	AutoFix                AutoFixRaw          `yaml:"auto_fix"`
+	CI                     CIRaw               `yaml:"ci"`
+	Commit                 CommitRaw           `yaml:"commit"`
+	Intent                 IntentRaw           `yaml:"intent"`
+	Test                   TestRaw             `yaml:"test"`
+	SCM                    SCMRaw              `yaml:"scm"`
+	TrustWorkingPathConfig bool                `yaml:"trust_working_path_config"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -392,6 +427,10 @@ type Config struct {
 	Test                 Test
 	Document             Document
 	Review               Review
+	// SCM carries the global SCM CLI settings; see SCMRaw. It is global-only:
+	// a repo config cannot set it, since it selects which credentials the
+	// daemon authenticates with.
+	SCM SCMRaw
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -1152,6 +1191,8 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	if raw.AgentPathOverride != nil {
 		cfg.AgentPathOverride = raw.AgentPathOverride
 	}
+	cfg.SCM = raw.SCM
+	cfg.TrustWorkingPathConfig = raw.TrustWorkingPathConfig
 	if raw.AgentArgsOverride != nil {
 		if err := validateAgentArgsOverride(raw.AgentArgsOverride); err != nil {
 			return nil, err
@@ -1417,6 +1458,62 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 	return &effective
 }
 
+// MergeWorkingPathTrusted layers the gate-control fields of a working-path
+// .no-mistakes.yaml over the trusted default-branch copy, returning the config
+// that should be treated as trusted. It is a no-op unless the maintainer set
+// trust_working_path_config in the global config (see GlobalConfig).
+//
+// The merge is field-by-field so the two copies compose rather than compete: a
+// working-path file that sets only commands.test leaves a default-branch
+// commands.lint in force. Only fields the working-path copy actually sets take
+// precedence, which is why an empty or absent file changes nothing.
+//
+// Deliberately NOT merged:
+//   - AllowRepoCommands, which hands commands and agent selection to whatever
+//     a contributor pushed. That switch stays default-branch-only; a local
+//     convenience override must not be able to widen the push trust boundary.
+//   - Every non-executing field (ignore patterns, auto-fix, commit, intent,
+//     test). Those already come from the pushed branch by design, and this
+//     function only concerns the trusted side.
+//
+// DisableProjectSettings merges as "true wins": a plain bool cannot
+// distinguish "set to false" from "absent", so the working-path copy can turn
+// the opt-out on but not off. Turning it off is the weakening direction, so
+// failing in the safe direction is correct.
+func MergeWorkingPathTrusted(trusted, workingPath *RepoConfig) *RepoConfig {
+	if workingPath == nil {
+		return trusted
+	}
+	merged := RepoConfig{}
+	if trusted != nil {
+		merged = *trusted
+		merged.Agents = copyAgents(trusted.Agents)
+	}
+	if workingPath.Commands.Test != "" {
+		merged.Commands.Test = workingPath.Commands.Test
+	}
+	if workingPath.Commands.Lint != "" {
+		merged.Commands.Lint = workingPath.Commands.Lint
+	}
+	if workingPath.Commands.Format != "" {
+		merged.Commands.Format = workingPath.Commands.Format
+	}
+	if len(workingPath.Agents) > 0 {
+		merged.Agents = copyAgents(workingPath.Agents)
+		merged.Agent = firstAgent(merged.Agents)
+	} else if workingPath.Agent != "" {
+		merged.Agent = workingPath.Agent
+		merged.Agents = nil
+	}
+	if workingPath.Document.Instructions != "" {
+		merged.Document.Instructions = workingPath.Document.Instructions
+	}
+	if workingPath.DisableProjectSettings {
+		merged.DisableProjectSettings = true
+	}
+	return &merged
+}
+
 // ParseLogLevel converts a log level string to slog.Level.
 // Accepted values: "debug", "info", "warn", "error". Defaults to slog.LevelInfo.
 func ParseLogLevel(level string) slog.Level {
@@ -1606,6 +1703,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		StepQuietWarning:     global.StepQuietWarning,
 		LogLevel:             global.LogLevel,
 		SessionReuse:         global.SessionReuse,
+		SCM:                  global.SCM,
 		Commands:             repo.Commands,
 		IgnorePatterns:       repo.IgnorePatterns,
 		AutoFix:              af,

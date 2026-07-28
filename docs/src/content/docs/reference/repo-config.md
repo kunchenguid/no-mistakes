@@ -15,6 +15,8 @@ Commit the gate-control settings you want to your default branch.
 Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`) are still read from the pushed branch.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
+
+If you cannot commit this file to the default branch at all — a repo owned by a team that does not run no-mistakes — set [`trust_working_path_config: true`](/no-mistakes/reference/global-config/#trust_working_path_config) in your global config. The daemon then layers the gate-control fields from your own checkout's `.no-mistakes.yaml` over the default-branch copy. That is a maintainer-side setting on the daemon host; the rule above still governs everything arriving over a push.
 :::
 
 ```yaml

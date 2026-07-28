@@ -3,7 +3,9 @@ package steps
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -45,7 +47,7 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 			// the plain slug (without host prefix) is correct here.
 			forkRepo = github.RepoSlug(sctx.Repo.ForkURL)
 		}
-		return github.NewWithFork(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, host, repo, forkRepo), ""
+		return github.NewWithFork(scmCLIFactory(sctx, cmdFactory), func() bool { return stepCLIAvailable(sctx, provider) }, host, repo, forkRepo), ""
 	case scm.ProviderGitLab:
 		if sctx.Repo.ForkURL != "" {
 			// Fork MR routing for GitLab is intentionally not half-wired.
@@ -93,5 +95,51 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		return azuredevops.New(cmdFactory, func() bool { return stepCLIAvailable(sctx, provider) }, org, project, repo), ""
 	default:
 		return nil, fmt.Sprintf("provider %s is not supported yet", provider)
+	}
+}
+
+// scmCLIFactory applies the global scm settings to gh invocations. The daemon
+// execs gh directly from a fixed, non-repo working directory, so it never sees
+// the login shell where a credential manager is wired up. When scm.cli_wrapper
+// is set, gh runs under that wrapper (for example `op plugin run -- gh`) from
+// the repo's own working path, so a wrapper that scopes credentials by
+// directory hands back the identity belonging to that repo rather than a
+// global default. When scm.gh_config_dir is set it replaces GH_CONFIG_DIR, so
+// gh reads no stored accounts and its auth state is exactly the token the
+// wrapper injected. Both unset returns base unchanged.
+func scmCLIFactory(sctx *pipeline.StepContext, base github.CmdFactory) github.CmdFactory {
+	if sctx.Config == nil {
+		return base
+	}
+	wrapper := sctx.Config.SCM.CLIWrapper
+	configDir := strings.TrimSpace(sctx.Config.SCM.GHConfigDir)
+	if len(wrapper) == 0 && configDir == "" {
+		return base
+	}
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if len(wrapper) > 0 {
+			wrapped := make([]string, 0, len(wrapper)-1+1+len(args))
+			wrapped = append(wrapped, wrapper[1:]...)
+			wrapped = append(wrapped, name)
+			wrapped = append(wrapped, args...)
+			name, args = wrapper[0], wrapped
+		}
+		cmd := base(ctx, name, args...)
+		// The wrapper resolves credentials relative to its working directory,
+		// and gh addresses the repository through --repo rather than the cwd,
+		// so pointing at the user's real checkout is safe and is what makes
+		// directory-scoped credentials resolve correctly.
+		if sctx.Repo != nil && sctx.Repo.WorkingPath != "" {
+			cmd.Dir = sctx.Repo.WorkingPath
+		}
+		if configDir != "" {
+			// A nil Env means "inherit"; appending to it would instead reduce
+			// the child's environment to this single variable.
+			if cmd.Env == nil {
+				cmd.Env = os.Environ()
+			}
+			cmd.Env = append(cmd.Env, "GH_CONFIG_DIR="+configDir)
+		}
+		return cmd
 	}
 }

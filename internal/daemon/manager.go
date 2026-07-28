@@ -223,7 +223,10 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 		return nil, err
 	}
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
+	// allow_repo_commands is read before the working-path merge so a local
+	// override cannot widen the push trust boundary (see MergeWorkingPathTrusted).
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
+	trustedRepoCfg = applyWorkingPathTrustedConfig(ctx, globalCfg, repo, trustedRepoCfg, run.ID)
 	return config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)), nil
 }
 
@@ -532,6 +535,43 @@ func loadTrustedRepoConfig(ctx context.Context, wtDir, trustedSHA, runID string)
 	return trusted
 }
 
+// applyWorkingPathTrustedConfig layers the maintainer's own checkout copy of
+// .no-mistakes.yaml over the trusted default-branch copy, when the global
+// config opted in with trust_working_path_config. It returns trusted unchanged
+// when the opt-in is off, the working path is unknown, or the file is absent.
+//
+// The working path is the registered primary checkout on the daemon host, not
+// the ephemeral gate worktree, so nothing a contributor pushed can reach it.
+// See config.MergeWorkingPathTrusted for the merge rules and for why
+// allow_repo_commands is excluded.
+func applyWorkingPathTrustedConfig(ctx context.Context, globalCfg *config.GlobalConfig, repo *db.Repo, trusted *config.RepoConfig, runID string) *config.RepoConfig {
+	if globalCfg == nil || !globalCfg.TrustWorkingPathConfig || repo == nil || repo.WorkingPath == "" {
+		return trusted
+	}
+	path := filepath.Join(repo.WorkingPath, ".no-mistakes.yaml")
+	if _, err := os.Stat(path); err != nil {
+		return trusted
+	}
+	workingCfg, err := config.LoadRepo(repo.WorkingPath)
+	if err != nil {
+		// Do NOT fall through to the default-branch copy on a parse error: the
+		// maintainer asked for this file to steer the gate, so silently running
+		// different commands than the ones they edited is the wrong failure.
+		// Warn loudly and keep the trusted copy, which is still a safe config.
+		slog.Warn("working-path repo config: parse failed; falling back to the default-branch copy", "run_id", runID, "path", path, "error", err)
+		return trusted
+	}
+	// A tracked file is a footgun: checking out a contributor's branch in the
+	// primary checkout would put their commands into a trusted position, which
+	// is exactly what the default-branch rule prevents. Untracked files cannot
+	// arrive over a push. Warn rather than refuse - the maintainer opted in.
+	if _, err := git.Run(ctx, repo.WorkingPath, "ls-files", "--error-unmatch", ".no-mistakes.yaml"); err == nil {
+		slog.Warn("working-path repo config is tracked by git: a branch checkout in the primary worktree can change trusted gate commands; keep it untracked (.git/info/exclude)", "run_id", runID, "path", path)
+	}
+	slog.Info("working-path repo config applied over the default-branch copy", "run_id", runID, "path", path)
+	return config.MergeWorkingPathTrusted(trusted, workingCfg)
+}
+
 // assertGateTrustedConfigReadable fails a run LOUD when the trusted
 // default-branch copy of .no-mistakes.yaml could not be READ at all. This is the
 // security correction for disable_project_settings: that field is a boundary
@@ -832,7 +872,10 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		return "", err
 	}
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, wtDir, trustedSHA, run.ID)
+	// allow_repo_commands is read before the working-path merge so a local
+	// override cannot widen the push trust boundary (see MergeWorkingPathTrusted).
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
+	trustedRepoCfg = applyWorkingPathTrustedConfig(ctx, globalCfg, repo, trustedRepoCfg, run.ID)
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	if allowRepoCommands {
 		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands/agent from pushed branch", "run_id", run.ID, "branch", branch)

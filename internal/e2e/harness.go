@@ -42,9 +42,10 @@ type Harness struct {
 	AgentLog    string // every fake-agent invocation appended here, one JSON per line
 	Scenario    string // optional path to a scenario yaml; empty = built-in default
 
-	agentName         string // claude / codex / opencode
-	allowRepoCommands *bool  // mirrors SetupOpts.AllowRepoCommands
-	daemonOwn         *e2edaemon.Ownership
+	agentName              string // claude / codex / opencode
+	allowRepoCommands      *bool  // mirrors SetupOpts.AllowRepoCommands
+	trustWorkingPathConfig bool   // mirrors SetupOpts.TrustWorkingPathConfig
+	daemonOwn              *e2edaemon.Ownership
 }
 
 // SetupOpts controls per-test setup.
@@ -68,6 +69,11 @@ type SetupOpts struct {
 	// (commands must come from the trusted default branch) pass a pointer
 	// to false to exercise the secure default.
 	AllowRepoCommands *bool
+
+	// TrustWorkingPathConfig writes trust_working_path_config into the global
+	// config, opting the daemon into layering the working path's own
+	// .no-mistakes.yaml over the trusted default-branch copy.
+	TrustWorkingPathConfig bool
 }
 
 const e2eDaemonStartTimeout = "45s"
@@ -90,18 +96,19 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	h := &Harness{
-		t:                 t,
-		NMBin:             nmBin,
-		FakeAgent:         fakeBin,
-		BinDir:            filepath.Join(root, "bin"),
-		NMHome:            filepath.Join(root, "nmhome"),
-		HomeDir:           filepath.Join(root, "home"),
-		UpstreamDir:       filepath.Join(root, "upstream.git"),
-		WorkDir:           filepath.Join(root, "work"),
-		AgentLog:          filepath.Join(root, "fakeagent.log"),
-		Scenario:          opts.Scenario,
-		agentName:         opts.Agent,
-		allowRepoCommands: opts.AllowRepoCommands,
+		t:                      t,
+		NMBin:                  nmBin,
+		FakeAgent:              fakeBin,
+		BinDir:                 filepath.Join(root, "bin"),
+		NMHome:                 filepath.Join(root, "nmhome"),
+		HomeDir:                filepath.Join(root, "home"),
+		UpstreamDir:            filepath.Join(root, "upstream.git"),
+		WorkDir:                filepath.Join(root, "work"),
+		AgentLog:               filepath.Join(root, "fakeagent.log"),
+		Scenario:               opts.Scenario,
+		agentName:              opts.Agent,
+		allowRepoCommands:      opts.AllowRepoCommands,
+		trustWorkingPathConfig: opts.TrustWorkingPathConfig,
 	}
 
 	for _, dir := range []string{h.BinDir, h.NMHome, h.HomeDir, h.WorkDir} {
@@ -209,6 +216,9 @@ auto_fix:
   document: 0
   ci: 0
 `, h.agentName, h.agentName, binLink)
+	if h.trustWorkingPathConfig {
+		cfg += "trust_working_path_config: true\n"
+	}
 	if err := os.WriteFile(configPath, []byte(cfg), 0o644); err != nil {
 		h.t.Fatalf("write config: %v", err)
 	}
