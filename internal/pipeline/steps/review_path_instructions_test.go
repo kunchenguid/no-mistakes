@@ -3,6 +3,8 @@ package steps
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -238,25 +240,78 @@ func TestChangedPathList(t *testing.T) {
 	}
 }
 
+// TestChangedPathList_RenameAndUnusualNames runs real git for the two properties
+// only real git output can prove: --no-renames emits both endpoints of a rename,
+// so a file moved out of a governed subtree still runs that subtree's rule, and
+// -z emits raw paths, so a name git would C-quote for display reaches path.Match
+// as the name itself.
+//
+// The strongest unusual name also carries a control character, which is what
+// breaks splitting the payload on newlines. Win32 forbids characters 1-31 in file
+// names, so on Windows that name cannot exist on disk and the non-ASCII half
+// carries the case; the escaping contract for a control-character name is pinned
+// on every platform by TestMatchedFilesSummary_EscapesNonGraphicPaths.
 func TestChangedPathList_RenameAndUnusualNames(t *testing.T) {
 	dir, _, _ := setupGitRepo(t)
-	oldPath := dir + "/internal/scm/legacy.go"
-	os.MkdirAll(dir+"/internal/scm", 0o755)
-	os.WriteFile(oldPath, []byte("package scm\n"), 0o644)
+
+	// Every filesystem call is checked: an unwritable name must fail here by
+	// name, not later as a confusing missing-path assertion.
+	writeFile := func(rel string) {
+		t.Helper()
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("mkdir for %q: %v", rel, err)
+		}
+		if err := os.WriteFile(full, []byte("package scm\n"), 0o644); err != nil {
+			t.Fatalf("write %q: %v", rel, err)
+		}
+	}
+
+	writeFile("internal/scm/legacy.go")
 	gitCmd(t, dir, "add", "-A")
 	gitCmd(t, dir, "commit", "-m", "base")
 	base := gitCmd(t, dir, "rev-parse", "HEAD")
-	os.MkdirAll(dir+"/docs", 0o755)
-	os.Rename(oldPath, dir+"/docs/legacy.go")
-	oddPath := "internal/scm/über\n.go"
-	os.WriteFile(dir+"/"+oddPath, []byte("package scm\n"), 0o644)
+
+	oddPath, oddRendered := "internal/scm/über\n.go", `"internal/scm/über\n.go"`
+	if runtime.GOOS == "windows" {
+		oddPath, oddRendered = "internal/scm/über.go", "internal/scm/über.go"
+	}
+
+	// Move legacy.go out of the governed subtree, and add the unusual name.
+	if err := os.MkdirAll(filepath.Join(dir, "docs"), 0o755); err != nil {
+		t.Fatalf("mkdir docs: %v", err)
+	}
+	if err := os.Rename(filepath.Join(dir, "internal", "scm", "legacy.go"), filepath.Join(dir, "docs", "legacy.go")); err != nil {
+		t.Fatalf("rename out of internal/scm: %v", err)
+	}
+	writeFile(oddPath)
 	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "rename and unicode")
+	gitCmd(t, dir, "commit", "-m", "rename and unusual name")
+
 	changed := changedPathList(gitCmd(t, dir, "diff", "--name-only", "-z", "--no-renames", base+"..HEAD"))
 	matches := matchPathInstructions(changed, []config.PathInstruction{{Path: "internal/scm/**", Instructions: "keep"}})
+	if len(matches.Blocks) != 1 {
+		t.Fatalf("blocks = %+v (changed = %q), want the internal/scm rule applied", matches.Blocks, changed)
+	}
 	assertIDs(t, "matched paths", matches.Blocks[0].Files, []string{"internal/scm/legacy.go", oddPath})
-	if got := matchedFilesSummary(matches.Blocks[0].Files); got != `internal/scm/legacy.go, "internal/scm/über\n.go"` {
-		t.Fatalf("matched files summary = %q", got)
+	if got, want := matchedFilesSummary(matches.Blocks[0].Files), "internal/scm/legacy.go, "+oddRendered; got != want {
+		t.Fatalf("matched files summary = %q, want %q", got, want)
+	}
+}
+
+// The renderer escapes a path only when it carries a non-graphic character and
+// leaves every other path byte for byte. Windows cannot hold a control-character
+// file name, so this is where that half of the contract is pinned on every
+// platform.
+func TestMatchedFilesSummary_EscapesNonGraphicPaths(t *testing.T) {
+	t.Parallel()
+
+	if got, want := matchedFilesSummary([]string{"internal/scm/über\n.go"}), `"internal/scm/über\n.go"`; got != want {
+		t.Errorf("summary = %q, want the control character escaped as %q", got, want)
+	}
+	// Non-ASCII on its own is graphic, so it must survive unescaped.
+	if got, want := matchedFilesSummary([]string{"internal/scm/über.go"}), "internal/scm/über.go"; got != want {
+		t.Errorf("summary = %q, want %q unescaped", got, want)
 	}
 }
 
