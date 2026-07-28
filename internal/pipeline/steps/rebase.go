@@ -79,6 +79,9 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	if outcome := detectBundledLocalDefaultCommits(ctx, sctx, branch, defaultBranch); outcome != nil {
 		return outcome, nil
 	}
+	if outcome := detectSharedBranchRewrite(ctx, sctx, branch, defaultBranch); outcome != nil {
+		return outcome, nil
+	}
 	if forcePush && branch == defaultBranch && remoteDefaultBranchAdvanced(ctx, sctx.WorkDir, defaultBranch, sctx.Run.BaseSHA) {
 		findingsJSON, _ := json.Marshal(Findings{
 			Items: []Finding{{
@@ -242,6 +245,88 @@ func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepCo
 			Action: types.ActionAskUser,
 		}},
 		Summary: fmt.Sprintf("branch bundles %d unpushed %s commit(s)", len(commits), defaultBranch),
+	})
+	return &pipeline.StepOutcome{
+		NeedsApproval: true,
+		AutoFixable:   false,
+		Findings:      string(findingsJSON),
+	}
+}
+
+// detectSharedBranchRewrite refuses to rewrite a branch the run does not own.
+//
+// The pipeline rebases the gated branch onto the fresh default branch and then
+// force-pushes the result. That is safe for an ordinary single-author feature
+// branch, whose history is linear and whose recorded base sits on the default
+// branch's own advancing lineage. It is destructive for a shared integration
+// branch that a worker deliberately assembled from several merge commits on a
+// specific base: the rebase linearizes those merges, replays the work onto a
+// different lineage that no longer contains the recorded base, and the
+// force-push then rewrites the shared ref - discarding an integration history
+// nobody chose to discard, and validating a base different from the one the
+// worker built on (the incident this guard exists to stop).
+//
+// The guard fails loudly, naming the branch, only when BOTH signals of that
+// shape are present, so ordinary gating is untouched:
+//   - the recorded BaseSHA is a real commit that is NOT an ancestor of the new
+//     base (origin/<default>), so the rebase would move the work onto a
+//     different lineage and drop the base from HEAD's ancestry; and
+//   - the range the rewrite would rewrite (BaseSHA..HEAD) carries merge commits,
+//     which the run itself never authors (it rebases, i.e. linearizes) and which
+//     mark a deliberately assembled integration history.
+//
+// A linear single-author feature branch fails the second check. A branch based
+// on the default branch's own advancing lineage fails the first (the old base is
+// still an ancestor of the newer default). Both must hold, which is exactly the
+// shared-integration-branch case. Returns nil to let the run proceed.
+func detectSharedBranchRewrite(ctx context.Context, sctx *pipeline.StepContext, branch, defaultBranch string) *pipeline.StepOutcome {
+	if branch == "" || branch == defaultBranch {
+		return nil
+	}
+	baseSHA := strings.TrimSpace(sctx.Run.BaseSHA)
+	if baseSHA == "" || git.IsZeroSHA(baseSHA) {
+		return nil
+	}
+	// The recorded base must be a real commit and a real ancestor of HEAD for
+	// the range and the lineage comparison to mean anything.
+	if _, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", baseSHA+"^{commit}"); err != nil {
+		return nil
+	}
+	if !isAncestor(ctx, sctx.WorkDir, baseSHA, "HEAD") {
+		return nil
+	}
+	newBase := "origin/" + defaultBranch
+	if _, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", newBase+"^{commit}"); err != nil {
+		return nil
+	}
+	// Same-lineage advance: the recorded base is still an ancestor of the new
+	// default, so rebasing keeps it in ancestry - ordinary gating, do not refuse.
+	if isAncestor(ctx, sctx.WorkDir, baseSHA, newBase) {
+		return nil
+	}
+	// Cross-lineage rebase. Refuse only when the branch carries merge commits the
+	// rebase would linearize - the fingerprint of a deliberately assembled
+	// integration branch the run does not own.
+	merges, err := git.Run(ctx, sctx.WorkDir, "rev-list", "--merges", baseSHA+"..HEAD")
+	if err != nil || strings.TrimSpace(merges) == "" {
+		return nil
+	}
+	mergeCommits := strings.Split(strings.TrimSpace(merges), "\n")
+
+	description := fmt.Sprintf(
+		"refusing to rewrite branch %q: it carries %d merge commit(s) on base %s, and rebasing onto %s would linearize those merges and drop that base from history (the new base is on a different lineage). This branch was assembled by a worker and is not this run's to rewrite; rebasing and force-pushing it would silently validate a different base than the work was built on and discard the integration history. Rebase the branch yourself onto the intended base, or gate a single-author branch instead.",
+		branch, len(mergeCommits), shortSHA(baseSHA), newBase,
+	)
+	findingsJSON, _ := json.Marshal(Findings{
+		Items: []Finding{{
+			Severity:    "error",
+			File:        filepath.Join("internal", "pipeline", "steps", "rebase.go"),
+			Description: description,
+			// Rewriting a shared integration branch is a workflow decision only a
+			// human can make; the pipeline must never auto-resolve it.
+			Action: types.ActionAskUser,
+		}},
+		Summary: fmt.Sprintf("refusing to rewrite shared branch %q (carries merge commits, base changes lineage)", branch),
 	})
 	return &pipeline.StepOutcome{
 		NeedsApproval: true,
