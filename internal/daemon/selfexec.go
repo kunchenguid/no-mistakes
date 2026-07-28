@@ -37,9 +37,11 @@ func daemonStartTimeout() time.Duration {
 // pending/racing connections fail as immediately as a Unix domain socket
 // unlink does, so the health check can keep reporting an ambiguous error
 // for longer after a graceful shutdown request has already succeeded.
+// That transport is a property of the host, so this reads runtime.GOOS and not
+// runtimeGOOS, which tests reassign to simulate a service manager.
 func daemonStopTimeout() time.Duration {
 	fallback := 5 * time.Second
-	if runtimeGOOS == "windows" {
+	if runtime.GOOS == "windows" {
 		fallback = 15 * time.Second
 	}
 	return durationFromEnv("NM_TEST_DAEMON_STOP_TIMEOUT", fallback)

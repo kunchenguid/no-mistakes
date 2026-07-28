@@ -85,6 +85,28 @@ func TestDaemonStartTimeoutCoversColdProductionWork(t *testing.T) {
 	}
 }
 
+// The longer stop window compensates for the real Windows loopback IPC
+// transport, not for a service manager, so it must track the host and ignore
+// runtimeGOOS. Dozens of tests simulate systemd or launchd by assigning
+// runtimeGOOS; on a Windows runner that used to cut the budget to the Unix 5s
+// and kill the still-shutting-down daemon by PID.
+func TestDaemonStopTimeoutTracksHostNotSimulatedServiceOS(t *testing.T) {
+	t.Setenv("NM_TEST_DAEMON_STOP_TIMEOUT", "")
+	oldGOOS := runtimeGOOS
+	t.Cleanup(func() { runtimeGOOS = oldGOOS })
+
+	want := 5 * time.Second
+	if runtime.GOOS == "windows" {
+		want = 15 * time.Second
+	}
+	for _, simulated := range []string{"linux", "darwin", "windows"} {
+		runtimeGOOS = simulated
+		if got := daemonStopTimeout(); got != want {
+			t.Errorf("daemonStopTimeout() with runtimeGOOS=%q = %v, want %v", simulated, got, want)
+		}
+	}
+}
+
 func TestEnsureDaemonDoesNotStartWhenHealthCheckTimesOut(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
 	if err != nil {
