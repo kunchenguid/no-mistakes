@@ -40,6 +40,9 @@ nix run github:kunchenguid/no-mistakes -- --version
 nix profile install github:kunchenguid/no-mistakes
 ```
 
+The flake builds for `x86_64-linux`, `aarch64-linux`, and `aarch64-darwin`.
+Intel macOS is not covered because nixpkgs dropped `x86_64-darwin`; use the install script or `go install` there.
+
 The flake embeds the default telemetry website ID, so a Nix-built binary reports to the default self-hosted host exactly like an official release binary.
 Disable telemetry with `NO_MISTAKES_TELEMETRY=0`, or override the host and website ID with `NO_MISTAKES_UMAMI_HOST` and `NO_MISTAKES_UMAMI_WEBSITE_ID`.
 
