@@ -462,6 +462,12 @@ func lastBareJSONObject(text string, schema json.RawMessage) (json.RawMessage, e
 	for i := 0; i < len(text); i++ {
 		if strings.HasPrefix(text[i:], "```") {
 			contentStart, info := fenceContentStart(text, i)
+			// A prose mention such as "an unclosed ``` code fence" is not an
+			// opening fence. Treating it as one would hide a later final JSON
+			// object when there is no matching closing marker.
+			if strings.ContainsAny(strings.TrimSpace(info), " \t`") {
+				continue
+			}
 			next := skipFenceBlock(text[contentStart:])
 			if next < 0 {
 				// A Pi response can prefix its final JSON with ```json but omit
