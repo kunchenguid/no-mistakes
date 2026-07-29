@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -103,6 +104,66 @@ type checkRerunBudget struct {
 	rollup map[string]rerunRollupState
 }
 
+// persistedRerunBudget is the on-disk shape of a checkRerunBudget. It is a
+// named type rather than an inline literal so a field added here is a
+// compile-time decision about what must survive a restart.
+type persistedRerunBudget struct {
+	Spent  map[string]int                  `json:"spent,omitempty"`
+	Rollup map[string]persistedRollupState `json:"rollup,omitempty"`
+}
+
+type persistedRollupState struct {
+	CompletedAt    time.Time `json:"completed_at"`
+	GraceRemaining int       `json:"grace_remaining"`
+}
+
+// marshal renders the budget for persistence. An empty budget marshals to the
+// empty string so a run that never spent a rerun writes nothing.
+func (b *checkRerunBudget) marshal() (string, error) {
+	if len(b.spent) == 0 && len(b.rollup) == 0 {
+		return "", nil
+	}
+	payload := persistedRerunBudget{Spent: b.spent}
+	if len(b.rollup) > 0 {
+		payload.Rollup = make(map[string]persistedRollupState, len(b.rollup))
+		for name, state := range b.rollup {
+			payload.Rollup[name] = persistedRollupState{
+				CompletedAt:    state.completedAt,
+				GraceRemaining: state.graceRemaining,
+			}
+		}
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal rerun budget: %w", err)
+	}
+	return string(encoded), nil
+}
+
+// unmarshal restores a budget persisted by marshal. An empty payload leaves the
+// budget untouched, so a run that never spent a rerun starts clean.
+func (b *checkRerunBudget) unmarshal(encoded string) error {
+	if strings.TrimSpace(encoded) == "" {
+		return nil
+	}
+	var payload persistedRerunBudget
+	if err := json.Unmarshal([]byte(encoded), &payload); err != nil {
+		return fmt.Errorf("unmarshal rerun budget: %w", err)
+	}
+	b.spent = payload.Spent
+	if b.spent == nil {
+		b.spent = map[string]int{}
+	}
+	b.rollup = make(map[string]rerunRollupState, len(payload.Rollup))
+	for name, state := range payload.Rollup {
+		b.rollup[name] = rerunRollupState{
+			completedAt:    state.CompletedAt,
+			graceRemaining: state.GraceRemaining,
+		}
+	}
+	return nil
+}
+
 func (b *checkRerunBudget) remaining(name string, limit int) int {
 	if limit <= 0 {
 		return 0
@@ -139,9 +200,18 @@ func (b *checkRerunBudget) spend(check scm.Check) int {
 // accepted a rerun and never reflected it must not stall the run.
 func (b *checkRerunBudget) cancelledAfterRerun(checks []scm.Check) (unresolved, awaiting []string) {
 	refreshed := map[string]bool{}
+	present := map[string]bool{}
 	var order []string
 	for _, check := range checks {
-		if check.Bucket != scm.CheckBucketCancel || b.used(check.Name) == 0 {
+		if b.used(check.Name) == 0 {
+			continue
+		}
+		// A rerun this run issued is outstanding until its replacement is
+		// published, whatever bucket the check currently reports. Recording
+		// presence for every bucket keeps a check that moved from cancelled to
+		// running or success from being read as missing below.
+		present[check.Name] = true
+		if check.Bucket != scm.CheckBucketCancel {
 			continue
 		}
 		if _, seen := refreshed[check.Name]; !seen {
@@ -151,6 +221,23 @@ func (b *checkRerunBudget) cancelledAfterRerun(checks []scm.Check) (unresolved, 
 		// enough to say the name's rollup has moved on.
 		refreshed[check.Name] = refreshed[check.Name] || !b.rollupUnchanged(check)
 	}
+
+	// Outstanding reruns drive this, not the checks the latest response
+	// happens to carry. A transitional rollup can omit the very check a rerun
+	// was requested for; iterating only the response would drop it from both
+	// buckets and let the run read as green while its replacement is unknown.
+	// A missing check consumes grace exactly like an unrefreshed one, so it
+	// stays awaiting for a bounded number of polls and then becomes unresolved.
+	var missing []string
+	for name := range b.rollup {
+		if present[name] || b.used(name) == 0 {
+			continue
+		}
+		missing = append(missing, name)
+	}
+	sort.Strings(missing)
+	order = append(order, missing...)
+
 	for _, name := range order {
 		if refreshed[name] || !b.consumeRollupGrace(name) {
 			unresolved = append(unresolved, name)
@@ -275,6 +362,37 @@ func mergeCheckNames(base, extra []string) []string {
 //
 // Every failure path here falls back to the behavior this policy replaces: no
 // rerun, and the failure escalates exactly as it would without it.
+// loadRerunBudget restores the durable rerun budget for this run. A run that
+// never spent one, or a database that cannot be read, leaves the in-memory
+// budget as it is: the failure direction is a fresh budget, which the
+// reservation write below then re-establishes.
+func (s *CIStep) loadRerunBudget(sctx *pipeline.StepContext) {
+	if sctx.DB == nil || sctx.Run == nil {
+		return
+	}
+	encoded, err := sctx.DB.GetRunCIRerunState(sctx.Run.ID)
+	if err != nil {
+		sctx.Log(fmt.Sprintf("warning: could not read the persisted rerun budget: %v", err))
+		return
+	}
+	if err := s.transientReruns.unmarshal(encoded); err != nil {
+		sctx.Log(fmt.Sprintf("warning: could not restore the persisted rerun budget: %v", err))
+	}
+}
+
+// persistRerunBudget writes the rerun budget so a recovered run resumes with
+// what it already spent rather than a fresh allowance.
+func (s *CIStep) persistRerunBudget(sctx *pipeline.StepContext) error {
+	if sctx.DB == nil || sctx.Run == nil {
+		return nil
+	}
+	encoded, err := s.transientReruns.marshal()
+	if err != nil {
+		return err
+	}
+	return sctx.DB.SetRunCIRerunState(sctx.Run.ID, encoded)
+}
+
 func (s *CIStep) rerunTransientChecks(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, checks []scm.Check) (bool, *pipeline.StepOutcome) {
 	limit := sctx.Config.CI.RerunTransient
 	if limit <= 0 {
@@ -308,6 +426,14 @@ func (s *CIStep) rerunTransientChecks(sctx *pipeline.StepContext, host scm.Host,
 	issued := false
 	for _, check := range candidates {
 		used := s.transientReruns.spend(check)
+		// Reserve durably before asking the provider. A crash between this
+		// write and the request costs the budget, which is the safe direction:
+		// the alternative is a recovered run believing the rerun never
+		// happened and issuing another one past the documented limit.
+		if err := s.persistRerunBudget(sctx); err != nil {
+			sctx.Log(fmt.Sprintf("warning: could not reserve the rerun budget for %s: %v", check.Name, err))
+			return issued, nil
+		}
 		if err := rerunner.RerunCheck(sctx.Ctx, pr, check); err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not re-run transient CI check %s: %v", check.Name, err))
 			continue

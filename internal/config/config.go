@@ -44,10 +44,14 @@ const (
 	// "off", and "never", resolves to this.
 	CITimeoutUnlimited = time.Duration(-1)
 	// DefaultCIRerunTransient is the per-check rerun budget the CI step uses
-	// when ci.rerun_transient is unset. One rerun is enough to clear a job the
-	// provider cancelled; a check that keeps ending cancelled is an outcome
-	// the provider keeps reproducing.
-	DefaultCIRerunTransient = 1
+	// when ci.rerun_transient is unset. It is 0 because GitHub's CANCELLED
+	// conclusion does not carry a cause: the same value covers a provider
+	// aborting its own infrastructure, a maintainer stopping a runaway or
+	// unsafe job, and repository concurrency with cancel-in-progress. Until a
+	// reliable cause signal exists, restarting on that ambiguity risks
+	// re-running work a person deliberately stopped, so rerunning cancelled
+	// checks is an explicit opt-in rather than a default.
+	DefaultCIRerunTransient = 0
 	// MaxCIRerunTransient caps ci.rerun_transient. Reruns are cheap compared
 	// with an agent round, but they are not free: each one keeps the monitor
 	// polling the same commit, so the budget stays small by construction.
@@ -426,11 +430,14 @@ auto_fix:
 
 # How many times the CI step may re-run a single check the provider reported as
 # cancelled before that check reaches an approval gate instead of the fix agent.
-# Each rerun is another workflow run billed to the repository being contributed
-# to, so set 0 to never spend someone else's CI minutes. A repository that sets
-# ci.rerun_transient on its own default branch overrides this value.
+# Defaults to 0: a cancelled conclusion does not identify who cancelled, so a
+# rerun can restart a job a maintainer or a concurrency rule stopped on purpose.
+# Raise this only for repositories whose cancellations are known to be
+# provider-side. Each rerun is another workflow run billed to the repository
+# being contributed to. A repository that sets ci.rerun_transient on its own
+# default branch overrides this value.
 ci:
-  rerun_transient: 1
+  rerun_transient: 0
 
 # Auto-fix commit subject template. Available variables: {{.Step}} and {{.Summary}}.
 # Repo config may override this value.
@@ -1237,9 +1244,11 @@ func autoFixDefaults() AutoFix {
 	}
 }
 
-// ciDefaults returns the default CI-step settings. One rerun per cancelled
-// check is on by default: it costs a poll interval, while escalating a
-// cancelled job costs an agent round and can edit code that was never broken.
+// ciDefaults returns the default CI-step settings. Rerunning cancelled checks
+// is off by default: a CANCELLED conclusion does not say who cancelled, so the
+// safe baseline is to escalate rather than risk restarting a job a maintainer
+// or a concurrency rule deliberately stopped. Repositories that know their
+// cancellations are provider-side opt in via ci.rerun_transient.
 func ciDefaults() CI {
 	return CI{RerunTransient: DefaultCIRerunTransient}
 }

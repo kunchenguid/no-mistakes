@@ -51,7 +51,7 @@ auto_fix:
 
 # Read only from the trusted default branch: each rerun is another workflow run.
 ci:
-  rerun_transient: 1
+  rerun_transient: 0
 
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
@@ -245,13 +245,14 @@ How many times the CI step may re-run a single check the provider reported as ca
 | | |
 |---|---|
 | Type | `int` |
-| Default | `1` |
+| Default | `0` |
 | Range | `0` to `5`; values outside it are clamped |
 | Trust | Read only from the trusted default branch |
 
 Every rerun this budget authorizes is another provider-side workflow run billed to the repository, so the value is read only from the trusted default-branch copy of this file, exactly like `document.instructions` and `disable_project_settings`.
 A pushed branch cannot raise its own rerun budget.
-Set `0` to disable reruns and escalate every failure on sight.
+The default is `0` because a cancelled conclusion does not identify its cause: the same value covers the provider aborting its own infrastructure, a maintainer stopping a runaway or unsafe job, and repository concurrency with `cancel-in-progress`.
+Rerunning on that ambiguity can restart work someone deliberately stopped, so raise this only for a repository whose cancellations are known to be provider-side.
 
 With no trusted copy of this file, the operator's own [`ci.rerun_transient`](/no-mistakes/reference/global-config/#cirerun_transient) applies, then the built-in default.
 A value set here always wins over the global one, so the maintainer of the repository has the last word on how many workflow runs their project is billed for.

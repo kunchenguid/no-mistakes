@@ -127,6 +127,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
+	// A run recovered after a restart resumes the rerun budget it already
+	// spent. Without this the fresh in-memory budget would grant reruns the
+	// documented limit already accounted for.
+	s.loadRerunBudget(sctx)
 	ctx := sctx.Ctx
 	if err := ctx.Err(); err != nil {
 		return nil, err

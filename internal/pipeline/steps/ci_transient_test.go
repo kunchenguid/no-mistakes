@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
@@ -438,5 +439,107 @@ func assertNames(t *testing.T, label string, got, want []string) {
 		if got[i] != want[i] {
 			t.Fatalf("%s = %v, want %v", label, got, want)
 		}
+	}
+}
+
+// A cancelled conclusion does not say who cancelled it, so rerunning is opt-in.
+// This guards the default rather than the plumbing: flipping it back to a
+// non-zero value would silently restart jobs a maintainer stopped on purpose.
+func TestRerunningCancelledChecksIsOffByDefault(t *testing.T) {
+	if config.DefaultCIRerunTransient != 0 {
+		t.Fatalf("DefaultCIRerunTransient = %d, want 0", config.DefaultCIRerunTransient)
+	}
+	budget := &checkRerunBudget{}
+	check := scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, State: "CANCELLED"}
+	if got := transientRerunCandidates([]scm.Check{check}, budget, config.DefaultCIRerunTransient); len(got) != 0 {
+		t.Fatalf("selected %d candidates at the default budget, want none", len(got))
+	}
+}
+
+// The budget has to survive a daemon restart. Before it was durable, a
+// recovered run started from zero spent and could issue another rerun past the
+// documented limit.
+func TestRerunBudgetSurvivesARestart(t *testing.T) {
+	completed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	original := &checkRerunBudget{}
+	original.spend(scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, CompletedAt: completed})
+
+	encoded, err := original.marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if encoded == "" {
+		t.Fatal("a spent budget marshalled to nothing")
+	}
+
+	recovered := &checkRerunBudget{}
+	if err := recovered.unmarshal(encoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := recovered.used("build"); got != 1 {
+		t.Fatalf("recovered used = %d, want 1", got)
+	}
+	if got := recovered.remaining("build", 1); got != 0 {
+		t.Fatalf("recovered remaining = %d, want 0: the restart handed back a spent rerun", got)
+	}
+	if !recovered.rollupUnchanged(scm.Check{Name: "build", CompletedAt: completed}) {
+		t.Fatal("recovered budget lost the completion the rerun was requested for")
+	}
+}
+
+// An empty budget writes nothing, so a run that never spent a rerun does not
+// persist a payload.
+func TestUnspentRerunBudgetMarshalsToNothing(t *testing.T) {
+	encoded, err := (&checkRerunBudget{}).marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if encoded != "" {
+		t.Fatalf("unspent budget marshalled to %q, want empty", encoded)
+	}
+}
+
+// A transitional rollup can omit the check a rerun was requested for. Tracking
+// only what the response carries dropped it from both buckets, so the run could
+// read as green while its replacement was still unknown.
+func TestOutstandingRerunMissingFromTheRollupStaysTracked(t *testing.T) {
+	completed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	budget := &checkRerunBudget{}
+	budget.spend(scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, CompletedAt: completed})
+
+	// The rollup no longer mentions the check at all.
+	for poll := 1; poll <= rerunRollupGracePolls; poll++ {
+		unresolved, awaiting := budget.cancelledAfterRerun(nil)
+		if len(unresolved) != 0 {
+			t.Fatalf("poll %d: unresolved = %v, want none while grace remains", poll, unresolved)
+		}
+		if len(awaiting) != 1 || awaiting[0] != "build" {
+			t.Fatalf("poll %d: awaiting = %v, want [build]", poll, awaiting)
+		}
+	}
+
+	// Grace is bounded: a replacement that never appears becomes unresolved
+	// rather than stalling the run forever.
+	unresolved, awaiting := budget.cancelledAfterRerun(nil)
+	if len(awaiting) != 0 {
+		t.Fatalf("awaiting = %v after grace ran out, want none", awaiting)
+	}
+	if len(unresolved) != 1 || unresolved[0] != "build" {
+		t.Fatalf("unresolved = %v, want [build]", unresolved)
+	}
+}
+
+// A check that came back in a non-cancelled bucket is published, not missing:
+// it must not consume the missing-check grace.
+func TestOutstandingRerunPublishedInAnotherBucketIsNotTreatedAsMissing(t *testing.T) {
+	completed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	budget := &checkRerunBudget{}
+	budget.spend(scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, CompletedAt: completed})
+
+	unresolved, awaiting := budget.cancelledAfterRerun([]scm.Check{
+		{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS"},
+	})
+	if len(unresolved) != 0 || len(awaiting) != 0 {
+		t.Fatalf("unresolved = %v, awaiting = %v, want both empty for a republished check", unresolved, awaiting)
 	}
 }

@@ -51,7 +51,7 @@ auto_fix:
   ci: 3
 
 ci:
-  rerun_transient: 1
+  rerun_transient: 0
 
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
@@ -322,7 +322,7 @@ How many times the CI step may re-run a single check the provider reported as ca
 | | |
 |---|---|
 | Type | `int` |
-| Default | `1` |
+| Default | `0` |
 | Range | `0` to `5`; values outside it are clamped |
 
 ```yaml
