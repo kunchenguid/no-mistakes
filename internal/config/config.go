@@ -1104,7 +1104,7 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // branch - this blocks the supply-chain vector for repos that ship
 // .no-mistakes.yaml only on feature branches.
 //
-// Non-executing fields (ignore patterns, auto-fix, commit, intent, test) are
+// Non-executing fields (ignore patterns, auto-fix, commit, intent, test, pr) are
 // always taken from the pushed copy, matching prior behavior, since they cannot
 // run arbitrary shell or select a process.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {

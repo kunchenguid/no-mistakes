@@ -288,4 +288,4 @@ Not set here inherits from global config and then the built-in default.
 | `pr.include_pipeline_summary` | `bool` | Inherits from global (default `true`) |
 
 Set `include_pipeline_summary: false` to publish only the Intent and What Changed content and omit the `## Pipeline` section, its no-mistakes attribution, and any pipeline status, evidence, or local paths carried through it.
-See [the global `pr.include_pipeline_summary` field](/no-mistakes/reference/global-config/#princludepipelinesummary) for full behavior.
+See [the global `pr.include_pipeline_summary` field](/no-mistakes/reference/global-config/#princlude_pipeline_summary) for full behavior.
