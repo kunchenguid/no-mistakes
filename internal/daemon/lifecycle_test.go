@@ -59,7 +59,7 @@ func TestWaitForDaemonStopKeepsArtifactsWhenKillFails(t *testing.T) {
 	}()
 
 	started := time.Now()
-	err = waitForDaemonStop(p)
+	err = waitForDaemonStop(p, daemonInstance{})
 	if err == nil {
 		t.Fatal("expected waitForDaemonStop to fail when kill fails")
 	}
@@ -885,7 +885,7 @@ func TestWaitForDaemonStopNeverKillsOwnPIDWhenHealthCheckOnlyErrors(t *testing.T
 		daemonKillPID = originalKillPID
 	}()
 
-	err = waitForDaemonStop(p)
+	err = waitForDaemonStop(p, daemonInstance{})
 	if err == nil {
 		t.Fatal("expected waitForDaemonStop to fail rather than kill our own pid")
 	}
@@ -924,7 +924,7 @@ func TestWaitForDaemonStopDoesNotTreatHealthCheckErrorsAsStopped(t *testing.T) {
 	}()
 
 	started := time.Now()
-	err = waitForDaemonStop(p)
+	err = waitForDaemonStop(p, daemonInstance{})
 	if err == nil {
 		t.Fatal("expected waitForDaemonStop to fail when health checks only error")
 	}
@@ -983,7 +983,7 @@ func TestWaitForDaemonStopRejectsStalePIDBeforeKill(t *testing.T) {
 	}()
 
 	started := time.Now()
-	err = waitForDaemonStop(p)
+	err = waitForDaemonStop(p, daemonInstance{})
 	if err == nil {
 		t.Fatal("expected waitForDaemonStop to fail for stale pid")
 	}
