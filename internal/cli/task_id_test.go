@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -59,6 +60,58 @@ func TestTaskIDPushOptionDefaultsFormatWhenOnlyIDIsCarried(t *testing.T) {
 	}
 }
 
+// TestTaskIDPushOptionDropsAnUnknownFormatInsteadOfFailingTheRun pins the
+// fail-open boundary: notify-push exiting non-zero means MethodPushReceived is
+// never called, so the branch lands in the gate and the pipeline silently never
+// runs. A PR title decoration must never cost someone their run.
+func TestTaskIDPushOptionDropsAnUnknownFormatInsteadOfFailingTheRun(t *testing.T) {
+	got, err := parseTaskIDPushOptions([]string{
+		taskIDPushOptionPrefix + base64.StdEncoding.EncodeToString([]byte("WA-3093")),
+		taskIDFormatPushOptionPrefix + "jira",
+	})
+	if err != nil {
+		t.Fatalf("parseTaskIDPushOptions failed the push on an unknown format: %v", err)
+	}
+	want := conventional.TaskID{ID: "WA-3093", Format: conventional.DefaultTaskIDFormat}
+	if got != want {
+		t.Fatalf("parsed = %+v, want %+v", got, want)
+	}
+}
+
+func TestTaskIDPushOptionDropsAnUnusableIDInsteadOfFailingTheRun(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		id   string
+	}{
+		{"control character", "WA\n3093"},
+		{"over the length limit", strings.Repeat("W", 65)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseTaskIDPushOptions([]string{
+				taskIDPushOptionPrefix + base64.StdEncoding.EncodeToString([]byte(tt.id)),
+				taskIDFormatPushOptionPrefix + string(conventional.TaskIDFormatPrefix),
+			})
+			if err != nil {
+				t.Fatalf("parseTaskIDPushOptions failed the push on an unusable id: %v", err)
+			}
+			if !got.Empty() {
+				t.Fatalf("parsed = %+v, want an empty task id", got)
+			}
+		})
+	}
+}
+
+// TestTaskIDPushOptionStillRejectsUndecodableTransport keeps a corrupt option
+// distinct from a bad value, mirroring parseIntentPushOptions.
+func TestTaskIDPushOptionStillRejectsUndecodableTransport(t *testing.T) {
+	if _, err := parseTaskIDPushOptions([]string{taskIDPushOptionPrefix + "not!base64"}); err == nil {
+		t.Fatal("parseTaskIDPushOptions accepted an undecodable option")
+	}
+}
+
+// TestResolveTaskIDRejectsAnUnknownFormat pins the deliberate asymmetry with the
+// push-option parse: the `axi run` flags fail before any run starts, so a typo
+// there is reported to the caller instead of silently ignored.
 func TestResolveTaskIDRejectsAnUnknownFormat(t *testing.T) {
 	_, err := resolveTaskID("WA-3093", "jira")
 	if err == nil {

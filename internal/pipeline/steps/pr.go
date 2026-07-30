@@ -88,7 +88,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	// alike, and the agent-drafted and fallback titles alike.
 	if decorated := sctx.TaskID.Apply(content.Title); decorated != content.Title {
 		content.Title = decorated
-		sctx.Log(fmt.Sprintf("applied task id %s to PR title (%s format)", sctx.TaskID.ID, taskIDFormatName(sctx.TaskID)))
+		sctx.Log(fmt.Sprintf("applied task id %s to PR title (%s format)", sctx.TaskID.ID, sctx.TaskID.EffectiveFormat()))
 	}
 
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
@@ -125,15 +125,6 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
-}
-
-// taskIDFormatName names the format actually used, so the log line matches the
-// title even when the run carries no explicit format.
-func taskIDFormatName(task conventional.TaskID) conventional.TaskIDFormat {
-	if task.Format == "" {
-		return conventional.DefaultTaskIDFormat
-	}
-	return task.Format
 }
 
 func describePR(pr *scm.PR) string {

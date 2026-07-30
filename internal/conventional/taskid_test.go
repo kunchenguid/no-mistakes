@@ -57,6 +57,28 @@ func TestTaskIDApply_EmptyIDIsANoOp(t *testing.T) {
 	}
 }
 
+// TestTaskIDEffectiveFormat_OwnsTheDefaultFallback pins the one owner of the
+// "unset or unknown format means the release-safe default" rule, which Apply
+// places by and reporting callers name.
+func TestTaskIDEffectiveFormat_OwnsTheDefaultFallback(t *testing.T) {
+	t.Parallel()
+	for _, format := range TaskIDFormats() {
+		if got := (TaskID{ID: "WA-3093", Format: format}).EffectiveFormat(); got != format {
+			t.Fatalf("EffectiveFormat for %q = %q, want it unchanged", format, got)
+		}
+	}
+	for _, format := range []TaskIDFormat{"", "jira"} {
+		task := TaskID{ID: "WA-3093", Format: format}
+		if got := task.EffectiveFormat(); got != DefaultTaskIDFormat {
+			t.Fatalf("EffectiveFormat for %q = %q, want %q", format, got, DefaultTaskIDFormat)
+		}
+		want := TaskID{ID: "WA-3093", Format: DefaultTaskIDFormat}.Apply("fix(x): y")
+		if got := task.Apply("fix(x): y"); got != want {
+			t.Fatalf("Apply with format %q = %q, want the default placement %q", format, got, want)
+		}
+	}
+}
+
 func TestTaskIDApply_IsIdempotentAcrossRuns(t *testing.T) {
 	t.Parallel()
 	for _, format := range TaskIDFormats() {

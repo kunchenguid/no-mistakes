@@ -617,6 +617,21 @@ func taskIDFromParams(id, format string) conventional.TaskID {
 	return conventional.TaskID{ID: strings.TrimSpace(id), Format: parsed}
 }
 
+// inheritedTaskID resolves the task-tracking id the branch already carries, for
+// a run that supplied none. Inheritance is best-effort: a lookup failure leaves
+// the run unstamped rather than failing it, since the id is a title decoration.
+func (m *RunManager) inheritedTaskID(repoID, branch string) conventional.TaskID {
+	stored, err := m.db.LatestRunTaskID(repoID, branch)
+	if err != nil {
+		slog.Warn("task id inheritance lookup failed; continuing without an id", "repo_id", repoID, "branch", branch, "error", err)
+		return conventional.TaskID{}
+	}
+	if stored == nil {
+		return conventional.TaskID{}
+	}
+	return taskIDFromParams(stored.ID, stored.Format)
+}
+
 // HandleRerun creates a new run for the latest gate head on a branch. An
 // explicit intent overrides the selected run. Otherwise an authoritative
 // intent is inherited byte-for-byte; runs without one infer intent afresh. An
@@ -769,6 +784,14 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
+	}
+
+	// A ticket id belongs to the branch, not to one run: a rerun, a fix round,
+	// or a follow-up `axi run` that omits --task-id must not strip the reference
+	// back off the already-open PR when the PR step rewrites its title. An
+	// explicitly supplied id always wins over the inherited one.
+	if task.Empty() {
+		task = m.inheritedTaskID(repo.ID, branch)
 	}
 
 	// Stamp the task-tracking id before the pipeline starts, so the PR step

@@ -254,6 +254,14 @@ func formatTaskIDPushOptions(task conventional.TaskID) []string {
 // parseTaskIDPushOptions extracts and decodes the task-id push options, if any.
 // The last occurrence of each wins. An id with no format resolves to the
 // release-safe default.
+//
+// This boundary is deliberately fail-open, unlike resolveTaskID behind the
+// `axi run` flags: a non-zero exit here means the post-receive hook never calls
+// MethodPushReceived, so the branch lands in the gate and the pipeline silently
+// never runs. A PR title decoration must never cost someone their run, so an
+// unusable id or an unknown format is dropped exactly the way the daemon's
+// taskIDFromParams drops it. Only an undecodable option still errors, mirroring
+// parseIntentPushOptions: that is a corrupt transport, not a bad value.
 func parseTaskIDPushOptions(options []string) (conventional.TaskID, error) {
 	task := conventional.TaskID{Format: conventional.DefaultTaskIDFormat}
 	for _, option := range options {
@@ -268,17 +276,15 @@ func parseTaskIDPushOptions(options []string) (conventional.TaskID, error) {
 		if value, ok := strings.CutPrefix(option, taskIDFormatPushOptionPrefix); ok {
 			format, err := conventional.ParseTaskIDFormat(value)
 			if err != nil {
-				return conventional.TaskID{}, err
+				format = conventional.DefaultTaskIDFormat
 			}
 			task.Format = format
 		}
 	}
-	if task.ID == "" {
+	if conventional.ValidateTaskID(task.ID) != nil {
 		return conventional.TaskID{}, nil
 	}
-	if err := conventional.ValidateTaskID(task.ID); err != nil {
-		return conventional.TaskID{}, fmt.Errorf("invalid task id push option: %w", err)
-	}
+	task.ID = strings.TrimSpace(task.ID)
 	return task, nil
 }
 

@@ -538,6 +538,29 @@ type RunTaskID struct {
 	Format string
 }
 
+// LatestRunTaskID returns the task-tracking id most recently recorded for a
+// repo's branch, or nil when no run on that branch ever carried one. A ticket
+// id belongs to a branch rather than to a single run, so a later run that
+// supplies none inherits this one instead of stripping the reference back off
+// an already-open pull request title.
+func (d *DB) LatestRunTaskID(repoID, branch string) (*RunTaskID, error) {
+	var id string
+	var format sql.NullString
+	err := d.sql.QueryRow(
+		`SELECT task_id, task_id_format FROM runs
+		 WHERE repo_id = ? AND branch = ? AND task_id IS NOT NULL AND task_id != ''
+		 ORDER BY created_at DESC, id DESC LIMIT 1`,
+		repoID, branch,
+	).Scan(&id, &format)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get latest run task id: %w", err)
+	}
+	return &RunTaskID{ID: id, Format: format.String}, nil
+}
+
 // UpdateRunTaskID persists the caller-supplied task-tracking id for a run. It
 // is stamped once at run start, before the pipeline begins, so the PR step
 // finds it already present.

@@ -90,6 +90,58 @@ func TestStartRunWithoutATaskIDLeavesTheRunUnstamped(t *testing.T) {
 	}
 }
 
+// TestTaskIDIsStickyPerBranch is the regression for a later run stripping the
+// ticket reference back off an already-open PR: the PR step rewrites the title
+// on every run, so a rerun or follow-up that omits --task-id must inherit the
+// id the branch already carries.
+func TestTaskIDIsStickyPerBranch(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "sticky-task-id")
+
+	seen := make(chan conventional.TaskID, 4)
+	manager := NewRunManager(database, p, func() []pipeline.Step {
+		return []pipeline.Step{&captureTaskIDStep{seen: seen}}
+	})
+	t.Cleanup(manager.Shutdown)
+
+	run := func(branch string, task conventional.TaskID) conventional.TaskID {
+		t.Helper()
+		runID, err := manager.startRun(context.Background(), repo, branch, head, refreshTestZeroSHA, "test", nil, "", task)
+		if err != nil {
+			t.Fatalf("start run: %v", err)
+		}
+		got := <-seen
+		waitForRunTerminalState(t, database, runID)
+		return got
+	}
+
+	first := conventional.TaskID{ID: "WA-3093", Format: conventional.TaskIDFormatPrefix}
+	if got := run("main", first); got != first {
+		t.Fatalf("first run task id = %+v, want %+v", got, first)
+	}
+
+	// A run that supplies nothing keeps the branch's id, format included.
+	if got := run("main", conventional.TaskID{}); got != first {
+		t.Fatalf("inherited task id = %+v, want %+v", got, first)
+	}
+
+	// An explicit id always wins over the inherited one.
+	explicit := conventional.TaskID{ID: "WA-4001", Format: conventional.TaskIDFormatSuffix}
+	if got := run("main", explicit); got != explicit {
+		t.Fatalf("explicit task id = %+v, want %+v", got, explicit)
+	}
+	if got := run("main", conventional.TaskID{}); got != explicit {
+		t.Fatalf("inherited task id after an override = %+v, want %+v", got, explicit)
+	}
+
+	// Inheritance is per branch: a ticket id belongs to one branch, not to the
+	// repository, so an unrelated branch stays unstamped.
+	if got := run("other", conventional.TaskID{}); !got.Empty() {
+		t.Fatalf("unrelated branch inherited a task id: %+v", got)
+	}
+}
+
 func TestTaskIDFromParams(t *testing.T) {
 	tests := []struct {
 		name   string

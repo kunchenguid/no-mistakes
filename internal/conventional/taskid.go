@@ -89,6 +89,18 @@ func (t TaskID) Empty() bool {
 	return ValidateTaskID(t.ID) != nil
 }
 
+// EffectiveFormat is the single owner of the "unset or unknown format means
+// DefaultTaskIDFormat" rule: Apply places the id by it, and callers that report
+// the placement read it so their message always matches the rendered title.
+func (t TaskID) EffectiveFormat() TaskIDFormat {
+	for _, format := range TaskIDFormats() {
+		if t.Format == format {
+			return format
+		}
+	}
+	return DefaultTaskIDFormat
+}
+
 // Apply bakes the tracking id into an already-final PR title.
 //
 // It must run AFTER TightenTitle, never before: feeding a decorated title such
@@ -106,13 +118,12 @@ func (t TaskID) Apply(title string) string {
 	if taskIDPresent(title, id) {
 		return title
 	}
-	switch t.Format {
+	switch t.EffectiveFormat() {
 	case TaskIDFormatPrefix:
 		return "[" + id + "] " + title
 	case TaskIDFormatSuffix:
 		return title + " [" + id + "]"
 	default:
-		// Unknown and unset formats fall back to the release-safe default.
 		return title + " (" + id + ")"
 	}
 }

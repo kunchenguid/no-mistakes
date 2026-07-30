@@ -107,6 +107,11 @@ It is a single line of at most 64 characters and is stamped on the run, so the [
 Baking is idempotent: a title that already carries the id is left alone, so re-running on the same branch never accretes copies of it.
 Without `--task-id`, `--task-id-format` does nothing and no title is changed.
 
+The id is sticky per branch, because a ticket belongs to one branch rather than to a single run.
+A later run that omits `--task-id` keeps the id and format already recorded for that branch, so a rerun, a fix round, or a follow-up `axi run` never strips the reference back off an open pull request title.
+Passing `--task-id` explicitly overrides the recorded one for that run and every later run that omits the flag.
+A branch that never carried an id stays unstamped.
+
 `--task-id-format` accepts three placements, all applied after the conventional-commit title has been generated:
 
 | Value            | Result for `WA-3093`                            | Notes                                                                              |
@@ -119,7 +124,7 @@ Without `--task-id`, `--task-id-format` does nothing and no title is changed.
 That is the caller's opt-in tradeoff; `release-please` is the default precisely because it never has that effect.
 
 `--task-id` is only available on `axi run`.
-A branch validated by pushing to the gate directly (`git push no-mistakes`) has no flag surface and therefore carries no task id.
+A branch validated by pushing to the gate directly (`git push no-mistakes`) has no flag surface, so it cannot set an id; it still inherits the one the branch already carries.
 
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Reattaching to an in-flight run does not require `--intent`.

@@ -34,6 +34,50 @@ func TestUpdateRunTaskIDPersistsIDAndFormat(t *testing.T) {
 	}
 }
 
+func TestLatestRunTaskIDIsScopedToTheBranchAndReturnsTheNewest(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/repo", "https://github.com/test/repo", "main")
+	if err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	stamp := func(branch, id, format string) {
+		t.Helper()
+		run, err := d.InsertRun(repo.ID, branch, "head", "base")
+		if err != nil {
+			t.Fatalf("insert run: %v", err)
+		}
+		if id == "" {
+			return
+		}
+		if err := d.UpdateRunTaskID(run.ID, RunTaskID{ID: id, Format: format}); err != nil {
+			t.Fatalf("update run task id: %v", err)
+		}
+	}
+
+	stamp("feature", "WA-1", "prefix")
+	stamp("feature", "WA-2", "suffix")
+	stamp("feature", "", "")
+	stamp("other", "WA-9", "prefix")
+
+	got, err := d.LatestRunTaskID(repo.ID, "feature")
+	if err != nil {
+		t.Fatalf("latest run task id: %v", err)
+	}
+	if got == nil || got.ID != "WA-2" || got.Format != "suffix" {
+		t.Fatalf("latest = %+v, want WA-2 / suffix", got)
+	}
+
+	// A branch nobody ever stamped stays unstamped: inheritance is per branch,
+	// never per repository.
+	none, err := d.LatestRunTaskID(repo.ID, "untouched")
+	if err != nil {
+		t.Fatalf("latest run task id: %v", err)
+	}
+	if none != nil {
+		t.Fatalf("latest for an unstamped branch = %+v, want nil", none)
+	}
+}
+
 func TestOpenMigratesTaskIDColumnsAndLeavesLegacyRunsUnbound(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.sqlite")
 	d, err := Open(path)
