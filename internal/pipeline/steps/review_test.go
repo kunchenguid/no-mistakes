@@ -825,3 +825,55 @@ func mustLatestRoundID(t *testing.T, sctx *pipeline.StepContext) string {
 	}
 	return rounds[len(rounds)-1].ID
 }
+
+// A re-pushed branch must not make the reviewer start cold: findings the
+// previous run already reported, and what was decided about them, reach the
+// review prompt so the same defect is not re-derived under a new ID.
+func TestReviewStep_CarriesPreviousBranchReviewIntoPrompt(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	prior, err := sctx.DB.InsertRun(sctx.Run.RepoID, sctx.Run.Branch, "prior-head", baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorStep, err := sctx.DB.InsertStepResult(prior.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorFindings := `{"findings":[{"id":"already-declined","severity":"warning","file":"a.go","description":"hardcoded timeout"}]}`
+	round, err := sctx.DB.InsertStepRound(priorStep.ID, 1, "initial", &priorFindings, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `[]`
+	if err := sctx.DB.SetStepRoundSelection(round.ID, &selected, db.RoundSelectionSourceUser); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
+	}
+	prompt := ag.calls[0].Prompt
+	if !strings.Contains(prompt, "Earlier review of this branch") {
+		t.Fatalf("previous-branch review history missing from prompt:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "already-declined") {
+		t.Errorf("previous finding missing from prompt:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "\n"+branchHistoryDeclined+":") {
+		t.Errorf("previous finding not labelled with its disposition:\n%s", prompt)
+	}
+}
