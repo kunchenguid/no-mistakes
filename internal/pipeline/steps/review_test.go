@@ -188,6 +188,9 @@ func TestReviewStep_FixMode_FocusedVerificationContract(t *testing.T) {
 		"Apply all the fixes you intend to make first; do not run any verification in between individual fixes.",
 		"After all fixes are applied, run one focused verification limited to the changed area (the specific package, file, or test you touched) at the end of the fix round to confirm the fixes hold.",
 		"Do NOT run the complete repository test suite or lint suite during this fix round. The pipeline has dedicated test and lint steps after review that are the authoritative test and lint gates; their coverage may itself be focused on the changed area when the repository has no configured test or lint commands.",
+		"When your environment supports Code Mode/an exec cell, if you have two or more independent read-only shell/tool calls, run them concurrently in one exec cell using `Promise.allSettled` or `Promise.all`",
+		"inspect every result, and do not split that batch across separate outer tool calls.",
+		"Keep dependent, ordering-sensitive, and mutating work sequential. Do not parallelize commands whose outputs determine later commands.",
 	} {
 		if !strings.Contains(fixPrompt, want) {
 			t.Errorf("expected fixer prompt to contain %q, got:\n%s", want, fixPrompt)
@@ -229,6 +232,9 @@ func TestReviewStep_DurableFixAdequacyContract(t *testing.T) {
 		"whether the same authorized failure remains reachable",
 		"source evidence proves the failure remains reachable",
 		"earliest supported shared boundary that would make the invariant hold",
+		"When your environment supports Code Mode/an exec cell, if you have two or more independent read-only shell/tool calls, run them concurrently in one exec cell using `Promise.allSettled` or `Promise.all`",
+		"inspect every result, and do not split that batch across separate outer tool calls.",
+		"Keep dependent, ordering-sensitive, and mutating work sequential. Do not parallelize commands whose outputs determine later commands.",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("review prompt missing durable-fix evidence requirement %q:\n%s", want, prompt)

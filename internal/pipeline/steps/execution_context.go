@@ -22,3 +22,14 @@ Execution context:
 - Operate only within this working directory. Do not modify or read from the gate's bare repository or any other clone of this project.
 `
 }
+
+// toolBatchingPromptSection encourages agents that expose Code Mode or an exec
+// cell to batch independent read-only tool calls without reordering dependent
+// or mutating work.
+func toolBatchingPromptSection() string {
+	return `
+Bounded tool-call stages:
+- When your environment supports Code Mode/an exec cell, if you have two or more independent read-only shell/tool calls, run them concurrently in one exec cell using ` + "`Promise.allSettled`" + ` or ` + "`Promise.all`" + `, inspect every result, and do not split that batch across separate outer tool calls.
+- Keep dependent, ordering-sensitive, and mutating work sequential. Do not parallelize commands whose outputs determine later commands.
+`
+}
