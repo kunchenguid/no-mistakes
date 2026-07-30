@@ -257,7 +257,9 @@ If the run was started with ` + "`--draft-until-ready`" + `, its PR opens as a *
 the CI step marks it ready for review at that same green edge - so a draft PR in
 ` + "`axi status`" + ` before ` + "`checks-passed`" + ` is the flag working, not a problem to fix.
 Never flip the PR yourself. The transition is one-way and only GitHub supports
-it; on other providers the PR simply opens normally and the step says so.
+it; on other providers the PR simply opens normally and the step says so. The
+flag only needs passing once per branch: later runs on the same branch inherit
+it, so a rerun cannot strand the draft unpublished.
 
 Because that monitor stays live, a PR that falls behind the default branch or
 hits a merge conflict after checks pass - commonly because another PR merged

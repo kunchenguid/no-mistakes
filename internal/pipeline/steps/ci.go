@@ -510,16 +510,18 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					// is common and must never look green. Elapsed time is not
 					// evidence; there is no grace-period promotion path.
 					if sctx.Config != nil && sctx.Config.NoCI {
-						lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
+						// Publish before announcing green so the agent-visible
+						// ready signal implies the PR is already published.
 						s.markPRReadyOnCIGreen(sctx, host, pr)
+						lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
 					} else {
 						clearCIMonitorReady(sctx)
 						lastMonitorLog = ""
 						sctx.Log("no CI checks reported yet, waiting for checks to register...")
 					}
 				case allChecksPassed(checks):
-					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
 					s.markPRReadyOnCIGreen(sctx, host, pr)
+					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
 				default:
 					clearCIMonitorReady(sctx)
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
@@ -564,6 +566,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 // because each means everything the pipeline can verify is green. An unproven
 // empty check list is not one of them: it never reaches a green arm, so a draft
 // waiting on delayed check registration stays a draft.
+//
+// It runs before logCIMonitorStatus announces that edge, because that
+// announcement is what releases `axi run` with `checks-passed`: the driving
+// agent may report success and detach the moment it lands, so the PR has to
+// already be published by then rather than racing it.
 //
 // The transition is one-way. If CI later goes red the PR stays published: a
 // draft the reviewers already started reading must never be yanked back, and

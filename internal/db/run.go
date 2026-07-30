@@ -170,6 +170,25 @@ func (d *DB) GetRunsByRepoHead(repoID, branch, headSHA string) ([]*Run, error) {
 	return runs, rows.Err()
 }
 
+// LatestRunForBranch returns the most recently created run for a repo's branch
+// regardless of status, or nil when the branch has never run. Per-run policies
+// that belong to the branch rather than to one trigger (draft-until-ready) read
+// it at run creation, so a terminal run - which is exactly what a rerun or a
+// re-push follows - must still be visible here.
+func (d *DB) LatestRunForBranch(repoID, branch string) (*Run, error) {
+	r := &Run{}
+	err := scanRun(d.sql.QueryRow(
+		`SELECT `+runColumns+` FROM runs WHERE repo_id = ? AND branch = ? ORDER BY created_at DESC, id DESC LIMIT 1`, repoID, branch,
+	), r)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("latest run for branch: %w", err)
+	}
+	return r, nil
+}
+
 // GetActiveRun returns the currently active run (pending or running) for a repo,
 // if any. When branch is non-empty, only a run on that exact branch is returned
 // - the setup wizard relies on this to decide whether a new run is needed for

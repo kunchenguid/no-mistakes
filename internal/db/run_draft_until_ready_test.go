@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // A database created before the draft-PR policy existed must migrate cleanly
@@ -55,5 +57,58 @@ func TestOpenMigratesRunDraftUntilReadyDefaultingToOff(t *testing.T) {
 	}
 	if !run.DraftUntilReady {
 		t.Fatal("draft_until_ready did not persist on a migrated row")
+	}
+}
+
+// The draft-until-ready policy carries forward to later runs on the same
+// branch, so run creation needs the branch's most recent run regardless of its
+// status - including a failed or cancelled one, which is exactly the case a
+// rerun follows.
+func TestLatestRunForBranchReturnsTheMostRecentRunOnThatBranch(t *testing.T) {
+	d := openTestDB(t)
+	if _, err := d.InsertRepoWithID("repo-1", "/work/repo", "https://example.com/repo.git", "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	if run, err := d.LatestRunForBranch("repo-1", "feature"); err != nil || run != nil {
+		t.Fatalf("LatestRunForBranch on an unseen branch = %v, %v; want nil, nil", run, err)
+	}
+
+	first, err := d.InsertRun("repo-1", "feature", "head-1", "base-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunDraftUntilReady(first.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(first.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	// A run on another branch must never be mistaken for this branch's latest.
+	if _, err := d.InsertRun("repo-1", "other", "head-x", "base-x"); err != nil {
+		t.Fatal(err)
+	}
+
+	latest, err := d.LatestRunForBranch("repo-1", "feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || latest.ID != first.ID {
+		t.Fatalf("LatestRunForBranch = %v, want the failed run %s", latest, first.ID)
+	}
+	if !latest.DraftUntilReady {
+		t.Fatal("latest run lost its draft-until-ready policy")
+	}
+
+	second, err := d.InsertRun("repo-1", "feature", "head-2", "base-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err = d.LatestRunForBranch("repo-1", "feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || latest.ID != second.ID {
+		t.Fatalf("LatestRunForBranch = %v, want the newest run %s", latest, second.ID)
 	}
 }

@@ -452,6 +452,110 @@ func TestCIStep_DraftUntilReadySkipsPublishForAnAlreadyPublishedPR(t *testing.T)
 	}
 }
 
+// A draft a human deliberately created is not the pipeline's to publish: a run
+// without the policy must leave it alone even when it adopts it and CI is green.
+func TestCIStep_WithoutDraftUntilReadyNeverPublishesAHumanCreatedDraft(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, logFile := fakeCIGHSequenceLogged(t, "OPEN", []string{`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`})
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = time.Hour
+	sctx.Shared = &pipeline.RunShared{}
+	sctx.Shared.SetPRDraftState(true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		baseBranchTip: stubBaseBranchTip,
+		waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected monitoring to continue until cancelled, got %v", err)
+	}
+
+	if got := countGHInvocations(t, logFile, "pr ready"); got != 0 {
+		t.Fatalf("gh pr ready invocations = %d, want 0 for a human-created draft\nlog:\n%s", got, readFakeCLILog(t, logFile))
+	}
+}
+
+// The checks-passed announcement is what releases `axi run` with
+// `checks-passed`, so the driving agent can report success and detach the
+// moment it lands. The PR must already be published by then, otherwise a
+// transient publish failure leaves the PR a draft with its warning logged after
+// the agent stopped reading.
+func TestCIStep_DraftUntilReadyPublishesBeforeAnnouncingTheReadySignal(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		checks  string
+		noCI    bool
+		message string
+	}{
+		{"checks passed", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`, false, ciChecksPassedMsg},
+		{"trusted no_ci with no checks reported", `[]`, true, ciNoChecksPassedMsg},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir, baseSHA, headSHA := setupGitRepo(t)
+
+			env, logFile := fakeCIGHSequenceLogged(t, "OPEN", []string{tc.checks})
+
+			prURL := "https://github.com/test/repo/pull/42"
+			ag := &mockAgent{name: "test"}
+			sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = env
+			sctx.Run.PRURL = &prURL
+			sctx.Run.DraftUntilReady = true
+			sctx.Config.CITimeout = time.Hour
+			sctx.Config.NoCI = tc.noCI
+
+			publishedWhenAnnounced := false
+			announced := false
+			sctx.Log = func(s string) {
+				if s == tc.message && !announced {
+					announced = true
+					publishedWhenAnnounced = countGHInvocations(t, logFile, "pr ready") == 1
+				}
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			sctx.Ctx = ctx
+
+			step := &CIStep{
+				baseBranchTip: stubBaseBranchTip,
+				waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
+					cancel()
+					return ctx.Err()
+				},
+			}
+			if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+				t.Fatalf("expected monitoring to continue until cancelled, got %v", err)
+			}
+
+			if !announced {
+				t.Fatalf("the CI-green message was never announced\nlog:\n%s", readFakeCLILog(t, logFile))
+			}
+			if !publishedWhenAnnounced {
+				t.Fatalf("the ready signal was announced before the PR was published\nlog:\n%s", readFakeCLILog(t, logFile))
+			}
+		})
+	}
+}
+
 // The PR step is the only place that observes draft state, so it must hand it
 // to the CI step for both the created and the adopted PR.
 func TestPRStep_RecordsPRDraftStateForTheCIStep(t *testing.T) {

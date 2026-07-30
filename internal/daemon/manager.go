@@ -706,6 +706,28 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 	return git.FetchRemoteBranchToRef(ctx, workDir, repo.UpstreamURL, repo.DefaultBranch, "refs/remotes/origin/"+repo.DefaultBranch)
 }
 
+// resolveDraftUntilReady decides whether a new run opens its pull request as a
+// draft. The policy belongs to the branch, not to the one trigger that happened
+// to carry the flag: the PR step deliberately never touches an adopted PR's
+// draft state, so without carry-forward a rerun, the TUI's rerun action, or a
+// plain gate push with no push option would adopt the draft an earlier run
+// opened and leave it unpublished forever.
+//
+// Carry-forward can only turn the policy on. An explicit request always wins,
+// and inheriting is never a path to switching it off for a run that asked for
+// it. A read failure fails safe to the trigger's own decision.
+func (m *RunManager) resolveDraftUntilReady(repoID, branch string, requested bool) bool {
+	if requested {
+		return true
+	}
+	prior, err := m.db.LatestRunForBranch(repoID, branch)
+	if err != nil {
+		slog.Warn("could not read the branch's prior draft-until-ready policy; continuing without it", "repo_id", repoID, "branch", branch, "error", err)
+		return false
+	}
+	return prior != nil && prior.DraftUntilReady
+}
+
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
 // A non-empty opts.Intent is stamped onto the run as agent-supplied, so the
 // intent step uses it instead of inferring from transcripts.
@@ -766,6 +788,8 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		runIntent = &db.RunIntent{Summary: storedIntent, Source: source, Score: 1}
 	}
 
+	draftUntilReady := m.resolveDraftUntilReady(repo.ID, branch, opts.DraftUntilReady)
+
 	run, err := m.db.InsertRunWithIntent(repo.ID, branch, headSHA, baseSHA, runIntent)
 	if err != nil {
 		trackStartFailure("create_run")
@@ -775,7 +799,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	// Stamp the per-run draft-PR policy before the pipeline starts so the PR
 	// step opens a draft and the CI step knows to publish it. A persist failure
 	// is non-fatal and fails safe: the PR simply opens normally.
-	if opts.DraftUntilReady {
+	if draftUntilReady {
 		if err := m.db.SetRunDraftUntilReady(run.ID, true); err != nil {
 			slog.Warn("failed to persist draft-until-ready policy", "run_id", run.ID, "error", err)
 		} else {
