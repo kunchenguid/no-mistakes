@@ -122,10 +122,10 @@ func TestGetChecksIncludesFailedWorkflowRunMissingFromPRRollup(t *testing.T) {
 				{"name":"request-owner-review","state":"SUCCESS","bucket":"pass"}
 			]` + "\n",
 		},
-		"gh run list --commit deadbeef --repo test/repo --all --limit 1000 --json name,workflowName,status,conclusion,updatedAt": {
-			stdout: `[
-				{"name":"workflow-validation","workflowName":"","status":"completed","conclusion":"failure","updatedAt":"2026-07-30T12:34:56Z"}
-			]` + "\n",
+		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
+			stdout: `[{"workflow_runs":[
+				{"name":"workflow-validation","display_title":"","status":"completed","conclusion":"failure","updated_at":"2026-07-30T12:34:56Z"}
+			]}]` + "\n",
 		},
 	}), nil, "", "test/repo")
 
@@ -154,10 +154,10 @@ func TestGetChecksIncludesFailedWorkflowRunWhenPRHasNoChecks(t *testing.T) {
 			stderr: "no checks reported on the 'feature' branch\n",
 			code:   1,
 		},
-		"gh run list --commit deadbeef --repo test/repo --all --limit 1000 --json name,workflowName,status,conclusion,updatedAt": {
-			stdout: `[
-				{"name":"workflow-validation","workflowName":"","status":"completed","conclusion":"failure","updatedAt":"2026-07-30T12:34:56Z"}
-			]` + "\n",
+		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
+			stdout: `[{"workflow_runs":[
+				{"name":"workflow-validation","display_title":"","status":"completed","conclusion":"failure","updated_at":"2026-07-30T12:34:56Z"}
+			]}]` + "\n",
 		},
 	}), nil, "", "test/repo")
 
@@ -170,6 +170,33 @@ func TestGetChecksIncludesFailedWorkflowRunWhenPRHasNoChecks(t *testing.T) {
 	}
 	if got := checks[0]; got.Name != "workflow-validation" || got.Bucket != scm.CheckBucketFail {
 		t.Fatalf("workflow run check = %+v, want workflow-validation/fail", got)
+	}
+}
+
+func TestGetChecksIncludesWorkflowRunsFromEveryPage(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo ghe.example.com/test/repo --json name,state,bucket,completedAt": {
+			stdout: `[{"name":"clippy","state":"SUCCESS","bucket":"pass"}]` + "\n",
+		},
+		"gh api --hostname ghe.example.com --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
+			stdout: `[
+				{"workflow_runs":[{"name":"first-page","status":"completed","conclusion":"success"}]},
+				{"workflow_runs":[{"name":"second-page-failure","status":"completed","conclusion":"failure"}]}
+			]` + "\n",
+		},
+	}), nil, "ghe.example.com", "ghe.example.com/test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: "deadbeef"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 3 {
+		t.Fatalf("GetChecks() returned %d checks, want 3: %+v", len(checks), checks)
+	}
+	if got := checks[2]; got.Name != "second-page-failure" || got.Bucket != scm.CheckBucketFail {
+		t.Fatalf("last workflow run check = %+v, want second-page-failure/fail", got)
 	}
 }
 

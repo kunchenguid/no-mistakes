@@ -337,28 +337,49 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 }
 
 func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.Check, error) {
-	args := []string{"run", "list", "--commit", strings.TrimSpace(headSHA)}
-	args = append(args, h.repoArgs()...)
-	args = append(args, "--all", "--limit", "1000", "--json", "name,workflowName,status,conclusion,updatedAt")
+	repo := strings.TrimSpace(h.repo)
+	if prefix := strings.TrimSpace(h.host) + "/"; h.host != "" && len(repo) > len(prefix) && strings.EqualFold(repo[:len(prefix)], prefix) {
+		repo = repo[len(prefix):]
+	}
+	endpoint := "repos/{owner}/{repo}/actions/runs"
+	if repo != "" {
+		endpoint = "repos/" + repo + "/actions/runs"
+	}
+	args := []string{"api"}
+	if h.host != "" {
+		args = append(args, "--hostname", h.host)
+	}
+	args = append(args, "--method", "GET", endpoint,
+		"-f", "head_sha="+strings.TrimSpace(headSHA),
+		"-f", "per_page=100",
+		"--paginate", "--slurp",
+	)
 	out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("gh run list for head commit: %s: %w", strings.TrimSpace(string(out)), err)
+		return nil, fmt.Errorf("gh api workflow runs for head commit: %s: %w", strings.TrimSpace(string(out)), err)
 	}
-	var raw []struct {
-		Name         string `json:"name"`
-		WorkflowName string `json:"workflowName"`
-		Status       string `json:"status"`
-		Conclusion   string `json:"conclusion"`
-		UpdatedAt    string `json:"updatedAt"`
+	type workflowRun struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"display_title"`
+		Status      string `json:"status"`
+		Conclusion  string `json:"conclusion"`
+		UpdatedAt   string `json:"updated_at"`
 	}
-	if err := json.Unmarshal(out, &raw); err != nil {
+	var pages []struct {
+		WorkflowRuns []workflowRun `json:"workflow_runs"`
+	}
+	if err := json.Unmarshal(out, &pages); err != nil {
 		return nil, fmt.Errorf("parse workflow runs for head commit: %w", err)
+	}
+	var raw []workflowRun
+	for _, page := range pages {
+		raw = append(raw, page.WorkflowRuns...)
 	}
 	checks := make([]scm.Check, 0, len(raw))
 	for _, run := range raw {
-		name := strings.TrimSpace(run.WorkflowName)
+		name := strings.TrimSpace(run.Name)
 		if name == "" {
-			name = strings.TrimSpace(run.Name)
+			name = strings.TrimSpace(run.DisplayName)
 		}
 		if name == "" {
 			name = "GitHub Actions workflow"
