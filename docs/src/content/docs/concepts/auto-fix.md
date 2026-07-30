@@ -97,12 +97,7 @@ A round stores its findings, duration, any selected finding IDs and whether that
 That merged payload can include per-finding user notes and user-authored findings added from the TUI or AXI interface.
 AXI status uses the same round history and the persisted auto-fix limit to show the active fix attempt, for example `auto-fix 1/3` or `fix 2`.
 The step log records a marker when each automatic or user-triggered fix round starts.
-The PR body's deterministic risk assessment, testing, and pipeline sections are built from these rounds, giving reviewers visibility into test results, review risk, what was fixed, and how many attempts it took.
-In PR pipeline details, auto-fix rounds are rendered as an issue -> fix -> verification narrative instead of a round-numbered log: each fix summary is followed by either a successful re-check or the findings still open after that fix.
-On very long runs, the PR body uses a 63,488-byte safety cap, which leaves a 2 KB buffer below GitHub's 65,536-character body limit.
-It first keeps the newest pipeline update rounds and replaces older rounds with an omission marker at whole-update boundaries.
-If the newest update or essential body content is still too large, the PR step truncates at line or section boundaries and adds an explicit marker.
-The full round history remains available in the run log.
+The full round history remains available in the run log. The generated PR keeps earlier evidence step-scoped and shows only compact step status in its Pipeline section; the [pipeline steps reference](/no-mistakes/reference/pipeline-steps/#pr) owns the PR body and size-limit contract.
 
 Round trigger types:
 - `initial` - first execution

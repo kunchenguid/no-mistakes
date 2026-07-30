@@ -255,12 +255,11 @@ func prBodyBudgetPromptSection(bodyLimit int) string {
 }
 
 // assemblePRBody composes the final PR body from its sections and keeps it
-// within bodyLimit (0 = unlimited). When the full body overruns the cap it
-// first drops the Testing section - the only one that embeds artifact and log
-// file contents and is therefore effectively unbounded - so an Azure DevOps PR
-// sheds log dumps while keeping its Intent, What Changed, Risk, and Pipeline
-// narrative intact. ClampPRBody is the final backstop when even that core
-// overruns (e.g. an unusually long Intent).
+// within bodyLimit (0 = unlimited). Optional Testing content supplied by
+// legacy or helper callers is dropped first. Production PR drafting supplies
+// the final-diff What Changed section and compact Pipeline status, then fits
+// Intent into the remaining budget so earlier step evidence cannot displace
+// the final-scope description.
 func assemblePRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int) string {
 	sections := appendGeneratedSections(whatChanged, riskLine, testingMD, pipelineMD)
 	full := prependIntentSection(sections, sctx)
