@@ -105,11 +105,12 @@ Err on the side of completeness: include the goal, important decisions and trade
 `--task-id` is a provider-neutral tracking reference: a Jira key (`WA-3093`), a GitHub issue (`#412`), an Asana or ClickUp id, or anything else that identifies the task.
 It is a single line of at most 64 characters and is stamped on the run, so the [PR step](/no-mistakes/reference/pipeline-steps/#pr) bakes it into the pull request title.
 Baking is idempotent: a title that already carries the id is left alone, so re-running on the same branch never accretes copies of it.
-Without `--task-id`, `--task-id-format` does nothing and no title is changed.
+Without `--task-id`, `--task-id-format` does nothing; on a branch that has never carried an id, no title is changed.
 
 The id is sticky per branch, because a ticket belongs to one branch rather than to a single run.
 A later run that omits `--task-id` keeps the id and format already recorded for that branch, so a rerun, a fix round, or a follow-up `axi run` never strips the reference back off an open pull request title.
 Passing `--task-id` explicitly overrides the recorded one for that run and every later run that omits the flag.
+The two flags resolve together, so `--task-id-format` on its own never re-places an inherited id: the recorded format wins, and changing the placement means passing `--task-id` again alongside the new format.
 A branch that never carried an id stays unstamped.
 
 `--task-id-format` accepts three placements, all applied after the conventional-commit title has been generated:
