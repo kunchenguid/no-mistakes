@@ -62,6 +62,9 @@ test:
   evidence:
     store_in_repo: true
     dir: .no-mistakes/evidence
+
+pr:
+  include_pipeline_summary: false
 ```
 
 ## Fields
