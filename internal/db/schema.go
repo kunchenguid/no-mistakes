@@ -125,6 +125,37 @@ CREATE TABLE IF NOT EXISTS run_agent_sessions (
     PRIMARY KEY (run_id, role)
 );
 
+-- Every live run-head advance is journaled with the immutable Git anchor that
+-- preserves its candidate. Git refs and SQLite cannot move atomically, so this
+-- record is the durable retry witness after either side advances first.
+CREATE TABLE IF NOT EXISTS run_head_advances (
+    run_id             TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    repo_id            TEXT NOT NULL,
+    branch             TEXT NOT NULL,
+    step_name          TEXT NOT NULL,
+    expected_head_sha  TEXT NOT NULL,
+    candidate_head_sha TEXT NOT NULL,
+    anchor_ref         TEXT NOT NULL,
+    created_at         INTEGER NOT NULL,
+    PRIMARY KEY (run_id, candidate_head_sha)
+);
+
+-- Historical forward-head recovery is explicit operator authorization, not
+-- inferred run provenance. This row is inserted transactionally with the
+-- exact terminal head CAS and remains the forensic/idempotency witness.
+CREATE TABLE IF NOT EXISTS run_head_recoveries (
+    run_id             TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    repo_id            TEXT NOT NULL,
+    branch             TEXT NOT NULL,
+    base_sha           TEXT NOT NULL,
+    expected_head_sha  TEXT NOT NULL,
+    candidate_head_sha TEXT NOT NULL,
+    local_head_sha     TEXT NOT NULL,
+    review_approved_head_sha TEXT,
+    anchor_ref         TEXT NOT NULL,
+    created_at         INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS intent_cache (
     cache_key   TEXT PRIMARY KEY,
     summary     TEXT NOT NULL,
@@ -135,8 +166,9 @@ CREATE TABLE IF NOT EXISTS intent_cache (
 `
 
 // migrationStatements hold additive schema changes applied to databases that
-// were created before the referenced columns existed. Each statement must be
-// idempotent via its error being tolerated when the column already exists.
+// were created before the referenced columns or tables existed. ALTER COLUMN
+// statements are idempotent via duplicate-column handling; CREATE TABLE
+// statements carry IF NOT EXISTS.
 var migrationStatements = []string{
 	`ALTER TABLE repos ADD COLUMN fork_url TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
@@ -198,4 +230,27 @@ var migrationStatements = []string{
 	`ALTER TABLE agent_invocations ADD COLUMN workload_files INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN workload_lines INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN finding_count INTEGER`,
+	`CREATE TABLE IF NOT EXISTS run_head_advances (
+		run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+		repo_id TEXT NOT NULL,
+		branch TEXT NOT NULL,
+		step_name TEXT NOT NULL,
+		expected_head_sha TEXT NOT NULL,
+		candidate_head_sha TEXT NOT NULL,
+		anchor_ref TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		PRIMARY KEY (run_id, candidate_head_sha)
+	)`,
+	`CREATE TABLE IF NOT EXISTS run_head_recoveries (
+		run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+		repo_id TEXT NOT NULL,
+		branch TEXT NOT NULL,
+		base_sha TEXT NOT NULL,
+		expected_head_sha TEXT NOT NULL,
+		candidate_head_sha TEXT NOT NULL,
+		local_head_sha TEXT NOT NULL,
+		review_approved_head_sha TEXT,
+		anchor_ref TEXT NOT NULL,
+		created_at INTEGER NOT NULL
+	)`,
 }
