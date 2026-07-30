@@ -14,6 +14,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/conventional"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -598,13 +599,29 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 
 	branch := branchFromRef(params.Ref)
-	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
+	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent, taskIDFromParams(params.TaskID, params.TaskIDFormat))
+}
+
+// taskIDFromParams resolves the wire form of a task-tracking id. An unusable id
+// or an unknown format is dropped rather than failing the run: the id is a PR
+// title decoration, never a validation gate.
+func taskIDFromParams(id, format string) conventional.TaskID {
+	if conventional.ValidateTaskID(id) != nil {
+		return conventional.TaskID{}
+	}
+	parsed, err := conventional.ParseTaskIDFormat(format)
+	if err != nil {
+		slog.Warn("ignoring unknown task id format; using the default", "format", format, "error", err)
+		parsed = conventional.DefaultTaskIDFormat
+	}
+	return conventional.TaskID{ID: strings.TrimSpace(id), Format: parsed}
 }
 
 // HandleRerun creates a new run for the latest gate head on a branch. An
 // explicit intent overrides the selected run. Otherwise an authoritative
-// intent is inherited byte-for-byte; runs without one infer intent afresh.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string) (string, error) {
+// intent is inherited byte-for-byte; runs without one infer intent afresh. An
+// optional task-tracking id is stamped onto the new run.
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string, task conventional.TaskID) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -670,7 +687,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		}
 	}
 
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, task)
 }
 
 // fetchRunDefaultBranch fetches the trusted branch from the refreshed
@@ -689,15 +706,16 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
-// step uses it instead of inferring from transcripts.
-func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent)
+// step uses it instead of inferring from transcripts. A non-empty task id is
+// stamped alongside it for the PR step to bake into the PR title.
+func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string, task conventional.TaskID) (string, error) {
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, task)
 }
 
 // startRunWithIntentSource is the common run-creation path. source is empty
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
-func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
+func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string, task conventional.TaskID) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -751,6 +769,20 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
+	}
+
+	// Stamp the task-tracking id before the pipeline starts, so the PR step
+	// reads it off the run row. A persist failure is non-fatal: the PR title
+	// simply carries no id.
+	if !task.Empty() {
+		id := strings.TrimSpace(task.ID)
+		format := string(task.Format)
+		if err := m.db.UpdateRunTaskID(run.ID, db.RunTaskID{ID: id, Format: format}); err != nil {
+			slog.Warn("failed to persist agent-supplied task id", "run_id", run.ID, "error", err)
+		} else {
+			run.TaskID = &id
+			run.TaskIDFormat = &format
+		}
 	}
 
 	// Create worktree from the gate bare repo.

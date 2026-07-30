@@ -6,6 +6,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/conventional"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -43,6 +44,11 @@ type StepContext struct {
 	// authoritative acceptance criteria; an agent name ("claude", "codex", ...)
 	// means it was inferred from a transcript (a hint). Empty when no intent exists.
 	IntentSource string
+	// TaskID is the caller-supplied task-tracking id and its title placement
+	// (`axi run --task-id` / `--task-id-format`). The zero value means no id
+	// was supplied and every use of it is a no-op. Only the PR step consumes
+	// it, to bake the id into the pull request title.
+	TaskID conventional.TaskID
 	// Sessions manages the run's durable review-fixer session. The session
 	// machinery remains role-generic for legacy recovery; nil runs every
 	// invocation cold.

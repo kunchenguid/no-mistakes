@@ -15,6 +15,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/conventional"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gateguidance"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -604,6 +605,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			userIntentSource = *run.IntentSource
 		}
 	}
+	taskID := runTaskID(run)
 	lastLogActivityAt := time.Time{}
 	touchLogActivity := func(text string, force bool) {
 		if activity := stepActivityFromLog(text); activity != "" {
@@ -699,6 +701,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		StepResultID:     sr.ID,
 		UserIntent:       userIntent,
 		IntentSource:     userIntentSource,
+		TaskID:           taskID,
 		Sessions:         e.sessions,
 		Shared:           e.shared,
 		Fixing:           state.fixing,
@@ -1065,6 +1068,22 @@ const (
 	maxStepActivityText          = 240
 	stepActivityThrottleInterval = time.Second
 )
+
+// runTaskID reads the run's task-tracking id, if any. A run row that carries an
+// id but no usable format resolves to the release-safe default rather than
+// dropping the id.
+func runTaskID(run *db.Run) conventional.TaskID {
+	if run == nil || run.TaskID == nil {
+		return conventional.TaskID{}
+	}
+	task := conventional.TaskID{ID: *run.TaskID, Format: conventional.DefaultTaskIDFormat}
+	if run.TaskIDFormat != nil {
+		if format, err := conventional.ParseTaskIDFormat(*run.TaskIDFormat); err == nil {
+			task.Format = format
+		}
+	}
+	return task
+}
 
 func stepActivityFromLog(text string) string {
 	end := len(text)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
+	"github.com/kunchenguid/no-mistakes/internal/conventional"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
@@ -61,6 +62,8 @@ func newAxiRunCmd() *cobra.Command {
 	var autoYes bool
 	var skipValue string
 	var intent string
+	var taskIDValue string
+	var taskIDFormatValue string
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -73,6 +76,10 @@ func newAxiRunCmd() *cobra.Command {
 			"--intent is required when starting a new run: pass what the user set out\n" +
 			"to accomplish (the goal behind the change, not a description of the diff)\n" +
 			"so no-mistakes uses it directly instead of inferring it from transcripts.\n\n" +
+			"--task-id bakes a task-tracking id (a Jira key, issue number, Asana or\n" +
+			"ClickUp id) into the generated PR title. --task-id-format chooses where it\n" +
+			"goes; the default keeps the conventional-commit type at the front so\n" +
+			"release automation is unaffected.\n\n" +
 			"The calling agent drives AXI approval gates but does not become the pipeline\n" +
 			"agent. The daemon requires a supported native agent binary, the `agent: cursor`\n" +
 			"ACP alias, or an explicit `acp:<target>` through `acpx`, and fails before the\n" +
@@ -83,26 +90,63 @@ func newAxiRunCmd() *cobra.Command {
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackAxiSurface("axi-run", "/axi/run", telemetry.Fields{
-				"auto_yes":   autoYes,
-				"has_intent": strings.TrimSpace(intent) != "",
-				"has_skip":   strings.TrimSpace(skipValue) != "",
+				"auto_yes":    autoYes,
+				"has_intent":  strings.TrimSpace(intent) != "",
+				"has_skip":    strings.TrimSpace(skipValue) != "",
+				"has_task_id": strings.TrimSpace(taskIDValue) != "",
 			}, func() error {
 				skipSteps, err := parseSkipSteps(skipValue)
 				if err != nil {
 					return emitError(cmd, 2, err.Error(),
 						"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
 				}
-				return runAxiRun(cmd, autoYes, skipSteps, intent)
+				task, err := resolveTaskID(taskIDValue, taskIDFormatValue)
+				if err != nil {
+					return emitError(cmd, 2, err.Error(),
+						"Valid task id formats: "+strings.Join(taskIDFormatNames(), ", "))
+				}
+				return runAxiRun(cmd, autoYes, skipSteps, intent, task)
 			})
 		},
 	}
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every gate (fix findings, then accept) until a decision point or outcome")
 	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip")
 	cmd.Flags().StringVar(&intent, "intent", "", "what the user set out to accomplish (not a description of the diff); used instead of inferring from transcripts (required to start a run)")
+	cmd.Flags().StringVar(&taskIDValue, "task-id", "", "task-tracking id (e.g. WA-3093, #412) to bake into the generated PR title")
+	cmd.Flags().StringVar(&taskIDFormatValue, "task-id-format", string(conventional.DefaultTaskIDFormat),
+		"where --task-id goes in the PR title: "+strings.Join(taskIDFormatNames(), ", "))
 	return cmd
 }
 
-func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent string) error {
+// taskIDFormatNames lists the supported --task-id-format values for help and
+// error text, so the CLI never drifts from the formats conventional supports.
+func taskIDFormatNames() []string {
+	formats := conventional.TaskIDFormats()
+	names := make([]string, 0, len(formats))
+	for _, format := range formats {
+		names = append(names, string(format))
+	}
+	return names
+}
+
+// resolveTaskID validates the --task-id / --task-id-format pair. The format is
+// inert without an id, so an absent id yields the zero value regardless of the
+// format, and never an error.
+func resolveTaskID(id, format string) (conventional.TaskID, error) {
+	parsed, err := conventional.ParseTaskIDFormat(format)
+	if err != nil {
+		return conventional.TaskID{}, err
+	}
+	if strings.TrimSpace(id) == "" {
+		return conventional.TaskID{}, nil
+	}
+	if err := conventional.ValidateTaskID(id); err != nil {
+		return conventional.TaskID{}, fmt.Errorf("invalid --task-id: %w", err)
+	}
+	return conventional.TaskID{ID: strings.TrimSpace(id), Format: parsed}, nil
+}
+
+func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent string, task conventional.TaskID) error {
 	ctx := cmd.Context()
 	env, err := openAxiRunEnv()
 	if err != nil {
@@ -145,7 +189,7 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 			return guard(cmd)
 		}
 		var err error
-		runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent)
+		runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent, task)
 		if err != nil {
 			if ownershipErr, ok := err.(*branchOwnershipError); ok {
 				return emitBranchOwnershipError(cmd, ownershipErr)
@@ -291,11 +335,12 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 // the gate to trigger a pipeline, and falls back to a rerun when the push was a
 // no-op (the gate already had this commit). Callers must check for an existing
 // active run first (see activeRunID) and apply pre-flight guards.
-func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent string) (string, error) {
+func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent string, task conventional.TaskID) (string, error) {
 	pushOptions := formatSkipPushOptions(skipSteps)
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
+	pushOptions = append(pushOptions, formatTaskIDPushOptions(task)...)
 	priorRunIDs, err := runIDsForHead(env.client, env.repo.ID, branch, headSHA)
 	if err != nil {
 		// An active run can still be found below. Without a baseline, however,
@@ -325,7 +370,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	// No run appeared: the push was likely up-to-date. Rerun the latest gate
 	// head so `axi run` is still useful when there are no new commits.
 	var rr ipc.RerunResult
-	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent), &rr); err != nil {
+	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent, task), &rr); err != nil {
 		return "", fmt.Errorf("no run started for %q: %v", branch, err)
 	}
 	return rr.RunID, nil
@@ -409,8 +454,15 @@ func activeRunLookupParams(repoID, branch string) *ipc.GetActiveRunParams {
 	return &ipc.GetActiveRunParams{RepoID: repoID, Branch: branch}
 }
 
-func rerunParams(repoID, branch string, skipSteps []types.StepName, intent string) *ipc.RerunParams {
-	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent}
+func rerunParams(repoID, branch string, skipSteps []types.StepName, intent string, task conventional.TaskID) *ipc.RerunParams {
+	return &ipc.RerunParams{
+		RepoID:       repoID,
+		Branch:       branch,
+		SkipSteps:    skipSteps,
+		Intent:       intent,
+		TaskID:       task.ID,
+		TaskIDFormat: string(task.Format),
+	}
 }
 
 // driveRun subscribes to a run and reconciles authoritative state on transition

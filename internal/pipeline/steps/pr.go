@@ -81,6 +81,15 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, err
 	}
+	// Bake the run's task-tracking id in last, after buildPRContent has already
+	// applied conventional.TightenTitle. Feeding a decorated title through
+	// TightenTitle would prepend "chore: " and destroy the type release
+	// automation parses. Applying it here covers the create and update paths
+	// alike, and the agent-drafted and fallback titles alike.
+	if decorated := sctx.TaskID.Apply(content.Title); decorated != content.Title {
+		content.Title = decorated
+		sctx.Log(fmt.Sprintf("applied task id %s to PR title (%s format)", sctx.TaskID.ID, taskIDFormatName(sctx.TaskID)))
+	}
 
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
 	existing, err := host.FindPR(ctx, branch, sctx.Repo.DefaultBranch)
@@ -116,6 +125,15 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
+}
+
+// taskIDFormatName names the format actually used, so the log line matches the
+// title even when the run carries no explicit format.
+func taskIDFormatName(task conventional.TaskID) conventional.TaskIDFormat {
+	if task.Format == "" {
+		return conventional.DefaultTaskIDFormat
+	}
+	return task.Format
 }
 
 func describePR(pr *scm.PR) string {

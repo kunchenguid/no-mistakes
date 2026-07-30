@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/conventional"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -106,6 +107,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			task, err := parseTaskIDPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -124,12 +129,14 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:      gatePath,
-				Ref:       ref,
-				Old:       oldSHA,
-				New:       newSHA,
-				SkipSteps: skipSteps,
-				Intent:    intent,
+				Gate:         gatePath,
+				Ref:          ref,
+				Old:          oldSHA,
+				New:          newSHA,
+				SkipSteps:    skipSteps,
+				Intent:       intent,
+				TaskID:       task.ID,
+				TaskIDFormat: string(task.Format),
 			}, &result)
 		},
 	}
@@ -219,6 +226,60 @@ func parseIntentPushOptions(options []string) (string, error) {
 		intent = string(decoded)
 	}
 	return intent, nil
+}
+
+// taskIDPushOptionPrefix and taskIDFormatPushOptionPrefix carry an
+// agent-supplied task-tracking id and its title placement through a git push.
+// The id is base64-encoded for the same reason intent is: push options are
+// line-oriented and an id may contain spaces or "=".
+const (
+	taskIDPushOptionPrefix       = "no-mistakes.task-id="
+	taskIDFormatPushOptionPrefix = "no-mistakes.task-id-format="
+)
+
+// formatTaskIDPushOptions encodes a task-tracking id as push options, or
+// returns nothing when there is no id to carry. The format is inert without an
+// id, so it is never sent alone.
+func formatTaskIDPushOptions(task conventional.TaskID) []string {
+	if task.Empty() {
+		return nil
+	}
+	options := []string{taskIDPushOptionPrefix + base64.StdEncoding.EncodeToString([]byte(strings.TrimSpace(task.ID)))}
+	if task.Format != "" {
+		options = append(options, taskIDFormatPushOptionPrefix+string(task.Format))
+	}
+	return options
+}
+
+// parseTaskIDPushOptions extracts and decodes the task-id push options, if any.
+// The last occurrence of each wins. An id with no format resolves to the
+// release-safe default.
+func parseTaskIDPushOptions(options []string) (conventional.TaskID, error) {
+	task := conventional.TaskID{Format: conventional.DefaultTaskIDFormat}
+	for _, option := range options {
+		if encoded, ok := strings.CutPrefix(option, taskIDPushOptionPrefix); ok {
+			decoded, err := base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				return conventional.TaskID{}, fmt.Errorf("decode task id push option: %w", err)
+			}
+			task.ID = string(decoded)
+			continue
+		}
+		if value, ok := strings.CutPrefix(option, taskIDFormatPushOptionPrefix); ok {
+			format, err := conventional.ParseTaskIDFormat(value)
+			if err != nil {
+				return conventional.TaskID{}, err
+			}
+			task.Format = format
+		}
+	}
+	if task.ID == "" {
+		return conventional.TaskID{}, nil
+	}
+	if err := conventional.ValidateTaskID(task.ID); err != nil {
+		return conventional.TaskID{}, fmt.Errorf("invalid task id push option: %w", err)
+	}
+	return task, nil
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

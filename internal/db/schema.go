@@ -151,6 +151,10 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_score REAL`,
+	// The task-tracking id and its title format are nullable and never
+	// backfilled: a run started without `--task-id` has no id to infer.
+	`ALTER TABLE runs ADD COLUMN task_id TEXT`,
+	`ALTER TABLE runs ADD COLUMN task_id_format TEXT`,
 	`ALTER TABLE runs ADD COLUMN awaiting_agent_since INTEGER`,
 	`ALTER TABLE runs ADD COLUMN parked_ms INTEGER`,
 	// The CI step's per-check rerun budget. It is durable because a run
