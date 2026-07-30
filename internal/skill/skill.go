@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/gateguidance"
+	"github.com/kunchenguid/no-mistakes/internal/testguidance"
 )
 
 // Name is the skill directory name and frontmatter name. It must match the
@@ -84,6 +85,8 @@ task along with the command:
      it *is* the intent - pass it through, enriched with the decisions and
      tradeoffs you made while doing the work (see
      [Intent is required](#intent-is-required)).
+
+` + testguidance.Rule + `
 
 Everything below - preconditions, intent, the validate-and-decide loop - applies
 the same way once the work is committed on a feature branch.

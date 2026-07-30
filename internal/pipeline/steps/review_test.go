@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,6 +85,7 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "leave the same class of bug likely elsewhere") {
 		t.Error("expected review fix prompt to avoid narrow fixes that leave systemic bugs")
 	}
+	assertTestQualityRulePrompt(t, ag.calls[0].Prompt)
 	if len(ag.calls[0].JSONSchema) == 0 {
 		t.Error("expected fix call to request structured JSON output")
 	}
@@ -102,6 +104,8 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[1].Prompt, "inspect surrounding code, call sites, shared helpers, tests, and invariants") {
 		t.Error("expected review prompt to allow surrounding-code inspection for root cause")
 	}
+	assertTestQualityRulePrompt(t, ag.calls[1].Prompt)
+	assertTestQualityReviewerAction(t, ag.calls[1].Prompt)
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
 	}
@@ -113,6 +117,71 @@ func TestReviewStep_FixMode(t *testing.T) {
 	}
 	if outcome.ReviewApprovedHeadSHA != sctx.Run.HeadSHA {
 		t.Fatalf("rereview captured approved head %s, want %s", outcome.ReviewApprovedHeadSHA, sctx.Run.HeadSHA)
+	}
+}
+
+// A deterministic fake finding exercises the ordinary review gate, repair,
+// and rereview flow without claiming that the fake agent can judge tests.
+func TestReviewStep_SourceContentFindingFollowsNormalFixFlow(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	calls := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			calls++
+			switch calls {
+			case 1:
+				assertTestQualityRulePrompt(t, opts.Prompt)
+				assertTestQualityReviewerAction(t, opts.Prompt)
+				output, _ := json.Marshal(Findings{Items: []Finding{{
+					ID:          "source-content-only-test",
+					Severity:    "warning",
+					Action:      types.ActionAutoFix,
+					File:        "app_test.go",
+					Description: "new test only greps implementation source for a required token",
+				}}})
+				return &agent.Result{Output: output}, nil
+			case 2:
+				assertTestQualityRulePrompt(t, opts.Prompt)
+				if err := os.WriteFile(filepath.Join(dir, "semantic_test.go"), []byte("package app\n"), 0o644); err != nil {
+					return nil, err
+				}
+				return &agent.Result{Output: json.RawMessage(`{"summary":"replace source test"}`)}, nil
+			case 3:
+				assertTestQualityRulePrompt(t, opts.Prompt)
+				assertTestQualityReviewerAction(t, opts.Prompt)
+				output, _ := json.Marshal(Findings{Summary: "clean"})
+				return &agent.Result{Output: output}, nil
+			default:
+				return nil, fmt.Errorf("unexpected agent call %d", calls)
+			}
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	step := &ReviewStep{}
+
+	initial, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !initial.NeedsApproval || !initial.AutoFixable {
+		t.Fatalf("initial source-content finding should use the normal repair gate, got %+v", initial)
+	}
+
+	sctx.Fixing = true
+	sctx.PreviousFindings = initial.Findings
+	fixed, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixed.NeedsApproval {
+		t.Fatalf("clean rereview after repair should not remain gated, got %+v", fixed)
+	}
+	if calls != 3 {
+		t.Fatalf("agent calls = %d, want review, fix, rereview", calls)
 	}
 }
 

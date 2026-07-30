@@ -1154,6 +1154,7 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	if !strings.Contains(capturedPrompt, "smallest correct root-cause fix") {
 		t.Errorf("prompt should prefer root-cause fixes over bandaids, got:\n%s", capturedPrompt)
 	}
+	assertTestQualityRulePrompt(t, capturedPrompt)
 	if strings.Contains(capturedPrompt, "Make the minimal change needed") {
 		t.Errorf("prompt should not prefer narrow minimal changes, got:\n%s", capturedPrompt)
 	}
