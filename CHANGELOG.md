@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.42.0](https://github.com/kunchenguid/no-mistakes/compare/v1.41.2...v1.42.0) (2026-07-30)
+
+
+### Features
+
+* **agent:** neutralize Pi project context files ([#586](https://github.com/kunchenguid/no-mistakes/issues/586)) ([829ee34](https://github.com/kunchenguid/no-mistakes/commit/829ee34703bdc1d7cb216e6c33166803944f6f85))
+
+
+### Bug Fixes
+
+* **db:** finalize runs on terminal PR outcomes ([#570](https://github.com/kunchenguid/no-mistakes/issues/570)) ([62ab989](https://github.com/kunchenguid/no-mistakes/commit/62ab9899d7cd0ef0c0f1e171bc65ad916bcfa613))
+* **gate:** refresh repository URLs at run start ([#582](https://github.com/kunchenguid/no-mistakes/issues/582)) ([e279099](https://github.com/kunchenguid/no-mistakes/commit/e279099c51a667f3d82b3025db88f6ba4736be15))
+* **pipeline:** bind pushes to the reviewed commit ([#573](https://github.com/kunchenguid/no-mistakes/issues/573)) ([574e3aa](https://github.com/kunchenguid/no-mistakes/commit/574e3aa651b2ce9bd0bb51cc72eaaa223cb6d3ce))
+* **pipeline:** enforce post-review HEAD continuity ([#574](https://github.com/kunchenguid/no-mistakes/issues/574)) ([88dc204](https://github.com/kunchenguid/no-mistakes/commit/88dc204f933bbccee5fd144f2fa1e74cb52704c2))
+* **pipeline:** scope PR summaries to the final diff ([#605](https://github.com/kunchenguid/no-mistakes/issues/605)) ([c70992a](https://github.com/kunchenguid/no-mistakes/commit/c70992ad5896cd211e08bfc81ffa43ecce3fd885))
+
 ## [1.41.2](https://github.com/kunchenguid/no-mistakes/compare/v1.41.1...v1.41.2) (2026-07-24)
 
 
