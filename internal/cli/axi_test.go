@@ -376,6 +376,39 @@ func TestGateNote_ReviewOnly(t *testing.T) {
 	}
 }
 
+// TestGateSelectionGuidance_OnlyWhenAnInfoFindingIsPresent keeps the severity
+// reminder at its point of use: a gate whose findings are all actionable has
+// no advisory finding to leave out, so the reminder would be noise there.
+func TestGateSelectionGuidance_OnlyWhenAnInfoFindingIsPresent(t *testing.T) {
+	mk := func(severities ...string) string {
+		items := make([]types.Finding, 0, len(severities))
+		for i, severity := range severities {
+			items = append(items, types.Finding{
+				ID:          fmt.Sprintf("review-%d", i+1),
+				Severity:    severity,
+				File:        "main.go",
+				Action:      types.ActionAutoFix,
+				Description: "x",
+			})
+		}
+		gate := stepView{Name: "review", Status: "awaiting_approval", FindingsJSON: findingsJSON(t, items, "summary")}
+		return axiDoc(gateFields(gate)...)
+	}
+
+	withInfo := mk(types.SeverityWarning, types.SeverityInfo)
+	if !strings.Contains(withInfo, "Info findings are advisory") {
+		t.Errorf("gate carrying an info finding is missing the selection guidance in:\n%s", withInfo)
+	}
+	if !strings.Contains(withInfo, "auto_fix.min_severity") {
+		t.Errorf("selection guidance must name the config floor in:\n%s", withInfo)
+	}
+
+	withoutInfo := mk(types.SeverityWarning, types.SeverityError)
+	if strings.Contains(withoutInfo, "Info findings are advisory") {
+		t.Errorf("gate with no info finding should not carry the selection guidance in:\n%s", withoutInfo)
+	}
+}
+
 func TestParseAddFinding(t *testing.T) {
 	f, err := parseAddFinding(`{"description":"add a nil check","action":"auto-fix","file":"x.go"}`)
 	if err != nil {

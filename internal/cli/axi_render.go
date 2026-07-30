@@ -26,6 +26,26 @@ const (
 	maxGateSummary = 1200
 )
 
+// findingSeverityGuidance is the point-of-use reminder shown at any gate that
+// carries an info finding. Every selected finding costs a fix round plus the
+// full rereview that round triggers, so advisory findings stay out of the
+// selection unless the user wants them. It is one of the guidance strings
+// pinned across surfaces by TestFindingSeverityGuidance_SyncedAcrossSurfaces.
+const findingSeverityGuidance = "Info findings are advisory - a preference, a nit, a possible cleanup. " +
+	"Select error and warning findings; leave info findings out of `--findings` unless the user asked for them " +
+	"or one is plainly a real defect the reviewer under-rated. " +
+	"The pipeline applies the same floor to its own automatic fixing (`auto_fix.min_severity`, default `warning`)."
+
+// hasInfoFinding reports whether any finding is advisory-severity.
+func hasInfoFinding(items []types.Finding) bool {
+	for _, f := range items {
+		if strings.EqualFold(strings.TrimSpace(f.Severity), types.SeverityInfo) {
+			return true
+		}
+	}
+	return false
+}
+
 // Row types carry `toon` tags so the encoder renders a []row slice as a
 // tabular array (name[N]{cols}:) with one comma-delimited line per element.
 type stepRow struct {
@@ -456,6 +476,12 @@ func gateFields(gate stepView) []toon.Field {
 	// unless config explicitly opts back in.
 	if gate.Name == string(types.StepReview) {
 		gfields = append(gfields, toon.Field{Key: "note", Value: "Review auto-fix is disabled by default (`auto_fix.review: 0`; a repo or global `auto_fix.review > 0` override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed."})
+	}
+	// Point-of-use reminder wherever the gate actually carries an info finding:
+	// selecting one costs a fix round plus its rereview, so it stays out of
+	// `--findings` by default.
+	if hasInfoFinding(parsed.Items) {
+		gfields = append(gfields, toon.Field{Key: "selection", Value: findingSeverityGuidance})
 	}
 	rows := make([]findingRow, 0, len(parsed.Items))
 	for _, f := range parsed.Items {

@@ -202,7 +202,7 @@ func TestAutoFixableFindings_FiltersToAutoFix(t *testing.T) {
 		},
 		RiskLevel: "medium",
 	}
-	fixable := AutoFixableFindings(f)
+	fixable := AutoFixableFindings(f, SeverityInfo)
 	if len(fixable.Items) != 2 {
 		t.Fatalf("Items count = %d, want 2", len(fixable.Items))
 	}
@@ -220,7 +220,7 @@ func TestAutoFixableFindings_AllAskUser(t *testing.T) {
 			{ID: "f1", Severity: "warning", Description: "choice", Action: ActionAskUser},
 		},
 	}
-	fixable := AutoFixableFindings(f)
+	fixable := AutoFixableFindings(f, SeverityInfo)
 	if len(fixable.Items) != 0 {
 		t.Errorf("Items count = %d, want 0", len(fixable.Items))
 	}
@@ -233,7 +233,7 @@ func TestAutoFixableFindings_NoOpExcluded(t *testing.T) {
 			{ID: "f2", Severity: "info", Description: "fyi", Action: ActionNoOp},
 		},
 	}
-	fixable := AutoFixableFindings(f)
+	fixable := AutoFixableFindings(f, SeverityInfo)
 	if len(fixable.Items) != 0 {
 		t.Errorf("Items count = %d, want 0", len(fixable.Items))
 	}
@@ -249,12 +249,61 @@ func TestAutoFixableFindings_EmptyActionIsNotAutoFixable(t *testing.T) {
 			{ID: "f2", Severity: "warning", Description: "explicit fix", Action: ActionAutoFix},
 		},
 	}
-	fixable := AutoFixableFindings(f)
+	fixable := AutoFixableFindings(f, SeverityInfo)
 	if len(fixable.Items) != 1 {
 		t.Fatalf("Items count = %d, want 1 (only the explicit auto-fix)", len(fixable.Items))
 	}
 	if fixable.Items[0].ID != "f2" {
 		t.Errorf("Items[0].ID = %q, want %q", fixable.Items[0].ID, "f2")
+	}
+}
+
+func TestAutoFixableFindings_SeverityFloorExcludesLowerSeverities(t *testing.T) {
+	f := Findings{
+		Items: []Finding{
+			{ID: "f1", Severity: SeverityError, Description: "bug", Action: ActionAutoFix},
+			{ID: "f2", Severity: SeverityWarning, Description: "missing check", Action: ActionAutoFix},
+			{ID: "f3", Severity: SeverityInfo, Description: "nit", Action: ActionAutoFix},
+		},
+	}
+	tests := []struct {
+		floor string
+		want  []string
+	}{
+		{SeverityInfo, []string{"f1", "f2", "f3"}},
+		{"", []string{"f1", "f2", "f3"}},
+		{SeverityWarning, []string{"f1", "f2"}},
+		{SeverityError, []string{"f1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.floor, func(t *testing.T) {
+			got := AutoFixableFindings(f, tt.floor)
+			if len(got.Items) != len(tt.want) {
+				t.Fatalf("Items count = %d, want %d", len(got.Items), len(tt.want))
+			}
+			for i, id := range tt.want {
+				if got.Items[i].ID != id {
+					t.Errorf("Items[%d].ID = %q, want %q", i, got.Items[i].ID, id)
+				}
+			}
+		})
+	}
+}
+
+// An unrecognized or missing severity must never be silently dropped by the
+// floor: it is included at every floor so an unclassified finding still gets
+// fixed rather than disappearing from the loop.
+func TestAutoFixableFindings_UnknownSeverityPassesEverySeverityFloor(t *testing.T) {
+	f := Findings{
+		Items: []Finding{
+			{ID: "f1", Severity: "", Description: "no severity", Action: ActionAutoFix},
+			{ID: "f2", Severity: "critical", Description: "unrecognized severity", Action: ActionAutoFix},
+		},
+	}
+	for _, floor := range []string{SeverityInfo, SeverityWarning, SeverityError, "nonsense"} {
+		if got := AutoFixableFindings(f, floor); len(got.Items) != 2 {
+			t.Errorf("floor %q: Items count = %d, want 2", floor, len(got.Items))
+		}
 	}
 }
 
@@ -272,7 +321,7 @@ func TestEmptyActionFindingFailsClosedToAskUser(t *testing.T) {
 	if f.Items[0].Action != "" {
 		t.Fatalf("expected action to remain empty on the wire, got %q", f.Items[0].Action)
 	}
-	if len(AutoFixableFindings(f).Items) != 0 {
+	if len(AutoFixableFindings(f, SeverityInfo).Items) != 0 {
 		t.Error("empty-action finding must not be auto-fixable")
 	}
 	if !HasAskUserFindings(f) {

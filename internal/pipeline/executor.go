@@ -791,12 +791,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			e.emitRunEvent(ipc.EventRunUpdated, run, repo)
 		}
 
-		// Check if auto-fix should be attempted.
-		// Only auto-fix findings whose action is "auto-fix".
-		// This runs before the NeedsApproval check so that all severity
-		// levels (including "info") get a chance at automatic fixing.
+		// Check if auto-fix should be attempted. Only findings whose action is
+		// "auto-fix" and whose severity meets auto_fix.min_severity qualify.
+		// This runs before the NeedsApproval check so a qualifying finding is
+		// fixed automatically whether or not the step itself blocks.
 		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
-			fixableFindings := autoFixableFindingsJSON(outcome.Findings)
+			fixableFindings := autoFixableFindingsJSON(outcome.Findings, e.config.AutoFix.MinSeverity)
 			if fixableFindings != "" {
 				autoFixAttempts++
 				telemetry.Track("fix", e.fixTelemetryFields("auto", stepName, findingsCount(fixableFindings), autoFixAttempts))

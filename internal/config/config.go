@@ -377,6 +377,9 @@ type AutoFixRaw struct {
 	CI       *int `yaml:"ci"`
 	Babysit  *int `yaml:"babysit"`
 	Rebase   *int `yaml:"rebase"`
+	// MinSeverity is the lowest finding severity the executor will fix on its
+	// own. Unrecognized and blank values leave the resolved default in place.
+	MinSeverity *string `yaml:"min_severity"`
 }
 
 // CIRaw is the YAML representation of CI-step settings.
@@ -404,6 +407,10 @@ type AutoFix struct {
 	Document int
 	CI       int
 	Rebase   int
+	// MinSeverity bounds automatic fixing to findings at or above this
+	// severity. Lower-severity findings are still reported and remain
+	// selectable by hand; they just do not spend a fix round on their own.
+	MinSeverity string
 }
 
 // Config is the merged result of global + per-repo configuration.
@@ -643,6 +650,10 @@ auto_fix:
   review: 0
   document: 3
   ci: 3
+  # Lowest finding severity the pipeline fixes on its own: error, warning, or
+  # info. Findings below the floor are still reported and can be selected by
+  # hand; they just do not spend a fix round plus the rereview it triggers.
+  min_severity: warning
 
 # How many times the CI step may re-run a single check the provider reported as
 # cancelled before that check reaches an approval gate instead of the fix agent.
@@ -1594,6 +1605,10 @@ func autoFixDefaults() AutoFix {
 		Document: 3,
 		CI:       3,
 		Rebase:   3,
+		// Info findings are advisory. Fixing them automatically costs a fix
+		// round plus the full rereview that round triggers, so they are
+		// reported and left for a deliberate hand selection instead.
+		MinSeverity: types.SeverityWarning,
 	}
 }
 
@@ -1636,6 +1651,11 @@ func applyAutoFixOverrides(dst *AutoFix, src *AutoFixRaw) {
 	}
 	if src.Rebase != nil {
 		dst.Rebase = *src.Rebase
+	}
+	if src.MinSeverity != nil {
+		if severity := strings.ToLower(strings.TrimSpace(*src.MinSeverity)); severity != "" && types.IsKnownSeverity(severity) {
+			dst.MinSeverity = severity
+		}
 	}
 }
 

@@ -51,6 +51,30 @@ var canonicalBranchSyncPhrases = []string{
 	"before changing the submitted head",
 }
 
+// canonicalFindingSeverityPhrases are the load-bearing claims of the finding
+// selection floor: info findings are advisory, they stay out of --findings by
+// default, and the pipeline applies the same floor to its own automatic fixing.
+var canonicalFindingSeverityPhrases = []string{
+	"advisory",
+	"--findings",
+	"auto_fix.min_severity",
+}
+
+func TestFindingSeverityGuidance_SyncedAcrossSurfaces(t *testing.T) {
+	surfaces := map[string]string{
+		"skill body":               skill.Markdown(),
+		"agents guide":             readAgentsGuide(t),
+		"live finding-gate string": findingSeverityGuidance,
+	}
+	for name, content := range surfaces {
+		for _, phrase := range canonicalFindingSeverityPhrases {
+			if !strings.Contains(content, phrase) {
+				t.Errorf("%s is missing the canonical finding-severity guidance phrase %q", name, phrase)
+			}
+		}
+	}
+}
+
 const canonicalPipelineAgentPrerequisite = "a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`"
 
 // TestStaleMonitorGuidance_SyncedAcrossSurfaces guards the repo invariant that

@@ -310,8 +310,14 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 | `auto_fix.document` | `int` | `3`     | Not used by the automatic document pass                                                     |
 | `auto_fix.lint`     | `int` | `3`     | Lint issue auto-fix attempts                                                                |
 | `auto_fix.ci`       | `int` | `3`     | CI auto-fix attempts for CI failures, plus GitHub, GitLab, and Azure DevOps merge conflicts |
+| `auto_fix.min_severity` | `string` | `warning` | Lowest finding severity the pipeline fixes on its own: `error`, `warning`, or `info` |
 
 Legacy alias: `auto_fix.babysit`.
+
+`auto_fix.min_severity` bounds only automatic fixing. Findings below the floor are still reported at the gate and can be selected by hand with `no-mistakes axi respond --action fix --findings <ids>`; they just do not spend a fix round plus the full rereview that round triggers on their own.
+It defaults to `warning` because `info` findings are advisory. Set it to `info` to restore fixing every auto-fix finding regardless of severity, or to `error` to fix only blocking ones.
+A finding with a missing or unrecognized severity is never dropped by the floor - it qualifies at every setting.
+An unrecognized `min_severity` value is ignored and the default stays in place.
 
 These are global defaults. Per-repo config can override individual steps.
 

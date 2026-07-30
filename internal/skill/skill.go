@@ -175,6 +175,16 @@ Run the pipeline and decide on its findings as they come up:
      touches product behavior. This is a call only the user can make - see
      [Escalate ` + "`ask-user`" + ` findings](#escalate-ask-user-findings) below.
 
+   ` + "`severity`" + ` decides whether a finding is worth a fix round at all.
+   Select ` + "`error`" + ` and ` + "`warning`" + ` findings; leave ` + "`info`" + `
+   findings out of ` + "`--findings`" + ` unless the user asked for them or one is
+   plainly a real defect the reviewer under-rated. ` + "`info`" + ` is advisory - a
+   preference, a nit, a possible future cleanup - and every finding you select
+   costs a fix round plus the full rereview that round triggers. Reporting an
+   ` + "`info`" + ` finding is the whole point of it; fixing it usually is not.
+   The pipeline applies the same floor to its own automatic fixing
+   (` + "`auto_fix.min_severity`" + `, default ` + "`warning`" + `).
+
    **Review auto-fix is disabled by default** (` + "`auto_fix.review: 0`" + `; a repo
    or global ` + "`auto_fix.review > 0`" + ` override re-enables it), so blocking and
    ask-user review findings park for your decision rather than being silently

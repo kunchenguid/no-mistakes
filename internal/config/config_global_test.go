@@ -453,6 +453,44 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	if raw.CI.RerunTransient == nil || *raw.CI.RerunTransient != ciDefaults().RerunTransient {
 		t.Errorf("YAML ci.rerun_transient = %v, Go default = %d", raw.CI.RerunTransient, ciDefaults().RerunTransient)
 	}
+	if raw.AutoFix.MinSeverity == nil || *raw.AutoFix.MinSeverity != defaults.MinSeverity {
+		t.Errorf("YAML auto_fix.min_severity = %v, Go default = %q", raw.AutoFix.MinSeverity, defaults.MinSeverity)
+	}
+}
+
+// The severity floor bounds only what the executor fixes on its own. It
+// defaults to "warning" so advisory info findings are still reported but no
+// longer spend a fix round plus the rereview that round triggers.
+func TestAutoFixMinSeverity_DefaultsToWarningAndAcceptsOverrides(t *testing.T) {
+	if got := autoFixDefaults().MinSeverity; got != types.SeverityWarning {
+		t.Errorf("default min_severity = %q, want %q", got, types.SeverityWarning)
+	}
+
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"unset keeps default", "auto_fix:\n  lint: 3\n", types.SeverityWarning},
+		{"info restores legacy behavior", "auto_fix:\n  min_severity: info\n", types.SeverityInfo},
+		{"error narrows to blocking only", "auto_fix:\n  min_severity: error\n", types.SeverityError},
+		{"blank is ignored", "auto_fix:\n  min_severity: \"  \"\n", types.SeverityWarning},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			global, err := LoadGlobal(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := Merge(global, &RepoConfig{}).AutoFix.MinSeverity; got != tt.want {
+				t.Errorf("MinSeverity = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestLoadGlobal_AutoFixDefaults(t *testing.T) {

@@ -219,7 +219,7 @@ func retainMatchingFindingsJSON(existingRaw, keepRaw string) string {
 	return filteredRaw
 }
 
-func autoFixableFindingsJSON(raw string) string {
+func autoFixableFindingsJSON(raw, minSeverity string) string {
 	if raw == "" {
 		return ""
 	}
@@ -227,7 +227,7 @@ func autoFixableFindingsJSON(raw string) string {
 	if err != nil {
 		return raw
 	}
-	fixable := types.AutoFixableFindings(findings)
+	fixable := types.AutoFixableFindings(findings, minSeverity)
 	if len(fixable.Items) == 0 {
 		return ""
 	}

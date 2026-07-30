@@ -13,6 +13,50 @@ const (
 	ActionAskUser = "ask-user"
 )
 
+// Finding severity constants, ordered from most to least severe.
+const (
+	SeverityError   = "error"
+	SeverityWarning = "warning"
+	SeverityInfo    = "info"
+)
+
+// severityRank orders the known severities. An unrecognized or missing
+// severity ranks at the top so a severity floor can never silently drop an
+// unclassified finding.
+func severityRank(severity string) int {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case SeverityInfo:
+		return 1
+	case SeverityWarning:
+		return 2
+	case SeverityError:
+		return 3
+	default:
+		return 4
+	}
+}
+
+// IsKnownSeverity reports whether severity is one of the defined severities.
+func IsKnownSeverity(severity string) bool {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case SeverityInfo, SeverityWarning, SeverityError:
+		return true
+	default:
+		return false
+	}
+}
+
+// MeetsSeverityFloor reports whether severity is at least as severe as floor.
+// An empty or unrecognized floor imposes no restriction.
+func MeetsSeverityFloor(severity, floor string) bool {
+	switch strings.ToLower(strings.TrimSpace(floor)) {
+	case SeverityInfo, SeverityWarning, SeverityError:
+		return severityRank(severity) >= severityRank(floor)
+	default:
+		return true
+	}
+}
+
 // Finding source constants. An empty Source is treated as agent-produced.
 const (
 	FindingSourceAgent = "agent"
@@ -166,11 +210,16 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 }
 
 // AutoFixableFindings returns a new Findings containing only items where
-// Action is "auto-fix". These are safe for automatic fixing without
-// user involvement.
-func AutoFixableFindings(findings Findings) Findings {
+// Action is "auto-fix" and Severity is at least minSeverity. These are safe
+// for automatic fixing without user involvement. Excluded findings are still
+// reported and remain selectable by hand; the floor only bounds what the
+// executor fixes on its own.
+func AutoFixableFindings(findings Findings, minSeverity string) Findings {
 	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale, RiskScope: findings.RiskScope}
 	for _, item := range findings.Items {
+		if !MeetsSeverityFloor(item.Severity, minSeverity) {
+			continue
+		}
 		if item.actionOrDefault() == ActionAutoFix {
 			result.Items = append(result.Items, item)
 		}

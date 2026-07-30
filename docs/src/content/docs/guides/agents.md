@@ -182,6 +182,10 @@ When `next_action.code` is `continue_active_run`, run the reported command and k
 If synchronization is blocked, process that state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
 Then commit follow-up work on top so every pipeline fix commit remains in the branch.
 
+Info findings are advisory - a preference, a nit, a possible cleanup.
+Select error and warning findings; leave info findings out of `--findings` unless the user asked for them or one is plainly a real defect the reviewer under-rated, because every selected finding costs a fix round plus the full rereview that round triggers.
+The pipeline applies the same floor to its own automatic fixing through [`auto_fix.min_severity`](/no-mistakes/reference/global-config/#auto_fix).
+
 The full driving protocol - how to read the home view and `gate:` objects, when to respond, fix, approve, or relay `ask-user` findings, and how to interpret `axi status` fields like `awaiting_agent` and `active_steps` - is owned by the skill itself and by the live `axi` output.
 Each `axi` response carries version-matched `help` lines for its state, and `no-mistakes axi run --help` and `no-mistakes axi respond --help` describe the loop authoritatively for the installed binary, so agents driving a gate never need this page open.
 The [CLI reference](/no-mistakes/reference/cli/) documents each `axi` command and output field for humans.

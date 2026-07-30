@@ -77,7 +77,7 @@ func TestRetainMatchingFindingsJSON_DoesNotKeepDistinctDuplicateLines(t *testing
 func TestAutoFixableFindingsJSON_FiltersToAutoFix(t *testing.T) {
 	raw := `{"findings":[{"id":"review-1","severity":"error","description":"bug","action":"auto-fix"},{"id":"review-2","severity":"warning","description":"design choice","action":"ask-user"},{"id":"review-3","severity":"warning","description":"missing check","action":"auto-fix"},{"id":"review-4","severity":"info","description":"note","action":"no-op"}],"risk_level":"medium","risk_rationale":"Mixed."}`
 
-	fixableRaw := autoFixableFindingsJSON(raw)
+	fixableRaw := autoFixableFindingsJSON(raw, types.SeverityInfo)
 	fixable, err := types.ParseFindingsJSON(fixableRaw)
 	if err != nil {
 		t.Fatalf("parse auto-fixable findings: %v", err)
@@ -93,14 +93,14 @@ func TestAutoFixableFindingsJSON_FiltersToAutoFix(t *testing.T) {
 func TestAutoFixableFindingsJSON_AllAskUser(t *testing.T) {
 	raw := `{"findings":[{"id":"review-1","severity":"warning","description":"choice","action":"ask-user"}],"risk_level":"high","risk_rationale":"Needs review."}`
 
-	fixableRaw := autoFixableFindingsJSON(raw)
+	fixableRaw := autoFixableFindingsJSON(raw, types.SeverityInfo)
 	if fixableRaw != "" {
 		t.Fatalf("expected empty string for all-ask-user findings, got %q", fixableRaw)
 	}
 }
 
 func TestAutoFixableFindingsJSON_EmptyInput(t *testing.T) {
-	if got := autoFixableFindingsJSON(""); got != "" {
+	if got := autoFixableFindingsJSON("", types.SeverityInfo); got != "" {
 		t.Fatalf("expected empty string for empty input, got %q", got)
 	}
 }
@@ -108,9 +108,32 @@ func TestAutoFixableFindingsJSON_EmptyInput(t *testing.T) {
 func TestAutoFixableFindingsJSON_AllNoOp(t *testing.T) {
 	raw := `{"findings":[{"id":"review-1","severity":"info","description":"note","action":"no-op"}],"risk_level":"low","risk_rationale":"Clean."}`
 
-	fixableRaw := autoFixableFindingsJSON(raw)
+	fixableRaw := autoFixableFindingsJSON(raw, types.SeverityInfo)
 	if fixableRaw != "" {
 		t.Fatalf("expected empty string for all-no-op findings, got %q", fixableRaw)
+	}
+}
+
+func TestAutoFixableFindingsJSON_AppliesSeverityFloor(t *testing.T) {
+	raw := `{"findings":[{"id":"review-1","severity":"warning","description":"missing check","action":"auto-fix"},{"id":"review-2","severity":"info","description":"nit","action":"auto-fix"}],"risk_level":"low","risk_rationale":"Minor."}`
+
+	fixableRaw := autoFixableFindingsJSON(raw, types.SeverityWarning)
+	fixable, err := types.ParseFindingsJSON(fixableRaw)
+	if err != nil {
+		t.Fatalf("parse auto-fixable findings: %v", err)
+	}
+	if len(fixable.Items) != 1 || fixable.Items[0].ID != "review-1" {
+		t.Fatalf("expected only the warning finding, got %#v", fixable.Items)
+	}
+}
+
+// A round whose only auto-fix findings sit below the floor must produce no fix
+// round at all, so the executor moves on instead of spending a rereview.
+func TestAutoFixableFindingsJSON_EmptyWhenEveryFindingIsBelowFloor(t *testing.T) {
+	raw := `{"findings":[{"id":"review-1","severity":"info","description":"nit","action":"auto-fix"}],"risk_level":"low","risk_rationale":"Minor."}`
+
+	if got := autoFixableFindingsJSON(raw, types.SeverityWarning); got != "" {
+		t.Fatalf("expected empty string for below-floor findings, got %q", got)
 	}
 }
 
