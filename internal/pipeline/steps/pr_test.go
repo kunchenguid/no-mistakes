@@ -295,8 +295,11 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	if !strings.Contains(ghLog, "--title feat: add feature --body") {
 		t.Fatalf("expected fallback PR title to use release-triggering conventional commit format, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "add feature\n\n## Risk Assessment\n\n⚠️ Medium: touches critical error handling") {
-		t.Fatalf("expected fallback PR body to append risk note under Risk Assessment heading, got:\n%s", ghLog)
+	if strings.Contains(ghLog, "touches critical error handling") || strings.Contains(ghLog, "## Risk Assessment") {
+		t.Fatalf("expected fallback PR body to exclude earlier Review rationale, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "A\tfeature.txt") {
+		t.Fatalf("expected fallback PR body to derive scope from the final diff, got:\n%s", ghLog)
 	}
 
 	// Verify PR URL was stored
@@ -571,8 +574,8 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 	if !strings.Contains(ghLog, "keep branch status readable") {
 		t.Fatalf("expected generated PR body in gh call, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "fix footer truncation\n\n## Risk Assessment\n\n⚠️ Medium: touches critical error handling") {
-		t.Fatalf("expected risk note under Risk Assessment heading, got:\n%s", ghLog)
+	if strings.Contains(ghLog, "touches critical error handling") || strings.Contains(ghLog, "## Risk Assessment") {
+		t.Fatalf("expected final PR body to exclude earlier Review rationale, got:\n%s", ghLog)
 	}
 	if strings.Contains(ghLog, "--title feature") {
 		t.Fatalf("expected PR title to avoid raw branch name, got:\n%s", ghLog)
@@ -637,12 +640,13 @@ func TestPRStep_ExcludesEarlierTestingSectionFromFinalPRScope(t *testing.T) {
 	}
 	ghLog := string(logData)
 
-	wantOrder := "## Risk Assessment\n\n⚠️ Medium: touches critical error handling\n\n## Pipeline"
-	if !strings.Contains(ghLog, wantOrder) {
-		t.Fatalf("expected the final PR's risk assessment and pipeline sections, got:\n%s", ghLog)
+	if !strings.Contains(ghLog, "## Pipeline") {
+		t.Fatalf("expected the final PR's pipeline section, got:\n%s", ghLog)
 	}
-	if strings.Contains(ghLog, "## Testing") {
-		t.Fatalf("final PR must not append Test-step evidence as final-scope testing, got:\n%s", ghLog)
+	for _, stale := range []string{"## Testing", "## Risk Assessment", "touches critical error handling"} {
+		if strings.Contains(ghLog, stale) {
+			t.Fatalf("final PR must not append earlier step evidence %q, got:\n%s", stale, ghLog)
+		}
 	}
 	if !strings.Contains(ghLog, "<summary>🔧 **Test** - 1 issue found → auto-fixed ✅</summary>") {
 		t.Fatalf("final PR must retain the Test step status without its step-scoped evidence, got:\n%s", ghLog)
@@ -1211,8 +1215,6 @@ func TestPRStep_CreateKeepsGeneratedSectionsAfterOversizedIntent(t *testing.T) {
 		"body truncated to keep the PR body within GitHub's 65536-char limit",
 		"## What Changed",
 		"essential summary survives",
-		"## Risk Assessment",
-		"validates generated PR body length handling",
 		"## Pipeline",
 		"<summary>✅ **Test** - passed</summary>",
 	} {
@@ -1220,7 +1222,7 @@ func TestPRStep_CreateKeepsGeneratedSectionsAfterOversizedIntent(t *testing.T) {
 			t.Fatalf("expected created PR body to contain %q, got:\n%s", want, body)
 		}
 	}
-	for _, unwanted := range []string{"## Testing", "Validated generated PR body length handling."} {
+	for _, unwanted := range []string{"## Testing", "## Risk Assessment", "Validated generated PR body length handling.", "validates generated PR body length handling"} {
 		if strings.Contains(body, unwanted) {
 			t.Fatalf("expected created PR body to exclude step-scoped test evidence %q, got:\n%s", unwanted, body)
 		}
@@ -1357,8 +1359,7 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 		sctx,
 		"feature",
 		"abc123 add feature",
-		"✅ Low: generated PR body length guard only",
-		"## Testing\n\n- go test ./internal/pipeline/steps",
+		"A\tinternal/pipeline/steps/pr.go",
 		pipelineMarkdownForTest(rounds...),
 		0,
 	)
@@ -1368,9 +1369,7 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 		"## Intent",
 		"Fallback intent survives.",
 		"## What Changed",
-		"add feature",
-		"## Risk Assessment",
-		"## Testing",
+		"internal/pipeline/steps/pr.go",
 		"earlier update rounds omitted",
 		"review round 140",
 	} {
@@ -1380,6 +1379,9 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 	}
 	if strings.Contains(content.Body, "review round 001") {
 		t.Fatal("expected oldest pipeline update to be omitted")
+	}
+	if strings.Contains(content.Body, "add feature") {
+		t.Fatalf("expected fallback body to exclude commit-history scope, got:\n%s", content.Body)
 	}
 }
 
