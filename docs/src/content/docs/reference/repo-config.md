@@ -12,7 +12,7 @@ The daemon also reads `document.instructions` and `disable_project_settings` onl
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`) are still read from the pushed branch.
+Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`, `pr`) are still read from the pushed branch.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
