@@ -559,6 +559,14 @@ func fakeCIGHLoggedSequence(t *testing.T, state string, checks []string, mergeab
 	}), logFile
 }
 
+// fakeCIGHSequenceLogged is fakeCIGHSequence that also records every gh argv,
+// so tests can assert exactly which PR-lifecycle commands the monitor issued.
+func fakeCIGHSequenceLogged(t *testing.T, state string, checks []string) (env []string, logFile string) {
+	t.Helper()
+	logFile = filepath.Join(t.TempDir(), "gh.log")
+	return append(fakeCIGHSequence(t, state, checks), "FAKE_CLI_LOG="+logFile), logFile
+}
+
 func fakeCIGHNoChecks(t *testing.T) []string {
 	t.Helper()
 	binDir := fakeCLIBinDir(t)

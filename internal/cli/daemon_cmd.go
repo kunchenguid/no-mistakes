@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
@@ -106,6 +107,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			draftUntilReady, err := parseDraftUntilReadyPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -124,12 +129,13 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:      gatePath,
-				Ref:       ref,
-				Old:       oldSHA,
-				New:       newSHA,
-				SkipSteps: skipSteps,
-				Intent:    intent,
+				Gate:            gatePath,
+				Ref:             ref,
+				Old:             oldSHA,
+				New:             newSHA,
+				SkipSteps:       skipSteps,
+				Intent:          intent,
+				DraftUntilReady: draftUntilReady,
 			}, &result)
 		},
 	}
@@ -219,6 +225,39 @@ func parseIntentPushOptions(options []string) (string, error) {
 		intent = string(decoded)
 	}
 	return intent, nil
+}
+
+// draftUntilReadyPushOptionPrefix carries the per-run `--draft-until-ready`
+// decision through a git push, which is the pipeline's primary trigger.
+const draftUntilReadyPushOptionPrefix = "no-mistakes.draft-until-ready="
+
+// formatDraftUntilReadyPushOption encodes the flag as a single push option, or
+// returns "" when the run does not want a draft PR (the default).
+func formatDraftUntilReadyPushOption(draftUntilReady bool) string {
+	if !draftUntilReady {
+		return ""
+	}
+	return draftUntilReadyPushOptionPrefix + "true"
+}
+
+// parseDraftUntilReadyPushOptions extracts the draft-until-ready push option,
+// if any. The last occurrence wins, and an unparseable value is an error rather
+// than a silent default: a misspelled option must not quietly open a PR that
+// tags every reviewer.
+func parseDraftUntilReadyPushOptions(options []string) (bool, error) {
+	draftUntilReady := false
+	for _, option := range options {
+		raw, ok := strings.CutPrefix(option, draftUntilReadyPushOptionPrefix)
+		if !ok {
+			continue
+		}
+		parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+		if err != nil {
+			return false, fmt.Errorf("decode draft-until-ready push option %q: %w", raw, err)
+		}
+		draftUntilReady = parsed
+	}
+	return draftUntilReady, nil
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

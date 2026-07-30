@@ -90,17 +90,19 @@ no-mistakes axi run --intent "the user's goal" --skip test,lint
 no-mistakes axi run --intent "the user's goal" --yes
 ```
 
-| Flag          | Type     | Default | Description                                                      |
-| ------------- | -------- | ------- | ---------------------------------------------------------------- |
-| `--intent`    | `string` | (none)  | What the user set out to accomplish; required to start a new run |
-| `-y`, `--yes` | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome        |
-| `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip                           |
+| Flag                  | Type     | Default | Description                                                                |
+| --------------------- | -------- | ------- | -------------------------------------------------------------------------- |
+| `--intent`            | `string` | (none)  | What the user set out to accomplish; required to start a new run           |
+| `-y`, `--yes`         | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome                  |
+| `--skip`              | `string` | (none)  | Comma-separated pipeline steps to skip                                     |
+| `--draft-until-ready` | `bool`   | `false` | Open the pull request as a draft and mark it ready for review once CI is green |
 
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Reattaching to an in-flight run does not require `--intent`.
+`--draft-until-ready` is a per-run decision recorded when the run starts, for repositories whose automation tags human reviewers on PR-open; the [PR](/no-mistakes/reference/pipeline-steps/#draft-until-ready) and [CI](/no-mistakes/reference/pipeline-steps/#publishing-a-draft-until-ready-pr) step references own the draft-to-ready lifecycle, including which providers support it and what happens when CI never goes green.
 Reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.
 When neither identity matches, `axi run` keeps the fresh-run path but refuses a gate push while `branch_sync` says the pipeline still owns the branch.
 That refusal returns the complete structured state and its `continue_active_run` or `recover_custody` next action instead of a raw Git non-fast-forward.

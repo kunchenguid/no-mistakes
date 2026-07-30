@@ -118,6 +118,9 @@ func (fakeHost) CreatePR(context.Context, string, string, PRContent) (*PR, error
 func (fakeHost) UpdatePR(context.Context, *PR, PRContent) (*PR, error) {
 	return nil, nil
 }
+func (fakeHost) MarkPRReady(context.Context, *PR) error {
+	return ErrUnsupported
+}
 func (fakeHost) GetPRState(context.Context, *PR) (PRState, error) {
 	return "", nil
 }

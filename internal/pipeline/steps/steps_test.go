@@ -135,6 +135,9 @@ func fakeGHHandler(args []string) {
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "edit" {
 		os.Exit(0)
 	}
+	if len(args) >= 2 && args[0] == "pr" && args[1] == "ready" {
+		os.Exit(0)
+	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "create" {
 		fmt.Println("https://github.com/test/repo/pull/99")
 		os.Exit(0)
@@ -328,6 +331,9 @@ func fakeCIGHHandler(args []string) {
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
+	if len(args) >= 2 && args[0] == "pr" && args[1] == "ready" {
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
 		if mergeableErr != "" {
 			fmt.Fprintln(os.Stderr, mergeableErr)
@@ -384,6 +390,9 @@ func fakeCIGHSequenceHandler(args []string) {
 	joined := strings.Join(args, " ")
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if len(args) >= 2 && args[0] == "pr" && args[1] == "ready" {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
@@ -557,6 +566,9 @@ func fakeCIGHNoChecksHandler(args []string) {
 	joined := strings.Join(args, " ")
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if len(args) >= 2 && args[0] == "pr" && args[1] == "ready" {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr checks") {

@@ -575,6 +575,20 @@ func assertGateTrustedConfigReadable(ctx context.Context, wtDir, defaultBranch, 
 	return nil
 }
 
+// RunOptions are the per-run decisions a trigger carries onto a new run. They
+// are stamped on the run row at creation and never change while it executes,
+// so every step reads the same decision the trigger made.
+type RunOptions struct {
+	SkipSteps []types.StepName
+	// Intent is an agent-supplied description of the change; when set the
+	// intent step uses it verbatim instead of inferring from transcripts.
+	Intent string
+	// DraftUntilReady opens the pull request as a draft and publishes it only
+	// once CI is green, so repo automation that tags reviewers on PR-open
+	// defers until the PR is actually reviewable.
+	DraftUntilReady bool
+}
+
 // HandlePushReceived processes a push notification from the post-receive hook.
 // It creates a run, sets up a worktree, and launches pipeline execution in the background.
 func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushReceivedParams) (string, error) {
@@ -598,13 +612,18 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 
 	branch := branchFromRef(params.Ref)
-	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
+	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", RunOptions{
+		SkipSteps:       params.SkipSteps,
+		Intent:          params.Intent,
+		DraftUntilReady: params.DraftUntilReady,
+	})
 }
 
-// HandleRerun creates a new run for the latest gate head on a branch. An
-// explicit intent overrides the selected run. Otherwise an authoritative
-// intent is inherited byte-for-byte; runs without one infer intent afresh.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string) (string, error) {
+// HandleRerun creates a new run for the latest gate head on a branch, carrying
+// the trigger's per-run options onto it. An explicit intent overrides the
+// selected run. Otherwise an authoritative intent is inherited byte-for-byte;
+// runs without one infer intent afresh.
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, opts RunOptions) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -658,19 +677,19 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	}
 
 	intentSource := db.RunIntentSourceAgent
-	if strings.TrimSpace(intent) == "" {
+	if strings.TrimSpace(opts.Intent) == "" {
 		intentSource = ""
 		if selectedRun.Intent != nil && selectedRun.IntentSource != nil &&
 			db.IsAuthoritativeRunIntentSource(*selectedRun.IntentSource) {
 			// Do not normalize or regenerate this value. The selected run's
 			// persisted bytes are the canonical acceptance criteria for the
 			// replacement run.
-			intent = *selectedRun.Intent
+			opts.Intent = *selectedRun.Intent
 			intentSource = db.RunIntentSourceRerun
 		}
 	}
 
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", opts, intentSource)
 }
 
 // fetchRunDefaultBranch fetches the trusted branch from the refreshed
@@ -688,16 +707,16 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 }
 
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
-// A non-empty intent is stamped onto the run as agent-supplied, so the intent
-// step uses it instead of inferring from transcripts.
-func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent)
+// A non-empty opts.Intent is stamped onto the run as agent-supplied, so the
+// intent step uses it instead of inferring from transcripts.
+func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, opts RunOptions) (string, error) {
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, opts, db.RunIntentSourceAgent)
 }
 
 // startRunWithIntentSource is the common run-creation path. source is empty
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
-func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
+func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, opts RunOptions, source string) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -735,7 +754,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	// Cancel any active run for this repo+branch.
 	m.cancelActiveRuns(repo.ID, branch)
 
-	storedIntent := intent
+	storedIntent := opts.Intent
 	if source != db.RunIntentSourceRerun {
 		storedIntent = strings.TrimSpace(storedIntent)
 	}
@@ -751,6 +770,17 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
+	}
+
+	// Stamp the per-run draft-PR policy before the pipeline starts so the PR
+	// step opens a draft and the CI step knows to publish it. A persist failure
+	// is non-fatal and fails safe: the PR simply opens normally.
+	if opts.DraftUntilReady {
+		if err := m.db.SetRunDraftUntilReady(run.ID, true); err != nil {
+			slog.Warn("failed to persist draft-until-ready policy", "run_id", run.ID, "error", err)
+		} else {
+			run.DraftUntilReady = true
+		}
 	}
 
 	// Create worktree from the gate bare repo.
@@ -902,7 +932,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	// Create executor with event broadcast.
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
-	executor.SetSkippedSteps(skipSteps)
+	executor.SetSkippedSteps(opts.SkipSteps)
 
 	// Track executor.
 	done := make(chan struct{})

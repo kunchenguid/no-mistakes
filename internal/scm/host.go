@@ -89,12 +89,21 @@ func ExtractPRNumber(prURL string) (string, error) {
 type PR struct {
 	Number string
 	URL    string
+	// IsDraft reports whether the PR is a draft. It is best-effort: it is
+	// populated only by providers whose Capabilities().Draft is true and whose
+	// lookup returns the state cheaply, and is false everywhere else.
+	IsDraft bool
 }
 
 // PRContent is the title + body for creating or updating a PR.
 type PRContent struct {
 	Title string
 	Body  string
+	// Draft requests that a newly created PR open as a draft. It applies to
+	// creation only: callers must never use it to change an existing PR's
+	// draft state, which the PR's own reviewers own once it is published.
+	// Callers must gate it on Capabilities().Draft.
+	Draft bool
 }
 
 // PRState is the normalized lifecycle state of a PR.
@@ -163,6 +172,11 @@ func (c Check) Pending() bool { return c.Bucket == CheckBucketPending }
 type Capabilities struct {
 	MergeableState  bool
 	FailedCheckLogs bool
+	// Draft reports whether the provider has draft pull requests at all: both
+	// opening one via PRContent.Draft and publishing one via MarkPRReady.
+	// Providers whose CLI draft surface is unverified declare it false and no
+	// caller may guess otherwise.
+	Draft bool
 }
 
 // ErrUnsupported is returned by optional Host methods that the provider
@@ -184,6 +198,13 @@ type Host interface {
 	FindPR(ctx context.Context, branch, base string) (*PR, error)
 	CreatePR(ctx context.Context, branch, base string, content PRContent) (*PR, error)
 	UpdatePR(ctx context.Context, pr *PR, content PRContent) (*PR, error)
+
+	// MarkPRReady publishes a draft PR for review. It is optional;
+	// implementations without Capabilities().Draft must return ErrUnsupported.
+	// Callers should consult Capabilities first. The transition is one-way:
+	// this interface deliberately exposes no way to convert a published PR
+	// back to a draft, which would pull it out from under its reviewers.
+	MarkPRReady(ctx context.Context, pr *PR) error
 
 	GetPRState(ctx context.Context, pr *PR) (PRState, error)
 	GetChecks(ctx context.Context, pr *PR) ([]Check, error)

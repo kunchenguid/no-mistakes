@@ -44,6 +44,10 @@ type CIStep struct {
 	pollIntervalOverride time.Duration        // if set, overrides computed poll interval (for testing)
 	waitForNextPoll      func(context.Context, time.Duration) error
 	now                  func() time.Time
+	// markedPRReady latches the one-way draft -> ready transition for this run,
+	// so the CI-green edge publishes the PR at most once no matter how many
+	// polls observe green (see markPRReadyOnCIGreen).
+	markedPRReady bool
 	// baseBranchTip resolves the current tip SHA of the upstream default
 	// branch. The bool is false when the SHA is a fallback/unknown value and
 	// must not re-arm the timeout. Overridable for testing; defaults to
@@ -507,6 +511,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					// evidence; there is no grace-period promotion path.
 					if sctx.Config != nil && sctx.Config.NoCI {
 						lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
+						s.markPRReadyOnCIGreen(sctx, host, pr)
 					} else {
 						clearCIMonitorReady(sctx)
 						lastMonitorLog = ""
@@ -514,6 +519,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					}
 				case allChecksPassed(checks):
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
+					s.markPRReadyOnCIGreen(sctx, host, pr)
 				default:
 					clearCIMonitorReady(sctx)
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
@@ -547,6 +553,46 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return nil, err
 		}
 	}
+}
+
+// markPRReadyOnCIGreen publishes a draft PR opened by `--draft-until-ready`.
+//
+// The hook is the CI-green edge, not step completion: the CI step keeps polling
+// until the PR is merged or closed, so publishing at completion would flip a PR
+// that is already merged. Both green states qualify - all checks passed, and a
+// zero-check repo whose trusted default-branch config declares no_ci: true -
+// because each means everything the pipeline can verify is green. An unproven
+// empty check list is not one of them: it never reaches a green arm, so a draft
+// waiting on delayed check registration stays a draft.
+//
+// The transition is one-way. If CI later goes red the PR stays published: a
+// draft the reviewers already started reading must never be yanked back, and
+// the run-scoped latch also keeps a red/green flap from re-publishing. The
+// latch is claimed before the call so a provider failure is not retried on
+// every subsequent poll. That failure is logged and nothing more: this is a
+// cosmetic review-timing transition and it must never fail a run whose code is
+// green.
+func (s *CIStep) markPRReadyOnCIGreen(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) {
+	if s.markedPRReady || sctx.Run == nil || !sctx.Run.DraftUntilReady {
+		return
+	}
+	if !host.Capabilities().Draft {
+		// The PR step already logged why this run's PR opened normally.
+		return
+	}
+	// A rerun adopts the PR a previous run already published; publishing it
+	// again is pointless noise. When the PR step in this process did not record
+	// a draft state (a resumed run, a skipped PR step) the state is unknown and
+	// we still attempt: leaving a PR stuck as a draft is the worse failure.
+	if isDraft, known := sctx.Shared.PRDraftState(); known && !isDraft {
+		return
+	}
+	s.markedPRReady = true
+	if err := host.MarkPRReady(sctx.Ctx, pr); err != nil {
+		sctx.Log(fmt.Sprintf("warning: could not mark PR ready for review: %v", err))
+		return
+	}
+	sctx.Log("CI is green - marked pull request ready for review")
 }
 
 func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) string {

@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS runs (
     error                   TEXT,
     awaiting_agent_since INTEGER,
     parked_ms            INTEGER,
+    draft_until_ready    INTEGER NOT NULL DEFAULT 0,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
@@ -159,6 +160,9 @@ var migrationStatements = []string{
 	// written before the provider call, so a crash mid-request spends the
 	// budget rather than silently granting a free retry.
 	`ALTER TABLE runs ADD COLUMN ci_rerun_state TEXT`,
+	// Per-run draft-PR policy. Defaults to 0 so historical rows and every run
+	// started without `--draft-until-ready` keep opening PRs normally.
+	`ALTER TABLE runs ADD COLUMN draft_until_ready INTEGER NOT NULL DEFAULT 0`,
 	// Branch synchronization provenance is intentionally nullable. Historical
 	// rows stay unbound because mutable head_sha cannot prove a successful push.
 	`ALTER TABLE runs ADD COLUMN submitted_head_sha TEXT`,

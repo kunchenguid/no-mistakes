@@ -159,7 +159,7 @@ func repoOwner(slug string) string {
 func (h *Host) Provider() scm.Provider { return scm.ProviderGitHub }
 
 func (h *Host) Capabilities() scm.Capabilities {
-	return scm.Capabilities{MergeableState: true, FailedCheckLogs: true}
+	return scm.Capabilities{MergeableState: true, FailedCheckLogs: true, Draft: true}
 }
 
 func (h *Host) Available(ctx context.Context) error {
@@ -188,9 +188,12 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		args = append(args, "--base", base)
 	}
 	args = append(args, h.repoArgs()...)
-	jsonFields := "number,url"
+	// isDraft rides along in the field list gh already returns, so an adopted
+	// PR's draft state costs no extra gh round trip. A draft PR is "open" to
+	// `gh pr list --state open`, so this is the only way to tell them apart.
+	jsonFields := "number,url,isDraft"
 	if h.forkOwner != "" {
-		jsonFields = "number,url,headRefName,headRepositoryOwner"
+		jsonFields = "number,url,isDraft,headRefName,headRepositoryOwner"
 	}
 	args = append(args, "--state", "open", "--json", jsonFields)
 	cmd := h.cmd(ctx, "gh", args...)
@@ -201,6 +204,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	var prs []struct {
 		Number              int    `json:"number"`
 		URL                 string `json:"url"`
+		IsDraft             bool   `json:"isDraft"`
 		HeadRefName         string `json:"headRefName"`
 		HeadRepositoryOwner *struct {
 			Login string `json:"login"`
@@ -213,7 +217,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		if !h.matchesHead(candidate.HeadRefName, candidate.HeadRepositoryOwner, branch) {
 			continue
 		}
-		pr := &scm.PR{URL: strings.TrimSpace(candidate.URL)}
+		pr := &scm.PR{URL: strings.TrimSpace(candidate.URL), IsDraft: candidate.IsDraft}
 		if candidate.Number > 0 {
 			pr.Number = fmt.Sprintf("%d", candidate.Number)
 		} else if num, nerr := scm.ExtractPRNumber(pr.URL); nerr == nil {
@@ -247,6 +251,9 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 		"--head", h.headRef(branch),
 		"--base", base,
 	}, h.repoArgs()...)
+	if content.Draft {
+		args = append(args, "--draft")
+	}
 	args = append(args, "--title", content.Title, "--body-file", "-")
 	cmd := h.cmd(ctx, "gh", args...)
 	cmd.Stdin = strings.NewReader(content.Body)
@@ -255,11 +262,30 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 		return nil, fmt.Errorf("gh pr create: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	url := strings.TrimSpace(string(out))
-	pr := &scm.PR{URL: url}
+	pr := &scm.PR{URL: url, IsDraft: content.Draft}
 	if num, nerr := scm.ExtractPRNumber(url); nerr == nil {
 		pr.Number = num
 	}
 	return pr, nil
+}
+
+// MarkPRReady publishes a draft PR for review via `gh pr ready`. Like every
+// other PR-targeting gh call here it names the PR explicitly through
+// prSelector: the daemon runs gh from the detached bare gate repo whose HEAD is
+// the default branch, so an empty positional would make gh resolve that branch
+// and publish the wrong PR (or fail with "no pull requests found for branch
+// main"). The transition is one-way by design: `gh pr ready --undo` is never
+// issued, so a PR reviewers already see can never be pulled back into a draft.
+func (h *Host) MarkPRReady(ctx context.Context, pr *scm.PR) error {
+	selector, err := prSelector(pr)
+	if err != nil {
+		return err
+	}
+	args := append([]string{"pr", "ready", selector}, h.repoArgs()...)
+	if out, err := h.cmd(ctx, "gh", args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("gh pr ready: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
 }
 
 func (h *Host) UpdatePR(ctx context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {

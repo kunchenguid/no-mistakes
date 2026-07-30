@@ -26,8 +26,16 @@ func (h *Host) Provider() scm.Provider { return scm.ProviderBitbucket }
 
 // Capabilities reports Bitbucket's feature matrix. Bitbucket's REST API
 // does not expose a reliable merge-conflict probe, so MergeableState is off.
+// Draft is off permanently, not pending verification: Bitbucket Cloud has no
+// draft pull requests at all.
 func (h *Host) Capabilities() scm.Capabilities {
 	return scm.Capabilities{MergeableState: false, FailedCheckLogs: true}
+}
+
+// MarkPRReady is unsupported: Bitbucket Cloud pull requests are never drafts,
+// so there is nothing to publish.
+func (h *Host) MarkPRReady(_ context.Context, _ *scm.PR) error {
+	return scm.ErrUnsupported
 }
 
 func (h *Host) Available(_ context.Context) error {
