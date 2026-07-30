@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.43.0](https://github.com/kunchenguid/no-mistakes/compare/v1.42.0...v1.43.0) (2026-07-30)
+
+
+### Features
+
+* **pipeline:** enforce behavior-based test guidance ([#607](https://github.com/kunchenguid/no-mistakes/issues/607)) ([df10389](https://github.com/kunchenguid/no-mistakes/commit/df1038941a4121fb5bfc3d2b3e99f2d8eab13586))
+
+
+### Bug Fixes
+
+* **daemon:** wait for process exit before restart ([#609](https://github.com/kunchenguid/no-mistakes/issues/609)) ([a7f32ee](https://github.com/kunchenguid/no-mistakes/commit/a7f32ee0f74a6bf329b7a54ab2f6764272f5a9ea))
+
 ## [1.42.0](https://github.com/kunchenguid/no-mistakes/compare/v1.41.2...v1.42.0) (2026-07-30)
 
 
