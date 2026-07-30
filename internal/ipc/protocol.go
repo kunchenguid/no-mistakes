@@ -9,20 +9,21 @@ import (
 
 // JSON-RPC 2.0 method names.
 const (
-	MethodPushReceived   = "push_received"
-	MethodGetRun         = "get_run"
-	MethodGetStepDiff    = "get_step_diff"
-	MethodGetRuns        = "get_runs"
-	MethodGetRunsForHead = "get_runs_for_head"
-	MethodGetActiveRun   = "get_active_run"
-	MethodRerun          = "rerun"
-	MethodSubscribe      = "subscribe"
-	MethodRespond        = "respond"
-	MethodCancelRun      = "cancel_run"
-	MethodGateContext    = "gate_context"
-	MethodAdmitPush      = "admit_push"
-	MethodHealth         = "health"
-	MethodShutdown       = "shutdown"
+	MethodPushReceived       = "push_received"
+	MethodGetRun             = "get_run"
+	MethodGetStepDiff        = "get_step_diff"
+	MethodGetRuns            = "get_runs"
+	MethodGetRunsForHead     = "get_runs_for_head"
+	MethodGetActiveRun       = "get_active_run"
+	MethodRerun              = "rerun"
+	MethodSubscribe          = "subscribe"
+	MethodRespond            = "respond"
+	MethodCancelRun          = "cancel_run"
+	MethodGateContext        = "gate_context"
+	MethodAdmitPush          = "admit_push"
+	MethodHealth             = "health"
+	MethodShutdown           = "shutdown"
+	MethodRecoverForwardHead = "recover_forward_head"
 )
 
 // JSON-RPC 2.0 error codes.
@@ -156,6 +157,14 @@ type CancelRunParams struct {
 	RunID string `json:"run_id"`
 }
 
+// RecoverForwardHeadParams carries the two exact operator-authority values and
+// the invoking worktree. Candidate is never inferred by a client or daemon.
+type RecoverForwardHeadParams struct {
+	RunID     string `json:"run_id"`
+	Candidate string `json:"candidate"`
+	WorkDir   string `json:"work_dir"`
+}
+
 // GateContextParams asks the daemon to classify the authenticated caller.
 // CWD and MarkerPresent are evidence only; peer PID comes from the transport.
 type GateContextParams struct {
@@ -210,6 +219,25 @@ type RespondResult struct {
 // CancelRunResult confirms the run cancellation request was accepted.
 type CancelRunResult struct {
 	OK bool `json:"ok"`
+}
+
+// RecoverForwardHeadResult reports both successful custody return and honest
+// monotonic partial phases after an anchor or head CAS.
+type RecoverForwardHeadResult struct {
+	Mode         string `json:"mode"`
+	State        string `json:"state"`
+	Safety       string `json:"safety"`
+	Phase        string `json:"phase"`
+	RunID        string `json:"run_id"`
+	RepoID       string `json:"repo_id"`
+	Branch       string `json:"branch"`
+	LocalHead    string `json:"local_head"`
+	RecordedHead string `json:"recorded_head"`
+	Candidate    string `json:"candidate"`
+	AnchorRef    string `json:"anchor_ref"`
+	Changed      bool   `json:"changed"`
+	Recovered    bool   `json:"recovered"`
+	Error        string `json:"error,omitempty"`
 }
 
 // GateContextResult is the privacy-safe execution-context classification.

@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/spf13/cobra"
 )
 
 type cliSyncFixture struct {
@@ -143,6 +144,13 @@ type pipelineCommitForCLI struct {
 func TestSyncHelpAndReferenceExposeGuardedModes(t *testing.T) {
 	human := newSyncCmd()
 	agent := newAxiSyncCmd()
+	for _, command := range []*cobra.Command{human, agent} {
+		for _, flag := range []string{"recover", "run", "adopt-forward-head"} {
+			if command.Flag(flag) == nil {
+				t.Errorf("%s is missing --%s", command.CommandPath(), flag)
+			}
+		}
+	}
 	for name, content := range map[string]string{"human help": human.Long, "axi help": agent.Long} {
 		for _, want := range []string{"fast-forward", "clean", "push", "equivalent", "reset semantics"} {
 			if !strings.Contains(content, want) {
@@ -770,8 +778,19 @@ func TestSyncRecoverFlagValidation(t *testing.T) {
 	for _, args := range [][]string{
 		{"sync", "--check", "--recover"},
 		{"sync", "--keep-local"},
+		{"sync", "--recover", "--run", "01KYMMY0K86DVCWW2ERM6JKBKY"},
+		{"sync", "--recover", "--adopt-forward-head", strings.Repeat("a", 40)},
+		{"sync", "--recover", "--run", "01KYMMY0K86DVCWW2ERM6JKBKY", "--adopt-forward-head", "abc"},
+		{"sync", "--recover", "--run", "01KYMMY0K86DVCWW2ERM6JKBKI", "--adopt-forward-head", strings.Repeat("a", 40)},
+		{"sync", "--recover", "--run", "01kymmy0k86dvcww2erm6jkbky", "--adopt-forward-head", strings.Repeat("a", 40)},
+		{"sync", "--recover", "--keep-local", "--run", "01KYMMY0K86DVCWW2ERM6JKBKY", "--adopt-forward-head", strings.Repeat("a", 40)},
 		{"axi", "sync", "--check", "--recover"},
 		{"axi", "sync", "--keep-local"},
+		{"axi", "sync", "--recover", "--run", "01KYMMY0K86DVCWW2ERM6JKBKY"},
+		{"axi", "sync", "--recover", "--adopt-forward-head", strings.Repeat("a", 40)},
+		{"axi", "sync", "--recover", "--run", "01KYMMY0K86DVCWW2ERM6JKBKY", "--adopt-forward-head", "HEAD"},
+		{"axi", "sync", "--recover", "--run", "01KYMMY0K86DVCWW2ERM6JKBKI", "--adopt-forward-head", strings.Repeat("a", 40)},
+		{"axi", "sync", "--check", "--recover", "--run", "01KYMMY0K86DVCWW2ERM6JKBKY", "--adopt-forward-head", strings.Repeat("a", 40)},
 	} {
 		out, err := executeCmd(args...)
 		var ee *exitError

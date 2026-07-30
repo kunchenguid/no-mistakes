@@ -3,12 +3,16 @@ package cli
 import (
 	"bufio"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	toON "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
+	"github.com/kunchenguid/no-mistakes/internal/daemon"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/spf13/cobra"
 )
@@ -17,6 +21,7 @@ var syncInteractive = terminalInteractive
 
 func newSyncCmd() *cobra.Command {
 	var check, yes, recover, keepLocal bool
+	var runID, adoptForwardHead string
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Safely move the current branch to an exact pipeline-pushed head",
@@ -33,6 +38,7 @@ func newSyncCmd() *cobra.Command {
 			"the current local head instead and never touches the worktree.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			exactRecovery := runID != "" || adoptForwardHead != ""
 			if check && yes {
 				return &exitError{code: 2, err: fmt.Errorf("--check and --yes cannot be used together")}
 			}
@@ -41,6 +47,18 @@ func newSyncCmd() *cobra.Command {
 			}
 			if keepLocal && !recover {
 				return &exitError{code: 2, err: fmt.Errorf("--keep-local requires --recover")}
+			}
+			if exactRecovery {
+				if !recover || runID == "" || adoptForwardHead == "" {
+					return &exitError{code: 2, err: fmt.Errorf("--run and --adopt-forward-head are required together and only with --recover")}
+				}
+				if check || keepLocal {
+					return &exitError{code: 2, err: fmt.Errorf("operator-authorized forward-head recovery cannot be combined with --check or --keep-local")}
+				}
+				if !branchsync.IsExactRunID(runID) || !branchsync.IsExactFullObjectID(adoptForwardHead) {
+					return &exitError{code: 2, err: fmt.Errorf("--run must be exact and --adopt-forward-head must be a canonical full 40- or 64-hex object ID")}
+				}
+				return runHumanForwardRecovery(cmd, runID, adoptForwardHead, yes)
 			}
 			if recover {
 				return runHumanRecover(cmd, keepLocal, yes)
@@ -52,11 +70,14 @@ func newSyncCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "apply an eligible guarded synchronization without prompting")
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
+	cmd.Flags().StringVar(&runID, "run", "", "with --recover --adopt-forward-head: exact completed run ID")
+	cmd.Flags().StringVar(&adoptForwardHead, "adopt-forward-head", "", "with --recover --run: exact full operator-authorized candidate commit")
 	return cmd
 }
 
 func newAxiSyncCmd() *cobra.Command {
 	var check, recover, keepLocal bool
+	var runID, adoptForwardHead string
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Check or apply guarded current-branch synchronization",
@@ -73,11 +94,24 @@ func newAxiSyncCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			exactRecovery := runID != "" || adoptForwardHead != ""
 			if check && recover {
 				return emitError(cmd, 2, "--check and --recover cannot be used together")
 			}
 			if keepLocal && !recover {
 				return emitError(cmd, 2, "--keep-local requires --recover")
+			}
+			if exactRecovery {
+				if !recover || runID == "" || adoptForwardHead == "" {
+					return emitError(cmd, 2, "--run and --adopt-forward-head are required together and only with --recover")
+				}
+				if check || keepLocal {
+					return emitError(cmd, 2, "operator-authorized forward-head recovery cannot be combined with --check or --keep-local")
+				}
+				if !branchsync.IsExactRunID(runID) || !branchsync.IsExactFullObjectID(adoptForwardHead) {
+					return emitError(cmd, 2, "--run must be exact and --adopt-forward-head must be a canonical full 40- or 64-hex object ID")
+				}
+				return runAxiForwardRecovery(cmd, runID, adoptForwardHead)
 			}
 			return runAxiSync(cmd, check, recover, keepLocal)
 		},
@@ -85,7 +119,109 @@ func newAxiSyncCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and return the plan without changing HEAD")
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
+	cmd.Flags().StringVar(&runID, "run", "", "with --recover --adopt-forward-head: exact completed run ID")
+	cmd.Flags().StringVar(&adoptForwardHead, "adopt-forward-head", "", "with --recover --run: exact full operator-authorized candidate commit")
 	return cmd
+}
+
+func callForwardRecovery(cmd *cobra.Command, runID, candidate string) (ipc.RecoverForwardHeadResult, error) {
+	var result ipc.RecoverForwardHeadResult
+	p, err := paths.New()
+	if err != nil {
+		return result, fmt.Errorf("resolve paths: %w", err)
+	}
+	if err := daemon.EnsureDaemon(p); err != nil {
+		return result, err
+	}
+	workDir, err := filepath.Abs(".")
+	if err != nil {
+		return result, fmt.Errorf("resolve invoking worktree: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(workDir); err == nil {
+		workDir = resolved
+	}
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		return result, err
+	}
+	defer client.Close()
+	if err := client.Call(ipc.MethodRecoverForwardHead, &ipc.RecoverForwardHeadParams{
+		RunID: runID, Candidate: candidate, WorkDir: workDir,
+	}, &result); err != nil {
+		return result, fmt.Errorf("daemon-owned forward-head recovery: %w", err)
+	}
+	return result, nil
+}
+
+func runHumanForwardRecovery(cmd *cobra.Command, runID, candidate string, yes bool) error {
+	if !yes {
+		if !syncInteractive() {
+			fmt.Fprintln(cmd.OutOrStdout(), "  Non-interactive input cannot authorize this exact historical repair. Re-run with --yes after reviewing the run and full candidate.")
+			return &exitError{code: 1}
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "\n  Candidate %s is explicit operator authorization.\n", candidate)
+		fmt.Fprintln(cmd.OutOrStdout(), "  Ancestry and gate equality preserve history but do not prove this historical run produced it.")
+		fmt.Fprintf(cmd.OutOrStdout(), "  Authorize exact run %s and strict-forward local recovery? [y/N] ", runID)
+		line, readErr := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+		if readErr != nil && strings.TrimSpace(line) == "" {
+			return readErr
+		}
+		answer := strings.ToLower(strings.TrimSpace(line))
+		if answer != "y" && answer != "yes" {
+			fmt.Fprintln(cmd.OutOrStdout(), "  Cancelled; no recovery mutation was requested.")
+			return nil
+		}
+	}
+	result, err := callForwardRecovery(cmd, runID, candidate)
+	if err != nil {
+		return err
+	}
+	printHumanForwardRecovery(cmd, result)
+	if !result.Recovered {
+		return &exitError{code: 1}
+	}
+	return nil
+}
+
+func runAxiForwardRecovery(cmd *cobra.Command, runID, candidate string) error {
+	result, err := callForwardRecovery(cmd, runID, candidate)
+	if err != nil {
+		return emitError(cmd, 1, err.Error())
+	}
+	fields := []toON.Field{
+		{Key: "recovery_mode", Value: result.Mode}, {Key: "recovered", Value: result.Recovered},
+		{Key: "changed", Value: result.Changed}, {Key: "state", Value: result.State},
+		{Key: "safety", Value: result.Safety}, {Key: "phase", Value: result.Phase},
+		{Key: "run_id", Value: result.RunID}, {Key: "repo_id", Value: result.RepoID},
+		{Key: "branch", Value: result.Branch}, {Key: "local_head", Value: result.LocalHead},
+		{Key: "recorded_head", Value: result.RecordedHead}, {Key: "candidate", Value: result.Candidate},
+		{Key: "anchor_ref", Value: result.AnchorRef},
+	}
+	if result.Error != "" {
+		fields = append(fields, toON.Field{Key: "error", Value: result.Error})
+	}
+	emitDoc(cmd, fields...)
+	if !result.Recovered {
+		return &exitError{code: 1}
+	}
+	return nil
+}
+
+func printHumanForwardRecovery(cmd *cobra.Command, result ipc.RecoverForwardHeadResult) {
+	w := cmd.OutOrStdout()
+	fmt.Fprintf(w, "\n  Recovery phase: %s\n", result.Phase)
+	fmt.Fprintf(w, "  run:       %s\n  candidate: %s\n", result.RunID, result.Candidate)
+	if result.AnchorRef != "" {
+		fmt.Fprintf(w, "  anchor:    %s\n", result.AnchorRef)
+	}
+	if result.LocalHead != "" {
+		fmt.Fprintf(w, "  local:     %s\n", result.LocalHead)
+	}
+	if result.Error != "" {
+		fmt.Fprintf(w, "  blocked:   %s\n", result.Error)
+	} else if result.Recovered {
+		fmt.Fprintln(w, "  Custody returned under the exact audited predicate.")
+	}
 }
 
 func openSyncService() (*branchsync.Service, func(), error) {

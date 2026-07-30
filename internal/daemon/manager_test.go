@@ -12,10 +12,74 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func TestForwardRecoverySerializesWithSameBranchRunCreation(t *testing.T) {
+	root := t.TempDir()
+	p := paths.WithRoot(root)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	repo, err := database.InsertRepo(filepath.Join(root, "operator"), "https://example.invalid/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature", strings.Repeat("2", 40), strings.Repeat("1", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewRunManager(database, p, func() []pipeline.Step { return nil })
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	mgr.beforeForwardRecovery = func() {
+		close(locked)
+		<-release
+	}
+	recoveryDone := make(chan error, 1)
+	go func() {
+		_, err := mgr.HandleRecoverForwardHead(context.Background(), run.ID, strings.Repeat("3", 40), repo.WorkingPath)
+		recoveryDone <- err
+	}()
+	<-locked
+
+	startDone := make(chan error, 1)
+	go func() {
+		_, err := mgr.startRun(context.Background(), repo, run.Branch, strings.Repeat("4", 40), run.BaseSHA, "test", nil, "")
+		startDone <- err
+	}()
+	select {
+	case err := <-startDone:
+		t.Fatalf("same-branch run creation escaped the recovery lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	runs, err := database.GetRunsByRepo(repo.ID)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs while recovery owns lock = %d, %v", len(runs), err)
+	}
+
+	close(release)
+	if err := <-recoveryDone; err != nil {
+		t.Fatalf("recovery handler: %v", err)
+	}
+	select {
+	case <-startDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("same-branch start did not resume after recovery released the lock")
+	}
+}
 
 // --- RunManager integration tests ---
 

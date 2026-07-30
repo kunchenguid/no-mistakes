@@ -156,6 +156,35 @@ func TestGetRunParams(t *testing.T) {
 	}
 }
 
+func TestRecoverForwardHeadProtocolRoundTrip(t *testing.T) {
+	params := RecoverForwardHeadParams{
+		RunID: "01KYMMY0K86DVCWW2ERM6JKBKY", Candidate: "a4ec1ad17b67500809831911f3709a4a2ad9bdec", WorkDir: "/operator/worktree",
+	}
+	data, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotParams RecoverForwardHeadParams
+	if err := json.Unmarshal(data, &gotParams); err != nil || gotParams != params {
+		t.Fatalf("params round trip = %#v, %v", gotParams, err)
+	}
+
+	result := RecoverForwardHeadResult{
+		Mode: "operator_authorized_forward_head", State: "custody_returned", Safety: "custody_returned", Phase: "custody_returned",
+		RunID: params.RunID, RepoID: "repo", Branch: "feature", LocalHead: params.Candidate,
+		RecordedHead: params.Candidate, Candidate: params.Candidate, AnchorRef: "refs/no-mistakes/recovery-candidates/run/candidate",
+		Changed: true, Recovered: true,
+	}
+	data, err = json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotResult RecoverForwardHeadResult
+	if err := json.Unmarshal(data, &gotResult); err != nil || gotResult != result {
+		t.Fatalf("result round trip = %#v, %v", gotResult, err)
+	}
+}
+
 func TestGetRunsParams(t *testing.T) {
 	params := GetRunsParams{RepoID: "repo123"}
 	data, _ := json.Marshal(params)
@@ -411,6 +440,7 @@ func TestMethodConstants(t *testing.T) {
 		MethodCancelRun,
 		MethodGateContext,
 		MethodAdmitPush,
+		MethodRecoverForwardHead,
 		MethodHealth,
 		MethodShutdown,
 	}

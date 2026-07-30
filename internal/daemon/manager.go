@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
@@ -46,6 +47,9 @@ type RunManager struct {
 	steps        StepFactory
 
 	branchLocks sync.Map // repoID+"/"+branch → *sync.Mutex
+	// beforeForwardRecovery is a test-only observation point after the shared
+	// branch lock is owned and before any recovery proof or mutation.
+	beforeForwardRecovery func()
 
 	// subMu guards the subscriber set and the per-run state revisions. It is
 	// a plain Mutex, not an RWMutex, because revision assignment and fan-out
@@ -82,6 +86,11 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 		stateRevs:     make(map[string]int64),
 		completedRuns: make(map[string]bool),
 	}
+}
+
+func (m *RunManager) branchMutex(repoID, branch string) *sync.Mutex {
+	lockVal, _ := m.branchLocks.LoadOrStore(repoID+"/"+branch, &sync.Mutex{})
+	return lockVal.(*sync.Mutex)
 }
 
 type recoveredRunPlan struct {
@@ -298,6 +307,11 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	}
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
+	executor.SetBranchLocker(func() func() {
+		mu := m.branchMutex(plan.repo.ID, plan.run.Branch)
+		mu.Lock()
+		return mu.Unlock
+	})
 	done := make(chan struct{})
 	m.mu.Lock()
 	m.executors[plan.run.ID] = executor
@@ -673,6 +687,55 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
 }
 
+// HandleRecoverForwardHead runs the exceptional historical repair inside the
+// daemon so it shares startRun's exact repo+branch serialization for the whole
+// proof/anchor/CAS/fast-forward/stamp interval. It never starts, cancels, or
+// otherwise drives a pipeline run.
+func (m *RunManager) HandleRecoverForwardHead(ctx context.Context, runID, candidate, workDir string) (branchsync.ForwardRecoveryResult, error) {
+	run, err := m.db.GetRun(runID)
+	if err != nil {
+		return branchsync.ForwardRecoveryResult{}, fmt.Errorf("get exact recovery run: %w", err)
+	}
+	if run == nil {
+		return branchsync.ForwardRecoveryResult{
+			Mode: branchsync.ForwardRecoveryOperatorAuthorized, RunID: runID, Candidate: candidate,
+			State: branchsync.StatePipelineOwned, Safety: "blocked_forward_run_ineligible",
+			Phase: branchsync.ForwardRecoveryPhaseInspected,
+			Error: "the exact run ID was not found; prefixes are never resolved",
+		}, nil
+	}
+
+	branchMu := m.branchMutex(run.RepoID, run.Branch)
+	branchMu.Lock()
+	defer branchMu.Unlock()
+	if m.beforeForwardRecovery != nil {
+		m.beforeForwardRecovery()
+	}
+
+	// Reload after lock acquisition. startRun uses this same mutex before it
+	// cancels/inserts, so no normal newer same-branch run can enter until the
+	// recovery has either durably stamped custody or refused.
+	run, err = m.db.GetRun(runID)
+	if err != nil {
+		return branchsync.ForwardRecoveryResult{}, fmt.Errorf("reload exact recovery run under branch lock: %w", err)
+	}
+	if run == nil {
+		return branchsync.ForwardRecoveryResult{}, fmt.Errorf("exact recovery run disappeared under branch lock")
+	}
+	repo, err := m.db.GetRepo(run.RepoID)
+	if err != nil {
+		return branchsync.ForwardRecoveryResult{}, fmt.Errorf("get exact recovery repo: %w", err)
+	}
+	if repo == nil {
+		return branchsync.ForwardRecoveryResult{}, fmt.Errorf("exact recovery repo is missing")
+	}
+	service := &branchsync.Service{
+		DB: m.db, Repo: repo, WorkDir: workDir,
+		GateDir: m.paths.RepoDir(repo.ID), Paths: m.paths,
+	}
+	return service.RecoverAuthorizedForwardHead(ctx, runID, candidate), nil
+}
+
 // fetchRunDefaultBranch fetches the trusted branch from the refreshed
 // registration when it differs from the gate worktree's inherited origin. It
 // updates only the run worktree's existing origin tracking ref and never
@@ -715,9 +778,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 
 	// Serialize per repo+branch to prevent two concurrent pushes from both
 	// passing cancelActiveRuns and creating duplicate pipelines.
-	lockKey := repo.ID + "/" + branch
-	lockVal, _ := m.branchLocks.LoadOrStore(lockKey, &sync.Mutex{})
-	branchMu := lockVal.(*sync.Mutex)
+	branchMu := m.branchMutex(repo.ID, branch)
 	branchMu.Lock()
 	defer branchMu.Unlock()
 
@@ -902,6 +963,11 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	// Create executor with event broadcast.
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
+	executor.SetBranchLocker(func() func() {
+		mu := m.branchMutex(repo.ID, branch)
+		mu.Lock()
+		return mu.Unlock
+	})
 	executor.SetSkippedSteps(skipSteps)
 
 	// Track executor.

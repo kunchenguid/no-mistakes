@@ -132,6 +132,7 @@ type Service struct {
 	beforeApply              func()
 	beforeGateReset          func()
 	beforeRecoverFastForward func()
+	forwardRecoveryHooks     forwardRecoveryHooks
 }
 
 // OpenCurrent opens a service for the invoking registered worktree. The caller

@@ -805,6 +805,31 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.CancelRunResult{OK: true}, nil
 	})
 
+	srv.Handle(ipc.MethodRecoverForwardHead, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.RecoverForwardHeadParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		classification, err := classify(ctx, p.WorkDir, false, false)
+		if err != nil {
+			return nil, err
+		}
+		if classification.Nested {
+			return nil, fmt.Errorf("%s", gatecontext.RefusalMessage(classification))
+		}
+		result, err := mgr.HandleRecoverForwardHead(ctx, p.RunID, p.Candidate, p.WorkDir)
+		if err != nil {
+			return nil, err
+		}
+		return &ipc.RecoverForwardHeadResult{
+			Mode: result.Mode, State: result.State, Safety: result.Safety, Phase: result.Phase,
+			RunID: result.RunID, RepoID: result.RepoID, Branch: result.Branch,
+			LocalHead: result.LocalHead, RecordedHead: result.RecordedHead,
+			Candidate: result.Candidate, AnchorRef: result.AnchorRef,
+			Changed: result.Changed, Recovered: result.Recovered, Error: result.Error,
+		}, nil
+	})
+
 	srv.HandleStream(ipc.MethodSubscribe, func(ctx context.Context, params json.RawMessage) (ipc.StreamFunc, error) {
 		var p ipc.SubscribeParams
 		if err := json.Unmarshal(params, &p); err != nil {
