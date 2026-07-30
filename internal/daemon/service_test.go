@@ -44,11 +44,19 @@ func TestStart_ReinstallsManagedServiceWhenPlistChanged(t *testing.T) {
 	}
 
 	var commands []string
+	running := true
 	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
-		commands = append(commands, name+" "+strings.Join(args, " "))
+		command := name + " " + strings.Join(args, " ")
+		commands = append(commands, command)
+		if strings.Contains(command, "launchctl bootout ") {
+			running = false
+		}
+		if strings.Contains(command, "launchctl kickstart ") {
+			running = true
+		}
 		return nil, nil
 	}
-	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return running, nil }
 
 	if err := Start(p); err != nil {
 		t.Fatalf("Start should reload and succeed when plist changed, got %v", err)
@@ -192,10 +200,18 @@ func TestStartPreservesInstalledExecutableWhenRefreshingLaunchAgent(t *testing.T
 		t.Fatal(err)
 	}
 
+	running := true
 	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command := name + " " + strings.Join(args, " ")
+		if strings.Contains(command, "launchctl bootout ") {
+			running = false
+		}
+		if strings.Contains(command, "launchctl kickstart ") {
+			running = true
+		}
 		return nil, nil
 	}
-	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return running, nil }
 
 	if err := Start(p); err != nil {
 		t.Fatalf("Start should refresh stale plist: %v", err)
@@ -239,11 +255,19 @@ func TestStartRestartsSystemdUnitWhenDefinitionChanged(t *testing.T) {
 	}
 
 	var commands []string
+	running := true
 	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
-		commands = append(commands, name+" "+strings.Join(args, " "))
+		command := name + " " + strings.Join(args, " ")
+		commands = append(commands, command)
+		switch command {
+		case "systemctl --user stop " + systemdServiceName(p):
+			running = false
+		case "systemctl --user restart " + systemdServiceName(p):
+			running = true
+		}
 		return nil, nil
 	}
-	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return running, nil }
 
 	if err := Start(p); err != nil {
 		t.Fatalf("Start should restart stale systemd unit, got %v", err)

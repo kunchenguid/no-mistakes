@@ -239,10 +239,11 @@ func stopCurrentDaemonBeforeManagedRestart(p *paths.Paths) error {
 	instance := captureRunningDaemon(p)
 	if managed, err := stopManagedService(p); managed {
 		var detachedErr error
-		if err != nil {
-			if alive, _ := daemonHealthCheck(p); alive {
-				detachedErr = stopDetachedDaemon(p)
-			}
+		// A managed service definition can coexist with a detached daemon.
+		// Stopping the service is then a successful no-op, so shut down any
+		// daemon that is still answering before restarting the service.
+		if alive, _ := daemonHealthCheck(p); alive {
+			detachedErr = stopDetachedDaemon(p)
 		}
 		if waitErr := waitForDaemonStop(p, instance); waitErr != nil {
 			switch {
@@ -250,6 +251,8 @@ func stopCurrentDaemonBeforeManagedRestart(p *paths.Paths) error {
 				return fmt.Errorf("stop managed daemon before restart: %w; detached shutdown: %v; wait for exit: %v", err, detachedErr, waitErr)
 			case err != nil:
 				return fmt.Errorf("stop managed daemon before restart: %w; wait for exit: %v", err, waitErr)
+			case detachedErr != nil:
+				return fmt.Errorf("detached shutdown before managed restart: %w; wait for exit: %v", detachedErr, waitErr)
 			default:
 				return fmt.Errorf("wait for managed daemon exit before restart: %w", waitErr)
 			}
@@ -610,12 +613,11 @@ func stopDetachedDaemon(p *paths.Paths) error {
 }
 
 // daemonInstance names the exact daemon process a stop is responsible for.
-// A zero value means no external process needs to be tracked. unknown records
-// that health indicated a daemon but its process identity could not be read.
+// A zero value means no provable external process was captured, so callers
+// fall back to health-only stop confirmation.
 type daemonInstance struct {
 	pid       int
 	startedAt time.Time
-	unknown   bool
 }
 
 // captureRunningDaemon best-effort identifies the live daemon process for this
@@ -627,8 +629,7 @@ type daemonInstance struct {
 func captureRunningDaemon(p *paths.Paths) daemonInstance {
 	record, err := readDaemonPIDFile(p.PIDFile())
 	if err != nil || record.PID <= 0 {
-		alive, healthErr := daemonHealthCheck(p)
-		return daemonInstance{unknown: healthErr != nil || alive}
+		return daemonInstance{}
 	}
 	if record.PID == os.Getpid() {
 		return daemonInstance{}
@@ -648,12 +649,10 @@ func captureRunningDaemon(p *paths.Paths) daemonInstance {
 }
 
 // exited reports whether this instance is gone. A PID now owned by a different
-// process is gone, while unknown process identity remains unconfirmed.
+// process is gone. A zero instance has no process identity to inspect, so the
+// caller relies on the independent health check.
 func (i daemonInstance) exited() (bool, error) {
 	if i.pid <= 0 {
-		if i.unknown {
-			return false, fmt.Errorf("daemon process identity is unknown")
-		}
 		return true, nil
 	}
 	if i.startedAt.IsZero() {
