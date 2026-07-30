@@ -45,6 +45,7 @@ func TestDaemonStopLeavesNoDaemonProcessOwningTheRoot(t *testing.T) {
 		t.Fatalf("daemon stop reported success while daemon pid %d was still running and still holding the %s lock", stopped, h.NMHome)
 	}
 	assertNoDaemonProcessesForRoot(t, h, "after daemon stop")
+	t.Logf("daemon stop output: %s; pid %d immediately exited; root owners: none", strings.TrimSpace(out), stopped)
 }
 
 func TestDaemonRestartReplacesTheDaemonWithExactlyOneOwner(t *testing.T) {
@@ -84,6 +85,13 @@ func TestDaemonRestartReplacesTheDaemonWithExactlyOneOwner(t *testing.T) {
 	if !strings.Contains(status, "daemon running") {
 		t.Fatalf("daemon status after restart should show running, got:\n%s", status)
 	}
+	t.Logf(
+		"daemon restart output: %s; previous pid %d immediately exited; replacement pid %d is the sole root owner; status: %s",
+		strings.TrimSpace(out),
+		previous,
+		current,
+		strings.TrimSpace(status),
+	)
 }
 
 func daemonPIDForRoot(t *testing.T, h *Harness) int {
