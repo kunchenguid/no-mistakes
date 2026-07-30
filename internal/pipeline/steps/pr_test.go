@@ -1229,7 +1229,7 @@ func TestPRStep_CreateKeepsGeneratedSectionsAfterOversizedIntent(t *testing.T) {
 	}
 }
 
-func TestPRStep_BuildPRContentTruncatesGeneratedPipelineUpdates(t *testing.T) {
+func TestPRStep_BuildPRContentUsesStepStatusWithoutEarlierReviewEvidence(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -1270,18 +1270,15 @@ func TestPRStep_BuildPRContentTruncatesGeneratedPipelineUpdates(t *testing.T) {
 	if !strings.Contains(content.Body, "Keep PR creation postable") || !strings.Contains(content.Body, "essential summary survives") {
 		t.Fatalf("expected intent and summary to survive, got:\n%s", content.Body)
 	}
-	if !strings.Contains(content.Body, "earlier update rounds omitted") {
-		t.Fatalf("expected omission marker, got:\n%s", content.Body)
+	if !strings.Contains(content.Body, "<summary>✅ **Review** - completed</summary>") {
+		t.Fatalf("expected compact Review status, got:\n%s", content.Body)
 	}
-	if strings.Contains(content.Body, "review round 001") {
-		t.Fatalf("expected old pipeline update to be omitted, got:\n%s", content.Body)
-	}
-	if !strings.Contains(content.Body, "review round 140") {
-		t.Fatalf("expected latest pipeline update to be retained, got:\n%s", content.Body)
+	if strings.Contains(content.Body, "review round") || strings.Contains(content.Body, "earlier update rounds omitted") {
+		t.Fatalf("expected earlier Review evidence to remain step-scoped, got:\n%s", content.Body)
 	}
 }
 
-func TestPRStep_CreateCapsBodyAfterPrependedIntent(t *testing.T) {
+func TestPRStep_CreateKeepsIntentAndCompactStatusAfterManyReviewRounds(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -1333,15 +1330,14 @@ func TestPRStep_CreateCapsBodyAfterPrependedIntent(t *testing.T) {
 		"Keep PR creation postable.",
 		"intent context line stays visible",
 		"essential summary survives",
-		"earlier update rounds omitted",
-		"review round 140",
+		"<summary>✅ **Review** - completed</summary>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected final PR body to contain %q", want)
 		}
 	}
-	if strings.Contains(body, "review round 001") {
-		t.Fatal("expected oldest pipeline update to be omitted")
+	if strings.Contains(body, "review round") || strings.Contains(body, "earlier update rounds omitted") {
+		t.Fatal("expected Review evidence to remain step-scoped")
 	}
 }
 
@@ -1717,7 +1713,7 @@ func TestPRStep_SkipsBeforeBuildingContentWhenProviderCLIUnavailable(t *testing.
 	}
 }
 
-func TestPRStep_ExistingBranchUsesMergeBaseCommitLog(t *testing.T) {
+func TestPRStep_ExistingBranchFallbackUsesMergeBaseFinalDiff(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
@@ -1755,11 +1751,14 @@ func TestPRStep_ExistingBranchUsesMergeBaseCommitLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	ghLog := string(logData)
-	if !strings.Contains(ghLog, "first feature commit") {
-		t.Errorf("expected PR body to include first feature commit, got:\n%s", ghLog)
+	if !strings.Contains(ghLog, "A\tfirst.txt") {
+		t.Errorf("expected PR body to include first final-diff path, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "second feature commit") {
-		t.Errorf("expected PR body to include second feature commit, got:\n%s", ghLog)
+	if !strings.Contains(ghLog, "A\tsecond.txt") {
+		t.Errorf("expected PR body to include second final-diff path, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "first feature commit") || strings.Contains(ghLog, "second feature commit") {
+		t.Errorf("expected PR body to derive scope from the final diff instead of commit history, got:\n%s", ghLog)
 	}
 }
 

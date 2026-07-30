@@ -315,26 +315,50 @@ func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) strin
 func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.StepContext) string {
 	body = stripGeneratedSections(body)
 	sections := appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD)
-	return prependIntentSectionWithinLimit(sections, sctx, maxPullRequestBodyBytes, true)
+	cleaned := cleanedUserIntent(sctx)
+	if cleaned == "" {
+		return sections
+	}
+
+	intent := "## Intent\n\n" + cleaned
+	separator := "\n\n"
+	if len(intent)+len(separator)+len(sections) <= maxPullRequestBodyBytes {
+		return intent + separator + sections
+	}
+	sectionsBudget := maxPullRequestBodyBytes - len(separator) - len(intent)
+	if sectionsBudget > 0 {
+		sections = appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, sectionsBudget)
+		return intent + separator + sections
+	}
+
+	intentBudget := maxPullRequestBodyBytes - len(separator) - len(sections)
+	if intentBudget <= 0 {
+		return sections
+	}
+	return truncateTextAtLineBoundary(intent, intentBudget, essentialPRBodyTruncationMarker()) + separator + sections
 }
 
 func appendGeneratedSectionsToCleanBody(body, riskLine, testingMD, pipelineMD string) string {
+	return appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, maxPullRequestBodyBytes)
+}
+
+func appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD string, maxBytes int) string {
 	generatedSections := generatedEssentialSections(riskLine, testingMD)
 	prefix := body + generatedSections
 	if pipelineMD == "" {
-		return essentialPRBodyWithinLimit(body, generatedSections)
+		return essentialPRBodyWithinBudget(body, generatedSections, maxBytes)
 	}
 
 	separator := ""
 	if prefix != "" {
 		separator = "\n\n"
 	}
-	if len(prefix+separator+pipelineMD) <= maxPullRequestBodyBytes {
+	if len(prefix+separator+pipelineMD) <= maxBytes {
 		return prefix + separator + pipelineMD
 	}
 
-	prefix = essentialPRBodyWithinPipelineBudget(body, generatedSections, pipelineMD)
-	return appendPipelineSectionWithinLimit(prefix, pipelineMD)
+	prefix = essentialPRBodyWithinPipelineBudget(body, generatedSections, pipelineMD, maxBytes)
+	return appendPipelineSectionWithinLimit(prefix, pipelineMD, maxBytes)
 }
 
 func generatedEssentialSections(riskLine, testingMD string) string {
@@ -354,21 +378,21 @@ func essentialPRBodyWithinLimit(body, generatedSections string) string {
 	return essentialPRBodyWithinBudget(body, generatedSections, maxPullRequestBodyBytes)
 }
 
-func essentialPRBodyWithinPipelineBudget(body, generatedSections, pipelineMD string) string {
+func essentialPRBodyWithinPipelineBudget(body, generatedSections, pipelineMD string, maxBytes int) string {
 	minPipeline := minimumPipelineRetainingLatestUpdate(pipelineMD)
 	if minPipeline == "" {
 		minPipeline = minimumPipelineOmissionSection(pipelineMD)
 		if minPipeline == "" {
-			return essentialPRBodyWithinLimit(body, generatedSections)
+			return essentialPRBodyWithinBudget(body, generatedSections, maxBytes)
 		}
 	}
 
-	prefixBudget := maxPullRequestBodyBytes - len(minPipeline)
+	prefixBudget := maxBytes - len(minPipeline)
 	if body != "" || generatedSections != "" {
 		prefixBudget -= len("\n\n")
 	}
 	if prefixBudget <= 0 || len(generatedSections) > prefixBudget {
-		return essentialPRBodyWithinLimit(body, generatedSections)
+		return essentialPRBodyWithinBudget(body, generatedSections, maxBytes)
 	}
 	return essentialPRBodyWithinBudget(body, generatedSections, prefixBudget)
 }
@@ -389,19 +413,19 @@ func essentialPRBodyWithinBudget(body, generatedSections string, maxBytes int) s
 	return truncatePRBodySections(body, bodyBudget, essentialPRBodyTruncationMarker()) + generatedSections
 }
 
-func appendPipelineSectionWithinLimit(prefix, pipelineMD string) string {
+func appendPipelineSectionWithinLimit(prefix, pipelineMD string, maxBytes int) string {
 	separator := ""
 	if prefix != "" {
 		separator = "\n\n"
 	}
 	full := prefix + separator + pipelineMD
-	if len(full) <= maxPullRequestBodyBytes {
+	if len(full) <= maxBytes {
 		return full
 	}
 
-	pipelineBudget := maxPullRequestBodyBytes - len(prefix) - len(separator)
+	pipelineBudget := maxBytes - len(prefix) - len(separator)
 	if pipelineBudget <= 0 {
-		return truncateEssentialPRBodyIfNeeded(prefix)
+		return truncateTextAtLineBoundary(prefix, maxBytes, essentialPRBodyTruncationMarker())
 	}
 
 	truncatedPipeline := truncatePipelineSection(pipelineMD, pipelineBudget)
@@ -409,13 +433,13 @@ func appendPipelineSectionWithinLimit(prefix, pipelineMD string) string {
 		return prefix
 	}
 	candidate := prefix + separator + truncatedPipeline
-	if len(candidate) <= maxPullRequestBodyBytes {
+	if len(candidate) <= maxBytes {
 		return candidate
 	}
-	if len(prefix) <= maxPullRequestBodyBytes {
+	if len(prefix) <= maxBytes {
 		return prefix
 	}
-	return truncateEssentialPRBodyIfNeeded(prefix)
+	return truncateTextAtLineBoundary(prefix, maxBytes, essentialPRBodyTruncationMarker())
 }
 
 func truncatePipelineSection(pipelineMD string, maxBytes int) string {
