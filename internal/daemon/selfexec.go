@@ -236,12 +236,23 @@ func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
 }
 
 func stopCurrentDaemonBeforeManagedRestart(p *paths.Paths) error {
-	if managed, err := stopManagedService(p); managed && err != nil {
-		if alive, _ := daemonHealthCheck(p); !alive {
-			return nil
+	instance := captureRunningDaemon(p)
+	if managed, err := stopManagedService(p); managed {
+		var detachedErr error
+		if err != nil {
+			if alive, _ := daemonHealthCheck(p); alive {
+				detachedErr = stopDetachedDaemon(p)
+			}
 		}
-		if detachedErr := stopDetachedDaemon(p); detachedErr != nil {
-			return fmt.Errorf("stop managed daemon before restart: %w; detached shutdown: %v", err, detachedErr)
+		if waitErr := waitForDaemonStop(p, instance); waitErr != nil {
+			switch {
+			case err != nil && detachedErr != nil:
+				return fmt.Errorf("stop managed daemon before restart: %w; detached shutdown: %v; wait for exit: %v", err, detachedErr, waitErr)
+			case err != nil:
+				return fmt.Errorf("stop managed daemon before restart: %w; wait for exit: %v", err, waitErr)
+			default:
+				return fmt.Errorf("wait for managed daemon exit before restart: %w", waitErr)
+			}
 		}
 		return nil
 	}
@@ -539,16 +550,23 @@ func daemonIsRunningViaIPC(p *paths.Paths) (bool, error) {
 func Stop(p *paths.Paths) error {
 	instance := captureRunningDaemon(p)
 	if managed, err := stopManagedService(p); managed {
+		var detachedErr error
 		if err != nil {
-			if alive, _ := daemonHealthCheck(p); !alive {
-				return nil
+			if alive, _ := daemonHealthCheck(p); alive {
+				detachedErr = stopDetachedDaemon(p)
 			}
-			if detachedErr := stopDetachedDaemon(p); detachedErr != nil {
-				return fmt.Errorf("%w; detached shutdown: %v", err, detachedErr)
-			}
-			return nil
 		}
-		return waitForDaemonStop(p, instance)
+		if waitErr := waitForDaemonStop(p, instance); waitErr != nil {
+			switch {
+			case err != nil && detachedErr != nil:
+				return fmt.Errorf("%w; detached shutdown: %v; wait for exit: %v", err, detachedErr, waitErr)
+			case err != nil:
+				return fmt.Errorf("%w; wait for exit: %v", err, waitErr)
+			default:
+				return waitErr
+			}
+		}
+		return nil
 	}
 	return stopDetachedDaemon(p)
 }
@@ -592,12 +610,12 @@ func stopDetachedDaemon(p *paths.Paths) error {
 }
 
 // daemonInstance names the exact daemon process a stop is responsible for.
-// A zero value means "no provable instance": callers then fall back to
-// health-only stop confirmation instead of blocking on a process they
-// cannot identify.
+// A zero value means no external process needs to be tracked. unknown records
+// that health indicated a daemon but its process identity could not be read.
 type daemonInstance struct {
 	pid       int
 	startedAt time.Time
+	unknown   bool
 }
 
 // captureRunningDaemon best-effort identifies the live daemon process for this
@@ -608,34 +626,55 @@ type daemonInstance struct {
 // is deliberately not captured: it never exits as a process.
 func captureRunningDaemon(p *paths.Paths) daemonInstance {
 	record, err := readDaemonPIDFile(p.PIDFile())
-	if err != nil || record.PID <= 0 || record.PID == os.Getpid() {
+	if err != nil || record.PID <= 0 {
+		alive, healthErr := daemonHealthCheck(p)
+		return daemonInstance{unknown: healthErr != nil || alive}
+	}
+	if record.PID == os.Getpid() {
 		return daemonInstance{}
 	}
 	startedAt, err := daemonProcessStartTime(record.PID)
 	if err != nil {
-		return daemonInstance{}
+		return daemonInstance{pid: record.PID, startedAt: record.StartedAt.UTC()}
 	}
-	if matches, err := daemonPIDRecordMatchesProcess(p, record, startedAt); err != nil || !matches {
+	matches, err := daemonPIDRecordMatchesProcess(p, record, startedAt)
+	if err != nil {
+		return daemonInstance{pid: record.PID}
+	}
+	if !matches {
 		return daemonInstance{}
 	}
 	return daemonInstance{pid: record.PID, startedAt: startedAt}
 }
 
-// exited reports whether this instance is gone. An uncapturable instance is
-// treated as exited, and so is a PID now owned by a different process.
-func (i daemonInstance) exited() bool {
+// exited reports whether this instance is gone. A PID now owned by a different
+// process is gone, while unknown process identity remains unconfirmed.
+func (i daemonInstance) exited() (bool, error) {
 	if i.pid <= 0 {
-		return true
+		if i.unknown {
+			return false, fmt.Errorf("daemon process identity is unknown")
+		}
+		return true, nil
+	}
+	if i.startedAt.IsZero() {
+		return false, fmt.Errorf("daemon pid %d start time is unknown", i.pid)
 	}
 	running, err := daemonProcessRunning(i.pid)
-	if err != nil || !running {
-		return true
+	if err != nil {
+		return false, err
+	}
+	if !running {
+		return true, nil
 	}
 	startedAt, err := daemonProcessStartTime(i.pid)
 	if err != nil {
-		return true
+		return false, err
 	}
-	return !startedAt.Equal(i.startedAt)
+	diff := startedAt.Sub(i.startedAt)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff > orphanStartTimeTolerance, nil
 }
 
 func stopDetachedDaemonByPID(p *paths.Paths) error {
@@ -770,10 +809,13 @@ func waitForDaemonStop(p *paths.Paths, instance daemonInstance) error {
 	deadline := time.Now().Add(daemonStopTimeout())
 	for time.Now().Before(deadline) {
 		alive, err := daemonHealthCheck(p)
-		if err == nil && !alive && instance.exited() {
-			cleanupDaemonArtifacts(p)
-			slog.Info("daemon stopped gracefully")
-			return nil
+		if err == nil && !alive {
+			exited, exitErr := instance.exited()
+			if exitErr == nil && exited {
+				cleanupDaemonArtifacts(p)
+				slog.Info("daemon stopped gracefully")
+				return nil
+			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -787,10 +829,16 @@ func waitForDaemonStop(p *paths.Paths, instance daemonInstance) error {
 		if err := validateDaemonPIDFallback(p, pid); err != nil {
 			return err
 		}
-	case !instance.exited():
-		pid = instance.pid
 	default:
-		return fmt.Errorf("daemon did not stop within timeout")
+		exited, exitErr := instance.exited()
+		switch {
+		case exitErr != nil:
+			return fmt.Errorf("daemon did not stop within timeout: inspect daemon instance: %w", exitErr)
+		case exited:
+			return fmt.Errorf("daemon did not stop within timeout")
+		default:
+			pid = instance.pid
+		}
 	}
 
 	slog.Warn("daemon did not stop gracefully, killing", "pid", pid)
