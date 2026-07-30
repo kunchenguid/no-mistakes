@@ -408,11 +408,11 @@ func TestCIStep_FailedHeadWorkflowRunPreventsChecksPassed(t *testing.T) {
 		{"name":"request-owner-review","state":"SUCCESS","bucket":"pass"}
 	]`)
 	env = append(env, `FAKE_CLI_WORKFLOW_RUNS=[{
+		"id":101,
 		"name":"workflow-validation",
-		"workflowName":"",
 		"status":"completed",
 		"conclusion":"failure",
-		"updatedAt":"2026-07-30T12:34:56Z"
+		"updated_at":"2026-07-30T12:34:56Z"
 	}]`)
 
 	prURL := "https://github.com/test/repo/pull/42"
@@ -424,9 +424,14 @@ func TestCIStep_FailedHeadWorkflowRunPreventsChecksPassed(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	outcome, err := (&CIStep{}).Execute(sctx)
+	step := &CIStep{
+		waitForNextPoll: func(context.Context, time.Duration) error {
+			return errors.New("unexpected monitor poll after failed head workflow")
+		},
+	}
+	outcome, err := step.Execute(sctx)
 	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
+		t.Fatalf("Execute() error = %v; logs: %v", err, logs)
 	}
 	if outcome == nil || !outcome.NeedsApproval {
 		t.Fatalf("Execute() outcome = %+v, want failing CI approval gate", outcome)
@@ -439,6 +444,7 @@ func TestCIStep_FailedHeadWorkflowRunPreventsChecksPassed(t *testing.T) {
 	if !strings.Contains(outcome.Findings, "workflow-validation") {
 		t.Fatalf("findings = %s, want failed workflow-validation run", outcome.Findings)
 	}
+	t.Logf("green PR rollup plus failed exact-head workflow produced approval gate: %s", outcome.Findings)
 }
 
 func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
