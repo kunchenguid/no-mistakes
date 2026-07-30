@@ -80,7 +80,12 @@ func BuildPipelineStatusSummary(steps []*db.StepResult, rounds map[string][]*db.
 		if shouldOmitPipelineStep(sr) {
 			continue
 		}
-		line, _ := buildStepEntry(sr, rounds[sr.ID])
+		var line string
+		if sr.StepName == types.StepReview && sr.Status == types.StepStatusCompleted {
+			line = "✅ **Review** - completed"
+		} else {
+			line, _ = buildStepEntry(sr, rounds[sr.ID])
+		}
 		if line != "" {
 			statusLines = append(statusLines, line)
 		}

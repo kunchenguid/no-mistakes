@@ -133,7 +133,6 @@ func describePR(pr *scm.PR) string {
 
 func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseSHA string, bodyLimit int) (prContent, error) {
 	ctx := sctx.Ctx
-	commitLog, _ := git.Log(ctx, sctx.WorkDir, baseSHA, sctx.Run.HeadSHA)
 	diffStat, _ := git.Run(ctx, sctx.WorkDir, "diff", "--stat", baseSHA+".."+sctx.Run.HeadSHA)
 	finalDiff, err := git.Run(ctx, sctx.WorkDir, "diff", "--name-status", baseSHA+".."+sctx.Run.HeadSHA)
 	if err != nil {
@@ -175,7 +174,7 @@ Final diff paths and statuses:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		return fallbackPRContent(sctx, branch, commitLog, finalDiff, pipelineMD, bodyLimit), nil
+		return fallbackPRContent(sctx, finalDiff, pipelineMD, bodyLimit), nil
 	}
 
 	var content prContent
@@ -201,7 +200,7 @@ Final diff paths and statuses:
 		}
 	}
 
-	return fallbackPRContent(sctx, branch, commitLog, finalDiff, pipelineMD, bodyLimit), nil
+	return fallbackPRContent(sctx, finalDiff, pipelineMD, bodyLimit), nil
 }
 
 func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) string {
@@ -973,26 +972,8 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	return section + "\n\n" + body
 }
 
-func fallbackPRContent(sctx *pipeline.StepContext, branch, commitLog, finalDiff, pipelineMD string, bodyLimit int) prContent {
-	title := ""
-	for _, line := range strings.Split(commitLog, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if idx := strings.IndexByte(line, ' '); idx >= 0 && idx+1 < len(line) {
-			title = strings.TrimSpace(line[idx+1:])
-		}
-		break
-	}
-	if title == "" {
-		title = strings.TrimSpace(branch)
-	}
-	if title == "" {
-		title = "chore: update pull request"
-	} else {
-		title = conventional.TightenTitle(title)
-	}
+func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, pipelineMD string, bodyLimit int) prContent {
+	title := "chore: update pull request"
 	diffSummary := strings.TrimSpace(finalDiff)
 	body := "## What Changed\n\nFinal changed paths and statuses:\n\n```text\n" + escapeMarkdownFence(diffSummary) + "\n```"
 	if diffSummary == "" {

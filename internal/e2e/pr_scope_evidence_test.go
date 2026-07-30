@@ -25,8 +25,8 @@ func writeFinalPRScopeScenario(t *testing.T) string {
     structured:
       findings: []
       summary: "review clean"
-      risk_level: low
-      risk_rationale: "no source risk found"
+      risk_level: medium
+      risk_rationale: "medium risk because only two source files changed"
   - match: "You are validating a code change by testing it. Examine the repository and run the smallest relevant tests yourself."
     text: "two-file test evidence"
     structured:
@@ -176,6 +176,9 @@ func TestPRFinalScopeExcludesEarlierStepEvidence(t *testing.T) {
 	if !strings.Contains(body, "<summary>✅ **Test** - passed</summary>") {
 		t.Fatalf("final PR body must retain the Test step status without its stale evidence:\n%s", body)
 	}
+	if !strings.Contains(body, "<summary>✅ **Review** - completed</summary>") {
+		t.Fatalf("final PR body must retain Review completion without stale risk:\n%s", body)
+	}
 	for _, want := range wantFiles {
 		if !strings.Contains(body, want) {
 			t.Fatalf("final PR body missing final-diff file %q:\n%s", want, body)
@@ -183,6 +186,11 @@ func TestPRFinalScopeExcludesEarlierStepEvidence(t *testing.T) {
 	}
 	if strings.Contains(body, staleTwoFileEvidence) {
 		t.Fatalf("earlier two-file Test evidence leaked into final PR scope after Document changed the diff:\n%s", body)
+	}
+	for _, stale := range []string{"medium risk because only two source files changed", "**Review** - medium risk"} {
+		if strings.Contains(body, stale) {
+			t.Fatalf("earlier Review risk leaked into final PR scope as %q:\n%s", stale, body)
+		}
 	}
 }
 

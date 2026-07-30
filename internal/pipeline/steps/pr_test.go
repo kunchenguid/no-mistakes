@@ -289,11 +289,11 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	if !strings.Contains(ghLog, "pr create") {
 		t.Errorf("expected gh pr create to be called, got:\n%s", ghLog)
 	}
-	if strings.Contains(ghLog, "--title add feature --") {
-		t.Fatalf("expected fallback PR title to reject raw non-conventional commit summary, got:\n%s", ghLog)
+	if !strings.Contains(ghLog, "--title chore: update pull request --body") {
+		t.Fatalf("expected fallback PR title to make no scope claim, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "--title feat: add feature --body") {
-		t.Fatalf("expected fallback PR title to use release-triggering conventional commit format, got:\n%s", ghLog)
+	if strings.Contains(ghLog, "--title feat: add feature") {
+		t.Fatalf("expected fallback PR title to exclude commit-history scope, got:\n%s", ghLog)
 	}
 	if strings.Contains(ghLog, "touches critical error handling") || strings.Contains(ghLog, "## Risk Assessment") {
 		t.Fatalf("expected fallback PR body to exclude earlier Review rationale, got:\n%s", ghLog)
@@ -1357,8 +1357,6 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 
 	content := fallbackPRContent(
 		sctx,
-		"feature",
-		"abc123 add feature",
 		"A\tinternal/pipeline/steps/pr.go",
 		pipelineMarkdownForTest(rounds...),
 		0,
@@ -1382,6 +1380,9 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 	}
 	if strings.Contains(content.Body, "add feature") {
 		t.Fatalf("expected fallback body to exclude commit-history scope, got:\n%s", content.Body)
+	}
+	if content.Title != "chore: update pull request" {
+		t.Fatalf("fallback title = %q, want neutral title", content.Title)
 	}
 }
 
