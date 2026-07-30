@@ -146,6 +146,33 @@ func TestGetChecksIncludesFailedWorkflowRunMissingFromPRRollup(t *testing.T) {
 	}
 }
 
+func TestGetChecksIncludesFailedWorkflowRunWhenPRHasNoChecks(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt": {
+			stderr: "no checks reported on the 'feature' branch\n",
+			code:   1,
+		},
+		"gh run list --commit deadbeef --repo test/repo --all --limit 1000 --json name,workflowName,status,conclusion,updatedAt": {
+			stdout: `[
+				{"name":"workflow-validation","workflowName":"","status":"completed","conclusion":"failure","updatedAt":"2026-07-30T12:34:56Z"}
+			]` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: "deadbeef"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("GetChecks() returned %d checks, want 1: %+v", len(checks), checks)
+	}
+	if got := checks[0]; got.Name != "workflow-validation" || got.Bucket != scm.CheckBucketFail {
+		t.Fatalf("workflow run check = %+v, want workflow-validation/fail", got)
+	}
+}
+
 func TestGetPRStatePassesRepoFlag(t *testing.T) {
 	t.Parallel()
 

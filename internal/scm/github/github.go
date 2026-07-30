@@ -302,9 +302,10 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if strings.Contains(string(out), "no checks reported") {
-			return nil, nil
+			out = []byte("[]")
+		} else {
+			return nil, fmt.Errorf("gh pr checks: %w", err)
 		}
-		return nil, fmt.Errorf("gh pr checks: %w", err)
 	}
 	var raw []struct {
 		Name        string `json:"name"`
