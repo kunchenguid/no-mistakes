@@ -181,6 +181,64 @@ func TestTestStep_FixMode_AgentWritesNewTests_ProceedsAutomatically(t *testing.T
 	}
 }
 
+// Regression model for the resource-contention path: the trigger is a legacy
+// commands.test full-suite/build process; concurrent unrelated work can mask
+// which process exhausted memory, and the operator sees only a daemon/agent
+// crash. Marker commands are controlled doubles: the successful counterfactual
+// proves explicit split mode runs typecheck + focused tests without launching
+// the heavy command. No daemon, fleet, credentials, or remote PR is involved.
+func TestSplitCertificationRunsUnifiedLocalFastChecksButOmitsLegacyHeavyTest(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	heavy := filepath.Join(dir, "heavy-ran")
+	linted := filepath.Join(dir, "lint-ran")
+	typechecked := filepath.Join(dir, "typecheck-ran")
+	focused := filepath.Join(dir, "focused-ran")
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "touch " + heavy})
+	sctx.Config.Certification = config.Certification{
+		Mode: config.CertificationModeCIAuthoritative,
+		LocalFast: config.LocalFastCommands{
+			Lint:      "touch " + linted,
+			Typecheck: "touch " + typechecked,
+			Test:      "touch " + focused,
+		},
+		RequiredChecks: []string{"full-suite"},
+	}
+
+	outcome, err := (&TestStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatalf("fast checks unexpectedly need approval: %+v", outcome)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("test step invoked agent despite passing configured local-fast commands: %d call(s)", len(ag.calls))
+	}
+	for _, path := range []string{linted, typechecked, focused} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("fast command did not run (%s): %v", path, err)
+		}
+	}
+	if _, err := os.Stat(heavy); !os.IsNotExist(err) {
+		t.Fatalf("legacy heavy command ran in ci_authoritative mode: %v", err)
+	}
+}
+
+func TestLegacyCertificationStillRunsConfiguredHeavyTestByDefault(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	heavy := filepath.Join(dir, "legacy-command-ran")
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{Test: "touch " + heavy})
+	if _, err := (&TestStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(heavy); err != nil {
+		t.Fatalf("legacy configured command no longer runs by default: %v", err)
+	}
+}
+
 func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -418,6 +476,91 @@ func TestTestStep_FixMode_TargetedVerificationContract(t *testing.T) {
 		if strings.Contains(fixPrompt, forbid) {
 			t.Errorf("test fixer prompt still carries open-ended suite language %q:\n%s", forbid, fixPrompt)
 		}
+	}
+}
+
+// Under split certification the Test step reports lint-adjacent failures
+// (typecheck) and focused-test failures alike, so the repair contract must name
+// the configured local-fast commands and allow the fixer to re-run the exact
+// one that failed. A blanket static-analysis ban would forbid reproducing and
+// verifying a typecheck failure at all.
+func TestTestStep_FixMode_LocalFastContractCoversLintTypecheckAndFocusedTests(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix typecheck failure"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 1"})
+	sctx.Config.Certification = config.Certification{
+		Mode: config.CertificationModeCIAuthoritative,
+		LocalFast: config.LocalFastCommands{
+			Lint:      "npm run lint:changed",
+			Typecheck: "tsc --noEmit",
+			Test:      "npm run test:changed",
+		},
+		RequiredChecks: []string{"full-suite"},
+	}
+	sctx.Fixing = true
+	sctx.PreviousFindings = `{"findings":[{"id":"test-1","severity":"error","description":"typecheck failed with exit code 2","action":"auto-fix"}],"summary":"error TS2322"}`
+
+	if _, err := (&TestStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) == 0 {
+		t.Fatal("expected the local-fast repair agent to be invoked")
+	}
+	fixPrompt := ag.calls[0].Prompt
+
+	for _, want := range []string{
+		"lint `npm run lint:changed`",
+		"typecheck `tsc --noEmit`",
+		"focused tests `npm run test:changed`",
+		"re-run that same command to verify your fix, including when it is the lint or typecheck static-analysis command",
+		"Do NOT run linters, formatters, or static analysis tools other than those configured commands",
+		"Reproduce the specific failing case first",
+		"Do NOT run the complete repository test suite",
+	} {
+		if !strings.Contains(fixPrompt, want) {
+			t.Errorf("expected local-fast fixer prompt to contain %q, got:\n%s", want, fixPrompt)
+		}
+	}
+	if strings.Contains(fixPrompt, "- Do NOT run linters, formatters, or static analysis tools.") {
+		t.Errorf("local-fast fixer prompt still forbids running the configured typecheck command:\n%s", fixPrompt)
+	}
+}
+
+// The legacy repair contract must keep the blanket tooling ban: without split
+// certification the Test step never reports a lint or typecheck failure.
+func TestTestStep_FixMode_LegacyContractKeepsBlanketToolingBan(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("fixed"), 0o644)
+			return &agent.Result{Output: json.RawMessage(`{"summary":"fix targeted failure"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{Test: "exit 0"})
+	sctx.Fixing = true
+
+	if _, err := (&TestStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	fixPrompt := ag.calls[0].Prompt
+	if !strings.Contains(fixPrompt, "- Do NOT run linters, formatters, or static analysis tools.") {
+		t.Fatalf("legacy repair prompt lost the blanket tooling ban:\n%s", fixPrompt)
+	}
+	if strings.Contains(fixPrompt, "local-fast certification commands") {
+		t.Fatalf("legacy repair prompt leaked split-certification tooling rules:\n%s", fixPrompt)
 	}
 }
 

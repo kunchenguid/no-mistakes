@@ -121,6 +121,31 @@ type RepoConfig struct {
 	// able to turn it off (or on). Default false; a plain bool so a missing key
 	// or a YAML/JSON null is falsy and preserves current loading.
 	DisableProjectSettings bool `yaml:"disable_project_settings"`
+	// Certification is trusted-default-branch policy. It selects the optional
+	// split gate and therefore controls both commands executed locally and the
+	// hosted checks that must certify the published revision.
+	Certification CertificationRaw `yaml:"certification"`
+}
+
+const (
+	CertificationModeLocalHeavy      = "local_heavy"
+	CertificationModeCIAuthoritative = "ci_authoritative"
+)
+
+// CertificationRaw is the repository schema for certification ownership.
+// An absent mode preserves the legacy commands.* behavior.
+type CertificationRaw struct {
+	Mode           string            `yaml:"mode"`
+	LocalFast      LocalFastCommands `yaml:"local_fast"`
+	RequiredChecks []string          `yaml:"required_checks"`
+}
+
+// LocalFastCommands are the bounded deterministic checks run before publish
+// when CI is authoritative for broad regression and builds.
+type LocalFastCommands struct {
+	Lint      string `yaml:"lint"`
+	Typecheck string `yaml:"typecheck"`
+	Test      string `yaml:"test"`
 }
 
 // DocumentRaw is the YAML representation of document-step settings.
@@ -133,16 +158,17 @@ type DocumentRaw struct {
 
 func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	type repoConfigRaw struct {
-		Agent                  agentList   `yaml:"agent"`
-		Commands               Commands    `yaml:"commands"`
-		IgnorePatterns         []string    `yaml:"ignore_patterns"`
-		AllowRepoCommands      bool        `yaml:"allow_repo_commands"`
-		AutoFix                AutoFixRaw  `yaml:"auto_fix"`
-		Commit                 CommitRaw   `yaml:"commit"`
-		Intent                 IntentRaw   `yaml:"intent"`
-		Test                   TestRaw     `yaml:"test"`
-		Document               DocumentRaw `yaml:"document"`
-		DisableProjectSettings bool        `yaml:"disable_project_settings"`
+		Agent                  agentList        `yaml:"agent"`
+		Commands               Commands         `yaml:"commands"`
+		IgnorePatterns         []string         `yaml:"ignore_patterns"`
+		AllowRepoCommands      bool             `yaml:"allow_repo_commands"`
+		AutoFix                AutoFixRaw       `yaml:"auto_fix"`
+		Commit                 CommitRaw        `yaml:"commit"`
+		Intent                 IntentRaw        `yaml:"intent"`
+		Test                   TestRaw          `yaml:"test"`
+		Document               DocumentRaw      `yaml:"document"`
+		DisableProjectSettings bool             `yaml:"disable_project_settings"`
+		Certification          CertificationRaw `yaml:"certification"`
 	}
 	var raw repoConfigRaw
 	if err := value.Decode(&raw); err != nil {
@@ -159,6 +185,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Test = raw.Test
 	c.Document = raw.Document
 	c.DisableProjectSettings = raw.DisableProjectSettings
+	c.Certification = raw.Certification
 	return nil
 }
 
@@ -216,6 +243,20 @@ type Config struct {
 	// project-level settings/instructions suppressed; the daemon fails the run
 	// closed if the resolved harness has no verified suppression knob.
 	DisableProjectSettings bool
+	Certification          Certification
+}
+
+// Certification is the resolved certification policy. Local-heavy is the
+// backward-compatible default; CI-authoritative is an explicit repository
+// opt-in with validated local-fast commands and required hosted checks.
+type Certification struct {
+	Mode           string
+	LocalFast      LocalFastCommands
+	RequiredChecks []string
+}
+
+func (c Certification) IsCIAuthoritative() bool {
+	return c.Mode == CertificationModeCIAuthoritative
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -1045,6 +1086,59 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	return cfg, nil
 }
 
+func validateCertification(c CertificationRaw) error {
+	mode := strings.TrimSpace(c.Mode)
+	if mode == "" {
+		if strings.TrimSpace(c.LocalFast.Lint) != "" || strings.TrimSpace(c.LocalFast.Typecheck) != "" || strings.TrimSpace(c.LocalFast.Test) != "" || len(c.RequiredChecks) != 0 {
+			return fmt.Errorf("certification.mode is required when split certification fields are configured")
+		}
+		return nil
+	}
+	if mode != CertificationModeCIAuthoritative {
+		return fmt.Errorf("certification.mode %q is invalid (want %q)", mode, CertificationModeCIAuthoritative)
+	}
+	commands := []struct{ name, value string }{
+		{"lint", c.LocalFast.Lint}, {"typecheck", c.LocalFast.Typecheck}, {"test", c.LocalFast.Test},
+	}
+	seenCommands := map[string]string{}
+	for _, command := range commands {
+		value := strings.TrimSpace(command.value)
+		if value == "" {
+			return fmt.Errorf("certification.local_fast.%s is required in ci_authoritative mode", command.name)
+		}
+		if previous, ok := seenCommands[value]; ok {
+			return fmt.Errorf("certification.local_fast commands must be distinct: %s overlaps %s", command.name, previous)
+		}
+		seenCommands[value] = command.name
+	}
+	if len(c.RequiredChecks) == 0 {
+		return fmt.Errorf("certification.required_checks must name at least one hosted check in ci_authoritative mode")
+	}
+	seenChecks := map[string]bool{}
+	for _, check := range c.RequiredChecks {
+		name := strings.TrimSpace(check)
+		if name == "" {
+			return fmt.Errorf("certification.required_checks cannot contain an empty check name")
+		}
+		key := strings.ToLower(name)
+		if seenChecks[key] {
+			return fmt.Errorf("certification.required_checks contains duplicate required check %q", name)
+		}
+		seenChecks[key] = true
+	}
+	return nil
+}
+
+func ValidateEffectiveRepoConfig(repo *RepoConfig) error {
+	if repo == nil {
+		return nil
+	}
+	if err := validateCertification(repo.Certification); err != nil {
+		return fmt.Errorf("parse repo config: %w", err)
+	}
+	return nil
+}
+
 // EffectiveRepoConfig returns the repo config that should drive the pipeline
 // given a pushed-branch copy and the trusted default-branch copy.
 //
@@ -1067,8 +1161,11 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // branch - this blocks the supply-chain vector for repos that ship
 // .no-mistakes.yaml only on feature branches.
 //
-// Non-executing fields (ignore patterns, auto-fix, commit, intent, test) are
-// always taken from the pushed copy, matching prior behavior, since they cannot
+// Certification is always trusted-only because it selects executable local
+// commands and the required hosted safety checks; allowRepoCommands does not
+// relax that boundary. Non-executing fields (ignore patterns, auto-fix, commit,
+// intent, test) are always taken from the pushed copy, matching prior behavior,
+// since they cannot
 // run arbitrary shell or select a process.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
 	if pushed == nil {
@@ -1077,6 +1174,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 	effective := *pushed
 	if trusted != nil {
 		effective.Document = trusted.Document
+		effective.Certification = trusted.Certification
 		// disable_project_settings is a security boundary: honor it ONLY from the
 		// trusted default-branch copy so a pushed branch cannot turn the opt-out
 		// off (and re-enable its own AGENTS.md) or on. A nil trusted copy here
@@ -1085,6 +1183,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.DisableProjectSettings = trusted.DisableProjectSettings
 	} else {
 		effective.Document = DocumentRaw{}
+		effective.Certification = CertificationRaw{}
 		effective.DisableProjectSettings = false
 	}
 	if allowRepoCommands {
@@ -1244,6 +1343,15 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	applyTestOverrides(&test, &global.Test)
 	applyTestOverrides(&test, &repo.Test)
 
+	certification := Certification{
+		Mode:           CertificationModeLocalHeavy,
+		LocalFast:      repo.Certification.LocalFast,
+		RequiredChecks: append([]string(nil), repo.Certification.RequiredChecks...),
+	}
+	if strings.TrimSpace(repo.Certification.Mode) != "" {
+		certification.Mode = strings.TrimSpace(repo.Certification.Mode)
+	}
+
 	commit := Commit{FixMessage: DefaultFixMessageTemplate}
 	if global.Commit.FixMessage != nil {
 		commit.FixMessage = *global.Commit.FixMessage
@@ -1269,6 +1377,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Commit:               commit,
 		Intent:               intent,
 		Test:                 test,
+		Certification:        certification,
 		Document:             Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).

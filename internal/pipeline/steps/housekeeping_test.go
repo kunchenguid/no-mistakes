@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -121,6 +122,41 @@ func TestDocumentStep_ConfiguredLintCommandKeepsDocOnlyPrompt(t *testing.T) {
 	}
 }
 
+func TestDocumentStep_CIAuthoritativeKeepsDocOnlyPrompt(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs current"}`)}, nil
+		},
+	}
+	sctx := newHousekeepingContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Certification = config.Certification{
+		Mode: config.CertificationModeCIAuthoritative,
+		LocalFast: config.LocalFastCommands{
+			Lint:      "true",
+			Typecheck: "true",
+			Test:      "true",
+		},
+		RequiredChecks: []string{"full-suite"},
+	}
+
+	if _, err := (&DocumentStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("document step agent calls = %d, want 1", len(ag.calls))
+	}
+	if strings.Contains(ag.calls[0].Prompt, "Combined lint duty") {
+		t.Fatal("ci_authoritative mode must not run the combined agent-driven lint duty")
+	}
+	if _, ok := sctx.Shared.TakeHousekeepingLint(); ok {
+		t.Fatal("ci_authoritative document pass must not stash an agent-driven lint result")
+	}
+}
+
 func TestDocumentStep_ConfiguredLintCommandKeepsLintCategorizedFindingInDocumentGate(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -152,6 +188,49 @@ func TestDocumentStep_ConfiguredLintCommandKeepsLintCategorizedFindingInDocument
 	}
 	if _, ok := sctx.Shared.TakeHousekeepingLint(); ok {
 		t.Fatal("a deterministic lint command must not receive a document-pass stash")
+	}
+}
+
+func TestSplitCertificationRunsLocalFastLintExactlyOnceThroughTestStep(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	localFastLint := filepath.Join(dir, "local-fast-lint-count")
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			if strings.Contains(opts.Prompt, "Combined lint duty") {
+				t.Fatal("split certification must not invoke agent-driven combined lint")
+			}
+			return &agent.Result{Output: json.RawMessage(`{"findings":[],"summary":"docs current"}`)}, nil
+		},
+	}
+	sctx := newHousekeepingContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Certification = config.Certification{
+		Mode: config.CertificationModeCIAuthoritative,
+		LocalFast: config.LocalFastCommands{
+			Lint:      "printf x >> " + localFastLint,
+			Typecheck: "true",
+			Test:      "true",
+		},
+		RequiredChecks: []string{"full-suite"},
+	}
+
+	if _, err := (&DocumentStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&LintStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&TestStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(localFastLint)
+	if err != nil {
+		t.Fatalf("local_fast.lint did not run: %v", err)
+	}
+	if got := string(data); got != "x" {
+		t.Fatalf("local_fast.lint ran %d time(s), want exactly once", len(got))
 	}
 }
 

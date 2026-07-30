@@ -21,6 +21,10 @@ func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	}
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	if sctx.Config.Certification.IsCIAuthoritative() {
+		sctx.Log("local-fast lint is handled by the test step in ci_authoritative certification")
+		return &pipeline.StepOutcome{Skipped: true}, nil
+	}
 	lintCmd := sctx.Config.Commands.Lint
 
 	if lintCmd == "" {

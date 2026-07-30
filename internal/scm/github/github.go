@@ -291,6 +291,27 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 	return normalizePRState(strings.TrimSpace(string(out))), nil
 }
 
+// GetPRHeadSHA returns the exact revision currently attached to the PR. Split
+// certification uses it after reading checks so a stale check set can never
+// certify a different published revision.
+func (h *Host) GetPRHeadSHA(ctx context.Context, pr *scm.PR) (string, error) {
+	selector, err := prSelector(pr)
+	if err != nil {
+		return "", err
+	}
+	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
+	args = append(args, "--json", "headRefOid", "--jq", ".headRefOid")
+	out, err := h.cmd(ctx, "gh", args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("gh pr view head revision: %w", err)
+	}
+	sha := strings.TrimSpace(string(out))
+	if sha == "" {
+		return "", fmt.Errorf("gh pr view returned an empty head revision")
+	}
+	return sha, nil
+}
+
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	selector, err := prSelector(pr)
 	if err != nil {
@@ -324,6 +345,74 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 			}
 		}
 		checks = append(checks, scm.Check{Name: r.Name, Bucket: normalizeCheckBucket(r.Bucket, r.State), CompletedAt: completedAt})
+	}
+	return checks, nil
+}
+
+func (h *Host) GetChecksForRef(ctx context.Context, ref string) ([]scm.Check, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil, fmt.Errorf("check ref is empty")
+	}
+	repo := h.apiRepoSlug()
+	if repo == "" {
+		return nil, fmt.Errorf("GitHub repository slug is unknown")
+	}
+	args := []string{"api"}
+	if h.host != "" && !strings.EqualFold(h.host, "github.com") {
+		args = append(args, "--hostname", h.host)
+	}
+	args = append(args,
+		"repos/"+repo+"/commits/"+ref+"/check-runs",
+		"--paginate",
+		"--jq", `.check_runs[] | {name: .name, status: .status, conclusion: .conclusion, completedAt: .completed_at}`,
+	)
+	out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("gh api commit check runs: %w", err)
+	}
+	return parseCheckRunLines(out)
+}
+
+func (h *Host) apiRepoSlug() string {
+	repo := strings.Trim(strings.TrimSpace(h.repo), "/")
+	if repo == "" {
+		return ""
+	}
+	parts := strings.Split(repo, "/")
+	if len(parts) == 3 && h.host != "" && strings.EqualFold(parts[0], h.host) {
+		return parts[1] + "/" + parts[2]
+	}
+	if len(parts) >= 2 {
+		return parts[len(parts)-2] + "/" + parts[len(parts)-1]
+	}
+	return ""
+}
+
+func parseCheckRunLines(out []byte) ([]scm.Check, error) {
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	checks := make([]scm.Check, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var raw struct {
+			Name        string `json:"name"`
+			Status      string `json:"status"`
+			Conclusion  string `json:"conclusion"`
+			CompletedAt string `json:"completedAt"`
+		}
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			return nil, fmt.Errorf("parse commit check run: %w", err)
+		}
+		var completedAt time.Time
+		if raw.CompletedAt != "" {
+			if parsed, parseErr := time.Parse(time.RFC3339, raw.CompletedAt); parseErr == nil {
+				completedAt = parsed
+			}
+		}
+		checks = append(checks, scm.Check{Name: raw.Name, Bucket: normalizeCheckRunBucket(raw.Status, raw.Conclusion), CompletedAt: completedAt})
 	}
 	return checks, nil
 }
@@ -505,5 +594,29 @@ func normalizeCheckBucket(bucket, state string) scm.CheckBucket {
 		return scm.CheckBucketSkip
 	default:
 		return ""
+	}
+}
+
+func normalizeCheckRunBucket(status, conclusion string) scm.CheckBucket {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "queued", "in_progress", "waiting", "requested", "pending":
+		return scm.CheckBucketPending
+	}
+	switch strings.ToLower(strings.TrimSpace(conclusion)) {
+	case "success":
+		return scm.CheckBucketPass
+	case "neutral":
+		return scm.CheckBucketSkip
+	case "failure", "timed_out", "action_required", "startup_failure":
+		return scm.CheckBucketFail
+	case "cancelled":
+		return scm.CheckBucketCancel
+	case "skipped":
+		return scm.CheckBucketSkip
+	default:
+		if strings.EqualFold(strings.TrimSpace(status), "completed") {
+			return scm.CheckBucketFail
+		}
+		return scm.CheckBucketPending
 	}
 }
