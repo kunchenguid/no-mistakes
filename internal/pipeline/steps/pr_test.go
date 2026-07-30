@@ -1935,3 +1935,104 @@ func TestPRStep_PromptGuidesScopeToRealModule(t *testing.T) {
 		t.Errorf("expected PR prompt to convey typical module count heuristic, got:\n%s", capturedPrompt)
 	}
 }
+
+// TestPRStep_IncludePipelineSummaryTogglesSectionOnCreate proves that the
+// generated "## Pipeline" section and its no-mistakes attribution are published
+// by default but omitted entirely when pr.include_pipeline_summary is false,
+// while the Intent and What Changed content are retained either way.
+func TestPRStep_IncludePipelineSummaryTogglesSectionOnCreate(t *testing.T) {
+	t.Parallel()
+
+	run := func(t *testing.T, include bool) string {
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		env, logFile := fakeGH(t, "")
+		ag := &mockAgent{
+			name: "test",
+			runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				payload := json.RawMessage(`{"title":"fix: add bar helper","body":"## What Changed\n\n- add Bar() helper"}`)
+				return &agent.Result{Output: payload}, nil
+			},
+		}
+		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		sctx.Env = env
+		sctx.UserIntent = "Add a Bar() helper for foo callers."
+		sctx.Config.PR.IncludePipelineSummary = include
+
+		reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := (&PRStep{}).Execute(sctx); err != nil {
+			t.Fatal(err)
+		}
+		return readFakeGHBodyArg(t, logFile)
+	}
+
+	t.Run("default includes pipeline section", func(t *testing.T) {
+		t.Parallel()
+		body := run(t, true)
+		for _, want := range []string{"## Intent", "Add a Bar() helper", "## What Changed", "add Bar() helper", "## Pipeline", noMistakesPRSignature} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("expected default PR body to contain %q, got:\n%s", want, body)
+			}
+		}
+	})
+
+	t.Run("opt-out omits pipeline section and attribution", func(t *testing.T) {
+		t.Parallel()
+		body := run(t, false)
+		for _, want := range []string{"## Intent", "Add a Bar() helper", "## What Changed", "add Bar() helper"} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("expected opted-out PR body to retain %q, got:\n%s", want, body)
+			}
+		}
+		for _, forbidden := range []string{"## Pipeline", noMistakesPRSignature} {
+			if strings.Contains(body, forbidden) {
+				t.Fatalf("expected opted-out PR body to omit %q, got:\n%s", forbidden, body)
+			}
+		}
+	})
+}
+
+// TestPRStep_OmitsPipelineSummaryOnUpdate proves the opt-out is honored on the
+// CI/merge-driven update path (gh pr edit), not just on initial creation.
+func TestPRStep_OmitsPipelineSummaryOnUpdate(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, logFile := fakeGH(t, "https://github.com/test/repo/pull/42")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Config.PR.IncludePipelineSummary = false
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "pr edit") {
+		t.Fatalf("expected gh pr edit to be called, got:\n%s", logData)
+	}
+	body := readFakeGHBodyArg(t, logFile)
+	for _, forbidden := range []string{"## Pipeline", noMistakesPRSignature} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("expected updated PR body to omit %q, got:\n%s", forbidden, body)
+		}
+	}
+}

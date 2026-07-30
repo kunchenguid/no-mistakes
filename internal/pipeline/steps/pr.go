@@ -204,6 +204,14 @@ Final diff paths and statuses:
 }
 
 func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) string {
+	// When the user opts out (pr.include_pipeline_summary: false), publish no
+	// "## Pipeline" section, attribution, pipeline evidence, or local paths on
+	// PR create and on every later CI/merge-driven update. A nil Config keeps
+	// the default of including the section.
+	if sctx.Config != nil && !sctx.Config.PR.IncludePipelineSummary {
+		return ""
+	}
+
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
 		slog.Warn("failed to query step results for pipeline summary", "error", err)

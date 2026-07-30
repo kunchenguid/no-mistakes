@@ -277,3 +277,15 @@ By default, test evidence stays in a temporary directory keyed by run ID and is 
 Set `store_in_repo: true` to write evidence under `<dir>/<branch-slug>` inside the worktree so push can commit and publish it with the branch.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
 If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
+
+### pr.include_pipeline_summary
+
+Override whether the generated `## Pipeline` section is published to PR bodies for this repo.
+Not set here inherits from global config and then the built-in default.
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `pr.include_pipeline_summary` | `bool` | Inherits from global (default `true`) |
+
+Set `include_pipeline_summary: false` to publish only the Intent and What Changed content and omit the `## Pipeline` section, its no-mistakes attribution, and any pipeline status, evidence, or local paths carried through it.
+See [the global `pr.include_pipeline_summary` field](/no-mistakes/reference/global-config/#princludepipelinesummary) for full behavior.

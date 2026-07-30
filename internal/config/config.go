@@ -66,6 +66,7 @@ type GlobalConfig struct {
 	Commit       CommitRaw
 	Intent       IntentRaw
 	Test         TestRaw
+	PR           PRRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -85,6 +86,7 @@ type globalConfigRaw struct {
 	Commit               CommitRaw           `yaml:"commit"`
 	Intent               IntentRaw           `yaml:"intent"`
 	Test                 TestRaw             `yaml:"test"`
+	PR                   PRRaw               `yaml:"pr"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -104,6 +106,10 @@ type RepoConfig struct {
 	Commit            CommitRaw  `yaml:"commit"`
 	Intent            IntentRaw  `yaml:"intent"`
 	Test              TestRaw    `yaml:"test"`
+	// PR carries PR-publishing settings (currently the opt-out for the
+	// generated "## Pipeline" section). It does not run code or select a
+	// process, so it is a non-executing field read from the pushed branch.
+	PR PRRaw `yaml:"pr"`
 	// Document carries the repository's documentation placement policy. It
 	// steers the document step's gate prompt, so it is honored ONLY from the
 	// trusted default-branch copy of .no-mistakes.yaml (see
@@ -141,6 +147,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Commit                 CommitRaw   `yaml:"commit"`
 		Intent                 IntentRaw   `yaml:"intent"`
 		Test                   TestRaw     `yaml:"test"`
+		PR                     PRRaw       `yaml:"pr"`
 		Document               DocumentRaw `yaml:"document"`
 		DisableProjectSettings bool        `yaml:"disable_project_settings"`
 	}
@@ -157,6 +164,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Commit = raw.Commit
 	c.Intent = raw.Intent
 	c.Test = raw.Test
+	c.PR = raw.PR
 	c.Document = raw.Document
 	c.DisableProjectSettings = raw.DisableProjectSettings
 	return nil
@@ -210,6 +218,7 @@ type Config struct {
 	Commit               Commit
 	Intent               Intent
 	Test                 Test
+	PR                   PR
 	Document             Document
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
@@ -223,6 +232,25 @@ type Config struct {
 // policy in the document prompt.
 type Document struct {
 	Instructions string
+}
+
+// PRRaw is the YAML representation of PR-publishing settings.
+// Pointer fields distinguish "not set" (nil) from an explicit false.
+type PRRaw struct {
+	// IncludePipelineSummary opts out of publishing the generated
+	// "## Pipeline" section (and its no-mistakes attribution) to PR bodies
+	// when set to false. nil (unset) preserves the default of including it.
+	IncludePipelineSummary *bool `yaml:"include_pipeline_summary"`
+}
+
+// PR is the resolved PR-publishing config. When IncludePipelineSummary is
+// false, the PR step publishes only the Intent/What Changed content and omits
+// the deterministic "## Pipeline" section, its attribution, and any pipeline
+// evidence or local paths carried through it. The resolved default is true and
+// is applied by Merge (prDefaults); construct Config through Merge so the
+// default holds.
+type PR struct {
+	IncludePipelineSummary bool
 }
 
 // TestRaw is the YAML representation of test-step settings.
@@ -414,6 +442,14 @@ intent:
 #   evidence:
 #     store_in_repo: true
 #     dir: .no-mistakes/evidence
+
+# Pull-request body settings. By default no-mistakes appends a generated
+# "## Pipeline" section (with a no-mistakes attribution line and per-step
+# status) to every PR it opens or updates. Set include_pipeline_summary to
+# false to publish only the Intent and What Changed content and omit that
+# section entirely; validation, gates, logs, and CI monitoring are unaffected.
+# pr:
+#   include_pipeline_summary: false
 `
 
 // defaultBinary maps agent names to their default binary names.
@@ -971,6 +1007,7 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg.Commit = raw.Commit
 	cfg.Intent = raw.Intent
 	cfg.Test = raw.Test
+	cfg.PR = raw.PR
 
 	return cfg, nil
 }
@@ -1173,6 +1210,19 @@ func applyTestOverrides(dst *Test, src *TestRaw) {
 	}
 }
 
+// prDefaults returns the default PR-publishing settings. The generated
+// "## Pipeline" section is published by default; a user opts out explicitly.
+func prDefaults() PR {
+	return PR{IncludePipelineSummary: true}
+}
+
+// applyPROverrides applies non-nil raw values onto resolved defaults.
+func applyPROverrides(dst *PR, src *PRRaw) {
+	if src.IncludePipelineSummary != nil {
+		dst.IncludePipelineSummary = *src.IncludePipelineSummary
+	}
+}
+
 // autoFixDefaults returns the default auto-fix configuration.
 func autoFixDefaults() AutoFix {
 	return AutoFix{
@@ -1244,6 +1294,10 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	applyTestOverrides(&test, &global.Test)
 	applyTestOverrides(&test, &repo.Test)
 
+	pr := prDefaults()
+	applyPROverrides(&pr, &global.PR)
+	applyPROverrides(&pr, &repo.PR)
+
 	commit := Commit{FixMessage: DefaultFixMessageTemplate}
 	if global.Commit.FixMessage != nil {
 		commit.FixMessage = *global.Commit.FixMessage
@@ -1269,6 +1323,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Commit:               commit,
 		Intent:               intent,
 		Test:                 test,
+		PR:                   pr,
 		Document:             Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).

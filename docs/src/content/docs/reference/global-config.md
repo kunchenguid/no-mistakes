@@ -63,6 +63,9 @@ test:
   evidence:
     store_in_repo: false
     dir: .no-mistakes/evidence
+
+pr:
+  include_pipeline_summary: true
 ```
 
 ## Fields
@@ -384,6 +387,22 @@ Branch slashes become nested directories, unsafe branch characters are replaced,
 If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
 
 These are global defaults. Per-repo config can override either field.
+
+### pr.include_pipeline_summary
+
+Controls whether no-mistakes appends its generated `## Pipeline` section to PR bodies.
+
+|         |          |
+| ------- | -------- |
+| Type    | `bool`   |
+| Default | `true`   |
+
+By default, every PR no-mistakes opens or updates ends with a `## Pipeline` section: a no-mistakes attribution line followed by a per-step status summary.
+Set `include_pipeline_summary: false` to publish only the Intent and What Changed content and omit that section entirely, including the attribution and any pipeline status, evidence, or local paths carried through it.
+The opt-out is honored on the initial PR and on every later CI/merge-driven body update.
+Pipeline validation, gates, run logs, AXI/TUI status, and CI monitoring are unaffected; only the PR body changes.
+
+This is a global default. Per-repo config can override it.
 
 ## Environment variables
 
