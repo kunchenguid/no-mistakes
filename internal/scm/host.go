@@ -89,6 +89,10 @@ func ExtractPRNumber(prURL string) (string, error) {
 type PR struct {
 	Number string
 	URL    string
+	// HeadSHA scopes provider check discovery to the exact commit currently
+	// being certified. Providers that expose CI outside the PR check rollup
+	// use it to include those runs.
+	HeadSHA string
 }
 
 // PRContent is the title + body for creating or updating a PR.

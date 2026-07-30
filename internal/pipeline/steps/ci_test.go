@@ -399,6 +399,48 @@ func TestCIStep_AllChecksPassingKeepsMonitoringOpenPR(t *testing.T) {
 	}
 }
 
+func TestCIStep_FailedHeadWorkflowRunPreventsChecksPassed(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env := fakeCIGH(t, "OPEN", `[
+		{"name":"clippy","state":"SUCCESS","bucket":"pass"},
+		{"name":"request-owner-review","state":"SUCCESS","bucket":"pass"}
+	]`)
+	env = append(env, `FAKE_CLI_WORKFLOW_RUNS=[{
+		"name":"workflow-validation",
+		"workflowName":"",
+		"status":"completed",
+		"conclusion":"failure",
+		"updatedAt":"2026-07-30T12:34:56Z"
+	}]`)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.AutoFix.CI = 0
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	outcome, err := (&CIStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("Execute() outcome = %+v, want failing CI approval gate", outcome)
+	}
+	for _, log := range logs {
+		if strings.Contains(log, ciChecksPassedMsg) {
+			t.Fatalf("failed head workflow was reported as checks-passed; logs: %v", logs)
+		}
+	}
+	if !strings.Contains(outcome.Findings, "workflow-validation") {
+		t.Fatalf("findings = %s, want failed workflow-validation run", outcome.Findings)
+	}
+}
+
 func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

@@ -325,6 +325,61 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		}
 		checks = append(checks, scm.Check{Name: r.Name, Bucket: normalizeCheckBucket(r.Bucket, r.State), CompletedAt: completedAt})
 	}
+	if pr != nil && strings.TrimSpace(pr.HeadSHA) != "" {
+		runs, err := h.getWorkflowRunChecks(ctx, pr.HeadSHA)
+		if err != nil {
+			return nil, err
+		}
+		checks = append(checks, runs...)
+	}
+	return checks, nil
+}
+
+func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.Check, error) {
+	args := []string{"run", "list", "--commit", strings.TrimSpace(headSHA)}
+	args = append(args, h.repoArgs()...)
+	args = append(args, "--all", "--limit", "1000", "--json", "name,workflowName,status,conclusion,updatedAt")
+	out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("gh run list for head commit: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	var raw []struct {
+		Name         string `json:"name"`
+		WorkflowName string `json:"workflowName"`
+		Status       string `json:"status"`
+		Conclusion   string `json:"conclusion"`
+		UpdatedAt    string `json:"updatedAt"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, fmt.Errorf("parse workflow runs for head commit: %w", err)
+	}
+	checks := make([]scm.Check, 0, len(raw))
+	for _, run := range raw {
+		name := strings.TrimSpace(run.WorkflowName)
+		if name == "" {
+			name = strings.TrimSpace(run.Name)
+		}
+		if name == "" {
+			name = "GitHub Actions workflow"
+		}
+		var completedAt time.Time
+		if run.UpdatedAt != "" {
+			if parsed, parseErr := time.Parse(time.RFC3339, run.UpdatedAt); parseErr == nil {
+				completedAt = parsed
+			}
+		}
+		bucket := normalizeCheckBucket("", run.Conclusion)
+		if bucket == "" {
+			bucket = normalizeCheckBucket("", run.Status)
+		}
+		if bucket == "" {
+			// An unrecognized or incomplete run state must not certify the
+			// commit as green. Keep monitoring until GitHub reports a terminal
+			// state that can be classified.
+			bucket = scm.CheckBucketPending
+		}
+		checks = append(checks, scm.Check{Name: name, Bucket: bucket, CompletedAt: completedAt})
+	}
 	return checks, nil
 }
 

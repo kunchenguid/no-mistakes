@@ -355,6 +355,14 @@ func fakeCIGHHandler(args []string) {
 		fmt.Println(checksJSON)
 		os.Exit(0)
 	}
+	if strings.Contains(joined, "run list") {
+		runs := os.Getenv("FAKE_CLI_WORKFLOW_RUNS")
+		if runs == "" {
+			runs = "[]"
+		}
+		fmt.Println(runs)
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "run view") {
 		fmt.Println("error log output")
 		os.Exit(0)
@@ -414,6 +422,14 @@ func fakeCIGHSequenceHandler(args []string) {
 			os.Exit(1)
 		}
 		fmt.Println(entries[index])
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "run list") {
+		runs := os.Getenv("FAKE_CLI_WORKFLOW_RUNS")
+		if runs == "" {
+			runs = "[]"
+		}
+		fmt.Println(runs)
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "run view") {
@@ -546,6 +562,10 @@ func fakeCIGHNoChecksHandler(args []string) {
 	if strings.Contains(joined, "pr checks") {
 		fmt.Fprintln(os.Stderr, "no checks reported on the 'feature/e2e' branch")
 		os.Exit(1)
+	}
+	if strings.Contains(joined, "run list") {
+		fmt.Println("[]")
+		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
 		fmt.Println("OPEN")

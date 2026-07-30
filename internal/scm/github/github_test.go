@@ -112,6 +112,40 @@ func TestGetChecksPassesRepoFlag(t *testing.T) {
 	}
 }
 
+func TestGetChecksIncludesFailedWorkflowRunMissingFromPRRollup(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt": {
+			stdout: `[
+				{"name":"clippy","state":"SUCCESS","bucket":"pass"},
+				{"name":"request-owner-review","state":"SUCCESS","bucket":"pass"}
+			]` + "\n",
+		},
+		"gh run list --commit deadbeef --repo test/repo --all --limit 1000 --json name,workflowName,status,conclusion,updatedAt": {
+			stdout: `[
+				{"name":"workflow-validation","workflowName":"","status":"completed","conclusion":"failure","updatedAt":"2026-07-30T12:34:56Z"}
+			]` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: "deadbeef"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 3 {
+		t.Fatalf("GetChecks() returned %d checks, want 3: %+v", len(checks), checks)
+	}
+	got := checks[2]
+	if got.Name != "workflow-validation" || got.Bucket != scm.CheckBucketFail {
+		t.Fatalf("workflow run check = %+v, want workflow-validation/fail", got)
+	}
+	wantCompletedAt := time.Date(2026, 7, 30, 12, 34, 56, 0, time.UTC)
+	if !got.CompletedAt.Equal(wantCompletedAt) {
+		t.Fatalf("workflow run CompletedAt = %v, want %v", got.CompletedAt, wantCompletedAt)
+	}
+}
+
 func TestGetPRStatePassesRepoFlag(t *testing.T) {
 	t.Parallel()
 
