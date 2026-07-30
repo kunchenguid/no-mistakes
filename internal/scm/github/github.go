@@ -359,6 +359,7 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 		return nil, fmt.Errorf("gh api workflow runs for head commit: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	type workflowRun struct {
+		ID          int64  `json:"id"`
 		Name        string `json:"name"`
 		DisplayName string `json:"display_title"`
 		Status      string `json:"status"`
@@ -366,14 +367,40 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 		UpdatedAt   string `json:"updated_at"`
 	}
 	var pages []struct {
+		TotalCount   *int          `json:"total_count"`
 		WorkflowRuns []workflowRun `json:"workflow_runs"`
 	}
 	if err := json.Unmarshal(out, &pages); err != nil {
 		return nil, fmt.Errorf("parse workflow runs for head commit: %w", err)
 	}
+	if len(pages) == 0 {
+		return nil, errors.New("workflow run discovery returned no pages")
+	}
 	var raw []workflowRun
-	for _, page := range pages {
-		raw = append(raw, page.WorkflowRuns...)
+	totalCount := -1
+	runIDs := make(map[int64]struct{})
+	for pageIndex, page := range pages {
+		if page.TotalCount == nil || *page.TotalCount < 0 {
+			return nil, fmt.Errorf("workflow run page %d has no valid total_count", pageIndex+1)
+		}
+		if totalCount == -1 {
+			totalCount = *page.TotalCount
+		} else if *page.TotalCount != totalCount {
+			return nil, fmt.Errorf("workflow run page %d total_count is %d, want %d", pageIndex+1, *page.TotalCount, totalCount)
+		}
+		for _, run := range page.WorkflowRuns {
+			if run.ID == 0 {
+				return nil, fmt.Errorf("workflow run page %d contains a run without an id", pageIndex+1)
+			}
+			if _, exists := runIDs[run.ID]; exists {
+				return nil, fmt.Errorf("workflow run id %d appears more than once", run.ID)
+			}
+			runIDs[run.ID] = struct{}{}
+			raw = append(raw, run)
+		}
+	}
+	if len(runIDs) != totalCount {
+		return nil, fmt.Errorf("workflow run discovery returned %d unique runs, want %d", len(runIDs), totalCount)
 	}
 	checks := make([]scm.Check, 0, len(raw))
 	for _, run := range raw {
