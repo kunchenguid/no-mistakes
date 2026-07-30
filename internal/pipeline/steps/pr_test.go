@@ -579,7 +579,7 @@ func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
 	}
 }
 
-func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
+func TestPRStep_ExcludesEarlierTestingSectionFromFinalPRScope(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -637,9 +637,15 @@ func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
 	}
 	ghLog := string(logData)
 
-	wantOrder := "## Risk Assessment\n\n⚠️ Medium: touches critical error handling\n\n## Testing\n\n- 🔧 **Test** - 1 issue found → auto-fixed ✅\n\n## Pipeline"
+	wantOrder := "## Risk Assessment\n\n⚠️ Medium: touches critical error handling\n\n## Pipeline"
 	if !strings.Contains(ghLog, wantOrder) {
-		t.Fatalf("expected testing section between risk assessment and pipeline, got:\n%s", ghLog)
+		t.Fatalf("expected the final PR's risk assessment and pipeline sections, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "## Testing") {
+		t.Fatalf("final PR must not append Test-step evidence as final-scope testing, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "<summary>🔧 **Test** - 1 issue found → auto-fixed ✅</summary>") {
+		t.Fatalf("final PR must retain the Test step status without its step-scoped evidence, got:\n%s", ghLog)
 	}
 }
 
@@ -1207,11 +1213,16 @@ func TestPRStep_CreateKeepsGeneratedSectionsAfterOversizedIntent(t *testing.T) {
 		"essential summary survives",
 		"## Risk Assessment",
 		"validates generated PR body length handling",
-		"## Testing",
-		"Validated generated PR body length handling.",
+		"## Pipeline",
+		"<summary>✅ **Test** - passed</summary>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected created PR body to contain %q, got:\n%s", want, body)
+		}
+	}
+	for _, unwanted := range []string{"## Testing", "Validated generated PR body length handling."} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("expected created PR body to exclude step-scoped test evidence %q, got:\n%s", unwanted, body)
 		}
 	}
 }

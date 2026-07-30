@@ -136,8 +136,12 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseSHA stri
 	commitLog, _ := git.Log(ctx, sctx.WorkDir, baseSHA, sctx.Run.HeadSHA)
 	diffStat, _ := git.Run(ctx, sctx.WorkDir, "diff", "--stat", baseSHA+".."+sctx.Run.HeadSHA)
 
-	// Build the deterministic sections from step rounds.
-	pipelineMD, riskLine, testingMD := s.buildPipelineSection(sctx)
+	// Build the deterministic pipeline status from step rounds. Test evidence is
+	// deliberately excluded: it is scoped to the earlier Test step and may
+	// predate legitimate Document or Lint commits. The final PR agent alone
+	// describes the final branch delta from the live final diff below.
+	pipelineMD, riskLine := s.buildPipelineSection(sctx)
+	testingMD := ""
 
 	// Build pipeline context for the agent prompt so it can reference findings in the summary.
 	pipelineContext := ""
@@ -210,12 +214,12 @@ Diff stat:
 }
 
 // buildPipelineSection queries step results and rounds from the DB and
-// produces the deterministic pipeline, risk, and testing sections.
-func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (string, string, string) {
+// produces the deterministic pipeline and risk sections.
+func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (string, string) {
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
 		slog.Warn("failed to query step results for pipeline summary", "error", err)
-		return "", "", ""
+		return "", ""
 	}
 
 	rounds := make(map[string][]*db.StepRound, len(steps))
@@ -229,8 +233,7 @@ func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (string, strin
 	}
 
 	pipelineMD, riskLine := BuildPipelineSummary(steps, rounds)
-	testingMD := BuildTestingSummaryForPR(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir)
-	return pipelineMD, riskLine, testingMD
+	return pipelineMD, riskLine
 }
 
 // unwrapNestedPRBody detects when the agent returned the body as a
