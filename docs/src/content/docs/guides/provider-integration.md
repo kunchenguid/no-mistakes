@@ -28,6 +28,7 @@ What you do not get is PR automation and CI monitoring.
 | Step | GitHub | GitLab | Bitbucket Cloud | Azure DevOps |
 |---|---|---|---|---|
 | **PR** (create/update) | `gh` CLI, authenticated | `glab` CLI, authenticated | `NO_MISTAKES_BITBUCKET_EMAIL` + `NO_MISTAKES_BITBUCKET_API_TOKEN` | `az` CLI + `azure-devops` extension, authenticated |
+| **Draft PRs** ([`--draft-until-ready`](/no-mistakes/reference/pipeline-steps/#draft-until-ready)) | `gh` CLI | not supported | not supported | not supported |
 | **CI** (polling, auto-fix) | `gh` CLI | `glab` CLI | same env vars | `az` CLI |
 | **Merge conflict auto-fix** | `gh` CLI | `glab` CLI | not supported | `az` CLI |
 | **Mergeability polling** | `gh` CLI | `glab` CLI | not supported | `az` CLI |
