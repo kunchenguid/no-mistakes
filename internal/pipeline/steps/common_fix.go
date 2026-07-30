@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -116,47 +118,208 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 }
 
 func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string) error {
+	return commitAgentFixesWithHooks(sctx, stepName, summary, fallbackSummary, headAdoptionHooks{})
+}
+
+// headAdoptionHooks expose only durable crash/race boundaries to focused
+// tests. Production passes zero hooks. A hook error simulates process loss at
+// that boundary; retry must resume monotonically from the anchor/ref/journal.
+type headAdoptionHooks struct {
+	AfterAnchor   func() error
+	BeforeGateCAS func() error
+	AfterGateCAS  func() error
+	AfterDBCAS    func() error
+}
+
+func commitAgentFixesWithHooks(sctx *pipeline.StepContext, stepName types.StepName, summary, fallbackSummary string, hooks headAdoptionHooks) error {
+	if sctx.BranchLock != nil {
+		unlock := sctx.BranchLock()
+		defer unlock()
+	}
 	ctx := sctx.Ctx
+	oldHead := strings.TrimSpace(sctx.Run.HeadSHA)
+	if oldHead == "" {
+		return fmt.Errorf("adopt %s fixes: pipeline run has no recorded head", stepName)
+	}
 	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
 		return err
 	}
-	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
-	if strings.TrimSpace(status) == "" {
+	status, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("read worktree status before %s adoption: %w", stepName, err)
+	}
+	commitMessage := ""
+	commitParent := ""
+	expectedCommitTree := ""
+	if strings.TrimSpace(status) != "" {
+		if summary == "" {
+			summary = fallbackSummary
+		}
+		if summary == "" {
+			summary = "apply fixes"
+		}
+		commitMessage, err = sctx.Config.Commit.RenderFixMessage(stepName, summary)
+		if err != nil {
+			return fmt.Errorf("render %s fix commit message: %w", stepName, err)
+		}
+		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
+			return fmt.Errorf("stage %s changes: %w", stepName, err)
+		}
+		commitParent, err = git.HeadSHA(ctx, sctx.WorkDir)
+		if err != nil {
+			return fmt.Errorf("resolve head before %s fix commit: %w", stepName, err)
+		}
+		expectedCommitTree, err = git.Run(ctx, sctx.WorkDir, "write-tree")
+		if err != nil {
+			return fmt.Errorf("resolve staged tree before %s fix commit: %w", stepName, err)
+		}
+		if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", commitMessage); err != nil {
+			return fmt.Errorf("commit %s changes: %w", stepName, err)
+		}
+	}
+	candidate, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("resolve head after %s fixes: %w", stepName, err)
+	}
+	finalStatus, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("read final worktree status after %s fixes: %w", stepName, err)
+	}
+	if strings.TrimSpace(finalStatus) != "" {
+		return fmt.Errorf("refusing to adopt %s head %s: worktree is not clean after commit", stepName, candidate)
+	}
+	if commitMessage != "" {
+		candidateTree, treeErr := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", candidate+"^{tree}")
+		if treeErr != nil {
+			return fmt.Errorf("resolve %s candidate tree: %w", stepName, treeErr)
+		}
+		if candidate == commitParent || candidateTree != expectedCommitTree {
+			return fmt.Errorf("refusing to adopt %s head %s: it is not a descendant commit preserving the exact staged tree on top of head %s", stepName, candidate, commitParent)
+		}
+	}
+	if candidate == oldHead {
 		sctx.Log("no agent changes to commit")
 		return nil
 	}
-	if summary == "" {
-		summary = fallbackSummary
+	if _, err := git.Run(ctx, sctx.WorkDir, "merge-base", "--is-ancestor", oldHead, candidate); err != nil {
+		return fmt.Errorf("refusing to adopt %s head %s: it is not a descendant of recorded head %s (adoption requires a strict forward move)", stepName, candidate, oldHead)
 	}
-	if summary == "" {
-		summary = "apply fixes"
+
+	anchorRef := liveHeadCandidateAnchorRef(sctx.Run.ID, candidate)
+	if _, err := git.Run(ctx, sctx.WorkDir, "check-ref-format", anchorRef); err != nil {
+		return fmt.Errorf("validate %s candidate anchor: %w", stepName, err)
 	}
-	commitMessage, err := sctx.Config.Commit.RenderFixMessage(stepName, summary)
-	if err != nil {
-		return fmt.Errorf("render %s fix commit message: %w", stepName, err)
+	if err := createOrVerifyImmutableRef(ctx, sctx.WorkDir, anchorRef, candidate); err != nil {
+		return fmt.Errorf("anchor %s candidate %s: %w", stepName, candidate, err)
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
-		return fmt.Errorf("stage %s changes: %w", stepName, err)
+	if hooks.AfterAnchor != nil {
+		if err := hooks.AfterAnchor(); err != nil {
+			return fmt.Errorf("after %s candidate anchor: %w", stepName, err)
+		}
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", commitMessage); err != nil {
-		return fmt.Errorf("commit %s changes: %w", stepName, err)
-	}
-	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
-	if err != nil {
-		return fmt.Errorf("resolve head after %s commit: %w", stepName, err)
-	}
-	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
-		return err
-	}
+
 	ref := normalizedBranchRef(sctx.Run.Branch)
-	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA); err != nil {
-		return fmt.Errorf("update local branch ref: %w", err)
+	gateHead, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", ref+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("resolve gate branch %s before %s adoption: %w", ref, stepName, err)
 	}
-	sctx.Run.HeadSHA = headSHA
-	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
+	switch gateHead {
+	case oldHead:
+		if hooks.BeforeGateCAS != nil {
+			if err := hooks.BeforeGateCAS(); err != nil {
+				return fmt.Errorf("before %s gate CAS: %w", stepName, err)
+			}
+		}
+		if err := verifyExactCleanHead(ctx, sctx.WorkDir, candidate); err != nil {
+			return fmt.Errorf("refusing %s gate CAS: %w", stepName, err)
+		}
+		if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, candidate, oldHead); err != nil {
+			return fmt.Errorf("advance local branch ref with expected-old CAS: %w", err)
+		}
+	case candidate:
+		// Monotonic retry after a crash between the Git and SQLite CAS.
+	default:
+		return fmt.Errorf("refusing to adopt %s head %s: gate branch %s is at %s, expected %s", stepName, candidate, ref, gateHead, oldHead)
+	}
+	if hooks.AfterGateCAS != nil {
+		if err := hooks.AfterGateCAS(); err != nil {
+			return fmt.Errorf("after %s gate CAS: %w", stepName, err)
+		}
+	}
+	if err := verifyExactCleanHead(ctx, sctx.WorkDir, candidate); err != nil {
+		return fmt.Errorf("refusing %s database CAS: %w", stepName, err)
+	}
+	if exactGate, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", ref+"^{commit}"); err != nil || exactGate != candidate {
+		return fmt.Errorf("refusing %s database CAS: gate branch no longer equals candidate %s", stepName, candidate)
+	}
+	if err := sctx.DB.AdvanceActiveRunHeadCAS(db.ActiveRunHeadAdvance{
+		RunID: sctx.Run.ID, RepoID: sctx.Run.RepoID, Branch: sctx.Run.Branch,
+		StepName: string(stepName), ExpectedHead: oldHead, Candidate: candidate, AnchorRef: anchorRef,
+	}); err != nil {
 		return err
 	}
-	sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
+	if hooks.AfterDBCAS != nil {
+		if err := hooks.AfterDBCAS(); err != nil {
+			return fmt.Errorf("after %s database CAS: %w", stepName, err)
+		}
+	}
+	if err := verifyExactCleanHead(ctx, sctx.WorkDir, candidate); err != nil {
+		return fmt.Errorf("%s head was durably adopted but final worktree verification failed: %w", stepName, err)
+	}
+	if exactGate, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", ref+"^{commit}"); err != nil || exactGate != candidate {
+		return fmt.Errorf("%s head was durably adopted but final gate verification failed", stepName)
+	}
+	// In-memory authority advances only after the durable journal/head CAS and
+	// final Git equality checks have succeeded.
+	sctx.Run.HeadSHA = candidate
+	if commitMessage != "" {
+		sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
+	} else {
+		sctx.Log(fmt.Sprintf("adopted agent self-commit: %s", candidate))
+	}
+	return nil
+}
+
+func liveHeadCandidateAnchorRef(runID, candidate string) string {
+	return "refs/no-mistakes/run-head-candidates/" + runID + "/" + candidate
+}
+
+func createOrVerifyImmutableRef(ctx context.Context, dir, ref, candidate string) error {
+	if existing, err := git.Run(ctx, dir, "rev-parse", "--verify", ref+"^{commit}"); err == nil {
+		if existing != candidate {
+			return fmt.Errorf("immutable ref %s already names conflicting commit %s", ref, existing)
+		}
+		return nil
+	}
+	zero := strings.Repeat("0", len(candidate))
+	if _, err := git.Run(ctx, dir, "update-ref", ref, candidate, zero); err != nil {
+		if existing, readErr := git.Run(ctx, dir, "rev-parse", "--verify", ref+"^{commit}"); readErr == nil && existing == candidate {
+			return nil
+		}
+		return err
+	}
+	existing, err := git.Run(ctx, dir, "rev-parse", "--verify", ref+"^{commit}")
+	if err != nil || existing != candidate {
+		return fmt.Errorf("immutable ref %s did not retain candidate %s", ref, candidate)
+	}
+	return nil
+}
+
+func verifyExactCleanHead(ctx context.Context, dir, candidate string) error {
+	head, err := git.HeadSHA(ctx, dir)
+	if err != nil {
+		return fmt.Errorf("resolve HEAD: %w", err)
+	}
+	if head != candidate {
+		return fmt.Errorf("HEAD changed to %s, expected exact candidate %s", head, candidate)
+	}
+	status, err := git.Run(ctx, dir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("read worktree status: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("worktree changed after candidate selection")
+	}
 	return nil
 }
 

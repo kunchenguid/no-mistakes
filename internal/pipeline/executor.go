@@ -52,8 +52,9 @@ type Executor struct {
 
 	// sessions manages this run's durable review-loop agent sessions; shared
 	// carries run-scoped step-to-step results. Both are created per Execute.
-	sessions *RunSessions
-	shared   *RunShared
+	sessions   *RunSessions
+	shared     *RunShared
+	branchLock func() func()
 
 	mu          sync.Mutex
 	approvalCh  chan approvalResponse // buffered channel for approval responses
@@ -62,6 +63,13 @@ type Executor struct {
 
 	gateReconcileInterval time.Duration
 	gateReconcileTimeout  time.Duration
+}
+
+// SetBranchLocker supplies the daemon-owned repo+branch serialization used by
+// live head adoption. It must be the same lock authority as run admission and
+// exceptional custody recovery.
+func (e *Executor) SetBranchLocker(lock func() func()) {
+	e.branchLock = lock
 }
 
 // SetSkippedSteps configures steps that should be marked skipped without running.
@@ -290,15 +298,16 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1)
 	}
 	reconcileCtx := &StepContext{
-		Ctx:      ctx,
-		Run:      run,
-		Repo:     repo,
-		WorkDir:  workDir,
-		Config:   e.config,
-		DB:       e.db,
-		Agent:    e.agent,
-		Sessions: e.sessions,
-		Shared:   e.shared,
+		Ctx:        ctx,
+		Run:        run,
+		Repo:       repo,
+		WorkDir:    workDir,
+		Config:     e.config,
+		DB:         e.db,
+		Agent:      e.agent,
+		Sessions:   e.sessions,
+		Shared:     e.shared,
+		BranchLock: e.branchLock,
 		Log: func(message string) {
 			slog.Info("recovered approval gate reconciliation", "run_id", run.ID, "step", gate.step.Name(), "message", message)
 		},
@@ -703,6 +712,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		IntentSource:     userIntentSource,
 		Sessions:         e.sessions,
 		Shared:           e.shared,
+		BranchLock:       e.branchLock,
 		Fixing:           state.fixing,
 		PreviousFindings: state.previousFindings,
 		Log:              writeLog,

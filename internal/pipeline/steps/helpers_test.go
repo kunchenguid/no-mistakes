@@ -415,6 +415,10 @@ func newTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA,
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := sctx.DB.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	run.Status = types.RunRunning
 	sctx.Run = run
 	sctx.Repo = repo
 	return sctx

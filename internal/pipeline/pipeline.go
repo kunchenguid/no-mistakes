@@ -50,6 +50,10 @@ type StepContext struct {
 	// step in the same run (e.g. the combined document+lint pass).
 	Shared             *RunShared
 	CIReadinessChanged func(ready, declaredNoCI bool)
+	// BranchLock enters the daemon-owned repo+branch critical section and
+	// returns its unlock function. Head-authority transitions use it to
+	// serialize with new-run admission; nil is accepted by isolated tests.
+	BranchLock func() func()
 }
 
 // RunAgentSession executes one turn of a durable review-loop role session,
