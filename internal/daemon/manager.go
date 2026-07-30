@@ -713,9 +713,14 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 // plain gate push with no push option would adopt the draft an earlier run
 // opened and leave it unpublished forever.
 //
-// Carry-forward can only turn the policy on. An explicit request always wins,
-// and inheriting is never a path to switching it off for a run that asked for
-// it. A read failure fails safe to the trigger's own decision.
+// Carry-forward can only turn the policy on, and a read failure fails safe to
+// the trigger's own decision.
+//
+// Known limitation: `requested` is a plain bool, so "not requested" and
+// "explicitly requested off" are indistinguishable here and an explicit
+// `no-mistakes.draft-until-ready=false` push option loses to inheritance. A
+// future `--no-draft-until-ready` must first make this option tri-state (nil
+// inherits, false is an explicit off, true is on) so an explicit off wins.
 func (m *RunManager) resolveDraftUntilReady(repoID, branch string, requested bool) bool {
 	if requested {
 		return true
