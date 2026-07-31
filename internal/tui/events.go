@@ -47,6 +47,15 @@ func (m *Model) applyEvent(event ipc.Event) bool {
 			m.run.PRURL = event.PRURL
 		}
 
+	case ipc.EventCIReadinessChanged:
+		m.err = nil
+		if event.CIReady != nil {
+			m.run.CIReady = *event.CIReady
+		}
+		if event.CIReadyNoCI != nil {
+			m.run.CIReadyNoCI = *event.CIReadyNoCI
+		}
+
 	case ipc.EventRunCompleted:
 		m.err = nil
 		if event.Status != nil {

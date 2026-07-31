@@ -529,6 +529,7 @@ func TestRenderDriveResult_DeclaredNoCIChecksPassed(t *testing.T) {
 		t.Fatal("PR 607 empty-checks sequence must not be agent-facing ready")
 	}
 
+	run.CIReady = true
 	if err := renderDriveResult(cmd, run, true); err != nil {
 		t.Fatalf("declared no_ci checks-passed must exit 0, got error: %v", err)
 	}

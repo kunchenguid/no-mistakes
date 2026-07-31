@@ -86,7 +86,7 @@ func renderCIViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo, fin
 
 	// State indicator.
 	status := ciStepStatus(steps)
-	activity := parseCIActivity(logs)
+	activity := cimonitor.FromAuthoritative(run != nil && run.CIReady, run != nil && run.CIReadyNoCI, logs)
 
 	b.WriteString("\n")
 
@@ -95,7 +95,7 @@ func renderCIViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo, fin
 		if activity.AutoFixing {
 			style := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBlue))
 			b.WriteString(style.Render("\u2699 Auto-fixing CI failures...") + "\n")
-		} else if run != nil && run.CIReady {
+		} else if activity.Ready {
 			style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiGreen))
 			b.WriteString(style.Render("✓ Checks passed") + "\n")
 			dim := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))

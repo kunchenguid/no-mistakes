@@ -10,6 +10,7 @@ import (
 	toon "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
+	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -472,9 +473,10 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 // ciReadyToMerge reports whether the CI step is actively monitoring and the
 // daemon has persisted checks-passed readiness.
 func ciReadyToMerge(rv runView) bool {
+	activity := cimonitor.FromAuthoritative(rv.CIReady, rv.CIReadyNoCI, nil)
 	for _, s := range rv.Steps {
 		if s.Name == string(types.StepCI) {
-			return s.Status == string(types.StepStatusRunning) && rv.CIReady
+			return s.Status == string(types.StepStatusRunning) && activity.Ready
 		}
 	}
 	return false
@@ -580,9 +582,10 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 	// merge. Report it as a distinct, successful outcome so the agent stops
 	// and asks the user to review and merge instead of waiting.
 	if ciReady {
+		activity := cimonitor.FromAuthoritative(rv.CIReady, rv.CIReadyNoCI, nil)
 		fields = append(fields, toon.Field{Key: "outcome", Value: "checks-passed"})
 		merge := "CI checks passed - the PR is ready. Ask the user to review and merge it."
-		if rv.CIReadyNoCI {
+		if activity.DeclaredNoCI {
 			merge = "Repository declares no CI (no_ci: true on the trusted default branch) and no checks are registered - treated as all checks passed. Ask the user to review and merge it."
 		}
 		if rv.PRURL != "" {

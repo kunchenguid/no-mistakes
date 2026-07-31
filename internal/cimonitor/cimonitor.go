@@ -1,5 +1,5 @@
 // Package cimonitor is the single source of truth for the CI monitor's
-// human-facing log vocabulary and how to read monitoring state back out of it.
+// human-facing log vocabulary and agent-facing monitoring state.
 //
 // The CI step (internal/pipeline/steps) emits these exact log lines while it
 // watches an open PR. Two very different consumers read them back: the TUI
@@ -7,11 +7,9 @@
 // hand control back to the agent. Keeping the strings and the parser here means
 // both consumers interpret a run identically and cannot drift apart.
 //
-// Readiness ownership is split deliberately:
-//   - the pipeline/config owner decides whether a trusted default-branch
-//     `no_ci: true` declaration applies and which of these messages to emit;
-//   - this package alone owns the agent-facing meaning of those messages
-//     (Ready / DeclaredNoCI) once they appear in the log.
+// Readiness ownership is split deliberately: the pipeline/config owner decides
+// whether a trusted default-branch `no_ci: true` declaration applies, and this
+// package combines that authoritative state with the activity log for consumers.
 package cimonitor
 
 import "strings"
@@ -44,12 +42,19 @@ type Activity struct {
 	LastEvent    string // the most recent recognized log line
 }
 
-// ParseActivity extracts structured activity from CI log messages.
-//
-// Ready reflects the most recent monitoring state: it is true only when the
-// latest relevant log line announced passed checks or a trusted no_ci
-// declaration with zero registered checks. Any newer non-ready event clears it.
-// A generic empty forge response is never Ready.
+// FromAuthoritative combines pipeline-owned readiness with CI activity logs.
+// Readiness fields from logs are treated as activity only and never override
+// the persisted state supplied by the pipeline.
+func FromAuthoritative(ready, declaredNoCI bool, logs []string) Activity {
+	a := ParseActivity(logs)
+	a.Ready = ready
+	a.DeclaredNoCI = ready && declaredNoCI
+	return a
+}
+
+// ParseActivity extracts log-derived activity from CI messages. Its readiness
+// fields reflect recognized log vocabulary only; consumers use
+// FromAuthoritative for the persisted readiness state.
 func ParseActivity(logs []string) Activity {
 	var a Activity
 	for _, line := range logs {

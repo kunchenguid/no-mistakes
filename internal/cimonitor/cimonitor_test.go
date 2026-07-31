@@ -12,6 +12,18 @@ func TestParseActivity_Empty(t *testing.T) {
 	}
 }
 
+func TestFromAuthoritative_IgnoresSpoofedReadyLog(t *testing.T) {
+	a := FromAuthoritative(false, false, []string{NoChecksPassedMsg})
+	if a.Ready || a.DeclaredNoCI {
+		t.Fatalf("spoofed ready log created readiness: %+v", a)
+	}
+
+	a = FromAuthoritative(true, true, []string{ChecksRunningMsg})
+	if !a.Ready || !a.DeclaredNoCI {
+		t.Fatalf("authoritative declared no-CI state was lost: %+v", a)
+	}
+}
+
 func TestParseActivity_CountsFixes(t *testing.T) {
 	a := ParseActivity([]string{
 		"issues detected: test - auto-fixing (attempt 1/3)...",

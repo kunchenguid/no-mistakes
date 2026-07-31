@@ -48,7 +48,8 @@ type StepContext struct {
 	Sessions *RunSessions
 	// Shared carries in-memory run-scoped results one step hands to a later
 	// step in the same run (e.g. the combined document+lint pass).
-	Shared *RunShared
+	Shared             *RunShared
+	CIReadinessChanged func(ready, declaredNoCI bool)
 }
 
 // RunAgentSession executes one turn of a durable review-loop role session,

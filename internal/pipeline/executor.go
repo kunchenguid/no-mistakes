@@ -679,6 +679,17 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			round:    func() int { return roundNum + 1 },
 		}
 	}
+	ciReady := run.CIReadyAt != nil
+	ciReadyNoCI := run.CIReadyNoCI
+	ciReadinessChanged := func(ready, declaredNoCI bool) {
+		declaredNoCI = ready && declaredNoCI
+		if ciReady == ready && ciReadyNoCI == declaredNoCI {
+			return
+		}
+		ciReady = ready
+		ciReadyNoCI = declaredNoCI
+		e.emitCIReadinessEvent(run, repo, ready, declaredNoCI)
+	}
 	sctx := &StepContext{
 		Ctx:              ctx,
 		Run:              run,
@@ -700,6 +711,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			fmt.Fprintln(logFile, text)
 			touchLogActivity(text, true)
 		},
+		CIReadinessChanged: ciReadinessChanged,
 	}
 
 	nextTrigger := "initial"
@@ -1222,6 +1234,17 @@ func (e *Executor) emitRunEvent(eventType ipc.EventType, run *db.Run, repo *db.R
 		PRURL:  run.PRURL,
 	}
 	e.onEvent(event)
+}
+
+func (e *Executor) emitCIReadinessEvent(run *db.Run, repo *db.Repo, ready, declaredNoCI bool) {
+	declaredNoCI = ready && declaredNoCI
+	e.onEvent(ipc.Event{
+		Type:        ipc.EventCIReadinessChanged,
+		RunID:       run.ID,
+		RepoID:      repo.ID,
+		CIReady:     &ready,
+		CIReadyNoCI: &declaredNoCI,
+	})
 }
 
 func (e *Executor) emitStepEvent(eventType ipc.EventType, run *db.Run, repo *db.Repo, stepName types.StepName, status string) {

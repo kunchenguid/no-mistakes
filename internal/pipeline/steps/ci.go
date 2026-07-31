@@ -319,6 +319,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				if err := sctx.DB.SetRunCIReady(sctx.Run.ID, false); err != nil {
 					return nil, err
 				}
+				if sctx.CIReadinessChanged != nil {
+					sctx.CIReadinessChanged(false, false)
+				}
 			}
 			if hasIssues && pending {
 				lastMonitorLog = ""
@@ -450,6 +453,8 @@ func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) st
 		declaredNoCI := message == ciNoChecksPassedMsg
 		if err := sctx.DB.SetRunCIReadyWithReason(sctx.Run.ID, ready, declaredNoCI); err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not persist CI readiness: %v", err))
+		} else if sctx.CIReadinessChanged != nil {
+			sctx.CIReadinessChanged(ready, declaredNoCI)
 		}
 		sctx.Log(message)
 	}
@@ -459,5 +464,7 @@ func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) st
 func clearCIMonitorReady(sctx *pipeline.StepContext) {
 	if err := sctx.DB.SetRunCIReady(sctx.Run.ID, false); err != nil {
 		sctx.Log(fmt.Sprintf("warning: could not clear CI readiness: %v", err))
+	} else if sctx.CIReadinessChanged != nil {
+		sctx.CIReadinessChanged(false, false)
 	}
 }

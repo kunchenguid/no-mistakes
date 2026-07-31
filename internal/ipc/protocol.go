@@ -303,12 +303,13 @@ type StepResultInfo struct {
 type EventType string
 
 const (
-	EventRunCreated    EventType = "run_created"
-	EventRunUpdated    EventType = "run_updated"
-	EventRunCompleted  EventType = "run_completed"
-	EventStepStarted   EventType = "step_started"
-	EventStepCompleted EventType = "step_completed"
-	EventLogChunk      EventType = "log_chunk"
+	EventRunCreated         EventType = "run_created"
+	EventRunUpdated         EventType = "run_updated"
+	EventRunCompleted       EventType = "run_completed"
+	EventCIReadinessChanged EventType = "ci_readiness_changed"
+	EventStepStarted        EventType = "step_started"
+	EventStepCompleted      EventType = "step_completed"
+	EventLogChunk            EventType = "log_chunk"
 	// EventStreamGap tells a subscriber that the daemon coalesced at least
 	// one state transition away under buffer pressure. StateRev is the
 	// highest revision folded into it. The subscriber must read authoritative
@@ -338,6 +339,8 @@ type Event struct {
 	// which makes a delta queued before an authoritative snapshot an
 	// idempotent no-op after it.
 	StateRev int64 `json:"state_rev,omitempty"`
+	CIReady          *bool           `json:"ci_ready,omitempty"`
+	CIReadyNoCI      *bool           `json:"ci_ready_no_ci,omitempty"`
 }
 
 // --- Helpers ---
