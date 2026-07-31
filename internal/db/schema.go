@@ -127,7 +127,8 @@ CREATE TABLE IF NOT EXISTS run_agent_sessions (
 
 -- Every live run-head advance is journaled with the immutable Git anchor that
 -- preserves its candidate. Git refs and SQLite cannot move atomically, so this
--- record is the durable retry witness after either side advances first.
+-- exact transition is prepared before the gate ref moves and remains the
+-- durable restart/retry witness after either side advances.
 CREATE TABLE IF NOT EXISTS run_head_advances (
     run_id             TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     repo_id            TEXT NOT NULL,

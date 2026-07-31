@@ -25,7 +25,9 @@ type ActiveRunHeadAdvance struct {
 
 // GetActiveRunHeadAdvance returns one durable live-transition journal row.
 // It is intentionally keyed by both run and candidate because a long run may
-// make several strict-forward step transitions.
+// make several strict-forward step transitions. A row is prepared before the
+// gate ref moves; runs.head_sha distinguishes a prepared transition from one
+// whose durable head CAS has completed.
 func (d *DB) GetActiveRunHeadAdvance(runID, candidate string) (*ActiveRunHeadAdvance, error) {
 	a := &ActiveRunHeadAdvance{}
 	err := d.sql.QueryRow(
@@ -42,9 +44,101 @@ func (d *DB) GetActiveRunHeadAdvance(runID, candidate string) (*ActiveRunHeadAdv
 	return a, nil
 }
 
-// AdvanceActiveRunHeadCAS journals and advances a live run head in one SQLite
-// transaction. A retry is accepted only when the existing journal tuple is an
-// exact match and the same run is still the sole latest active run.
+// GetPreparedActiveRunHeadAdvances returns transitions whose immutable journal
+// is durable while the exact active run still records the expected old head.
+// Startup treats this list only as discovery; every mutable predicate is
+// repeated by AdvanceActiveRunHeadCAS immediately before the durable head CAS.
+func (d *DB) GetPreparedActiveRunHeadAdvances() ([]ActiveRunHeadAdvance, error) {
+	rows, err := d.sql.Query(
+		`SELECT a.run_id, a.repo_id, a.branch, a.step_name, a.expected_head_sha, a.candidate_head_sha, a.anchor_ref
+		 FROM run_head_advances a
+		 JOIN runs r ON r.id = a.run_id AND r.repo_id = a.repo_id AND r.branch = a.branch
+		 WHERE r.status = 'running' AND r.head_sha = a.expected_head_sha
+		 ORDER BY r.created_at, r.id, a.created_at, a.candidate_head_sha`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get prepared active run head advances: %w", err)
+	}
+	defer rows.Close()
+	var advances []ActiveRunHeadAdvance
+	for rows.Next() {
+		var a ActiveRunHeadAdvance
+		if err := rows.Scan(&a.RunID, &a.RepoID, &a.Branch, &a.StepName, &a.ExpectedHead, &a.Candidate, &a.AnchorRef); err != nil {
+			return nil, fmt.Errorf("scan prepared active run head advance: %w", err)
+		}
+		advances = append(advances, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate prepared active run head advances: %w", err)
+	}
+	return advances, nil
+}
+
+// PrepareActiveRunHeadAdvanceCAS persists the exact transition tuple before
+// the caller moves the gate ref. It never changes runs.head_sha. A retry is
+// accepted only for the identical immutable tuple while the sole latest active
+// run is still eligible at either the expected head or the already-committed
+// candidate head.
+func (d *DB) PrepareActiveRunHeadAdvanceCAS(a ActiveRunHeadAdvance) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("prepare active run head: begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var existing ActiveRunHeadAdvance
+	err = tx.QueryRow(
+		`SELECT run_id, repo_id, branch, step_name, expected_head_sha, candidate_head_sha, anchor_ref
+		 FROM run_head_advances WHERE run_id = ? AND candidate_head_sha = ?`,
+		a.RunID, a.Candidate,
+	).Scan(&existing.RunID, &existing.RepoID, &existing.Branch, &existing.StepName, &existing.ExpectedHead, &existing.Candidate, &existing.AnchorRef)
+	switch {
+	case err == nil:
+		if existing != a {
+			return fmt.Errorf("prepare active run head: conflicting durable journal: %w", ErrRunHeadCAS)
+		}
+		eligible, checkErr := activeRunHeadEligible(tx, a, a.ExpectedHead)
+		if checkErr != nil {
+			return fmt.Errorf("prepare active run head: verify expected-head retry: %w", checkErr)
+		}
+		if !eligible {
+			eligible, checkErr = activeRunHeadEligible(tx, a, a.Candidate)
+			if checkErr != nil {
+				return fmt.Errorf("prepare active run head: verify candidate-head retry: %w", checkErr)
+			}
+		}
+		if !eligible {
+			return fmt.Errorf("prepare active run head: retry no longer eligible: %w", ErrRunHeadCAS)
+		}
+	case errors.Is(err, sql.ErrNoRows):
+		eligible, checkErr := activeRunHeadEligible(tx, a, a.ExpectedHead)
+		if checkErr != nil {
+			return fmt.Errorf("prepare active run head: verify eligibility: %w", checkErr)
+		}
+		if !eligible {
+			return fmt.Errorf("prepare active run head: %w", ErrRunHeadCAS)
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO run_head_advances
+			 (run_id, repo_id, branch, step_name, expected_head_sha, candidate_head_sha, anchor_ref, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			a.RunID, a.RepoID, a.Branch, a.StepName, a.ExpectedHead, a.Candidate, a.AnchorRef, now(),
+		); err != nil {
+			return fmt.Errorf("prepare active run head: insert journal: %w", err)
+		}
+	default:
+		return fmt.Errorf("prepare active run head: read journal: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("prepare active run head: commit: %w", err)
+	}
+	return nil
+}
+
+// AdvanceActiveRunHeadCAS commits a previously prepared exact transition. It
+// never creates the journal after the gate has moved: a missing or conflicting
+// prepared row loses the CAS. The identical committed tuple is retryable.
 func (d *DB) AdvanceActiveRunHeadCAS(a ActiveRunHeadAdvance) error {
 	tx, err := d.sql.Begin()
 	if err != nil {
@@ -58,36 +152,32 @@ func (d *DB) AdvanceActiveRunHeadCAS(a ActiveRunHeadAdvance) error {
 		 FROM run_head_advances WHERE run_id = ? AND candidate_head_sha = ?`,
 		a.RunID, a.Candidate,
 	).Scan(&existing.RunID, &existing.RepoID, &existing.Branch, &existing.StepName, &existing.ExpectedHead, &existing.Candidate, &existing.AnchorRef)
-	switch {
-	case err == nil:
-		if existing != a {
-			return fmt.Errorf("advance active run head: conflicting durable journal: %w", ErrRunHeadCAS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("advance active run head: prepared journal missing: %w", ErrRunHeadCAS)
+	}
+	if err != nil {
+		return fmt.Errorf("advance active run head: read prepared journal: %w", err)
+	}
+	if existing != a {
+		return fmt.Errorf("advance active run head: conflicting prepared journal: %w", ErrRunHeadCAS)
+	}
+
+	result, err := tx.Exec(activeRunHeadCASUpdateSQL, a.Candidate, now(), a.RunID, a.RepoID, a.Branch, a.ExpectedHead)
+	if err != nil {
+		return fmt.Errorf("advance active run head: update run: %w", err)
+	}
+	rows, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return fmt.Errorf("advance active run head: rows affected: %w", rowsErr)
+	}
+	if rows != 1 {
+		result, err = tx.Exec(activeRunHeadCASUpdateSQL, a.Candidate, now(), a.RunID, a.RepoID, a.Branch, a.Candidate)
+		if err != nil {
+			return fmt.Errorf("advance active run head: verify retry: %w", err)
 		}
-		result, updateErr := tx.Exec(activeRunHeadCASUpdateSQL, a.Candidate, now(), a.RunID, a.RepoID, a.Branch, a.Candidate)
-		if updateErr != nil {
-			return fmt.Errorf("advance active run head: verify retry: %w", updateErr)
-		}
-		if rows, rowsErr := result.RowsAffected(); rowsErr != nil || rows != 1 {
+		if rows, rowsErr = result.RowsAffected(); rowsErr != nil || rows != 1 {
 			return fmt.Errorf("advance active run head: retry no longer eligible: %w", ErrRunHeadCAS)
 		}
-	case errors.Is(err, sql.ErrNoRows):
-		if _, err := tx.Exec(
-			`INSERT INTO run_head_advances
-			 (run_id, repo_id, branch, step_name, expected_head_sha, candidate_head_sha, anchor_ref, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			a.RunID, a.RepoID, a.Branch, a.StepName, a.ExpectedHead, a.Candidate, a.AnchorRef, now(),
-		); err != nil {
-			return fmt.Errorf("advance active run head: insert journal: %w", err)
-		}
-		result, updateErr := tx.Exec(activeRunHeadCASUpdateSQL, a.Candidate, now(), a.RunID, a.RepoID, a.Branch, a.ExpectedHead)
-		if updateErr != nil {
-			return fmt.Errorf("advance active run head: update run: %w", updateErr)
-		}
-		if rows, rowsErr := result.RowsAffected(); rowsErr != nil || rows != 1 {
-			return fmt.Errorf("advance active run head: %w", ErrRunHeadCAS)
-		}
-	default:
-		return fmt.Errorf("advance active run head: read journal: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -96,8 +186,23 @@ func (d *DB) AdvanceActiveRunHeadCAS(a ActiveRunHeadAdvance) error {
 	return nil
 }
 
-const activeRunHeadCASUpdateSQL = `
-	UPDATE runs SET head_sha = ?, updated_at = ?
+type activeRunHeadEligibilityQuerier interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func activeRunHeadEligible(q activeRunHeadEligibilityQuerier, a ActiveRunHeadAdvance, head string) (bool, error) {
+	var eligible int
+	err := q.QueryRow(activeRunHeadEligibilitySQL, a.RunID, a.RepoID, a.Branch, head).Scan(&eligible)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return eligible == 1, nil
+}
+
+const activeRunHeadEligibilityPredicateSQL = `
 	 WHERE id = ? AND repo_id = ? AND branch = ? AND head_sha = ?
 	   AND status = 'running' AND error IS NULL AND awaiting_agent_since IS NULL
 	   AND custody_returned_at IS NULL AND COALESCE(push_active, 0) = 0
@@ -115,6 +220,11 @@ const activeRunHeadCASUpdateSQL = `
 		 WHERE active.repo_id = runs.repo_id AND active.branch = runs.branch AND active.id <> runs.id
 		   AND active.status IN ('pending', 'running')
 	   )`
+
+const activeRunHeadEligibilitySQL = `SELECT 1 FROM runs` + activeRunHeadEligibilityPredicateSQL
+
+const activeRunHeadCASUpdateSQL = `
+	UPDATE runs SET head_sha = ?, updated_at = ?` + activeRunHeadEligibilityPredicateSQL
 
 // RunHeadRecovery is the immutable audit tuple for one operator-authorized
 // completed local-only recovery.

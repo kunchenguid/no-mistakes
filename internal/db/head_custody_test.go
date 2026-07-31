@@ -297,16 +297,40 @@ func TestAdoptCompletedRunHeadCASDatabaseFailureRollsBackAudit(t *testing.T) {
 	}
 }
 
-func TestAdvanceActiveRunHeadCASExactStateAndRetry(t *testing.T) {
+func newActiveRunHeadAdvanceFixture(t *testing.T) (*DB, *Repo, *Run, ActiveRunHeadAdvance) {
+	t.Helper()
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo(t.TempDir(), "https://example.invalid/live.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feature", "old", "base")
 	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 		t.Fatal(err)
 	}
+	step, err := d.InsertStepResult(run.ID, types.StepDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.StartStep(step.ID); err != nil {
+		t.Fatal(err)
+	}
 	a := ActiveRunHeadAdvance{
 		RunID: run.ID, RepoID: repo.ID, Branch: run.Branch, StepName: "document",
 		ExpectedHead: "old", Candidate: "candidate", AnchorRef: "refs/no-mistakes/run-head-candidates/run/candidate",
+	}
+	return d, repo, run, a
+}
+
+func TestAdvanceActiveRunHeadCASExactPreparedStateAndRetry(t *testing.T) {
+	d, _, run, a := newActiveRunHeadAdvanceFixture(t)
+	if err := d.PrepareActiveRunHeadAdvanceCAS(a); err != nil {
+		t.Fatal(err)
+	}
+	preparedRun, _ := d.GetRun(run.ID)
+	if preparedRun.HeadSHA != a.ExpectedHead {
+		t.Fatalf("prepare changed live head to %s", preparedRun.HeadSHA)
+	}
+	prepared, err := d.GetPreparedActiveRunHeadAdvances()
+	if err != nil || len(prepared) != 1 || prepared[0] != a {
+		t.Fatalf("prepared advances = %#v, %v", prepared, err)
 	}
 	if err := d.AdvanceActiveRunHeadCAS(a); err != nil {
 		t.Fatal(err)
@@ -317,6 +341,42 @@ func TestAdvanceActiveRunHeadCASExactStateAndRetry(t *testing.T) {
 	got, _ := d.GetRun(run.ID)
 	if got.HeadSHA != a.Candidate {
 		t.Fatalf("live head = %s", got.HeadSHA)
+	}
+	prepared, err = d.GetPreparedActiveRunHeadAdvances()
+	if err != nil || len(prepared) != 0 {
+		t.Fatalf("committed advance still listed as prepared: %#v, %v", prepared, err)
+	}
+}
+
+func TestAdvanceActiveRunHeadCASRequiresPreparedJournal(t *testing.T) {
+	d, _, run, a := newActiveRunHeadAdvanceFixture(t)
+	if err := d.AdvanceActiveRunHeadCAS(a); !errors.Is(err, ErrRunHeadCAS) {
+		t.Fatalf("missing prepare CAS = %v", err)
+	}
+	got, _ := d.GetRun(run.ID)
+	if got.HeadSHA != a.ExpectedHead {
+		t.Fatalf("missing prepare changed live head to %s", got.HeadSHA)
+	}
+}
+
+func TestAdvanceActiveRunHeadCASPredicateLossPreservesPreparedJournal(t *testing.T) {
+	d, _, run, a := newActiveRunHeadAdvanceFixture(t)
+	if err := d.PrepareActiveRunHeadAdvanceCAS(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.AdvanceActiveRunHeadCAS(a); !errors.Is(err, ErrRunHeadCAS) {
+		t.Fatalf("predicate-loss CAS = %v", err)
+	}
+	got, _ := d.GetRun(run.ID)
+	if got.HeadSHA != a.ExpectedHead {
+		t.Fatalf("predicate loss changed live head to %s", got.HeadSHA)
+	}
+	journal, err := d.GetActiveRunHeadAdvance(run.ID, a.Candidate)
+	if err != nil || journal == nil || *journal != a {
+		t.Fatalf("predicate loss discarded prepared journal = %#v, %v", journal, err)
 	}
 }
 
@@ -334,21 +394,16 @@ func TestAdvanceActiveRunHeadCASDenialAndJournalRollback(t *testing.T) {
 		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			d := openTestDB(t)
-			repo, _ := d.InsertRepo(t.TempDir(), "https://example.invalid/live.git", "main")
-			run, _ := d.InsertRun(repo.ID, "feature", "old", "base")
-			if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
-				t.Fatal(err)
-			}
-			a := ActiveRunHeadAdvance{RunID: run.ID, RepoID: repo.ID, Branch: run.Branch, StepName: "document", ExpectedHead: "old", Candidate: "candidate", AnchorRef: "refs/candidate"}
+			d, repo, run, a := newActiveRunHeadAdvanceFixture(t)
+			a.AnchorRef = "refs/candidate"
 			if tt.name == "wrong expected head" {
 				a.ExpectedHead = "wrong"
 			}
 			if err := tt.apply(d, repo, run); err != nil {
 				t.Fatal(err)
 			}
-			if err := d.AdvanceActiveRunHeadCAS(a); !errors.Is(err, ErrRunHeadCAS) {
-				t.Fatalf("live CAS = %v", err)
+			if err := d.PrepareActiveRunHeadAdvanceCAS(a); !errors.Is(err, ErrRunHeadCAS) {
+				t.Fatalf("live prepare CAS = %v", err)
 			}
 			got, _ := d.GetRun(run.ID)
 			if got.HeadSHA != "old" {

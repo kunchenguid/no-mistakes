@@ -187,6 +187,10 @@ func TestCommitAgentFixesGateCASRacePreservesConcurrentHead(t *testing.T) {
 	if got := gitCmd(t, dir, "rev-parse", liveHeadCandidateAnchorRef(sctx.Run.ID, candidate)); got != candidate {
 		t.Fatalf("candidate anchor = %s, want %s", got, candidate)
 	}
+	journal, journalErr := sctx.DB.GetActiveRunHeadAdvance(sctx.Run.ID, candidate)
+	if journalErr != nil || journal == nil || journal.ExpectedHead != old || journal.Candidate != candidate {
+		t.Fatalf("gate race prepared journal = %#v, %v", journal, journalErr)
+	}
 }
 
 func TestCommitAgentFixesExactHeadRaceRefusesBeforeGateCAS(t *testing.T) {

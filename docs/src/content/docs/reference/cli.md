@@ -179,13 +179,16 @@ no-mistakes axi sync --check
 no-mistakes axi sync
 no-mistakes axi sync --recover
 no-mistakes axi sync --recover --keep-local
+no-mistakes axi sync --recover --run <FULL-RUN-ID> --adopt-forward-head <FULL-COMMIT-ID>
 ```
 
-| Flag           | Type   | Default | Description                                                                  |
-| -------------- | ------ | ------- | ---------------------------------------------------------------------------- |
-| `--check`      | `bool` | `false` | Verify the live target and exact plan without changing `HEAD`                |
-| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits |
-| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree   |
+| Flag                   | Type     | Default | Description                                                                  |
+| ---------------------- | -------- | ------- | ---------------------------------------------------------------------------- |
+| `--check`              | `bool`   | `false` | Verify the live target and exact plan without changing `HEAD`                |
+| `--recover`            | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits |
+| `--keep-local`         | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree    |
+| `--run`                | `string` | (none)  | With `--recover --adopt-forward-head`: exact complete 26-character run ID    |
+| `--adopt-forward-head` | `string` | (none)  | With `--recover --run`: exact lowercase 40- or 64-hex candidate commit ID    |
 
 The default command is an explicit non-interactive apply request and never prompts.
 All modes return the complete `branch_sync` object as TOON.
@@ -210,6 +213,10 @@ A dirty or diverged worktree refuses with explicit choices.
 When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
 `no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
+
+The paired `--run <FULL-RUN-ID> --adopt-forward-head <FULL-COMMIT-ID>` form is a narrower operator-authorized historical repair, not generic descendant adoption. Both flags are required together and only with `--recover`; prefixes, lowercase run IDs, abbreviated SHAs, refs, tags, revision expressions, `--check`, and `--keep-local` are refused. The exact run must be the latest same-branch row, exactly completed with Intent through Lint successful and Push, PR, and CI skipped, with no error, awaiting-agent, publication, or competing active-run state. The invoking registered branch must be uniquely checked out and clean at its exact submitted head, that submitted head must be a strict ancestor of the recorded head, and the recorded head must be a strict ancestor of the explicit candidate. Any recorded review-approved head must also be ancestral to the candidate, and the exact gate branch must equal the candidate. The repair anchors the candidate, records an immutable audit tuple, advances only by strict fast-forward, and returns custody only after the final local, gate, anchor, run, step, and audit proof succeeds.
+
+`no-mistakes axi sync` is non-interactive, so the paired form sends that exact authorization immediately and does not prompt. Use it only when the operator has already reviewed and authorized both full IDs. The human `no-mistakes sync` form displays the candidate and run and requires an explicit `y`/`yes` confirmation; in a non-TTY it refuses unless `--yes` is supplied.
 
 ## no-mistakes axi logs
 
@@ -315,17 +322,20 @@ no-mistakes sync --check
 no-mistakes sync --yes
 no-mistakes sync --recover
 no-mistakes sync --recover --keep-local
+no-mistakes sync --recover --run <FULL-RUN-ID> --adopt-forward-head <FULL-COMMIT-ID>
 ```
 
-| Flag           | Type   | Default | Description                                                     |
-| -------------- | ------ | ------- | --------------------------------------------------------------- |
-| `--check`      | `bool` | `false` | Verify and print the fresh plan without changing `HEAD`         |
-| `-y`, `--yes`  | `bool` | `false` | Apply an eligible guarded synchronization without an interactive prompt |
-| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits |
-| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree |
+| Flag                   | Type     | Default | Description                                                     |
+| ---------------------- | -------- | ------- | --------------------------------------------------------------- |
+| `--check`              | `bool`   | `false` | Verify and print the fresh plan without changing `HEAD`         |
+| `-y`, `--yes`          | `bool`   | `false` | Apply an eligible guarded synchronization without an interactive prompt |
+| `--recover`            | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits |
+| `--keep-local`         | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree |
+| `--run`                | `string` | (none)  | With `--recover --adopt-forward-head`: exact complete 26-character run ID |
+| `--adopt-forward-head` | `string` | (none)  | With `--recover --run`: exact lowercase 40- or 64-hex candidate commit ID |
 
 Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` prompts the same way before returning custody.
-A non-TTY apply or recovery refuses with a direct `--yes` hint.
+A non-TTY apply or recovery refuses with a direct `--yes` hint. For the paired exact historical repair, confirmation names both the full candidate and full run ID and warns that ancestry and gate equality do not prove the historical run produced the candidate.
 The command uses the same service and safety contract as `no-mistakes axi sync`, including the guarded equivalent advance and custody recovery documented there; it never stashes, rebases, creates a merge commit, switches branches, deletes a branch, or updates an external remote.
 
 ## no-mistakes status

@@ -162,7 +162,11 @@ func TestSyncHelpAndReferenceExposeGuardedModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"## no-mistakes sync", "## no-mistakes axi sync", "no-mistakes axi sync --check"} {
+	for _, want := range []string{
+		"## no-mistakes sync", "## no-mistakes axi sync", "no-mistakes axi sync --check",
+		"--run <FULL-RUN-ID> --adopt-forward-head <FULL-COMMIT-ID>",
+		"requires an explicit `y`/`yes` confirmation", "exactly completed", "latest same-branch row",
+	} {
 		if !strings.Contains(string(doc), want) {
 			t.Errorf("CLI reference missing %q", want)
 		}

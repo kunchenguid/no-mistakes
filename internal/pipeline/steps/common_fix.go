@@ -217,6 +217,17 @@ func commitAgentFixesWithHooks(sctx *pipeline.StepContext, stepName types.StepNa
 			return fmt.Errorf("after %s candidate anchor: %w", stepName, err)
 		}
 	}
+	advance := db.ActiveRunHeadAdvance{
+		RunID: sctx.Run.ID, RepoID: sctx.Run.RepoID, Branch: sctx.Run.Branch,
+		StepName: string(stepName), ExpectedHead: oldHead, Candidate: candidate, AnchorRef: anchorRef,
+	}
+	// Git refs and SQLite cannot move atomically. Persist the complete exact
+	// transition tuple before the gate CAS so a new daemon can distinguish the
+	// one prepared old→candidate move it may reconcile from an arbitrary
+	// descendant or an unanchored gate change.
+	if err := sctx.DB.PrepareActiveRunHeadAdvanceCAS(advance); err != nil {
+		return err
+	}
 
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	gateHead, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", ref+"^{commit}")
@@ -252,10 +263,7 @@ func commitAgentFixesWithHooks(sctx *pipeline.StepContext, stepName types.StepNa
 	if exactGate, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", ref+"^{commit}"); err != nil || exactGate != candidate {
 		return fmt.Errorf("refusing %s database CAS: gate branch no longer equals candidate %s", stepName, candidate)
 	}
-	if err := sctx.DB.AdvanceActiveRunHeadCAS(db.ActiveRunHeadAdvance{
-		RunID: sctx.Run.ID, RepoID: sctx.Run.RepoID, Branch: sctx.Run.Branch,
-		StepName: string(stepName), ExpectedHead: oldHead, Candidate: candidate, AnchorRef: anchorRef,
-	}); err != nil {
+	if err := sctx.DB.AdvanceActiveRunHeadCAS(advance); err != nil {
 		return err
 	}
 	if hooks.AfterDBCAS != nil {

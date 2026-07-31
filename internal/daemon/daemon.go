@@ -215,7 +215,9 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, sta
 	slog.Info("daemon process launched", "pid", pidRecord.PID)
 
 	// Recovery remains exclusive and completes before IPC is bound.
-	recoverOnStartup(d, p, mgr)
+	if err := recoverOnStartup(d, p, mgr); err != nil {
+		return err
+	}
 
 	srv := ipc.NewServer()
 
@@ -351,7 +353,7 @@ func writeDaemonPIDFile(path string, record daemonPIDFile) error {
 // best-effort migrates gate bare repos in place so older installs pick up
 // the per-worktree hookspath isolation introduced for issue #122 when Git
 // supports config --worktree.
-func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
+func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) error {
 	orphanStarted := time.Now()
 	reapOrphanedServers(p)
 	logStartupPhase("orphan_servers", orphanStarted)
@@ -365,6 +367,22 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 		"rejected", gateStats.Rejected,
 		"failed", gateStats.Failed,
 	)
+
+	// A live head adoption prepares its exact immutable journal before moving
+	// the gate. Reconcile the one gate-moved/durable-head-stale state while the
+	// crashed run and worktree are still active, under the shared branch lock,
+	// before generic recovery marks the run failed and removes its worktree.
+	headAdvanceStarted := time.Now()
+	headAdvanceStats, headAdvanceErr := mgr.reconcilePreparedHeadAdvances(context.Background())
+	logStartupPhase("prepared_head_advances", headAdvanceStarted,
+		"prepared", headAdvanceStats.Prepared,
+		"reconciled", headAdvanceStats.Reconciled,
+		"skipped", headAdvanceStats.Skipped,
+		"failed", headAdvanceStats.Failed,
+	)
+	if headAdvanceErr != nil {
+		return fmt.Errorf("reconcile prepared run head advances before stale-run recovery: %w", headAdvanceErr)
+	}
 
 	terminalPRStarted := time.Now()
 	terminalPRCount, err := d.ReconcileTerminalPRRuns()
@@ -394,7 +412,7 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 		for _, plan := range plans {
 			_ = plan.agent.Close()
 		}
-		return
+		return nil
 	}
 	if count > 0 {
 		slog.Info("recovered stale runs from previous crash", "count", count)
@@ -405,6 +423,7 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	cleanupOrphanWorktrees(d, p)
 	logStartupPhase("worktree_cleanup", worktreeStarted)
 	mgr.resumeRecoveredRuns(plans)
+	return nil
 }
 
 // cleanupOrphanWorktrees removes worktree directories left behind by runs
