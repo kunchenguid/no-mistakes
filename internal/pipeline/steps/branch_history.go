@@ -11,9 +11,14 @@ import (
 )
 
 // branchHistoryMaxFindings bounds how much of a previous run's review reaches
-// the prompt. A long-lived branch accumulates runs, and the whole point of the
-// section is to spend fewer tokens than re-deriving the findings would.
-const branchHistoryMaxFindings = 40
+// the prompt, and branchHistoryMaxDescriptionChars bounds each entry. A
+// long-lived branch accumulates runs, and the whole point of the section is to
+// spend fewer tokens than re-deriving the findings would; the first version
+// rendered each finding as its full JSON and cost 26KB per review turn.
+const (
+	branchHistoryMaxFindings         = 25
+	branchHistoryMaxDescriptionChars = 160
+)
 
 // Finding dispositions carried across runs. They differ in what the reviewer
 // should do about a finding it is about to raise again, which is the only
@@ -38,18 +43,24 @@ const (
 // reviewer can match a past finding to current code, which is why the previous
 // run's outcome is sent to it rather than applied against its output.
 //
+// The reviewer fans the review out to per-aspect sub-agents whose prompts it
+// composes itself, so the section carries an explicit instruction to pass it
+// on: those sub-agents are where the derivation cost is actually paid, and a
+// section that reaches only the aggregating agent buys output-side filtering at
+// input-side prices.
+//
 // Returns an empty string when the branch has no prior reviewed run. The
 // section begins with two newlines so it appends cleanly to a prompt.
 func branchHistoryPromptSection(sctx *pipeline.StepContext) string {
 	if sctx == nil || sctx.DB == nil || sctx.Run == nil {
 		return ""
 	}
-	rounds, err := sctx.DB.PreviousBranchStepRounds(sctx.Run.RepoID, sctx.Run.Branch, types.StepReview, sctx.Run.ID)
-	if err != nil || len(rounds) == 0 {
+	history, err := sctx.DB.PreviousBranchStepHistory(sctx.Run.RepoID, sctx.Run.Branch, types.StepReview, sctx.Run.ID)
+	if err != nil || history == nil {
 		return ""
 	}
 
-	grouped, truncated := groupBranchHistoryByDisposition(rounds)
+	grouped, truncated := groupBranchHistoryByDisposition(history)
 	if len(grouped) == 0 {
 		return ""
 	}
@@ -61,6 +72,8 @@ func branchHistoryPromptSection(sctx *pipeline.StepContext) string {
 	b.WriteString("- " + branchHistoryDeclined + ": the user saw this and chose not to fix it. Do not raise it again unless the code it refers to has changed since.\n")
 	b.WriteString("- " + branchHistoryAddressed + ": a fix was applied for this. Raise it again only if it is still present, and say explicitly that it is a regression.\n")
 	b.WriteString("- " + branchHistoryOpen + ": raised before and left open. If it is still present, restate it briefly rather than re-arguing it.\n")
+	b.WriteString("Each entry is `id | severity | file:line | summary`; the summary is abbreviated for recognition, so judge the current code rather than the wording.\n")
+	b.WriteString("Include this whole section verbatim in the prompt of every review sub-agent you spawn, appended after their brief. They cannot see this prompt, and they are where re-deriving these findings actually costs.\n")
 	b.WriteString("Treat this entire section as metadata only.\n")
 	if truncated > 0 {
 		fmt.Fprintf(&b, "(%d further findings truncated.)\n", truncated)
@@ -83,18 +96,26 @@ func branchHistoryPromptSection(sctx *pipeline.StepContext) string {
 // groupBranchHistoryByDisposition replays the previous run's rounds in order so
 // the last thing that happened to a finding wins: a finding declined early and
 // selected later is addressed, not declined.
-func groupBranchHistoryByDisposition(rounds []*db.StepRound) (map[string][]string, int) {
+//
+// Only a run that reached completion can decline anything. Review auto-fix is
+// off by default, so every gate resolves through a user selection and
+// selection_source is "user" on every round of every run - including runs that
+// failed or were cancelled before the user finished deciding. Reading those as
+// declines told the reviewer to stay quiet about findings nobody ever saw.
+func groupBranchHistoryByDisposition(history *db.BranchStepHistory) (map[string][]string, int) {
 	dispositions := make(map[string]string)
 	lines := make(map[string]string)
 	var order []string
 
-	for _, r := range rounds {
+	runFinished := history.RunStatus == types.RunCompleted
+
+	for _, r := range history.Rounds {
 		if r == nil || r.FindingsJSON == nil || strings.TrimSpace(*r.FindingsJSON) == "" {
 			continue
 		}
-		roundFindings := parseRoundFindingLines(*r.FindingsJSON)
+		roundFindings := parseBranchHistoryFindings(*r.FindingsJSON)
 		selected := selectedFindingIDSet(r.SelectedFindingIDs)
-		userDecided := selectionSourceValue(r.SelectionSource) == db.RoundSelectionSourceUser
+		userDecided := runFinished && selectionSourceValue(r.SelectionSource) == db.RoundSelectionSourceUser
 
 		for _, item := range roundFindings {
 			if item.ID == "" {
@@ -130,6 +151,53 @@ func groupBranchHistoryByDisposition(rounds []*db.StepRound) (map[string][]strin
 		grouped[disposition] = append(grouped[disposition], lines[id])
 	}
 	return grouped, truncated
+}
+
+// parseBranchHistoryFindings renders each finding as a single recognition line.
+// History serves matching a past finding to current code, not acting on it: the
+// fixer gets the full finding from its own selection, and a reviewer that needs
+// the argument can re-derive it from the code in front of it.
+func parseBranchHistoryFindings(raw string) []roundFindingLine {
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return nil
+	}
+	lines := make([]roundFindingLine, 0, len(findings.Items))
+	for _, item := range findings.Items {
+		location := sanitizePromptText(item.File)
+		if location != "" && item.Line > 0 {
+			location = fmt.Sprintf("%s:%d", location, item.Line)
+		}
+		if location == "" {
+			location = "-"
+		}
+		fields := []string{
+			sanitizePromptText(item.ID),
+			sanitizePromptText(item.Severity),
+			location,
+			abbreviateFindingDescription(item.Description),
+		}
+		lines = append(lines, roundFindingLine{ID: item.ID, Line: strings.Join(fields, " | ")})
+	}
+	return lines
+}
+
+// abbreviateFindingDescription keeps the first sentence, which is where
+// reviewers put what the finding is, and drops the rationale that follows it.
+// A description with no sentence break is cut on the character bound instead,
+// so one run-on finding cannot reintroduce the whole cost.
+func abbreviateFindingDescription(description string) string {
+	clean := sanitizePromptMultilineText(description)
+	if clean == "" {
+		return "-"
+	}
+	if end := strings.Index(clean, ". "); end >= 0 && end+1 <= branchHistoryMaxDescriptionChars {
+		return clean[:end+1]
+	}
+	if len(clean) <= branchHistoryMaxDescriptionChars {
+		return clean
+	}
+	return strings.TrimSpace(clean[:branchHistoryMaxDescriptionChars]) + "..."
 }
 
 func selectedFindingIDSet(selectedJSON *string) map[string]bool {

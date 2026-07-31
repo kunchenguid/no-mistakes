@@ -6,7 +6,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-func TestPreviousBranchStepRoundsReturnsMostRecentPriorRunOnSameBranch(t *testing.T) {
+func TestPreviousBranchStepHistoryReturnsMostRecentPriorRunOnSameBranch(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/tmp/branch-history", "https://example.com/repo.git", "main")
 
@@ -14,33 +14,60 @@ func TestPreviousBranchStepRoundsReturnsMostRecentPriorRunOnSameBranch(t *testin
 	insertRunWithReviewFindings(t, d, repo.ID, "feature", `{"findings":[{"id":"newer-1","severity":"error","description":"newer"}]}`)
 	current, _ := d.InsertRun(repo.ID, "feature", "head3", "base")
 
-	rounds, err := d.PreviousBranchStepRounds(repo.ID, "feature", types.StepReview, current.ID)
+	history, err := d.PreviousBranchStepHistory(repo.ID, "feature", types.StepReview, current.ID)
 	if err != nil {
-		t.Fatalf("previous branch step rounds: %v", err)
+		t.Fatalf("previous branch step history: %v", err)
 	}
-	if len(rounds) != 1 {
-		t.Fatalf("want rounds from exactly the newest prior run, got %d", len(rounds))
+	if history == nil || len(history.Rounds) != 1 {
+		t.Fatalf("want rounds from exactly the newest prior run, got %#v", history)
 	}
-	if *rounds[0].FindingsJSON != `{"findings":[{"id":"newer-1","severity":"error","description":"newer"}]}` {
-		t.Fatalf("returned rounds from the wrong run: %s", *rounds[0].FindingsJSON)
+	if *history.Rounds[0].FindingsJSON != `{"findings":[{"id":"newer-1","severity":"error","description":"newer"}]}` {
+		t.Fatalf("returned rounds from the wrong run: %s", *history.Rounds[0].FindingsJSON)
 	}
 }
 
-func TestPreviousBranchStepRoundsExcludesCurrentRun(t *testing.T) {
+// The previous run's terminal status is the only evidence of whether the user
+// finished deciding about its findings, so it must travel with the rounds.
+func TestPreviousBranchStepHistoryCarriesPriorRunStatus(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/branch-history-status", "https://example.com/repo.git", "main")
+
+	prior := insertRunWithReviewFindings(t, d, repo.ID, "feature", `{"findings":[{"id":"f-1","severity":"warning","description":"d"}]}`)
+	if err := d.UpdateRunStatus(prior, types.RunFailed); err != nil {
+		t.Fatalf("update run status: %v", err)
+	}
+	current, _ := d.InsertRun(repo.ID, "feature", "head-current", "base")
+
+	history, err := d.PreviousBranchStepHistory(repo.ID, "feature", types.StepReview, current.ID)
+	if err != nil {
+		t.Fatalf("previous branch step history: %v", err)
+	}
+	if history == nil {
+		t.Fatal("want history for the prior run")
+	}
+	if history.RunID != prior {
+		t.Errorf("run id = %q, want %q", history.RunID, prior)
+	}
+	if history.RunStatus != types.RunFailed {
+		t.Errorf("run status = %q, want %q", history.RunStatus, types.RunFailed)
+	}
+}
+
+func TestPreviousBranchStepHistoryExcludesCurrentRun(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/tmp/branch-history-self", "https://example.com/repo.git", "main")
 	current := insertRunWithReviewFindings(t, d, repo.ID, "feature", `{"findings":[{"id":"self-1","severity":"warning","description":"self"}]}`)
 
-	rounds, err := d.PreviousBranchStepRounds(repo.ID, "feature", types.StepReview, current)
+	history, err := d.PreviousBranchStepHistory(repo.ID, "feature", types.StepReview, current)
 	if err != nil {
-		t.Fatalf("previous branch step rounds: %v", err)
+		t.Fatalf("previous branch step history: %v", err)
 	}
-	if len(rounds) != 0 {
-		t.Fatalf("current run must never be its own prior history, got %d rounds", len(rounds))
+	if history != nil {
+		t.Fatalf("current run must never be its own prior history, got %#v", history)
 	}
 }
 
-func TestPreviousBranchStepRoundsIgnoresOtherBranchesAndRepos(t *testing.T) {
+func TestPreviousBranchStepHistoryIgnoresOtherBranchesAndRepos(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/tmp/branch-history-scope", "https://example.com/repo.git", "main")
 	other, _ := d.InsertRepo("/tmp/branch-history-other", "https://example.com/other.git", "main")
@@ -48,19 +75,19 @@ func TestPreviousBranchStepRoundsIgnoresOtherBranchesAndRepos(t *testing.T) {
 	insertRunWithReviewFindings(t, d, other.ID, "feature", `{"findings":[{"id":"y","severity":"error","description":"y"}]}`)
 	current, _ := d.InsertRun(repo.ID, "feature", "head", "base")
 
-	rounds, err := d.PreviousBranchStepRounds(repo.ID, "feature", types.StepReview, current.ID)
+	history, err := d.PreviousBranchStepHistory(repo.ID, "feature", types.StepReview, current.ID)
 	if err != nil {
-		t.Fatalf("previous branch step rounds: %v", err)
+		t.Fatalf("previous branch step history: %v", err)
 	}
-	if len(rounds) != 0 {
-		t.Fatalf("history leaked across branch or repo, got %d rounds", len(rounds))
+	if history != nil {
+		t.Fatalf("history leaked across branch or repo, got %#v", history)
 	}
 }
 
 // A run whose review produced no findings carries no reusable history, so the
 // lookup must fall through to the most recent run that actually reviewed
 // something rather than reporting an empty history.
-func TestPreviousBranchStepRoundsSkipsRunsWithoutRecordedFindings(t *testing.T) {
+func TestPreviousBranchStepHistorySkipsRunsWithoutRecordedFindings(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/tmp/branch-history-empty", "https://example.com/repo.git", "main")
 	insertRunWithReviewFindings(t, d, repo.ID, "feature", `{"findings":[{"id":"real-1","severity":"warning","description":"real"}]}`)
@@ -72,15 +99,15 @@ func TestPreviousBranchStepRoundsSkipsRunsWithoutRecordedFindings(t *testing.T) 
 	}
 
 	current, _ := d.InsertRun(repo.ID, "feature", "head-current", "base")
-	rounds, err := d.PreviousBranchStepRounds(repo.ID, "feature", types.StepReview, current.ID)
+	history, err := d.PreviousBranchStepHistory(repo.ID, "feature", types.StepReview, current.ID)
 	if err != nil {
-		t.Fatalf("previous branch step rounds: %v", err)
+		t.Fatalf("previous branch step history: %v", err)
 	}
-	if len(rounds) != 1 || rounds[0].FindingsJSON == nil {
-		t.Fatalf("want the last run with recorded findings, got %#v", rounds)
+	if history == nil || len(history.Rounds) != 1 || history.Rounds[0].FindingsJSON == nil {
+		t.Fatalf("want the last run with recorded findings, got %#v", history)
 	}
-	if *rounds[0].FindingsJSON != `{"findings":[{"id":"real-1","severity":"warning","description":"real"}]}` {
-		t.Fatalf("wrong run selected: %s", *rounds[0].FindingsJSON)
+	if *history.Rounds[0].FindingsJSON != `{"findings":[{"id":"real-1","severity":"warning","description":"real"}]}` {
+		t.Fatalf("wrong run selected: %s", *history.Rounds[0].FindingsJSON)
 	}
 }
 

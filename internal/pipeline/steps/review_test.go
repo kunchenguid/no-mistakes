@@ -859,6 +859,11 @@ func TestReviewStep_CarriesPreviousBranchReviewIntoPrompt(t *testing.T) {
 	if err := sctx.DB.SetStepRoundSelection(round.ID, &selected, db.RoundSelectionSourceUser); err != nil {
 		t.Fatal(err)
 	}
+	// Only a run that ran to completion proves the user finished deciding, which
+	// is what makes an unselected finding a decline rather than an open one.
+	if err := sctx.DB.UpdateRunStatus(prior.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
 		t.Fatal(err)
