@@ -250,7 +250,7 @@ func TestTUIOverflow_ReconnectAttemptsAreBounded(t *testing.T) {
 
 // A successful reconnect clears the retry budget so a later drop gets a fresh
 // set of attempts.
-func TestTUIOverflow_SuccessfulReconnectResetsTheRetryBudget(t *testing.T) {
+func TestTUIOverflow_RetryBudgetResetsOnlyAfterAuthoritativeProgress(t *testing.T) {
 	m := ciRunningModel(false)
 	updated, _ := m.Update(subscriptionErrMsg{err: fmt.Errorf("dial: no daemon"), subscriptionID: m.subscriptionID})
 	m = updated.(Model)
@@ -260,8 +260,47 @@ func TestTUIOverflow_SuccessfulReconnectResetsTheRetryBudget(t *testing.T) {
 	events := make(chan ipc.Event)
 	updated, _ = m.Update(connectedMsg{events: events, cancelSub: func() {}, subscriptionID: m.subscriptionID})
 	m = updated.(Model)
+	if m.resubscribeTries != 1 {
+		t.Fatalf("resubscribeTries = %d, want connection alone to preserve the consumed retry", m.resubscribeTries)
+	}
+	updated, _ = m.Update(runReconciledMsg{
+		run:            snapshot(20, false, types.StepStatusRunning),
+		subscriptionID: m.subscriptionID,
+	})
+	m = updated.(Model)
 	if m.resubscribeTries != 0 {
-		t.Fatalf("resubscribeTries = %d, want 0 after a successful reconnect", m.resubscribeTries)
+		t.Fatalf("resubscribeTries = %d, want 0 after authoritative reconciliation", m.resubscribeTries)
+	}
+}
+
+func TestTUIOverflow_CompletedGapThenCloseConvergesWithoutReconnect(t *testing.T) {
+	m := ciRunningModel(false)
+	m.reconcile = func(context.Context) (*ipc.RunInfo, error) {
+		return &ipc.RunInfo{ID: "run-1", Status: types.RunCompleted, StateRev: 44}, nil
+	}
+	subscriptionID := m.subscriptionID
+	updated, reconcileCmd := m.Update(eventMsg{
+		event:          ipc.Event{Type: ipc.EventStreamGap, RunID: "run-1", StateRev: 44},
+		subscriptionID: subscriptionID,
+	})
+	m = updated.(Model)
+	reconciled := reconciledFrom(t, reconcileCmd)
+
+	updated, reconnectCmd := m.Update(subscriptionErrMsg{
+		err: fmt.Errorf("event stream closed"), subscriptionID: subscriptionID,
+	})
+	m = updated.(Model)
+	if reconnectCmd != nil || m.subscriptionID != subscriptionID {
+		t.Fatal("stream close rolled over before the in-flight reconciliation completed")
+	}
+
+	updated, reconnectCmd = m.Update(reconciled)
+	m = updated.(Model)
+	if !m.done || m.run.Status != types.RunCompleted {
+		t.Fatal("terminal authoritative snapshot was not applied")
+	}
+	if reconnectCmd != nil || m.subscriptionID != subscriptionID || m.resubscribeTries != 0 {
+		t.Fatal("completed reconciliation scheduled a reconnect loop")
 	}
 }
 
@@ -485,17 +524,28 @@ func TestTUIOverflow_SnapshotGateReplacesPreviousRoundDiffAndInflightFetch(t *te
 func TestTUIOverflow_ReconnectClearsGenerationScopedAsyncState(t *testing.T) {
 	m := ciRunningModel(false)
 	m.reconcilePending = true
-	m.reconcileAgain = true
 	m.stepDiffFetching[types.StepReview] = true
 	m.pendingDiffFetch = []stepDiffRequest{{step: types.StepReview, requestID: 1}}
 	oldSubscriptionID := m.subscriptionID
 
-	updated, _ := m.Update(subscriptionErrMsg{
+	updated, reconnectCmd := m.Update(subscriptionErrMsg{
 		err: fmt.Errorf("stream closed"), subscriptionID: oldSubscriptionID,
 	})
 	m = updated.(Model)
-	if m.subscriptionID == oldSubscriptionID {
-		t.Fatal("subscription generation did not advance")
+	if reconnectCmd != nil || m.subscriptionID != oldSubscriptionID || !m.reconcilePending {
+		t.Fatal("stream close did not preserve the in-flight authoritative read")
+	}
+
+	updated, reconnectCmd = m.Update(runReconciledMsg{
+		run: &ipc.RunInfo{
+			ID: "run-1", Status: types.RunRunning, StateRev: 39,
+			Steps: []ipc.StepResultInfo{{RunID: "run-1", StepName: types.StepCI, Status: types.StepStatusRunning}},
+		},
+		subscriptionID: oldSubscriptionID,
+	})
+	m = updated.(Model)
+	if reconnectCmd == nil || m.subscriptionID == oldSubscriptionID {
+		t.Fatal("completed reconciliation did not advance the subscription generation")
 	}
 	if m.reconcilePending || m.reconcileAgain || len(m.stepDiffFetching) != 0 || len(m.pendingDiffFetch) != 0 {
 		t.Fatal("reconnect retained generation-scoped reconcile or diff work")
@@ -535,6 +585,7 @@ func TestTUIOverflow_TruncatedDiffStateRendersBeforeApprovalActions(t *testing.T
 	}
 	m.stepDiffs[types.StepReview] = "diff body\n"
 	m.stepDiffTruncated[types.StepReview] = true
+	m.stepDiffLoaded[types.StepReview] = true
 	m.width = 100
 
 	view := stripANSI(m.View())
@@ -549,6 +600,49 @@ func TestTUIOverflow_TruncatedDiffStateRendersBeforeApprovalActions(t *testing.T
 	}
 	if approveAt < 0 || warningAt > approveAt {
 		t.Fatalf("truncation warning must appear before approval actions:\n%s", view)
+	}
+}
+
+func TestTUIOverflow_FixReviewApprovalWaitsForDiffForManualAndYolo(t *testing.T) {
+	m := ciRunningModel(false)
+	m.steps = []ipc.StepResultInfo{
+		{RunID: "run-1", StepName: types.StepReview, Status: types.StepStatusFixReview},
+	}
+	m.yoloMode = true
+	m.requestStepDiff(types.StepReview, true)
+	requestID := m.stepDiffRequestID[types.StepReview]
+
+	updated, manualCmd := m.handleKey(keyMsg("a"))
+	m = updated.(Model)
+	if manualCmd != nil {
+		t.Fatal("manual approval was enabled before the fix diff loaded")
+	}
+	if cmd := m.maybeAutoApproveCmd(); cmd != nil {
+		t.Fatal("yolo approval was enabled before the fix diff loaded")
+	}
+	view := stripANSI(m.View())
+	if strings.Contains(view, "a approve") || !strings.Contains(view, "loading fix diff") {
+		t.Fatalf("action bar exposed approval before the diff loaded:\n%s", view)
+	}
+
+	updated, cmd := m.Update(stepDiffMsg{
+		step: types.StepReview, diff: "partial diff\n", truncated: true,
+		requestID: requestID, subscriptionID: m.subscriptionID,
+	})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("diff completion did not schedule the post-render approval check")
+	}
+	view = stripANSI(m.View())
+	warningAt := strings.Index(view, "Diff truncated at 512 KiB.")
+	approveAt := strings.Index(view, "a approve")
+	if warningAt < 0 || approveAt < 0 || warningAt > approveAt {
+		t.Fatalf("approval became available without a preceding truncation warning:\n%s", view)
+	}
+	updated, approveCmd := m.Update(cmd())
+	m = updated.(Model)
+	if approveCmd == nil {
+		t.Fatal("yolo approval did not become available after the warning render cycle")
 	}
 }
 

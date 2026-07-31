@@ -24,6 +24,11 @@ import (
 func (m *Model) applyEvent(event ipc.Event) bool {
 	if event.Type == ipc.EventStreamGap {
 		m.err = nil
+		if step := awaitingStep(m.steps); step != nil && step.Status == types.StepStatusFixReview {
+			delete(m.stepDiffs, step.StepName)
+			delete(m.stepDiffTruncated, step.StepName)
+			delete(m.stepDiffLoaded, step.StepName)
+		}
 		return true
 	}
 	if ipc.ClassOf(event.Type) == ipc.ClassState && event.StateRev != 0 {
@@ -213,12 +218,20 @@ func (m *Model) requestStepDiff(step types.StepName, replace bool) {
 	}
 	delete(m.stepDiffs, step)
 	delete(m.stepDiffTruncated, step)
+	delete(m.stepDiffLoaded, step)
 	m.stepDiffRequestID[step]++
 	m.stepDiffFetching[step] = true
 	m.pendingDiffFetch = append(m.pendingDiffFetch, stepDiffRequest{
 		step:      step,
 		requestID: m.stepDiffRequestID[step],
 	})
+}
+
+func (m Model) approvalReady(step *ipc.StepResultInfo) bool {
+	if step == nil || step.Status != types.StepStatusFixReview {
+		return true
+	}
+	return !m.reconcilePending && m.stepDiffLoaded[step.StepName] && !m.stepDiffFetching[step.StepName]
 }
 
 func (m *Model) updateStepStatus(name types.StepName, status types.StepStatus) {

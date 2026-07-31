@@ -102,6 +102,9 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	if step == nil || m.yoloApproved[step.StepName] {
 		return nil
 	}
+	if !m.approvalReady(step) {
+		return nil
+	}
 	if step.Status != types.StepStatusFixReview && !m.yoloFixed[step.StepName] && m.stepHasActionableFindings(step.StepName) {
 		m.yoloFixed[step.StepName] = true
 		m.resetFindingSelection(step.StepName)
@@ -114,6 +117,9 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 func (m Model) respondCmd(action types.ApprovalAction) tea.Cmd {
 	step := awaitingStep(m.steps)
 	if step == nil {
+		return nil
+	}
+	if action == types.ActionApprove && !m.approvalReady(step) {
 		return nil
 	}
 	if action == types.ActionFix {
@@ -257,6 +263,24 @@ func (m Model) resubscribeCmd() tea.Cmd {
 	return tea.Tick(resubscribeDelay, func(time.Time) tea.Msg {
 		return resubscribeMsg{subscriptionID: subID}
 	})
+}
+
+func (m *Model) startResubscribe() tea.Cmd {
+	if m.resubscribeTries >= maxResubscribeTries {
+		return nil
+	}
+	m.resubscribeTries++
+	m.streamClosed = false
+	m.subscriptionID++
+	m.stateRev = 0
+	m.reconcilePending = false
+	m.reconcileAgain = false
+	m.stepDiffFetching = make(map[types.StepName]bool)
+	m.stepDiffLoaded = make(map[types.StepName]bool)
+	m.stepDiffs = make(map[types.StepName]string)
+	m.stepDiffTruncated = make(map[types.StepName]bool)
+	m.pendingDiffFetch = nil
+	return m.resubscribeCmd()
 }
 
 func (m Model) waitForEvent() tea.Cmd {

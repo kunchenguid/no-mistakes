@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"sync"
@@ -131,15 +132,32 @@ func TestExecutor_SkippedStepEventsAlsoFollowTheirDatabaseWrite(t *testing.T) {
 
 func TestExecutor_ApprovalPersistenceFailureDoesNotPublishOrWaitAtGate(t *testing.T) {
 	database, p, run, repo := setupTest(t)
+	control, err := sql.Open("sqlite", p.DB()+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Exec(`
+		CREATE TRIGGER fail_gate_findings_update
+		BEFORE UPDATE OF findings_json ON step_results
+		BEGIN
+			SELECT RAISE(FAIL, 'findings write failed');
+		END
+	`); err != nil {
+		control.Close()
+		t.Fatal(err)
+	}
+	if err := control.Close(); err != nil {
+		t.Fatal(err)
+	}
 	var eventsMu sync.Mutex
 	var events []ipc.Event
 	step := &adaptiveCallStep{
 		name: types.StepReview,
 		fn: func(*StepContext) (*StepOutcome, error) {
-			if err := database.Close(); err != nil {
-				t.Fatalf("close database: %v", err)
-			}
-			return &StepOutcome{NeedsApproval: true, Findings: `{"items":[]}`}, nil
+			return &StepOutcome{
+				NeedsApproval: true,
+				Findings:      `{"items":[{"id":"review-1","severity":"error"}]}`,
+			}, nil
 		},
 	}
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, func(event ipc.Event) {
@@ -148,7 +166,7 @@ func TestExecutor_ApprovalPersistenceFailureDoesNotPublishOrWaitAtGate(t *testin
 		eventsMu.Unlock()
 	})
 
-	err := exec.Execute(context.Background(), run, repo, t.TempDir())
+	err = exec.Execute(context.Background(), run, repo, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "persist review approval gate") {
 		t.Fatalf("Execute error = %v, want approval persistence failure", err)
 	}

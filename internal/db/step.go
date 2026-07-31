@@ -101,7 +101,7 @@ func (d *DB) UpdateStepStatusWithDuration(id string, status types.StepStatus, du
 	return nil
 }
 
-func (d *DB) ParkStepForApproval(runID, stepID string, status types.StepStatus, durationMS int64) error {
+func (d *DB) ParkStepForApproval(runID, stepID string, status types.StepStatus, durationMS int64, findingsJSON *string) error {
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return fmt.Errorf("begin approval park: %w", err)
@@ -110,8 +110,8 @@ func (d *DB) ParkStepForApproval(runID, stepID string, status types.StepStatus, 
 
 	ts := now()
 	stepResult, err := tx.Exec(
-		`UPDATE step_results SET status = ?, duration_ms = ?, last_activity_at = ?, last_activity = ? WHERE id = ?`,
-		status, durationMS, ts, fmt.Sprintf("status: %s", status), stepID,
+		`UPDATE step_results SET status = ?, duration_ms = ?, findings_json = ?, last_activity_at = ?, last_activity = ? WHERE id = ?`,
+		status, durationMS, findingsJSON, ts, fmt.Sprintf("status: %s", status), stepID,
 	)
 	if err != nil {
 		return fmt.Errorf("park step for approval: %w", err)

@@ -63,6 +63,12 @@ type stepDiffRequest struct {
 	requestID uint64
 }
 
+type stepDiffReadyMsg struct {
+	step           types.StepName
+	requestID      uint64
+	subscriptionID uint64
+}
+
 // resubscribeMsg fires after the reconnect delay for a dropped stream.
 type resubscribeMsg struct{ subscriptionID uint64 }
 

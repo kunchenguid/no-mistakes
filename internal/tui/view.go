@@ -47,8 +47,10 @@ func (m Model) View() string {
 		raw, ok := m.stepDiffs[step.StepName]
 		hasDiff = ok && raw != ""
 	}
-	actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff)
-	if step := awaitingStep(m.steps); step != nil && m.stepDiffTruncated[step.StepName] {
+	stepAwaiting := awaitingStep(m.steps)
+	approvalReady := m.approvalReady(stepAwaiting)
+	actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff, approvalReady)
+	if stepAwaiting != nil && m.stepDiffTruncated[stepAwaiting.StepName] {
 		warning := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiYellow)).
 			Render("⚠ Diff truncated at 512 KiB. Approval applies to the full diff.")
 		actionBar = warning + "\n" + actionBar

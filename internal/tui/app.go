@@ -33,6 +33,7 @@ type Model struct {
 	reconcile        func(ctx context.Context) (*ipc.RunInfo, error)
 	reconcilePending bool
 	reconcileAgain   bool
+	streamClosed     bool
 	// resubscribeTries bounds reconnect attempts for a dropped event stream.
 	resubscribeTries int
 	// fetchStepDiff reads a fix-review gate's working-tree diff. Nil in
@@ -43,6 +44,7 @@ type Model struct {
 	stepDiffs           map[types.StepName]string            // step name → raw unified diff (fetched on demand)
 	stepDiffTruncated   map[types.StepName]bool              // steps whose fetched diff was capped
 	stepDiffFetching    map[types.StepName]bool              // steps with an in-flight diff read
+	stepDiffLoaded      map[types.StepName]bool              // steps whose current diff request completed
 	stepDiffRequestID   map[types.StepName]uint64            // latest request generation per step
 	pendingDiffFetch    []stepDiffRequest                    // diff reads to issue on the next update
 	findingSelections   map[types.StepName]map[string]bool   // step name → finding ID → selected
@@ -106,6 +108,7 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		stepDiffs:           make(map[types.StepName]string),
 		stepDiffTruncated:   make(map[types.StepName]bool),
 		stepDiffFetching:    make(map[types.StepName]bool),
+		stepDiffLoaded:      make(map[types.StepName]bool),
 		stepDiffRequestID:   make(map[types.StepName]uint64),
 		findingSelections:   make(map[types.StepName]map[string]bool),
 		findingCursor:       make(map[types.StepName]int),
@@ -214,7 +217,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.events = msg.events
 		m.cancelSub = msg.cancelSub
-		m.resubscribeTries = 0
+		m.streamClosed = false
 		if m.done {
 			if m.cancelSub != nil {
 				m.cancelSub()
@@ -272,11 +275,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 		} else {
 			m.applySnapshot(msg.run)
+			m.resubscribeTries = 0
 		}
 		cmds := m.drainDiffFetches()
 		if m.reconcileAgain {
 			m.reconcileAgain = false
 			cmds = append(cmds, m.reconcileCmd())
+		} else if m.streamClosed && !m.done {
+			cmds = append(cmds, m.startResubscribe())
 		}
 		return m, tea.Batch(cmds...)
 
@@ -288,29 +294,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.done {
 			return m, nil
 		}
-		// A dropped stream is not terminal: resubscribe. The new subscription
-		// opens gapped, so it reads authoritative state before rendering
-		// anything further, and the applied revision resets to adopt the
-		// daemon's numbering for that generation.
-		//
-		// Retries are delayed and bounded so a daemon that is genuinely gone
-		// becomes a visible error rather than a reconnect spin.
-		if m.resubscribeTries >= maxResubscribeTries {
-			return m, nil
-		}
-		m.resubscribeTries++
 		if m.cancelSub != nil {
 			m.cancelSub()
 			m.cancelSub = nil
 		}
 		m.events = nil
-		m.subscriptionID++
-		m.stateRev = 0
-		m.reconcilePending = false
-		m.reconcileAgain = false
-		m.stepDiffFetching = make(map[types.StepName]bool)
-		m.pendingDiffFetch = nil
-		return m, m.resubscribeCmd()
+		m.streamClosed = true
+		if m.reconcilePending {
+			return m, nil
+		}
+		return m, m.startResubscribe()
 
 	case resubscribeMsg:
 		if msg.subscriptionID != m.subscriptionID {
@@ -326,11 +319,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		delete(m.stepDiffFetching, msg.step)
-		if msg.err == nil && msg.diff != "" {
-			m.stepDiffs[msg.step] = msg.diff
+		if msg.err == nil {
+			m.stepDiffLoaded[msg.step] = true
 			m.stepDiffTruncated[msg.step] = msg.truncated
+			if msg.diff != "" {
+				m.stepDiffs[msg.step] = msg.diff
+			} else {
+				delete(m.stepDiffs, msg.step)
+			}
+			return m, func() tea.Msg {
+				return stepDiffReadyMsg{
+					step:           msg.step,
+					requestID:      msg.requestID,
+					subscriptionID: msg.subscriptionID,
+				}
+			}
 		}
 		return m, nil
+
+	case stepDiffReadyMsg:
+		if msg.subscriptionID != m.subscriptionID || msg.requestID != m.stepDiffRequestID[msg.step] {
+			return m, nil
+		}
+		return m, m.maybeAutoApproveCmd()
 
 	case syncRefreshedMsg:
 		m.syncRefreshing = false

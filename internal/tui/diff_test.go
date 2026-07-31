@@ -449,7 +449,7 @@ func TestRenderPipelineView_DiffKey(t *testing.T) {
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
 	// Action bar is now rendered outside the pipeline box per DESIGN.md.
-	out := stripANSI(renderActionBar(run.Steps, true, true, false, 5, 5, false, true))
+	out := stripANSI(renderActionBar(run.Steps, true, true, false, 5, 5, false, true, true))
 	if !strings.Contains(out, "d diff") {
 		t.Error("expected d diff in approval prompt")
 	}

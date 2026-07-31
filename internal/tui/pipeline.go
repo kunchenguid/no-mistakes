@@ -208,7 +208,7 @@ func appendRightLabel(line, label string, width int) string {
 // Per DESIGN.md: "Sits below the pipeline box, above findings/diff"
 // showDiff controls whether the 'd' key label says "findings" (to toggle back) or "diff".
 // Selection actions are hidden in diff mode since they don't apply.
-func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int, confirmAbort bool, hasDiff bool) string {
+func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int, confirmAbort bool, hasDiff bool, approvalReady bool) string {
 	step := awaitingStep(steps)
 	if step == nil {
 		return ""
@@ -224,17 +224,22 @@ func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allo
 	b.WriteString("\n")
 	// Hide selection actions in diff mode since toggle/A/N keys don't work there.
 	effectiveSelection := showSelectionActions && !showDiff
-	b.WriteString(renderApprovalActions(effectiveSelection, allowFix, showDiff, selectedCount, totalCount, confirmAbort, hasDiff))
+	b.WriteString(renderApprovalActions(effectiveSelection, allowFix, showDiff, selectedCount, totalCount, confirmAbort, hasDiff, approvalReady))
 	return b.String()
 }
 
-func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int, confirmAbort bool, hasDiff bool) string {
+func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int, confirmAbort bool, hasDiff bool, approvalReady bool) string {
 	boldKey := lipgloss.NewStyle().Bold(true)
 	renderAction := func(key, label string) string {
 		return boldKey.Render(key) + " " + label
 	}
 
-	primary := []string{renderAction("a", "approve")}
+	var primary []string
+	if approvalReady {
+		primary = append(primary, renderAction("a", "approve"))
+	} else {
+		primary = append(primary, lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack)).Render("loading fix diff..."))
+	}
 	if allowFix {
 		fixLabel := "fix"
 		if selectedCount > 0 && selectedCount < totalCount {
