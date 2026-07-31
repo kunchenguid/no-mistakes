@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/gateguidance"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -93,7 +94,7 @@ func TestStaleMonitorGuidance_InChecksPassedOutput(t *testing.T) {
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
 	cmd.SetOut(&out)
-	if err := renderDriveResult(cmd, run, true); err != nil {
+	if err := renderDriveResult(cmd, run, true, []string{cimonitor.ChecksPassedMsg}); err != nil {
 		t.Fatalf("checks-passed must exit 0, got error: %v", err)
 	}
 
@@ -222,7 +223,11 @@ func renderDriveResultForGuidanceTest(t *testing.T, ciReady bool, status types.R
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
 	cmd.SetOut(&out)
-	err := renderDriveResult(cmd, run, ciReady)
+	var ciLogs []string
+	if ciReady {
+		ciLogs = []string{cimonitor.ChecksPassedMsg}
+	}
+	err := renderDriveResult(cmd, run, ciReady, ciLogs)
 	var exit *exitError
 	if err != nil && !errors.As(err, &exit) {
 		t.Fatalf("renderDriveResult returned unexpected error: %v", err)

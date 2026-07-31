@@ -129,6 +129,17 @@ type RepoConfig struct {
 	// able to turn it off (or on). Default false; a plain bool so a missing key
 	// or a YAML/JSON null is falsy and preserves current loading.
 	DisableProjectSettings bool `yaml:"disable_project_settings"`
+	// NoCI declares that this repository intentionally has no CI. When true and
+	// the forge reports zero checks, the CI monitor treats that empty result as
+	// all-checks-passed. It is a readiness boundary honored ONLY from the trusted
+	// default-branch copy of .no-mistakes.yaml (see EffectiveRepoConfig): a
+	// contributor's pushed branch must not self-declare no-CI and bypass checks.
+	// Default false - absence means CI is expected, and an unproven empty check
+	// list remains not-ready regardless of elapsed time. If checks still appear,
+	// their actual states are processed normally; the declaration never waives a
+	// registered pending or failing check. No inference from workflow files,
+	// prior history, branch names, or grace-period expiry.
+	NoCI bool `yaml:"no_ci"`
 }
 
 // DocumentRaw is the YAML representation of document-step settings.
@@ -269,6 +280,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Document               DocumentRaw `yaml:"document"`
 		Review                 ReviewRaw   `yaml:"review"`
 		DisableProjectSettings bool        `yaml:"disable_project_settings"`
+		NoCI                   bool        `yaml:"no_ci"`
 	}
 	var raw repoConfigRaw
 	if err := value.Decode(&raw); err != nil {
@@ -286,6 +298,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Document = raw.Document
 	c.Review = raw.Review
 	c.DisableProjectSettings = raw.DisableProjectSettings
+	c.NoCI = raw.NoCI
 	return nil
 }
 
@@ -344,6 +357,10 @@ type Config struct {
 	// project-level settings/instructions suppressed; the daemon fails the run
 	// closed if the resolved harness has no verified suppression knob.
 	DisableProjectSettings bool
+	// NoCI is the resolved, trusted-only declaration that this repository
+	// intentionally has no CI (see the RepoConfig field). When true and the
+	// forge reports zero checks, the CI monitor treats that as all-checks-passed.
+	NoCI bool
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -1280,8 +1297,9 @@ func validatePathInstructionGlob(pattern string) error {
 // injected into the review gate prompt) is trusted-only for the same reason: a
 // pushed branch must not steer the reviewer that gates it. DisableProjectSettings
 // is also trusted-only so a pushed branch cannot enable or defeat the gate-agent
-// project-instruction boundary. All three ignore allowRepoCommands, which scopes
-// only the code-executing selection fields. When allowRepoCommands is
+// project-instruction boundary. NoCI is trusted-only so a pushed branch cannot
+// self-declare no-CI and bypass its own checks. All four ignore allowRepoCommands,
+// which scopes only the code-executing selection fields. When allowRepoCommands is
 // true the maintainer has explicitly opted in (via allow_repo_commands on the
 // TRUSTED default-branch copy) to honoring the pushed branch's commands and
 // agent selection.
@@ -1314,10 +1332,15 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// means the trusted config was legitimately absent (the daemon aborts
 		// separately when it could not be READ at all), so falsy is correct.
 		effective.DisableProjectSettings = trusted.DisableProjectSettings
+		// no_ci is a readiness boundary: honor it ONLY from the trusted
+		// default-branch copy so a pushed branch cannot self-declare no-CI and
+		// bypass checks that the default branch still expects.
+		effective.NoCI = trusted.NoCI
 	} else {
 		effective.Document = DocumentRaw{}
 		effective.Review = ReviewRaw{}
 		effective.DisableProjectSettings = false
+		effective.NoCI = false
 	}
 	if allowRepoCommands {
 		return &effective
@@ -1506,6 +1529,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
+		NoCI:                   repo.NoCI,
 	}
 
 	if repo.Agent != "" {

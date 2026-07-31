@@ -152,11 +152,16 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 		}
 	}
 
-	run, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, autoYes, ciLogReader(env.p))
+	readCILog := ciLogReader(env.p)
+	run, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, autoYes, readCILog)
 	if err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}
-	return renderDriveResult(cmd, run, ciReady)
+	var ciLogs []string
+	if readCILog != nil {
+		ciLogs = readCILog(run.ID)
+	}
+	return renderDriveResult(cmd, run, ciReady, ciLogs)
 }
 
 func configErrorForFreshAxiRun(env *axiEnv, runID string) error {
@@ -586,7 +591,11 @@ func sendRespond(client *ipc.Client, runID string, step types.StepName, action t
 // passed, exit 1 when blocked, failed, or cancelled). Successful outcomes also
 // carry the fixes the pipeline applied and reporting instructions, so the agent
 // closes the loop with the user instead of stopping at "it passed".
-func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error {
+//
+// ciLogs are the CI step log lines used only to distinguish a trusted no_ci
+// declaration (positive evidence, still outcome checks-passed) from observed
+// green checks, so help text keeps that evidence inspectable.
+func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool, ciLogs []string) error {
 	rv := runViewFromIPC(run)
 	fields := []toon.Field{runObjectField(rv)}
 	hasBranchSync := false
@@ -601,8 +610,11 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 	if ciReady {
 		fields = append(fields, toon.Field{Key: "outcome", Value: "checks-passed"})
 		merge := "CI checks passed - the PR is ready. Ask the user to review and merge it."
+		if cimonitor.DeclaredNoCI(ciLogs) {
+			merge = "Repository declares no CI (no_ci: true on the trusted default branch) and no checks are registered - treated as all checks passed. Ask the user to review and merge it."
+		}
 		if rv.PRURL != "" {
-			merge = fmt.Sprintf("CI checks passed - the PR is ready. Ask the user to review and merge it: %s", rv.PRURL)
+			merge = fmt.Sprintf("%s: %s", strings.TrimSuffix(merge, "."), rv.PRURL)
 		}
 		fixes := rv.fixRows()
 		fields = appendFixesField(fields, fixes)
@@ -807,11 +819,16 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		return emitError(cmd, 1, fmt.Sprintf("wait for %s: %v", stepName, err))
 	}
 
-	final, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes, ciLogReader(env.p))
+	readCILog := ciLogReader(env.p)
+	final, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes, readCILog)
 	if err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}
-	return renderDriveResult(cmd, final, ciReady)
+	var ciLogs []string
+	if readCILog != nil {
+		ciLogs = readCILog(final.ID)
+	}
+	return renderDriveResult(cmd, final, ciReady, ciLogs)
 }
 
 // gateStatusFor returns the current status of step in rv, defaulting to the

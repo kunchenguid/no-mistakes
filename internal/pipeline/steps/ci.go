@@ -15,7 +15,6 @@ import (
 )
 
 const (
-	defaultChecksGracePeriod          = 60 * time.Second
 	defaultBaseBranchTipResolveWindow = 30 * time.Second
 )
 
@@ -31,11 +30,15 @@ const (
 
 // CIStep monitors an open PR until it is merged, closed, or its configured idle
 // timeout elapses, auto-fixing CI failures.
+//
+// Empty check lists are never treated as green unless the resolved config
+// carries the trusted default-branch `no_ci: true` declaration (config.Config.NoCI).
+// A feature branch cannot self-declare that value. When checks exist, their
+// actual states are always processed normally - even on a declared no-CI repo.
 type CIStep struct {
 	lastFixedChecks      string               // sorted check names from last fix attempt, to avoid re-fixing
 	lastFixedCompletedAt map[string]time.Time // failing check completion times seen before the last fix attempt
 	ciFixAttempts        int                  // number of CI auto-fix attempts made
-	checksGracePeriod    time.Duration        // minimum wait before trusting empty CI checks (0 = default 60s)
 	pollIntervalOverride time.Duration        // if set, overrides computed poll interval (for testing)
 	waitForNextPoll      func(context.Context, time.Duration) error
 	now                  func() time.Time
@@ -112,13 +115,6 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	default:
 		return false, fmt.Errorf("PR state is unresolved: %q", state)
 	}
-}
-
-func (s *CIStep) gracePeriod() time.Duration {
-	if s.checksGracePeriod > 0 {
-		return s.checksGracePeriod
-	}
-	return defaultChecksGracePeriod
 }
 
 func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
@@ -244,7 +240,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			}
 		}
 
-		elapsed := now().Sub(started)
 		if !unlimited && now().Sub(timeoutAnchor) >= timeout {
 			return timeoutOutcome()
 		}
@@ -396,14 +391,22 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					// Checks are (re-)running with no failures yet. Surface this
 					// so a PR that passed checks and starts re-running clears the
 					// previous passed-checks signal instead of looking stale.
+					// Applies even when no_ci is declared: registered checks are
+					// never waived.
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
-				case len(checks) == 0 && elapsed < s.gracePeriod():
-					clearCIMonitorReady(sctx)
-					// CI checks may not be registered yet, keep polling.
-					lastMonitorLog = ""
-					sctx.Log("no CI checks reported yet, waiting for checks to register...")
 				case len(checks) == 0:
-					lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
+					// Empty forge results are ready ONLY with positive durable
+					// evidence from trusted default-branch config (no_ci: true).
+					// Without that declaration, keep waiting - delayed registration
+					// is common and must never look green. Elapsed time is not
+					// evidence; there is no grace-period promotion path.
+					if sctx.Config != nil && sctx.Config.NoCI {
+						lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
+					} else {
+						clearCIMonitorReady(sctx)
+						lastMonitorLog = ""
+						sctx.Log("no CI checks reported yet, waiting for checks to register...")
+					}
 				default:
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
 				}

@@ -184,12 +184,21 @@ func TestParseCIActivity(t *testing.T) {
 		}
 	})
 
-	t.Run("checks passed when no checks configured", func(t *testing.T) {
+	t.Run("checks passed when trusted no_ci declares no CI", func(t *testing.T) {
+		a := parseCIActivity([]string{
+			"repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed",
+		})
+		if !a.Ready {
+			t.Error("expected Ready to be true when trusted no_ci declares no CI")
+		}
+	})
+
+	t.Run("generic empty checks never ready", func(t *testing.T) {
 		a := parseCIActivity([]string{
 			"no CI checks reported - still monitoring until merged or closed",
 		})
-		if !a.Ready {
-			t.Error("expected Ready to be true when no checks are configured")
+		if a.Ready {
+			t.Error("expected Ready false for unproven empty forge results")
 		}
 	})
 
