@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -13,6 +14,17 @@ import (
 )
 
 const spinnerTickInterval = 120 * time.Millisecond
+
+// reconcileTimeout bounds one authoritative run read so a wedged daemon
+// surfaces as an error instead of a silently stalled view.
+const reconcileTimeout = 30 * time.Second
+
+// Reconnect pacing for a dropped event stream. Bounded so a daemon that is
+// genuinely gone surfaces the error instead of spinning on failed dials.
+const (
+	resubscribeDelay    = 500 * time.Millisecond
+	maxResubscribeTries = 60
+)
 
 var runBrowserCommand = func(name string, args ...string) error {
 	return exec.Command(name, args...).Run()
@@ -171,6 +183,80 @@ func (m Model) subscribeCmd() tea.Cmd {
 		}
 		return connectedMsg{events: events, cancelSub: cancel, subscriptionID: m.subscriptionID}
 	}
+}
+
+// reconcileCmd reads authoritative run state exactly once.
+//
+// Requests coalesce: at most one read is in flight, and a gap arriving while
+// one is running schedules exactly one follow-up. That keeps overflow from
+// turning into a reconciliation storm, and it is the only read the TUI ever
+// makes on its own - there is no interval poll.
+func (m *Model) reconcileCmd() tea.Cmd {
+	if m.reconcilePending {
+		m.reconcileAgain = true
+		return nil
+	}
+	m.reconcilePending = true
+	subID := m.subscriptionID
+	reconcile := m.reconcile
+	client := m.client
+	runID := m.runID
+	return func() tea.Msg {
+		if reconcile != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), reconcileTimeout)
+			defer cancel()
+			run, err := reconcile(ctx)
+			return runReconciledMsg{run: run, err: err, subscriptionID: subID}
+		}
+		var result ipc.GetRunResult
+		if err := client.CallWithTimeout(ipc.MethodGetRun, &ipc.GetRunParams{RunID: runID}, &result, reconcileTimeout); err != nil {
+			return runReconciledMsg{err: err, subscriptionID: subID}
+		}
+		return runReconciledMsg{run: result.Run, subscriptionID: subID}
+	}
+}
+
+// drainDiffFetches converts queued fix-review diff requests into commands.
+func (m *Model) drainDiffFetches() []tea.Cmd {
+	if len(m.pendingDiffFetch) == 0 {
+		return nil
+	}
+	cmds := make([]tea.Cmd, 0, len(m.pendingDiffFetch))
+	for _, step := range m.pendingDiffFetch {
+		cmds = append(cmds, m.fetchStepDiffCmd(step))
+	}
+	m.pendingDiffFetch = nil
+	return cmds
+}
+
+// fetchStepDiffCmd reads one fix-review gate's working-tree diff on demand.
+// The diff is derived from the run's worktree rather than carried by the event
+// stream, where an unbounded frame would break the subscription.
+func (m *Model) fetchStepDiffCmd(step types.StepName) tea.Cmd {
+	subID := m.subscriptionID
+	fetch := m.fetchStepDiff
+	client := m.client
+	runID := m.runID
+	return func() tea.Msg {
+		if fetch != nil {
+			diff, err := fetch(step)
+			return stepDiffMsg{step: step, diff: diff, err: err, subscriptionID: subID}
+		}
+		var result ipc.GetStepDiffResult
+		if err := client.CallWithTimeout(ipc.MethodGetStepDiff, &ipc.GetStepDiffParams{RunID: runID}, &result, reconcileTimeout); err != nil {
+			return stepDiffMsg{step: step, err: err, subscriptionID: subID}
+		}
+		return stepDiffMsg{step: step, diff: result.Diff, subscriptionID: subID}
+	}
+}
+
+// resubscribeCmd waits out the reconnect delay before reattaching to the
+// event stream.
+func (m Model) resubscribeCmd() tea.Cmd {
+	subID := m.subscriptionID
+	return tea.Tick(resubscribeDelay, func(time.Time) tea.Msg {
+		return resubscribeMsg{subscriptionID: subID}
+	})
 }
 
 func (m Model) waitForEvent() tea.Cmd {

@@ -22,10 +22,27 @@ type Model struct {
 	subscriptionID uint64
 
 	// State.
-	run                 *ipc.RunInfo
+	run *ipc.RunInfo
+	// stateRev is the highest run-state revision this model has applied. It
+	// is scoped to the current subscription generation: a fresh subscription
+	// resets it to zero and reconciles, adopting the daemon's numbering.
+	stateRev int64
+	// reconcile reads authoritative run state. Nil in production, where the
+	// IPC client is used; injectable so the contract is testable without a
+	// daemon.
+	reconcile        func(ctx context.Context) (*ipc.RunInfo, error)
+	reconcilePending bool
+	reconcileAgain   bool
+	// resubscribeTries bounds reconnect attempts for a dropped event stream.
+	resubscribeTries int
+	// fetchStepDiff reads a fix-review gate's working-tree diff. Nil in
+	// production, where the IPC client is used; injectable for tests.
+	fetchStepDiff       func(types.StepName) (string, error)
 	steps               []ipc.StepResultInfo
 	stepFindings        map[types.StepName]string            // step name → raw findings JSON
-	stepDiffs           map[types.StepName]string            // step name → raw unified diff
+	stepDiffs           map[types.StepName]string            // step name → raw unified diff (fetched on demand)
+	stepDiffFetching    map[types.StepName]bool              // steps with an in-flight diff read
+	pendingDiffFetch    []types.StepName                     // diff reads to issue on the next update
 	findingSelections   map[types.StepName]map[string]bool   // step name → finding ID → selected
 	findingCursor       map[types.StepName]int               // step name → current finding cursor
 	findingInstructions map[types.StepName]map[string]string // step name → finding ID → user note
@@ -85,6 +102,7 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		steps:               steps,
 		stepFindings:        make(map[types.StepName]string),
 		stepDiffs:           make(map[types.StepName]string),
+		stepDiffFetching:    make(map[types.StepName]bool),
 		findingSelections:   make(map[types.StepName]map[string]bool),
 		findingCursor:       make(map[types.StepName]int),
 		findingInstructions: make(map[types.StepName]map[string]string),
@@ -192,6 +210,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.events = msg.events
 		m.cancelSub = msg.cancelSub
+		m.resubscribeTries = 0
 		if m.done {
 			if m.cancelSub != nil {
 				m.cancelSub()
@@ -226,18 +245,79 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.subscriptionID != m.subscriptionID {
 			return m, nil
 		}
-		m.applyEvent(msg.event)
+		gapped := m.applyEvent(msg.event)
 		m.refreshCachedSync()
+		cmds := m.drainDiffFetches()
+		if gapped {
+			// The daemon coalesced at least one state transition away.
+			// Read authoritative state once instead of guessing.
+			cmds = append(cmds, m.reconcileCmd())
+		}
 		if m.done {
+			return m, tea.Batch(cmds...)
+		}
+		cmds = append(cmds, m.waitForEvent(), m.startSpinnerIfNeeded(), m.maybeAutoApproveCmd())
+		return m, tea.Batch(cmds...)
+
+	case runReconciledMsg:
+		if msg.subscriptionID != m.subscriptionID {
 			return m, nil
 		}
-		return m, tea.Batch(m.waitForEvent(), m.startSpinnerIfNeeded(), m.maybeAutoApproveCmd())
+		m.reconcilePending = false
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.applySnapshot(msg.run)
+		}
+		cmds := m.drainDiffFetches()
+		if m.reconcileAgain {
+			m.reconcileAgain = false
+			cmds = append(cmds, m.reconcileCmd())
+		}
+		return m, tea.Batch(cmds...)
 
 	case subscriptionErrMsg:
 		if msg.subscriptionID != m.subscriptionID {
 			return m, nil
 		}
 		m.err = msg.err
+		if m.done {
+			return m, nil
+		}
+		// A dropped stream is not terminal: resubscribe. The new subscription
+		// opens gapped, so it reads authoritative state before rendering
+		// anything further, and the applied revision resets to adopt the
+		// daemon's numbering for that generation.
+		//
+		// Retries are delayed and bounded so a daemon that is genuinely gone
+		// becomes a visible error rather than a reconnect spin.
+		if m.resubscribeTries >= maxResubscribeTries {
+			return m, nil
+		}
+		m.resubscribeTries++
+		if m.cancelSub != nil {
+			m.cancelSub()
+			m.cancelSub = nil
+		}
+		m.events = nil
+		m.subscriptionID++
+		m.stateRev = 0
+		return m, m.resubscribeCmd()
+
+	case resubscribeMsg:
+		if msg.subscriptionID != m.subscriptionID {
+			return m, nil
+		}
+		return m, m.subscribeCmd()
+
+	case stepDiffMsg:
+		if msg.subscriptionID != m.subscriptionID {
+			return m, nil
+		}
+		delete(m.stepDiffFetching, msg.step)
+		if msg.err == nil && msg.diff != "" {
+			m.stepDiffs[msg.step] = msg.diff
+		}
 		return m, nil
 
 	case syncRefreshedMsg:

@@ -11,6 +11,7 @@ import (
 const (
 	MethodPushReceived   = "push_received"
 	MethodGetRun         = "get_run"
+	MethodGetStepDiff    = "get_step_diff"
 	MethodGetRuns        = "get_runs"
 	MethodGetRunsForHead = "get_runs_for_head"
 	MethodGetActiveRun   = "get_active_run"
@@ -77,6 +78,22 @@ type PushReceivedParams struct {
 // GetRunParams requests a single run by ID.
 type GetRunParams struct {
 	RunID string `json:"run_id"`
+}
+
+// GetStepDiffParams requests the working-tree diff for a run parked at a
+// fix-review gate. The diff is derived on demand from the run's worktree and
+// is never stored, so it is the reconstruction authority for the one piece of
+// gate context that is not persisted.
+type GetStepDiffParams struct {
+	RunID string `json:"run_id"`
+}
+
+// GetStepDiffResult carries a bounded working-tree diff. Truncated reports
+// that the diff exceeded the response budget and was cut, so a very large
+// change degrades to a partial view instead of an oversized frame.
+type GetStepDiffResult struct {
+	Diff      string `json:"diff"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
 
 // GetRunsParams requests all runs for a repo.
@@ -239,8 +256,13 @@ type RunInfo struct {
 	AwaitingAgent      bool             `json:"awaiting_agent,omitempty"`
 	AwaitingAgentSince *int64           `json:"awaiting_agent_since,omitempty"`
 	Steps              []StepResultInfo `json:"steps,omitempty"`
-	CreatedAt          int64            `json:"created_at"`
-	UpdatedAt          int64            `json:"updated_at"`
+	// StateRev is the monotonic run-state revision this snapshot is at least
+	// as new as. It is sampled before the database read, so every event at or
+	// below it is already reflected here and every event above it still
+	// applies on top.
+	StateRev  int64 `json:"state_rev,omitempty"`
+	CreatedAt int64 `json:"created_at"`
+	UpdatedAt int64 `json:"updated_at"`
 }
 
 // StepResultInfo is the IPC representation of a step result.
@@ -283,6 +305,11 @@ const (
 	EventStepStarted   EventType = "step_started"
 	EventStepCompleted EventType = "step_completed"
 	EventLogChunk      EventType = "log_chunk"
+	// EventStreamGap tells a subscriber that the daemon coalesced at least
+	// one state transition away under buffer pressure. StateRev is the
+	// highest revision folded into it. The subscriber must read authoritative
+	// state once; the frame carries no payload of its own.
+	EventStreamGap EventType = "stream_gap"
 )
 
 // Event is a real-time update sent to subscribers.
@@ -297,11 +324,16 @@ type Event struct {
 	Content          *string         `json:"content,omitempty"`
 	Branch           *string         `json:"branch,omitempty"`
 	Findings         *string         `json:"findings,omitempty"` // JSON-encoded findings for step_completed events
-	Diff             *string         `json:"diff,omitempty"`     // unified diff for fix_review events
 	ReportedFindings *int            `json:"reported_findings,omitempty"`
 	FixedFindings    *int            `json:"fixed_findings,omitempty"`
 	DurationMS       *int64          `json:"duration_ms,omitempty"` // execution-only duration for step events
 	PRURL            *string         `json:"pr_url,omitempty"`      // PR URL for run_updated/run_completed events
+	// StateRev is the daemon-assigned monotonic revision of the run state
+	// this event reflects, or zero for activity. A consumer applies a state
+	// delta only when StateRev exceeds the revision it has already applied,
+	// which makes a delta queued before an authoritative snapshot an
+	// idempotent no-op after it.
+	StateRev int64 `json:"state_rev,omitempty"`
 }
 
 // --- Helpers ---

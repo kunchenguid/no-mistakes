@@ -601,3 +601,73 @@ func TestRenderDriveResult_FailedHasNoSummarizeInstruction(t *testing.T) {
 		t.Errorf("failed outcome must not carry the success summary instruction:\n%s", got)
 	}
 }
+
+// A stream gap is state-bearing for the reconciler: it forces exactly one
+// authoritative read, which is how a transition the daemon had to coalesce
+// away reaches AXI. Subscribe-first behaviour and the single-read budget are
+// unchanged.
+func TestRunReconciler_StreamGapForcesOneAuthoritativeRead(t *testing.T) {
+	events := make(chan ipc.Event, 4)
+	source := &scriptedRunStateSource{
+		subscriptions: []scriptedSubscription{{events: events}},
+		runs: []*ipc.RunInfo{
+			{ID: "run-1", Status: types.RunRunning, StateRev: 3},
+			{ID: "run-1", Status: types.RunCompleted, StateRev: 71},
+		},
+	}
+	reconciler := newRunReconciler(source, "run-1")
+	defer reconciler.Close()
+	// Disable the slow lost-event backstop so only the gap can wake the
+	// reconciler; otherwise the heartbeat would mask a missing gap route.
+	reconciler.heartbeatInterval = time.Hour
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	first, err := reconciler.Next(ctx)
+	if err != nil || first.Status != types.RunRunning {
+		t.Fatalf("initial Next = %#v, %v", first, err)
+	}
+	events <- ipc.Event{Type: ipc.EventStreamGap, RunID: "run-1", StateRev: 71}
+	after, err := reconciler.Next(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != types.RunCompleted {
+		t.Fatalf("post-gap status = %q, want the authoritative terminal state", after.Status)
+	}
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	if got := strings.Join(source.operations, ","); got != "subscribe,reconcile,reconcile" {
+		t.Fatalf("operations = %s, want exactly one extra reconciliation for the gap", got)
+	}
+}
+
+// An event type this build does not recognise must be treated as state-bearing
+// rather than ignored, so a future producer cannot strand a consumer.
+func TestRunReconciler_UnknownEventTypeIsTreatedAsStateBearing(t *testing.T) {
+	events := make(chan ipc.Event, 2)
+	source := &scriptedRunStateSource{
+		subscriptions: []scriptedSubscription{{events: events}},
+		runs: []*ipc.RunInfo{
+			{ID: "run-1", Status: types.RunRunning},
+			{ID: "run-1", Status: types.RunCompleted},
+		},
+	}
+	reconciler := newRunReconciler(source, "run-1")
+	defer reconciler.Close()
+	reconciler.heartbeatInterval = time.Hour
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := reconciler.Next(ctx); err != nil {
+		t.Fatal(err)
+	}
+	events <- ipc.Event{Type: ipc.EventType("some_future_event"), RunID: "run-1"}
+	after, err := reconciler.Next(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != types.RunCompleted {
+		t.Fatalf("status after unknown event = %q, want a reconciliation", after.Status)
+	}
+}

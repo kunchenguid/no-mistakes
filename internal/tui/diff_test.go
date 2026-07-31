@@ -373,24 +373,30 @@ func TestModel_DiffScroll_NoEffectWhenHidden(t *testing.T) {
 	}
 }
 
-func TestModel_ApplyEvent_StepCompletedWithDiff(t *testing.T) {
+func TestModel_ApplyEvent_FixReviewGateRequestsDiffOnDemand(t *testing.T) {
 	run := testRun()
 	m := NewModel("/tmp/sock", nil, run)
 	m.showDiff = true
 	m.diffOffset = 5
+	m.stepDiffs[types.StepReview] = "stale diff from a previous round\n"
 
-	diff := "+new line\n-old line\n"
 	m.applyEvent(ipc.Event{
 		Type:     ipc.EventStepCompleted,
 		RunID:    run.ID,
 		StepName: ptr(types.StepReview),
 		Status:   ptr(string(types.StepStatusFixReview)),
-		Diff:     &diff,
 	})
 
-	got, ok := m.stepDiffs[types.StepReview]
-	if !ok || got != diff {
-		t.Error("expected diff stored for review step")
+	// Entering the gate invalidates the previous round's diff and queues one
+	// on-demand read; the event stream no longer carries the diff itself.
+	if _, ok := m.stepDiffs[types.StepReview]; ok {
+		t.Error("expected the stale diff to be invalidated on gate entry")
+	}
+	if len(m.pendingDiffFetch) != 1 || m.pendingDiffFetch[0] != types.StepReview {
+		t.Errorf("pendingDiffFetch = %v, want one request for the review step", m.pendingDiffFetch)
+	}
+	if !m.stepDiffFetching[types.StepReview] {
+		t.Error("expected the in-flight marker to be set")
 	}
 	// showDiff and offset should reset.
 	if m.showDiff {

@@ -47,11 +47,24 @@ type RunManager struct {
 
 	branchLocks sync.Map // repoID+"/"+branch → *sync.Mutex
 
-	subMu          sync.RWMutex
-	subscribers    map[string][]chan<- ipc.Event // runID → subscriber channels
-	completedRuns  map[string]bool               // runIDs whose goroutines have finished
-	completedOrder []string                      // insertion order for FIFO eviction
+	// subMu guards the subscriber set and the per-run state revisions. It is
+	// a plain Mutex, not an RWMutex, because revision assignment and fan-out
+	// must be one atomic step: if two concurrent state events could be
+	// enqueued out of revision order, a consumer's monotonic guard would
+	// permanently discard the older one's payload. The critical section
+	// contains no blocking operation and no I/O, so hold time is
+	// O(subscribers) memory writes.
+	subMu          sync.Mutex
+	subscribers    map[string][]*eventMailbox // runID → subscriber mailboxes
+	stateRevs      map[string]int64           // runID → monotonic state revision
+	completedRuns  map[string]bool            // runIDs whose goroutines have finished
+	completedOrder []string                   // insertion order for FIFO eviction
 }
+
+// maxSubscribersPerRun bounds the global mailbox footprint: queued bytes can
+// never exceed activeRuns × maxSubscribersPerRun × mailboxMaxBytes. Refusing
+// past the cap is an ordinary error, never unbounded growth.
+const maxSubscribersPerRun = 32
 
 // NewRunManager creates a RunManager. Pass nil for stepFactory to use default steps.
 func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *RunManager {
@@ -65,7 +78,8 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 		db:            database,
 		paths:         p,
 		steps:         stepFactory,
-		subscribers:   make(map[string][]chan<- ipc.Event),
+		subscribers:   make(map[string][]*eventMailbox),
+		stateRevs:     make(map[string]int64),
 		completedRuns: make(map[string]bool),
 	}
 }
@@ -359,56 +373,102 @@ func agentListsEqual(a, b []types.AgentName) bool {
 	return true
 }
 
-// Subscribe registers a channel to receive events for a run.
-// Returns the channel and an unsubscribe function.
-// If the run has already completed, the returned channel is immediately closed.
-func (m *RunManager) Subscribe(runID string) (<-chan ipc.Event, func()) {
-	ch := make(chan ipc.Event, 64)
+// Subscribe registers a subscriber mailbox for a run.
+//
+// The returned subscription always opens with a stream-gap frame, so a
+// subscriber's first action is always one authoritative read. That makes
+// attach and reconnect converge without each consumer needing its own
+// subscribe-then-reconcile ordering rule. A run that has already completed
+// yields that one gap and then finishes.
+func (m *RunManager) Subscribe(runID string) (*Subscription, error) {
 	m.subMu.Lock()
+	defer m.subMu.Unlock()
+
+	mb := newEventMailbox(runID, m.stateRevs[runID])
 	if m.completedRuns[runID] {
-		m.subMu.Unlock()
-		close(ch)
-		return ch, func() {}
+		mb.close()
+		return &Subscription{mb: mb, unsub: func() {}}, nil
 	}
-	m.subscribers[runID] = append(m.subscribers[runID], ch)
-	m.subMu.Unlock()
+	if len(m.subscribers[runID]) >= maxSubscribersPerRun {
+		return nil, fmt.Errorf("run %s already has the maximum of %d event subscribers", runID, maxSubscribersPerRun)
+	}
+	m.subscribers[runID] = append(m.subscribers[runID], mb)
 
+	var once sync.Once
 	unsub := func() {
-		m.subMu.Lock()
-		defer m.subMu.Unlock()
-		subs := m.subscribers[runID]
-		for i, s := range subs {
-			if s == ch {
-				m.subscribers[runID] = append(subs[:i], subs[i+1:]...)
-				break
+		once.Do(func() {
+			m.subMu.Lock()
+			subs := m.subscribers[runID]
+			for i, s := range subs {
+				if s == mb {
+					m.subscribers[runID] = append(subs[:i], subs[i+1:]...)
+					break
+				}
 			}
-		}
+			if len(m.subscribers[runID]) == 0 {
+				delete(m.subscribers, runID)
+			}
+			m.subMu.Unlock()
+			mb.release()
+		})
 	}
-	return ch, unsub
+	return &Subscription{mb: mb, unsub: unsub}, nil
 }
 
-// broadcast sends an event to all subscribers of the event's run.
+// Subscription is one subscriber's view of a run's event stream. It owns no
+// goroutine: the caller drives it with Next.
+type Subscription struct {
+	mb    *eventMailbox
+	unsub func()
+}
+
+// Next blocks until the next frame is available and returns it. ok is false
+// once the stream is finished or ctx is done.
+func (s *Subscription) Next(ctx context.Context) (ipc.Event, bool) { return s.mb.next(ctx) }
+
+// Close unsubscribes and releases every retained payload. It is idempotent.
+func (s *Subscription) Close() { s.unsub() }
+
+// StateRev returns the current monotonic state revision for a run.
+//
+// A caller serving an authoritative snapshot must sample this BEFORE reading
+// the database. Every producer writes state and only then broadcasts, so a
+// revision sampled first is never newer than the snapshot that follows it:
+// every event at or below it is already reflected in that read, and every
+// event above it still reaches the subscriber and still applies on top.
+func (m *RunManager) StateRev(runID string) int64 {
+	m.subMu.Lock()
+	defer m.subMu.Unlock()
+	return m.stateRevs[runID]
+}
+
+// broadcast stamps a state revision and publishes an event to every subscriber
+// of the event's run. It performs no blocking channel operation and no I/O, so
+// the executor can never be stalled by a slow or dead subscriber.
 func (m *RunManager) broadcast(event ipc.Event) {
-	m.subMu.RLock()
-	defer m.subMu.RUnlock()
-	for _, ch := range m.subscribers[event.RunID] {
-		select {
-		case ch <- event:
-		default:
-			slog.Debug("dropped event for slow subscriber", "run_id", event.RunID, "type", event.Type)
-		}
+	m.subMu.Lock()
+	defer m.subMu.Unlock()
+	if ipc.ClassOf(event.Type) == ipc.ClassState {
+		m.stateRevs[event.RunID]++
+		event.StateRev = m.stateRevs[event.RunID]
+	}
+	for _, mb := range m.subscribers[event.RunID] {
+		mb.publish(event)
 	}
 }
 
-// closeSubscribers closes all subscriber channels for a run and marks it
-// as completed so future Subscribe calls return an immediately-closed channel.
+// closeSubscribers soft-closes every subscriber for a run and marks the run
+// completed so future Subscribe calls return a gapped, immediately-finished
+// subscription. Soft close still drains queued frames and any pending gap, so
+// a coalesced terminal transition cannot be discarded by completion.
 func (m *RunManager) closeSubscribers(runID string) {
 	m.subMu.Lock()
 	defer m.subMu.Unlock()
-	for _, ch := range m.subscribers[runID] {
-		close(ch)
+	for _, mb := range m.subscribers[runID] {
+		mb.close()
 	}
 	delete(m.subscribers, runID)
+	delete(m.stateRevs, runID)
 	m.completedRuns[runID] = true
 	m.completedOrder = append(m.completedOrder, runID)
 	if len(m.completedOrder) > 1000 {

@@ -8,7 +8,30 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-func (m *Model) applyEvent(event ipc.Event) {
+// applyEvent applies one stream frame and reports whether the model must read
+// authoritative state.
+//
+// A stream gap means the daemon coalesced at least one state transition away
+// under buffer pressure; the only correct response is one authoritative read,
+// because the lost payload is unknowable from the stream.
+//
+// State frames are guarded by the monotonic revision: a delta applies only
+// when it is newer than what the model already holds. That is what makes a
+// delta queued before an authoritative snapshot an idempotent no-op after it,
+// so draining a backlog behind a gap cannot move state backwards. Frames with
+// no revision (an older daemon) always apply, so a new client against an old
+// daemon behaves exactly as it does today.
+func (m *Model) applyEvent(event ipc.Event) bool {
+	if event.Type == ipc.EventStreamGap {
+		m.err = nil
+		return true
+	}
+	if ipc.ClassOf(event.Type) == ipc.ClassState && event.StateRev != 0 {
+		if event.StateRev <= m.stateRev {
+			return false
+		}
+		m.stateRev = event.StateRev
+	}
 	switch event.Type {
 	case ipc.EventRunUpdated, ipc.EventRunCreated:
 		m.err = nil
@@ -100,10 +123,15 @@ func (m *Model) applyEvent(event ipc.Event) {
 				m.resetFindingSelection(*event.StepName)
 			}
 		}
-		if event.StepName != nil && event.Diff != nil && *event.Diff != "" {
-			m.stepDiffs[*event.StepName] = *event.Diff
+		// The fix-review diff no longer rides the event stream: it is
+		// unbounded and one oversized frame would kill the subscription.
+		// Entering the gate invalidates any cached diff and requests a fresh
+		// one from the run's worktree.
+		if event.StepName != nil && event.Status != nil && types.StepStatus(*event.Status) == types.StepStatusFixReview {
+			delete(m.stepDiffs, *event.StepName)
 			m.showDiff = false
 			m.diffOffset = 0
+			m.requestStepDiff(*event.StepName)
 		}
 
 	case ipc.EventLogChunk:
@@ -138,6 +166,50 @@ func (m *Model) applyEvent(event ipc.Event) {
 			}
 		}
 	}
+	return false
+}
+
+// applySnapshot replaces model state with an authoritative get_run snapshot.
+//
+// A snapshot older than what the model already holds is ignored, so two
+// reconciliations racing cannot move state backwards either. Findings come
+// from the snapshot's persisted step rows, which is why a coalesced
+// step_completed carrying findings is recoverable.
+func (m *Model) applySnapshot(run *ipc.RunInfo) {
+	if run == nil || run.StateRev < m.stateRev {
+		return
+	}
+	m.err = nil
+	m.stateRev = run.StateRev
+	steps := normalizePipelineSteps(run.ID, run.Status, run.Steps)
+	run.Steps = steps
+	m.run = run
+	m.steps = steps
+	m.syntheticSteps = false
+	for _, s := range steps {
+		if s.FindingsJSON != nil && *s.FindingsJSON != "" {
+			m.stepFindings[s.StepName] = *s.FindingsJSON
+		}
+		// A gate reached while the model was out of sync still needs its
+		// diff, which is derived rather than carried by the snapshot.
+		if s.Status == types.StepStatusFixReview && m.stepDiffs[s.StepName] == "" {
+			m.requestStepDiff(s.StepName)
+		}
+	}
+	if run.Status == types.RunCompleted || run.Status == types.RunFailed || run.Status == types.RunCancelled {
+		m.flushPartialLog()
+		m.done = true
+	}
+}
+
+// requestStepDiff queues one on-demand read of a fix-review gate's
+// working-tree diff. At most one request per step is in flight.
+func (m *Model) requestStepDiff(step types.StepName) {
+	if m.stepDiffFetching[step] {
+		return
+	}
+	m.stepDiffFetching[step] = true
+	m.pendingDiffFetch = append(m.pendingDiffFetch, step)
 }
 
 func (m *Model) updateStepStatus(name types.StepName, status types.StepStatus) {
