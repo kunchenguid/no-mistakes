@@ -27,11 +27,12 @@ func InstallUser() ([]string, error) {
 	return Install(home)
 }
 
-// Install writes SKILL.md into each agent skills directory under root
-// (normally the user's home directory), creating directories as needed. It
-// returns the root-relative paths written so the caller can report them.
-// Writing is idempotent: re-running overwrites with identical content
-// (refreshing a stale SKILL.md from an older version).
+// Install writes every skill file (SKILL.md plus the disclosed reference
+// files, see Files) into each agent skills directory under root (normally the
+// user's home directory), creating directories as needed. It returns the
+// root-relative paths written so the caller can report them. Writing is
+// idempotent: re-running overwrites with identical content, which is also how
+// a stale or deleted file from an older version is refreshed.
 //
 // Users may consolidate the two bases with a symlink - `.claude/skills` ->
 // `.agents/skills`, the whole `.claude` dir -> `.agents`, or the reverse. Install
@@ -39,24 +40,25 @@ func InstallUser() ([]string, error) {
 // not exist yet (a plain os.MkdirAll would fail with "file exists" on a dangling
 // symlink). Both logical bases stay readable afterward via the link.
 func Install(root string) ([]string, error) {
-	content := []byte(Markdown())
-	written := make([]string, 0, len(InstallBases))
+	files := Files()
+	written := make([]string, 0, len(InstallBases)*len(files))
 	for _, base := range InstallBases {
-		rel := filepath.Join(base, Name, "SKILL.md")
-		path := filepath.Join(root, rel)
+		dir := filepath.Join(root, base, Name)
 		// Resolve any symlink components to a real directory before creating
 		// it, so a dangling symlink in the path does not collide with MkdirAll.
-		realDir, err := resolveThroughSymlinks(filepath.Dir(path))
+		realDir, err := resolveThroughSymlinks(dir)
 		if err != nil {
 			return written, err
 		}
 		if err := os.MkdirAll(realDir, 0o755); err != nil {
 			return written, err
 		}
-		if err := os.WriteFile(filepath.Join(realDir, "SKILL.md"), content, 0o644); err != nil {
-			return written, err
+		for _, f := range files {
+			if err := os.WriteFile(filepath.Join(realDir, f.Name), []byte(f.Content), 0o644); err != nil {
+				return written, err
+			}
+			written = append(written, filepath.Join(base, Name, f.Name))
 		}
-		written = append(written, rel)
 	}
 	return written, nil
 }
@@ -68,7 +70,7 @@ func Install(root string) ([]string, error) {
 func Vendored(repoRoot string) []string {
 	var found []string
 	for _, base := range InstallBases {
-		rel := filepath.Join(base, Name, "SKILL.md")
+		rel := filepath.Join(base, Name, SkillFile)
 		if _, err := os.Stat(filepath.Join(repoRoot, rel)); err == nil {
 			found = append(found, rel)
 		}

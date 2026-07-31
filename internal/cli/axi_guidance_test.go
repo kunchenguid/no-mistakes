@@ -136,7 +136,7 @@ func TestStaleMonitorGuidance_InChecksPassedOutput(t *testing.T) {
 
 func TestPreserveGateFixGuidance_SyncedAcrossSurfaces(t *testing.T) {
 	surfaces := map[string]string{
-		"skill body":       skill.Markdown(),
+		"skill files":      skill.Bundle(),
 		"agents guide":     readAgentsGuide(t),
 		"axi run help":     newAxiRunCmd().Long,
 		"axi respond help": newAxiRespondCmd().Long,
@@ -153,7 +153,7 @@ func TestPreserveGateFixGuidance_SyncedAcrossSurfaces(t *testing.T) {
 
 func TestBranchSyncGuidance_SyncedAcrossStaticAndLiveSurfaces(t *testing.T) {
 	surfaces := map[string]string{
-		"skill body":         skill.Markdown(),
+		"skill files":        skill.Bundle(),
 		"agents guide":       readAgentsGuide(t),
 		"live sync guidance": branchSyncAgentGuidance,
 	}

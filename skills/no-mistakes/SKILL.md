@@ -1,16 +1,15 @@
 ---
 name: no-mistakes
-description: Validate your code changes through the no-mistakes pipeline - automated code review, tests, lint, docs, push, PR, and CI - before they reach the configured push target. Use when the user asks to run no-mistakes, gate or ship or validate their changes, push safely, asks you to do a task and then validate it, or invokes /no-mistakes.
+description: Validate code changes through the no-mistakes pipeline - code review, tests, lint, docs, push, PR, and CI - before they reach the push target. Use when the user asks to run no-mistakes, gate or validate changes before pushing, asks you to do a task and then validate it, or invokes /no-mistakes.
 user-invocable: true
 ---
 
 # no-mistakes
 
-`no-mistakes` is a local gate that validates your code changes through a pipeline
-(intent, rebase, review, test, document, lint, push, PR, CI) before they reach
-the configured push target. You drive it through the `no-mistakes axi` command family, which prints
+Drive `no-mistakes` through the `no-mistakes axi` command family: it prints
 machine-readable [TOON](https://toonformat.dev) to stdout and progress to stderr.
-
+The pipeline validates committed history through intent, rebase, review, test,
+document, lint, push, PR, and CI before it reaches the configured push target.
 
 ## Active validation-step boundary
 
@@ -29,116 +28,10 @@ return control to the outer executor. Safe inspection remains available through
 `no-mistakes axi status`, `no-mistakes axi logs`, help, and
 `no-mistakes doctor`.
 
-
-When the user invokes `/no-mistakes`, report the outcome at the end. If the user
-asks for something specific, translate that request into the matching `axi run`
-flags yourself - for example, "skip the lint step" becomes `--skip=lint`. Run
-`no-mistakes axi run --help` to see the available flags.
-
-## Two ways to invoke
-
-`/no-mistakes` works in two modes, depending on whether the user hands you a
-task along with the command:
-
-- **Validate-only** - bare `/no-mistakes` (optionally with flag-style requests
-  like "skip the lint step"). The user's code changes are already committed;
-  validate them and report the outcome.
-- **Task-first** - `/no-mistakes <task>`, e.g.
-  `/no-mistakes add a --json flag to the status command`. First carry out the
-  task yourself, then validate the result through the pipeline:
-  1. **Check scope.** Inspect `git status` before you change or commit anything.
-     Preserve unrelated pre-existing uncommitted changes, and when you commit,
-     commit only the changes that belong to the user's task.
-  2. **Do the work.** Make the changes the task describes, then **commit them on
-     a feature branch**. If the user is on the repository's default branch,
-     create a feature branch first - the gate validates committed history on a
-     non-default branch, so the work must land there before you run.
-  3. **Then validate**, passing the user's task as your `--intent`. The task
-     text is exactly what the user set out to accomplish, in their own words, so
-     it *is* the intent - preserve requirements stated directly by the user,
-     including constraints, exclusions, acceptance criteria, and later decisions;
-     do not condense them into a diff summary or drop them while adding
-     implementation context. Enrich it with the decisions and tradeoffs you
-     made while doing the work (see
-     [Intent is required](#intent-is-required)).
-
-
-## Test-quality rule
-
-Never add a test whose only evidence is that it opens, reads, greps, parses, or
-snapshots implementation source code and finds or omits particular strings,
-tokens, lines, commands, function names, prompt phrases, regex matches, AST
-shapes, or incidental snapshots. That does not prove behavior: matching text
-can be dead or commented out, and a behavior-preserving refactor can change it.
-
-Instead execute a public or executable interface and assert observable behavior,
-state, output, side effects, and failure modes. For machine-consumed declarative
-artifacts such as workflow YAML, JSON, policy, .gitignore, or generated
-configuration, invoke the real consumer when feasible or parse into a typed or
-normalized semantic model and assert meaning. A raw substring or regex over the
-file is still the anti-pattern.
-
-Reading a file is legitimate when the file is itself generated public output, a
-serialized protocol, persisted state, an intentional snapshot, or another
-explicitly owned text or byte contract. Name that contract, and do not use its
-contents as a proxy that unrelated code works. A natural-language prompt or
-instruction is not proven effective because its source contains a sentence.
-Deterministic CI may test the final emitted prompt delivered to an agent as an
-intentional generated interface; model interpretation belongs in
-development-only evaluation, not live-LLM CI.
-
-For a regression, reproduce the reported failure when feasible: the test should
-fail before the fix and pass after it.
-
-
-Everything below - preconditions, intent, the validate-and-decide loop - applies
-the same way once the work is committed on a feature branch.
-
-## Before you start
-
-- The work you want validated must be **committed** on a branch. The gate
-  validates committed history, not your uncommitted working tree.
-- You must be on a **feature branch**, not the repository's default branch.
-- The repository must already be initialized with `no-mistakes init`.
-- The daemon must have a runnable configured pipeline agent: a supported native
-  agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through
-  `acpx`. You are the AXI driver, not
-  an implicit pipeline-agent backend. If none is available, the run fails
-  before its first step; `no-mistakes doctor` reports the configuration problem.
-
-If any of these is not met, `axi run` returns an `error:` with the exact command
-to fix it - read it and act on it (commit your work, or create a branch). If the
-repository is not initialized, run `no-mistakes init` first; if the `no-mistakes`
-command itself is missing or misbehaving, `no-mistakes doctor` reports what is
-wrong.
-Before starting, run `no-mistakes axi` (home view).
-If it shows an active run on your current branch, inspect it with `no-mistakes axi status`.
-If it is parked at a gate, drive it with `no-mistakes axi respond`.
-Reattach an in-flight run by re-running `no-mistakes axi run` when it still matches your current `HEAD` - either as the submitted head or as the current pipeline head.
-Only `no-mistakes axi abort` it when you mean to discard that run before starting over; aborting is a between-runs action, never a way to take over or bypass a gate while a run is still going (see [Validate and decide](#validate-and-decide)).
-If it shows an active run on another branch, leave that run alone and start validation for your current branch with `no-mistakes axi run --intent "..."`.
-
-## Intent is required
-
-When you start a run you must pass `--intent`: **what the user set out to
-accomplish** - the goal or request behind this work, in their terms. This is not
-a description of the diff or the files you changed; it is the objective the
-change is meant to achieve. You know it from the conversation, so pass it
-directly - no-mistakes uses it verbatim instead of inferring it from local agent
-transcripts (slower and flakier).
-
-Err on the side of completeness, not brevity. The review step uses `--intent`
-to tell a deliberate decision apart from a mistake, so a thin one-line summary
-makes it flag things the user already chose. Capture the nuance: the user's
-goal, the specific decisions and tradeoffs they made along the way, any
-constraints or approaches they ruled in or out, and anything they explicitly
-asked for that might otherwise look surprising in the diff. A few sentences to a
-short paragraph is normal - write down what you learned from the conversation
-that a reviewer reading only the diff would not know.
-
 ## Validate and decide
 
-Run the pipeline and decide on its findings as they come up:
+Run the pipeline and decide on its findings as they come up. On a branch you
+have not validated yet, clear [Before you start](#before-you-start) first.
 
 1. Start the run. It blocks until the first decision point or the end:
    ```sh
@@ -171,9 +64,8 @@ Run the pipeline and decide on its findings as they come up:
    - `auto-fix` - mechanical and low-risk; you can authorize the fix on
      your own judgment by responding with `--action fix`.
    - `no-op` - informational only; nothing to do.
-   - `ask-user` - the finding challenges the user's deliberate intent or
-     touches product behavior. This is a call only the user can make - see
-     [Escalate `ask-user` findings](#escalate-ask-user-findings) below.
+   - `ask-user` - a call only the user can make; see
+     [Escalate `ask-user` findings](#escalate-ask-user-findings).
 
    `severity` decides whether a finding is worth a fix round at all.
    Select `error` and `warning` findings; leave `info`
@@ -202,13 +94,12 @@ Run the pipeline and decide on its findings as they come up:
    # skip this step
    no-mistakes axi respond --action skip
    ```
-   While a run is active, never fix findings by editing the code yourself -
-   the pipeline owns both the findings and the fixes. Your job at a gate is to
-   decide and respond; `--action fix` has the pipeline apply the fix and
-   re-review the result. For the same reason, while a run is active do **not**
-   `abort` or `rerun` to go fix a finding yourself - even a real bug in
-   your own code - because that discards the pipeline's in-flight work and
-   forces a full re-validation. `abort` and `rerun` are for *between*
+   The pipeline owns both the findings and the fixes: your job at a gate is to
+   decide and respond, and `--action fix` has the pipeline apply the fix and
+   re-review the result. Leave the worktree alone while a run is active - even
+   for a real bug in your own code - because editing it yourself, or reaching
+   for `abort` or `rerun` to do so, discards the pipeline's in-flight work
+   and forces a full re-validation. `abort` and `rerun` are for *between*
    runs (after a `failed` or `cancelled` outcome), never to circumvent a
    gate.
 
@@ -237,24 +128,9 @@ Run the pipeline and decide on its findings as they come up:
      Fix whatever the output points at (a failing test, a lint error, a finding
      you skipped), commit the fix on the same feature branch, then drive the
      pipeline again - `no-mistakes axi run --intent "..."` starts a fresh run,
-     or `no-mistakes rerun` re-runs the pipeline for the current branch. This
-     is the right place to start over: a fresh run or `rerun` is a
-     *between-runs* action, correct only after a terminal outcome like this -
-     never mid-run to circumvent a gate. Do not leave the user at a `failed`
-     outcome without either retrying or explaining what blocks it.
-
-Before any post-pipeline local commit or fresh run, read the structured `branch_sync` object returned by AXI home, status, or a drive result.
-Only when its `next_action.code` is `sync`, run `no-mistakes axi sync` first.
-That guarded sync may be a strict fast-forward or a content-equivalent diverged advance that anchors the pre-sync head before moving the branch with reset semantics; genuine divergence stays blocked.
-If it reports `next_action.code` is `continue_active_run`, the pipeline still owns the branch: run the reported command, keep driving the active run, and do not make local follow-up commits.
-When `next_action.code` is `recover_custody`, a terminal run left unpublished pipeline commits preserved in the local gate: run `no-mistakes axi sync --recover` to return custody and take the preserved head, or `no-mistakes rerun` to resume validating it instead.
-Recovery takes that head by fast-forward, or by adopting a diverged preserved head proven to carry every local change - the ordinary result of the pipeline rebasing your commits onto a newer base - after anchoring your pre-recovery head under `refs/no-mistakes/recover-local/<run>`.
-That proof is deliberately narrow, so a rebase whose fix rounds also rewrote your own lines refuses instead of being adopted: when nothing can tell a deliberate pipeline fix from a dropped change, the decision is yours.
-A `branch_sync.state` of `user_owned` means the run went terminal before changing the submitted head and cancellation released the branch: the exact branch and head are yours and immediately usable for whichever delivery path is authorized - no sync action is needed, and a repeated `--recover` there is a harmless no-op.
-A dirty worktree, or divergence that cannot be proven contained, makes the recovery refuse with explicit choices; `--keep-local` keeps your current head while the preserved commits stay anchored under `refs/no-mistakes/recover/<run>`.
-If synchronization is blocked, process that structured state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
-After synchronization, commit the follow-up on top and re-run `no-mistakes axi run --intent "..."` with the original user intent.
-This preserves every prior gate-fix commit regardless of its configured subject.
+     or `no-mistakes rerun` re-runs the pipeline for the current branch. Do
+     not leave the user at a `failed` outcome without either retrying or
+     explaining what blocks it.
 
 The CI step deliberately keeps watching the PR after checks pass, so
 `axi run` returns `checks-passed` the moment checks are green (or a trusted
@@ -264,24 +140,127 @@ Never treat "no CI checks reported" alone as green.
 
 Because that monitor stays live, a PR that falls behind the default branch or
 hits a merge conflict after checks pass - commonly because another PR merged
-first - needs **no command from you**: never hand-rebase. When the CI monitor
-sees an actual conflict it **rebases onto the base, resolves it, and re-pushes
-the branch itself**; a PR that is merely behind but still clean needs nothing
-either, since the platform merges it. The one exception is when that monitor is
-no longer running - the PR was closed, the run was aborted or superseded, it
-idle-timed-out, or its auto-fix attempts were exhausted - in which case recover
-with `no-mistakes rerun`, which cancels the stale monitor and re-runs the full
-pipeline including a deterministic rebase step. Do **not** reach for
-`no-mistakes axi run` to refresh a still-active PR: after `checks-passed` it
-reattaches to the running monitor (HEAD unchanged) and returns its output
+first - needs **no command from you**: leave it to the live monitor and
+never hand-rebase it yourself. When the CI monitor sees an actual conflict it
+**rebases onto the base, resolves it, and re-pushes the branch itself**; a PR
+that is merely behind but still clean needs nothing either, since the platform
+merges it. The one
+exception is when that monitor is no longer running - the PR was closed, the run
+was aborted or superseded, it idle-timed-out, or its auto-fix attempts were
+exhausted - in which case recover with `no-mistakes rerun`, which cancels the
+stale monitor and re-runs the full pipeline including a deterministic rebase
+step. Reach for `no-mistakes axi run` only for a new run: on a still-active PR
+it reattaches to the running monitor (HEAD unchanged) and returns its output
 without rebasing.
 
+Before any post-pipeline local commit or fresh run, read the structured
+`branch_sync` object returned by AXI home, status, or a drive result and act
+on its `next_action.code` as [sync-recovery.md](sync-recovery.md) describes.
+
 On a successful outcome (`checks-passed` or `passed`), close the loop with the
-user: summarize what happened during the pipeline in a concise, easily readable
-format - what was validated and what was found. If the output includes a
-`fixes` table, the pipeline fixed findings your original change missed:
-acknowledge those misses and explicitly list each fix so the user can easily
-review them.
+user. If the output includes a `fixes` table, the pipeline fixed findings your
+original change missed: acknowledge those misses and explicitly list each fix so
+the user can easily review them.
+
+## Two ways to invoke
+
+When the user invokes `/no-mistakes`, report the outcome at the end. If the user
+asks for something specific, translate that request into the matching `axi run`
+flags yourself - for example, "skip the lint step" becomes `--skip=lint`. Run
+`no-mistakes axi run --help` to see the available flags.
+
+- **Validate-only** - bare `/no-mistakes` (optionally with flag-style requests
+  like "skip the lint step"). The user's code changes are already committed;
+  validate them and report the outcome.
+- **Task-first** - `/no-mistakes <task>`, e.g.
+  `/no-mistakes add a --json flag to the status command`. First carry out the
+  task yourself, then validate the result through the pipeline:
+  1. **Check scope.** Inspect `git status` before you change or commit anything.
+     Preserve unrelated pre-existing uncommitted changes, and when you commit,
+     commit only the changes that belong to the user's task.
+  2. **Do the work.** Done means: every change the task requires is committed on
+     a non-default branch, and `git status` shows only the unrelated
+     pre-existing changes you found in step 1. If the user is on the
+     repository's default branch, create a feature branch first - the gate
+     validates committed history on a non-default branch, so the work must land
+     there before you run.
+  3. **Then validate**, passing the user's task as your `--intent`. The task
+     text is exactly what the user set out to accomplish, in their own words, so
+     it *is* the intent - preserve requirements stated directly by the user,
+     including constraints, exclusions, acceptance criteria, and later decisions;
+     do not condense them into a diff summary or drop them while adding
+     implementation context. Enrich it with the decisions and tradeoffs you
+     made while doing the work (see
+     [Intent is required](#intent-is-required)).
+
+## Test-quality rule
+
+Never add a test whose only evidence is that it opens, reads, greps, parses, or
+snapshots implementation source code and finds or omits particular strings,
+tokens, lines, commands, function names, prompt phrases, regex matches, AST
+shapes, or incidental snapshots. That does not prove behavior: matching text
+can be dead or commented out, and a behavior-preserving refactor can change it.
+
+Instead execute a public or executable interface and assert observable behavior,
+state, output, side effects, and failure modes. For machine-consumed declarative
+artifacts such as workflow YAML, JSON, policy, .gitignore, or generated
+configuration, invoke the real consumer when feasible or parse into a typed or
+normalized semantic model and assert meaning. A raw substring or regex over the
+file is still the anti-pattern.
+
+Reading a file is legitimate when the file is itself generated public output, a
+serialized protocol, persisted state, an intentional snapshot, or another
+explicitly owned text or byte contract. Name that contract, and do not use its
+contents as a proxy that unrelated code works. A natural-language prompt or
+instruction is not proven effective because its source contains a sentence.
+Deterministic CI may test the final emitted prompt delivered to an agent as an
+intentional generated interface; model interpretation belongs in
+development-only evaluation, not live-LLM CI.
+
+For a regression, reproduce the reported failure when feasible: the test should
+fail before the fix and pass after it.
+
+## Before you start
+
+- The work you want validated must be **committed** on a branch. The gate
+  validates committed history, not your uncommitted working tree.
+- You must be on a **feature branch**, not the repository's default branch.
+- The repository must already be initialized with `no-mistakes init`; run
+  `no-mistakes init` if it is not.
+- The daemon must have a runnable configured pipeline agent: a supported native
+  agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through
+  `acpx`. You are the AXI driver, not
+  an implicit pipeline-agent backend. If none is available, the run fails
+  before its first step; `no-mistakes doctor` reports the configuration problem.
+
+`axi run` fails closed on an unmet precondition and names the exact command to
+fix it; run that command. If the `no-mistakes` command itself is missing or
+misbehaving, `no-mistakes doctor` reports what is wrong.
+
+Then run `no-mistakes axi` (home view).
+If it shows an active run on your current branch, inspect it with `no-mistakes axi status`.
+If it is parked at a gate, drive it with `no-mistakes axi respond`.
+Reattach an in-flight run by re-running `no-mistakes axi run` when it still matches your current `HEAD` - either as the submitted head or as the current pipeline head.
+Use `no-mistakes axi abort` only when you mean to discard that run before starting over.
+If it shows an active run on another branch, leave that run alone and start validation for your current branch with `no-mistakes axi run --intent "..."`.
+
+## Intent is required
+
+When you start a run you must pass `--intent`: **what the user set out to
+accomplish** - the goal or request behind this work, in their terms. This is not
+a description of the diff or the files you changed; it is the objective the
+change is meant to achieve. You know it from the conversation, so pass it
+directly - no-mistakes uses it verbatim instead of inferring it from local agent
+transcripts (slower and flakier).
+
+Err on the side of completeness, not brevity. The review step uses `--intent`
+to tell a deliberate decision apart from a mistake, so a thin one-line summary
+makes it flag things the user already chose. Capture the nuance: the user's
+goal, the specific decisions and tradeoffs they made along the way, any
+constraints or approaches they ruled in or out, and anything they explicitly
+asked for that might otherwise look surprising in the diff. A few sentences to a
+short paragraph is normal - write down what you learned from the conversation
+that a reviewer reading only the diff would not know.
 
 ## Escalate `ask-user` findings
 
@@ -316,44 +295,14 @@ run without checking back.
 ```sh
 no-mistakes axi               # home view: current branch, active runs, next steps
 no-mistakes axi status        # full detail plus cached branch_sync when relevant
-no-mistakes axi sync --check  # freshly verify an offered synchronization plan
-no-mistakes axi sync          # apply only an offered guarded synchronization
-no-mistakes axi sync --recover  # return custody after a terminal run left unpublished pipeline commits
 no-mistakes axi logs --step <name> --full   # full log output of one step
 no-mistakes axi abort         # cancel the current-branch active run
 no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside its worktree)
 ```
 
-## Reading the output
+Exit codes: `0` success, no-op, or normal decision gates, `1` failed or cancelled final outcomes, `2` bad usage.
 
-- Output is TOON: `key: value` pairs, `name[N]{cols}:` tables, and `help[N]:` hints.
-- A non-terminal run object may include `awaiting_agent: parked <duration>` immediately after `status`; that means the run is parked at a gate awaiting your `axi respond`.
-- A run object with a `running` or `fixing` step may include an `active_steps` table. Use it to see the active duration, latest activity, native agent PID, and current execution or fix round.
-- The `help` list at the bottom of most responses tells you the next commands to run.
-- Errors are printed as `error: ...` on stdout with a `help` list; act on the suggestion.
-- Exit codes: `0` success, no-op, or normal decision gates, `1` failed or cancelled final outcomes, `2` bad usage.
-
-A `gate:` waiting on you looks roughly like this - a `gate:` line naming the step, optional step-specific fields such as `note`, a `findings[N]{...}:` table with one row per finding, and a `help[N]:` list of next commands:
-
-```
-gate: review
-note: Review auto-fix is disabled by default (auto_fix.review: 0; a repo or global auto_fix.review > 0 override re-enables it), so blocking and ask-user review findings park for your decision rather than being silently self-fixed.
-findings[2]{id,severity,file,line,action,description}:
-  r1,warning,internal/pipeline/executor.go,,auto-fix,Error from os.Remove is ignored
-  r2,error,cmd/no-mistakes/main.go,,ask-user,New --force flag bypasses the confirm prompt
-help[6]:
-  Run `no-mistakes axi respond --action approve` to accept this step and continue
-  Run `no-mistakes axi respond --action fix --findings <ids>` to have the pipeline fix the selected findings (do not edit files yourself)
-  Run `no-mistakes axi respond --action skip` to skip this step
-  Run `no-mistakes axi logs --step review --full` to read the full step log
-  A long-running call is working, not stalled - background it if your harness needs to, but the run never advances past a gate on its own. Read every return; on a `gate:`, respond; loop until an `outcome:`.
-  Commit post-pipeline follow-up work on top of the existing branch so every pipeline fix commit remains present. Never abort-and-restart, reset, or replace the branch in a way that drops prior gate-fix commits.
-```
-
-Read the `action` column per row: decide `r1` (auto-fix) on your own
-judgment - `respond --action fix --findings r1` hands it to the pipeline to
-fix - but stop and escalate `r2` (ask-user) to the user before responding. A
-final state
-instead shows `outcome: <checks-passed|passed|failed|cancelled>` with no
-`findings` table. Field names and exact columns can vary by step and version,
-so read the actual `findings` header rather than assuming this layout.
+To parse an unfamiliar TOON shape - a gate block, a findings table, a final
+state - read [reading-output.md](reading-output.md).
+To return branch custody, synchronize, or recover unpublished pipeline commits,
+read [sync-recovery.md](sync-recovery.md).

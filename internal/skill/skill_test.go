@@ -91,15 +91,55 @@ func TestBodyDocumentsAxiGateGuidance(t *testing.T) {
 	}
 }
 
-func TestInstallWritesBothPaths(t *testing.T) {
+// TestFilesShipDisclosedReferences pins the multi-file contract: SKILL.md
+// leads, every reference file ships beside it, and SKILL.md reaches each one
+// by its relative path so the disclosed material stays reachable.
+func TestFilesShipDisclosedReferences(t *testing.T) {
+	files := Files()
+	if len(files) < 2 {
+		t.Fatalf("Files() = %d file(s), want SKILL.md plus reference files", len(files))
+	}
+	if files[0].Name != SkillFile || files[0].Content != Markdown() {
+		t.Fatalf("Files()[0] must be %s rendered from Markdown(), got %q", SkillFile, files[0].Name)
+	}
+	md := Markdown()
+	for _, f := range files[1:] {
+		if f.Content == "" {
+			t.Errorf("reference file %s is empty", f.Name)
+		}
+		if !strings.Contains(md, "("+f.Name+")") {
+			t.Errorf("SKILL.md does not point at reference file %s by relative path", f.Name)
+		}
+	}
+	for _, want := range []string{ReadingOutputFile, SyncRecoveryFile} {
+		if !hasFile(files, want) {
+			t.Errorf("Files() missing %s", want)
+		}
+	}
+}
+
+// TestBundleCoversEveryShippedFile proves the guidance-sync surface sees the
+// disclosed reference content, not just SKILL.md.
+func TestBundleCoversEveryShippedFile(t *testing.T) {
+	bundle := Bundle()
+	for _, f := range Files() {
+		if !strings.Contains(bundle, f.Content) {
+			t.Errorf("Bundle() is missing the content of %s", f.Name)
+		}
+	}
+}
+
+func TestInstallWritesEveryFileToBothBases(t *testing.T) {
 	root := t.TempDir()
 	written, err := Install(root)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	wantRel := []string{
-		filepath.Join(".claude", "skills", Name, "SKILL.md"),
-		filepath.Join(".agents", "skills", Name, "SKILL.md"),
+	var wantRel []string
+	for _, base := range []string{".claude", ".agents"} {
+		for _, f := range Files() {
+			wantRel = append(wantRel, filepath.Join(base, "skills", Name, f.Name))
+		}
 	}
 	if len(written) != len(wantRel) {
 		t.Fatalf("written = %v, want %v", written, wantRel)
@@ -108,14 +148,35 @@ func TestInstallWritesBothPaths(t *testing.T) {
 		if written[i] != rel {
 			t.Errorf("written[%d] = %q, want %q", i, written[i], rel)
 		}
-		data, err := os.ReadFile(filepath.Join(root, rel))
-		if err != nil {
-			t.Fatalf("read %s: %v", rel, err)
-		}
-		if string(data) != Markdown() {
-			t.Errorf("%s content does not match Markdown()", rel)
+	}
+	assertInstalledContent(t, root)
+}
+
+// assertInstalledContent checks every shipped file is readable with current
+// content through both logical bases.
+func assertInstalledContent(t *testing.T, root string) {
+	t.Helper()
+	for _, base := range InstallBases {
+		for _, f := range Files() {
+			path := filepath.Join(root, base, Name, f.Name)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			if string(data) != f.Content {
+				t.Errorf("%s content does not match the generator", path)
+			}
 		}
 	}
+}
+
+func hasFile(files []File, name string) bool {
+	for _, f := range files {
+		if f.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // TestInstallUserWritesUnderHome proves the init entry point resolves the
@@ -131,18 +192,10 @@ func TestInstallUserWritesUnderHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InstallUser: %v", err)
 	}
-	if len(written) != len(InstallBases) {
-		t.Fatalf("written = %v, want one path per base", written)
+	if len(written) != len(InstallBases)*len(Files()) {
+		t.Fatalf("written = %v, want one path per file per base", written)
 	}
-	for _, base := range InstallBases {
-		data, err := os.ReadFile(filepath.Join(home, base, Name, "SKILL.md"))
-		if err != nil {
-			t.Fatalf("skill not installed under home at %s: %v", base, err)
-		}
-		if string(data) != Markdown() {
-			t.Errorf("%s content does not match Markdown()", base)
-		}
-	}
+	assertInstalledContent(t, home)
 }
 
 func TestInstallIsIdempotent(t *testing.T) {
@@ -153,13 +206,7 @@ func TestInstallIsIdempotent(t *testing.T) {
 	if _, err := Install(root); err != nil {
 		t.Fatalf("second install: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(root, ".claude", "skills", Name, "SKILL.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != Markdown() {
-		t.Errorf("content drifted after re-install")
-	}
+	assertInstalledContent(t, root)
 }
 
 // TestInstallSymlinkLayouts covers home directories that consolidate the two
@@ -223,27 +270,14 @@ func TestInstallSymlinkLayouts(t *testing.T) {
 
 			// Every reported path must be readable with current content.
 			for _, rel := range written {
-				data, err := os.ReadFile(filepath.Join(root, rel))
-				if err != nil {
+				if _, err := os.ReadFile(filepath.Join(root, rel)); err != nil {
 					t.Fatalf("read reported %s: %v", rel, err)
-				}
-				if string(data) != Markdown() {
-					t.Errorf("%s content does not match Markdown()", rel)
 				}
 			}
 
 			// The skill must be discoverable via both logical bases no matter
 			// which side carries the symlink.
-			for _, base := range InstallBases {
-				p := filepath.Join(root, base, Name, "SKILL.md")
-				data, err := os.ReadFile(p)
-				if err != nil {
-					t.Fatalf("skill not reachable via %s: %v", base, err)
-				}
-				if string(data) != Markdown() {
-					t.Errorf("%s content does not match Markdown()", base)
-				}
-			}
+			assertInstalledContent(t, root)
 		})
 	}
 }
@@ -268,6 +302,28 @@ func TestInstallOverwritesStaleContent(t *testing.T) {
 	if string(data) != Markdown() {
 		t.Errorf("stale SKILL.md was not refreshed to current content")
 	}
+}
+
+// TestInstallRestoresStaleAndDeletedReferenceFiles covers the same upgrade
+// path for disclosed reference files: SKILL.md points at them by relative
+// path, so a hand-edited or deleted one must come back on the next install.
+func TestInstallRestoresStaleAndDeletedReferenceFiles(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Install(root); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	dir := filepath.Join(root, ".claude", "skills", Name)
+	if err := os.WriteFile(filepath.Join(dir, ReadingOutputFile), []byte("stale reference\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, SyncRecoveryFile)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Install(root); err != nil {
+		t.Fatalf("refresh install: %v", err)
+	}
+	assertInstalledContent(t, root)
 }
 
 func TestInstallRejectsSymlinkCycle(t *testing.T) {
