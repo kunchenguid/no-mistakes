@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -106,6 +107,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			agentRoute, err := parseAgentRoutePushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -124,12 +129,13 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:      gatePath,
-				Ref:       ref,
-				Old:       oldSHA,
-				New:       newSHA,
-				SkipSteps: skipSteps,
-				Intent:    intent,
+				Gate:       gatePath,
+				Ref:        ref,
+				Old:        oldSHA,
+				New:        newSHA,
+				SkipSteps:  skipSteps,
+				Intent:     intent,
+				AgentRoute: agentRoute,
 			}, &result)
 		},
 	}
@@ -193,6 +199,7 @@ func parseSkipSteps(value string) ([]types.StepName, error) {
 // The value is base64-encoded so multi-line or special-character intents
 // survive the push-option transport (which is line-oriented).
 const intentPushOptionPrefix = "no-mistakes.intent="
+const agentRoutePushOptionPrefix = "no-mistakes.agent-route="
 
 // formatIntentPushOption encodes intent as a single push option, or returns ""
 // when there is no intent to carry.
@@ -219,6 +226,37 @@ func parseIntentPushOptions(options []string) (string, error) {
 		intent = string(decoded)
 	}
 	return intent, nil
+}
+
+func formatAgentRoutePushOption(route *types.AgentRouteOverride) (string, error) {
+	if route == nil {
+		return "", nil
+	}
+	encoded, err := json.Marshal(route)
+	if err != nil {
+		return "", fmt.Errorf("encode agent route push option: %w", err)
+	}
+	return agentRoutePushOptionPrefix + base64.StdEncoding.EncodeToString(encoded), nil
+}
+
+func parseAgentRoutePushOptions(options []string) (*types.AgentRouteOverride, error) {
+	var route *types.AgentRouteOverride
+	for _, option := range options {
+		encoded, ok := strings.CutPrefix(option, agentRoutePushOptionPrefix)
+		if !ok {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return nil, fmt.Errorf("decode agent route push option: %w", err)
+		}
+		var parsed types.AgentRouteOverride
+		if err := json.Unmarshal(decoded, &parsed); err != nil {
+			return nil, fmt.Errorf("parse agent route push option: %w", err)
+		}
+		route = &parsed
+	}
+	return route, nil
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -60,6 +61,39 @@ func TestNewPipelineAgent_NoOptOut_AdmitsEveryHarness(t *testing.T) {
 			t.Fatalf("%s must be admitted when the repo did not opt out, got: %v", name, err)
 		}
 		_ = ag.Close()
+	}
+}
+
+func TestNewPipelineAgentWithRouteMapsResolvedAutoClaudeToPi(t *testing.T) {
+	cfg := &config.Config{Agent: types.AgentAuto}
+	route := &types.AgentRouteOverride{
+		From: types.AgentClaude,
+		To:   types.AgentPi,
+		Args: []string{"--model", "kimi-coding/k3", "--thinking", "high"},
+	}
+	ag, err := newPipelineAgentWithRoute(context.Background(), cfg, route, fakeLookPath)
+	if err != nil {
+		t.Fatalf("newPipelineAgentWithRoute: %v", err)
+	}
+	defer ag.Close()
+	if ag.Name() != "pi" {
+		t.Fatalf("pipeline agent = %q, want pi", ag.Name())
+	}
+}
+
+func TestNewPipelineAgentWithRouteLeavesCodexFallbackPrimary(t *testing.T) {
+	cfg := &config.Config{Agents: []types.AgentName{types.AgentCodex, types.AgentClaude}}
+	route := &types.AgentRouteOverride{From: types.AgentClaude, To: types.AgentPi}
+	ag, err := newPipelineAgentWithRoute(context.Background(), cfg, route, fakeLookPath)
+	if err != nil {
+		t.Fatalf("newPipelineAgentWithRoute: %v", err)
+	}
+	defer ag.Close()
+	if ag.Name() != "codex" {
+		t.Fatalf("pipeline primary = %q, want codex unchanged", ag.Name())
+	}
+	if got, want := cfg.Agents, []types.AgentName{types.AgentCodex, types.AgentPi}; !slices.Equal(got, want) {
+		t.Fatalf("resolved agents = %v, want %v", got, want)
 	}
 }
 

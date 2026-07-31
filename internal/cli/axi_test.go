@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -496,12 +497,31 @@ func TestConfigErrorForFreshAxiRunAllowsReattach(t *testing.T) {
 }
 
 func TestRerunParamsIncludeSkipSteps(t *testing.T) {
-	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal")
+	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal", nil)
 	if params.RepoID != "repo-1" || params.Branch != "feature/x" || params.Intent != "user goal" {
 		t.Fatalf("unexpected rerun params: %#v", params)
 	}
 	if len(params.SkipSteps) != 1 || params.SkipSteps[0] != types.StepReview {
 		t.Fatalf("SkipSteps = %#v, want review", params.SkipSteps)
+	}
+}
+
+func TestParseAgentRoute(t *testing.T) {
+	route, err := parseAgentRoute("claude=pi", []string{"--model", "kimi-coding/k3", "--thinking", "high"})
+	if err != nil {
+		t.Fatalf("parseAgentRoute: %v", err)
+	}
+	if route.From != types.AgentClaude || route.To != types.AgentPi {
+		t.Fatalf("route = %q=%q, want claude=pi", route.From, route.To)
+	}
+	if got, want := route.Args, []string{"--model", "kimi-coding/k3", "--thinking", "high"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("route args = %v, want %v", got, want)
+	}
+}
+
+func TestParseAgentRouteArgsRequireRoute(t *testing.T) {
+	if _, err := parseAgentRoute("", []string{"--model"}); err == nil {
+		t.Fatal("expected args without --agent-route to fail")
 	}
 }
 
@@ -826,7 +846,7 @@ func TestAxiRunReportsInvalidGlobalConfig(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if err := runAxiRun(cmd, false, nil, "user goal"); err == nil {
+	if err := runAxiRun(cmd, false, nil, "user goal", nil); err == nil {
 		t.Fatalf("axi run should fail on invalid global config:\n%s", out.String())
 	}
 	got := out.String()

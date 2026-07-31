@@ -114,6 +114,25 @@ Repo config takes precedence over global config.
 agent: [codex, claude]
 ```
 
+### One-run route override
+
+An orchestrator can replace one resolved agent for a single run without changing
+global or repository configuration:
+
+```sh
+no-mistakes axi run --intent "the user's goal" \
+  --agent-route claude=pi \
+  --agent-route-arg=--model \
+  --agent-route-arg=kimi-coding/k3 \
+  --agent-route-arg=--thinking \
+  --agent-route-arg=high
+```
+
+The route is applied after normal resolution, so `auto` is replaced only when
+it resolved to the source agent, and entries for other agents stay unchanged.
+The selected route and arguments are stored with the run so a daemon restart
+uses the same pipeline agent.
+
 ### Optional ACP target
 
 If you install `acpx` separately, you can opt into any ACP target with the `acp:` prefix, for example `agent: acp:gemini`.

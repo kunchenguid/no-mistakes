@@ -100,6 +100,25 @@ func TestFormatIntentPushOptionEmpty(t *testing.T) {
 	}
 }
 
+func TestAgentRoutePushOptionRoundTrip(t *testing.T) {
+	want := &types.AgentRouteOverride{
+		From: types.AgentClaude,
+		To:   types.AgentPi,
+		Args: []string{"--model", "kimi-coding/k3", "--thinking", "high"},
+	}
+	option, err := formatAgentRoutePushOption(want)
+	if err != nil {
+		t.Fatalf("formatAgentRoutePushOption: %v", err)
+	}
+	got, err := parseAgentRoutePushOptions([]string{"no-mistakes.skip=test", option})
+	if err != nil {
+		t.Fatalf("parseAgentRoutePushOptions: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("route = %#v, want %#v", got, want)
+	}
+}
+
 func TestParseIntentPushOptionsNone(t *testing.T) {
 	got, err := parseIntentPushOptions([]string{"no-mistakes.skip=test", "ci.skip"})
 	if err != nil {

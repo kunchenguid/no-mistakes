@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -142,7 +143,11 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if err != nil {
 		return nil, err
 	}
-	ag, err := newPipelineAgent(ctx, cfg, exec.LookPath)
+	route, err := agentRouteForRun(run)
+	if err != nil {
+		return nil, err
+	}
+	ag, err := newPipelineAgentWithRoute(ctx, cfg, route, exec.LookPath)
 	if err != nil {
 		return nil, err
 	}
@@ -214,11 +219,22 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 }
 
 func newPipelineAgent(ctx context.Context, cfg *config.Config, lookPath func(string) (string, error)) (agent.Agent, error) {
+	return newPipelineAgentWithRoute(ctx, cfg, nil, lookPath)
+}
+
+func newPipelineAgentWithRoute(ctx context.Context, cfg *config.Config, route *types.AgentRouteOverride, lookPath func(string) (string, error)) (agent.Agent, error) {
 	if steps.IsDemoMode() {
 		return agent.NewNoop(), nil
 	}
 	if err := cfg.ResolveAgent(ctx, lookPath); err != nil {
 		return nil, err
+	}
+	if matched, err := cfg.ApplyResolvedAgentRoute(route); err != nil {
+		return nil, err
+	} else if matched {
+		if err := cfg.ResolveAgent(ctx, lookPath); err != nil {
+			return nil, err
+		}
 	}
 	agents := cfg.Agents
 	if len(agents) == 0 {
@@ -249,6 +265,17 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, lookPath func(str
 		}
 	}
 	return ag, nil
+}
+
+func agentRouteForRun(run *db.Run) (*types.AgentRouteOverride, error) {
+	if run == nil || run.AgentRouteJSON == nil || strings.TrimSpace(*run.AgentRouteJSON) == "" {
+		return nil, nil
+	}
+	var route types.AgentRouteOverride
+	if err := json.Unmarshal([]byte(*run.AgentRouteJSON), &route); err != nil {
+		return nil, fmt.Errorf("decode run agent route: %w", err)
+	}
+	return &route, nil
 }
 
 func resolveGitPath(workDir, value string) string {
@@ -538,12 +565,12 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 
 	branch := branchFromRef(params.Ref)
-	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
+	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent, params.AgentRoute)
 }
 
 // HandleRerun creates a new run for the latest gate head on a branch. An
 // optional intent is stamped onto the new run.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, skipSteps []types.StepName, intent string) (string, error) {
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, skipSteps []types.StepName, intent string, agentRoute *types.AgentRouteOverride) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -586,7 +613,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 		baseSHA = matchingHead.BaseSHA
 	}
 
-	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent)
+	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, agentRoute)
 }
 
 // fetchRunDefaultBranch fetches the trusted branch from the refreshed
@@ -606,7 +633,7 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
-func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
+func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string, agentRoute *types.AgentRouteOverride) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -649,6 +676,19 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
+	}
+	if agentRoute != nil {
+		encoded, marshalErr := json.Marshal(agentRoute)
+		if marshalErr != nil {
+			trackStartFailure("encode_agent_route")
+			return "", fmt.Errorf("encode agent route: %w", marshalErr)
+		}
+		if err := m.db.UpdateRunAgentRoute(run.ID, string(encoded)); err != nil {
+			trackStartFailure("persist_agent_route")
+			return "", err
+		}
+		routeJSON := string(encoded)
+		run.AgentRouteJSON = &routeJSON
 	}
 
 	// Stamp an agent-supplied intent onto the run before the pipeline starts,
@@ -767,6 +807,17 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 			m.db.UpdateRunError(run.ID, err.Error())
 			trackStartFailure("resolve_agent")
 			return "", err
+		}
+		if matched, err := cfg.ApplyResolvedAgentRoute(agentRoute); err != nil {
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("apply_agent_route")
+			return "", err
+		} else if matched {
+			if err := cfg.ResolveAgent(ctx, exec.LookPath); err != nil {
+				m.db.UpdateRunError(run.ID, err.Error())
+				trackStartFailure("resolve_routed_agent")
+				return "", err
+			}
 		}
 		agents := cfg.Agents
 		if len(agents) == 0 {
