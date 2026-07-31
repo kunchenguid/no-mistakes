@@ -3,7 +3,6 @@
 This file is for agentic coding tools working in this repo.
 
 This repository is a Go CLI app named `no-mistakes`.
-The binary entrypoint is `cmd/no-mistakes`; implementation code lives under `internal/`, and the package names there are the layout map (CLI in `internal/cli`, daemon in `internal/daemon`, pipeline and steps in `internal/pipeline`, agent adapters in `internal/agent`, terminal UI in `internal/tui`, shared infrastructure in `internal/git`, `internal/ipc`, `internal/config`, `internal/db`, `internal/paths`, `internal/types`).
 Build, test, and release commands are owned by the `Makefile`; read it for the full target list instead of relying on a copy here.
 
 Safest local verification sequence after non-trivial changes:
@@ -29,11 +28,6 @@ Safest local verification sequence after non-trivial changes:
 - Step-failure errors (`executor.go` `FailStep`/log/IPC emit) and the Bitbucket resolve-repo error are redacted via `safeurl.RedactText`/`safeurl.Redact` so a credentialled URL wrapped into an error can never reach a step log or `runs.error`. Reuse `internal/safeurl` for new redaction sites rather than adding a git-local helper; it is already wired into `git.Run`/step git-run error formatting.
 - Regressions: `TestInitRedactsCredentialURL`, `TestResolveUpstreamURL_PreservesCredential`, `TestResolveUpstreamURL_FallsBackToRecordedURL`, `TestResolvePushURL_ForkWinsOverCredential`.
 
-**GitLab Backend (`internal/scm/gitlab`)**
-
-- The backend is pinned against `glab v1.5x`, whose flag surface drifts between versions: the auth check must be host-scoped (`--hostname <host>`, falling back to unscoped only when the host is unknown), `glab mr list` no longer accepts `--state opened`, and the daemon's detached-HEAD worktree breaks `glab ci get`, so pipeline jobs are read via the branch-independent `glab api .../pipelines/<id>/jobs` REST endpoint.
-- The comments in `internal/scm/gitlab/gitlab.go` own the full rationale for each trap; extend them there when you hit new glab version drift.
-
 **Documentation**
 
 - Keep `README.md` concise and high-level; the bar needs to be extremely high for what shows up there.
@@ -50,11 +44,9 @@ Safest local verification sequence after non-trivial changes:
 
 **Context, Concurrency, and Processes**
 
-- Thread `context.Context` through long-running, subprocess, and networked work; prefer `exec.CommandContext`; use derived contexts and timeouts for cleanup and HTTP calls.
 - Route every long-lived subprocess spawned for a cancellable step or agent invocation through `shellenv.ConfigureShellCommand(cmd)`: it creates a process-tree boundary and installs `cmd.Cancel` to kill the whole tree, so grandchildren (test workers, build watchers) cannot outlive cancellation and hold the next run's worktree locked.
 - `cmd.Cancel` covers only cancellation; on clean exit or error the group is not reaped, and leaked grandchildren accumulate until the OS OOM-kills the daemon (surfacing as `daemon crashed during execution` with no stack trace). Use `shellenv.RunShellCommand` / `OutputShellCommand` / `CombinedOutputShellCommand` for one-shot commands, or `StartShellCommand` plus `TerminateShellCommandGroup` when handling pipes manually; the helper doc comments in `internal/shellenv` own the details. `ConfigureShellCommand` also installs a 5s `cmd.WaitDelay` backstop so a grandchild holding an inherited pipe cannot wedge `cmd.Wait` forever. Regressions: `TestCodexAgent_Run_ReapsLeakedGrandchildOnCleanExit`, `TestRunShellCommandWithEnv_ReapsGrandchildOnCleanExit`, `TestTerminateShellCommandGroup_*`.
 - On Windows the daemon runs console-less, so route every console child through `winproc.Harden(cmd)` (no-op elsewhere, idempotent, preserves existing creation flags) or a console window flashes per child (#287). `shellenv.ConfigureShellCommand` already calls it; one-shot commands built directly must call it themselves. Regressions: `TestHarden*` in `internal/winproc`.
-- Protect shared mutable state with the standard sync/atomic tools, and be explicit about ownership and cleanup of goroutines, worktrees, temp dirs, and channels.
 
 **Recursive Gate-Execution Containment**
 
@@ -119,7 +111,6 @@ Safest local verification sequence after non-trivial changes:
 - Packages whose tests shell out to git unset `GIT_CONFIG_COUNT` in `TestMain` so ambient `GIT_CONFIG_*` injection from agent harnesses cannot leak in; a test exercising injected config re-sets it with `t.Setenv` (see `internal/git`, `internal/gate`, `internal/daemon`, `internal/pipeline/steps`).
 - Packages whose tests can start a daemon or touch ambient state (`cmd/no-mistakes`, `internal/cli`, `internal/update`) use a package-wide `TestMain` that points `NM_HOME` and `HOME` at fresh temp dirs and disables telemetry/update-check env vars, so a full test run never touches a real `~/.no-mistakes`. Follow the same pattern in new such packages.
 - `paths.New()` refuses the default `~/.no-mistakes` root under `go test`; tests that touch app state must set `NM_HOME` to a temp dir, and only the production-default path test may opt in with `NO_MISTAKES_ALLOW_DEFAULT_ROOT_IN_TESTS=1`.
-- Isolate filesystem and environment state with `t.TempDir()` and `t.Setenv()`.
 - The Windows CI leg is process-spawn bound, not compute bound: git-backed packages cost roughly 10x their Linux time (`internal/git` 5.7s -> 53s, `internal/branchsync` 31s -> 415s), so the job's wall floor is the slowest single package. Keep long git-heavy packages off the serial critical path (`internal/branchsync` runs `t.Parallel()` for exactly that reason) and keep the Defender scan-exclusion step in `ci.yml`, whose comment owns the rationale. Regressions: `TestCIWorkflow_WindowsTestsRunWithScanExclusions`, `TestCIWorkflow_WindowsHangSurfacesAsGoTimeoutNotJobCancellation`.
 - Go applies an implicit GOOS constraint from a filename suffix, so a test file named `*_windows_test.go` (or `_linux`, `_darwin`) silently compiles only on that platform. Name platform-agnostic tests about Windows something else.
 
@@ -219,12 +210,8 @@ Safest local verification sequence after non-trivial changes:
 
 **macOS Release Signing (permanent identity)**
 
-- Every official macOS release artifact - both `darwin/arm64` and `darwin/amd64` - is Developer ID Application signed on a macOS runner with a fixed identifier, hardened runtime, secure timestamp, and no entitlements, then strictly verified before it is archived or checksummed; the Linux and Windows release paths are unchanged.
 - The executable identifier `com.kunchenguid.no-mistakes` and Team ID `9T2J7MNUP9` are the permanent Developer ID identity and MUST NEVER change: they are the invariant of the identity-based designated requirement that lets macOS permission grants survive `no-mistakes update`, so changing either resets every grant once.
-- Signing runs only in the darwin build job gated behind the `release-signing` GitHub environment; the certificate is the base64 `CSC_LINK` secret unlocked with `CSC_KEY_PASSWORD`, imported into an ephemeral keychain with a runtime-generated password that is deleted on success and failure, and no other job may reference those secrets.
-- Signing happens before tarball creation and checksum generation, and the verify gate fails the release closed on any missing or ambiguous signature, wrong Team ID, non-permanent identifier, content-based (`cdhash`) requirement, missing hardened runtime or timestamp, or wrong architecture.
-- Mechanics live in `.github/workflows/release.yml`; the contract is pinned by the root `TestReleaseWorkflow*` static tests in `workflow_release_signing_test.go`, and secret values are never recorded here or in any test fixture.
-- Notarization, stapling, a PKG, Homebrew, and universal binaries are intentionally out of scope for this phase.
+- Full signing contract (job gating, ephemeral keychain, verify gate, out-of-scope list) lives in `.claude/rules/release-signing.md`, which loads when you work under `.github/workflows/`.
 
 **When Making Changes**
 
