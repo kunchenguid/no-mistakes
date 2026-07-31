@@ -9,6 +9,11 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+// ErrRunCustodyCAS reports that the exact terminal run authority changed
+// before custody could be stamped. Callers must retain immutable recovery
+// anchors and retry from freshly inspected state.
+var ErrRunCustodyCAS = errors.New("run custody compare-and-swap lost")
+
 // Run represents a pipeline run.
 type Run struct {
 	ID               string
@@ -259,17 +264,63 @@ func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
 	return nil
 }
 
-// SetRunCustodyReturned stamps the moment a guarded recovery explicitly
-// returned custody of this run's branch to the operator worktree. Stamping is
-// idempotent: the first timestamp wins so the record keeps the original
-// recovery moment.
-func (d *DB) SetRunCustodyReturned(id string) error {
+// SetRunCustodyReturnedCAS stamps custody only while the complete authority
+// tuple observed by recovery is unchanged and the run is still the newest run
+// for its repository branch. This is the durable half of the recovery's final
+// Git-proof/database boundary; a concurrent run or publication write loses the
+// CAS instead of stamping stale authority.
+func (d *DB) SetRunCustodyReturnedCAS(expected *Run) error {
+	if expected == nil {
+		return ErrRunCustodyCAS
+	}
 	ts := now()
-	_, err := d.sql.Exec(`UPDATE runs SET custody_returned_at = COALESCE(custody_returned_at, ?), updated_at = ? WHERE id = ?`, ts, ts, id)
+	result, err := d.sql.Exec(`
+		UPDATE runs SET custody_returned_at = ?, updated_at = ?
+		 WHERE id = ? AND repo_id = ? AND branch = ? AND head_sha = ? AND base_sha = ?
+		   AND submitted_head_sha IS ? AND review_approved_head_sha IS ? AND status = ?
+		   AND pr_url IS ? AND pr_state IS ? AND pr_state_observed_at IS ? AND ci_ready_at IS ?
+		   AND last_pushed_sha IS ? AND push_target_kind IS ? AND push_target_fingerprint IS ?
+		   AND push_ref IS ? AND last_pushed_at IS ? AND push_generation IS ?
+		   AND COALESCE(push_active, 0) = 0 AND custody_returned_at IS NULL
+		   AND error IS ? AND awaiting_agent_since IS ?
+		   AND status IN ('completed', 'failed', 'cancelled')
+		   AND NOT EXISTS (
+			SELECT 1 FROM runs newer
+			 WHERE newer.repo_id = runs.repo_id AND newer.branch = runs.branch
+			   AND (newer.created_at > runs.created_at OR (newer.created_at = runs.created_at AND newer.id > runs.id))
+		   )`,
+		ts, ts, expected.ID, expected.RepoID, expected.Branch, expected.HeadSHA, expected.BaseSHA,
+		nullableRunString(expected.SubmittedHeadSHA), nullableRunString(expected.ReviewApprovedHeadSHA), expected.Status,
+		nullableRunString(expected.PRURL), nullableRunString(expected.PRState), nullableRunInt64(expected.PRStateObservedAt), nullableRunInt64(expected.CIReadyAt),
+		nullableRunString(expected.LastPushedSHA), nullableRunString(expected.PushTargetKind), nullableRunString(expected.PushTargetFingerprint),
+		nullableRunString(expected.PushRef), nullableRunInt64(expected.LastPushedAt), nullableRunInt64(expected.PushGeneration),
+		nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince),
+	)
 	if err != nil {
-		return fmt.Errorf("set run custody returned: %w", err)
+		return fmt.Errorf("set run custody returned CAS: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set run custody returned CAS: affected rows: %w", err)
+	}
+	if rows != 1 {
+		return ErrRunCustodyCAS
 	}
 	return nil
+}
+
+func nullableRunString(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func nullableRunInt64(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 // SetRunPushActive marks whether a pipeline phase currently owns a possible

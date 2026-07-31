@@ -857,6 +857,7 @@ func TestAxiSyncCheckSurfacesRecoveryForTerminalPrePushRun(t *testing.T) {
 		"code: recover_custody",
 		"command: no-mistakes axi sync --recover",
 		"no-mistakes rerun",
+		"rerun starts from the current ordinary gate branch",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stranded check missing %q:\n%s", want, out)
@@ -944,6 +945,7 @@ func TestAxiSyncRecoverMovedGateAnchorsAndReturnsActionableHelp(t *testing.T) {
 		f.anchorRef(),
 		"no-mistakes axi sync --recover --keep-local",
 		"no-mistakes rerun",
+		"rerun starts from the current ordinary gate branch",
 		"git log --oneline --left-right HEAD..." + f.anchorRef(),
 		"no files or refs were changed except the recovery anchor",
 	} {

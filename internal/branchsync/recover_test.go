@@ -483,6 +483,9 @@ func TestRecoverGateAtLocalSubmittedHeadAnchorsRecordedHead(t *testing.T) {
 	t.Run("keep local stamps custody without moving worktree or gate", func(t *testing.T) {
 		f := newRecoverFixture(t, types.RunFailed)
 		f.moveGateBranchToSubmitted()
+		if first := f.service.Recover(f.ctx, false); first.Recovered || first.Safety != "blocked_recover_diverged" {
+			t.Fatalf("anchor-only recovery boundary = %#v", first)
+		}
 
 		state := f.service.Recover(f.ctx, true)
 		if !state.Recovered || state.Changed {
@@ -499,6 +502,15 @@ func TestRecoverGateAtLocalSubmittedHeadAnchorsRecordedHead(t *testing.T) {
 		}
 		if !f.custodyReturned() {
 			t.Fatal("keep-local did not stamp custody")
+		}
+		// Simulate a crash after the database stamp but before private-marker
+		// cleanup. An idempotent retry must finish that cleanup.
+		mustRun(t, f.gate, "update-ref", custodyReturnRef(f.run.ID), f.submitted)
+		if retry := f.service.Recover(f.ctx, true); !retry.Recovered || retry.Changed {
+			t.Fatalf("completed keep-local retry = %#v", retry)
+		}
+		if _, err := gitpkg.Run(f.ctx, f.gate, "show-ref", "--verify", custodyReturnRef(f.run.ID)); err == nil {
+			t.Fatal("completed retry left stale custody-return marker")
 		}
 	})
 
@@ -579,6 +591,84 @@ func TestRecoverGateAtLocalSubmittedHeadAnchorsRecordedHead(t *testing.T) {
 }
 
 func TestRecoverMovedGateExactAnchorDisconfirmingCases(t *testing.T) {
+	t.Run("recorded head is not a canonical full object ID", func(t *testing.T) {
+		for _, invalid := range []string{"deadbeef", "HEAD", strings.Repeat("A", 40), strings.Repeat("1", 39), strings.Repeat("1", 41)} {
+			t.Run(invalid[:min(len(invalid), 8)], func(t *testing.T) {
+				f := newRecoverFixture(t, types.RunFailed)
+				f.moveGateBranchToSubmitted()
+				if err := f.db.UpdateRunHeadSHA(f.run.ID, invalid); err != nil {
+					t.Fatal(err)
+				}
+
+				state := f.service.Recover(f.ctx, true)
+				if state.Recovered || state.Safety != "blocked_recover_invalid_head" {
+					t.Fatalf("noncanonical preserved head recover = %#v", state)
+				}
+				assertNoRecoverAnchor(t, f)
+				if f.custodyReturned() {
+					t.Fatal("noncanonical preserved head stamped custody")
+				}
+			})
+		}
+	})
+
+	t.Run("conflicting recovery anchor", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		f.moveGateBranchToSubmitted()
+		mustRun(t, f.local, "update-ref", f.anchorRef(), f.submitted)
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Safety != "blocked_recover_anchor_conflict" {
+			t.Fatalf("conflicting-anchor moved-gate recover = %#v", state)
+		}
+		if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.submitted {
+			t.Fatalf("conflicting anchor overwritten to %s", got)
+		}
+		if f.custodyReturned() {
+			t.Fatal("conflicting anchor stamped custody")
+		}
+	})
+
+	t.Run("publication-bearing run", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		f.moveGateBranchToSubmitted()
+		if err := f.db.UpdateRunPushBinding(f.run.ID, db.PushBinding{
+			HeadSHA: f.submitted, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/recover",
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Safety != "blocked_recover_publication" {
+			t.Fatalf("publication-bearing moved-gate recover = %#v", state)
+		}
+		assertNoRecoverAnchor(t, f)
+		if f.custodyReturned() {
+			t.Fatal("publication-bearing run stamped custody")
+		}
+	})
+
+	t.Run("newer terminal run owns branch", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		f.moveGateBranchToSubmitted()
+		newer, err := f.db.InsertRun(f.repo.ID, f.run.Branch, f.submitted, f.base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.db.UpdateRunStatus(newer.ID, types.RunCancelled); err != nil {
+			t.Fatal(err)
+		}
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Safety != "blocked_recover_newer_run" {
+			t.Fatalf("older moved-gate recovery with newer owner = %#v", state)
+		}
+		assertNoRecoverAnchor(t, f)
+		if f.custodyReturned() {
+			t.Fatal("older run stamped custody despite newer owner")
+		}
+	})
+
 	t.Run("local differs from moved gate", func(t *testing.T) {
 		f := newRecoverFixture(t, types.RunFailed)
 		f.moveGateBranchToSubmitted()
@@ -1344,6 +1434,15 @@ func TestRecoverKeepLocalRechecksAfterGateCASBeforeStamp(t *testing.T) {
 		if f.custodyReturned() {
 			t.Fatal("post-cas local commit stamped custody")
 		}
+		f.service.beforeRecoverStamp = nil
+		retry := f.service.Recover(f.ctx, true)
+		if !retry.Recovered || retry.Changed {
+			t.Fatalf("post-cas local commit retry = %#v", retry)
+		}
+		newHead := mustRun(t, f.local, "rev-parse", "HEAD")
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != newHead {
+			t.Fatalf("post-cas retry gate = %s, want latest local %s", got, newHead)
+		}
 	})
 
 	t.Run("refuses branch switch after CAS", func(t *testing.T) {
@@ -1367,4 +1466,56 @@ func TestRecoverKeepLocalRechecksAfterGateCASBeforeStamp(t *testing.T) {
 			t.Fatal("post-cas branch switch stamped custody")
 		}
 	})
+}
+
+func TestRecoverFinalCustodyCASRejectsConcurrentAuthorityChanges(t *testing.T) {
+	t.Run("newer owning run", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunCancelled)
+		f.moveGateBranchToSubmitted()
+		f.service.beforeRecoverStamp = func() {
+			if _, err := f.db.InsertRun(f.repo.ID, f.run.Branch, f.submitted, f.base); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Safety != "blocked_recover_custody_race" {
+			t.Fatalf("concurrent newer-owner recovery = %#v", state)
+		}
+		if f.custodyReturned() {
+			t.Fatal("concurrent newer owner did not prevent custody stamp")
+		}
+	})
+
+	t.Run("publication binding", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunCancelled)
+		f.moveGateBranchToSubmitted()
+		f.service.beforeRecoverStamp = func() {
+			if err := f.db.UpdateRunPushBinding(f.run.ID, db.PushBinding{
+				HeadSHA: f.submitted, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/recover",
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Safety != "blocked_recover_custody_race" {
+			t.Fatalf("concurrent publication recovery = %#v", state)
+		}
+		if f.custodyReturned() {
+			t.Fatal("concurrent publication did not prevent custody stamp")
+		}
+	})
+}
+
+func TestRunHasPublicationTreatsLegacyZeroGenerationAsUnpublished(t *testing.T) {
+	zero := int64(0)
+	one := int64(1)
+	none := "none"
+	if runHasPublication(&db.Run{PushGeneration: &zero, PRState: &none}) {
+		t.Fatal("legacy zero push generation was treated as publication")
+	}
+	if !runHasPublication(&db.Run{PushGeneration: &one, PRState: &none}) {
+		t.Fatal("positive push generation was not treated as publication")
+	}
 }

@@ -98,7 +98,7 @@ func TestRebaseOnlyCancelledRunKeepLocalRecovery(t *testing.T) {
 	if got := gitCmd(t, root, "--git-dir="+gate, "rev-parse", "refs/heads/"+branch); got != submitted {
 		t.Fatalf("rebase moved ordinary gate branch to %s, want A %s", got, submitted)
 	}
-	if err := database.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
+	if err := database.UpdateRunErrorStatus(run.ID, "cancelled: aborted by user", types.RunCancelled); err != nil {
 		t.Fatal(err)
 	}
 	gitCmd(t, root, "--git-dir="+gate, "worktree", "remove", "--force", pipelineWorktree)

@@ -267,7 +267,7 @@ func humanSyncSummary(state branchsync.State) string {
 	switch state.State {
 	case branchsync.StatePipelineOwned:
 		if state.Safety == "blocked_pipeline_owned_recoverable" {
-			return "run ended without publishing its pipeline commits; recover custody with `no-mistakes sync --recover` (or `no-mistakes rerun` to resume validation)"
+			return "run ended without publishing its pipeline commits; recover custody with `no-mistakes sync --recover`; rerun starts from the current ordinary gate branch"
 		}
 		return "pipeline fix is not pushed yet; do not make local follow-up commits"
 	case branchsync.StateCustodyReturned:
@@ -340,7 +340,7 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
 		help = append(help, "Run `"+state.NextAction.Command+"`")
 	}
 	if state.Safety == "blocked_pipeline_owned_recoverable" {
-		help = append(help, "Run `no-mistakes rerun` instead to resume validating the preserved pipeline head")
+		help = append(help, "`no-mistakes rerun` is available, but rerun starts from the current ordinary gate branch, not the preserved recovery anchor")
 	}
 	if len(help) > 0 {
 		fields = append(fields, toON.Field{Key: "help", Value: help})

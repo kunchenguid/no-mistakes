@@ -49,6 +49,7 @@ var canonicalBranchSyncPhrases = []string{
 	// that it needs no recovery.
 	"user_owned",
 	"before changing the submitted head",
+	"rerun starts from the current ordinary gate branch",
 }
 
 const canonicalPipelineAgentPrerequisite = "a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`"

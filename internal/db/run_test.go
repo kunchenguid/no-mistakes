@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -817,34 +818,73 @@ func TestRecoverStaleRunsNoStaleRuns(t *testing.T) {
 	}
 }
 
-func TestSetRunCustodyReturnedStampsOnceAndSurvivesStatusUpdates(t *testing.T) {
-	d := openTestDB(t)
-	repo, _ := d.InsertRepo("/home/user/custody", "git@github.com:user/custody.git", "main")
-	run, _ := d.InsertRun(repo.ID, "feat", "abc", "def")
+func TestSetRunCustodyReturnedCAS(t *testing.T) {
+	t.Run("stamps unchanged newest terminal run", func(t *testing.T) {
+		d := openTestDB(t)
+		repo, _ := d.InsertRepo("/home/user/custody-success", "git@github.com:user/custody.git", "main")
+		run, _ := d.InsertRun(repo.ID, "feat", "submitted", "base")
+		if err := d.UpdateRunHeadSHA(run.ID, "preserved"); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
+			t.Fatal(err)
+		}
+		expected, _ := d.GetRun(run.ID)
 
-	got, err := d.GetRun(run.ID)
-	if err != nil || got.CustodyReturnedAt != nil {
-		t.Fatalf("fresh run custody = %#v, err %v", got.CustodyReturnedAt, err)
-	}
+		if err := d.SetRunCustodyReturnedCAS(expected); err != nil {
+			t.Fatalf("custody CAS: %v", err)
+		}
+		got, _ := d.GetRun(run.ID)
+		if got.CustodyReturnedAt == nil {
+			t.Fatal("custody stamp missing after successful CAS")
+		}
+	})
 
-	if err := d.SetRunCustodyReturned(run.ID); err != nil {
-		t.Fatalf("set custody returned: %v", err)
-	}
-	got, _ = d.GetRun(run.ID)
-	if got.CustodyReturnedAt == nil {
-		t.Fatal("custody stamp missing after set")
-	}
-	first := *got.CustodyReturnedAt
+	t.Run("rejects active run", func(t *testing.T) {
+		d := openTestDB(t)
+		repo, _ := d.InsertRepo("/home/user/custody-active", "git@github.com:user/custody.git", "main")
+		run, _ := d.InsertRun(repo.ID, "feat", "submitted", "base")
+		if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+			t.Fatal(err)
+		}
+		expected, _ := d.GetRun(run.ID)
+		if err := d.SetRunCustodyReturnedCAS(expected); !errors.Is(err, ErrRunCustodyCAS) {
+			t.Fatalf("active custody CAS error = %v", err)
+		}
+	})
 
-	// Re-stamping is idempotent: the original recovery moment is preserved.
-	if err := d.SetRunCustodyReturned(run.ID); err != nil {
-		t.Fatalf("re-stamp: %v", err)
-	}
-	if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
-		t.Fatalf("status update: %v", err)
-	}
-	got, _ = d.GetRun(run.ID)
-	if got.CustodyReturnedAt == nil || *got.CustodyReturnedAt != first {
-		t.Fatalf("custody stamp changed: %#v, want %d", got.CustodyReturnedAt, first)
-	}
+	t.Run("rejects newer owner", func(t *testing.T) {
+		d := openTestDB(t)
+		repo, _ := d.InsertRepo("/home/user/custody-newer", "git@github.com:user/custody.git", "main")
+		run, _ := d.InsertRun(repo.ID, "feat", "submitted", "base")
+		if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
+			t.Fatal(err)
+		}
+		expected, _ := d.GetRun(run.ID)
+		if _, err := d.InsertRun(repo.ID, "feat", "newer", "base"); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.SetRunCustodyReturnedCAS(expected); !errors.Is(err, ErrRunCustodyCAS) {
+			t.Fatalf("newer-owner custody CAS error = %v", err)
+		}
+	})
+
+	t.Run("rejects publication written after snapshot", func(t *testing.T) {
+		d := openTestDB(t)
+		repo, _ := d.InsertRepo("/home/user/custody-published", "git@github.com:user/custody.git", "main")
+		run, _ := d.InsertRun(repo.ID, "feat", "submitted", "base")
+		if err := d.UpdateRunHeadSHA(run.ID, "preserved"); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
+			t.Fatal(err)
+		}
+		expected, _ := d.GetRun(run.ID)
+		if err := d.UpdateRunPushBinding(run.ID, PushBinding{HeadSHA: "submitted", TargetKind: "upstream", TargetFingerprint: "target", Ref: "refs/heads/feat"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.SetRunCustodyReturnedCAS(expected); !errors.Is(err, ErrRunCustodyCAS) {
+			t.Fatalf("publication-race custody CAS error = %v", err)
+		}
+	})
 }
