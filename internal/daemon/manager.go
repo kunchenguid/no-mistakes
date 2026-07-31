@@ -844,6 +844,18 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		trackStartFailure("load_global_config")
 		return "", fmt.Errorf("load global config: %w", err)
 	}
+	// SECURITY: sign_commits is read from the global config only, never from
+	// the pushed branch, so a contributor cannot turn the maintainer's commit
+	// signing off. Disabling it here (rather than in the gate's shared config)
+	// keeps the write per-worktree and picks up a config change on the next
+	// run without a re-init.
+	if !globalCfg.SignCommits {
+		if err := git.DisableCommitSigning(ctx, wtDir); err != nil {
+			m.db.UpdateRunError(run.ID, fmt.Sprintf("disable commit signing: %s", err))
+			trackStartFailure("disable_commit_signing")
+			return "", fmt.Errorf("disable commit signing: %w", err)
+		}
+	}
 	repoCfg, err := config.LoadRepo(wtDir)
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))

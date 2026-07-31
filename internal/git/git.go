@@ -548,18 +548,41 @@ func CopyLocalUserIdentity(ctx context.Context, srcDir, dstDir string) error {
 		if value == "" {
 			continue
 		}
-		if _, err := Run(ctx, dstDir, "config", "--worktree", key, value); err != nil {
-			if !isWorktreeConfigWriteUnavailable(err) {
-				return err
-			}
-			// Per-worktree config is not usable here (Git too old for the
-			// flag, or the repo has multiple worktrees without
-			// extensions.worktreeConfig enabled). Fall back to the shared
-			// local config. Such gates also lack per-worktree isolation, so
-			// this matches the legacy behavior.
-			if _, err := Run(ctx, dstDir, "config", "--local", key, value); err != nil {
-				return err
-			}
+		if err := setWorktreeScopedConfig(ctx, dstDir, key, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DisableCommitSigning turns commit and tag signing off for dir, overriding
+// whatever the host's global git config asks for.
+//
+// The daemon runs unattended, so an interactive signer (1Password's
+// op-ssh-sign waits on a biometric unlock) never completes and fails the whole
+// step. Callers apply this only when the maintainer set sign_commits: false;
+// see the config field for the re-signing recipe.
+func DisableCommitSigning(ctx context.Context, dir string) error {
+	for _, key := range []string{"commit.gpgsign", "tag.gpgsign"} {
+		if err := setWorktreeScopedConfig(ctx, dir, key, "false"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// setWorktreeScopedConfig writes one config value in per-worktree scope,
+// falling back to shared local scope where per-worktree config is not usable
+// (Git too old for the flag, or multiple worktrees without
+// extensions.worktreeConfig enabled). Such gates also lack per-worktree
+// isolation, so the fallback matches the legacy behavior.
+func setWorktreeScopedConfig(ctx context.Context, dir, key, value string) error {
+	if _, err := Run(ctx, dir, "config", "--worktree", key, value); err != nil {
+		if !isWorktreeConfigWriteUnavailable(err) {
+			return err
+		}
+		if _, err := Run(ctx, dir, "config", "--local", key, value); err != nil {
+			return err
 		}
 	}
 	return nil

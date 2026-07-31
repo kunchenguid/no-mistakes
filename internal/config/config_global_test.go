@@ -431,6 +431,9 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	if raw.SessionReuse == nil || !*raw.SessionReuse {
 		t.Errorf("YAML session_reuse = %v, Go default = true", raw.SessionReuse)
 	}
+	if raw.SignCommits == nil || !*raw.SignCommits {
+		t.Errorf("YAML sign_commits = %v, Go default = true", raw.SignCommits)
+	}
 	defaults := autoFixDefaults()
 	if raw.AutoFix.Lint == nil || *raw.AutoFix.Lint != defaults.Lint {
 		t.Errorf("YAML auto_fix.lint = %v, Go default = %d", raw.AutoFix.Lint, defaults.Lint)
@@ -490,6 +493,61 @@ func TestAutoFixMinSeverity_DefaultsToWarningAndAcceptsOverrides(t *testing.T) {
 				t.Errorf("MinSeverity = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// sign_commits defaults to true, meaning the daemon leaves the host's git
+// signing configuration alone. Setting it false is what an unattended daemon
+// needs when the configured signer is interactive (1Password biometric
+// unlock), since a blocked signer fails the whole run.
+func TestLoadGlobal_SignCommits(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{"unset defaults to true", "log_level: info\n", true},
+		{"explicit false disables signing", "sign_commits: false\n", false},
+		{"explicit true keeps signing", "sign_commits: true\n", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadGlobal(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.SignCommits != tt.want {
+				t.Errorf("SignCommits = %v, want %v", cfg.SignCommits, tt.want)
+			}
+		})
+	}
+
+	cfg, err := LoadGlobal(filepath.Join(t.TempDir(), "missing.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.SignCommits {
+		t.Error("SignCommits = false with no config file, want true")
+	}
+}
+
+// Signing is an authenticity boundary, so it is global-only: a pushed branch
+// must never be able to turn the maintainer's commit signing off.
+func TestSignCommits_IsGlobalOnlyAndNotSettableFromRepoConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".no-mistakes.yaml")
+	if err := os.WriteFile(path, []byte("sign_commits: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repoCfg, err := LoadRepo(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := Merge(DefaultGlobalConfig(), repoCfg).SignCommits; !got {
+		t.Error("repo config disabled commit signing; sign_commits must be global-only")
 	}
 }
 

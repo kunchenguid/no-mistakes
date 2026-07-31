@@ -42,6 +42,8 @@ log_level: info
 
 session_reuse: true
 
+sign_commits: true
+
 auto_fix:
   rebase: 3
   review: 0
@@ -291,6 +293,27 @@ When resume is unavailable or fails, the fix turn falls back to a cold run or a 
 Session identities are persisted only as minimum local resume metadata, never as prompts or transcripts.
 The [daemon crash-recovery reference](/no-mistakes/concepts/daemon/#crash-recovery) owns which parked gates can resume or reconcile after a restart.
 Set `false` to force every agent invocation cold.
+
+### sign_commits
+
+Whether the commits the pipeline makes (fix, document, and CI-fix commits) inherit the host's git signing configuration.
+
+|         |        |
+| ------- | ------ |
+| Type    | `bool` |
+| Default | `true` |
+
+The default leaves your git configuration alone: if `commit.gpgsign` is on, pipeline commits are signed like any other.
+
+Set `false` when your signer is interactive. The daemon runs unattended, so a signer that waits on a human — 1Password's `op-ssh-sign` asks for a biometric unlock — never completes and fails the step instead. With `sign_commits: false`, the daemon turns `commit.gpgsign` and `tag.gpgsign` off in each run's worktree only; your own clone's configuration is untouched, and the setting takes effect on the next run without a re-init.
+
+Commits then land unsigned. Re-sign a branch afterwards from your own checkout:
+
+```bash
+git rebase <base> --exec 'git commit --amend --no-edit -S'
+```
+
+This key is global-only. Signing is an authenticity boundary, so a pushed branch's `.no-mistakes.yaml` can never turn it off.
 
 ### auto_fix
 
