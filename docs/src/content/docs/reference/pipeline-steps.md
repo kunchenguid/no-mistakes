@@ -93,9 +93,11 @@ Follow-up review passes use the history to avoid re-reporting user-ignored findi
 
 **Default auto-fix limit:** `0`.
 
-### Post-review HEAD continuity
+### HEAD custody and post-review continuity
 
 At entry to every remaining step in the fixed pipeline order - Test, Document, Lint, Push, PR, and CI - no-mistakes compares the live worktree `HEAD` with the pipeline-recorded head. An equal head or a pipeline-descendant commit continues. A backward reset, divergent sibling, or unverifiable relationship fails the run before that step performs work, including for steps that would not create a commit.
+
+The recorded head also advances through a guarded custody transition whenever Rebase rewrites it or Review, Test, Document, or Lint commits or adopts agent changes. Under the daemon's per-repository-and-branch lock, no-mistakes verifies a clean exact candidate, preserves it under an immutable run-and-candidate ref, records the exact old-to-candidate transition, advances the gate branch only if it still equals the old head, and then advances the run record with the same compare-and-swap predicate. Agent-authored candidates must be strict descendants; only Rebase may record an exact history rewrite. A daemon restart can reconcile the one prepared transition whose gate already reached the proven candidate before it performs generic stale-run recovery; the [daemon lifecycle reference](/no-mistakes/concepts/daemon/#crash-recovery) owns that restart behavior.
 
 ## Test
 

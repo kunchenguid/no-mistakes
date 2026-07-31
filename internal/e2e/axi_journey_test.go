@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -184,6 +186,14 @@ func TestAxiBranchSyncJourney(t *testing.T) {
 	if !strings.Contains(freshOut, "gate:") || strings.Contains(freshOut, "fetch first") {
 		t.Fatalf("fresh pipeline did not start cleanly:\n%s", freshOut)
 	}
+	t.Logf(
+		"end-user managed-head custody transcript\nsubmitted head: %s\n$ no-mistakes axi respond --action fix --findings sync-1\n%s\n$ no-mistakes axi respond --action approve\n%s\npushed pipeline head: %s\n$ no-mistakes axi sync\n%s",
+		originalHead,
+		strings.TrimSpace(fixOut),
+		strings.TrimSpace(doneOut),
+		pushedHead,
+		strings.TrimSpace(syncOut),
+	)
 }
 
 // TestAxiRunReattachesAfterManagedFix reproduces the v1.39.0 dogfood failure:
@@ -465,6 +475,153 @@ func TestAxiCustodyRecoveryJourney(t *testing.T) {
 	if !strings.Contains(freshOut, "gate:") {
 		t.Fatalf("fresh pipeline did not start cleanly after recovery:\n%s", freshOut)
 	}
+}
+
+// TestAxiExactForwardHeadRecoveryJourney exercises the deliberately narrow
+// operator-authorized repair through the real CLI and daemon. It builds the
+// one eligible completed local-only history, leaves the operator at the
+// submitted head, advances the gate by one explicit strict-forward candidate,
+// and proves the full-ID/full-SHA command returns custody without losing the
+// pipeline-authored fix.
+func TestAxiExactForwardHeadRecoveryJourney(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: branchSyncScenario(t)})
+	h.CommitChange("init-exact-recover", "seed.txt", "seed\n", "seed exact recovery init")
+	initWorktree := h.AddWorktree("init-exact-recover")
+	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+
+	submitted := h.CommitChange("feature/exact-recover", "feature.txt", "unsafe\n", "add exact recovery feature")
+	operator := h.AddWorktree("feature/exact-recover")
+	gateOut, err := h.RunInDir(
+		operator,
+		"axi", "run",
+		"--intent", "preserve the validated fix and recover one exact historical forward head",
+		"--skip", "push,pr,ci",
+	)
+	if err != nil || !strings.Contains(gateOut, "sync-1") {
+		t.Fatalf("initial review gate: %v\n%s", err, gateOut)
+	}
+	fixOut, err := h.RunInDir(operator, "axi", "respond", "--action", "fix", "--findings", "sync-1")
+	if err != nil {
+		t.Fatalf("review fix: %v\n%s", err, fixOut)
+	}
+	doneOut, err := h.RunInDir(operator, "axi", "respond", "--action", "approve")
+	if err != nil || !strings.Contains(doneOut, "outcome: passed") {
+		t.Fatalf("complete local-only run: %v\n%s", err, doneOut)
+	}
+
+	run := h.WaitForRun("feature/exact-recover", 30*time.Second)
+	recorded := run.HeadSHA
+	if recorded == submitted {
+		t.Fatal("pipeline did not preserve its review-fix commit in the recorded head")
+	}
+	if got := strings.TrimSpace(h.WorktreeRefSHA("feature/exact-recover")); got != submitted {
+		t.Fatalf("operator moved before exact recovery: %s, want submitted %s", got, submitted)
+	}
+
+	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
+	treeBytes, gitErr := h.runGit(context.Background(), gateDir, "rev-parse", recorded+"^{tree}")
+	if gitErr != nil {
+		t.Fatalf("resolve recorded tree: %v\n%s", gitErr, treeBytes)
+	}
+	candidateBytes, gitErr := h.runGit(
+		context.Background(),
+		gateDir,
+		"-c", "user.name=Incident Operator",
+		"-c", "user.email=operator@example.com",
+		"commit-tree", strings.TrimSpace(string(treeBytes)),
+		"-p", recorded,
+		"-m", "authorized historical forward head",
+	)
+	if gitErr != nil {
+		t.Fatalf("create candidate: %v\n%s", gitErr, candidateBytes)
+	}
+	candidate := strings.TrimSpace(string(candidateBytes))
+	branchRef := "refs/heads/feature/exact-recover"
+	if out, gitErr := h.runGit(context.Background(), gateDir, "update-ref", branchRef, candidate, recorded); gitErr != nil {
+		t.Fatalf("stage historical candidate in gate: %v\n%s", gitErr, out)
+	}
+
+	abbreviatedOut, abbreviatedErr := h.RunInDir(
+		operator,
+		"axi", "sync", "--recover",
+		"--run", run.ID,
+		"--adopt-forward-head", candidate[:12],
+	)
+	if abbreviatedErr == nil || !strings.Contains(abbreviatedOut, "canonical full 40- or 64-hex object ID") {
+		t.Fatalf("abbreviated candidate should be rejected before recovery:\n%s", abbreviatedOut)
+	}
+	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", "HEAD"); gitErr != nil || strings.TrimSpace(string(got)) != submitted {
+		t.Fatalf("abbreviated authorization moved operator HEAD to %s (err %v)", strings.TrimSpace(string(got)), gitErr)
+	}
+	if got, gitErr := h.runGit(context.Background(), gateDir, "rev-parse", branchRef); gitErr != nil || strings.TrimSpace(string(got)) != candidate {
+		t.Fatalf("abbreviated authorization moved gate head to %s (err %v)", strings.TrimSpace(string(got)), gitErr)
+	}
+
+	recoverOut, err := h.RunInDir(
+		operator,
+		"axi", "sync", "--recover",
+		"--run", run.ID,
+		"--adopt-forward-head", candidate,
+	)
+	if err != nil {
+		t.Fatalf("exact forward recovery: %v\n%s", err, recoverOut)
+	}
+	for _, want := range []string{
+		"recovery_mode: operator_authorized_forward_head",
+		"recovered: true",
+		"changed: true",
+		"state: custody_returned",
+		"safety: custody_returned",
+		"phase: custody_returned",
+		"run_id: \"" + run.ID + "\"",
+		"local_head: " + candidate,
+		"recorded_head: " + candidate,
+		"candidate: " + candidate,
+	} {
+		if !strings.Contains(recoverOut, want) {
+			t.Errorf("recovery output missing %q:\n%s", want, recoverOut)
+		}
+	}
+	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", "HEAD"); gitErr != nil || strings.TrimSpace(string(got)) != candidate {
+		t.Fatalf("operator HEAD after recovery = %s (err %v), want %s", strings.TrimSpace(string(got)), gitErr, candidate)
+	}
+	anchorRef := "refs/no-mistakes/recovery-candidates/" + run.ID + "/" + candidate
+	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", anchorRef); gitErr != nil || strings.TrimSpace(string(got)) != candidate {
+		t.Fatalf("recovery anchor %s = %s (err %v), want %s", anchorRef, strings.TrimSpace(string(got)), gitErr, candidate)
+	}
+	database, err := db.Open(paths.WithRoot(h.NMHome).DB())
+	if err != nil {
+		t.Fatalf("open persisted recovery database: %v", err)
+	}
+	defer database.Close()
+	audit, err := database.GetRunHeadRecovery(run.ID)
+	if err != nil {
+		t.Fatalf("read persisted recovery audit: %v", err)
+	}
+	if audit == nil ||
+		audit.RunID != run.ID ||
+		audit.ExpectedHeadSHA != recorded ||
+		audit.LocalHeadSHA != submitted ||
+		audit.CandidateHeadSHA != candidate ||
+		audit.AnchorRef != anchorRef {
+		t.Fatalf("persisted recovery audit = %#v", audit)
+	}
+
+	t.Logf(
+		"end-user exact recovery transcript\n$ no-mistakes axi sync --recover --run %s --adopt-forward-head %s\n%s\n$ no-mistakes axi sync --recover --run %s --adopt-forward-head %s\n%s\npersisted audit: submitted=%s recorded=%s candidate=%s anchor=%s",
+		run.ID,
+		candidate[:12],
+		strings.TrimSpace(abbreviatedOut),
+		run.ID,
+		candidate,
+		strings.TrimSpace(recoverOut),
+		submitted,
+		recorded,
+		candidate,
+		anchorRef,
+	)
 }
 
 func operatorContext() context.Context { return context.Background() }

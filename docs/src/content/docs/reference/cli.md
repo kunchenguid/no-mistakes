@@ -191,7 +191,8 @@ no-mistakes axi sync --recover --run <FULL-RUN-ID> --adopt-forward-head <FULL-CO
 | `--adopt-forward-head` | `string` | (none)  | With `--recover --run`: exact lowercase 40- or 64-hex candidate commit ID    |
 
 The default command is an explicit non-interactive apply request and never prompts.
-All modes return the complete `branch_sync` object as TOON.
+Ordinary check, apply, and custody-recovery modes return the complete `branch_sync` object as TOON.
+The paired exact historical-repair mode instead returns its recovery mode, whether anything changed, whether custody was returned, its current phase, the exact run/repository/branch and commit identities, the candidate anchor, and any refusal reason.
 Exit code `0` means an eligible check, applied synchronization or recovery, already-synchronized or custody-returned no-op, or expected merged-and-removed no-op; blocked operational states return `1`.
 The ordinary worktree mutation is either a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA, or an equivalent-diverged advance.
 When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and moves to the pipeline head with reset semantics.
@@ -215,6 +216,8 @@ When you explicitly keep a behind or diverged local head instead of taking the p
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
 
 The paired `--run <FULL-RUN-ID> --adopt-forward-head <FULL-COMMIT-ID>` form is a narrower operator-authorized historical repair, not generic descendant adoption. Both flags are required together and only with `--recover`; prefixes, lowercase run IDs, abbreviated SHAs, refs, tags, revision expressions, `--check`, and `--keep-local` are refused. The exact run must be the latest same-branch row, exactly completed with Intent through Lint successful and Push, PR, and CI skipped, with no error, awaiting-agent, publication, or competing active-run state. The invoking registered branch must be uniquely checked out and clean at its exact submitted head, that submitted head must be a strict ancestor of the recorded head, and the recorded head must be a strict ancestor of the explicit candidate. Any recorded review-approved head must also be ancestral to the candidate, and the exact gate branch must equal the candidate. The repair anchors the candidate, records an immutable audit tuple, advances only by strict fast-forward, and returns custody only after the final local, gate, anchor, run, step, and audit proof succeeds.
+
+Anchor creation, recorded-head adoption, and the local fast-forward are monotonic durable phases and are not rolled back if a later proof refuses. The paired AXI result reports `phase` as `inspected`, `candidate_anchored`, `head_adopted`, `local_advanced`, or `custody_returned`; after correcting a transient refusal, retry with the same exact run and candidate so recovery resumes from the durable state.
 
 `no-mistakes axi sync` is non-interactive, so the paired form sends that exact authorization immediately and does not prompt. Use it only when the operator has already reviewed and authorized both full IDs. The human `no-mistakes sync` form displays the candidate and run and requires an explicit `y`/`yes` confirmation; in a non-TTY it refuses unless `--yes` is supplied.
 

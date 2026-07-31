@@ -96,11 +96,14 @@ Configured commands and one-shot agent subprocesses are terminated as a process 
 
 ## Concurrent push handling
 
-If you push to the same branch while a run is already active, the daemon:
+Run admission, pre-publication pipeline head transitions, and exceptional head-custody recovery share one per-repository-and-branch critical section. If you push to the same branch while a run is already active, the daemon:
 
-1. Cancels the in-progress run (reason: "cancelled: superseded by new push")
-2. Waits for it to finish
-3. Starts a new run with the latest push
+1. Verifies that the gate branch still equals the exact head named by the push notification
+2. Cancels the in-progress run (reason: "cancelled: superseded by new push")
+3. Waits for it to finish without preventing that run from completing any already-started guarded head transition
+4. Re-verifies the exact gate head and starts the new run only while it still matches
+
+If the gate branch changes during that handoff, admission refuses the stale notification instead of starting a run against a different head.
 
 Pushes to different branches run concurrently.
 
@@ -111,6 +114,7 @@ reason about in one long-lived process than inside independent hook invocations.
 
 On startup, the daemon checks for runs that were left in `pending` or `running` status (which means the daemon crashed while they were active):
 
+- Before generic stale-run recovery, reconciles an exactly journaled pipeline head transition only when the gate and the still-clean run worktree both equal its immutable candidate. A prepared transition whose gate never moved is left for ordinary failed-run recovery; if the gate reached the candidate but its authority proofs fail, startup stops before destroying the evidence needed for a safe retry or explicit repair
 - Completes legacy active rows whose persisted PR state is already `merged` or `closed`, including their CI step, before active-run recovery and parked-run planning
 - Resumes only fully recorded parked approval gates whose worktree and step history can be validated; incomplete or ambiguous active runs fail closed
 - Before resuming a parked CI gate, re-checks its persisted PR URL through the configured provider; a currently merged or closed PR completes the stale gate, while an open, unknown, or unreachable PR remains parked
