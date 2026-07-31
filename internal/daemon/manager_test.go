@@ -322,6 +322,7 @@ func TestPushReceivedAllowsDifferentBranchRunsConcurrently(t *testing.T) {
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "concurrent-branch-repo")
+	setTestGateBranches(t, p.RepoDir("concurrent-branch-repo"), headSHA, "feature/one", "feature/two")
 
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
@@ -405,6 +406,15 @@ func waitForStartedBranch(t *testing.T, started <-chan string, branch string) {
 	}
 }
 
+func setTestGateBranches(t *testing.T, gateDir, headSHA string, branches ...string) {
+	t.Helper()
+	for _, branch := range branches {
+		if _, err := git.Run(context.Background(), gateDir, "update-ref", "refs/heads/"+branch, headSHA); err != nil {
+			t.Fatalf("create gate branch %s: %v", branch, err)
+		}
+	}
+}
+
 // TestPushReceivedConcurrentDifferentBranchRunsAvoidSharedConfigLock fires two
 // branch pushes for the same repo at the same time so both runs hit worktree
 // creation and git-identity setup concurrently. All runs share one gate bare
@@ -423,6 +433,8 @@ func TestPushReceivedConcurrentDifferentBranchRunsAvoidSharedConfigLock(t *testi
 
 	const repoID = "concurrent-config-lock-repo"
 	_, headSHA := setupTestGitRepo(t, p, d, repoID)
+	branches := []string{"feature/one", "feature/two"}
+	setTestGateBranches(t, p.RepoDir(repoID), headSHA, branches...)
 
 	// Mirror a real gate: enable the per-worktree config isolation that
 	// `no-mistakes init` installs, which is what lets identity writes avoid the
@@ -431,7 +443,6 @@ func TestPushReceivedConcurrentDifferentBranchRunsAvoidSharedConfigLock(t *testi
 		t.Fatalf("isolate hooks path: %v", err)
 	}
 
-	branches := []string{"feature/one", "feature/two"}
 	errs := make([]error, len(branches))
 	var wg sync.WaitGroup
 	for i, br := range branches {
