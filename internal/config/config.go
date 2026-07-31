@@ -771,6 +771,53 @@ func (c *Config) AgentArgsFor(name types.AgentName) []string {
 	return c.AgentArgsOverride[string(name)]
 }
 
+// ApplyResolvedAgentRoute replaces From only after normal trusted config and
+// availability resolution. This makes `auto` and fallback lists behave
+// naturally: a route from Claude changes only the entries that actually
+// resolved to Claude, while configured Codex entries remain untouched.
+func (c *Config) ApplyResolvedAgentRoute(route *types.AgentRouteOverride) (bool, error) {
+	if route == nil {
+		return false, nil
+	}
+	if route.From == "" || route.To == "" || route.From == types.AgentAuto || route.To == types.AgentAuto {
+		return false, fmt.Errorf("agent route requires concrete non-auto from and to agents")
+	}
+	if !agentArgsOverrideAgents[string(route.From)] || !agentArgsOverrideAgents[string(route.To)] {
+		return false, fmt.Errorf("agent route supports native agents only")
+	}
+	if err := validateAgentArgsOverride(map[string][]string{string(route.To): route.Args}); err != nil {
+		return false, err
+	}
+
+	agents := c.Agents
+	if len(agents) == 0 {
+		agents = []types.AgentName{c.Agent}
+	}
+	matched := false
+	routed := make([]types.AgentName, len(agents))
+	for i, name := range agents {
+		routed[i] = name
+		if name == route.From {
+			routed[i] = route.To
+			matched = true
+		}
+	}
+	if !matched {
+		return false, nil
+	}
+	c.Agent = routed[0]
+	c.Agents = routed
+	if len(route.Args) > 0 {
+		overrides := make(map[string][]string, len(c.AgentArgsOverride)+1)
+		for name, args := range c.AgentArgsOverride {
+			overrides[name] = append([]string(nil), args...)
+		}
+		overrides[string(route.To)] = append(overrides[string(route.To)], route.Args...)
+		c.AgentArgsOverride = overrides
+	}
+	return true, nil
+}
+
 // agentArgsOverrideAgents lists native agent names accepted as keys in
 // agent_args_override.
 var agentArgsOverrideAgents = map[string]bool{

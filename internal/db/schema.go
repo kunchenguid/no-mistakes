@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS runs (
     error                   TEXT,
     awaiting_agent_since INTEGER,
     parked_ms            INTEGER,
+    agent_route_json     TEXT,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
@@ -151,6 +152,7 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN intent_score REAL`,
 	`ALTER TABLE runs ADD COLUMN awaiting_agent_since INTEGER`,
 	`ALTER TABLE runs ADD COLUMN parked_ms INTEGER`,
+	`ALTER TABLE runs ADD COLUMN agent_route_json TEXT`,
 	// Branch synchronization provenance is intentionally nullable. Historical
 	// rows stay unbound because mutable head_sha cannot prove a successful push.
 	`ALTER TABLE runs ADD COLUMN submitted_head_sha TEXT`,

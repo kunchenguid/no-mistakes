@@ -88,6 +88,7 @@ An active run on another branch does not block starting validation for the curre
 no-mistakes axi run --intent "the user's goal"
 no-mistakes axi run --intent "the user's goal" --skip test,lint
 no-mistakes axi run --intent "the user's goal" --yes
+no-mistakes axi run --intent "the user's goal" --agent-route claude=pi --agent-route-arg=--model --agent-route-arg=kimi-coding/k3
 ```
 
 | Flag          | Type     | Default | Description                                                      |
@@ -95,6 +96,8 @@ no-mistakes axi run --intent "the user's goal" --yes
 | `--intent`    | `string` | (none)  | What the user set out to accomplish; required to start a new run |
 | `-y`, `--yes` | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome        |
 | `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip                           |
+| `--agent-route` | `string` | (none) | Replace one resolved pipeline agent for this run, as `from=to` |
+| `--agent-route-arg` | `string[]` | (none) | Append a CLI argument to the routed agent; repeat as needed |
 
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.

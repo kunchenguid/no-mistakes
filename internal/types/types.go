@@ -144,6 +144,15 @@ const (
 	AgentCursor   AgentName = "cursor"
 )
 
+// AgentRouteOverride replaces one resolved pipeline agent with another for a
+// single run. Args are appended only when From is present in the resolved
+// configuration, so unrelated agents and fallback routes stay unchanged.
+type AgentRouteOverride struct {
+	From AgentName `json:"from"`
+	To   AgentName `json:"to"`
+	Args []string  `json:"args,omitempty"`
+}
+
 // ACPAlias describes a first-class agent name that resolves to an ACP target.
 type ACPAlias struct {
 	Name           AgentName
