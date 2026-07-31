@@ -146,6 +146,8 @@ Directory holding gh's `hosts.yml`, consulted when detecting self-hosted GitHub 
 
 When the upstream hostname is not `github.com`, no-mistakes reads gh's configured hosts from `$GH_CONFIG_DIR/hosts.yml` to decide whether the host is a GitHub Enterprise instance. It takes precedence over `XDG_CONFIG_HOME`. See [Provider Integration](/no-mistakes/guides/provider-integration/#self-hosted-githubgitlab).
 
+The daemon sets this variable for its own `gh` invocations when [`scm.gh_config_dir`](/no-mistakes/reference/global-config/#scm) is configured.
+
 ## `XDG_CONFIG_HOME`
 
 Config directory used to locate glab's `config.yml` for self-hosted GitLab detection and gh's `hosts.yml` for self-hosted GitHub Enterprise detection.

@@ -51,6 +51,10 @@ auto_fix:
   document: 3
   lint: 3
   ci: 3
+  min_severity: warning
+
+review:
+  narrow_after_round: 2
 
 ci:
   rerun_transient: 0
