@@ -459,6 +459,10 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	if raw.AutoFix.MinSeverity == nil || *raw.AutoFix.MinSeverity != defaults.MinSeverity {
 		t.Errorf("YAML auto_fix.min_severity = %v, Go default = %q", raw.AutoFix.MinSeverity, defaults.MinSeverity)
 	}
+	reviewDefault := reviewDefaults()
+	if raw.Review.NarrowAfterRound == nil || *raw.Review.NarrowAfterRound != reviewDefault.NarrowAfterRound {
+		t.Errorf("YAML review.narrow_after_round = %v, Go default = %d", raw.Review.NarrowAfterRound, reviewDefault.NarrowAfterRound)
+	}
 }
 
 // The severity floor bounds only what the executor fixes on its own. It

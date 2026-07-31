@@ -17,6 +17,84 @@ import (
 // local patch: enforced in code because the prompt-level mandate alone drifts.
 const requiredReviewSkill = "comprehensive-code-review"
 
+// fullSweepSkillInvocation is how the review step has always invoked the
+// review skill: every applicable aspect, every severity.
+const fullSweepSkillInvocation = "(Skill tool, no arguments)"
+
+// Aspect names match the review skill's own step-2 table, because it runs only
+// the aspects the caller names. Correctness & bugs is the defect aspect;
+// Simplification and React are advisory or narrow, and are the first to go.
+var (
+	coreReviewAspects    = []string{"Correctness & bugs", "Tests"}
+	minimalReviewAspects = []string{"Correctness & bugs"}
+)
+
+// reviewBreadth is how wide and how strict a single review turn is.
+type reviewBreadth struct {
+	// Aspects are the review-skill aspects to run. Nil runs every applicable
+	// aspect.
+	Aspects []string
+	// MinSeverity is the lowest severity worth producing. Empty reports every
+	// severity.
+	MinSeverity string
+}
+
+// reviewBreadthForRound narrows a rereview as rounds accumulate.
+//
+// The review loop's cost is dominated by the per-aspect sub-agents the review
+// skill spawns, and measured rereviews keep finding fresh advisory material
+// rather than converging: findings per round did not decay across nine rounds,
+// 96% of findings appeared in exactly one round, and 59% were info severity.
+// Later rounds therefore buy less per token than the first, so they get fewer
+// aspects and a higher floor. narrowAfter <= 0 keeps every round a full sweep.
+func reviewBreadthForRound(round, narrowAfter int) reviewBreadth {
+	switch {
+	case narrowAfter <= 0 || round <= narrowAfter:
+		return reviewBreadth{}
+	case round <= 2*narrowAfter:
+		return reviewBreadth{Aspects: coreReviewAspects, MinSeverity: types.SeverityWarning}
+	default:
+		return reviewBreadth{Aspects: minimalReviewAspects, MinSeverity: types.SeverityError}
+	}
+}
+
+// skillInvocation renders how the review turn should invoke the review skill.
+func (b reviewBreadth) skillInvocation() string {
+	if len(b.Aspects) == 0 {
+		return fullSweepSkillInvocation
+	}
+	return fmt.Sprintf("(Skill tool), naming exactly these aspects so it runs only those: %s", strings.Join(b.Aspects, ", "))
+}
+
+// severityRule renders the floor as a generation rule rather than a reporting
+// filter: a finding suppressed only at report time has already cost a full
+// sub-agent pass to produce.
+func (b reviewBreadth) severityRule() string {
+	switch b.MinSeverity {
+	case types.SeverityWarning:
+		return "\n- This is a later round of an ongoing review. Report only \"error\" and \"warning\" findings. Do not spend review effort looking for \"info\"-severity polish, and omit any you notice in passing."
+	case types.SeverityError:
+		return "\n- This is a late round of an ongoing review. Report only \"error\" findings - problems that must not merge. Do not spend review effort looking for \"warning\" or \"info\" findings, and omit any you notice in passing."
+	default:
+		return ""
+	}
+}
+
+// reviewRound is the 1-indexed number of the review turn about to run. The
+// executor inserts a round record only after the step returns, so the current
+// turn is one past the recorded history. An unreadable history falls back to
+// round 1, which keeps the full sweep.
+func reviewRound(sctx *pipeline.StepContext) int {
+	if sctx == nil || sctx.DB == nil || sctx.StepResultID == "" {
+		return 1
+	}
+	rounds, err := sctx.DB.GetRoundsByStep(sctx.StepResultID)
+	if err != nil {
+		return 1
+	}
+	return len(rounds) + 1
+}
+
 // ReviewStep reviews the diff for bugs, security issues, and doc gaps.
 type ReviewStep struct{}
 
@@ -180,6 +258,11 @@ Previous review findings to address:
 	logPathInstructions(sctx.Log, pathInstructionMatches)
 	pathInstructions := reviewPathInstructionsSection(pathInstructionMatches)
 
+	// A rereview costs the same per-aspect sub-agent fan-out as the first
+	// review, so later rounds narrow both what runs and what is worth
+	// reporting. Round one is always the full adversarial sweep.
+	breadth := reviewBreadthForRound(reviewRound(sctx), sctx.Config.Review.NarrowAfterRound)
+
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
 
@@ -192,7 +275,7 @@ Context:
 - ignore patterns: %s
 
 Task:
-- Run the review by invoking the `+"`comprehensive-code-review`"+` skill (Skill tool, no arguments) against the review scope above, and follow its procedure as written - including spawning the per-aspect review agents it prescribes rather than collapsing them into one inline pass. Compile what it returns into the structured findings below, mapping its severities onto this schema: Critical -> "error", Important -> "warning", Suggestion -> "info". An inline review is never an acceptable substitute: if the skill is unavailable or fails, stop and say so rather than reviewing the diff yourself - the step fails and the run parks.
+- Run the review by invoking the `+"`comprehensive-code-review`"+` skill %s against the review scope above, and follow its procedure as written - including spawning the per-aspect review agents it prescribes rather than collapsing them into one inline pass. Compile what it returns into the structured findings below, mapping its severities onto this schema: Critical -> "error", Important -> "warning", Suggestion -> "info". An inline review is never an acceptable substitute: if the skill is unavailable or fails, stop and say so rather than reviewing the diff yourself - the step fails and the run parks.
 - Read enough of the history and diff yourself to frame the review scope and to judge the findings that come back.
 - Focus findings on risks introduced by changed code, but inspect surrounding code, call sites, shared helpers, tests, and invariants when needed to understand root cause.
 - Determine from the stated intent and relevant evidence whether a bug-fix change claims a durable fix or explicitly authorized short-term containment.
@@ -208,7 +291,7 @@ Task:
 
 Rules:
 - Anchor every finding to a specific file and one-indexed line number in the changed code when possible.
-- Use severity "error" for problems that should absolutely not get merged, "warning" for things that are worth addressing but can be done in a follow up, and "info" for things that are nice to have.
+- Use severity "error" for problems that should absolutely not get merged, "warning" for things that are worth addressing but can be done in a follow up, and "info" for things that are nice to have.%s
 - Be concise and actionable. No generic advice like "add more tests".
 - Only comment on things that genuinely matter.
 - Do NOT report styling, formatting, linting, compilation, or type-checking issues.
@@ -235,6 +318,8 @@ Risk assessment (after listing all findings):
 		reviewScope,
 		sctx.Repo.DefaultBranch,
 		ignorePatterns,
+		breadth.skillInvocation(),
+		breadth.severityRule(),
 		historySection,
 		pathInstructions,
 	)

@@ -364,6 +364,27 @@ Set `0` here to never spend someone else's CI minutes; this is the only place to
 
 The per-repo [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_transient) overrides this value and owns the classification, the trust boundary, and every case that skips the rerun.
 
+### review.narrow_after_round
+
+How many review rounds get a full adversarial sweep before the Review step starts narrowing.
+
+| | |
+| --- | --- |
+| Type | `int` |
+| Default | `2` |
+
+Most of a review's cost is the per-aspect sub-agents the review skill spawns, and later rounds keep surfacing advisory findings rather than converging. Past this threshold the Review step asks the skill for fewer aspects and a higher severity floor, so the findings that would not be acted on are never generated:
+
+| Round | Aspects | Severities reported |
+| --- | --- | --- |
+| 1 to `narrow_after_round` | every applicable aspect | `error`, `warning`, `info` |
+| up to `2 x narrow_after_round` | correctness & bugs, tests | `error`, `warning` |
+| beyond that | correctness & bugs | `error` |
+
+Set it to `0` to keep every round a full sweep. A negative value is treated as `0`.
+
+This is global-only: review breadth is a gate strength, so a pushed branch must not be able to narrow the review of its own change. Unlike `auto_fix.min_severity`, which filters findings after they are produced, this changes what the reviewer is asked to look for.
+
 ### commit.fix_message
 
 Template for the subject of commits created by the shared Review, Test, Document, and Lint fix path.
