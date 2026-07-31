@@ -437,7 +437,7 @@ func (m Model) terminalTitle() string {
 		icon := stepStatusIndicator(s.Status, m.spinnerFrame)
 		switch s.Status {
 		case types.StepStatusRunning, types.StepStatusFixing:
-			if s.StepName == types.StepCI && ((m.run != nil && m.run.CIReady) || parseCIActivity(m.logs).Ready) {
+			if s.StepName == types.StepCI && m.run != nil && m.run.CIReady {
 				return "✓ Checks passed" + suffix
 			}
 			return icon + " " + stepLabel(s.StepName) + suffix

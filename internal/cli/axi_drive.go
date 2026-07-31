@@ -4,15 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	toon "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
-	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -152,16 +149,11 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 		}
 	}
 
-	readCILog := ciLogReader(env.p)
-	run, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, autoYes, readCILog)
+	run, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, autoYes)
 	if err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}
-	var ciLogs []string
-	if readCILog != nil {
-		ciLogs = readCILog(run.ID)
-	}
-	return renderDriveResult(cmd, run, ciReady, ciLogs)
+	return renderDriveResult(cmd, run, ciReady)
 }
 
 func configErrorForFreshAxiRun(env *axiEnv, runID string) error {
@@ -422,15 +414,13 @@ func rerunParams(repoID, branch string, skipSteps []types.StepName, intent strin
 // agent driving the run must not block on that human action, so once CI checks
 // pass driveRun returns with ciReady=true: the change is validated and the PR is
 // ready for a human to merge. The daemon keeps monitoring in the background.
-// readCILog reads the CI step's log lines for runID; it may be nil (no early
-// stop) and returns nil when no log exists yet.
-func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, socketPath, runID string, autoApprove bool, readCILog func(string) []string) (run *ipc.RunInfo, ciReady bool, err error) {
+func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, socketPath, runID string, autoApprove bool) (run *ipc.RunInfo, ciReady bool, err error) {
 	reconciler := newRunReconciler(&ipcRunStateSource{socketPath: socketPath}, runID)
 	defer reconciler.Close()
-	return driveRunWithReconciler(ctx, progress, client, reconciler, runID, autoApprove, readCILog)
+	return driveRunWithReconciler(ctx, progress, client, reconciler, runID, autoApprove)
 }
 
-func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc.Client, reconciler *runReconciler, runID string, autoApprove bool, readCILog func(string) []string) (run *ipc.RunInfo, ciReady bool, err error) {
+func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc.Client, reconciler *runReconciler, runID string, autoApprove bool) (run *ipc.RunInfo, ciReady bool, err error) {
 	pp := &progressPrinter{w: progress, seen: map[string]string{}}
 	fixedSteps := map[string]bool{}
 	pendingGate := ""
@@ -473,35 +463,21 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 		// CI is green but the PR is unmerged: hand control back rather than
 		// waiting on a human merge. This holds even under autoApprove, since
 		// the agent cannot approve away a human's merge.
-		if readCILog != nil && ciReadyToMerge(rv, readCILog(runID)) {
+		if ciReadyToMerge(rv) {
 			return run, true, nil
 		}
 	}
 }
 
-// ciReadyToMerge reports whether the CI step is actively monitoring and its logs
-// show all checks have passed, meaning the PR is ready for a human to merge. It
-// reads CI state through the same parser the TUI uses (see cimonitor) so the two
-// surfaces never disagree about when a run is "done" from the agent's view.
-func ciReadyToMerge(rv runView, ciLogs []string) bool {
+// ciReadyToMerge reports whether the CI step is actively monitoring and the
+// daemon has persisted checks-passed readiness.
+func ciReadyToMerge(rv runView) bool {
 	for _, s := range rv.Steps {
 		if s.Name == string(types.StepCI) {
-			return s.Status == string(types.StepStatusRunning) && cimonitor.ChecksPassed(ciLogs)
+			return s.Status == string(types.StepStatusRunning) && rv.CIReady
 		}
 	}
 	return false
-}
-
-// ciLogReader returns a reader of the CI step's log lines for a run, sourced
-// from the same on-disk log the daemon writes and `axi logs` reads.
-func ciLogReader(p *paths.Paths) func(string) []string {
-	return func(runID string) []string {
-		data, err := os.ReadFile(filepath.Join(p.RunLogDir(runID), string(types.StepCI)+".log"))
-		if err != nil {
-			return nil
-		}
-		return splitLogLines(string(data))
-	}
 }
 
 // gateResolution decides how --yes answers an approval gate. A gate with
@@ -591,11 +567,7 @@ func sendRespond(client *ipc.Client, runID string, step types.StepName, action t
 // passed, exit 1 when blocked, failed, or cancelled). Successful outcomes also
 // carry the fixes the pipeline applied and reporting instructions, so the agent
 // closes the loop with the user instead of stopping at "it passed".
-//
-// ciLogs are the CI step log lines used only to distinguish a trusted no_ci
-// declaration (positive evidence, still outcome checks-passed) from observed
-// green checks, so help text keeps that evidence inspectable.
-func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool, ciLogs []string) error {
+func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error {
 	rv := runViewFromIPC(run)
 	fields := []toon.Field{runObjectField(rv)}
 	hasBranchSync := false
@@ -610,7 +582,7 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool, ciLog
 	if ciReady {
 		fields = append(fields, toon.Field{Key: "outcome", Value: "checks-passed"})
 		merge := "CI checks passed - the PR is ready. Ask the user to review and merge it."
-		if cimonitor.DeclaredNoCI(ciLogs) {
+		if rv.CIReadyNoCI {
 			merge = "Repository declares no CI (no_ci: true on the trusted default branch) and no checks are registered - treated as all checks passed. Ask the user to review and merge it."
 		}
 		if rv.PRURL != "" {
@@ -819,16 +791,11 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		return emitError(cmd, 1, fmt.Sprintf("wait for %s: %v", stepName, err))
 	}
 
-	readCILog := ciLogReader(env.p)
-	final, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes, readCILog)
+	final, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes)
 	if err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}
-	var ciLogs []string
-	if readCILog != nil {
-		ciLogs = readCILog(final.ID)
-	}
-	return renderDriveResult(cmd, final, ciReady, ciLogs)
+	return renderDriveResult(cmd, final, ciReady)
 }
 
 // gateStatusFor returns the current status of step in rv, defaulting to the

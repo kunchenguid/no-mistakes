@@ -52,13 +52,10 @@ func extractPRFromLogs(logs []string) string {
 	return ""
 }
 
-// ciActivity summarizes what the CI step has been doing based on logs. It is an
-// alias of cimonitor.Activity so the TUI and the agent-facing axi commands read
-// CI state through the exact same parser.
+// ciActivity summarizes what the CI step has been doing based on logs.
 type ciActivity = cimonitor.Activity
 
-// parseCIActivity extracts structured activity from CI log messages. It defers
-// to cimonitor so the TUI never drifts from how axi interprets the same logs.
+// parseCIActivity extracts structured activity from CI log messages.
 func parseCIActivity(logs []string) ciActivity {
 	return cimonitor.ParseActivity(logs)
 }
@@ -98,7 +95,7 @@ func renderCIViewWithSelection(run *ipc.RunInfo, steps []ipc.StepResultInfo, fin
 		if activity.AutoFixing {
 			style := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBlue))
 			b.WriteString(style.Render("\u2699 Auto-fixing CI failures...") + "\n")
-		} else if activity.Ready || (run != nil && run.CIReady) {
+		} else if run != nil && run.CIReady {
 			style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiGreen))
 			b.WriteString(style.Render("✓ Checks passed") + "\n")
 			dim := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack))

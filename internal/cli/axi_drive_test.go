@@ -80,7 +80,7 @@ func TestDriveRun_HealthyWaitStaysWithinRequestBudget(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
 	defer cancel()
-	_, _, err := driveRun(ctx, io.Discard, client, socketPath, "run-1", false, nil)
+	_, _, err := driveRun(ctx, io.Discard, client, socketPath, "run-1", false)
 	if err == nil || err != context.DeadlineExceeded {
 		t.Fatalf("driveRun error = %v, want context deadline", err)
 	}
@@ -136,7 +136,7 @@ func TestDriveRunDetectsTerminalStateAfterReconnect(t *testing.T) {
 	reconciler := newRunReconciler(source, "run-1")
 	defer reconciler.Close()
 
-	run, ciReady, err := driveRunWithReconciler(context.Background(), io.Discard, nil, reconciler, "run-1", false, nil)
+	run, ciReady, err := driveRunWithReconciler(context.Background(), io.Discard, nil, reconciler, "run-1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,63 +315,54 @@ func (s *scriptedRunStateSource) Reconcile(context.Context, string) (*ipc.RunInf
 }
 
 func TestCIReadyToMerge(t *testing.T) {
-	passedLogs := []string{
-		"monitoring CI for PR #42 (timeout: 4h)...",
-		cimonitor.ChecksPassedMsg,
-	}
-	runningLogs := []string{"monitoring CI for PR #42 (timeout: 4h)..."}
-
 	tests := []struct {
 		name     string
 		rv       runView
-		ciLogs   []string
+		ciReady  bool
 		wantStop bool
 	}{
 		{
 			name:     "ci running and checks passed",
 			rv:       ciRunView(types.StepStatusRunning),
-			ciLogs:   passedLogs,
+			ciReady:  true,
 			wantStop: true,
 		},
 		{
 			name:     "ci running but checks not passed yet",
 			rv:       ciRunView(types.StepStatusRunning),
-			ciLogs:   runningLogs,
 			wantStop: false,
 		},
 		{
 			name:     "checks passed but ci step already completed",
 			rv:       ciRunView(types.StepStatusCompleted),
-			ciLogs:   passedLogs,
 			wantStop: false,
 		},
 		{
 			name:     "no ci step in run",
 			rv:       runView{Status: string(types.RunRunning), Steps: []stepView{{Name: string(types.StepPR), Status: string(types.StepStatusCompleted)}}},
-			ciLogs:   passedLogs,
 			wantStop: false,
 		},
 		{
 			name:     "declared no_ci with zero checks is ready",
 			rv:       ciRunView(types.StepStatusRunning),
-			ciLogs:   []string{cimonitor.NoChecksPassedMsg},
+			ciReady:  true,
 			wantStop: true,
 		},
 		{
-			name: "PR 607 generic empty checks never ready",
-			rv:   ciRunView(types.StepStatusRunning),
-			ciLogs: []string{
-				"monitoring CI for PR #607 (timeout: 4h0m0s)...",
-				"mergeable state still pending: PENDING",
-				"mergeable state still pending: PENDING",
-				"no CI checks reported - still monitoring until merged or closed",
-			},
+			name:     "ready-looking agent output is ignored without persisted readiness",
+			rv:       ciRunView(types.StepStatusRunning),
+			wantStop: false,
+		},
+		{
+			name:     "PR 607 generic empty checks never ready",
+			rv:       ciRunView(types.StepStatusRunning),
 			wantStop: false,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ciReadyToMerge(tt.rv, tt.ciLogs); got != tt.wantStop {
+			tt.rv.CIReady = tt.ciReady
+			if got := ciReadyToMerge(tt.rv); got != tt.wantStop {
 				t.Errorf("ciReadyToMerge() = %v, want %v", got, tt.wantStop)
 			}
 		})
@@ -479,7 +470,7 @@ func TestRenderDriveResult_ChecksPassed(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetOut(&out)
 
-	if err := renderDriveResult(cmd, run, true, []string{cimonitor.ChecksPassedMsg}); err != nil {
+	if err := renderDriveResult(cmd, run, true); err != nil {
 		t.Fatalf("checks-passed must exit 0, got error: %v", err)
 	}
 
@@ -512,11 +503,12 @@ func TestRenderDriveResult_ChecksPassed(t *testing.T) {
 
 func TestRenderDriveResult_DeclaredNoCIChecksPassed(t *testing.T) {
 	run := &ipc.RunInfo{
-		ID:      "run-1",
-		Branch:  "feature/x",
-		Status:  types.RunRunning,
-		HeadSHA: "abcdef1234567890",
-		PRURL:   strptr("https://github.com/user/repo/pull/42"),
+		ID:          "run-1",
+		Branch:      "feature/x",
+		Status:      types.RunRunning,
+		HeadSHA:     "abcdef1234567890",
+		PRURL:       strptr("https://github.com/user/repo/pull/42"),
+		CIReadyNoCI: true,
 		Steps: []ipc.StepResultInfo{
 			{StepName: types.StepCI, Status: types.StepStatusRunning},
 		},
@@ -526,20 +518,18 @@ func TestRenderDriveResult_DeclaredNoCIChecksPassed(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetOut(&out)
 
-	// PR 607-shaped empty generic marker is not ciReady (see TestCIReadyToMerge
-	// and cimonitor.TestChecksPassed_PR607RealLogSequence). Drive only hands
-	// checks-passed through when cimonitor.ChecksPassed is true.
+	// PR 607-shaped empty generic marker is not an authoritative readiness state.
 	pr607Logs := []string{
 		"monitoring CI for PR #607 (timeout: 4h0m0s)...",
 		"mergeable state still pending: PENDING",
 		"mergeable state still pending: PENDING",
 		"no CI checks reported - still monitoring until merged or closed",
 	}
-	if cimonitor.ChecksPassed(pr607Logs) || ciReadyToMerge(runViewFromIPC(run), pr607Logs) {
+	if cimonitor.ChecksPassed(pr607Logs) || ciReadyToMerge(runViewFromIPC(run)) {
 		t.Fatal("PR 607 empty-checks sequence must not be agent-facing ready")
 	}
 
-	if err := renderDriveResult(cmd, run, true, []string{cimonitor.NoChecksPassedMsg}); err != nil {
+	if err := renderDriveResult(cmd, run, true); err != nil {
 		t.Fatalf("declared no_ci checks-passed must exit 0, got error: %v", err)
 	}
 	got := out.String()
@@ -576,7 +566,7 @@ func TestRenderDriveResult_ChecksPassedWithFixes(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetOut(&out)
 
-	if err := renderDriveResult(cmd, run, true, []string{cimonitor.ChecksPassedMsg}); err != nil {
+	if err := renderDriveResult(cmd, run, true); err != nil {
 		t.Fatalf("checks-passed must exit 0, got error: %v", err)
 	}
 
@@ -606,7 +596,7 @@ func TestRenderDriveResult_TerminalPassedUnaffected(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetOut(&out)
 
-	if err := renderDriveResult(cmd, run, false, nil); err != nil {
+	if err := renderDriveResult(cmd, run, false); err != nil {
 		t.Fatalf("terminal passed must exit 0, got error: %v", err)
 	}
 	got := out.String()
@@ -632,7 +622,7 @@ func TestRenderDriveResult_TerminalPassedWithFixes(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetOut(&out)
 
-	if err := renderDriveResult(cmd, run, false, nil); err != nil {
+	if err := renderDriveResult(cmd, run, false); err != nil {
 		t.Fatalf("terminal passed must exit 0, got error: %v", err)
 	}
 	got := out.String()
@@ -661,7 +651,7 @@ func TestRenderDriveResult_FailedHasNoSummarizeInstruction(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetOut(&out)
 
-	err := renderDriveResult(cmd, run, false, nil)
+	err := renderDriveResult(cmd, run, false)
 	if err == nil {
 		t.Fatal("failed outcome must exit non-zero")
 	}

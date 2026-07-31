@@ -41,7 +41,7 @@ func TestInsertRunWithIntent(t *testing.T) {
 	run, err := d.InsertRunWithIntent(repo.ID, "feature", "abc123", "def456", &intent)
 	if err != nil {
 		t.Fatalf("insert run with intent: %v", err)
-	}
+ 	}
 	got, err := d.GetRun(run.ID)
 	if err != nil {
 		t.Fatalf("get run: %v", err)
@@ -51,6 +51,48 @@ func TestInsertRunWithIntent(t *testing.T) {
 	}
 	if got.IntentSource == nil || *got.IntentSource != intent.Source {
 		t.Fatalf("intent source = %v, want %q", got.IntentSource, intent.Source)
+	}
+}
+
+func TestRunCIReadinessStoresNoCIDeclaration(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	if err := d.SetRunCIReadyWithReason(run.ID, true, true); err != nil {
+		t.Fatalf("set declared no-CI readiness: %v", err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.CIReadyAt == nil || !got.CIReadyNoCI {
+		t.Fatalf("declared no-CI readiness = at %v, no_ci %v", got.CIReadyAt, got.CIReadyNoCI)
+	}
+
+	if err := d.SetRunCIReadyWithReason(run.ID, true, false); err != nil {
+		t.Fatalf("set all-green readiness: %v", err)
+	}
+	got, err = d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run after all-green readiness: %v", err)
+	}
+	if got.CIReadyAt == nil || got.CIReadyNoCI {
+		t.Fatalf("all-green readiness = at %v, no_ci %v", got.CIReadyAt, got.CIReadyNoCI)
+	}
+
+	if err := d.SetRunCIReady(run.ID, false); err != nil {
+		t.Fatalf("clear readiness: %v", err)
+	}
+	got, err = d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run after clear: %v", err)
+	}
+	if got.CIReadyAt != nil || got.CIReadyNoCI {
+		t.Fatalf("cleared readiness = at %v, no_ci %v", got.CIReadyAt, got.CIReadyNoCI)
 	}
 }
 

@@ -298,7 +298,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			lastMonitorLog = ""
 			sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
 		} else {
-			pending := hasPendingChecks(checks)
+			pending := hasPendingChecks(checks) || hasUnresolvedChecks(checks)
 			failing := failingCheckNames(checks)
 			sort.Strings(failing)
 			hasFailures := len(failing) > 0
@@ -407,8 +407,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 						lastMonitorLog = ""
 						sctx.Log("no CI checks reported yet, waiting for checks to register...")
 					}
-				default:
+				case allChecksPassed(checks):
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
+				default:
+					clearCIMonitorReady(sctx)
+					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
 				}
 			}
 		}
@@ -444,7 +447,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) string {
 	if message != previous {
 		ready := message == ciChecksPassedMsg || message == ciNoChecksPassedMsg
-		if err := sctx.DB.SetRunCIReady(sctx.Run.ID, ready); err != nil {
+		declaredNoCI := message == ciNoChecksPassedMsg
+		if err := sctx.DB.SetRunCIReadyWithReason(sctx.Run.ID, ready, declaredNoCI); err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not persist CI readiness: %v", err))
 		}
 		sctx.Log(message)
