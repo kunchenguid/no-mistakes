@@ -1,6 +1,11 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestReviewNarrowAfterRound_DefaultsToTwo(t *testing.T) {
 	if got := reviewDefaults().NarrowAfterRound; got != DefaultReviewNarrowAfterRound {
@@ -21,7 +26,7 @@ func TestReviewNarrowAfterRound_GlobalOverrides(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			global := &GlobalConfig{Review: ReviewRaw{NarrowAfterRound: tt.set}}
+			global := &GlobalConfig{Review: GlobalReviewRaw{NarrowAfterRound: tt.set}}
 			if got := Merge(global, &RepoConfig{}).Review.NarrowAfterRound; got != tt.want {
 				t.Errorf("NarrowAfterRound = %d, want %d", got, tt.want)
 			}
@@ -44,3 +49,41 @@ func TestReviewNarrowAfterRound_IsGlobalOnly(t *testing.T) {
 }
 
 func intPtr(i int) *int { return &i }
+
+// path_instructions is repo-owned: Merge reads it from the trusted repo config
+// and never from the global one. A global copy is therefore unusable, and
+// dropping it silently would leave a maintainer believing their reviewer
+// guidance is in force. Strict decoding rejects it instead.
+func TestGlobalConfig_RejectsReviewPathInstructions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	body := "review:\n  narrow_after_round: 3\n  path_instructions:\n    - path: internal/**\n      instructions: be strict\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadGlobal(path)
+	if err == nil {
+		t.Fatal("expected LoadGlobal to reject a global review.path_instructions")
+	}
+	if !strings.Contains(err.Error(), "path_instructions") {
+		t.Errorf("error = %q, want it to name the rejected field", err)
+	}
+}
+
+// The global-only review field still loads from the same block.
+func TestGlobalConfig_AcceptsReviewNarrowAfterRound(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("review:\n  narrow_after_round: 3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("LoadGlobal: %v", err)
+	}
+	if cfg.Review.NarrowAfterRound == nil || *cfg.Review.NarrowAfterRound != 3 {
+		t.Errorf("NarrowAfterRound = %v, want 3", cfg.Review.NarrowAfterRound)
+	}
+}

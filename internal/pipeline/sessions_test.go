@@ -387,3 +387,62 @@ func TestRunSessions_AgentChangeDiscardsStoredSession(t *testing.T) {
 		t.Fatalf("stored session for another agent must be discarded, got %+v", call.session)
 	}
 }
+
+// TestRunSessions_ResetDropsStoredIdentity proves Reset actually forgets the
+// role's session in memory AND in the database: the next turn of that role
+// starts cold, a fresh manager for the same run does not resurrect the dead
+// identity, and the other role is untouched.
+func TestRunSessions_ResetDropsStoredIdentity(t *testing.T) {
+	d, run := sessionTestDB(t)
+	fake := newFakeSessionAgent()
+	rs := NewRunSessions(d, run.ID, fake, true)
+
+	if _, err := rs.Run(context.Background(), fake, SessionRoleReviewer, agent.RunOpts{Prompt: "review"}, nil); err != nil {
+		t.Fatalf("review: %v", err)
+	}
+	if _, err := rs.Run(context.Background(), fake, SessionRoleFixer, agent.RunOpts{Prompt: "fix"}, nil); err != nil {
+		t.Fatalf("fix: %v", err)
+	}
+
+	rs.Reset(SessionRoleReviewer)
+
+	stored, err := d.GetRunAgentSessions(run.ID)
+	if err != nil {
+		t.Fatalf("get sessions: %v", err)
+	}
+	for _, s := range stored {
+		if SessionRole(s.Role) == SessionRoleReviewer {
+			t.Fatalf("reviewer identity %q still persisted after Reset", s.SessionID)
+		}
+	}
+
+	if _, err := rs.Run(context.Background(), fake, SessionRoleReviewer, agent.RunOpts{Prompt: "retry review"}, nil); err != nil {
+		t.Fatalf("retry review: %v", err)
+	}
+	retry := fake.calls[len(fake.calls)-1]
+	if retry.session == nil || retry.session.ID != "" {
+		t.Fatalf("retry after Reset must start a fresh session, got %+v", retry.session)
+	}
+
+	// The fixer keeps its own session, and a fresh manager sees exactly the
+	// post-Reset state rather than the discarded reviewer identity.
+	rs2 := NewRunSessions(d, run.ID, fake, true)
+	if _, err := rs2.Run(context.Background(), fake, SessionRoleFixer, agent.RunOpts{Prompt: "fix again"}, nil); err != nil {
+		t.Fatalf("fix again: %v", err)
+	}
+	fixCall := fake.calls[len(fake.calls)-1]
+	if fixCall.session == nil || fixCall.session.ID != "sess-2" {
+		t.Fatalf("fixer must still resume its own session, got %+v", fixCall.session)
+	}
+}
+
+// Reset on a nil manager and on a role that never had a session are both
+// no-ops: the cold path must never panic on a rejected turn.
+func TestRunSessions_ResetIsSafeWhenNothingStored(t *testing.T) {
+	var nilManager *RunSessions
+	nilManager.Reset(SessionRoleReviewer)
+
+	d, run := sessionTestDB(t)
+	rs := NewRunSessions(d, run.ID, newFakeSessionAgent(), true)
+	rs.Reset(SessionRoleReviewer)
+}

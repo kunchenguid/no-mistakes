@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/testguidance"
@@ -111,18 +112,11 @@ func skillBaseName(name string) string {
 	return strings.TrimSpace(name)
 }
 
-// reviewRound is the 1-indexed number of the review turn about to run. The
+// reviewRoundFor is the 1-indexed number of the review turn about to run. The
 // executor inserts a round record only after the step returns, so the current
-// turn is one past the recorded history. An unreadable history falls back to
-// round 1, which keeps the full sweep.
-func reviewRound(sctx *pipeline.StepContext) int {
-	if sctx == nil || sctx.DB == nil || sctx.StepResultID == "" {
-		return 1
-	}
-	rounds, err := sctx.DB.GetRoundsByStep(sctx.StepResultID)
-	if err != nil {
-		return 1
-	}
+// turn is one past the recorded history. An unreadable history reads as no
+// history and falls back to round 1, which keeps the full sweep.
+func reviewRoundFor(rounds []*db.StepRound) int {
 	return len(rounds) + 1
 }
 
@@ -275,7 +269,8 @@ Previous review findings to address:
 	// net-deleted-author-lines git-diff backstop for the removal-of-required
 	// class - a fixer round that net-deletes author-added lines parks
 	// regardless of intent source. Held pending a scope decision.
-	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + branchHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
+	rounds := stepRounds(sctx)
+	historySection := executionContextPromptSection() + roundHistoryPromptSectionFor(rounds) + fixRoundProvenanceClause(sctx) + branchHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
 
 	// Path-scoped repository review guidance, taken from the trusted
 	// default-branch config copy (regardless of allow_repo_commands) so a pushed
@@ -292,7 +287,7 @@ Previous review findings to address:
 	// A rereview costs the same per-aspect sub-agent fan-out as the first
 	// review, so later rounds narrow both what runs and what is worth
 	// reporting. Round one is always the full adversarial sweep.
-	breadth := reviewBreadthForRound(reviewRound(sctx), sctx.Config.Review.NarrowAfterRound)
+	breadth := reviewBreadthForRound(reviewRoundFor(rounds), sctx.Config.Review.NarrowAfterRound)
 
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
@@ -373,6 +368,9 @@ Risk assessment (after listing all findings):
 		OnChunk:    sctx.LogChunk,
 		Purpose:    "review",
 		Workload:   workload,
+	}
+	if err := assertReviewSkillInstalled(sctx.WorkDir, agentDisplayName(sctx)); err != nil {
+		return nil, err
 	}
 	result, err := sctx.Agent.Run(ctx, runOpts)
 	if err != nil {

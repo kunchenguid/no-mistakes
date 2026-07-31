@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -99,7 +100,7 @@ type GlobalConfig struct {
 	Test   TestRaw
 	// Review steers how wide and how strict each review turn is. Global-only:
 	// a pushed branch must not be able to loosen the review of its own change.
-	Review ReviewRaw
+	Review GlobalReviewRaw
 	SCM    SCMRaw `yaml:"scm"`
 	// TrustWorkingPathConfig honors the gate-control fields from
 	// .no-mistakes.yaml in the repo's registered working path (the
@@ -120,13 +121,14 @@ type GlobalConfig struct {
 // SCMRaw is the YAML representation of SCM CLI settings. They exist because
 // the daemon execs the SCM CLI binary directly and never sees a login shell,
 // so a credential manager wired up through a shell alias (1Password's
-// `op plugin run -- gh`, for example) is invisible to it.
+// `op plugin run -- gh`, for example) is invisible to it. Both fields apply to
+// GitHub `gh` invocations only; the GitLab and Bitbucket hosts are unwrapped.
 type SCMRaw struct {
-	// CLIWrapper prefixes every SCM CLI invocation, so
+	// CLIWrapper prefixes every `gh` invocation, so
 	// ["op", "plugin", "run", "--"] turns `gh pr create` into
 	// `op plugin run -- gh pr create`. The wrapper runs in the repo's working
 	// path so credential managers that scope secrets by directory resolve the
-	// identity that matches the repo. Empty runs the CLI directly.
+	// identity that matches the repo. Empty runs `gh` directly.
 	CLIWrapper []string `yaml:"cli_wrapper"`
 	// GHConfigDir overrides GH_CONFIG_DIR for daemon gh invocations. Pointing
 	// it at a directory with no stored accounts makes `gh auth status` depend
@@ -154,7 +156,7 @@ type globalConfigRaw struct {
 	Commit                 CommitRaw           `yaml:"commit"`
 	Intent                 IntentRaw           `yaml:"intent"`
 	Test                   TestRaw             `yaml:"test"`
-	Review                 ReviewRaw           `yaml:"review"`
+	Review                 GlobalReviewRaw     `yaml:"review"`
 	SCM                    SCMRaw              `yaml:"scm"`
 	TrustWorkingPathConfig bool                `yaml:"trust_working_path_config"`
 }
@@ -231,6 +233,17 @@ type ReviewRaw struct {
 	PathInstructions []PathInstruction `yaml:"path_instructions"`
 	// NarrowAfterRound is a pointer so "not set" (nil) differs from an
 	// explicit 0, which disables narrowing.
+	NarrowAfterRound *int `yaml:"narrow_after_round"`
+}
+
+// GlobalReviewRaw is the global config's review block. It carries only the
+// global-only review fields on purpose: path_instructions is repo-owned (read
+// from the trusted default-branch .no-mistakes.yaml), and Merge never sources
+// it from the global config. Listing it here would let a maintainer write
+// review.path_instructions into ~/.no-mistakes/config.yaml and have it
+// silently dropped; leaving it out makes LoadGlobal's strict decoding reject
+// the key with "field path_instructions not found".
+type GlobalReviewRaw struct {
 	NarrowAfterRound *int `yaml:"narrow_after_round"`
 }
 
@@ -1532,6 +1545,15 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 // commands.lint in force. Only fields the working-path copy actually sets take
 // precedence, which is why an empty or absent file changes nothing.
 //
+// The merged gate-control fields are commands.{test,lint,format}, agent /
+// agents, document.instructions, review.path_instructions, and
+// disable_project_settings.
+//
+// review.path_instructions replaces the trusted list wholesale when the
+// working-path copy sets one, rather than concatenating: the two are alternate
+// statements of the same maintainer's rules, and appending would make a
+// working-path edit unable to retire a default-branch rule.
+//
 // Deliberately NOT merged:
 //   - AllowRepoCommands, which hands commands and agent selection to whatever
 //     a contributor pushed. That switch stays default-branch-only; a local
@@ -1571,6 +1593,9 @@ func MergeWorkingPathTrusted(trusted, workingPath *RepoConfig) *RepoConfig {
 	}
 	if workingPath.Document.Instructions != "" {
 		merged.Document.Instructions = workingPath.Document.Instructions
+	}
+	if len(workingPath.Review.PathInstructions) > 0 {
+		merged.Review.PathInstructions = slices.Clone(workingPath.Review.PathInstructions)
 	}
 	if workingPath.DisableProjectSettings {
 		merged.DisableProjectSettings = true
@@ -1657,7 +1682,7 @@ func reviewDefaults() Review {
 // applyReviewOverrides applies non-nil raw values onto resolved defaults. A
 // negative threshold is meaningless, so it collapses to 0 (never narrow) -
 // the fail-safe direction, since it preserves the exhaustive review.
-func applyReviewOverrides(dst *Review, src *ReviewRaw) {
+func applyReviewOverrides(dst *Review, src *GlobalReviewRaw) {
 	if src.NarrowAfterRound != nil {
 		dst.NarrowAfterRound = max(*src.NarrowAfterRound, 0)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -89,5 +90,43 @@ func TestDisableCommitSigning_WritesPerWorktreeScopeOnGateWorktrees(t *testing.T
 	cmd.Dir = wtB
 	if out, err := cmd.Output(); err == nil {
 		t.Errorf("worktree b inherited the write in shared scope: %q", out)
+	}
+}
+
+// Where per-worktree config is unusable the disable must fail loudly instead
+// of falling back to --local: on a gate worktree that write lands in the bare's
+// shared config, where commit.gpgsign=false becomes permanent gate state that
+// outlives the sign_commits setting with nothing that ever unsets it.
+func TestDisableCommitSigning_RefusesSharedConfigFallback(t *testing.T) {
+	ctx := context.Background()
+	bare := t.TempDir()
+	run(t, bare, "git", "init", "--bare", ".")
+	seed := initTestRepo(t)
+	run(t, seed, "git", "remote", "add", "gate", bare)
+	run(t, seed, "git", "push", "gate", "HEAD:refs/heads/main")
+
+	// No extensions.worktreeConfig: this is the legacy gate shape where the
+	// --worktree write is rejected.
+	head := run(t, seed, "git", "rev-parse", "HEAD")
+	wtA := filepath.Join(t.TempDir(), "a")
+	wtB := filepath.Join(t.TempDir(), "b")
+	if err := WorktreeAdd(ctx, bare, wtA, head); err != nil {
+		t.Fatalf("WorktreeAdd a: %v", err)
+	}
+	if err := WorktreeAdd(ctx, bare, wtB, head); err != nil {
+		t.Fatalf("WorktreeAdd b: %v", err)
+	}
+
+	err := DisableCommitSigning(ctx, wtA)
+	if err == nil {
+		t.Fatal("expected DisableCommitSigning to fail where per-worktree config is unusable")
+	}
+	if !strings.Contains(err.Error(), "per-worktree") {
+		t.Errorf("error = %q, want it to name the per-worktree requirement", err)
+	}
+	cmd := exec.Command("git", "config", "--get", "commit.gpgsign")
+	cmd.Dir = wtB
+	if out, cmdErr := cmd.Output(); cmdErr == nil {
+		t.Errorf("shared gate config was written: commit.gpgsign = %q", strings.TrimSpace(string(out)))
 	}
 }

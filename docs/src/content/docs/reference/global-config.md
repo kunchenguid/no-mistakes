@@ -305,7 +305,9 @@ Whether the commits the pipeline makes (fix, document, and CI-fix commits) inher
 
 The default leaves your git configuration alone: if `commit.gpgsign` is on, pipeline commits are signed like any other.
 
-Set `false` when your signer is interactive. The daemon runs unattended, so a signer that waits on a human — 1Password's `op-ssh-sign` asks for a biometric unlock — never completes and fails the step instead. With `sign_commits: false`, the daemon turns `commit.gpgsign` and `tag.gpgsign` off in each run's worktree only; your own clone's configuration is untouched, and the setting takes effect on the next run without a re-init.
+Set `false` when your signer is interactive. The daemon runs unattended, so a signer that waits on a human — 1Password's `op-ssh-sign` asks for a biometric unlock — never completes and fails the step instead. With `sign_commits: false`, the daemon turns `commit.gpgsign` and `tag.gpgsign` off in per-worktree git config (`git config --worktree`) for each run's worktree only; your own clone's configuration is untouched, the gate's shared config is never written, and the setting takes effect on the next run without a re-init.
+
+Because the opt-out is per-worktree, it needs a gate that supports per-worktree config. `no-mistakes init` enables `extensions.worktreeConfig` on the gates it creates; on an old gate or a Git too old for the flag, the run fails with a message naming the extension rather than writing the opt-out somewhere it would outlive the setting.
 
 Commits then land unsigned. Re-sign a branch afterwards from your own checkout:
 
@@ -382,6 +384,8 @@ Most of a review's cost is the per-aspect sub-agents the review skill spawns, an
 | beyond that | correctness & bugs, spec conformance & standards | `error` |
 
 Spec conformance stays in every narrowed round: it is the axis that checks the change against the author's stated intent, which matters most after several fix rounds.
+
+Rounds count per run, not per branch. A new push starts a new run, so its first review is a full sweep again even on a branch an earlier run already reviewed several times; that run instead gets the earlier run's findings as branch history, which tells the reviewer what was already decided.
 
 Set it to `0` to keep every round a full sweep. A negative value is treated as `0`.
 
@@ -468,8 +472,10 @@ These are global defaults. Per-repo config can override either field.
 
 | Field              | Type       | Default | Description                                                          |
 | ------------------ | ---------- | ------- | -------------------------------------------------------------------- |
-| `scm.cli_wrapper`  | `[]string` | empty   | Command prefix applied to every SCM CLI invocation                    |
+| `scm.cli_wrapper`  | `[]string` | empty   | Command prefix applied to every `gh` invocation                       |
 | `scm.gh_config_dir`| `string`   | empty   | Overrides `GH_CONFIG_DIR` for daemon `gh` invocations                 |
+
+Both fields apply to GitHub only. The GitLab (`glab`) and Bitbucket hosts run unwrapped and ignore them.
 
 The daemon execs the SCM CLI directly and never sources a login shell, so a credential manager wired up as a shell alias is invisible to it.
 `cli_wrapper` reapplies that wrapper: `["op", "plugin", "run", "--"]` turns `gh pr create` into `op plugin run -- gh pr create`.
@@ -489,13 +495,16 @@ Both fields are global-only, since they select which credentials the daemon auth
 
 Reads the gate-control fields of `.no-mistakes.yaml` from each repo's registered working path — your own checkout — and layers them over the trusted default-branch copy.
 
-The normal rule is that `commands`, `agent`, `document.instructions`, and `disable_project_settings` come only from a fresh fetch of the default branch, so a contributor cannot choose what the daemon executes by pushing a branch. That rule assumes you can commit those settings to the default branch. This field exists for the case where you cannot: a repo owned by a team that does not run no-mistakes, where there is nowhere trusted to put the commands.
+The normal rule is that `commands`, `agent`, `document.instructions`, `review.path_instructions`, and `disable_project_settings` come only from a fresh fetch of the default branch, so a contributor cannot choose what the daemon executes by pushing a branch. That rule assumes you can commit those settings to the default branch. This field exists for the case where you cannot: a repo owned by a team that does not run no-mistakes, where there is nowhere trusted to put the commands.
 
-The merge is field-by-field, and only fields the working-path copy actually sets take precedence. A working-path file setting just `commands.test` leaves a default-branch `commands.lint` in force; an absent or empty file changes nothing.
+The merge is field-by-field, and only fields the working-path copy actually sets take precedence. A working-path file setting just `commands.test` leaves a default-branch `commands.lint` in force; an absent or empty file changes nothing. A working-path `review.path_instructions` replaces the default-branch list rather than adding to it, so an edit there can retire a rule as well as add one.
 
-Two fields are deliberately excluded:
+One field is deliberately excluded:
 
 - **`allow_repo_commands`** stays default-branch-only. A local convenience override must not be able to widen the trust boundary for pushed branches.
+
+One field merges asymmetrically:
+
 - **`disable_project_settings`** merges as "true wins". The working-path copy can turn the opt-out on but not off, because a plain boolean cannot distinguish "set to false" from "absent".
 
 Everything arriving over a push is unaffected: the default-branch rule still applies to the pushed SHA, whether or not this field is set.

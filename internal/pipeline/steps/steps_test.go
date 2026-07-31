@@ -23,6 +23,10 @@ func TestMain(m *testing.M) {
 	// via GIT_CONFIG_COUNT/KEY_n/VALUE_n; tests that need it re-set it with
 	// t.Setenv (issue #362).
 	os.Unsetenv("GIT_CONFIG_COUNT")
+	// The review-skill preflight reads the user's skill library; pin it away
+	// from the developer's real home so tests do not depend on which skills
+	// the machine running them happens to have installed.
+	reviewSkillHomeDir = func() (string, error) { return "", nil }
 	os.Exit(m.Run())
 }
 

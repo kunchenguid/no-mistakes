@@ -97,11 +97,14 @@ func branchHistoryPromptSection(sctx *pipeline.StepContext) string {
 // the last thing that happened to a finding wins: a finding declined early and
 // selected later is addressed, not declined.
 //
-// Only a run that reached completion can decline anything. Review auto-fix is
-// off by default, so every gate resolves through a user selection and
-// selection_source is "user" on every round of every run - including runs that
-// failed or were cancelled before the user finished deciding. Reading those as
-// declines told the reviewer to stay quiet about findings nobody ever saw.
+// Only a run that reached completion can decline or address anything. Review
+// auto-fix is off by default, so every gate resolves through a user selection
+// and selection_source is "user" on every round of every run - including runs
+// that failed or were cancelled before the user finished deciding. Reading
+// those as declines told the reviewer to stay quiet about findings nobody ever
+// saw; reading their selections as fixes told it a fix landed that the run
+// never got to verify. Both degrade to "open", which costs a restatement and
+// nothing else.
 func groupBranchHistoryByDisposition(history *db.BranchStepHistory) (map[string][]string, int) {
 	dispositions := make(map[string]string)
 	lines := make(map[string]string)
@@ -127,7 +130,7 @@ func groupBranchHistoryByDisposition(history *db.BranchStepHistory) (map[string]
 			lines[item.ID] = item.Line
 
 			switch {
-			case selected[item.ID]:
+			case runFinished && selected[item.ID]:
 				dispositions[item.ID] = branchHistoryAddressed
 			case userDecided:
 				dispositions[item.ID] = branchHistoryDeclined

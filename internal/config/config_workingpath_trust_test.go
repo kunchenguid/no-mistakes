@@ -70,3 +70,39 @@ func TestMergeWorkingPathTrusted_DoesNotMutateTrusted(t *testing.T) {
 		t.Fatalf("trusted.Commands.Test = %q, want it untouched: the merge must not write through to the caller's config", trusted.Commands.Test)
 	}
 }
+
+// review.path_instructions is a maintainer-owned trusted field like
+// document.instructions, so a maintainer who cannot commit to the default
+// branch must be able to supply it from the working path - otherwise the
+// opt-in silently drops half of what it exists to carry.
+func TestMergeWorkingPathTrusted_MergesReviewPathInstructions(t *testing.T) {
+	trusted := &RepoConfig{Review: ReviewRaw{PathInstructions: []PathInstruction{
+		{Path: "internal/**", Instructions: "default-branch rule"},
+	}}}
+	workingPath := &RepoConfig{Review: ReviewRaw{PathInstructions: []PathInstruction{
+		{Path: "internal/db/**", Instructions: "working-path rule"},
+	}}}
+
+	got := MergeWorkingPathTrusted(trusted, workingPath)
+
+	if len(got.Review.PathInstructions) != 1 || got.Review.PathInstructions[0].Instructions != "working-path rule" {
+		t.Fatalf("Review.PathInstructions = %+v, want the working-path list to replace the trusted one", got.Review.PathInstructions)
+	}
+	if len(trusted.Review.PathInstructions) != 1 || trusted.Review.PathInstructions[0].Instructions != "default-branch rule" {
+		t.Errorf("trusted config mutated: %+v", trusted.Review.PathInstructions)
+	}
+}
+
+// An absent working-path review block leaves the maintainer's default-branch
+// rules in force, exactly like every other merged field.
+func TestMergeWorkingPathTrusted_KeepsTrustedReviewWhenWorkingPathHasNone(t *testing.T) {
+	trusted := &RepoConfig{Review: ReviewRaw{PathInstructions: []PathInstruction{
+		{Path: "internal/**", Instructions: "default-branch rule"},
+	}}}
+
+	got := MergeWorkingPathTrusted(trusted, &RepoConfig{})
+
+	if len(got.Review.PathInstructions) != 1 || got.Review.PathInstructions[0].Instructions != "default-branch rule" {
+		t.Fatalf("Review.PathInstructions = %+v, want the trusted list preserved", got.Review.PathInstructions)
+	}
+}

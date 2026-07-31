@@ -58,6 +58,42 @@ func (f *branchHistoryFixture) priorRun(t *testing.T, status types.RunStatus, fi
 	}
 }
 
+// priorRound is one recorded review round of an earlier run on the branch.
+type priorRound struct {
+	findingsJSON string
+	selectedIDs  string
+	source       string
+}
+
+// priorRunWithRounds records an earlier run whose review step went through
+// several rounds, in order, so replay semantics can be exercised.
+func (f *branchHistoryFixture) priorRunWithRounds(t *testing.T, status types.RunStatus, rounds ...priorRound) {
+	t.Helper()
+	run, err := f.db.InsertRun(f.repoID, f.branch, "prior-head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sr, err := f.db.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, r := range rounds {
+		findings := r.findingsJSON
+		round, err := f.db.InsertStepRound(sr.ID, i+1, "initial", &findings, nil, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.selectedIDs != "" {
+			if err := f.db.SetStepRoundSelection(round.ID, &r.selectedIDs, r.source); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := f.db.UpdateRunStatus(run.ID, status); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (f *branchHistoryFixture) currentContext(t *testing.T) *pipeline.StepContext {
 	t.Helper()
 	run, err := f.db.InsertRun(f.repoID, f.branch, "current-head", "base")
@@ -286,4 +322,80 @@ func sectionAfter(text, disposition string) string {
 		}
 	}
 	return rest
+}
+
+// Rounds replay in order and the last thing that happened to a finding wins:
+// a finding declined in round one and selected in round two is addressed, not
+// declined, and a finding declined in every round it appeared stays declined.
+func TestBranchHistoryPromptSection_LastRoundWinsAcrossRounds(t *testing.T) {
+	f := newBranchHistoryFixture(t)
+	f.priorRunWithRounds(t, types.RunCompleted,
+		priorRound{
+			findingsJSON: `{"findings":[
+				{"id":"reconsidered","severity":"warning","file":"a.go","description":"hardcoded timeout"},
+				{"id":"kept-on-purpose","severity":"info","file":"b.go","description":"nit"},
+				{"id":"fixed-first","severity":"error","file":"c.go","description":"nil deref"}
+			]}`,
+			selectedIDs: `["fixed-first"]`,
+			source:      db.RoundSelectionSourceUser,
+		},
+		priorRound{
+			findingsJSON: `{"findings":[
+				{"id":"reconsidered","severity":"warning","file":"a.go","description":"hardcoded timeout"},
+				{"id":"kept-on-purpose","severity":"info","file":"b.go","description":"nit"}
+			]}`,
+			selectedIDs: `["reconsidered"]`,
+			source:      db.RoundSelectionSourceUser,
+		},
+	)
+
+	got := branchHistoryPromptSection(f.currentContext(t))
+	addressed := sectionAfter(got, "addressed")
+	if !strings.Contains(addressed, "reconsidered") {
+		t.Errorf("finding selected in the later round must be addressed:\n%s", got)
+	}
+	if !strings.Contains(addressed, "fixed-first") {
+		t.Errorf("finding selected in the earlier round and never re-raised must stay addressed:\n%s", got)
+	}
+	declined := sectionAfter(got, "declined_by_user")
+	if !strings.Contains(declined, "kept-on-purpose") {
+		t.Errorf("finding left unselected in every round must be declined:\n%s", got)
+	}
+	if strings.Contains(declined, "reconsidered") {
+		t.Errorf("round one's decline must not survive round two's selection:\n%s", got)
+	}
+}
+
+// A selection is only evidence that a fix landed if the run reached
+// completion. A run that died mid-loop selected findings it never verified, so
+// every one of its rounds degrades to still-open rather than addressed.
+func TestBranchHistoryPromptSection_UnfinishedRunNeverAddressesFindings(t *testing.T) {
+	for _, status := range []types.RunStatus{types.RunFailed, types.RunCancelled} {
+		t.Run(string(status), func(t *testing.T) {
+			f := newBranchHistoryFixture(t)
+			f.priorRunWithRounds(t, status,
+				priorRound{
+					findingsJSON: `{"findings":[{"id":"selected-then-crashed","severity":"error","file":"a.go","description":"nil deref"}]}`,
+					selectedIDs:  `["selected-then-crashed"]`,
+					source:       db.RoundSelectionSourceUser,
+				},
+				priorRound{
+					findingsJSON: `{"findings":[{"id":"still-there","severity":"warning","file":"b.go","description":"race"}]}`,
+					selectedIDs:  `["still-there"]`,
+					source:       db.RoundSelectionSourceAutoFix,
+				},
+			)
+
+			got := branchHistoryPromptSection(f.currentContext(t))
+			if strings.Contains(got, "\naddressed:") {
+				t.Fatalf("unfinished run must not report addressed findings:\n%s", got)
+			}
+			open := sectionAfter(got, "reported_not_addressed")
+			for _, id := range []string{"selected-then-crashed", "still-there"} {
+				if !strings.Contains(open, id) {
+					t.Errorf("%s not reported as still open:\n%s", id, got)
+				}
+			}
+		})
+	}
 }

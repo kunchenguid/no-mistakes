@@ -98,7 +98,8 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 	}
 }
 
-// scmCLIFactory applies the global scm settings to gh invocations. The daemon
+// scmCLIFactory applies the global scm settings to gh invocations, and only to
+// gh: the GitLab and Bitbucket hosts are built with an unwrapped factory. The daemon
 // execs gh directly from a fixed, non-repo working directory, so it never sees
 // the login shell where a credential manager is wired up. When scm.cli_wrapper
 // is set, gh runs under that wrapper (for example `op plugin run -- gh`) from

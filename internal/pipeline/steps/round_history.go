@@ -19,11 +19,26 @@ import (
 // The section is meant to be appended to an existing prompt and begins with
 // two newlines so it separates cleanly from surrounding context.
 func roundHistoryPromptSection(sctx *pipeline.StepContext) string {
+	return roundHistoryPromptSectionFor(stepRounds(sctx))
+}
+
+// stepRounds reads the recorded rounds of the current step, treating an
+// unreadable history as no history.
+func stepRounds(sctx *pipeline.StepContext) []*db.StepRound {
 	if sctx == nil || sctx.DB == nil || sctx.StepResultID == "" {
-		return ""
+		return nil
 	}
 	rounds, err := sctx.DB.GetRoundsByStep(sctx.StepResultID)
-	if err != nil || len(rounds) == 0 {
+	if err != nil {
+		return nil
+	}
+	return rounds
+}
+
+// roundHistoryPromptSectionFor renders already-read rounds, so a step needing
+// the history for more than one purpose pays a single query.
+func roundHistoryPromptSectionFor(rounds []*db.StepRound) string {
+	if len(rounds) == 0 {
 		return ""
 	}
 

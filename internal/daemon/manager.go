@@ -858,8 +858,10 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	// SECURITY: sign_commits is read from the global config only, never from
 	// the pushed branch, so a contributor cannot turn the maintainer's commit
 	// signing off. Disabling it here (rather than in the gate's shared config)
-	// keeps the write per-worktree and picks up a config change on the next
-	// run without a re-init.
+	// keeps the write strictly per-worktree and picks up a config change on
+	// the next run without a re-init. A repo where per-worktree config is
+	// unusable fails the run rather than writing the opt-out into the gate's
+	// shared config, where it would outlive the setting.
 	if !globalCfg.SignCommits {
 		if err := git.DisableCommitSigning(ctx, wtDir); err != nil {
 			m.db.UpdateRunError(run.ID, fmt.Sprintf("disable commit signing: %s", err))

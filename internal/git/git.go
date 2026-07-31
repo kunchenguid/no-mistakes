@@ -562,9 +562,19 @@ func CopyLocalUserIdentity(ctx context.Context, srcDir, dstDir string) error {
 // op-ssh-sign waits on a biometric unlock) never completes and fails the whole
 // step. Callers apply this only when the maintainer set sign_commits: false;
 // see the config field for the re-signing recipe.
+//
+// Unlike CopyLocalUserIdentity this never falls back to `--local`. dir is
+// typically a linked worktree of the shared gate bare repo, so a --local write
+// would land in the bare's shared config and turn a per-run opt-out into
+// permanent gate state that outlives the setting, with no counterpart that
+// unsets it when sign_commits goes back to true. Where per-worktree config is
+// unusable the caller fails the run instead.
 func DisableCommitSigning(ctx context.Context, dir string) error {
 	for _, key := range []string{"commit.gpgsign", "tag.gpgsign"} {
-		if err := setWorktreeScopedConfig(ctx, dir, key, "false"); err != nil {
+		if _, err := Run(ctx, dir, "config", "--worktree", key, "false"); err != nil {
+			if isWorktreeConfigWriteUnavailable(err) {
+				return fmt.Errorf("sign_commits: false needs per-worktree git config, which this repository does not support (enable extensions.worktreeConfig, or upgrade Git): %w", err)
+			}
 			return err
 		}
 	}
