@@ -421,7 +421,7 @@ Whether the PR step appends the generated `## Pipeline` section (the no-mistakes
 | Default | `true` |
 
 Set `false` for a clean PR description.
-The rest of the PR description (the Intent and What Changed sections) is unaffected, and the section disappears from an existing PR the next time a run updates it.
+The rest of the PR description (the Intent, What Changed, Risk Assessment, and Testing sections) is unaffected, and the section disappears from an existing PR the next time a run updates it.
 A per-repo [`pr.pipeline_summary`](/no-mistakes/reference/repo-config/#prpipeline_summary) value overrides this global setting.
 
 ## Environment variables
