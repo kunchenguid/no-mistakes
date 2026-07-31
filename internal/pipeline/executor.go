@@ -853,13 +853,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// tell in one `axi status` read that the run is waiting for the agent
 		// to drive this gate (versus actively running/fixing/ci). Observability
 		// only: it does not change the wait below. Cleared once the wait ends.
-		if dbErr := e.db.SetRunAwaitingAgent(run.ID); dbErr != nil {
-			slog.Warn("failed to set awaiting-agent marker in db", "step", stepName, "run", run.ID, "error", dbErr)
-		}
-
-		// Step needs approval - store execution-only duration and wait for user action.
-		if dbErr := e.db.UpdateStepStatusWithDuration(sr.ID, approvalStatus, executionMS); dbErr != nil {
-			slog.Warn("failed to update step status and duration in db", "step", stepName, "status", approvalStatus, "error", dbErr)
+		if dbErr := e.db.ParkStepForApproval(run.ID, sr.ID, approvalStatus, executionMS); dbErr != nil {
+			e.mu.Lock()
+			e.waiting = false
+			e.waitingStep = ""
+			e.mu.Unlock()
+			return false, fmt.Errorf("persist %s approval gate: %w", stepName, dbErr)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), outcome.Findings, "", &executionMS)
 

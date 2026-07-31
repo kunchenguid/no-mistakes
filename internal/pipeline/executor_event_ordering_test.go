@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -125,5 +126,44 @@ func TestExecutor_SkippedStepEventsAlsoFollowTheirDatabaseWrite(t *testing.T) {
 	defer mu.Unlock()
 	if len(violations) > 0 {
 		t.Fatalf("skip-path events emitted before their database write:\n  %v", violations)
+	}
+}
+
+func TestExecutor_ApprovalPersistenceFailureDoesNotPublishOrWaitAtGate(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	var eventsMu sync.Mutex
+	var events []ipc.Event
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(*StepContext) (*StepOutcome, error) {
+			if err := database.Close(); err != nil {
+				t.Fatalf("close database: %v", err)
+			}
+			return &StepOutcome{NeedsApproval: true, Findings: `{"items":[]}`}, nil
+		},
+	}
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, func(event ipc.Event) {
+		eventsMu.Lock()
+		events = append(events, event)
+		eventsMu.Unlock()
+	})
+
+	err := exec.Execute(context.Background(), run, repo, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "persist review approval gate") {
+		t.Fatalf("Execute error = %v, want approval persistence failure", err)
+	}
+	if responseErr := exec.Respond(types.StepReview, types.ActionApprove, nil); responseErr == nil {
+		t.Fatal("executor remained parked after approval persistence failed")
+	}
+
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	for _, event := range events {
+		if event.StepName == nil || *event.StepName != types.StepReview || event.Status == nil {
+			continue
+		}
+		if *event.Status == string(types.StepStatusAwaitingApproval) || *event.Status == string(types.StepStatusFixReview) {
+			t.Fatalf("unpersisted approval gate event was published: %#v", event)
+		}
 	}
 }

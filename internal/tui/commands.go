@@ -222,8 +222,8 @@ func (m *Model) drainDiffFetches() []tea.Cmd {
 		return nil
 	}
 	cmds := make([]tea.Cmd, 0, len(m.pendingDiffFetch))
-	for _, step := range m.pendingDiffFetch {
-		cmds = append(cmds, m.fetchStepDiffCmd(step))
+	for _, request := range m.pendingDiffFetch {
+		cmds = append(cmds, m.fetchStepDiffCmd(request))
 	}
 	m.pendingDiffFetch = nil
 	return cmds
@@ -232,21 +232,21 @@ func (m *Model) drainDiffFetches() []tea.Cmd {
 // fetchStepDiffCmd reads one fix-review gate's working-tree diff on demand.
 // The diff is derived from the run's worktree rather than carried by the event
 // stream, where an unbounded frame would break the subscription.
-func (m *Model) fetchStepDiffCmd(step types.StepName) tea.Cmd {
+func (m *Model) fetchStepDiffCmd(request stepDiffRequest) tea.Cmd {
 	subID := m.subscriptionID
 	fetch := m.fetchStepDiff
 	client := m.client
 	runID := m.runID
 	return func() tea.Msg {
 		if fetch != nil {
-			diff, err := fetch(step)
-			return stepDiffMsg{step: step, diff: diff, err: err, subscriptionID: subID}
+			diff, err := fetch(request.step)
+			return stepDiffMsg{step: request.step, diff: diff, err: err, requestID: request.requestID, subscriptionID: subID}
 		}
 		var result ipc.GetStepDiffResult
 		if err := client.CallWithTimeout(ipc.MethodGetStepDiff, &ipc.GetStepDiffParams{RunID: runID}, &result, reconcileTimeout); err != nil {
-			return stepDiffMsg{step: step, err: err, subscriptionID: subID}
+			return stepDiffMsg{step: request.step, err: err, requestID: request.requestID, subscriptionID: subID}
 		}
-		return stepDiffMsg{step: step, diff: result.Diff, subscriptionID: subID}
+		return stepDiffMsg{step: request.step, diff: result.Diff, truncated: result.Truncated, requestID: request.requestID, subscriptionID: subID}
 	}
 }
 

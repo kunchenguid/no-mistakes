@@ -52,8 +52,15 @@ type runReconciledMsg struct {
 type stepDiffMsg struct {
 	step           types.StepName
 	diff           string
+	truncated      bool
 	err            error
+	requestID      uint64
 	subscriptionID uint64
+}
+
+type stepDiffRequest struct {
+	step      types.StepName
+	requestID uint64
 }
 
 // resubscribeMsg fires after the reconnect delay for a dropped stream.

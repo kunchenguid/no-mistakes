@@ -72,3 +72,50 @@ func TestRunSnapshot_RevisionsAreScopedPerRun(t *testing.T) {
 		t.Fatalf("run-2 snapshot StateRev = %d, want 0", info.StateRev)
 	}
 }
+
+func TestRunSnapshot_CompletedRunRetainsTerminalRevisionUntilEviction(t *testing.T) {
+	m := NewRunManager(nil, nil, nil)
+	m.broadcast(ipc.Event{Type: ipc.EventRunCompleted, RunID: "terminal"})
+	terminalRev := m.StateRev("terminal")
+	m.closeSubscribers("terminal")
+
+	info, err := runSnapshot(m, "terminal", func(runID string) (*ipc.RunInfo, error) {
+		return &ipc.RunInfo{ID: runID, Status: types.RunCompleted}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.StateRev != terminalRev || info.StateRev == 0 {
+		t.Fatalf("completed snapshot StateRev = %d, want terminal revision %d", info.StateRev, terminalRev)
+	}
+
+	sub, err := m.Subscribe("terminal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	event, ok := sub.Next(t.Context())
+	if !ok || event.Type != ipc.EventStreamGap || event.StateRev != terminalRev {
+		t.Fatalf("completed subscription first event = %#v, ok=%v, want terminal gap revision %d", event, ok, terminalRev)
+	}
+}
+
+func TestRunSnapshot_CompletedRevisionEvictsWithCompletedRecord(t *testing.T) {
+	m := NewRunManager(nil, nil, nil)
+	for i := 0; i <= 1000; i++ {
+		runID := fmt.Sprintf("run-%04d", i)
+		m.broadcast(ipc.Event{Type: ipc.EventRunCompleted, RunID: runID})
+		m.closeSubscribers(runID)
+	}
+
+	if len(m.completedRuns) != 501 || len(m.stateRevs) != 501 || len(m.completedOrder) != 501 {
+		t.Fatalf("retained completed records/revisions/order = %d/%d/%d, want 501/501/501",
+			len(m.completedRuns), len(m.stateRevs), len(m.completedOrder))
+	}
+	if m.completedRuns["run-0000"] || m.StateRev("run-0000") != 0 {
+		t.Fatal("oldest completed run and revision were not evicted together")
+	}
+	if !m.completedRuns["run-1000"] || m.StateRev("run-1000") == 0 {
+		t.Fatal("newest completed run lost its terminal revision")
+	}
+}

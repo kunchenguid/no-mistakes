@@ -41,8 +41,10 @@ type Model struct {
 	steps               []ipc.StepResultInfo
 	stepFindings        map[types.StepName]string            // step name → raw findings JSON
 	stepDiffs           map[types.StepName]string            // step name → raw unified diff (fetched on demand)
+	stepDiffTruncated   map[types.StepName]bool              // steps whose fetched diff was capped
 	stepDiffFetching    map[types.StepName]bool              // steps with an in-flight diff read
-	pendingDiffFetch    []types.StepName                     // diff reads to issue on the next update
+	stepDiffRequestID   map[types.StepName]uint64            // latest request generation per step
+	pendingDiffFetch    []stepDiffRequest                    // diff reads to issue on the next update
 	findingSelections   map[types.StepName]map[string]bool   // step name → finding ID → selected
 	findingCursor       map[types.StepName]int               // step name → current finding cursor
 	findingInstructions map[types.StepName]map[string]string // step name → finding ID → user note
@@ -102,7 +104,9 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		steps:               steps,
 		stepFindings:        make(map[types.StepName]string),
 		stepDiffs:           make(map[types.StepName]string),
+		stepDiffTruncated:   make(map[types.StepName]bool),
 		stepDiffFetching:    make(map[types.StepName]bool),
+		stepDiffRequestID:   make(map[types.StepName]uint64),
 		findingSelections:   make(map[types.StepName]map[string]bool),
 		findingCursor:       make(map[types.StepName]int),
 		findingInstructions: make(map[types.StepName]map[string]string),
@@ -302,6 +306,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.events = nil
 		m.subscriptionID++
 		m.stateRev = 0
+		m.reconcilePending = false
+		m.reconcileAgain = false
+		m.stepDiffFetching = make(map[types.StepName]bool)
+		m.pendingDiffFetch = nil
 		return m, m.resubscribeCmd()
 
 	case resubscribeMsg:
@@ -314,9 +322,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.subscriptionID != m.subscriptionID {
 			return m, nil
 		}
+		if msg.requestID != m.stepDiffRequestID[msg.step] {
+			return m, nil
+		}
 		delete(m.stepDiffFetching, msg.step)
 		if msg.err == nil && msg.diff != "" {
 			m.stepDiffs[msg.step] = msg.diff
+			m.stepDiffTruncated[msg.step] = msg.truncated
 		}
 		return m, nil
 

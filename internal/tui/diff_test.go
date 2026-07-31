@@ -392,7 +392,7 @@ func TestModel_ApplyEvent_FixReviewGateRequestsDiffOnDemand(t *testing.T) {
 	if _, ok := m.stepDiffs[types.StepReview]; ok {
 		t.Error("expected the stale diff to be invalidated on gate entry")
 	}
-	if len(m.pendingDiffFetch) != 1 || m.pendingDiffFetch[0] != types.StepReview {
+	if len(m.pendingDiffFetch) != 1 || m.pendingDiffFetch[0].step != types.StepReview {
 		t.Errorf("pendingDiffFetch = %v, want one request for the review step", m.pendingDiffFetch)
 	}
 	if !m.stepDiffFetching[types.StepReview] {

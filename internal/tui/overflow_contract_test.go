@@ -360,6 +360,26 @@ func TestTUIOverflow_UnversionedDeltasStillApply(t *testing.T) {
 	}
 }
 
+func TestTUIOverflow_UnknownStateEventRequestsAuthoritativeReconciliation(t *testing.T) {
+	m := ciRunningModel(false)
+	m.stateRev = 8
+	m.reconcile = func(context.Context) (*ipc.RunInfo, error) {
+		return &ipc.RunInfo{ID: "run-1", Status: types.RunRunning, StateRev: 9}, nil
+	}
+
+	updated, cmd := m.Update(eventMsg{
+		event:          ipc.Event{Type: "future_state_transition", RunID: "run-1", StateRev: 9},
+		subscriptionID: m.subscriptionID,
+	})
+	m = updated.(Model)
+	if !m.reconcilePending || cmd == nil {
+		t.Fatal("unknown state event did not request authoritative reconciliation")
+	}
+	if m.stateRev != 9 {
+		t.Fatalf("stateRev = %d, want future event revision 9 retained as the monotonic floor", m.stateRev)
+	}
+}
+
 // The fix-review diff is fetched on demand and lands in the model, so removing
 // it from the event stream costs the user nothing.
 func TestTUIOverflow_FixReviewDiffIsFetchedOnDemand(t *testing.T) {
@@ -423,6 +443,112 @@ func TestTUIOverflow_SnapshotGateAlsoFetchesItsDiff(t *testing.T) {
 	m = updated.(Model)
 	if m.stepDiffs[types.StepReview] != "diff body\n" {
 		t.Fatalf("stepDiffs = %q, want the fetched diff", m.stepDiffs[types.StepReview])
+	}
+}
+
+func TestTUIOverflow_SnapshotGateReplacesPreviousRoundDiffAndInflightFetch(t *testing.T) {
+	m := ciRunningModel(false)
+	m.stepDiffs[types.StepReview] = "old round\n"
+	m.stepDiffTruncated[types.StepReview] = true
+	m.requestStepDiff(types.StepReview, false)
+	oldRequestID := m.stepDiffRequestID[types.StepReview]
+	m.pendingDiffFetch = nil
+
+	m.applySnapshot(&ipc.RunInfo{
+		ID: "run-1", Status: types.RunRunning, StateRev: 20,
+		Steps: []ipc.StepResultInfo{
+			{RunID: "run-1", StepName: types.StepReview, Status: types.StepStatusFixReview},
+		},
+	})
+
+	if _, ok := m.stepDiffs[types.StepReview]; ok {
+		t.Fatal("snapshot retained the previous fix round diff")
+	}
+	if m.stepDiffTruncated[types.StepReview] {
+		t.Fatal("snapshot retained the previous fix round truncation state")
+	}
+	if m.stepDiffRequestID[types.StepReview] <= oldRequestID || len(m.pendingDiffFetch) != 1 {
+		t.Fatal("snapshot did not supersede the in-flight previous-round diff request")
+	}
+
+	stale := stepDiffMsg{
+		step: types.StepReview, diff: "stale response\n", requestID: oldRequestID,
+		subscriptionID: m.subscriptionID,
+	}
+	updated, _ := m.Update(stale)
+	m = updated.(Model)
+	if _, ok := m.stepDiffs[types.StepReview]; ok {
+		t.Fatal("stale previous-round diff response mutated the current gate")
+	}
+}
+
+func TestTUIOverflow_ReconnectClearsGenerationScopedAsyncState(t *testing.T) {
+	m := ciRunningModel(false)
+	m.reconcilePending = true
+	m.reconcileAgain = true
+	m.stepDiffFetching[types.StepReview] = true
+	m.pendingDiffFetch = []stepDiffRequest{{step: types.StepReview, requestID: 1}}
+	oldSubscriptionID := m.subscriptionID
+
+	updated, _ := m.Update(subscriptionErrMsg{
+		err: fmt.Errorf("stream closed"), subscriptionID: oldSubscriptionID,
+	})
+	m = updated.(Model)
+	if m.subscriptionID == oldSubscriptionID {
+		t.Fatal("subscription generation did not advance")
+	}
+	if m.reconcilePending || m.reconcileAgain || len(m.stepDiffFetching) != 0 || len(m.pendingDiffFetch) != 0 {
+		t.Fatal("reconnect retained generation-scoped reconcile or diff work")
+	}
+
+	updated, _ = m.Update(runReconciledMsg{
+		run:            &ipc.RunInfo{ID: "run-1", Status: types.RunCompleted, StateRev: 99},
+		subscriptionID: oldSubscriptionID,
+	})
+	m = updated.(Model)
+	updated, _ = m.Update(stepDiffMsg{
+		step: types.StepReview, diff: "stale\n", requestID: 1,
+		subscriptionID: oldSubscriptionID,
+	})
+	m = updated.(Model)
+	if m.done || m.stepDiffs[types.StepReview] == "stale\n" {
+		t.Fatal("stale asynchronous result mutated the new subscription generation")
+	}
+
+	m.reconcile = func(context.Context) (*ipc.RunInfo, error) {
+		return &ipc.RunInfo{ID: "run-1", Status: types.RunRunning, StateRev: 40}, nil
+	}
+	updated, cmd := m.Update(eventMsg{
+		event:          ipc.Event{Type: ipc.EventStreamGap, RunID: "run-1", StateRev: 40},
+		subscriptionID: m.subscriptionID,
+	})
+	m = updated.(Model)
+	if !m.reconcilePending || cmd == nil {
+		t.Fatal("new generation gap could not start reconciliation")
+	}
+}
+
+func TestTUIOverflow_TruncatedDiffStateRendersBeforeApprovalActions(t *testing.T) {
+	m := ciRunningModel(false)
+	m.steps = []ipc.StepResultInfo{
+		{RunID: "run-1", StepName: types.StepReview, Status: types.StepStatusFixReview},
+	}
+	m.stepDiffs[types.StepReview] = "diff body\n"
+	m.stepDiffTruncated[types.StepReview] = true
+	m.width = 100
+
+	view := stripANSI(m.View())
+	warning := "Diff truncated at 512 KiB."
+	warningAt := strings.Index(view, warning)
+	approveAt := strings.Index(view, "approve")
+	if warningAt < 0 {
+		t.Fatalf("truncation warning is not visible:\n%s", view)
+	}
+	if !strings.Contains(view, "Approval applies to the full") {
+		t.Fatalf("truncation warning does not disclose approval scope:\n%s", view)
+	}
+	if approveAt < 0 || warningAt > approveAt {
+		t.Fatalf("truncation warning must appear before approval actions:\n%s", view)
 	}
 }
 

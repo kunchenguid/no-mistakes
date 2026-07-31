@@ -468,13 +468,13 @@ func (m *RunManager) closeSubscribers(runID string) {
 		mb.close()
 	}
 	delete(m.subscribers, runID)
-	delete(m.stateRevs, runID)
 	m.completedRuns[runID] = true
 	m.completedOrder = append(m.completedOrder, runID)
 	if len(m.completedOrder) > 1000 {
 		half := len(m.completedOrder) / 2
 		for _, id := range m.completedOrder[:half] {
 			delete(m.completedRuns, id)
+			delete(m.stateRevs, id)
 		}
 		m.completedOrder = m.completedOrder[half:]
 	}

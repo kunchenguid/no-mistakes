@@ -128,10 +128,9 @@ func (m *Model) applyEvent(event ipc.Event) bool {
 		// Entering the gate invalidates any cached diff and requests a fresh
 		// one from the run's worktree.
 		if event.StepName != nil && event.Status != nil && types.StepStatus(*event.Status) == types.StepStatusFixReview {
-			delete(m.stepDiffs, *event.StepName)
 			m.showDiff = false
 			m.diffOffset = 0
-			m.requestStepDiff(*event.StepName)
+			m.requestStepDiff(*event.StepName, true)
 		}
 
 	case ipc.EventLogChunk:
@@ -165,6 +164,8 @@ func (m *Model) applyEvent(event ipc.Event) bool {
 				m.logs = m.logs[len(m.logs)-100:]
 			}
 		}
+	default:
+		return ipc.ClassOf(event.Type) == ipc.ClassState
 	}
 	return false
 }
@@ -192,8 +193,10 @@ func (m *Model) applySnapshot(run *ipc.RunInfo) {
 		}
 		// A gate reached while the model was out of sync still needs its
 		// diff, which is derived rather than carried by the snapshot.
-		if s.Status == types.StepStatusFixReview && m.stepDiffs[s.StepName] == "" {
-			m.requestStepDiff(s.StepName)
+		if s.Status == types.StepStatusFixReview {
+			m.showDiff = false
+			m.diffOffset = 0
+			m.requestStepDiff(s.StepName, true)
 		}
 	}
 	if run.Status == types.RunCompleted || run.Status == types.RunFailed || run.Status == types.RunCancelled {
@@ -204,12 +207,18 @@ func (m *Model) applySnapshot(run *ipc.RunInfo) {
 
 // requestStepDiff queues one on-demand read of a fix-review gate's
 // working-tree diff. At most one request per step is in flight.
-func (m *Model) requestStepDiff(step types.StepName) {
-	if m.stepDiffFetching[step] {
+func (m *Model) requestStepDiff(step types.StepName, replace bool) {
+	if m.stepDiffFetching[step] && !replace {
 		return
 	}
+	delete(m.stepDiffs, step)
+	delete(m.stepDiffTruncated, step)
+	m.stepDiffRequestID[step]++
 	m.stepDiffFetching[step] = true
-	m.pendingDiffFetch = append(m.pendingDiffFetch, step)
+	m.pendingDiffFetch = append(m.pendingDiffFetch, stepDiffRequest{
+		step:      step,
+		requestID: m.stepDiffRequestID[step],
+	})
 }
 
 func (m *Model) updateStepStatus(name types.StepName, status types.StepStatus) {

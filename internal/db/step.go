@@ -101,6 +101,48 @@ func (d *DB) UpdateStepStatusWithDuration(id string, status types.StepStatus, du
 	return nil
 }
 
+func (d *DB) ParkStepForApproval(runID, stepID string, status types.StepStatus, durationMS int64) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin approval park: %w", err)
+	}
+	defer tx.Rollback()
+
+	ts := now()
+	stepResult, err := tx.Exec(
+		`UPDATE step_results SET status = ?, duration_ms = ?, last_activity_at = ?, last_activity = ? WHERE id = ?`,
+		status, durationMS, ts, fmt.Sprintf("status: %s", status), stepID,
+	)
+	if err != nil {
+		return fmt.Errorf("park step for approval: %w", err)
+	}
+	changed, err := stepResult.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("park step for approval rows affected: %w", err)
+	}
+	if changed != 1 {
+		return fmt.Errorf("park step for approval: updated %d rows", changed)
+	}
+	runResult, err := tx.Exec(
+		`UPDATE runs SET awaiting_agent_since = ?, updated_at = ? WHERE id = ?`,
+		ts, ts, runID,
+	)
+	if err != nil {
+		return fmt.Errorf("mark run awaiting approval: %w", err)
+	}
+	changed, err = runResult.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mark run awaiting approval rows affected: %w", err)
+	}
+	if changed != 1 {
+		return fmt.Errorf("mark run awaiting approval: updated %d rows", changed)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit approval park: %w", err)
+	}
+	return nil
+}
+
 // StartStep marks a step as running with a started_at timestamp.
 func (d *DB) StartStep(id string) error {
 	return d.StartStepWithAutoFixLimit(id, 0)
