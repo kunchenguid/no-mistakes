@@ -81,6 +81,126 @@ func TestForwardRecoverySerializesWithSameBranchRunCreation(t *testing.T) {
 	}
 }
 
+func TestStartRunReleasesBranchLockWhileCancellingAndRevalidates(t *testing.T) {
+	root := t.TempDir()
+	p := paths.WithRoot(root)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	source := filepath.Join(root, "source")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.com"}} {
+		if _, err := git.Run(context.Background(), source, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(source, "source.txt"), []byte("source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git.Run(context.Background(), source, "add", "source.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git.Run(context.Background(), source, "commit", "-m", "source"); err != nil {
+		t.Fatal(err)
+	}
+	head, err := git.HeadSHA(context.Background(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := database.InsertRepo(filepath.Join(root, "missing-working-copy"), "https://example.invalid/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateDir := p.RepoDir(repo.ID)
+	if _, err := git.Run(context.Background(), root, "init", "--bare", gateDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git.Run(context.Background(), source, "remote", "add", "gate", gateDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git.Run(context.Background(), source, "push", "gate", "HEAD:refs/heads/feature"); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRun, err := database.InsertRun(repo.ID, "feature", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(oldRun.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewRunManager(database, p, func() []pipeline.Step { return nil })
+	branchMu := mgr.branchMutex(repo.ID, "feature")
+	oldDone := make(chan struct{})
+	competitorCancelled := make(chan struct{})
+	callbackErr := make(chan error, 1)
+	var oldOnce sync.Once
+	mgr.cancels[oldRun.ID] = func(error) {
+		oldOnce.Do(func() {
+			go func() {
+				branchMu.Lock()
+				defer branchMu.Unlock()
+				defer close(oldDone)
+				if err := database.UpdateRunStatus(oldRun.ID, types.RunCancelled); err != nil {
+					callbackErr <- err
+					return
+				}
+				competitor, err := database.InsertRun(repo.ID, "feature", head, head)
+				if err != nil {
+					callbackErr <- err
+					return
+				}
+				if err := database.UpdateRunStatus(competitor.ID, types.RunRunning); err != nil {
+					callbackErr <- err
+					return
+				}
+				competitorDone := make(chan struct{})
+				var competitorOnce sync.Once
+				mgr.mu.Lock()
+				mgr.cancels[competitor.ID] = func(error) {
+					competitorOnce.Do(func() {
+						_ = database.UpdateRunStatus(competitor.ID, types.RunCancelled)
+						close(competitorCancelled)
+						close(competitorDone)
+					})
+				}
+				mgr.dones[competitor.ID] = competitorDone
+				mgr.mu.Unlock()
+			}()
+		})
+	}
+	mgr.dones[oldRun.ID] = oldDone
+
+	startDone := make(chan error, 1)
+	go func() {
+		_, err := mgr.startRun(context.Background(), repo, "feature", head, head, "test", nil, "")
+		startDone <- err
+	}()
+	select {
+	case <-competitorCancelled:
+	case err := <-callbackErr:
+		t.Fatalf("cancellation callback: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("replacement admission did not release and reacquire the branch lock")
+	}
+	select {
+	case <-startDone:
+	case err := <-callbackErr:
+		t.Fatalf("cancellation callback: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("replacement admission did not finish after revalidating active authority")
+	}
+}
+
 // --- RunManager integration tests ---
 
 func TestPushReceivedTracksRunTelemetry(t *testing.T) {

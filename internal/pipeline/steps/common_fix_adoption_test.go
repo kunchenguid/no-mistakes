@@ -37,6 +37,30 @@ func TestCommitAgentFixesAdoptsCleanStrictForwardSelfCommit(t *testing.T) {
 	assertLiveHeadAdopted(t, sctx, dir, old, candidate)
 }
 
+func TestCommitAgentFixesAfterRebaseHeadTransition(t *testing.T) {
+	sctx, dir, old := newLiveAdoptionContext(t)
+	rebased := gitCmd(t, dir, "commit-tree", old+"^{tree}", "-p", sctx.Run.BaseSHA, "-m", "rebased feature")
+	gitCmd(t, dir, "reset", "--hard", rebased)
+
+	if _, err := updateHeadSHA(sctx.Ctx, sctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); got != rebased {
+		t.Fatalf("gate branch after rebase = %s, want %s", got, rebased)
+	}
+	journal, err := sctx.DB.GetActiveRunHeadAdvance(sctx.Run.ID, rebased)
+	if err != nil || journal == nil || journal.StepName != string(types.StepRebase) || journal.ExpectedHead != old {
+		t.Fatalf("rebase transition journal = %#v, %v", journal, err)
+	}
+
+	writeSelfCommit(t, dir)
+	candidate := gitCmd(t, dir, "rev-parse", "HEAD")
+	if err := commitAgentFixes(sctx, types.StepDocument, "", "docs"); err != nil {
+		t.Fatal(err)
+	}
+	assertLiveHeadAdopted(t, sctx, dir, rebased, candidate)
+}
+
 func TestCommitAgentFixesNoChangeIsTrueNoOp(t *testing.T) {
 	sctx, dir, old := newLiveAdoptionContext(t)
 	if err := commitAgentFixes(sctx, types.StepDocument, "", "docs"); err != nil {

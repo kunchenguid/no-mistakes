@@ -201,8 +201,23 @@ func commitAgentFixesWithHooks(sctx *pipeline.StepContext, stepName types.StepNa
 		sctx.Log("no agent changes to commit")
 		return nil
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "merge-base", "--is-ancestor", oldHead, candidate); err != nil {
-		return fmt.Errorf("refusing to adopt %s head %s: it is not a descendant of recorded head %s (adoption requires a strict forward move)", stepName, candidate, oldHead)
+	if err := adoptPipelineHeadTransition(sctx, stepName, oldHead, candidate, true, hooks); err != nil {
+		return err
+	}
+	if commitMessage != "" {
+		sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
+	} else {
+		sctx.Log(fmt.Sprintf("adopted agent self-commit: %s", candidate))
+	}
+	return nil
+}
+
+func adoptPipelineHeadTransition(sctx *pipeline.StepContext, stepName types.StepName, oldHead, candidate string, strictForward bool, hooks headAdoptionHooks) error {
+	ctx := sctx.Ctx
+	if strictForward {
+		if _, err := git.Run(ctx, sctx.WorkDir, "merge-base", "--is-ancestor", oldHead, candidate); err != nil {
+			return fmt.Errorf("refusing to adopt %s head %s: it is not a descendant of recorded head %s (adoption requires a strict forward move)", stepName, candidate, oldHead)
+		}
 	}
 
 	anchorRef := liveHeadCandidateAnchorRef(sctx.Run.ID, candidate)
@@ -280,11 +295,6 @@ func commitAgentFixesWithHooks(sctx *pipeline.StepContext, stepName types.StepNa
 	// In-memory authority advances only after the durable journal/head CAS and
 	// final Git equality checks have succeeded.
 	sctx.Run.HeadSHA = candidate
-	if commitMessage != "" {
-		sctx.Log(fmt.Sprintf("committed agent fixes: %s", commitMessage))
-	} else {
-		sctx.Log(fmt.Sprintf("adopted agent self-commit: %s", candidate))
-	}
 	return nil
 }
 

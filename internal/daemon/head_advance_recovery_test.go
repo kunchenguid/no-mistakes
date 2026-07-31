@@ -22,6 +22,7 @@ import (
 const (
 	headAdvanceCrashRootEnv  = "NM_TEST_HEAD_ADVANCE_CRASH_ROOT"
 	headAdvanceCrashPhaseEnv = "NM_TEST_HEAD_ADVANCE_CRASH_PHASE"
+	headAdvanceCrashModeEnv  = "NM_TEST_HEAD_ADVANCE_CRASH_MODE"
 )
 
 type headAdvanceCrashFixture struct {
@@ -40,15 +41,24 @@ type headAdvanceCrashFixture struct {
 // reconciliation before stale-run failure and worktree cleanup.
 func TestPreparedHeadAdvanceSurvivesProcessRestart(t *testing.T) {
 	if root := os.Getenv(headAdvanceCrashRootEnv); root != "" {
-		if err := stageHeadAdvanceCrash(root, os.Getenv(headAdvanceCrashPhaseEnv)); err != nil {
+		if err := stageHeadAdvanceCrash(root, os.Getenv(headAdvanceCrashPhaseEnv), os.Getenv(headAdvanceCrashModeEnv)); err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "stage head-advance crash: %v\n", err)
 			os.Exit(2)
 		}
 		os.Exit(0)
 	}
 
-	for _, phase := range []string{"after_anchor", "after_gate", "after_db"} {
-		t.Run(phase, func(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		phase string
+		mode  string
+	}{
+		{name: "after_anchor", phase: "after_anchor"},
+		{name: "after_gate", phase: "after_gate"},
+		{name: "after_db", phase: "after_db"},
+		{name: "rebase_after_gate", phase: "after_gate", mode: "rebase"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			root, err := os.MkdirTemp("", "nm-head-restart-")
 			if err != nil {
 				t.Fatal(err)
@@ -56,7 +66,7 @@ func TestPreparedHeadAdvanceSurvivesProcessRestart(t *testing.T) {
 			t.Cleanup(func() { _ = os.RemoveAll(root) })
 
 			cmd := exec.Command(os.Args[0], "-test.run=^TestPreparedHeadAdvanceSurvivesProcessRestart$")
-			cmd.Env = append(os.Environ(), headAdvanceCrashRootEnv+"="+root, headAdvanceCrashPhaseEnv+"="+phase)
+			cmd.Env = append(os.Environ(), headAdvanceCrashRootEnv+"="+root, headAdvanceCrashPhaseEnv+"="+tc.phase, headAdvanceCrashModeEnv+"="+tc.mode)
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("crash-staging child failed: %v\n%s", err, output)
 			}
@@ -99,7 +109,7 @@ func TestPreparedHeadAdvanceSurvivesProcessRestart(t *testing.T) {
 			}
 
 			wantDurableHead := fixture.OldHead
-			if phase != "after_anchor" {
+			if tc.phase != "after_anchor" {
 				wantDurableHead = fixture.Candidate
 			}
 			if run.HeadSHA != wantDurableHead {
@@ -121,10 +131,10 @@ func TestPreparedHeadAdvanceSurvivesProcessRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if phase == "after_anchor" && journal != nil {
+			if tc.phase == "after_anchor" && journal != nil {
 				t.Fatalf("anchor-only crash unexpectedly persisted journal: %#v", journal)
 			}
-			if phase != "after_anchor" && journal == nil {
+			if tc.phase != "after_anchor" && journal == nil {
 				t.Fatal("gate/DB crash lost exact prepared journal")
 			}
 			if _, err := os.Stat(p.WorktreeDir(fixture.RepoID, fixture.RunID)); !os.IsNotExist(err) {
@@ -134,7 +144,7 @@ func TestPreparedHeadAdvanceSurvivesProcessRestart(t *testing.T) {
 	}
 }
 
-func stageHeadAdvanceCrash(root, phase string) error {
+func stageHeadAdvanceCrash(root, phase, mode string) error {
 	switch phase {
 	case "after_anchor", "after_gate", "after_db":
 	default:
@@ -228,6 +238,23 @@ func stageHeadAdvanceCrash(root, phase string) error {
 	if _, err := runHeadAdvanceTestGit(worktree, "commit", "-m", "candidate head"); err != nil {
 		return err
 	}
+	stepName := types.StepLint
+	if mode == "rebase" {
+		tree, err := runHeadAdvanceTestGit(worktree, "rev-parse", "HEAD^{tree}")
+		if err != nil {
+			return err
+		}
+		rewritten, err := runHeadAdvanceTestGit(worktree, "commit-tree", tree, "-m", "rebased candidate")
+		if err != nil {
+			return err
+		}
+		if _, err := runHeadAdvanceTestGit(worktree, "reset", "--hard", rewritten); err != nil {
+			return err
+		}
+		stepName = types.StepRebase
+	} else if mode != "" {
+		return fmt.Errorf("unsupported crash mode %q", mode)
+	}
 	candidate, err := runHeadAdvanceTestGit(worktree, "rev-parse", "HEAD")
 	if err != nil {
 		return err
@@ -241,7 +268,7 @@ func stageHeadAdvanceCrash(root, phase string) error {
 		RunID:        run.ID,
 		RepoID:       repo.ID,
 		Branch:       branch,
-		StepName:     string(types.StepLint),
+		StepName:     string(stepName),
 		ExpectedHead: oldHead,
 		Candidate:    candidate,
 		AnchorRef:    anchorRef,

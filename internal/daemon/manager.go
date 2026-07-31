@@ -781,6 +781,10 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	branchMu := m.branchMutex(repo.ID, branch)
 	branchMu.Lock()
 	defer branchMu.Unlock()
+	if err := m.coordinateRunAdmission(ctx, branchMu, repo.ID, branch, headSHA); err != nil {
+		trackStartFailure("coordinate_admission")
+		return "", err
+	}
 
 	// Best-effort only: a clone's remotes may change after init. Refresh the
 	// registered URLs before constructing any run-owned Git operation, but keep
@@ -792,9 +796,6 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	} else {
 		repo = refreshed
 	}
-
-	// Cancel any active run for this repo+branch.
-	m.cancelActiveRuns(repo.ID, branch)
 
 	storedIntent := intent
 	if source != db.RunIntentSourceRerun {
@@ -1164,19 +1165,69 @@ func (m *RunManager) HandleCancel(runID string) error {
 	return nil
 }
 
-// cancelActiveRuns cancels any in-progress runs for the given repo+branch
-// and waits for their goroutines to finish before returning, preventing
-// concurrent pushes to upstream.
-// The cancellation cause is propagated to the executor via context.Cause,
-// which uses it as the run's error message in the DB.
-func (m *RunManager) cancelActiveRuns(repoID, branch string) {
+func (m *RunManager) coordinateRunAdmission(ctx context.Context, branchMu *sync.Mutex, repoID, branch, headSHA string) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("coordinate run admission: %w", err)
+		}
+		gateHead, err := git.Run(ctx, m.paths.RepoDir(repoID), "rev-parse", "--verify", normalizedManagerBranchRef(branch)+"^{commit}")
+		if err != nil {
+			return fmt.Errorf("coordinate run admission: resolve exact gate head: %w", err)
+		}
+		if gateHead != headSHA {
+			return fmt.Errorf("coordinate run admission: gate branch moved to %s while request expected %s", gateHead, headSHA)
+		}
+
+		toWait, err := m.cancelActiveRuns(repoID, branch)
+		if err != nil {
+			return err
+		}
+		if len(toWait) == 0 {
+			return nil
+		}
+
+		branchMu.Unlock()
+		waitErr := waitForCancelledRuns(ctx, toWait)
+		branchMu.Lock()
+		if waitErr != nil {
+			return waitErr
+		}
+		if m.shuttingDown.Load() {
+			return fmt.Errorf("daemon is shutting down")
+		}
+	}
+}
+
+func normalizedManagerBranchRef(branch string) string {
+	branch = strings.TrimSpace(branch)
+	if strings.HasPrefix(branch, "refs/heads/") {
+		return branch
+	}
+	return "refs/heads/" + branch
+}
+
+func waitForCancelledRuns(ctx context.Context, dones []<-chan struct{}) error {
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	for _, done := range dones {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return fmt.Errorf("wait for superseded run: %w", ctx.Err())
+		case <-timer.C:
+			return fmt.Errorf("timed out waiting for superseded runs to finish")
+		}
+	}
+	return nil
+}
+
+func (m *RunManager) cancelActiveRuns(repoID, branch string) ([]<-chan struct{}, error) {
 	runs, err := m.db.GetRunsByRepo(repoID)
 	if err != nil {
-		slog.Error("failed to query active runs for cancellation", "repo", repoID, "branch", branch, "error", err)
-		return
+		return nil, fmt.Errorf("query active runs for cancellation: %w", err)
 	}
 
-	var toWait []chan struct{}
+	var toWait []<-chan struct{}
 	for _, run := range runs {
 		if run.Branch != branch {
 			continue
@@ -1195,18 +1246,10 @@ func (m *RunManager) cancelActiveRuns(repoID, branch string) {
 
 		cancel(fmt.Errorf(types.RunCancelReasonSuperseded))
 		slog.Info("cancelled active run", "run_id", run.ID, "repo_id", repoID, "branch", branch)
-		if done != nil {
-			toWait = append(toWait, done)
+		if done == nil {
+			return nil, fmt.Errorf("active run %s has no completion signal", run.ID)
 		}
+		toWait = append(toWait, done)
 	}
-
-	timeout := time.After(30 * time.Second)
-	for _, done := range toWait {
-		select {
-		case <-done:
-		case <-timeout:
-			slog.Warn("timed out waiting for cancelled runs to finish")
-			return
-		}
-	}
+	return toWait, nil
 }

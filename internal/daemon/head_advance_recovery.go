@@ -22,10 +22,11 @@ type preparedHeadAdvanceRecoveryStats struct {
 
 // reconcilePreparedHeadAdvances closes the only live-adoption state that a
 // process restart may safely finish: the exact immutable transition was
-// prepared while the run was active, its worktree is still clean at the strict
-// forward candidate, and the gate CAS already moved from the recorded old head
-// to that candidate. It runs under the same repo+branch mutex as admission and
-// ordinary adoption, before generic stale-run failure and worktree cleanup.
+// prepared while the run was active, its worktree is still clean at the exact
+// candidate, and the gate CAS already moved from the recorded old head to that
+// candidate. Agent-authored transitions remain strict-forward; Rebase may
+// record an exact rewrite. Reconciliation runs under the same repo+branch mutex
+// as admission and ordinary adoption, before stale-run failure and cleanup.
 //
 // A prepared transition whose gate is still at the old head is deliberately
 // not adopted; generic crash recovery may fail that run while the immutable
@@ -67,7 +68,7 @@ func (m *RunManager) reconcilePreparedHeadAdvance(ctx context.Context, advance d
 		return false, fmt.Errorf("run identity is not one canonical complete ID")
 	}
 	if !branchsync.IsExactFullObjectID(advance.ExpectedHead) || !branchsync.IsExactFullObjectID(advance.Candidate) || advance.ExpectedHead == advance.Candidate {
-		return false, fmt.Errorf("head transition is not one exact strict-forward object pair")
+		return false, fmt.Errorf("head transition is not one exact object pair")
 	}
 	expectedAnchor := "refs/no-mistakes/run-head-candidates/" + advance.RunID + "/" + advance.Candidate
 	if advance.AnchorRef != expectedAnchor {
@@ -113,8 +114,9 @@ func (m *RunManager) reconcilePreparedHeadAdvance(ctx context.Context, advance d
 		return false, nil
 	}
 
-	switch types.StepName(advance.StepName) {
-	case types.StepReview, types.StepTest, types.StepDocument, types.StepLint:
+	stepName := types.StepName(advance.StepName)
+	switch stepName {
+	case types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint:
 	default:
 		return false, fmt.Errorf("step %q cannot author a live head transition", advance.StepName)
 	}
@@ -131,8 +133,10 @@ func (m *RunManager) reconcilePreparedHeadAdvance(ctx context.Context, advance d
 	if err != nil || candidateObject != advance.Candidate {
 		return false, fmt.Errorf("exact candidate commit is unavailable")
 	}
-	if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", advance.ExpectedHead, advance.Candidate); err != nil {
-		return false, fmt.Errorf("candidate is not a strict descendant of the expected old head")
+	if stepName != types.StepRebase {
+		if _, err := git.Run(ctx, gateDir, "merge-base", "--is-ancestor", advance.ExpectedHead, advance.Candidate); err != nil {
+			return false, fmt.Errorf("candidate is not a strict descendant of the expected old head")
+		}
 	}
 
 	commonDir, err := git.Run(ctx, workDir, "rev-parse", "--path-format=absolute", "--git-common-dir")
