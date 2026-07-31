@@ -58,9 +58,10 @@ func reviewSkillDirs(root, name string) []string {
 }
 
 // reviewSkillJudgeable reports whether this machine has a skill library at all.
-// Where no skill base directory exists the absence of one skill proves nothing
-// (an agent may resolve skills from somewhere this check cannot see), so the
-// preflight stays silent rather than failing a run over a guess.
+// This is not a general escape hatch: `no-mistakes init` creates the install
+// bases, so on any initialized machine it is true and the mandate applies
+// unconditionally. It only covers a host that has never run init, where no
+// skill directory exists to read an absence from.
 func reviewSkillJudgeable(workDir string) bool {
 	for _, root := range reviewSkillSearchRoots(workDir) {
 		for _, base := range skill.InstallBases {
@@ -87,6 +88,9 @@ func reviewSkillInstalled(workDir, name string) bool {
 // mandated skill is not installed. Without it the step still fails, but only
 // after two full review turns and with a message about the agent ignoring the
 // prompt, which reads as an agent problem rather than the setup problem it is.
+// The mandate is deliberately hard and has no config opt-out: on an initialized
+// machine, a missing comprehensive-code-review fails every review step until it
+// is installed.
 func assertReviewSkillInstalled(workDir string, agentName string) error {
 	if !reviewSkillJudgeable(workDir) || reviewSkillInstalled(workDir, requiredReviewSkill) {
 		return nil

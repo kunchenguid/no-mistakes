@@ -74,9 +74,9 @@ func TestAssertReviewSkillInstalled_AcceptsEveryResolvableLayout(t *testing.T) {
 	}
 }
 
-// Absence of a skill library at all is not evidence the skill is missing: the
-// agent may resolve skills from somewhere this check cannot see, and failing
-// the run on that guess is worse than the drift failure it replaces.
+// A host that has never run `no-mistakes init` has no skill directory to read
+// an absence from, so the preflight has nothing to judge. Every initialized
+// machine has the install bases and is judged unconditionally.
 func TestAssertReviewSkillInstalled_NoSkillLibraryDoesNotFailTheRun(t *testing.T) {
 	pinReviewSkillHome(t, t.TempDir())
 

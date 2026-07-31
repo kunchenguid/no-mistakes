@@ -102,6 +102,21 @@ func reviewSkillMandateSatisfied(result *agent.Result) bool {
 	})
 }
 
+// reviewMandateAttempts is the initial reviewer turn plus one retry when the
+// mandated skill was not invoked.
+const reviewMandateAttempts = 2
+
+// runReviewTurn runs one reviewer turn and reports whether it satisfied the
+// required-skill mandate. Every turn - initial and retry - goes through here so
+// the run options, the error wrap, and the mandate check cannot diverge.
+func runReviewTurn(sctx *pipeline.StepContext, runOpts agent.RunOpts) (*agent.Result, bool, error) {
+	result, err := sctx.Agent.Run(sctx.Ctx, runOpts)
+	if err != nil {
+		return nil, false, fmt.Errorf("agent review: %w", err)
+	}
+	return result, reviewSkillMandateSatisfied(result), nil
+}
+
 // skillBaseName strips the namespace a host prepends to a skill name, so a
 // plugin skill ("plugin:comprehensive-code-review") and a directory-scoped one
 // ("apps/web:comprehensive-code-review") still match the bare skill name.
@@ -372,11 +387,6 @@ Risk assessment (after listing all findings):
 	if err := assertReviewSkillInstalled(sctx.WorkDir, agentDisplayName(sctx)); err != nil {
 		return nil, err
 	}
-	result, err := sctx.Agent.Run(ctx, runOpts)
-	if err != nil {
-		return nil, fmt.Errorf("agent review: %w", err)
-	}
-
 	// PERSONAL: the review prompt mandates the comprehensive-code-review skill,
 	// but prompt text is discretionary - measured drift had roughly half of
 	// review turns collapse into a single inline pass, silently skipping every
@@ -384,15 +394,22 @@ Risk assessment (after listing all findings):
 	// the turn is cheaply repeatable, retry it once before failing the step,
 	// which fails the whole run. The retry is another session-free turn, so it
 	// cannot inherit the drifted turn's context.
-	if !reviewSkillMandateSatisfied(result) {
-		sctx.Log(fmt.Sprintf(
-			"review did not invoke the %s skill (skills used: %v); retrying once",
-			requiredReviewSkill, result.SkillsUsed))
-		result, err = sctx.Agent.Run(ctx, runOpts)
-		if err != nil {
-			return nil, fmt.Errorf("agent review: %w", err)
+	var result *agent.Result
+	for attempt := range reviewMandateAttempts {
+		if attempt > 0 {
+			sctx.Log(fmt.Sprintf(
+				"review did not invoke the %s skill (skills used: %v); retrying once",
+				requiredReviewSkill, result.SkillsUsed))
 		}
-		if !reviewSkillMandateSatisfied(result) {
+		turn, satisfied, err := runReviewTurn(sctx, runOpts)
+		if err != nil {
+			return nil, err
+		}
+		result = turn
+		if satisfied {
+			break
+		}
+		if attempt == reviewMandateAttempts-1 {
 			return nil, fmt.Errorf(
 				"review did not invoke the %s skill after a retry (skills used: %v); inline review is not accepted",
 				requiredReviewSkill, result.SkillsUsed)

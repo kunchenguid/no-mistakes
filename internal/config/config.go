@@ -224,16 +224,18 @@ type DocumentRaw struct {
 	Instructions string `yaml:"instructions"`
 }
 
-// ReviewRaw is the YAML representation of review-step settings.
+// ReviewRaw is the repository config's review block. It carries only the
+// repo-owned review fields on purpose: narrow_after_round is global-only
+// (review breadth is a gate strength, so a pushed branch must not narrow the
+// review of its own change) and Merge never sources it from the repo config.
+// Listing it here would advertise a per-repo knob that silently does nothing,
+// since LoadRepo decodes leniently and cannot reject the key.
 type ReviewRaw struct {
 	// PathInstructions scope extra review guidance to the paths a change
 	// actually touches. The review step appends the blocks whose glob matches
 	// at least one changed file; a run that touches nothing matching leaves
 	// the review prompt exactly as it is without this setting.
 	PathInstructions []PathInstruction `yaml:"path_instructions"`
-	// NarrowAfterRound is a pointer so "not set" (nil) differs from an
-	// explicit 0, which disables narrowing.
-	NarrowAfterRound *int `yaml:"narrow_after_round"`
 }
 
 // GlobalReviewRaw is the global config's review block. It carries only the
