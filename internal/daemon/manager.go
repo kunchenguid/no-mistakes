@@ -222,11 +222,7 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	if err := assertGateTrustedConfigReadable(ctx, workDir, repo.DefaultBranch, trustedSHA); err != nil {
 		return nil, err
 	}
-	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
-	// allow_repo_commands is read before the working-path merge so a local
-	// override cannot widen the push trust boundary (see MergeWorkingPathTrusted).
-	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
-	trustedRepoCfg = applyWorkingPathTrustedConfig(ctx, globalCfg, repo, trustedRepoCfg, run.ID)
+	trustedRepoCfg, allowRepoCommands := resolveTrustedRepoConfig(ctx, workDir, globalCfg, repo, trustedSHA, run.ID)
 	return config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)), nil
 }
 
@@ -533,6 +529,21 @@ func loadTrustedRepoConfig(ctx context.Context, wtDir, trustedSHA, runID string)
 		return nil
 	}
 	return trusted
+}
+
+// resolveTrustedRepoConfig is the single owner of the trusted repo config a run
+// executes under: it reads the trusted default-branch copy, then layers the
+// maintainer's working-path copy over it.
+//
+// SECURITY: allow_repo_commands is read from the default-branch copy BEFORE the
+// working-path merge, and is returned separately rather than read back off the
+// merged config, so a local override can never widen the push trust boundary
+// (config.MergeWorkingPathTrusted deliberately excludes the field). Both callers
+// (run start and crash recovery) go through here so that ordering has one home.
+func resolveTrustedRepoConfig(ctx context.Context, gitDir string, globalCfg *config.GlobalConfig, repo *db.Repo, trustedSHA, runID string) (*config.RepoConfig, bool) {
+	trusted := loadTrustedRepoConfig(ctx, gitDir, trustedSHA, runID)
+	allowRepoCommands := trusted != nil && trusted.AllowRepoCommands
+	return applyWorkingPathTrustedConfig(ctx, globalCfg, repo, trusted, runID), allowRepoCommands
 }
 
 // applyWorkingPathTrustedConfig layers the maintainer's own checkout copy of
@@ -883,11 +894,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		trackStartFailure("trusted_config_unreadable")
 		return "", err
 	}
-	trustedRepoCfg := loadTrustedRepoConfig(ctx, wtDir, trustedSHA, run.ID)
-	// allow_repo_commands is read before the working-path merge so a local
-	// override cannot widen the push trust boundary (see MergeWorkingPathTrusted).
-	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
-	trustedRepoCfg = applyWorkingPathTrustedConfig(ctx, globalCfg, repo, trustedRepoCfg, run.ID)
+	trustedRepoCfg, allowRepoCommands := resolveTrustedRepoConfig(ctx, wtDir, globalCfg, repo, trustedSHA, run.ID)
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	if allowRepoCommands {
 		slog.Warn("allow_repo_commands is enabled on the default branch: honoring commands/agent from pushed branch", "run_id", run.ID, "branch", branch)

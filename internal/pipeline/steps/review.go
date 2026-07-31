@@ -24,9 +24,17 @@ const fullSweepSkillInvocation = "(Skill tool, no arguments)"
 // Aspect names match the review skill's own step-2 table, because it runs only
 // the aspects the caller names. Correctness & bugs is the defect aspect;
 // Simplification and React are advisory or narrow, and are the first to go.
+//
+// specConformanceAspect is the skill's 3a track (its Standards and Spec
+// sub-agents), and is pinned into every narrowed list: naming aspects excludes
+// every row not named, and the Spec axis is the only one checking the change
+// against the author's stated intent - exactly the check that matters most
+// after several fix rounds. Narrowing therefore only ever drops 3b spawns.
+const specConformanceAspect = "Spec conformance & standards"
+
 var (
-	coreReviewAspects    = []string{"Correctness & bugs", "Tests"}
-	minimalReviewAspects = []string{"Correctness & bugs"}
+	coreReviewAspects    = []string{"Correctness & bugs", "Tests", specConformanceAspect}
+	minimalReviewAspects = []string{"Correctness & bugs", specConformanceAspect}
 )
 
 // reviewBreadth is how wide and how strict a single review turn is.
@@ -78,6 +86,29 @@ func (b reviewBreadth) severityRule() string {
 	default:
 		return ""
 	}
+}
+
+// reviewSkillMandateSatisfied reports whether a review turn actually invoked
+// the required review skill. SkillsUsed is nil for adapters that do not report
+// skill use, which is treated as satisfied because the mandate is unobservable
+// there.
+func reviewSkillMandateSatisfied(result *agent.Result) bool {
+	if result == nil || result.SkillsUsed == nil {
+		return true
+	}
+	return slices.ContainsFunc(result.SkillsUsed, func(name string) bool {
+		return skillBaseName(name) == requiredReviewSkill
+	})
+}
+
+// skillBaseName strips the namespace a host prepends to a skill name, so a
+// plugin skill ("plugin:comprehensive-code-review") and a directory-scoped one
+// ("apps/web:comprehensive-code-review") still match the bare skill name.
+func skillBaseName(name string) string {
+	if i := strings.LastIndex(name, ":"); i >= 0 {
+		name = name[i+1:]
+	}
+	return strings.TrimSpace(name)
 }
 
 // reviewRound is the 1-indexed number of the review turn about to run. The
@@ -275,7 +306,7 @@ Context:
 - ignore patterns: %s
 
 Task:
-- Run the review by invoking the `+"`comprehensive-code-review`"+` skill %s against the review scope above, and follow its procedure as written - including spawning the per-aspect review agents it prescribes rather than collapsing them into one inline pass. Compile what it returns into the structured findings below, mapping its severities onto this schema: Critical -> "error", Important -> "warning", Suggestion -> "info". An inline review is never an acceptable substitute: if the skill is unavailable or fails, stop and say so rather than reviewing the diff yourself - the step fails and the run parks.
+- Run the review by invoking the `+"`comprehensive-code-review`"+` skill %s against the review scope above, and follow its procedure as written - including spawning the per-aspect review agents it prescribes rather than collapsing them into one inline pass. Compile what it returns into the structured findings below, mapping its severities onto this schema: Critical -> "error", Important -> "warning", Suggestion -> "info". An inline review is never an acceptable substitute: if the skill is unavailable or fails, stop and say so rather than reviewing the diff yourself - the step and the run fail.
 - Read enough of the history and diff yourself to frame the review scope and to judge the findings that come back.
 - Focus findings on risks introduced by changed code, but inspect surrounding code, call sites, shared helpers, tests, and invariants when needed to understand root cause.
 - Determine from the stated intent and relevant evidence whether a bug-fix change claims a durable fix or explicitly authorized short-term containment.
@@ -335,14 +366,15 @@ Risk assessment (after listing all findings):
 	// cross-round context a rereview legitimately needs travels in the
 	// explicit sanitized round-history section above; only the fixer keeps a
 	// durable session (executeFixMode), because it certifies nothing.
-	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
+	runOpts := agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: reviewFindingsSchema,
 		OnChunk:    sctx.LogChunk,
 		Purpose:    "review",
 		Workload:   workload,
-	})
+	}
+	result, err := sctx.Agent.Run(ctx, runOpts)
 	if err != nil {
 		return nil, fmt.Errorf("agent review: %w", err)
 	}
@@ -350,13 +382,23 @@ Risk assessment (after listing all findings):
 	// PERSONAL: the review prompt mandates the comprehensive-code-review skill,
 	// but prompt text is discretionary - measured drift had roughly half of
 	// review turns collapse into a single inline pass, silently skipping every
-	// per-aspect reviewer. Fail the step instead of accepting that review.
-	// SkillsUsed is nil for adapters that do not report skill use; only enforce
-	// when the adapter actually reports.
-	if result.SkillsUsed != nil && !slices.Contains(result.SkillsUsed, requiredReviewSkill) {
-		return nil, fmt.Errorf(
-			"review did not invoke the %s skill (skills used: %v); inline review is not accepted",
-			requiredReviewSkill, result.SkillsUsed)
+	// per-aspect reviewer. Because that is a discretionary adherence miss and
+	// the turn is cheaply repeatable, retry it once before failing the step,
+	// which fails the whole run. The retry is another session-free turn, so it
+	// cannot inherit the drifted turn's context.
+	if !reviewSkillMandateSatisfied(result) {
+		sctx.Log(fmt.Sprintf(
+			"review did not invoke the %s skill (skills used: %v); retrying once",
+			requiredReviewSkill, result.SkillsUsed))
+		result, err = sctx.Agent.Run(ctx, runOpts)
+		if err != nil {
+			return nil, fmt.Errorf("agent review: %w", err)
+		}
+		if !reviewSkillMandateSatisfied(result) {
+			return nil, fmt.Errorf(
+				"review did not invoke the %s skill after a retry (skills used: %v); inline review is not accepted",
+				requiredReviewSkill, result.SkillsUsed)
+		}
 	}
 
 	// Parse structured findings

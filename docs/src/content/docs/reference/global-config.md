@@ -378,8 +378,10 @@ Most of a review's cost is the per-aspect sub-agents the review skill spawns, an
 | Round | Aspects | Severities reported |
 | --- | --- | --- |
 | 1 to `narrow_after_round` | every applicable aspect | `error`, `warning`, `info` |
-| up to `2 x narrow_after_round` | correctness & bugs, tests | `error`, `warning` |
-| beyond that | correctness & bugs | `error` |
+| up to `2 x narrow_after_round` | correctness & bugs, tests, spec conformance & standards | `error`, `warning` |
+| beyond that | correctness & bugs, spec conformance & standards | `error` |
+
+Spec conformance stays in every narrowed round: it is the axis that checks the change against the author's stated intent, which matters most after several fix rounds.
 
 Set it to `0` to keep every round a full sweep. A negative value is treated as `0`.
 

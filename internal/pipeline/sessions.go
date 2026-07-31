@@ -148,6 +148,16 @@ func sessionProvider(a agent.Agent, result *agent.Result) string {
 	return a.Name()
 }
 
+// Reset drops the role's durable session identity so its next turn runs in a
+// fresh session. Used when a turn completed but its content was rejected, and
+// resuming the same context would likely reproduce the rejection.
+func (rs *RunSessions) Reset(role SessionRole) {
+	if rs == nil {
+		return
+	}
+	rs.forget(role)
+}
+
 func (rs *RunSessions) forget(role SessionRole) {
 	rs.mu.Lock()
 	delete(rs.ids, role)

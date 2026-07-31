@@ -1,8 +1,11 @@
 package steps
 
 import (
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 )
 
 // The review loop's cost is dominated by the per-aspect sub-agents
@@ -79,11 +82,65 @@ func TestReviewBreadthPromptSections_NarrowedNamesAspectsAndFloor(t *testing.T) 
 	}
 }
 
+// The warning-floor rule also names all three severities, so this asserts the
+// phrase that distinguishes the top rung: the error floor must fail if it ever
+// regresses into the warning floor.
 func TestReviewBreadthPromptSections_ErrorFloorExcludesWarningAndInfo(t *testing.T) {
 	rule := reviewBreadthForRound(5, 2).severityRule()
-	for _, want := range []string{"error", "warning", "info"} {
-		if !strings.Contains(rule, want) {
-			t.Errorf("severityRule() = %q, missing %q", rule, want)
+	if !strings.Contains(rule, `Report only "error" findings`) {
+		t.Errorf("severityRule() = %q, want it to report only error findings", rule)
+	}
+	if strings.Contains(rule, `and "warning" findings`) {
+		t.Errorf("severityRule() = %q, must not still admit warning findings", rule)
+	}
+	if !strings.Contains(rule, `Do not spend review effort looking for "warning" or "info"`) {
+		t.Errorf("severityRule() = %q, want it to suppress warning and info generation", rule)
+	}
+}
+
+// Narrowing names aspects, and the review skill runs ONLY the aspects it is
+// given, so every list must keep the 3a Spec/Standards track: it is the axis
+// that checks the change against the author's intent, and late rounds are
+// exactly when that matters most. Narrowing may only drop 3b spawns.
+func TestReviewBreadthForRound_NarrowedRoundsKeepSpecConformance(t *testing.T) {
+	for _, round := range []int{3, 4, 5, 9, 40} {
+		b := reviewBreadthForRound(round, 2)
+		if len(b.Aspects) == 0 {
+			t.Fatalf("round %d: expected a narrowed aspect list", round)
 		}
+		if !slices.Contains(b.Aspects, specConformanceAspect) {
+			t.Errorf("round %d: Aspects = %v, want it to keep %q", round, b.Aspects, specConformanceAspect)
+		}
+		if !strings.Contains(b.skillInvocation(), specConformanceAspect) {
+			t.Errorf("round %d: skillInvocation() = %q, want it to name %q", round, b.skillInvocation(), specConformanceAspect)
+		}
+	}
+}
+
+// A namespaced skill name (plugin or directory-scoped install) still satisfies
+// the mandate; anything else does not, and an adapter that reports no skill use
+// at all is unobservable rather than a violation.
+func TestReviewSkillMandateSatisfied_MatchesNamespacedSkillNames(t *testing.T) {
+	tests := []struct {
+		name  string
+		skill []string
+		want  bool
+	}{
+		{"unreported skills are unobservable", nil, true},
+		{"bare name", []string{requiredReviewSkill}, true},
+		{"plugin scoped", []string{"plugin:" + requiredReviewSkill}, true},
+		{"directory scoped", []string{"apps/web:" + requiredReviewSkill}, true},
+		{"among others", []string{"tdd", "plugin:" + requiredReviewSkill}, true},
+		{"empty list is a violation", []string{}, false},
+		{"other skills only", []string{"tdd", "code-review"}, false},
+		{"suffix of another skill is not a match", []string{"not-comprehensive-code-review"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := reviewSkillMandateSatisfied(&agent.Result{SkillsUsed: tt.skill})
+			if got != tt.want {
+				t.Errorf("reviewSkillMandateSatisfied(%v) = %v, want %v", tt.skill, got, tt.want)
+			}
+		})
 	}
 }

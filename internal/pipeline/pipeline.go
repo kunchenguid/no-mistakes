@@ -65,6 +65,16 @@ func (sctx *StepContext) RunAgentSession(role SessionRole, opts agent.RunOpts) (
 	return sctx.Sessions.Run(sctx.Ctx, sctx.Agent, role, opts, sctx.Log)
 }
 
+// ResetAgentSession drops the run's durable session identity for a role, so the
+// next turn of that role starts in a fresh session. It is a no-op when sessions
+// are unavailable, where every turn is already cold.
+func (sctx *StepContext) ResetAgentSession(role SessionRole) {
+	if sctx.Sessions == nil {
+		return
+	}
+	sctx.Sessions.Reset(role)
+}
+
 // StepOutcome is the result of executing a pipeline step.
 type StepOutcome struct {
 	NeedsApproval bool // whether the step pauses for user action

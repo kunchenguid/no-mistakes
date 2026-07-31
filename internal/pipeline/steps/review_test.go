@@ -777,6 +777,35 @@ func TestReviewStep_RejectsReviewThatSkippedRequiredSkill(t *testing.T) {
 	}
 }
 
+// Skipping the skill is a discretionary prompt-adherence miss, and failing the
+// step fails the whole run, so the turn gets one retry before the run is
+// discarded. Review turns are session-free, so the retry cannot inherit the
+// drifted turn's context.
+func TestReviewStep_RetriesOnceWhenRequiredSkillSkipped(t *testing.T) {
+	t.Parallel()
+	clean, _ := json.Marshal(Findings{RiskLevel: "low", RiskRationale: "clean"})
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test"}
+	calls := 0
+	ag.runFn = func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+		calls++
+		if calls == 1 {
+			return &agent.Result{Output: clean, SkillsUsed: []string{}}, nil
+		}
+		return &agent.Result{Output: clean, SkillsUsed: []string{"plugin:" + requiredReviewSkill}}, nil
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatalf("expected the retried turn to be accepted, got: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("expected exactly one retry (2 review calls), got %d", calls)
+	}
+}
+
 // PERSONAL: the mandate lives in the review prompt, not only in a memory file
 // a step agent may never load.
 func TestReviewStep_PromptMandatesComprehensiveReviewSkill(t *testing.T) {
