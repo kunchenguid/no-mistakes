@@ -2,6 +2,7 @@ package branchsync
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,8 +11,38 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
+	pipelinepkg "github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+type cancellationRaceStep struct {
+	committed chan string
+}
+
+func (s *cancellationRaceStep) Name() types.StepName { return types.StepReview }
+
+func (s *cancellationRaceStep) Execute(sctx *pipelinepkg.StepContext) (*pipelinepkg.StepOutcome, error) {
+	if err := os.WriteFile(filepath.Join(sctx.WorkDir, "fix.txt"), []byte("pipeline fix\n"), 0o644); err != nil {
+		return nil, err
+	}
+	if _, err := gitpkg.Run(sctx.Ctx, sctx.WorkDir, "add", "fix.txt"); err != nil {
+		return nil, err
+	}
+	if _, err := gitpkg.Run(sctx.Ctx, sctx.WorkDir, "commit", "-m", "no-mistakes(review): fix"); err != nil {
+		return nil, err
+	}
+	head, err := gitpkg.HeadSHA(sctx.Ctx, sctx.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := gitpkg.Run(sctx.Ctx, sctx.WorkDir, "update-ref", "refs/heads/feature/recover", head); err != nil {
+		return nil, err
+	}
+	s.committed <- head
+	<-sctx.Ctx.Done()
+	return nil, context.Cause(sctx.Ctx)
+}
 
 // recoverFixture reproduces the stranded custody state from the v1.38.1
 // dogfood report: a run went terminal at the pre_push phase, so its pipeline
@@ -548,6 +579,56 @@ func newUnmovedRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixt
 		service: &Service{DB: database, Repo: repo, WorkDir: local, GateDir: gate},
 		local:   local, gate: gate, remote: remote,
 		base: base, submitted: submitted, preserved: submitted,
+	}
+}
+
+func TestCancellationReconcilesCommittedWorktreeHeadBeforeReleaseClassification(t *testing.T) {
+	f := newUnmovedRecoverFixture(t, types.RunCancelled)
+	if err := f.db.UpdateRunStatus(f.run.ID, types.RunPending); err != nil {
+		t.Fatal(err)
+	}
+	f.run.Status = types.RunPending
+
+	managed := filepath.Join(t.TempDir(), "managed")
+	if err := gitpkg.WorktreeAdd(f.ctx, f.gate, managed, f.submitted); err != nil {
+		t.Fatal(err)
+	}
+	configureIdentity(t, managed)
+
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	step := &cancellationRaceStep{committed: make(chan string, 1)}
+	executor := pipelinepkg.NewExecutor(f.db, p, nil, nil, []pipelinepkg.Step{step}, nil)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- executor.Execute(ctx, f.run, f.repo, managed)
+	}()
+
+	committed := <-step.committed
+	cancel(fmt.Errorf(types.RunCancelReasonAbortedByUser))
+	if err := <-done; err == nil {
+		t.Fatal("cancelled executor returned nil")
+	}
+
+	terminal, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.Status != types.RunCancelled || terminal.HeadSHA != committed {
+		t.Fatalf("terminal run = status %s head %s, want cancelled head %s", terminal.Status, terminal.HeadSHA, committed)
+	}
+	state := f.service.InspectCached(f.ctx)
+	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned_recoverable" {
+		t.Fatalf("cancelled committed state = %#v", state)
+	}
+	if state.Pipeline.CurrentHead != committed || state.Pipeline.SubmittedHead != f.submitted {
+		t.Fatalf("cancelled committed heads = %#v", state.Pipeline)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "recover_custody" {
+		t.Fatalf("cancelled committed next action = %#v", state.NextAction)
 	}
 }
 

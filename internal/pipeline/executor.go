@@ -17,6 +17,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gateguidance"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
@@ -54,6 +55,7 @@ type Executor struct {
 	// carries run-scoped step-to-step results. Both are created per Execute.
 	sessions *RunSessions
 	shared   *RunShared
+	workDir  string
 
 	mu          sync.Mutex
 	approvalCh  chan approvalResponse // buffered channel for approval responses
@@ -144,6 +146,7 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 // If the context is cancelled with a cause (via context.WithCancelCause),
 // the cause message is preserved as the run's error in the DB.
 func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
+	e.workDir = workDir
 	// Mark run as running. Route write failures through failRun so the
 	// in-memory lifecycle and subscriber stream still become terminal instead
 	// of leaving a silent pending run.
@@ -250,6 +253,7 @@ func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
 // daemon stopped. It only accepts a fully recorded gate and otherwise returns
 // an error so startup recovery can fail the run rather than guessing.
 func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
+	e.workDir = workDir
 	if repo == nil {
 		return fmt.Errorf("recovered run has no repository")
 	}
@@ -1211,6 +1215,7 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 	if errMsg == types.RunCancelReasonAbortedByUser || errMsg == types.RunCancelReasonSuperseded {
 		runStatus = types.RunCancelled
 	}
+	e.reconcileTerminalRunHead(run)
 	if dbErr := e.db.UpdateRunErrorStatus(run.ID, errMsg, runStatus); dbErr != nil {
 		slog.Error("failed to update run error status", "run", run.ID, "error", dbErr)
 	}
@@ -1218,6 +1223,41 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 	run.Error = &errMsg
 	e.emitRunEvent(ipc.EventRunCompleted, run, repo)
 	return err
+}
+
+func (e *Executor) reconcileTerminalRunHead(run *db.Run) {
+	if run == nil || strings.TrimSpace(e.workDir) == "" {
+		return
+	}
+	recordedRun, err := e.db.GetRun(run.ID)
+	if err != nil || recordedRun == nil {
+		slog.Warn("failed to load run head before terminalization", "run", run.ID, "error", err)
+		return
+	}
+	recorded := strings.TrimSpace(recordedRun.HeadSHA)
+	if recorded == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	observed, err := git.HeadSHA(ctx, e.workDir)
+	if err != nil {
+		slog.Warn("failed to resolve worktree head before terminalization", "run", run.ID, "error", err)
+		return
+	}
+	observed = strings.TrimSpace(observed)
+	if observed == "" || observed == recorded {
+		return
+	}
+	if _, err := git.Run(ctx, e.workDir, "merge-base", "--is-ancestor", recorded, observed); err != nil {
+		slog.Warn("worktree head is not a verified descendant before terminalization", "run", run.ID, "error", err)
+		return
+	}
+	if err := e.db.UpdateRunHeadSHA(run.ID, observed); err != nil {
+		slog.Warn("failed to reconcile run head before terminalization", "run", run.ID, "error", err)
+		return
+	}
+	run.HeadSHA = observed
 }
 
 // --- event helpers ---
