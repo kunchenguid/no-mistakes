@@ -4,24 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
 const managedGateRefAuthorityMarker = "no-mistakes managed gate authority:"
-
-func managedGateAuthorityOwnedByCurrentProcess(path string) bool {
-	value, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	fields := strings.Fields(string(value))
-	if len(fields) != 5 || fields[0] != "no-mistakes" || fields[1] != "managed" || fields[2] != "gate" || fields[3] != "authority:" || fields[4] == "" {
-		return false
-	}
-	pid, err := strconv.Atoi(fields[4])
-	return err == nil && pid == os.Getpid()
-}
 
 type ManagedGateRefAuthority struct {
 	file     *os.File
@@ -102,26 +88,5 @@ func (a *ManagedGateRefAuthority) Release() error {
 		}
 	}
 	a.released = true
-	return nil
-}
-
-func HandoffManagedGateRefAuthority(gateDir, ref string) error {
-	if strings.TrimSpace(gateDir) == "" || !strings.HasPrefix(ref, "refs/heads/") || !isManagedGateRef(ref) {
-		return fmt.Errorf("managed gate authority handoff requires an ordinary branch ref")
-	}
-	path := filepath.Join(gateDir, filepath.FromSlash(ref)+".lock")
-	marker, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if !strings.HasPrefix(strings.TrimSpace(string(marker)), managedGateRefAuthorityMarker+" ") {
-		return nil
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("handoff managed gate authority: %w", err)
-	}
 	return nil
 }

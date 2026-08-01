@@ -68,12 +68,6 @@ func acquireGateRefLock(gateDir, ref, authorityEndpoint string) (*gateRefLock, e
 		if !os.IsExist(err) {
 			return nil, fmt.Errorf("acquire managed gate ref lock: %w", err)
 		}
-		if managedGateAuthorityOwnedByCurrentProcess(path) {
-			if removeErr := os.Remove(path); removeErr != nil {
-				return nil, fmt.Errorf("handoff managed gate authority: %w", removeErr)
-			}
-			continue
-		}
 		stale, staleErr := staleGateRefLock(path)
 		if staleErr != nil {
 			return nil, fmt.Errorf("acquire managed gate ref lock: %w", staleErr)
@@ -132,12 +126,6 @@ func acquireOwnedGateRefLock(gateDir, ref string, owner gateRefLockOwner) (*gate
 		}
 		if !os.IsExist(err) {
 			return nil, fmt.Errorf("acquire ordinary gate ref lock: %w", err)
-		}
-		if managedGateAuthorityOwnedByCurrentProcess(path) {
-			if removeErr := os.Remove(path); removeErr != nil {
-				return nil, fmt.Errorf("handoff managed gate authority: %w", removeErr)
-			}
-			continue
 		}
 		stale, staleErr := staleGateRefLock(path)
 		if staleErr != nil {
@@ -378,6 +366,18 @@ func readLockedGateRef(gateDir, ref string) (string, error) {
 }
 
 func readDirectLooseGateRef(gateDir, ref string) (string, error) {
+	return readDirectLooseRef(gateDir, ref)
+}
+
+func readDirectLooseWorktreeRef(workDir, ref string) (string, error) {
+	gitDir, err := worktreeGitDir(workDir)
+	if err != nil {
+		return "", err
+	}
+	return readDirectLooseRef(gitDir, ref)
+}
+
+func readDirectLooseRef(gateDir, ref string) (string, error) {
 	if strings.TrimSpace(gateDir) == "" || !isManagedGateRef(ref) {
 		return "", fmt.Errorf("read direct gate ref: invalid ref")
 	}
@@ -411,6 +411,58 @@ func readDirectLooseGateRef(gateDir, ref string) (string, error) {
 		return "", fmt.Errorf("read direct gate ref: noncanonical ref %s", ref)
 	}
 	return valueString, nil
+}
+
+func worktreeGitDir(workDir string) (string, error) {
+	if strings.TrimSpace(workDir) == "" {
+		return "", fmt.Errorf("resolve worktree Git directory: empty path")
+	}
+	if osInfo, err := os.Lstat(workDir); err != nil || !osInfo.IsDir() || osInfo.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("resolve worktree Git directory: invalid worktree")
+	}
+	dotGit := filepath.Join(workDir, ".git")
+	info, err := os.Lstat(dotGit)
+	if err != nil {
+		return "", fmt.Errorf("resolve worktree Git directory: %w", err)
+	}
+	var gitDir string
+	switch {
+	case info.IsDir():
+		gitDir = dotGit
+	case info.Mode().IsRegular():
+		data, readErr := os.ReadFile(dotGit)
+		if readErr != nil {
+			return "", fmt.Errorf("read worktree Git directory: %w", readErr)
+		}
+		value := strings.TrimSpace(string(data))
+		if !strings.HasPrefix(value, "gitdir:") {
+			return "", fmt.Errorf("resolve worktree Git directory: malformed .git file")
+		}
+		gitDir = strings.TrimSpace(strings.TrimPrefix(value, "gitdir:"))
+		if !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(workDir, gitDir)
+		}
+	default:
+		return "", fmt.Errorf("resolve worktree Git directory: noncanonical .git entry")
+	}
+	gitDir, err = filepath.Abs(filepath.Clean(gitDir))
+	if err != nil {
+		return "", fmt.Errorf("resolve worktree Git directory: %w", err)
+	}
+	commonDirPath := filepath.Join(gitDir, "commondir")
+	if data, readErr := os.ReadFile(commonDirPath); readErr == nil {
+		commonDir := strings.TrimSpace(string(data))
+		if commonDir == "" {
+			return "", fmt.Errorf("resolve worktree Git directory: empty commondir")
+		}
+		if !filepath.IsAbs(commonDir) {
+			commonDir = filepath.Join(gitDir, commonDir)
+		}
+		gitDir = commonDir
+	} else if !os.IsNotExist(readErr) {
+		return "", fmt.Errorf("read worktree Git commondir: %w", readErr)
+	}
+	return filepath.Clean(gitDir), nil
 }
 
 func rejectSymlinkPath(gateDir, ref string) error {

@@ -2131,6 +2131,71 @@ func TestRecoverLegacyBaselineChecksEveryConfiguredRemote(t *testing.T) {
 	}
 }
 
+func TestRecoverLegacyBaselineChecksConfiguredPushURL(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted)
+	stateDB, err := sql.Open("sqlite", f.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stateDB.Exec(`DELETE FROM managed_gate_refs WHERE repo_id = ? AND gate_path = ? AND ref = ?`, f.repo.ID, f.gate, "refs/heads/feature/recover"); err != nil {
+		stateDB.Close()
+		t.Fatal(err)
+	}
+	stateDB.Close()
+	pushOnly := filepath.Join(t.TempDir(), "push-only.git")
+	mustRun(t, filepath.Dir(pushOnly), "init", "--bare", pushOnly)
+	mustRun(t, f.gate, "push", pushOnly, f.preserved+":refs/heads/feature/recover")
+	mustRun(t, f.local, "remote", "add", "push-only", f.remote)
+	mustRun(t, f.local, "remote", "set-url", "--push", "push-only", pushOnly)
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Safety != "blocked_recover_gate_quarantined" {
+		t.Fatalf("legacy push-url recovery = %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("legacy push-url evidence stamped custody")
+	}
+}
+
+func TestRecoverLegacyBaselineChecksLocalPullRequestRefs(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted)
+	mustRun(t, f.gate, "update-ref", "refs/pull/1/head", f.preserved)
+	mustRun(t, f.local, "remote", "add", "origin", f.remote)
+	stateDB, err := sql.Open("sqlite", f.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stateDB.Exec(`DELETE FROM managed_gate_refs WHERE repo_id = ? AND gate_path = ? AND ref = ?`, f.repo.ID, f.gate, "refs/heads/feature/recover"); err != nil {
+		stateDB.Close()
+		t.Fatal(err)
+	}
+	stateDB.Close()
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Safety != "blocked_recover_gate_quarantined" {
+		t.Fatalf("legacy local PR recovery = %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("legacy local PR evidence stamped custody")
+	}
+}
+
+func TestRecoverRejectsSymbolicRecoveryAnchor(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.local, "symbolic-ref", f.anchorRef(), "refs/no-mistakes/recovery-target")
+	f.moveGateBranchToSubmitted()
+	if err := f.db.SetManagedGateRefHead(f.repo.ID, f.gate, "refs/heads/feature/recover", f.submitted); err != nil {
+		t.Fatal(err)
+	}
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Safety != "blocked_recover_anchor_conflict" {
+		t.Fatalf("symbolic recovery anchor = %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("symbolic recovery anchor stamped custody")
+	}
+}
+
 func TestRecoverRetryReconcilesStampedOwner(t *testing.T) {
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")

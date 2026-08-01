@@ -939,9 +939,6 @@ func (s *Service) updateOrdinaryGateRef(ctx context.Context, lock *custodyLock, 
 	if err != nil {
 		return err
 	}
-	if err := HandoffManagedGateRefAuthority(s.GateDir, ref); err != nil {
-		return err
-	}
 	if completed, err := s.reconcileCompletedOrdinaryGateRefMutation(lock.runID, branch, ref, oldSHA, newSHA, endpoint); err != nil {
 		return err
 	} else if completed {
@@ -1005,9 +1002,6 @@ func (s *Service) reconcileCompletedOrdinaryGateRefMutation(runID, branch, ref, 
 	}
 	if journal.AuthorityEndpoint != authorityEndpoint {
 		return false, nil
-	}
-	if err := HandoffManagedGateRefAuthority(s.GateDir, ref); err != nil {
-		return false, err
 	}
 	owner := gateRefLockOwner{RunID: journal.RunID, RepoID: journal.RepoID, GatePath: journal.GatePath, Branch: journal.Branch, Ref: journal.Ref, OwnerGeneration: journal.OwnerGeneration, AuthorityEndpoint: journal.AuthorityEndpoint, ExpectedHead: journal.ExpectedHead}
 	var gateLock *gateRefLock
@@ -1679,9 +1673,6 @@ func (s *Service) reclaimStampedGateRefLock(lock *custodyLock, run *db.Run) erro
 	}
 	owner := gateRefLockOwner{RunID: journal.RunID, RepoID: journal.RepoID, GatePath: journal.GatePath, Branch: journal.Branch, Ref: journal.Ref, OwnerGeneration: journal.OwnerGeneration, AuthorityEndpoint: journal.AuthorityEndpoint, ExpectedHead: journal.ExpectedHead}
 	var gateLock *gateRefLock
-	if err := HandoffManagedGateRefAuthority(s.GateDir, journal.Ref); err != nil {
-		return fmt.Errorf("handoff stamped gate authority: %w", err)
-	}
 	if _, statErr := os.Stat(journal.LockPath); os.IsNotExist(statErr) {
 		gateLock, err = acquireOwnedGateRefLock(s.GateDir, journal.Ref, owner)
 		if err != nil {
@@ -1797,9 +1788,13 @@ func isExactFullObjectID(value string) bool {
 }
 
 func recoveryAnchorState(ctx context.Context, dir, anchorRef, preserved string) (anchored, conflict bool) {
-	existing, err := git.Run(ctx, dir, "show-ref", "--verify", "--hash", anchorRef)
-	if err != nil {
+	_ = ctx
+	existing, err := readDirectLooseWorktreeRef(dir, anchorRef)
+	if errors.Is(err, errGateRefAbsent) {
 		return false, false
+	}
+	if err != nil || !isExactFullObjectID(existing) {
+		return false, true
 	}
 	return existing == preserved, existing != preserved
 }
@@ -1878,7 +1873,11 @@ func (s *Service) verifyLegacyRunUnpublished(ctx context.Context, run *db.Run, b
 }
 
 func (s *Service) verifyLegacyGateBaseline(ctx context.Context, state State, run *db.Run, branch string, repo *db.Repo, gateHead string) bool {
-	if s == nil || run == nil || run.SubmittedHeadSHA == nil || !isExactFullObjectID(ptr(run.SubmittedHeadSHA)) || state.Local.Head != ptr(run.SubmittedHeadSHA) || gateHead != ptr(run.SubmittedHeadSHA) {
+	if s == nil || run == nil || repo == nil || run.SubmittedHeadSHA == nil || !isExactFullObjectID(ptr(run.SubmittedHeadSHA)) || state.Local.Head != ptr(run.SubmittedHeadSHA) || gateHead != ptr(run.SubmittedHeadSHA) {
+		return false
+	}
+	submitted := ptr(run.SubmittedHeadSHA)
+	if !legacyLocalPublicationRefsClean(ctx, s.workDir(), submitted) || !legacyLocalPublicationRefsClean(ctx, s.GateDir, submitted) {
 		return false
 	}
 	remoteList, err := git.Run(ctx, s.workDir(), "remote")
@@ -1889,21 +1888,63 @@ func (s *Service) verifyLegacyGateBaseline(ctx context.Context, state State, run
 	if len(remotes) == 0 {
 		return false
 	}
-	seenTargets := make(map[string]struct{}, len(remotes))
+	seenTargets := make(map[string]struct{}, len(remotes)*2)
 	for _, remote := range remotes {
-		urls, urlErr := git.GetConfiguredRemoteURLs(ctx, s.workDir(), remote)
-		if urlErr != nil || len(urls) != 1 || strings.TrimSpace(urls[0]) == "" {
+		fetchURLs, fetchErr := git.GetConfiguredRemoteURLs(ctx, s.workDir(), remote)
+		pushURLs, pushErr := git.GetConfiguredRemotePushURLs(ctx, s.workDir(), remote)
+		if fetchErr != nil || pushErr != nil || len(fetchURLs) != 1 || len(pushURLs) != 1 || strings.TrimSpace(fetchURLs[0]) == "" || strings.TrimSpace(pushURLs[0]) == "" {
 			return false
 		}
-		remoteHead, headErr := git.LsRemote(ctx, s.workDir(), urls[0], publicationRef(branch))
-		if headErr != nil || remoteHead != ptr(run.SubmittedHeadSHA) {
-			return false
+		for _, target := range []string{fetchURLs[0], pushURLs[0]} {
+			remoteHead, headErr := git.LsRemote(ctx, s.workDir(), target, publicationRef(branch))
+			if headErr != nil || remoteHead != submitted || !legacyRemotePublicationRefsClean(ctx, s.workDir(), target, submitted) {
+				return false
+			}
+			seenTargets[TargetFingerprint(target)] = struct{}{}
 		}
-		seenTargets[TargetFingerprint(urls[0])] = struct{}{}
 	}
 	for _, target := range []string{repo.UpstreamURL, repo.ForkURL} {
 		if strings.TrimSpace(target) != "" {
 			if _, ok := seenTargets[TargetFingerprint(target)]; !ok {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func legacyLocalPublicationRefsClean(ctx context.Context, dir, submitted string) bool {
+	if strings.TrimSpace(dir) == "" {
+		return false
+	}
+	out, err := git.Run(ctx, dir, "for-each-ref", "--format=%(refname) %(objectname)", "refs/pull", "refs/merge-requests", "refs/changes")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 2 || !isExactFullObjectID(fields[1]) || fields[1] != submitted {
+			return false
+		}
+	}
+	return true
+}
+
+func legacyRemotePublicationRefsClean(ctx context.Context, dir, remote, submitted string) bool {
+	for _, pattern := range []string{"refs/pull/*/head", "refs/merge-requests/*/head", "refs/changes/*"} {
+		out, err := git.Run(ctx, dir, "ls-remote", remote, pattern)
+		if err != nil {
+			return false
+		}
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) != 2 || !isExactFullObjectID(fields[0]) || fields[1] == "" || fields[0] != submitted {
 				return false
 			}
 		}

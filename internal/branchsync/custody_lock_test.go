@@ -129,6 +129,31 @@ func TestManagedGateAuthorityBlocksRawUpdateWhileIdle(t *testing.T) {
 	}
 }
 
+func TestManagedGateAuthorityCannotBeUnlinkedByInternalWriter(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	authority, err := AcquireManagedGateRefAuthority(f.gate, "refs/heads/feature/recover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Release()
+	branchLock, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer branchLock.Release()
+	ref := "refs/heads/feature/recover"
+	if err := f.service.updateOrdinaryGateRef(f.ctx, branchLock, f.run.Branch, ref, f.preserved, f.submitted); err == nil {
+		t.Fatal("internal writer bypassed the live managed gate authority")
+	}
+	if _, err := gitpkg.Run(f.ctx, f.gate, "-c", "core.hooksPath="+t.TempDir(), "update-ref", ref, f.submitted, f.preserved); err == nil {
+		t.Fatal("raw writer changed the ref after internal writer refusal")
+	}
+	lockPath := filepath.Join(f.gate, filepath.FromSlash(ref)+".lock")
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("managed gate authority disappeared: %v", err)
+	}
+}
+
 func TestReconcileOrdinaryGateRefHoldsLockAcrossJournalUpdate(t *testing.T) {
 	f := newRecoverFixture(t, "cancelled")
 	lock, err := acquireCustodyLock(f.service, f.run)

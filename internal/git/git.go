@@ -190,6 +190,16 @@ func GetConfiguredRemoteURLs(ctx context.Context, dir, name string) ([]string, e
 	return strings.Split(strings.TrimSuffix(out, "\x00"), "\x00"), nil
 }
 
+// GetConfiguredRemotePushURLs returns every literal push URL configured for a
+// remote. When no pushurl is configured, Git pushes to the remote's URL.
+func GetConfiguredRemotePushURLs(ctx context.Context, dir, name string) ([]string, error) {
+	out, err := Run(ctx, dir, "config", "--null", "--get-all", "remote."+name+".pushurl")
+	if err != nil {
+		return GetConfiguredRemoteURLs(ctx, dir, name)
+	}
+	return strings.Split(strings.TrimSuffix(out, "\x00"), "\x00"), nil
+}
+
 // HasRemote reports whether a remote named name is configured in the repo at
 // dir, returning an error if the remote list cannot be read.
 func HasRemote(ctx context.Context, dir, name string) (bool, error) {

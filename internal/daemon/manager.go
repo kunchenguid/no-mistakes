@@ -1212,17 +1212,18 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 
 	gateDir := m.paths.RepoDir(repo.ID)
 	ref := "refs/heads/" + branch
-	if err := m.releaseManagedGateGuard(repo.ID, ref); err != nil {
-		return "", fmt.Errorf("release managed gate authority for rerun: %w", err)
-	}
-	snapshotGuard, err := branchsync.AcquireManagedGateRefAuthority(gateDir, ref)
-	if err != nil {
-		_ = m.ensureManagedGateGuard(repo, ref)
+	key := managedGateGuardKey(repo.ID, ref)
+	m.managedGateMu.Lock()
+	_, hadGuard := m.managedGateGuards[key]
+	m.managedGateMu.Unlock()
+	if err := m.ensureManagedGateGuard(repo, ref); err != nil {
 		return "", fmt.Errorf("acquire managed gate authority for rerun: %w", err)
 	}
+	keepGuard := false
 	defer func() {
-		_ = snapshotGuard.Release()
-		_ = m.ensureManagedGateGuard(repo, ref)
+		if !hadGuard && !keepGuard {
+			_ = m.releaseManagedGateGuard(repo.ID, ref)
+		}
 	}()
 	quarantine, err := m.db.GetGateRefQuarantine(repo.ID, gateDir, "refs/heads/"+branch)
 	if err != nil {
@@ -1300,6 +1301,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		}
 	}
 
+	keepGuard = true
 	return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, ownershipLock, "")
 }
 
