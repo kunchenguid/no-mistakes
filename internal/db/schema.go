@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS runs (
     last_pushed_at          INTEGER,
     push_generation         INTEGER,
     push_active             INTEGER NOT NULL DEFAULT 0,
-    terminal_head_verified_at INTEGER,
+	terminal_head_verified_at INTEGER,
+	custody_transition_phase TEXT,
     error                   TEXT,
     awaiting_agent_since INTEGER,
     parked_ms            INTEGER,
@@ -182,6 +183,7 @@ var migrationStatements = []string{
 	// guarded recovery ended that ownership (internal/branchsync).
 	`ALTER TABLE runs ADD COLUMN custody_returned_at INTEGER`,
 	`ALTER TABLE runs ADD COLUMN custody_transition_token TEXT`,
+	`ALTER TABLE runs ADD COLUMN custody_transition_phase TEXT`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,

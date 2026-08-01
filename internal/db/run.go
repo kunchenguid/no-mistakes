@@ -15,11 +15,19 @@ import (
 // anchors and retry from freshly inspected state.
 var ErrRunCustodyCAS = errors.New("run custody compare-and-swap lost")
 
+const (
+	CustodyPhasePreparing = "preparing"
+	CustodyPhaseStaged    = "staged"
+	CustodyPhaseGateMoved = "gate_moved"
+	CustodyPhaseRestoring = "restoring"
+	CustodyPhaseStamped   = "stamped"
+)
+
 type CustodyTransition struct {
-	db      *DB
-	tx      *sql.Tx
-	token   string
-	stamped bool
+	db     *DB
+	runID  string
+	token  string
+	closed bool
 }
 
 func (t *CustodyTransition) Token() string {
@@ -29,17 +37,79 @@ func (t *CustodyTransition) Token() string {
 	return t.token
 }
 
-func (t *CustodyTransition) Complete(ctx context.Context, expected *Run) error {
-	if t == nil || t.tx == nil || expected == nil || t.token == "" {
+func (t *CustodyTransition) Phase(ctx context.Context) (string, error) {
+	if t == nil || t.db == nil || t.runID == "" || t.token == "" {
+		return "", ErrRunCustodyCAS
+	}
+	var phase sql.NullString
+	err := t.db.sql.QueryRowContext(ctx, `SELECT custody_transition_phase FROM runs WHERE id = ? AND custody_transition_token = ?`, t.runID, t.token).Scan(&phase)
+	if err == sql.ErrNoRows || !phase.Valid || phase.String == "" {
+		return "", ErrRunCustodyCAS
+	}
+	if err != nil {
+		return "", fmt.Errorf("read run custody transition phase: %w", err)
+	}
+	return phase.String, nil
+}
+
+func (t *CustodyTransition) Advance(ctx context.Context, from, to string) error {
+	if t == nil || t.db == nil || t.runID == "" || t.token == "" || from == "" || to == "" {
 		return ErrRunCustodyCAS
 	}
-	args := append([]any{now(), now()}, custodyAuthorityArgs(expected)...)
-	args = append(args, t.token, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))
-	result, err := t.tx.ExecContext(
+	result, err := t.db.sql.ExecContext(
 		ctx,
-		`UPDATE runs SET custody_returned_at = ?, updated_at = ?
+		`UPDATE runs SET custody_transition_phase = ?, updated_at = ?
+		 WHERE id = ? AND custody_transition_token = ? AND custody_transition_phase = ? AND custody_returned_at IS NULL`,
+		to, now(), t.runID, t.token, from,
+	)
+	if err != nil {
+		return fmt.Errorf("advance run custody transition: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("advance run custody transition: affected rows: %w", err)
+	}
+	if rows != 1 {
+		return ErrRunCustodyCAS
+	}
+	return nil
+}
+
+func (t *CustodyTransition) BeginRestore(ctx context.Context) error {
+	return t.Advance(ctx, CustodyPhaseGateMoved, CustodyPhaseRestoring)
+}
+
+func (t *CustodyTransition) FinishRestore(ctx context.Context) error {
+	if t == nil || t.db == nil || t.runID == "" || t.token == "" {
+		return ErrRunCustodyCAS
+	}
+	result, err := t.db.sql.ExecContext(ctx, `UPDATE runs SET custody_transition_token = NULL, custody_transition_phase = NULL, updated_at = ? WHERE id = ? AND custody_transition_token = ? AND custody_transition_phase = ? AND custody_returned_at IS NULL`, now(), t.runID, t.token, CustodyPhaseRestoring)
+	if err != nil {
+		return fmt.Errorf("finish run custody restore: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("finish run custody restore: affected rows: %w", err)
+	}
+	if rows != 1 {
+		return ErrRunCustodyCAS
+	}
+	t.closed = true
+	return nil
+}
+
+func (t *CustodyTransition) Complete(ctx context.Context, expected *Run) error {
+	if t == nil || t.db == nil || expected == nil || t.runID == "" || t.token == "" {
+		return ErrRunCustodyCAS
+	}
+	args := []any{now(), CustodyPhaseStamped, now()}
+	args = append(args, custodyAuthorityArgs(expected)...)
+	args = append(args, t.token, CustodyPhaseGateMoved, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))
+	result, err := t.db.sql.ExecContext(
+		ctx,
+		`UPDATE runs SET custody_returned_at = ?, custody_transition_phase = ?, updated_at = ?
 		 WHERE `+custodyAuthorityPredicate+`
-		   AND custody_returned_at IS NULL AND custody_transition_token = ?
+		   AND custody_returned_at IS NULL AND custody_transition_token = ? AND custody_transition_phase = ?
 		   AND COALESCE(push_active, 0) = 0 AND error IS ? AND awaiting_agent_since IS ?`,
 		args...,
 	)
@@ -53,33 +123,39 @@ func (t *CustodyTransition) Complete(ctx context.Context, expected *Run) error {
 	if rows != 1 {
 		return ErrRunCustodyCAS
 	}
-	if err := t.tx.Commit(); err != nil {
-		t.tx = nil
-		return fmt.Errorf("complete run custody transition: commit: %w", err)
-	}
-	t.tx = nil
-	t.stamped = true
 	return nil
 }
 
 func (t *CustodyTransition) Release() error {
-	if t == nil || t.tx == nil {
+	if t == nil || t.db == nil || t.closed {
 		return nil
 	}
-	err := t.tx.Rollback()
-	t.tx = nil
-	if errors.Is(err, sql.ErrTxDone) {
-		return nil
-	}
+	result, err := t.db.sql.Exec(`UPDATE runs SET custody_transition_token = NULL, custody_transition_phase = NULL, updated_at = ? WHERE id = ? AND custody_transition_token = ? AND custody_returned_at IS NULL AND custody_transition_phase IN (?, ?)`, now(), t.runID, t.token, CustodyPhasePreparing, CustodyPhaseStaged)
 	if err != nil {
 		return fmt.Errorf("release run custody transition: %w", err)
 	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("release run custody transition: affected rows: %w", err)
+	}
+	if rows != 1 {
+		current, getErr := t.db.GetRun(t.runID)
+		if getErr == nil && current != nil && current.CustodyTransitionToken == nil {
+			t.closed = true
+			return nil
+		}
+		return ErrRunCustodyCAS
+	}
+	t.closed = true
 	return nil
 }
 
 func (t *CustodyTransition) ReleaseStamped(ctx context.Context, runID string) error {
-	if t == nil || !t.stamped || t.db == nil {
+	if t == nil || t.db == nil || t.token == "" {
 		return nil
+	}
+	if runID == "" {
+		runID = t.runID
 	}
 	return t.db.ClearRunCustodyTransition(ctx, runID, t.token)
 }
@@ -117,6 +193,7 @@ type Run struct {
 	// the operator worktree took the branch back.
 	CustodyReturnedAt      *int64
 	CustodyTransitionToken *string
+	CustodyTransitionPhase *string
 	Error                  *string
 	// AwaitingAgentSince is the unix-seconds timestamp at which the run parked
 	// at a gate awaiting the driving agent's response (an awaiting_approval or
@@ -137,7 +214,7 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, custody_transition_token, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, custody_transition_token, custody_transition_phase, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 const custodyAuthorityPredicate = `id = ? AND repo_id = ? AND branch = ? AND head_sha = ? AND base_sha = ?
 		   AND submitted_head_sha IS ? AND review_approved_head_sha IS ? AND status = ?
@@ -159,7 +236,7 @@ func scanRun(row interface {
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
-		&r.CustodyReturnedAt, &r.CustodyTransitionToken, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
+		&r.CustodyReturnedAt, &r.CustodyTransitionToken, &r.CustodyTransitionPhase, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -304,7 +381,7 @@ func (d *DB) GetActiveRuns() ([]*Run, error) {
 
 // UpdateRunStatus updates a run's status and updated_at timestamp.
 func (d *DB) UpdateRunStatus(id string, status types.RunStatus) error {
-	_, err := d.sql.Exec(`UPDATE runs SET status = ?, push_active = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN 0 ELSE push_active END, terminal_head_verified_at = NULL, updated_at = ? WHERE id = ?`, status, status, now(), id)
+	_, err := d.sql.Exec(`UPDATE runs SET status = ?, push_active = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN 0 ELSE push_active END, terminal_head_verified_at = NULL, updated_at = ? WHERE id = ? AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL`, status, status, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run status: %w", err)
 	}
@@ -315,9 +392,14 @@ func (d *DB) UpdateRunStatus(id string, status types.RunStatus) error {
 // regress terminal lifecycle truth already observed by the CI monitor.
 func (d *DB) UpdateRunPRURL(id, prURL string) error {
 	ts := now()
-	_, err := d.sql.Exec(`UPDATE runs SET pr_url = ?, pr_state = CASE WHEN pr_state IN ('merged', 'closed') THEN pr_state ELSE 'open' END, pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, prURL, ts, ts, id)
+	result, err := d.sql.Exec(`UPDATE runs SET pr_url = ?, pr_state = CASE WHEN pr_state IN ('merged', 'closed') THEN pr_state ELSE 'open' END, pr_state_observed_at = ?, updated_at = ? WHERE id = ? AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL`, prURL, ts, ts, id)
 	if err != nil {
 		return fmt.Errorf("update run pr url: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("update run pr url: affected rows: %w", err)
+	} else if rows != 1 {
+		return ErrRunCustodyCAS
 	}
 	return nil
 }
@@ -337,12 +419,17 @@ type PushBinding struct {
 // freshly verified already-up-to-date push.
 func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
 	ts := now()
-	_, err := d.sql.Exec(
-		`UPDATE runs SET last_pushed_sha = ?, push_target_kind = ?, push_target_fingerprint = ?, push_ref = ?, last_pushed_at = ?, push_generation = COALESCE(push_generation, 0) + 1, updated_at = ? WHERE id = ?`,
+	result, err := d.sql.Exec(
+		`UPDATE runs SET last_pushed_sha = ?, push_target_kind = ?, push_target_fingerprint = ?, push_ref = ?, last_pushed_at = ?, push_generation = COALESCE(push_generation, 0) + 1, updated_at = ? WHERE id = ? AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL`,
 		binding.HeadSHA, binding.TargetKind, binding.TargetFingerprint, binding.Ref, ts, ts, id,
 	)
 	if err != nil {
 		return fmt.Errorf("update run push binding: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("update run push binding: affected rows: %w", err)
+	} else if rows != 1 {
+		return ErrRunCustodyCAS
 	}
 	return nil
 }
@@ -361,7 +448,7 @@ func (d *DB) SetRunCustodyReturnedCAS(expected *Run) error {
 	result, err := d.sql.Exec(`
 		UPDATE runs SET custody_returned_at = ?, updated_at = ?
 		 WHERE `+custodyAuthorityPredicate+`
-		   AND COALESCE(push_active, 0) = 0 AND custody_returned_at IS NULL AND custody_transition_token IS NULL
+		   AND COALESCE(push_active, 0) = 0 AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL
 		   AND error IS ? AND awaiting_agent_since IS ?`,
 		append(args, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))...,
 	)
@@ -382,33 +469,47 @@ func (d *DB) BeginRunCustodyTransition(ctx context.Context, expected *Run) (*Cus
 	if expected == nil {
 		return nil, ErrRunCustodyCAS
 	}
-	tx, err := d.sql.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin run custody transition: %w", err)
-	}
 	token := newID()
-	args := append([]any{token, now()}, custodyAuthorityArgs(expected)...)
-	result, err := tx.ExecContext(
+	args := []any{token, CustodyPhasePreparing, now()}
+	args = append(args, custodyAuthorityArgs(expected)...)
+	args = append(args, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))
+	result, err := d.sql.ExecContext(
 		ctx,
-		`UPDATE runs SET custody_transition_token = ?, updated_at = ? WHERE `+custodyAuthorityPredicate+`
+		`UPDATE runs SET custody_transition_token = ?, custody_transition_phase = ?, updated_at = ? WHERE `+custodyAuthorityPredicate+`
 		   AND custody_returned_at IS NULL AND custody_transition_token IS NULL
-		   AND COALESCE(push_active, 0) = 0 AND error IS ? AND awaiting_agent_since IS ?`,
-		append(args, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))...,
+		   AND custody_transition_phase IS NULL AND COALESCE(push_active, 0) = 0 AND error IS ? AND awaiting_agent_since IS ?`,
+		args...,
 	)
 	if err != nil {
-		_ = tx.Rollback()
 		return nil, fmt.Errorf("begin run custody transition: %w", err)
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {
-		_ = tx.Rollback()
 		return nil, fmt.Errorf("begin run custody transition: affected rows: %w", err)
 	}
 	if rows != 1 {
-		_ = tx.Rollback()
 		return nil, ErrRunCustodyCAS
 	}
-	return &CustodyTransition{db: d, tx: tx, token: token}, nil
+	return &CustodyTransition{db: d, runID: expected.ID, token: token}, nil
+}
+
+func (d *DB) ResumeRunCustodyTransition(ctx context.Context, expected *Run) (*CustodyTransition, error) {
+	if expected == nil || expected.CustodyTransitionToken == nil || expected.CustodyTransitionPhase == nil || *expected.CustodyTransitionToken == "" || *expected.CustodyTransitionPhase == "" {
+		return nil, ErrRunCustodyCAS
+	}
+	args := custodyAuthorityArgs(expected)
+	args = append(args, *expected.CustodyTransitionToken, *expected.CustodyTransitionPhase, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))
+	var token, phase string
+	err := d.sql.QueryRowContext(ctx, `SELECT custody_transition_token, custody_transition_phase FROM runs WHERE `+custodyAuthorityPredicate+`
+		AND custody_returned_at IS NULL AND custody_transition_token = ? AND custody_transition_phase = ?
+		AND COALESCE(push_active, 0) = 0 AND error IS ? AND awaiting_agent_since IS ?`, args...).Scan(&token, &phase)
+	if err == sql.ErrNoRows {
+		return nil, ErrRunCustodyCAS
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resume run custody transition: %w", err)
+	}
+	return &CustodyTransition{db: d, runID: expected.ID, token: token}, nil
 }
 
 func (d *DB) ClearRunCustodyTransition(ctx context.Context, runID, token string) error {
@@ -416,9 +517,9 @@ func (d *DB) ClearRunCustodyTransition(ctx context.Context, runID, token string)
 		return nil
 	}
 	result, err := d.sql.ExecContext(ctx,
-		`UPDATE runs SET custody_transition_token = NULL, updated_at = ?
-		 WHERE id = ? AND custody_transition_token = ? AND custody_returned_at IS NOT NULL`,
-		now(), runID, token,
+		`UPDATE runs SET custody_transition_token = NULL, custody_transition_phase = NULL, updated_at = ?
+		 WHERE id = ? AND custody_transition_token = ? AND custody_transition_phase = ? AND custody_returned_at IS NOT NULL`,
+		now(), runID, token, CustodyPhaseStamped,
 	)
 	if err != nil {
 		return fmt.Errorf("clear run custody transition: %w", err)
@@ -429,7 +530,7 @@ func (d *DB) ClearRunCustodyTransition(ctx context.Context, runID, token string)
 	}
 	if rows != 1 {
 		current, getErr := d.GetRun(runID)
-		if getErr == nil && current != nil && current.CustodyReturnedAt != nil && current.CustodyTransitionToken == nil {
+		if getErr == nil && current != nil && current.CustodyReturnedAt != nil && current.CustodyTransitionToken == nil && current.CustodyTransitionPhase == nil {
 			return nil
 		}
 		return ErrRunCustodyCAS
@@ -464,9 +565,21 @@ func nullableRunInt64(value *int64) any {
 // SetRunPushActive marks whether a pipeline phase currently owns a possible
 // branch-head update. Sync refuses while this marker is set.
 func (d *DB) SetRunPushActive(id string, active bool) error {
-	_, err := d.sql.Exec(`UPDATE runs SET push_active = ?, updated_at = ? WHERE id = ?`, active, now(), id)
+	where := `id = ?`
+	args := []any{active, now(), id}
+	if active {
+		where += ` AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL`
+	}
+	result, err := d.sql.Exec(`UPDATE runs SET push_active = ?, updated_at = ? WHERE `+where, args...)
 	if err != nil {
 		return fmt.Errorf("set run push active: %w", err)
+	}
+	if active {
+		if rows, err := result.RowsAffected(); err != nil {
+			return fmt.Errorf("set run push active: affected rows: %w", err)
+		} else if rows != 1 {
+			return ErrRunCustodyCAS
+		}
 	}
 	return nil
 }
@@ -485,16 +598,26 @@ func (d *DB) UpdateRunPRState(id, state string) error {
 	}
 	defer tx.Rollback()
 
-	var current sql.NullString
-	if err := tx.QueryRow(`SELECT pr_state FROM runs WHERE id = ?`, id).Scan(&current); err != nil {
+	var current, transitionToken, transitionPhase sql.NullString
+	var custodyReturned sql.NullInt64
+	if err := tx.QueryRow(`SELECT pr_state, custody_transition_token, custody_transition_phase, custody_returned_at FROM runs WHERE id = ?`, id).Scan(&current, &transitionToken, &transitionPhase, &custodyReturned); err != nil {
 		if err == sql.ErrNoRows {
 			return nil
 		}
 		return fmt.Errorf("update run PR state: read current state: %w", err)
 	}
+	if transitionToken.Valid || transitionPhase.Valid || custodyReturned.Valid {
+		return ErrRunCustodyCAS
+	}
 	state = monotonicPRState(current.String, state)
-	if _, err := tx.Exec(`UPDATE runs SET pr_state = ?, pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, state, ts, ts, id); err != nil {
+	result, err := tx.Exec(`UPDATE runs SET pr_state = ?, pr_state_observed_at = ?, updated_at = ? WHERE id = ? AND custody_transition_token IS NULL AND custody_transition_phase IS NULL AND custody_returned_at IS NULL`, state, ts, ts, id)
+	if err != nil {
 		return fmt.Errorf("update run PR state: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("update run PR state: affected rows: %w", err)
+	} else if rows != 1 {
+		return ErrRunCustodyCAS
 	}
 	if terminalPRState(state) {
 		if err := finalizeTerminalPRRun(tx, id, ts); err != nil {
@@ -614,7 +737,7 @@ func (d *DB) SetRunCIReadyWithReason(id string, ready, declaredNoCI bool) error 
 			declaredValue = 1
 		}
 	}
-	_, err := d.sql.Exec(`UPDATE runs SET ci_ready_at = ?, ci_ready_no_ci = ?, updated_at = ? WHERE id = ? AND ((ci_ready_at IS NULL AND ? = 1) OR (ci_ready_at IS NOT NULL AND ? = 0) OR (COALESCE(ci_ready_no_ci, 0) != ?))`, readyAt, declaredValue, now(), id, readyValue, readyValue, declaredValue)
+	_, err := d.sql.Exec(`UPDATE runs SET ci_ready_at = ?, ci_ready_no_ci = ?, updated_at = ? WHERE id = ? AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL AND ((ci_ready_at IS NULL AND ? = 1) OR (ci_ready_at IS NOT NULL AND ? = 0) OR (COALESCE(ci_ready_no_ci, 0) != ?))`, readyAt, declaredValue, now(), id, readyValue, readyValue, declaredValue)
 	if err != nil {
 		return fmt.Errorf("set run CI ready: %w", err)
 	}
@@ -624,18 +747,28 @@ func (d *DB) SetRunCIReadyWithReason(id string, ready, declaredNoCI bool) error 
 // UpdateRunReviewApprovedHeadSHA replaces the run's review authority with the
 // exact commit approved by the latest successfully completed full review.
 func (d *DB) UpdateRunReviewApprovedHeadSHA(id, headSHA string) error {
-	_, err := d.sql.Exec(`UPDATE runs SET review_approved_head_sha = ?, updated_at = ? WHERE id = ?`, headSHA, now(), id)
+	result, err := d.sql.Exec(`UPDATE runs SET review_approved_head_sha = ?, updated_at = ? WHERE id = ? AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL`, headSHA, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run review-approved head sha: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("update run review-approved head sha: affected rows: %w", err)
+	} else if rows != 1 {
+		return ErrRunCustodyCAS
 	}
 	return nil
 }
 
 // UpdateRunHeadSHA updates the run head SHA and timestamp.
 func (d *DB) UpdateRunHeadSHA(id, headSHA string) error {
-	_, err := d.sql.Exec(`UPDATE runs SET head_sha = ?, updated_at = ? WHERE id = ?`, headSHA, now(), id)
+	result, err := d.sql.Exec(`UPDATE runs SET head_sha = ?, updated_at = ? WHERE id = ? AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL`, headSHA, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run head sha: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("update run head sha: affected rows: %w", err)
+	} else if rows != 1 {
+		return ErrRunCustodyCAS
 	}
 	return nil
 }
@@ -647,7 +780,7 @@ func (d *DB) UpdateRunError(id, errMsg string) error {
 
 // UpdateRunErrorStatus sets the error message and terminal status on a run.
 func (d *DB) UpdateRunErrorStatus(id, errMsg string, status types.RunStatus) error {
-	_, err := d.sql.Exec(`UPDATE runs SET error = ?, status = ?, push_active = 0, terminal_head_verified_at = NULL, updated_at = ? WHERE id = ?`, errMsg, status, now(), id)
+	_, err := d.sql.Exec(`UPDATE runs SET error = ?, status = ?, push_active = 0, terminal_head_verified_at = NULL, updated_at = ? WHERE id = ? AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL`, errMsg, status, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run error: %w", err)
 	}

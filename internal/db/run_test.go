@@ -918,6 +918,12 @@ func TestRunCustodyTransitionOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := transition.Advance(context.Background(), CustodyPhasePreparing, CustodyPhaseStaged); err != nil {
+		t.Fatalf("stage custody transition: %v", err)
+	}
+	if err := transition.Advance(context.Background(), CustodyPhaseStaged, CustodyPhaseGateMoved); err != nil {
+		t.Fatalf("move custody transition: %v", err)
+	}
 	if err := transition.Complete(context.Background(), expected); err != nil {
 		t.Fatalf("complete custody transition: %v", err)
 	}
@@ -934,5 +940,41 @@ func TestRunCustodyTransitionOwnership(t *testing.T) {
 	got, _ := d.GetRun(run.ID)
 	if got.CustodyReturnedAt == nil || got.CustodyTransitionToken != nil {
 		t.Fatalf("completed custody transition = %#v", got)
+	}
+}
+
+func TestCustodyTransitionFencesPublicationWriters(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/custody-fence", "git@github.com:user/custody-fence.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feat", "submitted", "base")
+	if err := d.UpdateRunHeadSHA(run.ID, "preserved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
+		t.Fatal(err)
+	}
+	expected, _ := d.GetRun(run.ID)
+	transition, err := d.BeginRunCustodyTransition(context.Background(), expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunPushActive(run.ID, true); !errors.Is(err, ErrRunCustodyCAS) {
+		t.Fatalf("push entry during custody = %v", err)
+	}
+	if err := d.UpdateRunPushBinding(run.ID, PushBinding{HeadSHA: "preserved", TargetKind: "upstream", TargetFingerprint: "target", Ref: "refs/heads/feat"}); !errors.Is(err, ErrRunCustodyCAS) {
+		t.Fatalf("push binding during custody = %v", err)
+	}
+	if err := d.UpdateRunHeadSHA(run.ID, "late"); !errors.Is(err, ErrRunCustodyCAS) {
+		t.Fatalf("head update during custody = %v", err)
+	}
+	unrelated, _ := d.InsertRun(repo.ID, "other", "other", "base")
+	if err := d.SetRunPushActive(unrelated.ID, true); err != nil {
+		t.Fatalf("unrelated run write blocked by custody: %v", err)
+	}
+	if err := transition.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := d.GetRun(run.ID); got.CustodyTransitionToken != nil || got.CustodyTransitionPhase != nil {
+		t.Fatalf("released custody transition = %#v", got)
 	}
 }

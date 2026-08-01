@@ -1497,14 +1497,17 @@ func TestRecoverSerializesConcurrentAuthorityChanges(t *testing.T) {
 		}
 
 		state := f.service.Recover(f.ctx, true)
-		if !state.Recovered {
-			t.Fatalf("serialized newer-owner recovery = %#v", state)
+		if state.Recovered {
+			t.Fatalf("newer-owner recovery unexpectedly stamped custody: %#v", state)
 		}
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
-		if !f.custodyReturned() {
-			t.Fatal("serialized newer owner lost custody stamp")
+		if f.custodyReturned() {
+			t.Fatal("newer owner race stamped stale custody")
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+			t.Fatalf("newer-owner rollback gate = %s, want %s", got, f.preserved)
 		}
 	})
 
@@ -1527,14 +1530,14 @@ func TestRecoverSerializesConcurrentAuthorityChanges(t *testing.T) {
 			}()
 		}
 		state := f.service.Recover(f.ctx, true)
-		if !state.Recovered {
-			t.Fatalf("serialized late newer-owner recovery = %#v", state)
+		if state.Recovered {
+			t.Fatalf("late newer-owner recovery unexpectedly stamped custody: %#v", state)
 		}
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
-		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != mustRun(t, f.local, "rev-parse", "HEAD") {
-			t.Fatalf("late newer-owner gate = %s, want local head", got)
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+			t.Fatalf("late newer-owner rollback gate = %s, want preserved head", got)
 		}
 		if _, err := gitpkg.Run(f.ctx, f.gate, "show-ref", "--verify", custodyReturnRef(f.run.ID)); err == nil {
 			t.Fatal("late newer-owner recovery left custody marker")
@@ -1542,8 +1545,8 @@ func TestRecoverSerializesConcurrentAuthorityChanges(t *testing.T) {
 		if _, err := gitpkg.Run(f.ctx, f.gate, "show-ref", "--verify", custodyOriginalRef(f.run.ID)); err == nil {
 			t.Fatal("late newer-owner recovery left original gate marker")
 		}
-		if !f.custodyReturned() {
-			t.Fatal("late newer owner lost custody stamp")
+		if f.custodyReturned() {
+			t.Fatal("late newer owner race stamped stale custody")
 		}
 	})
 
@@ -1565,10 +1568,10 @@ func TestRecoverSerializesConcurrentAuthorityChanges(t *testing.T) {
 
 		state := f.service.Recover(f.ctx, true)
 		if !state.Recovered {
-			t.Fatalf("serialized publication recovery = %#v", state)
+			t.Fatalf("publication-fenced recovery = %#v", state)
 		}
-		if err := <-done; err != nil {
-			t.Fatal(err)
+		if err := <-done; !errors.Is(err, db.ErrRunCustodyCAS) {
+			t.Fatalf("publication binding during custody = %v", err)
 		}
 		if !f.custodyReturned() {
 			t.Fatal("serialized publication lost custody stamp")
@@ -1616,21 +1619,19 @@ func TestRecoverConcurrentKeepLocalDoesNotRollbackCompletedTransition(t *testing
 		t.Fatal("second recovery did not start")
 	}
 	close(releaseFirst)
+	var firstState, secondState State
 	select {
-	case first := <-firstResult:
-		if !first.Recovered {
-			t.Fatalf("first recovery = %#v", first)
-		}
+	case firstState = <-firstResult:
 	case <-time.After(5 * time.Second):
 		t.Fatal("first recovery did not complete")
 	}
 	select {
-	case second := <-secondResult:
-		if second.Recovered {
-			t.Fatalf("concurrent second recovery unexpectedly succeeded: %#v", second)
-		}
+	case secondState = <-secondResult:
 	case <-time.After(5 * time.Second):
 		t.Fatal("second recovery did not complete")
+	}
+	if !firstState.Recovered && !secondState.Recovered {
+		t.Fatalf("concurrent recoveries both failed: first=%#v second=%#v", firstState, secondState)
 	}
 	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != mustRun(t, f.local, "rev-parse", "HEAD") {
 		t.Fatalf("completed concurrent recovery gate = %s, want local head", got)
@@ -1690,6 +1691,12 @@ func TestRecoverRetryReconcilesStampedOwner(t *testing.T) {
 
 	owner, err := f.db.BeginRunCustodyTransition(f.ctx, f.run)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Advance(f.ctx, db.CustodyPhasePreparing, db.CustodyPhaseStaged); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Advance(f.ctx, db.CustodyPhaseStaged, db.CustodyPhaseGateMoved); err != nil {
 		t.Fatal(err)
 	}
 	if err := owner.Complete(f.ctx, f.run); err != nil {
