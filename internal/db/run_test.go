@@ -41,7 +41,7 @@ func TestInsertRunWithIntent(t *testing.T) {
 	run, err := d.InsertRunWithIntent(repo.ID, "feature", "abc123", "def456", &intent)
 	if err != nil {
 		t.Fatalf("insert run with intent: %v", err)
- 	}
+	}
 	got, err := d.GetRun(run.ID)
 	if err != nil {
 		t.Fatalf("get run: %v", err)

@@ -461,9 +461,9 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 			continue
 		}
 		pendingGate = ""
-	// CI readiness is established but the PR is unmerged: hand control back
-	// rather than waiting on a human merge. This holds even under autoApprove,
-	// since the agent cannot approve away a human's merge.
+		// CI readiness is established but the PR is unmerged: hand control back
+		// rather than waiting on a human merge. This holds even under autoApprove,
+		// since the agent cannot approve away a human's merge.
 		if ciReadyToMerge(rv) {
 			return run, true, nil
 		}
