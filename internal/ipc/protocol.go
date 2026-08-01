@@ -201,7 +201,8 @@ type ShutdownParams struct{}
 
 // PushReceivedResult confirms the push was accepted.
 type PushReceivedResult struct {
-	RunID string `json:"run_id"`
+	RunID   string `json:"run_id"`
+	Deleted bool   `json:"deleted,omitempty"`
 }
 
 // GetRunResult wraps a single run.
@@ -247,9 +248,8 @@ type GateContextResult struct {
 
 // AdmitPushResult is returned before a receive hook permits ref mutation.
 type AdmitPushResult struct {
-	Context           GateContextResult `json:"context"`
-	ReservationID     string            `json:"reservation_id,omitempty"`
-	ReceiveCapability string            `json:"receive_capability,omitempty"`
+	Context       GateContextResult `json:"context"`
+	ReservationID string            `json:"reservation_id,omitempty"`
 }
 
 // HealthResult confirms the daemon is alive.

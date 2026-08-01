@@ -111,11 +111,12 @@ agent edit files, and commit fixes. Your day-to-day working tree stays clean.
 
 ### Receive hooks
 
-Before Git changes a managed gate ref, the managed receive-pack wrapper creates
-a private random session identity for that exact receive. The daemon issues the
-capability over the authenticated local control path; hooks carry it only in
-protected inherited descriptors and the database stores only its verifier. The
-`pre-receive` hook asks the daemon to authorize each ref before mutation. The
+Before Git changes a managed gate ref, the managed receive-pack wrapper
+delegates to the daemon-owned receive launcher. The launcher creates a private
+random session identity and capability for that exact receive, stores only the
+capability verifier, and passes the capability to hooks through protected
+inherited descriptors. The `pre-receive` hook asks the daemon to authorize each
+ref before mutation. The
 daemon refuses descendants of an active validation step before mutation,
 including direct pushes. An existing custom `pre-receive` hook is preserved and
 runs after admission.

@@ -27,6 +27,14 @@ func ReceivePackWrapperPath(bareDir string) string {
 }
 
 func ReceivePackWrapperScript() string {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = "no-mistakes"
+	}
+	return receivePackWrapperScript(exe)
+}
+
+func receivePackWrapperScript(command string) string {
 	return `#!/bin/sh
 # no-mistakes managed receive-pack wrapper
 set -eu
@@ -39,37 +47,12 @@ case "$GATE_DIR" in
   /*) ;;
   *) GATE_DIR=$(cd "$GATE_DIR" 2>/dev/null && (/bin/pwd -P 2>/dev/null || pwd -P) || exit 1) ;;
 esac
-umask 077
-random_hex() {
-  dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'
-}
-RECEIVE_SESSION_ID=$(random_hex)
-if [ "${#RECEIVE_SESSION_ID}" -ne 64 ]; then
-  printf 'no-mistakes: cannot create receive session identity\n' >&2
-  exit 1
+NM_BIN=` + shellSingleQuote(command) + `
+if [ ! -f "$NM_BIN" ]; then
+  NM_BIN="$(command -v no-mistakes 2>/dev/null || echo no-mistakes)"
 fi
-RECEIVE_CAPABILITY_FILE=$(mktemp "$GATE_DIR/.no-mistakes-receive-capability.XXXXXX") || exit 1
-RECEIVE_MANIFEST=$(mktemp "$GATE_DIR/.no-mistakes-receive-manifest.XXXXXX") || {
-  rm -f "$RECEIVE_CAPABILITY_FILE"
-  exit 1
-}
-export NO_MISTAKES_RECEIVE_SESSION_ID="$RECEIVE_SESSION_ID"
-export NO_MISTAKES_RECEIVE_MANIFEST="$RECEIVE_MANIFEST"
-trap 'rm -f "$RECEIVE_CAPABILITY_FILE" "$RECEIVE_MANIFEST"' 0 1 2 3 15
-exec 3<"$RECEIVE_CAPABILITY_FILE"
-exec 4>"$RECEIVE_CAPABILITY_FILE"
-exec 5<"$RECEIVE_CAPABILITY_FILE"
-exec 6<"$RECEIVE_CAPABILITY_FILE"
-exec 7<"$RECEIVE_CAPABILITY_FILE"
-exec 8<"$RECEIVE_CAPABILITY_FILE"
-rm -f "$RECEIVE_CAPABILITY_FILE"
-if git-receive-pack "$@"; then
-  status=0
-else
-  status=$?
-fi
-rm -f "$RECEIVE_MANIFEST"
-exit "$status"
+shift
+exec "$NM_BIN" daemon receive-pack --gate "$GATE_DIR" "$GATE_DIR" "$@"
 `
 }
 
@@ -129,35 +112,24 @@ while [ "$i" -lt "${GIT_PUSH_OPTION_COUNT:-0}" ]; do
   set -- "$@" --push-option "$opt"
   i=$((i + 1))
 done
-out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon admit-push --gate "$GATE_DIR" --receive-session-id "$RECEIVE_SESSION_ID" "$@" < "$RECEIVE_INPUT" 2>&1)
+out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon admit-push --gate "$GATE_DIR" --receive-session-id "$RECEIVE_SESSION_ID" --receive-capability-fd 3 "$@" < "$RECEIVE_INPUT" 2>&1)
 status=$?
 if [ $status -ne 0 ]; then
   printf 'no-mistakes: gate push refused before ref mutation:\n%s\n' "$out" >&2
   exit $status
 fi
-receive_capability=
-while IFS=' ' read -r reservation_id capability oldrev newrev refname; do
+while IFS=' ' read -r reservation_id oldrev newrev refname; do
   [ -z "$refname" ] && continue
-  if [ -z "$reservation_id" ] || [ -z "$capability" ] || [ -z "$oldrev" ] || [ -z "$newrev" ] || [ -z "$refname" ]; then
+  if [ -z "$reservation_id" ] || [ -z "$oldrev" ] || [ -z "$newrev" ] || [ -z "$refname" ]; then
     printf 'no-mistakes: admit push returned an invalid receive identity\n' >&2
     exit 1
   fi
-  case "$reservation_id$capability" in
+  case "$reservation_id" in
     *[![:alnum:]_-]*)
       printf 'no-mistakes: admit push returned an invalid receive identity\n' >&2
       exit 1
       ;;
   esac
-  if [ -z "$receive_capability" ]; then
-    receive_capability=$capability
-    if ! printf '%s\n' "$receive_capability" >&4; then
-      printf 'no-mistakes: cannot retain receive capability\n' >&2
-      exit 1
-    fi
-  elif [ "$receive_capability" != "$capability" ]; then
-    printf 'no-mistakes: receive capability changed within one session\n' >&2
-    exit 1
-  fi
   if ! printf '%s %s %s %s\n' "$reservation_id" "$oldrev" "$newrev" "$refname" >> "$RECEIVE_MANIFEST"; then
     printf 'no-mistakes: cannot persist gate receive identity\n' >&2
     exit 1
@@ -342,7 +314,7 @@ while IFS=' ' read -r oldrev newrev refname; do
     exit 1
   fi
 done < "$RECEIVE_INPUT"
-CAPABILITY_FD=3
+CAPABILITY_FD=4
 case "$PHASE" in
   committed) CAPABILITY_FD=5 ;;
   aborted) CAPABILITY_FD=6 ;;

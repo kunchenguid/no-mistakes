@@ -752,11 +752,11 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if result.Nested {
 			return nil, fmt.Errorf("%s", gatecontext.RefusalMessage(result))
 		}
-		reservationID, receiveCapability, err := mgr.HandleAdmitPush(ctx, &p)
+		reservationID, err := mgr.HandleAdmitPush(ctx, &p)
 		if err != nil {
 			return nil, err
 		}
-		return &ipc.AdmitPushResult{Context: gateContextResult(result), ReservationID: reservationID, ReceiveCapability: receiveCapability}, nil
+		return &ipc.AdmitPushResult{Context: gateContextResult(result), ReservationID: reservationID}, nil
 	})
 
 	srv.Handle(ipc.MethodReceiveTransaction, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -806,7 +806,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err != nil {
 			return nil, err
 		}
-		return &ipc.PushReceivedResult{RunID: runID}, nil
+		return &ipc.PushReceivedResult{RunID: runID, Deleted: isZeroObjectID(p.New)}, nil
 	})
 
 	srv.Handle(ipc.MethodRespond, func(ctx context.Context, params json.RawMessage) (interface{}, error) {

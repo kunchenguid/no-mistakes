@@ -20,8 +20,7 @@ func TestPreReceiveHookScript(t *testing.T) {
 		"mktemp \"$GATE_DIR/.no-mistakes-receive.XXXXXX\"",
 		"NO_MISTAKES_RECEIVE_SESSION_ID",
 		"--receive-session-id \"$RECEIVE_SESSION_ID\"",
-		"receive_capability=",
-		"printf '%s\\n' \"$receive_capability\" >&4",
+		"--receive-capability-fd 3",
 		"%s %s %s %s\\n",
 		"admit push returned an invalid receive identity",
 		"gate push refused before ref mutation",
@@ -71,13 +70,8 @@ func TestReceivePackWrapperScript(t *testing.T) {
 	script := ReceivePackWrapperScript()
 	for _, want := range []string{
 		"# no-mistakes managed receive-pack wrapper",
-		"/dev/urandom",
-		"NO_MISTAKES_RECEIVE_SESSION_ID",
-		"NO_MISTAKES_RECEIVE_MANIFEST",
-		"exec 3<\"$RECEIVE_CAPABILITY_FILE\"",
-		"exec 4>\"$RECEIVE_CAPABILITY_FILE\"",
-		"git-receive-pack \"$@\"",
-		"umask 077",
+		"daemon receive-pack --gate \"$GATE_DIR\"",
+		"exec \"$NM_BIN\"",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("receive-pack wrapper missing %q", want)
@@ -86,8 +80,8 @@ func TestReceivePackWrapperScript(t *testing.T) {
 	if strings.Contains(script, "PPID") || strings.Contains(script, "GIT_QUARANTINE_PATH") {
 		t.Fatal("receive-pack wrapper must not use process or quarantine heuristics")
 	}
-	if strings.Contains(script, "NO_MISTAKES_RECEIVE_CAPABILITY=") || strings.Contains(script, "exec git-receive-pack") {
-		t.Fatal("receive-pack wrapper must keep the capability off argv and run cleanup")
+	if strings.Contains(script, "NO_MISTAKES_RECEIVE_CAPABILITY=") || strings.Contains(script, "git-receive-pack \"$@\"") || strings.Contains(script, "/dev/urandom") {
+		t.Fatal("receive-pack wrapper must delegate session ownership to the daemon launcher")
 	}
 }
 

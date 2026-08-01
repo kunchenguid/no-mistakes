@@ -2,18 +2,23 @@ package cli
 
 import (
 	"bufio"
+	cryptorand "crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/lifecycle"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -36,11 +41,179 @@ func newDaemonCmd() *cobra.Command {
 	cmd.AddCommand(newDaemonRestartCmd())
 	cmd.AddCommand(newDaemonStatusCmd())
 	cmd.AddCommand(newDaemonRunCmd())
+	cmd.AddCommand(newDaemonReceivePackCmd())
 	cmd.AddCommand(newDaemonAdmitPushCmd())
 	cmd.AddCommand(newDaemonReceiveTransactionCmd())
 	cmd.AddCommand(newDaemonNotifyPushCmd())
 
 	return cmd
+}
+
+func newDaemonReceivePackCmd() *cobra.Command {
+	var gate string
+	cmd := &cobra.Command{
+		Use:    "receive-pack <gate> [options]",
+		Short:  "Run the managed git receive-pack boundary",
+		Hidden: true,
+		Args:   cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runManagedReceivePack(cmd, gate, args)
+		},
+	}
+	cmd.Flags().StringVar(&gate, "gate", "", "managed gate path")
+	_ = cmd.MarkFlagRequired("gate")
+	return cmd
+}
+
+func runManagedReceivePack(cmd *cobra.Command, gate string, args []string) error {
+	gatePath, err := normalizeNotifyGatePath(gate)
+	if err != nil {
+		return err
+	}
+	if len(args) == 0 {
+		return fmt.Errorf("receive-pack repository is required")
+	}
+	if !sameCLIPath(args[0], gatePath) {
+		return fmt.Errorf("receive-pack repository does not match managed gate")
+	}
+	p, err := paths.New()
+	if err != nil {
+		return err
+	}
+	repoID, err := receiveRepoID(gatePath)
+	if err != nil {
+		return err
+	}
+	if !sameCLIPath(gatePath, p.RepoDir(repoID)) {
+		return fmt.Errorf("managed gate path does not match no-mistakes repository")
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		return fmt.Errorf("open receive database: %w", err)
+	}
+	defer database.Close()
+	repo, err := database.GetRepo(repoID)
+	if err != nil {
+		return fmt.Errorf("get receive repository: %w", err)
+	}
+	if repo == nil {
+		return fmt.Errorf("unknown repo for gate %s", gatePath)
+	}
+	sessionID, capability, err := newReceiveSessionCredentials()
+	if err != nil {
+		return fmt.Errorf("create receive session: %w", err)
+	}
+	if err := database.RegisterReceiveSession(repo.ID, gatePath, sessionID, capability); err != nil {
+		return err
+	}
+	defer database.RetireReceiveSession(sessionID)
+
+	capabilityFile, err := os.CreateTemp(gatePath, ".no-mistakes-receive-capability.XXXXXX")
+	if err != nil {
+		return fmt.Errorf("create receive capability channel: %w", err)
+	}
+	capabilityPath := capabilityFile.Name()
+	removeCapability := true
+	defer func() {
+		_ = capabilityFile.Close()
+		if removeCapability {
+			_ = os.Remove(capabilityPath)
+		}
+	}()
+	if err := capabilityFile.Chmod(0o600); err != nil {
+		return fmt.Errorf("protect receive capability channel: %w", err)
+	}
+	if _, err := capabilityFile.WriteString(capability + "\n"); err != nil {
+		return fmt.Errorf("write receive capability channel: %w", err)
+	}
+	if err := capabilityFile.Sync(); err != nil {
+		return fmt.Errorf("sync receive capability channel: %w", err)
+	}
+	if err := capabilityFile.Close(); err != nil {
+		return fmt.Errorf("close receive capability channel: %w", err)
+	}
+
+	manifest, err := os.CreateTemp(gatePath, ".no-mistakes-receive-manifest.XXXXXX")
+	if err != nil {
+		return fmt.Errorf("create receive manifest: %w", err)
+	}
+	manifestPath := manifest.Name()
+	defer os.Remove(manifestPath)
+	if err := manifest.Chmod(0o600); err != nil {
+		_ = manifest.Close()
+		return fmt.Errorf("protect receive manifest: %w", err)
+	}
+	if err := manifest.Close(); err != nil {
+		return fmt.Errorf("close receive manifest: %w", err)
+	}
+
+	capabilityFiles := make([]*os.File, 0, 5)
+	for i := 0; i < 5; i++ {
+		file, err := os.Open(capabilityPath)
+		if err != nil {
+			for _, opened := range capabilityFiles {
+				_ = opened.Close()
+			}
+			return fmt.Errorf("open receive capability channel: %w", err)
+		}
+		capabilityFiles = append(capabilityFiles, file)
+	}
+	for _, file := range capabilityFiles {
+		defer file.Close()
+	}
+	if err := os.Remove(capabilityPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove receive capability channel: %w", err)
+	}
+	removeCapability = false
+
+	receiveArgs := append([]string{gatePath}, args[1:]...)
+	child := exec.CommandContext(cmd.Context(), "git-receive-pack", receiveArgs...)
+	child.Stdin = cmd.InOrStdin()
+	child.Stdout = cmd.OutOrStdout()
+	child.Stderr = cmd.ErrOrStderr()
+	child.ExtraFiles = capabilityFiles
+	child.Env = append(os.Environ(), "NO_MISTAKES_RECEIVE_SESSION_ID="+sessionID, "NO_MISTAKES_RECEIVE_MANIFEST="+manifestPath)
+	shellenv.ConfigureShellCommand(child)
+	return shellenv.RunShellCommand(child)
+}
+
+func newReceiveSessionCredentials() (string, string, error) {
+	read := func() (string, error) {
+		value := make([]byte, 32)
+		if _, err := cryptorand.Read(value); err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(value), nil
+	}
+	sessionID, err := read()
+	if err != nil {
+		return "", "", err
+	}
+	capability, err := read()
+	if err != nil {
+		return "", "", err
+	}
+	return sessionID, capability, nil
+}
+
+func receiveRepoID(gate string) (string, error) {
+	base := filepath.Base(gate)
+	if !strings.HasSuffix(base, ".git") {
+		return "", fmt.Errorf("invalid gate path: %s", gate)
+	}
+	return strings.TrimSuffix(base, ".git"), nil
+}
+
+func sameCLIPath(a, b string) bool {
+	a = filepath.Clean(a)
+	b = filepath.Clean(b)
+	if resolved, err := filepath.EvalSymlinks(a); err == nil {
+		a = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(b); err == nil {
+		b = resolved
+	}
+	return a == b
 }
 
 func newDaemonReceiveTransactionCmd() *cobra.Command {
@@ -148,12 +321,12 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var receiveCapability string
-			if receiveCapabilityFD >= 0 {
-				receiveCapability, err = readReceiveCapability(receiveCapabilityFD)
-				if err != nil {
-					return err
-				}
+			if receiveCapabilityFD < 0 {
+				return fmt.Errorf("receive capability descriptor is required")
+			}
+			receiveCapability, err := readReceiveCapability(receiveCapabilityFD)
+			if err != nil {
+				return err
 			}
 			client, err := ipc.Dial(p.Socket())
 			if err != nil {
@@ -168,13 +341,10 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 				if result.Context.Nested {
 					return emitGateContextRefusal(cmd, gatecontext.Result{Nested: result.Context.Nested, ManagedGit: result.Context.ManagedGit, AgentDescendant: result.Context.AgentDescendant, DaemonDescendant: result.Context.DaemonDescendant, MarkerPresent: result.Context.MarkerPresent, RunID: result.Context.RunID, Phase: result.Context.Phase})
 				}
-				if result.ReservationID == "" || result.ReceiveCapability == "" {
+				if result.ReservationID == "" {
 					return fmt.Errorf("admit push returned no receive reservation")
 				}
-				if receiveCapability == "" {
-					receiveCapability = result.ReceiveCapability
-				}
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s %s %s\n", result.ReservationID, receiveCapability, values[0], values[1], values[2])
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s %s\n", result.ReservationID, values[0], values[1], values[2])
 				return nil
 			}
 			allFields := ref != "" && oldSHA != "" && newSHA != ""
@@ -281,6 +451,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			}
 			scanner := bufio.NewScanner(cmd.InOrStdin())
 			seen := false
+			var failures []string
 			for scanner.Scan() {
 				fields := strings.Fields(scanner.Text())
 				if len(fields) == 0 {
@@ -291,7 +462,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				}
 				seen = true
 				if err := notify([]string{fields[2], fields[0], fields[1]}); err != nil {
-					return err
+					failures = append(failures, fmt.Sprintf("%s: %v", fields[2], err))
 				}
 			}
 			if err := scanner.Err(); err != nil {
@@ -299,6 +470,9 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			}
 			if !seen {
 				return fmt.Errorf("push notification input is empty")
+			}
+			if len(failures) > 0 {
+				return fmt.Errorf("push notification batch failed: %s", strings.Join(failures, "; "))
 			}
 			return nil
 		},

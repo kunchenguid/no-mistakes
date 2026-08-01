@@ -2,8 +2,6 @@ package daemon
 
 import (
 	"context"
-	cryptorand "crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -585,59 +583,45 @@ func assertGateTrustedConfigReadable(ctx context.Context, wtDir, defaultBranch, 
 	return nil
 }
 
-func (m *RunManager) HandleAdmitPush(ctx context.Context, params *ipc.AdmitPushParams) (string, string, error) {
+func (m *RunManager) HandleAdmitPush(ctx context.Context, params *ipc.AdmitPushParams) (string, error) {
 	if params == nil {
-		return "", "", fmt.Errorf("admit push: missing parameters")
+		return "", fmt.Errorf("admit push: missing parameters")
 	}
 	if strings.TrimSpace(params.ReceiveSessionID) == "" {
-		return "", "", fmt.Errorf("admit push: receive session identity is required")
+		return "", fmt.Errorf("admit push: receive session identity is required")
 	}
 	receiveCapability := strings.TrimSpace(params.ReceiveCapability)
 	if receiveCapability == "" {
-		var err error
-		receiveCapability, err = newReceiveCapability()
-		if err != nil {
-			return "", "", fmt.Errorf("admit push: issue receive capability: %w", err)
-		}
+		return "", fmt.Errorf("admit push: receive capability is required")
 	}
 	repo, branch, err := m.receiveRepo(params.Gate, params.Ref)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	if strings.TrimSpace(params.ReceiveCapability) != "" {
-		matches, err := m.db.ReceiveSessionCapabilityMatches(repo.ID, params.ReceiveSessionID, receiveCapability)
-		if err != nil {
-			return "", "", err
-		}
-		if !matches {
-			return "", "", fmt.Errorf("admit push: receive capability was not issued for this repository session")
-		}
+	matches, err := m.db.VerifyReceiveSession(repo.ID, m.paths.RepoDir(repo.ID), params.ReceiveSessionID, receiveCapability)
+	if err != nil {
+		return "", err
+	}
+	if !matches {
+		return "", fmt.Errorf("admit push: receive capability was not issued for this repository session")
 	}
 	lock, err := branchsync.AcquireBranchOwnershipLock(m.paths, repo, repo.WorkingPath, branch)
 	if err != nil {
-		return "", "", fmt.Errorf("acquire branch ownership lock: %w", err)
+		return "", fmt.Errorf("acquire branch ownership lock: %w", err)
 	}
 	defer lock.Release()
 	current, exists, err := gateReceiveRef(ctx, m.paths.RepoDir(repo.ID), params.Ref)
 	if err != nil {
-		return "", "", err
-	}
-	if !receiveOldMatches(current, exists, params.Old) {
-		return "", "", fmt.Errorf("gate ref %s is not at expected old head %s", params.Ref, params.Old)
-	}
-	reservation, err := m.db.ReserveReceiveForSession(repo.ID, m.paths.RepoDir(repo.ID), branch, params.Ref, params.Old, params.New, params.ReceiveSessionID, receiveCapability, params.SkipSteps, params.Intent)
-	if err != nil {
-		return "", "", err
-	}
-	return reservation.ID, receiveCapability, nil
-}
-
-func newReceiveCapability() (string, error) {
-	secret := make([]byte, 32)
-	if _, err := cryptorand.Read(secret); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(secret), nil
+	if !receiveOldMatches(current, exists, params.Old) {
+		return "", fmt.Errorf("gate ref %s is not at expected old head %s", params.Ref, params.Old)
+	}
+	reservation, err := m.db.ReserveReceiveForAuthenticatedSession(repo.ID, m.paths.RepoDir(repo.ID), branch, params.Ref, params.Old, params.New, params.ReceiveSessionID, receiveCapability, params.SkipSteps, params.Intent)
+	if err != nil {
+		return "", err
+	}
+	return reservation.ID, nil
 }
 
 func (m *RunManager) HandleReceiveTransaction(ctx context.Context, params *ipc.ReceiveTransactionParams) error {
@@ -668,11 +652,11 @@ func (m *RunManager) HandleReceiveTransaction(ctx context.Context, params *ipc.R
 	}
 	switch params.Phase {
 	case "prepared":
-		err = m.db.MarkReceivePreparedForID(params.ReservationID, repo.ID, branch, params.Ref, params.Old, params.New)
+		err = m.db.MarkReceivePreparedForSession(params.ReservationID, repo.ID, branch, params.Ref, params.Old, params.New, params.ReceiveSessionID, params.ReceiveCapability)
 	case "committed":
-		err = m.db.MarkReceiveCommittedForID(params.ReservationID, repo.ID, branch, params.Ref, params.Old, params.New)
+		err = m.db.MarkReceiveCommittedForSession(params.ReservationID, repo.ID, branch, params.Ref, params.Old, params.New, params.ReceiveSessionID, params.ReceiveCapability)
 	case "aborted":
-		err = m.db.MarkReceiveAbortedForID(params.ReservationID, repo.ID, branch, params.Ref, params.Old, params.New)
+		err = m.db.MarkReceiveAbortedForSession(params.ReservationID, repo.ID, branch, params.Ref, params.Old, params.New, params.ReceiveSessionID, params.ReceiveCapability)
 	default:
 		return fmt.Errorf("receive transaction: unsupported phase %q", params.Phase)
 	}
@@ -703,9 +687,6 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	runID, err := m.reconcileReceiveReservationLocked(ctx, repo, params, lock, false)
 	if err != nil {
 		return "", err
-	}
-	if isZeroObjectID(params.New) {
-		return "", fmt.Errorf("ref deletion push, no pipeline to run")
 	}
 	return runID, nil
 }
@@ -786,10 +767,16 @@ func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo
 	if !samePath(reservation.GatePath, m.paths.RepoDir(repo.ID)) {
 		return "", fmt.Errorf("receive reservation target changed")
 	}
+	completeReservation := func(runID string) error {
+		if trustedStartup {
+			return m.db.CompleteReceiveReservation(reservation.ID, runID)
+		}
+		return m.db.CompleteReceiveReservationForSession(reservation.ID, runID, params.ReceiveSessionID, params.ReceiveCapability)
+	}
 	if run, err := m.db.GetRunByReceiveReservation(reservation.ID); err != nil {
 		return "", err
 	} else if run != nil {
-		if err := m.db.CompleteReceiveReservation(reservation.ID, run.ID); err != nil {
+		if err := completeReservation(run.ID); err != nil {
 			return run.ID, err
 		}
 		return run.ID, nil
@@ -800,7 +787,7 @@ func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo
 	}
 	if isZeroObjectID(reservation.NewSHA) {
 		if !exists {
-			if err := m.db.CompleteReceiveReservation(reservation.ID, ""); err != nil {
+			if err := completeReservation(""); err != nil {
 				return "", err
 			}
 			return "", nil
@@ -823,7 +810,7 @@ func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo
 	if err != nil {
 		return "", err
 	}
-	if err := m.db.CompleteReceiveReservation(reservation.ID, runID); err != nil {
+	if err := completeReservation(runID); err != nil {
 		return runID, err
 	}
 	return runID, nil

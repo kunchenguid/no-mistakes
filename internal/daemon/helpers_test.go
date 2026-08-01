@@ -287,6 +287,9 @@ func setupTestGitRepo(t *testing.T, p *paths.Paths, d *db.DB, repoID string) (*d
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := d.RegisterReceiveSession(repo.ID, p.RepoDir(repo.ID), testReceiveSessionID, testReceiveCapability); err != nil {
+		t.Fatal(err)
+	}
 	_ = ctx
 
 	return repo, headSHA

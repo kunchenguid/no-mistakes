@@ -12,6 +12,9 @@ func TestReceiveReservationLifecycle(t *testing.T) {
 	if _, err := d.InsertRepoWithID("repo", "/work/repo", "https://example.com/repo.git", "main"); err != nil {
 		t.Fatal(err)
 	}
+	if err := d.RegisterReceiveSession("repo", "/gate/repo.git", "session-lifecycle", "cap-lifecycle"); err != nil {
+		t.Fatal(err)
+	}
 	oldSHA := "1111111111111111111111111111111111111111"
 	newSHA := "2222222222222222222222222222222222222222"
 	first, err := d.ReserveReceiveForSession("repo", "/gate/repo.git", "feature", "refs/heads/feature", oldSHA, newSHA, "session-lifecycle", "cap-lifecycle", []types.StepName{types.StepReview}, "intent")
@@ -25,13 +28,13 @@ func TestReceiveReservationLifecycle(t *testing.T) {
 	if second.ID != first.ID || second.State != ReceiveReservationReserved {
 		t.Fatalf("duplicate reservation = %#v, want original pending reservation", second)
 	}
-	if matches, err := d.ReceiveSessionCapabilityMatches("repo", "session-lifecycle", "cap-lifecycle"); err != nil || !matches {
+	if matches, err := d.VerifyReceiveSession("repo", "/gate/repo.git", "session-lifecycle", "cap-lifecycle"); err != nil || !matches {
 		t.Fatalf("issued capability match = %v, %v", matches, err)
 	}
-	if matches, err := d.ReceiveSessionCapabilityMatches("other-repo", "session-lifecycle", "cap-lifecycle"); err != nil || matches {
+	if matches, err := d.VerifyReceiveSession("other-repo", "/gate/repo.git", "session-lifecycle", "cap-lifecycle"); err != nil || matches {
 		t.Fatalf("cross-repository capability match = %v, %v", matches, err)
 	}
-	if matches, err := d.ReceiveSessionCapabilityMatches("repo", "session-lifecycle", "wrong-capability"); err != nil || matches {
+	if matches, err := d.VerifyReceiveSession("repo", "/gate/repo.git", "session-lifecycle", "wrong-capability"); err != nil || matches {
 		t.Fatalf("forged capability match = %v, %v", matches, err)
 	}
 	if _, err := d.ReserveReceiveForSession("repo", "/gate/repo.git", "feature", "refs/heads/feature", oldSHA, "3333333333333333333333333333333333333333", "session-other", "cap-other", nil, ""); !errors.Is(err, ErrReceiveReservationConflict) {
@@ -60,7 +63,10 @@ func TestReceiveReservationLifecycle(t *testing.T) {
 	if len(pending) != 0 {
 		t.Fatalf("pending reservations after completion = %d", len(pending))
 	}
-	if matches, err := d.ReceiveSessionCapabilityMatches("repo", "session-lifecycle", "cap-lifecycle"); err != nil || matches {
+	if err := d.RetireReceiveSession("session-lifecycle"); err != nil {
+		t.Fatal(err)
+	}
+	if matches, err := d.VerifyReceiveSession("repo", "/gate/repo.git", "session-lifecycle", "cap-lifecycle"); err != nil || matches {
 		t.Fatalf("completed capability match = %v, %v", matches, err)
 	}
 	third, err := d.ReserveReceiveForSession("repo", "/gate/repo.git", "feature", "refs/heads/feature", oldSHA, newSHA, "session-later", "cap-later", nil, "")
@@ -92,6 +98,35 @@ func TestReceiveReservationBindsIdenticalTransitionsToSession(t *testing.T) {
 	}
 	if _, err := d.ReserveReceiveForSession("repo", "/gate/repo.git", "main", "refs/heads/main", oldSHA, newSHA, "session-b", "cap-b", nil, "second"); !errors.Is(err, ErrReceiveReservationConflict) {
 		t.Fatalf("different identical receive error = %v, want conflict", err)
+	}
+}
+
+func TestAuthenticatedReceivePhasesRequireExactCapability(t *testing.T) {
+	d := openTestDB(t)
+	if _, err := d.InsertRepoWithID("repo", "/work/repo", "https://example.com/repo.git", "main"); err != nil {
+		t.Fatal(err)
+	}
+	gate := "/gate/repo.git"
+	oldSHA := "1111111111111111111111111111111111111111"
+	newSHA := "2222222222222222222222222222222222222222"
+	if err := d.RegisterReceiveSession("repo", gate, "session", "capability"); err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := d.ReserveReceiveForAuthenticatedSession("repo", gate, "main", "refs/heads/main", oldSHA, newSHA, "session", "capability", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.MarkReceivePreparedForSession(reservation.ID, "repo", "main", "refs/heads/main", oldSHA, newSHA, "session", "wrong"); err == nil {
+		t.Fatal("wrong capability prepared the receive")
+	}
+	if err := d.MarkReceivePreparedForSession(reservation.ID, "repo", "main", "refs/heads/main", oldSHA, newSHA, "session", "capability"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.MarkReceiveCommittedForSession(reservation.ID, "repo", "main", "refs/heads/main", oldSHA, newSHA, "other-session", "capability"); err == nil {
+		t.Fatal("wrong session committed the receive")
+	}
+	if err := d.MarkReceiveCommittedForSession(reservation.ID, "repo", "main", "refs/heads/main", oldSHA, newSHA, "session", "capability"); err != nil {
+		t.Fatal(err)
 	}
 }
 
