@@ -9,6 +9,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
 type recoveryPull struct {
@@ -21,17 +23,22 @@ type recoveryPull struct {
 	} `json:"head"`
 }
 
-func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, preserved string, since, until int64) error {
+func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, preserved string, since, until int64, targetIdentity string) error {
 	if err := h.Available(ctx); err != nil {
 		return err
 	}
 	if strings.TrimSpace(h.repo) == "" {
 		return errors.New("GitHub repository identity is unavailable")
 	}
+	targetNumber, err := scm.ExtractPRNumber(targetIdentity)
+	if err != nil || (h.host != "" && scm.ExtractHost(targetIdentity) != "" && !strings.EqualFold(scm.ExtractHost(targetIdentity), h.host)) || RepoSlug(targetIdentity) != strings.TrimSpace(strings.TrimPrefix(h.repo, h.host+"/")) {
+		return errors.New("GitHub submission-time pull-request identity is unavailable or mismatched")
+	}
 	var pulls []recoveryPull
 	if err := h.apiPages(ctx, "repos/"+h.apiRepoPath()+"/pulls?state=all&per_page=100", &pulls); err != nil {
 		return fmt.Errorf("inspect GitHub pull-request history: %w", err)
 	}
+	matched := false
 	for _, pull := range pulls {
 		inWindow, err := recoveryRecordInWindow(pull.CreatedAt, pull.UpdatedAt, since, until)
 		if err != nil {
@@ -40,6 +47,10 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 		if !inWindow {
 			continue
 		}
+		if fmt.Sprint(pull.Number) != targetNumber {
+			continue
+		}
+		matched = true
 		if pull.Head.SHA == "" || pull.Head.SHA != submitted {
 			return fmt.Errorf("GitHub pull request %d has a changed head", pull.Number)
 		}
@@ -63,6 +74,9 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 				return fmt.Errorf("GitHub pull request %d history contains the preserved unpublished head", pull.Number)
 			}
 		}
+	}
+	if !matched {
+		return fmt.Errorf("GitHub pull request %s was not found in the submission interval", targetNumber)
 	}
 	return nil
 }

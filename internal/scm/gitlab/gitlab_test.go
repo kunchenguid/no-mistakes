@@ -316,8 +316,25 @@ func TestVerifyUnpublishedHistoryRejectsPreservedHead(t *testing.T) {
 			stdout: "[]\n",
 		},
 	}), nil, "", "group/project")
-	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0); err == nil {
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0, "https://gitlab.example.com/group/project/-/merge_requests/7"); err == nil {
 		t.Fatal("VerifyUnpublishedHistory() error = nil, want preserved-head rejection")
+	}
+}
+
+func TestVerifyUnpublishedHistoryIgnoresUnrelatedMergeRequests(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	q := strings.Repeat("c", 40)
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/merge_requests?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"iid":7,"source_branch":"renamed-feature","sha":"%s"},{"iid":8,"source_branch":"other","sha":"%s"}]`+"\n", a, q),
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/versions?per_page=100":              {stdout: "[]\n"},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/resource_state_events?per_page=100": {stdout: "[]\n"},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, strings.Repeat("b", 40), 0, 0, "https://gitlab.example.com/group/project/-/merge_requests/7"); err != nil {
+		t.Fatalf("VerifyUnpublishedHistory() error = %v, want unrelated MR ignored", err)
 	}
 }
 

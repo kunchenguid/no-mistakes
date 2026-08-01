@@ -686,6 +686,39 @@ func (d *DB) SetRunCustodyReturnedCAS(expected *Run) error {
 	return nil
 }
 
+func (d *DB) RollbackRunCustodyStamp(ctx context.Context, expected *Run, token string) error {
+	if expected == nil {
+		return ErrRunCustodyCAS
+	}
+	args := custodyAuthorityArgs(expected)
+	query := `UPDATE runs SET custody_returned_at = NULL, updated_at = ?
+			 WHERE ` + custodyAuthorityPredicate + `
+		   AND custody_returned_at IS NOT NULL`
+	args = append([]any{now()}, args...)
+	if strings.TrimSpace(token) != "" {
+		query = `UPDATE runs SET custody_returned_at = NULL, custody_transition_phase = ?, updated_at = ?
+			 WHERE ` + custodyAuthorityPredicate + `
+		   AND custody_returned_at IS NOT NULL`
+		args = append([]any{CustodyPhaseGateMoved, now()}, custodyAuthorityArgs(expected)...)
+		query += ` AND custody_transition_token = ? AND custody_transition_phase = ?`
+		args = append(args, strings.TrimSpace(token), CustodyPhaseStamped)
+	} else {
+		query += ` AND custody_transition_token IS NULL AND custody_transition_phase IS NULL`
+	}
+	result, err := d.sql.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("rollback run custody stamp: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rollback run custody stamp: affected rows: %w", err)
+	}
+	if rows != 1 {
+		return ErrRunCustodyCAS
+	}
+	return nil
+}
+
 func (d *DB) BeginRunCustodyTransition(ctx context.Context, expected *Run) (*CustodyTransition, error) {
 	if expected == nil {
 		return nil, ErrRunCustodyCAS

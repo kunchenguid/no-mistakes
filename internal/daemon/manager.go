@@ -54,9 +54,12 @@ type RunManager struct {
 
 	branchLocks sync.Map // repoID+"/"+branch → *sync.Mutex
 
-	managedGateMu     sync.Mutex
-	managedGateGuards map[string]*branchsync.ManagedGateRefAuthority
-	recoveryAnchorMu  sync.Mutex
+	managedGateMu                  sync.Mutex
+	managedGateGuards              map[string]*branchsync.ManagedGateRefAuthority
+	managedGateQuarantine          map[string]error
+	managedGateQuarantinePersisted map[string]bool
+	quarantineGateRef              func(string, string, string, string, string, string) error
+	recoveryAnchorMu               sync.Mutex
 
 	// subMu guards the subscriber set and the per-run state revisions. It is
 	// a plain Mutex, not an RWMutex, because revision assignment and fan-out
@@ -83,16 +86,21 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 		stepFactory = func() []pipeline.Step { return steps.AllSteps() }
 	}
 	return &RunManager{
-		executors:         make(map[string]*pipeline.Executor),
-		cancels:           make(map[string]context.CancelCauseFunc),
-		dones:             make(map[string]chan struct{}),
-		db:                database,
-		paths:             p,
-		steps:             stepFactory,
-		subscribers:       make(map[string][]*eventMailbox),
-		stateRevs:         make(map[string]int64),
-		completedRuns:     make(map[string]bool),
-		managedGateGuards: make(map[string]*branchsync.ManagedGateRefAuthority),
+		executors:                      make(map[string]*pipeline.Executor),
+		cancels:                        make(map[string]context.CancelCauseFunc),
+		dones:                          make(map[string]chan struct{}),
+		db:                             database,
+		paths:                          p,
+		steps:                          stepFactory,
+		subscribers:                    make(map[string][]*eventMailbox),
+		stateRevs:                      make(map[string]int64),
+		completedRuns:                  make(map[string]bool),
+		managedGateGuards:              make(map[string]*branchsync.ManagedGateRefAuthority),
+		managedGateQuarantine:          make(map[string]error),
+		managedGateQuarantinePersisted: make(map[string]bool),
+		quarantineGateRef: func(repoID, gatePath, ref, expected, observed, reason string) error {
+			return database.QuarantineGateRef(repoID, gatePath, ref, expected, observed, reason)
+		},
 	}
 }
 
@@ -107,12 +115,21 @@ func (m *RunManager) ensureManagedGateGuard(repo *db.Repo, ref string) error {
 	key := managedGateGuardKey(repo.ID, ref)
 	m.managedGateMu.Lock()
 	defer m.managedGateMu.Unlock()
+	if cause, ok := m.managedGateQuarantine[key]; ok {
+		quarantine, err := m.db.GetGateRefQuarantine(repo.ID, m.paths.RepoDir(repo.ID), ref)
+		if err != nil || quarantine != nil || !m.managedGateQuarantinePersisted[key] {
+			return fmt.Errorf("managed gate authority remains quarantined: %w", cause)
+		}
+		delete(m.managedGateQuarantine, key)
+	}
 	if err := m.ensureManagedGateRefAvailable(repo, ref); err != nil {
 		return err
 	}
 	if guard, ok := m.managedGateGuards[key]; ok {
 		if err := guard.Validate(m.paths.RepoDir(repo.ID), ref); err != nil {
-			m.quarantineManagedGateGuardLocked(repo, ref, err)
+			if quarantineErr := m.quarantineManagedGateGuardLocked(repo, ref, err); quarantineErr != nil {
+				return quarantineErr
+			}
 			return fmt.Errorf("managed gate authority is no longer valid: %w", err)
 		}
 		return nil
@@ -164,8 +181,8 @@ func (m *RunManager) managedGateRefRead(repoID, gateDir, ref string) func(string
 	}
 }
 
-func (m *RunManager) managedGateRefFinalize(repoID, gateDir, ref string) func(context.Context, string, string, func() error) error {
-	return func(ctx context.Context, requestedRef, expected string, stamp func() error) error {
+func (m *RunManager) managedGateRefFinalize(repoID, gateDir, ref string) func(context.Context, string, string, func() error, func() error) error {
+	return func(ctx context.Context, requestedRef, expected string, stamp func() error, rollback func() error) error {
 		if requestedRef != ref {
 			return fmt.Errorf("managed gate authority ref mismatch")
 		}
@@ -189,13 +206,22 @@ func (m *RunManager) managedGateRefFinalize(repoID, gateDir, ref string) func(co
 			return err
 		}
 		if err := m.validateManagedGateGuardLocked(repoID, gateDir, ref, guard); err != nil {
-			return err
+			if rollbackErr := rollback(); rollbackErr != nil {
+				return fmt.Errorf("managed gate authority was lost after custody stamp: %w; rollback failed: %v", err, rollbackErr)
+			}
+			return fmt.Errorf("managed gate authority was lost after custody stamp: %w", err)
 		}
 		current, err = branchsync.ReadManagedGateRefUnderAuthority(guard, gateDir, ref)
 		if err != nil {
-			return err
+			if rollbackErr := rollback(); rollbackErr != nil {
+				return fmt.Errorf("managed gate ref could not be re-read after custody stamp: %w; rollback failed: %v", err, rollbackErr)
+			}
+			return fmt.Errorf("managed gate ref could not be re-read after custody stamp: %w", err)
 		}
 		if db.NormalizeManagedGateHead(current) != db.NormalizeManagedGateHead(expected) {
+			if rollbackErr := rollback(); rollbackErr != nil {
+				return fmt.Errorf("managed gate ref changed after final custody stamp; rollback failed: %v", rollbackErr)
+			}
 			return fmt.Errorf("managed gate ref changed after final custody stamp")
 		}
 		_ = ctx
@@ -216,16 +242,18 @@ func (m *RunManager) validateManagedGateGuardLocked(repoID, gateDir, ref string,
 	if err := guard.Validate(gateDir, ref); err != nil {
 		repo, repoErr := m.db.GetRepo(repoID)
 		if repoErr == nil && repo != nil {
-			m.quarantineManagedGateGuardLocked(repo, ref, err)
+			if quarantineErr := m.quarantineManagedGateGuardLocked(repo, ref, err); quarantineErr != nil {
+				return quarantineErr
+			}
 		}
 		return fmt.Errorf("managed gate authority is no longer valid: %w", err)
 	}
 	return nil
 }
 
-func (m *RunManager) quarantineManagedGateGuardLocked(repo *db.Repo, ref string, cause error) {
+func (m *RunManager) quarantineManagedGateGuardLocked(repo *db.Repo, ref string, cause error) error {
 	if repo == nil {
-		return
+		return fmt.Errorf("managed gate quarantine requires a repository")
 	}
 	gateDir := m.paths.RepoDir(repo.ID)
 	managed, _ := m.db.GetManagedGateRef(repo.ID, gateDir, ref)
@@ -237,12 +265,28 @@ func (m *RunManager) quarantineManagedGateGuardLocked(repo *db.Repo, ref string,
 	if observeErr != nil {
 		observed = ""
 	}
-	_ = m.db.QuarantineGateRef(repo.ID, gateDir, ref, expected, observed, "managed-gate-authority-lost: "+cause.Error())
 	key := managedGateGuardKey(repo.ID, ref)
+	if m.managedGateQuarantine == nil {
+		m.managedGateQuarantine = make(map[string]error)
+	}
+	if m.managedGateQuarantinePersisted == nil {
+		m.managedGateQuarantinePersisted = make(map[string]bool)
+	}
+	m.managedGateQuarantine[key] = cause
+	quarantine := m.quarantineGateRef
+	if quarantine == nil {
+		quarantine = m.db.QuarantineGateRef
+	}
+	persistErr := quarantine(repo.ID, gateDir, ref, expected, observed, "managed-gate-authority-lost: "+cause.Error())
+	m.managedGateQuarantinePersisted[key] = persistErr == nil
 	if guard := m.managedGateGuards[key]; guard != nil {
 		_ = guard.Invalidate()
 		delete(m.managedGateGuards, key)
 	}
+	if persistErr != nil {
+		return fmt.Errorf("managed gate authority quarantine could not be persisted: %w", persistErr)
+	}
+	return nil
 }
 
 func (m *RunManager) releaseManagedGateGuard(repoID, ref string) error {
@@ -357,7 +401,10 @@ func (m *RunManager) legacyPublicationProof(ctx context.Context, run *db.Run, br
 		if run.CreatedAt <= 0 || run.UpdatedAt < run.CreatedAt {
 			return fmt.Errorf("historical publication proof has no valid run interval")
 		}
-		if err := verifier.VerifyUnpublishedHistory(ctx, branch, submitted, run.HeadSHA, run.CreatedAt, run.UpdatedAt); err != nil {
+		if run.PRURL == nil || strings.TrimSpace(*run.PRURL) == "" {
+			return fmt.Errorf("historical publication proof has no exact submission-time request identity")
+		}
+		if err := verifier.VerifyUnpublishedHistory(ctx, branch, submitted, run.HeadSHA, run.CreatedAt, run.UpdatedAt, *run.PRURL); err != nil {
 			return err
 		}
 	}

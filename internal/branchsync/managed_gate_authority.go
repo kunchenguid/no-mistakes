@@ -76,7 +76,11 @@ func (a *ManagedGateRefAuthority) UpdateRef(ctx context.Context, gateDir, ref, o
 	if err != nil {
 		return fmt.Errorf("read managed gate ref: %w", err)
 	}
-	if current != strings.TrimSpace(oldSHA) {
+	expected := strings.TrimSpace(oldSHA)
+	if git.IsZeroSHA(expected) || (len(expected) == 64 && expected == strings.Repeat("0", 64)) {
+		expected = ""
+	}
+	if current != expected {
 		return fmt.Errorf("managed gate ref changed from expected %s to %s", oldSHA, current)
 	}
 	newSHA = strings.TrimSpace(newSHA)
@@ -147,6 +151,17 @@ func AcquireManagedGateRefAuthority(gateDir, ref string) (*ManagedGateRefAuthori
 	if strings.TrimSpace(gateDir) == "" || !strings.HasPrefix(ref, "refs/heads/") || !isManagedGateRef(ref) {
 		return nil, fmt.Errorf("managed gate authority requires an ordinary branch ref")
 	}
+	return acquireManagedRefAuthority(gateDir, ref)
+}
+
+func AcquireManagedPrivateRefAuthority(gitDir, ref string) (*ManagedGateRefAuthority, error) {
+	if strings.TrimSpace(gitDir) == "" || !strings.HasPrefix(ref, "refs/no-mistakes/") || !isManagedGateRef(ref) {
+		return nil, fmt.Errorf("managed private ref authority requires a no-mistakes ref")
+	}
+	return acquireManagedRefAuthority(gitDir, ref)
+}
+
+func acquireManagedRefAuthority(gateDir, ref string) (*ManagedGateRefAuthority, error) {
 	path := filepath.Join(gateDir, filepath.FromSlash(ref)+".lock")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create managed gate authority directory: %w", err)

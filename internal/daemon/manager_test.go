@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,6 +165,64 @@ func TestManagedGateAuthorityLossPersistsQuarantine(t *testing.T) {
 	}
 	if err := manager.ensureManagedGateGuard(repo, ref); err == nil {
 		t.Fatal("quarantined managed gate authority was reacquired")
+	}
+	manager.Shutdown()
+}
+
+func TestManagedGateFinalizeRollsBackAfterAuthorityLoss(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "managed-finalize-rollback")
+	ref := "refs/heads/main"
+	if err := database.SetManagedGateRefHead(repo.ID, p.RepoDir(repo.ID), ref, head); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewRunManager(database, p, nil)
+	if err := manager.ensureManagedGateGuard(repo, ref); err != nil {
+		t.Fatal(err)
+	}
+	guard := manager.managedGateGuards[managedGateGuardKey(repo.ID, ref)]
+	if guard == nil {
+		t.Fatal("managed gate guard was not installed")
+	}
+	rolledBack := false
+	err := manager.managedGateRefFinalize(repo.ID, p.RepoDir(repo.ID), ref)(context.Background(), ref, head, func() error {
+		if err := os.Remove(guard.Path()); err != nil {
+			return err
+		}
+		return nil
+	}, func() error {
+		rolledBack = true
+		return nil
+	})
+	if err == nil || !rolledBack {
+		t.Fatalf("finalize authority-loss result = %v, rolledBack=%v", err, rolledBack)
+	}
+	manager.Shutdown()
+}
+
+func TestManagedGateQuarantinePersistenceFailureStaysSticky(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "managed-quarantine-persist-failure")
+	ref := "refs/heads/main"
+	if err := database.SetManagedGateRefHead(repo.ID, p.RepoDir(repo.ID), ref, head); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewRunManager(database, p, nil)
+	manager.quarantineGateRef = func(string, string, string, string, string, string) error {
+		return errors.New("quarantine storage unavailable")
+	}
+	if err := manager.ensureManagedGateGuard(repo, ref); err != nil {
+		t.Fatal(err)
+	}
+	guard := manager.managedGateGuards[managedGateGuardKey(repo.ID, ref)]
+	if err := os.Remove(guard.Path()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ensureManagedGateGuard(repo, ref); err == nil {
+		t.Fatal("authority loss with failed quarantine persistence was accepted")
+	}
+	if err := manager.ensureManagedGateGuard(repo, ref); err == nil {
+		t.Fatal("authority was reacquired after failed quarantine persistence")
 	}
 	manager.Shutdown()
 }

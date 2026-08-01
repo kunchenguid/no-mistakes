@@ -204,6 +204,115 @@ func TestStageRecoveryAnchorUsesPreparedThenCommittedAuthority(t *testing.T) {
 	}
 }
 
+func TestStageRecoveryAnchorTakesOverDeadPreparedAuthority(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover:refs/no-mistakes/recovery-source")
+	first, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.ensureInternalMutationAuthority(f.db); err != nil {
+		first.Release()
+		t.Fatal(err)
+	}
+	oldEndpoint, oldGeneration, err := first.authorityIdentity()
+	if err != nil {
+		first.Release()
+		t.Fatal(err)
+	}
+	if err := f.db.PrepareRecoveryAnchorStage(db.RecoveryAnchorStage{RunID: f.run.ID, RepoID: f.repo.ID, GatePath: f.gate, Branch: f.run.Branch, Ref: f.anchorRef(), OldSHA: internalZeroObjectID(f.preserved), NewSHA: f.preserved, OwnerGeneration: oldGeneration, AuthorityEndpoint: oldEndpoint}); err != nil {
+		first.Release()
+		t.Fatal(err)
+	}
+	stage, err := f.db.GetRecoveryAnchorStage(f.run.ID)
+	if err != nil {
+		first.Release()
+		t.Fatal(err)
+	}
+	if err := ensureRecoveryAnchorOwner(f.local, f.run, stage); err != nil {
+		first.Release()
+		t.Fatal(err)
+	}
+	first.Release()
+	second, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Release()
+	if _, err := second.ensureInternalMutationAuthority(f.db); err != nil {
+		t.Fatal(err)
+	}
+	f.service.InternalMutationConsumed = func(string) error { return nil }
+	if safety := f.service.stageRecoveryAnchor(f.ctx, second, f.run, f.preserved, f.anchorRef()); safety != "" {
+		t.Fatalf("takeover stage safety = %q", safety)
+	}
+	stage, err = f.db.GetRecoveryAnchorStage(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stage == nil || stage.State != db.RecoveryAnchorStageStaged || stage.AuthorityEndpoint == oldEndpoint {
+		t.Fatalf("taken-over anchor stage = %#v", stage)
+	}
+}
+
+func TestStageRecoveryAnchorHoldsPrivateRefFenceAcrossStageCommit(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover:refs/no-mistakes/recovery-source")
+	lock, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	if _, err := lock.ensureInternalMutationAuthority(f.db); err != nil {
+		t.Fatal(err)
+	}
+	endpoint, generation, err := lock.authorityIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage := &db.RecoveryAnchorStage{RunID: f.run.ID, RepoID: f.repo.ID, GatePath: f.gate, Branch: f.run.Branch, Ref: f.anchorRef(), OldSHA: internalZeroObjectID(f.preserved), NewSHA: f.preserved, OwnerGeneration: generation, AuthorityEndpoint: endpoint, State: db.RecoveryAnchorStagePrepared}
+	if err := f.db.PrepareRecoveryAnchorStage(*stage); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureRecoveryAnchorOwner(f.local, f.run, stage); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, f.local, "update-ref", f.anchorRef(), f.preserved)
+	var rawErr error
+	f.service.InternalMutationConsumed = func(string) error {
+		if rawErr == nil {
+			_, rawErr = gitpkg.Run(f.ctx, f.local, "-c", "core.hooksPath="+t.TempDir(), "update-ref", f.anchorRef(), f.submitted, f.preserved)
+		}
+		return nil
+	}
+	if safety := f.service.stageRecoveryAnchor(f.ctx, lock, f.run, f.preserved, f.anchorRef()); safety != "" {
+		t.Fatalf("private-fence stage safety = %q", safety)
+	}
+	if rawErr == nil {
+		t.Fatal("raw private-anchor writer bypassed the authenticated private-ref fence")
+	}
+	if got, err := readDirectLooseWorktreeRef(f.local, f.anchorRef()); err != nil || got != f.preserved {
+		t.Fatalf("private anchor after fenced stage = %q, err=%v", got, err)
+	}
+}
+
+func TestManagedPrivateRefAuthorityWritesExactAnchor(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover:refs/no-mistakes/recovery-source")
+	gitDir, err := worktreeGitDir(f.local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := AcquireManagedPrivateRefAuthority(gitDir, f.anchorRef())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Release()
+	if err := authority.UpdateRef(f.ctx, gitDir, f.anchorRef(), internalZeroObjectID(f.preserved), f.preserved); err != nil {
+		t.Fatalf("private ref authority update: %v", err)
+	}
+}
+
 func TestReconcileOrdinaryGateRefHoldsLockAcrossJournalUpdate(t *testing.T) {
 	f := newRecoverFixture(t, "cancelled")
 	lock, err := acquireCustodyLock(f.service, f.run)

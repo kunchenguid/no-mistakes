@@ -947,6 +947,13 @@ func TestSetRunCustodyReturnedCAS(t *testing.T) {
 		if got.CustodyReturnedAt == nil {
 			t.Fatal("custody stamp missing after successful CAS")
 		}
+		if err := d.RollbackRunCustodyStamp(context.Background(), expected, ""); err != nil {
+			t.Fatalf("rollback custody CAS: %v", err)
+		}
+		got, _ = d.GetRun(run.ID)
+		if got.CustodyReturnedAt != nil {
+			t.Fatal("custody stamp survived an authority rollback")
+		}
 	})
 
 	t.Run("rejects active run", func(t *testing.T) {

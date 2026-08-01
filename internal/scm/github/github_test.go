@@ -709,8 +709,25 @@ func TestVerifyUnpublishedHistoryRejectsPreservedHead(t *testing.T) {
 			stdout: "[]\n",
 		},
 	}), nil, "", "test/repo")
-	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0); err == nil {
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0, "https://github.com/test/repo/pull/7"); err == nil {
 		t.Fatal("VerifyUnpublishedHistory() error = nil, want preserved-head rejection")
+	}
+}
+
+func TestVerifyUnpublishedHistoryIgnoresUnrelatedPullRequests(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	q := strings.Repeat("c", 40)
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+		"gh api --paginate repos/test/repo/pulls?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"number":7,"head":{"ref":"renamed-feature","sha":"%s"}},{"number":8,"head":{"ref":"other","sha":"%s"}}]`+"\n", a, q),
+		},
+		"gh api --paginate repos/test/repo/pulls/7/commits?per_page=100":   {stdout: "[]\n"},
+		"gh api --paginate repos/test/repo/issues/7/timeline?per_page=100": {stdout: "[]\n"},
+	}), nil, "", "test/repo")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, strings.Repeat("b", 40), 0, 0, "https://github.com/test/repo/pull/7"); err != nil {
+		t.Fatalf("VerifyUnpublishedHistory() error = %v, want unrelated PR ignored", err)
 	}
 }
 

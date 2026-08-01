@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
 type recoveryMergeRequest struct {
@@ -23,18 +25,23 @@ type recoveryMergeRequest struct {
 	} `json:"diff_refs"`
 }
 
-func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, preserved string, since, until int64) error {
+func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, preserved string, since, until int64, targetIdentity string) error {
 	if err := h.Available(ctx); err != nil {
 		return err
 	}
 	if strings.TrimSpace(h.projectPath) == "" {
 		return errors.New("GitLab project identity is unavailable")
 	}
+	targetNumber, err := scm.ExtractPRNumber(targetIdentity)
+	if err != nil || (h.host != "" && scm.ExtractHost(targetIdentity) != "" && !strings.EqualFold(scm.ExtractHost(targetIdentity), h.host)) || scmProjectPath(targetIdentity) != h.projectPath {
+		return errors.New("GitLab submission-time merge-request identity is unavailable or mismatched")
+	}
 	project := url.PathEscape(h.projectPath)
 	var mergeRequests []recoveryMergeRequest
 	if err := h.apiPages(ctx, fmt.Sprintf("projects/%s/merge_requests?state=all&per_page=100", project), &mergeRequests); err != nil {
 		return fmt.Errorf("inspect GitLab merge-request history: %w", err)
 	}
+	matched := false
 	for _, mergeRequest := range mergeRequests {
 		inWindow, err := recoveryRecordInWindow(mergeRequest.CreatedAt, mergeRequest.UpdatedAt, since, until)
 		if err != nil {
@@ -43,6 +50,10 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 		if !inWindow {
 			continue
 		}
+		if fmt.Sprint(mergeRequest.IID) != targetNumber {
+			continue
+		}
+		matched = true
 		head := mergeRequest.SHA
 		if head == "" {
 			head = mergeRequest.DiffRefs.HeadSHA
@@ -69,7 +80,22 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 			}
 		}
 	}
+	if !matched {
+		return fmt.Errorf("GitLab merge request %s was not found in the submission interval", targetNumber)
+	}
 	return nil
+}
+
+func scmProjectPath(identity string) string {
+	trimmed := strings.TrimSpace(identity)
+	if marker := strings.Index(trimmed, "/-/merge_requests/"); marker >= 0 {
+		path := strings.TrimPrefix(trimmed[:marker], "https://")
+		path = strings.TrimPrefix(path, "http://")
+		if slash := strings.Index(path, "/"); slash >= 0 {
+			return strings.Trim(path[slash+1:], "/")
+		}
+	}
+	return ""
 }
 
 func recoveryRecordInWindow(created, updated string, since, until int64) (bool, error) {
