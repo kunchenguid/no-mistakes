@@ -243,7 +243,7 @@ func (s *Service) Refresh(ctx context.Context) State {
 		state.State = StateOffline
 		state.Safety = "blocked_offline"
 		state.Error = "could not refresh the configured push target; no files or refs were changed"
-		state.NextAction = &NextAction{Code: "retry", Command: "no-mistakes sync --check"}
+		state.NextAction = &NextAction{Code: "retry", Command: "no-mistakes axi sync --check"}
 		return state
 	}
 	state.Remote.Freshness = "live"
@@ -467,7 +467,7 @@ func (s *Service) Apply(ctx context.Context) State {
 //	all local
 //	work
 //	diverged   any       refuse (anchor named, manual   custody at local head;
-//	                     reconcile / rerun offered)     gate reset to it (CAS)
+//	                     reconcile offered)             gate reset to it (CAS)
 //	P missing  any       refuse                         refuse
 //
 // The containment row exists because a cancelled validation routinely leaves P
@@ -503,8 +503,13 @@ func (s *Service) Apply(ctx context.Context) State {
 // Recovery ends with a persisted custody-return stamp on the run; inspection
 // then reports custody_returned (never-pushed runs) or the ordinary
 // classification against the last push binding (pushed runs), both pointing at
-// run_pipeline as the next step. `no-mistakes rerun` remains the alternative
-// exit that resumes validating the preserved head instead of taking it back.
+// run_pipeline as the next step.
+//
+// `no-mistakes rerun` is a separate, one-way exit that resumes validating the
+// preserved head instead of taking it back: it makes the owning run active
+// again, and an active run always refuses recovery
+// (blocked_recover_run_active). A refusal message must therefore never offer
+// rerun beside a recovery option it would foreclose.
 func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
 		return refusal
@@ -629,7 +634,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			return s.recoverAdoptPreserved(ctx, run, state, preserved)
 		}
 		state.Relation = RelationDiverged
-		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_diverged", fmt.Sprintf("the local branch and the preserved pipeline head have diverged; the preserved commits are anchored at %s - reconcile manually and re-run the recovery, run `no-mistakes rerun` to resume validating the preserved head, or use --keep-local to keep the current head; no files or refs were changed", anchorRef))
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_diverged", BlockedRecoverDivergedMessage(anchorRef))
 		blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "git log --oneline --left-right HEAD..." + anchorRef}
 		return blocked
 	}
@@ -909,6 +914,20 @@ func recoverLocalAnchorRef(runID string) string {
 	return "refs/no-mistakes/recover-local/" + runID
 }
 
+// BlockedRecoverDivergedMessage is the refusal an operator reads when the local
+// branch and the preserved pipeline head have diverged in a way the equivalence
+// proof cannot contain. It is exported so the agent-guidance drift tests can pin
+// it alongside the other custody-recovery surfaces.
+//
+// It deliberately offers only exits that stay open. `no-mistakes rerun` is
+// one-way here: it makes the owning run active again, after which every later
+// `axi sync --recover` refuses with blocked_recover_run_active, so naming it as
+// an option would foreclose the reconcile and --keep-local exits named in the
+// same sentence.
+func BlockedRecoverDivergedMessage(anchorRef string) string {
+	return fmt.Sprintf("the local branch and the preserved pipeline head have diverged; the preserved commits are anchored at %s - reconcile them manually and re-run the recovery, or use --keep-local to keep the current head; no files or refs were changed", anchorRef)
+}
+
 func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 	state := State{Relation: RelationUnknown, Safety: "blocked_ambiguous_context", Remote: RemoteState{Freshness: "unknown"}}
 	root, err := git.FindGitRoot(s.workDir())
@@ -1130,7 +1149,7 @@ func (s *Service) classifyRelation(ctx context.Context, state *State, pushed, ba
 		state.Relation = RelationUnknown
 		state.Safety = "blocked_relation_unknown"
 		state.Error = "the pipeline-pushed commit is not available locally; run an explicit synchronization check"
-		state.NextAction = &NextAction{Code: "check_sync", Command: "no-mistakes sync --check"}
+		state.NextAction = &NextAction{Code: "check_sync", Command: "no-mistakes axi sync --check"}
 		return
 	}
 	if live {

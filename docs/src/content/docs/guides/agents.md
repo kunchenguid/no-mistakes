@@ -155,7 +155,13 @@ If that PR later falls behind the default branch or hits a merge conflict - comm
 The CI monitor stays live in the background after checks pass, and when it sees an actual conflict it rebases onto the base, resolves it, and re-pushes the branch itself, so no agent or user action is needed.
 A PR that is merely behind but still clean needs nothing either, since the platform merges it.
 The one exception is when that monitor is no longer running - the PR was closed, the run was aborted or superseded, it idle-timed-out, or its auto-fix attempts were exhausted - in which case the agent recovers with `no-mistakes rerun`, which cancels the stale monitor and re-runs the full pipeline including a deterministic rebase step.
-The agent must not use `no-mistakes axi run` to refresh a still-active PR: after `checks-passed` it reattaches to the running monitor with HEAD unchanged and returns the monitor output without rebasing.
+When the dead run left auto-fix or CI-rebase commits the clone lacks, the agent takes them with the offered `branch_sync` `sync` action before the rerun, not after: the rerun creates a pending run with no push binding (`legacy_unbound`), and `no-mistakes axi sync` then refuses.
+`no-mistakes rerun` only starts that recovery run: it returns immediately without driving, so something still has to answer the recovered run's gates, and the agent follows it with `no-mistakes axi run`.
+That reattach is conditional: the reran run carries the head the *gate* holds, while `axi run` looks up an active run by the caller's *local* `HEAD`, so it reattaches - needing no `--intent` - only while the gate head still equals your local HEAD, which is exactly what syncing first establishes.
+The agent must still not use `no-mistakes axi run` to refresh a *still-active* PR: after `checks-passed` it reattaches to the running monitor with HEAD unchanged and returns the monitor output without rebasing.
+
+The reverse also holds, and it is the sharper trap: `no-mistakes rerun` re-validates the head already pushed to the gate, not the caller's local `HEAD`, so it is only for an unchanged local HEAD such as this dead-monitor recovery.
+After a `failed` or `cancelled` outcome the agent commits its fix on the same feature branch and starts a fresh run with `no-mistakes axi run --intent "..."`, which pushes that new local `HEAD` through the gate; `no-mistakes rerun` there would silently re-check the pre-fix code.
 
 In task-first mode, if the repo is on the default branch, the skill tells the agent to create a feature branch before committing because the gate validates committed history on a non-default branch.
 The agent should inspect `git status` before changing or committing anything, preserve unrelated pre-existing uncommitted changes, and commit only the changes that belong to the user's task.
@@ -176,7 +182,10 @@ no-mistakes axi abort --run <id>
 
 Before any post-pipeline local commit or fresh run, read `branch_sync`.
 Only when its structured `next_action.code` is `sync`, run `no-mistakes axi sync` first.
-When `next_action.code` is `recover_custody` - a terminal run left unpublished pipeline commits preserved in the local gate - run `no-mistakes axi sync --recover` to return custody, or `no-mistakes rerun` to resume validating the preserved head.
+When `next_action.code` is `recover_custody` - a terminal run left unpublished pipeline commits preserved in the local gate - recover custody first with `no-mistakes axi sync --recover`: it returns custody and moves a clean worktree to the preserved pipeline head.
+Then validate that head with `no-mistakes axi run --intent "..."`, which starts and drives the run in one command.
+`no-mistakes rerun` also re-runs the preserved pipeline head, but it returns immediately without driving, and a following `no-mistakes axi run` reattaches only while your local HEAD equals that preserved head - so use it only after the recovery moved your worktree there.
+Never abort or rerun while a gate awaits your response or a step is actively working, unless you are deliberately discarding that run: wanting to fix a finding by hand is not such a reason, because it throws away the pipeline's in-flight work and forces a full re-validation.
 A `branch_sync.state` of `user_owned` means the run went terminal before changing the submitted head and cancellation released the branch: it is immediately usable and needs no sync action.
 When `next_action.code` is `continue_active_run`, run the reported command and keep driving the active run.
 If synchronization is blocked, process that state instead of improvising reset, stash, merge, rebase, force, or branch replacement.

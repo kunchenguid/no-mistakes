@@ -874,3 +874,46 @@ func readOptional(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+// TestNextActionCommandsAreTheAgentAxiForm pins the contract the agent skill
+// states: "run the reported command". Every next_action a machine consumer can
+// receive must therefore name a command that consumer can actually run, so the
+// no-mistakes-owned commands are emitted in their `axi` form. Only the AXI
+// surfaces render NextAction.Command (`no-mistakes sync` prints its own human
+// summary and the TUI reads only Code), so the agent form is the whole
+// contract for this field.
+func TestNextActionCommandsAreTheAgentAxiForm(t *testing.T) {
+	t.Run("offline retry", func(t *testing.T) {
+		f := newSyncFixture(t)
+		if err := os.Rename(f.remote, f.remote+".offline"); err != nil {
+			t.Fatal(err)
+		}
+		state := f.service.Refresh(f.ctx)
+		if state.NextAction == nil || state.NextAction.Code != "retry" {
+			t.Fatalf("offline next action = %#v", state.NextAction)
+		}
+		if got := state.NextAction.Command; got != "no-mistakes axi sync --check" {
+			t.Fatalf("offline retry command = %q, want the agent axi form", got)
+		}
+	})
+
+	t.Run("unavailable pipeline head check_sync", func(t *testing.T) {
+		f := newSplitLocalSyncFixture(t)
+		absent := "0123456789abcdef0123456789abcdef01234567"
+		if err := f.db.UpdateRunHeadSHA(f.run.ID, absent); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.db.UpdateRunPushBinding(f.run.ID, db.PushBinding{
+			HeadSHA: absent, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/sync",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		state := f.service.InspectCached(f.ctx)
+		if state.NextAction == nil || state.NextAction.Code != "check_sync" {
+			t.Fatalf("ambiguous-context next action = %#v", state.NextAction)
+		}
+		if got := state.NextAction.Command; got != "no-mistakes axi sync --check" {
+			t.Fatalf("check_sync command = %q, want the agent axi form", got)
+		}
+	})
+}

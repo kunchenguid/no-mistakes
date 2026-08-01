@@ -424,6 +424,12 @@ func TestRecoverDivergedRefusesButKeepLocalReturnsCustody(t *testing.T) {
 	if !strings.Contains(refused.Error, f.anchorRef()) || !strings.Contains(refused.Error, "--keep-local") {
 		t.Fatalf("diverged refusal not actionable: %q", refused.Error)
 	}
+	// `rerun` was offered here as a third exit, but taking it makes the run
+	// active again, so the two real exits this same message names are then
+	// refused with blocked_recover_run_active. Never offer it.
+	if strings.Contains(refused.Error, "rerun") {
+		t.Fatalf("diverged refusal offers `rerun`, which forecloses the exits it names: %q", refused.Error)
+	}
 	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
 		t.Fatalf("diverged refusal did not anchor preserved commits: %s", got)
 	}

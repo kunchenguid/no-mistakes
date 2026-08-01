@@ -33,6 +33,10 @@ return control to the outer executor. Safe inspection remains available through
 Run the pipeline and decide on its findings as they come up. On a branch you
 have not validated yet, clear [Before you start](#before-you-start) first.
 
+If the user asked you to *do* something rather than validate what is already
+committed, carry out the task first and come back to this loop - see
+[Two ways to invoke](#two-ways-to-invoke). Otherwise start the run now.
+
 1. Start the run. It blocks until the first decision point or the end:
    ```sh
    no-mistakes axi run --intent "<what the user set out to accomplish>"
@@ -46,26 +50,22 @@ have not validated yet, clear [Before you start](#before-you-start) first.
    needs to, but the run **never advances past a gate on its own**. Read every
    return; on a `gate:`, respond; loop until an `outcome:`. Never idle-wait
    for the run to move forward by itself.
-   When that status output includes `awaiting_agent: parked <duration>` under the run,
-   the run is parked at an approval or fix-review gate and waiting for you to
-   send `axi respond`. The field is observability only: it does not change
-   gate resolution, auto-resume the run, or make `--yes` the default.
-   While a step is actively `running` or `fixing`, `axi status` may include
-   `active_steps` with `active_for`, `last_activity`, a native `agent_pid` when
-   a subprocess agent is running, and the current round such as `round 1`,
-   `auto-fix 1/3`, or `fix 2`. If `last_activity` is prefixed with
-   `quiet`, no step log or native-agent lifecycle activity has arrived for
-   longer than `step_quiet_warning`. Treat that as a liveness clue, not as
-   permission to cancel, rerun, or edit the worktree yourself.
+   That status output tells you whether the run is parked at a gate waiting on
+   your `axi respond` and how long its active step has been working; the fields
+   are described in [reading-output.md](reading-output.md).
 2. If the output contains a `gate:` object, the pipeline is waiting on you.
-   Read its `findings` table. Each finding has an `id`, `severity`,
-   `file`, `description`, and an `action` that tells you how the
-   pipeline classified it:
+   Read its `findings` table. Two fields drive your decision: `action`,
+   which tells you how the pipeline classified the finding, and `severity`,
+   which tells you whether it is worth a fix round. Select findings by their
+   `id`. The `action` values are:
    - `auto-fix` - mechanical and low-risk; you can authorize the fix on
      your own judgment by responding with `--action fix`.
    - `no-op` - informational only; nothing to do.
    - `ask-user` - a call only the user can make; see
      [Escalate `ask-user` findings](#escalate-ask-user-findings).
+
+   To parse an unfamiliar TOON shape - a gate block, a findings table, a final
+   state - read [reading-output.md](reading-output.md).
 
    `severity` decides whether a finding is worth a fix round at all.
    Select `error` and `warning` findings; leave `info`
@@ -99,46 +99,50 @@ have not validated yet, clear [Before you start](#before-you-start) first.
    re-review the result. Leave the worktree alone while a run is active - even
    for a real bug in your own code - because editing it yourself, or reaching
    for `abort` or `rerun` to do so, discards the pipeline's in-flight work
-   and forces a full re-validation. `abort` and `rerun` are for *between*
-   runs (after a `failed` or `cancelled` outcome), never to circumvent a
-   gate.
+   and forces a full re-validation. Never
+   abort or rerun while a gate awaits your response or a step is actively
+   working, unless you are deliberately discarding that run.
 
-    Each `respond` blocks until the next `gate:`, `checks-passed` decision point, or final outcome.
+   Each `respond` blocks until the next `gate:`, `checks-passed` decision point, or final outcome.
 
-    Two extra flags are available on `respond` when you need them:
-    - `--add-finding '<json>'` (with `--action fix`) folds a finding you
-      spotted yourself - one the pipeline did not surface - into the fix round,
-      as a JSON finding object. Use it for a problem you noticed that is not in
-      the gate's own `findings` table.
-    - `--step <name>` responds to a specific step instead of the one currently
-      awaiting approval. You rarely need this; omit it to answer the active gate.
+   Two extra flags are available on `respond` when you need them:
+   - `--add-finding '<json>'` (with `--action fix`) folds a finding you
+     spotted yourself - one the pipeline did not surface - into the fix round,
+     as a JSON finding object. Use it for a problem you noticed that is not in
+     the gate's own `findings` table.
+   - `--step <name>` responds to a specific step instead of the one currently
+     awaiting approval. You rarely need this; omit it to answer the active gate.
+
+   If the user asked you to drive the whole run without checking back, resolve
+   every gate with `--yes` instead - see
+   [Drive unattended with `--yes`](#drive-unattended-with---yes).
 3. Repeat step 2 until the output has an `outcome:` instead of a `gate:`. The
    outcomes are:
    - `checks-passed` - the change is validated and CI is green (or the
      trusted default-branch config declares `no_ci: true` and no checks are
-     registered - the help line names that declaration when it applies), but
-     the PR is not merged yet. **You are done driving the pipeline.** Do not
-     wait for the merge: tell the user the PR is ready and ask them to review
-     and merge it (the PR link is in the `help` line). A generic empty forge
-     check list without that declaration is not ready. no-mistakes keeps
-     monitoring the PR in the background until it is merged, closed, or its
-     configured idle timeout elapses, so a human can watch it in the TUI.
+     registered - the help line names that declaration when it applies), but the
+     PR is not merged yet. The CI step deliberately returns here the moment
+     checks are green rather than blocking on the human merge, so **you are done
+     driving the pipeline.** Do not wait, poll, or re-run for the merge: tell the
+     user the PR is ready and ask them to review and merge it (the PR link is in
+     the `help` line). A generic empty forge check list without that
+     declaration is not ready - never treat "no CI checks reported" alone as
+     green. no-mistakes keeps monitoring the PR in the background until it is
+     merged, closed, or its configured idle timeout elapses, so a human can watch
+     it in the TUI.
    - `passed` - the changes cleared the gate and the PR was merged or closed.
    - `failed` or `cancelled` - they did not; read the output and address it.
      Fix whatever the output points at (a failing test, a lint error, a finding
-     you skipped), commit the fix on the same feature branch, then drive the
-     pipeline again - `no-mistakes axi run --intent "..."` starts a fresh run,
-     or `no-mistakes rerun` re-runs the pipeline for the current branch. Do
-     not leave the user at a `failed` outcome without either retrying or
-     explaining what blocks it.
+     you skipped), commit the fix on the same feature branch, then start a fresh
+     run with `no-mistakes axi run --intent "..."`, which validates the new
+     local `HEAD` you just committed. Do not reach for
+     `no-mistakes rerun` after a local commit:
+     it re-validates the head already pushed to the gate, so it is
+     only for an unchanged local HEAD (a dead or stale CI monitor) and here
+     would silently re-check the pre-fix code. Do not leave the user at a
+     `failed` outcome without either retrying or explaining what blocks it.
 
-The CI step deliberately keeps watching the PR after checks pass, so
-`axi run` returns `checks-passed` the moment checks are green (or a trusted
-`no_ci: true` declaration covers a zero-check repository) rather than
-blocking on the human merge. Never poll or re-run waiting for the merge yourself.
-Never treat "no CI checks reported" alone as green.
-
-Because that monitor stays live, a PR that falls behind the default branch or
+Because that background monitor stays live, a PR that falls behind the default branch or
 hits a merge conflict after checks pass - commonly because another PR merged
 first - needs **no command from you**: leave it to the live monitor and
 never hand-rebase it yourself. When the CI monitor sees an actual conflict it
@@ -149,9 +153,21 @@ exception is when that monitor is no longer running - the PR was closed, the run
 was aborted or superseded, it idle-timed-out, or its auto-fix attempts were
 exhausted - in which case recover with `no-mistakes rerun`, which cancels the
 stale monitor and re-runs the full pipeline including a deterministic rebase
-step. Reach for `no-mistakes axi run` only for a new run: on a still-active PR
-it reattaches to the running monitor (HEAD unchanged) and returns its output
-without rebasing.
+step. If the dead run left auto-fix or CI-rebase commits your clone lacks, take
+them with the offered `branch_sync` `sync` action **before the rerun,
+not after**: the rerun creates a pending run with no push binding
+(`legacy_unbound`), and `no-mistakes axi sync` then refuses.
+`no-mistakes rerun` only *starts* that run:
+it returns immediately without driving, so something still has to answer the
+recovered run's gates.
+Follow it with `no-mistakes axi run`, then resume the
+step-2 gate loop until you get an `outcome:`. That reattach is conditional:
+the reran run carries the head the **gate** holds, while `axi run` looks up an
+active run by your **local** `HEAD`, so it reattaches - with no `--intent` -
+only while the gate head still equals your local HEAD, which is exactly what
+syncing first establishes. Never point
+`no-mistakes axi run` at a **still-active** PR to refresh it: it reattaches to
+the running monitor and returns its output without rebasing.
 
 Before any post-pipeline local commit or fresh run, read the structured
 `branch_sync` object returned by AXI home, status, or a drive result and act
@@ -264,9 +280,7 @@ that a reviewer reading only the diff would not know.
 
 ## Escalate `ask-user` findings
 
-A gate whose findings are all `auto-fix` or `no-op` is safe to drive on your
-own judgment: respond with `--action fix` or `--action approve` as
-appropriate. But a finding marked
+A finding marked
 `ask-user` is a decision that belongs to the user, not you - the pipeline
 flagged it because it challenges their deliberate intent or changes product
 behavior. Do not approve, fix, or skip it on your own. Instead, stop and bring
@@ -279,9 +293,12 @@ it to the user before you respond:
   `respond` call: `--action fix` (pass their guidance through
   `--instructions`), `--action approve`, or `--action skip`.
 
-The one exception is `--yes` (below): it is the user's standing consent to
+The one exception is
+[`--yes`](#drive-unattended-with---yes): it is the user's standing consent to
 drive every gate unattended, so under `--yes` you resolve `ask-user`
 findings automatically instead of stopping to ask.
+
+## Drive unattended with `--yes`
 
 If you have clear consent to drive the run automatically, pass `--yes` to `axi run`
 or `axi respond`. It treats every actionable finding - `auto-fix` and
@@ -289,6 +306,12 @@ or `axi respond`. It treats every actionable finding - `auto-fix` and
 fix round, accepts the resulting fix review, and approves gates with only
 `no-op` findings. Only use it when the user has asked you to drive the whole
 run without checking back.
+
+`--yes` converges; it does not fix until clean. Each step is fixed at most
+once, so if the rereview of that fix still reports blocking findings, `--yes`
+approves the gate and the run moves on rather than looping. A run driven this
+way can therefore reach a successful outcome with findings still outstanding -
+report them to the user.
 
 ## Inspecting state
 
@@ -300,9 +323,5 @@ no-mistakes axi abort         # cancel the current-branch active run
 no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside its worktree)
 ```
 
-Exit codes: `0` success, no-op, or normal decision gates, `1` failed or cancelled final outcomes, `2` bad usage.
-
-To parse an unfamiliar TOON shape - a gate block, a findings table, a final
-state - read [reading-output.md](reading-output.md).
-To return branch custody, synchronize, or recover unpublished pipeline commits,
-read [sync-recovery.md](sync-recovery.md).
+Exit codes: `0` success, no-op, or normal decision gates; `1` either a `failed`/`cancelled` final outcome **or** an `error:` document (uninitialized repo, refused precondition, refused branch ownership, `nested_gate_context`); `2` bad usage.
+Exit `1` alone does not mean the run failed - read whether you got an `outcome:` or an `error:` before you tell the user anything.

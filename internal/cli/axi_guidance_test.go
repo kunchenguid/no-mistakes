@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/gateguidance"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -21,10 +22,66 @@ import (
 // "PR fell behind / conflicted after checks pass" guidance: the live CI monitor
 // auto-rebases and re-pushes such a PR, so the agent runs no command and never
 // hand-rebases, and `no-mistakes rerun` is only the dead-monitor recovery.
+//
+// The last two phrases bound that recovery. `rerun` re-runs the gate branch tip
+// (daemon.RunManager.HandleRerun), while `axi run` pushes the caller's local
+// HEAD, so offering `rerun` as a post-commit retry silently re-validates the
+// pre-fix code. Every surface must scope it to an unchanged local HEAD.
+//
+// The final phrases close the other half of that recovery: newRerunCmd fires
+// MethodRerun and returns, so `rerun` alone leaves the recovered run parked at
+// its first gate with nobody responding, and something must answer those gates.
+// That follow-up `axi run` reattaches only CONDITIONALLY: HandleRerun stamps the
+// gate branch tip while activeRunID matches the caller's local HEAD, and
+// pipeline fix commits move the gate branch ref, so a surface must state the
+// condition and the fallback instead of promising an unconditional reattach.
+//
+// "before the rerun, not after" pins the ORDER of that fallback, the third
+// attempt at this paragraph. Naming the sync as a recovery from a failed
+// reattach was unreachable: the rerun's own pending run is the newest run
+// branchsync.inspect selects, it carries no push binding, so the state is
+// legacy_unbound and `axi sync` refuses. Synchronizing first is what makes the
+// gate head equal local HEAD, which is the reattach condition itself. Proven end
+// to end by e2e TestAxiStaleMonitorSyncBeforeRerunReattaches and its
+// TestAxiStaleMonitorRerunBeforeSyncStrandsTheRecovery counterpart.
 var canonicalStaleMonitorPhrases = []string{
 	"never hand-rebase",
 	"re-pushes",
 	"no-mistakes rerun",
+	"re-validates the head already pushed to the gate",
+	"only for an unchanged local HEAD",
+	"returns immediately without driving",
+	"answer the recovered run's gates",
+	"only while the gate head still equals your local HEAD",
+	"branch_sync",
+	"no-mistakes axi run",
+	"before the rerun, not after",
+}
+
+// canonicalCustodyRecoveryPhrases pin the corrected `recover_custody` recovery.
+// That state exists only because the gate holds pipeline commits the worktree
+// lacks, so the local HEAD `axi run` matches cannot equal the gate tip `rerun`
+// stamps: custody recovery has to move the worktree first, and only then is a
+// run startable and drivable. Every surface must keep the order and must not
+// promise an unconditional `rerun` + `axi run` reattach here.
+var canonicalCustodyRecoveryPhrases = []string{
+	"no-mistakes axi sync --recover",
+	"preserved pipeline head",
+	`no-mistakes axi run --intent`,
+	"returns immediately without driving",
+	"reattaches only while your local HEAD equals that preserved head",
+}
+
+// canonicalAbortScopePhrases pin the scope of `abort`/`rerun` as a principle,
+// not an enumeration. Listing the legitimate exceptions (dead CI monitor,
+// recover_custody) kept colliding with other live surfaces that legitimately
+// prescribe abort - blocked_recover_run_active tells the reader to abort, and
+// the skill's own before-you-start sanctions abort to discard a run - because
+// the exception set is open. What actually distinguishes a wrong abort from a
+// right one is whether the caller means to throw that run away.
+var canonicalAbortScopePhrases = []string{
+	"abort or rerun while a gate awaits your response or a step is actively working",
+	"unless you are deliberately discarding that run",
 }
 
 var canonicalPreserveGateFixPhrases = []string{
@@ -88,13 +145,7 @@ func TestStaleMonitorGuidance_SyncedAcrossSurfaces(t *testing.T) {
 		"agents guide":    readAgentsGuide(t),
 		"axi help string": staleMonitorGuidance,
 	}
-	for name, content := range surfaces {
-		for _, phrase := range canonicalStaleMonitorPhrases {
-			if !strings.Contains(content, phrase) {
-				t.Errorf("%s is missing the canonical stale-monitor guidance phrase %q", name, phrase)
-			}
-		}
-	}
+	assertPhrasesOnEverySurface(t, "stale-monitor", surfaces, canonicalStaleMonitorPhrases)
 
 	// The discarded wrong framing must not creep back into any surface.
 	for name, content := range surfaces {
@@ -102,6 +153,68 @@ func TestStaleMonitorGuidance_SyncedAcrossSurfaces(t *testing.T) {
 			t.Errorf("%s still carries the discarded 'rebase step integrates the latest default branch' wording", name)
 		}
 	}
+	// The unconditional-reattach promise is pinned positively instead: an exact
+	// historical substring let any reworded promise through, while the reattach
+	// condition and the sync-first order in canonicalStaleMonitorPhrases are
+	// what a surface actually has to carry.
+}
+
+// TestCustodyRecoveryGuidance_SyncedAcrossSurfaces pins the recover_custody
+// recovery on the static surfaces and on the live sync help string, which
+// previously drifted unguarded into promising a `rerun` + `axi run` reattach
+// that cannot work in that state.
+func TestCustodyRecoveryGuidance_SyncedAcrossSurfaces(t *testing.T) {
+	assertPhrasesOnEverySurface(t, "custody-recovery", map[string]string{
+		"skill files":           skill.Bundle(),
+		"agents guide":          readAgentsGuide(t),
+		"live sync help string": custodyRecoveryGuidance,
+	}, canonicalCustodyRecoveryPhrases)
+
+	// The diverged-recovery refusal is a custody-recovery surface too, and the
+	// only one that ever offered `rerun` as a third exit. Taking it reactivates
+	// the run, after which both exits this same message names are refused with
+	// blocked_recover_run_active, so it must offer neither the command nor a
+	// reworded version of it.
+	diverged := branchsync.BlockedRecoverDivergedMessage("refs/no-mistakes/recover/run-1")
+	for _, forbidden := range []string{"rerun", "resume validating"} {
+		if strings.Contains(diverged, forbidden) {
+			t.Errorf("blocked_recover_diverged offers %q, which forecloses the exits it names: %q", forbidden, diverged)
+		}
+	}
+	for _, want := range []string{"refs/no-mistakes/recover/run-1", "--keep-local", "no files or refs were changed"} {
+		if !strings.Contains(diverged, want) {
+			t.Errorf("blocked_recover_diverged is missing %q: %q", want, diverged)
+		}
+	}
+}
+
+// TestAbortScopeGuidance_SyncedAcrossSurfaces pins the abort/rerun scope rule,
+// including the live `axi abort` help text, so the terminal-outcome
+// precondition and its two prescribed-recovery exceptions cannot drift apart.
+func TestAbortScopeGuidance_SyncedAcrossSurfaces(t *testing.T) {
+	assertPhrasesOnEverySurface(t, "abort-scope", map[string]string{
+		"skill body":          skill.Markdown(),
+		"agents guide":        readAgentsGuide(t),
+		"live axi abort help": newAxiAbortCmd().Long,
+	}, canonicalAbortScopePhrases)
+}
+
+func assertPhrasesOnEverySurface(t *testing.T, kind string, surfaces map[string]string, phrases []string) {
+	t.Helper()
+	for name, content := range surfaces {
+		normalized := normalizeGuidanceSpace(content)
+		for _, phrase := range phrases {
+			if !strings.Contains(normalized, normalizeGuidanceSpace(phrase)) {
+				t.Errorf("%s is missing the canonical %s guidance phrase %q", name, kind, phrase)
+			}
+		}
+	}
+}
+
+// normalizeGuidanceSpace collapses the line wrapping each surface applies, so a
+// pinned phrase matches regardless of where a surface breaks its lines.
+func normalizeGuidanceSpace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // TestStaleMonitorGuidance_InChecksPassedOutput ensures the guidance reaches the

@@ -119,6 +119,7 @@ Treat that as the agent stopping point: ask the user to review and merge the PR 
 If that PR later falls behind the default branch or hits a merge conflict, do not run `axi run`, `rerun`, or a manual rebase while the CI monitor is still running.
 The monitor auto-rebases onto the base, resolves actual conflicts, and re-pushes the branch; a PR that is merely behind but clean needs no command.
 Use `no-mistakes rerun` only after that monitor is no longer running, such as a closed PR, aborted or superseded run, idle timeout, or exhausted CI auto-fix attempts.
+When the dead run left pipeline commits your clone lacks, run `no-mistakes axi sync` before the rerun, not after: the rerun's own pending run carries no push binding, so synchronization is refused until it ends.
 Successful outcomes (`checks-passed` and `passed`) also carry `help` instructions telling the agent to summarize the run.
 When the pipeline applied fixes, they include a `fixes` table and a `help` instruction to acknowledge the misses and list those fixes for the user's review.
 
@@ -218,7 +219,7 @@ The proof is deliberately narrow and never uses patch identity, which discards h
 Anything it cannot decide - unlanded local commits, or a rebase whose fix rounds also rewrote your own lines - still refuses with the anchor named, because only escalation can tell a deliberate pipeline fix apart from a dropped change.
 A dirty worktree refuses with explicit choices.
 When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
-`no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
+`no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back, but it is one-way: the new run is active, so recovery then refuses with `blocked_recover_run_active` until that run ends.
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
 On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pipeline-created exists to recover, and no file, ref, or database row changes.
 
@@ -312,7 +313,9 @@ an override is recorded as newly supplied explicit intent, while fresh inference
 records the transcript source. If another run is active on that branch, rerun
 cancels it before starting over. Treat rerun as a between-runs action after a
 failed or cancelled outcome, or after you have committed a separate fix outside
-an active run; do not use it to bypass a gate.
+an active run. Never rerun while a gate awaits your response or a step is
+actively working, unless you are deliberately discarding that run; do not use it
+to bypass a gate.
 
 | Flag | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |

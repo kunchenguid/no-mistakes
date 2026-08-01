@@ -15,6 +15,20 @@ import (
 
 var syncInteractive = terminalInteractive
 
+// custodyRecoveryGuidance is the live help emitted for
+// `blocked_pipeline_owned_recoverable`: a terminal run whose pipeline commits
+// live only on the gate branch. The order matters. `no-mistakes rerun` stamps
+// its new run with the GATE branch tip (RunManager.HandleRerun) while `axi run`
+// looks up an active run by the caller's LOCAL HEAD, and this state exists
+// precisely because those two differ, so `rerun` followed by `axi run` cannot
+// reattach until the recovery has moved the worktree onto the preserved head.
+// Recovering custody first makes the ordinary `axi run --intent` path work: it
+// starts and drives the run in one command.
+//
+// Mirrored in the skill body and the agents guide; kept in sync by
+// TestCustodyRecoveryGuidance_SyncedAcrossSurfaces.
+const custodyRecoveryGuidance = "Recover custody first with `no-mistakes axi sync --recover`: it returns custody and fast-forwards a clean worktree to the preserved pipeline head. Then validate that head with `no-mistakes axi run --intent \"<what the user set out to accomplish>\"`, which starts and drives the run in one command. `no-mistakes rerun` also re-runs the preserved pipeline head, but it returns immediately without driving, and a following `no-mistakes axi run` reattaches only while your local HEAD equals that preserved head - so use it only after the recovery moved your worktree there."
+
 func newSyncCmd() *cobra.Command {
 	var check, yes, recover, keepLocal bool
 	cmd := &cobra.Command{
@@ -269,7 +283,7 @@ func humanSyncSummary(state branchsync.State) string {
 	switch state.State {
 	case branchsync.StatePipelineOwned:
 		if state.Safety == "blocked_pipeline_owned_recoverable" {
-			return "run ended without publishing its pipeline commits; recover custody with `no-mistakes sync --recover` (or `no-mistakes rerun` to resume validation)"
+			return "run ended without publishing its pipeline commits; recover custody with `no-mistakes sync --recover`, then start a fresh run to validate the preserved head"
 		}
 		return "pipeline fix is not pushed yet; do not make local follow-up commits"
 	case branchsync.StateCustodyReturned:
@@ -342,7 +356,7 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
 		help = append(help, "Run `"+state.NextAction.Command+"`")
 	}
 	if state.Safety == "blocked_pipeline_owned_recoverable" {
-		help = append(help, "Run `no-mistakes rerun` instead to resume validating the preserved pipeline head")
+		help = append(help, custodyRecoveryGuidance)
 	}
 	if len(help) > 0 {
 		fields = append(fields, toON.Field{Key: "help", Value: help})
