@@ -616,6 +616,9 @@ func ResolveRef(ctx context.Context, dir, ref string) (string, error) {
 // `git rev-parse --verify --quiet` so a missing ref is a clean (nil, false)
 // result rather than a loud error.
 func RefExists(ctx context.Context, dir, ref string) (bool, error) {
+	if isBareGitDir(dir) {
+		return RefExistsBare(ctx, dir, ref)
+	}
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	cmd.Env = NonInteractiveEnv(dir)
 	winproc.Harden(cmd)
@@ -627,6 +630,25 @@ func RefExists(ctx context.Context, dir, ref string) (bool, error) {
 		return false, fmt.Errorf("git rev-parse %s: %w", ref, err)
 	}
 	return true, nil
+}
+
+func RefExistsBare(ctx context.Context, bareDir, ref string) (bool, error) {
+	if _, err := RunBare(ctx, bareDir, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("git rev-parse %s: %w", ref, err)
+	}
+	return true, nil
+}
+
+func ResolveRefBare(ctx context.Context, bareDir, ref string) (string, error) {
+	out, err := RunBare(ctx, bareDir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolve ref %s: %w", ref, err)
+	}
+	return out, nil
 }
 
 // ShowFile returns the content of path as stored at the given ref (e.g.

@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS runs (
     head_sha                TEXT NOT NULL,
     base_sha                TEXT NOT NULL,
     submitted_head_sha      TEXT,
+    receive_reservation_id  TEXT,
     review_approved_head_sha TEXT,
     status                  TEXT NOT NULL DEFAULT 'pending',
     pr_url                  TEXT,
@@ -68,6 +69,10 @@ CREATE TABLE IF NOT EXISTS runs (
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS runs_receive_reservation
+    ON runs (receive_reservation_id)
+    WHERE receive_reservation_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS step_results (
     id               TEXT PRIMARY KEY,
@@ -193,6 +198,8 @@ var migrationStatements = []string{
 	// Branch synchronization provenance is intentionally nullable. Historical
 	// rows stay unbound because mutable head_sha cannot prove a successful push.
 	`ALTER TABLE runs ADD COLUMN submitted_head_sha TEXT`,
+	`ALTER TABLE runs ADD COLUMN receive_reservation_id TEXT`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS runs_receive_reservation ON runs (receive_reservation_id) WHERE receive_reservation_id IS NOT NULL`,
 	// Review authority is nullable and never backfilled. A historical mutable
 	// head_sha cannot prove which exact commit a completed review approved.
 	`ALTER TABLE runs ADD COLUMN review_approved_head_sha TEXT`,

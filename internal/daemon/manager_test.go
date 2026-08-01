@@ -266,6 +266,117 @@ func TestPendingReceiveDoesNotReuseRunBeforeRefMutation(t *testing.T) {
 	}
 }
 
+func TestReceiveCreatesDistinctRunForSameHeadWithDifferentReservation(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+	repo, oldSHA := setupTestGitRepo(t, p, d, "same-head-receive-repo")
+	gitCmd(t, repo.WorkingPath, "config", "user.email", "test@test.com")
+	gitCmd(t, repo.WorkingPath, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "preserved.txt"), []byte("preserved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "preserved.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "preserved")
+	preservedSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/tmp/preserved")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	gatePath := p.RepoDir(repo.ID)
+	ref := "refs/heads/main"
+	var admitted ipc.AdmitPushResult
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: preservedSHA, Intent: "first"}, &admitted); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, gatePath, "update-ref", ref, preservedSHA, oldSHA)
+	firstParams := &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: preservedSHA, Intent: "first"}
+	var firstResult ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, firstParams, &firstResult); err != nil {
+		t.Fatal(err)
+	}
+	firstRun := waitForRunTerminalState(t, d, firstResult.RunID)
+
+	gitCmd(t, repo.WorkingPath, "checkout", "-b", "alternate", oldSHA)
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "alternate.txt"), []byte("alternate\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "alternate.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "alternate")
+	alternateSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/tmp/alternate")
+	gitCmd(t, gatePath, "update-ref", ref, alternateSHA, preservedSHA)
+
+	secondParams := &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: alternateSHA, New: preservedSHA, Intent: "second"}
+	if err := client.Call(ipc.MethodAdmitPush, secondParams, &admitted); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, gatePath, "update-ref", ref, preservedSHA, alternateSHA)
+	var secondResult ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: alternateSHA, New: preservedSHA, Intent: "second"}, &secondResult); err != nil {
+		t.Fatal(err)
+	}
+	if secondResult.RunID == firstResult.RunID {
+		t.Fatal("same-head receive reused the prior reservation's run")
+	}
+	secondRun := waitForRunTerminalState(t, d, secondResult.RunID)
+	if secondRun.Intent == nil || *secondRun.Intent != "second" {
+		t.Fatalf("second receive intent = %v, want second", secondRun.Intent)
+	}
+	if firstRun.Intent == nil || *firstRun.Intent != "first" {
+		t.Fatalf("first receive intent = %v, want first", firstRun.Intent)
+	}
+}
+
+func TestReceiveDeletionReservationReconcilesWithoutRun(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+	repo, oldSHA := setupTestGitRepo(t, p, d, "deletion-receive-repo")
+	gatePath := p.RepoDir(repo.ID)
+	ref := "refs/heads/main"
+	zeroSHA := "0000000000000000000000000000000000000000"
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var admitted ipc.AdmitPushResult
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: zeroSHA}, &admitted); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := d.GetPendingReceiveReservationsForBranch(repo.ID, "main"); err != nil || len(pending) != 1 {
+		t.Fatalf("pending deletion reservations = %d, %v", len(pending), err)
+	}
+	gitCmd(t, gatePath, "update-ref", "-d", ref, oldSHA)
+
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: zeroSHA}, &result)
+	if err == nil || !strings.Contains(err.Error(), "ref deletion") {
+		t.Fatalf("deletion notification error = %v, want ref deletion", err)
+	}
+	if runs, err := d.GetRunsByRepo(repo.ID); err != nil {
+		t.Fatal(err)
+	} else if len(runs) != 0 {
+		t.Fatalf("runs after deletion = %d, want 0", len(runs))
+	}
+	reservations, err := d.GetPendingReceiveReservationsForBranch(repo.ID, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reservations) != 0 {
+		t.Fatalf("pending reservations after deletion = %d, want 0", len(reservations))
+	}
+
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: zeroSHA}, &result); err == nil || !strings.Contains(err.Error(), "ref deletion") {
+		t.Fatalf("duplicate deletion notification error = %v, want ref deletion", err)
+	}
+}
+
 func TestPushReceivedAllowsDifferentBranchRunsConcurrently(t *testing.T) {
 	started := make(chan string, 2)
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {

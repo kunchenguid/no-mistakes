@@ -77,3 +77,24 @@ func TestReceiveReservationRetiresOnlyWhenPending(t *testing.T) {
 		t.Fatalf("retired reservation state = %q", got.State)
 	}
 }
+
+func TestReceiveReservationSupportsDeletion(t *testing.T) {
+	d := openTestDB(t)
+	if _, err := d.InsertRepoWithID("repo", "/work/repo", "https://example.com/repo.git", "main"); err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := d.ReserveReceive("repo", "/gate/repo.git", "main", "refs/heads/main", "1111111111111111111111111111111111111111", "0000000000000000000000000000000000000000", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.CompleteReceiveReservation(reservation.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.GetReceiveReservation(reservation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != ReceiveReservationPublished || got.RunID != nil {
+		t.Fatalf("published deletion reservation = %#v", got)
+	}
+}

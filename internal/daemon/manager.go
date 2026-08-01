@@ -603,9 +603,6 @@ func (m *RunManager) HandleAdmitPush(ctx context.Context, params *ipc.AdmitPushP
 	if !receiveOldMatches(current, exists, params.Old) {
 		return fmt.Errorf("gate ref %s is not at expected old head %s", params.Ref, params.Old)
 	}
-	if isZeroObjectID(params.New) {
-		return nil
-	}
 	_, err = m.db.ReserveReceive(repo.ID, m.paths.RepoDir(repo.ID), branch, params.Ref, params.Old, params.New, params.SkipSteps, params.Intent)
 	return err
 }
@@ -616,11 +613,6 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	if params == nil {
 		return "", fmt.Errorf("push notification: missing parameters")
 	}
-	// Ref deletion (git push remote :branch) sends new SHA as all-zeros.
-	// Nothing to validate - skip pipeline.
-	if isZeroObjectID(params.New) {
-		return "", fmt.Errorf("ref deletion push, no pipeline to run")
-	}
 	repo, branch, err := m.receiveRepo(params.Gate, params.Ref)
 	if err != nil {
 		return "", err
@@ -630,7 +622,14 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 		return "", fmt.Errorf("acquire branch ownership lock: %w", err)
 	}
 	defer lock.Release()
-	return m.reconcileReceiveReservationLocked(ctx, repo, params, lock)
+	runID, err := m.reconcileReceiveReservationLocked(ctx, repo, params, lock)
+	if err != nil {
+		return "", err
+	}
+	if isZeroObjectID(params.New) {
+		return "", fmt.Errorf("ref deletion push, no pipeline to run")
+	}
+	return runID, nil
 }
 
 func (m *RunManager) receiveRepo(gatePath, ref string) (*db.Repo, string, error) {
@@ -670,8 +669,14 @@ func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo
 		if historyErr != nil {
 			return "", historyErr
 		}
-		if history != nil && history.State == db.ReceiveReservationPublished && history.RunID != nil && *history.RunID != "" {
-			return *history.RunID, nil
+		if history != nil && history.State == db.ReceiveReservationPublished {
+			if history.RunID != nil && *history.RunID != "" {
+				return *history.RunID, nil
+			}
+			if isZeroObjectID(history.NewSHA) {
+				return "", nil
+			}
+			return "", fmt.Errorf("published receive reservation has no run")
 		}
 		reservation, err = m.db.ReserveReceive(repo.ID, m.paths.RepoDir(repo.ID), branch, params.Ref, params.Old, params.New, params.SkipSteps, params.Intent)
 		if err != nil {
@@ -679,6 +684,9 @@ func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo
 		}
 	}
 	if reservation.State == db.ReceiveReservationPublished {
+		if isZeroObjectID(reservation.NewSHA) {
+			return "", nil
+		}
 		if reservation.RunID == nil || *reservation.RunID == "" {
 			return "", fmt.Errorf("published receive reservation has no run")
 		}
@@ -690,9 +698,32 @@ func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo
 	if !samePath(reservation.GatePath, m.paths.RepoDir(repo.ID)) {
 		return "", fmt.Errorf("receive reservation target changed")
 	}
+	if run, err := m.db.GetRunByReceiveReservation(reservation.ID); err != nil {
+		return "", err
+	} else if run != nil {
+		if err := m.db.CompleteReceiveReservation(reservation.ID, run.ID); err != nil {
+			return run.ID, err
+		}
+		return run.ID, nil
+	}
 	current, exists, err := gateReceiveRef(ctx, m.paths.RepoDir(repo.ID), reservation.Ref)
 	if err != nil {
 		return "", err
+	}
+	if isZeroObjectID(reservation.NewSHA) {
+		if !exists {
+			if err := m.db.CompleteReceiveReservation(reservation.ID, ""); err != nil {
+				return "", err
+			}
+			return "", nil
+		}
+		if exists && current == reservation.OldSHA && !legacyNotification {
+			if err := m.db.RetireReceiveReservation(reservation.ID); err != nil {
+				return "", err
+			}
+			return "", fmt.Errorf("receive did not mutate %s", reservation.Ref)
+		}
+		return "", fmt.Errorf("receive ref %s is at %s, reservation expects deletion", reservation.Ref, current)
 	}
 	if !exists && !legacyNotification {
 		if isZeroObjectID(reservation.OldSHA) {
@@ -715,17 +746,7 @@ func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo
 	if !exists && !isZeroObjectID(reservation.OldSHA) {
 		return "", fmt.Errorf("receive ref %s is unavailable; reservation remains pending", reservation.Ref)
 	}
-	if exists && current == reservation.NewSHA {
-		if runs, err := m.db.GetRunsByRepoHead(repo.ID, branch, reservation.NewSHA); err != nil {
-			return "", err
-		} else if len(runs) > 0 {
-			if err := m.db.CompleteReceiveReservation(reservation.ID, runs[0].ID); err != nil {
-				return runs[0].ID, err
-			}
-			return runs[0].ID, nil
-		}
-	}
-	runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, reservation.NewSHA, reservation.OldSHA, "push", reservation.SkipSteps, reservation.Intent, db.RunIntentSourceAgent, lock, true)
+	runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, reservation.NewSHA, reservation.OldSHA, "push", reservation.SkipSteps, reservation.Intent, db.RunIntentSourceAgent, lock, reservation.ID)
 	if err != nil {
 		return "", err
 	}
@@ -761,14 +782,14 @@ func (m *RunManager) reconcileReceiveReservations(ctx context.Context) {
 }
 
 func gateReceiveRef(ctx context.Context, gateDir, ref string) (string, bool, error) {
-	exists, err := git.RefExists(ctx, gateDir, ref)
+	exists, err := git.RefExistsBare(ctx, gateDir, ref)
 	if err != nil {
 		return "", false, fmt.Errorf("check receive ref %s: %w", ref, err)
 	}
 	if !exists {
 		return "", false, nil
 	}
-	sha, err := git.ResolveRef(ctx, gateDir, ref)
+	sha, err := git.ResolveRefBare(ctx, gateDir, ref)
 	if err != nil {
 		return "", false, err
 	}
@@ -860,7 +881,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		}
 	}
 
-	return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, ownershipLock, false)
+	return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, ownershipLock, "")
 }
 
 // fetchRunDefaultBranch fetches the trusted branch from the refreshed
@@ -888,10 +909,10 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
 func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
-	return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, nil, false)
+	return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, nil, "")
 }
 
-func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string, heldLock *branchsync.BranchOwnershipLock, receiveOwned bool) (string, error) {
+func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string, heldLock *branchsync.BranchOwnershipLock, receiveReservationID string) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -925,7 +946,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	branchMu := lockVal.(*sync.Mutex)
 	branchMu.Lock()
 	defer branchMu.Unlock()
-	if !receiveOwned {
+	if strings.TrimSpace(receiveReservationID) == "" {
 		pending, err := m.db.GetPendingReceiveReservationsForBranch(repo.ID, branch)
 		if err != nil {
 			trackStartFailure("receive_reservation")
@@ -963,7 +984,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		runIntent = &db.RunIntent{Summary: storedIntent, Source: source, Score: 1}
 	}
 
-	run, err := m.db.InsertRunWithIntent(repo.ID, branch, headSHA, baseSHA, runIntent)
+	run, err := m.db.InsertRunWithIntentAndReceiveReservation(repo.ID, branch, headSHA, baseSHA, runIntent, receiveReservationID)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)

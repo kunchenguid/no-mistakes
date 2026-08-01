@@ -172,12 +172,13 @@ func (t *CustodyTransition) ReleaseStamped(ctx context.Context, runID string) er
 
 // Run represents a pipeline run.
 type Run struct {
-	ID               string
-	RepoID           string
-	Branch           string
-	HeadSHA          string
-	BaseSHA          string
-	SubmittedHeadSHA *string
+	ID                   string
+	RepoID               string
+	Branch               string
+	HeadSHA              string
+	BaseSHA              string
+	SubmittedHeadSHA     *string
+	ReceiveReservationID *string
 	// ReviewApprovedHeadSHA is the exact commit approved by the last
 	// successfully completed full review. It is nil for legacy runs and until
 	// review completes; mutable run/worktree heads never infer this authority.
@@ -233,7 +234,7 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, publication_journal_state, publication_journal_target_kind, publication_journal_target_fingerprint, publication_journal_ref, publication_journal_target_version, publication_attempt_head_sha, publication_attempt_target_kind, publication_attempt_target_fingerprint, publication_attempt_ref, custody_returned_at, custody_transition_token, custody_transition_phase, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, receive_reservation_id, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, publication_journal_state, publication_journal_target_kind, publication_journal_target_fingerprint, publication_journal_ref, publication_journal_target_version, publication_attempt_head_sha, publication_attempt_target_kind, publication_attempt_target_fingerprint, publication_attempt_ref, custody_returned_at, custody_transition_token, custody_transition_phase, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 const custodyAuthorityPredicate = `id = ? AND repo_id = ? AND branch = ? AND head_sha = ? AND base_sha = ?
 		   AND submitted_head_sha IS ? AND review_approved_head_sha IS ? AND status = ?
@@ -255,7 +256,7 @@ func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
 	return row.Scan(
-		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.SubmittedHeadSHA, &r.ReviewApprovedHeadSHA, &r.Status,
+		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.SubmittedHeadSHA, &r.ReceiveReservationID, &r.ReviewApprovedHeadSHA, &r.Status,
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
@@ -270,10 +271,14 @@ func scanRun(row interface {
 
 // InsertRun creates a new run record.
 func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
-	return d.InsertRunWithIntent(repoID, branch, headSHA, baseSHA, nil)
+	return d.InsertRunWithIntentAndReceiveReservation(repoID, branch, headSHA, baseSHA, nil, "")
 }
 
 func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent *RunIntent) (*Run, error) {
+	return d.InsertRunWithIntentAndReceiveReservation(repoID, branch, headSHA, baseSHA, intent, "")
+}
+
+func (d *DB) InsertRunWithIntentAndReceiveReservation(repoID, branch, headSHA, baseSHA string, intent *RunIntent, reservationID string) (*Run, error) {
 	ts := now()
 	repo, err := d.GetRepo(repoID)
 	if err != nil {
@@ -289,6 +294,9 @@ func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent
 		Status:           types.RunPending,
 		CreatedAt:        ts,
 		UpdatedAt:        ts,
+	}
+	if reservationID = strings.TrimSpace(reservationID); reservationID != "" {
+		r.ReceiveReservationID = &reservationID
 	}
 	if repo != nil {
 		journalState := PublicationJournalReady
@@ -309,11 +317,26 @@ func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent
 		r.IntentScore = &intent.Score
 	}
 	_, err = d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_state, publication_journal_state, publication_journal_target_kind, publication_journal_target_fingerprint, publication_journal_ref, publication_journal_target_version, intent, intent_source, intent_session_id, intent_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.Status, r.PublicationJournalState, r.PublicationJournalTargetKind, r.PublicationJournalTargetFingerprint, r.PublicationJournalRef, r.PublicationJournalTargetVersion, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, receive_reservation_id, status, pr_state, publication_journal_state, publication_journal_target_kind, publication_journal_target_fingerprint, publication_journal_ref, publication_journal_target_version, intent, intent_source, intent_session_id, intent_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.ReceiveReservationID, r.Status, r.PublicationJournalState, r.PublicationJournalTargetKind, r.PublicationJournalTargetFingerprint, r.PublicationJournalRef, r.PublicationJournalTargetVersion, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
+	}
+	return r, nil
+}
+
+func (d *DB) GetRunByReceiveReservation(reservationID string) (*Run, error) {
+	if strings.TrimSpace(reservationID) == "" {
+		return nil, nil
+	}
+	r := &Run{}
+	err := scanRun(d.sql.QueryRow(`SELECT `+runColumns+` FROM runs WHERE receive_reservation_id = ?`, reservationID), r)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get run by receive reservation: %w", err)
 	}
 	return r, nil
 }

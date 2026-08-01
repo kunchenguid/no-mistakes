@@ -44,9 +44,6 @@ func (d *DB) ReserveReceive(repoID, gatePath, branch, ref, oldSHA, newSHA string
 	if !receiveObjectID(oldSHA) || !receiveObjectID(newSHA) || oldSHA == newSHA {
 		return nil, fmt.Errorf("reserve receive: old and new values must be distinct full object IDs")
 	}
-	if newSHA == zeroObjectID(len(newSHA)) {
-		return nil, fmt.Errorf("reserve receive: ref deletion has no pipeline reservation")
-	}
 	encodedSteps, err := json.Marshal(skipSteps)
 	if err != nil {
 		return nil, fmt.Errorf("reserve receive: encode skipped steps: %w", err)
@@ -155,10 +152,17 @@ func (d *DB) GetPendingReceiveReservationsForBranch(repoID, branch string) ([]*R
 }
 
 func (d *DB) CompleteReceiveReservation(id, runID string) error {
-	if strings.TrimSpace(id) == "" || strings.TrimSpace(runID) == "" {
-		return fmt.Errorf("complete receive reservation: id and run are required")
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("complete receive reservation: id is required")
 	}
-	result, err := d.sql.Exec(`UPDATE receive_reservations SET state = ?, run_id = ?, updated_at = ? WHERE id = ? AND state = ?`, ReceiveReservationPublished, runID, now(), id, ReceiveReservationReserved)
+	runID = strings.TrimSpace(runID)
+	var result sql.Result
+	var err error
+	if runID == "" {
+		result, err = d.sql.Exec(`UPDATE receive_reservations SET state = ?, run_id = NULL, updated_at = ? WHERE id = ? AND state = ?`, ReceiveReservationPublished, now(), id, ReceiveReservationReserved)
+	} else {
+		result, err = d.sql.Exec(`UPDATE receive_reservations SET state = ?, run_id = ?, updated_at = ? WHERE id = ? AND state = ?`, ReceiveReservationPublished, runID, now(), id, ReceiveReservationReserved)
+	}
 	if err != nil {
 		return fmt.Errorf("complete receive reservation: %w", err)
 	}
@@ -171,8 +175,13 @@ func (d *DB) CompleteReceiveReservation(id, runID string) error {
 	if err != nil {
 		return err
 	}
-	if current != nil && current.State == ReceiveReservationPublished && current.RunID != nil && *current.RunID == runID {
-		return nil
+	if current != nil && current.State == ReceiveReservationPublished {
+		if runID == "" && current.RunID == nil {
+			return nil
+		}
+		if current.RunID != nil && *current.RunID == runID {
+			return nil
+		}
 	}
 	return fmt.Errorf("complete receive reservation: ownership changed")
 }
@@ -231,8 +240,4 @@ func receiveObjectID(value string) bool {
 		}
 	}
 	return true
-}
-
-func zeroObjectID(length int) string {
-	return strings.Repeat("0", length)
 }
