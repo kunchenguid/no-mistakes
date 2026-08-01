@@ -50,6 +50,60 @@ func TestEmitIntentRequiredError_CarriesBranchSyncNextAction(t *testing.T) {
 	}
 }
 
+// Most next actions are not commands that take the pipeline's commits.
+// `run_pipeline` is the very command being refused here, so labelling it as the
+// way forward would send the agent in a circle; the code still travels in the
+// branch_sync next_action field.
+func TestEmitIntentRequiredError_OmitsTakeCommitsHintForNonSyncNextAction(t *testing.T) {
+	for _, code := range []string{"run_pipeline", "inspect_worktree", "continue_active_run", "inspect_and_reconcile_manually"} {
+		t.Run(code, func(t *testing.T) {
+			state := branchsync.State{
+				State:      branchsync.StateLocalAhead,
+				NextAction: &branchsync.NextAction{Code: code, Command: "no-mistakes axi status"},
+			}
+
+			var out bytes.Buffer
+			cmd := &cobra.Command{}
+			cmd.SetOut(&out)
+
+			if err := emitIntentRequiredError(cmd, state); err == nil {
+				t.Fatal("intent-required must still fail")
+			}
+			got := out.String()
+			if strings.Contains(got, "Take the pipeline's commits first") {
+				t.Errorf("%s must not be labelled as taking the pipeline's commits:\n%s", code, got)
+			}
+			if !strings.Contains(got, "next_action") || !strings.Contains(got, code) {
+				t.Errorf("next_action %s must still travel in the document:\n%s", code, got)
+			}
+		})
+	}
+}
+
+// The sync and recovery codes are the ones that genuinely take or re-check the
+// pipeline's commits, so those keep the prose hint.
+func TestEmitIntentRequiredError_KeepsTakeCommitsHintForSyncCodes(t *testing.T) {
+	for _, code := range []string{"sync", "check_sync", "recover_custody", "retry"} {
+		t.Run(code, func(t *testing.T) {
+			state := branchsync.State{
+				State:      branchsync.StateBehind,
+				NextAction: &branchsync.NextAction{Code: code, Command: "no-mistakes axi sync"},
+			}
+
+			var out bytes.Buffer
+			cmd := &cobra.Command{}
+			cmd.SetOut(&out)
+
+			if err := emitIntentRequiredError(cmd, state); err == nil {
+				t.Fatal("intent-required must still fail")
+			}
+			if got := out.String(); !strings.Contains(got, "Take the pipeline's commits first") {
+				t.Errorf("%s must keep the recovery hint:\n%s", code, got)
+			}
+		})
+	}
+}
+
 // With nothing to synchronize there is no action to offer, so the refusal must
 // stay the plain one-line error instead of growing an empty recovery hint.
 func TestEmitIntentRequiredError_OmitsSyncHintWithoutNextAction(t *testing.T) {

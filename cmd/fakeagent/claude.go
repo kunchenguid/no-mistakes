@@ -95,12 +95,21 @@ func runClaude(args []string, promptReader io.Reader, scenario *Scenario) int {
 // which may not satisfy the schemas every step in the pipeline expects
 // (e.g. document.go's unmarshalRequiredFindings requires "summary").
 // Patching keeps the wire shape real but the content predictable.
+//
+// Reporting mandated skill use is additive: an action with no content of its
+// own gets Skill tool_use items spliced into the assistant event, and its
+// recorded text and structured_output are still replayed byte-for-byte.
 func patchClaudeFixture(raw []byte, action Action, skills []string) ([]byte, error) {
-	if action.Structured == nil && action.StructuredRaw == "" && len(skills) == 0 {
+	overrideContent := action.hasStructuredOutput()
+	if !overrideContent && len(skills) == 0 {
 		return raw, nil
 	}
 	structuredJSON := action.structuredJSON()
-	text := action.textOrDefault()
+	var text *string
+	if overrideContent {
+		replacement := action.textOrDefault()
+		text = &replacement
+	}
 	var out bytes.Buffer
 	seenAssistant := false
 	for _, line := range bytes.Split(raw, []byte("\n")) {
@@ -131,7 +140,7 @@ func patchClaudeFixture(raw []byte, action Action, skills []string) ([]byte, err
 			out.WriteByte('\n')
 			continue
 		}
-		if !seenAssistant {
+		if !seenAssistant && (overrideContent || len(skills) > 0) {
 			assistant, err := patchClaudeAssistantEvent([]byte(`{"type":"assistant","message":{"content":[]}}`), text, skillsOnce(&skills))
 			if err != nil {
 				return nil, err
@@ -140,12 +149,17 @@ func patchClaudeFixture(raw []byte, action Action, skills []string) ([]byte, err
 			out.WriteByte('\n')
 			seenAssistant = true
 		}
+		if !overrideContent {
+			out.Write(line)
+			out.WriteByte('\n')
+			continue
+		}
 		var event map[string]any
 		if err := json.Unmarshal(line, &event); err != nil {
 			return nil, fmt.Errorf("parse result event: %w", err)
 		}
 		event["structured_output"] = json.RawMessage(structuredJSON)
-		event["result"] = text
+		event["result"] = *text
 		patched, err := json.Marshal(event)
 		if err != nil {
 			return nil, fmt.Errorf("marshal patched result: %w", err)
@@ -156,14 +170,21 @@ func patchClaudeFixture(raw []byte, action Action, skills []string) ([]byte, err
 	return out.Bytes(), nil
 }
 
-func patchClaudeAssistantEvent(line []byte, text string, skills []string) ([]byte, error) {
+// patchClaudeAssistantEvent splices skill tool_use items into an assistant
+// event, replacing its text only when text is non-nil.
+func patchClaudeAssistantEvent(line []byte, text *string, skills []string) ([]byte, error) {
 	var event map[string]any
 	if err := json.Unmarshal(line, &event); err != nil {
 		return nil, fmt.Errorf("parse assistant event: %w", err)
 	}
 	message, _ := event["message"].(map[string]any)
 	if message != nil {
-		message["content"] = append(patchClaudeAssistantContent(message["content"], text), skillToolUses(skills)...)
+		content := message["content"]
+		if text != nil {
+			content = patchClaudeAssistantContent(content, *text)
+		}
+		items, _ := content.([]any)
+		message["content"] = append(items, skillToolUses(skills)...)
 		event["message"] = message
 	}
 	patched, err := json.Marshal(event)

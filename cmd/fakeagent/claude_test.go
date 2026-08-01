@@ -123,6 +123,51 @@ func TestPatchClaudeFixtureReportsMandatedSkillUse(t *testing.T) {
 	}
 }
 
+// Reporting mandated skill use must be additive: an action carrying no
+// structured output of its own still replays the recorded result payload and
+// assistant text byte-for-byte, with only the Skill tool_use item spliced in.
+func TestPatchClaudeFixtureSkillReportingPreservesRecordedPayload(t *testing.T) {
+	raw := []byte("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"recorded\"}]}}\n{\"type\":\"result\",\"result\":\"recorded result\",\"structured_output\":{\"summary\":\"recorded summary\"}}\n")
+	patched, err := patchClaudeFixture(raw, Action{}, []string{"comprehensive-code-review"})
+	if err != nil {
+		t.Fatalf("patchClaudeFixture: %v", err)
+	}
+
+	if got := claudeSkillsUsed(t, patched); len(got) != 1 || got[0] != "comprehensive-code-review" {
+		t.Fatalf("skills reported on the wire = %v, want [comprehensive-code-review]", got)
+	}
+
+	lines := bytes.Split(bytes.TrimSpace(patched), []byte("\n"))
+	if len(lines) != 2 {
+		t.Fatalf("got %d jsonl lines, want 2", len(lines))
+	}
+	var assistant struct {
+		Message struct {
+			Content []map[string]any `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(lines[0], &assistant); err != nil {
+		t.Fatalf("unmarshal assistant event: %v", err)
+	}
+	if len(assistant.Message.Content) != 2 || assistant.Message.Content[0]["text"] != "recorded" {
+		t.Fatalf("assistant content = %+v, want recorded text plus the skill tool_use", assistant.Message.Content)
+	}
+
+	var result struct {
+		Result           string          `json:"result"`
+		StructuredOutput json.RawMessage `json:"structured_output"`
+	}
+	if err := json.Unmarshal(lines[1], &result); err != nil {
+		t.Fatalf("unmarshal result event: %v", err)
+	}
+	if result.Result != "recorded result" {
+		t.Errorf("result text = %q, want the recorded text replayed", result.Result)
+	}
+	if got := string(result.StructuredOutput); got != `{"summary":"recorded summary"}` {
+		t.Errorf("structured_output = %s, want the recorded payload replayed", got)
+	}
+}
+
 // claudeSkillsUsed extracts skill names the way internal/agent's claude adapter
 // does, so the fake and the parser cannot drift apart silently.
 func claudeSkillsUsed(t *testing.T, stream []byte) []string {

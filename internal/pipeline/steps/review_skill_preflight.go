@@ -2,8 +2,10 @@ package steps
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/skill"
@@ -35,25 +37,51 @@ func reviewSkillSearchRoots(workDir string) []string {
 	return roots
 }
 
+// reviewSkillPluginWalkDepth bounds how deep under .claude/plugins a skill
+// directory is looked for. The marketplace cache nests
+// cache/<marketplace>/<plugin>/<version>/skills/<name>, which is six
+// components; the bound leaves headroom without walking an arbitrary tree.
+const reviewSkillPluginWalkDepth = 8
+
 // reviewSkillDirs enumerates the directories a skill named name can occupy:
 // the bases skill.Install writes (.claude/skills, .agents/skills) plus the
-// Claude Code plugin layout, since a plugin-provided skill is invoked as
-// `plugin:<name>` and is just as valid a resolution.
+// Claude Code plugin layouts, since a plugin-provided skill is invoked as
+// `plugin:<name>` and is just as valid a resolution. Plugins are found by a
+// bounded walk rather than fixed globs because the nesting between .claude/
+// plugins and skills/<name> varies by install source (a linked plugin sits at
+// plugins/<plugin>/skills/<name>, a marketplace one at
+// plugins/cache/<marketplace>/<plugin>/<version>/skills/<name>).
 func reviewSkillDirs(root, name string) []string {
 	dirs := make([]string, 0, len(skill.InstallBases)+2)
 	for _, base := range skill.InstallBases {
 		dirs = append(dirs, filepath.Join(root, base, name))
 	}
-	for _, pattern := range []string{
-		filepath.Join(root, ".claude", "plugins", "*", "skills", name),
-		filepath.Join(root, ".claude", "plugins", "*", "*", "skills", name),
-	} {
-		matches, err := filepath.Glob(pattern)
+	return append(dirs, reviewSkillPluginDirs(root, name)...)
+}
+
+// reviewSkillPluginDirs walks .claude/plugins for any skills/<name> directory,
+// treating an unreadable subtree as absent.
+func reviewSkillPluginDirs(root, name string) []string {
+	pluginsRoot := filepath.Join(root, ".claude", "plugins")
+	var dirs []string
+	_ = filepath.WalkDir(pluginsRoot, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			continue
+			return fs.SkipDir
 		}
-		dirs = append(dirs, matches...)
-	}
+		if !entry.IsDir() {
+			return nil
+		}
+		if rel, relErr := filepath.Rel(pluginsRoot, path); relErr == nil && rel != "." {
+			if len(strings.Split(rel, string(filepath.Separator))) >= reviewSkillPluginWalkDepth {
+				return fs.SkipDir
+			}
+		}
+		if entry.Name() == name && filepath.Base(filepath.Dir(path)) == "skills" {
+			dirs = append(dirs, path)
+			return fs.SkipDir
+		}
+		return nil
+	})
 	return dirs
 }
 

@@ -9,11 +9,16 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/skill"
 )
 
-func writeSkill(t *testing.T, dir string) {
+func mustMkdirAll(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeSkill(t *testing.T, dir string) {
+	t.Helper()
+	mustMkdirAll(t, dir)
 	if err := os.WriteFile(filepath.Join(dir, skill.SkillFile), []byte("# skill\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +58,8 @@ func TestAssertReviewSkillInstalled_AcceptsEveryResolvableLayout(t *testing.T) {
 	}{
 		{"user claude skills", filepath.Join(".claude", "skills", requiredReviewSkill), false},
 		{"user agents skills", filepath.Join(".agents", "skills", requiredReviewSkill), false},
-		{"user plugin", filepath.Join(".claude", "plugins", "marketplace", "reviewer", "skills", requiredReviewSkill), false},
+		{"user linked plugin", filepath.Join(".claude", "plugins", "reviewer", "skills", requiredReviewSkill), false},
+		{"user marketplace plugin cache", filepath.Join(".claude", "plugins", "cache", "marketplace", "reviewer", "2.3.0", "skills", requiredReviewSkill), false},
 		{"project level", filepath.Join(".claude", "skills", requiredReviewSkill), true},
 	}
 	for _, tt := range tests {
@@ -64,6 +70,9 @@ func TestAssertReviewSkillInstalled_AcceptsEveryResolvableLayout(t *testing.T) {
 			if tt.inRepo {
 				root = workDir
 			}
+			// The mandate only applies where a skill library exists, so every
+			// layout case must be judgeable or it passes vacuously.
+			mustMkdirAll(t, filepath.Join(home, ".claude", "skills"))
 			writeSkill(t, filepath.Join(root, tt.relPath))
 			pinReviewSkillHome(t, home)
 
@@ -71,6 +80,19 @@ func TestAssertReviewSkillInstalled_AcceptsEveryResolvableLayout(t *testing.T) {
 				t.Errorf("assertReviewSkillInstalled() = %v, want nil", err)
 			}
 		})
+	}
+}
+
+// A plugin directory shaped like the skill but carrying no SKILL.md is not a
+// resolvable install, so the preflight must still fail.
+func TestAssertReviewSkillInstalled_PluginDirWithoutSkillFileFails(t *testing.T) {
+	home := t.TempDir()
+	mustMkdirAll(t, filepath.Join(home, ".claude", "skills"))
+	mustMkdirAll(t, filepath.Join(home, ".claude", "plugins", "cache", "marketplace", "reviewer", "2.3.0", "skills", requiredReviewSkill))
+	pinReviewSkillHome(t, home)
+
+	if err := assertReviewSkillInstalled(t.TempDir(), "claude"); err == nil {
+		t.Fatal("expected an error when the plugin skill directory carries no SKILL.md")
 	}
 }
 
