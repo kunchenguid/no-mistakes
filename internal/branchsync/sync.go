@@ -655,11 +655,12 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 }
 
 // recoverKeepLocal performs the explicit keep-local custody return: the
-// worktree is never touched; the gate branch moves to the kept local head with
-// an atomic compare-and-swap so a concurrent gate push refuses instead of
-// being clobbered. The kept head's objects reach the gate through a gate-side
-// fetch - never a push, which would fire the gate's receive hooks and start a
-// pipeline run. The preserved head stays reachable through the anchor ref.
+// worktree is never touched; the gate branch is verified at the kept local head
+// or moved to it with an atomic compare-and-swap when needed, so a concurrent
+// gate push refuses instead of being clobbered. The kept head's objects reach
+// the gate through a gate-side fetch - never a push, which would fire the
+// gate's receive hooks and start a pipeline run. The preserved head stays
+// reachable through the anchor ref.
 func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State, gateHead string) State {
 	if s.beforeGateReset != nil {
 		s.beforeGateReset()
