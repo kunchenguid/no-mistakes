@@ -64,6 +64,7 @@ func (m *Model) applyEvent(event ipc.Event) bool {
 		}
 		m.flushPartialLog()
 		m.done = true
+		m.invalidateInactiveStepDiffs()
 
 	case ipc.EventStepStarted:
 		m.err = nil
@@ -192,6 +193,7 @@ func (m *Model) applySnapshot(run *ipc.RunInfo) {
 	m.run = run
 	m.steps = steps
 	m.syntheticSteps = false
+	m.invalidateInactiveStepDiffs()
 	for _, s := range steps {
 		if s.FindingsJSON != nil && *s.FindingsJSON != "" {
 			m.stepFindings[s.StepName] = *s.FindingsJSON
@@ -233,19 +235,25 @@ func (m *Model) requestStepDiff(step types.StepName, replace bool) {
 }
 
 func (m Model) approvalReady(step *ipc.StepResultInfo) bool {
+	if m.reconcilePending || m.reviewRetryReconcile {
+		return false
+	}
 	if step == nil || step.Status != types.StepStatusFixReview {
 		return true
 	}
-	return !m.reviewRetryAvailable() && !m.reconcilePending && m.stepDiffLoaded[step.StepName] && !m.stepDiffFetching[step.StepName]
+	return !m.reviewRetryDiff && m.stepDiffLoaded[step.StepName] && !m.stepDiffFetching[step.StepName]
 }
 
 func (m Model) reviewRetryAvailable() bool {
-	return m.reviewRetryReconcile || m.reviewRetryDiff
+	return m.reviewRetryReconcile || (m.reviewRetryDiff && m.hasFixReviewStep())
 }
 
 func (m Model) reviewRetryError() error {
 	if m.reviewReconcileErr != nil {
 		return m.reviewReconcileErr
+	}
+	if !m.hasFixReviewStep() {
+		return nil
 	}
 	return m.reviewDiffErr
 }
@@ -254,8 +262,62 @@ func (m *Model) updateStepStatus(name types.StepName, status types.StepStatus) {
 	for i := range m.steps {
 		if m.steps[i].StepName == name {
 			m.steps[i].Status = status
+			if status != types.StepStatusFixReview {
+				m.invalidateStepDiff(name)
+			}
 			return
 		}
+	}
+}
+
+func (m Model) stepInFixReview(name types.StepName) bool {
+	if m.done || m.run == nil || m.run.Status == types.RunCompleted || m.run.Status == types.RunFailed || m.run.Status == types.RunCancelled {
+		return false
+	}
+	for i := range m.steps {
+		if m.steps[i].StepName == name {
+			return m.steps[i].Status == types.StepStatusFixReview
+		}
+	}
+	return false
+}
+
+func (m Model) hasFixReviewStep() bool {
+	for i := range m.steps {
+		if m.stepInFixReview(m.steps[i].StepName) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) invalidateInactiveStepDiffs() {
+	for step := range m.stepDiffRequestID {
+		if !m.stepInFixReview(step) {
+			m.invalidateStepDiff(step)
+		}
+	}
+}
+
+func (m *Model) invalidateStepDiff(step types.StepName) {
+	m.stepDiffRequestID[step]++
+	delete(m.stepDiffFetching, step)
+	delete(m.stepDiffLoaded, step)
+	delete(m.stepDiffs, step)
+	delete(m.stepDiffTruncated, step)
+	if len(m.pendingDiffFetch) > 0 {
+		pending := m.pendingDiffFetch[:0]
+		for _, request := range m.pendingDiffFetch {
+			if request.step != step {
+				pending = append(pending, request)
+			}
+		}
+		m.pendingDiffFetch = pending
+	}
+	if m.reviewRetryDiff && !m.hasFixReviewStep() {
+		m.reviewRetryDiff = false
+		m.reviewDiffErr = nil
+		m.err = m.reviewRetryError()
 	}
 }
 

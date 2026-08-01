@@ -855,6 +855,52 @@ func TestTUIOverflow_ReconciliationRetryDisclosedBeforeGateDiscovery(t *testing.
 	}
 }
 
+func TestTUIOverflow_FailedReconciliationBlocksStaleAwaitingGate(t *testing.T) {
+	m := ciRunningModel(false)
+	m.steps = []ipc.StepResultInfo{
+		{RunID: "run-1", StepName: types.StepReview, Status: types.StepStatusAwaitingApproval},
+	}
+	m.reconcilePending = true
+	updated, _ := m.Update(runReconciledMsg{
+		err: fmt.Errorf("database busy"), subscriptionID: m.subscriptionID,
+	})
+	m = updated.(Model)
+
+	for _, action := range []types.ApprovalAction{types.ActionApprove, types.ActionFix, types.ActionSkip} {
+		if cmd := m.respondCmd(action); cmd != nil {
+			t.Fatalf("%s response was enabled against stale gate state", action)
+		}
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "r retry") || strings.Contains(view, "a approve") || strings.Contains(view, "f fix") || strings.Contains(view, "s skip") {
+		t.Fatalf("stale gate did not disclose retry exclusively:\n%s", view)
+	}
+}
+
+func TestTUIOverflow_LateDiffFailureAfterGateLeavesIsIgnored(t *testing.T) {
+	m := ciRunningModel(false)
+	m.steps = []ipc.StepResultInfo{
+		{RunID: "run-1", StepName: types.StepReview, Status: types.StepStatusFixReview},
+	}
+	m.requestStepDiff(types.StepReview, true)
+	m.drainDiffFetches()
+	requestID := m.stepDiffRequestID[types.StepReview]
+
+	m.updateStepStatus(types.StepReview, types.StepStatusCompleted)
+	updated, _ := m.Update(stepDiffMsg{
+		step: types.StepReview, err: fmt.Errorf("daemon gone"),
+		requestID: requestID, subscriptionID: m.subscriptionID,
+	})
+	m = updated.(Model)
+
+	if m.reviewRetryDiff || m.reviewDiffErr != nil || m.stepDiffFetching[types.StepReview] {
+		t.Fatal("late diff failure created retry state after the gate left fix review")
+	}
+	if view := stripANSI(m.View()); strings.Contains(view, "r retry") {
+		t.Fatalf("late diff failure exposed an inert retry action:\n%s", view)
+	}
+}
+
 func firstMsgOfType[T tea.Msg](t *testing.T, cmd tea.Cmd) T {
 	t.Helper()
 	var zero T

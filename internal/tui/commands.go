@@ -119,7 +119,7 @@ func (m Model) respondCmd(action types.ApprovalAction) tea.Cmd {
 	if step == nil {
 		return nil
 	}
-	if step.Status == types.StepStatusFixReview && !m.approvalReady(step) {
+	if !m.approvalReady(step) {
 		return nil
 	}
 	if action == types.ActionFix {

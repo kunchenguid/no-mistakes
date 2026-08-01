@@ -328,6 +328,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.requestID != m.stepDiffRequestID[msg.step] {
 			return m, nil
 		}
+		if !m.stepInFixReview(msg.step) {
+			m.invalidateStepDiff(msg.step)
+			return m, nil
+		}
 		delete(m.stepDiffFetching, msg.step)
 		if msg.err == nil {
 			m.reviewRetryDiff = false
