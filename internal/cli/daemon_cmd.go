@@ -52,7 +52,7 @@ func newDaemonCmd() *cobra.Command {
 }
 
 func newDaemonAuthorizeRefMutationCmd() *cobra.Command {
-	var gate, phase, branch, ref, oldSHA, newSHA, operation, scope string
+	var gate, authority, phase, branch, ref, oldSHA, newSHA, operation, scope string
 	cmd := &cobra.Command{
 		Use:    "authorize-ref-mutation",
 		Short:  "Authorize one exact internal managed-gate ref transaction",
@@ -67,36 +67,24 @@ func newDaemonAuthorizeRefMutationCmd() *cobra.Command {
 			if capability == "" {
 				return fmt.Errorf("internal mutation capability is required")
 			}
-			p, err := paths.New()
-			if err != nil {
-				return err
+			if strings.TrimSpace(authority) == "" {
+				return fmt.Errorf("live internal mutation authority is required")
 			}
-			repoID, err := receiveRepoID(gatePath)
-			if err != nil {
-				return err
-			}
-			if !sameCLIPath(gatePath, p.RepoDir(repoID)) {
-				return fmt.Errorf("managed gate path does not match no-mistakes repository")
-			}
-			database, err := db.Open(p.DB())
-			if err != nil {
-				return fmt.Errorf("open mutation database: %w", err)
-			}
-			defer database.Close()
-			mutation, err := database.GetInternalRefMutation(capability)
-			if err != nil {
-				return err
-			}
-			if mutation.RepoID != repoID || !sameCLIPath(mutation.GatePath, gatePath) {
-				return fmt.Errorf("internal mutation capability is bound to another gate")
-			}
-			if !branchsync.VerifyInternalMutationLockProof(mutation.LockPath, mutation.OwnerPID, mutation.LockTokenHash) {
-				return fmt.Errorf("internal mutation capability has no active branch-lock ownership")
-			}
-			return database.AdvanceInternalRefMutation(phase, mutation.GatePath, branch, ref, oldSHA, newSHA, operation, scope, capability)
+			return branchsync.AuthorizeInternalRefMutation(authority, branchsync.InternalRefMutationAuthorization{
+				Capability: capability,
+				Phase:      phase,
+				GatePath:   gatePath,
+				Branch:     branch,
+				Ref:        ref,
+				OldSHA:     oldSHA,
+				NewSHA:     newSHA,
+				Operation:  operation,
+				Scope:      scope,
+			})
 		},
 	}
 	cmd.Flags().StringVar(&gate, "gate", "", "managed bare gate path")
+	cmd.Flags().StringVar(&authority, "authority", "", "live branch-lock authority endpoint")
 	cmd.Flags().StringVar(&phase, "phase", "", "reference transaction phase")
 	cmd.Flags().StringVar(&branch, "branch", "", "exact branch identity")
 	cmd.Flags().StringVar(&ref, "ref", "", "exact ref name")
@@ -105,6 +93,7 @@ func newDaemonAuthorizeRefMutationCmd() *cobra.Command {
 	cmd.Flags().StringVar(&operation, "operation", "", "exact internal operation")
 	cmd.Flags().StringVar(&scope, "scope", "", "ordinary or private ref scope")
 	_ = cmd.MarkFlagRequired("gate")
+	_ = cmd.MarkFlagRequired("authority")
 	_ = cmd.MarkFlagRequired("phase")
 	_ = cmd.MarkFlagRequired("branch")
 	_ = cmd.MarkFlagRequired("ref")

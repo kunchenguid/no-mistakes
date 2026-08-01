@@ -73,7 +73,8 @@ func TestReferenceTransactionHookScript(t *testing.T) {
 		"NO_MISTAKES_INTERNAL_MUTATION_CAPABILITY",
 		"NO_MISTAKES_INTERNAL_MUTATION_OPERATION",
 		"NO_MISTAKES_INTERNAL_MUTATION_BRANCH",
-		"daemon authorize-ref-mutation --gate \"$GATE_DIR\"",
+		"NO_MISTAKES_INTERNAL_MUTATION_AUTHORITY",
+		"daemon authorize-ref-mutation --gate \"$GATE_DIR\" --authority",
 		"internal mutation capability is required",
 		preservedReferenceTransactionHook,
 	} {

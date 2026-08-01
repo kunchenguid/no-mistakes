@@ -155,7 +155,7 @@ func newRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
 	run, _ = database.GetRun(run.ID)
 	return &recoverFixture{
 		t: t, ctx: ctx, db: database, repo: repo, run: run, dbPath: dbPath,
-		service: &Service{DB: database, Repo: repo, WorkDir: local, GateDir: gate, Paths: paths.WithRoot(filepath.Join(root, "nm-home"))},
+		service: &Service{DB: database, Repo: repo, WorkDir: local, GateDir: gate, Paths: paths.WithRoot(filepath.Join(root, "nm-home")), GateConfigCurrent: func() bool { return true }, InternalMutationConsumed: func(string) error { return nil }},
 		local:   local, gate: gate, remote: remote,
 		base: base, submitted: submitted, preserved: preserved,
 	}
@@ -371,9 +371,7 @@ func TestRecoverIdempotentAfterSuccess(t *testing.T) {
 	}
 }
 
-// TestRecoverWorktreeAlreadyAtPreservedHeadReturnsCustodyWithoutMutation
-// covers the equal cell: nothing to reconcile, custody return only.
-func TestRecoverWorktreeAlreadyAtPreservedHeadReturnsCustodyWithoutMutation(t *testing.T) {
+func TestRecoverWorktreeAlreadyAtPreservedHeadRefusesMissingGate(t *testing.T) {
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover")
 	mustRun(t, f.local, "merge", "--ff-only", f.preserved)
@@ -381,20 +379,15 @@ func TestRecoverWorktreeAlreadyAtPreservedHeadReturnsCustodyWithoutMutation(t *t
 		t.Fatal(err)
 	}
 	state := f.service.Recover(f.ctx, false)
-	if !state.Recovered || state.Changed || state.State != StateCustodyReturned || state.Relation != RelationEqual {
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_gate_unavailable" {
 		t.Fatalf("recover equal = %#v", state)
 	}
-	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
-		t.Fatalf("anchor ref = %s, want %s", got, f.preserved)
-	}
-	if !f.custodyReturned() {
-		t.Fatal("custody not stamped")
+	if f.custodyReturned() {
+		t.Fatal("missing gate recovery stamped custody")
 	}
 }
 
-// TestRecoverLocalAheadOfPreservedHeadReturnsCustodyWithoutMutation covers the
-// ahead cell: the preserved commits are already incorporated locally.
-func TestRecoverLocalAheadOfPreservedHeadReturnsCustodyWithoutMutation(t *testing.T) {
+func TestRecoverLocalAheadOfPreservedHeadRefusesMissingGate(t *testing.T) {
 	f := newRecoverFixture(t, types.RunFailed)
 	mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover")
 	mustRun(t, f.local, "merge", "--ff-only", f.preserved)
@@ -406,14 +399,14 @@ func TestRecoverLocalAheadOfPreservedHeadReturnsCustodyWithoutMutation(t *testin
 		t.Fatal(err)
 	}
 	state := f.service.Recover(f.ctx, false)
-	if !state.Recovered || state.Changed || state.State != StateCustodyReturned || state.Relation != RelationAhead {
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_gate_unavailable" {
 		t.Fatalf("recover ahead = %#v", state)
 	}
 	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != ahead {
 		t.Fatal("recover ahead moved HEAD")
 	}
-	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
-		t.Fatalf("anchor ref = %s, want %s", got, f.preserved)
+	if f.custodyReturned() {
+		t.Fatal("missing gate recovery stamped custody")
 	}
 }
 
@@ -924,6 +917,22 @@ func TestRecoverKeepLocalDirtyBehindReturnsCustodyWithoutTouchingWorktree(t *tes
 	}
 }
 
+func TestRecoverKeepLocalRefusesUnverifiedGateMutation(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
+	mustRun(t, f.local, "add", "rescope.txt")
+	mustRun(t, f.local, "commit", "-m", "diverging rescope")
+	f.service.InternalMutationConsumed = func(string) error { return errors.New("live authority refused mutation") }
+
+	state := f.service.Recover(f.ctx, true)
+	if state.Recovered || state.Safety != "blocked_recover_preserve_failed" {
+		t.Fatalf("unverified gate mutation recover = %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("unverified gate mutation stamped custody")
+	}
+}
+
 // TestRecoverGateDivergenceAndUnavailabilityFailClosed: recovery must refuse
 // whenever the preserved head cannot be verified and anchored - a moved gate
 // branch, a deleted gate branch, or a missing gate.
@@ -967,6 +976,19 @@ func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 			t.Fatal("unverifiable preservation stamped custody")
 		}
 	})
+}
+
+func TestRecoverRefusesUnavailableGateFence(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	f.service.GateConfigCurrent = func() bool { return false }
+
+	state := f.service.Recover(f.ctx, true)
+	if state.Recovered || state.Safety != "blocked_recover_gate_unavailable" {
+		t.Fatalf("unavailable gate fence recover = %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("unavailable gate fence stamped custody")
+	}
 }
 
 func TestRecoverTerminalPostPushRunWithMovedHead(t *testing.T) {
@@ -1730,7 +1752,7 @@ func TestRecoverConcurrentKeepLocalDoesNotRollbackCompletedTransition(t *testing
 		t.Fatal(err)
 	}
 	defer secondDB.Close()
-	secondService := &Service{DB: secondDB, Repo: f.repo, WorkDir: f.local, GateDir: f.gate, Paths: f.service.Paths}
+	secondService := &Service{DB: secondDB, Repo: f.repo, WorkDir: f.local, GateDir: f.gate, Paths: f.service.Paths, GateConfigCurrent: f.service.GateConfigCurrent, InternalMutationConsumed: f.service.InternalMutationConsumed}
 	secondService.afterCustodyLockAttempt = func(error) { close(secondStarted) }
 
 	firstResult := make(chan State, 1)
@@ -1785,7 +1807,7 @@ func TestRecoverConcurrentDefaultAndKeepLocalShareCustodyLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer secondDB.Close()
-	secondService := &Service{DB: secondDB, Repo: f.repo, WorkDir: f.local, GateDir: f.gate, Paths: f.service.Paths}
+	secondService := &Service{DB: secondDB, Repo: f.repo, WorkDir: f.local, GateDir: f.gate, Paths: f.service.Paths, GateConfigCurrent: f.service.GateConfigCurrent, InternalMutationConsumed: f.service.InternalMutationConsumed}
 	secondStarted := make(chan struct{})
 	secondService.afterCustodyLockAttempt = func(error) { close(secondStarted) }
 
@@ -1842,7 +1864,7 @@ func TestRecoverConcurrentDefaultAttemptsShareCustodyLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer secondDB.Close()
-	secondService := &Service{DB: secondDB, Repo: f.repo, WorkDir: f.local, GateDir: f.gate, Paths: f.service.Paths}
+	secondService := &Service{DB: secondDB, Repo: f.repo, WorkDir: f.local, GateDir: f.gate, Paths: f.service.Paths, GateConfigCurrent: f.service.GateConfigCurrent, InternalMutationConsumed: f.service.InternalMutationConsumed}
 	secondStarted := make(chan struct{})
 	secondService.afterCustodyLockAttempt = func(error) { close(secondStarted) }
 

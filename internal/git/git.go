@@ -64,6 +64,9 @@ func runInDir(ctx context.Context, dir string, args ...string) (string, error) {
 	if branch := internalMutationBranch(ctx); branch != "" {
 		cmd.Env = append(cmd.Env, "NO_MISTAKES_INTERNAL_MUTATION_BRANCH="+branch)
 	}
+	if endpoint := internalMutationAuthority(ctx); endpoint != "" {
+		cmd.Env = append(cmd.Env, "NO_MISTAKES_INTERNAL_MUTATION_AUTHORITY="+endpoint)
+	}
 	winproc.Harden(cmd)
 	out, err := cmd.Output()
 	if err != nil {

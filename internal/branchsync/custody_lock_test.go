@@ -1,13 +1,13 @@
 package branchsync
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"context"
 	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 )
 
 func TestInternalMutationCapabilityRequiresActiveBranchLock(t *testing.T) {
@@ -17,25 +17,112 @@ func TestInternalMutationCapabilityRequiresActiveBranchLock(t *testing.T) {
 		Ref: "refs/heads/feature/recover", OldSHA: f.submitted, NewSHA: f.preserved,
 		Operation: "update-ref", Scope: db.InternalRefMutationScopeOrdinary,
 	}
-	if _, err := IssueInternalRefMutation(f.db, nil, spec); err == nil {
+	if _, _, err := IssueInternalRefMutation(f.db, nil, spec); err == nil {
 		t.Fatal("capability issuance without a branch lock unexpectedly succeeded")
 	}
 	lock, err := acquireCustodyLock(f.service, f.run)
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof := lock.InternalMutationLockProof()
-	tokenHash := sha256.Sum256([]byte(proof.Token))
-	if !VerifyInternalMutationLockProof(proof.Path, proof.PID, hex.EncodeToString(tokenHash[:])) {
-		t.Fatal("active branch-lock proof was rejected")
-	}
-	if _, err := IssueInternalRefMutation(f.db, lock, spec); err != nil {
+	capability, endpoint, err := IssueInternalRefMutation(f.db, lock, spec)
+	if err != nil {
 		t.Fatalf("capability issuance with a branch lock: %v", err)
 	}
-	lock.Release()
-	if VerifyInternalMutationLockProof(proof.Path, proof.PID, hex.EncodeToString(tokenHash[:])) {
-		t.Fatal("released branch-lock proof remained valid")
+	request := InternalRefMutationAuthorization{Capability: capability, Phase: "prepared", GatePath: spec.GatePath, Branch: spec.Branch, Ref: spec.Ref, OldSHA: spec.OldSHA, NewSHA: spec.NewSHA, Operation: spec.Operation, Scope: spec.Scope}
+	if err := AuthorizeInternalRefMutation(endpoint, request); err != nil {
+		t.Fatalf("live branch-lock authority rejected capability: %v", err)
 	}
+	lock.Release()
+	if err := AuthorizeInternalRefMutation(endpoint, request); err == nil {
+		t.Fatal("closed branch-lock authority accepted capability")
+	}
+	restarted, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Release()
+	if err := AuthorizeInternalRefMutation(endpoint, request); err == nil {
+		t.Fatal("restarted branch-lock authority accepted a capability from the prior owner")
+	}
+	if _, err := restarted.ensureInternalMutationAuthority(f.db); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := IssueInternalRefMutation(f.db, restarted, spec); err == nil {
+		t.Fatal("closed branch-lock file descriptor issued a capability")
+	}
+	restarted.file = nil
+	restarted.closeInternalMutationAuthority()
+}
+
+func TestGateRefLockBlocksHooksPathOverride(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	branchLock, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer branchLock.Release()
+	authority, err := branchLock.ensureInternalMutationAuthority(f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := acquireGateRefLock(f.gate, "refs/heads/feature/recover", authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+
+	if _, err := gitpkg.Run(context.Background(), f.gate, "-c", "core.hooksPath="+t.TempDir(), "update-ref", "refs/heads/feature/recover", f.preserved, f.submitted); err == nil {
+		t.Fatal("raw update-ref bypassed the final ordinary-ref lock")
+	}
+	if got, err := readLockedGateRef(f.gate, "refs/heads/feature/recover"); err != nil || got != f.preserved {
+		t.Fatalf("locked gate branch = %s, want %s", got, f.preserved)
+	}
+}
+
+func TestGateRefLockRemovesStaleOwnedLockAfterAuthorityExit(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	branchLock, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := branchLock.ensureInternalMutationAuthority(f.db)
+	if err != nil {
+		branchLock.Release()
+		t.Fatal(err)
+	}
+	gateLock, err := acquireGateRefLock(f.gate, "refs/heads/feature/recover", authority)
+	if err != nil {
+		branchLock.Release()
+		t.Fatal(err)
+	}
+	if err := gateLock.file.Close(); err != nil {
+		branchLock.Release()
+		t.Fatal(err)
+	}
+	gateLock.file = nil
+	branchLock.closeInternalMutationAuthority()
+	if err := branchLock.file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	branchLock.file = nil
+
+	restarted, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Release()
+	newAuthority, err := restarted.ensureInternalMutationAuthority(f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newGateLock, err := acquireGateRefLock(f.gate, "refs/heads/feature/recover", newAuthority)
+	if err != nil {
+		t.Fatalf("stale owned gate lock blocked retry: %v", err)
+	}
+	newGateLock.Release()
 }
 
 func TestCustodyLockRejectsLiveSecondAttemptAndReleasesAfterOwnerExit(t *testing.T) {

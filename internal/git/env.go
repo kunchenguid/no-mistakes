@@ -10,6 +10,7 @@ import (
 type internalMutationCapabilityKey struct{}
 type internalMutationOperationKey struct{}
 type internalMutationBranchKey struct{}
+type internalMutationAuthorityKey struct{}
 
 func WithInternalMutationCapability(ctx context.Context, capability string) context.Context {
 	return context.WithValue(ctx, internalMutationCapabilityKey{}, capability)
@@ -21,6 +22,10 @@ func WithInternalMutationOperation(ctx context.Context, operation string) contex
 
 func WithInternalMutationBranch(ctx context.Context, branch string) context.Context {
 	return context.WithValue(ctx, internalMutationBranchKey{}, branch)
+}
+
+func WithInternalMutationAuthority(ctx context.Context, endpoint string) context.Context {
+	return context.WithValue(ctx, internalMutationAuthorityKey{}, endpoint)
 }
 
 func internalMutationCapability(ctx context.Context) string {
@@ -45,6 +50,14 @@ func internalMutationBranch(ctx context.Context) string {
 	}
 	branch, _ := ctx.Value(internalMutationBranchKey{}).(string)
 	return branch
+}
+
+func internalMutationAuthority(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	endpoint, _ := ctx.Value(internalMutationAuthorityKey{}).(string)
+	return endpoint
 }
 
 // NonInteractiveEnv returns the environment for a subprocess that may invoke

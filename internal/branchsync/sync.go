@@ -132,11 +132,13 @@ func CanApply(state State) bool {
 // head and ancestry as provenance evidence, while Recover is the only method
 // that mutates it.
 type Service struct {
-	DB      *db.DB
-	Repo    *db.Repo
-	WorkDir string
-	GateDir string
-	Paths   *paths.Paths
+	DB                       *db.DB
+	Repo                     *db.Repo
+	WorkDir                  string
+	GateDir                  string
+	Paths                    *paths.Paths
+	GateConfigCurrent        func() bool
+	InternalMutationConsumed func(string) error
 
 	beforeApply              func()
 	beforeGateReset          func()
@@ -574,6 +576,9 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return custodyLockFailure(state, lockErr)
 	}
 	defer lock.Release()
+	if strings.TrimSpace(s.GateDir) == "" || !s.gateConfigCurrent() {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "the managed gate fencing configuration is missing or tampered; custody was not returned and no files or refs were changed")
+	}
 	if pending, err := s.DB.GetPendingReceiveReservationsForBranch(s.Repo.ID, run.Branch); err != nil {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_receive_reservation", "a managed gate receive is still being reconciled; custody was not returned and no files or refs were changed")
 	} else if len(pending) > 0 {
@@ -762,10 +767,7 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 		}
 		if currentGateHead == originalGateHead {
 			if casErr := s.updateGateRef(ctx, lock, state.Local.Branch, "refs/heads/"+state.Local.Branch, originalGateHead, state.Local.Head); casErr != nil {
-				currentGateHead, err = git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+state.Local.Branch+"^{commit}")
-				if err != nil || currentGateHead != state.Local.Head {
-					return releaseCustodyOwner(blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the gate branch changed while custody was being returned; re-run after reconciling the gate; no ordinary refs were changed"), owner)
-				}
+				return releaseCustodyOwner(blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the gate branch could not be authorized by the live branch-lock authority; custody was not stamped; re-run recovery"), owner)
 			}
 		} else if currentGateHead != state.Local.Head {
 			return releaseCustodyOwner(blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the ordinary gate ref changed while custody was being returned; re-run after reconciling the gate; no custody was stamped"), owner)
@@ -788,7 +790,13 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 	if !ok {
 		return s.recoverKeepLocalFailure(ctx, precheck, run, transition, lock)
 	}
-	return s.finishRecoverWithTransition(ctx, run, false, transition, lock)
+	expectedGateHead := run.HeadSHA
+	if transition != nil {
+		expectedGateHead = transition.current
+	} else {
+		expectedGateHead = state.Local.Head
+	}
+	return s.finishRecoverAtGateHead(ctx, run, false, transition, lock, expectedGateHead)
 }
 
 func (s *Service) acquireRecoveryLock(run *db.Run) (*custodyLock, error) {
@@ -802,25 +810,26 @@ func (s *Service) acquireRecoveryLock(run *db.Run) (*custodyLock, error) {
 	return lock, err
 }
 
-func (s *Service) internalGateContext(ctx context.Context, lock *custodyLock, branch, ref, oldSHA, newSHA, operation string) (context.Context, error) {
+func (s *Service) internalGateContext(ctx context.Context, lock *custodyLock, branch, ref, oldSHA, newSHA, operation string) (context.Context, string, error) {
 	if lock == nil || s == nil || s.DB == nil || s.Repo == nil {
-		return nil, fmt.Errorf("managed gate mutation requires an active branch lock")
+		return nil, "", fmt.Errorf("managed gate mutation requires an active branch lock")
 	}
 	scope := db.InternalRefMutationScopePrivate
 	if strings.HasPrefix(ref, "refs/heads/") {
 		scope = db.InternalRefMutationScopeOrdinary
 	}
-	capability, err := IssueInternalRefMutation(s.DB, lock, db.InternalRefMutationSpec{
+	capability, endpoint, err := IssueInternalRefMutation(s.DB, lock, db.InternalRefMutationSpec{
 		RepoID: s.Repo.ID, GatePath: s.GateDir, Branch: branch, Ref: ref,
 		OldSHA: oldSHA, NewSHA: newSHA, Operation: operation, Scope: scope,
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	mutationCtx := git.WithInternalMutationCapability(ctx, capability)
 	mutationCtx = git.WithInternalMutationOperation(mutationCtx, operation)
 	mutationCtx = git.WithInternalMutationBranch(mutationCtx, branch)
-	return mutationCtx, nil
+	mutationCtx = git.WithInternalMutationAuthority(mutationCtx, endpoint)
+	return mutationCtx, capability, nil
 }
 
 func internalZeroObjectID(sha string) string {
@@ -831,6 +840,9 @@ func internalZeroObjectID(sha string) string {
 }
 
 func (s *Service) updateGateRef(ctx context.Context, lock *custodyLock, branch, ref, oldSHA, newSHA string) error {
+	if !s.gateConfigCurrent() {
+		return fmt.Errorf("managed gate fencing configuration is missing or tampered")
+	}
 	oldSHA = strings.TrimSpace(oldSHA)
 	newSHA = strings.TrimSpace(newSHA)
 	if oldSHA == "" {
@@ -839,7 +851,7 @@ func (s *Service) updateGateRef(ctx context.Context, lock *custodyLock, branch, 
 	if newSHA == "" {
 		newSHA = internalZeroObjectID(oldSHA)
 	}
-	mutationCtx, err := s.internalGateContext(ctx, lock, branch, ref, oldSHA, newSHA, "update-ref")
+	mutationCtx, capability, err := s.internalGateContext(ctx, lock, branch, ref, oldSHA, newSHA, "update-ref")
 	if err != nil {
 		return err
 	}
@@ -853,10 +865,16 @@ func (s *Service) updateGateRef(ctx context.Context, lock *custodyLock, branch, 
 		args = append(args, oldSHA)
 	}
 	_, err = git.Run(mutationCtx, s.GateDir, args...)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.verifyInternalMutationConsumed(capability)
 }
 
 func (s *Service) fetchGatePrivateRef(ctx context.Context, lock *custodyLock, branch, source, destination, oldSHA, newSHA string) error {
+	if !s.gateConfigCurrent() {
+		return fmt.Errorf("managed gate fencing configuration is missing or tampered")
+	}
 	oldSHA = strings.TrimSpace(oldSHA)
 	newSHA = strings.TrimSpace(newSHA)
 	if oldSHA == "" {
@@ -865,12 +883,36 @@ func (s *Service) fetchGatePrivateRef(ctx context.Context, lock *custodyLock, br
 			oldSHA = internalZeroObjectID(newSHA)
 		}
 	}
-	mutationCtx, err := s.internalGateContext(ctx, lock, branch, destination, oldSHA, newSHA, "fetch-private-ref")
+	mutationCtx, capability, err := s.internalGateContext(ctx, lock, branch, destination, oldSHA, newSHA, "fetch-private-ref")
 	if err != nil {
 		return err
 	}
 	_, err = git.Run(mutationCtx, s.GateDir, "fetch", "--no-tags", "--no-write-fetch-head", source, "+refs/heads/"+branch+":"+destination)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.verifyInternalMutationConsumed(capability)
+}
+
+func (s *Service) verifyInternalMutationConsumed(capability string) error {
+	if s.InternalMutationConsumed != nil {
+		return s.InternalMutationConsumed(capability)
+	}
+	mutation, err := s.DB.GetInternalRefMutation(capability)
+	if err != nil {
+		return err
+	}
+	if mutation.State != db.InternalRefMutationStateConsumed {
+		return fmt.Errorf("managed gate mutation was not authorized by its live branch-lock authority")
+	}
+	return nil
+}
+
+func (s *Service) gateConfigCurrent() bool {
+	if s.GateConfigCurrent != nil {
+		return s.GateConfigCurrent()
+	}
+	return git.GateConfigCurrent(s.GateDir)
 }
 
 func custodyLockFailure(state State, err error) State {
@@ -1005,11 +1047,7 @@ func (s *Service) prepareCustodyOriginal(ctx context.Context, lock *custodyLock,
 		return existing, nil
 	}
 	if err := s.updateGateRef(ctx, lock, branch, originalRef, "", gateHead); err != nil {
-		existing, existingErr := git.Run(ctx, s.GateDir, "rev-parse", originalRef+"^{commit}")
-		if existingErr != nil || existing != gateHead {
-			return "", err
-		}
-		return existing, nil
+		return "", err
 	}
 	existing, err := git.Run(ctx, s.GateDir, "rev-parse", originalRef+"^{commit}")
 	if err != nil || existing != gateHead {
@@ -1105,6 +1143,87 @@ func (s *Service) finishRecover(ctx context.Context, run *db.Run, changed bool, 
 }
 
 func (s *Service) finishRecoverWithTransition(ctx context.Context, run *db.Run, changed bool, transition *custodyGateTransition, lock *custodyLock) State {
+	expectedGateHead := run.HeadSHA
+	if transition != nil {
+		expectedGateHead = transition.current
+	}
+	return s.finishRecoverAtGateHead(ctx, run, changed, transition, lock, expectedGateHead)
+}
+
+func (s *Service) finishRecoverAtGateHead(ctx context.Context, run *db.Run, changed bool, transition *custodyGateTransition, lock *custodyLock, expectedGateHead string) State {
+	if lock == nil {
+		state, _, _ := s.inspect(ctx)
+		state.Changed = changed
+		state.Recovered = false
+		state.Safety = "blocked_recover_gate_race"
+		state.Error = "the live branch-lock authority is missing for the final custody check; custody was not stamped; re-run recovery"
+		state.NextAction = nil
+		return state
+	}
+	if !git.LooksLikeBareRepository(s.GateDir) || !s.gateConfigCurrent() {
+		state, _, _ := s.inspect(ctx)
+		state.Changed = changed
+		state.Recovered = false
+		state.Safety = "blocked_recover_gate_unavailable"
+		state.Error = "the managed gate is missing or its fencing configuration changed before the final custody check; custody was not stamped; re-run recovery"
+		state.NextAction = nil
+		return state
+	}
+	authorityEndpoint, authorityErr := lock.ensureInternalMutationAuthority(s.DB)
+	if authorityErr != nil {
+		state, _, _ := s.inspect(ctx)
+		state.Changed = changed
+		state.Recovered = false
+		state.Safety = "blocked_recover_gate_race"
+		state.Error = "the live branch-lock authority could not be established for the final custody check; custody was not stamped; re-run recovery"
+		state.NextAction = nil
+		return state
+	}
+	gateLock, gateLockErr := acquireGateRefLock(s.GateDir, "refs/heads/"+run.Branch, authorityEndpoint)
+	if gateLockErr != nil {
+		state, _, _ := s.inspect(ctx)
+		state.Changed = changed
+		state.Recovered = false
+		state.Safety = "blocked_recover_gate_race"
+		state.Error = "the ordinary gate ref could not be exclusively locked for the final custody check; custody was not stamped; re-run recovery"
+		state.NextAction = nil
+		return state
+	}
+	releaseGateLock := func() {
+		if gateLock != nil {
+			gateLock.Release()
+			gateLock = nil
+		}
+	}
+	defer releaseGateLock()
+	if !s.gateConfigCurrent() {
+		state, _, _ := s.inspect(ctx)
+		state.Changed = changed
+		state.Recovered = false
+		state.Safety = "blocked_recover_gate_unavailable"
+		state.Error = "the managed gate fencing configuration changed before the final custody check; custody was not stamped; re-run recovery"
+		state.NextAction = nil
+		return state
+	}
+	gateHead, gateHeadErr := readLockedGateRef(s.GateDir, "refs/heads/"+run.Branch)
+	if gateHeadErr != nil || gateHead != expectedGateHead {
+		state, _, _ := s.inspect(ctx)
+		state.Changed = changed
+		state.Recovered = false
+		state.Safety = "blocked_recover_gate_race"
+		state.Error = "the ordinary gate ref changed before the final custody stamp; custody was not stamped; re-run recovery"
+		state.NextAction = nil
+		return state
+	}
+	if !s.gateConfigCurrent() {
+		state, _, _ := s.inspect(ctx)
+		state.Changed = changed
+		state.Recovered = false
+		state.Safety = "blocked_recover_gate_unavailable"
+		state.Error = "the managed gate fencing configuration changed before the custody stamp; custody was not stamped; re-run recovery"
+		state.NextAction = nil
+		return state
+	}
 	var stampErr error
 	if transition != nil {
 		stampErr = transition.owner.Complete(ctx, run)
@@ -1112,6 +1231,7 @@ func (s *Service) finishRecoverWithTransition(ctx context.Context, run *db.Run, 
 		stampErr = s.DB.SetRunCustodyReturnedCAS(run)
 	}
 	if stampErr != nil {
+		releaseGateLock()
 		if transition != nil {
 			current, currentErr := s.DB.GetRun(run.ID)
 			if currentErr == nil && current != nil && current.CustodyReturnedAt != nil {
@@ -1222,13 +1342,7 @@ func (s *Service) fetchExactRecoveryAnchor(ctx context.Context, lock *custodyLoc
 		}
 	} else {
 		if err := s.updateGateRef(ctx, lock, run.Branch, sourceRef, "", preserved); err != nil {
-			source, sourceErr := git.Run(ctx, s.GateDir, "rev-parse", sourceRef+"^{commit}")
-			if sourceErr != nil || source != preserved {
-				if sourceErr == nil && source != preserved {
-					return "blocked_recover_anchor_conflict"
-				}
-				return "blocked_recover_preserve_failed"
-			}
+			return "blocked_recover_preserve_failed"
 		}
 	}
 	if s.beforeRecoverAnchorFetch != nil {

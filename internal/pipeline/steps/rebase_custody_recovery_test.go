@@ -121,7 +121,7 @@ func TestRebaseOnlyCancelledRunKeepLocalRecovery(t *testing.T) {
 		t.Fatalf("PR head before recovery = %s, want %s", got, submitted)
 	}
 
-	service := &branchsync.Service{DB: database, Repo: repo, WorkDir: operator, GateDir: gate}
+	service := &branchsync.Service{DB: database, Repo: repo, WorkDir: operator, GateDir: gate, GateConfigCurrent: func() bool { return true }, InternalMutationConsumed: func(string) error { return nil }}
 	state := service.Recover(ctx, true)
 	if !state.Recovered || state.Changed || state.State != branchsync.StateCustodyReturned {
 		t.Fatalf("keep-local recovery = %#v", state)

@@ -311,6 +311,7 @@ RECEIVE_MANIFEST=${NO_MISTAKES_RECEIVE_MANIFEST:-}
 INTERNAL_CAPABILITY=${NO_MISTAKES_INTERNAL_MUTATION_CAPABILITY:-}
 INTERNAL_OPERATION=${NO_MISTAKES_INTERNAL_MUTATION_OPERATION:-}
 INTERNAL_BRANCH=${NO_MISTAKES_INTERNAL_MUTATION_BRANCH:-}
+INTERNAL_AUTHORITY=${NO_MISTAKES_INTERNAL_MUTATION_AUTHORITY:-}
 if [ -z "$RECEIVE_SESSION_ID" ] && [ -z "$RECEIVE_MANIFEST" ]; then
 
   RECEIVE_INPUT=$(mktemp "$GATE_DIR/.no-mistakes-reference-transaction.XXXXXX") || {
@@ -348,7 +349,7 @@ if [ -z "$RECEIVE_SESSION_ID" ] && [ -z "$RECEIVE_MANIFEST" ]; then
     printf 'no-mistakes: internal mutation capability is required for managed ref %s\n' "$INTERNAL_REF" >&2
     exit 1
   fi
-  if [ -z "$INTERNAL_OPERATION" ] || [ -z "$INTERNAL_BRANCH" ]; then
+  if [ -z "$INTERNAL_OPERATION" ] || [ -z "$INTERNAL_BRANCH" ] || [ -z "$INTERNAL_AUTHORITY" ]; then
     printf 'no-mistakes: internal mutation capability metadata is incomplete\n' >&2
     exit 1
   fi
@@ -364,7 +365,7 @@ if [ -z "$RECEIVE_SESSION_ID" ] && [ -z "$RECEIVE_MANIFEST" ]; then
       exit 1
       ;;
   esac
-  NM_HOOK_HELPER=1 "$NM_BIN" daemon authorize-ref-mutation --gate "$GATE_DIR" --phase "$PHASE" --branch "$INTERNAL_BRANCH" --ref "$INTERNAL_REF" --old "$INTERNAL_OLD" --new "$INTERNAL_NEW" --operation "$INTERNAL_OPERATION" --scope "$INTERNAL_SCOPE" < /dev/null
+  NM_HOOK_HELPER=1 "$NM_BIN" daemon authorize-ref-mutation --gate "$GATE_DIR" --authority "$INTERNAL_AUTHORITY" --phase "$PHASE" --branch "$INTERNAL_BRANCH" --ref "$INTERNAL_REF" --old "$INTERNAL_OLD" --new "$INTERNAL_NEW" --operation "$INTERNAL_OPERATION" --scope "$INTERNAL_SCOPE" < /dev/null
   status=$?
   if [ $status -ne 0 ]; then
     printf 'no-mistakes: internal mutation capability refused for %s\n' "$INTERNAL_REF" >&2

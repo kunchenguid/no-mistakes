@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 )
 
 const (
@@ -33,23 +32,21 @@ type InternalRefMutationSpec struct {
 }
 
 type InternalRefMutation struct {
-	ID            string
-	RepoID        string
-	GatePath      string
-	Branch        string
-	Ref           string
-	OldSHA        string
-	NewSHA        string
-	Operation     string
-	Scope         string
-	LockPath      string
-	OwnerPID      int
-	LockTokenHash string
-	State         string
-	CreatedAt     int64
+	ID                string
+	RepoID            string
+	GatePath          string
+	Branch            string
+	Ref               string
+	OldSHA            string
+	NewSHA            string
+	Operation         string
+	Scope             string
+	AuthorityEndpoint string
+	State             string
+	CreatedAt         int64
 }
 
-func (d *DB) IssueInternalRefMutation(spec InternalRefMutationSpec, lockPath string, ownerPID int, lockToken string) (string, error) {
+func (d *DB) IssueInternalRefMutation(spec InternalRefMutationSpec, authorityEndpoint string) (string, error) {
 	spec.RepoID = strings.TrimSpace(spec.RepoID)
 	spec.GatePath = strings.TrimSpace(spec.GatePath)
 	spec.Branch = strings.TrimSpace(spec.Branch)
@@ -58,9 +55,8 @@ func (d *DB) IssueInternalRefMutation(spec InternalRefMutationSpec, lockPath str
 	spec.NewSHA = strings.TrimSpace(spec.NewSHA)
 	spec.Operation = strings.TrimSpace(spec.Operation)
 	spec.Scope = strings.TrimSpace(spec.Scope)
-	lockPath = strings.TrimSpace(lockPath)
-	lockToken = strings.TrimSpace(lockToken)
-	if spec.RepoID == "" || spec.GatePath == "" || spec.Branch == "" || spec.Ref == "" || spec.OldSHA == "" || spec.NewSHA == "" || spec.Operation == "" || lockPath == "" || ownerPID <= 0 || lockToken == "" {
+	authorityEndpoint = strings.TrimSpace(authorityEndpoint)
+	if spec.RepoID == "" || spec.GatePath == "" || spec.Branch == "" || spec.Ref == "" || spec.OldSHA == "" || spec.NewSHA == "" || spec.Operation == "" || authorityEndpoint == "" {
 		return "", fmt.Errorf("issue internal ref mutation: exact identity and active lock proof are required")
 	}
 	if spec.Scope != InternalRefMutationScopeOrdinary && spec.Scope != InternalRefMutationScopePrivate {
@@ -80,8 +76,8 @@ func (d *DB) IssueInternalRefMutation(spec InternalRefMutationSpec, lockPath str
 		return "", fmt.Errorf("issue internal ref mutation: generate capability: %w", err)
 	}
 	stamp := now()
-	_, err = d.sql.Exec(`INSERT INTO internal_ref_mutations (id, repo_id, gate_path, branch, ref, old_sha, new_sha, operation, scope, capability_hash, lock_path, lock_owner_pid, lock_token_hash, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		newID(), spec.RepoID, spec.GatePath, spec.Branch, spec.Ref, spec.OldSHA, spec.NewSHA, spec.Operation, spec.Scope, capabilityHash(capability), lockPath, ownerPID, capabilityHash(lockToken), InternalRefMutationStateIssued, stamp, stamp)
+	_, err = d.sql.Exec(`INSERT INTO internal_ref_mutations (id, repo_id, gate_path, branch, ref, old_sha, new_sha, operation, scope, capability_hash, authority_endpoint, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		newID(), spec.RepoID, spec.GatePath, spec.Branch, spec.Ref, spec.OldSHA, spec.NewSHA, spec.Operation, spec.Scope, capabilityHash(capability), authorityEndpoint, InternalRefMutationStateIssued, stamp, stamp)
 	if err != nil {
 		return "", fmt.Errorf("issue internal ref mutation: %w", err)
 	}
@@ -94,8 +90,8 @@ func (d *DB) GetInternalRefMutation(capability string) (*InternalRefMutation, er
 		return nil, ErrInternalRefMutation
 	}
 	var mutation InternalRefMutation
-	err := d.sql.QueryRow(`SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, operation, scope, lock_path, lock_owner_pid, lock_token_hash, state, created_at FROM internal_ref_mutations WHERE capability_hash = ?`, capabilityHash(capability)).Scan(
-		&mutation.ID, &mutation.RepoID, &mutation.GatePath, &mutation.Branch, &mutation.Ref, &mutation.OldSHA, &mutation.NewSHA, &mutation.Operation, &mutation.Scope, &mutation.LockPath, &mutation.OwnerPID, &mutation.LockTokenHash, &mutation.State, &mutation.CreatedAt)
+	err := d.sql.QueryRow(`SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, operation, scope, authority_endpoint, state, created_at FROM internal_ref_mutations WHERE capability_hash = ?`, capabilityHash(capability)).Scan(
+		&mutation.ID, &mutation.RepoID, &mutation.GatePath, &mutation.Branch, &mutation.Ref, &mutation.OldSHA, &mutation.NewSHA, &mutation.Operation, &mutation.Scope, &mutation.AuthorityEndpoint, &mutation.State, &mutation.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrInternalRefMutation
 	}
@@ -105,7 +101,18 @@ func (d *DB) GetInternalRefMutation(capability string) (*InternalRefMutation, er
 	return &mutation, nil
 }
 
-func (d *DB) AdvanceInternalRefMutation(phase, gatePath, branch, ref, oldSHA, newSHA, operation, scope, capability string) error {
+func (d *DB) InvalidateInternalRefMutations(authorityEndpoint string) error {
+	_, err := d.sql.Exec(`UPDATE internal_ref_mutations SET state = ?, updated_at = ? WHERE authority_endpoint = ? AND state IN (?, ?)`, InternalRefMutationStateConsumed, now(), strings.TrimSpace(authorityEndpoint), InternalRefMutationStateIssued, InternalRefMutationStatePrepared)
+	return err
+}
+
+func (d *DB) InvalidateInternalRefMutationsPrefix(authorityPrefix string) error {
+	prefix := strings.TrimSpace(authorityPrefix)
+	_, err := d.sql.Exec(`UPDATE internal_ref_mutations SET state = ?, updated_at = ? WHERE (authority_endpoint = ? OR (authority_endpoint >= ? AND authority_endpoint < ?)) AND state IN (?, ?)`, InternalRefMutationStateConsumed, now(), prefix, prefix+"-", prefix+".", InternalRefMutationStateIssued, InternalRefMutationStatePrepared)
+	return err
+}
+
+func (d *DB) AdvanceInternalRefMutation(authorityEndpoint, phase, gatePath, branch, ref, oldSHA, newSHA, operation, scope, capability string) error {
 	if phase != "prepared" && phase != "committed" && phase != "aborted" {
 		return fmt.Errorf("advance internal ref mutation: unsupported phase %q", phase)
 	}
@@ -113,10 +120,7 @@ func (d *DB) AdvanceInternalRefMutation(phase, gatePath, branch, ref, oldSHA, ne
 	if err != nil {
 		return err
 	}
-	if mutation.GatePath != strings.TrimSpace(gatePath) || mutation.Branch != strings.TrimSpace(branch) || mutation.Ref != strings.TrimSpace(ref) || mutation.OldSHA != strings.TrimSpace(oldSHA) || mutation.NewSHA != strings.TrimSpace(newSHA) || mutation.Operation != strings.TrimSpace(operation) || mutation.Scope != strings.TrimSpace(scope) {
-		return ErrInternalRefMutation
-	}
-	if time.Since(time.Unix(mutation.CreatedAt, 0)) > 5*time.Minute {
+	if mutation.AuthorityEndpoint != strings.TrimSpace(authorityEndpoint) || mutation.GatePath != strings.TrimSpace(gatePath) || mutation.Branch != strings.TrimSpace(branch) || mutation.Ref != strings.TrimSpace(ref) || mutation.OldSHA != strings.TrimSpace(oldSHA) || mutation.NewSHA != strings.TrimSpace(newSHA) || mutation.Operation != strings.TrimSpace(operation) || mutation.Scope != strings.TrimSpace(scope) {
 		return ErrInternalRefMutation
 	}
 	from := InternalRefMutationStateIssued
