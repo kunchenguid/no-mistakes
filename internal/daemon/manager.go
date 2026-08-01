@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -606,6 +607,13 @@ func (m *RunManager) HandleAdmitPushBatch(ctx context.Context, params *ipc.Admit
 	if err != nil {
 		return nil, err
 	}
+	active, err := m.db.VerifyReceiveSession(repo.ID, m.paths.RepoDir(repo.ID), params.ReceiveSessionID, params.ReceiveCapability)
+	if err != nil {
+		return nil, err
+	}
+	if !active {
+		return nil, fmt.Errorf("admit push batch: receive session capability was not issued for this gate")
+	}
 	type checkedUpdate struct {
 		update ipc.AdmitPushUpdate
 		branch string
@@ -681,11 +689,28 @@ func (m *RunManager) HandleReceiveTransaction(ctx context.Context, params *ipc.R
 }
 
 func (m *RunManager) HandleReceiveTransactionBatch(ctx context.Context, params *ipc.ReceiveTransactionBatchParams) error {
-	if params == nil || len(params.Updates) == 0 {
-		return fmt.Errorf("receive transaction: at least one transition is required")
+	if params == nil {
+		return fmt.Errorf("receive transaction: missing parameters")
 	}
 	if strings.TrimSpace(params.ReceiveSessionID) == "" || strings.TrimSpace(params.ReceiveCapability) == "" {
 		return fmt.Errorf("receive transaction: authenticated receive capability is required")
+	}
+	if len(params.Updates) == 0 {
+		if params.Phase != "aborted" {
+			return fmt.Errorf("receive transaction: at least one transition is required")
+		}
+		repoID, err := repoIDFromGatePath(params.Gate)
+		if err != nil {
+			return err
+		}
+		repo, err := m.db.GetRepo(repoID)
+		if err != nil {
+			return fmt.Errorf("get repo: %w", err)
+		}
+		if repo == nil || !samePath(params.Gate, m.paths.RepoDir(repo.ID)) {
+			return fmt.Errorf("receive transaction: gate path does not match registered repository")
+		}
+		return m.db.AbortReceiveSession(repo.ID, m.paths.RepoDir(repo.ID), params.ReceiveSessionID, params.ReceiveCapability)
 	}
 	repo, _, err := m.receiveRepo(params.Gate, params.Updates[0].Ref)
 	if err != nil {
@@ -928,6 +953,12 @@ func (m *RunManager) reconcileReceiveReservations(ctx context.Context) {
 		lock.Release()
 		if reconcileErr != nil {
 			slog.Warn("receive reservation remains pending", "reservation_id", reservation.ID, "error", reconcileErr)
+			continue
+		}
+		if reservation.SessionID != "" {
+			if err := m.db.RetireReceiveSession(reservation.SessionID); err != nil && !errors.Is(err, db.ErrReceiveSessionPending) {
+				slog.Warn("recovered receive session remains active", "session_id", reservation.SessionID, "error", err)
+			}
 		}
 	}
 }

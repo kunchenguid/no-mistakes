@@ -363,7 +363,7 @@ func TestPushReceivedRejectsReservationIDWithWrongCapability(t *testing.T) {
 	defer client.Close()
 	var result ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: p.RepoDir("forged-reservation-notification-repo"), Ref: "refs/heads/main", Old: "0000000000000000000000000000000000000000", New: headSHA, ReservationID: reservation.ID, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: "forged-capability"}, &result)
-	if err == nil || !strings.Contains(err.Error(), "session does not match") {
+	if err == nil || (!strings.Contains(err.Error(), "session does not match") && !strings.Contains(err.Error(), "session is no longer active")) {
 		t.Fatalf("forged reservation notification error = %v", err)
 	}
 	if runs, err := d.GetRunsByRepo("forged-reservation-notification-repo"); err != nil {

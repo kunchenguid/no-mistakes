@@ -5,7 +5,6 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -109,7 +108,7 @@ func runManagedReceivePack(cmd *cobra.Command, gate string, args []string) (retE
 	}
 	defer func() {
 		if err := database.RetireReceiveSession(sessionID); err != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("retire receive session: %w", err))
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "no-mistakes: receive session retained for reconciliation: %v\n", err)
 		}
 	}()
 	transport, err := newReceiveCapabilityTransport(gatePath, capability)
@@ -118,7 +117,7 @@ func runManagedReceivePack(cmd *cobra.Command, gate string, args []string) (retE
 	}
 	defer func() {
 		if err := transport.Close(); err != nil {
-			retErr = errors.Join(retErr, err)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "no-mistakes: receive capability cleanup deferred: %v\n", err)
 		}
 	}()
 
@@ -239,7 +238,7 @@ func newDaemonReceiveTransactionCmd() *cobra.Command {
 				if err := scanner.Err(); err != nil {
 					return fmt.Errorf("read receive transaction input: %w", err)
 				}
-				if !seen {
+				if !seen && phase != "aborted" {
 					return fmt.Errorf("receive transaction input is empty")
 				}
 			}

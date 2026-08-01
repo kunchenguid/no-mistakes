@@ -147,11 +147,35 @@ while IFS=' ' read -r reservation_id oldrev newrev refname; do
 done <<EOF
 $out
 EOF
+ABORT_CAPABILITY_FLAG=--receive-capability-fd
+ABORT_CAPABILITY_VALUE=6
+if [ -n "${NO_MISTAKES_RECEIVE_CAPABILITY_ABORTED_HANDLE:-}" ]; then
+  ABORT_CAPABILITY_FLAG=--receive-capability-handle
+  ABORT_CAPABILITY_VALUE=$NO_MISTAKES_RECEIVE_CAPABILITY_ABORTED_HANDLE
+fi
+abort_receive_batch() {
+  if [ "$ABORT_CAPABILITY_FLAG" = --receive-capability-fd ]; then
+    abort_out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon receive-transaction --gate "$GATE_DIR" --phase aborted --receive-session-id "$RECEIVE_SESSION_ID" --receive-capability-fd "$ABORT_CAPABILITY_VALUE" < /dev/null 2>&1)
+  else
+    abort_out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon receive-transaction --gate "$GATE_DIR" --phase aborted --receive-session-id "$RECEIVE_SESSION_ID" "$ABORT_CAPABILITY_FLAG" "$ABORT_CAPABILITY_VALUE" < /dev/null 2>&1)
+  fi
+  abort_status=$?
+  if [ $abort_status -ne 0 ]; then
+    printf 'no-mistakes: could not record pre-receive rejection; receive remains fenced:\n%s\n' "$abort_out" >&2
+    return $abort_status
+  fi
+  return 0
+}
 USER_HOOK="$GATE_DIR/hooks/` + preservedPreReceiveHook + `"
 if [ -x "$USER_HOOK" ]; then
-  exec 3<&- 4>&- 5<&- 6<&- 7<&- 8<&-
-  "$USER_HOOK" < "$RECEIVE_INPUT"
-  exit $?
+  user_status=0
+  "$USER_HOOK" < "$RECEIVE_INPUT" || user_status=$?
+  if [ $user_status -ne 0 ]; then
+    abort_receive_batch || :
+    exec 3<&- 4<&- 5<&- 6<&- 7<&- 8<&-
+    exit $user_status
+  fi
+  exec 3<&- 4<&- 5<&- 6<&- 7<&- 8<&-
 fi
 exit 0
 `

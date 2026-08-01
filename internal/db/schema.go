@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS receive_sessions (
     gate_path             TEXT NOT NULL,
     capability_hash      TEXT NOT NULL,
     state                 TEXT NOT NULL DEFAULT 'active',
+    phase                 TEXT NOT NULL DEFAULT 'issued',
+    batch_hash            TEXT NOT NULL DEFAULT '',
     created_at            INTEGER NOT NULL,
     updated_at            INTEGER NOT NULL
 );
@@ -187,8 +189,10 @@ CREATE TABLE IF NOT EXISTS intent_cache (
 var migrationStatements = []string{
 	`ALTER TABLE repos ADD COLUMN fork_url TEXT`,
 	`ALTER TABLE repos ADD COLUMN url_version INTEGER NOT NULL DEFAULT 0`,
-	`CREATE TABLE IF NOT EXISTS receive_sessions (id TEXT PRIMARY KEY, repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE, gate_path TEXT NOT NULL, capability_hash TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS receive_sessions (id TEXT PRIMARY KEY, repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE, gate_path TEXT NOT NULL, capability_hash TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'active', phase TEXT NOT NULL DEFAULT 'issued', batch_hash TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
 	`CREATE INDEX IF NOT EXISTS receive_sessions_active ON receive_sessions (repo_id, id, state)`,
+	`ALTER TABLE receive_sessions ADD COLUMN phase TEXT NOT NULL DEFAULT 'issued'`,
+	`ALTER TABLE receive_sessions ADD COLUMN batch_hash TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,

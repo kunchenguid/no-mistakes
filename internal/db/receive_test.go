@@ -136,29 +136,36 @@ func TestAuthenticatedReceiveBatchIsAtomicAndSessionScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	gate := "/gate/repo.git"
-	if err := d.RegisterReceiveSession("batch", gate, "session-batch", "cap-batch"); err != nil {
+	if err := d.RegisterReceiveSession("repo", gate, "session-batch", "cap-batch"); err != nil {
 		t.Fatal(err)
 	}
 	oldSHA := "1111111111111111111111111111111111111111"
 	mainSHA := "2222222222222222222222222222222222222222"
 	featureSHA := "3333333333333333333333333333333333333333"
 	reservations, err := d.ReserveReceivesForAuthenticatedSession("session-batch", "cap-batch", []ReceiveReservationInput{
-		{RepoID: "batch", GatePath: gate, Branch: "main", Ref: "refs/heads/main", OldSHA: oldSHA, NewSHA: mainSHA},
-		{RepoID: "batch", GatePath: gate, Branch: "feature", Ref: "refs/heads/feature", OldSHA: oldSHA, NewSHA: featureSHA},
+		{RepoID: "repo", GatePath: gate, Branch: "main", Ref: "refs/heads/main", OldSHA: oldSHA, NewSHA: mainSHA},
+		{RepoID: "repo", GatePath: gate, Branch: "feature", Ref: "refs/heads/feature", OldSHA: oldSHA, NewSHA: featureSHA},
 	})
 	if err != nil || len(reservations) != 2 {
 		t.Fatalf("reserve receive batch = %v, %v", reservations, err)
+	}
+	retry, err := d.ReserveReceivesForAuthenticatedSession("session-batch", "cap-batch", []ReceiveReservationInput{
+		{RepoID: "repo", GatePath: gate, Branch: "feature", Ref: "refs/heads/feature", OldSHA: oldSHA, NewSHA: featureSHA},
+		{RepoID: "repo", GatePath: gate, Branch: "main", Ref: "refs/heads/main", OldSHA: oldSHA, NewSHA: mainSHA},
+	})
+	if err != nil || len(retry) != 2 || retry[0].ID != reservations[1].ID || retry[1].ID != reservations[0].ID {
+		t.Fatalf("same-batch retry = %v, %v", retry, err)
 	}
 	if err := d.RetireReceiveSession("session-batch"); err == nil {
 		t.Fatal("retired a session with pending reservations")
 	}
 	if _, err := d.ReserveReceivesForAuthenticatedSession("session-batch", "cap-batch", []ReceiveReservationInput{
-		{RepoID: "batch", GatePath: gate, Branch: "other", Ref: "refs/heads/other", OldSHA: oldSHA, NewSHA: mainSHA},
-		{RepoID: "batch", GatePath: gate, Branch: "main", Ref: "refs/heads/main", OldSHA: oldSHA, NewSHA: featureSHA},
+		{RepoID: "repo", GatePath: gate, Branch: "other", Ref: "refs/heads/other", OldSHA: oldSHA, NewSHA: mainSHA},
+		{RepoID: "repo", GatePath: gate, Branch: "main", Ref: "refs/heads/main", OldSHA: oldSHA, NewSHA: featureSHA},
 	}); err == nil {
 		t.Fatal("accepted a conflicting batch")
 	}
-	other, err := d.GetPendingReceiveReservation("batch", "other", "refs/heads/other", oldSHA, mainSHA)
+	other, err := d.GetPendingReceiveReservation("repo", "other", "refs/heads/other", oldSHA, mainSHA)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,18 +173,18 @@ func TestAuthenticatedReceiveBatchIsAtomicAndSessionScoped(t *testing.T) {
 		t.Fatal("conflicting batch partially inserted a reservation")
 	}
 	if err := d.ApplyReceiveTransactionBatch("prepared", "session-batch", "cap-batch", []ReceiveTransactionInput{
-		{ID: reservations[0].ID, RepoID: "batch", Branch: "main", Ref: "refs/heads/main", OldSHA: oldSHA, NewSHA: mainSHA},
-		{ID: reservations[1].ID, RepoID: "batch", Branch: "feature", Ref: "refs/heads/feature", OldSHA: oldSHA, NewSHA: featureSHA},
+		{ID: reservations[0].ID, RepoID: "repo", Branch: "main", Ref: "refs/heads/main", OldSHA: oldSHA, NewSHA: mainSHA},
+		{ID: reservations[1].ID, RepoID: "repo", Branch: "feature", Ref: "refs/heads/feature", OldSHA: oldSHA, NewSHA: featureSHA},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.ApplyReceiveTransactionBatch("committed", "session-batch", "cap-batch", []ReceiveTransactionInput{
-		{ID: reservations[0].ID, RepoID: "batch", Branch: "main", Ref: "refs/heads/main", OldSHA: oldSHA, NewSHA: mainSHA},
-		{ID: reservations[1].ID, RepoID: "batch", Branch: "feature", Ref: "refs/heads/feature", OldSHA: oldSHA, NewSHA: featureSHA},
+		{ID: reservations[0].ID, RepoID: "repo", Branch: "main", Ref: "refs/heads/main", OldSHA: oldSHA, NewSHA: mainSHA},
+		{ID: reservations[1].ID, RepoID: "repo", Branch: "feature", Ref: "refs/heads/feature", OldSHA: oldSHA, NewSHA: featureSHA},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.ApplyReceiveTransactionBatch("prepared", "session-batch", "cap-batch", []ReceiveTransactionInput{{ID: reservations[0].ID, RepoID: "batch", Branch: "main", Ref: "refs/heads/main", OldSHA: oldSHA, NewSHA: mainSHA}}); err == nil {
+	if err := d.ApplyReceiveTransactionBatch("prepared", "session-batch", "cap-batch", []ReceiveTransactionInput{{ID: reservations[0].ID, RepoID: "repo", Branch: "main", Ref: "refs/heads/main", OldSHA: oldSHA, NewSHA: mainSHA}}); err == nil {
 		t.Fatal("replayed prepared phase after commit")
 	}
 	if err := d.CompleteReceiveReservationForSession(reservations[0].ID, "run-main", "session-batch", "cap-batch"); err != nil {
@@ -189,8 +196,47 @@ func TestAuthenticatedReceiveBatchIsAtomicAndSessionScoped(t *testing.T) {
 	if err := d.RetireReceiveSession("session-batch"); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.ApplyReceiveTransactionBatch("committed", "session-batch", "cap-batch", []ReceiveTransactionInput{{ID: reservations[0].ID, RepoID: "batch", Branch: "main", Ref: "refs/heads/main", OldSHA: oldSHA, NewSHA: mainSHA}}); err == nil {
+	if err := d.ApplyReceiveTransactionBatch("committed", "session-batch", "cap-batch", []ReceiveTransactionInput{{ID: reservations[0].ID, RepoID: "repo", Branch: "main", Ref: "refs/heads/main", OldSHA: oldSHA, NewSHA: mainSHA}}); err == nil {
 		t.Fatal("replayed committed phase after session retirement")
+	}
+}
+
+func TestAbortReceiveSessionRetiresTheWholeSealedBatch(t *testing.T) {
+	d := openTestDB(t)
+	if _, err := d.InsertRepoWithID("repo", "/work/repo", "https://example.com/repo.git", "main"); err != nil {
+		t.Fatal(err)
+	}
+	gate := "/gate/repo.git"
+	oldSHA := "1111111111111111111111111111111111111111"
+	if err := d.RegisterReceiveSession("repo", gate, "session-abort", "cap-abort"); err != nil {
+		t.Fatal(err)
+	}
+	reservations, err := d.ReserveReceivesForAuthenticatedSession("session-abort", "cap-abort", []ReceiveReservationInput{
+		{RepoID: "repo", GatePath: gate, Branch: "main", Ref: "refs/heads/main", OldSHA: oldSHA, NewSHA: "2222222222222222222222222222222222222222"},
+		{RepoID: "repo", GatePath: gate, Branch: "feature", Ref: "refs/heads/feature", OldSHA: oldSHA, NewSHA: "3333333333333333333333333333333333333333"},
+	})
+	if err != nil || len(reservations) != 2 {
+		t.Fatalf("reserve abort batch = %v, %v", reservations, err)
+	}
+	if err := d.AbortReceiveSession("repo", gate, "session-abort", "cap-abort"); err != nil {
+		t.Fatal(err)
+	}
+	for _, reservation := range reservations {
+		got, err := d.GetReceiveReservation(reservation.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.State != ReceiveReservationRetired {
+			t.Fatalf("reservation %s state = %q, want retired", reservation.ID, got.State)
+		}
+	}
+	if err := d.RetireReceiveSession("session-abort"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ReserveReceivesForAuthenticatedSession("session-abort", "cap-abort", []ReceiveReservationInput{{
+		RepoID: "repo", GatePath: gate, Branch: "main", Ref: "refs/heads/main", OldSHA: oldSHA, NewSHA: "4444444444444444444444444444444444444444",
+	}}); err == nil {
+		t.Fatal("reused an aborted and retired receive capability")
 	}
 }
 
