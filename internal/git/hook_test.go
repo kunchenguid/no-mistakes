@@ -39,6 +39,16 @@ func TestPreReceiveHookScript(t *testing.T) {
 	if !strings.Contains(script, "cat > \"$RECEIVE_INPUT\"") || !strings.Contains(script, "< \"$RECEIVE_INPUT\"") {
 		t.Fatal("admission wrapper must preserve receive input for a user hook")
 	}
+	abortAt := strings.Index(script, "abort_receive_batch()")
+	admitAt := strings.Index(script, "daemon admit-push")
+	if abortAt < 0 || admitAt < 0 || abortAt > admitAt {
+		t.Fatal("pre-receive abort path must be defined before admission")
+	}
+	for _, want := range []string{"abort_receive_batch || :", "cannot persist gate receive identity", "gate push refused before ref mutation"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("pre-receive hook missing abort coverage for %q", want)
+		}
+	}
 	if !strings.Contains(script, "exit $status") {
 		t.Fatal("admission failure must reject the ref update")
 	}

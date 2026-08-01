@@ -48,6 +48,13 @@ type ReceiveReservation struct {
 	UpdatedAt      int64
 }
 
+type ReceiveSession struct {
+	ID       string
+	RepoID   string
+	GatePath string
+	Phase    string
+}
+
 type ReceiveReservationInput struct {
 	RepoID    string
 	GatePath  string
@@ -497,6 +504,26 @@ func (d *DB) GetPendingReceiveReservationsForBranch(repoID, branch string) ([]*R
 		return nil, fmt.Errorf("iterate receive reservations: %w", err)
 	}
 	return reservations, nil
+}
+
+func (d *DB) GetActiveReceiveSessions() ([]ReceiveSession, error) {
+	rows, err := d.sql.Query(`SELECT id, repo_id, gate_path, phase FROM receive_sessions WHERE state = 'active' ORDER BY created_at, id`)
+	if err != nil {
+		return nil, fmt.Errorf("get active receive sessions: %w", err)
+	}
+	defer rows.Close()
+	var sessions []ReceiveSession
+	for rows.Next() {
+		var session ReceiveSession
+		if err := rows.Scan(&session.ID, &session.RepoID, &session.GatePath, &session.Phase); err != nil {
+			return nil, fmt.Errorf("scan active receive session: %w", err)
+		}
+		sessions = append(sessions, session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active receive sessions: %w", err)
+	}
+	return sessions, nil
 }
 
 func (d *DB) CompleteReceiveReservation(id, runID string) error {

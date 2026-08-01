@@ -105,6 +105,25 @@ if ! cat > "$RECEIVE_INPUT"; then
   printf 'no-mistakes: cannot read gate receive updates\n' >&2
   exit 1
 fi
+ABORT_CAPABILITY_FLAG=--receive-capability-fd
+ABORT_CAPABILITY_VALUE=6
+if [ -n "${NO_MISTAKES_RECEIVE_CAPABILITY_ABORTED_HANDLE:-}" ]; then
+  ABORT_CAPABILITY_FLAG=--receive-capability-handle
+  ABORT_CAPABILITY_VALUE=$NO_MISTAKES_RECEIVE_CAPABILITY_ABORTED_HANDLE
+fi
+abort_receive_batch() {
+  if [ "$ABORT_CAPABILITY_FLAG" = --receive-capability-fd ]; then
+    abort_out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon receive-transaction --gate "$GATE_DIR" --phase aborted --receive-session-id "$RECEIVE_SESSION_ID" --receive-capability-fd "$ABORT_CAPABILITY_VALUE" < /dev/null 2>&1)
+  else
+    abort_out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon receive-transaction --gate "$GATE_DIR" --phase aborted --receive-session-id "$RECEIVE_SESSION_ID" "$ABORT_CAPABILITY_FLAG" "$ABORT_CAPABILITY_VALUE" < /dev/null 2>&1)
+  fi
+  abort_status=$?
+  if [ $abort_status -ne 0 ]; then
+    printf 'no-mistakes: could not record pre-receive rejection; receive remains fenced:\n%s\n' "$abort_out" >&2
+    return $abort_status
+  fi
+  return 0
+}
 set --
 i=0
 while [ "$i" -lt "${GIT_PUSH_OPTION_COUNT:-0}" ]; do
@@ -125,47 +144,32 @@ else
 fi
 status=$?
 if [ $status -ne 0 ]; then
+  abort_receive_batch || :
   printf 'no-mistakes: gate push refused before ref mutation:\n%s\n' "$out" >&2
   exit $status
 fi
 while IFS=' ' read -r reservation_id oldrev newrev refname; do
   [ -z "$refname" ] && continue
   if [ -z "$reservation_id" ] || [ -z "$oldrev" ] || [ -z "$newrev" ] || [ -z "$refname" ]; then
+    abort_receive_batch || :
     printf 'no-mistakes: admit push returned an invalid receive identity\n' >&2
     exit 1
   fi
   case "$reservation_id" in
     *[![:alnum:]_-]*)
+      abort_receive_batch || :
       printf 'no-mistakes: admit push returned an invalid receive identity\n' >&2
       exit 1
       ;;
   esac
   if ! printf '%s %s %s %s\n' "$reservation_id" "$oldrev" "$newrev" "$refname" >> "$RECEIVE_MANIFEST"; then
+    abort_receive_batch || :
     printf 'no-mistakes: cannot persist gate receive identity\n' >&2
     exit 1
   fi
 done <<EOF
 $out
 EOF
-ABORT_CAPABILITY_FLAG=--receive-capability-fd
-ABORT_CAPABILITY_VALUE=6
-if [ -n "${NO_MISTAKES_RECEIVE_CAPABILITY_ABORTED_HANDLE:-}" ]; then
-  ABORT_CAPABILITY_FLAG=--receive-capability-handle
-  ABORT_CAPABILITY_VALUE=$NO_MISTAKES_RECEIVE_CAPABILITY_ABORTED_HANDLE
-fi
-abort_receive_batch() {
-  if [ "$ABORT_CAPABILITY_FLAG" = --receive-capability-fd ]; then
-    abort_out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon receive-transaction --gate "$GATE_DIR" --phase aborted --receive-session-id "$RECEIVE_SESSION_ID" --receive-capability-fd "$ABORT_CAPABILITY_VALUE" < /dev/null 2>&1)
-  else
-    abort_out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon receive-transaction --gate "$GATE_DIR" --phase aborted --receive-session-id "$RECEIVE_SESSION_ID" "$ABORT_CAPABILITY_FLAG" "$ABORT_CAPABILITY_VALUE" < /dev/null 2>&1)
-  fi
-  abort_status=$?
-  if [ $abort_status -ne 0 ]; then
-    printf 'no-mistakes: could not record pre-receive rejection; receive remains fenced:\n%s\n' "$abort_out" >&2
-    return $abort_status
-  fi
-  return 0
-}
 USER_HOOK="$GATE_DIR/hooks/` + preservedPreReceiveHook + `"
 if [ -x "$USER_HOOK" ]; then
   user_status=0

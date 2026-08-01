@@ -221,6 +221,10 @@ func TestAbortReceiveSessionRetiresTheWholeSealedBatch(t *testing.T) {
 	if err := d.AbortReceiveSession("repo", gate, "session-abort", "cap-abort"); err != nil {
 		t.Fatal(err)
 	}
+	sessions, err := d.GetActiveReceiveSessions()
+	if err != nil || len(sessions) != 1 || sessions[0].ID != "session-abort" {
+		t.Fatalf("active aborted sessions = %v, %v", sessions, err)
+	}
 	for _, reservation := range reservations {
 		got, err := d.GetReceiveReservation(reservation.ID)
 		if err != nil {

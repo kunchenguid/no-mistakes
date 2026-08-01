@@ -961,6 +961,16 @@ func (m *RunManager) reconcileReceiveReservations(ctx context.Context) {
 			}
 		}
 	}
+	sessions, err := m.db.GetActiveReceiveSessions()
+	if err != nil {
+		slog.Warn("failed to list active receive sessions", "error", err)
+		return
+	}
+	for _, session := range sessions {
+		if err := m.db.RetireReceiveSession(session.ID); err != nil && !errors.Is(err, db.ErrReceiveSessionPending) {
+			slog.Warn("active receive session remains after startup reconciliation", "session_id", session.ID, "phase", session.Phase, "error", err)
+		}
+	}
 }
 
 func gateReceiveRef(ctx context.Context, gateDir, ref string) (string, bool, error) {
