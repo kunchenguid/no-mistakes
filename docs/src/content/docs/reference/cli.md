@@ -297,7 +297,8 @@ no-mistakes rerun
 no-mistakes rerun --intent "the revised user goal"
 ```
 
-Starts a new pipeline run using the last-known head SHA on the current branch.
+Starts a new pipeline run using the head of the current branch's ordinary gate ref.
+It does not select a private `refs/no-mistakes/recover/<run>` anchor.
 If the selected prior run has explicit intent, rerun inherits it exactly by default;
 otherwise it performs fresh intent inference. `--intent` supplies a new canonical
 explicit intent in either case. Inherited intent keeps distinct rerun provenance;
