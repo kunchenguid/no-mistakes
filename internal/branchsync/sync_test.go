@@ -687,17 +687,24 @@ func TestTargetChangeLegacyDetachedAndGenerationRaceRefuse(t *testing.T) {
 			t.Fatalf("state = %#v", state)
 		}
 	})
-	t.Run("legacy", func(t *testing.T) {
+	t.Run("active run without push provenance", func(t *testing.T) {
+		// A newer active run with no push binding owns the branch: the refusal
+		// names pipeline custody (not a legacy-unbound misclassification) and
+		// points at the active run.
 		f := newSyncFixture(t)
-		legacy, err := f.db.InsertRun(f.repo.ID, "feature/sync", f.old, f.base)
+		active, err := f.db.InsertRun(f.repo.ID, "feature/sync", f.old, f.base)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.db.UpdateRunStatus(legacy.ID, types.RunRunning); err != nil {
+		if err := f.db.UpdateRunStatus(active.ID, types.RunRunning); err != nil {
 			t.Fatal(err)
 		}
-		if state := f.service.Refresh(f.ctx); state.State != StateLegacyUnbound {
+		state := f.service.Refresh(f.ctx)
+		if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned" {
 			t.Fatalf("state = %#v", state)
+		}
+		if state.Pipeline.RunID != active.ID || state.NextAction == nil || state.NextAction.Code != "continue_active_run" {
+			t.Fatalf("pipeline = %#v next = %#v", state.Pipeline, state.NextAction)
 		}
 	})
 	t.Run("detached", func(t *testing.T) {

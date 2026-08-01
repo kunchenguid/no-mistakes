@@ -265,7 +265,18 @@ func inspectAxiBranchSync(ctx context.Context, env *axiEnv) branchsync.State {
 func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.State {
 	state := inspectAxiBranchSync(ctx, env)
 	switch state.State {
-	case branchsync.StatePipelineOwned, branchsync.StatePushInProgress:
+	case branchsync.StatePipelineOwned:
+		// The ownership block exists to keep a fresh push from discarding
+		// pipeline commits that live only in the gate. An ACTIVE run whose
+		// head has not moved yet holds none, so the pre-existing supersede
+		// flow (push new commits over an in-flight run) stays available; a
+		// terminal unmoved run never reaches here because cancellation
+		// releases the branch as user_owned.
+		if branchsync.RunHeadUnmoved(state) {
+			return nil
+		}
+		return &state
+	case branchsync.StatePushInProgress:
 		return &state
 	default:
 		return nil
@@ -863,11 +874,17 @@ func runAxiAbort(cmd *cobra.Command, runID string) error {
 	}
 
 	if active.Run == nil {
-		// Idempotent: nothing to abort is a successful no-op.
-		emitDoc(cmd,
-			toon.Field{Key: "aborted", Value: false},
-			toon.Field{Key: "detail", Value: "no active run (no-op)"},
-		)
+		// Idempotent: nothing to abort is a successful no-op that still
+		// reports the branch's current structured ownership state, so a
+		// repeated abort returns the same final truth as the aborting call.
+		fields := []toon.Field{
+			{Key: "aborted", Value: false},
+			{Key: "detail", Value: "no active run (no-op)"},
+		}
+		if state := inspectAxiBranchSync(ctx, env); relevantCachedSyncState(state) {
+			fields = append(fields, branchSyncField(state))
+		}
+		emitDoc(cmd, fields...)
 		return nil
 	}
 
@@ -888,10 +905,17 @@ func runAxiAbort(cmd *cobra.Command, runID string) error {
 	help := []string{
 		"Run `no-mistakes axi sync --check` before any local follow-up commit - a cancelled run can leave unpublished pipeline commits preserved in the local gate, and the check offers the guarded custody recovery",
 	}
-	if state.Pipeline.RunID == active.Run.ID && state.NextAction != nil {
-		help = []string{
-			"Run `" + state.NextAction.Command + "`",
-			branchSyncAgentGuidance,
+	if state.Pipeline.RunID == active.Run.ID {
+		switch {
+		case state.NextAction != nil:
+			help = []string{
+				"Run `" + state.NextAction.Command + "`",
+				branchSyncAgentGuidance,
+			}
+		case state.State == branchsync.StateUserOwned:
+			help = []string{
+				"Cancellation released this branch: the exact branch and head are yours and immediately usable - no sync action is needed",
+			}
 		}
 	}
 	fields = append(fields,

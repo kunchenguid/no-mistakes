@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -490,6 +492,322 @@ func TestRecoverRefusesWhenNothingIsStranded(t *testing.T) {
 	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.old {
 		t.Fatal("not-applicable refusal moved HEAD")
 	}
+}
+
+// newUnmovedRecoverFixture models the released cancellation shape: a run
+// cancelled through the supported abort before the pipeline changed anything
+// (for example because delivery switched to a direct PR mid-validation). The
+// gate branch and the run's head_sha still equal the submitted head, and the
+// run carries no push provenance and no custody stamp. Cancellation releases
+// ownership of this shape: it must classify user_owned, never wrong-branch
+// ambiguity and never recoverable pipeline custody.
+func newUnmovedRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
+	t.Helper()
+	ctx := context.Background()
+	root := t.TempDir()
+	remote := filepath.Join(root, "upstream.git")
+	mustRun(t, root, "init", "--bare", remote)
+
+	local := filepath.Join(root, "operator")
+	mustRun(t, root, "init", "-b", "main", local)
+	configureIdentity(t, local)
+	mustWrite(t, filepath.Join(local, "file.txt"), "base\n")
+	mustRun(t, local, "add", "file.txt")
+	mustRun(t, local, "commit", "-m", "base")
+	base := mustRun(t, local, "rev-parse", "HEAD")
+	mustRun(t, local, "checkout", "-b", "feature/recover")
+	mustWrite(t, filepath.Join(local, "file.txt"), "feature\n")
+	mustRun(t, local, "commit", "-am", "feature")
+	submitted := mustRun(t, local, "rev-parse", "HEAD")
+
+	// The gate received the submitted branch and the run went terminal before
+	// the pipeline committed anything: preserved head == submitted head.
+	gate := filepath.Join(root, "gate.git")
+	mustRun(t, root, "init", "--bare", gate)
+	mustRun(t, local, "push", gate, "refs/heads/feature/recover:refs/heads/feature/recover")
+
+	database, err := db.Open(filepath.Join(root, "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	repo, err := database.InsertRepo(local, remote, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature/recover", submitted, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(run.ID, status); err != nil {
+		t.Fatal(err)
+	}
+	run, _ = database.GetRun(run.ID)
+	return &recoverFixture{
+		t: t, ctx: ctx, db: database, repo: repo, run: run,
+		service: &Service{DB: database, Repo: repo, WorkDir: local, GateDir: gate},
+		local:   local, gate: gate, remote: remote,
+		base: base, submitted: submitted, preserved: submitted,
+	}
+}
+
+// TestTerminalUnmovedPrePushRunReportsUserOwnedRelease is the regression test
+// for the pre-push abort taken to switch delivery away from the pipeline: a
+// terminal run whose head never moved must be selected and reported as
+// user-owned with the exact branch/head ownership facts - never wrong-branch
+// ambiguity, and never recoverable pipeline custody (cancellation releases
+// ownership; there is nothing pipeline-created to recover).
+func TestTerminalUnmovedPrePushRunReportsUserOwnedRelease(t *testing.T) {
+	for _, status := range []types.RunStatus{types.RunCancelled, types.RunFailed} {
+		t.Run(string(status), func(t *testing.T) {
+			f := newUnmovedRecoverFixture(t, status)
+			state := f.service.InspectCached(f.ctx)
+			if state.State != StateUserOwned || state.Safety != "user_owned" {
+				t.Fatalf("state = %s safety = %s error = %q, want user_owned/user_owned", state.State, state.Safety, state.Error)
+			}
+			if state.Pipeline.RunID != f.run.ID || state.Pipeline.Status != string(status) {
+				t.Fatalf("pipeline = %#v", state.Pipeline)
+			}
+			if state.Pipeline.SubmittedHead != f.submitted || state.Pipeline.CurrentHead != f.submitted {
+				t.Fatalf("pipeline heads = %#v, want submitted==current==%s", state.Pipeline, f.submitted)
+			}
+			if state.Local.Branch != "feature/recover" || state.Local.Head != f.submitted {
+				t.Fatalf("local = %#v", state.Local)
+			}
+			if state.Relation != RelationEqual {
+				t.Fatalf("relation = %s, want equal", state.Relation)
+			}
+			if state.NextAction != nil {
+				t.Fatalf("released branch must need no sync action, got %#v", state.NextAction)
+			}
+			if state.Error != "" {
+				t.Fatalf("released branch must not report an error, got %q", state.Error)
+			}
+		})
+	}
+}
+
+// TestActiveUnmovedRunBlocksAsPipelineOwnedWithoutRecovery pins the active half
+// of the unmoved shape: while the run is active the branch is pipeline-owned
+// with a precise reason, recovery refuses as run-active, and nothing mutates.
+func TestActiveUnmovedRunBlocksAsPipelineOwnedWithoutRecovery(t *testing.T) {
+	f := newUnmovedRecoverFixture(t, types.RunRunning)
+	state := f.service.InspectCached(f.ctx)
+	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned" {
+		t.Fatalf("active unmoved state = %s/%s error=%q", state.State, state.Safety, state.Error)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "continue_active_run" || state.NextAction.Command != "no-mistakes axi status" {
+		t.Fatalf("active unmoved next action = %#v", state.NextAction)
+	}
+	recovered := f.service.Recover(f.ctx, false)
+	if recovered.Recovered || recovered.Safety != "blocked_recover_run_active" {
+		t.Fatalf("recover on active unmoved run = %#v", recovered)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatal("recover on active unmoved run moved HEAD")
+	}
+	if f.custodyReturned() {
+		t.Fatal("recover on active unmoved run stamped custody")
+	}
+}
+
+// assertReleasedNoOpRecover runs Recover on a released (user_owned) branch and
+// proves the contract: idempotent no-op success that mutates no file, ref, or
+// database row - no worktree move, no anchor ref, no custody stamp, no gate
+// rewrite.
+func assertReleasedNoOpRecover(t *testing.T, f *recoverFixture, keepLocal bool, wantHead string) {
+	t.Helper()
+	gateHead, gateErr := gitpkg.Run(f.ctx, f.gate, "rev-parse", "refs/heads/feature/recover")
+	state := f.service.Recover(f.ctx, keepLocal)
+	if !state.Recovered || state.Changed || state.State != StateUserOwned {
+		t.Fatalf("released recover = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != wantHead {
+		t.Fatalf("released recover moved HEAD to %s, want %s", got, wantHead)
+	}
+	if _, err := gitpkg.Run(f.ctx, f.local, "rev-parse", f.anchorRef()); err == nil {
+		t.Fatal("released recover wrote an anchor ref")
+	}
+	if f.custodyReturned() {
+		t.Fatal("released recover stamped custody")
+	}
+	if gateErr == nil {
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != strings.TrimSpace(gateHead) {
+			t.Fatalf("released recover moved the gate branch to %s", got)
+		}
+	}
+}
+
+// TestRecoverOnReleasedBranchIsIdempotentNoOp: cancellation already released
+// the branch, so recovery has nothing to do and repeating it changes nothing.
+func TestRecoverOnReleasedBranchIsIdempotentNoOp(t *testing.T) {
+	f := newUnmovedRecoverFixture(t, types.RunCancelled)
+	assertReleasedNoOpRecover(t, f, false, f.submitted)
+	assertReleasedNoOpRecover(t, f, false, f.submitted)
+}
+
+// TestReleasedBranchWithDirtyDirectPRWorkStaysUserOwnedUntouched: in-progress
+// direct-PR edits are the operator's own work on their own branch; status
+// stays user_owned with the dirt exposed as a fact, and recovery leaves every
+// byte alone.
+func TestReleasedBranchWithDirtyDirectPRWorkStaysUserOwnedUntouched(t *testing.T) {
+	f := newUnmovedRecoverFixture(t, types.RunCancelled)
+	mustWrite(t, filepath.Join(f.local, "file.txt"), "direct-pr edit\n")
+	state := f.service.InspectCached(f.ctx)
+	if state.State != StateUserOwned || state.Local.Clean {
+		t.Fatalf("dirty released state = %#v", state)
+	}
+	assertReleasedNoOpRecover(t, f, false, f.submitted)
+	if got := readOptional(t, filepath.Join(f.local, "file.txt")); got != "direct-pr edit\n" {
+		t.Fatalf("released recover touched worktree files: %q", got)
+	}
+}
+
+// TestReleasedBranchIgnoresHiddenManagedCopyTip pins that the release binds to
+// the run's recorded head, not whatever tip the managed gate copy happens to
+// hold: an out-of-band gate mutation neither leaks into the worktree nor gets
+// rewritten, and the branch stays user-owned.
+func TestReleasedBranchIgnoresHiddenManagedCopyTip(t *testing.T) {
+	f := newUnmovedRecoverFixture(t, types.RunCancelled)
+	writer := filepath.Join(t.TempDir(), "writer")
+	mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
+	configureIdentity(t, writer)
+	mustRun(t, writer, "checkout", "feature/recover")
+	mustWrite(t, filepath.Join(writer, "hidden.txt"), "hidden\n")
+	mustRun(t, writer, "add", "hidden.txt")
+	mustRun(t, writer, "commit", "-m", "out of band gate commit")
+	mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
+	hidden := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover")
+
+	state := f.service.InspectCached(f.ctx)
+	if state.State != StateUserOwned {
+		t.Fatalf("released state with hidden managed tip = %#v", state)
+	}
+	assertReleasedNoOpRecover(t, f, false, f.submitted)
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != hidden {
+		t.Fatalf("release rewrote the gate branch to %s", got)
+	}
+}
+
+// TestReleasedBranchAfterUserResetOrDivergenceStaysUserOwned: once released,
+// the branch is the operator's - resetting behind the submitted head or
+// rewriting it is their own action, and no recovery path may "correct" it by
+// moving the worktree or the gate, clean, dirty, or with --keep-local.
+func TestReleasedBranchAfterUserResetOrDivergenceStaysUserOwned(t *testing.T) {
+	t.Run("reset behind clean", func(t *testing.T) {
+		f := newUnmovedRecoverFixture(t, types.RunCancelled)
+		mustRun(t, f.local, "reset", "--hard", f.base)
+		state := f.service.InspectCached(f.ctx)
+		if state.State != StateUserOwned || state.Relation != RelationBehind {
+			t.Fatalf("released behind state = %s relation %s", state.State, state.Relation)
+		}
+		assertReleasedNoOpRecover(t, f, false, f.base)
+	})
+	t.Run("reset behind dirty", func(t *testing.T) {
+		f := newUnmovedRecoverFixture(t, types.RunCancelled)
+		mustRun(t, f.local, "reset", "--hard", f.base)
+		mustWrite(t, filepath.Join(f.local, "file.txt"), "dirty\n")
+		assertReleasedNoOpRecover(t, f, false, f.base)
+	})
+	t.Run("diverged with keep-local", func(t *testing.T) {
+		f := newUnmovedRecoverFixture(t, types.RunCancelled)
+		mustRun(t, f.local, "reset", "--hard", f.base)
+		mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
+		mustRun(t, f.local, "add", "rescope.txt")
+		mustRun(t, f.local, "commit", "-m", "diverging rescope")
+		divergedHead := mustRun(t, f.local, "rev-parse", "HEAD")
+		state := f.service.InspectCached(f.ctx)
+		if state.State != StateUserOwned || state.Relation != RelationDiverged {
+			t.Fatalf("released diverged state = %s relation %s", state.State, state.Relation)
+		}
+		assertReleasedNoOpRecover(t, f, true, divergedHead)
+	})
+}
+
+// TestUnmovedRunSelectionPrefersNewerAuthoritativeRuns pins multi-run
+// disambiguation on one branch: a newer active run or a newer exact pushed
+// binding governs, and the stranded older run can never steal selection or be
+// recovered underneath them.
+func TestUnmovedRunSelectionPrefersNewerAuthoritativeRuns(t *testing.T) {
+	t.Run("newer active run wins", func(t *testing.T) {
+		f := newUnmovedRecoverFixture(t, types.RunCancelled)
+		time.Sleep(1100 * time.Millisecond)
+		fresh, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.submitted, f.base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.db.UpdateRunStatus(fresh.ID, types.RunRunning); err != nil {
+			t.Fatal(err)
+		}
+		state := f.service.InspectCached(f.ctx)
+		if state.Pipeline.RunID != fresh.ID || state.Safety != "blocked_pipeline_owned" {
+			t.Fatalf("selection with newer active run = %#v", state.Pipeline)
+		}
+		recovered := f.service.Recover(f.ctx, false)
+		if recovered.Recovered || recovered.Safety != "blocked_recover_run_active" {
+			t.Fatalf("recover under newer active run = %#v", recovered)
+		}
+		if f.custodyReturned() {
+			t.Fatal("recover under newer active run stamped custody on the old run")
+		}
+	})
+	t.Run("newer pushed binding wins", func(t *testing.T) {
+		f := newUnmovedRecoverFixture(t, types.RunCancelled)
+		time.Sleep(1100 * time.Millisecond)
+		mustRun(t, f.local, "push", f.remote, "refs/heads/feature/recover:refs/heads/feature/recover")
+		newer, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.submitted, f.base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.db.UpdateRunPushBinding(newer.ID, db.PushBinding{
+			HeadSHA: f.submitted, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/recover",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.db.UpdateRunStatus(newer.ID, types.RunCompleted); err != nil {
+			t.Fatal(err)
+		}
+		state := f.service.InspectCached(f.ctx)
+		if state.Pipeline.RunID != newer.ID || state.State != StateSynchronized {
+			t.Fatalf("selection with newer pushed binding = %s %#v", state.State, state.Pipeline)
+		}
+	})
+}
+
+// TestUnmovedRunWrongContextsStayRefusedWithoutStamp: a different checked-out
+// branch and a detached HEAD keep their precise refusals, and neither path can
+// stamp custody on the stranded run.
+func TestUnmovedRunWrongContextsStayRefusedWithoutStamp(t *testing.T) {
+	t.Run("different branch", func(t *testing.T) {
+		f := newUnmovedRecoverFixture(t, types.RunCancelled)
+		mustRun(t, f.local, "checkout", "-b", "feature/other")
+		state := f.service.InspectCached(f.ctx)
+		if state.State != StateAmbiguousContext || state.Safety != "blocked_wrong_branch" {
+			t.Fatalf("different-branch state = %#v", state)
+		}
+		recovered := f.service.Recover(f.ctx, false)
+		if recovered.Recovered || recovered.Safety != "blocked_recover_not_applicable" {
+			t.Fatalf("different-branch recover = %#v", recovered)
+		}
+		if f.custodyReturned() {
+			t.Fatal("different-branch recover stamped custody")
+		}
+	})
+	t.Run("detached head", func(t *testing.T) {
+		f := newUnmovedRecoverFixture(t, types.RunCancelled)
+		mustRun(t, f.local, "checkout", "--detach", f.submitted)
+		state := f.service.InspectCached(f.ctx)
+		if state.State != StateAmbiguousContext {
+			t.Fatalf("detached state = %#v", state)
+		}
+		recovered := f.service.Recover(f.ctx, false)
+		if recovered.Recovered || recovered.Safety != "blocked_recover_not_applicable" {
+			t.Fatalf("detached recover = %#v", recovered)
+		}
+		if f.custodyReturned() {
+			t.Fatal("detached recover stamped custody")
+		}
+	})
 }
 
 // TestRecoverConcurrentGatePushLosesCleanly: the keep-local gate reset is an

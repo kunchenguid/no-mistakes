@@ -184,7 +184,7 @@ no-mistakes axi sync --recover --keep-local
 | Flag           | Type   | Default | Description                                                                  |
 | -------------- | ------ | ------- | ---------------------------------------------------------------------------- |
 | `--check`      | `bool` | `false` | Verify the live target and exact plan without changing `HEAD`                |
-| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits |
+| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
 | `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree   |
 
 The default command is an explicit non-interactive apply request and never prompts.
@@ -201,7 +201,8 @@ Run `axi sync` only when structured output offers `next_action.code: sync`; proc
 
 ### Custody recovery
 
-A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head leaves the branch `pipeline_owned` with `safety: blocked_pipeline_owned_recoverable`, the run's terminal `pipeline.status`, and `next_action.code: recover_custody`.
+A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head leaves the branch `pipeline_owned` with `safety: blocked_pipeline_owned_recoverable`, the run's terminal `pipeline.status`, the exact `submitted_head`/`current_head`/`relation` ownership facts, and `next_action.code: recover_custody`.
+A run that goes terminal before changing the submitted head releases the branch instead: cancellation ends ownership, status reports `state: user_owned` with the same exact ownership facts and no `next_action`, the branch and head are immediately usable for any separately authorized delivery, and nothing blocks a direct push or PR.
 While the run is still active, the same state stays blocked and reports `next_action.code: continue_active_run` with `no-mistakes axi status`.
 `--recover` verifies the run is terminal, anchors the preserved head under `refs/no-mistakes/recover/<run>` in the invoking repository, and stamps custody returned so a fresh run can start.
 For equal or ahead worktrees where the preserved head is already locally reachable, recovery writes that anchor locally without gate access.
@@ -210,6 +211,7 @@ A dirty or diverged worktree refuses with explicit choices.
 When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
 `no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
+On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pipeline-created exists to recover, and no file, ref, or database row changes.
 
 ## no-mistakes axi logs
 
@@ -321,7 +323,7 @@ no-mistakes sync --recover --keep-local
 | -------------- | ------ | ------- | --------------------------------------------------------------- |
 | `--check`      | `bool` | `false` | Verify and print the fresh plan without changing `HEAD`         |
 | `-y`, `--yes`  | `bool` | `false` | Apply an eligible guarded synchronization without an interactive prompt |
-| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits |
+| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
 | `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree |
 
 Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` prompts the same way before returning custody.
