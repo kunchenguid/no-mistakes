@@ -185,7 +185,15 @@ func TestPushReservationSurvivesOwnershipLockContention(t *testing.T) {
 	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: params.Gate, Ref: params.Ref, Old: params.Old, New: params.New}, &admitted); err != nil {
 		t.Fatalf("admit push: %v", err)
 	}
+	for _, phase := range []string{"prepared"} {
+		if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: params.Gate, Phase: phase, Ref: params.Ref, Old: params.Old, New: params.New}, nil); err != nil {
+			t.Fatalf("receive transaction %s: %v", phase, err)
+		}
+	}
 	gitCmd(t, p.RepoDir(repo.ID), "update-ref", "refs/heads/main", newSHA, oldSHA)
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: params.Gate, Phase: "committed", Ref: params.Ref, Old: params.Old, New: params.New}, nil); err != nil {
+		t.Fatalf("receive transaction committed: %v", err)
+	}
 
 	owner, err := branchsync.AcquireBranchOwnershipLock(p, repo, repo.WorkingPath, "main")
 	if err != nil {
@@ -199,8 +207,8 @@ func TestPushReservationSurvivesOwnershipLockContention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pending == nil || pending.State != db.ReceiveReservationReserved {
-		t.Fatalf("reservation after blocked notification = %#v, want pending", pending)
+	if pending == nil || pending.State != db.ReceiveReservationCommitted {
+		t.Fatalf("reservation after blocked notification = %#v, want committed", pending)
 	}
 	owner.Release()
 
@@ -256,8 +264,8 @@ func TestPendingReceiveDoesNotReuseRunBeforeRefMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.State != db.ReceiveReservationRetired {
-		t.Fatalf("reservation state = %q, want retired", got.State)
+	if got.State != db.ReceiveReservationReserved {
+		t.Fatalf("reservation state = %q, want reserved", got.State)
 	}
 	if runs, err := d.GetRunsByRepoHead(repo.ID, "main", newSHA); err != nil {
 		t.Fatal(err)
@@ -292,8 +300,14 @@ func TestReceiveCreatesDistinctRunForSameHeadWithDifferentReservation(t *testing
 	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: preservedSHA, Intent: "first"}, &admitted); err != nil {
 		t.Fatal(err)
 	}
-	gitCmd(t, gatePath, "update-ref", ref, preservedSHA, oldSHA)
 	firstParams := &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: preservedSHA, Intent: "first"}
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", Ref: ref, Old: oldSHA, New: preservedSHA}, nil); err != nil {
+		t.Fatalf("first receive transaction prepared: %v", err)
+	}
+	gitCmd(t, gatePath, "update-ref", ref, preservedSHA, oldSHA)
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", Ref: ref, Old: oldSHA, New: preservedSHA}, nil); err != nil {
+		t.Fatalf("first receive transaction committed: %v", err)
+	}
 	var firstResult ipc.PushReceivedResult
 	if err := client.Call(ipc.MethodPushReceived, firstParams, &firstResult); err != nil {
 		t.Fatal(err)
@@ -314,7 +328,13 @@ func TestReceiveCreatesDistinctRunForSameHeadWithDifferentReservation(t *testing
 	if err := client.Call(ipc.MethodAdmitPush, secondParams, &admitted); err != nil {
 		t.Fatal(err)
 	}
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", Ref: ref, Old: alternateSHA, New: preservedSHA}, nil); err != nil {
+		t.Fatalf("second receive transaction prepared: %v", err)
+	}
 	gitCmd(t, gatePath, "update-ref", ref, preservedSHA, alternateSHA)
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", Ref: ref, Old: alternateSHA, New: preservedSHA}, nil); err != nil {
+		t.Fatalf("second receive transaction committed: %v", err)
+	}
 	var secondResult ipc.PushReceivedResult
 	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: alternateSHA, New: preservedSHA, Intent: "second"}, &secondResult); err != nil {
 		t.Fatal(err)
@@ -352,7 +372,13 @@ func TestReceiveDeletionReservationReconcilesWithoutRun(t *testing.T) {
 	if pending, err := d.GetPendingReceiveReservationsForBranch(repo.ID, "main"); err != nil || len(pending) != 1 {
 		t.Fatalf("pending deletion reservations = %d, %v", len(pending), err)
 	}
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", Ref: ref, Old: oldSHA, New: zeroSHA}, nil); err != nil {
+		t.Fatalf("deletion receive transaction prepared: %v", err)
+	}
 	gitCmd(t, gatePath, "update-ref", "-d", ref, oldSHA)
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", Ref: ref, Old: oldSHA, New: zeroSHA}, nil); err != nil {
+		t.Fatalf("deletion receive transaction committed: %v", err)
+	}
 
 	var result ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: zeroSHA}, &result)

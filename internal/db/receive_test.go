@@ -28,6 +28,12 @@ func TestReceiveReservationLifecycle(t *testing.T) {
 	if _, err := d.ReserveReceive("repo", "/gate/repo.git", "feature", "refs/heads/feature", oldSHA, "3333333333333333333333333333333333333333", nil, ""); !errors.Is(err, ErrReceiveReservationConflict) {
 		t.Fatalf("conflicting reservation error = %v, want ErrReceiveReservationConflict", err)
 	}
+	if err := d.MarkReceivePrepared("repo", "feature", "refs/heads/feature", oldSHA, newSHA); err != nil {
+		t.Fatalf("mark prepared: %v", err)
+	}
+	if err := d.MarkReceiveCommitted("repo", "feature", "refs/heads/feature", oldSHA, newSHA); err != nil {
+		t.Fatalf("mark committed: %v", err)
+	}
 	if err := d.CompleteReceiveReservation(first.ID, "run-1"); err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +93,12 @@ func TestReceiveReservationSupportsDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := d.MarkReceivePrepared("repo", "main", "refs/heads/main", "1111111111111111111111111111111111111111", "0000000000000000000000000000000000000000"); err != nil {
+		t.Fatalf("mark deletion prepared: %v", err)
+	}
+	if err := d.MarkReceiveCommitted("repo", "main", "refs/heads/main", "1111111111111111111111111111111111111111", "0000000000000000000000000000000000000000"); err != nil {
+		t.Fatalf("mark deletion committed: %v", err)
+	}
 	if err := d.CompleteReceiveReservation(reservation.ID, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -96,5 +108,31 @@ func TestReceiveReservationSupportsDeletion(t *testing.T) {
 	}
 	if got.State != ReceiveReservationPublished || got.RunID != nil {
 		t.Fatalf("published deletion reservation = %#v", got)
+	}
+}
+
+func TestReceiveReservationAbortedEvidenceRetiresPendingState(t *testing.T) {
+	d := openTestDB(t)
+	if _, err := d.InsertRepoWithID("repo", "/work/repo", "https://example.com/repo.git", "main"); err != nil {
+		t.Fatal(err)
+	}
+	oldSHA := "1111111111111111111111111111111111111111"
+	newSHA := "2222222222222222222222222222222222222222"
+	reservation, err := d.ReserveReceive("repo", "/gate/repo.git", "main", "refs/heads/main", oldSHA, newSHA, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.MarkReceivePrepared("repo", "main", "refs/heads/main", oldSHA, newSHA); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.MarkReceiveAborted("repo", "main", "refs/heads/main", oldSHA, newSHA); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.GetReceiveReservation(reservation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != ReceiveReservationRetired {
+		t.Fatalf("aborted reservation state = %q, want retired", got.State)
 	}
 }

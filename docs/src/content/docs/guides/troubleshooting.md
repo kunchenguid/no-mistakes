@@ -193,16 +193,16 @@ It also reattaches an existing gate after you rename or move the repo directory,
 
 ### Check the receive hooks
 
-The gate's bare repo has a `pre-receive` hook that authorizes ref updates before mutation and a `post-receive` hook that notifies the daemon after an admitted push. Look at the gate path:
+The gate's bare repo has `pre-receive`, `reference-transaction`, and `post-receive` hooks. They authorize ref updates before mutation, record exact transaction evidence, and notify the daemon after an admitted push. Look at the gate path:
 
 ```sh
 no-mistakes status
 # gate path is shown in the output
 
-ls -la <gate-path>/hooks/pre-receive <gate-path>/hooks/post-receive
+ls -la <gate-path>/hooks/pre-receive <gate-path>/hooks/reference-transaction <gate-path>/hooks/post-receive
 ```
 
-Both hooks should be executable. If either is missing or non-executable, `no-mistakes init` will reinstall it for an existing no-mistakes-managed gate.
+All three hooks should be executable. If one is missing or non-executable, `no-mistakes init` will reinstall it for an existing no-mistakes-managed gate.
 For validated registered gates and strictly named legacy gates, `no-mistakes daemon restart` also installs missing no-mistakes-managed hooks and refreshes legacy managed hooks. An existing custom pre-receive hook is preserved behind the managed admission wrapper.
 Current managed hooks resolve the gate as an absolute bare-repo path before notifying the daemon, so a shell with a bad `PWD` value cannot accidentally report the gate as `.`.
 If `notify-push.log` mentions `invalid gate path: .`, refresh the managed hook with `no-mistakes init` or `no-mistakes daemon restart`, then push again.

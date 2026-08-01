@@ -49,7 +49,8 @@ is trying to make one deliberate path mean something consistent.
 flowchart LR
   repo["Your repo"] -->|"git push no-mistakes"| gate["Local gate repo"]
   gate --> admission["pre-receive admission"]
-  admission --> hook["post-receive notification"]
+  admission --> transaction["reference-transaction evidence"]
+  transaction --> hook["post-receive notification"]
   admission --> daemon["Daemon"]
   hook --> daemon
   daemon --> worktree["Disposable worktree"]

@@ -36,8 +36,46 @@ func newDaemonCmd() *cobra.Command {
 	cmd.AddCommand(newDaemonStatusCmd())
 	cmd.AddCommand(newDaemonRunCmd())
 	cmd.AddCommand(newDaemonAdmitPushCmd())
+	cmd.AddCommand(newDaemonReceiveTransactionCmd())
 	cmd.AddCommand(newDaemonNotifyPushCmd())
 
+	return cmd
+}
+
+func newDaemonReceiveTransactionCmd() *cobra.Command {
+	var gate, phase, ref, oldSHA, newSHA string
+	cmd := &cobra.Command{
+		Use:    "receive-transaction",
+		Short:  "Record an authoritative git receive transaction phase",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			gatePath, err := normalizeNotifyGatePath(gate)
+			if err != nil {
+				return err
+			}
+			p, err := paths.New()
+			if err != nil {
+				return err
+			}
+			client, err := ipc.Dial(p.Socket())
+			if err != nil {
+				return fmt.Errorf("connect to daemon: %w", err)
+			}
+			defer client.Close()
+			return client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: phase, Ref: ref, Old: oldSHA, New: newSHA}, nil)
+		},
+	}
+	cmd.Flags().StringVar(&gate, "gate", "", "bare repo path for the receive transaction")
+	cmd.Flags().StringVar(&phase, "phase", "", "git reference-transaction phase")
+	cmd.Flags().StringVar(&ref, "ref", "", "git ref name")
+	cmd.Flags().StringVar(&oldSHA, "old", "", "previous commit SHA")
+	cmd.Flags().StringVar(&newSHA, "new", "", "new commit SHA")
+	_ = cmd.MarkFlagRequired("gate")
+	_ = cmd.MarkFlagRequired("phase")
+	_ = cmd.MarkFlagRequired("ref")
+	_ = cmd.MarkFlagRequired("old")
+	_ = cmd.MarkFlagRequired("new")
 	return cmd
 }
 

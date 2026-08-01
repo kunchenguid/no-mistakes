@@ -12,6 +12,8 @@ import (
 
 const (
 	ReceiveReservationReserved  = "reserved"
+	ReceiveReservationPrepared  = "prepared"
+	ReceiveReservationCommitted = "committed"
 	ReceiveReservationPublished = "published"
 	ReceiveReservationRetired   = "retired"
 )
@@ -38,11 +40,8 @@ func (d *DB) ReserveReceive(repoID, gatePath, branch, ref, oldSHA, newSHA string
 	if strings.TrimSpace(repoID) == "" || strings.TrimSpace(gatePath) == "" || strings.TrimSpace(branch) == "" {
 		return nil, fmt.Errorf("reserve receive: repository, gate path, and branch are required")
 	}
-	if ref != "refs/heads/"+branch {
-		return nil, fmt.Errorf("reserve receive: ref %q does not match branch %q", ref, branch)
-	}
-	if !receiveObjectID(oldSHA) || !receiveObjectID(newSHA) || oldSHA == newSHA {
-		return nil, fmt.Errorf("reserve receive: old and new values must be distinct full object IDs")
+	if err := validateReceiveTransition(branch, ref, oldSHA, newSHA); err != nil {
+		return nil, fmt.Errorf("reserve receive: %w", err)
 	}
 	encodedSteps, err := json.Marshal(skipSteps)
 	if err != nil {
@@ -55,13 +54,13 @@ func (d *DB) ReserveReceive(repoID, gatePath, branch, ref, oldSHA, newSHA string
 	}
 	defer tx.Rollback()
 
-	if existing, err := scanReceiveReservation(tx.QueryRow(`SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, skip_steps, intent, state, run_id, created_at, updated_at FROM receive_reservations WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state = ? ORDER BY created_at, id LIMIT 1`, repoID, branch, ref, oldSHA, newSHA, ReceiveReservationReserved)); err == nil {
+	if existing, err := scanReceiveReservation(tx.QueryRow(`SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, skip_steps, intent, state, run_id, created_at, updated_at FROM receive_reservations WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state IN (?, ?, ?) ORDER BY created_at, id LIMIT 1`, repoID, branch, ref, oldSHA, newSHA, ReceiveReservationReserved, ReceiveReservationPrepared, ReceiveReservationCommitted)); err == nil {
 		return existing, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("reserve receive: read existing reservation: %w", err)
 	}
 	var pendingID string
-	err = tx.QueryRow(`SELECT id FROM receive_reservations WHERE repo_id = ? AND branch = ? AND state = ? ORDER BY created_at, id LIMIT 1`, repoID, branch, ReceiveReservationReserved).Scan(&pendingID)
+	err = tx.QueryRow(`SELECT id FROM receive_reservations WHERE repo_id = ? AND branch = ? AND state IN (?, ?, ?) ORDER BY created_at, id LIMIT 1`, repoID, branch, ReceiveReservationReserved, ReceiveReservationPrepared, ReceiveReservationCommitted).Scan(&pendingID)
 	if err == nil {
 		return nil, fmt.Errorf("%w: %s", ErrReceiveReservationConflict, pendingID)
 	}
@@ -79,7 +78,7 @@ func (d *DB) ReserveReceive(repoID, gatePath, branch, ref, oldSHA, newSHA string
 }
 
 func (d *DB) GetPendingReceiveReservation(repoID, branch, ref, oldSHA, newSHA string) (*ReceiveReservation, error) {
-	reservation, err := scanReceiveReservation(d.sql.QueryRow(`SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, skip_steps, intent, state, run_id, created_at, updated_at FROM receive_reservations WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state = ? ORDER BY created_at, id LIMIT 1`, repoID, branch, ref, oldSHA, newSHA, ReceiveReservationReserved))
+	reservation, err := scanReceiveReservation(d.sql.QueryRow(`SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, skip_steps, intent, state, run_id, created_at, updated_at FROM receive_reservations WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state IN (?, ?, ?) ORDER BY created_at, id LIMIT 1`, repoID, branch, ref, oldSHA, newSHA, ReceiveReservationReserved, ReceiveReservationPrepared, ReceiveReservationCommitted))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -112,7 +111,7 @@ func (d *DB) GetReceiveReservation(id string) (*ReceiveReservation, error) {
 }
 
 func (d *DB) GetPendingReceiveReservations() ([]*ReceiveReservation, error) {
-	rows, err := d.sql.Query(`SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, skip_steps, intent, state, run_id, created_at, updated_at FROM receive_reservations WHERE state = ? ORDER BY created_at, id`, ReceiveReservationReserved)
+	rows, err := d.sql.Query(`SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, skip_steps, intent, state, run_id, created_at, updated_at FROM receive_reservations WHERE state IN (?, ?, ?) ORDER BY created_at, id`, ReceiveReservationReserved, ReceiveReservationPrepared, ReceiveReservationCommitted)
 	if err != nil {
 		return nil, fmt.Errorf("get pending receive reservations: %w", err)
 	}
@@ -132,7 +131,7 @@ func (d *DB) GetPendingReceiveReservations() ([]*ReceiveReservation, error) {
 }
 
 func (d *DB) GetPendingReceiveReservationsForBranch(repoID, branch string) ([]*ReceiveReservation, error) {
-	rows, err := d.sql.Query(`SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, skip_steps, intent, state, run_id, created_at, updated_at FROM receive_reservations WHERE repo_id = ? AND branch = ? AND state = ? ORDER BY created_at, id`, repoID, branch, ReceiveReservationReserved)
+	rows, err := d.sql.Query(`SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, skip_steps, intent, state, run_id, created_at, updated_at FROM receive_reservations WHERE repo_id = ? AND branch = ? AND state IN (?, ?, ?) ORDER BY created_at, id`, repoID, branch, ReceiveReservationReserved, ReceiveReservationPrepared, ReceiveReservationCommitted)
 	if err != nil {
 		return nil, fmt.Errorf("get pending receive reservations for branch: %w", err)
 	}
@@ -159,9 +158,9 @@ func (d *DB) CompleteReceiveReservation(id, runID string) error {
 	var result sql.Result
 	var err error
 	if runID == "" {
-		result, err = d.sql.Exec(`UPDATE receive_reservations SET state = ?, run_id = NULL, updated_at = ? WHERE id = ? AND state = ?`, ReceiveReservationPublished, now(), id, ReceiveReservationReserved)
+		result, err = d.sql.Exec(`UPDATE receive_reservations SET state = ?, run_id = NULL, updated_at = ? WHERE id = ? AND state IN (?, ?)`, ReceiveReservationPublished, now(), id, ReceiveReservationReserved, ReceiveReservationCommitted)
 	} else {
-		result, err = d.sql.Exec(`UPDATE receive_reservations SET state = ?, run_id = ?, updated_at = ? WHERE id = ? AND state = ?`, ReceiveReservationPublished, runID, now(), id, ReceiveReservationReserved)
+		result, err = d.sql.Exec(`UPDATE receive_reservations SET state = ?, run_id = ?, updated_at = ? WHERE id = ? AND state IN (?, ?)`, ReceiveReservationPublished, runID, now(), id, ReceiveReservationReserved, ReceiveReservationCommitted)
 	}
 	if err != nil {
 		return fmt.Errorf("complete receive reservation: %w", err)
@@ -186,8 +185,77 @@ func (d *DB) CompleteReceiveReservation(id, runID string) error {
 	return fmt.Errorf("complete receive reservation: ownership changed")
 }
 
+func (d *DB) MarkReceivePrepared(repoID, branch, ref, oldSHA, newSHA string) error {
+	if err := validateReceiveTransition(branch, ref, oldSHA, newSHA); err != nil {
+		return fmt.Errorf("mark receive prepared: %w", err)
+	}
+	result, err := d.sql.Exec(`UPDATE receive_reservations SET state = ?, updated_at = ? WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state = ?`, ReceiveReservationPrepared, now(), repoID, branch, ref, oldSHA, newSHA, ReceiveReservationReserved)
+	if err != nil {
+		return fmt.Errorf("mark receive prepared: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("mark receive prepared: affected rows: %w", err)
+	} else if rows == 1 {
+		return nil
+	}
+	current, err := d.GetLatestReceiveReservation(repoID, branch, ref, oldSHA, newSHA)
+	if err != nil {
+		return err
+	}
+	if current != nil && (current.State == ReceiveReservationPrepared || current.State == ReceiveReservationCommitted) {
+		return nil
+	}
+	return fmt.Errorf("mark receive prepared: exact reservation is not pending")
+}
+
+func (d *DB) MarkReceiveCommitted(repoID, branch, ref, oldSHA, newSHA string) error {
+	if err := validateReceiveTransition(branch, ref, oldSHA, newSHA); err != nil {
+		return fmt.Errorf("mark receive committed: %w", err)
+	}
+	result, err := d.sql.Exec(`UPDATE receive_reservations SET state = ?, updated_at = ? WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state = ?`, ReceiveReservationCommitted, now(), repoID, branch, ref, oldSHA, newSHA, ReceiveReservationPrepared)
+	if err != nil {
+		return fmt.Errorf("mark receive committed: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("mark receive committed: affected rows: %w", err)
+	} else if rows == 1 {
+		return nil
+	}
+	current, err := d.GetLatestReceiveReservation(repoID, branch, ref, oldSHA, newSHA)
+	if err != nil {
+		return err
+	}
+	if current != nil && current.State == ReceiveReservationCommitted {
+		return nil
+	}
+	return fmt.Errorf("mark receive committed: exact prepared reservation is missing")
+}
+
+func (d *DB) MarkReceiveAborted(repoID, branch, ref, oldSHA, newSHA string) error {
+	if err := validateReceiveTransition(branch, ref, oldSHA, newSHA); err != nil {
+		return fmt.Errorf("mark receive aborted: %w", err)
+	}
+	result, err := d.sql.Exec(`UPDATE receive_reservations SET state = ?, updated_at = ? WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state IN (?, ?)`, ReceiveReservationRetired, now(), repoID, branch, ref, oldSHA, newSHA, ReceiveReservationReserved, ReceiveReservationPrepared)
+	if err != nil {
+		return fmt.Errorf("mark receive aborted: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("mark receive aborted: affected rows: %w", err)
+	} else if rows == 1 {
+		return nil
+	}
+	current, err := d.GetLatestReceiveReservation(repoID, branch, ref, oldSHA, newSHA)
+	if err != nil {
+		return err
+	}
+	if current != nil && current.State == ReceiveReservationRetired {
+		return nil
+	}
+	return fmt.Errorf("mark receive aborted: exact reservation cannot be aborted")
+}
+
 func (d *DB) RetireReceiveReservation(id string) error {
-	result, err := d.sql.Exec(`UPDATE receive_reservations SET state = ?, updated_at = ? WHERE id = ? AND state = ?`, ReceiveReservationRetired, now(), id, ReceiveReservationReserved)
+	result, err := d.sql.Exec(`UPDATE receive_reservations SET state = ?, updated_at = ? WHERE id = ? AND state IN (?, ?)`, ReceiveReservationRetired, now(), id, ReceiveReservationReserved, ReceiveReservationPrepared)
 	if err != nil {
 		return fmt.Errorf("retire receive reservation: %w", err)
 	}
@@ -240,4 +308,14 @@ func receiveObjectID(value string) bool {
 		}
 	}
 	return true
+}
+
+func validateReceiveTransition(branch, ref, oldSHA, newSHA string) error {
+	if ref != "refs/heads/"+branch {
+		return fmt.Errorf("ref %q does not match branch %q", ref, branch)
+	}
+	if !receiveObjectID(oldSHA) || !receiveObjectID(newSHA) || oldSHA == newSHA {
+		return fmt.Errorf("old and new values must be distinct full object IDs")
+	}
+	return nil
 }

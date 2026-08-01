@@ -607,6 +607,35 @@ func (m *RunManager) HandleAdmitPush(ctx context.Context, params *ipc.AdmitPushP
 	return err
 }
 
+func (m *RunManager) HandleReceiveTransaction(ctx context.Context, params *ipc.ReceiveTransactionParams) error {
+	if params == nil {
+		return fmt.Errorf("receive transaction: missing parameters")
+	}
+	repo, branch, err := m.receiveRepo(params.Gate, params.Ref)
+	if err != nil {
+		return err
+	}
+	lock, err := branchsync.AcquireBranchOwnershipLock(m.paths, repo, repo.WorkingPath, branch)
+	if err != nil {
+		return fmt.Errorf("acquire branch ownership lock: %w", err)
+	}
+	defer lock.Release()
+	switch params.Phase {
+	case "prepared":
+		err = m.db.MarkReceivePrepared(repo.ID, branch, params.Ref, params.Old, params.New)
+	case "committed":
+		err = m.db.MarkReceiveCommitted(repo.ID, branch, params.Ref, params.Old, params.New)
+	case "aborted":
+		err = m.db.MarkReceiveAborted(repo.ID, branch, params.Ref, params.Old, params.New)
+	default:
+		return fmt.Errorf("receive transaction: unsupported phase %q", params.Phase)
+	}
+	if err != nil {
+		return fmt.Errorf("receive transaction %s: %w", params.Phase, err)
+	}
+	return nil
+}
+
 // HandlePushReceived processes a push notification from the post-receive hook.
 // It creates a run, sets up a worktree, and launches pipeline execution in the background.
 func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushReceivedParams) (string, error) {
@@ -692,7 +721,11 @@ func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo
 		}
 		return *reservation.RunID, nil
 	}
-	if reservation.State != db.ReceiveReservationReserved {
+	if reservation.State == db.ReceiveReservationReserved || reservation.State == db.ReceiveReservationPrepared {
+		if !legacyNotification {
+			return "", fmt.Errorf("receive reservation is awaiting authoritative transaction evidence")
+		}
+	} else if reservation.State != db.ReceiveReservationCommitted {
 		return "", fmt.Errorf("receive reservation is no longer pending")
 	}
 	if !samePath(reservation.GatePath, m.paths.RepoDir(repo.ID)) {
@@ -717,28 +750,13 @@ func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo
 			}
 			return "", nil
 		}
-		if exists && current == reservation.OldSHA && !legacyNotification {
-			if err := m.db.RetireReceiveReservation(reservation.ID); err != nil {
-				return "", err
-			}
-			return "", fmt.Errorf("receive did not mutate %s", reservation.Ref)
-		}
 		return "", fmt.Errorf("receive ref %s is at %s, reservation expects deletion", reservation.Ref, current)
 	}
 	if !exists && !legacyNotification {
-		if isZeroObjectID(reservation.OldSHA) {
-			if err := m.db.RetireReceiveReservation(reservation.ID); err != nil {
-				return "", err
-			}
-			return "", fmt.Errorf("receive did not mutate %s", reservation.Ref)
-		}
 		return "", fmt.Errorf("receive ref %s is unavailable; reservation remains pending", reservation.Ref)
 	}
 	if exists && current == reservation.OldSHA && !legacyNotification {
-		if err := m.db.RetireReceiveReservation(reservation.ID); err != nil {
-			return "", err
-		}
-		return "", fmt.Errorf("receive did not mutate %s", reservation.Ref)
+		return "", fmt.Errorf("receive ref %s is still at its old head; reservation remains pending", reservation.Ref)
 	}
 	if exists && current != reservation.NewSHA {
 		return "", fmt.Errorf("receive ref %s is at %s, reservation expects %s", reservation.Ref, current, reservation.NewSHA)

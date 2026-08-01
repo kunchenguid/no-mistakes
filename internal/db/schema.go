@@ -70,10 +70,6 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at           INTEGER NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS runs_receive_reservation
-    ON runs (receive_reservation_id)
-    WHERE receive_reservation_id IS NOT NULL;
-
 CREATE TABLE IF NOT EXISTS step_results (
     id               TEXT PRIMARY KEY,
     run_id           TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,

@@ -36,6 +36,57 @@ func TestPreReceiveHookScript(t *testing.T) {
 	}
 }
 
+func TestReferenceTransactionHookScript(t *testing.T) {
+	script := referenceTransactionHookScript("/opt/No Mistakes/no-mistakes")
+	for _, want := range []string{
+		"#!/bin/sh",
+		"# no-mistakes reference-transaction hook",
+		"NM_BIN='/opt/No Mistakes/no-mistakes'",
+		"prepared|committed|aborted",
+		"daemon receive-transaction --gate \"$GATE_DIR\"",
+		"--phase \"$PHASE\"",
+		"mktemp \"$GATE_DIR/.no-mistakes-reference-transaction.XXXXXX\"",
+		preservedReferenceTransactionHook,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("reference transaction hook missing %q", want)
+		}
+	}
+	if !strings.Contains(script, "\"$USER_HOOK\" \"$PHASE\" < \"$RECEIVE_INPUT\"") {
+		t.Fatal("reference transaction hook must preserve phase and input for a user hook")
+	}
+}
+
+func TestRefreshManagedReferenceTransactionHookPreservesCustomHook(t *testing.T) {
+	bare := t.TempDir()
+	hooks := filepath.Join(bare, "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	custom := []byte("#!/bin/sh\necho custom\n")
+	if err := os.WriteFile(filepath.Join(hooks, "reference-transaction"), custom, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := RefreshManagedReferenceTransactionHook(bare)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected managed wrapper installation")
+	}
+	preserved, err := os.ReadFile(filepath.Join(hooks, preservedReferenceTransactionHook))
+	if err != nil {
+		t.Fatalf("read preserved hook: %v", err)
+	}
+	if string(preserved) != string(custom) {
+		t.Fatalf("preserved hook changed: %q", preserved)
+	}
+	managed, err := os.ReadFile(filepath.Join(hooks, "reference-transaction"))
+	if err != nil || !isManagedReferenceTransactionHook(managed) {
+		t.Fatalf("managed transaction hook missing: %v", err)
+	}
+}
+
 func TestRefreshManagedPreReceiveHookPreservesCustomHook(t *testing.T) {
 	bare := t.TempDir()
 	hooks := filepath.Join(bare, "hooks")
@@ -76,6 +127,16 @@ func TestGateConfigCurrentRejectsMissingOrTamperedAdmissionHook(t *testing.T) {
 	}
 	if !GateConfigCurrent(bare) {
 		t.Fatal("fresh managed admission hook should be current")
+	}
+	referenceTransaction := filepath.Join(bare, "hooks", "reference-transaction")
+	if err := os.WriteFile(referenceTransaction, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if GateConfigCurrent(bare) {
+		t.Fatal("tampered reference transaction hook must invalidate the gate stamp")
+	}
+	if err := os.WriteFile(referenceTransaction, []byte(ReferenceTransactionHookScript()), 0o755); err != nil {
+		t.Fatal(err)
 	}
 	pre := filepath.Join(bare, "hooks", "pre-receive")
 	if err := os.WriteFile(pre, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {

@@ -751,6 +751,23 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.AdmitPushResult{Context: gateContextResult(result)}, nil
 	})
 
+	srv.Handle(ipc.MethodReceiveTransaction, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, true); err != nil {
+			return nil, err
+		}
+		var p ipc.ReceiveTransactionParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		if strings.TrimSpace(p.Gate) == "" {
+			return nil, fmt.Errorf("gate path is required")
+		}
+		if err := mgr.HandleReceiveTransaction(ctx, &p); err != nil {
+			return nil, err
+		}
+		return struct{}{}, nil
+	})
+
 	srv.Handle(ipc.MethodRerun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		if err := refuseNested(ctx, false); err != nil {
 			return nil, err

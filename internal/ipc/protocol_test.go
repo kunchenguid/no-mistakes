@@ -411,6 +411,7 @@ func TestMethodConstants(t *testing.T) {
 		MethodCancelRun,
 		MethodGateContext,
 		MethodAdmitPush,
+		MethodReceiveTransaction,
 		MethodHealth,
 		MethodShutdown,
 	}

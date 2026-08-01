@@ -9,20 +9,21 @@ import (
 
 // JSON-RPC 2.0 method names.
 const (
-	MethodPushReceived   = "push_received"
-	MethodGetRun         = "get_run"
-	MethodGetStepDiff    = "get_step_diff"
-	MethodGetRuns        = "get_runs"
-	MethodGetRunsForHead = "get_runs_for_head"
-	MethodGetActiveRun   = "get_active_run"
-	MethodRerun          = "rerun"
-	MethodSubscribe      = "subscribe"
-	MethodRespond        = "respond"
-	MethodCancelRun      = "cancel_run"
-	MethodGateContext    = "gate_context"
-	MethodAdmitPush      = "admit_push"
-	MethodHealth         = "health"
-	MethodShutdown       = "shutdown"
+	MethodPushReceived       = "push_received"
+	MethodGetRun             = "get_run"
+	MethodGetStepDiff        = "get_step_diff"
+	MethodGetRuns            = "get_runs"
+	MethodGetRunsForHead     = "get_runs_for_head"
+	MethodGetActiveRun       = "get_active_run"
+	MethodRerun              = "rerun"
+	MethodSubscribe          = "subscribe"
+	MethodRespond            = "respond"
+	MethodCancelRun          = "cancel_run"
+	MethodGateContext        = "gate_context"
+	MethodAdmitPush          = "admit_push"
+	MethodReceiveTransaction = "receive_transaction"
+	MethodHealth             = "health"
+	MethodShutdown           = "shutdown"
 )
 
 // JSON-RPC 2.0 error codes.
@@ -172,6 +173,14 @@ type AdmitPushParams struct {
 	New       string           `json:"new"`
 	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
 	Intent    string           `json:"intent,omitempty"`
+}
+
+type ReceiveTransactionParams struct {
+	Gate  string `json:"gate"`
+	Phase string `json:"phase"`
+	Ref   string `json:"ref"`
+	Old   string `json:"old"`
+	New   string `json:"new"`
 }
 
 // HealthParams has no fields but exists for consistency.

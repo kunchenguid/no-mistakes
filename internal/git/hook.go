@@ -15,6 +15,7 @@ var runGit = RunBare
 
 const gateConfigStampFile = "no-mistakes-gate-config"
 const preservedPreReceiveHook = "pre-receive.no-mistakes-user"
+const preservedReferenceTransactionHook = "reference-transaction.no-mistakes-user"
 
 // PreReceiveHookScript returns the fail-closed admission hook that runs before
 // Git mutates any managed gate ref. The daemon authenticates the hook process's
@@ -131,10 +132,121 @@ func RefreshManagedGateHooks(bareDir string) error {
 	if _, err := RefreshManagedPreReceiveHook(bareDir); err != nil {
 		return err
 	}
+	if _, err := RefreshManagedReferenceTransactionHook(bareDir); err != nil {
+		return err
+	}
 	if _, err := RefreshManagedPostReceiveHook(bareDir); err != nil {
 		return err
 	}
 	return nil
+}
+
+func ReferenceTransactionHookScript() string {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = "no-mistakes"
+	}
+	return referenceTransactionHookScript(exe)
+}
+
+func referenceTransactionHookScript(command string) string {
+	return `#!/bin/sh
+# no-mistakes reference-transaction hook
+NM_BIN=` + shellSingleQuote(command) + `
+if [ ! -f "$NM_BIN" ]; then
+  NM_BIN="$(command -v no-mistakes 2>/dev/null || echo no-mistakes)"
+fi
+PHASE=$1
+case "$PHASE" in
+  prepared|committed|aborted) ;;
+  *)
+    printf 'no-mistakes: unsupported reference transaction phase %s\n' "$PHASE" >&2
+    exit 1
+    ;;
+esac
+GATE_DIR=$(git rev-parse --absolute-git-dir 2>/dev/null || :)
+case "$GATE_DIR" in
+  /*) ;;
+  *)
+    HOOK_PATH=$0
+    case "$HOOK_PATH" in
+      */*) HOOK_DIR=${HOOK_PATH%/*} ;;
+      *) HOOK_DIR=. ;;
+    esac
+    GATE_DIR=$(cd "$HOOK_DIR/.." 2>/dev/null && (/bin/pwd -P 2>/dev/null || pwd -P) || :)
+    ;;
+esac
+case "$GATE_DIR" in
+  /*) ;;
+  *) GATE_DIR=$(/bin/pwd -P 2>/dev/null || pwd -P 2>/dev/null || pwd) ;;
+esac
+RECEIVE_INPUT=$(mktemp "$GATE_DIR/.no-mistakes-reference-transaction.XXXXXX") || {
+  printf 'no-mistakes: cannot record reference transaction evidence\n' >&2
+  exit 1
+}
+trap 'rm -f "$RECEIVE_INPUT"' 0 1 2 3 15
+if ! cat > "$RECEIVE_INPUT"; then
+  printf 'no-mistakes: cannot read reference transaction updates\n' >&2
+  exit 1
+fi
+while IFS=' ' read -r oldrev newrev refname; do
+  [ -z "$refname" ] && continue
+  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon receive-transaction --gate "$GATE_DIR" --phase "$PHASE" --ref "$refname" --old "$oldrev" --new "$newrev" 2>&1)
+  status=$?
+  if [ $status -ne 0 ]; then
+    printf 'no-mistakes: reference transaction evidence refused for %s (%s):\n%s\n' "$refname" "$PHASE" "$out" >&2
+    exit $status
+  fi
+done < "$RECEIVE_INPUT"
+USER_HOOK="$GATE_DIR/hooks/` + preservedReferenceTransactionHook + `"
+if [ -x "$USER_HOOK" ]; then
+  "$USER_HOOK" "$PHASE" < "$RECEIVE_INPUT"
+  exit $?
+fi
+exit 0
+`
+}
+
+func isManagedReferenceTransactionHook(content []byte) bool {
+	text := string(content)
+	return strings.Contains(text, "# no-mistakes reference-transaction hook") && strings.Contains(text, "daemon receive-transaction")
+}
+
+func RefreshManagedReferenceTransactionHook(bareDir string) (bool, error) {
+	hooksDir := filepath.Join(bareDir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		return false, err
+	}
+	hookPath := filepath.Join(hooksDir, "reference-transaction")
+	companion := filepath.Join(hooksDir, preservedReferenceTransactionHook)
+	desired := []byte(ReferenceTransactionHookScript())
+	existing, err := os.ReadFile(hookPath)
+	if err == nil {
+		if string(existing) == string(desired) {
+			return false, nil
+		}
+		if !isManagedReferenceTransactionHook(existing) {
+			if _, companionErr := os.Stat(companion); companionErr == nil {
+				return false, fmt.Errorf("preserve reference-transaction hook: companion already exists")
+			} else if !os.IsNotExist(companionErr) {
+				return false, companionErr
+			}
+			if err := os.Rename(hookPath, companion); err != nil {
+				return false, fmt.Errorf("preserve reference-transaction hook: %w", err)
+			}
+			if err := writeGateFileAtomic(hookPath, desired, 0o755, ".reference-transaction-*"); err != nil {
+				_ = os.Rename(companion, hookPath)
+				return false, err
+			}
+			return true, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := writeGateFileAtomic(hookPath, desired, 0o755, ".reference-transaction-*"); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // PostReceiveHookScript returns the shell script for the post-receive hook.
@@ -323,7 +435,11 @@ func GateConfigCurrent(bareDir string) bool {
 	// managed pre-receive bytes on every startup so a stale stamp cannot hide a
 	// removed or replaced guard. This remains filesystem-only for current gates.
 	preReceive, err := os.ReadFile(filepath.Join(bareDir, "hooks", "pre-receive"))
-	return err == nil && string(preReceive) == PreReceiveHookScript()
+	if err != nil || string(preReceive) != PreReceiveHookScript() {
+		return false
+	}
+	referenceTransaction, err := os.ReadFile(filepath.Join(bareDir, "hooks", "reference-transaction"))
+	return err == nil && string(referenceTransaction) == ReferenceTransactionHookScript()
 }
 
 // MarkGateConfigCurrent atomically records a fully completed gate migration.
@@ -338,8 +454,8 @@ func MarkGateConfigCurrent(bareDir string) error {
 }
 
 func gateConfigStampContent() string {
-	sum := sha256.Sum256([]byte("gate-config-v2\x00" + PreReceiveHookScript() + "\x00" + PostReceiveHookScript()))
-	return fmt.Sprintf("v2:%x\n", sum)
+	sum := sha256.Sum256([]byte("gate-config-v3\x00" + PreReceiveHookScript() + "\x00" + ReferenceTransactionHookScript() + "\x00" + PostReceiveHookScript()))
+	return fmt.Sprintf("v3:%x\n", sum)
 }
 
 // IsolateHooksPath protects the gate's post-receive hook from being

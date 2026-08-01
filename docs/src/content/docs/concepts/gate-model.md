@@ -15,7 +15,8 @@ validation can happen before a branch is shared.
 flowchart TD
   repo["Working repo"] -->|"git push no-mistakes"| gate["Local bare gate repo"]
   gate --> admission["pre-receive admission"]
-  admission --> hook["post-receive notification"]
+  admission --> transaction["reference-transaction evidence"]
+  transaction --> hook["post-receive notification"]
   admission --> daemon["Daemon"]
   hook --> daemon
   daemon --> worktree["Disposable worktree"]
@@ -32,7 +33,7 @@ flowchart TD
 When you run `no-mistakes init` in a repo:
 
 1. It creates a local bare gate repo under `~/.no-mistakes/repos/<id>.git`.
-2. It installs a `pre-receive` admission hook and a `post-receive` notification hook in that gate repo.
+2. It installs `pre-receive`, `reference-transaction`, and `post-receive` hooks in that gate repo.
 3. It enables Git push options for the gate repo.
 4. It best-effort isolates the gate repo's hooks path from shared local Git config writes when Git supports `config --worktree`.
 5. It adds a `no-mistakes` remote to your working repo that points at the gate.
@@ -54,11 +55,12 @@ That is a core design choice, not an implementation detail.
 
 1. You run `git push no-mistakes <branch>`.
 2. The gate repo's `pre-receive` hook asks the daemon to admit the update before Git changes any gate ref. An active validation-step descendant is refused, including a direct push that bypasses the CLI.
-3. Git writes an admitted push into the local bare gate repo.
-4. The gate repo's `post-receive` hook notifies the daemon.
-5. The daemon creates a detached worktree for this run.
-6. The pipeline runs in order: `intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci`.
-7. If a step pauses, you can attach with the TUI or use `no-mistakes axi respond` to approve, fix, or skip.
+3. Git's `reference-transaction` hook durably records prepared, committed, or aborted evidence for the exact ref transition. Missing evidence keeps the receive fenced.
+4. Git writes an admitted push into the local bare gate repo.
+5. The gate repo's `post-receive` hook notifies the daemon.
+6. The daemon creates a detached worktree for this run.
+7. The pipeline runs in order: `intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci`.
+8. If a step pauses, you can attach with the TUI or use `no-mistakes axi respond` to approve, fix, or skip.
    Use `no-mistakes axi abort` only when you mean to cancel the whole run.
    AXI run objects show `awaiting_agent: parked <duration>` while a non-terminal run is parked at that gate, so a supervising agent can distinguish a waiting run from active work in one status read.
    While a step is actively running or fixing, AXI run objects can also show `active_steps` with the active duration, latest activity, native agent PID, and current execution or fix round.
@@ -86,7 +88,8 @@ not a trap door that silently rewires normal Git behavior.
 
 The local bare repo gives Git a normal place to receive pushes. A managed
 `pre-receive` hook asks the daemon to authorize the update before any gate ref
-changes, and a `post-receive` hook hands an admitted push off to the daemon.
+changes. A managed `reference-transaction` hook records exact transaction
+evidence, and a `post-receive` hook hands an admitted push off to the daemon.
 
 Git operations on the gate name the bare repo explicitly with `--git-dir`
 instead of relying on working-directory discovery, so hardened environments
@@ -113,6 +116,11 @@ to authorize the pushing process. The daemon refuses descendants of an active
 validation step before mutation, including direct pushes, and safely omits run
 or phase details when authenticated ancestry cannot identify them uniquely.
 An existing custom `pre-receive` hook is preserved and runs after admission.
+
+The `reference-transaction` hook records the exact Git transaction phase for
+each admitted ref. A prepared or committed transaction remains fenced across
+daemon restarts until the corresponding committed or aborted evidence arrives;
+the daemon never infers an aborted receive from an unchanged ref.
 
 When `git push no-mistakes <branch>` lands, the bare repo's `post-receive` hook
 fires. It resolves the gate to an absolute bare-repo path using Git's own view
