@@ -117,6 +117,8 @@ After a fix cycle, press `d` to toggle the diff view:
 - Finding context line showing which finding you're viewing
 - Scroll position in the box title: `Diff (45/312)`
 
+The TUI loads this working-tree diff on demand when the fix-review gate opens. If loading either the authoritative run state or the diff fails, approval actions stay disabled and the action bar offers `r retry`. Diff previews are capped at 512 KiB; when a preview is truncated, the TUI shows a warning because approval still applies to the complete working-tree diff.
+
 ### Log tail
 
 During running steps, shows streaming agent output. Lines starting with `PASS` are green, `FAIL` are red, everything else is dim.
@@ -190,7 +192,7 @@ When the instruction editor is open, press `Ctrl+s` or `Ctrl+enter` to save, or 
 | `esc` | Exit diff view back to findings |
 | `?` | Toggle help overlay |
 | `y` | Toggle yolo mode, which auto-resolves paused steps |
-| `r` | Start a rerun after a failed or cancelled run |
+| `r` | Retry a failed fix-review state or diff load; otherwise start a rerun after a failed or cancelled run |
 | `u` | Refresh and confirm local branch synchronization, or confirm custody recovery, when offered |
 | `q` | Detach from TUI (or quit if run is done) |
 
