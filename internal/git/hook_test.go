@@ -17,6 +17,10 @@ func TestPreReceiveHookScript(t *testing.T) {
 		"NM_BIN='/opt/No Mistakes/no-mistakes'",
 		"git rev-parse --absolute-git-dir",
 		"daemon admit-push --gate \"$GATE_DIR\"",
+		"--ref \"$refname\"",
+		"--old \"$oldrev\"",
+		"--new \"$newrev\"",
+		"mktemp \"$GATE_DIR/.no-mistakes-receive.XXXXXX\"",
 		"gate push refused before ref mutation",
 		preservedPreReceiveHook,
 	} {
@@ -24,8 +28,8 @@ func TestPreReceiveHookScript(t *testing.T) {
 			t.Errorf("pre-receive hook missing %q", want)
 		}
 	}
-	if strings.Contains(script, "read oldrev") {
-		t.Fatal("admission wrapper must leave stdin untouched for a preserved user hook")
+	if !strings.Contains(script, "cat > \"$RECEIVE_INPUT\"") || !strings.Contains(script, "< \"$RECEIVE_INPUT\"") {
+		t.Fatal("admission wrapper must preserve receive input for a user hook")
 	}
 	if !strings.Contains(script, "exit $status") {
 		t.Fatal("admission failure must reject the ref update")

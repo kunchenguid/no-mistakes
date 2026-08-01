@@ -163,10 +163,15 @@ type GateContextParams struct {
 	MarkerPresent bool   `json:"marker_present,omitempty"`
 }
 
-// AdmitPushParams asks whether a local receive hook's authenticated process
-// ancestry is allowed to mutate a managed gate ref.
+// AdmitPushParams carries the exact managed gate update to admit and reserve
+// before Git mutates the ref.
 type AdmitPushParams struct {
-	Gate string `json:"gate"`
+	Gate      string           `json:"gate"`
+	Ref       string           `json:"ref"`
+	Old       string           `json:"old"`
+	New       string           `json:"new"`
+	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
+	Intent    string           `json:"intent,omitempty"`
 }
 
 // HealthParams has no fields but exists for consistency.

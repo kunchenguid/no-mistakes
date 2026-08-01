@@ -497,6 +497,11 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return refusal
 	}
 	state, run, _ := s.inspect(ctx)
+	if pending, err := s.DB.GetPendingReceiveReservationsForBranch(s.Repo.ID, state.Local.Branch); err != nil {
+		return blockedPlan(state, state.State, "blocked_recover_receive_reservation", "a managed gate receive is still being reconciled; custody was not returned and no files or refs were changed")
+	} else if len(pending) > 0 {
+		return blockedPlan(state, state.State, "blocked_recover_receive_reservation", "a managed gate receive is still being reconciled; custody was not returned and no files or refs were changed")
+	}
 	if run != nil && publicationAttemptPresent(run) {
 		if err := s.DB.ReconcileRunPublicationAttempt(run.ID); err != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "a publication attempt has no exact durable push binding; custody was not returned and no files or refs were changed")
@@ -569,6 +574,11 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return custodyLockFailure(state, lockErr)
 	}
 	defer lock.Release()
+	if pending, err := s.DB.GetPendingReceiveReservationsForBranch(s.Repo.ID, run.Branch); err != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_receive_reservation", "a managed gate receive is still being reconciled; custody was not returned and no files or refs were changed")
+	} else if len(pending) > 0 {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_receive_reservation", "a managed gate receive is still being reconciled; custody was not returned and no files or refs were changed")
+	}
 	currentRepo, repoErr := s.DB.GetRepo(run.RepoID)
 	if repoErr != nil || currentRepo == nil {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "the registered repository target could not be reloaded under the custody lock; custody was not returned and no files or refs were changed")

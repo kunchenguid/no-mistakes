@@ -31,7 +31,7 @@ func PreReceiveHookScript() string {
 func preReceiveHookScript(command string) string {
 	return `#!/bin/sh
 # no-mistakes pre-receive hook
-# Authorize the pushing process before any managed gate ref changes.
+# Reserve each managed gate ref update before Git mutates it.
 NM_BIN=` + shellSingleQuote(command) + `
 if [ ! -f "$NM_BIN" ]; then
   NM_BIN="$(command -v no-mistakes 2>/dev/null || echo no-mistakes)"
@@ -48,15 +48,35 @@ case "$GATE_DIR" in
     GATE_DIR=$(cd "$HOOK_DIR/.." 2>/dev/null && (/bin/pwd -P 2>/dev/null || pwd -P) || :)
     ;;
 esac
-out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon admit-push --gate "$GATE_DIR" 2>&1)
-status=$?
-if [ $status -ne 0 ]; then
-  printf 'no-mistakes: gate push refused before ref mutation:\n%s\n' "$out" >&2
-  exit $status
+RECEIVE_INPUT=$(mktemp "$GATE_DIR/.no-mistakes-receive.XXXXXX") || {
+  printf 'no-mistakes: cannot reserve gate receive before ref mutation\n' >&2
+  exit 1
+}
+trap 'rm -f "$RECEIVE_INPUT"' 0 1 2 3 15
+if ! cat > "$RECEIVE_INPUT"; then
+  printf 'no-mistakes: cannot read gate receive updates\n' >&2
+  exit 1
 fi
+while IFS=' ' read -r oldrev newrev refname; do
+  [ -z "$refname" ] && continue
+  set --
+  i=0
+  while [ "$i" -lt "${GIT_PUSH_OPTION_COUNT:-0}" ]; do
+    opt=$(printenv "GIT_PUSH_OPTION_$i" 2>/dev/null || :)
+    set -- "$@" --push-option "$opt"
+    i=$((i + 1))
+  done
+  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon admit-push --gate "$GATE_DIR" --ref "$refname" --old "$oldrev" --new "$newrev" "$@" 2>&1)
+  status=$?
+  if [ $status -ne 0 ]; then
+    printf 'no-mistakes: gate push refused before ref mutation:\n%s\n' "$out" >&2
+    exit $status
+  fi
+done < "$RECEIVE_INPUT"
 USER_HOOK="$GATE_DIR/hooks/` + preservedPreReceiveHook + `"
 if [ -x "$USER_HOOK" ]; then
-  exec "$USER_HOOK"
+  "$USER_HOOK" < "$RECEIVE_INPUT"
+  exit $?
 fi
 exit 0
 `
@@ -120,8 +140,9 @@ func RefreshManagedGateHooks(bareDir string) error {
 // PostReceiveHookScript returns the shell script for the post-receive hook.
 // The hook notifies the daemon via the CLI so it works across platforms.
 // It resolves the gate to an absolute bare-repo path before notifying.
-// It never blocks the push - notification failures are surfaced to stderr and
-// appended to notify-push.log inside the bare repo.
+// It never rejects the completed ref update - notification failures are
+// retried, surfaced to stderr, and appended to notify-push.log inside the
+// bare repo.
 func PostReceiveHookScript() string {
 	exe, err := os.Executable()
 	if err != nil {
@@ -133,10 +154,9 @@ func PostReceiveHookScript() string {
 func postReceiveHookScript(command string) string {
 	return `#!/bin/sh
 # no-mistakes post-receive hook
-# Notifies the daemon of the push. Non-blocking: post-receive exit code is
-# ignored by git, so we never reject the push here. Instead, failures are
-# surfaced on stderr (so the pushing client sees them) and appended to
-# notify-push.log inside the bare repo for later inspection.
+# Notifies the daemon of the push. A bounded retry handles a short ownership
+# transition; remaining failures are surfaced on stderr and appended to
+# notify-push.log inside the bare repo for later startup reconciliation.
 NM_BIN=` + shellSingleQuote(command) + `
 if [ ! -f "$NM_BIN" ]; then
   NM_BIN="$(command -v no-mistakes 2>/dev/null || echo no-mistakes)"
@@ -176,8 +196,18 @@ while read oldrev newrev refname; do
 	    set -- "$@" --push-option "$opt"
 	    i=$((i + 1))
 	  done
-	  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon notify-push "$@" 2>&1)
-  status=$?
+	  attempt=1
+	  out=""
+	  status=1
+	  while [ "$attempt" -le 3 ]; do
+	    out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon notify-push "$@" 2>&1)
+	    status=$?
+	    [ $status -eq 0 ] && break
+	    if [ "$attempt" -lt 3 ]; then
+	      sleep 1
+	    fi
+	    attempt=$((attempt + 1))
+	  done
   if [ $status -ne 0 ]; then
     notify_failed=1
     {

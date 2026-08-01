@@ -96,6 +96,27 @@ func TestRunCreationRefusesCustodyOwnershipLockContention(t *testing.T) {
 	}
 }
 
+func TestRunCreationRefusesPendingReceiveReservation(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "pending-receive-run-repo")
+	if _, err := database.ReserveReceive(repo.ID, p.RepoDir(repo.ID), "main", "refs/heads/main", refreshTestZeroSHA, head, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewRunManager(database, p, nil)
+	t.Cleanup(manager.Shutdown)
+	if _, err := manager.startRun(context.Background(), repo, "main", head, refreshTestZeroSHA, "test", nil, "pending receive"); err == nil {
+		t.Fatal("run creation succeeded with a pending receive reservation")
+	}
+	runs, err := database.GetRunsByRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("run creation with pending receive inserted %d runs", len(runs))
+	}
+}
+
 func TestRerunReadsGateOnlyAfterCustodyOwnershipLock(t *testing.T) {
 	t.Setenv("NM_DEMO", "1")
 	p, database := newRefreshRunFixture(t)

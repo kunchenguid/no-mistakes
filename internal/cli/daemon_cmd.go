@@ -43,12 +43,24 @@ func newDaemonCmd() *cobra.Command {
 
 func newDaemonAdmitPushCmd() *cobra.Command {
 	var gate string
+	var ref string
+	var oldSHA string
+	var newSHA string
+	var pushOptions []string
 	cmd := &cobra.Command{
 		Use:    "admit-push",
 		Short:  "Authorize a managed gate ref update",
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			skipSteps, err := parseSkipPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
+			intent, err := parseIntentPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -63,7 +75,7 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 			}
 			defer client.Close()
 			var result ipc.AdmitPushResult
-			if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath}, &result); err != nil {
+			if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: newSHA, SkipSteps: skipSteps, Intent: intent}, &result); err != nil {
 				return err
 			}
 			if !result.Context.Nested {
@@ -81,7 +93,14 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&gate, "gate", "", "bare repo path that is about to receive a push")
+	cmd.Flags().StringVar(&ref, "ref", "", "git ref name")
+	cmd.Flags().StringVar(&oldSHA, "old", "", "previous commit SHA")
+	cmd.Flags().StringVar(&newSHA, "new", "", "new commit SHA")
+	cmd.Flags().StringArrayVar(&pushOptions, "push-option", nil, "git push option")
 	_ = cmd.MarkFlagRequired("gate")
+	_ = cmd.MarkFlagRequired("ref")
+	_ = cmd.MarkFlagRequired("old")
+	_ = cmd.MarkFlagRequired("new")
 	return cmd
 }
 

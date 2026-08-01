@@ -11,6 +11,25 @@ CREATE TABLE IF NOT EXISTS repos (
     created_at     INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS receive_reservations (
+    id          TEXT PRIMARY KEY,
+    repo_id     TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    gate_path   TEXT NOT NULL,
+    branch      TEXT NOT NULL,
+    ref         TEXT NOT NULL,
+    old_sha     TEXT NOT NULL,
+    new_sha     TEXT NOT NULL,
+    skip_steps  TEXT,
+    intent      TEXT,
+    state       TEXT NOT NULL DEFAULT 'reserved',
+    run_id      TEXT,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS receive_reservations_pending_branch
+    ON receive_reservations (repo_id, branch, state, created_at, id);
+
 CREATE TABLE IF NOT EXISTS runs (
     id                   TEXT PRIMARY KEY,
     repo_id              TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,

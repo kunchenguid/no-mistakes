@@ -583,30 +583,207 @@ func assertGateTrustedConfigReadable(ctx context.Context, wtDir, defaultBranch, 
 	return nil
 }
 
+func (m *RunManager) HandleAdmitPush(ctx context.Context, params *ipc.AdmitPushParams) error {
+	if params == nil {
+		return fmt.Errorf("admit push: missing parameters")
+	}
+	repo, branch, err := m.receiveRepo(params.Gate, params.Ref)
+	if err != nil {
+		return err
+	}
+	lock, err := branchsync.AcquireBranchOwnershipLock(m.paths, repo, repo.WorkingPath, branch)
+	if err != nil {
+		return fmt.Errorf("acquire branch ownership lock: %w", err)
+	}
+	defer lock.Release()
+	current, exists, err := gateReceiveRef(ctx, m.paths.RepoDir(repo.ID), params.Ref)
+	if err != nil {
+		return err
+	}
+	if !receiveOldMatches(current, exists, params.Old) {
+		return fmt.Errorf("gate ref %s is not at expected old head %s", params.Ref, params.Old)
+	}
+	if isZeroObjectID(params.New) {
+		return nil
+	}
+	_, err = m.db.ReserveReceive(repo.ID, m.paths.RepoDir(repo.ID), branch, params.Ref, params.Old, params.New, params.SkipSteps, params.Intent)
+	return err
+}
+
 // HandlePushReceived processes a push notification from the post-receive hook.
 // It creates a run, sets up a worktree, and launches pipeline execution in the background.
 func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushReceivedParams) (string, error) {
+	if params == nil {
+		return "", fmt.Errorf("push notification: missing parameters")
+	}
 	// Ref deletion (git push remote :branch) sends new SHA as all-zeros.
 	// Nothing to validate - skip pipeline.
-	if git.IsZeroSHA(params.New) {
+	if isZeroObjectID(params.New) {
 		return "", fmt.Errorf("ref deletion push, no pipeline to run")
 	}
-
-	repoID, err := repoIDFromGatePath(params.Gate)
+	repo, branch, err := m.receiveRepo(params.Gate, params.Ref)
 	if err != nil {
 		return "", err
 	}
+	lock, err := branchsync.AcquireBranchOwnershipLock(m.paths, repo, repo.WorkingPath, branch)
+	if err != nil {
+		return "", fmt.Errorf("acquire branch ownership lock: %w", err)
+	}
+	defer lock.Release()
+	return m.reconcileReceiveReservationLocked(ctx, repo, params, lock)
+}
 
+func (m *RunManager) receiveRepo(gatePath, ref string) (*db.Repo, string, error) {
+	repoID, err := repoIDFromGatePath(gatePath)
+	if err != nil {
+		return nil, "", err
+	}
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
-		return "", fmt.Errorf("get repo: %w", err)
+		return nil, "", fmt.Errorf("get repo: %w", err)
 	}
 	if repo == nil {
-		return "", fmt.Errorf("unknown repo for gate %s", params.Gate)
+		return nil, "", fmt.Errorf("unknown repo for gate %s", gatePath)
 	}
+	if !samePath(gatePath, m.paths.RepoDir(repo.ID)) {
+		return nil, "", fmt.Errorf("gate path does not match registered repository")
+	}
+	if !strings.HasPrefix(ref, "refs/heads/") {
+		return nil, "", fmt.Errorf("unsupported receive ref %q", ref)
+	}
+	branch := branchFromRef(ref)
+	if branch == "" || strings.Contains(branch, "..") {
+		return nil, "", fmt.Errorf("invalid receive branch %q", branch)
+	}
+	return repo, branch, nil
+}
 
+func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo *db.Repo, params *ipc.PushReceivedParams, lock *branchsync.BranchOwnershipLock) (string, error) {
 	branch := branchFromRef(params.Ref)
-	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
+	reservation, err := m.db.GetPendingReceiveReservation(repo.ID, branch, params.Ref, params.Old, params.New)
+	if err != nil {
+		return "", err
+	}
+	legacyNotification := reservation == nil
+	if reservation == nil {
+		history, historyErr := m.db.GetLatestReceiveReservation(repo.ID, branch, params.Ref, params.Old, params.New)
+		if historyErr != nil {
+			return "", historyErr
+		}
+		if history != nil && history.State == db.ReceiveReservationPublished && history.RunID != nil && *history.RunID != "" {
+			return *history.RunID, nil
+		}
+		reservation, err = m.db.ReserveReceive(repo.ID, m.paths.RepoDir(repo.ID), branch, params.Ref, params.Old, params.New, params.SkipSteps, params.Intent)
+		if err != nil {
+			return "", err
+		}
+	}
+	if reservation.State == db.ReceiveReservationPublished {
+		if reservation.RunID == nil || *reservation.RunID == "" {
+			return "", fmt.Errorf("published receive reservation has no run")
+		}
+		return *reservation.RunID, nil
+	}
+	if reservation.State != db.ReceiveReservationReserved {
+		return "", fmt.Errorf("receive reservation is no longer pending")
+	}
+	if !samePath(reservation.GatePath, m.paths.RepoDir(repo.ID)) {
+		return "", fmt.Errorf("receive reservation target changed")
+	}
+	current, exists, err := gateReceiveRef(ctx, m.paths.RepoDir(repo.ID), reservation.Ref)
+	if err != nil {
+		return "", err
+	}
+	if !exists && !legacyNotification {
+		if isZeroObjectID(reservation.OldSHA) {
+			if err := m.db.RetireReceiveReservation(reservation.ID); err != nil {
+				return "", err
+			}
+			return "", fmt.Errorf("receive did not mutate %s", reservation.Ref)
+		}
+		return "", fmt.Errorf("receive ref %s is unavailable; reservation remains pending", reservation.Ref)
+	}
+	if exists && current == reservation.OldSHA && !legacyNotification {
+		if err := m.db.RetireReceiveReservation(reservation.ID); err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("receive did not mutate %s", reservation.Ref)
+	}
+	if exists && current != reservation.NewSHA {
+		return "", fmt.Errorf("receive ref %s is at %s, reservation expects %s", reservation.Ref, current, reservation.NewSHA)
+	}
+	if !exists && !isZeroObjectID(reservation.OldSHA) {
+		return "", fmt.Errorf("receive ref %s is unavailable; reservation remains pending", reservation.Ref)
+	}
+	if exists && current == reservation.NewSHA {
+		if runs, err := m.db.GetRunsByRepoHead(repo.ID, branch, reservation.NewSHA); err != nil {
+			return "", err
+		} else if len(runs) > 0 {
+			if err := m.db.CompleteReceiveReservation(reservation.ID, runs[0].ID); err != nil {
+				return runs[0].ID, err
+			}
+			return runs[0].ID, nil
+		}
+	}
+	runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, reservation.NewSHA, reservation.OldSHA, "push", reservation.SkipSteps, reservation.Intent, db.RunIntentSourceAgent, lock, true)
+	if err != nil {
+		return "", err
+	}
+	if err := m.db.CompleteReceiveReservation(reservation.ID, runID); err != nil {
+		return runID, err
+	}
+	return runID, nil
+}
+
+func (m *RunManager) reconcileReceiveReservations(ctx context.Context) {
+	reservations, err := m.db.GetPendingReceiveReservations()
+	if err != nil {
+		slog.Warn("failed to list receive reservations", "error", err)
+		return
+	}
+	for _, reservation := range reservations {
+		repo, err := m.db.GetRepo(reservation.RepoID)
+		if err != nil || repo == nil {
+			slog.Warn("receive reservation cannot be reconciled", "reservation_id", reservation.ID, "error", err)
+			continue
+		}
+		lock, err := branchsync.AcquireBranchOwnershipLock(m.paths, repo, repo.WorkingPath, reservation.Branch)
+		if err != nil {
+			continue
+		}
+		params := &ipc.PushReceivedParams{Gate: reservation.GatePath, Ref: reservation.Ref, Old: reservation.OldSHA, New: reservation.NewSHA, SkipSteps: reservation.SkipSteps, Intent: reservation.Intent}
+		_, reconcileErr := m.reconcileReceiveReservationLocked(ctx, repo, params, lock)
+		lock.Release()
+		if reconcileErr != nil {
+			slog.Warn("receive reservation remains pending", "reservation_id", reservation.ID, "error", reconcileErr)
+		}
+	}
+}
+
+func gateReceiveRef(ctx context.Context, gateDir, ref string) (string, bool, error) {
+	exists, err := git.RefExists(ctx, gateDir, ref)
+	if err != nil {
+		return "", false, fmt.Errorf("check receive ref %s: %w", ref, err)
+	}
+	if !exists {
+		return "", false, nil
+	}
+	sha, err := git.ResolveRef(ctx, gateDir, ref)
+	if err != nil {
+		return "", false, err
+	}
+	return sha, true, nil
+}
+
+func receiveOldMatches(current string, exists bool, oldSHA string) bool {
+	if isZeroObjectID(oldSHA) {
+		return !exists
+	}
+	return exists && current == oldSHA
+}
+
+func isZeroObjectID(value string) bool {
+	return (len(value) == 40 || len(value) == 64) && strings.Trim(value, "0") == ""
 }
 
 // HandleRerun creates a new run for the latest gate head on a branch. An
@@ -683,7 +860,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		}
 	}
 
-	return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, ownershipLock)
+	return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, ownershipLock, false)
 }
 
 // fetchRunDefaultBranch fetches the trusted branch from the refreshed
@@ -711,10 +888,10 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
 func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
-	return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, nil)
+	return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, nil, false)
 }
 
-func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string, heldLock *branchsync.BranchOwnershipLock) (string, error) {
+func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string, heldLock *branchsync.BranchOwnershipLock, receiveOwned bool) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -748,6 +925,17 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	branchMu := lockVal.(*sync.Mutex)
 	branchMu.Lock()
 	defer branchMu.Unlock()
+	if !receiveOwned {
+		pending, err := m.db.GetPendingReceiveReservationsForBranch(repo.ID, branch)
+		if err != nil {
+			trackStartFailure("receive_reservation")
+			return "", fmt.Errorf("check receive reservations: %w", err)
+		}
+		if len(pending) > 0 {
+			trackStartFailure("receive_reservation")
+			return "", fmt.Errorf("receive reservation is pending for repository branch")
+		}
+	}
 
 	// Best-effort only: a clone's remotes may change after init. Refresh the
 	// registered URLs before constructing any run-owned Git operation, but keep

@@ -405,6 +405,7 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	cleanupOrphanWorktrees(d, p)
 	logStartupPhase("worktree_cleanup", worktreeStarted)
 	mgr.resumeRecoveredRuns(plans)
+	mgr.reconcileReceiveReservations(context.Background())
 }
 
 // cleanupOrphanWorktrees removes worktree directories left behind by runs
@@ -739,6 +740,12 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		}
 		result, err := classify(ctx, "", false, true)
 		if err != nil {
+			return nil, err
+		}
+		if result.Nested {
+			return nil, fmt.Errorf("%s", gatecontext.RefusalMessage(result))
+		}
+		if err := mgr.HandleAdmitPush(ctx, &p); err != nil {
 			return nil, err
 		}
 		return &ipc.AdmitPushResult{Context: gateContextResult(result)}, nil

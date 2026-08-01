@@ -70,6 +70,9 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if err := d.sql.QueryRow("SELECT count(*) FROM runs").Scan(&count); err != nil {
 		t.Fatalf("runs table missing: %v", err)
 	}
+	if err := d.sql.QueryRow("SELECT count(*) FROM receive_reservations").Scan(&count); err != nil {
+		t.Fatalf("receive_reservations table missing: %v", err)
+	}
 	if err := d.sql.QueryRow("SELECT count(*) FROM step_results").Scan(&count); err != nil {
 		t.Fatalf("step_results table missing: %v", err)
 	}

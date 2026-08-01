@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -156,6 +157,112 @@ func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
 		if step.StepName == types.StepReview && step.Status != types.StepStatusSkipped {
 			t.Fatalf("review status = %s, want %s", step.Status, types.StepStatusSkipped)
 		}
+	}
+}
+
+func TestPushReservationSurvivesOwnershipLockContention(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+	repo, oldSHA := setupTestGitRepo(t, p, d, "reserved-push-repo")
+	gitCmd(t, repo.WorkingPath, "config", "user.email", "test@test.com")
+	gitCmd(t, repo.WorkingPath, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "received.txt"), []byte("received\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "received.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "received")
+	newSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/tmp/reserved-push")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	params := &ipc.PushReceivedParams{Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: oldSHA, New: newSHA}
+	var admitted ipc.AdmitPushResult
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: params.Gate, Ref: params.Ref, Old: params.Old, New: params.New}, &admitted); err != nil {
+		t.Fatalf("admit push: %v", err)
+	}
+	gitCmd(t, p.RepoDir(repo.ID), "update-ref", "refs/heads/main", newSHA, oldSHA)
+
+	owner, err := branchsync.AcquireBranchOwnershipLock(p, repo, repo.WorkingPath, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var blocked ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, params, &blocked); err == nil {
+		t.Fatal("push notification succeeded while ownership lock was held")
+	}
+	pending, err := d.GetPendingReceiveReservation(repo.ID, "main", params.Ref, oldSHA, newSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending == nil || pending.State != db.ReceiveReservationReserved {
+		t.Fatalf("reservation after blocked notification = %#v, want pending", pending)
+	}
+	owner.Release()
+
+	var result ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, params, &result); err != nil {
+		t.Fatalf("retry push notification: %v", err)
+	}
+	run := waitForRunTerminalState(t, d, result.RunID)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("run status = %q, want %q", run.Status, types.RunCompleted)
+	}
+	reservation, err := d.GetReceiveReservation(pending.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reservation.State != db.ReceiveReservationPublished || reservation.RunID == nil || *reservation.RunID != result.RunID {
+		t.Fatalf("published reservation = %#v", reservation)
+	}
+}
+
+func TestPendingReceiveDoesNotReuseRunBeforeRefMutation(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+	repo, oldSHA := setupTestGitRepo(t, p, d, "pending-receive-old-ref-repo")
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "next.txt"), []byte("next\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "next.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "next")
+	newSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	if _, err := d.InsertRun(repo.ID, "main", newSHA, oldSHA); err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := d.ReserveReceive(repo.ID, p.RepoDir(repo.ID), "main", "refs/heads/main", oldSHA, newSHA, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: oldSHA, New: newSHA,
+	}, &result)
+	if err == nil {
+		t.Fatal("notification succeeded before the gate ref reached the reserved head")
+	}
+	got, err := d.GetReceiveReservation(reservation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != db.ReceiveReservationRetired {
+		t.Fatalf("reservation state = %q, want retired", got.State)
+	}
+	if runs, err := d.GetRunsByRepoHead(repo.ID, "main", newSHA); err != nil {
+		t.Fatal(err)
+	} else if len(runs) != 1 {
+		t.Fatalf("runs for unreceived head = %d, want historical run only", len(runs))
 	}
 }
 
