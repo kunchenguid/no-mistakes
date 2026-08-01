@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.44.1](https://github.com/kunchenguid/no-mistakes/compare/v1.44.0...v1.44.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* **daemon:** preserve intent provenance across reruns ([#624](https://github.com/kunchenguid/no-mistakes/issues/624)) ([7e336cb](https://github.com/kunchenguid/no-mistakes/commit/7e336cb8d748d796562ac73786e4708582622872))
+
 ## [1.44.0](https://github.com/kunchenguid/no-mistakes/compare/v1.43.0...v1.44.0) (2026-08-01)
 
 
