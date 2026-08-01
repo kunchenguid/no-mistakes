@@ -380,7 +380,7 @@ func TestRunSessions_QuotaFallbackResetsSessionAtAgentBoundary(t *testing.T) {
 	if _, err := rs.Run(context.Background(), fallback, SessionRoleReviewer, agent.RunOpts{Prompt: "initial review"}, nil); err != nil {
 		t.Fatalf("initial review: %v", err)
 	}
-	claude.failResumes["sess-1"] = errors.New("claude exited: exit status 1: session limit")
+	claude.failResumes["sess-1"] = agent.ClassifyProviderError(errors.New("claude exited: exit status 1: session limit reached"), "session limit reached")
 
 	result, err := rs.Run(context.Background(), fallback, SessionRoleReviewer, agent.RunOpts{Prompt: "quota review"}, nil)
 	if err != nil {
@@ -415,6 +415,60 @@ func TestRunSessions_QuotaFallbackResetsSessionAtAgentBoundary(t *testing.T) {
 	}
 	if len(stored) != 1 || stored[0].Agent != "pi" {
 		t.Fatalf("stored session after fallback = %+v, want pi only", stored)
+	}
+}
+
+func TestRunSessions_QuotaTerminalFailureForgetsExhaustedSession(t *testing.T) {
+	tests := []struct {
+		name      string
+		secondErr error
+		wantQuota bool
+	}{
+		{
+			name:      "all providers exhausted",
+			secondErr: agent.ClassifyProviderError(errors.New("pi quota detail"), "rate_limit_error"),
+			wantQuota: true,
+		},
+		{
+			name:      "replacement generic failure",
+			secondErr: errors.New("structured output validation failed"),
+			wantQuota: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, run := sessionTestDB(t)
+			claude := newFakeSessionAgent()
+			claude.name = "claude"
+			pi := newFakeSessionAgent()
+			pi.name = "pi"
+			fallback := agent.NewFallback([]agent.Agent{claude, pi})
+			rs := NewRunSessions(d, run.ID, fallback, true)
+
+			if _, err := rs.Run(context.Background(), fallback, SessionRoleReviewer, agent.RunOpts{}, nil); err != nil {
+				t.Fatalf("initial: %v", err)
+			}
+			claude.failResumes["sess-1"] = agent.ClassifyProviderError(errors.New("claude quota detail"), "session limit reached")
+			pi.failNext = tt.secondErr
+
+			_, err := rs.Run(context.Background(), fallback, SessionRoleReviewer, agent.RunOpts{}, nil)
+			if err == nil {
+				t.Fatal("quota fallback terminal failure returned nil")
+			}
+			if got := agent.IsQuotaFallbackError(err); got != tt.wantQuota {
+				t.Fatalf("IsQuotaFallbackError() = %v, want %v: %v", got, tt.wantQuota, err)
+			}
+			if !agent.HadQuotaFallback(err) {
+				t.Fatalf("HadQuotaFallback() = false: %v", err)
+			}
+			stored, dbErr := d.GetRunAgentSessions(run.ID)
+			if dbErr != nil {
+				t.Fatalf("stored sessions: %v", dbErr)
+			}
+			if len(stored) != 0 {
+				t.Fatalf("stored exhausted session = %+v, want none", stored)
+			}
+		})
 	}
 }
 

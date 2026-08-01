@@ -91,7 +91,11 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 		rs.remember(role, result.SessionID, provider)
 		return result, nil
 	}
-	if storedID == "" || ctx.Err() != nil || agent.IsQuotaFallbackError(err) {
+	if ctx.Err() != nil || storedID == "" {
+		return nil, err
+	}
+	if agent.HadQuotaFallback(err) {
+		rs.forget(role)
 		return nil, err
 	}
 

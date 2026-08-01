@@ -122,7 +122,7 @@ func TestFallbackAgent_ForwardsSessionCapability(t *testing.T) {
 }
 
 func TestClassifyProviderErrorSanitizesLifecycleDiagnostics(t *testing.T) {
-	const secretDiagnostic = "weekly limit; token=raw-provider-secret"
+	const secretDiagnostic = "weekly limit reached; token=raw-provider-secret"
 	classified := ClassifyProviderError(errors.New("provider failed: "+secretDiagnostic), secretDiagnostic)
 
 	var event LifecycleEvent
@@ -169,7 +169,7 @@ func TestFallbackAgentFallsBackOnExplicitQuotaExit(t *testing.T) {
 }
 
 func TestFallbackAgentIgnoresAssistantQuotaLanguage(t *testing.T) {
-	invocationErr := errors.New("claude exited: exit status 1")
+	invocationErr := errors.New("provider returned invalid response")
 	first := &fallbackTestAgent{
 		name: "claude",
 		runWithOpts: func(opts RunOpts) (*Result, error) {
@@ -195,8 +195,8 @@ func TestFallbackAgentReportsAllQuotaExhaustionWithoutSecrets(t *testing.T) {
 	first := &fallbackTestAgent{
 		name: "claude",
 		run: func() (*Result, error) {
-			err := errors.New("claude exited: exit status 1: weekly limit; token=secret-one")
-			return nil, ClassifyProviderError(err, "weekly limit; token=secret-one")
+			err := errors.New("claude exited: exit status 1: weekly limit reached; token=secret-one")
+			return nil, ClassifyProviderError(err, "weekly limit reached; token=secret-one")
 		},
 	}
 	second := &fallbackTestAgent{
@@ -231,8 +231,8 @@ func TestFallbackAgentQuotaExhaustionBoundsAttemptsAndAgentNames(t *testing.T) {
 		agents = append(agents, &fallbackTestAgent{
 			name: strings.Repeat(string(rune('a'+i)), maxQuotaFallbackAgentNameRunes+20),
 			run: func() (*Result, error) {
-				err := errors.New("provider rate limit; token=secret")
-				return nil, ClassifyProviderError(err, "provider rate limit; token=secret")
+				err := errors.New("provider rate limit exceeded; token=secret")
+				return nil, ClassifyProviderError(err, "provider rate limit exceeded; token=secret")
 			},
 		})
 	}
@@ -269,8 +269,8 @@ func TestFallbackAgentSingletonSanitizesQuotaExhaustion(t *testing.T) {
 	only := &fallbackTestAgent{
 		name: "claude",
 		run: func() (*Result, error) {
-			err := errors.New("claude exited: weekly limit; token=secret")
-			return nil, ClassifyProviderError(err, "weekly limit; token=secret")
+			err := errors.New("claude exited: weekly limit reached; token=secret")
+			return nil, ClassifyProviderError(err, "weekly limit reached; token=secret")
 		},
 	}
 
@@ -280,6 +280,50 @@ func TestFallbackAgentSingletonSanitizesQuotaExhaustion(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "secret") || !strings.Contains(err.Error(), "claude (session/quota limit)") {
 		t.Fatalf("error = %q, want bounded classification without diagnostic", err)
+	}
+}
+
+func TestFallbackAgentPreservesGenericErrorAfterQuotaTransition(t *testing.T) {
+	quota := &fallbackTestAgent{
+		name: "claude",
+		run: func() (*Result, error) {
+			return nil, ClassifyProviderError(errors.New("quota detail"), "rate_limit_error")
+		},
+	}
+	terminal := errors.New("structured output validation failed")
+	generic := &fallbackTestAgent{
+		name: "pi",
+		run:  func() (*Result, error) { return nil, terminal },
+	}
+
+	_, err := NewFallback([]Agent{quota, generic}).Run(context.Background(), RunOpts{})
+	if !errors.Is(err, terminal) {
+		t.Fatalf("Run() error = %v, want terminal generic error", err)
+	}
+	var exhausted *quotaFallbackError
+	if errors.As(err, &exhausted) {
+		t.Fatalf("Run() error = %v, must not replace generic error with exhaustion summary", err)
+	}
+	if !HadQuotaFallback(err) {
+		t.Fatalf("Run() error = %v, want quota-transition signal", err)
+	}
+}
+
+func TestClassifyProviderErrorRequiresExhaustionEvidence(t *testing.T) {
+	generic := errors.New("provider failed")
+	for _, diagnostic := range []string{
+		"unknown option rate_limit",
+		"configuration field: rate limit",
+		"quota limit setting is invalid",
+	} {
+		if got := ClassifyProviderError(generic, diagnostic); got != generic {
+			t.Fatalf("diagnostic %q classified as quota exhaustion: %v", diagnostic, got)
+		}
+	}
+	for _, diagnostic := range []string{"rate_limit_error", "session_limit_error", "quota_exceeded", "rate limit exceeded", "HTTP 429 Too Many Requests"} {
+		if got := ClassifyProviderError(generic, diagnostic); got == generic {
+			t.Fatalf("diagnostic %q was not classified", diagnostic)
+		}
 	}
 }
 
@@ -315,8 +359,8 @@ func TestFallbackAgentNeverSwitchesWhileInvocationIsActive(t *testing.T) {
 		runWithOpts: func(RunOpts) (*Result, error) {
 			close(started)
 			<-release
-			err := errors.New("claude exited: exit status 1: rate limit")
-			return nil, ClassifyProviderError(err, "rate limit")
+			err := errors.New("claude exited: exit status 1: rate limit exceeded")
+			return nil, ClassifyProviderError(err, "rate limit exceeded")
 		},
 	}
 	second := &fallbackTestAgent{

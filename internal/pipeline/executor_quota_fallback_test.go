@@ -31,8 +31,8 @@ func (a *quotaFixAgent) Run(_ context.Context, _ agent.RunOpts) (*agent.Result, 
 		}
 		quotaTestGit(a.workDir, "add", "prior-fix.txt")
 		quotaTestGit(a.workDir, "commit", "-m", "prior pipeline fix")
-		err := errors.New("claude exited: exit status 1: session limit")
-		return nil, agent.ClassifyProviderError(err, "session limit")
+		err := errors.New("claude exited: exit status 1: session limit reached")
+		return nil, agent.ClassifyProviderError(err, "session limit reached")
 	}
 	return &agent.Result{Text: "validated"}, nil
 }

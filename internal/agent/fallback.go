@@ -34,10 +34,17 @@ type providerQuotaError struct {
 	reason string
 }
 
+type quotaFallbackTransitionError struct {
+	err error
+}
+
 func (e *providerQuotaError) Error() string {
 	return fmt.Sprintf("provider quota unavailable: %s", e.reason)
 }
 func (e *providerQuotaError) Unwrap() error { return e.err }
+
+func (e *quotaFallbackTransitionError) Error() string { return e.err.Error() }
+func (e *quotaFallbackTransitionError) Unwrap() error { return e.err }
 
 func (e *quotaFallbackError) Error() string {
 	parts := make([]string, 0, len(e.attempts)+1)
@@ -67,6 +74,16 @@ func appendQuotaFallbackAttempt(attempts []quotaFallbackAttempt, omitted bool, a
 func IsQuotaFallbackError(err error) bool {
 	var quotaErr *quotaFallbackError
 	return errors.As(err, &quotaErr)
+}
+
+// HadQuotaFallback reports whether an invocation moved past a provider after
+// positive quota evidence, including when a later generic failure is returned.
+func HadQuotaFallback(err error) bool {
+	if IsQuotaFallbackError(err) {
+		return true
+	}
+	var transitionErr *quotaFallbackTransitionError
+	return errors.As(err, &transitionErr)
 }
 
 // NewFallback returns an Agent that tries each agent in order when an
@@ -217,7 +234,10 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 		}
 
 		if quotaSeen {
-			if position == len(candidateIndexes)-1 || (!isAgentUnavailableError(err) && !isQuota) {
+			if !isQuota && !isAgentUnavailableError(err) {
+				return nil, &quotaFallbackTransitionError{err: err}
+			}
+			if position == len(candidateIndexes)-1 {
 				return nil, &quotaFallbackError{attempts: path, omitted: pathOmitted}
 			}
 		} else if position == len(candidateIndexes)-1 || !isAgentUnavailableError(err) {
@@ -286,27 +306,44 @@ func quotaErrorReason(err error) (string, bool) {
 
 func quotaDiagnosticReason(diagnostic string) (string, bool) {
 	msg := strings.ToLower(diagnostic)
-	if strings.Contains(msg, "session limit") ||
-		strings.Contains(msg, "session_limit") ||
-		strings.Contains(msg, "usage limit") ||
-		strings.Contains(msg, "weekly limit") ||
-		strings.Contains(msg, "monthly limit") ||
-		strings.Contains(msg, "daily limit") ||
-		strings.Contains(msg, "quota exceeded") ||
+	if strings.Contains(msg, "quota exceeded") ||
 		strings.Contains(msg, "quota exhausted") ||
-		strings.Contains(msg, "quota limit") {
+		strings.Contains(msg, "quota_exceeded") ||
+		strings.Contains(msg, "quota_exhausted") ||
+		strings.Contains(msg, "session_limit_error") ||
+		strings.Contains(msg, "usage_limit_error") ||
+		limitStatus(msg, "session limit") ||
+		limitStatus(msg, "session_limit") ||
+		limitStatus(msg, "usage limit") ||
+		limitStatus(msg, "weekly limit") ||
+		limitStatus(msg, "monthly limit") ||
+		limitStatus(msg, "daily limit") ||
+		limitStatus(msg, "quota limit") {
 		return "session/quota limit", true
 	}
-	if strings.Contains(msg, "rate limit") ||
-		strings.Contains(msg, "rate_limit") ||
+	if strings.Contains(msg, "rate_limit_error") ||
+		strings.Contains(msg, "rate_limit_exceeded") ||
 		strings.Contains(msg, "rate-limited") ||
 		strings.Contains(msg, "rate limited") ||
+		limitStatus(msg, "rate limit") ||
 		strings.Contains(msg, "too many requests") ||
 		strings.Contains(msg, "http 429") ||
 		strings.Contains(msg, "status 429") {
 		return "rate limit", true
 	}
 	return "", false
+}
+
+func limitStatus(msg, limit string) bool {
+	for _, status := range []string{"exceeded", "exhausted", "reached", "hit"} {
+		if strings.Contains(msg, limit+" "+status) ||
+			strings.Contains(msg, status+" "+limit) ||
+			strings.Contains(msg, status+" the "+limit) ||
+			strings.Contains(msg, status+" your "+limit) {
+			return true
+		}
+	}
+	return false
 }
 
 func fallbackFailureReason(err error) string {
