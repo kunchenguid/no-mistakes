@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -18,6 +20,22 @@ import (
 type doctorAgentCheck struct {
 	name     string
 	binaries []string
+}
+
+var ghVersionRE = regexp.MustCompile(`gh version (\d+)\.(\d+)\.(\d+)`)
+
+// ghVersionPredatesChecksJSON identifies gh releases that need the structured
+// statusCheckRollup compatibility path. Unknown vendor/version formats do not
+// warn because the CI monitor detects support from the actual command result.
+func ghVersionPredatesChecksJSON(raw string) (version string, predates bool) {
+	match := ghVersionRE.FindStringSubmatch(raw)
+	if match == nil {
+		return "", false
+	}
+	version = strings.Join(match[1:4], ".")
+	major, _ := strconv.Atoi(match[1])
+	minor, _ := strconv.Atoi(match[2])
+	return version, major < 2 || (major == 2 && minor < 50)
 }
 
 func newDoctorCmd() *cobra.Command {
@@ -61,6 +79,15 @@ func newDoctorCmd() *cobra.Command {
 					warn("gh            ", "not found "+sDim.Render("(optional, needed for PR/CI)"))
 				} else {
 					ok("gh            ", "ok")
+					ghCmd := exec.Command("gh", "--version")
+					winproc.Harden(ghCmd)
+					if out, err := ghCmd.Output(); err == nil {
+						if version, predates := ghVersionPredatesChecksJSON(string(out)); predates {
+							warn("gh version    ", fmt.Sprintf(
+								"%s: pr checks --json is unavailable before 2.50.0; CI monitoring will use statusCheckRollup",
+								version))
+						}
+					}
 				}
 
 				if _, err := exec.LookPath("az"); err != nil {
