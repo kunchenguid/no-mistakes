@@ -160,6 +160,21 @@ func TestTargetIdentityNeverPersistsOrDisplaysHTTPUserinfo(t *testing.T) {
 	}
 }
 
+func TestRecoveryTargetUsesEquivalentOriginCredentials(t *testing.T) {
+	root := t.TempDir()
+	repoDir := filepath.Join(root, "repo")
+	mustRun(t, root, "init", "-b", "main", repoDir)
+	credentialed := "https://token:secret@example.com/owner/repo.git"
+	mustRun(t, repoDir, "remote", "add", "origin", credentialed)
+	service := &Service{
+		Repo:    &db.Repo{UpstreamURL: "https://example.com/owner/repo.git"},
+		WorkDir: repoDir,
+	}
+	if got := service.recoveryPublicationTarget(context.Background()); got != credentialed {
+		t.Fatalf("recovery publication target = %q, want credentialed origin", got)
+	}
+}
+
 func TestInspectCachedPrePushAndPushInProgressAreNonSyncable(t *testing.T) {
 	f := newSyncFixture(t)
 	active, err := f.db.InsertRun(f.repo.ID, "feature/sync", f.old, f.base)

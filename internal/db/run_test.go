@@ -430,6 +430,57 @@ func TestRunPushBindingIsForwardOnlyAndLegacyRowsStayNullable(t *testing.T) {
 	}
 }
 
+func TestCustodyCASRejectsPublicationAttemptRecordedAfterSnapshot(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/repo-publication-fence", "https://example.com/repo.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := PublicationAttempt{HeadSHA: "published", TargetKind: "upstream", TargetFingerprint: publicationTargetFingerprint(repo.PushURL()), Ref: "refs/heads/feature"}
+	if err := d.RecordRunPublicationAttempt(run.ID, attempt); err != nil {
+		t.Fatalf("record publication attempt: %v", err)
+	}
+	if err := d.SetRunCustodyReturnedCAS(expected); !errors.Is(err, ErrRunCustodyCAS) {
+		t.Fatalf("custody CAS after publication attempt = %v, want ErrRunCustodyCAS", err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CustodyReturnedAt != nil {
+		t.Fatal("custody was stamped after a publication attempt")
+	}
+}
+
+func TestNewRunHasExactPublicationJournalTarget(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/repo-publication-audit", "https://token:secret@example.com/repo.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PublicationJournalState == nil || *run.PublicationJournalState != PublicationJournalReady {
+		t.Fatalf("publication journal state = %#v, want ready", run.PublicationJournalState)
+	}
+	if run.PublicationJournalTargetKind == nil || *run.PublicationJournalTargetKind != "upstream" {
+		t.Fatalf("publication journal target kind = %#v", run.PublicationJournalTargetKind)
+	}
+	if run.PublicationJournalTargetFingerprint == nil || *run.PublicationJournalTargetFingerprint == "" {
+		t.Fatalf("publication journal target fingerprint = %#v", run.PublicationJournalTargetFingerprint)
+	}
+	if run.PublicationJournalRef == nil || *run.PublicationJournalRef != "refs/heads/feature" {
+		t.Fatalf("publication journal ref = %#v", run.PublicationJournalRef)
+	}
+}
+
 func TestPublicationAttemptJournalRequiresExactBindingToReconcile(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/tmp/repo-publication-journal", "https://example.com/repo.git", "main")
@@ -437,7 +488,7 @@ func TestPublicationAttemptJournalRequiresExactBindingToReconcile(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempt := PublicationAttempt{HeadSHA: "published", TargetKind: "upstream", TargetFingerprint: "target", Ref: "refs/heads/feature"}
+	attempt := PublicationAttempt{HeadSHA: "published", TargetKind: "upstream", TargetFingerprint: publicationTargetFingerprint(repo.PushURL()), Ref: "refs/heads/feature"}
 	if err := d.RecordRunPublicationAttempt(run.ID, attempt); err != nil {
 		t.Fatalf("record publication attempt: %v", err)
 	}
@@ -468,7 +519,7 @@ func TestReconcilePublicationAttemptClearsOnlyMatchingExistingBinding(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempt := PublicationAttempt{HeadSHA: "published", TargetKind: "upstream", TargetFingerprint: "target", Ref: "refs/heads/feature"}
+	attempt := PublicationAttempt{HeadSHA: "published", TargetKind: "upstream", TargetFingerprint: publicationTargetFingerprint(repo.PushURL()), Ref: "refs/heads/feature"}
 	if err := d.RecordRunPublicationAttempt(run.ID, attempt); err != nil {
 		t.Fatal(err)
 	}

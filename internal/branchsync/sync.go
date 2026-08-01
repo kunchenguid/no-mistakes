@@ -565,8 +565,14 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if latest, ok := s.latestRunForBranch(run.Branch); !ok || latest.ID != run.ID {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_newer_run", "a newer run owns this repository branch; custody was not returned and no files or refs were changed")
 	}
+	if run.LastPushedSHA != nil && run.HeadSHA != ptr(run.LastPushedSHA) {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "the mutable run head differs from its exact published head; the publication owner must reconcile the run before custody can be returned; no files or refs were changed")
+	}
+	if runHasPublication(run) {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "the run has publication provenance; the publication owner must reconcile it before custody can be returned; no files or refs were changed")
+	}
 	if safety := s.verifyLegacyRunUnpublished(ctx, run, branch); safety != "" {
-		return blockedPlan(state, StatePipelineOwned, safety, "the legacy run has no durable publication journal and the configured remote does not freshly prove the submitted head is still unpublished; custody was not returned and no files or refs were changed")
+		return blockedPlan(state, StatePipelineOwned, safety, "the run has no exact authoritative unpublished-publication journal for its original target; custody was not returned and no files or refs were changed")
 	}
 	anchored, anchorConflict := recoveryAnchorState(ctx, wd, anchorRef, preserved)
 	if anchorConflict {
@@ -1190,36 +1196,36 @@ func publicationAttemptPresent(run *db.Run) bool {
 }
 
 func (s *Service) verifyLegacyRunUnpublished(ctx context.Context, run *db.Run, branch string) string {
-	if run == nil || runHasPublication(run) {
-		return ""
-	}
-	if run.SubmittedHeadSHA == nil || !isExactFullObjectID(ptr(run.SubmittedHeadSHA)) {
+	if run == nil || run.PublicationJournalState == nil || *run.PublicationJournalState != db.PublicationJournalReady {
 		return "blocked_recover_publication"
 	}
-	target := strings.TrimSpace(s.Repo.PushURL())
-	if target == "" {
+	if run.SubmittedHeadSHA == nil || !isExactFullObjectID(ptr(run.SubmittedHeadSHA)) ||
+		run.PublicationJournalTargetKind == nil || run.PublicationJournalTargetFingerprint == nil || run.PublicationJournalRef == nil {
 		return "blocked_recover_publication"
 	}
-	queryCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
-	defer cancel()
-	out, err := git.Run(queryCtx, s.workDir(), "ls-remote", target, "refs/heads/"+branch)
-	if err != nil {
-		return "blocked_recover_publication"
-	}
-	lines := make([]string, 0, 1)
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if strings.TrimSpace(line) != "" {
-			lines = append(lines, strings.TrimSpace(line))
-		}
-	}
-	if len(lines) != 1 {
-		return "blocked_recover_publication"
-	}
-	fields := strings.Fields(lines[0])
-	if len(fields) != 2 || fields[1] != "refs/heads/"+branch || !isExactFullObjectID(fields[0]) || fields[0] != ptr(run.SubmittedHeadSHA) {
+	target := s.recoveryPublicationTarget(ctx)
+	if target == "" || ptr(run.PublicationJournalTargetKind) != targetKind(s.Repo) ||
+		ptr(run.PublicationJournalTargetFingerprint) != TargetFingerprint(target) ||
+		ptr(run.PublicationJournalRef) != publicationRef(branch) {
 		return "blocked_recover_publication"
 	}
 	return ""
+}
+
+func (s *Service) recoveryPublicationTarget(ctx context.Context) string {
+	if s == nil || s.Repo == nil {
+		return ""
+	}
+	target := strings.TrimSpace(s.Repo.PushURL())
+	origin, err := git.GetRemoteURL(ctx, s.workDir(), "origin")
+	if err == nil && strings.TrimSpace(origin) != "" && TargetFingerprint(origin) == TargetFingerprint(target) {
+		return strings.TrimSpace(origin)
+	}
+	return target
+}
+
+func publicationRef(branch string) string {
+	return "refs/heads/" + strings.TrimPrefix(strings.TrimSpace(branch), "refs/heads/")
 }
 
 func positiveInt64(value *int64) bool {

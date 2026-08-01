@@ -2,6 +2,7 @@ package branchsync
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	pipelinepkg "github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	_ "modernc.org/sqlite"
 )
 
 type cancellationRaceStep struct {
@@ -602,7 +604,7 @@ func TestRecoverGateAtLocalSubmittedHeadAnchorsRecordedHead(t *testing.T) {
 	})
 }
 
-func TestRecoverLegacyRunRequiresFreshUnpublishedRemoteProof(t *testing.T) {
+func TestRecoverPublicationJournalRequiresExactTargetAudit(t *testing.T) {
 	t.Run("unpublished", func(t *testing.T) {
 		f := newRecoverFixture(t, types.RunCancelled)
 		f.moveGateBranchToSubmitted()
@@ -614,11 +616,11 @@ func TestRecoverLegacyRunRequiresFreshUnpublishedRemoteProof(t *testing.T) {
 
 	t.Run("published", func(t *testing.T) {
 		f := newRecoverFixture(t, types.RunCancelled)
-		mustRun(t, f.remote, "fetch", f.gate, "+refs/heads/feature/recover:refs/heads/feature/recover")
+		f.repo.UpstreamURL = filepath.Join(t.TempDir(), "different.git")
 		f.moveGateBranchToSubmitted()
 		state := f.service.Recover(f.ctx, true)
 		if state.Recovered || state.Safety != "blocked_recover_publication" {
-			t.Fatalf("legacy published recovery = %#v", state)
+			t.Fatalf("changed-target recovery = %#v", state)
 		}
 		if f.custodyReturned() {
 			t.Fatal("legacy published recovery stamped custody")
@@ -632,11 +634,31 @@ func TestRecoverLegacyRunRequiresFreshUnpublishedRemoteProof(t *testing.T) {
 			t.Fatal(err)
 		}
 		state := f.service.Recover(f.ctx, true)
+		if !state.Recovered || !f.custodyReturned() {
+			t.Fatalf("journal-backed unavailable recovery = %#v", state)
+		}
+	})
+
+	t.Run("missing journal", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunCancelled)
+		sqlDB, err := sql.Open("sqlite", f.dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sqlDB.Exec(`UPDATE runs SET publication_journal_state = NULL, publication_journal_target_kind = NULL, publication_journal_target_fingerprint = NULL, publication_journal_ref = NULL WHERE id = ?`, f.run.ID); err != nil {
+			sqlDB.Close()
+			t.Fatal(err)
+		}
+		if err := sqlDB.Close(); err != nil {
+			t.Fatal(err)
+		}
+		f.moveGateBranchToSubmitted()
+		state := f.service.Recover(f.ctx, true)
 		if state.Recovered || state.Safety != "blocked_recover_publication" {
-			t.Fatalf("legacy unavailable recovery = %#v", state)
+			t.Fatalf("missing-journal recovery = %#v", state)
 		}
 		if f.custodyReturned() {
-			t.Fatal("legacy unavailable recovery stamped custody")
+			t.Fatal("missing-journal recovery stamped custody")
 		}
 	})
 }
@@ -893,11 +915,6 @@ func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 	})
 }
 
-// TestRecoverTerminalPostPushRunWithMovedHead covers the post-push class cell:
-// a run that pushed successfully, then went terminal with additional
-// unpublished pipeline commits. Recovery fast-forwards to the preserved head
-// and the branch classifies as local_ahead against the pushed binding, whose
-// existing run_pipeline guidance publishes the recovered commits.
 func TestRecoverTerminalPostPushRunWithMovedHead(t *testing.T) {
 	f := newRecoverFixture(t, types.RunCancelled)
 	// The run pushed the submitted head upstream, then the pipeline moved on.
@@ -917,17 +934,14 @@ func TestRecoverTerminalPostPushRunWithMovedHead(t *testing.T) {
 	}
 
 	recovered := f.service.Recover(f.ctx, false)
-	if !recovered.Recovered || !recovered.Changed {
+	if recovered.Recovered || recovered.Changed || recovered.Safety != "blocked_recover_publication" {
 		t.Fatalf("post-push recover = %#v", recovered)
 	}
-	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
-		t.Fatalf("post-push recover HEAD = %s, want %s", got, f.preserved)
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("post-push recover moved HEAD to %s", got)
 	}
-	if recovered.State != StateLocalAhead || recovered.NextAction == nil || recovered.NextAction.Code != "run_pipeline" {
-		t.Fatalf("post-push recovered classification = %#v", recovered)
-	}
-	if !f.custodyReturned() {
-		t.Fatal("post-push recover did not stamp custody")
+	if f.custodyReturned() {
+		t.Fatal("post-push recovery stamped custody")
 	}
 }
 
