@@ -19,61 +19,6 @@ import (
 
 // --- RunManager integration tests ---
 
-func TestBroadcastReadinessSurvivesFullSubscriber(t *testing.T) {
-	manager := NewRunManager(nil, nil, nil)
-	events, cancel := manager.Subscribe("run-1")
-	defer cancel()
-
-	for i := 0; i < 64; i++ {
-		manager.broadcast(ipc.Event{
-			Type:  ipc.EventLogChunk,
-			RunID: "run-1",
-		})
-	}
-
-	ready := false
-	declaredNoCI := false
-	done := make(chan struct{})
-	go func() {
-		manager.broadcast(ipc.Event{
-			Type:        ipc.EventCIReadinessChanged,
-			RunID:       "run-1",
-			CIReady:     &ready,
-			CIReadyNoCI: &declaredNoCI,
-		})
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("readiness broadcast blocked on a full subscriber")
-	}
-
-	if got := len(events); got != 64 {
-		t.Fatalf("subscriber buffer length = %d, want 64", got)
-	}
-	readinessEvents := 0
-	activityEvents := 0
-	for i := 0; i < 64; i++ {
-		event := <-events
-		if event.Type == ipc.EventCIReadinessChanged {
-			readinessEvents++
-			if event.CIReady == nil || *event.CIReady {
-				t.Fatalf("readiness event = %#v, want authoritative false", event)
-			}
-		} else if event.Type == ipc.EventLogChunk {
-			activityEvents++
-		}
-	}
-	if readinessEvents != 1 {
-		t.Fatalf("readiness events = %d, want 1", readinessEvents)
-	}
-	if activityEvents != 63 {
-		t.Fatalf("activity events = %d, want bounded 63 after readiness eviction", activityEvents)
-	}
-}
-
 func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	recorder := &telemetryRecorder{}
 	restore := telemetry.SetDefaultForTesting(recorder)

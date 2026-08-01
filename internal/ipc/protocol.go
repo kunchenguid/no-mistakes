@@ -309,7 +309,7 @@ const (
 	EventCIReadinessChanged EventType = "ci_readiness_changed"
 	EventStepStarted        EventType = "step_started"
 	EventStepCompleted      EventType = "step_completed"
-	EventLogChunk            EventType = "log_chunk"
+	EventLogChunk           EventType = "log_chunk"
 	// EventStreamGap tells a subscriber that the daemon coalesced at least
 	// one state transition away under buffer pressure. StateRev is the
 	// highest revision folded into it. The subscriber must read authoritative
