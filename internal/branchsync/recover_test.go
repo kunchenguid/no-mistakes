@@ -22,6 +22,16 @@ type cancellationRaceStep struct {
 
 type unreachedCancellationStep struct{}
 
+type skippedDeliveryStep struct {
+	name types.StepName
+}
+
+func (s *skippedDeliveryStep) Name() types.StepName { return s.name }
+
+func (*skippedDeliveryStep) Execute(*pipelinepkg.StepContext) (*pipelinepkg.StepOutcome, error) {
+	return &pipelinepkg.StepOutcome{}, nil
+}
+
 func (*unreachedCancellationStep) Name() types.StepName { return types.StepReview }
 
 func (*unreachedCancellationStep) Execute(*pipelinepkg.StepContext) (*pipelinepkg.StepOutcome, error) {
@@ -701,6 +711,49 @@ func TestCancellationReleaseRequiresVerifiedManagedHead(t *testing.T) {
 				t.Fatalf("state = %#v, want %s/%s", state, tt.wantState, tt.wantSafety)
 			}
 		})
+	}
+}
+
+func TestSuccessfulSkippedDeliveryReleasesVerifiedUnmovedHead(t *testing.T) {
+	f := newUnmovedRecoverFixture(t, types.RunCancelled)
+	if err := f.db.UpdateRunStatus(f.run.ID, types.RunPending); err != nil {
+		t.Fatal(err)
+	}
+	f.run.Status = types.RunPending
+	f.run.TerminalHeadVerifiedAt = nil
+
+	managed := filepath.Join(t.TempDir(), "managed")
+	if err := gitpkg.WorktreeAdd(f.ctx, f.gate, managed, f.submitted); err != nil {
+		t.Fatal(err)
+	}
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	steps := []pipelinepkg.Step{
+		&skippedDeliveryStep{name: types.StepPush},
+		&skippedDeliveryStep{name: types.StepPR},
+		&skippedDeliveryStep{name: types.StepCI},
+	}
+	executor := pipelinepkg.NewExecutor(f.db, p, nil, nil, steps, nil)
+	executor.SetSkippedSteps([]types.StepName{types.StepPush, types.StepPR, types.StepCI})
+	if err := executor.Execute(context.Background(), f.run, f.repo, managed); err != nil {
+		t.Fatal(err)
+	}
+
+	terminal, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.Status != types.RunCompleted || terminal.TerminalHeadVerifiedAt == nil || terminal.HeadSHA != f.submitted {
+		t.Fatalf("terminal run = status %s head %s verified %#v", terminal.Status, terminal.HeadSHA, terminal.TerminalHeadVerifiedAt)
+	}
+	state := f.service.InspectCached(f.ctx)
+	if state.State != StateUserOwned || state.Safety != "user_owned" {
+		t.Fatalf("completed skipped-delivery state = %#v", state)
+	}
+	if state.NextAction != nil {
+		t.Fatalf("completed skipped-delivery next action = %#v", state.NextAction)
 	}
 }
 
