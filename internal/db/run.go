@@ -76,6 +76,10 @@ func scanRun(row interface {
 
 // InsertRun creates a new run record.
 func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
+	return d.InsertRunWithIntent(repoID, branch, headSHA, baseSHA, nil)
+}
+
+func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent *RunIntent) (*Run, error) {
 	ts := now()
 	r := &Run{
 		ID:               newID(),
@@ -88,9 +92,15 @@ func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
 		CreatedAt:        ts,
 		UpdatedAt:        ts,
 	}
+	if intent != nil {
+		r.Intent = &intent.Summary
+		r.IntentSource = &intent.Source
+		r.IntentSessionID = &intent.SessionID
+		r.IntentScore = &intent.Score
+	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.Status, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)

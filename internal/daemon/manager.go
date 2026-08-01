@@ -544,7 +544,7 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 // HandleRerun creates a new run for the latest gate head on a branch. An
 // explicit intent overrides the selected run. Otherwise an authoritative
 // intent is inherited byte-for-byte; runs without one infer intent afresh.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, skipSteps []types.StepName, intent string) (string, error) {
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -581,6 +581,16 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 	if latestForBranch == nil {
 		return "", fmt.Errorf("no previous run for branch %s", branch)
 	}
+	selectedRun := latestForBranch
+	if previousRunID != "" {
+		selectedRun, err = m.db.GetRun(previousRunID)
+		if err != nil {
+			return "", fmt.Errorf("get selected run: %w", err)
+		}
+		if selectedRun == nil || selectedRun.RepoID != repoID || selectedRun.Branch != branch {
+			return "", fmt.Errorf("selected run %s does not belong to repo %s branch %s", previousRunID, repoID, branch)
+		}
+	}
 
 	baseSHA := latestForBranch.BaseSHA
 	if matchingHead != nil {
@@ -590,12 +600,12 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 	intentSource := db.RunIntentSourceAgent
 	if strings.TrimSpace(intent) == "" {
 		intentSource = ""
-		if latestForBranch.Intent != nil && latestForBranch.IntentSource != nil &&
-			db.IsAuthoritativeRunIntentSource(*latestForBranch.IntentSource) {
+		if selectedRun.Intent != nil && selectedRun.IntentSource != nil &&
+			db.IsAuthoritativeRunIntentSource(*selectedRun.IntentSource) {
 			// Do not normalize or regenerate this value. The selected run's
 			// persisted bytes are the canonical acceptance criteria for the
 			// replacement run.
-			intent = *latestForBranch.Intent
+			intent = *selectedRun.Intent
 			intentSource = db.RunIntentSourceRerun
 		}
 	}
@@ -665,32 +675,22 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	// Cancel any active run for this repo+branch.
 	m.cancelActiveRuns(repo.ID, branch)
 
-	// Create run record.
-	run, err := m.db.InsertRun(repo.ID, branch, headSHA, baseSHA)
-	if err != nil {
-		trackStartFailure("create_run")
-		return "", fmt.Errorf("create run: %w", err)
-	}
-
-	// Stamp an explicit or inherited intent onto the run before the pipeline
-	// starts, so the intent step skips transcript-based inference. Inherited
-	// intent is deliberately not trimmed: its persisted bytes are canonical.
 	storedIntent := intent
 	if source != db.RunIntentSourceRerun {
 		storedIntent = strings.TrimSpace(storedIntent)
 	}
+	var runIntent *db.RunIntent
 	if strings.TrimSpace(storedIntent) != "" {
 		if source == "" {
 			source = db.RunIntentSourceAgent
 		}
-		if err := m.db.UpdateRunIntent(run.ID, db.RunIntent{Summary: storedIntent, Source: source, Score: 1}); err != nil {
-			slog.Warn("failed to persist run intent", "run_id", run.ID, "error", err)
-		} else {
-			run.Intent = &storedIntent
-			run.IntentSource = &source
-			score := 1.0
-			run.IntentScore = &score
-		}
+		runIntent = &db.RunIntent{Summary: storedIntent, Source: source, Score: 1}
+	}
+
+	run, err := m.db.InsertRunWithIntent(repo.ID, branch, headSHA, baseSHA, runIntent)
+	if err != nil {
+		trackStartFailure("create_run")
+		return "", fmt.Errorf("create run: %w", err)
 	}
 
 	// Create worktree from the gate bare repo.

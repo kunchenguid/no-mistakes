@@ -58,9 +58,10 @@ func (m Model) rerunCmd(requestID uint64) tea.Cmd {
 	}
 	repoID := m.run.RepoID
 	branch := m.run.Branch
+	previousRunID := m.run.ID
 	return func() tea.Msg {
 		var rerun ipc.RerunResult
-		if err := m.client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repoID, Branch: branch}, &rerun); err != nil {
+		if err := m.client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repoID, Branch: branch, PreviousRunID: previousRunID}, &rerun); err != nil {
 			return rerunErrMsg{err: err, requestID: requestID}
 		}
 		var result ipc.GetRunResult
