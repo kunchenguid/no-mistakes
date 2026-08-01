@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
@@ -296,6 +297,13 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		_ = plan.agent.Close()
 		return
 	}
+	ownershipLock, err := branchsync.AcquireBranchOwnershipLock(m.paths, plan.repo, plan.workDir, plan.run.Branch)
+	if err != nil {
+		_ = plan.agent.Close()
+		slog.Warn("active run cannot be resumed", "run_id", plan.run.ID, "error", err)
+		return
+	}
+	defer ownershipLock.Release()
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
 	done := make(chan struct{})
@@ -612,6 +620,11 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	if repo == nil {
 		return "", fmt.Errorf("unknown repo %s", repoID)
 	}
+	ownershipLock, err := branchsync.AcquireBranchOwnershipLock(m.paths, repo, repo.WorkingPath, branch)
+	if err != nil {
+		return "", fmt.Errorf("acquire branch ownership lock: %w", err)
+	}
+	defer ownershipLock.Release()
 
 	gateDir := m.paths.RepoDir(repo.ID)
 	headSHA, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
@@ -670,7 +683,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		}
 	}
 
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
+	return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, ownershipLock)
 }
 
 // fetchRunDefaultBranch fetches the trusted branch from the refreshed
@@ -698,6 +711,10 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
 func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
+	return m.startRunWithIntentSourceLocked(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, source, nil)
+}
+
+func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string, heldLock *branchsync.BranchOwnershipLock) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -713,8 +730,19 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		return "", fmt.Errorf("daemon is shutting down")
 	}
 
-	// Serialize per repo+branch to prevent two concurrent pushes from both
-	// passing cancelActiveRuns and creating duplicate pipelines.
+	var ownershipLock *branchsync.BranchOwnershipLock
+	if heldLock != nil {
+		ownershipLock = heldLock
+	} else {
+		var err error
+		ownershipLock, err = branchsync.AcquireBranchOwnershipLock(m.paths, repo, repo.WorkingPath, branch)
+		if err != nil {
+			trackStartFailure("branch_ownership_lock")
+			return "", fmt.Errorf("acquire branch ownership lock: %w", err)
+		}
+		defer ownershipLock.Release()
+	}
+
 	lockKey := repo.ID + "/" + branch
 	lockVal, _ := m.branchLocks.LoadOrStore(lockKey, &sync.Mutex{})
 	branchMu := lockVal.(*sync.Mutex)

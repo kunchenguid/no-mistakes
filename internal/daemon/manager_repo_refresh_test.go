@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -67,6 +70,86 @@ func TestRunStartRefreshesCloneURLWithoutMutatingRemotes(t *testing.T) {
 		currentURL,
 		oldURL,
 	)
+}
+
+func TestRunCreationRefusesCustodyOwnershipLockContention(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "ownership-lock-repo")
+	owner, err := branchsync.AcquireBranchOwnershipLock(p, repo, repo.WorkingPath, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Release()
+
+	manager := NewRunManager(database, p, func() []pipeline.Step { return []pipeline.Step{&captureRefreshRepoStep{seen: make(chan *db.Repo, 1)}} })
+	t.Cleanup(manager.Shutdown)
+	if _, err := manager.startRun(context.Background(), repo, "main", head, refreshTestZeroSHA, "test", nil, "lock contention"); !errors.Is(err, branchsync.ErrCustodyLockHeld) {
+		t.Fatalf("start under custody lock error = %v, want ErrCustodyLockHeld", err)
+	}
+	runs, err := database.GetRunsByRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("run creation under custody lock inserted %d runs", len(runs))
+	}
+}
+
+func TestRerunReadsGateOnlyAfterCustodyOwnershipLock(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "rerun-ownership-lock-repo")
+	previous, err := database.InsertRun(repo.ID, "main", head, refreshTestZeroSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(previous.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := branchsync.AcquireBranchOwnershipLock(p, repo, repo.WorkingPath, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Release()
+
+	manager := NewRunManager(database, p, func() []pipeline.Step { return []pipeline.Step{&captureRefreshRepoStep{seen: make(chan *db.Repo, 1)}} })
+	t.Cleanup(manager.Shutdown)
+	if _, err := manager.HandleRerun(context.Background(), repo.ID, "main", previous.ID, nil, ""); !errors.Is(err, branchsync.ErrCustodyLockHeld) {
+		t.Fatalf("rerun under custody lock error = %v, want ErrCustodyLockHeld", err)
+	}
+	runs, err := database.GetRunsByRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].ID != previous.ID {
+		t.Fatalf("rerun under custody lock changed runs: %#v", runs)
+	}
+}
+
+func TestRecoveredRunResumeRefusesCustodyOwnershipLockContention(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, _ := setupTestGitRepo(t, p, database, "resume-ownership-lock-repo")
+	owner, err := branchsync.AcquireBranchOwnershipLock(p, repo, repo.WorkingPath, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Release()
+
+	manager := NewRunManager(database, p, nil)
+	t.Cleanup(manager.Shutdown)
+	manager.resumeRecoveredRun(recoveredRunPlan{
+		run:   &db.Run{ID: "parked-run", Branch: "main"},
+		repo:  repo,
+		agent: agent.NewNoop(),
+	})
+
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if len(manager.executors) != 0 {
+		t.Fatalf("resumed run registered an executor while custody lock was held: %d", len(manager.executors))
+	}
 }
 
 func TestRunStartURLRefreshFailuresWarnSafelyAndContinueWithOldRegistration(t *testing.T) {

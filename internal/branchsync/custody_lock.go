@@ -10,19 +10,43 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
 var ErrCustodyLockHeld = errors.New("custody recovery is already running")
 
-type custodyLock struct {
+type BranchOwnershipLock struct {
 	file *os.File
+}
+
+type custodyLock = BranchOwnershipLock
+
+func AcquireBranchOwnershipLock(p *paths.Paths, repo *db.Repo, workDir, branch string) (*BranchOwnershipLock, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("acquire branch ownership lock: missing repository")
+	}
+	root := ""
+	if p != nil {
+		root = p.Root()
+	}
+	if root == "" {
+		root = workDir
+		if mainRoot, err := git.FindMainRepoRoot(root); err == nil {
+			root = mainRoot
+		}
+	}
+	return acquireBranchOwnershipLock(root, repo.WorkingPath, workDir, branch)
 }
 
 func acquireCustodyLock(s *Service, run *db.Run) (*custodyLock, error) {
 	if s == nil || run == nil || s.Repo == nil {
 		return nil, fmt.Errorf("acquire custody lock: missing recovery identity")
 	}
-	path := custodyLockPath(s, run)
+	return AcquireBranchOwnershipLock(s.Paths, s.Repo, s.workDir(), run.Branch)
+}
+
+func acquireBranchOwnershipLock(root, repository, workDir, branch string) (*BranchOwnershipLock, error) {
+	path := branchOwnershipLockPath(root, repository, workDir, branch)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("acquire custody lock: create lock directory: %w", err)
 	}
@@ -37,10 +61,10 @@ func acquireCustodyLock(s *Service, run *db.Run) (*custodyLock, error) {
 		}
 		return nil, fmt.Errorf("acquire custody lock: lock file: %w", err)
 	}
-	return &custodyLock{file: file}, nil
+	return &BranchOwnershipLock{file: file}, nil
 }
 
-func (l *custodyLock) Release() {
+func (l *BranchOwnershipLock) Release() {
 	if l == nil || l.file == nil {
 		return
 	}
@@ -72,6 +96,22 @@ func custodyLockPath(s *Service, run *db.Run) string {
 	if resolved, err := filepath.EvalSymlinks(repository); err == nil {
 		repository = resolved
 	}
-	key := sha256.Sum256([]byte(filepath.Clean(repository) + "\x00" + run.Branch))
+	return branchOwnershipLockPath(root, repository, s.workDir(), run.Branch)
+}
+
+func branchOwnershipLockPath(root, repository, workDir, branch string) string {
+	if repository == "" {
+		repository = workDir
+		if mainRoot, err := git.FindMainRepoRoot(repository); err == nil {
+			repository = mainRoot
+		}
+	}
+	if absolute, err := filepath.Abs(repository); err == nil {
+		repository = absolute
+	}
+	if resolved, err := filepath.EvalSymlinks(repository); err == nil {
+		repository = resolved
+	}
+	key := sha256.Sum256([]byte(filepath.Clean(repository) + "\x00" + branch))
 	return filepath.Join(root, ".no-mistakes", "custody-locks", hex.EncodeToString(key[:])+".lock")
 }
