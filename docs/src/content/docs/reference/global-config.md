@@ -96,11 +96,11 @@ The list is filtered to entries available to the daemon at run startup, and the 
 After resolving `auto`, entries that resolve to the same ACP target are deduplicated in list order, so `cursor` and `acp:cursor` provide one fallback and preserve whichever spelling appears first.
 If no entry is available, the gate fails before its first pipeline step.
 If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
-An explicit quota, session-limit, or rate-limit signal is also eligible for the next configured agent after the current invocation has ended.
+After the current invocation has ended, positive explicit quota, session-limit, or rate-limit evidence from provider or process diagnostics is also eligible for the next configured agent; assistant prose is not quota evidence.
 Quota fallback starts the replacement agent cold and keeps the same run, step, branch custody, prior commits, finding decisions, and remaining retry budget.
 The replacement follows the resolved list order and the executable and adapter-support availability checks performed at run startup.
-A generic failure or silent exit does not become a quota fallback, and structured findings or schema/output validation problems do not trigger fallback.
-If the ordered path is exhausted, the run fails with a bounded agent-and-reason summary that does not include provider output or secrets.
+Generic invocation failures, successful processes that return no usable result, structured findings, and schema/output validation problems retain their existing behavior and do not become quota fallbacks.
+If the ordered quota/availability path is exhausted, the run fails with a bounded agent-and-reason summary that does not include provider output or secrets.
 When session reuse is enabled, a quota fallback discards the exhausted provider's session identity before recording or resuming the replacement provider's session.
 
 ### acpx_path
