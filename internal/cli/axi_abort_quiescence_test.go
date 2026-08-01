@@ -22,7 +22,7 @@ import (
 // accepted, but what the post-cancel terminal wait observes is controlled per
 // test. The registered repo, worktree, socket, and NM_HOME are all real, so
 // `axi abort` runs end to end through the CLI.
-func newAbortQuiescenceFixture(t *testing.T, getRun func(context.Context, int) (*ipc.RunInfo, error)) {
+func newAbortQuiescenceFixture(t *testing.T, getRun func(context.Context, int) (*ipc.RunInfo, error), cancelAfterRequest ...func()) {
 	t.Helper()
 	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
@@ -74,6 +74,9 @@ func newAbortQuiescenceFixture(t *testing.T, getRun func(context.Context, int) (
 		}}, nil
 	})
 	srv.Handle(ipc.MethodCancelRun, func(context.Context, json.RawMessage) (interface{}, error) {
+		for _, cancel := range cancelAfterRequest {
+			cancel()
+		}
 		return &ipc.CancelRunResult{OK: true}, nil
 	})
 	calls := 0
@@ -139,6 +142,7 @@ func TestAxiAbortRefusesSuccessWhileTerminalQuiescenceUnconfirmed(t *testing.T) 
 	t.Run("terminalization delayed past bounded wait", func(t *testing.T) {
 		newAbortQuiescenceFixture(t, runningRunForever)
 		out, err := executeCmd("axi", "abort")
+		t.Logf("branch-scoped delayed-terminalization CLI output:\n%s", out)
 		if err == nil {
 			t.Fatalf("abort with delayed terminalization must exit nonzero:\n%s", out)
 		}
@@ -152,6 +156,7 @@ func TestAxiAbortRefusesSuccessWhileTerminalQuiescenceUnconfirmed(t *testing.T) 
 			return nil, errors.New("scripted status read failure")
 		})
 		out, err := executeCmd("axi", "abort")
+		t.Logf("branch-scoped status-read-failure CLI output:\n%s", out)
 		if err == nil {
 			t.Fatalf("abort with failing status reads must exit nonzero:\n%s", out)
 		}
@@ -167,6 +172,7 @@ func TestAxiAbortByRunIDRefusesSuccessWhileTerminalQuiescenceUnconfirmed(t *test
 	t.Run("terminalization delayed past bounded wait", func(t *testing.T) {
 		newAbortQuiescenceFixture(t, runningRunForever)
 		out, err := executeCmd("axi", "abort", "--run", "run-quiesce")
+		t.Logf("explicit-run delayed-terminalization CLI output:\n%s", out)
 		if err == nil {
 			t.Fatalf("abort --run with delayed terminalization must exit nonzero:\n%s", out)
 		}
@@ -180,6 +186,7 @@ func TestAxiAbortByRunIDRefusesSuccessWhileTerminalQuiescenceUnconfirmed(t *test
 			return nil, errors.New("scripted status read failure")
 		})
 		out, err := executeCmd("axi", "abort", "--run", "run-quiesce")
+		t.Logf("explicit-run status-read-failure CLI output:\n%s", out)
 		if err == nil {
 			t.Fatalf("abort --run with failing status reads must exit nonzero:\n%s", out)
 		}
@@ -190,6 +197,7 @@ func TestAxiAbortByRunIDRefusesSuccessWhileTerminalQuiescenceUnconfirmed(t *test
 			return &ipc.RunInfo{ID: "run-quiesce", Branch: "feature/abort", Status: types.RunCancelled}, nil
 		})
 		out, err := executeCmd("axi", "abort", "--run", "run-quiesce")
+		t.Logf("explicit-run confirmed-terminal CLI output:\n%s", out)
 		if err != nil {
 			t.Fatalf("confirmed abort --run: %v\n%s", err, out)
 		}
@@ -216,6 +224,7 @@ func TestAxiAbortStatusReadStallRespectsBoundedWait(t *testing.T) {
 			})
 			started := time.Now()
 			out, err := executeCmd(tc.args...)
+			t.Logf("%s stalled-status-read CLI output:\n%s", tc.name, out)
 			if err == nil {
 				t.Fatalf("abort with a stalled status read must exit nonzero:\n%s", out)
 			}
@@ -225,6 +234,30 @@ func TestAxiAbortStatusReadStallRespectsBoundedWait(t *testing.T) {
 			assertUnconfirmedAbortOutput(t, tc.name, out)
 			if !strings.Contains(out, "in-flight run state read did not complete") {
 				t.Errorf("stalled status read omitted precise timeout reason:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestAxiAbortCancelledWaitRefusesSuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "branch scoped", args: []string{"axi", "abort"}},
+		{name: "explicit run", args: []string{"axi", "abort", "--run", "run-quiesce"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			newAbortQuiescenceFixture(t, runningRunForever, cancel)
+			out, err := executeCmdWithContext(ctx, tc.args...)
+			t.Logf("%s cancelled-wait CLI output:\n%s", tc.name, out)
+			if err == nil {
+				t.Fatalf("abort with a cancelled wait must exit nonzero:\n%s", out)
+			}
+			assertUnconfirmedAbortOutput(t, tc.name, out)
+			if !strings.Contains(out, "cancelled") {
+				t.Errorf("cancelled wait omitted its precise reason:\n%s", out)
 			}
 		})
 	}
