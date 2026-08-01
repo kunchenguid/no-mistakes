@@ -119,6 +119,12 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 		emitAgentExited(opts, "claude", pid, retErr)
 		return nil, retErr
 	}
+	if result.IsError || result.Subtype != "success" {
+		if retErr := completedProviderQuotaError("claude", result.diagnostic); retErr != nil {
+			emitAgentExited(opts, "claude", pid, retErr)
+			return nil, retErr
+		}
+	}
 
 	res, err := finalizeClaudeResult(result, opts.JSONSchema, usage)
 	if res != nil {
@@ -270,6 +276,7 @@ type claudeEvent struct {
 	Subtype          string          `json:"subtype,omitempty"`
 	IsError          bool            `json:"is_error,omitempty"`
 	StructuredOutput json.RawMessage `json:"structured_output,omitempty"`
+	Result           json.RawMessage `json:"result,omitempty"`
 	Usage            *claudeUsage    `json:"usage,omitempty"`
 }
 
@@ -280,6 +287,7 @@ type claudeResult struct {
 	StructuredOutput json.RawMessage
 	text             string // accumulated text from assistant events
 	rawEvent         json.RawMessage
+	diagnostic       string
 	sessionID        string // durable session identity from the event stream
 	model            string // model reported by assistant events
 }
@@ -361,12 +369,17 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 			if result != nil {
 				raw := make(json.RawMessage, len(line))
 				copy(raw, line)
+				var diagnostic string
+				if event.IsError || event.Subtype != "success" {
+					_ = json.Unmarshal(event.Result, &diagnostic)
+				}
 				*result = &claudeResult{
 					Subtype:          event.Subtype,
 					IsError:          event.IsError,
 					StructuredOutput: event.StructuredOutput,
 					text:             textBuf,
 					rawEvent:         raw,
+					diagnostic:       diagnostic,
 					sessionID:        lastSessionID,
 					model:            lastModel,
 				}

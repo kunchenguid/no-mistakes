@@ -296,6 +296,15 @@ func ClassifyProviderError(err error, diagnostics ...string) error {
 	return err
 }
 
+func completedProviderQuotaError(provider, diagnostic string) error {
+	base := fmt.Errorf("%s provider error", provider)
+	classified := ClassifyProviderError(base, diagnostic)
+	if _, ok := quotaErrorReason(classified); ok {
+		return classified
+	}
+	return nil
+}
+
 func quotaErrorReason(err error) (string, bool) {
 	var quotaErr *providerQuotaError
 	if !errors.As(err, &quotaErr) {

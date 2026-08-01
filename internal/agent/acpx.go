@@ -72,6 +72,10 @@ func (a *acpxAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) 
 		emitAgentExited(opts, a.Name(), pid, retErr)
 		return nil, retErr
 	}
+	if retErr := completedProviderQuotaError(a.Name(), stdoutErr); retErr != nil {
+		emitAgentExited(opts, a.Name(), pid, retErr)
+		return nil, retErr
+	}
 	if usage.OutputTokens == 0 {
 		usage.OutputTokens = estimateAcpxTokens(len(text))
 	}

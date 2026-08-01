@@ -139,6 +139,10 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		emitAgentExited(opts, "codex", pid, retErr)
 		return nil, retErr
 	}
+	if retErr := completedProviderQuotaError("codex", codexErr); retErr != nil {
+		emitAgentExited(opts, "codex", pid, retErr)
+		return nil, retErr
+	}
 
 	res, err := finalizeTextResult("codex", lastMessage, validationSchema, usage)
 	if res != nil {
