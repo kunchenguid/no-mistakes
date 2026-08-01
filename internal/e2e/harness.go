@@ -165,7 +165,6 @@ func NewHarness(t *testing.T, opts SetupOpts) *Harness {
 	t.Setenv("NO_MISTAKES_NO_UPDATE_CHECK", "1")
 
 	h.writeGlobalConfig()
-	h.writeMandatedReviewSkill()
 	h.initGitRepos()
 
 	// Temporary-daemon ownership: inventory + concurrency slot. The suite
@@ -192,33 +191,6 @@ func (h *Harness) writeLoginShellPathSeed() {
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
-}
-
-// MandatedReviewSkill is the skill the review step requires every review turn
-// to invoke. The mandate is an unconditional production hard failure with no
-// config opt-out, so a harness HOME that carries a skill library (every
-// journey runs `no-mistakes init`, which creates one) must also carry this
-// skill or every journey reaching Review fails before its first turn.
-const MandatedReviewSkill = "comprehensive-code-review"
-
-// MandatedReviewSkillDir is where the harness seeds MandatedReviewSkill,
-// relative to HomeDir.
-func (h *Harness) MandatedReviewSkillDir() string {
-	return filepath.Join(h.HomeDir, ".claude", "skills", MandatedReviewSkill)
-}
-
-// writeMandatedReviewSkill seeds a stub of the required review skill under the
-// harness HOME. Its content is irrelevant - the fake agent never reads it; only
-// its presence is what the review preflight checks.
-func (h *Harness) writeMandatedReviewSkill() {
-	dir := h.MandatedReviewSkillDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		h.t.Fatalf("mkdir review skill: %v", err)
-	}
-	body := "---\nname: " + MandatedReviewSkill + "\ndescription: e2e stub of the mandated review skill.\n---\n\nStub.\n"
-	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
-		h.t.Fatalf("write review skill: %v", err)
-	}
 }
 
 // writeGlobalConfig writes a no-mistakes global config that pins the

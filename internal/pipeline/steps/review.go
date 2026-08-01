@@ -385,9 +385,6 @@ Risk assessment (after listing all findings):
 		Purpose:    "review",
 		Workload:   workload,
 	}
-	if err := assertReviewSkillInstalled(sctx.WorkDir, agentDisplayName(sctx)); err != nil {
-		return nil, err
-	}
 	// PERSONAL: the review prompt mandates the comprehensive-code-review skill,
 	// but prompt text is discretionary - measured drift had roughly half of
 	// review turns collapse into a single inline pass, silently skipping every
