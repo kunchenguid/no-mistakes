@@ -203,9 +203,10 @@ Run `axi sync` only when structured output offers `next_action.code: sync`; proc
 
 A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head leaves the branch `pipeline_owned` with `safety: blocked_pipeline_owned_recoverable`, the run's terminal `pipeline.status`, and `next_action.code: recover_custody`.
 While the run is still active, the same state stays blocked and reports `next_action.code: continue_active_run` with `no-mistakes axi status`.
-`--recover` verifies the run is terminal, anchors the preserved head under `refs/no-mistakes/recover/<run>` in the invoking repository, and stamps custody returned so a fresh run can start.
+`--recover` verifies the run is terminal and anchors the preserved head under `refs/no-mistakes/recover/<run>` in the invoking repository before it can stamp custody returned.
 For equal or ahead worktrees where the preserved head is already locally reachable, recovery writes that anchor locally without gate access.
 For behind or diverged worktrees, recovery verifies the preserved head at the local gate branch and fetches it into the anchor before fast-forwarding only a clean behind worktree or refusing with the anchor named.
+If a terminal run's gate branch moved back to the recorded submitted local head, recovery may instead fetch the preserved head from the local gate by exact object ID: non-`--keep-local` refuses with the anchor and explicit reconcile choices, while `--keep-local` stamps custody at the current head without moving the worktree or gate branch.
 A dirty or diverged worktree refuses with explicit choices.
 When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
 `no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
