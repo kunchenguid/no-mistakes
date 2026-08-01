@@ -49,7 +49,7 @@ func (m Model) View() string {
 	}
 	stepAwaiting := awaitingStep(m.steps)
 	approvalReady := m.approvalReady(stepAwaiting)
-	retryAvailable := m.reviewRetry != reviewRetryNone
+	retryAvailable := m.reviewRetryAvailable()
 	actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff, approvalReady, retryAvailable)
 	if stepAwaiting != nil && m.stepDiffTruncated[stepAwaiting.StepName] {
 		warning := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiYellow)).
@@ -104,8 +104,8 @@ func (m Model) View() string {
 	}
 
 	visibleErr := m.err
-	if m.reviewRetryErr != nil {
-		visibleErr = m.reviewRetryErr
+	if reviewErr := m.reviewRetryError(); reviewErr != nil {
+		visibleErr = reviewErr
 	}
 	if visibleErr != nil {
 		appendExtraSection(renderErrorBox(visibleErr, rightWidth))

@@ -211,6 +211,10 @@ func appendRightLabel(line, label string, width int) string {
 func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int, confirmAbort bool, hasDiff bool, approvalReady bool, retryAvailable bool) string {
 	step := awaitingStep(steps)
 	if step == nil {
+		if retryAvailable {
+			promptStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiYellow))
+			return promptStyle.Render("Review state unavailable:") + "\n" + renderApprovalActions(false, false, false, 0, 0, confirmAbort, false, false, true)
+		}
 		return ""
 	}
 

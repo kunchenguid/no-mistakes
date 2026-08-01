@@ -165,25 +165,23 @@ func (m Model) respondCmd(action types.ApprovalAction) tea.Cmd {
 }
 
 func (m *Model) retryReviewCmd() tea.Cmd {
-	switch m.reviewRetry {
-	case reviewRetryReconcile:
-		m.reviewRetry = reviewRetryNone
-		m.reviewRetryErr = nil
-		m.err = nil
-		return m.reconcileCmd()
-	case reviewRetryDiff:
-		step := awaitingStep(m.steps)
-		if step == nil || step.Status != types.StepStatusFixReview {
-			return nil
-		}
-		m.reviewRetry = reviewRetryNone
-		m.reviewRetryErr = nil
-		m.err = nil
-		m.requestStepDiff(step.StepName, true)
-		return tea.Batch(m.drainDiffFetches()...)
-	default:
-		return nil
+	var cmds []tea.Cmd
+	if m.reviewRetryReconcile {
+		m.reviewRetryReconcile = false
+		m.reviewReconcileErr = nil
+		cmds = append(cmds, m.reconcileCmd())
 	}
+	if m.reviewRetryDiff {
+		step := awaitingStep(m.steps)
+		if step != nil && step.Status == types.StepStatusFixReview {
+			m.reviewRetryDiff = false
+			m.reviewDiffErr = nil
+			m.requestStepDiff(step.StepName, true)
+			cmds = append(cmds, m.drainDiffFetches()...)
+		}
+	}
+	m.err = m.reviewRetryError()
+	return tea.Batch(cmds...)
 }
 
 func (m Model) cancelRunCmd() tea.Cmd {
@@ -224,10 +222,10 @@ func (m *Model) reconcileCmd() tea.Cmd {
 		m.reconcileAgain = true
 		return nil
 	}
-	if m.reviewRetry == reviewRetryReconcile {
-		m.reviewRetry = reviewRetryNone
-		m.reviewRetryErr = nil
-		m.err = nil
+	if m.reviewRetryReconcile {
+		m.reviewRetryReconcile = false
+		m.reviewReconcileErr = nil
+		m.err = m.reviewRetryError()
 	}
 	m.reconcilePending = true
 	subID := m.subscriptionID

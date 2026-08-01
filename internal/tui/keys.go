@@ -279,7 +279,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "r":
-		if m.reviewRetry != reviewRetryNone {
+		if m.reviewRetryAvailable() {
 			return m, m.retryReviewCmd()
 		}
 		if m.rerunPending || !canRerun(m.run) {

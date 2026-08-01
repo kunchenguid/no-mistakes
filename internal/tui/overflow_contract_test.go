@@ -676,11 +676,11 @@ func TestTUIOverflow_FailedReconciliationCanRetryToCurrentDiff(t *testing.T) {
 	updated, _ = m.Update(reconciledFrom(t, cmd))
 	m = updated.(Model)
 
-	if m.reconcilePending || m.reviewRetry != reviewRetryReconcile {
+	if m.reconcilePending || !m.reviewRetryReconcile {
 		t.Fatal("failed reconciliation did not become manually retryable")
 	}
-	if m.reviewRetryErr == nil || !strings.Contains(m.reviewRetryErr.Error(), "database busy") {
-		t.Fatalf("reconciliation failure was not surfaced: %v", m.reviewRetryErr)
+	if m.reviewReconcileErr == nil || !strings.Contains(m.reviewReconcileErr.Error(), "database busy") {
+		t.Fatalf("reconciliation failure was not surfaced: %v", m.reviewReconcileErr)
 	}
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "r retry") || strings.Contains(view, "a approve") || strings.Contains(view, "s skip") {
@@ -689,7 +689,7 @@ func TestTUIOverflow_FailedReconciliationCanRetryToCurrentDiff(t *testing.T) {
 
 	updated, retryCmd := m.handleKey(keyMsg("r"))
 	m = updated.(Model)
-	if retryCmd == nil || !m.reconcilePending || m.reviewRetry != reviewRetryNone {
+	if retryCmd == nil || !m.reconcilePending || m.reviewRetryAvailable() {
 		t.Fatal("manual reconciliation retry did not start")
 	}
 	updated, diffCmd := m.Update(reconciledFrom(t, retryCmd))
@@ -735,8 +735,8 @@ func TestTUIOverflow_FailedDiffFetchCanRetrySuccessfully(t *testing.T) {
 	if _, ok := m.stepDiffs[types.StepReview]; ok {
 		t.Fatal("failed fetch invented a diff")
 	}
-	if m.reviewRetry != reviewRetryDiff || m.reviewRetryErr == nil || !strings.Contains(m.reviewRetryErr.Error(), "daemon gone") {
-		t.Fatalf("diff failure was not surfaced as retryable: %v", m.reviewRetryErr)
+	if !m.reviewRetryDiff || m.reviewDiffErr == nil || !strings.Contains(m.reviewDiffErr.Error(), "daemon gone") {
+		t.Fatalf("diff failure was not surfaced as retryable: %v", m.reviewDiffErr)
 	}
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "r retry") || strings.Contains(view, "a approve") || strings.Contains(view, "s skip") {
@@ -745,7 +745,7 @@ func TestTUIOverflow_FailedDiffFetchCanRetrySuccessfully(t *testing.T) {
 
 	updated, retryCmd := m.handleKey(keyMsg("r"))
 	m = updated.(Model)
-	if retryCmd == nil || !m.stepDiffFetching[types.StepReview] || m.reviewRetry != reviewRetryNone {
+	if retryCmd == nil || !m.stepDiffFetching[types.StepReview] || m.reviewRetryAvailable() {
 		t.Fatal("manual diff retry did not start")
 	}
 	updated, _ = m.Update(firstMsgOfType[stepDiffMsg](t, retryCmd))
@@ -755,6 +755,103 @@ func TestTUIOverflow_FailedDiffFetchCanRetrySuccessfully(t *testing.T) {
 	}
 	if view = stripANSI(m.View()); !strings.Contains(view, "a approve") || !strings.Contains(view, "s skip") || strings.Contains(view, "r retry") {
 		t.Fatalf("normal review controls were not restored after diff retry:\n%s", view)
+	}
+}
+
+func TestTUIOverflow_ConcurrentReviewFailuresRequireBothRetries(t *testing.T) {
+	m := ciRunningModel(false)
+	m.steps = []ipc.StepResultInfo{
+		{RunID: "run-1", StepName: types.StepReview, Status: types.StepStatusFixReview},
+	}
+	m.fetchStepDiff = func(types.StepName) (string, error) { return "current diff\n", nil }
+	m.reconcile = func(context.Context) (*ipc.RunInfo, error) {
+		return &ipc.RunInfo{
+			ID: "run-1", Status: types.RunRunning, StateRev: 12,
+			Steps: []ipc.StepResultInfo{
+				{RunID: "run-1", StepName: types.StepReview, Status: types.StepStatusFixReview},
+			},
+		}, nil
+	}
+
+	m.requestStepDiff(types.StepReview, true)
+	m.drainDiffFetches()
+	requestID := m.stepDiffRequestID[types.StepReview]
+	m.reconcilePending = true
+	updated, _ := m.Update(runReconciledMsg{
+		err: fmt.Errorf("database busy"), subscriptionID: m.subscriptionID,
+	})
+	m = updated.(Model)
+	updated, _ = m.Update(stepDiffMsg{
+		step: types.StepReview, err: fmt.Errorf("daemon gone"),
+		requestID: requestID, subscriptionID: m.subscriptionID,
+	})
+	m = updated.(Model)
+
+	if !m.reviewRetryReconcile || !m.reviewRetryDiff {
+		t.Fatal("concurrent failures did not retain both retry dependencies")
+	}
+	if count := strings.Count(stripANSI(m.View()), "r retry"); count != 1 {
+		t.Fatalf("retry action count = %d, want 1", count)
+	}
+
+	updated, retryCmd := m.handleKey(keyMsg("r"))
+	m = updated.(Model)
+	if retryCmd == nil || !m.reconcilePending || !m.stepDiffFetching[types.StepReview] {
+		t.Fatal("single retry action did not restart both failed dependencies")
+	}
+	requestID = m.stepDiffRequestID[types.StepReview]
+	updated, _ = m.Update(stepDiffMsg{
+		step: types.StepReview, diff: "current diff\n",
+		requestID: requestID, subscriptionID: m.subscriptionID,
+	})
+	m = updated.(Model)
+	if m.approvalReady(awaitingStep(m.steps)) {
+		t.Fatal("successful diff retry enabled approval before reconciliation succeeded")
+	}
+
+	updated, _ = m.Update(runReconciledMsg{
+		run: &ipc.RunInfo{
+			ID: "run-1", Status: types.RunRunning, StateRev: 12,
+			Steps: []ipc.StepResultInfo{
+				{RunID: "run-1", StepName: types.StepReview, Status: types.StepStatusFixReview},
+			},
+		},
+		subscriptionID: m.subscriptionID,
+	})
+	m = updated.(Model)
+	if m.approvalReady(awaitingStep(m.steps)) {
+		t.Fatal("reconciliation enabled approval before its fresh diff loaded")
+	}
+	requestID = m.stepDiffRequestID[types.StepReview]
+	updated, _ = m.Update(stepDiffMsg{
+		step: types.StepReview, diff: "authoritative diff\n",
+		requestID: requestID, subscriptionID: m.subscriptionID,
+	})
+	m = updated.(Model)
+	if !m.approvalReady(awaitingStep(m.steps)) {
+		t.Fatal("review controls stayed disabled after both dependencies succeeded")
+	}
+}
+
+func TestTUIOverflow_ReconciliationRetryDisclosedBeforeGateDiscovery(t *testing.T) {
+	m := ciRunningModel(false)
+	m.reconcilePending = true
+	updated, _ := m.Update(runReconciledMsg{
+		err: fmt.Errorf("database busy"), subscriptionID: m.subscriptionID,
+	})
+	m = updated.(Model)
+
+	if awaitingStep(m.steps) != nil {
+		t.Fatal("precondition: stale model unexpectedly knows an approval gate")
+	}
+	view := stripANSI(m.View())
+	if count := strings.Count(view, "r retry"); count != 1 {
+		t.Fatalf("retry action count = %d, want 1 before gate discovery:\n%s", count, view)
+	}
+	updated, cmd := m.handleKey(keyMsg("r"))
+	m = updated.(Model)
+	if cmd == nil || !m.reconcilePending {
+		t.Fatal("disclosed reconciliation retry did not start")
 	}
 }
 

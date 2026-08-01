@@ -216,10 +216,10 @@ func (m *Model) requestStepDiff(step types.StepName, replace bool) {
 	if m.stepDiffFetching[step] && !replace {
 		return
 	}
-	if m.reviewRetry == reviewRetryDiff {
-		m.reviewRetry = reviewRetryNone
-		m.reviewRetryErr = nil
-		m.err = nil
+	if m.reviewRetryDiff {
+		m.reviewRetryDiff = false
+		m.reviewDiffErr = nil
+		m.err = m.reviewRetryError()
 	}
 	delete(m.stepDiffs, step)
 	delete(m.stepDiffTruncated, step)
@@ -236,7 +236,18 @@ func (m Model) approvalReady(step *ipc.StepResultInfo) bool {
 	if step == nil || step.Status != types.StepStatusFixReview {
 		return true
 	}
-	return m.reviewRetry == reviewRetryNone && !m.reconcilePending && m.stepDiffLoaded[step.StepName] && !m.stepDiffFetching[step.StepName]
+	return !m.reviewRetryAvailable() && !m.reconcilePending && m.stepDiffLoaded[step.StepName] && !m.stepDiffFetching[step.StepName]
+}
+
+func (m Model) reviewRetryAvailable() bool {
+	return m.reviewRetryReconcile || m.reviewRetryDiff
+}
+
+func (m Model) reviewRetryError() error {
+	if m.reviewReconcileErr != nil {
+		return m.reviewReconcileErr
+	}
+	return m.reviewDiffErr
 }
 
 func (m *Model) updateStepStatus(name types.StepName, status types.StepStatus) {

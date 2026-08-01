@@ -11,14 +11,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-type reviewRetryKind uint8
-
-const (
-	reviewRetryNone reviewRetryKind = iota
-	reviewRetryReconcile
-	reviewRetryDiff
-)
-
 // Model is the root bubbletea model for the TUI.
 type Model struct {
 	// Connection.
@@ -38,12 +30,14 @@ type Model struct {
 	// reconcile reads authoritative run state. Nil in production, where the
 	// IPC client is used; injectable so the contract is testable without a
 	// daemon.
-	reconcile        func(ctx context.Context) (*ipc.RunInfo, error)
-	reconcilePending bool
-	reconcileAgain   bool
-	streamClosed     bool
-	reviewRetry      reviewRetryKind
-	reviewRetryErr   error
+	reconcile            func(ctx context.Context) (*ipc.RunInfo, error)
+	reconcilePending     bool
+	reconcileAgain       bool
+	streamClosed         bool
+	reviewRetryReconcile bool
+	reviewRetryDiff      bool
+	reviewReconcileErr   error
+	reviewDiffErr        error
 	// resubscribeTries bounds reconnect attempts for a dropped event stream.
 	resubscribeTries int
 	// fetchStepDiff reads a fix-review gate's working-tree diff. Nil in
@@ -283,15 +277,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reconcilePending = false
 		if msg.err != nil {
 			m.reconcileAgain = false
-			m.reviewRetry = reviewRetryReconcile
-			m.reviewRetryErr = fmt.Errorf("refresh authoritative run state: %w", msg.err)
-			m.err = m.reviewRetryErr
+			m.reviewRetryReconcile = true
+			m.reviewReconcileErr = fmt.Errorf("refresh authoritative run state: %w", msg.err)
+			m.err = m.reviewRetryError()
 		} else {
-			if m.reviewRetry == reviewRetryReconcile {
-				m.reviewRetry = reviewRetryNone
-				m.reviewRetryErr = nil
-			}
+			m.reviewRetryReconcile = false
+			m.reviewReconcileErr = nil
 			m.applySnapshot(msg.run)
+			m.err = m.reviewRetryError()
 			m.resubscribeTries = 0
 		}
 		cmds := m.drainDiffFetches()
@@ -337,11 +330,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		delete(m.stepDiffFetching, msg.step)
 		if msg.err == nil {
-			if m.reviewRetry == reviewRetryDiff {
-				m.reviewRetry = reviewRetryNone
-				m.reviewRetryErr = nil
-			}
-			m.err = nil
+			m.reviewRetryDiff = false
+			m.reviewDiffErr = nil
+			m.err = m.reviewRetryError()
 			m.stepDiffLoaded[msg.step] = true
 			m.stepDiffTruncated[msg.step] = msg.truncated
 			if msg.diff != "" {
@@ -360,9 +351,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(m.stepDiffLoaded, msg.step)
 		delete(m.stepDiffs, msg.step)
 		delete(m.stepDiffTruncated, msg.step)
-		m.reviewRetry = reviewRetryDiff
-		m.reviewRetryErr = fmt.Errorf("load fix-review diff: %w", msg.err)
-		m.err = m.reviewRetryErr
+		m.reviewRetryDiff = true
+		m.reviewDiffErr = fmt.Errorf("load fix-review diff: %w", msg.err)
+		m.err = m.reviewRetryError()
 		return m, nil
 
 	case stepDiffReadyMsg:
