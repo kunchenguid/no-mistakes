@@ -783,7 +783,7 @@ func TestAxiSyncOlderUnpublishedNonAncestorStillRefuses(t *testing.T) {
 	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
 		t.Fatalf("non-ancestor recovery should refuse, got %#v\n%s", err, out)
 	}
-	if !strings.Contains(out, "safety: blocked_recover_unverified_head") {
+	if !strings.Contains(out, "safety: blocked_recover_newer_run") {
 		t.Fatalf("non-ancestor recovery did not remain fail-closed:\n%s", out)
 	}
 	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.localHead {
