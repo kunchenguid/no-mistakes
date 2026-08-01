@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/testguidance"
 )
 
 func TestMarkdownFrontmatter(t *testing.T) {
@@ -63,6 +65,9 @@ func TestBodyDocumentsTaskFirstFlow(t *testing.T) {
 		if !strings.Contains(md, want) {
 			t.Errorf("body should document the task-first flow: missing %q", want)
 		}
+	}
+	if !strings.Contains(md, testguidance.Rule) {
+		t.Errorf("task-first skill missing shared test-quality guidance:\n%s", md)
 	}
 }
 

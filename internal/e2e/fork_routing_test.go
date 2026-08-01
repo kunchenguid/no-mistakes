@@ -117,6 +117,7 @@ type ghStubInvocation struct {
 	Repo string   `json:"repo"`
 	Head string   `json:"head"`
 	Base string   `json:"base"`
+	Body string   `json:"body"`
 }
 
 func readGHStubInvocations(t *testing.T, path string) []ghStubInvocation {

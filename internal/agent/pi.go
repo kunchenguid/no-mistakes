@@ -19,11 +19,26 @@ import (
 type piAgent struct {
 	bin       string
 	extraArgs []string
+	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
+	// buildArgs suppresses pi's project-level AGENTS.md/CLAUDE.md discovery.
+	disableProjectSettings bool
 }
 
 func (a *piAgent) Name() string { return "pi" }
 
 func (a *piAgent) ReportsAgentAttempts() bool { return true }
+
+// NeutralizesGateInstructions reports whether pi is currently launched with the
+// target repo's project agent-instruction files suppressed. It is meaningful
+// only under the opt-out (disableProjectSettings): the gate only consults it
+// when the repo opted out. Pi's --no-context-files (-nc) disables AGENTS.md and
+// CLAUDE.md discovery for the session. buildArgs places the suppression flag
+// before user arguments so it cannot be consumed as another flag's value.
+// Verified against current pi --help: "--no-context-files, -nc Disable AGENTS.md
+// and CLAUDE.md discovery and loading".
+func (a *piAgent) NeutralizesGateInstructions() bool {
+	return a.disableProjectSettings
+}
 
 func (a *piAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
 	return runWithRetry(ctx, "pi", opts, claudeMaxRetries, classifyTransient, nil, func() (*Result, error) {
@@ -102,14 +117,62 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	return res, err
 }
 
-// buildArgs returns the Pi argv for one invocation. User extras come first
-// (so user --provider/--model take effect), then the managed flags that
-// no-mistakes requires for JSONL parsing.
+// buildArgs returns the Pi argv for one invocation. Under the project-settings
+// opt-out, the context-file suppression flag comes first. User extras otherwise
+// precede the managed flags that no-mistakes requires for JSONL parsing.
 func (a *piAgent) buildArgs() []string {
-	args := make([]string, 0, len(a.extraArgs)+3)
-	args = append(args, a.extraArgs...)
+	args := make([]string, 0, len(a.extraArgs)+5)
+	// Project-settings opt-out (trusted-only; see config.DisableProjectSettings):
+	// disable AGENTS.md/CLAUDE.md discovery so an agent-orchestration target
+	// (firstmate) cannot install a fleet-captain identity on the gate agent.
+	// Preserve an operator-pinned -nc/--no-context-files spelling, but place it
+	// first. When the repo did not opt out, nothing is added and pi loads project
+	// instruction files exactly as before (backward-compat).
+	pinIndex := -1
+	if a.disableProjectSettings {
+		pinIndex = piNoContextFilesArgIndex(a.extraArgs)
+		contextFlag := "--no-context-files"
+		if pinIndex >= 0 {
+			contextFlag = a.extraArgs[pinIndex]
+		}
+		args = append(args, contextFlag)
+	}
+	for i, arg := range a.extraArgs {
+		if i != pinIndex {
+			args = append(args, arg)
+		}
+	}
 	args = append(args, "--mode", "json", "--no-session")
 	return args
+}
+
+func piNoContextFilesArgIndex(args []string) int {
+	for i := 0; i < len(args); i++ {
+		if piNoContextFilesArg(args[i]) {
+			return i
+		}
+		if piArgTakesValue(args[i]) {
+			i++
+		}
+	}
+	return -1
+}
+
+func piNoContextFilesArg(arg string) bool {
+	return arg == "--no-context-files" || arg == "-nc"
+}
+
+func piArgTakesValue(arg string) bool {
+	switch arg {
+	case "--mode", "--provider", "--model", "--api-key", "--system-prompt",
+		"--append-system-prompt", "--name", "-n", "--session", "--session-id",
+		"--fork", "--session-dir", "--models", "--tools", "-t", "--exclude-tools",
+		"-xt", "--thinking", "--export", "--extension", "-e", "--skill",
+		"--prompt-template", "--theme":
+		return true
+	default:
+		return false
+	}
 }
 
 // buildPiPrompt appends a JSON-output contract to the user prompt when a

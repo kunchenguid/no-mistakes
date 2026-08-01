@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -130,6 +131,13 @@ type RepoConfig struct {
 	// EffectiveRepoConfig): a contributor's pushed branch must not be able to
 	// weaken documentation rules for its own review.
 	Document DocumentRaw `yaml:"document"`
+	// Review carries the repository's review-step settings. Its
+	// path_instructions steer the review gate prompt, so they are honored
+	// ONLY from the trusted default-branch copy of .no-mistakes.yaml (see
+	// EffectiveRepoConfig), regardless of allow_repo_commands: a contributor's
+	// pushed branch must not be able to inject or weaken the guidance that
+	// reviews it.
+	Review ReviewRaw `yaml:"review"`
 	// DisableProjectSettings opts the repository out of loading project-level
 	// agent settings/instructions (AGENTS.md/CLAUDE.md and the equivalent
 	// per-harness project settings) into gate agents. It exists for
@@ -151,6 +159,123 @@ type DocumentRaw struct {
 	Instructions string `yaml:"instructions"`
 }
 
+// ReviewRaw is the YAML representation of review-step settings.
+type ReviewRaw struct {
+	// PathInstructions scope extra review guidance to the paths a change
+	// actually touches. The review step appends the blocks whose glob matches
+	// at least one changed file; a run that touches nothing matching leaves
+	// the review prompt exactly as it is without this setting.
+	PathInstructions []PathInstruction `yaml:"path_instructions"`
+}
+
+// PathInstruction is one glob-scoped block of review guidance. Path follows the
+// same match rules as ignore_patterns: no slash matches by basename, a trailing
+// "/**" matches an entire subtree, and anything else is a full-path glob.
+type PathInstruction struct {
+	Path         string `yaml:"path"`
+	Instructions string `yaml:"instructions"`
+}
+
+// Review-prompt block frame for review.path_instructions.
+//
+// The review step renders every matched entry as
+//
+//	path: <path>
+//	matched files: <files>
+//	instructions:
+//	<instructions>
+//
+// so each rule travels with the scope it was selected for and no block can read
+// as a global instruction. The labels live here rather than in the review step
+// because the byte accounting below has to measure the real assembled section,
+// not an estimate of it; internal/pipeline/steps builds its blocks from these
+// same constants and TestReviewPathInstructionsSectionStaysWithinAccountedBytes
+// is the drift check.
+const (
+	ReviewPathInstructionsHeading    = "Repository review instructions for the changed paths (trusted, from the default branch). Each block below applies only to the files listed under its path, and adds to the requirements above:"
+	ReviewPathInstructionsPathLabel  = "path: "
+	ReviewPathInstructionsFilesLabel = "matched files: "
+	ReviewPathInstructionsRulesLabel = "instructions:"
+	// ReviewPathInstructionsMaxFilesBytes bounds the matched-file list a single
+	// block may print. A broad glob can match hundreds of files, so the review
+	// step truncates the list deterministically and states the remaining count;
+	// the accounting charges every entry this full allowance so the cap holds
+	// for any diff rather than only for small ones.
+	ReviewPathInstructionsMaxFilesBytes = 192
+)
+
+// Bounds on review.path_instructions.
+//
+// The injected text lands in the review prompt, which is already the largest
+// gate prompt no-mistakes builds, and an oversized prompt fails the agent
+// invocation outright instead of degrading. The budget is therefore validated
+// when the config is parsed - before a run starts - rather than truncated
+// silently at review time.
+const (
+	// MaxReviewPathInstructions is the largest number of path_instructions
+	// entries a repository may configure.
+	MaxReviewPathInstructions = 32
+	// MaxReviewPathInstructionsBytes is the largest review-prompt section
+	// path_instructions may produce, measured by ReviewPathInstructionsBytes.
+	// It leaves room for the entry cap to be reached with a rule of ordinary
+	// length, so neither cap makes the other unusable.
+	MaxReviewPathInstructionsBytes = 16384
+)
+
+// ReviewPathInstructionsBytes returns the largest review-prompt section these
+// entries can produce: the leading blank line, the heading, and for every entry
+// its labels, its path, its instructions, its full matched-file allowance, and
+// the separator before it. Instruction text can only shrink on its way into the
+// prompt (conflict markers are removed and whitespace is collapsed), and the
+// matched-file list is truncated to its allowance, so the result is an upper
+// bound on the real section for any diff.
+func ReviewPathInstructionsBytes(entries []PathInstruction) int {
+	if len(entries) == 0 {
+		return 0
+	}
+	total := len("\n\n") + len(ReviewPathInstructionsHeading) + len("\n")
+	for i, entry := range entries {
+		if i > 0 {
+			total += len("\n\n")
+		}
+		total += len(ReviewPathInstructionsPathLabel) + len(strings.TrimSpace(entry.Path)) + len("\n")
+		total += len(ReviewPathInstructionsFilesLabel) + ReviewPathInstructionsMaxFilesBytes + len("\n")
+		total += len(ReviewPathInstructionsRulesLabel) + len("\n")
+		total += len(strings.TrimSpace(entry.Instructions))
+	}
+	return total
+}
+
+// promptConflictMarkers are the merge-conflict tokens the pipeline removes from
+// maintainer-authored text before injecting it into an agent prompt
+// (sanitizePromptMultilineText in internal/pipeline/steps owns the removal, and
+// document.instructions goes through the same path). Validation applies the same
+// removal so a value that would reach the reviewer as an empty block is rejected
+// here instead of disappearing from the prompt without a word.
+var promptConflictMarkers = strings.NewReplacer("<<<<<<<", " ", "=======", " ", ">>>>>>>", " ")
+
+// RenderedInstructions is the emptiness-agreement helper for instruction text,
+// not a second copy of the prompt renderer. The real renderer is
+// sanitizePromptMultilineText in internal/pipeline/steps, which additionally
+// normalizes CR and collapses each line's runs of whitespace; internal/config
+// cannot import that package, which is why the conflict-marker replacer above is
+// duplicated here at all. Two invariants tie the two together, and the rest of
+// this feature silently depends on both:
+//
+//   - Emptiness agrees exactly. This returns "" for precisely the inputs the
+//     prompt renderer reduces to "", so validation can reject a value that would
+//     otherwise reach the reviewer as an empty block.
+//   - The prompt renderer never lengthens text, so the rendered instructions are
+//     no longer than strings.TrimSpace of the raw value and
+//     ReviewPathInstructionsBytes stays an upper bound on the assembled section.
+//
+// A change to sanitizePromptMultilineText that can lengthen text (escaping,
+// wrapping) or that strips a token this replacer keeps breaks one of them;
+// TestPathInstructionRenderingAgreesWithConfigValidation is the drift check.
+func RenderedInstructions(instructions string) string {
+	return strings.TrimSpace(promptConflictMarkers.Replace(instructions))
+}
+
 func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	type repoConfigRaw struct {
 		Agent                  agentList   `yaml:"agent"`
@@ -163,6 +288,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Intent                 IntentRaw   `yaml:"intent"`
 		Test                   TestRaw     `yaml:"test"`
 		Document               DocumentRaw `yaml:"document"`
+		Review                 ReviewRaw   `yaml:"review"`
 		DisableProjectSettings bool        `yaml:"disable_project_settings"`
 	}
 	var raw repoConfigRaw
@@ -180,6 +306,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Intent = raw.Intent
 	c.Test = raw.Test
 	c.Document = raw.Document
+	c.Review = raw.Review
 	c.DisableProjectSettings = raw.DisableProjectSettings
 	return nil
 }
@@ -250,6 +377,7 @@ type Config struct {
 	Intent               Intent
 	Test                 Test
 	Document             Document
+	Review               Review
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -262,6 +390,13 @@ type Config struct {
 // policy in the document prompt.
 type Document struct {
 	Instructions string
+}
+
+// Review is the resolved review-step config. PathInstructions come from the
+// trusted default-branch repo config and scope extra review guidance to the
+// changed paths each glob matches.
+type Review struct {
+	PathInstructions []PathInstruction
 }
 
 // TestRaw is the YAML representation of test-step settings.
@@ -351,6 +486,31 @@ func copyAgents(names []types.AgentName) []types.AgentName {
 	}
 	out := make([]types.AgentName, len(names))
 	copy(out, names)
+	return out
+}
+
+// resolvePathInstructions trims every entry and drops the ones left without a
+// path or without instruction text that survives prompt rendering, so the
+// resolved config never carries an entry the review step would have to skip.
+// Parsing already rejects those, but Merge also runs on configs built in code.
+func resolvePathInstructions(entries []PathInstruction) []PathInstruction {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]PathInstruction, 0, len(entries))
+	for _, entry := range entries {
+		trimmed := PathInstruction{
+			Path:         strings.TrimSpace(entry.Path),
+			Instructions: strings.TrimSpace(entry.Instructions),
+		}
+		if trimmed.Path == "" || RenderedInstructions(trimmed.Instructions) == "" {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
 	return out
 }
 
@@ -1089,11 +1249,72 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	if err := validateCommitRaw(cfg.Commit); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
+	if err := validateReviewRaw(cfg.Review); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
 	if cfg.AutoFix.CI == nil {
 		cfg.AutoFix.CI = cfg.AutoFix.Babysit
 	}
 
 	return cfg, nil
+}
+
+// validateReviewRaw fails the config closed on a review.path_instructions list
+// the review step could not honor deterministically: a missing path or
+// instructions value, a glob the matcher cannot compile, or a list that would
+// overrun the review prompt budget. Rejecting the config aborts the run before
+// an agent starts, which is preferable to silently dropping guidance the
+// maintainer expects the reviewer to apply.
+//
+// This deliberately also runs on the PUSHED copy, even though EffectiveRepoConfig
+// discards a pushed review block: the trusted-copy read
+// (assertGateTrustedConfigReadable in internal/daemon) aborts EVERY run whose
+// default-branch .no-mistakes.yaml fails these checks, so a branch carrying an
+// invalid block has to fail here, before it merges, rather than brick the
+// repository's pipeline afterwards. Do not scope this to the trusted copy.
+func validateReviewRaw(review ReviewRaw) error {
+	if len(review.PathInstructions) > MaxReviewPathInstructions {
+		return fmt.Errorf("review.path_instructions has %d entries, at most %d are allowed", len(review.PathInstructions), MaxReviewPathInstructions)
+	}
+	for i, entry := range review.PathInstructions {
+		path := strings.TrimSpace(entry.Path)
+		if path == "" {
+			return fmt.Errorf("review.path_instructions[%d].path must not be empty", i)
+		}
+		if strings.TrimSpace(entry.Instructions) == "" {
+			return fmt.Errorf("review.path_instructions[%d].instructions must not be empty (path %q)", i, path)
+		}
+		if RenderedInstructions(entry.Instructions) == "" {
+			return fmt.Errorf("review.path_instructions[%d].instructions for path %q is left empty once merge-conflict markers are removed; write the rule without <<<<<<<, =======, or >>>>>>>", i, path)
+		}
+		if err := validatePathInstructionGlob(path); err != nil {
+			return fmt.Errorf("review.path_instructions[%d].path %q is not a valid glob: %w", i, path, err)
+		}
+	}
+	if total := ReviewPathInstructionsBytes(review.PathInstructions); total > MaxReviewPathInstructionsBytes {
+		return fmt.Errorf("review.path_instructions would add up to %d bytes to the review prompt, at most %d are allowed so the prompt stays within budget", total, MaxReviewPathInstructionsBytes)
+	}
+	return nil
+}
+
+// validatePathInstructionGlob mirrors how ignore_patterns are matched: a
+// trailing "/**" is a literal subtree prefix rather than a glob, and everything
+// else goes through path.Match, so only patterns Match can compile are accepted.
+// It must stay path.Match rather than filepath.Match for the same reason the
+// matcher does (matchIgnorePattern in internal/pipeline/steps): filepath.Match
+// is separator-dependent, so on Windows the validator would accept patterns the
+// matcher rejects and read a "\" as a path separator instead of an escape.
+func validatePathInstructionGlob(pattern string) error {
+	if prefix, ok := strings.CutSuffix(pattern, "/**"); ok {
+		if prefix == "" {
+			return errors.New("subtree pattern needs a directory before /**")
+		}
+		return nil
+	}
+	if _, err := path.Match(pattern, "a"); err != nil {
+		return err
+	}
+	return nil
 }
 
 // EffectiveRepoConfig returns the repo config that should drive the pipeline
@@ -1106,11 +1327,14 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 // pushed branch cannot inject shell or pick an agent. Document (the
 // documentation placement policy injected into the document gate prompt) is
 // trusted-only for the same reason: a pushed branch must not weaken the
-// documentation rules that gate itself. DisableProjectSettings is also
-// trusted-only so a pushed branch cannot enable or defeat the gate-agent
+// documentation rules that gate itself. Review (the path-scoped guidance
+// injected into the review gate prompt) is trusted-only for the same reason: a
+// pushed branch must not steer the reviewer that gates it. DisableProjectSettings
+// is also trusted-only so a pushed branch cannot enable or defeat the gate-agent
 // project-instruction boundary, and CI (the transient-rerun budget) is
 // trusted-only because every rerun it authorizes is another provider-side
-// workflow run billed to the repository. When allowRepoCommands is
+// workflow run billed to the repository. All four ignore allowRepoCommands, which
+// scopes only the code-executing selection fields. When allowRepoCommands is
 // true the maintainer has explicitly opted in (via allow_repo_commands on the
 // TRUSTED default-branch copy) to honoring the pushed branch's commands and
 // agent selection.
@@ -1130,6 +1354,13 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 	effective := *pushed
 	if trusted != nil {
 		effective.Document = trusted.Document
+		// review.path_instructions steers the gate agent that reviews the pushed
+		// branch, so it is trusted-only exactly like document.instructions and
+		// regardless of allow_repo_commands: a contributor must not be able to
+		// inject rules into their own review, and enabling the commands opt-in
+		// must not silently drop the maintainer's review rules when the pushed
+		// branch happens to carry no review block.
+		effective.Review = trusted.Review
 		// disable_project_settings is a security boundary: honor it ONLY from the
 		// trusted default-branch copy so a pushed branch cannot turn the opt-out
 		// off (and re-enable its own AGENTS.md) or on. A nil trusted copy here
@@ -1143,6 +1374,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.CI = trusted.CI
 	} else {
 		effective.Document = DocumentRaw{}
+		effective.Review = ReviewRaw{}
 		effective.DisableProjectSettings = false
 		effective.CI = CIRaw{}
 	}
@@ -1358,6 +1590,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Intent:               intent,
 		Test:                 test,
 		Document:             Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
+		Review:               Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,

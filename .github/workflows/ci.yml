@@ -4,6 +4,12 @@ on:
   pull_request:
     branches:
       - main
+    # Never create a run for a release-please PR. GITHUB_TOKEN-opened PRs land in
+    # action_required and never start; excluding the exact release-output set means
+    # no run is created at all. push/tag/release triggers are unaffected.
+    paths-ignore:
+      - .release-please-manifest.json
+      - CHANGELOG.md
 
 jobs:
   check:

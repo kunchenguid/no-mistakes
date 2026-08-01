@@ -62,6 +62,7 @@ func TestTestStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "smallest correct root-cause fix") {
 		t.Error("expected test fix prompt to prefer root-cause fixes over bandaids")
 	}
+	assertTestQualityRulePrompt(t, ag.calls[0].Prompt)
 	if !strings.Contains(ag.calls[0].Prompt, "remove any transient artifacts your testing created in the working tree") {
 		t.Error("expected test fix prompt to ask the agent to clean up transient testing artifacts before finishing")
 	}
@@ -347,6 +348,7 @@ func TestTestStep_InitialAgent_TargetedValidationContract(t *testing.T) {
 	}
 	prompt := ag.calls[0].Prompt
 
+	assertTestQualityRulePrompt(t, prompt)
 	for _, want := range []string{
 		"run the smallest relevant tests yourself",
 		"Do NOT run the complete repository test suite",

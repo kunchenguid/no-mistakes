@@ -74,6 +74,38 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 	return b.String(), riskLine
 }
 
+func BuildPipelineStatusSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound) string {
+	var statusLines []string
+	for _, sr := range steps {
+		if shouldOmitPipelineStep(sr) {
+			continue
+		}
+		var line string
+		if sr.StepName == types.StepReview && sr.Status == types.StepStatusCompleted {
+			line = "✅ **Review** - completed"
+		} else {
+			line, _ = buildStepEntry(sr, rounds[sr.ID])
+		}
+		if line != "" {
+			statusLines = append(statusLines, line)
+		}
+	}
+	if len(statusLines) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("## Pipeline\n\n")
+	b.WriteString(noMistakesPRSignature)
+	b.WriteString("\n\n")
+	for _, line := range statusLines {
+		b.WriteString("<details>\n<summary>")
+		b.WriteString(line)
+		b.WriteString("</summary>\n</details>\n")
+	}
+	return b.String()
+}
+
 // BuildTestingSummary extracts a deterministic Testing section from the test step.
 func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound) string {
 	return buildTestingSummary(steps, rounds, testingSummaryOptions{includeTestedDetails: true})
@@ -1080,7 +1112,6 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 			} else {
 				b.WriteString("✅ No issues found.\n")
 			}
-			writeTestedDetails(&b, sr, &findings)
 			b.WriteString("\n")
 			continue
 		}
@@ -1111,8 +1142,7 @@ func fixRoundLine(r *db.StepRound) string {
 	return fmt.Sprintf("🔧 Fix: %s", html.EscapeString(summary))
 }
 
-// writeFindingItems renders each finding as a `file:line - description` bullet,
-// followed by any test command details for the test step.
+// writeFindingItems renders each finding as a `file:line - description` bullet.
 func writeFindingItems(b *strings.Builder, sr *db.StepResult, findings *types.Findings) {
 	for _, f := range findings.Items {
 		emoji := severityEmoji(f.Severity)
@@ -1125,22 +1155,6 @@ func writeFindingItems(b *strings.Builder, sr *db.StepResult, findings *types.Fi
 			loc += "` - "
 		}
 		b.WriteString(fmt.Sprintf("- %s %s%s\n", emoji, loc, html.EscapeString(f.Description)))
-	}
-	writeTestedDetails(b, sr, findings)
-}
-
-// writeTestedDetails lists the commands the test step exercised. It is a no-op
-// for non-test steps.
-func writeTestedDetails(b *strings.Builder, sr *db.StepResult, findings *types.Findings) {
-	if sr.StepName != types.StepTest {
-		return
-	}
-	for _, detail := range findings.Tested {
-		rendered := renderTestedDetail(detail)
-		if rendered == "" {
-			continue
-		}
-		b.WriteString(fmt.Sprintf("- %s\n", rendered))
 	}
 }
 

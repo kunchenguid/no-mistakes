@@ -10,6 +10,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/testguidance"
 )
 
 // autoFixCI runs the agent to fix CI failures and/or merge conflicts, then
@@ -100,6 +101,7 @@ CI logs:
 %s`, logOutput)
 	}
 	prompt += userIntentPromptSection(sctx)
+	prompt = testguidance.LateRepairPrompt(string(s.Name()), prompt)
 
 	sctx.Log("running agent to fix CI issues...")
 	_, err := sctx.Agent.Run(ctx, agent.RunOpts{

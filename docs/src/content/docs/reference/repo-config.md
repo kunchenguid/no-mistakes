@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `disable_project_settings`, and `ci.rerun_transient` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, and `ci.rerun_transient` only from that trusted copy.
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
@@ -36,6 +36,17 @@ ignore_patterns:
 document:
   instructions: |
     docs/ owns detailed product guidance; README.md owns the introduction.
+
+# Optional extra review guidance, scoped to the paths a change touches.
+# Read only from the trusted default branch.
+review:
+  path_instructions:
+    - path: "internal/scm/**"
+      instructions: |
+        Any URL or error string that can carry credentials must go through internal/safeurl.
+    - path: "docs/**"
+      instructions: |
+        Prose changes only. Do not request test coverage.
 
 # For orchestration repos whose project instructions would misidentify gate agents.
 # Read only from the trusted default branch. Defaults to false.
@@ -75,7 +86,7 @@ test:
 Override the default agent for this repo and its setup-wizard suggestions.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `string` or `string[]` |
 | Values | `auto`, `claude`, `codex`, `rovodev`, `opencode`, `pi`, `copilot`, `cursor`, `acp:<target>` |
 | Default | Inherits from global config |
@@ -106,24 +117,24 @@ This per-repo `agent` value, including every fallback entry, is still read from 
 Opt in to honoring the code-executing selection fields (`commands.{test,lint,format}` and `agent`) from a contributor's pushed branch instead of the trusted default-branch copy.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `bool` |
 | Default | `false` |
 
-This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
+This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. This opt-in covers those two fields only; `document.instructions`, `review.path_instructions`, and `disable_project_settings` stay trusted-only either way. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
 
 ### disable_project_settings
 
 Suppress project-level agent settings and instructions for every gate-agent start and resumed session.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `bool` |
 | Default | `false` |
 
 This opt-in is intended for agent-orchestration repositories whose `AGENTS.md`, `CLAUDE.md`, or harness-specific project settings would give a validation agent an operator identity and authority that it must not adopt.
 When enabled, no-mistakes suppresses the target checkout's project settings for every agent-driven gate step while preserving user-level agent configuration.
-Codex and Claude are the currently verified agents: Codex receives `project_doc_max_bytes=0` and `--ignore-rules`, while Claude loads only its user setting source.
+Codex, Claude, and Pi are the currently verified agents: Codex receives `project_doc_max_bytes=0` and `--ignore-rules`, Claude loads only its user setting source, and Pi runs with `--no-context-files` (preserving a pinned `--no-context-files` or `-nc` spelling).
 The setting applies to both new and resumed sessions.
 
 The gate fails before launching an agent if any resolved agent or fallback lacks a verified suppression mechanism.
@@ -139,7 +150,7 @@ If the trusted commit or its present config file cannot be read and parsed, the 
 Explicit **targeted** local test command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /c` on Windows.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `string` |
 | Default | Empty (agent selects the smallest relevant tests and evidence checks) |
 
@@ -156,7 +167,7 @@ When user intent is available, the agent may still run after a successful baseli
 Explicit lint command. Run via the platform shell - `sh -c` on POSIX, `cmd.exe /c` on Windows.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `string` |
 | Default | Empty (agent auto-detects) |
 
@@ -169,7 +180,7 @@ Neither responsibility is skipped: when the document step has nothing to run aga
 Formatter command run before the push step commits agent fixes.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `string` |
 | Default | Empty (no separate push-step formatter) |
 
@@ -180,7 +191,7 @@ This does not prevent empty `commands.lint` from detecting and running formatter
 Repository-specific documentation ownership policy for the document step.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `string` (multiline) |
 | Default | Empty (built-in placement policy only) |
 
@@ -189,6 +200,63 @@ The document step always applies a built-in placement policy: every fact has exa
 It augments or clarifies the built-in policy; it cannot disable documentation integrity.
 
 Like `commands.*` and `agent`, this field steers gate behavior, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`: a contributor's pushed branch cannot weaken the documentation rules that gate its own review.
+
+### review.path_instructions
+
+Extra review guidance, scoped to the paths a change actually touches.
+
+| | |
+|---|---|
+| Type | `object[]` with `path` (`string`) and `instructions` (`string`, multiline) |
+| Default | Empty (built-in review instructions only) |
+
+Use this for house rules that only apply to part of the tree, for example a redaction rule for the code that builds remote URLs, or a note that a documentation directory needs no test coverage:
+
+```yaml
+review:
+  path_instructions:
+    - path: "internal/scm/**"
+      instructions: |
+        Any URL or error string that can carry credentials must go through internal/safeurl.
+    - path: "docs/**"
+      instructions: |
+        Prose changes only. Do not request test coverage.
+```
+
+Each matched rule reaches the reviewer with the scope it was selected for, so a rule scoped to one directory can never read as a repository-wide instruction:
+
+```
+path: docs/**
+matched files: docs/notes.md
+instructions:
+Prose changes only. Do not request test coverage.
+```
+
+#### Matching
+
+`path` uses the same matcher and syntax as [`ignore_patterns`](#ignore_patterns), including the rule that `*` never crosses a `/`, so `**/*.go` covers a single directory level rather than every Go file.
+
+The review step appends only the blocks whose `path` matches at least one changed file, in the order they appear in the file.
+Two entries with the same `path` **and** the same `instructions` are injected once. The same instruction text under two different `path` values is injected once per path, because each block states its own scope. Two entries with the same `path` and different `instructions` are both injected.
+Matching runs against the full changed-file list and is deliberately **not** filtered by `ignore_patterns`: that field is read from the pushed branch, so filtering here would let a contributor drop one of your rules from the review of their own branch.
+
+Blocks augment the built-in review instructions; they cannot disable them, and a finding the reviewer raises from a block goes through the same severity and action model as any other finding.
+With nothing configured, or nothing matching the change, the review prompt is exactly what it would be without this setting.
+The step log names the rules it applied and the rules that matched nothing, so a rule that never fires is visible in `no-mistakes axi logs --step review`.
+
+#### Limits and validation
+
+`instructions` is prompt text, so merge-conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) are removed from it and runs of whitespace are collapsed, exactly as for [`document.instructions`](#documentinstructions). Write rules without those tokens; a value that would be left empty once they are removed is rejected rather than silently dropped.
+
+At most 32 entries are allowed, and the assembled prompt section may not exceed 16,384 bytes, because the injected text shares the review prompt's budget and an oversized prompt fails the agent invocation outright.
+The size is measured on what is actually injected: the heading, and for every entry its labels, its `path`, its `instructions`, and a 192-byte allowance for its matched-file list. A block whose matched-file list would exceed that allowance is truncated with a `+N more` suffix, so the measured limit holds for any diff.
+
+A missing `path` or `instructions` value, an `instructions` value that renders empty, a `path` that is not a valid glob, or a config over either limit fails when the config is parsed, so the run aborts before an agent starts instead of silently dropping guidance.
+These checks run on whichever copy of the file is parsed, including the pushed branch's. A pushed branch's blocks are ignored when the review prompt is built (see [Trust](#trust) below), but an invalid block on that branch still fails its own run, so a broken rule surfaces before it merges and becomes the trusted copy.
+
+#### Trust
+
+Like `document.instructions`, this field steers gate behavior, so it is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of [`allow_repo_commands`](#allow_repo_commands): a value present only on a pushed branch is ignored, so a contributor cannot inject instructions into the review that gates them.
 
 ### Command process lifetime
 
@@ -201,17 +269,20 @@ Do not rely on a configured command to leave a background server or watcher runn
 Paths to exclude from review and documentation checks.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `string[]` |
 | Default | Empty (no ignores) |
 
-Pattern matching rules:
+Pattern matching rules. [`review.path_instructions`](#reviewpath_instructions) uses the same matcher, so there is one path syntax to learn:
 
 | Pattern | Rule |
-|---|---|
-| `*.generated.go` | No slash - matches by basename |
-| `vendor/**` | Ends with `/**` - matches entire subtree |
-| `some/path/file.go` | Contains a slash - full path glob |
+| --- | --- |
+| `*.generated.go` | No slash - matches by basename, at any depth |
+| `vendor/**` | Ends with `/**` - matches that directory and everything under it |
+| `some/path/file.go` | Contains a slash - full path glob against the whole path |
+| `**/*.go` | Also a full path glob, so **only one directory level** - `internal/main.go`, not `internal/scm/github/github.go` |
+
+`*` never crosses a `/`, on every platform, so `**/*.go` is not "every Go file"; it behaves as a single-segment wildcard. Use `*.go` to match by extension at any depth, or `internal/**` to cover a subtree.
 
 ### auto_fix
 
@@ -222,7 +293,7 @@ Override auto-fix attempt limits for specific steps. Fields not set here inherit
 | Type | `object` |
 
 | Field | Type | Default |
-|---|---|---|
+| --- | --- | --- |
 | `auto_fix.rebase` | `int` | Inherits from global (default `3`) |
 | `auto_fix.review` | `int` | Inherits from global (default `0`) |
 | `auto_fix.test` | `int` | Inherits from global (default `3`) |
@@ -288,7 +359,7 @@ Reruns are also skipped, with no change in behavior, when:
 Override the auto-fix commit subject template for this repository.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `string` |
 | Default | Inherits from global config, whose default is `no-mistakes({{.Step}}): {{.Summary}}` |
 
@@ -304,7 +375,7 @@ Override transcript-based user-intent extraction settings for this repo.
 Fields not set here inherit from global config and then the built-in defaults.
 
 | Field | Type | Default |
-|---|---|---|
+| --- | --- | --- |
 | `intent.enabled` | `bool` | Inherits from global (default `true`) |
 | `intent.threshold` | `float` | Inherits from global (default `0.2`) |
 | `intent.slack_days` | `int` | Inherits from global (default `3`) |
@@ -318,7 +389,7 @@ Override where evidence artifacts from the test step are stored.
 Fields not set here inherit from global config and then the built-in defaults.
 
 | Field | Type | Default |
-|---|---|---|
+| --- | --- | --- |
 | `test.evidence.store_in_repo` | `bool` | Inherits from global (default `false`) |
 | `test.evidence.dir` | `string` | Inherits from global (default `.no-mistakes/evidence`) |
 
