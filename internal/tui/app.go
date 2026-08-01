@@ -284,7 +284,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.reviewRetryReconcile = false
 			m.reviewReconcileErr = nil
-			m.applySnapshot(msg.run)
+			if msg.run != nil && !m.applySnapshot(msg.run) {
+				m.reconcileAgain = true
+			}
 			m.err = m.reviewRetryError()
 			m.resubscribeTries = 0
 		}

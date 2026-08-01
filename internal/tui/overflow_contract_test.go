@@ -102,6 +102,70 @@ func TestTUIOverflow_GreenTitleClearsFromAuthoritativeSnapshot(t *testing.T) {
 	}
 }
 
+func TestTUIOverflow_StaleSnapshotSchedulesFollowUp(t *testing.T) {
+	m := ciRunningModel(true)
+	m.stateRev = 10
+	snapshots := []*ipc.RunInfo{
+		snapshot(20, true, types.StepStatusRunning),
+		snapshot(21, false, types.StepStatusRunning),
+	}
+	reconcileCalls := 0
+	m.reconcile = func(context.Context) (*ipc.RunInfo, error) {
+		if reconcileCalls >= len(snapshots) {
+			t.Fatal("authoritative reconciliation ran too many times")
+		}
+		run := snapshots[reconcileCalls]
+		reconcileCalls++
+		return run, nil
+	}
+
+	updated, gapCmd := m.Update(eventMsg{
+		event:          ipc.Event{Type: ipc.EventStreamGap, RunID: "run-1", StateRev: 20},
+		subscriptionID: m.subscriptionID,
+	})
+	m = updated.(Model)
+	if !m.reconcilePending {
+		t.Fatal("stream gap did not start reconciliation")
+	}
+	first := reconciledFrom(t, gapCmd)
+
+	updated, _ = m.Update(eventMsg{
+		event: ipc.Event{
+			Type:     ipc.EventCIReadinessChanged,
+			RunID:    "run-1",
+			CIReady:  ptr(false),
+			StateRev: 21,
+		},
+		subscriptionID: m.subscriptionID,
+	})
+	m = updated.(Model)
+
+	updated, followUp := m.Update(first)
+	m = updated.(Model)
+	if reconcileCalls != 1 {
+		t.Fatalf("reconciliation calls after stale snapshot = %d, want 1", reconcileCalls)
+	}
+	if !m.reconcilePending || followUp == nil {
+		t.Fatal("stale snapshot did not schedule a follow-up reconciliation")
+	}
+
+	second := reconciledFrom(t, followUp)
+	updated, _ = m.Update(second)
+	m = updated.(Model)
+	if reconcileCalls != 2 {
+		t.Fatalf("reconciliation calls after follow-up = %d, want 2", reconcileCalls)
+	}
+	if m.reconcilePending || m.reconcileAgain {
+		t.Fatal("follow-up reconciliation remained pending")
+	}
+	if m.stateRev != 21 || m.run.CIReady {
+		t.Fatalf("authoritative state = rev %d, ready %t; want rev 21, ready false", m.stateRev, m.run.CIReady)
+	}
+	if strings.Contains(m.terminalTitle(), "Checks passed") {
+		t.Fatalf("stale success title survived follow-up: %q", m.terminalTitle())
+	}
+}
+
 // A delta that was queued before the snapshot must not regress state after it,
 // even though it arrives later in the stream.
 func TestTUIOverflow_StaleQueuedDeltaCannotRegressAfterSnapshot(t *testing.T) {

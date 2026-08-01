@@ -191,9 +191,9 @@ func (m *Model) applyEvent(event ipc.Event) bool {
 // reconciliations racing cannot move state backwards either. Findings come
 // from the snapshot's persisted step rows, which is why a coalesced
 // step_completed carrying findings is recoverable.
-func (m *Model) applySnapshot(run *ipc.RunInfo) {
+func (m *Model) applySnapshot(run *ipc.RunInfo) bool {
 	if run == nil || run.StateRev < m.stateRev {
-		return
+		return false
 	}
 	m.err = nil
 	m.stateRev = run.StateRev
@@ -225,6 +225,7 @@ func (m *Model) applySnapshot(run *ipc.RunInfo) {
 		m.flushPartialLog()
 		m.done = true
 	}
+	return true
 }
 
 func (m *Model) reconcileGateState(steps []ipc.StepResultInfo, oldFindings, findings map[types.StepName]string) {
