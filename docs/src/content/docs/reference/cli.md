@@ -212,7 +212,7 @@ If a terminal unpublished run's gate branch and local head both remain at the re
 A dirty or diverged worktree refuses with explicit choices.
 When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it when needed, so a concurrent gate push wins and the recovery refuses instead. A private run-owned custody marker makes a crash after that gate compare-and-swap retryable; the final custody stamp is itself a full run-authority compare-and-swap that rejects newer runs and concurrent publication writes.
 `no-mistakes rerun` starts a new run from the current ordinary gate branch; it does not select or validate the preserved recovery anchor when those differ.
-A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
+A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`. A publication-bearing run is refused pending publication reconciliation and receives no custody stamp.
 On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pipeline-created exists to recover, and no file, ref, or database row changes.
 
 ## no-mistakes axi logs

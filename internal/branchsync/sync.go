@@ -488,11 +488,10 @@ func (s *Service) Apply(ctx context.Context) State {
 //     anchor write or fetch, changed assumptions) refuses without a custody
 //     stamp. A verified immutable anchor or prepared private marker may remain.
 //
-// Recovery ends with a persisted custody-return stamp on the run; inspection
-// then reports custody_returned (never-pushed runs) or the ordinary
-// classification against the last push binding (pushed runs), both pointing at
-// run_pipeline as the next step. `no-mistakes rerun` starts from the ordinary
-// gate branch, which may differ from the recovery anchor.
+// Recovery ends with a persisted custody-return stamp on an eligible
+// never-published run. Publication-bearing runs remain blocked until their
+// publication owner reconciles them. `no-mistakes rerun` starts from the
+// ordinary gate branch, which may differ from the recovery anchor.
 func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
 		return refusal
@@ -565,13 +564,22 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if latest, ok := s.latestRunForBranch(run.Branch); !ok || latest.ID != run.ID {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_newer_run", "a newer run owns this repository branch; custody was not returned and no files or refs were changed")
 	}
+	lock, lockErr := s.acquireRecoveryLock(run)
+	if lockErr != nil {
+		return custodyLockFailure(state, lockErr)
+	}
+	defer lock.Release()
+	currentRepo, repoErr := s.DB.GetRepo(run.RepoID)
+	if repoErr != nil || currentRepo == nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "the registered repository target could not be reloaded under the custody lock; custody was not returned and no files or refs were changed")
+	}
 	if run.LastPushedSHA != nil && run.HeadSHA != ptr(run.LastPushedSHA) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "the mutable run head differs from its exact published head; the publication owner must reconcile the run before custody can be returned; no files or refs were changed")
 	}
 	if runHasPublication(run) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "the run has publication provenance; the publication owner must reconcile it before custody can be returned; no files or refs were changed")
 	}
-	if safety := s.verifyLegacyRunUnpublished(ctx, run, branch); safety != "" {
+	if safety := s.verifyLegacyRunUnpublished(ctx, run, branch, currentRepo); safety != "" {
 		return blockedPlan(state, StatePipelineOwned, safety, "the run has no exact authoritative unpublished-publication journal for its original target; custody was not returned and no files or refs were changed")
 	}
 	anchored, anchorConflict := recoveryAnchorState(ctx, wd, anchorRef, preserved)
@@ -580,11 +588,6 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 
 	if objectExists(ctx, wd, preserved) && (local == preserved || isAncestor(ctx, wd, preserved, local)) {
-		lock, err := s.acquireRecoveryLock(run)
-		if err != nil {
-			return custodyLockFailure(state, err)
-		}
-		defer lock.Release()
 		if !anchored {
 			if blocked, ok := s.anchorReachablePreserved(ctx, state, anchorRef, preserved); !ok {
 				return blocked
@@ -617,11 +620,6 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if movedGateAtSubmitted && runHasPublication(run) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "exact-object moved-gate recovery is limited to a terminal run with no push, PR, or CI publication provenance; custody was not returned and no refs were changed")
 	}
-	lock, lockErr := s.acquireRecoveryLock(run)
-	if lockErr != nil {
-		return custodyLockFailure(state, lockErr)
-	}
-	defer lock.Release()
 	if !anchored {
 		if safety := s.fetchExactRecoveryAnchor(ctx, run, preserved, anchorRef); safety != "" {
 			message := fmt.Sprintf("the preserved pipeline head %s could not be immutably anchored from the local gate by exact object ID; no ordinary refs were changed", preserved)
@@ -1195,7 +1193,7 @@ func publicationAttemptPresent(run *db.Run) bool {
 	return run != nil && (run.PublicationAttemptHeadSHA != nil || run.PublicationAttemptTargetKind != nil || run.PublicationAttemptTargetFingerprint != nil || run.PublicationAttemptRef != nil)
 }
 
-func (s *Service) verifyLegacyRunUnpublished(ctx context.Context, run *db.Run, branch string) string {
+func (s *Service) verifyLegacyRunUnpublished(ctx context.Context, run *db.Run, branch string, repo *db.Repo) string {
 	if run == nil || run.PublicationJournalState == nil || *run.PublicationJournalState != db.PublicationJournalReady {
 		return "blocked_recover_publication"
 	}
@@ -1203,8 +1201,8 @@ func (s *Service) verifyLegacyRunUnpublished(ctx context.Context, run *db.Run, b
 		run.PublicationJournalTargetKind == nil || run.PublicationJournalTargetFingerprint == nil || run.PublicationJournalRef == nil {
 		return "blocked_recover_publication"
 	}
-	target := s.recoveryPublicationTarget(ctx)
-	if target == "" || ptr(run.PublicationJournalTargetKind) != targetKind(s.Repo) ||
+	target := s.recoveryPublicationTarget(ctx, repo)
+	if target == "" || repo == nil || run.PublicationJournalTargetVersion == nil || *run.PublicationJournalTargetVersion != repo.URLVersion || ptr(run.PublicationJournalTargetKind) != targetKind(repo) ||
 		ptr(run.PublicationJournalTargetFingerprint) != TargetFingerprint(target) ||
 		ptr(run.PublicationJournalRef) != publicationRef(branch) {
 		return "blocked_recover_publication"
@@ -1212,11 +1210,11 @@ func (s *Service) verifyLegacyRunUnpublished(ctx context.Context, run *db.Run, b
 	return ""
 }
 
-func (s *Service) recoveryPublicationTarget(ctx context.Context) string {
-	if s == nil || s.Repo == nil {
+func (s *Service) recoveryPublicationTarget(ctx context.Context, repo *db.Repo) string {
+	if s == nil || repo == nil {
 		return ""
 	}
-	target := strings.TrimSpace(s.Repo.PushURL())
+	target := strings.TrimSpace(repo.PushURL())
 	origin, err := git.GetRemoteURL(ctx, s.workDir(), "origin")
 	if err == nil && strings.TrimSpace(origin) != "" && TargetFingerprint(origin) == TargetFingerprint(target) {
 		return strings.TrimSpace(origin)

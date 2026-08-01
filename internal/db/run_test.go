@@ -479,6 +479,9 @@ func TestNewRunHasExactPublicationJournalTarget(t *testing.T) {
 	if run.PublicationJournalRef == nil || *run.PublicationJournalRef != "refs/heads/feature" {
 		t.Fatalf("publication journal ref = %#v", run.PublicationJournalRef)
 	}
+	if run.PublicationJournalTargetVersion == nil || *run.PublicationJournalTargetVersion != repo.URLVersion {
+		t.Fatalf("publication journal target version = %#v, want %d", run.PublicationJournalTargetVersion, repo.URLVersion)
+	}
 }
 
 func TestPublicationAttemptJournalRequiresExactBindingToReconcile(t *testing.T) {

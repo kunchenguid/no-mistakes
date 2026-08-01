@@ -170,7 +170,7 @@ func TestRecoveryTargetUsesEquivalentOriginCredentials(t *testing.T) {
 		Repo:    &db.Repo{UpstreamURL: "https://example.com/owner/repo.git"},
 		WorkDir: repoDir,
 	}
-	if got := service.recoveryPublicationTarget(context.Background()); got != credentialed {
+	if got := service.recoveryPublicationTarget(context.Background(), service.Repo); got != credentialed {
 		t.Fatalf("recovery publication target = %q, want credentialed origin", got)
 	}
 }

@@ -616,7 +616,12 @@ func TestRecoverPublicationJournalRequiresExactTargetAudit(t *testing.T) {
 
 	t.Run("published", func(t *testing.T) {
 		f := newRecoverFixture(t, types.RunCancelled)
-		f.repo.UpstreamURL = filepath.Join(t.TempDir(), "different.git")
+		updated, err := f.db.UpdateRepoMetadata(f.repo.ID, filepath.Join(t.TempDir(), "different.git"), "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.repo = updated
+		f.service.Repo = updated
 		f.moveGateBranchToSubmitted()
 		state := f.service.Recover(f.ctx, true)
 		if state.Recovered || state.Safety != "blocked_recover_publication" {
@@ -661,6 +666,22 @@ func TestRecoverPublicationJournalRequiresExactTargetAudit(t *testing.T) {
 			t.Fatal("missing-journal recovery stamped custody")
 		}
 	})
+}
+
+func TestRecoverRefusesRepositoryTargetChangeBeforeCustodyCAS(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	f.service.beforeRecoverFastForward = func() {
+		if _, err := f.db.UpdateRepoMetadata(f.repo.ID, filepath.Join(t.TempDir(), "changed.git"), "main"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Safety != "blocked_recover_custody_race" {
+		t.Fatalf("repository-target race recovery = %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("repository-target race stamped custody")
+	}
 }
 
 func TestRecoverRefusesRemotePushBeforeDatabaseBindingCrash(t *testing.T) {

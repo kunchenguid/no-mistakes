@@ -118,7 +118,7 @@ func (t *CustodyTransition) Complete(ctx context.Context, expected *Run) error {
 		 WHERE `+custodyAuthorityPredicate+`
 		   AND custody_returned_at IS NULL AND custody_transition_token = ? AND custody_transition_phase = ?
 		   AND COALESCE(push_active, 0) = 0
-		   AND publication_journal_state = ? AND publication_journal_target_kind IS NOT NULL AND publication_journal_target_fingerprint IS NOT NULL AND publication_journal_ref IS NOT NULL
+		   AND publication_journal_state = ? AND publication_journal_target_kind IS NOT NULL AND publication_journal_target_fingerprint IS NOT NULL AND publication_journal_ref IS NOT NULL AND publication_journal_target_version IS NOT NULL
 		   AND publication_attempt_head_sha IS NULL AND publication_attempt_target_kind IS NULL AND publication_attempt_target_fingerprint IS NULL AND publication_attempt_ref IS NULL
 		   AND error IS ? AND awaiting_agent_since IS ?`,
 		args...,
@@ -200,6 +200,7 @@ type Run struct {
 	PublicationJournalTargetKind        *string
 	PublicationJournalTargetFingerprint *string
 	PublicationJournalRef               *string
+	PublicationJournalTargetVersion     *int64
 	PublicationAttemptHeadSHA           *string
 	PublicationAttemptTargetKind        *string
 	PublicationAttemptTargetFingerprint *string
@@ -232,7 +233,7 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, publication_journal_state, publication_journal_target_kind, publication_journal_target_fingerprint, publication_journal_ref, publication_attempt_head_sha, publication_attempt_target_kind, publication_attempt_target_fingerprint, publication_attempt_ref, custody_returned_at, custody_transition_token, custody_transition_phase, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, publication_journal_state, publication_journal_target_kind, publication_journal_target_fingerprint, publication_journal_ref, publication_journal_target_version, publication_attempt_head_sha, publication_attempt_target_kind, publication_attempt_target_fingerprint, publication_attempt_ref, custody_returned_at, custody_transition_token, custody_transition_phase, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 const custodyAuthorityPredicate = `id = ? AND repo_id = ? AND branch = ? AND head_sha = ? AND base_sha = ?
 		   AND submitted_head_sha IS ? AND review_approved_head_sha IS ? AND status = ?
@@ -240,7 +241,9 @@ const custodyAuthorityPredicate = `id = ? AND repo_id = ? AND branch = ? AND hea
 		   AND last_pushed_sha IS ? AND push_target_kind IS ? AND push_target_fingerprint IS ?
 		   AND push_ref IS ? AND last_pushed_at IS ? AND push_generation IS ?
 		   AND publication_journal_state IS ? AND publication_journal_target_kind IS ? AND publication_journal_target_fingerprint IS ? AND publication_journal_ref IS ?
+		   AND publication_journal_target_version IS ?
 		   AND publication_attempt_head_sha IS ? AND publication_attempt_target_kind IS ? AND publication_attempt_target_fingerprint IS ? AND publication_attempt_ref IS ?
+		   AND EXISTS (SELECT 1 FROM repos current_repo WHERE current_repo.id = runs.repo_id AND COALESCE(current_repo.url_version, 0) = ?)
 		   AND status IN ('completed', 'failed', 'cancelled')
 		   AND NOT EXISTS (
 			SELECT 1 FROM runs newer
@@ -257,6 +260,7 @@ func scanRun(row interface {
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
 		&r.PublicationJournalState, &r.PublicationJournalTargetKind, &r.PublicationJournalTargetFingerprint, &r.PublicationJournalRef,
+		&r.PublicationJournalTargetVersion,
 		&r.PublicationAttemptHeadSHA, &r.PublicationAttemptTargetKind, &r.PublicationAttemptTargetFingerprint, &r.PublicationAttemptRef,
 		&r.CustodyReturnedAt, &r.CustodyTransitionToken, &r.CustodyTransitionPhase, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
@@ -291,10 +295,12 @@ func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent
 		journalKind := publicationTargetKind(repo)
 		journalFingerprint := publicationTargetFingerprint(repo.PushURL())
 		journalRef := publicationRef(branch)
+		journalVersion := repo.URLVersion
 		r.PublicationJournalState = &journalState
 		r.PublicationJournalTargetKind = &journalKind
 		r.PublicationJournalTargetFingerprint = &journalFingerprint
 		r.PublicationJournalRef = &journalRef
+		r.PublicationJournalTargetVersion = &journalVersion
 	}
 	if intent != nil {
 		r.Intent = &intent.Summary
@@ -303,8 +309,8 @@ func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent
 		r.IntentScore = &intent.Score
 	}
 	_, err = d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_state, publication_journal_state, publication_journal_target_kind, publication_journal_target_fingerprint, publication_journal_ref, intent, intent_source, intent_session_id, intent_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.Status, r.PublicationJournalState, r.PublicationJournalTargetKind, r.PublicationJournalTargetFingerprint, r.PublicationJournalRef, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_state, publication_journal_state, publication_journal_target_kind, publication_journal_target_fingerprint, publication_journal_ref, publication_journal_target_version, intent, intent_source, intent_session_id, intent_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.Status, r.PublicationJournalState, r.PublicationJournalTargetKind, r.PublicationJournalTargetFingerprint, r.PublicationJournalRef, r.PublicationJournalTargetVersion, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
@@ -496,6 +502,7 @@ func (d *DB) RecordRunPublicationAttempt(id string, attempt PublicationAttempt) 
 	result, err := d.sql.Exec(`UPDATE runs SET publication_journal_state = ?, publication_attempt_head_sha = ?, publication_attempt_target_kind = ?, publication_attempt_target_fingerprint = ?, publication_attempt_ref = ?, updated_at = ?
 		WHERE id = ? AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL
 		AND publication_journal_state = ? AND publication_journal_target_kind = ? AND publication_journal_target_fingerprint = ? AND publication_journal_ref = ?
+		AND publication_journal_target_version IS NOT NULL
 		AND publication_attempt_head_sha IS NULL AND publication_attempt_target_kind IS NULL AND publication_attempt_target_fingerprint IS NULL AND publication_attempt_ref IS NULL`,
 		PublicationJournalAttempted, attempt.HeadSHA, attempt.TargetKind, attempt.TargetFingerprint, attempt.Ref, now(), id,
 		PublicationJournalReady, attempt.TargetKind, attempt.TargetFingerprint, attempt.Ref)
@@ -528,10 +535,11 @@ func (d *DB) ReconcileRunPublicationAttempt(id string) error {
 	defer tx.Rollback()
 
 	var journalState, journalKind, journalFingerprint, journalRef sql.NullString
+	var journalVersion sql.NullInt64
 	var attemptHead, attemptKind, attemptFingerprint, attemptRef sql.NullString
 	var pushedHead, pushedKind, pushedFingerprint, pushedRef sql.NullString
-	if err := tx.QueryRow(`SELECT publication_journal_state, publication_journal_target_kind, publication_journal_target_fingerprint, publication_journal_ref, publication_attempt_head_sha, publication_attempt_target_kind, publication_attempt_target_fingerprint, publication_attempt_ref, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref FROM runs WHERE id = ?`, id).Scan(
-		&journalState, &journalKind, &journalFingerprint, &journalRef, &attemptHead, &attemptKind, &attemptFingerprint, &attemptRef, &pushedHead, &pushedKind, &pushedFingerprint, &pushedRef,
+	if err := tx.QueryRow(`SELECT publication_journal_state, publication_journal_target_kind, publication_journal_target_fingerprint, publication_journal_ref, publication_journal_target_version, publication_attempt_head_sha, publication_attempt_target_kind, publication_attempt_target_fingerprint, publication_attempt_ref, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref FROM runs WHERE id = ?`, id).Scan(
+		&journalState, &journalKind, &journalFingerprint, &journalRef, &journalVersion, &attemptHead, &attemptKind, &attemptFingerprint, &attemptRef, &pushedHead, &pushedKind, &pushedFingerprint, &pushedRef,
 	); err == sql.ErrNoRows {
 		return ErrRunPublicationCAS
 	} else if err != nil {
@@ -543,7 +551,7 @@ func (d *DB) ReconcileRunPublicationAttempt(id string) error {
 		}
 		return nil
 	}
-	if !journalState.Valid || journalState.String != PublicationJournalAttempted || !journalKind.Valid || !journalFingerprint.Valid || !journalRef.Valid ||
+	if !journalState.Valid || journalState.String != PublicationJournalAttempted || !journalKind.Valid || !journalFingerprint.Valid || !journalRef.Valid || !journalVersion.Valid ||
 		!attemptHead.Valid || !attemptKind.Valid || !attemptFingerprint.Valid || !attemptRef.Valid ||
 		journalKind.String != attemptKind.String || journalFingerprint.String != attemptFingerprint.String || journalRef.String != attemptRef.String ||
 		!pushedHead.Valid || !pushedKind.Valid || !pushedFingerprint.Valid || !pushedRef.Valid ||
@@ -582,11 +590,12 @@ func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
 	}
 	defer tx.Rollback()
 	var journalState, journalKind, journalFingerprint, journalRef sql.NullString
+	var journalVersion sql.NullInt64
 	var attemptHead, attemptKind, attemptFingerprint, attemptRef sql.NullString
 	var custodyReturned sql.NullInt64
 	var transitionToken, transitionPhase sql.NullString
-	if err := tx.QueryRow(`SELECT publication_journal_state, publication_journal_target_kind, publication_journal_target_fingerprint, publication_journal_ref, publication_attempt_head_sha, publication_attempt_target_kind, publication_attempt_target_fingerprint, publication_attempt_ref, custody_returned_at, custody_transition_token, custody_transition_phase FROM runs WHERE id = ?`, id).Scan(
-		&journalState, &journalKind, &journalFingerprint, &journalRef, &attemptHead, &attemptKind, &attemptFingerprint, &attemptRef, &custodyReturned, &transitionToken, &transitionPhase,
+	if err := tx.QueryRow(`SELECT publication_journal_state, publication_journal_target_kind, publication_journal_target_fingerprint, publication_journal_ref, publication_journal_target_version, publication_attempt_head_sha, publication_attempt_target_kind, publication_attempt_target_fingerprint, publication_attempt_ref, custody_returned_at, custody_transition_token, custody_transition_phase FROM runs WHERE id = ?`, id).Scan(
+		&journalState, &journalKind, &journalFingerprint, &journalRef, &journalVersion, &attemptHead, &attemptKind, &attemptFingerprint, &attemptRef, &custodyReturned, &transitionToken, &transitionPhase,
 	); err == sql.ErrNoRows {
 		return ErrRunCustodyCAS
 	} else if err != nil {
@@ -595,7 +604,7 @@ func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
 	if custodyReturned.Valid || transitionToken.Valid || transitionPhase.Valid {
 		return ErrRunCustodyCAS
 	}
-	if journalState.Valid && journalState.String == PublicationJournalAttempted && (!attemptHead.Valid || !attemptKind.Valid || !attemptFingerprint.Valid || !attemptRef.Valid) {
+	if journalState.Valid && journalState.String == PublicationJournalAttempted && (!journalVersion.Valid || !attemptHead.Valid || !attemptKind.Valid || !attemptFingerprint.Valid || !attemptRef.Valid) {
 		return ErrRunPublicationCAS
 	}
 	journalPresent := attemptHead.Valid || attemptKind.Valid || attemptFingerprint.Valid || attemptRef.Valid
@@ -636,7 +645,7 @@ func (d *DB) SetRunCustodyReturnedCAS(expected *Run) error {
 		UPDATE runs SET custody_returned_at = ?, updated_at = ?
 			 WHERE `+custodyAuthorityPredicate+`
 		   AND COALESCE(push_active, 0) = 0 AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL
-		   AND publication_journal_state = ? AND publication_journal_target_kind IS NOT NULL AND publication_journal_target_fingerprint IS NOT NULL AND publication_journal_ref IS NOT NULL
+		   AND publication_journal_state = ? AND publication_journal_target_kind IS NOT NULL AND publication_journal_target_fingerprint IS NOT NULL AND publication_journal_ref IS NOT NULL AND publication_journal_target_version IS NOT NULL
 		   AND publication_attempt_head_sha IS NULL AND publication_attempt_target_kind IS NULL AND publication_attempt_target_fingerprint IS NULL AND publication_attempt_ref IS NULL
 		   AND error IS ? AND awaiting_agent_since IS ?`,
 		append(args, PublicationJournalReady, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))...,
@@ -667,10 +676,10 @@ func (d *DB) BeginRunCustodyTransition(ctx context.Context, expected *Run) (*Cus
 		`UPDATE runs SET custody_transition_token = ?, custody_transition_phase = ?, updated_at = ? WHERE `+custodyAuthorityPredicate+`
 		   AND custody_returned_at IS NULL AND custody_transition_token IS NULL
 		   AND custody_transition_phase IS NULL AND COALESCE(push_active, 0) = 0
-		   AND publication_journal_state = ? AND publication_journal_target_kind IS NOT NULL AND publication_journal_target_fingerprint IS NOT NULL AND publication_journal_ref IS NOT NULL
+		   AND publication_journal_state = ? AND publication_journal_target_kind IS NOT NULL AND publication_journal_target_fingerprint IS NOT NULL AND publication_journal_ref IS NOT NULL AND publication_journal_target_version IS NOT NULL
 		   AND publication_attempt_head_sha IS NULL AND publication_attempt_target_kind IS NULL AND publication_attempt_target_fingerprint IS NULL AND publication_attempt_ref IS NULL
 		   AND error IS ? AND awaiting_agent_since IS ?`,
-		append(args, PublicationJournalReady, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))...,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("begin run custody transition: %w", err)
@@ -695,7 +704,7 @@ func (d *DB) ResumeRunCustodyTransition(ctx context.Context, expected *Run) (*Cu
 	err := d.sql.QueryRowContext(ctx, `SELECT custody_transition_token, custody_transition_phase FROM runs WHERE `+custodyAuthorityPredicate+`
 		AND custody_returned_at IS NULL AND custody_transition_token = ? AND custody_transition_phase = ?
 		AND COALESCE(push_active, 0) = 0
-		AND publication_journal_state = ? AND publication_journal_target_kind IS NOT NULL AND publication_journal_target_fingerprint IS NOT NULL AND publication_journal_ref IS NOT NULL
+		AND publication_journal_state = ? AND publication_journal_target_kind IS NOT NULL AND publication_journal_target_fingerprint IS NOT NULL AND publication_journal_ref IS NOT NULL AND publication_journal_target_version IS NOT NULL
 		AND publication_attempt_head_sha IS NULL AND publication_attempt_target_kind IS NULL AND publication_attempt_target_fingerprint IS NULL AND publication_attempt_ref IS NULL
 		AND error IS ? AND awaiting_agent_since IS ?`, args...).Scan(&token, &phase)
 	if err == sql.ErrNoRows {
@@ -741,7 +750,9 @@ func custodyAuthorityArgs(expected *Run) []any {
 		nullableRunString(expected.LastPushedSHA), nullableRunString(expected.PushTargetKind), nullableRunString(expected.PushTargetFingerprint),
 		nullableRunString(expected.PushRef), nullableRunInt64(expected.LastPushedAt), nullableRunInt64(expected.PushGeneration),
 		nullableRunString(expected.PublicationJournalState), nullableRunString(expected.PublicationJournalTargetKind), nullableRunString(expected.PublicationJournalTargetFingerprint), nullableRunString(expected.PublicationJournalRef),
+		nullableRunInt64(expected.PublicationJournalTargetVersion),
 		nullableRunString(expected.PublicationAttemptHeadSHA), nullableRunString(expected.PublicationAttemptTargetKind), nullableRunString(expected.PublicationAttemptTargetFingerprint), nullableRunString(expected.PublicationAttemptRef),
+		nullableRunInt64(expected.PublicationJournalTargetVersion),
 	}
 }
 

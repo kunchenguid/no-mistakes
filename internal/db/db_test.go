@@ -76,7 +76,10 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if !hasColumn(t, d, "repos", "fork_url") {
 		t.Fatal("repos.fork_url column missing from fresh schema")
 	}
-	for _, column := range []string{"submitted_head_sha", "review_approved_head_sha", "last_pushed_sha", "push_target_fingerprint", "push_ref", "last_pushed_at", "push_generation", "push_active", "terminal_head_verified_at", "publication_journal_state", "publication_journal_target_kind", "publication_journal_target_fingerprint", "publication_journal_ref", "publication_attempt_head_sha", "publication_attempt_target_kind", "publication_attempt_target_fingerprint", "publication_attempt_ref", "pr_state", "pr_state_observed_at", "ci_ready_at", "ci_ready_no_ci", "custody_returned_at", "custody_transition_token", "custody_transition_phase"} {
+	if !hasColumn(t, d, "repos", "url_version") {
+		t.Fatal("repos.url_version column missing from fresh schema")
+	}
+	for _, column := range []string{"submitted_head_sha", "review_approved_head_sha", "last_pushed_sha", "push_target_fingerprint", "push_ref", "last_pushed_at", "push_generation", "push_active", "terminal_head_verified_at", "publication_journal_state", "publication_journal_target_kind", "publication_journal_target_fingerprint", "publication_journal_ref", "publication_journal_target_version", "publication_attempt_head_sha", "publication_attempt_target_kind", "publication_attempt_target_fingerprint", "publication_attempt_ref", "pr_state", "pr_state_observed_at", "ci_ready_at", "ci_ready_no_ci", "custody_returned_at", "custody_transition_token", "custody_transition_phase"} {
 		if !hasColumn(t, d, "runs", column) {
 			t.Fatalf("runs.%s column missing from fresh schema", column)
 		}

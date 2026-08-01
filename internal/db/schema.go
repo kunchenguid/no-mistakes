@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS repos (
     upstream_url   TEXT NOT NULL,
     fork_url       TEXT,
     default_branch TEXT NOT NULL DEFAULT 'main',
+    url_version    INTEGER NOT NULL DEFAULT 0,
     created_at     INTEGER NOT NULL
 );
 
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS runs (
 	publication_journal_target_kind TEXT,
 	publication_journal_target_fingerprint TEXT,
 	publication_journal_ref TEXT,
+	publication_journal_target_version INTEGER,
 	publication_attempt_head_sha TEXT,
 	publication_attempt_target_kind TEXT,
 	publication_attempt_target_fingerprint TEXT,
@@ -149,6 +151,7 @@ CREATE TABLE IF NOT EXISTS intent_cache (
 // idempotent via its error being tolerated when the column already exists.
 var migrationStatements = []string{
 	`ALTER TABLE repos ADD COLUMN fork_url TEXT`,
+	`ALTER TABLE repos ADD COLUMN url_version INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,
@@ -186,6 +189,7 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN publication_journal_target_kind TEXT`,
 	`ALTER TABLE runs ADD COLUMN publication_journal_target_fingerprint TEXT`,
 	`ALTER TABLE runs ADD COLUMN publication_journal_ref TEXT`,
+	`ALTER TABLE runs ADD COLUMN publication_journal_target_version INTEGER`,
 	`ALTER TABLE runs ADD COLUMN publication_attempt_head_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN publication_attempt_target_kind TEXT`,
 	`ALTER TABLE runs ADD COLUMN publication_attempt_target_fingerprint TEXT`,
