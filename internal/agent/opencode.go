@@ -113,6 +113,14 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 		err := fmt.Errorf("opencode message: %w", mr.err)
 		return nil, ClassifyProviderError(err, mr.err.Error())
 	}
+	if mr.resp != nil && mr.resp.Info != nil && mr.resp.Info.Error != nil &&
+		!mr.resp.Info.Error.IsStructuredOutput() && mr.resp.Info.Error.Message != "" {
+		responseErr := fmt.Errorf("opencode response %s: %s", mr.resp.Info.Error.Name, mr.resp.Info.Error.Message)
+		classified := ClassifyProviderError(responseErr, mr.resp.Info.Error.Message)
+		if _, isQuota := quotaErrorReason(classified); isQuota {
+			return nil, classified
+		}
+	}
 
 	// Update usage and text from message response
 	responseText := ""

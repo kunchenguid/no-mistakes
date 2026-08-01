@@ -204,6 +204,47 @@ func TestFallbackAgentReportsAllQuotaExhaustionWithoutSecrets(t *testing.T) {
 	}
 }
 
+func TestFallbackAgentQuotaExhaustionBoundsAttemptsAndAgentNames(t *testing.T) {
+	const agentCount = maxQuotaFallbackAttempts + 4
+	agents := make([]Agent, 0, agentCount)
+	for i := 0; i < agentCount; i++ {
+		agents = append(agents, &fallbackTestAgent{
+			name: strings.Repeat(string(rune('a'+i)), maxQuotaFallbackAgentNameRunes+20),
+			run: func() (*Result, error) {
+				err := errors.New("provider rate limit; token=secret")
+				return nil, ClassifyProviderError(err, "provider rate limit; token=secret")
+			},
+		})
+	}
+
+	_, err := NewFallback(agents).Run(context.Background(), RunOpts{})
+	var quotaErr *quotaFallbackError
+	if !errors.As(err, &quotaErr) {
+		t.Fatalf("error = %v, want quota fallback error", err)
+	}
+	if got := len(quotaErr.attempts); got != maxQuotaFallbackAttempts {
+		t.Fatalf("recorded attempts = %d, want %d", got, maxQuotaFallbackAttempts)
+	}
+	if !quotaErr.omitted {
+		t.Fatal("quota fallback error did not record omitted attempts")
+	}
+	for _, attempt := range quotaErr.attempts {
+		if got := len([]rune(attempt.agent)); got > maxQuotaFallbackAgentNameRunes+len([]rune(quotaFallbackTruncationMarker)) {
+			t.Fatalf("recorded agent name length = %d, want bounded name", got)
+		}
+	}
+	message := err.Error()
+	if !strings.Contains(message, quotaFallbackAttemptsOmittedMarker) {
+		t.Fatalf("error = %q, want omitted-attempt marker", message)
+	}
+	if strings.Contains(message, "secret") {
+		t.Fatalf("error leaked provider diagnostic: %q", message)
+	}
+	if len(message) > 1024 {
+		t.Fatalf("error length = %d, want fixed bound", len(message))
+	}
+}
+
 func TestFallbackAgentSingletonSanitizesQuotaExhaustion(t *testing.T) {
 	only := &fallbackTestAgent{
 		name: "claude",

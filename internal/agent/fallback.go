@@ -12,6 +12,13 @@ type fallbackAgent struct {
 	agents []Agent
 }
 
+const (
+	maxQuotaFallbackAttempts           = 8
+	maxQuotaFallbackAgentNameRunes     = 64
+	quotaFallbackTruncationMarker      = "..."
+	quotaFallbackAttemptsOmittedMarker = "additional attempts omitted"
+)
+
 type quotaFallbackAttempt struct {
 	agent  string
 	reason string
@@ -19,6 +26,7 @@ type quotaFallbackAttempt struct {
 
 type quotaFallbackError struct {
 	attempts []quotaFallbackAttempt
+	omitted  bool
 }
 
 type providerQuotaError struct {
@@ -30,11 +38,25 @@ func (e *providerQuotaError) Error() string { return e.err.Error() }
 func (e *providerQuotaError) Unwrap() error { return e.err }
 
 func (e *quotaFallbackError) Error() string {
-	parts := make([]string, 0, len(e.attempts))
+	parts := make([]string, 0, len(e.attempts)+1)
 	for _, attempt := range e.attempts {
 		parts = append(parts, fmt.Sprintf("%s (%s)", attempt.agent, attempt.reason))
 	}
+	if e.omitted {
+		parts = append(parts, quotaFallbackAttemptsOmittedMarker)
+	}
 	return fmt.Sprintf("configured agent fallback exhausted: %s", strings.Join(parts, "; "))
+}
+
+func appendQuotaFallbackAttempt(attempts []quotaFallbackAttempt, omitted bool, agent, reason string) ([]quotaFallbackAttempt, bool) {
+	if len(attempts) >= maxQuotaFallbackAttempts {
+		return attempts, true
+	}
+	name := []rune(agent)
+	if len(name) > maxQuotaFallbackAgentNameRunes {
+		agent = string(name[:maxQuotaFallbackAgentNameRunes]) + quotaFallbackTruncationMarker
+	}
+	return append(attempts, quotaFallbackAttempt{agent: agent, reason: reason}), omitted
 }
 
 // IsQuotaFallbackError reports whether an ordered fallback stopped after an
@@ -131,7 +153,8 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 		scheduled[index] = true
 	}
 	attempted := make(map[int]bool, len(candidateIndexes))
-	path := make([]quotaFallbackAttempt, 0, len(a.agents))
+	path := make([]quotaFallbackAttempt, 0, min(len(a.agents), maxQuotaFallbackAttempts))
+	pathOmitted := false
 	quotaSeen := false
 	freshProvider := false
 	var lastErr error
@@ -176,7 +199,7 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 		reason, isQuota := quotaErrorReason(err)
 		if isQuota {
 			quotaSeen = true
-			path = append(path, quotaFallbackAttempt{agent: current.Name(), reason: reason})
+			path, pathOmitted = appendQuotaFallbackAttempt(path, pathOmitted, current.Name(), reason)
 			freshProvider = true
 			// A quota signal from a resumed provider unlocks only the remaining
 			// configured order. This is still synchronous and only happens after
@@ -188,12 +211,12 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 				}
 			}
 		} else {
-			path = append(path, quotaFallbackAttempt{agent: current.Name(), reason: fallbackFailureReason(err)})
+			path, pathOmitted = appendQuotaFallbackAttempt(path, pathOmitted, current.Name(), fallbackFailureReason(err))
 		}
 
 		if quotaSeen {
 			if position == len(candidateIndexes)-1 || (!isAgentUnavailableError(err) && !isQuota) {
-				return nil, &quotaFallbackError{attempts: path}
+				return nil, &quotaFallbackError{attempts: path, omitted: pathOmitted}
 			}
 		} else if position == len(candidateIndexes)-1 || !isAgentUnavailableError(err) {
 			return nil, err
@@ -202,7 +225,7 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 		nextPosition := position + 1
 		if nextPosition >= len(candidateIndexes) {
 			if quotaSeen {
-				return nil, &quotaFallbackError{attempts: path}
+				return nil, &quotaFallbackError{attempts: path, omitted: pathOmitted}
 			}
 			return nil, err
 		}
@@ -216,7 +239,7 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 		}
 	}
 	if quotaSeen {
-		return nil, &quotaFallbackError{attempts: path}
+		return nil, &quotaFallbackError{attempts: path, omitted: pathOmitted}
 	}
 	return nil, lastErr
 }
