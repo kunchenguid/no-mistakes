@@ -461,9 +461,9 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 			continue
 		}
 		pendingGate = ""
-		// CI is green but the PR is unmerged: hand control back rather than
-		// waiting on a human merge. This holds even under autoApprove, since
-		// the agent cannot approve away a human's merge.
+	// CI readiness is established but the PR is unmerged: hand control back
+	// rather than waiting on a human merge. This holds even under autoApprove,
+	// since the agent cannot approve away a human's merge.
 		if ciReadyToMerge(rv) {
 			return run, true, nil
 		}
@@ -564,10 +564,11 @@ func sendRespond(client *ipc.Client, runID string, step types.StepName, action t
 }
 
 // renderDriveResult prints the run snapshot plus one of: the active gate (exit
-// 0, a normal decision point), a checks-passed outcome (exit 0, CI is green and
-// the PR is ready for a human to merge), or the terminal outcome (exit 0 when
-// passed, exit 1 when blocked, failed, or cancelled). Successful outcomes also
-// carry the fixes the pipeline applied and reporting instructions, so the agent
+// 0, a normal decision point), a checks-passed outcome (exit 0, CI readiness is
+// established by green checks or the trusted no_ci declaration and the PR is
+// ready for a human to merge), or the terminal outcome (exit 0 when passed,
+// exit 1 when blocked, failed, or cancelled). Successful outcomes also carry
+// the fixes the pipeline applied and reporting instructions, so the agent
 // closes the loop with the user instead of stopping at "it passed".
 func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error {
 	rv := runViewFromIPC(run)
@@ -578,9 +579,9 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 		hasBranchSync = true
 	}
 
-	// CI passed but the run is intentionally still monitoring for a human
-	// merge. Report it as a distinct, successful outcome so the agent stops
-	// and asks the user to review and merge instead of waiting.
+	// CI readiness is established but the run is intentionally still monitoring
+	// for a human merge. Report it as a distinct, successful outcome so the
+	// agent stops and asks the user to review and merge instead of waiting.
 	if ciReady {
 		activity := cimonitor.FromAuthoritative(rv.CIReady, rv.CIReadyNoCI, nil)
 		fields = append(fields, toon.Field{Key: "outcome", Value: "checks-passed"})
