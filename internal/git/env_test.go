@@ -83,6 +83,22 @@ func TestNonInteractiveEnvFrom_UsesBaseAndOverridesGitKeys(t *testing.T) {
 	}
 }
 
+func TestSanitizedGateConfigEnvDropsAmbientGitConfig(t *testing.T) {
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.hookspath")
+	t.Setenv("GIT_CONFIG_VALUE_0", "/tmp")
+
+	got := resolveEnv(sanitizedGateConfigEnv(""))
+	for key := range got {
+		if strings.HasPrefix(key, "GIT_CONFIG_") && key != "GIT_CONFIG_NOSYSTEM" && key != "GIT_CONFIG_GLOBAL" {
+			t.Fatalf("ambient git config survived sanitization: %s", key)
+		}
+	}
+	if got["GIT_CONFIG_NOSYSTEM"] != "1" || got["GIT_CONFIG_GLOBAL"] != os.DevNull {
+		t.Fatalf("sanitized git config controls = %#v", got)
+	}
+}
+
 // TestNonInteractiveEnv_SetsPWDToDir locks in the PWD coupling. Assigning
 // cmd.Env disables os/exec's automatic PWD=Cmd.Dir injection, so the helper
 // must restore it; otherwise os.Getwd in the child resolves symlinks (e.g.

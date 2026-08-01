@@ -145,6 +145,13 @@ func (l *BranchOwnershipLock) ensureInternalMutationAuthority(database *db.DB) (
 	}
 	l.authorityMu.Lock()
 	defer l.authorityMu.Unlock()
+	if l.authorityClosing {
+		return "", fmt.Errorf("issue internal ref mutation: branch lock authority is closing")
+	}
+	return l.ensureInternalMutationAuthorityLocked(database)
+}
+
+func (l *BranchOwnershipLock) ensureInternalMutationAuthorityLocked(database *db.DB) (string, error) {
 	if l.file == nil {
 		return "", fmt.Errorf("issue internal ref mutation: active branch lock is required")
 	}
@@ -190,13 +197,17 @@ func (l *BranchOwnershipLock) closeInternalMutationAuthority() {
 	if l == nil {
 		return
 	}
-	l.authorityMu.Lock()
-	authority := l.authority
-	l.authority = nil
-	l.authorityMu.Unlock()
+	authority, done := l.beginAuthorityClose()
 	if authority != nil {
 		authority.close()
 	}
+	l.authorityMu.Lock()
+	if l.authorityDone == done {
+		l.authorityClosing = false
+		l.authorityDone = nil
+		close(done)
+	}
+	l.authorityMu.Unlock()
 }
 
 func AuthorizeInternalRefMutation(endpoint string, request InternalRefMutationAuthorization) error {

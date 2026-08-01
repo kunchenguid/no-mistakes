@@ -5,12 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 type internalMutationCapabilityKey struct{}
 type internalMutationOperationKey struct{}
 type internalMutationBranchKey struct{}
 type internalMutationAuthorityKey struct{}
+type sanitizedGateConfigKey struct{}
 
 func WithInternalMutationCapability(ctx context.Context, capability string) context.Context {
 	return context.WithValue(ctx, internalMutationCapabilityKey{}, capability)
@@ -26,6 +28,10 @@ func WithInternalMutationBranch(ctx context.Context, branch string) context.Cont
 
 func WithInternalMutationAuthority(ctx context.Context, endpoint string) context.Context {
 	return context.WithValue(ctx, internalMutationAuthorityKey{}, endpoint)
+}
+
+func WithSanitizedGateConfig(ctx context.Context) context.Context {
+	return context.WithValue(ctx, sanitizedGateConfigKey{}, true)
 }
 
 func internalMutationCapability(ctx context.Context) string {
@@ -58,6 +64,14 @@ func internalMutationAuthority(ctx context.Context) string {
 	}
 	endpoint, _ := ctx.Value(internalMutationAuthorityKey{}).(string)
 	return endpoint
+}
+
+func sanitizedGateConfig(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(sanitizedGateConfigKey{}).(bool)
+	return value
 }
 
 // NonInteractiveEnv returns the environment for a subprocess that may invoke
@@ -111,4 +125,17 @@ func NonInteractiveEnvFrom(base []string, dir string) []string {
 		}
 	}
 	return env
+}
+
+func sanitizedGateConfigEnv(dir string) []string {
+	base := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "GIT_CONFIG_") {
+			continue
+		}
+		base = append(base, entry)
+	}
+	env := NonInteractiveEnvFrom(base, dir)
+	return append(env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
 }

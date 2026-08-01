@@ -23,6 +23,8 @@ type BranchOwnershipLock struct {
 	authorityMu         sync.Mutex
 	authority           *internalMutationAuthority
 	authorityGeneration string
+	authorityClosing    bool
+	authorityDone       chan struct{}
 }
 
 type custodyLock = BranchOwnershipLock
@@ -73,25 +75,63 @@ func acquireBranchOwnershipLock(root, repository, workDir, branch string) (*Bran
 }
 
 func (l *BranchOwnershipLock) Release() {
-	if l == nil || l.file == nil {
+	if l == nil {
 		return
 	}
-	l.closeInternalMutationAuthority()
-	_ = unlockCustodyLock(l.file)
-	_ = l.file.Close()
-	l.file = nil
+	authority, done := l.beginAuthorityClose()
+	if authority != nil {
+		authority.close()
+	}
+	l.authorityMu.Lock()
+	if l.authorityDone == done {
+		if l.file != nil {
+			_ = unlockCustodyLock(l.file)
+			_ = l.file.Close()
+			l.file = nil
+		}
+		l.authorityClosing = false
+		l.authorityDone = nil
+		close(done)
+	}
+	l.authorityMu.Unlock()
 }
 
 func IssueInternalRefMutation(database *db.DB, lock *BranchOwnershipLock, spec db.InternalRefMutationSpec) (string, string, error) {
-	if database == nil || lock == nil || lock.file == nil {
+	if database == nil || lock == nil {
 		return "", "", fmt.Errorf("issue internal ref mutation: active branch lock is required")
 	}
-	endpoint, err := lock.ensureInternalMutationAuthority(database)
+	lock.authorityMu.Lock()
+	defer lock.authorityMu.Unlock()
+	if lock.file == nil || lock.authorityClosing {
+		return "", "", fmt.Errorf("issue internal ref mutation: active branch lock is required")
+	}
+	if _, err := lock.file.Stat(); err != nil {
+		return "", "", fmt.Errorf("issue internal ref mutation: active branch lock is required")
+	}
+	endpoint, err := lock.ensureInternalMutationAuthorityLocked(database)
 	if err != nil {
 		return "", "", err
 	}
 	capability, err := database.IssueInternalRefMutation(spec, endpoint)
 	return capability, endpoint, err
+}
+
+func (l *BranchOwnershipLock) beginAuthorityClose() (*internalMutationAuthority, chan struct{}) {
+	l.authorityMu.Lock()
+	for l.authorityClosing {
+		done := l.authorityDone
+		l.authorityMu.Unlock()
+		<-done
+		l.authorityMu.Lock()
+	}
+	l.authorityClosing = true
+	done := make(chan struct{})
+	l.authorityDone = done
+	authority := l.authority
+	l.authority = nil
+	l.authorityGeneration = ""
+	l.authorityMu.Unlock()
+	return authority, done
 }
 
 func custodyLockPath(s *Service, run *db.Run) string {

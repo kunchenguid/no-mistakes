@@ -253,6 +253,18 @@ func TestGateConfigCurrentRejectsMissingOrTamperedAdmissionHook(t *testing.T) {
 	if GateConfigCurrent(bare) {
 		t.Fatal("wrong effective hooks path must invalidate the gate stamp")
 	}
+	localConfigPath := filepath.Join(bare, "config")
+	localConfig, err := os.ReadFile(localConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localConfig = []byte(strings.Replace(string(localConfig), "worktreeconfig = true", "worktreeconfig = false", 1))
+	if err := os.WriteFile(localConfigPath, localConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if GateConfigCurrent(bare) {
+		t.Fatal("disabled worktree config must invalidate the gate stamp")
+	}
 }
 
 func TestPostReceiveHookScript(t *testing.T) {

@@ -16,6 +16,8 @@ import (
 const gateRefLockMarker = "no-mistakes gate lock authority:"
 const gateRefLockOwnerMarker = "no-mistakes gate lock owner:"
 
+var removeGateRefLock = os.Remove
+
 type gateRefLockOwner struct {
 	RunID             string `json:"run_id"`
 	RepoID            string `json:"repo_id"`
@@ -28,13 +30,14 @@ type gateRefLockOwner struct {
 }
 
 type gateRefLock struct {
-	file      *os.File
-	path      string
-	owner     gateRefLockOwner
-	identity  string
-	database  *db.DB
-	journaled bool
-	osLocked  bool
+	file       *os.File
+	path       string
+	owner      gateRefLockOwner
+	identity   string
+	database   *db.DB
+	osLocked   bool
+	released   bool
+	releaseErr error
 }
 
 func acquireGateRefLock(gateDir, ref, authorityEndpoint string) (*gateRefLock, error) {
@@ -222,20 +225,43 @@ func readOwnedGateRefLock(path string) (gateRefLockOwner, error) {
 	return owner, nil
 }
 
-func (l *gateRefLock) release(database *db.DB) {
-	if l == nil || l.file == nil {
-		return
+func (l *gateRefLock) release(database *db.DB) error {
+	if l == nil {
+		return nil
+	}
+	if l.released {
+		return l.releaseErr
+	}
+	if l.file == nil {
+		l.released = true
+		return l.releaseErr
 	}
 	if l.osLocked {
 		releaseGateRefOSLock(l.file)
 		l.osLocked = false
 	}
-	_ = l.file.Close()
-	_ = os.Remove(l.path)
-	if database != nil && l.owner.RunID != "" && l.owner.OwnerGeneration != "" {
-		_ = database.ClearGateRefLock(l.owner.RunID, l.owner.OwnerGeneration)
-	}
+	closeErr := l.file.Close()
 	l.file = nil
+	removeErr := removeGateRefLock(l.path)
+	if removeErr != nil && !os.IsNotExist(removeErr) {
+		l.releaseErr = fmt.Errorf("remove gate ref lock: %w", removeErr)
+		l.released = true
+		return l.releaseErr
+	}
+	if closeErr != nil {
+		l.releaseErr = fmt.Errorf("close gate ref lock: %w", closeErr)
+		l.released = true
+		return l.releaseErr
+	}
+	if database != nil && l.owner.RunID != "" && l.owner.OwnerGeneration != "" {
+		if err := database.ClearGateRefLock(l.owner.RunID, l.owner.OwnerGeneration); err != nil {
+			l.releaseErr = err
+			l.released = true
+			return err
+		}
+	}
+	l.released = true
+	return nil
 }
 
 func readLockedGateRef(gateDir, ref string) (string, error) {
@@ -273,9 +299,21 @@ func readLockedGateRefAtDepth(gateDir, ref string, depth int) (string, error) {
 	return "", fmt.Errorf("read locked gate ref: %s is absent", ref)
 }
 
-func (l *gateRefLock) Release() {
+func (l *gateRefLock) Release() error {
+	if l == nil {
+		return nil
+	}
+	return l.release(l.database)
+}
+
+func (l *gateRefLock) closeKeepJournal() {
 	if l == nil || l.file == nil {
 		return
 	}
-	l.release(l.database)
+	if l.osLocked {
+		releaseGateRefOSLock(l.file)
+		l.osLocked = false
+	}
+	_ = l.file.Close()
+	l.file = nil
 }

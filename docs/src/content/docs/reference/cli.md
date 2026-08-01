@@ -215,6 +215,8 @@ When you explicitly keep a behind or diverged local head instead of taking the p
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`. A publication-bearing run is refused pending publication reconciliation and receives no custody stamp.
 On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pipeline-created exists to recover, and no file, ref, or database row changes.
 
+Historical custody recovery and local managed-gate fencing own the `gate_ref_locks` journal. This boundary is compatible with open PR #614: PR #614 is complementary future forward-head transition journaling, not a runtime dependency of this recovery path, and the two changes keep their journal schemas and ownership scopes separate.
+
 ## no-mistakes axi logs
 
 Show the log output of one pipeline step.

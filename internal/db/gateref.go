@@ -74,6 +74,17 @@ func (d *DB) MarkGateRefLockStamped(runID, ownerGeneration string) error {
 	return nil
 }
 
+func (d *DB) UpdateGateRefLockIdentity(runID, ownerGeneration, fileIdentity string) error {
+	result, err := d.sql.Exec(`UPDATE gate_ref_locks SET file_identity = ?, updated_at = ? WHERE run_id = ? AND owner_generation = ? AND state IN (?, ?)`, strings.TrimSpace(fileIdentity), now(), strings.TrimSpace(runID), strings.TrimSpace(ownerGeneration), GateRefLockStatePrepared, GateRefLockStateStamped)
+	if err != nil {
+		return fmt.Errorf("update gate ref lock identity: %w", err)
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return fmt.Errorf("update gate ref lock identity: ownership journal is missing or changed")
+	}
+	return nil
+}
+
 func (d *DB) ClearGateRefLock(runID, ownerGeneration string) error {
 	_, err := d.sql.Exec(`DELETE FROM gate_ref_locks WHERE run_id = ? AND owner_generation = ?`, strings.TrimSpace(runID), strings.TrimSpace(ownerGeneration))
 	if err != nil {

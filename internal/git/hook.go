@@ -722,9 +722,35 @@ func gateWorktreeConfigCurrent(bareDir string) bool {
 	if err != nil {
 		return false
 	}
-	config, err := os.ReadFile(filepath.Join(bareDir, "config.worktree"))
+	worktreePath := filepath.Join(bareDir, "config.worktree")
+	localPath := filepath.Join(bareDir, "config")
+	if !gateConfigFileRegular(worktreePath) || !gateConfigFileRegular(localPath) {
+		return false
+	}
+	worktreeValues, err := gateConfigSectionValues(worktreePath, "core")
 	if err != nil {
 		return false
+	}
+	extensionValues, err := gateConfigSectionValues(localPath, "extensions")
+	if err != nil {
+		return false
+	}
+	configuredHooks, ok := worktreeValues["hookspath"]
+	if !ok || !filepath.IsAbs(configuredHooks) || filepath.Clean(configuredHooks) != filepath.Clean(hooksDir) {
+		return false
+	}
+	return strings.EqualFold(worktreeValues["bare"], "true") && strings.EqualFold(extensionValues["worktreeconfig"], "true")
+}
+
+func gateConfigFileRegular(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
+func gateConfigSectionValues(path, wantedSection string) (map[string]string, error) {
+	config, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
 	}
 	values := map[string]string{}
 	section := ""
@@ -738,18 +764,14 @@ func gateWorktreeConfigCurrent(bareDir string) bool {
 			continue
 		}
 		key, value, ok := strings.Cut(line, "=")
-		if !ok || section != "core" {
+		if !ok || section != strings.ToLower(wantedSection) {
 			continue
 		}
 		key = strings.ToLower(strings.TrimSpace(key))
 		value = strings.TrimSpace(value)
 		values[key] = value
 	}
-	configuredHooks, ok := values["hookspath"]
-	if !ok || filepath.IsAbs(configuredHooks) == false || filepath.Clean(configuredHooks) != filepath.Clean(hooksDir) {
-		return false
-	}
-	return strings.EqualFold(values["bare"], "true")
+	return values, nil
 }
 
 // MarkGateConfigCurrent atomically records a fully completed gate migration.

@@ -848,7 +848,7 @@ func internalZeroObjectID(sha string) string {
 }
 
 func (s *Service) updateGateRef(ctx context.Context, lock *custodyLock, branch, ref, oldSHA, newSHA string) error {
-	if !s.gateConfigCurrent() {
+	if !git.LooksLikeBareRepository(s.GateDir) || !s.gateConfigCurrent() {
 		return fmt.Errorf("managed gate fencing configuration is missing or tampered")
 	}
 	oldSHA = strings.TrimSpace(oldSHA)
@@ -863,6 +863,11 @@ func (s *Service) updateGateRef(ctx context.Context, lock *custodyLock, branch, 
 	if err != nil {
 		return err
 	}
+	mutationCtx = git.WithSanitizedGateConfig(mutationCtx)
+	hookPath, err := filepath.Abs(filepath.Join(s.GateDir, "hooks"))
+	if err != nil {
+		return fmt.Errorf("resolve managed gate hooks path: %w", err)
+	}
 	args := []string{"update-ref"}
 	if git.IsZeroSHA(newSHA) || (len(newSHA) == 64 && newSHA == strings.Repeat("0", 64)) {
 		args = append(args, "-d", ref)
@@ -872,6 +877,7 @@ func (s *Service) updateGateRef(ctx context.Context, lock *custodyLock, branch, 
 	if oldSHA != "" {
 		args = append(args, oldSHA)
 	}
+	args = append([]string{"-c", "core.hooksPath=" + hookPath, "-c", "extensions.worktreeConfig=true"}, args...)
 	_, err = git.Run(mutationCtx, s.GateDir, args...)
 	if err != nil {
 		return err
@@ -880,7 +886,7 @@ func (s *Service) updateGateRef(ctx context.Context, lock *custodyLock, branch, 
 }
 
 func (s *Service) fetchGatePrivateRef(ctx context.Context, lock *custodyLock, branch, source, destination, oldSHA, newSHA string) error {
-	if !s.gateConfigCurrent() {
+	if !git.LooksLikeBareRepository(s.GateDir) || !s.gateConfigCurrent() {
 		return fmt.Errorf("managed gate fencing configuration is missing or tampered")
 	}
 	oldSHA = strings.TrimSpace(oldSHA)
@@ -895,7 +901,12 @@ func (s *Service) fetchGatePrivateRef(ctx context.Context, lock *custodyLock, br
 	if err != nil {
 		return err
 	}
-	_, err = git.Run(mutationCtx, s.GateDir, "fetch", "--no-tags", "--no-write-fetch-head", source, "+refs/heads/"+branch+":"+destination)
+	mutationCtx = git.WithSanitizedGateConfig(mutationCtx)
+	hookPath, err := filepath.Abs(filepath.Join(s.GateDir, "hooks"))
+	if err != nil {
+		return fmt.Errorf("resolve managed gate hooks path: %w", err)
+	}
+	_, err = git.Run(mutationCtx, s.GateDir, "-c", "core.hooksPath="+hookPath, "-c", "extensions.worktreeConfig=true", "fetch", "--no-tags", "--no-write-fetch-head", source, "+refs/heads/"+branch+":"+destination)
 	if err != nil {
 		return err
 	}
@@ -1158,7 +1169,7 @@ func (s *Service) finishRecoverWithTransition(ctx context.Context, run *db.Run, 
 	return s.finishRecoverAtGateHead(ctx, run, changed, transition, lock, expectedGateHead)
 }
 
-func (s *Service) finishRecoverAtGateHead(ctx context.Context, run *db.Run, changed bool, transition *custodyGateTransition, lock *custodyLock, expectedGateHead string) State {
+func (s *Service) finishRecoverAtGateHead(ctx context.Context, run *db.Run, changed bool, transition *custodyGateTransition, lock *custodyLock, expectedGateHead string) (result State) {
 	if lock == nil {
 		state, _, _ := s.inspect(ctx)
 		state.Changed = changed
@@ -1228,13 +1239,24 @@ func (s *Service) finishRecoverAtGateHead(ctx context.Context, run *db.Run, chan
 		return state
 	}
 	gateLock.database = s.DB
-	releaseGateLock := func() {
+	releaseGateLock := func() error {
 		if gateLock != nil {
-			gateLock.Release()
-			gateLock = nil
+			err := gateLock.Release()
+			if err == nil {
+				gateLock = nil
+			}
+			return err
 		}
+		return nil
 	}
-	defer releaseGateLock()
+	defer func() {
+		if err := releaseGateLock(); err != nil {
+			result.Recovered = false
+			result.Safety = "blocked_recover_gate_race"
+			result.Error = fmt.Sprintf("the ordinary gate lock could not be released (%v); custody remains retryable and the ownership journal was retained", err)
+			result.NextAction = nil
+		}
+	}()
 	if !s.gateConfigCurrent() {
 		state, _, _ := s.inspect(ctx)
 		state.Changed = changed
@@ -1353,45 +1375,53 @@ func (s *Service) reclaimStampedGateRefLock(lock *custodyLock, run *db.Run) erro
 		_ = conn.Close()
 		return fmt.Errorf("the recorded gate lock authority is still live")
 	}
-	gateHead, err := readLockedGateRef(s.GateDir, journal.Ref)
-	if err != nil || gateHead != journal.ExpectedHead {
-		return fmt.Errorf("ordinary gate ref changed before stamped lock reclaim")
+	owner := gateRefLockOwner{RunID: journal.RunID, RepoID: journal.RepoID, GatePath: journal.GatePath, Branch: journal.Branch, Ref: journal.Ref, OwnerGeneration: journal.OwnerGeneration, AuthorityEndpoint: journal.AuthorityEndpoint, ExpectedHead: journal.ExpectedHead}
+	var gateLock *gateRefLock
+	if _, statErr := os.Stat(journal.LockPath); os.IsNotExist(statErr) {
+		gateLock, err = acquireOwnedGateRefLock(s.GateDir, journal.Ref, owner)
+		if err != nil {
+			return fmt.Errorf("reacquire stamped gate lock: %w", err)
+		}
+		if err := s.DB.UpdateGateRefLockIdentity(run.ID, journal.OwnerGeneration, gateLock.identity); err != nil {
+			gateLock.closeKeepJournal()
+			return err
+		}
+	} else if statErr != nil {
+		return fmt.Errorf("inspect stamped gate lock: %w", statErr)
+	} else {
+		ownerOnDisk, ownerErr := readOwnedGateRefLock(journal.LockPath)
+		if ownerErr != nil {
+			return ownerErr
+		}
+		if ownerOnDisk != owner {
+			return fmt.Errorf("stamped gate lock owner changed")
+		}
+		identity, identityErr := gateRefFileIdentity(journal.LockPath)
+		if identityErr != nil || identity != journal.FileIdentity {
+			return fmt.Errorf("stamped gate lock file identity changed")
+		}
+		file, openErr := os.OpenFile(journal.LockPath, os.O_RDWR, 0o644)
+		if openErr != nil {
+			return fmt.Errorf("open stamped gate lock: %w", openErr)
+		}
+		gateLock = &gateRefLock{file: file, path: journal.LockPath, owner: owner, identity: identity}
 	}
-	if _, err := os.Stat(journal.LockPath); os.IsNotExist(err) {
-		return s.DB.ClearGateRefLock(run.ID, journal.OwnerGeneration)
-	} else if err != nil {
-		return fmt.Errorf("inspect stamped gate lock: %w", err)
-	}
-	owner, err := readOwnedGateRefLock(journal.LockPath)
-	if err != nil {
-		return err
-	}
-	if owner.RunID != journal.RunID || owner.RepoID != journal.RepoID || owner.GatePath != journal.GatePath || owner.Branch != journal.Branch || owner.Ref != journal.Ref || owner.OwnerGeneration != journal.OwnerGeneration || owner.AuthorityEndpoint != journal.AuthorityEndpoint || owner.ExpectedHead != journal.ExpectedHead {
-		return fmt.Errorf("stamped gate lock owner changed")
-	}
-	identity, err := gateRefFileIdentity(journal.LockPath)
-	if err != nil || identity != journal.FileIdentity {
-		return fmt.Errorf("stamped gate lock file identity changed")
-	}
-	file, err := os.OpenFile(journal.LockPath, os.O_RDWR, 0o644)
-	if err != nil {
-		return fmt.Errorf("open stamped gate lock: %w", err)
-	}
-	defer file.Close()
-	if err := acquireGateRefOSLock(file); err != nil {
+	defer gateLock.closeKeepJournal()
+	if err := acquireGateRefOSLock(gateLock.file); err != nil {
 		return fmt.Errorf("acquire stamped gate lock: %w", err)
 	}
-	defer releaseGateRefOSLock(file)
-	if identity, err := gateRefFileIdentity(journal.LockPath); err != nil || identity != journal.FileIdentity {
+	gateLock.osLocked = true
+	if identity, identityErr := gateRefFileIdentity(journal.LockPath); identityErr != nil || identity != gateLock.identity {
 		return fmt.Errorf("stamped gate lock file identity changed during reclaim")
 	}
-	gateHead, err = readLockedGateRef(s.GateDir, journal.Ref)
+	gateHead, err := readLockedGateRef(s.GateDir, journal.Ref)
 	if err != nil || gateHead != journal.ExpectedHead {
 		return fmt.Errorf("ordinary gate ref changed before stamped lock reclaim")
 	}
 	if err := os.Remove(journal.LockPath); err != nil {
 		return fmt.Errorf("remove stamped gate lock: %w", err)
 	}
+	gateLock.closeKeepJournal()
 	return s.DB.ClearGateRefLock(run.ID, journal.OwnerGeneration)
 }
 

@@ -54,7 +54,11 @@ func RunBare(ctx context.Context, bareDir string, args ...string) (string, error
 func runInDir(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = NonInteractiveEnv(dir)
+	if sanitizedGateConfig(ctx) {
+		cmd.Env = sanitizedGateConfigEnv(dir)
+	} else {
+		cmd.Env = NonInteractiveEnv(dir)
+	}
 	if capability := internalMutationCapability(ctx); capability != "" {
 		cmd.Env = append(cmd.Env, "NO_MISTAKES_INTERNAL_MUTATION_CAPABILITY="+capability)
 	}

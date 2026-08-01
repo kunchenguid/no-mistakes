@@ -208,6 +208,50 @@ func TestStampedRecoveryReclaimsOwnedGateLockAfterCrash(t *testing.T) {
 	}
 }
 
+func TestGateRefLockReleaseRetainsJournalWhenRemovalFails(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	branchLock, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := branchLock.ensureInternalMutationAuthority(f.db)
+	if err != nil {
+		branchLock.Release()
+		t.Fatal(err)
+	}
+	generation, err := newGateRefLockGeneration()
+	if err != nil {
+		branchLock.Release()
+		t.Fatal(err)
+	}
+	ref := "refs/heads/" + f.run.Branch
+	owner := gateRefLockOwner{RunID: f.run.ID, RepoID: f.repo.ID, GatePath: f.gate, Branch: f.run.Branch, Ref: ref, OwnerGeneration: generation, AuthorityEndpoint: authority, ExpectedHead: f.preserved}
+	gateLock, err := acquireOwnedGateRefLock(f.gate, ref, owner)
+	if err != nil {
+		branchLock.Release()
+		t.Fatal(err)
+	}
+	if err := f.db.PrepareGateRefLock(db.GateRefLockJournal{RunID: f.run.ID, RepoID: f.repo.ID, GatePath: f.gate, Branch: f.run.Branch, Ref: ref, LockPath: gateLock.path, OwnerGeneration: generation, AuthorityEndpoint: authority, ExpectedHead: f.preserved, FileIdentity: gateLock.identity}); err != nil {
+		gateLock.Release()
+		branchLock.Release()
+		t.Fatal(err)
+	}
+	gateLock.database = f.db
+	originalRemove := removeGateRefLock
+	removeGateRefLock = func(string) error { return errors.New("injected removal failure") }
+	err = gateLock.Release()
+	removeGateRefLock = originalRemove
+	if err == nil {
+		t.Fatal("gate lock release unexpectedly ignored removal failure")
+	}
+	if journal, journalErr := f.db.GetGateRefLock(f.run.ID); journalErr != nil || journal == nil {
+		t.Fatalf("gate lock journal after failed removal = %#v, %v", journal, journalErr)
+	}
+	_ = originalRemove(gateLock.path)
+	_ = f.db.ClearGateRefLock(f.run.ID, generation)
+	branchLock.Release()
+}
+
 func TestCustodyLockRejectsLiveSecondAttemptAndReleasesAfterOwnerExit(t *testing.T) {
 	f := newRecoverFixture(t, "cancelled")
 	first, err := acquireCustodyLock(f.service, f.run)
