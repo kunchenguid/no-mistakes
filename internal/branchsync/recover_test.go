@@ -183,6 +183,27 @@ func (f *recoverFixture) custodyReturned() bool {
 	return run.CustodyReturnedAt != nil
 }
 
+func TestInvalidCustodyStampDoesNotReportRecovered(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	expected, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.SetRunCustodyReturnedCAS(expected); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.MarkRunCustodyInvalid(context.Background(), f.run.ID, "", "authority was lost"); err != nil {
+		t.Fatal(err)
+	}
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered {
+		t.Fatal("invalid custody stamp was reported as recovered")
+	}
+	if state.Safety != "blocked_recover_custody_invalid" {
+		t.Fatalf("invalid custody safety = %q", state.Safety)
+	}
+}
+
 func assertNoRecoverAnchor(t *testing.T, f *recoverFixture) {
 	t.Helper()
 	if got, err := gitpkg.Run(f.ctx, f.local, "rev-parse", "--verify", "--quiet", f.anchorRef()+"^{commit}"); err == nil {

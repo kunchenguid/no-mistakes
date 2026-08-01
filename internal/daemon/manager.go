@@ -142,6 +142,58 @@ func (m *RunManager) ensureManagedGateGuard(repo *db.Repo, ref string) error {
 	return nil
 }
 
+func (m *RunManager) reconcileManagedGateQuarantine(ctx context.Context, repo *db.Repo, ref string) error {
+	if m == nil || m.db == nil || repo == nil || !strings.HasPrefix(ref, "refs/heads/") {
+		return nil
+	}
+	gateDir := m.paths.RepoDir(repo.ID)
+	quarantine, err := m.db.GetGateRefQuarantine(repo.ID, gateDir, ref)
+	if err != nil || quarantine == nil {
+		return err
+	}
+	ownership, err := branchsync.AcquireBranchOwnershipLock(m.paths, repo, repo.WorkingPath, branchFromRef(ref))
+	if err != nil {
+		return fmt.Errorf("acquire branch ownership lock for quarantine reconciliation: %w", err)
+	}
+	defer ownership.Release()
+	m.managedGateMu.Lock()
+	defer m.managedGateMu.Unlock()
+	key := managedGateGuardKey(repo.ID, ref)
+	guard := m.managedGateGuards[key]
+	ownedHere := guard != nil
+	if guard == nil {
+		guard, err = branchsync.AcquireManagedGateRefAuthority(gateDir, ref)
+		if err != nil {
+			return fmt.Errorf("acquire managed gate authority for quarantine reconciliation: %w", err)
+		}
+	} else if err := guard.Validate(gateDir, ref); err != nil {
+		return fmt.Errorf("validate managed gate authority for quarantine reconciliation: %w", err)
+	}
+	current, readErr := branchsync.ReadManagedGateRefUnderAuthority(guard, gateDir, ref)
+	if readErr != nil || db.NormalizeManagedGateHead(current) != db.NormalizeManagedGateHead(quarantine.ExpectedHead) {
+		if !ownedHere {
+			_ = guard.Release()
+		}
+		if readErr != nil {
+			return fmt.Errorf("read quarantined managed gate ref: %w", readErr)
+		}
+		return fmt.Errorf("quarantined managed gate ref changed from expected %s to %s", quarantine.ExpectedHead, current)
+	}
+	if err := m.db.ClearGateRefQuarantine(repo.ID, gateDir, ref); err != nil {
+		if !ownedHere {
+			_ = guard.Release()
+		}
+		return fmt.Errorf("clear reconciled managed gate quarantine: %w", err)
+	}
+	if !ownedHere {
+		m.managedGateGuards[key] = guard
+	}
+	delete(m.managedGateQuarantine, key)
+	delete(m.managedGateQuarantinePersisted, key)
+	_ = ctx
+	return nil
+}
+
 func (m *RunManager) managedGateRefMutation(repoID, gateDir string) func(context.Context, string, string, string, func(string, string) error, func() error) error {
 	return func(ctx context.Context, ref, oldSHA, newSHA string, prepare func(string, string) error, commit func() error) error {
 		m.managedGateMu.Lock()
@@ -203,6 +255,9 @@ func (m *RunManager) managedGateRefFinalize(repoID, gateDir, ref string) func(co
 			return fmt.Errorf("managed gate ref changed during final custody check")
 		}
 		if err := stamp(); err != nil {
+			if rollbackErr := rollback(); rollbackErr != nil {
+				return fmt.Errorf("managed custody stamp failed: %w; rollback failed: %v", err, rollbackErr)
+			}
 			return err
 		}
 		if err := m.validateManagedGateGuardLocked(repoID, gateDir, ref, guard); err != nil {
@@ -348,6 +403,9 @@ func (m *RunManager) HandleRecover(ctx context.Context, repoID, branch string, k
 		return branchsync.State{}, fmt.Errorf("invalid recovery branch")
 	}
 	ref := "refs/heads/" + branch
+	if err := m.reconcileManagedGateQuarantine(ctx, repo, ref); err != nil {
+		return branchsync.State{}, fmt.Errorf("reconcile managed gate quarantine for recovery: %w", err)
+	}
 	if err := m.ensureManagedGateGuard(repo, ref); err != nil {
 		return branchsync.State{}, fmt.Errorf("acquire managed gate authority for recovery: %w", err)
 	}
@@ -401,14 +459,38 @@ func (m *RunManager) legacyPublicationProof(ctx context.Context, run *db.Run, br
 		if run.CreatedAt <= 0 || run.UpdatedAt < run.CreatedAt {
 			return fmt.Errorf("historical publication proof has no valid run interval")
 		}
-		if run.PRURL == nil || strings.TrimSpace(*run.PRURL) == "" {
-			return fmt.Errorf("historical publication proof has no exact submission-time request identity")
-		}
-		if err := verifier.VerifyUnpublishedHistory(ctx, branch, submitted, run.HeadSHA, run.CreatedAt, run.UpdatedAt, *run.PRURL); err != nil {
+		targetIdentity := recoveryTargetIdentity(ctx, target, run.PRURL)
+		if err := verifier.VerifyUnpublishedHistory(ctx, branch, submitted, run.HeadSHA, run.CreatedAt, run.UpdatedAt, targetIdentity); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func recoveryTargetIdentity(ctx context.Context, target string, prURL *string) string {
+	if prURL == nil || strings.TrimSpace(*prURL) == "" {
+		return ""
+	}
+	provider := scm.DetectProviderContext(ctx, target)
+	if provider != scm.DetectProviderContext(ctx, *prURL) {
+		return ""
+	}
+	targetHost := scm.ResolveHost(ctx, target)
+	prHost := scm.ResolveHost(ctx, *prURL)
+	if !strings.EqualFold(targetHost, prHost) {
+		return ""
+	}
+	switch provider {
+	case scm.ProviderGitHub:
+		if github.HostPrefixedSlugForHost(target, targetHost) == github.HostPrefixedSlugForHost(*prURL, prHost) {
+			return strings.TrimSpace(*prURL)
+		}
+	case scm.ProviderGitLab:
+		if gitlab.ProjectPath(target) == gitlab.ProjectPath(*prURL) {
+			return strings.TrimSpace(*prURL)
+		}
+	}
+	return ""
 }
 
 func reviewObjectID(value string) bool {

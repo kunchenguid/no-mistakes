@@ -956,6 +956,29 @@ func TestSetRunCustodyReturnedCAS(t *testing.T) {
 		}
 	})
 
+	t.Run("marks an unrollbackable stamp invalid", func(t *testing.T) {
+		d := openTestDB(t)
+		repo, _ := d.InsertRepo("/home/user/custody-invalid", "git@github.com:user/custody.git", "main")
+		run, _ := d.InsertRun(repo.ID, "feat", "submitted", "base")
+		if err := d.UpdateRunHeadSHA(run.ID, "preserved"); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
+			t.Fatal(err)
+		}
+		expected, _ := d.GetRun(run.ID)
+		if err := d.SetRunCustodyReturnedCAS(expected); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.MarkRunCustodyInvalid(context.Background(), run.ID, "", "gate authority was lost"); err != nil {
+			t.Fatalf("mark custody invalid: %v", err)
+		}
+		got, _ := d.GetRun(run.ID)
+		if got.CustodyReturnedAt == nil || got.CustodyTransitionPhase == nil || *got.CustodyTransitionPhase != CustodyPhaseInvalid {
+			t.Fatalf("invalid custody state = %#v", got)
+		}
+	})
+
 	t.Run("rejects active run", func(t *testing.T) {
 		d := openTestDB(t)
 		repo, _ := d.InsertRepo("/home/user/custody-active", "git@github.com:user/custody.git", "main")

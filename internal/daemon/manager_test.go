@@ -227,6 +227,33 @@ func TestManagedGateQuarantinePersistenceFailureStaysSticky(t *testing.T) {
 	manager.Shutdown()
 }
 
+func TestRecoveryReconcilesQuarantineBeforeManagedGuard(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "recovery-quarantine-reconcile")
+	ref := "refs/heads/main"
+	if err := database.SetManagedGateRefHead(repo.ID, p.RepoDir(repo.ID), ref, head); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QuarantineGateRef(repo.ID, p.RepoDir(repo.ID), ref, head, head, "authority-lost"); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewRunManager(database, p, nil)
+	if err := manager.reconcileManagedGateQuarantine(context.Background(), repo, ref); err != nil {
+		t.Fatalf("reconcile managed gate quarantine: %v", err)
+	}
+	if err := manager.ensureManagedGateGuard(repo, ref); err != nil {
+		t.Fatalf("ensure managed gate guard after reconciliation: %v", err)
+	}
+	quarantine, err := database.GetGateRefQuarantine(repo.ID, p.RepoDir(repo.ID), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quarantine != nil {
+		t.Fatalf("quarantine remains after authenticated reconciliation: %#v", quarantine)
+	}
+	manager.Shutdown()
+}
+
 func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
 	review := &mockPassStep{name: types.StepReview}
 	testStep := &mockPassStep{name: types.StepTest}

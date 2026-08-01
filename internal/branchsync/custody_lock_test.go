@@ -296,6 +296,52 @@ func TestStageRecoveryAnchorHoldsPrivateRefFenceAcrossStageCommit(t *testing.T) 
 	}
 }
 
+func TestRecoveryAnchorFinalizationRejectsChangedAnchor(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover:refs/no-mistakes/recovery-source")
+	lock, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	if _, err := lock.ensureInternalMutationAuthority(f.db); err != nil {
+		t.Fatal(err)
+	}
+	if safety := f.service.stageRecoveryAnchor(f.ctx, lock, f.run, f.preserved, f.anchorRef()); safety != "" {
+		t.Fatalf("stage recovery anchor safety = %q", safety)
+	}
+	mustRun(t, f.local, "update-ref", f.anchorRef(), f.submitted)
+	if err := f.service.withVerifiedRecoveryAnchor(f.ctx, f.run, func() error { return nil }); err == nil {
+		t.Fatal("changed recovery anchor passed final custody verification")
+	}
+}
+
+func TestRecoveryAnchorOwnerUpgradeIsCanonical(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	stage := &db.RecoveryAnchorStage{RunID: f.run.ID, RepoID: f.repo.ID, GatePath: f.gate, Branch: f.run.Branch, Ref: f.anchorRef(), OldSHA: internalZeroObjectID(f.preserved), NewSHA: f.preserved, OwnerGeneration: "generation-1", AuthorityEndpoint: "endpoint-1", State: db.RecoveryAnchorStagePrepared}
+	path, err := recoveryAnchorOwnerPath(f.local, stage.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := recoveryAnchorOwnerValue(f.run, stage) + "generation=old\n"
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureRecoveryAnchorOwner(f.local, f.run, stage); err != nil {
+		t.Fatalf("upgrade recovery anchor owner: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != recoveryAnchorOwnerValue(f.run, stage) {
+		t.Fatalf("canonical owner = %q", got)
+	}
+}
+
 func TestManagedPrivateRefAuthorityWritesExactAnchor(t *testing.T) {
 	f := newRecoverFixture(t, "cancelled")
 	mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover:refs/no-mistakes/recovery-source")

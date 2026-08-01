@@ -32,9 +32,13 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 	if strings.TrimSpace(h.projectPath) == "" {
 		return errors.New("GitLab project identity is unavailable")
 	}
-	targetNumber, err := scm.ExtractPRNumber(targetIdentity)
-	if err != nil || (h.host != "" && scm.ExtractHost(targetIdentity) != "" && !strings.EqualFold(scm.ExtractHost(targetIdentity), h.host)) || scmProjectPath(targetIdentity) != h.projectPath {
-		return errors.New("GitLab submission-time merge-request identity is unavailable or mismatched")
+	targetNumber := ""
+	if strings.TrimSpace(targetIdentity) != "" {
+		var err error
+		targetNumber, err = scm.ExtractPRNumber(targetIdentity)
+		if err != nil || (h.host != "" && scm.ExtractHost(targetIdentity) != "" && !strings.EqualFold(scm.ExtractHost(targetIdentity), h.host)) || scmProjectPath(targetIdentity) != h.projectPath {
+			return errors.New("GitLab submission-time merge-request identity is unavailable or mismatched")
+		}
 	}
 	project := url.PathEscape(h.projectPath)
 	var mergeRequests []recoveryMergeRequest
@@ -50,7 +54,10 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 		if !inWindow {
 			continue
 		}
-		if fmt.Sprint(mergeRequest.IID) != targetNumber {
+		if targetNumber != "" && fmt.Sprint(mergeRequest.IID) != targetNumber {
+			continue
+		}
+		if targetNumber == "" && mergeRequest.SourceBranch != branch {
 			continue
 		}
 		matched = true
@@ -80,7 +87,7 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 			}
 		}
 	}
-	if !matched {
+	if !matched && targetNumber != "" {
 		return fmt.Errorf("GitLab merge request %s was not found in the submission interval", targetNumber)
 	}
 	return nil

@@ -516,6 +516,18 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		}
 		state, run, _ = s.inspect(ctx)
 	}
+	if run != nil && run.CustodyReturnedAt != nil && run.CustodyTransitionPhase != nil && *run.CustodyTransitionPhase == db.CustodyPhaseInvalid {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_custody_invalid", "the previous custody transition was invalidated after an authority failure; reconcile the returned custody state before retrying; no files or refs were changed")
+	}
+	if run != nil && run.CustodyReturnedAt != nil {
+		quarantine, quarantineErr := s.DB.GetGateRefQuarantine(s.Repo.ID, s.GateDir, "refs/heads/"+run.Branch)
+		if quarantineErr != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the returned custody quarantine could not be read; custody remains fail-closed; no files or refs were changed")
+		}
+		if quarantine != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_quarantined", "the returned custody state is quarantined after an authority transition; reconcile the ordinary gate before retrying; no files or refs were changed")
+		}
+	}
 	if run != nil && run.CustodyReturnedAt != nil {
 		lock, err := s.acquireRecoveryLock(run)
 		if err != nil {
@@ -1523,6 +1535,23 @@ func (s *Service) rollbackCustodyTransition(ctx context.Context, transition *cus
 	return transition.owner.FinishRestore(ctx)
 }
 
+func (s *Service) rollbackCustodyStamp(ctx context.Context, run *db.Run, token string) error {
+	current, err := s.DB.GetRun(run.ID)
+	if err != nil {
+		return fmt.Errorf("read custody stamp for rollback: %w", err)
+	}
+	if current == nil || current.CustodyReturnedAt == nil {
+		return nil
+	}
+	if err := s.DB.RollbackRunCustodyStamp(ctx, current, token); err != nil {
+		if invalidErr := s.DB.MarkRunCustodyInvalid(ctx, run.ID, token, "custody stamp rollback failed: "+err.Error()); invalidErr != nil {
+			return fmt.Errorf("rollback custody stamp: %w; mark custody invalid: %v", err, invalidErr)
+		}
+		return fmt.Errorf("rollback custody stamp: %w; custody marked invalid", err)
+	}
+	return nil
+}
+
 // finishRecover stamps custody returned and reports the fresh post-recovery
 // truth. changed reports whether this call moved the worktree HEAD.
 func (s *Service) finishRecover(ctx context.Context, run *db.Run, changed bool, lock *custodyLock) State {
@@ -1568,15 +1597,17 @@ func (s *Service) finishRecoverAtGateHead(ctx context.Context, run *db.Run, chan
 		}
 		gateRef := "refs/heads/" + run.Branch
 		stampErr := s.ManagedGateRefFinalize(ctx, gateRef, expectedGateHead, func() error {
-			if transition != nil {
-				return transition.owner.Complete(ctx, run)
-			}
-			return s.DB.SetRunCustodyReturnedCAS(run)
+			return s.withVerifiedRecoveryAnchor(ctx, run, func() error {
+				if transition != nil {
+					return transition.owner.Complete(ctx, run)
+				}
+				return s.DB.SetRunCustodyReturnedCAS(run)
+			})
 		}, func() error {
 			if transition != nil {
-				return s.DB.RollbackRunCustodyStamp(ctx, run, transition.owner.Token())
+				return s.rollbackCustodyStamp(ctx, run, transition.owner.Token())
 			}
-			return s.DB.RollbackRunCustodyStamp(ctx, run, "")
+			return s.rollbackCustodyStamp(ctx, run, "")
 		})
 		if stampErr != nil {
 			if transition != nil {
@@ -1704,13 +1735,20 @@ func (s *Service) finishRecoverAtGateHead(ctx context.Context, run *db.Run, chan
 		state.NextAction = nil
 		return state
 	}
-	var stampErr error
-	if transition != nil {
-		stampErr = transition.owner.Complete(ctx, run)
-	} else {
-		stampErr = s.DB.SetRunCustodyReturnedCAS(run)
-	}
+	stampErr := s.withVerifiedRecoveryAnchor(ctx, run, func() error {
+		if transition != nil {
+			return transition.owner.Complete(ctx, run)
+		}
+		return s.DB.SetRunCustodyReturnedCAS(run)
+	})
 	if stampErr != nil {
+		token := ""
+		if transition != nil {
+			token = transition.owner.Token()
+		}
+		if rollbackErr := s.rollbackCustodyStamp(ctx, run, token); rollbackErr != nil {
+			stampErr = fmt.Errorf("%v; custody rollback: %w", stampErr, rollbackErr)
+		}
 		releaseGateLock()
 		if transition != nil {
 			if restoreErr := s.rollbackCustodyTransition(ctx, transition); restoreErr != nil {
@@ -1976,26 +2014,14 @@ func ensureRecoveryAnchorOwner(workDir string, run *db.Run, stage *db.RecoveryAn
 			return fmt.Errorf("recovery anchor owner conflicts with the durable stage")
 		}
 		if string(got) != want {
-			return os.WriteFile(path, []byte(want), 0o644)
+			return writeRecoveryAnchorOwnerAtomic(path, []byte(want))
 		}
 		return nil
 	}
 	if !os.IsNotExist(statErr) {
 		return statErr
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := file.WriteString(want); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return err
-	}
-	return file.Close()
+	return writeRecoveryAnchorOwnerAtomic(path, []byte(want))
 }
 
 func verifyRecoveryAnchorOwner(workDir string, run *db.Run, stage *db.RecoveryAnchorStage) error {
@@ -2047,10 +2073,53 @@ func (s *Service) recoveryAnchorStageMatches(ctx context.Context, run *db.Run, s
 	if err != nil {
 		return false, false
 	}
-	if !consumed && stage.State == db.RecoveryAnchorStageStaged {
+	if !consumed && s.InternalMutationConsumed == nil && stage.State == db.RecoveryAnchorStageStaged {
 		return false, false
 	}
 	return true, stage.State == db.RecoveryAnchorStageStaged
+}
+
+func (s *Service) withVerifiedRecoveryAnchor(ctx context.Context, run *db.Run, fn func() error) error {
+	if s == nil || s.DB == nil || run == nil || fn == nil {
+		return fmt.Errorf("recovery anchor finalization requires a run and callback")
+	}
+	anchorRef := recoverAnchorRef(run.ID)
+	oldSHA := internalZeroObjectID(run.HeadSHA)
+	return s.managedPrivateAnchorTransaction(ctx, anchorRef, oldSHA, run.HeadSHA, func(transactionCtx context.Context, authority *ManagedGateRefAuthority) error {
+		stage, err := s.DB.GetRecoveryAnchorStage(run.ID)
+		if err != nil {
+			return err
+		}
+		valid, staged := s.recoveryAnchorStageMatches(transactionCtx, run, stage, anchorRef, run.HeadSHA)
+		if !valid || !staged {
+			return fmt.Errorf("recovery anchor lacks exact staged provenance")
+		}
+		gitDir, err := worktreeGitDir(s.workDir())
+		if err != nil {
+			return err
+		}
+		if err := authority.Validate(gitDir, anchorRef); err != nil {
+			return err
+		}
+		anchored, err := readDirectLooseWorktreeRef(s.workDir(), anchorRef)
+		if err != nil || anchored != run.HeadSHA {
+			return fmt.Errorf("recovery anchor changed before custody finalization")
+		}
+		if err := verifyRecoveryAnchorObject(transactionCtx, s.workDir(), run.HeadSHA); err != nil {
+			return err
+		}
+		if err := fn(); err != nil {
+			return err
+		}
+		if err := authority.Validate(gitDir, anchorRef); err != nil {
+			return fmt.Errorf("recovery anchor authority changed during custody finalization: %w", err)
+		}
+		anchored, err = readDirectLooseWorktreeRef(s.workDir(), anchorRef)
+		if err != nil || anchored != run.HeadSHA {
+			return fmt.Errorf("recovery anchor changed during custody finalization")
+		}
+		return verifyRecoveryAnchorObject(transactionCtx, s.workDir(), run.HeadSHA)
+	})
 }
 
 func (s *Service) commitRecoveryAnchorEvidence(ctx context.Context, lock *custodyLock, run *db.Run, stage *db.RecoveryAnchorStage, anchorRef, preserved string) error {

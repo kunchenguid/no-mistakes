@@ -30,9 +30,13 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 	if strings.TrimSpace(h.repo) == "" {
 		return errors.New("GitHub repository identity is unavailable")
 	}
-	targetNumber, err := scm.ExtractPRNumber(targetIdentity)
-	if err != nil || (h.host != "" && scm.ExtractHost(targetIdentity) != "" && !strings.EqualFold(scm.ExtractHost(targetIdentity), h.host)) || RepoSlug(targetIdentity) != strings.TrimSpace(strings.TrimPrefix(h.repo, h.host+"/")) {
-		return errors.New("GitHub submission-time pull-request identity is unavailable or mismatched")
+	targetNumber := ""
+	if strings.TrimSpace(targetIdentity) != "" {
+		var err error
+		targetNumber, err = scm.ExtractPRNumber(targetIdentity)
+		if err != nil || (h.host != "" && scm.ExtractHost(targetIdentity) != "" && !strings.EqualFold(scm.ExtractHost(targetIdentity), h.host)) || RepoSlug(targetIdentity) != strings.TrimSpace(strings.TrimPrefix(h.repo, h.host+"/")) {
+			return errors.New("GitHub submission-time pull-request identity is unavailable or mismatched")
+		}
 	}
 	var pulls []recoveryPull
 	if err := h.apiPages(ctx, "repos/"+h.apiRepoPath()+"/pulls?state=all&per_page=100", &pulls); err != nil {
@@ -47,7 +51,10 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 		if !inWindow {
 			continue
 		}
-		if fmt.Sprint(pull.Number) != targetNumber {
+		if targetNumber != "" && fmt.Sprint(pull.Number) != targetNumber {
+			continue
+		}
+		if targetNumber == "" && pull.Head.Ref != branch {
 			continue
 		}
 		matched = true
@@ -75,7 +82,7 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 			}
 		}
 	}
-	if !matched {
+	if !matched && targetNumber != "" {
 		return fmt.Errorf("GitHub pull request %s was not found in the submission interval", targetNumber)
 	}
 	return nil

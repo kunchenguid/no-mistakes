@@ -25,6 +25,7 @@ const (
 	CustodyPhaseGateMoved = "gate_moved"
 	CustodyPhaseRestoring = "restoring"
 	CustodyPhaseStamped   = "stamped"
+	CustodyPhaseInvalid   = "invalid"
 
 	PublicationJournalReady     = "ready"
 	PublicationJournalAttempted = "attempted"
@@ -712,6 +713,36 @@ func (d *DB) RollbackRunCustodyStamp(ctx context.Context, expected *Run, token s
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("rollback run custody stamp: affected rows: %w", err)
+	}
+	if rows != 1 {
+		return ErrRunCustodyCAS
+	}
+	return nil
+}
+
+func (d *DB) MarkRunCustodyInvalid(ctx context.Context, runID, token, reason string) error {
+	runID = strings.TrimSpace(runID)
+	token = strings.TrimSpace(token)
+	reason = strings.TrimSpace(reason)
+	if runID == "" || reason == "" {
+		return ErrRunCustodyCAS
+	}
+	query := `UPDATE runs SET custody_transition_phase = ?, error = ?, updated_at = ?
+			 WHERE id = ? AND custody_returned_at IS NOT NULL`
+	args := []any{CustodyPhaseInvalid, reason, now(), runID}
+	if token == "" {
+		query += ` AND custody_transition_token IS NULL AND custody_transition_phase IS NULL`
+	} else {
+		query += ` AND custody_transition_token = ? AND custody_transition_phase = ?`
+		args = append(args, token, CustodyPhaseStamped)
+	}
+	result, err := d.sql.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("mark run custody invalid: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mark run custody invalid: affected rows: %w", err)
 	}
 	if rows != 1 {
 		return ErrRunCustodyCAS
