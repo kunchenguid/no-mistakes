@@ -72,24 +72,33 @@ func (l *gateRefLock) commitRef(ctx context.Context, gateDir, ref, oldSHA, newSH
 	}
 	if git.IsZeroSHA(newSHA) || (len(newSHA) == 64 && newSHA == strings.Repeat("0", 64)) {
 		if current == "" {
+			l.commitDone = true
 			return nil
 		}
 		if err := os.Remove(target); err != nil {
 			return fmt.Errorf("remove managed gate ref: %w", err)
 		}
+		l.commitDone = true
 		return nil
 	}
-	if err := l.file.Truncate(0); err != nil {
+	payloadPath := l.path + ".payload"
+	if l.payloadPath == "" {
+		l.payloadPath = payloadPath
+	}
+	payload, err := os.OpenFile(payloadPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
 		return fmt.Errorf("stage managed gate ref: %w", err)
 	}
-	if _, err := l.file.Seek(0, 0); err != nil {
-		return fmt.Errorf("rewind managed gate ref lock: %w", err)
-	}
-	if _, err := l.file.WriteString(newSHA + "\n"); err != nil {
+	if _, err := payload.WriteString(newSHA + "\n"); err != nil {
+		_ = payload.Close()
 		return fmt.Errorf("write managed gate ref: %w", err)
 	}
-	if err := l.file.Sync(); err != nil {
+	if err := payload.Sync(); err != nil {
+		_ = payload.Close()
 		return fmt.Errorf("sync managed gate ref: %w", err)
+	}
+	if err := payload.Close(); err != nil {
+		return fmt.Errorf("close managed gate ref payload: %w", err)
 	}
 	if runtime.GOOS == "windows" {
 		releaseGateRefOSLock(l.file)
@@ -100,8 +109,9 @@ func (l *gateRefLock) commitRef(ctx context.Context, gateDir, ref, oldSHA, newSH
 		}
 		l.file = nil
 	}
-	if err := replaceManagedGateRef(l.path, target); err != nil {
+	if err := replaceManagedGateRef(payloadPath, target); err != nil {
 		return fmt.Errorf("commit managed gate ref: %w", err)
 	}
+	l.commitDone = true
 	return nil
 }

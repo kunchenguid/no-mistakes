@@ -267,6 +267,43 @@ func TestGateConfigCurrentRejectsMissingOrTamperedAdmissionHook(t *testing.T) {
 	}
 }
 
+func TestGateConfigCurrentRejectsSymlinkedAdmissionHook(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink hook semantics are Unix-specific")
+	}
+	bare := t.TempDir()
+	if err := InitBare(context.Background(), bare); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureHooksPathIsolation(context.Background(), bare); err != nil {
+		t.Fatalf("isolate hooks path: %v", err)
+	}
+	if err := RefreshManagedGateHooks(bare); err != nil {
+		t.Fatalf("install hooks: %v", err)
+	}
+	if err := MarkGateConfigCurrent(bare); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(bare, "hooks", "pre-receive")
+	target := filepath.Join(t.TempDir(), "pre-receive")
+	content, err := os.ReadFile(hook)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, hook); err != nil {
+		t.Fatal(err)
+	}
+	if GateConfigCurrent(bare) {
+		t.Fatal("symlinked admission hook must invalidate the gate stamp")
+	}
+}
+
 func TestPostReceiveHookScript(t *testing.T) {
 	script := postReceiveHookScript("/opt/No Mistakes/no-mistakes")
 

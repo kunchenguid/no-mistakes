@@ -714,7 +714,7 @@ func GateConfigCurrent(bareDir string) bool {
 
 func gateHookExecutable(path string) bool {
 	info, err := os.Lstat(path)
-	return err == nil && !info.IsDir() && gateHookExecutableMode(info)
+	return err == nil && info.Mode().IsRegular() && gateHookExecutableMode(info)
 }
 
 func gateWorktreeConfigCurrent(bareDir string) bool {

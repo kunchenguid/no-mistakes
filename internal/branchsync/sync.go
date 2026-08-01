@@ -546,6 +546,19 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if !terminalRunStatus(run.Status) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_run_active", "the run that owns this branch is still active; drive it to completion or abort it first; no files or refs were changed")
 	}
+	quarantine, quarantineErr := s.DB.GetGateRefQuarantine(s.Repo.ID, s.GateDir, "refs/heads/"+run.Branch)
+	if quarantineErr != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the managed gate quarantine journal could not be read; custody was not returned and no files or refs were changed")
+	}
+	if quarantine != nil {
+		currentQuarantinedHead, currentQuarantinedErr := git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+run.Branch+"^{commit}")
+		if currentQuarantinedErr != nil || db.NormalizeManagedGateHead(currentQuarantinedHead) != db.NormalizeManagedGateHead(quarantine.ExpectedHead) {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_quarantined", fmt.Sprintf("the ordinary gate ref is quarantined after an unbound transition from %s to %s; reconcile it before retrying recovery", quarantine.ExpectedHead, quarantine.ObservedHead))
+		}
+		if err := s.DB.ClearGateRefQuarantine(s.Repo.ID, s.GateDir, "refs/heads/"+run.Branch); err != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the reconciled gate quarantine could not be cleared; custody was not returned and no files or refs were changed")
+		}
+	}
 	if run.TerminalHeadVerifiedAt == nil {
 		branch := state.Local.Branch
 		if strings.TrimSpace(s.GateDir) == "" {
@@ -638,7 +651,26 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	resumedKeepLocal := keepLocal && anchored && (gateHead == local || (custodyHead != "" && gateHead == custodyHead))
 	movedGateAtSubmitted := run.SubmittedHeadSHA != nil && gateHead == local && local == *run.SubmittedHeadSHA
 	if gateHead != preserved && !resumedKeepLocal && !movedGateAtSubmitted {
+		if quarantineErr := s.DB.QuarantineGateRef(s.Repo.ID, s.GateDir, "refs/heads/"+branch, preserved, gateHead, "unbound-or-unexpected-gate-ref"); quarantineErr != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", fmt.Sprintf("the gate branch is at %s instead of %s and the quarantine journal could not be persisted; custody was not returned and no files or refs were changed", gateHead, preserved))
+		}
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_diverged", fmt.Sprintf("the gate branch is at %s, not the preserved pipeline head %s recorded for this run; no files or refs were changed", gateHead, preserved))
+	}
+	if !resumedKeepLocal && !movedGateAtSubmitted {
+		managedGateRef, managedGateErr := s.DB.GetManagedGateRef(s.Repo.ID, s.GateDir, "refs/heads/"+branch)
+		if managedGateErr != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the managed gate head journal could not be read; custody was not returned and no files or refs were changed")
+		}
+		if managedGateRef == nil {
+			if err := s.DB.SetManagedGateRefHead(s.Repo.ID, s.GateDir, "refs/heads/"+branch, gateHead); err != nil {
+				return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the managed gate head journal could not be initialized; custody was not returned and no files or refs were changed")
+			}
+		} else if db.NormalizeManagedGateHead(managedGateRef.Head) != db.NormalizeManagedGateHead(gateHead) {
+			if err := s.DB.QuarantineGateRef(s.Repo.ID, s.GateDir, "refs/heads/"+branch, managedGateRef.Head, gateHead, "unbound-or-unexpected-gate-ref"); err != nil {
+				return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the managed gate head mismatch could not be quarantined; custody was not returned and no files or refs were changed")
+			}
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_quarantined", fmt.Sprintf("the ordinary gate ref changed from journaled head %s to %s; reconcile the quarantined ref before retrying recovery", managedGateRef.Head, gateHead))
+		}
 	}
 	if movedGateAtSubmitted && runHasPublication(run) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "exact-object moved-gate recovery is limited to a terminal run with no push, PR, or CI publication provenance; custody was not returned and no refs were changed")
@@ -889,9 +921,21 @@ func (s *Service) updateGateRef(ctx context.Context, lock *custodyLock, branch, 
 }
 
 func (s *Service) updateOrdinaryGateRef(ctx context.Context, lock *custodyLock, branch, ref, oldSHA, newSHA string) error {
+	if lock == nil || lock.runID == "" {
+		return fmt.Errorf("managed ordinary ref mutation requires a run-owned branch lock")
+	}
 	authority, err := lock.ensureInternalMutationAuthority(s.DB)
 	if err != nil {
 		return err
+	}
+	endpoint, generation, err := lock.authorityIdentity()
+	if err != nil {
+		return err
+	}
+	if completed, err := s.reconcileCompletedOrdinaryGateRefMutation(lock.runID, branch, ref, oldSHA, newSHA, endpoint); err != nil {
+		return err
+	} else if completed {
+		return nil
 	}
 	gateLock, err := acquireGateRefLock(s.GateDir, ref, authority)
 	if err != nil {
@@ -904,6 +948,11 @@ func (s *Service) updateOrdinaryGateRef(ctx context.Context, lock *custodyLock, 
 	}()
 	mutationCtx, capability, err := s.internalGateContext(ctx, lock, branch, ref, oldSHA, newSHA, "update-ref")
 	if err != nil {
+		return err
+	}
+	gateLock.owner = gateRefLockOwner{RunID: lock.runID, RepoID: s.Repo.ID, GatePath: s.GateDir, Branch: branch, Ref: ref, OwnerGeneration: generation, AuthorityEndpoint: endpoint, ExpectedHead: oldSHA}
+	gateLock.database = s.DB
+	if err := s.DB.PrepareGateRefLock(db.GateRefLockJournal{RunID: lock.runID, RepoID: s.Repo.ID, GatePath: s.GateDir, Branch: branch, Ref: ref, LockPath: gateLock.path, OwnerGeneration: generation, AuthorityEndpoint: endpoint, ExpectedHead: oldSHA, NewHead: newSHA, FileIdentity: gateLock.identity}); err != nil {
 		return err
 	}
 	request := InternalRefMutationAuthorization{Capability: capability, Phase: "prepared", GatePath: s.GateDir, Branch: branch, Ref: ref, OldSHA: oldSHA, NewSHA: newSHA, Operation: "update-ref", Scope: db.InternalRefMutationScopeOrdinary}
@@ -923,11 +972,58 @@ func (s *Service) updateOrdinaryGateRef(ctx context.Context, lock *custodyLock, 
 			return err
 		}
 	}
+	if err := s.DB.SetManagedGateRefHead(s.Repo.ID, s.GateDir, ref, newSHA); err != nil {
+		return err
+	}
 	if err := gateLock.Release(); err != nil {
 		return err
 	}
 	gateLock = nil
 	return nil
+}
+
+func (s *Service) reconcileCompletedOrdinaryGateRefMutation(runID, branch, ref, oldSHA, newSHA, authorityEndpoint string) (bool, error) {
+	journal, err := s.DB.GetGateRefLock(runID)
+	if err != nil || journal == nil {
+		return false, err
+	}
+	if journal.RepoID != s.Repo.ID || journal.GatePath != s.GateDir || journal.Branch != branch || journal.Ref != ref || journal.ExpectedHead != oldSHA || journal.NewHead != newSHA || journal.AuthorityEndpoint == "" {
+		return false, nil
+	}
+	current, err := readManagedGateRef(s.GateDir, ref)
+	if errors.Is(err, errGateRefAbsent) {
+		current = ""
+	} else if err != nil {
+		return false, err
+	}
+	if db.NormalizeManagedGateHead(current) != db.NormalizeManagedGateHead(newSHA) {
+		return false, nil
+	}
+	consumed, err := s.DB.ConsumedInternalRefMutationExists(db.InternalRefMutationSpec{RepoID: s.Repo.ID, GatePath: s.GateDir, Branch: branch, Ref: ref, OldSHA: oldSHA, NewSHA: newSHA, Operation: "update-ref", Scope: db.InternalRefMutationScopeOrdinary}, journal.AuthorityEndpoint)
+	if err != nil {
+		return false, err
+	}
+	if !consumed {
+		return false, nil
+	}
+	if err := s.DB.SetManagedGateRefHead(s.Repo.ID, s.GateDir, ref, newSHA); err != nil {
+		return false, err
+	}
+	if _, statErr := os.Stat(journal.LockPath); statErr == nil {
+		staleLock, staleErr := acquireGateRefLock(s.GateDir, ref, authorityEndpoint)
+		if staleErr != nil {
+			return false, staleErr
+		}
+		if err := staleLock.Release(); err != nil {
+			return false, err
+		}
+	} else if !os.IsNotExist(statErr) {
+		return false, statErr
+	}
+	if err := s.DB.ClearGateRefLock(journal.RunID, journal.OwnerGeneration); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Service) fetchGatePrivateRef(ctx context.Context, lock *custodyLock, branch, source, destination, oldSHA, newSHA string) error {
@@ -937,23 +1033,79 @@ func (s *Service) fetchGatePrivateRef(ctx context.Context, lock *custodyLock, br
 	oldSHA = strings.TrimSpace(oldSHA)
 	newSHA = strings.TrimSpace(newSHA)
 	mutationCtx := git.WithSanitizedGateConfig(ctx)
-	if strings.HasPrefix(destination, "refs/no-mistakes/") && newSHA != "" && !git.IsZeroSHA(newSHA) {
-		existing, existingErr := git.Run(mutationCtx, s.GateDir, "show-ref", "--verify", "--hash", destination)
-		if existingErr == nil {
-			if existing != newSHA {
-				return fmt.Errorf("managed private ref %s names %s, expected %s", destination, existing, newSHA)
-			}
-			if _, err := git.Run(mutationCtx, s.GateDir, "cat-file", "-e", existing+"^{commit}"); err != nil {
-				return fmt.Errorf("managed private ref %s has no exact object: %w", destination, err)
-			}
-			return nil
+	stageRunID, err := custodyStageRunID(destination)
+	if err != nil {
+		return err
+	}
+	run, err := s.DB.GetRun(stageRunID)
+	if err != nil || run == nil || run.RepoID != s.Repo.ID || run.Branch != branch || run.CustodyReturnedAt != nil || run.CustodyTransitionToken == nil || run.CustodyTransitionPhase == nil || *run.CustodyTransitionPhase != db.CustodyPhasePreparing {
+		return fmt.Errorf("managed private staging requires the active custody transition journal")
+	}
+	currentBranch, branchErr := git.CurrentBranch(mutationCtx, source)
+	currentHead, headErr := git.HeadSHA(mutationCtx, source)
+	if branchErr != nil || headErr != nil || currentBranch != branch || currentHead != newSHA {
+		return fmt.Errorf("managed private staging provenance no longer matches the active local head")
+	}
+	if _, err := git.Run(mutationCtx, s.GateDir, "show-ref", "--verify", "--hash", custodyOriginalRef(stageRunID)); err != nil {
+		return fmt.Errorf("managed private staging provenance has no custody-original marker")
+	}
+	stage, err := s.DB.GetCustodyRefStage(stageRunID)
+	if err != nil {
+		return err
+	}
+	if stage != nil && (stage.RepoID != s.Repo.ID || stage.GatePath != s.GateDir || stage.Branch != branch || stage.Ref != destination || stage.NewSHA != newSHA || stage.OldSHA == "" || stage.OwnerGeneration == "" || stage.AuthorityEndpoint == "") {
+		return fmt.Errorf("managed private staging journal does not match the exact transition")
+	}
+	if stage != nil && stage.State != db.CustodyRefStagePrepared && stage.State != db.CustodyRefStageStaged {
+		return fmt.Errorf("managed private staging journal has an unknown state")
+	}
+	existing, existsErr := git.RefExists(mutationCtx, s.GateDir, destination)
+	if existsErr != nil {
+		return existsErr
+	}
+	if existing {
+		existingSHA, resolveErr := git.ResolveRef(mutationCtx, s.GateDir, destination)
+		if resolveErr != nil {
+			return resolveErr
 		}
+		if stage == nil || existingSHA != newSHA {
+			return fmt.Errorf("managed private ref %s is an unjournaled or conflicting ref", destination)
+		}
+		consumed, consumedErr := s.DB.ConsumedInternalRefMutationExists(db.InternalRefMutationSpec{RepoID: s.Repo.ID, GatePath: s.GateDir, Branch: branch, Ref: destination, OldSHA: stage.OldSHA, NewSHA: stage.NewSHA, Operation: "fetch-private-ref", Scope: db.InternalRefMutationScopePrivate}, stage.AuthorityEndpoint)
+		if consumedErr != nil {
+			return consumedErr
+		}
+		if !consumed {
+			return fmt.Errorf("managed private ref %s lacks a consumed writer capability", destination)
+		}
+		if stage.State == db.CustodyRefStagePrepared {
+			if err := s.DB.MarkCustodyRefStageStaged(stageRunID, stage.OwnerGeneration); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if stage != nil && stage.State == db.CustodyRefStageStaged {
+		return fmt.Errorf("managed private staging journal says the destination was staged, but the exact ref is absent")
 	}
 	if oldSHA == "" {
 		oldSHA, _ = git.Run(mutationCtx, s.GateDir, "rev-parse", destination+"^{commit}")
 		if oldSHA == "" {
 			oldSHA = internalZeroObjectID(newSHA)
 		}
+	}
+	if stage != nil && stage.OldSHA != oldSHA {
+		return fmt.Errorf("managed private staging old head changed")
+	}
+	if _, err := lock.ensureInternalMutationAuthority(s.DB); err != nil {
+		return err
+	}
+	endpoint, generation, err := lock.authorityIdentity()
+	if err != nil {
+		return err
+	}
+	if err := s.DB.PrepareCustodyRefStage(db.CustodyRefStage{RunID: stageRunID, RepoID: s.Repo.ID, GatePath: s.GateDir, Branch: branch, Ref: destination, OldSHA: oldSHA, NewSHA: newSHA, OwnerGeneration: generation, AuthorityEndpoint: endpoint}); err != nil {
+		return err
 	}
 	mutationCtx, capability, err := s.internalGateContext(ctx, lock, branch, destination, oldSHA, newSHA, "fetch-private-ref")
 	if err != nil {
@@ -968,7 +1120,22 @@ func (s *Service) fetchGatePrivateRef(ctx context.Context, lock *custodyLock, br
 	if err != nil {
 		return err
 	}
-	return s.verifyInternalMutationConsumed(capability)
+	if err := s.verifyInternalMutationConsumed(capability); err != nil {
+		return err
+	}
+	return s.DB.MarkCustodyRefStageStaged(stageRunID, generation)
+}
+
+func custodyStageRunID(ref string) (string, error) {
+	const prefix = "refs/no-mistakes/custody-return/"
+	if !strings.HasPrefix(ref, prefix) {
+		return "", fmt.Errorf("managed private staging requires a run-scoped custody-return ref")
+	}
+	runID := strings.TrimPrefix(ref, prefix)
+	if runID == "" || strings.Contains(runID, "/") {
+		return "", fmt.Errorf("managed private staging ref has an invalid run identity")
+	}
+	return runID, nil
 }
 
 func (s *Service) verifyInternalMutationConsumed(capability string) error {

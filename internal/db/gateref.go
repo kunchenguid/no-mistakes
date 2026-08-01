@@ -22,6 +22,7 @@ type GateRefLockJournal struct {
 	OwnerGeneration   string
 	AuthorityEndpoint string
 	ExpectedHead      string
+	NewHead           string
 	FileIdentity      string
 	State             string
 }
@@ -36,13 +37,14 @@ func (d *DB) PrepareGateRefLock(journal GateRefLockJournal) error {
 	journal.OwnerGeneration = strings.TrimSpace(journal.OwnerGeneration)
 	journal.AuthorityEndpoint = strings.TrimSpace(journal.AuthorityEndpoint)
 	journal.ExpectedHead = strings.TrimSpace(journal.ExpectedHead)
+	journal.NewHead = strings.TrimSpace(journal.NewHead)
 	journal.FileIdentity = strings.TrimSpace(journal.FileIdentity)
 	if journal.RunID == "" || journal.RepoID == "" || journal.GatePath == "" || journal.Branch == "" || journal.Ref == "" || journal.LockPath == "" || journal.OwnerGeneration == "" || journal.AuthorityEndpoint == "" || journal.ExpectedHead == "" || journal.FileIdentity == "" {
 		return fmt.Errorf("prepare gate ref lock: exact ownership metadata is required")
 	}
 	stamp := now()
-	_, err := d.sql.Exec(`INSERT INTO gate_ref_locks (run_id, repo_id, gate_path, branch, ref, lock_path, owner_generation, authority_endpoint, expected_head, file_identity, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id) DO UPDATE SET repo_id = excluded.repo_id, gate_path = excluded.gate_path, branch = excluded.branch, ref = excluded.ref, lock_path = excluded.lock_path, owner_generation = excluded.owner_generation, authority_endpoint = excluded.authority_endpoint, expected_head = excluded.expected_head, file_identity = excluded.file_identity, state = excluded.state, updated_at = excluded.updated_at`,
-		journal.RunID, journal.RepoID, journal.GatePath, journal.Branch, journal.Ref, journal.LockPath, journal.OwnerGeneration, journal.AuthorityEndpoint, journal.ExpectedHead, journal.FileIdentity, GateRefLockStatePrepared, stamp, stamp)
+	_, err := d.sql.Exec(`INSERT INTO gate_ref_locks (run_id, repo_id, gate_path, branch, ref, lock_path, owner_generation, authority_endpoint, expected_head, new_head, file_identity, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id) DO UPDATE SET repo_id = excluded.repo_id, gate_path = excluded.gate_path, branch = excluded.branch, ref = excluded.ref, lock_path = excluded.lock_path, owner_generation = excluded.owner_generation, authority_endpoint = excluded.authority_endpoint, expected_head = excluded.expected_head, new_head = excluded.new_head, file_identity = excluded.file_identity, state = excluded.state, updated_at = excluded.updated_at`,
+		journal.RunID, journal.RepoID, journal.GatePath, journal.Branch, journal.Ref, journal.LockPath, journal.OwnerGeneration, journal.AuthorityEndpoint, journal.ExpectedHead, journal.NewHead, journal.FileIdentity, GateRefLockStatePrepared, stamp, stamp)
 	return err
 }
 
@@ -52,8 +54,8 @@ func (d *DB) GetGateRefLock(runID string) (*GateRefLockJournal, error) {
 		return nil, nil
 	}
 	var journal GateRefLockJournal
-	err := d.sql.QueryRow(`SELECT run_id, repo_id, gate_path, branch, ref, lock_path, owner_generation, authority_endpoint, expected_head, file_identity, state FROM gate_ref_locks WHERE run_id = ?`, runID).Scan(
-		&journal.RunID, &journal.RepoID, &journal.GatePath, &journal.Branch, &journal.Ref, &journal.LockPath, &journal.OwnerGeneration, &journal.AuthorityEndpoint, &journal.ExpectedHead, &journal.FileIdentity, &journal.State)
+	err := d.sql.QueryRow(`SELECT run_id, repo_id, gate_path, branch, ref, lock_path, owner_generation, authority_endpoint, expected_head, new_head, file_identity, state FROM gate_ref_locks WHERE run_id = ?`, runID).Scan(
+		&journal.RunID, &journal.RepoID, &journal.GatePath, &journal.Branch, &journal.Ref, &journal.LockPath, &journal.OwnerGeneration, &journal.AuthorityEndpoint, &journal.ExpectedHead, &journal.NewHead, &journal.FileIdentity, &journal.State)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

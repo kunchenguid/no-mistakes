@@ -19,6 +19,7 @@ var ErrCustodyLockHeld = errors.New("custody recovery is already running")
 type BranchOwnershipLock struct {
 	file                *os.File
 	lockPath            string
+	runID               string
 	authorityPrefix     string
 	authorityMu         sync.Mutex
 	authority           *internalMutationAuthority
@@ -50,7 +51,27 @@ func acquireCustodyLock(s *Service, run *db.Run) (*custodyLock, error) {
 	if s == nil || run == nil || s.Repo == nil {
 		return nil, fmt.Errorf("acquire custody lock: missing recovery identity")
 	}
-	return AcquireBranchOwnershipLock(s.Paths, s.Repo, s.workDir(), run.Branch)
+	lock, err := AcquireBranchOwnershipLock(s.Paths, s.Repo, s.workDir(), run.Branch)
+	if err != nil {
+		return nil, err
+	}
+	lock.runID = run.ID
+	return lock, nil
+}
+
+func (l *BranchOwnershipLock) authorityIdentity() (string, string, error) {
+	if l == nil {
+		return "", "", fmt.Errorf("active branch lock is required")
+	}
+	l.authorityMu.Lock()
+	defer l.authorityMu.Unlock()
+	if l.file == nil || l.authorityClosing || l.authority == nil || l.authorityGeneration == "" {
+		return "", "", fmt.Errorf("active branch lock authority is unavailable")
+	}
+	if _, err := l.file.Stat(); err != nil {
+		return "", "", fmt.Errorf("active branch lock authority is unavailable")
+	}
+	return l.authority.endpoint, l.authorityGeneration, nil
 }
 
 func acquireBranchOwnershipLock(root, repository, workDir, branch string) (*BranchOwnershipLock, error) {

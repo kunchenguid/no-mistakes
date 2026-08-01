@@ -2,11 +2,16 @@
 
 package branchsync
 
-import "os"
+import "golang.org/x/sys/windows"
 
 func replaceManagedGateRef(lockPath, refPath string) error {
-	if err := os.Remove(refPath); err != nil && !os.IsNotExist(err) {
+	from, err := windows.UTF16PtrFromString(lockPath)
+	if err != nil {
 		return err
 	}
-	return os.Rename(lockPath, refPath)
+	to, err := windows.UTF16PtrFromString(refPath)
+	if err != nil {
+		return err
+	}
+	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
 }

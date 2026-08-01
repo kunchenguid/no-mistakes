@@ -933,7 +933,27 @@ func TestRecoverKeepLocalRefusesUnverifiedGateMutation(t *testing.T) {
 	}
 }
 
-func TestFetchGatePrivateRefTreatsExactExistingDestinationAsStaged(t *testing.T) {
+func TestRecoverQuarantinesUnboundGateMutation(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.base, f.preserved)
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Safety != "blocked_recover_gate_diverged" {
+		t.Fatalf("unbound gate mutation recover = %#v", state)
+	}
+	quarantine, err := f.db.GetGateRefQuarantine(f.repo.ID, f.gate, "refs/heads/feature/recover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quarantine == nil || quarantine.ExpectedHead != f.preserved || quarantine.ObservedHead != f.base {
+		t.Fatalf("gate quarantine = %#v", quarantine)
+	}
+	state = f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Safety != "blocked_recover_gate_quarantined" {
+		t.Fatalf("quarantined gate recover = %#v", state)
+	}
+}
+
+func TestFetchGatePrivateRefRejectsUnjournaledExistingDestination(t *testing.T) {
 	f := newRecoverFixture(t, types.RunCancelled)
 	lock, err := acquireCustodyLock(f.service, f.run)
 	if err != nil {
@@ -942,8 +962,8 @@ func TestFetchGatePrivateRefTreatsExactExistingDestinationAsStaged(t *testing.T)
 	defer lock.Release()
 	destination := custodyReturnRef(f.run.ID)
 	mustRun(t, f.gate, "update-ref", destination, f.submitted)
-	if err := f.service.fetchGatePrivateRef(f.ctx, lock, f.run.Branch, f.local, destination, "", f.submitted); err != nil {
-		t.Fatalf("exact staged destination was not accepted: %v", err)
+	if err := f.service.fetchGatePrivateRef(f.ctx, lock, f.run.Branch, f.local, destination, "", f.submitted); err == nil {
+		t.Fatal("raw private destination was accepted without a custody stage journal")
 	}
 }
 

@@ -710,6 +710,11 @@ func (d *DB) ApplyReceiveTransactionBatch(phase, sessionID, capability string, i
 		if err != nil || affected != 1 {
 			return fmt.Errorf("receive transaction: reservation %s is not in expected %s phase", input.ID, phase)
 		}
+		if phase == "committed" && strings.HasPrefix(input.Ref, "refs/heads/") {
+			if _, err := tx.Exec(`INSERT INTO managed_gate_refs (repo_id, gate_path, ref, head, updated_at) SELECT repo_id, gate_path, ref, ?, ? FROM receive_reservations WHERE id = ? ON CONFLICT(repo_id, gate_path, ref) DO UPDATE SET head = excluded.head, updated_at = excluded.updated_at`, NormalizeManagedGateHead(input.NewSHA), now(), input.ID); err != nil {
+				return fmt.Errorf("receive transaction: record managed gate ref: %w", err)
+			}
+		}
 	}
 	if phase == "aborted" && sessionPhase == receiveSessionPhaseAdmitted {
 		result, err := tx.Exec(`UPDATE receive_sessions SET phase = ?, updated_at = ? WHERE id = ? AND state = 'active' AND phase = ?`, receiveSessionPhaseAborted, now(), strings.TrimSpace(sessionID), receiveSessionPhaseAdmitted)

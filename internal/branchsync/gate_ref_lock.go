@@ -33,14 +33,16 @@ type gateRefLockOwner struct {
 }
 
 type gateRefLock struct {
-	file       *os.File
-	path       string
-	owner      gateRefLockOwner
-	identity   string
-	database   *db.DB
-	osLocked   bool
-	released   bool
-	releaseErr error
+	file        *os.File
+	path        string
+	payloadPath string
+	owner       gateRefLockOwner
+	identity    string
+	database    *db.DB
+	osLocked    bool
+	commitDone  bool
+	released    bool
+	releaseErr  error
 }
 
 func acquireGateRefLock(gateDir, ref, authorityEndpoint string) (*gateRefLock, error) {
@@ -55,7 +57,13 @@ func acquireGateRefLock(gateDir, ref, authorityEndpoint string) (*gateRefLock, e
 	for attempt := 0; attempt < 2; attempt++ {
 		file, err := createGateRefLock(path, marker)
 		if err == nil {
-			return &gateRefLock{file: file, path: path}, nil
+			identity, identityErr := gateRefFileIdentity(path)
+			if identityErr != nil {
+				_ = file.Close()
+				_ = os.Remove(path)
+				return nil, fmt.Errorf("identify managed gate ref lock: %w", identityErr)
+			}
+			return &gateRefLock{file: file, path: path, identity: identity}, nil
 		}
 		if !os.IsExist(err) {
 			return nil, fmt.Errorf("acquire managed gate ref lock: %w", err)
@@ -66,6 +74,9 @@ func acquireGateRefLock(gateDir, ref, authorityEndpoint string) (*gateRefLock, e
 		}
 		if !stale {
 			return nil, fmt.Errorf("acquire managed gate ref lock: another Git transaction owns %s", ref)
+		}
+		if err := os.Remove(path + ".payload"); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("remove stale managed gate ref payload: %w", err)
 		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return nil, fmt.Errorf("remove stale managed gate ref lock: %w", err)
@@ -120,6 +131,9 @@ func acquireOwnedGateRefLock(gateDir, ref string, owner gateRefLockOwner) (*gate
 		}
 		if !stale {
 			return nil, fmt.Errorf("acquire ordinary gate ref lock: another Git transaction owns %s", ref)
+		}
+		if err := os.Remove(path + ".payload"); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("remove stale ordinary gate ref payload: %w", err)
 		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return nil, fmt.Errorf("remove stale ordinary gate ref lock: %w", err)
@@ -239,24 +253,32 @@ func (l *gateRefLock) release(database *db.DB) error {
 	if l.released {
 		return l.releaseErr
 	}
-	if l.file == nil {
-		l.released = true
-		return l.releaseErr
+	if l.file == nil && !l.commitDone {
+		return fmt.Errorf("gate ref lock handle is unavailable; ownership journal retained")
 	}
-	if l.osLocked {
+	if l.file != nil && l.osLocked {
 		releaseGateRefOSLock(l.file)
 		l.osLocked = false
 	}
-	closeErr := l.file.Close()
-	l.file = nil
+	if l.file != nil {
+		closeErr := l.file.Close()
+		l.file = nil
+		if closeErr != nil {
+			l.releaseErr = fmt.Errorf("close gate ref lock: %w", closeErr)
+			l.released = true
+			return l.releaseErr
+		}
+	}
+	if l.payloadPath != "" {
+		if err := os.Remove(l.payloadPath); err != nil && !os.IsNotExist(err) {
+			l.releaseErr = fmt.Errorf("remove gate ref payload: %w", err)
+			l.released = true
+			return l.releaseErr
+		}
+	}
 	removeErr := removeGateRefLock(l.path)
 	if removeErr != nil && !os.IsNotExist(removeErr) {
 		l.releaseErr = fmt.Errorf("remove gate ref lock: %w", removeErr)
-		l.released = true
-		return l.releaseErr
-	}
-	if closeErr != nil {
-		l.releaseErr = fmt.Errorf("close gate ref lock: %w", closeErr)
 		l.released = true
 		return l.releaseErr
 	}

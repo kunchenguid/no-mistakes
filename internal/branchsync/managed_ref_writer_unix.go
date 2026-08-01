@@ -2,8 +2,19 @@
 
 package branchsync
 
-import "os"
+import (
+	"os"
+	"path/filepath"
+)
 
 func replaceManagedGateRef(lockPath, refPath string) error {
-	return os.Rename(lockPath, refPath)
+	if err := os.Rename(lockPath, refPath); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(refPath))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }

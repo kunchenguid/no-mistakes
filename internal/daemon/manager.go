@@ -665,6 +665,9 @@ func (m *RunManager) HandleAdmitPushBatch(ctx context.Context, params *ipc.Admit
 		if err != nil {
 			return nil, err
 		}
+		if err := m.verifyManagedGateRefHead(repo, item.update.Ref, current, exists); err != nil {
+			return nil, err
+		}
 		if !receiveOldMatches(current, exists, item.update.Old) {
 			return nil, fmt.Errorf("gate ref %s is not at expected old head %s", item.update.Ref, item.update.Old)
 		}
@@ -766,6 +769,17 @@ func (m *RunManager) HandleReceiveTransactionBatch(ctx context.Context, params *
 		if reservation == nil || reservation.RepoID != repo.ID || reservation.Branch != item.branch || reservation.Ref != item.update.Ref || reservation.OldSHA != item.update.Old || reservation.NewSHA != item.update.New || !reservation.MatchesSession(params.ReceiveSessionID, params.ReceiveCapability) {
 			return fmt.Errorf("receive transaction: reservation identity does not match the exact receive")
 		}
+		current, exists, err := gateReceiveRef(ctx, m.paths.RepoDir(repo.ID), item.update.Ref)
+		if err != nil {
+			return err
+		}
+		if params.Phase == "committed" {
+			if err := m.verifyManagedGateRefCommit(repo, item.update.Ref, current, exists, item.update.Old, item.update.New); err != nil {
+				return err
+			}
+		} else if err := m.verifyManagedGateRefHead(repo, item.update.Ref, current, exists); err != nil {
+			return err
+		}
 		inputs[i] = db.ReceiveTransactionInput{ID: item.update.ReservationID, RepoID: repo.ID, Branch: item.branch, Ref: item.update.Ref, OldSHA: item.update.Old, NewSHA: item.update.New}
 	}
 	if err := m.db.ApplyReceiveTransactionBatch(params.Phase, params.ReceiveSessionID, params.ReceiveCapability, inputs); err != nil {
@@ -829,6 +843,92 @@ func (m *RunManager) receiveRepo(gatePath, ref string) (*db.Repo, string, error)
 		return nil, "", fmt.Errorf("invalid receive branch %q", branch)
 	}
 	return repo, branch, nil
+}
+
+func (m *RunManager) ensureManagedGateRefAvailable(repo *db.Repo, ref string) error {
+	if repo == nil || !strings.HasPrefix(strings.TrimSpace(ref), "refs/heads/") {
+		return nil
+	}
+	quarantine, err := m.db.GetGateRefQuarantine(repo.ID, m.paths.RepoDir(repo.ID), ref)
+	if err != nil {
+		return fmt.Errorf("check managed gate ref quarantine: %w", err)
+	}
+	if quarantine != nil {
+		return fmt.Errorf("managed gate ref %s is quarantined after an unbound transition from %s to %s; reconcile it before accepting a receive", ref, quarantine.ExpectedHead, quarantine.ObservedHead)
+	}
+	return nil
+}
+
+func (m *RunManager) verifyManagedGateRefHead(repo *db.Repo, ref, current string, exists bool) error {
+	if repo == nil || !strings.HasPrefix(strings.TrimSpace(ref), "refs/heads/") {
+		return nil
+	}
+	observed := db.NormalizeManagedGateHead(current)
+	if !exists {
+		observed = ""
+	}
+	quarantine, err := m.db.GetGateRefQuarantine(repo.ID, m.paths.RepoDir(repo.ID), ref)
+	if err != nil {
+		return err
+	}
+	if quarantine != nil {
+		if db.NormalizeManagedGateHead(quarantine.ExpectedHead) != observed {
+			return fmt.Errorf("managed gate ref %s is quarantined after an unbound transition from %s to %s; reconcile it before accepting a receive", ref, quarantine.ExpectedHead, quarantine.ObservedHead)
+		}
+		if err := m.db.ClearGateRefQuarantine(repo.ID, m.paths.RepoDir(repo.ID), ref); err != nil {
+			return err
+		}
+	}
+	managed, err := m.db.GetManagedGateRef(repo.ID, m.paths.RepoDir(repo.ID), ref)
+	if err != nil {
+		return err
+	}
+	if managed == nil {
+		return m.db.SetManagedGateRefHead(repo.ID, m.paths.RepoDir(repo.ID), ref, observed)
+	}
+	if db.NormalizeManagedGateHead(managed.Head) != observed {
+		if err := m.db.QuarantineGateRef(repo.ID, m.paths.RepoDir(repo.ID), ref, managed.Head, observed, "unbound-or-unexpected-gate-ref"); err != nil {
+			return err
+		}
+		return fmt.Errorf("managed gate ref %s changed from journaled head %s to %s; the ref was quarantined", ref, managed.Head, observed)
+	}
+	return nil
+}
+
+func (m *RunManager) verifyManagedGateRefCommit(repo *db.Repo, ref, current string, exists bool, oldHead, newHead string) error {
+	if repo == nil || !strings.HasPrefix(strings.TrimSpace(ref), "refs/heads/") {
+		return nil
+	}
+	if err := m.ensureManagedGateRefAvailable(repo, ref); err != nil {
+		return err
+	}
+	managed, err := m.db.GetManagedGateRef(repo.ID, m.paths.RepoDir(repo.ID), ref)
+	if err != nil {
+		return err
+	}
+	expectedOld := db.NormalizeManagedGateHead(oldHead)
+	if managed == nil {
+		if err := m.db.SetManagedGateRefHead(repo.ID, m.paths.RepoDir(repo.ID), ref, expectedOld); err != nil {
+			return err
+		}
+	} else if db.NormalizeManagedGateHead(managed.Head) != expectedOld {
+		if err := m.db.QuarantineGateRef(repo.ID, m.paths.RepoDir(repo.ID), ref, managed.Head, db.NormalizeManagedGateHead(current), "unbound-or-unexpected-gate-ref"); err != nil {
+			return err
+		}
+		return fmt.Errorf("managed gate ref %s does not have its journaled old head %s; the ref was quarantined", ref, expectedOld)
+	}
+	observed := db.NormalizeManagedGateHead(current)
+	if !exists {
+		observed = ""
+	}
+	expectedNew := db.NormalizeManagedGateHead(newHead)
+	if observed != expectedNew {
+		if err := m.db.QuarantineGateRef(repo.ID, m.paths.RepoDir(repo.ID), ref, expectedNew, observed, "unbound-or-unexpected-gate-ref"); err != nil {
+			return err
+		}
+		return fmt.Errorf("managed gate ref %s is at %s instead of committed head %s; the ref was quarantined", ref, observed, expectedNew)
+	}
+	return nil
 }
 
 func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo *db.Repo, params *ipc.PushReceivedParams, lock *branchsync.BranchOwnershipLock, trustedStartup bool) (string, error) {
@@ -898,6 +998,9 @@ func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo
 	}
 	current, exists, err := gateReceiveRef(ctx, m.paths.RepoDir(repo.ID), reservation.Ref)
 	if err != nil {
+		return "", err
+	}
+	if err := m.verifyManagedGateRefHead(repo, reservation.Ref, current, exists); err != nil {
 		return "", err
 	}
 	if isZeroObjectID(reservation.NewSHA) {
