@@ -1,10 +1,51 @@
 package git
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
 )
+
+type internalMutationCapabilityKey struct{}
+type internalMutationOperationKey struct{}
+type internalMutationBranchKey struct{}
+
+func WithInternalMutationCapability(ctx context.Context, capability string) context.Context {
+	return context.WithValue(ctx, internalMutationCapabilityKey{}, capability)
+}
+
+func WithInternalMutationOperation(ctx context.Context, operation string) context.Context {
+	return context.WithValue(ctx, internalMutationOperationKey{}, operation)
+}
+
+func WithInternalMutationBranch(ctx context.Context, branch string) context.Context {
+	return context.WithValue(ctx, internalMutationBranchKey{}, branch)
+}
+
+func internalMutationCapability(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	capability, _ := ctx.Value(internalMutationCapabilityKey{}).(string)
+	return capability
+}
+
+func internalMutationOperation(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	operation, _ := ctx.Value(internalMutationOperationKey{}).(string)
+	return operation
+}
+
+func internalMutationBranch(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	branch, _ := ctx.Value(internalMutationBranchKey{}).(string)
+	return branch
+}
 
 // NonInteractiveEnv returns the environment for a subprocess that may invoke
 // git, with git forced into a fully non-interactive mode. It is intended for

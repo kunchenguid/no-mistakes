@@ -320,6 +320,43 @@ func TestRequestLoggingKeepsMutationsAndFailuresVisible(t *testing.T) {
 	}
 }
 
+func TestAdmissionMutationsLogAtInfo(t *testing.T) {
+	sock := socketPath(t)
+	srv := startServer(t, sock)
+	srv.Handle(ipc.MethodAdmitPush, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return "reservation-1", nil
+	})
+	srv.Handle(ipc.MethodAdmitPushBatch, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+		return ipc.AdmitPushBatchResult{ReservationIDs: []string{"reservation-1"}}, nil
+	})
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	prev := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(prev)
+
+	c, err := ipc.Dial(sock)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+	var result ipc.AdmitPushBatchResult
+	if err := c.Call(ipc.MethodAdmitPushBatch, nil, &result); err != nil {
+		t.Fatalf("admission call: %v", err)
+	}
+	var single string
+	if err := c.Call(ipc.MethodAdmitPush, nil, &single); err != nil {
+		t.Fatalf("single admission call: %v", err)
+	}
+	if got := logs.String(); !strings.Contains(got, `level=INFO msg="ipc request" method=admit_push_batch`) {
+		t.Fatalf("admission mutation missing INFO audit record: %s", got)
+	}
+	if got := logs.String(); !strings.Contains(got, `level=INFO msg="ipc request" method=admit_push`) {
+		t.Fatalf("single admission mutation missing INFO audit record: %s", got)
+	}
+}
+
 func TestCallWithNilResult(t *testing.T) {
 	sock := socketPath(t)
 	srv := startServer(t, sock)

@@ -1,10 +1,42 @@
 package branchsync
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/db"
 )
+
+func TestInternalMutationCapabilityRequiresActiveBranchLock(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	spec := db.InternalRefMutationSpec{
+		RepoID: f.repo.ID, GatePath: f.gate, Branch: f.run.Branch,
+		Ref: "refs/heads/feature/recover", OldSHA: f.submitted, NewSHA: f.preserved,
+		Operation: "update-ref", Scope: db.InternalRefMutationScopeOrdinary,
+	}
+	if _, err := IssueInternalRefMutation(f.db, nil, spec); err == nil {
+		t.Fatal("capability issuance without a branch lock unexpectedly succeeded")
+	}
+	lock, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof := lock.InternalMutationLockProof()
+	tokenHash := sha256.Sum256([]byte(proof.Token))
+	if !VerifyInternalMutationLockProof(proof.Path, proof.PID, hex.EncodeToString(tokenHash[:])) {
+		t.Fatal("active branch-lock proof was rejected")
+	}
+	if _, err := IssueInternalRefMutation(f.db, lock, spec); err != nil {
+		t.Fatalf("capability issuance with a branch lock: %v", err)
+	}
+	lock.Release()
+	if VerifyInternalMutationLockProof(proof.Path, proof.PID, hex.EncodeToString(tokenHash[:])) {
+		t.Fatal("released branch-lock proof remained valid")
+	}
+}
 
 func TestCustodyLockRejectsLiveSecondAttemptAndReleasesAfterOwnerExit(t *testing.T) {
 	f := newRecoverFixture(t, "cancelled")

@@ -308,9 +308,70 @@ esac
 USER_HOOK="$GATE_DIR/hooks/` + preservedReferenceTransactionHook + `"
 RECEIVE_SESSION_ID=${NO_MISTAKES_RECEIVE_SESSION_ID:-}
 RECEIVE_MANIFEST=${NO_MISTAKES_RECEIVE_MANIFEST:-}
+INTERNAL_CAPABILITY=${NO_MISTAKES_INTERNAL_MUTATION_CAPABILITY:-}
+INTERNAL_OPERATION=${NO_MISTAKES_INTERNAL_MUTATION_OPERATION:-}
+INTERNAL_BRANCH=${NO_MISTAKES_INTERNAL_MUTATION_BRANCH:-}
 if [ -z "$RECEIVE_SESSION_ID" ] && [ -z "$RECEIVE_MANIFEST" ]; then
+
+  RECEIVE_INPUT=$(mktemp "$GATE_DIR/.no-mistakes-reference-transaction.XXXXXX") || {
+    printf 'no-mistakes: cannot record unmanaged reference transaction\n' >&2
+    exit 1
+  }
+  trap 'rm -f "$RECEIVE_INPUT"' 0 1 2 3 15
+  if ! cat > "$RECEIVE_INPUT"; then
+    printf 'no-mistakes: cannot read unmanaged reference transaction\n' >&2
+    exit 1
+  fi
+  MANAGED_COUNT=0
+  INTERNAL_OLD=
+  INTERNAL_NEW=
+  INTERNAL_REF=
+  while IFS=' ' read -r oldrev newrev refname; do
+    [ -z "$refname" ] && continue
+    case "$refname" in
+      refs/heads/*|refs/no-mistakes/*)
+        MANAGED_COUNT=$((MANAGED_COUNT + 1))
+        INTERNAL_OLD=$oldrev
+        INTERNAL_NEW=$newrev
+        INTERNAL_REF=$refname
+        ;;
+    esac
+  done < "$RECEIVE_INPUT"
+  if [ "$MANAGED_COUNT" -eq 0 ]; then
+    if [ -x "$USER_HOOK" ]; then
+      "$USER_HOOK" "$PHASE" < "$RECEIVE_INPUT"
+      exit $?
+    fi
+    exit 0
+  fi
+  if [ -z "$INTERNAL_CAPABILITY" ]; then
+    printf 'no-mistakes: internal mutation capability is required for managed ref %s\n' "$INTERNAL_REF" >&2
+    exit 1
+  fi
+  if [ -z "$INTERNAL_OPERATION" ] || [ -z "$INTERNAL_BRANCH" ]; then
+    printf 'no-mistakes: internal mutation capability metadata is incomplete\n' >&2
+    exit 1
+  fi
+  if [ "$MANAGED_COUNT" -ne 1 ]; then
+    printf 'no-mistakes: one exact internal mutation capability is required per managed ref transaction\n' >&2
+    exit 1
+  fi
+  case "$INTERNAL_REF" in
+    refs/heads/*) INTERNAL_SCOPE=ordinary ;;
+    refs/no-mistakes/*) INTERNAL_SCOPE=private ;;
+    *)
+      printf 'no-mistakes: internal mutation capability cannot authorize ref %s\n' "$INTERNAL_REF" >&2
+      exit 1
+      ;;
+  esac
+  NM_HOOK_HELPER=1 "$NM_BIN" daemon authorize-ref-mutation --gate "$GATE_DIR" --phase "$PHASE" --branch "$INTERNAL_BRANCH" --ref "$INTERNAL_REF" --old "$INTERNAL_OLD" --new "$INTERNAL_NEW" --operation "$INTERNAL_OPERATION" --scope "$INTERNAL_SCOPE" < /dev/null
+  status=$?
+  if [ $status -ne 0 ]; then
+    printf 'no-mistakes: internal mutation capability refused for %s\n' "$INTERNAL_REF" >&2
+    exit $status
+  fi
   if [ -x "$USER_HOOK" ]; then
-    "$USER_HOOK" "$PHASE"
+    "$USER_HOOK" "$PHASE" < "$RECEIVE_INPUT"
     exit $?
   fi
   exit 0

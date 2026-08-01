@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
@@ -44,8 +45,73 @@ func newDaemonCmd() *cobra.Command {
 	cmd.AddCommand(newDaemonReceivePackCmd())
 	cmd.AddCommand(newDaemonAdmitPushCmd())
 	cmd.AddCommand(newDaemonReceiveTransactionCmd())
+	cmd.AddCommand(newDaemonAuthorizeRefMutationCmd())
 	cmd.AddCommand(newDaemonNotifyPushCmd())
 
+	return cmd
+}
+
+func newDaemonAuthorizeRefMutationCmd() *cobra.Command {
+	var gate, phase, branch, ref, oldSHA, newSHA, operation, scope string
+	cmd := &cobra.Command{
+		Use:    "authorize-ref-mutation",
+		Short:  "Authorize one exact internal managed-gate ref transaction",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			gatePath, err := normalizeNotifyGatePath(gate)
+			if err != nil {
+				return err
+			}
+			capability := strings.TrimSpace(os.Getenv("NO_MISTAKES_INTERNAL_MUTATION_CAPABILITY"))
+			if capability == "" {
+				return fmt.Errorf("internal mutation capability is required")
+			}
+			p, err := paths.New()
+			if err != nil {
+				return err
+			}
+			repoID, err := receiveRepoID(gatePath)
+			if err != nil {
+				return err
+			}
+			if !sameCLIPath(gatePath, p.RepoDir(repoID)) {
+				return fmt.Errorf("managed gate path does not match no-mistakes repository")
+			}
+			database, err := db.Open(p.DB())
+			if err != nil {
+				return fmt.Errorf("open mutation database: %w", err)
+			}
+			defer database.Close()
+			mutation, err := database.GetInternalRefMutation(capability)
+			if err != nil {
+				return err
+			}
+			if mutation.RepoID != repoID || !sameCLIPath(mutation.GatePath, gatePath) {
+				return fmt.Errorf("internal mutation capability is bound to another gate")
+			}
+			if !branchsync.VerifyInternalMutationLockProof(mutation.LockPath, mutation.OwnerPID, mutation.LockTokenHash) {
+				return fmt.Errorf("internal mutation capability has no active branch-lock ownership")
+			}
+			return database.AdvanceInternalRefMutation(phase, mutation.GatePath, branch, ref, oldSHA, newSHA, operation, scope, capability)
+		},
+	}
+	cmd.Flags().StringVar(&gate, "gate", "", "managed bare gate path")
+	cmd.Flags().StringVar(&phase, "phase", "", "reference transaction phase")
+	cmd.Flags().StringVar(&branch, "branch", "", "exact branch identity")
+	cmd.Flags().StringVar(&ref, "ref", "", "exact ref name")
+	cmd.Flags().StringVar(&oldSHA, "old", "", "exact old object ID")
+	cmd.Flags().StringVar(&newSHA, "new", "", "exact new object ID")
+	cmd.Flags().StringVar(&operation, "operation", "", "exact internal operation")
+	cmd.Flags().StringVar(&scope, "scope", "", "ordinary or private ref scope")
+	_ = cmd.MarkFlagRequired("gate")
+	_ = cmd.MarkFlagRequired("phase")
+	_ = cmd.MarkFlagRequired("branch")
+	_ = cmd.MarkFlagRequired("ref")
+	_ = cmd.MarkFlagRequired("old")
+	_ = cmd.MarkFlagRequired("new")
+	_ = cmd.MarkFlagRequired("operation")
+	_ = cmd.MarkFlagRequired("scope")
 	return cmd
 }
 

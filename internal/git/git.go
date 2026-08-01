@@ -55,6 +55,15 @@ func runInDir(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = NonInteractiveEnv(dir)
+	if capability := internalMutationCapability(ctx); capability != "" {
+		cmd.Env = append(cmd.Env, "NO_MISTAKES_INTERNAL_MUTATION_CAPABILITY="+capability)
+	}
+	if operation := internalMutationOperation(ctx); operation != "" {
+		cmd.Env = append(cmd.Env, "NO_MISTAKES_INTERNAL_MUTATION_OPERATION="+operation)
+	}
+	if branch := internalMutationBranch(ctx); branch != "" {
+		cmd.Env = append(cmd.Env, "NO_MISTAKES_INTERNAL_MUTATION_BRANCH="+branch)
+	}
 	winproc.Harden(cmd)
 	out, err := cmd.Output()
 	if err != nil {

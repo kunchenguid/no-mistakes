@@ -70,6 +70,11 @@ func TestReferenceTransactionHookScript(t *testing.T) {
 		"--receive-session-id \"$RECEIVE_SESSION_ID\"",
 		"TRANSACTION_INPUT",
 		"mktemp \"$GATE_DIR/.no-mistakes-reference-transaction.XXXXXX\"",
+		"NO_MISTAKES_INTERNAL_MUTATION_CAPABILITY",
+		"NO_MISTAKES_INTERNAL_MUTATION_OPERATION",
+		"NO_MISTAKES_INTERNAL_MUTATION_BRANCH",
+		"daemon authorize-ref-mutation --gate \"$GATE_DIR\"",
+		"internal mutation capability is required",
 		preservedReferenceTransactionHook,
 	} {
 		if !strings.Contains(script, want) {
@@ -81,6 +86,33 @@ func TestReferenceTransactionHookScript(t *testing.T) {
 	}
 	if strings.Contains(script, "--receive-capability \"") {
 		t.Fatal("reference transaction hook must not put the capability in argv")
+	}
+}
+
+func TestReferenceTransactionRejectsUnboundManagedRefUpdate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("reference-transaction hooks are POSIX shell scripts")
+	}
+	ctx := context.Background()
+	bare := filepath.Join(t.TempDir(), "gate.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	work := seedGate(t, filepath.Dir(bare), bare)
+	oldSHA := strings.TrimSpace(runGitOrFatal(t, bare, "rev-parse", "refs/heads/main"))
+	runGitOrFatal(t, work, "commit", "--allow-empty", "-m", "second")
+	newSHA := strings.TrimSpace(runGitOrFatal(t, work, "rev-parse", "HEAD"))
+	if _, err := RefreshManagedReferenceTransactionHook(bare); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("git", "-C", bare, "update-ref", "refs/heads/main", newSHA, oldSHA)
+	cmd.Env = append(os.Environ(), "NO_MISTAKES_INTERNAL_MUTATION_CAPABILITY=")
+	if output, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("unbound ordinary ref update unexpectedly succeeded: %s", output)
+	}
+	if got := strings.TrimSpace(runGitOrFatal(t, bare, "rev-parse", "refs/heads/main")); got != oldSHA {
+		t.Fatalf("unbound update changed ordinary ref to %s, want %s", got, oldSHA)
 	}
 }
 

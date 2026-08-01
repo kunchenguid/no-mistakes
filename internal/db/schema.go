@@ -181,6 +181,28 @@ CREATE TABLE IF NOT EXISTS intent_cache (
     session_id  TEXT NOT NULL,
     created_at  INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS internal_ref_mutations (
+    id                 TEXT PRIMARY KEY,
+    repo_id            TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    gate_path          TEXT NOT NULL,
+    branch             TEXT NOT NULL,
+    ref                TEXT NOT NULL,
+    old_sha            TEXT NOT NULL,
+    new_sha            TEXT NOT NULL,
+    operation          TEXT NOT NULL,
+    scope              TEXT NOT NULL,
+    capability_hash    TEXT NOT NULL UNIQUE,
+    lock_path          TEXT NOT NULL,
+    lock_owner_pid     INTEGER NOT NULL,
+    lock_token_hash    TEXT NOT NULL,
+    state              TEXT NOT NULL DEFAULT 'issued',
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS internal_ref_mutations_active
+    ON internal_ref_mutations (repo_id, gate_path, state, created_at);
 `
 
 // migrationStatements hold additive schema changes applied to databases that
@@ -250,6 +272,8 @@ var migrationStatements = []string{
 	`ALTER TABLE receive_reservations ADD COLUMN receive_session_id TEXT`,
 	`ALTER TABLE receive_reservations ADD COLUMN receive_capability_hash TEXT`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS receive_reservations_session_transition ON receive_reservations (repo_id, receive_session_id, ref, old_sha, new_sha) WHERE receive_session_id IS NOT NULL`,
+	`CREATE TABLE IF NOT EXISTS internal_ref_mutations (id TEXT PRIMARY KEY, repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE, gate_path TEXT NOT NULL, branch TEXT NOT NULL, ref TEXT NOT NULL, old_sha TEXT NOT NULL, new_sha TEXT NOT NULL, operation TEXT NOT NULL, scope TEXT NOT NULL, capability_hash TEXT NOT NULL UNIQUE, lock_path TEXT NOT NULL, lock_owner_pid INTEGER NOT NULL, lock_token_hash TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'issued', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS internal_ref_mutations_active ON internal_ref_mutations (repo_id, gate_path, state, created_at)`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,
