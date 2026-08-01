@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.44.0](https://github.com/kunchenguid/no-mistakes/compare/v1.43.0...v1.44.0) (2026-08-01)
+
+
+### Features
+
+* **pipeline:** scope review guidance to the paths a change touches ([#594](https://github.com/kunchenguid/no-mistakes/issues/594)) ([5f89e1f](https://github.com/kunchenguid/no-mistakes/commit/5f89e1f9233c20b28ac59bc689fa5a3df58cf027))
+
+
+### Bug Fixes
+
+* **branchsync:** prefer newer pushed descendants over stale custody ([#622](https://github.com/kunchenguid/no-mistakes/issues/622)) ([2d0fa98](https://github.com/kunchenguid/no-mistakes/commit/2d0fa98f9207451f739b046211ec1a32db4cb76d))
+
 ## [1.43.0](https://github.com/kunchenguid/no-mistakes/compare/v1.42.0...v1.43.0) (2026-07-30)
 
 
