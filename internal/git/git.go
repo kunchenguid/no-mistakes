@@ -440,12 +440,10 @@ func FetchRemoteBranchToPrivateRef(ctx context.Context, dir, remote, branch, loc
 	return err
 }
 
-// FetchRemoteCommitToPrivateRef fetches one exact commit object into a
-// caller-owned private ref without touching FETCH_HEAD or ordinary
-// remote-tracking refs. It is intended for local gate repositories whose
-// object database can still contain a recorded head after the branch moved.
-func FetchRemoteCommitToPrivateRef(ctx context.Context, dir, remote, commitSHA, localRef string) error {
-	refspec := fmt.Sprintf("+%s:%s", commitSHA, localRef)
+// FetchRemoteRefToPrivateRef fetches one exact ref into a caller-owned private
+// ref without touching FETCH_HEAD or ordinary remote-tracking refs.
+func FetchRemoteRefToPrivateRef(ctx context.Context, dir, remote, sourceRef, localRef string) error {
+	refspec := fmt.Sprintf("+%s:%s", sourceRef, localRef)
 	_, err := Run(ctx, dir, "fetch", "--no-tags", "--no-write-fetch-head", remote, refspec)
 	return err
 }

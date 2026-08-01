@@ -449,6 +449,11 @@ func TestRecoverGateAtLocalSubmittedHeadAnchorsRecordedHead(t *testing.T) {
 	t.Run("default anchors and refuses with actionable custody choices", func(t *testing.T) {
 		f := newRecoverFixture(t, types.RunFailed)
 		f.moveGateBranchToSubmitted()
+		f.service.beforeRecoverAnchorFetch = func() {
+			if got := mustRun(t, f.gate, "rev-parse", recoverySourceRef(f.run.ID)+"^{commit}"); got != f.preserved {
+				t.Fatalf("recovery source = %s, want preserved %s", got, f.preserved)
+			}
+		}
 		beforeStatus := mustRun(t, f.local, "status", "--porcelain=v1")
 
 		state := f.service.Recover(f.ctx, false)
@@ -1417,7 +1422,6 @@ func TestRecoverKeepLocalRechecksAfterGateCASBeforeStamp(t *testing.T) {
 		mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
 		mustRun(t, f.local, "add", "rescope.txt")
 		mustRun(t, f.local, "commit", "-m", "diverging rescope")
-		kept := mustRun(t, f.local, "rev-parse", "HEAD")
 		f.service.beforeRecoverStamp = func() {
 			mustWrite(t, filepath.Join(f.local, "race.txt"), "race\n")
 			mustRun(t, f.local, "add", "race.txt")
@@ -1428,8 +1432,8 @@ func TestRecoverKeepLocalRechecksAfterGateCASBeforeStamp(t *testing.T) {
 		if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
 			t.Fatalf("post-cas local commit recover = %#v", state)
 		}
-		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != kept {
-			t.Fatalf("post-cas local commit gate = %s, want kept %s", got, kept)
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+			t.Fatalf("post-cas local commit gate = %s, want preserved %s", got, f.preserved)
 		}
 		if f.custodyReturned() {
 			t.Fatal("post-cas local commit stamped custody")
@@ -1450,7 +1454,6 @@ func TestRecoverKeepLocalRechecksAfterGateCASBeforeStamp(t *testing.T) {
 		mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
 		mustRun(t, f.local, "add", "rescope.txt")
 		mustRun(t, f.local, "commit", "-m", "diverging rescope")
-		kept := mustRun(t, f.local, "rev-parse", "HEAD")
 		f.service.beforeRecoverStamp = func() {
 			mustRun(t, f.local, "checkout", "main")
 		}
@@ -1459,8 +1462,8 @@ func TestRecoverKeepLocalRechecksAfterGateCASBeforeStamp(t *testing.T) {
 		if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
 			t.Fatalf("post-cas branch switch recover = %#v", state)
 		}
-		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != kept {
-			t.Fatalf("post-cas branch switch gate = %s, want kept %s", got, kept)
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+			t.Fatalf("post-cas branch switch gate = %s, want preserved %s", got, f.preserved)
 		}
 		if f.custodyReturned() {
 			t.Fatal("post-cas branch switch stamped custody")
@@ -1484,6 +1487,35 @@ func TestRecoverFinalCustodyCASRejectsConcurrentAuthorityChanges(t *testing.T) {
 		}
 		if f.custodyReturned() {
 			t.Fatal("concurrent newer owner did not prevent custody stamp")
+		}
+	})
+
+	t.Run("newer owning run after gate reset restores ordinary ref", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunCancelled)
+		mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
+		mustRun(t, f.local, "add", "rescope.txt")
+		mustRun(t, f.local, "commit", "-m", "diverging rescope")
+
+		f.service.beforeRecoverStamp = func() {
+			if _, err := f.db.InsertRun(f.repo.ID, f.run.Branch, f.submitted, f.base); err != nil {
+				t.Fatal(err)
+			}
+		}
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Safety != "blocked_recover_custody_race" {
+			t.Fatalf("late newer-owner recovery = %#v", state)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+			t.Fatalf("late newer-owner gate = %s, want preserved %s", got, f.preserved)
+		}
+		if _, err := gitpkg.Run(f.ctx, f.gate, "show-ref", "--verify", custodyReturnRef(f.run.ID)); err == nil {
+			t.Fatal("late newer-owner recovery left custody marker")
+		}
+		if _, err := gitpkg.Run(f.ctx, f.gate, "show-ref", "--verify", custodyOriginalRef(f.run.ID)); err == nil {
+			t.Fatal("late newer-owner recovery left original gate marker")
+		}
+		if f.custodyReturned() {
+			t.Fatal("late newer owner did not prevent custody stamp")
 		}
 	})
 
@@ -1512,6 +1544,9 @@ func TestRunHasPublicationTreatsLegacyZeroGenerationAsUnpublished(t *testing.T) 
 	zero := int64(0)
 	one := int64(1)
 	none := "none"
+	if runHasPublication(&db.Run{}) {
+		t.Fatal("legacy run with no publication fields was treated as publication")
+	}
 	if runHasPublication(&db.Run{PushGeneration: &zero, PRState: &none}) {
 		t.Fatal("legacy zero push generation was treated as publication")
 	}
