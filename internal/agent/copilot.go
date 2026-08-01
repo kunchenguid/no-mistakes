@@ -95,6 +95,10 @@ func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 		emitAgentExited(opts, "copilot", pid, retErr)
 		return nil, retErr
 	}
+	if retErr := completedProviderQuotaError("copilot", copilotErr); retErr != nil {
+		emitAgentExited(opts, "copilot", pid, retErr)
+		return nil, retErr
+	}
 
 	res, err := finalizeCopilotResult(messages, opts.JSONSchema, usage)
 	emitAgentExited(opts, "copilot", pid, err)

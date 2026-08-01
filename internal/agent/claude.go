@@ -109,7 +109,11 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	waitErr := started.wait()
 	stderrWG.Wait()
 	if waitErr != nil {
-		retErr := ClassifyProviderError(fmt.Errorf("claude exited: %w: %s", waitErr, string(stderrBuf)), string(stderrBuf))
+		resultDiagnostic := ""
+		if result != nil && (result.IsError || result.Subtype != "success") {
+			resultDiagnostic = result.diagnostic
+		}
+		retErr := ClassifyProviderError(fmt.Errorf("claude exited: %w: %s", waitErr, string(stderrBuf)), string(stderrBuf), resultDiagnostic)
 		emitAgentExited(opts, "claude", pid, retErr)
 		return nil, retErr
 	}
