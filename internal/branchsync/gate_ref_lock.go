@@ -68,6 +68,12 @@ func acquireGateRefLock(gateDir, ref, authorityEndpoint string) (*gateRefLock, e
 		if !os.IsExist(err) {
 			return nil, fmt.Errorf("acquire managed gate ref lock: %w", err)
 		}
+		if managedGateAuthorityOwnedByCurrentProcess(path) {
+			if removeErr := os.Remove(path); removeErr != nil {
+				return nil, fmt.Errorf("handoff managed gate authority: %w", removeErr)
+			}
+			continue
+		}
 		stale, staleErr := staleGateRefLock(path)
 		if staleErr != nil {
 			return nil, fmt.Errorf("acquire managed gate ref lock: %w", staleErr)
@@ -126,6 +132,12 @@ func acquireOwnedGateRefLock(gateDir, ref string, owner gateRefLockOwner) (*gate
 		}
 		if !os.IsExist(err) {
 			return nil, fmt.Errorf("acquire ordinary gate ref lock: %w", err)
+		}
+		if managedGateAuthorityOwnedByCurrentProcess(path) {
+			if removeErr := os.Remove(path); removeErr != nil {
+				return nil, fmt.Errorf("handoff managed gate authority: %w", removeErr)
+			}
+			continue
 		}
 		stale, staleErr := staleGateRefLock(path)
 		if staleErr != nil {
@@ -248,6 +260,26 @@ func readOwnedGateRefLock(path string) (gateRefLockOwner, error) {
 	return owner, nil
 }
 
+func (l *gateRefLock) setOwner(owner gateRefLockOwner) error {
+	if l == nil || l.file == nil {
+		return fmt.Errorf("managed gate ref lock handle is unavailable")
+	}
+	encoded, err := json.Marshal(owner)
+	if err != nil {
+		return err
+	}
+	if _, err := l.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if err := l.file.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := l.file.Write(append([]byte(gateRefLockOwnerMarker+" "), append(encoded, '\n')...)); err != nil {
+		return err
+	}
+	return l.file.Sync()
+}
+
 func (l *gateRefLock) release(database *db.DB) error {
 	if l == nil {
 		return nil
@@ -343,6 +375,42 @@ func readLockedGateRef(gateDir, ref string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("read locked gate ref: %w: %s", errGateRefAbsent, ref)
+}
+
+func readDirectLooseGateRef(gateDir, ref string) (string, error) {
+	if strings.TrimSpace(gateDir) == "" || !isManagedGateRef(ref) {
+		return "", fmt.Errorf("read direct gate ref: invalid ref")
+	}
+	if err := rejectSymlinkPath(gateDir, ref); err != nil {
+		return "", err
+	}
+	path := filepath.Join(gateDir, filepath.FromSlash(ref))
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		packed, packedErr := packedGateRefExists(gateDir, ref)
+		if packedErr != nil {
+			return "", packedErr
+		}
+		if packed {
+			return "", fmt.Errorf("read direct gate ref: packed ref %s is noncanonical", ref)
+		}
+		return "", fmt.Errorf("read direct gate ref: %w: %s", errGateRefAbsent, ref)
+	}
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("read direct gate ref: noncanonical ref %s", ref)
+	}
+	value, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	valueString := strings.TrimSpace(string(value))
+	if valueString == "" || strings.HasPrefix(valueString, "ref:") || strings.ContainsAny(valueString, " \t\r\n") {
+		return "", fmt.Errorf("read direct gate ref: noncanonical ref %s", ref)
+	}
+	return valueString, nil
 }
 
 func rejectSymlinkPath(gateDir, ref string) error {

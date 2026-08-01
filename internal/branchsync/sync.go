@@ -147,6 +147,7 @@ type Service struct {
 	beforeRecoverAnchorFetch func()
 	beforeRecoverStamp       func()
 	beforeRecoverFastForward func()
+	beforeGateRefReconcile   func()
 }
 
 // OpenCurrent opens a service for the invoking registered worktree. The caller
@@ -938,6 +939,9 @@ func (s *Service) updateOrdinaryGateRef(ctx context.Context, lock *custodyLock, 
 	if err != nil {
 		return err
 	}
+	if err := HandoffManagedGateRefAuthority(s.GateDir, ref); err != nil {
+		return err
+	}
 	if completed, err := s.reconcileCompletedOrdinaryGateRefMutation(lock.runID, branch, ref, oldSHA, newSHA, endpoint); err != nil {
 		return err
 	} else if completed {
@@ -957,6 +961,9 @@ func (s *Service) updateOrdinaryGateRef(ctx context.Context, lock *custodyLock, 
 		return err
 	}
 	gateLock.owner = gateRefLockOwner{RunID: lock.runID, RepoID: s.Repo.ID, GatePath: s.GateDir, Branch: branch, Ref: ref, OwnerGeneration: generation, AuthorityEndpoint: endpoint, ExpectedHead: oldSHA}
+	if err := gateLock.setOwner(gateLock.owner); err != nil {
+		return err
+	}
 	gateLock.database = s.DB
 	if err := s.DB.PrepareGateRefLock(db.GateRefLockJournal{RunID: lock.runID, RepoID: s.Repo.ID, GatePath: s.GateDir, Branch: branch, Ref: ref, LockPath: gateLock.path, OwnerGeneration: generation, AuthorityEndpoint: endpoint, ExpectedHead: oldSHA, NewHead: newSHA, FileIdentity: gateLock.identity}); err != nil {
 		return err
@@ -996,10 +1003,53 @@ func (s *Service) reconcileCompletedOrdinaryGateRefMutation(runID, branch, ref, 
 	if journal.RepoID != s.Repo.ID || journal.GatePath != s.GateDir || journal.Branch != branch || journal.Ref != ref || journal.ExpectedHead != oldSHA || journal.NewHead != newSHA || journal.AuthorityEndpoint == "" {
 		return false, nil
 	}
+	if journal.AuthorityEndpoint != authorityEndpoint {
+		return false, nil
+	}
+	if err := HandoffManagedGateRefAuthority(s.GateDir, ref); err != nil {
+		return false, err
+	}
+	owner := gateRefLockOwner{RunID: journal.RunID, RepoID: journal.RepoID, GatePath: journal.GatePath, Branch: journal.Branch, Ref: journal.Ref, OwnerGeneration: journal.OwnerGeneration, AuthorityEndpoint: journal.AuthorityEndpoint, ExpectedHead: journal.ExpectedHead}
+	var gateLock *gateRefLock
+	if _, statErr := os.Stat(journal.LockPath); os.IsNotExist(statErr) {
+		gateLock, err = acquireOwnedGateRefLock(s.GateDir, ref, owner)
+		if err != nil {
+			return false, err
+		}
+		if err := s.DB.UpdateGateRefLockIdentity(journal.RunID, journal.OwnerGeneration, gateLock.identity); err != nil {
+			gateLock.closeKeepJournal()
+			return false, err
+		}
+	} else if statErr != nil {
+		return false, statErr
+	} else {
+		onDisk, ownerErr := readOwnedGateRefLock(journal.LockPath)
+		if ownerErr != nil {
+			return false, ownerErr
+		}
+		if onDisk != owner {
+			return false, nil
+		}
+		identity, identityErr := gateRefFileIdentity(journal.LockPath)
+		if identityErr != nil || identity != journal.FileIdentity {
+			return false, fmt.Errorf("reconciliation gate ref lock identity changed")
+		}
+		file, openErr := os.OpenFile(journal.LockPath, os.O_RDWR, 0o644)
+		if openErr != nil {
+			return false, openErr
+		}
+		gateLock = &gateRefLock{file: file, path: journal.LockPath, owner: owner, identity: identity}
+	}
+	defer gateLock.closeKeepJournal()
+	if err := acquireGateRefOSLock(gateLock.file); err != nil {
+		return false, err
+	}
+	gateLock.osLocked = true
+	if s.beforeGateRefReconcile != nil {
+		s.beforeGateRefReconcile()
+	}
 	current, err := readManagedGateRef(s.GateDir, ref)
-	if errors.Is(err, errGateRefAbsent) {
-		current = ""
-	} else if err != nil {
+	if err != nil {
 		return false, err
 	}
 	if db.NormalizeManagedGateHead(current) != db.NormalizeManagedGateHead(newSHA) {
@@ -1015,20 +1065,23 @@ func (s *Service) reconcileCompletedOrdinaryGateRefMutation(runID, branch, ref, 
 	if err := s.DB.SetManagedGateRefHead(s.Repo.ID, s.GateDir, ref, newSHA); err != nil {
 		return false, err
 	}
-	if _, statErr := os.Stat(journal.LockPath); statErr == nil {
-		staleLock, staleErr := acquireGateRefLock(s.GateDir, ref, authorityEndpoint)
-		if staleErr != nil {
-			return false, staleErr
+	final, finalErr := readManagedGateRef(s.GateDir, ref)
+	if finalErr != nil || db.NormalizeManagedGateHead(final) != db.NormalizeManagedGateHead(newSHA) {
+		_ = s.DB.PrepareGateRefLock(*journal)
+		if finalErr != nil {
+			return false, finalErr
 		}
-		if err := staleLock.Release(); err != nil {
-			return false, err
-		}
-	} else if !os.IsNotExist(statErr) {
-		return false, statErr
+		return false, fmt.Errorf("managed gate ref changed during reconciliation")
 	}
 	if err := s.DB.ClearGateRefLock(journal.RunID, journal.OwnerGeneration); err != nil {
 		return false, err
 	}
+	gateLock.database = nil
+	if err := gateLock.Release(); err != nil {
+		_ = s.DB.PrepareGateRefLock(*journal)
+		return false, err
+	}
+	gateLock = nil
 	return true, nil
 }
 
@@ -1065,15 +1118,12 @@ func (s *Service) fetchGatePrivateRef(ctx context.Context, lock *custodyLock, br
 	if stage != nil && stage.State != db.CustodyRefStagePrepared && stage.State != db.CustodyRefStageStaged {
 		return fmt.Errorf("managed private staging journal has an unknown state")
 	}
-	existing, existsErr := git.RefExists(mutationCtx, s.GateDir, destination)
-	if existsErr != nil {
-		return existsErr
+	existingSHA, directErr := readDirectLooseGateRef(s.GateDir, destination)
+	existing := directErr == nil
+	if directErr != nil && !errors.Is(directErr, errGateRefAbsent) {
+		return directErr
 	}
 	if existing {
-		existingSHA, resolveErr := git.ResolveRef(mutationCtx, s.GateDir, destination)
-		if resolveErr != nil {
-			return resolveErr
-		}
 		if stage == nil || existingSHA != newSHA {
 			return fmt.Errorf("managed private ref %s is an unjournaled or conflicting ref", destination)
 		}
@@ -1629,6 +1679,9 @@ func (s *Service) reclaimStampedGateRefLock(lock *custodyLock, run *db.Run) erro
 	}
 	owner := gateRefLockOwner{RunID: journal.RunID, RepoID: journal.RepoID, GatePath: journal.GatePath, Branch: journal.Branch, Ref: journal.Ref, OwnerGeneration: journal.OwnerGeneration, AuthorityEndpoint: journal.AuthorityEndpoint, ExpectedHead: journal.ExpectedHead}
 	var gateLock *gateRefLock
+	if err := HandoffManagedGateRefAuthority(s.GateDir, journal.Ref); err != nil {
+		return fmt.Errorf("handoff stamped gate authority: %w", err)
+	}
 	if _, statErr := os.Stat(journal.LockPath); os.IsNotExist(statErr) {
 		gateLock, err = acquireOwnedGateRefLock(s.GateDir, journal.Ref, owner)
 		if err != nil {
@@ -1828,12 +1881,34 @@ func (s *Service) verifyLegacyGateBaseline(ctx context.Context, state State, run
 	if s == nil || run == nil || run.SubmittedHeadSHA == nil || !isExactFullObjectID(ptr(run.SubmittedHeadSHA)) || state.Local.Head != ptr(run.SubmittedHeadSHA) || gateHead != ptr(run.SubmittedHeadSHA) {
 		return false
 	}
-	target := s.recoveryPublicationTarget(ctx, repo)
-	if target == "" {
+	remoteList, err := git.Run(ctx, s.workDir(), "remote")
+	if err != nil {
 		return false
 	}
-	remoteHead, err := git.LsRemote(ctx, s.workDir(), target, publicationRef(branch))
-	return err == nil && remoteHead == ptr(run.SubmittedHeadSHA)
+	remotes := strings.Fields(remoteList)
+	if len(remotes) == 0 {
+		return false
+	}
+	seenTargets := make(map[string]struct{}, len(remotes))
+	for _, remote := range remotes {
+		urls, urlErr := git.GetConfiguredRemoteURLs(ctx, s.workDir(), remote)
+		if urlErr != nil || len(urls) != 1 || strings.TrimSpace(urls[0]) == "" {
+			return false
+		}
+		remoteHead, headErr := git.LsRemote(ctx, s.workDir(), urls[0], publicationRef(branch))
+		if headErr != nil || remoteHead != ptr(run.SubmittedHeadSHA) {
+			return false
+		}
+		seenTargets[TargetFingerprint(urls[0])] = struct{}{}
+	}
+	for _, target := range []string{repo.UpstreamURL, repo.ForkURL} {
+		if strings.TrimSpace(target) != "" {
+			if _, ok := seenTargets[TargetFingerprint(target)]; !ok {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (s *Service) recoveryPublicationTarget(ctx context.Context, repo *db.Repo) string {

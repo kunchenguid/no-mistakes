@@ -114,6 +114,83 @@ func TestGateRefLockBlocksHooksPathOverride(t *testing.T) {
 	}
 }
 
+func TestManagedGateAuthorityBlocksRawUpdateWhileIdle(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	authority, err := AcquireManagedGateRefAuthority(f.gate, "refs/heads/feature/recover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Release()
+	if _, err := gitpkg.Run(context.Background(), f.gate, "-c", "core.hooksPath="+t.TempDir(), "update-ref", "refs/heads/feature/recover", f.submitted, f.preserved); err == nil {
+		t.Fatal("raw update-ref bypassed the persistent managed gate authority")
+	}
+	if got, err := readLockedGateRef(f.gate, "refs/heads/feature/recover"); err != nil || got != f.preserved {
+		t.Fatalf("idle gate head = %s, want %s", got, f.preserved)
+	}
+}
+
+func TestReconcileOrdinaryGateRefHoldsLockAcrossJournalUpdate(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	lock, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	authority, err := lock.ensureInternalMutationAuthority(f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint, generation, err := lock.authorityIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := "refs/heads/feature/recover"
+	gateLock, err := acquireGateRefLock(f.gate, ref, endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := gateRefLockOwner{RunID: f.run.ID, RepoID: f.repo.ID, GatePath: f.gate, Branch: f.run.Branch, Ref: ref, OwnerGeneration: generation, AuthorityEndpoint: endpoint, ExpectedHead: f.preserved}
+	gateLock.owner = owner
+	if err := gateLock.setOwner(owner); err != nil {
+		t.Fatal(err)
+	}
+	gateLock.database = f.db
+	if err := f.db.PrepareGateRefLock(db.GateRefLockJournal{RunID: f.run.ID, RepoID: f.repo.ID, GatePath: f.gate, Branch: f.run.Branch, Ref: ref, LockPath: gateLock.path, OwnerGeneration: generation, AuthorityEndpoint: endpoint, ExpectedHead: f.preserved, NewHead: f.submitted, FileIdentity: gateLock.identity}); err != nil {
+		t.Fatal(err)
+	}
+	spec := db.InternalRefMutationSpec{RepoID: f.repo.ID, GatePath: f.gate, Branch: f.run.Branch, Ref: ref, OldSHA: f.preserved, NewSHA: f.submitted, Operation: "update-ref", Scope: db.InternalRefMutationScopeOrdinary}
+	capability, _, err := IssueInternalRefMutation(f.db, lock, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := InternalRefMutationAuthorization{Capability: capability, Phase: "prepared", GatePath: f.gate, Branch: f.run.Branch, Ref: ref, OldSHA: f.preserved, NewSHA: f.submitted, Operation: "update-ref", Scope: db.InternalRefMutationScopeOrdinary}
+	if err := AuthorizeInternalRefMutation(authority, request); err != nil {
+		t.Fatal(err)
+	}
+	mutationCtx := gitpkg.WithSanitizedGateConfig(context.Background())
+	if err := gateLock.commitRef(mutationCtx, f.gate, ref, f.preserved, f.submitted); err != nil {
+		t.Fatal(err)
+	}
+	request.Phase = "committed"
+	if err := AuthorizeInternalRefMutation(authority, request); err != nil {
+		t.Fatal(err)
+	}
+	gateLock.closeKeepJournal()
+	rawErr := error(nil)
+	f.service.beforeGateRefReconcile = func() {
+		_, rawErr = gitpkg.Run(context.Background(), f.gate, "-c", "core.hooksPath="+t.TempDir(), "update-ref", ref, f.preserved, f.submitted)
+	}
+	if err := f.service.updateOrdinaryGateRef(context.Background(), lock, f.run.Branch, ref, f.preserved, f.submitted); err != nil {
+		t.Fatal(err)
+	}
+	if rawErr == nil {
+		t.Fatal("raw writer changed the ref during reconciliation")
+	}
+	if got := mustRun(t, f.gate, "rev-parse", ref); got != f.submitted {
+		t.Fatalf("reconciled gate head = %s, want %s", got, f.submitted)
+	}
+}
+
 func TestReadLockedGateRefRejectsLinkedRefs(t *testing.T) {
 	f := newRecoverFixture(t, "cancelled")
 	refPath := filepath.Join(f.gate, filepath.FromSlash("refs/heads/feature/recover"))

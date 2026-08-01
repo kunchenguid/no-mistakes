@@ -406,6 +406,7 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	logStartupPhase("worktree_cleanup", worktreeStarted)
 	mgr.resumeRecoveredRuns(plans)
 	mgr.reconcileReceiveReservations(context.Background())
+	mgr.restoreManagedGateGuards()
 }
 
 // cleanupOrphanWorktrees removes worktree directories left behind by runs

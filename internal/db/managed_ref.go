@@ -14,6 +14,26 @@ type ManagedGateRef struct {
 	Head     string
 }
 
+func (d *DB) ListManagedGateRefs(repoID, gatePath string) ([]ManagedGateRef, error) {
+	rows, err := d.sql.Query(`SELECT repo_id, gate_path, ref, head FROM managed_gate_refs WHERE repo_id = ? AND gate_path = ? ORDER BY ref`, strings.TrimSpace(repoID), strings.TrimSpace(gatePath))
+	if err != nil {
+		return nil, fmt.Errorf("list managed gate refs: %w", err)
+	}
+	defer rows.Close()
+	var refs []ManagedGateRef
+	for rows.Next() {
+		var managed ManagedGateRef
+		if err := rows.Scan(&managed.RepoID, &managed.GatePath, &managed.Ref, &managed.Head); err != nil {
+			return nil, fmt.Errorf("scan managed gate ref: %w", err)
+		}
+		refs = append(refs, managed)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list managed gate refs: %w", err)
+	}
+	return refs, nil
+}
+
 func NormalizeManagedGateHead(head string) string {
 	head = strings.TrimSpace(head)
 	if head != "" && strings.Trim(head, "0") == "" {

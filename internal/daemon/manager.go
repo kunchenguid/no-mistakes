@@ -50,6 +50,9 @@ type RunManager struct {
 
 	branchLocks sync.Map // repoID+"/"+branch → *sync.Mutex
 
+	managedGateMu     sync.Mutex
+	managedGateGuards map[string]*branchsync.ManagedGateRefAuthority
+
 	// subMu guards the subscriber set and the per-run state revisions. It is
 	// a plain Mutex, not an RWMutex, because revision assignment and fan-out
 	// must be one atomic step: if two concurrent state events could be
@@ -75,16 +78,85 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 		stepFactory = func() []pipeline.Step { return steps.AllSteps() }
 	}
 	return &RunManager{
-		executors:     make(map[string]*pipeline.Executor),
-		cancels:       make(map[string]context.CancelCauseFunc),
-		dones:         make(map[string]chan struct{}),
-		db:            database,
-		paths:         p,
-		steps:         stepFactory,
-		subscribers:   make(map[string][]*eventMailbox),
-		stateRevs:     make(map[string]int64),
-		completedRuns: make(map[string]bool),
+		executors:         make(map[string]*pipeline.Executor),
+		cancels:           make(map[string]context.CancelCauseFunc),
+		dones:             make(map[string]chan struct{}),
+		db:                database,
+		paths:             p,
+		steps:             stepFactory,
+		subscribers:       make(map[string][]*eventMailbox),
+		stateRevs:         make(map[string]int64),
+		completedRuns:     make(map[string]bool),
+		managedGateGuards: make(map[string]*branchsync.ManagedGateRefAuthority),
 	}
+}
+
+func managedGateGuardKey(repoID, ref string) string {
+	return strings.TrimSpace(repoID) + "\x00" + strings.TrimSpace(ref)
+}
+
+func (m *RunManager) ensureManagedGateGuard(repo *db.Repo, ref string) error {
+	if m == nil || m.db == nil || repo == nil || !strings.HasPrefix(ref, "refs/heads/") {
+		return nil
+	}
+	key := managedGateGuardKey(repo.ID, ref)
+	m.managedGateMu.Lock()
+	defer m.managedGateMu.Unlock()
+	if _, ok := m.managedGateGuards[key]; ok {
+		return nil
+	}
+	guard, err := branchsync.AcquireManagedGateRefAuthority(m.paths.RepoDir(repo.ID), ref)
+	if err != nil {
+		return err
+	}
+	m.managedGateGuards[key] = guard
+	return nil
+}
+
+func (m *RunManager) releaseManagedGateGuard(repoID, ref string) error {
+	if m == nil {
+		return nil
+	}
+	key := managedGateGuardKey(repoID, ref)
+	m.managedGateMu.Lock()
+	defer m.managedGateMu.Unlock()
+	guard := m.managedGateGuards[key]
+	if guard == nil {
+		return nil
+	}
+	if err := guard.Release(); err != nil {
+		return err
+	}
+	delete(m.managedGateGuards, key)
+	return nil
+}
+
+func (m *RunManager) restoreManagedGateGuards() {
+	if m == nil || m.db == nil {
+		return
+	}
+	for _, repo := range m.mustListRepos() {
+		refs, err := m.db.ListManagedGateRefs(repo.ID, m.paths.RepoDir(repo.ID))
+		if err != nil {
+			continue
+		}
+		for _, managed := range refs {
+			if err := m.ensureManagedGateGuard(repo, managed.Ref); err != nil {
+				_ = m.db.QuarantineGateRef(repo.ID, managed.GatePath, managed.Ref, managed.Head, managed.Head, "managed-gate-authority-unavailable")
+			}
+		}
+	}
+}
+
+func (m *RunManager) mustListRepos() []*db.Repo {
+	if m == nil || m.db == nil {
+		return nil
+	}
+	repos, err := m.db.GetRepos()
+	if err != nil {
+		return nil
+	}
+	return repos
 }
 
 type recoveredRunPlan struct {
@@ -677,6 +749,11 @@ func (m *RunManager) HandleAdmitPushBatch(ctx context.Context, params *ipc.Admit
 	if err != nil {
 		return nil, err
 	}
+	for _, item := range checked {
+		if err := m.releaseManagedGateGuard(repo.ID, item.update.Ref); err != nil {
+			return nil, fmt.Errorf("release managed gate authority for receive: %w", err)
+		}
+	}
 	ids := make([]string, len(reservations))
 	for i, reservation := range reservations {
 		ids[i] = reservation.ID
@@ -785,6 +862,14 @@ func (m *RunManager) HandleReceiveTransactionBatch(ctx context.Context, params *
 	if err := m.db.ApplyReceiveTransactionBatch(params.Phase, params.ReceiveSessionID, params.ReceiveCapability, inputs); err != nil {
 		return err
 	}
+	if params.Phase == "committed" || params.Phase == "aborted" {
+		for _, item := range checked {
+			if err := m.ensureManagedGateGuard(repo, item.update.Ref); err != nil {
+				_ = m.db.QuarantineGateRef(repo.ID, m.paths.RepoDir(repo.ID), item.update.Ref, item.update.New, item.update.New, "managed-gate-authority-unavailable")
+				return fmt.Errorf("restore managed gate authority: %w", err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -884,7 +969,10 @@ func (m *RunManager) verifyManagedGateRefHead(repo *db.Repo, ref, current string
 		return err
 	}
 	if managed == nil {
-		return m.db.SetManagedGateRefHead(repo.ID, m.paths.RepoDir(repo.ID), ref, observed)
+		if err := m.db.SetManagedGateRefHead(repo.ID, m.paths.RepoDir(repo.ID), ref, observed); err != nil {
+			return err
+		}
+		return m.ensureManagedGateGuard(repo, ref)
 	}
 	if db.NormalizeManagedGateHead(managed.Head) != observed {
 		if err := m.db.QuarantineGateRef(repo.ID, m.paths.RepoDir(repo.ID), ref, managed.Head, observed, "unbound-or-unexpected-gate-ref"); err != nil {
@@ -892,7 +980,7 @@ func (m *RunManager) verifyManagedGateRefHead(repo *db.Repo, ref, current string
 		}
 		return fmt.Errorf("managed gate ref %s changed from journaled head %s to %s; the ref was quarantined", ref, managed.Head, observed)
 	}
-	return nil
+	return m.ensureManagedGateGuard(repo, ref)
 }
 
 func (m *RunManager) verifyManagedGateRefCommit(repo *db.Repo, ref, current string, exists bool, oldHead, newHead string) error {
@@ -1123,6 +1211,19 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	defer ownershipLock.Release()
 
 	gateDir := m.paths.RepoDir(repo.ID)
+	ref := "refs/heads/" + branch
+	if err := m.releaseManagedGateGuard(repo.ID, ref); err != nil {
+		return "", fmt.Errorf("release managed gate authority for rerun: %w", err)
+	}
+	snapshotGuard, err := branchsync.AcquireManagedGateRefAuthority(gateDir, ref)
+	if err != nil {
+		_ = m.ensureManagedGateGuard(repo, ref)
+		return "", fmt.Errorf("acquire managed gate authority for rerun: %w", err)
+	}
+	defer func() {
+		_ = snapshotGuard.Release()
+		_ = m.ensureManagedGateGuard(repo, ref)
+	}()
 	quarantine, err := m.db.GetGateRefQuarantine(repo.ID, gateDir, "refs/heads/"+branch)
 	if err != nil {
 		return "", fmt.Errorf("check managed gate ref quarantine: %w", err)
@@ -1636,6 +1737,15 @@ func (m *RunManager) Shutdown() {
 	case <-done:
 	case <-time.After(30 * time.Second):
 		slog.Warn("timed out waiting for runs to finish during shutdown")
+	}
+	m.managedGateMu.Lock()
+	guards := m.managedGateGuards
+	m.managedGateGuards = make(map[string]*branchsync.ManagedGateRefAuthority)
+	m.managedGateMu.Unlock()
+	for key, guard := range guards {
+		if err := guard.Release(); err != nil {
+			slog.Warn("failed to release managed gate authority", "ref_key", key, "error", err)
+		}
 	}
 }
 

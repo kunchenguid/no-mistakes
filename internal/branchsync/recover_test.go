@@ -984,6 +984,37 @@ func TestFetchGatePrivateRefRejectsConflictingExistingDestination(t *testing.T) 
 	}
 }
 
+func TestFetchGatePrivateRefRejectsSymbolicExistingDestination(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	lock, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := custodyReturnRef(f.run.ID)
+	mustRun(t, f.gate, "update-ref", custodyOriginalRef(f.run.ID), f.preserved)
+	owner, err := f.db.BeginRunCustodyTransition(f.ctx, f.run)
+	if err != nil {
+		lock.Release()
+		t.Fatal(err)
+	}
+	if err := f.service.fetchGatePrivateRef(f.ctx, lock, f.run.Branch, f.local, destination, "", f.submitted); err != nil {
+		lock.Release()
+		t.Fatal(err)
+	}
+	_ = owner
+	lock.Release()
+	mustRun(t, f.gate, "symbolic-ref", destination, "refs/no-mistakes/symbol-target")
+	mustRun(t, f.gate, "update-ref", "refs/no-mistakes/symbol-target", f.submitted)
+	lock, err = acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	if err := f.service.fetchGatePrivateRef(f.ctx, lock, f.run.Branch, f.local, destination, "", f.submitted); err == nil {
+		t.Fatal("symbolic private destination was accepted")
+	}
+}
+
 // TestRecoverGateDivergenceAndUnavailabilityFailClosed: recovery must refuse
 // whenever the preserved head cannot be verified and anchored - a moved gate
 // branch, a deleted gate branch, or a missing gate.
@@ -2071,6 +2102,32 @@ func TestRecoverRefusesUnjournaledRewrittenGateHead(t *testing.T) {
 	}
 	if f.custodyReturned() {
 		t.Fatal("unjournaled rewritten gate recovery stamped custody")
+	}
+}
+
+func TestRecoverLegacyBaselineChecksEveryConfiguredRemote(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted)
+	stateDB, err := sql.Open("sqlite", f.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stateDB.Exec(`DELETE FROM managed_gate_refs WHERE repo_id = ? AND gate_path = ? AND ref = ?`, f.repo.ID, f.gate, "refs/heads/feature/recover"); err != nil {
+		stateDB.Close()
+		t.Fatal(err)
+	}
+	stateDB.Close()
+	mirror := filepath.Join(t.TempDir(), "mirror.git")
+	mustRun(t, filepath.Dir(mirror), "init", "--bare", mirror)
+	mustRun(t, f.gate, "remote", "add", "mirror", mirror)
+	mustRun(t, f.gate, "push", "mirror", f.preserved+":refs/heads/feature/recover")
+	mustRun(t, f.local, "remote", "add", "mirror", mirror)
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Safety != "blocked_recover_gate_quarantined" {
+		t.Fatalf("legacy multi-remote recovery = %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("legacy multi-remote evidence stamped custody")
 	}
 }
 
