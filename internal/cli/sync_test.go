@@ -485,7 +485,7 @@ func newCLIUnmovedAbortFixture(t *testing.T) cliRecoverFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
+	if err := database.UpdateRunStatusWithVerifiedHead(run.ID, types.RunCancelled, submitted); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Close(); err != nil {
