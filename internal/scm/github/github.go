@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -23,6 +25,12 @@ type Host struct {
 	host         string // repo's GitHub hostname; scopes the auth check
 	repo         string // "owner/name" slug for --repo; empty when unknown
 	forkOwner    string // fork owner for cross-repository PR heads
+
+	// checksJSONUnsupported records that the resolved gh binary predates
+	// `gh pr checks --json`. Hosts are scoped to a pipeline run, so detecting
+	// the unsupported flag once avoids repeating a known-bad command on every
+	// CI poll without persisting assumptions across runs or binary upgrades.
+	checksJSONUnsupported atomic.Bool
 }
 
 // New builds a Host. cliAvailable reports whether the gh binary is
@@ -286,7 +294,7 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("gh pr view: %w", err)
+		return "", ghCLIError("gh pr view", err)
 	}
 	return normalizePRState(strings.TrimSpace(string(out))), nil
 }
@@ -296,16 +304,84 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !h.checksJSONUnsupported.Load() {
+		checks, err, unsupported := h.getChecksViaJSONFlag(ctx, selector)
+		if !unsupported {
+			return checks, err
+		}
+		h.checksJSONUnsupported.Store(true)
+	}
+	return h.getChecksViaStatusRollup(ctx, selector)
+}
+
+// getChecksViaJSONFlag uses the preferred gh >= 2.50.0 command. gh returns a
+// non-zero status when checks are pending or failing even though stdout still
+// contains valid JSON, so a parseable payload remains authoritative. The one
+// fallback signal is gh's explicit rejection of the --json flag.
+func (h *Host) getChecksViaJSONFlag(ctx context.Context, selector string) (checks []scm.Check, err error, unsupported bool) {
 	args := append([]string{"pr", "checks", selector}, h.repoArgs()...)
 	args = append(args, "--json", "name,state,bucket,completedAt")
 	cmd := h.cmd(ctx, "gh", args...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		if strings.Contains(string(out), "no checks reported") {
-			return nil, nil
+	out, cmdErr := cmd.Output()
+	if cmdErr != nil {
+		stderr := exitStderr(cmdErr)
+		detail := string(stderr)
+		if strings.Contains(string(out), "no checks reported") || strings.Contains(detail, "no checks reported") {
+			return nil, nil, false
 		}
-		return nil, fmt.Errorf("gh pr checks: %w", err)
+		if strings.Contains(detail, "unknown flag: --json") {
+			return nil, nil, true
+		}
+		if len(strings.TrimSpace(string(out))) == 0 {
+			return nil, ghCLIError("gh pr checks", cmdErr), false
+		}
 	}
+	checks, err = parseChecksJSON(out)
+	if err != nil && cmdErr != nil {
+		return nil, ghCLIError("gh pr checks", cmdErr), false
+	}
+	return checks, err, false
+}
+
+// getChecksViaStatusRollup supports gh versions that predate `pr checks
+// --json`. It keeps both the exact PR selector and --repo argument, so daemon
+// polling from a detached bare gate never falls back to cwd branch inference.
+func (h *Host) getChecksViaStatusRollup(ctx context.Context, selector string) ([]scm.Check, error) {
+	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
+	args = append(args, "--json", "statusCheckRollup")
+	cmd := h.cmd(ctx, "gh", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, ghCLIError("gh pr view statusCheckRollup", err)
+	}
+	var payload struct {
+		StatusCheckRollup []struct {
+			Typename    string `json:"__typename"`
+			Name        string `json:"name"`
+			Context     string `json:"context"`
+			Conclusion  string `json:"conclusion"`
+			Status      string `json:"status"`
+			State       string `json:"state"`
+			CompletedAt string `json:"completedAt"`
+		} `json:"statusCheckRollup"`
+	}
+	if err := json.Unmarshal(out, &payload); err != nil {
+		return nil, fmt.Errorf("parse CI checks: %w", err)
+	}
+	checks := make([]scm.Check, 0, len(payload.StatusCheckRollup))
+	for _, item := range payload.StatusCheckRollup {
+		name, state := item.Name, item.Conclusion
+		if item.Typename == "StatusContext" {
+			name, state = item.Context, item.State
+		} else if state == "" {
+			state = item.Status
+		}
+		checks = append(checks, newCheck(name, state, "", item.CompletedAt))
+	}
+	return checks, nil
+}
+
+func parseChecksJSON(out []byte) ([]scm.Check, error) {
 	var raw []struct {
 		Name        string `json:"name"`
 		State       string `json:"state"`
@@ -317,15 +393,23 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	}
 	checks := make([]scm.Check, 0, len(raw))
 	for _, r := range raw {
-		var completedAt time.Time
-		if r.CompletedAt != "" {
-			if parsed, parseErr := time.Parse(time.RFC3339, r.CompletedAt); parseErr == nil {
-				completedAt = parsed
-			}
-		}
-		checks = append(checks, scm.Check{Name: r.Name, Bucket: normalizeCheckBucket(r.Bucket, r.State), CompletedAt: completedAt})
+		checks = append(checks, newCheck(r.Name, r.State, r.Bucket, r.CompletedAt))
 	}
 	return checks, nil
+}
+
+func newCheck(name, state, bucket, completedAtRaw string) scm.Check {
+	var completedAt time.Time
+	if completedAtRaw != "" {
+		if parsed, err := time.Parse(time.RFC3339, completedAtRaw); err == nil {
+			completedAt = parsed
+		}
+	}
+	return scm.Check{
+		Name:        name,
+		Bucket:      normalizeCheckBucket(bucket, state),
+		CompletedAt: completedAt,
+	}
 }
 
 func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {
@@ -338,9 +422,46 @@ func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.Mergeable
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("gh pr view mergeable: %w", err)
+		return "", ghCLIError("gh pr view mergeable", err)
 	}
 	return normalizeMergeableState(strings.TrimSpace(string(out))), nil
+}
+
+// ghCLIError preserves the first useful gh stderr line while keeping repeated
+// CI-poll warnings bounded and single-line. Output populates ExitError.Stderr
+// when the command did not have an explicit stderr writer.
+func ghCLIError(op string, err error) error {
+	if detail := compactCLIError(exitStderr(err)); detail != "" {
+		return fmt.Errorf("%s: %w: %s", op, err, detail)
+	}
+	return fmt.Errorf("%s: %w", op, err)
+}
+
+func exitStderr(err error) []byte {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.Stderr
+	}
+	return nil
+}
+
+func compactCLIError(stderr []byte) string {
+	const maxBytes = 200
+	for _, raw := range strings.Split(string(stderr), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if len(line) > maxBytes {
+			cut := maxBytes
+			for cut > 0 && !utf8.RuneStart(line[cut]) {
+				cut--
+			}
+			line = line[:cut]
+		}
+		return line
+	}
+	return ""
 }
 
 func (h *Host) FetchFailedCheckLogs(ctx context.Context, _ *scm.PR, branch, headSHA string, failingNames []string) (string, error) {
@@ -488,7 +609,9 @@ func normalizeMergeableState(raw string) scm.MergeableState {
 }
 
 func normalizeCheckBucket(bucket, state string) scm.CheckBucket {
-	if normalized := scm.CheckBucket(strings.TrimSpace(bucket)); normalized != "" {
+	switch normalized := scm.CheckBucket(strings.TrimSpace(bucket)); normalized {
+	case scm.CheckBucketPass, scm.CheckBucketFail, scm.CheckBucketPending,
+		scm.CheckBucketCancel, scm.CheckBucketSkip:
 		return normalized
 	}
 
@@ -504,6 +627,6 @@ func normalizeCheckBucket(bucket, state string) scm.CheckBucket {
 	case "SKIPPED", "NEUTRAL", "STALE":
 		return scm.CheckBucketSkip
 	default:
-		return ""
+		return scm.CheckBucketPending
 	}
 }

@@ -401,6 +401,8 @@ Checks:
 
 Uses indicators: `✓` (available), `–` (not found, optional), `✗` (problem detected).
 
+When `gh` is installed but older than 2.50.0, `doctor` shows an informational warning that CI monitoring will use the structured `statusCheckRollup` compatibility path. The fallback remains supported; the warning makes the active path visible before a run.
+
 The standalone runner rows inspect default binary names; the `cursor` row reports whichever of `cursor-agent` and `acpx` are missing.
 The [Global Config Reference](/no-mistakes/reference/global-config/) owns ACP gate-validation availability and probing semantics.
 Each validation run performs the authoritative agent resolution again after applying any trusted repository-level override.
