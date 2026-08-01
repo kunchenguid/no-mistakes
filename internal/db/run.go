@@ -19,20 +19,21 @@ type Run struct {
 	// ReviewApprovedHeadSHA is the exact commit approved by the last
 	// successfully completed full review. It is nil for legacy runs and until
 	// review completes; mutable run/worktree heads never infer this authority.
-	ReviewApprovedHeadSHA *string
-	Status                types.RunStatus
-	PRURL                 *string
-	PRState               *string
-	PRStateObservedAt     *int64
-	CIReadyAt             *int64
-	CIReadyNoCI           bool
-	LastPushedSHA         *string
-	PushTargetKind        *string
-	PushTargetFingerprint *string
-	PushRef               *string
-	LastPushedAt          *int64
-	PushGeneration        *int64
-	PushActive            bool
+	ReviewApprovedHeadSHA  *string
+	Status                 types.RunStatus
+	PRURL                  *string
+	PRState                *string
+	PRStateObservedAt      *int64
+	CIReadyAt              *int64
+	CIReadyNoCI            bool
+	LastPushedSHA          *string
+	PushTargetKind         *string
+	PushTargetFingerprint  *string
+	PushRef                *string
+	LastPushedAt           *int64
+	PushGeneration         *int64
+	PushActive             bool
+	TerminalHeadVerifiedAt *int64
 	// CustodyReturnedAt is non-nil once a guarded branch-sync recovery
 	// explicitly ended this run's ownership of an unpublished pipeline head
 	// (terminal run whose head was never successfully pushed, or moved after
@@ -59,7 +60,7 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -68,7 +69,7 @@ func scanRun(row interface {
 		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.SubmittedHeadSHA, &r.ReviewApprovedHeadSHA, &r.Status,
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
-		&r.LastPushedAt, &r.PushGeneration, &r.PushActive,
+		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
@@ -214,7 +215,7 @@ func (d *DB) GetActiveRuns() ([]*Run, error) {
 
 // UpdateRunStatus updates a run's status and updated_at timestamp.
 func (d *DB) UpdateRunStatus(id string, status types.RunStatus) error {
-	_, err := d.sql.Exec(`UPDATE runs SET status = ?, push_active = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN 0 ELSE push_active END, updated_at = ? WHERE id = ?`, status, status, now(), id)
+	_, err := d.sql.Exec(`UPDATE runs SET status = ?, push_active = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN 0 ELSE push_active END, terminal_head_verified_at = NULL, updated_at = ? WHERE id = ?`, status, status, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run status: %w", err)
 	}
@@ -456,9 +457,27 @@ func (d *DB) UpdateRunError(id, errMsg string) error {
 
 // UpdateRunErrorStatus sets the error message and terminal status on a run.
 func (d *DB) UpdateRunErrorStatus(id, errMsg string, status types.RunStatus) error {
-	_, err := d.sql.Exec(`UPDATE runs SET error = ?, status = ?, push_active = 0, updated_at = ? WHERE id = ?`, errMsg, status, now(), id)
+	_, err := d.sql.Exec(`UPDATE runs SET error = ?, status = ?, push_active = 0, terminal_head_verified_at = NULL, updated_at = ? WHERE id = ?`, errMsg, status, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run error: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) UpdateRunErrorStatusWithVerifiedHead(id, errMsg string, status types.RunStatus, headSHA string) error {
+	ts := now()
+	_, err := d.sql.Exec(`UPDATE runs SET error = ?, status = ?, head_sha = ?, push_active = 0, terminal_head_verified_at = ?, updated_at = ? WHERE id = ?`, errMsg, status, headSHA, ts, ts, id)
+	if err != nil {
+		return fmt.Errorf("update run error with verified head: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) UpdateRunStatusWithVerifiedHead(id string, status types.RunStatus, headSHA string) error {
+	ts := now()
+	_, err := d.sql.Exec(`UPDATE runs SET status = ?, head_sha = ?, push_active = 0, terminal_head_verified_at = ?, updated_at = ? WHERE id = ?`, status, headSHA, ts, ts, id)
+	if err != nil {
+		return fmt.Errorf("update run status with verified head: %w", err)
 	}
 	return nil
 }

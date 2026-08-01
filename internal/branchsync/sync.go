@@ -442,10 +442,9 @@ func (s *Service) Apply(ctx context.Context) State {
 // pipeline commits in the gate, or terminal after a push with additional
 // unpublished commits. While such a run was active the pipeline_owned block
 // was correct; once it is terminal nothing will ever publish the head, so an
-// explicit guarded exit must exist. A terminal run that never changed the
-// submitted head needs no recovery at all - cancellation already released the
-// branch (user_owned) - so Recover treats it as an idempotent no-op success
-// that mutates nothing.
+// explicit guarded exit must exist. A terminal run whose verified worktree
+// head never changed from the submitted head needs no recovery at all, so
+// Recover treats that user_owned state as an idempotent no-op success.
 //
 // The decision matrix, by worktree relation to the preserved pipeline head P
 // (the gate branch head recorded as the run's head_sha):
@@ -506,6 +505,27 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 	if !terminalRunStatus(run.Status) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_run_active", "the run that owns this branch is still active; drive it to completion or abort it first; no files or refs were changed")
+	}
+	if run.TerminalHeadVerifiedAt == nil {
+		branch := state.Local.Branch
+		if strings.TrimSpace(s.GateDir) == "" {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and no gate is available to prove preserved custody; no files or refs were changed")
+		}
+		gateHead, err := git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
+		if err != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the preserved gate head could not be read; no files or refs were changed")
+		}
+		if gateHead != run.HeadSHA {
+			if !isAncestor(ctx, s.GateDir, run.HeadSHA, gateHead) {
+				return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the gate head does not descend from the recorded head; no files or refs were changed")
+			}
+			if err := s.DB.UpdateRunHeadSHA(run.ID, gateHead); err != nil {
+				return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the verified gate head could not be preserved; no files or refs were changed")
+			}
+			run.HeadSHA = gateHead
+			state.Pipeline.CurrentHead = gateHead
+			state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, gateHead)
+		}
 	}
 
 	wd := s.workDir()
@@ -789,11 +809,9 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		}
 		// The head never left the submitted head and nothing was pushed. An
 		// active run owns the branch and blocks with the plain pipeline-owned
-		// reason. A terminal run releases it: cancellation ends ownership, no
-		// pipeline-created content exists to recover, and the branch and head
-		// are the operator's, immediately usable with no sync action (v1.44.2
-		// dogfood: a pre-push abort taken to switch delivery must never
-		// misreport as wrong-branch ambiguity or recoverable custody).
+		// reason. A terminal run releases it only when terminalization verified
+		// the managed worktree head: no pipeline-created content exists to
+		// recover, and the branch and head are immediately usable.
 		if run.SubmittedHeadSHA != nil && run.LastPushedSHA == nil {
 			if run.CustodyReturnedAt != nil {
 				s.classifyCustodyReturned(ctx, &state)
@@ -803,9 +821,13 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 				s.classifyPipelineOwned(ctx, &state, run, "a validation run is active on this branch; do not make local follow-up commits until it finishes")
 				return state, run, false
 			}
-			if terminalRunStatus(run.Status) {
+			if terminalRunStatus(run.Status) && run.TerminalHeadVerifiedAt != nil && runHeadUnmoved(run) {
 				s.classifyUserOwned(ctx, &state)
 				return state, run, true
+			}
+			if terminalRunStatus(run.Status) {
+				s.classifyPipelineOwned(ctx, &state, run, "the terminal run has no verified worktree-head evidence; recover custody before local follow-up work")
+				return state, run, false
 			}
 		}
 		state.State = StateLegacyUnbound
@@ -1043,7 +1065,7 @@ func unpublishedPipelineHead(run *db.Run) bool {
 		return false
 	}
 	if run.LastPushedSHA == nil {
-		return run.HeadSHA != ptr(run.SubmittedHeadSHA)
+		return run.HeadSHA != ptr(run.SubmittedHeadSHA) || (terminalRunStatus(run.Status) && run.TerminalHeadVerifiedAt == nil)
 	}
 	return run.HeadSHA != ptr(run.LastPushedSHA)
 }
@@ -1138,13 +1160,11 @@ func runHeadUnmoved(run *db.Run) bool {
 }
 
 // releasedSubmittedHeadRun reports a terminal run whose cancellation released
-// the branch: no push provenance, no custody stamp, head_sha still equal to
-// submitted_head_sha. The supported pre-push abort creates exactly this shape;
-// selection must keep it visible so status reports user_owned instead of
-// wrong-branch ambiguity.
+// the branch: no push provenance, no custody stamp, and positive terminal
+// evidence that head_sha still equals submitted_head_sha.
 func releasedSubmittedHeadRun(run *db.Run) bool {
 	return run != nil && terminalRunStatus(run.Status) && run.CustodyReturnedAt == nil &&
-		run.LastPushedSHA == nil && runHeadUnmoved(run)
+		run.LastPushedSHA == nil && run.TerminalHeadVerifiedAt != nil && runHeadUnmoved(run)
 }
 
 // RunHeadUnmoved reports whether the classified run's pipeline head still

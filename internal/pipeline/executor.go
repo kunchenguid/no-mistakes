@@ -1215,9 +1215,17 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 	if errMsg == types.RunCancelReasonAbortedByUser || errMsg == types.RunCancelReasonSuperseded {
 		runStatus = types.RunCancelled
 	}
-	e.reconcileTerminalRunHead(run)
-	if dbErr := e.db.UpdateRunErrorStatus(run.ID, errMsg, runStatus); dbErr != nil {
+	verifiedHead, verified := e.reconcileTerminalRunHead(run)
+	var dbErr error
+	if verified {
+		dbErr = e.db.UpdateRunErrorStatusWithVerifiedHead(run.ID, errMsg, runStatus, verifiedHead)
+	} else {
+		dbErr = e.db.UpdateRunErrorStatus(run.ID, errMsg, runStatus)
+	}
+	if dbErr != nil {
 		slog.Error("failed to update run error status", "run", run.ID, "error", dbErr)
+	} else if verified {
+		run.HeadSHA = verifiedHead
 	}
 	run.Status = runStatus
 	run.Error = &errMsg
@@ -1225,39 +1233,38 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 	return err
 }
 
-func (e *Executor) reconcileTerminalRunHead(run *db.Run) {
+func (e *Executor) reconcileTerminalRunHead(run *db.Run) (string, bool) {
 	if run == nil || strings.TrimSpace(e.workDir) == "" {
-		return
+		return "", false
 	}
 	recordedRun, err := e.db.GetRun(run.ID)
 	if err != nil || recordedRun == nil {
 		slog.Warn("failed to load run head before terminalization", "run", run.ID, "error", err)
-		return
+		return "", false
 	}
 	recorded := strings.TrimSpace(recordedRun.HeadSHA)
 	if recorded == "" {
-		return
+		return "", false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	observed, err := git.HeadSHA(ctx, e.workDir)
 	if err != nil {
 		slog.Warn("failed to resolve worktree head before terminalization", "run", run.ID, "error", err)
-		return
+		return "", false
 	}
 	observed = strings.TrimSpace(observed)
-	if observed == "" || observed == recorded {
-		return
+	if observed == "" {
+		return "", false
+	}
+	if observed == recorded {
+		return recorded, true
 	}
 	if _, err := git.Run(ctx, e.workDir, "merge-base", "--is-ancestor", recorded, observed); err != nil {
 		slog.Warn("worktree head is not a verified descendant before terminalization", "run", run.ID, "error", err)
-		return
+		return "", false
 	}
-	if err := e.db.UpdateRunHeadSHA(run.ID, observed); err != nil {
-		slog.Warn("failed to reconcile run head before terminalization", "run", run.ID, "error", err)
-		return
-	}
-	run.HeadSHA = observed
+	return observed, true
 }
 
 // --- event helpers ---

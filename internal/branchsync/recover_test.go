@@ -2,7 +2,7 @@ package branchsync
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +18,14 @@ import (
 
 type cancellationRaceStep struct {
 	committed chan string
+}
+
+type unreachedCancellationStep struct{}
+
+func (*unreachedCancellationStep) Name() types.StepName { return types.StepReview }
+
+func (*unreachedCancellationStep) Execute(*pipelinepkg.StepContext) (*pipelinepkg.StepOutcome, error) {
+	return &pipelinepkg.StepOutcome{}, nil
 }
 
 func (s *cancellationRaceStep) Name() types.StepName { return types.StepReview }
@@ -119,8 +127,14 @@ func newRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
 	if err := database.UpdateRunHeadSHA(run.ID, preserved); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.UpdateRunStatus(run.ID, status); err != nil {
-		t.Fatal(err)
+	var statusErr error
+	if terminalRunStatus(status) {
+		statusErr = database.UpdateRunStatusWithVerifiedHead(run.ID, status, preserved)
+	} else {
+		statusErr = database.UpdateRunStatus(run.ID, status)
+	}
+	if statusErr != nil {
+		t.Fatal(statusErr)
 	}
 	run, _ = database.GetRun(run.ID)
 	return &recoverFixture{
@@ -570,8 +584,14 @@ func newUnmovedRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixt
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.UpdateRunStatus(run.ID, status); err != nil {
-		t.Fatal(err)
+	var statusErr error
+	if terminalRunStatus(status) {
+		statusErr = database.UpdateRunStatusWithVerifiedHead(run.ID, status, submitted)
+	} else {
+		statusErr = database.UpdateRunStatus(run.ID, status)
+	}
+	if statusErr != nil {
+		t.Fatal(statusErr)
 	}
 	run, _ = database.GetRun(run.ID)
 	return &recoverFixture{
@@ -608,7 +628,7 @@ func TestCancellationReconcilesCommittedWorktreeHeadBeforeReleaseClassification(
 	}()
 
 	committed := <-step.committed
-	cancel(fmt.Errorf(types.RunCancelReasonAbortedByUser))
+	cancel(errors.New(types.RunCancelReasonAbortedByUser))
 	if err := <-done; err == nil {
 		t.Fatal("cancelled executor returned nil")
 	}
@@ -629,6 +649,72 @@ func TestCancellationReconcilesCommittedWorktreeHeadBeforeReleaseClassification(
 	}
 	if state.NextAction == nil || state.NextAction.Code != "recover_custody" {
 		t.Fatalf("cancelled committed next action = %#v", state.NextAction)
+	}
+}
+
+func TestCancellationReleaseRequiresVerifiedManagedHead(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		worktree   bool
+		wantState  string
+		wantSafety string
+		verified   bool
+	}{
+		{name: "verified equal head releases", worktree: true, wantState: StateUserOwned, wantSafety: "user_owned", verified: true},
+		{name: "missing worktree keeps custody", wantState: StatePipelineOwned, wantSafety: "blocked_pipeline_owned_recoverable"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newUnmovedRecoverFixture(t, types.RunCancelled)
+			if err := f.db.UpdateRunStatus(f.run.ID, types.RunPending); err != nil {
+				t.Fatal(err)
+			}
+			f.run.Status = types.RunPending
+			f.run.TerminalHeadVerifiedAt = nil
+
+			workDir := filepath.Join(t.TempDir(), "missing-managed")
+			if tt.worktree {
+				workDir = filepath.Join(t.TempDir(), "managed")
+				if err := gitpkg.WorktreeAdd(f.ctx, f.gate, workDir, f.submitted); err != nil {
+					t.Fatal(err)
+				}
+			}
+			p := paths.WithRoot(t.TempDir())
+			if err := p.EnsureDirs(); err != nil {
+				t.Fatal(err)
+			}
+			executor := pipelinepkg.NewExecutor(f.db, p, nil, nil, []pipelinepkg.Step{&unreachedCancellationStep{}}, nil)
+			ctx, cancel := context.WithCancelCause(context.Background())
+			cancel(errors.New(types.RunCancelReasonAbortedByUser))
+			if err := executor.Execute(ctx, f.run, f.repo, workDir); err == nil {
+				t.Fatal("cancelled executor returned nil")
+			}
+
+			terminal, err := f.db.GetRun(f.run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (terminal.TerminalHeadVerifiedAt != nil) != tt.verified {
+				t.Fatalf("terminal verification = %#v, want verified %t", terminal.TerminalHeadVerifiedAt, tt.verified)
+			}
+			state := f.service.InspectCached(f.ctx)
+			if state.State != tt.wantState || state.Safety != tt.wantSafety {
+				t.Fatalf("state = %#v, want %s/%s", state, tt.wantState, tt.wantSafety)
+			}
+		})
+	}
+}
+
+func TestLegacyTerminalUnmovedRunKeepsRecoverableCustody(t *testing.T) {
+	f := newUnmovedRecoverFixture(t, types.RunCancelled)
+	if err := f.db.UpdateRunStatus(f.run.ID, types.RunCancelled); err != nil {
+		t.Fatal(err)
+	}
+	state := f.service.InspectCached(f.ctx)
+	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned_recoverable" {
+		t.Fatalf("legacy terminal state = %#v", state)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "recover_custody" {
+		t.Fatalf("legacy terminal next action = %#v", state.NextAction)
 	}
 }
 
