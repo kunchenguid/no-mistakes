@@ -11,6 +11,14 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+type reviewRetryKind uint8
+
+const (
+	reviewRetryNone reviewRetryKind = iota
+	reviewRetryReconcile
+	reviewRetryDiff
+)
+
 // Model is the root bubbletea model for the TUI.
 type Model struct {
 	// Connection.
@@ -34,6 +42,8 @@ type Model struct {
 	reconcilePending bool
 	reconcileAgain   bool
 	streamClosed     bool
+	reviewRetry      reviewRetryKind
+	reviewRetryErr   error
 	// resubscribeTries bounds reconnect attempts for a dropped event stream.
 	resubscribeTries int
 	// fetchStepDiff reads a fix-review gate's working-tree diff. Nil in
@@ -272,8 +282,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.reconcilePending = false
 		if msg.err != nil {
-			m.err = msg.err
+			m.reconcileAgain = false
+			m.reviewRetry = reviewRetryReconcile
+			m.reviewRetryErr = fmt.Errorf("refresh authoritative run state: %w", msg.err)
+			m.err = m.reviewRetryErr
 		} else {
+			if m.reviewRetry == reviewRetryReconcile {
+				m.reviewRetry = reviewRetryNone
+				m.reviewRetryErr = nil
+			}
 			m.applySnapshot(msg.run)
 			m.resubscribeTries = 0
 		}
@@ -320,6 +337,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		delete(m.stepDiffFetching, msg.step)
 		if msg.err == nil {
+			if m.reviewRetry == reviewRetryDiff {
+				m.reviewRetry = reviewRetryNone
+				m.reviewRetryErr = nil
+			}
+			m.err = nil
 			m.stepDiffLoaded[msg.step] = true
 			m.stepDiffTruncated[msg.step] = msg.truncated
 			if msg.diff != "" {
@@ -335,6 +357,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		delete(m.stepDiffLoaded, msg.step)
+		delete(m.stepDiffs, msg.step)
+		delete(m.stepDiffTruncated, msg.step)
+		m.reviewRetry = reviewRetryDiff
+		m.reviewRetryErr = fmt.Errorf("load fix-review diff: %w", msg.err)
+		m.err = m.reviewRetryErr
 		return m, nil
 
 	case stepDiffReadyMsg:

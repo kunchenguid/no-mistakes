@@ -208,7 +208,7 @@ func appendRightLabel(line, label string, width int) string {
 // Per DESIGN.md: "Sits below the pipeline box, above findings/diff"
 // showDiff controls whether the 'd' key label says "findings" (to toggle back) or "diff".
 // Selection actions are hidden in diff mode since they don't apply.
-func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int, confirmAbort bool, hasDiff bool, approvalReady bool) string {
+func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int, confirmAbort bool, hasDiff bool, approvalReady bool, retryAvailable bool) string {
 	step := awaitingStep(steps)
 	if step == nil {
 		return ""
@@ -224,33 +224,36 @@ func renderActionBar(steps []ipc.StepResultInfo, showSelectionActions bool, allo
 	b.WriteString("\n")
 	// Hide selection actions in diff mode since toggle/A/N keys don't work there.
 	effectiveSelection := showSelectionActions && !showDiff
-	b.WriteString(renderApprovalActions(effectiveSelection, allowFix, showDiff, selectedCount, totalCount, confirmAbort, hasDiff, approvalReady))
+	b.WriteString(renderApprovalActions(effectiveSelection, allowFix, showDiff, selectedCount, totalCount, confirmAbort, hasDiff, approvalReady, retryAvailable))
 	return b.String()
 }
 
-func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int, confirmAbort bool, hasDiff bool, approvalReady bool) string {
+func renderApprovalActions(showSelectionActions bool, allowFix bool, showDiff bool, selectedCount int, totalCount int, confirmAbort bool, hasDiff bool, approvalReady bool, retryAvailable bool) string {
 	boldKey := lipgloss.NewStyle().Bold(true)
 	renderAction := func(key, label string) string {
 		return boldKey.Render(key) + " " + label
 	}
 
-	var primary []string
-	if approvalReady {
-		primary = append(primary, renderAction("a", "approve"))
-	} else {
-		primary = append(primary, lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack)).Render("loading fix diff..."))
+	abortLabel := "abort"
+	if confirmAbort {
+		warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
+		abortLabel = warnStyle.Render("x again to abort")
 	}
+	if !approvalReady {
+		status := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiBrightBlack)).Render("loading fix diff...")
+		if retryAvailable {
+			status = renderAction("r", "retry")
+		}
+		return " " + strings.Join([]string{status, renderAction("x", abortLabel)}, "  ")
+	}
+
+	primary := []string{renderAction("a", "approve")}
 	if allowFix {
 		fixLabel := "fix"
 		if selectedCount > 0 && selectedCount < totalCount {
 			fixLabel = fmt.Sprintf("fix (%d/%d)", selectedCount, totalCount)
 		}
 		primary = append(primary, renderAction("f", fixLabel))
-	}
-	abortLabel := "abort"
-	if confirmAbort {
-		warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ansiRed))
-		abortLabel = warnStyle.Render("x again to abort")
 	}
 	primary = append(primary, renderAction("s", "skip"), renderAction("x", abortLabel))
 	if hasDiff {

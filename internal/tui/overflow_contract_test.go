@@ -646,11 +646,78 @@ func TestTUIOverflow_FixReviewApprovalWaitsForDiffForManualAndYolo(t *testing.T)
 	}
 }
 
-// A failed diff read is not fatal: the marker clears so a later gate entry can
-// retry, and no stale diff is invented.
-func TestTUIOverflow_FailedDiffFetchClearsInFlightMarker(t *testing.T) {
+func TestTUIOverflow_FailedReconciliationCanRetryToCurrentDiff(t *testing.T) {
 	m := ciRunningModel(false)
-	m.fetchStepDiff = func(types.StepName) (string, error) { return "", fmt.Errorf("daemon gone") }
+	m.steps = []ipc.StepResultInfo{
+		{RunID: "run-1", StepName: types.StepReview, Status: types.StepStatusFixReview},
+	}
+	m.stepDiffLoaded[types.StepReview] = true
+	m.stepDiffs[types.StepReview] = "stale diff\n"
+	reconcileCalls := 0
+	m.reconcile = func(context.Context) (*ipc.RunInfo, error) {
+		reconcileCalls++
+		if reconcileCalls == 1 {
+			return nil, fmt.Errorf("database busy")
+		}
+		return &ipc.RunInfo{
+			ID: "run-1", Status: types.RunRunning, StateRev: 12,
+			Steps: []ipc.StepResultInfo{
+				{RunID: "run-1", StepName: types.StepReview, Status: types.StepStatusFixReview},
+			},
+		}, nil
+	}
+	m.fetchStepDiff = func(types.StepName) (string, error) { return "current diff\n", nil }
+
+	updated, cmd := m.Update(eventMsg{
+		event:          ipc.Event{Type: ipc.EventStreamGap, RunID: "run-1", StateRev: 12},
+		subscriptionID: m.subscriptionID,
+	})
+	m = updated.(Model)
+	updated, _ = m.Update(reconciledFrom(t, cmd))
+	m = updated.(Model)
+
+	if m.reconcilePending || m.reviewRetry != reviewRetryReconcile {
+		t.Fatal("failed reconciliation did not become manually retryable")
+	}
+	if m.reviewRetryErr == nil || !strings.Contains(m.reviewRetryErr.Error(), "database busy") {
+		t.Fatalf("reconciliation failure was not surfaced: %v", m.reviewRetryErr)
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "r retry") || strings.Contains(view, "a approve") || strings.Contains(view, "s skip") {
+		t.Fatalf("failed reconciliation exposed review responses instead of retry:\n%s", view)
+	}
+
+	updated, retryCmd := m.handleKey(keyMsg("r"))
+	m = updated.(Model)
+	if retryCmd == nil || !m.reconcilePending || m.reviewRetry != reviewRetryNone {
+		t.Fatal("manual reconciliation retry did not start")
+	}
+	updated, diffCmd := m.Update(reconciledFrom(t, retryCmd))
+	m = updated.(Model)
+	updated, _ = m.Update(firstMsgOfType[stepDiffMsg](t, diffCmd))
+	m = updated.(Model)
+
+	if !m.approvalReady(awaitingStep(m.steps)) || m.stepDiffs[types.StepReview] != "current diff\n" {
+		t.Fatal("successful reconciliation retry did not restore the current diff and review controls")
+	}
+	if view = stripANSI(m.View()); !strings.Contains(view, "a approve") || !strings.Contains(view, "s skip") || strings.Contains(view, "r retry") {
+		t.Fatalf("normal review controls were not restored after retry success:\n%s", view)
+	}
+}
+
+func TestTUIOverflow_FailedDiffFetchCanRetrySuccessfully(t *testing.T) {
+	m := ciRunningModel(false)
+	m.steps = []ipc.StepResultInfo{
+		{RunID: "run-1", StepName: types.StepReview, Status: types.StepStatusRunning},
+	}
+	fetchCalls := 0
+	m.fetchStepDiff = func(types.StepName) (string, error) {
+		fetchCalls++
+		if fetchCalls == 1 {
+			return "", fmt.Errorf("daemon gone")
+		}
+		return "current diff\n", nil
+	}
 
 	gate := string(types.StepStatusFixReview)
 	name := types.StepReview
@@ -667,6 +734,27 @@ func TestTUIOverflow_FailedDiffFetchClearsInFlightMarker(t *testing.T) {
 	}
 	if _, ok := m.stepDiffs[types.StepReview]; ok {
 		t.Fatal("failed fetch invented a diff")
+	}
+	if m.reviewRetry != reviewRetryDiff || m.reviewRetryErr == nil || !strings.Contains(m.reviewRetryErr.Error(), "daemon gone") {
+		t.Fatalf("diff failure was not surfaced as retryable: %v", m.reviewRetryErr)
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "r retry") || strings.Contains(view, "a approve") || strings.Contains(view, "s skip") {
+		t.Fatalf("failed diff exposed review responses instead of retry:\n%s", view)
+	}
+
+	updated, retryCmd := m.handleKey(keyMsg("r"))
+	m = updated.(Model)
+	if retryCmd == nil || !m.stepDiffFetching[types.StepReview] || m.reviewRetry != reviewRetryNone {
+		t.Fatal("manual diff retry did not start")
+	}
+	updated, _ = m.Update(firstMsgOfType[stepDiffMsg](t, retryCmd))
+	m = updated.(Model)
+	if !m.approvalReady(awaitingStep(m.steps)) || m.stepDiffs[types.StepReview] != "current diff\n" {
+		t.Fatal("successful diff retry did not restore review controls")
+	}
+	if view = stripANSI(m.View()); !strings.Contains(view, "a approve") || !strings.Contains(view, "s skip") || strings.Contains(view, "r retry") {
+		t.Fatalf("normal review controls were not restored after diff retry:\n%s", view)
 	}
 }
 

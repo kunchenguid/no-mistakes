@@ -119,7 +119,7 @@ func (m Model) respondCmd(action types.ApprovalAction) tea.Cmd {
 	if step == nil {
 		return nil
 	}
-	if action == types.ActionApprove && !m.approvalReady(step) {
+	if step.Status == types.StepStatusFixReview && !m.approvalReady(step) {
 		return nil
 	}
 	if action == types.ActionFix {
@@ -164,6 +164,28 @@ func (m Model) respondCmd(action types.ApprovalAction) tea.Cmd {
 	}
 }
 
+func (m *Model) retryReviewCmd() tea.Cmd {
+	switch m.reviewRetry {
+	case reviewRetryReconcile:
+		m.reviewRetry = reviewRetryNone
+		m.reviewRetryErr = nil
+		m.err = nil
+		return m.reconcileCmd()
+	case reviewRetryDiff:
+		step := awaitingStep(m.steps)
+		if step == nil || step.Status != types.StepStatusFixReview {
+			return nil
+		}
+		m.reviewRetry = reviewRetryNone
+		m.reviewRetryErr = nil
+		m.err = nil
+		m.requestStepDiff(step.StepName, true)
+		return tea.Batch(m.drainDiffFetches()...)
+	default:
+		return nil
+	}
+}
+
 func (m Model) cancelRunCmd() tea.Cmd {
 	if m.runID == "" {
 		return nil
@@ -201,6 +223,11 @@ func (m *Model) reconcileCmd() tea.Cmd {
 	if m.reconcilePending {
 		m.reconcileAgain = true
 		return nil
+	}
+	if m.reviewRetry == reviewRetryReconcile {
+		m.reviewRetry = reviewRetryNone
+		m.reviewRetryErr = nil
+		m.err = nil
 	}
 	m.reconcilePending = true
 	subID := m.subscriptionID

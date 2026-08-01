@@ -49,7 +49,8 @@ func (m Model) View() string {
 	}
 	stepAwaiting := awaitingStep(m.steps)
 	approvalReady := m.approvalReady(stepAwaiting)
-	actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff, approvalReady)
+	retryAvailable := m.reviewRetry != reviewRetryNone
+	actionBar := renderActionBar(m.steps, showSelectionActions, allowFix, m.showDiff, selectedCount, totalCount, m.confirmAbort, hasDiff, approvalReady, retryAvailable)
 	if stepAwaiting != nil && m.stepDiffTruncated[stepAwaiting.StepName] {
 		warning := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ansiYellow)).
 			Render("⚠ Diff truncated at 512 KiB. Approval applies to the full diff.")
@@ -102,8 +103,12 @@ func (m Model) View() string {
 		return true
 	}
 
-	if m.err != nil {
-		appendExtraSection(renderErrorBox(m.err, rightWidth))
+	visibleErr := m.err
+	if m.reviewRetryErr != nil {
+		visibleErr = m.reviewRetryErr
+	}
+	if visibleErr != nil {
+		appendExtraSection(renderErrorBox(visibleErr, rightWidth))
 	}
 	if m.syncConfirm && m.branchSync != nil {
 		extraSections = append(extraSections, renderSyncConfirmation(*m.branchSync, rightWidth))
