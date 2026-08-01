@@ -2,10 +2,8 @@ package steps
 
 import (
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/skill"
@@ -60,28 +58,34 @@ func reviewSkillDirs(root, name string) []string {
 }
 
 // reviewSkillPluginDirs walks .claude/plugins for any skills/<name> directory,
-// treating an unreadable subtree as absent.
+// treating an unreadable subtree as absent. Directories are resolved with Stat
+// rather than the walk entry's own type, so a plugin (or a marketplace cache)
+// installed as a symlink resolves the way the shipped layouts do; the depth
+// bound is what keeps that from following a cycle forever, and a match is
+// taken before the bound applies so a skill sitting exactly at it still counts.
 func reviewSkillPluginDirs(root, name string) []string {
-	pluginsRoot := filepath.Join(root, ".claude", "plugins")
-	var dirs []string
-	_ = filepath.WalkDir(pluginsRoot, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return fs.SkipDir
+	return appendReviewSkillPluginDirs(nil, filepath.Join(root, ".claude", "plugins"), name, 1)
+}
+
+func appendReviewSkillPluginDirs(dirs []string, dir, name string, depth int) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return dirs
+	}
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		info, err := os.Stat(path)
+		if err != nil || !info.IsDir() {
+			continue
 		}
-		if !entry.IsDir() {
-			return nil
-		}
-		if rel, relErr := filepath.Rel(pluginsRoot, path); relErr == nil && rel != "." {
-			if len(strings.Split(rel, string(filepath.Separator))) >= reviewSkillPluginWalkDepth {
-				return fs.SkipDir
-			}
-		}
-		if entry.Name() == name && filepath.Base(filepath.Dir(path)) == "skills" {
+		if entry.Name() == name && filepath.Base(dir) == "skills" {
 			dirs = append(dirs, path)
-			return fs.SkipDir
+			continue
 		}
-		return nil
-	})
+		if depth < reviewSkillPluginWalkDepth {
+			dirs = appendReviewSkillPluginDirs(dirs, path, name, depth+1)
+		}
+	}
 	return dirs
 }
 

@@ -189,8 +189,13 @@ func parseBranchHistoryFindings(raw string) []roundFindingLine {
 // reviewers put what the finding is, and drops the rationale that follows it.
 // A description with no sentence break is cut on the character bound instead,
 // so one run-on finding cannot reintroduce the whole cost.
+//
+// Newlines are collapsed, like every other field on the line: an entry is one
+// `id | severity | file:line | summary` line, so a prior finding whose
+// description spans lines would otherwise render as several entries and could
+// forge history the previous run never produced.
 func abbreviateFindingDescription(description string) string {
-	clean := sanitizePromptMultilineText(description)
+	clean := sanitizePromptText(description)
 	if clean == "" {
 		return "-"
 	}

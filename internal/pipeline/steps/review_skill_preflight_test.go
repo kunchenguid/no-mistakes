@@ -83,6 +83,46 @@ func TestAssertReviewSkillInstalled_AcceptsEveryResolvableLayout(t *testing.T) {
 	}
 }
 
+// Plugins are commonly installed by symlinking the checkout into place, and an
+// agent resolves such a skill normally. The walk must therefore follow
+// symlinked intermediate directories, since not finding the skill ends in the
+// mandate's hard failure.
+func TestAssertReviewSkillInstalled_FollowsSymlinkedPluginDirectory(t *testing.T) {
+	home := t.TempDir()
+	mustMkdirAll(t, filepath.Join(home, ".claude", "skills"))
+
+	checkout := t.TempDir()
+	writeSkill(t, filepath.Join(checkout, "skills", requiredReviewSkill))
+	mustMkdirAll(t, filepath.Join(home, ".claude", "plugins"))
+	if err := os.Symlink(checkout, filepath.Join(home, ".claude", "plugins", "reviewer")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	pinReviewSkillHome(t, home)
+
+	if err := assertReviewSkillInstalled(t.TempDir(), "claude"); err != nil {
+		t.Errorf("assertReviewSkillInstalled() = %v, want nil for a symlinked plugin", err)
+	}
+}
+
+// The depth bound exists to stop an unbounded walk, not to reject a legal
+// install: a skill sitting exactly at the bound is matched before the bound is
+// applied.
+func TestReviewSkillPluginDirs_MatchesAtTheDepthBound(t *testing.T) {
+	root := t.TempDir()
+	parts := []string{root, ".claude", "plugins"}
+	for len(parts)-3+2 < reviewSkillPluginWalkDepth {
+		parts = append(parts, "nested")
+	}
+	parts = append(parts, "skills", requiredReviewSkill)
+	deep := filepath.Join(parts...)
+	writeSkill(t, deep)
+
+	got := reviewSkillPluginDirs(root, requiredReviewSkill)
+	if len(got) != 1 || got[0] != deep {
+		t.Errorf("reviewSkillPluginDirs() = %v, want [%s]", got, deep)
+	}
+}
+
 // A plugin directory shaped like the skill but carrying no SKILL.md is not a
 // resolvable install, so the preflight must still fail.
 func TestAssertReviewSkillInstalled_PluginDirWithoutSkillFileFails(t *testing.T) {

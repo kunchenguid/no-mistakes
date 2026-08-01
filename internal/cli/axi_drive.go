@@ -254,35 +254,20 @@ func emitBranchOwnershipError(cmd *cobra.Command, ownershipErr *branchOwnershipE
 	return &exitError{code: 1}
 }
 
-// isBranchSyncNextAction reports whether a branch-sync next action is a
-// command that actually takes or inspects the pipeline's commits. Most codes
-// are not: `run_pipeline` is the very command being refused here, and
-// `inspect_worktree` / `continue_active_run` resolve something else. Labelling
-// those as the way to take the pipeline's commits sends the agent in a circle,
-// so only the sync and recovery codes earn the prose; every code still travels
-// in the branch_sync next_action field.
-func isBranchSyncNextAction(code string) bool {
-	switch code {
-	case "sync", "check_sync", "recover_custody", "retry":
-		return true
-	default:
-		return false
-	}
-}
-
 // emitIntentRequiredError refuses a fresh run that carries no intent, and
 // carries the branch-sync classification with it. An agent returning to a
 // branch the pipeline pushed auto-fix or CI-rebase commits to reaches this
 // refusal before anything inspects synchronization, so the sync action it must
 // run first has to travel in this document; naming it only in prose elsewhere
-// leaves the agent to guess.
+// leaves the agent to guess. Only a synchronization action earns the prose
+// hint - every code still travels in the branch_sync next_action field.
 func emitIntentRequiredError(cmd *cobra.Command, state branchsync.State) error {
 	help := []string{`Pass what the user set out to accomplish: no-mistakes axi run --intent "the user's goal"`}
 	fields := []toon.Field{
 		{Key: "error", Value: "--intent is required to start a run"},
 		branchSyncField(state),
 	}
-	if state.NextAction != nil && isBranchSyncNextAction(state.NextAction.Code) {
+	if state.NextAction.IsSynchronization() {
 		help = append(help, "Take the pipeline's commits first: `"+state.NextAction.Command+"`")
 	}
 	fields = append(fields, toon.Field{Key: "help", Value: help})

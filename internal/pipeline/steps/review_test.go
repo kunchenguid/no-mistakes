@@ -535,6 +535,22 @@ func TestReviewStep_ConformanceObligationTracksIntentProvenance(t *testing.T) {
 				if !strings.Contains(prompt, `you MUST emit an "ask-user" finding`) {
 					t.Errorf("conformance clause missing the ask-user obligation:\n%s", prompt)
 				}
+				// The obligation fixes the action, never the severity: a
+				// conformance finding is rated on the normal scale so a real
+				// contradiction is an error that survives a later round's
+				// floor, and a cosmetic one is correctly suppressed. Without
+				// this the clause would read as a floor carve-out.
+				for _, want := range []string{
+					"Rate its severity on the normal scale",
+					`a contradiction that genuinely breaks a required behavior is "error"`,
+					`a cosmetic divergence is "info"`,
+					"Any severity floor stated above applies to it unchanged",
+					"this obligation fixes the action, never the severity",
+				} {
+					if !strings.Contains(prompt, want) {
+						t.Errorf("conformance clause missing %q:\n%s", want, prompt)
+					}
+				}
 			}
 		})
 	}

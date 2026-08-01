@@ -69,6 +69,17 @@ func TestReviewBreadthPromptSections_NarrowedNamesAspectsAndFloor(t *testing.T) 
 	if strings.Contains(invocation, "no arguments") {
 		t.Errorf("skillInvocation() = %q, must not still claim no arguments", invocation)
 	}
+	// The invocation is interpolated mid-sentence, so the aspect list must be
+	// closed: with an open list the prose that follows reads as one more aspect
+	// name, and the aspect names are the one string narrowing depends on the
+	// agent parsing exactly.
+	last := coreReviewAspects[len(coreReviewAspects)-1]
+	if !strings.Contains(invocation, "- "+strings.Join(coreReviewAspects, ", ")+" -") {
+		t.Errorf("skillInvocation() = %q, want the aspect list delimited on both sides", invocation)
+	}
+	if strings.HasSuffix(invocation, last) {
+		t.Errorf("skillInvocation() = %q, want the list closed after %q", invocation, last)
+	}
 
 	rule := b.severityRule()
 	if !strings.Contains(rule, "warning") {

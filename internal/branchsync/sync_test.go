@@ -180,7 +180,7 @@ func TestInspectCachedPrePushAndPushInProgressAreNonSyncable(t *testing.T) {
 	if state.State != StatePipelineOwned || !strings.Contains(state.Error, "do not make local follow-up commits") {
 		t.Fatalf("pre-push state = %#v", state)
 	}
-	if state.NextAction == nil || state.NextAction.Code != "continue_active_run" || state.NextAction.Command != "no-mistakes axi status" {
+	if state.NextAction == nil || state.NextAction.Code != NextActionContinueActiveRun || state.NextAction.Command != "no-mistakes axi status" {
 		t.Fatalf("pre-push next action = %#v", state.NextAction)
 	}
 	if err := f.db.SetRunPushActive(active.ID, true); err != nil {
@@ -190,7 +190,7 @@ func TestInspectCachedPrePushAndPushInProgressAreNonSyncable(t *testing.T) {
 	if state.State != StatePushInProgress {
 		t.Fatalf("push-in-progress state = %#v", state)
 	}
-	if state.NextAction == nil || state.NextAction.Code != "continue_active_run" || state.NextAction.Command != "no-mistakes axi status" {
+	if state.NextAction == nil || state.NextAction.Code != NextActionContinueActiveRun || state.NextAction.Command != "no-mistakes axi status" {
 		t.Fatalf("push-in-progress next action = %#v", state.NextAction)
 	}
 	if err := f.db.SetRunPushActive(active.ID, false); err != nil {
@@ -205,7 +205,7 @@ func TestInspectCachedPrePushAndPushInProgressAreNonSyncable(t *testing.T) {
 	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned_recoverable" {
 		t.Fatalf("terminal unpublished pipeline head = %#v", state)
 	}
-	if state.NextAction == nil || state.NextAction.Code != "recover_custody" {
+	if state.NextAction == nil || state.NextAction.Code != NextActionRecoverCustody {
 		t.Fatalf("terminal unpublished pipeline head next action = %#v", state.NextAction)
 	}
 }
@@ -909,7 +909,7 @@ func TestNextActionCommandsAreTheAgentAxiForm(t *testing.T) {
 			t.Fatal(err)
 		}
 		state := f.service.InspectCached(f.ctx)
-		if state.NextAction == nil || state.NextAction.Code != "check_sync" {
+		if state.NextAction == nil || state.NextAction.Code != NextActionCheckSync {
 			t.Fatalf("ambiguous-context next action = %#v", state.NextAction)
 		}
 		if got := state.NextAction.Command; got != "no-mistakes axi sync --check" {

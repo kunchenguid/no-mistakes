@@ -40,7 +40,7 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 		case branchsync.StateDiverged:
 			if state.Safety == branchsync.SafetySafeEquivalentAdvance {
 				message = "Local branch diverged, but its changes are represented in the live pipeline head. Sync will preserve the old head before advancing."
-			} else if state.NextAction != nil && state.NextAction.Code == "sync" {
+			} else if state.NextAction != nil && state.NextAction.Code == branchsync.NextActionSync {
 				message = "Local branch diverged, but the pipeline head may contain equivalent work. Refresh to verify before syncing."
 				footer = "u sync branch"
 			} else {

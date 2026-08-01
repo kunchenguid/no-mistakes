@@ -184,7 +184,7 @@ func TestTerminalPrePushRunSurfacesGuardedCustodyRecovery(t *testing.T) {
 			if state.Pipeline.Status != string(status) || state.Pipeline.Phase != "pre_push" {
 				t.Fatalf("pipeline = %#v", state.Pipeline)
 			}
-			if state.NextAction == nil || state.NextAction.Code != "recover_custody" || !strings.Contains(state.NextAction.Command, "sync --recover") {
+			if state.NextAction == nil || state.NextAction.Code != NextActionRecoverCustody || !strings.Contains(state.NextAction.Command, "sync --recover") {
 				t.Fatalf("next action = %#v", state.NextAction)
 			}
 			if !strings.Contains(state.Error, "preserved") {
@@ -205,7 +205,7 @@ func TestActivePrePushRunStaysBlockedWithoutRecovery(t *testing.T) {
 	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned" {
 		t.Fatalf("active run state = %#v", state)
 	}
-	if state.NextAction == nil || state.NextAction.Code != "continue_active_run" || state.NextAction.Command != "no-mistakes axi status" {
+	if state.NextAction == nil || state.NextAction.Code != NextActionContinueActiveRun || state.NextAction.Command != "no-mistakes axi status" {
 		t.Fatalf("active run next action = %#v", state.NextAction)
 	}
 	if state.Pipeline.Status != "running" {
@@ -239,7 +239,7 @@ func TestRecoverCleanBehindFastForwardsAndReturnsCustody(t *testing.T) {
 	if state.State != StateCustodyReturned || state.Safety != "custody_returned" || state.Relation != RelationEqual {
 		t.Fatalf("post-recover state = %s/%s relation %s", state.State, state.Safety, state.Relation)
 	}
-	if state.NextAction == nil || state.NextAction.Code != "run_pipeline" {
+	if state.NextAction == nil || state.NextAction.Code != NextActionRunPipeline {
 		t.Fatalf("post-recover next action = %#v", state.NextAction)
 	}
 	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
@@ -258,7 +258,7 @@ func TestRecoverCleanBehindFastForwardsAndReturnsCustody(t *testing.T) {
 	// The branch is free again: cached inspection reports custody_returned
 	// with a run_pipeline next action, and a brand-new run takes over cleanly.
 	after := f.service.InspectCached(f.ctx)
-	if after.State != StateCustodyReturned || after.NextAction == nil || after.NextAction.Code != "run_pipeline" {
+	if after.State != StateCustodyReturned || after.NextAction == nil || after.NextAction.Code != NextActionRunPipeline {
 		t.Fatalf("post-recover inspection = %#v", after)
 	}
 	fresh, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.preserved, f.base)
@@ -549,7 +549,7 @@ func TestRecoverTerminalPostPushRunWithMovedHead(t *testing.T) {
 	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned_recoverable" {
 		t.Fatalf("post-push terminal state = %#v", state)
 	}
-	if state.NextAction == nil || state.NextAction.Code != "recover_custody" {
+	if state.NextAction == nil || state.NextAction.Code != NextActionRecoverCustody {
 		t.Fatalf("post-push next action = %#v", state.NextAction)
 	}
 
@@ -560,7 +560,7 @@ func TestRecoverTerminalPostPushRunWithMovedHead(t *testing.T) {
 	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
 		t.Fatalf("post-push recover HEAD = %s, want %s", got, f.preserved)
 	}
-	if recovered.State != StateLocalAhead || recovered.NextAction == nil || recovered.NextAction.Code != "run_pipeline" {
+	if recovered.State != StateLocalAhead || recovered.NextAction == nil || recovered.NextAction.Code != NextActionRunPipeline {
 		t.Fatalf("post-push recovered classification = %#v", recovered)
 	}
 	if !f.custodyReturned() {

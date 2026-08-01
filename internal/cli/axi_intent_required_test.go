@@ -17,7 +17,7 @@ func TestEmitIntentRequiredError_CarriesBranchSyncNextAction(t *testing.T) {
 	state := branchsync.State{
 		State: branchsync.StateBehind,
 		NextAction: &branchsync.NextAction{
-			Code:    "sync",
+			Code:    branchsync.NextActionSync,
 			Command: "no-mistakes axi sync",
 		},
 	}
@@ -55,7 +55,12 @@ func TestEmitIntentRequiredError_CarriesBranchSyncNextAction(t *testing.T) {
 // way forward would send the agent in a circle; the code still travels in the
 // branch_sync next_action field.
 func TestEmitIntentRequiredError_OmitsTakeCommitsHintForNonSyncNextAction(t *testing.T) {
-	for _, code := range []string{"run_pipeline", "inspect_worktree", "continue_active_run", "inspect_and_reconcile_manually"} {
+	for _, code := range []string{
+		branchsync.NextActionRunPipeline,
+		branchsync.NextActionInspectWorktree,
+		branchsync.NextActionContinueActiveRun,
+		branchsync.NextActionInspectAndReconcileManually,
+	} {
 		t.Run(code, func(t *testing.T) {
 			state := branchsync.State{
 				State:      branchsync.StateLocalAhead,
@@ -83,7 +88,12 @@ func TestEmitIntentRequiredError_OmitsTakeCommitsHintForNonSyncNextAction(t *tes
 // The sync and recovery codes are the ones that genuinely take or re-check the
 // pipeline's commits, so those keep the prose hint.
 func TestEmitIntentRequiredError_KeepsTakeCommitsHintForSyncCodes(t *testing.T) {
-	for _, code := range []string{"sync", "check_sync", "recover_custody", "retry"} {
+	for _, code := range []string{
+		branchsync.NextActionSync,
+		branchsync.NextActionCheckSync,
+		branchsync.NextActionRecoverCustody,
+		branchsync.NextActionRetry,
+	} {
 		t.Run(code, func(t *testing.T) {
 			state := branchsync.State{
 				State:      branchsync.StateBehind,

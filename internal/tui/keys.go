@@ -2,6 +2,7 @@ package tui
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -253,7 +254,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.recoverConfirm = true
 			return m, nil
 		}
-		if m.syncRefresh == nil || m.branchSync.NextAction == nil || m.branchSync.NextAction.Code != "sync" {
+		if m.syncRefresh == nil || m.branchSync.NextAction == nil || m.branchSync.NextAction.Code != branchsync.NextActionSync {
 			return m, nil
 		}
 		m.syncRefreshing = true
