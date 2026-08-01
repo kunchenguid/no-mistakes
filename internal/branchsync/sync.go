@@ -40,7 +40,7 @@ const (
 	StateAmbiguousContext     = "ambiguous_context"
 	StateLegacyUnbound        = "legacy_unbound"
 	StateCustodyReturned      = "custody_returned"
-	// StateUserOwned reports a branch released by cancellation: its terminal
+	// StateUserOwned reports a branch released by its terminal outcome: the
 	// run ended before the pipeline changed the submitted head, so no
 	// pipeline-created content exists to recover and the exact branch and head
 	// are the operator's, immediately usable with no sync action.
@@ -74,8 +74,8 @@ type State struct {
 	PRState  string
 	// Recovered is set only by Recover and reports that the operator owns the
 	// branch when the call returns: custody of a stranded terminal run was
-	// returned (by this call or an earlier, idempotent one), or cancellation
-	// had already released the branch (user_owned), making the recovery an
+	// returned (by this call or an earlier, idempotent one), or the terminal
+	// outcome had already released the branch (user_owned), making recovery an
 	// idempotent no-op.
 	Recovered  bool
 	NextAction *NextAction
@@ -492,9 +492,9 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		state.Changed = false
 		return state
 	}
-	// A branch released by cancellation is already the operator's: nothing
-	// pipeline-created exists to recover, so recovery is an idempotent no-op
-	// that mutates no file, ref, or database row.
+	// A branch released by its terminal outcome is already the operator's:
+	// nothing pipeline-created exists to recover, so recovery is an idempotent
+	// no-op that mutates no file, ref, or database row.
 	if state.State == StateUserOwned {
 		state.Recovered = true
 		state.Changed = false
@@ -761,10 +761,9 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		// custody_returned (or its ordinary post-push classification) instead
 		// of falling back to an older binding or an ambiguous no-match. A
 		// terminal run whose head never left the submitted head is equally
-		// selectable: cancellation released the branch, and skipping the run
-		// misreported that release as wrong-branch ambiguity (v1.44.2
-		// dogfood). The run==nil guard keeps every newer authoritative run
-		// winning.
+		// selectable: its terminal outcome released the branch, and skipping the
+		// run misreported that release as wrong-branch ambiguity (v1.44.2
+		// dogfood). The run==nil guard keeps every newer authoritative run winning.
 		if run == nil && (candidate.LastPushedSHA != nil || candidate.CustodyReturnedAt != nil || releasedSubmittedHeadRun(candidate)) {
 			run = candidate
 		}
@@ -1121,9 +1120,9 @@ func terminalRunStatus(status types.RunStatus) bool {
 // state becomes recoverable and points at the guarded custody-return action
 // (issue: v1.38.1 dogfood, cancelled pre-push run with pipeline commits). A
 // terminal run that never moved the head is classified user_owned instead:
-// cancellation releases ownership. The relation between the local head and the
-// run's recorded head is exposed whenever it is computable locally, so the
-// operator sees the exact ownership facts before acting.
+// its terminal outcome releases ownership. The relation between the local
+// head and the run's recorded head is exposed whenever it is computable
+// locally, so the operator sees the exact ownership facts before acting.
 func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *db.Run, activeMessage string) {
 	state.State = StatePipelineOwned
 	state.Pipeline.Phase = "pre_push"
@@ -1139,8 +1138,8 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.NextAction = &NextAction{Code: "continue_active_run", Command: "no-mistakes axi status"}
 }
 
-// classifyUserOwned reports a branch released by cancellation: the terminal
-// run ended before the pipeline changed the submitted head, so no
+// classifyUserOwned reports a branch released by its terminal outcome: the
+// terminal run ended before the pipeline changed the submitted head, so no
 // pipeline-created content exists to recover. The exact branch and head are
 // the operator's and immediately usable - no sync action is required or
 // offered, and a separately authorized direct push or PR is never blocked.
@@ -1159,7 +1158,7 @@ func runHeadUnmoved(run *db.Run) bool {
 	return run != nil && run.SubmittedHeadSHA != nil && *run.SubmittedHeadSHA != "" && run.HeadSHA == *run.SubmittedHeadSHA
 }
 
-// releasedSubmittedHeadRun reports a terminal run whose cancellation released
+// releasedSubmittedHeadRun reports a terminal run whose outcome released
 // the branch: no push provenance, no custody stamp, and positive terminal
 // evidence that head_sha still equals submitted_head_sha.
 func releasedSubmittedHeadRun(run *db.Run) bool {

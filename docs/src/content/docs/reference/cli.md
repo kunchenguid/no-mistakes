@@ -189,7 +189,7 @@ no-mistakes axi sync --recover --keep-local
 
 The default command is an explicit non-interactive apply request and never prompts.
 All modes return the complete `branch_sync` object as TOON.
-Exit code `0` means an eligible check, applied synchronization or recovery, already-synchronized or custody-returned no-op, or expected merged-and-removed no-op; blocked operational states return `1`.
+Exit code `0` means an eligible check, applied synchronization or recovery, already-synchronized, custody-returned, or user-owned no-op, or expected merged-and-removed no-op; blocked operational states return `1`.
 The ordinary worktree mutation is either a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA, or an equivalent-diverged advance.
 When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and moves to the pipeline head with reset semantics.
 Genuine divergence still reports `safety: blocked_diverged` and changes nothing.
@@ -202,8 +202,9 @@ Run `axi sync` only when structured output offers `next_action.code: sync`; proc
 ### Custody recovery
 
 A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head leaves the branch `pipeline_owned` with `safety: blocked_pipeline_owned_recoverable`, the run's terminal `pipeline.status`, the exact `submitted_head`/`current_head`/`relation` ownership facts, and `next_action.code: recover_custody`.
-A run that goes terminal before changing the submitted head releases the branch instead: cancellation ends ownership, status reports `state: user_owned` with the same exact ownership facts and no `next_action`, the branch and head are immediately usable for any separately authorized delivery, and nothing blocks a direct push or PR.
-While the run is still active, the same state stays blocked and reports `next_action.code: continue_active_run` with `no-mistakes axi status`.
+A run whose terminalization verifies that the managed worktree head never changed from the submitted head releases the branch instead: the terminal outcome, including cancellation, ends ownership; status reports `state: user_owned` with the same exact ownership facts and no `next_action`; the branch and head are immediately usable for any separately authorized delivery; and nothing blocks a direct push or PR.
+Without that positive terminal head evidence, custody stays recoverable rather than being guessed away.
+While a run is still active, it reports `state: pipeline_owned`, the exact submitted/current heads and their relation, and `next_action.code: continue_active_run` with `no-mistakes axi status`, even when its head has not moved yet.
 `--recover` verifies the run is terminal, anchors the preserved head under `refs/no-mistakes/recover/<run>` in the invoking repository, and stamps custody returned so a fresh run can start.
 For equal or ahead worktrees where the preserved head is already locally reachable, recovery writes that anchor locally without gate access.
 For behind or diverged worktrees, recovery verifies the preserved head at the local gate branch and fetches it into the anchor before fast-forwarding only a clean behind worktree or refusing with the anchor named.
@@ -254,8 +255,8 @@ no-mistakes axi abort --run <id>
 Use it to reap an orphaned CI monitor whose worktree was torn down before the PR merged - the run id is shown in `axi run` output and in the `axi` home view.
 Aborting an id that is not an active run is a successful no-op.
 When the daemon is already running, `axi abort` can cancel an active run even if the global config file has become invalid, because it is not starting a fresh run.
-Branch-scoped abort waits for the cancellation state to persist, then renders the refreshed `branch_sync` object and its exact next action.
-Pipeline-created commits remain preserved in the gate and a recoverable cancellation points directly to `no-mistakes axi sync --recover`.
+Branch-scoped abort waits for the cancellation state to persist, then renders the refreshed `branch_sync` object and its exact next action, if any.
+Pipeline-created commits remain preserved in the gate and a recoverable cancellation points directly to `no-mistakes axi sync --recover`; when the submitted head never moved, cancellation instead reports `state: user_owned` with no sync action.
 While a run is active, do not use `axi abort` or `no-mistakes rerun` to go fix a finding yourself.
 That cancels the pipeline's in-flight work and forces a full re-validation; use `axi respond --action fix` at the gate so the pipeline applies and re-checks the fix.
 
