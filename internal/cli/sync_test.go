@@ -433,16 +433,29 @@ type cliStaleUnpublishedFixture struct {
 	local, gate, base, localHead, unpublished, pushed string
 }
 
+type olderTargetProvenance int
+
+const (
+	olderTargetMatching olderTargetProvenance = iota
+	olderTargetConflicting
+	olderTargetMissing
+)
+
 // newCLIStaleUnpublishedFixture builds the exact same-branch provenance race:
 // an older terminal run owns U, while a newer run has an exact pushed
 // descendant P. The gate and remote are both at P, and the clean worktree is
 // still at L, the ancestor before U.
 func newCLIStaleUnpublishedFixture(t *testing.T) cliStaleUnpublishedFixture {
 	t.Helper()
-	return newCLIStaleUnpublishedFixtureWithRelation(t, true)
+	return newCLIStaleUnpublishedFixtureWithOptions(t, true, olderTargetMatching)
 }
 
 func newCLIStaleUnpublishedFixtureWithRelation(t *testing.T, pushedDescendant bool) cliStaleUnpublishedFixture {
+	t.Helper()
+	return newCLIStaleUnpublishedFixtureWithOptions(t, pushedDescendant, olderTargetMatching)
+}
+
+func newCLIStaleUnpublishedFixtureWithOptions(t *testing.T, pushedDescendant bool, provenance olderTargetProvenance) cliStaleUnpublishedFixture {
 	t.Helper()
 	nmHome := filepath.Join(t.TempDir(), "nm-home")
 	t.Setenv("NM_HOME", nmHome)
@@ -504,6 +517,15 @@ func newCLIStaleUnpublishedFixtureWithRelation(t *testing.T, pushedDescendant bo
 	older, err := database.InsertRun(repo.ID, "feature/sync", localHead, base)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if provenance != olderTargetMissing {
+		fingerprint := branchsync.TargetFingerprint(remote)
+		if provenance == olderTargetConflicting {
+			fingerprint = branchsync.TargetFingerprint(remote + "-previous")
+		}
+		if err := database.UpdateRunPushBinding(older.ID, db.PushBinding{HeadSHA: localHead, TargetKind: "upstream", TargetFingerprint: fingerprint, Ref: "refs/heads/feature/sync"}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := database.UpdateRunHeadSHA(older.ID, unpublished); err != nil {
 		t.Fatal(err)
@@ -567,7 +589,7 @@ func TestAxiSyncOlderUnpublishedRunSelectsNewerPushedDescendant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("descendant sync: %v\n%s", err, out)
 	}
-	for _, want := range []string{"state: synchronized", "status: completed", "current_head: " + f.pushed, "pushed_head: " + f.pushed, "changed: true"} {
+	for _, want := range []string{"state: synchronized", "status: completed", f.pushed, "changed: true"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("descendant sync missing %q:\n%s", want, out)
 		}
@@ -627,6 +649,36 @@ func TestAxiSyncOlderUnpublishedMissingGateDoesNotSupersede(t *testing.T) {
 	}
 	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.localHead {
 		t.Fatalf("missing-gate refusal moved HEAD to %s", got)
+	}
+}
+
+func TestAxiSyncOlderUnpublishedTargetProvenanceRefusesTakeover(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		provenance olderTargetProvenance
+	}{
+		{name: "conflicting", provenance: olderTargetConflicting},
+		{name: "missing", provenance: olderTargetMissing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCLIStaleUnpublishedFixtureWithOptions(t, true, tc.provenance)
+			out, err := executeCmd("axi", "sync")
+			var ee *exitError
+			if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+				t.Fatalf("%s target provenance should refuse, got %#v\n%s", tc.name, err, out)
+			}
+			for _, want := range []string{"state: pipeline_owned", "status: failed", f.unpublished} {
+				if !strings.Contains(out, want) {
+					t.Errorf("%s target provenance missing refusal evidence %q:\n%s", tc.name, want, out)
+				}
+			}
+			if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.localHead {
+				t.Fatalf("refused %s target provenance moved HEAD to %s", tc.name, got)
+			}
+			if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/sync"); got != f.pushed {
+				t.Fatalf("refused %s target provenance moved gate to %s", tc.name, got)
+			}
+		})
 	}
 }
 

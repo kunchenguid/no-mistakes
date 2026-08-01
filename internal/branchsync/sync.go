@@ -1018,7 +1018,7 @@ func exactPushedBinding(repo *db.Repo, run *db.Run, branch string) bool {
 // missing or conflicting evidence leaves the older run authoritative.
 func (s *Service) supersededUnpublishedRun(ctx context.Context, older, newer *db.Run, branch string) bool {
 	if older == nil || newer == nil || !terminalRunStatus(older.Status) || !unpublishedPipelineHead(older) ||
-		strings.TrimSpace(s.GateDir) == "" || older.HeadSHA == "" || newer.LastPushedSHA == nil {
+		!samePushTargetBinding(older, newer) || strings.TrimSpace(s.GateDir) == "" || older.HeadSHA == "" || newer.LastPushedSHA == nil {
 		return false
 	}
 	pushed := ptr(newer.LastPushedSHA)
@@ -1027,6 +1027,13 @@ func (s *Service) supersededUnpublishedRun(ctx context.Context, older, newer *db
 		return false
 	}
 	return isAncestor(ctx, s.GateDir, older.HeadSHA, pushed)
+}
+
+func samePushTargetBinding(older, newer *db.Run) bool {
+	return older != nil && newer != nil &&
+		older.PushTargetKind != nil && newer.PushTargetKind != nil && ptr(older.PushTargetKind) == ptr(newer.PushTargetKind) &&
+		older.PushTargetFingerprint != nil && newer.PushTargetFingerprint != nil && ptr(older.PushTargetFingerprint) == ptr(newer.PushTargetFingerprint) &&
+		older.PushRef != nil && newer.PushRef != nil && ptr(older.PushRef) == ptr(newer.PushRef)
 }
 
 func terminalRunStatus(status types.RunStatus) bool {
