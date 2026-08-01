@@ -112,7 +112,17 @@ while [ "$i" -lt "${GIT_PUSH_OPTION_COUNT:-0}" ]; do
   set -- "$@" --push-option "$opt"
   i=$((i + 1))
 done
-out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon admit-push --gate "$GATE_DIR" --receive-session-id "$RECEIVE_SESSION_ID" --receive-capability-fd 3 "$@" < "$RECEIVE_INPUT" 2>&1)
+CAPABILITY_FLAG=--receive-capability-fd
+CAPABILITY_VALUE=3
+if [ -n "${NO_MISTAKES_RECEIVE_CAPABILITY_ADMIT_HANDLE:-}" ]; then
+  CAPABILITY_FLAG=--receive-capability-handle
+  CAPABILITY_VALUE=$NO_MISTAKES_RECEIVE_CAPABILITY_ADMIT_HANDLE
+fi
+if [ "$CAPABILITY_FLAG" = --receive-capability-fd ]; then
+  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon admit-push --gate "$GATE_DIR" --receive-session-id "$RECEIVE_SESSION_ID" --receive-capability-fd 3 "$@" < "$RECEIVE_INPUT" 2>&1)
+else
+  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon admit-push --gate "$GATE_DIR" --receive-session-id "$RECEIVE_SESSION_ID" "$CAPABILITY_FLAG" "$CAPABILITY_VALUE" "$@" < "$RECEIVE_INPUT" 2>&1)
+fi
 status=$?
 if [ $status -ne 0 ]; then
   printf 'no-mistakes: gate push refused before ref mutation:\n%s\n' "$out" >&2
@@ -314,12 +324,26 @@ while IFS=' ' read -r oldrev newrev refname; do
     exit 1
   fi
 done < "$RECEIVE_INPUT"
+CAPABILITY_FLAG=--receive-capability-fd
 CAPABILITY_FD=4
 case "$PHASE" in
   committed) CAPABILITY_FD=5 ;;
   aborted) CAPABILITY_FD=6 ;;
 esac
-out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon receive-transaction --gate "$GATE_DIR" --phase "$PHASE" --receive-session-id "$RECEIVE_SESSION_ID" --receive-capability-fd "$CAPABILITY_FD" < "$TRANSACTION_INPUT" 2>&1)
+case "$PHASE" in
+  prepared) CAPABILITY_HANDLE=${NO_MISTAKES_RECEIVE_CAPABILITY_PREPARED_HANDLE:-} ;;
+  committed) CAPABILITY_HANDLE=${NO_MISTAKES_RECEIVE_CAPABILITY_COMMITTED_HANDLE:-} ;;
+  aborted) CAPABILITY_HANDLE=${NO_MISTAKES_RECEIVE_CAPABILITY_ABORTED_HANDLE:-} ;;
+  *) CAPABILITY_HANDLE= ;;
+esac
+if [ -n "$CAPABILITY_HANDLE" ]; then
+  CAPABILITY_FLAG=--receive-capability-handle
+fi
+if [ "$CAPABILITY_FLAG" = --receive-capability-fd ]; then
+  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon receive-transaction --gate "$GATE_DIR" --phase "$PHASE" --receive-session-id "$RECEIVE_SESSION_ID" --receive-capability-fd "$CAPABILITY_FD" < "$TRANSACTION_INPUT" 2>&1)
+else
+  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon receive-transaction --gate "$GATE_DIR" --phase "$PHASE" --receive-session-id "$RECEIVE_SESSION_ID" "$CAPABILITY_FLAG" "$CAPABILITY_HANDLE" < "$TRANSACTION_INPUT" 2>&1)
+fi
 status=$?
 if [ $status -ne 0 ]; then
   printf 'no-mistakes: reference transaction evidence refused (%s):\n%s\n' "$PHASE" "$out" >&2
@@ -436,7 +460,13 @@ if ! cat > "$RECEIVE_INPUT"; then
   exit 1
 fi
 notify_failed=0
-set -- --gate "$GATE_DIR" --receive-session-id "$RECEIVE_SESSION_ID" --receive-capability-fd 7
+CAPABILITY_FLAG=--receive-capability-fd
+CAPABILITY_VALUE=7
+if [ -n "${NO_MISTAKES_RECEIVE_CAPABILITY_NOTIFY_HANDLE:-}" ]; then
+  CAPABILITY_FLAG=--receive-capability-handle
+  CAPABILITY_VALUE=$NO_MISTAKES_RECEIVE_CAPABILITY_NOTIFY_HANDLE
+fi
+set -- --gate "$GATE_DIR" --receive-session-id "$RECEIVE_SESSION_ID" "$CAPABILITY_FLAG" "$CAPABILITY_VALUE"
 i=0
 while [ "$i" -lt "${GIT_PUSH_OPTION_COUNT:-0}" ]; do
   opt=$(printenv "GIT_PUSH_OPTION_$i" 2>/dev/null || :)

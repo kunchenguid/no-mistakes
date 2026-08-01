@@ -759,6 +759,28 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.AdmitPushResult{Context: gateContextResult(result), ReservationID: reservationID}, nil
 	})
 
+	srv.Handle(ipc.MethodAdmitPushBatch, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.AdmitPushBatchParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		if strings.TrimSpace(p.Gate) == "" {
+			return nil, fmt.Errorf("gate path is required")
+		}
+		result, err := classify(ctx, "", false, true)
+		if err != nil {
+			return nil, err
+		}
+		if result.Nested {
+			return nil, fmt.Errorf("%s", gatecontext.RefusalMessage(result))
+		}
+		reservationIDs, err := mgr.HandleAdmitPushBatch(ctx, &p)
+		if err != nil {
+			return nil, err
+		}
+		return &ipc.AdmitPushBatchResult{Context: gateContextResult(result), ReservationIDs: reservationIDs}, nil
+	})
+
 	srv.Handle(ipc.MethodReceiveTransaction, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		if err := refuseNested(ctx, true); err != nil {
 			return nil, err
@@ -771,6 +793,23 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 			return nil, fmt.Errorf("gate path is required")
 		}
 		if err := mgr.HandleReceiveTransaction(ctx, &p); err != nil {
+			return nil, err
+		}
+		return struct{}{}, nil
+	})
+
+	srv.Handle(ipc.MethodReceiveTxnBatch, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, true); err != nil {
+			return nil, err
+		}
+		var p ipc.ReceiveTransactionBatchParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		if strings.TrimSpace(p.Gate) == "" {
+			return nil, fmt.Errorf("gate path is required")
+		}
+		if err := mgr.HandleReceiveTransactionBatch(ctx, &p); err != nil {
 			return nil, err
 		}
 		return struct{}{}, nil

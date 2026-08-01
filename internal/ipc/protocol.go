@@ -21,7 +21,9 @@ const (
 	MethodCancelRun          = "cancel_run"
 	MethodGateContext        = "gate_context"
 	MethodAdmitPush          = "admit_push"
+	MethodAdmitPushBatch     = "admit_push_batch"
 	MethodReceiveTransaction = "receive_transaction"
+	MethodReceiveTxnBatch    = "receive_transaction_batch"
 	MethodHealth             = "health"
 	MethodShutdown           = "shutdown"
 )
@@ -180,6 +182,21 @@ type AdmitPushParams struct {
 	ReceiveCapability string           `json:"receive_capability,omitempty"`
 }
 
+type AdmitPushUpdate struct {
+	Ref       string           `json:"ref"`
+	Old       string           `json:"old"`
+	New       string           `json:"new"`
+	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
+	Intent    string           `json:"intent,omitempty"`
+}
+
+type AdmitPushBatchParams struct {
+	Gate              string            `json:"gate"`
+	Updates           []AdmitPushUpdate `json:"updates"`
+	ReceiveSessionID  string            `json:"receive_session_id"`
+	ReceiveCapability string            `json:"receive_capability"`
+}
+
 type ReceiveTransactionParams struct {
 	Gate              string `json:"gate"`
 	Phase             string `json:"phase"`
@@ -189,6 +206,21 @@ type ReceiveTransactionParams struct {
 	New               string `json:"new"`
 	ReceiveSessionID  string `json:"receive_session_id"`
 	ReceiveCapability string `json:"receive_capability"`
+}
+
+type ReceiveTransactionUpdate struct {
+	ReservationID string `json:"reservation_id"`
+	Ref           string `json:"ref"`
+	Old           string `json:"old"`
+	New           string `json:"new"`
+}
+
+type ReceiveTransactionBatchParams struct {
+	Gate              string                     `json:"gate"`
+	Phase             string                     `json:"phase"`
+	Updates           []ReceiveTransactionUpdate `json:"updates"`
+	ReceiveSessionID  string                     `json:"receive_session_id"`
+	ReceiveCapability string                     `json:"receive_capability"`
 }
 
 // HealthParams has no fields but exists for consistency.
@@ -250,6 +282,11 @@ type GateContextResult struct {
 type AdmitPushResult struct {
 	Context       GateContextResult `json:"context"`
 	ReservationID string            `json:"reservation_id,omitempty"`
+}
+
+type AdmitPushBatchResult struct {
+	Context        GateContextResult `json:"context"`
+	ReservationIDs []string          `json:"reservation_ids"`
 }
 
 // HealthResult confirms the daemon is alive.

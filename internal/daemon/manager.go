@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -587,81 +588,163 @@ func (m *RunManager) HandleAdmitPush(ctx context.Context, params *ipc.AdmitPushP
 	if params == nil {
 		return "", fmt.Errorf("admit push: missing parameters")
 	}
-	if strings.TrimSpace(params.ReceiveSessionID) == "" {
-		return "", fmt.Errorf("admit push: receive session identity is required")
-	}
-	receiveCapability := strings.TrimSpace(params.ReceiveCapability)
-	if receiveCapability == "" {
-		return "", fmt.Errorf("admit push: receive capability is required")
-	}
-	repo, branch, err := m.receiveRepo(params.Gate, params.Ref)
+	ids, err := m.HandleAdmitPushBatch(ctx, &ipc.AdmitPushBatchParams{Gate: params.Gate, Updates: []ipc.AdmitPushUpdate{{Ref: params.Ref, Old: params.Old, New: params.New, SkipSteps: params.SkipSteps, Intent: params.Intent}}, ReceiveSessionID: params.ReceiveSessionID, ReceiveCapability: params.ReceiveCapability})
 	if err != nil {
 		return "", err
 	}
-	matches, err := m.db.VerifyReceiveSession(repo.ID, m.paths.RepoDir(repo.ID), params.ReceiveSessionID, receiveCapability)
+	return ids[0], nil
+}
+
+func (m *RunManager) HandleAdmitPushBatch(ctx context.Context, params *ipc.AdmitPushBatchParams) ([]string, error) {
+	if params == nil || len(params.Updates) == 0 {
+		return nil, fmt.Errorf("admit push batch: at least one update is required")
+	}
+	if strings.TrimSpace(params.ReceiveSessionID) == "" || strings.TrimSpace(params.ReceiveCapability) == "" {
+		return nil, fmt.Errorf("admit push batch: authenticated receive capability is required")
+	}
+	repo, _, err := m.receiveRepo(params.Gate, params.Updates[0].Ref)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if !matches {
-		return "", fmt.Errorf("admit push: receive capability was not issued for this repository session")
+	type checkedUpdate struct {
+		update ipc.AdmitPushUpdate
+		branch string
 	}
-	lock, err := branchsync.AcquireBranchOwnershipLock(m.paths, repo, repo.WorkingPath, branch)
+	checked := make([]checkedUpdate, len(params.Updates))
+	locksByBranch := make(map[string]*branchsync.BranchOwnershipLock, len(params.Updates))
+	branchKeys := make(map[string]string, len(params.Updates))
+	for i, update := range params.Updates {
+		otherRepo, branch, err := m.receiveRepo(params.Gate, update.Ref)
+		if err != nil {
+			return nil, err
+		}
+		if otherRepo.ID != repo.ID {
+			return nil, fmt.Errorf("admit push batch: updates do not target one repository")
+		}
+		key := update.Ref + "\x00" + update.Old + "\x00" + update.New
+		if previous, ok := branchKeys[branch]; ok && previous != key {
+			return nil, fmt.Errorf("admit push batch: branch %s has multiple transitions", branch)
+		}
+		if _, ok := branchKeys[branch]; ok {
+			return nil, fmt.Errorf("admit push batch: duplicate transition for %s", update.Ref)
+		}
+		branchKeys[branch] = key
+		checked[i] = checkedUpdate{update: update, branch: branch}
+	}
+	branches := make([]string, 0, len(branchKeys))
+	for branch := range branchKeys {
+		branches = append(branches, branch)
+	}
+	sort.Strings(branches)
+	for _, branch := range branches {
+		lock, err := branchsync.AcquireBranchOwnershipLock(m.paths, repo, repo.WorkingPath, branch)
+		if err != nil {
+			for _, held := range locksByBranch {
+				held.Release()
+			}
+			return nil, fmt.Errorf("acquire branch ownership lock: %w", err)
+		}
+		locksByBranch[branch] = lock
+	}
+	defer func() {
+		for _, branch := range branches {
+			locksByBranch[branch].Release()
+		}
+	}()
+	inputs := make([]db.ReceiveReservationInput, len(checked))
+	for i, item := range checked {
+		current, exists, err := gateReceiveRef(ctx, m.paths.RepoDir(repo.ID), item.update.Ref)
+		if err != nil {
+			return nil, err
+		}
+		if !receiveOldMatches(current, exists, item.update.Old) {
+			return nil, fmt.Errorf("gate ref %s is not at expected old head %s", item.update.Ref, item.update.Old)
+		}
+		inputs[i] = db.ReceiveReservationInput{RepoID: repo.ID, GatePath: m.paths.RepoDir(repo.ID), Branch: item.branch, Ref: item.update.Ref, OldSHA: item.update.Old, NewSHA: item.update.New, SkipSteps: item.update.SkipSteps, Intent: item.update.Intent}
+	}
+	reservations, err := m.db.ReserveReceivesForAuthenticatedSession(params.ReceiveSessionID, params.ReceiveCapability, inputs)
 	if err != nil {
-		return "", fmt.Errorf("acquire branch ownership lock: %w", err)
+		return nil, err
 	}
-	defer lock.Release()
-	current, exists, err := gateReceiveRef(ctx, m.paths.RepoDir(repo.ID), params.Ref)
-	if err != nil {
-		return "", err
+	ids := make([]string, len(reservations))
+	for i, reservation := range reservations {
+		ids[i] = reservation.ID
 	}
-	if !receiveOldMatches(current, exists, params.Old) {
-		return "", fmt.Errorf("gate ref %s is not at expected old head %s", params.Ref, params.Old)
-	}
-	reservation, err := m.db.ReserveReceiveForAuthenticatedSession(repo.ID, m.paths.RepoDir(repo.ID), branch, params.Ref, params.Old, params.New, params.ReceiveSessionID, receiveCapability, params.SkipSteps, params.Intent)
-	if err != nil {
-		return "", err
-	}
-	return reservation.ID, nil
+	return ids, nil
 }
 
 func (m *RunManager) HandleReceiveTransaction(ctx context.Context, params *ipc.ReceiveTransactionParams) error {
 	if params == nil {
 		return fmt.Errorf("receive transaction: missing parameters")
 	}
-	if strings.TrimSpace(params.ReservationID) == "" {
-		return fmt.Errorf("receive transaction: reservation identity is required")
+	return m.HandleReceiveTransactionBatch(ctx, &ipc.ReceiveTransactionBatchParams{Gate: params.Gate, Phase: params.Phase, Updates: []ipc.ReceiveTransactionUpdate{{ReservationID: params.ReservationID, Ref: params.Ref, Old: params.Old, New: params.New}}, ReceiveSessionID: params.ReceiveSessionID, ReceiveCapability: params.ReceiveCapability})
+}
+
+func (m *RunManager) HandleReceiveTransactionBatch(ctx context.Context, params *ipc.ReceiveTransactionBatchParams) error {
+	if params == nil || len(params.Updates) == 0 {
+		return fmt.Errorf("receive transaction: at least one transition is required")
 	}
 	if strings.TrimSpace(params.ReceiveSessionID) == "" || strings.TrimSpace(params.ReceiveCapability) == "" {
 		return fmt.Errorf("receive transaction: authenticated receive capability is required")
 	}
-	repo, branch, err := m.receiveRepo(params.Gate, params.Ref)
+	repo, _, err := m.receiveRepo(params.Gate, params.Updates[0].Ref)
 	if err != nil {
 		return err
 	}
-	lock, err := branchsync.AcquireBranchOwnershipLock(m.paths, repo, repo.WorkingPath, branch)
-	if err != nil {
-		return fmt.Errorf("acquire branch ownership lock: %w", err)
+	type checkedUpdate struct {
+		update ipc.ReceiveTransactionUpdate
+		branch string
 	}
-	defer lock.Release()
-	reservation, err := m.db.GetReceiveReservation(params.ReservationID)
-	if err != nil {
+	checked := make([]checkedUpdate, len(params.Updates))
+	branchesSet := make(map[string]struct{}, len(params.Updates))
+	for i, update := range params.Updates {
+		otherRepo, branch, err := m.receiveRepo(params.Gate, update.Ref)
+		if err != nil {
+			return err
+		}
+		if otherRepo.ID != repo.ID {
+			return fmt.Errorf("receive transaction: updates do not target one repository")
+		}
+		if _, ok := branchesSet[branch]; ok {
+			return fmt.Errorf("receive transaction: duplicate branch transition %s", branch)
+		}
+		branchesSet[branch] = struct{}{}
+		checked[i] = checkedUpdate{update: update, branch: branch}
+	}
+	branches := make([]string, 0, len(branchesSet))
+	for branch := range branchesSet {
+		branches = append(branches, branch)
+	}
+	sort.Strings(branches)
+	locks := make(map[string]*branchsync.BranchOwnershipLock, len(branches))
+	for _, branch := range branches {
+		lock, err := branchsync.AcquireBranchOwnershipLock(m.paths, repo, repo.WorkingPath, branch)
+		if err != nil {
+			for _, held := range locks {
+				held.Release()
+			}
+			return fmt.Errorf("acquire branch ownership lock: %w", err)
+		}
+		locks[branch] = lock
+	}
+	defer func() {
+		for _, branch := range branches {
+			locks[branch].Release()
+		}
+	}()
+	inputs := make([]db.ReceiveTransactionInput, len(checked))
+	for i, item := range checked {
+		reservation, err := m.db.GetReceiveReservation(item.update.ReservationID)
+		if err != nil {
+			return err
+		}
+		if reservation == nil || reservation.RepoID != repo.ID || reservation.Branch != item.branch || reservation.Ref != item.update.Ref || reservation.OldSHA != item.update.Old || reservation.NewSHA != item.update.New || !reservation.MatchesSession(params.ReceiveSessionID, params.ReceiveCapability) {
+			return fmt.Errorf("receive transaction: reservation identity does not match the exact receive")
+		}
+		inputs[i] = db.ReceiveTransactionInput{ID: item.update.ReservationID, RepoID: repo.ID, Branch: item.branch, Ref: item.update.Ref, OldSHA: item.update.Old, NewSHA: item.update.New}
+	}
+	if err := m.db.ApplyReceiveTransactionBatch(params.Phase, params.ReceiveSessionID, params.ReceiveCapability, inputs); err != nil {
 		return err
-	}
-	if reservation == nil || reservation.RepoID != repo.ID || reservation.Branch != branch || reservation.Ref != params.Ref || reservation.OldSHA != params.Old || reservation.NewSHA != params.New || !reservation.MatchesSession(params.ReceiveSessionID, params.ReceiveCapability) {
-		return fmt.Errorf("receive transaction: reservation identity does not match the exact receive")
-	}
-	switch params.Phase {
-	case "prepared":
-		err = m.db.MarkReceivePreparedForSession(params.ReservationID, repo.ID, branch, params.Ref, params.Old, params.New, params.ReceiveSessionID, params.ReceiveCapability)
-	case "committed":
-		err = m.db.MarkReceiveCommittedForSession(params.ReservationID, repo.ID, branch, params.Ref, params.Old, params.New, params.ReceiveSessionID, params.ReceiveCapability)
-	case "aborted":
-		err = m.db.MarkReceiveAbortedForSession(params.ReservationID, repo.ID, branch, params.Ref, params.Old, params.New, params.ReceiveSessionID, params.ReceiveCapability)
-	default:
-		return fmt.Errorf("receive transaction: unsupported phase %q", params.Phase)
-	}
-	if err != nil {
-		return fmt.Errorf("receive transaction %s: %w", params.Phase, err)
 	}
 	return nil
 }
@@ -678,6 +761,13 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	repo, branch, err := m.receiveRepo(params.Gate, params.Ref)
 	if err != nil {
 		return "", err
+	}
+	active, err := m.db.VerifyReceiveSession(repo.ID, m.paths.RepoDir(repo.ID), params.ReceiveSessionID, params.ReceiveCapability)
+	if err != nil {
+		return "", err
+	}
+	if !active {
+		return "", fmt.Errorf("push notification: receive session is no longer active")
 	}
 	lock, err := branchsync.AcquireBranchOwnershipLock(m.paths, repo, repo.WorkingPath, branch)
 	if err != nil {
