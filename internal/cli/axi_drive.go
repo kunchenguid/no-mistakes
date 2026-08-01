@@ -133,8 +133,7 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 		// the change's intent, so we take it directly instead of inferring it
 		// from transcripts. Reattaching to an in-flight run does not need it.
 		if strings.TrimSpace(intent) == "" {
-			return emitError(cmd, 2, "--intent is required to start a run",
-				`Pass what the user set out to accomplish: no-mistakes axi run --intent "the user's goal"`)
+			return emitIntentRequiredError(cmd, inspectAxiBranchSync(ctx, env))
 		}
 		// Starting a fresh run: apply the same pre-flight the human wizard
 		// enforces, but as structured errors the agent acts on rather than
@@ -253,6 +252,26 @@ func emitBranchOwnershipError(cmd *cobra.Command, ownershipErr *branchOwnershipE
 	}
 	emitDoc(cmd, fields...)
 	return &exitError{code: 1}
+}
+
+// emitIntentRequiredError refuses a fresh run that carries no intent, and
+// carries the branch-sync classification with it. An agent returning to a
+// branch the pipeline pushed auto-fix or CI-rebase commits to reaches this
+// refusal before anything inspects synchronization, so the sync action it must
+// run first has to travel in this document; naming it only in prose elsewhere
+// leaves the agent to guess.
+func emitIntentRequiredError(cmd *cobra.Command, state branchsync.State) error {
+	help := []string{`Pass what the user set out to accomplish: no-mistakes axi run --intent "the user's goal"`}
+	fields := []toon.Field{
+		{Key: "error", Value: "--intent is required to start a run"},
+		branchSyncField(state),
+	}
+	if state.NextAction != nil {
+		help = append(help, "Take the pipeline's commits first: `"+state.NextAction.Command+"`")
+	}
+	fields = append(fields, toon.Field{Key: "help", Value: help})
+	emitDoc(cmd, fields...)
+	return &exitError{code: 2}
 }
 
 func inspectAxiBranchSync(ctx context.Context, env *axiEnv) branchsync.State {
@@ -838,10 +857,11 @@ func newAxiAbortCmd() *cobra.Command {
 			"current branch. Pass --run <id> to cancel a specific run by its id from\n" +
 			"anywhere - including outside its worktree - so an orphaned CI monitor\n" +
 			"(e.g. after a worktree was torn down) can be reaped deterministically.\n\n" +
-			"While a run is active, do NOT abort (or rerun) to go fix a finding\n" +
-			"yourself - that discards the pipeline's in-flight work and forces a full\n" +
-			"re-validation. abort and rerun are for between runs (after a failed or\n" +
-			"cancelled outcome), never to circumvent a gate.\n\n" +
+			"Never abort or rerun while a gate awaits your response or a step is\n" +
+			"actively working, unless you are deliberately discarding that run.\n" +
+			"Wanting to fix a finding yourself is not such a reason: aborting there\n" +
+			"discards the pipeline's in-flight work and forces a full re-validation -\n" +
+			"answer the gate instead.\n\n" +
 			preserveGateFixCommitsGuidance,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
