@@ -3,6 +3,7 @@
 package branchsync
 
 import (
+	"errors"
 	"os"
 
 	"golang.org/x/sys/windows"
@@ -25,4 +26,8 @@ func unlockCustodyLock(file *os.File) error {
 		0, 1, 0,
 		&windows.Overlapped{Offset: custodyLockByteOffset},
 	)
+}
+
+func isCustodyLockContention(err error) bool {
+	return errors.Is(err, windows.ERROR_LOCK_VIOLATION)
 }

@@ -32,7 +32,10 @@ func acquireCustodyLock(s *Service, run *db.Run) (*custodyLock, error) {
 	}
 	if err := tryCustodyLock(file); err != nil {
 		_ = file.Close()
-		return nil, fmt.Errorf("%w: %v", ErrCustodyLockHeld, err)
+		if isCustodyLockContention(err) {
+			return nil, fmt.Errorf("%w: %v", ErrCustodyLockHeld, err)
+		}
+		return nil, fmt.Errorf("acquire custody lock: lock file: %w", err)
 	}
 	return &custodyLock{file: file}, nil
 }

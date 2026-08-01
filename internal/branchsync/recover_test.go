@@ -152,7 +152,7 @@ func newRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
 	run, _ = database.GetRun(run.ID)
 	return &recoverFixture{
 		t: t, ctx: ctx, db: database, repo: repo, run: run, dbPath: dbPath,
-		service: &Service{DB: database, Repo: repo, WorkDir: local, GateDir: gate},
+		service: &Service{DB: database, Repo: repo, WorkDir: local, GateDir: gate, Paths: paths.WithRoot(filepath.Join(root, "nm-home"))},
 		local:   local, gate: gate, remote: remote,
 		base: base, submitted: submitted, preserved: preserved,
 	}
@@ -1600,8 +1600,8 @@ func TestRecoverConcurrentKeepLocalDoesNotRollbackCompletedTransition(t *testing
 		t.Fatal(err)
 	}
 	defer secondDB.Close()
-	secondService := &Service{DB: secondDB, Repo: f.repo, WorkDir: f.local, GateDir: f.gate}
-	secondService.beforeGateReset = func() { close(secondStarted) }
+	secondService := &Service{DB: secondDB, Repo: f.repo, WorkDir: f.local, GateDir: f.gate, Paths: f.service.Paths}
+	secondService.afterCustodyLockAttempt = func(error) { close(secondStarted) }
 
 	firstResult := make(chan State, 1)
 	go func() { firstResult <- f.service.Recover(f.ctx, true) }()
@@ -1638,6 +1638,120 @@ func TestRecoverConcurrentKeepLocalDoesNotRollbackCompletedTransition(t *testing
 	}
 	if !f.custodyReturned() {
 		t.Fatal("completed concurrent recovery lost custody stamp")
+	}
+}
+
+func TestRecoverConcurrentDefaultAndKeepLocalShareCustodyLock(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	firstAtStamp := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	f.service.beforeRecoverStamp = func() {
+		close(firstAtStamp)
+		<-releaseFirst
+	}
+
+	secondDB, err := db.Open(f.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondDB.Close()
+	secondService := &Service{DB: secondDB, Repo: f.repo, WorkDir: f.local, GateDir: f.gate, Paths: f.service.Paths}
+	secondStarted := make(chan struct{})
+	secondService.afterCustodyLockAttempt = func(error) { close(secondStarted) }
+
+	firstResult := make(chan State, 1)
+	go func() { firstResult <- f.service.Recover(f.ctx, true) }()
+	select {
+	case <-firstAtStamp:
+	case <-time.After(5 * time.Second):
+		t.Fatal("keep-local recovery did not reach the custody stamp boundary")
+	}
+
+	secondResult := make(chan State, 1)
+	go func() { secondResult <- secondService.Recover(f.ctx, false) }()
+	select {
+	case <-secondStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("default recovery did not reach the shared custody lock")
+	}
+	close(releaseFirst)
+
+	var firstState, secondState State
+	select {
+	case firstState = <-firstResult:
+	case <-time.After(5 * time.Second):
+		t.Fatal("keep-local recovery did not complete")
+	}
+	select {
+	case secondState = <-secondResult:
+	case <-time.After(5 * time.Second):
+		t.Fatal("default recovery did not complete")
+	}
+	if !firstState.Recovered || secondState.Recovered {
+		t.Fatalf("default/keep-local recovery ownership: first=%#v second=%#v", firstState, secondState)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("default recovery moved local HEAD to %s, want submitted %s", got, f.submitted)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("keep-local recovery lost custody stamp")
+	}
+}
+
+func TestRecoverConcurrentDefaultAttemptsShareCustodyLock(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	firstAtMerge := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	f.service.beforeRecoverFastForward = func() {
+		close(firstAtMerge)
+		<-releaseFirst
+	}
+
+	secondDB, err := db.Open(f.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondDB.Close()
+	secondService := &Service{DB: secondDB, Repo: f.repo, WorkDir: f.local, GateDir: f.gate, Paths: f.service.Paths}
+	secondStarted := make(chan struct{})
+	secondService.afterCustodyLockAttempt = func(error) { close(secondStarted) }
+
+	firstResult := make(chan State, 1)
+	go func() { firstResult <- f.service.Recover(f.ctx, false) }()
+	select {
+	case <-firstAtMerge:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first default recovery did not reach the fast-forward boundary")
+	}
+
+	secondResult := make(chan State, 1)
+	go func() { secondResult <- secondService.Recover(f.ctx, false) }()
+	select {
+	case <-secondStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second default recovery did not reach the shared custody lock")
+	}
+	close(releaseFirst)
+
+	var firstState, secondState State
+	select {
+	case firstState = <-firstResult:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first default recovery did not complete")
+	}
+	select {
+	case secondState = <-secondResult:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second default recovery did not complete")
+	}
+	if !firstState.Recovered || secondState.Recovered {
+		t.Fatalf("default recovery ownership: first=%#v second=%#v", firstState, secondState)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("completed default recovery HEAD = %s, want preserved %s", got, f.preserved)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("default recovery lost custody stamp")
 	}
 }
 

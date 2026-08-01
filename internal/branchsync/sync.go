@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -139,6 +140,8 @@ type Service struct {
 
 	beforeApply              func()
 	beforeGateReset          func()
+	beforeCustodyLock        func()
+	afterCustodyLockAttempt  func(error)
 	beforeRecoverAnchorFetch func()
 	beforeRecoverStamp       func()
 	beforeRecoverFastForward func()
@@ -496,6 +499,11 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 	state, run, _ := s.inspect(ctx)
 	if run != nil && run.CustodyReturnedAt != nil {
+		lock, err := s.acquireRecoveryLock(run)
+		if err != nil {
+			return custodyLockFailure(state, err)
+		}
+		defer lock.Release()
 		s.cleanupRecoverMarkers(ctx, run)
 		if token := run.CustodyTransitionToken; token != nil {
 			_ = s.DB.ClearRunCustodyTransition(ctx, run.ID, *token)
@@ -557,6 +565,11 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 
 	if objectExists(ctx, wd, preserved) && (local == preserved || isAncestor(ctx, wd, preserved, local)) {
+		lock, err := s.acquireRecoveryLock(run)
+		if err != nil {
+			return custodyLockFailure(state, err)
+		}
+		defer lock.Release()
 		if !anchored {
 			if blocked, ok := s.anchorReachablePreserved(ctx, state, anchorRef, preserved); !ok {
 				return blocked
@@ -589,6 +602,11 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if movedGateAtSubmitted && runHasPublication(run) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "exact-object moved-gate recovery is limited to a terminal run with no push, PR, or CI publication provenance; custody was not returned and no refs were changed")
 	}
+	lock, lockErr := s.acquireRecoveryLock(run)
+	if lockErr != nil {
+		return custodyLockFailure(state, lockErr)
+	}
+	defer lock.Release()
 	if !anchored {
 		if safety := s.fetchExactRecoveryAnchor(ctx, run, preserved, anchorRef); safety != "" {
 			message := fmt.Sprintf("the preserved pipeline head %s could not be immutably anchored from the local gate by exact object ID; no ordinary refs were changed", preserved)
@@ -646,11 +664,6 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 	if s.beforeGateReset != nil {
 		s.beforeGateReset()
 	}
-	lock, err := acquireCustodyLock(s, run)
-	if err != nil {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_custody_race", "another custody recovery is active for this repository branch; no files or ordinary refs were changed")
-	}
-	defer lock.Release()
 	precheck, currentGateHead, ok := s.recheckRecoverKeepLocal(ctx, state, gateHead)
 	if !ok {
 		return precheck
@@ -752,6 +765,24 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 		return s.recoverKeepLocalFailure(ctx, precheck, run, transition)
 	}
 	return s.finishRecoverWithTransition(ctx, run, false, transition)
+}
+
+func (s *Service) acquireRecoveryLock(run *db.Run) (*custodyLock, error) {
+	if s.beforeCustodyLock != nil {
+		s.beforeCustodyLock()
+	}
+	lock, err := acquireCustodyLock(s, run)
+	if s.afterCustodyLockAttempt != nil {
+		s.afterCustodyLockAttempt(err)
+	}
+	return lock, err
+}
+
+func custodyLockFailure(state State, err error) State {
+	if errors.Is(err, ErrCustodyLockHeld) {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_custody_race", "another custody recovery is active for this repository branch; no files or ordinary refs were changed")
+	}
+	return blockedPlan(state, StatePipelineOwned, "blocked_recover_custody_lock", fmt.Sprintf("the custody recovery lock could not be established (%v); no files or ordinary refs were changed", err))
 }
 
 func (s *Service) beginOrResumeCustodyTransition(ctx context.Context, run *db.Run) (*db.CustodyTransition, error) {
