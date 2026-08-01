@@ -306,14 +306,17 @@ func TestVerifyUnpublishedHistoryRejectsPreservedHead(t *testing.T) {
 	p := strings.Repeat("b", 40)
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
 		"glab auth status": {},
-		"glab api --paginate projects/group%2Fproject/merge_requests?state=all&source_branch=feature&per_page=100": {
-			stdout: fmt.Sprintf(`[{"iid":7,"source_branch":"feature","sha":"%s"}]`+"\n", a),
+		"glab api --paginate projects/group%2Fproject/merge_requests?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"iid":7,"source_branch":"renamed-feature","sha":"%s"}]`+"\n", a),
 		},
 		"glab api --paginate projects/group%2Fproject/merge_requests/7/versions?per_page=100": {
 			stdout: fmt.Sprintf(`[{"head_commit_sha":"%s"}]`+"\n", p),
 		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/resource_state_events?per_page=100": {
+			stdout: "[]\n",
+		},
 	}), nil, "", "group/project")
-	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p); err == nil {
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0); err == nil {
 		t.Fatal("VerifyUnpublishedHistory() error = nil, want preserved-head rejection")
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -113,6 +114,58 @@ func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	if _, ok := finished.fields["duration_ms"]; !ok {
 		t.Fatal("expected duration_ms in run finished telemetry")
 	}
+}
+
+func TestLegacyPublicationProofRejectsUnsupportedTarget(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	a := strings.Repeat("a", 40)
+	run := &db.Run{HeadSHA: a, SubmittedHeadSHA: &a}
+	manager := &RunManager{db: database, paths: p}
+	if err := manager.legacyPublicationProof(context.Background(), run, "feature", []string{"https://unsupported.example/repo.git"}); err == nil {
+		t.Fatal("legacy publication proof accepted an unsupported target")
+	}
+}
+
+func TestManagedGateAuthorityLossPersistsQuarantine(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "managed-authority-loss")
+	ref := "refs/heads/main"
+	if err := database.SetManagedGateRefHead(repo.ID, p.RepoDir(repo.ID), ref, head); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewRunManager(database, p, nil)
+	if err := manager.ensureManagedGateGuard(repo, ref); err != nil {
+		t.Fatal(err)
+	}
+	guard := manager.managedGateGuards[managedGateGuardKey(repo.ID, ref)]
+	if guard == nil {
+		t.Fatal("managed gate guard was not installed")
+	}
+	if err := os.Remove(guard.Path()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ensureManagedGateGuard(repo, ref); err == nil {
+		t.Fatal("managed gate authority loss was accepted")
+	}
+	quarantine, err := database.GetGateRefQuarantine(repo.ID, p.RepoDir(repo.ID), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quarantine == nil {
+		t.Fatal("managed gate authority loss was not quarantined")
+	}
+	if err := manager.ensureManagedGateGuard(repo, ref); err == nil {
+		t.Fatal("quarantined managed gate authority was reacquired")
+	}
+	manager.Shutdown()
 }
 
 func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {

@@ -2,7 +2,10 @@ package branchsync
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +19,9 @@ type ManagedGateRefAuthority struct {
 	file     *os.File
 	path     string
 	identity string
+	marker   string
 	released bool
+	invalid  bool
 }
 
 func (a *ManagedGateRefAuthority) Path() string {
@@ -33,13 +38,34 @@ func (a *ManagedGateRefAuthority) Identity() string {
 	return a.identity
 }
 
-func (a *ManagedGateRefAuthority) UpdateRef(ctx context.Context, gateDir, ref, oldSHA, newSHA string) error {
-	if a == nil || a.file == nil || a.released || a.path == "" || !isManagedGateRef(ref) {
+func (a *ManagedGateRefAuthority) Validate(gateDir, ref string) error {
+	if a == nil || a.file == nil || a.released || a.invalid || a.path == "" || !isManagedGateRef(ref) {
 		return fmt.Errorf("managed gate authority is not live")
+	}
+	if _, err := a.file.Stat(); err != nil {
+		return fmt.Errorf("managed gate authority handle is not live")
 	}
 	identity, err := gateRefFileIdentity(a.path)
 	if err != nil || identity != a.identity {
 		return fmt.Errorf("managed gate authority identity changed")
+	}
+	marker, err := readAuthorityMarker(a.path)
+	if err != nil || marker != a.marker {
+		return fmt.Errorf("managed gate authority marker changed")
+	}
+	if filepath.Clean(filepath.Dir(a.path)) != filepath.Clean(filepath.Join(gateDir, filepath.FromSlash(filepath.Dir(ref)))) {
+		return fmt.Errorf("managed gate authority path changed")
+	}
+	return nil
+}
+
+func (a *ManagedGateRefAuthority) UpdateRef(ctx context.Context, gateDir, ref, oldSHA, newSHA string) error {
+	if err := a.Validate(gateDir, ref); err != nil {
+		return err
+	}
+	identity, err := gateRefFileIdentity(a.path)
+	if err != nil {
+		return err
 	}
 	if packed, err := packedGateRefExists(gateDir, ref); err != nil {
 		return fmt.Errorf("inspect packed managed gate ref: %w", err)
@@ -104,16 +130,15 @@ func (a *ManagedGateRefAuthority) UpdateRef(ctx context.Context, gateDir, ref, o
 	if err != nil || identity != a.identity {
 		return fmt.Errorf("managed gate authority changed during ref transaction")
 	}
+	if marker, markerErr := readAuthorityMarker(a.path); markerErr != nil || marker != a.marker {
+		return fmt.Errorf("managed gate authority changed during ref transaction")
+	}
 	return nil
 }
 
 func ReadManagedGateRefUnderAuthority(a *ManagedGateRefAuthority, gateDir, ref string) (string, error) {
-	if a == nil || a.file == nil || a.released || !isManagedGateRef(ref) {
-		return "", fmt.Errorf("managed gate authority is not live")
-	}
-	identity, err := gateRefFileIdentity(a.path)
-	if err != nil || identity != a.identity {
-		return "", fmt.Errorf("managed gate authority identity changed")
+	if err := a.Validate(gateDir, ref); err != nil {
+		return "", err
 	}
 	return readManagedGateRef(gateDir, ref)
 }
@@ -126,7 +151,12 @@ func AcquireManagedGateRefAuthority(gateDir, ref string) (*ManagedGateRefAuthori
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create managed gate authority directory: %w", err)
 	}
-	marker := []byte(fmt.Sprintf("%s %d\n", managedGateRefAuthorityMarker, os.Getpid()))
+	tokenBytes := make([]byte, 16)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return nil, fmt.Errorf("generate managed gate authority token: %w", err)
+	}
+	markerValue := fmt.Sprintf("%s %d %s", managedGateRefAuthorityMarker, os.Getpid(), hex.EncodeToString(tokenBytes))
+	marker := []byte(markerValue + "\n")
 	for attempt := 0; attempt < 2; attempt++ {
 		file, err := createGateRefLock(path, marker)
 		if err == nil {
@@ -142,7 +172,7 @@ func AcquireManagedGateRefAuthority(gateDir, ref string) (*ManagedGateRefAuthori
 				_ = os.Remove(path)
 				return nil, identityErr
 			}
-			return &ManagedGateRefAuthority{file: file, path: path, identity: identity}, nil
+			return &ManagedGateRefAuthority{file: file, path: path, identity: identity, marker: markerValue}, nil
 		}
 		if !os.IsExist(err) {
 			return nil, fmt.Errorf("acquire managed gate authority: %w", err)
@@ -191,4 +221,36 @@ func (a *ManagedGateRefAuthority) Release() error {
 	}
 	a.released = true
 	return nil
+}
+
+func (a *ManagedGateRefAuthority) Invalidate() error {
+	if a == nil || a.released {
+		return nil
+	}
+	if a.file != nil {
+		releaseGateRefOSLock(a.file)
+		if err := a.file.Close(); err != nil {
+			a.file = nil
+			a.released = true
+			a.invalid = true
+			return fmt.Errorf("close invalid managed gate authority: %w", err)
+		}
+		a.file = nil
+	}
+	a.released = true
+	a.invalid = true
+	return nil
+}
+
+func readAuthorityMarker(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	value, err := io.ReadAll(file)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(string(value), "\n"), nil
 }

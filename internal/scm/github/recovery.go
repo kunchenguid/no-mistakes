@@ -8,17 +8,20 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 )
 
 type recoveryPull struct {
-	Number int `json:"number"`
-	Head   struct {
+	Number    int    `json:"number"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	Head      struct {
 		Ref string `json:"ref"`
 		SHA string `json:"sha"`
 	} `json:"head"`
 }
 
-func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, preserved string) error {
+func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, preserved string, since, until int64) error {
 	if err := h.Available(ctx); err != nil {
 		return err
 	}
@@ -30,7 +33,11 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 		return fmt.Errorf("inspect GitHub pull-request history: %w", err)
 	}
 	for _, pull := range pulls {
-		if pull.Head.Ref != branch {
+		inWindow, err := recoveryRecordInWindow(pull.CreatedAt, pull.UpdatedAt, since, until)
+		if err != nil {
+			return fmt.Errorf("GitHub pull request %d has incomplete historical timestamps: %w", pull.Number, err)
+		}
+		if !inWindow {
 			continue
 		}
 		if pull.Head.SHA == "" || pull.Head.SHA != submitted {
@@ -47,19 +54,65 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 				return fmt.Errorf("GitHub pull request %d history contains the preserved unpublished head", pull.Number)
 			}
 		}
-		var events []struct {
-			SHA string `json:"sha"`
-		}
+		var events []json.RawMessage
 		if err := h.apiPages(ctx, fmt.Sprintf("repos/%s/issues/%d/timeline?per_page=100", h.apiRepoPath(), pull.Number), &events); err != nil {
 			return fmt.Errorf("inspect GitHub pull-request %d timeline: %w", pull.Number, err)
 		}
 		for _, event := range events {
-			if event.SHA == preserved {
+			if recoveryJSONContainsSHA(event, preserved) {
 				return fmt.Errorf("GitHub pull request %d history contains the preserved unpublished head", pull.Number)
 			}
 		}
 	}
 	return nil
+}
+
+func recoveryRecordInWindow(created, updated string, since, until int64) (bool, error) {
+	if since == 0 && until == 0 {
+		return true, nil
+	}
+	if since <= 0 || until < since || strings.TrimSpace(created) == "" || strings.TrimSpace(updated) == "" {
+		return false, errors.New("missing or invalid run interval")
+	}
+	createdAt, err := time.Parse(time.RFC3339, created)
+	if err != nil {
+		return false, err
+	}
+	updatedAt, err := time.Parse(time.RFC3339, updated)
+	if err != nil {
+		return false, err
+	}
+	start := time.Unix(since, 0)
+	end := time.Unix(until, 0)
+	return !updatedAt.Before(start) && !createdAt.After(end), nil
+}
+
+func recoveryJSONContainsSHA(raw json.RawMessage, preserved string) bool {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return false
+	}
+	return recoveryValueContainsSHA(value, preserved)
+}
+
+func recoveryValueContainsSHA(value any, preserved string) bool {
+	switch typed := value.(type) {
+	case string:
+		return typed == preserved
+	case []any:
+		for _, item := range typed {
+			if recoveryValueContainsSHA(item, preserved) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, item := range typed {
+			if recoveryValueContainsSHA(item, preserved) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (h *Host) apiRepoPath() string {

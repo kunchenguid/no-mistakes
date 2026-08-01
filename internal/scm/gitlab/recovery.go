@@ -9,18 +9,21 @@ import (
 	"io"
 	"net/url"
 	"strings"
+	"time"
 )
 
 type recoveryMergeRequest struct {
 	IID          int    `json:"iid"`
 	SourceBranch string `json:"source_branch"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
 	SHA          string `json:"sha"`
 	DiffRefs     struct {
 		HeadSHA string `json:"head_sha"`
 	} `json:"diff_refs"`
 }
 
-func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, preserved string) error {
+func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, preserved string, since, until int64) error {
 	if err := h.Available(ctx); err != nil {
 		return err
 	}
@@ -29,11 +32,15 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 	}
 	project := url.PathEscape(h.projectPath)
 	var mergeRequests []recoveryMergeRequest
-	if err := h.apiPages(ctx, fmt.Sprintf("projects/%s/merge_requests?state=all&source_branch=%s&per_page=100", project, url.QueryEscape(branch)), &mergeRequests); err != nil {
+	if err := h.apiPages(ctx, fmt.Sprintf("projects/%s/merge_requests?state=all&per_page=100", project), &mergeRequests); err != nil {
 		return fmt.Errorf("inspect GitLab merge-request history: %w", err)
 	}
 	for _, mergeRequest := range mergeRequests {
-		if mergeRequest.SourceBranch != branch {
+		inWindow, err := recoveryRecordInWindow(mergeRequest.CreatedAt, mergeRequest.UpdatedAt, since, until)
+		if err != nil {
+			return fmt.Errorf("GitLab merge request %d has incomplete historical timestamps: %w", mergeRequest.IID, err)
+		}
+		if !inWindow {
 			continue
 		}
 		head := mergeRequest.SHA
@@ -43,20 +50,72 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 		if head == "" || head != submitted {
 			return fmt.Errorf("GitLab merge request %d has a changed head", mergeRequest.IID)
 		}
-		var versions []struct {
-			HeadCommitSHA string `json:"head_commit_sha"`
-			CreatedAt     string `json:"created_at"`
-		}
+		var versions []json.RawMessage
 		if err := h.apiPages(ctx, fmt.Sprintf("projects/%s/merge_requests/%d/versions?per_page=100", project, mergeRequest.IID), &versions); err != nil {
 			return fmt.Errorf("inspect GitLab merge-request %d history: %w", mergeRequest.IID, err)
 		}
 		for _, version := range versions {
-			if version.HeadCommitSHA == preserved {
+			if recoveryJSONContainsSHA(version, preserved) {
+				return fmt.Errorf("GitLab merge request %d history contains the preserved unpublished head", mergeRequest.IID)
+			}
+		}
+		var events []json.RawMessage
+		if err := h.apiPages(ctx, fmt.Sprintf("projects/%s/merge_requests/%d/resource_state_events?per_page=100", project, mergeRequest.IID), &events); err != nil {
+			return fmt.Errorf("inspect GitLab merge-request %d event history: %w", mergeRequest.IID, err)
+		}
+		for _, event := range events {
+			if recoveryJSONContainsSHA(event, preserved) {
 				return fmt.Errorf("GitLab merge request %d history contains the preserved unpublished head", mergeRequest.IID)
 			}
 		}
 	}
 	return nil
+}
+
+func recoveryRecordInWindow(created, updated string, since, until int64) (bool, error) {
+	if since == 0 && until == 0 {
+		return true, nil
+	}
+	if since <= 0 || until < since || strings.TrimSpace(created) == "" || strings.TrimSpace(updated) == "" {
+		return false, errors.New("missing or invalid run interval")
+	}
+	createdAt, err := time.Parse(time.RFC3339, created)
+	if err != nil {
+		return false, err
+	}
+	updatedAt, err := time.Parse(time.RFC3339, updated)
+	if err != nil {
+		return false, err
+	}
+	return !updatedAt.Before(time.Unix(since, 0)) && !createdAt.After(time.Unix(until, 0)), nil
+}
+
+func recoveryJSONContainsSHA(raw json.RawMessage, preserved string) bool {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return false
+	}
+	return recoveryValueContainsSHA(value, preserved)
+}
+
+func recoveryValueContainsSHA(value any, preserved string) bool {
+	switch typed := value.(type) {
+	case string:
+		return typed == preserved
+	case []any:
+		for _, item := range typed {
+			if recoveryValueContainsSHA(item, preserved) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, item := range typed {
+			if recoveryValueContainsSHA(item, preserved) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (h *Host) apiPages(ctx context.Context, endpoint string, dst interface{}) error {

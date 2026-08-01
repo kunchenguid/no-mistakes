@@ -700,7 +700,7 @@ func TestVerifyUnpublishedHistoryRejectsPreservedHead(t *testing.T) {
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
 		"gh auth status": {},
 		"gh api --paginate repos/test/repo/pulls?state=all&per_page=100": {
-			stdout: fmt.Sprintf(`[{"number":7,"head":{"ref":"feature","sha":"%s"}}]`+"\n", a),
+			stdout: fmt.Sprintf(`[{"number":7,"head":{"ref":"renamed-feature","sha":"%s"}}]`+"\n", a),
 		},
 		"gh api --paginate repos/test/repo/pulls/7/commits?per_page=100": {
 			stdout: fmt.Sprintf(`[{"sha":"%s"}]`+"\n", p),
@@ -709,7 +709,7 @@ func TestVerifyUnpublishedHistoryRejectsPreservedHead(t *testing.T) {
 			stdout: "[]\n",
 		},
 	}), nil, "", "test/repo")
-	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p); err == nil {
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0); err == nil {
 		t.Fatal("VerifyUnpublishedHistory() error = nil, want preserved-head rejection")
 	}
 }

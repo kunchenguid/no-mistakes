@@ -56,6 +56,7 @@ type RunManager struct {
 
 	managedGateMu     sync.Mutex
 	managedGateGuards map[string]*branchsync.ManagedGateRefAuthority
+	recoveryAnchorMu  sync.Mutex
 
 	// subMu guards the subscriber set and the per-run state revisions. It is
 	// a plain Mutex, not an RWMutex, because revision assignment and fan-out
@@ -106,7 +107,14 @@ func (m *RunManager) ensureManagedGateGuard(repo *db.Repo, ref string) error {
 	key := managedGateGuardKey(repo.ID, ref)
 	m.managedGateMu.Lock()
 	defer m.managedGateMu.Unlock()
-	if _, ok := m.managedGateGuards[key]; ok {
+	if err := m.ensureManagedGateRefAvailable(repo, ref); err != nil {
+		return err
+	}
+	if guard, ok := m.managedGateGuards[key]; ok {
+		if err := guard.Validate(m.paths.RepoDir(repo.ID), ref); err != nil {
+			m.quarantineManagedGateGuardLocked(repo, ref, err)
+			return fmt.Errorf("managed gate authority is no longer valid: %w", err)
+		}
 		return nil
 	}
 	guard, err := branchsync.AcquireManagedGateRefAuthority(m.paths.RepoDir(repo.ID), ref)
@@ -124,6 +132,9 @@ func (m *RunManager) managedGateRefMutation(repoID, gateDir string) func(context
 		guard := m.managedGateGuards[managedGateGuardKey(repoID, ref)]
 		if guard == nil {
 			return fmt.Errorf("managed gate authority is unavailable")
+		}
+		if err := m.validateManagedGateGuardLocked(repoID, gateDir, ref, guard); err != nil {
+			return err
 		}
 		if err := prepare(guard.Path(), guard.Identity()); err != nil {
 			return err
@@ -146,7 +157,91 @@ func (m *RunManager) managedGateRefRead(repoID, gateDir, ref string) func(string
 		if guard == nil {
 			return "", fmt.Errorf("managed gate authority is unavailable")
 		}
+		if err := m.validateManagedGateGuardLocked(repoID, gateDir, ref, guard); err != nil {
+			return "", err
+		}
 		return branchsync.ReadManagedGateRefUnderAuthority(guard, gateDir, ref)
+	}
+}
+
+func (m *RunManager) managedGateRefFinalize(repoID, gateDir, ref string) func(context.Context, string, string, func() error) error {
+	return func(ctx context.Context, requestedRef, expected string, stamp func() error) error {
+		if requestedRef != ref {
+			return fmt.Errorf("managed gate authority ref mismatch")
+		}
+		m.managedGateMu.Lock()
+		defer m.managedGateMu.Unlock()
+		guard := m.managedGateGuards[managedGateGuardKey(repoID, ref)]
+		if guard == nil {
+			return fmt.Errorf("managed gate authority is unavailable")
+		}
+		if err := m.validateManagedGateGuardLocked(repoID, gateDir, ref, guard); err != nil {
+			return err
+		}
+		current, err := branchsync.ReadManagedGateRefUnderAuthority(guard, gateDir, ref)
+		if err != nil {
+			return err
+		}
+		if db.NormalizeManagedGateHead(current) != db.NormalizeManagedGateHead(expected) {
+			return fmt.Errorf("managed gate ref changed during final custody check")
+		}
+		if err := stamp(); err != nil {
+			return err
+		}
+		if err := m.validateManagedGateGuardLocked(repoID, gateDir, ref, guard); err != nil {
+			return err
+		}
+		current, err = branchsync.ReadManagedGateRefUnderAuthority(guard, gateDir, ref)
+		if err != nil {
+			return err
+		}
+		if db.NormalizeManagedGateHead(current) != db.NormalizeManagedGateHead(expected) {
+			return fmt.Errorf("managed gate ref changed after final custody stamp")
+		}
+		_ = ctx
+		return nil
+	}
+}
+
+func (m *RunManager) managedPrivateRefMutation(ctx context.Context, ref, oldSHA, newSHA string, write func(context.Context) error) error {
+	if strings.TrimSpace(ref) == "" || strings.TrimSpace(oldSHA) == "" || strings.TrimSpace(newSHA) == "" {
+		return fmt.Errorf("private recovery ref mutation requires exact identity")
+	}
+	m.recoveryAnchorMu.Lock()
+	defer m.recoveryAnchorMu.Unlock()
+	return write(ctx)
+}
+
+func (m *RunManager) validateManagedGateGuardLocked(repoID, gateDir, ref string, guard *branchsync.ManagedGateRefAuthority) error {
+	if err := guard.Validate(gateDir, ref); err != nil {
+		repo, repoErr := m.db.GetRepo(repoID)
+		if repoErr == nil && repo != nil {
+			m.quarantineManagedGateGuardLocked(repo, ref, err)
+		}
+		return fmt.Errorf("managed gate authority is no longer valid: %w", err)
+	}
+	return nil
+}
+
+func (m *RunManager) quarantineManagedGateGuardLocked(repo *db.Repo, ref string, cause error) {
+	if repo == nil {
+		return
+	}
+	gateDir := m.paths.RepoDir(repo.ID)
+	managed, _ := m.db.GetManagedGateRef(repo.ID, gateDir, ref)
+	expected := ""
+	if managed != nil {
+		expected = managed.Head
+	}
+	observed, observeErr := git.Run(context.Background(), gateDir, "rev-parse", ref+"^{commit}")
+	if observeErr != nil {
+		observed = ""
+	}
+	_ = m.db.QuarantineGateRef(repo.ID, gateDir, ref, expected, observed, "managed-gate-authority-lost: "+cause.Error())
+	key := managedGateGuardKey(repo.ID, ref)
+	if guard := m.managedGateGuards[key]; guard != nil {
+		_ = guard.Invalidate()
+		delete(m.managedGateGuards, key)
 	}
 }
 
@@ -213,14 +308,16 @@ func (m *RunManager) HandleRecover(ctx context.Context, repoID, branch string, k
 		return branchsync.State{}, fmt.Errorf("acquire managed gate authority for recovery: %w", err)
 	}
 	service := &branchsync.Service{
-		DB:                     m.db,
-		Repo:                   repo,
-		WorkDir:                repo.WorkingPath,
-		GateDir:                m.paths.RepoDir(repo.ID),
-		Paths:                  m.paths,
-		ManagedGateRefMutation: m.managedGateRefMutation(repo.ID, m.paths.RepoDir(repo.ID)),
-		ManagedGateRefRead:     m.managedGateRefRead(repo.ID, m.paths.RepoDir(repo.ID), ref),
-		LegacyPublicationProof: m.legacyPublicationProof,
+		DB:                        m.db,
+		Repo:                      repo,
+		WorkDir:                   repo.WorkingPath,
+		GateDir:                   m.paths.RepoDir(repo.ID),
+		Paths:                     m.paths,
+		ManagedGateRefMutation:    m.managedGateRefMutation(repo.ID, m.paths.RepoDir(repo.ID)),
+		ManagedGateRefRead:        m.managedGateRefRead(repo.ID, m.paths.RepoDir(repo.ID), ref),
+		ManagedGateRefFinalize:    m.managedGateRefFinalize(repo.ID, m.paths.RepoDir(repo.ID), ref),
+		ManagedPrivateRefMutation: m.managedPrivateRefMutation,
+		LegacyPublicationProof:    m.legacyPublicationProof,
 	}
 	return service.Recover(ctx, keepLocal), nil
 }
@@ -252,12 +349,15 @@ func (m *RunManager) legacyPublicationProof(ctx context.Context, run *db.Run, br
 			host := scm.ResolveHost(ctx, target)
 			verifier = gitlab.New(cmdFactory, func() bool { _, err := exec.LookPath("glab"); return err == nil }, host, gitlab.ProjectPath(target))
 		default:
-			continue
+			return fmt.Errorf("historical publication proof is unavailable for target %s: unsupported provider %s", target, provider)
 		}
 		if verifier == nil {
 			return fmt.Errorf("historical publication proof is unavailable for %s", provider)
 		}
-		if err := verifier.VerifyUnpublishedHistory(ctx, branch, submitted, run.HeadSHA); err != nil {
+		if run.CreatedAt <= 0 || run.UpdatedAt < run.CreatedAt {
+			return fmt.Errorf("historical publication proof has no valid run interval")
+		}
+		if err := verifier.VerifyUnpublishedHistory(ctx, branch, submitted, run.HeadSHA, run.CreatedAt, run.UpdatedAt); err != nil {
 			return err
 		}
 	}

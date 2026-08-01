@@ -132,16 +132,18 @@ func CanApply(state State) bool {
 // head and ancestry as provenance evidence, while Recover is the only method
 // that mutates it.
 type Service struct {
-	DB                       *db.DB
-	Repo                     *db.Repo
-	WorkDir                  string
-	GateDir                  string
-	Paths                    *paths.Paths
-	GateConfigCurrent        func() bool
-	InternalMutationConsumed func(string) error
-	ManagedGateRefMutation   func(context.Context, string, string, string, func(string, string) error, func() error) error
-	ManagedGateRefRead       func(string) (string, error)
-	LegacyPublicationProof   func(context.Context, *db.Run, string, []string) error
+	DB                        *db.DB
+	Repo                      *db.Repo
+	WorkDir                   string
+	GateDir                   string
+	Paths                     *paths.Paths
+	GateConfigCurrent         func() bool
+	InternalMutationConsumed  func(string) error
+	ManagedGateRefMutation    func(context.Context, string, string, string, func(string, string) error, func() error) error
+	ManagedGateRefRead        func(string) (string, error)
+	ManagedGateRefFinalize    func(context.Context, string, string, func() error) error
+	ManagedPrivateRefMutation func(context.Context, string, string, string, func(context.Context) error) error
+	LegacyPublicationProof    func(context.Context, *db.Run, string, []string) error
 
 	beforeApply              func()
 	beforeGateReset          func()
@@ -1561,6 +1563,63 @@ func (s *Service) finishRecoverAtGateHead(ctx context.Context, run *db.Run, chan
 		state.NextAction = nil
 		return state
 	}
+	if s.ManagedGateRefFinalize != nil {
+		if _, err := lock.ensureInternalMutationAuthority(s.DB); err != nil {
+			state, _, _ := s.inspect(ctx)
+			state.Changed = changed
+			state.Recovered = false
+			state.Safety = "blocked_recover_gate_race"
+			state.Error = "the live branch-lock authority could not be established for the final custody check; custody was not stamped; re-run recovery"
+			state.NextAction = nil
+			return state
+		}
+		gateRef := "refs/heads/" + run.Branch
+		stampErr := s.ManagedGateRefFinalize(ctx, gateRef, expectedGateHead, func() error {
+			if transition != nil {
+				return transition.owner.Complete(ctx, run)
+			}
+			return s.DB.SetRunCustodyReturnedCAS(run)
+		})
+		if stampErr != nil {
+			if transition != nil {
+				current, currentErr := s.DB.GetRun(run.ID)
+				if currentErr == nil && current != nil && current.CustodyReturnedAt != nil {
+					s.cleanupRecoverMarkers(ctx, lock, current)
+					if current.CustodyTransitionToken != nil {
+						_ = s.DB.ClearRunCustodyTransition(ctx, current.ID, *current.CustodyTransitionToken)
+					}
+					state, _, _ := s.inspect(ctx)
+					state.Recovered = true
+					state.Changed = changed
+					return state
+				}
+				if restoreErr := s.rollbackCustodyTransition(ctx, transition); restoreErr != nil {
+					state, _, _ := s.inspect(ctx)
+					state.Changed = changed
+					state.Recovered = false
+					state.Safety = "blocked_recover_gate_race"
+					state.Error = "the exact run ownership or publication authority changed before custody could be recorded, and the ordinary gate could not be restored; custody was not stamped; re-run after reconciling the gate"
+					state.NextAction = nil
+					return state
+				}
+			}
+			state, _, _ := s.inspect(ctx)
+			state.Changed = changed
+			state.Recovered = false
+			state.Safety = "blocked_recover_custody_race"
+			state.Error = fmt.Sprintf("the final custody authority could not be completed (%v); custody was not stamped; re-run from freshly inspected state", stampErr)
+			state.NextAction = nil
+			return state
+		}
+		s.cleanupRecoverMarkers(ctx, lock, run)
+		if transition != nil {
+			_ = transition.owner.ReleaseStamped(ctx, run.ID)
+		}
+		state, _, _ := s.inspect(ctx)
+		state.Recovered = true
+		state.Changed = changed
+		return state
+	}
 	authorityEndpoint, authorityErr := lock.ensureInternalMutationAuthority(s.DB)
 	if authorityErr != nil {
 		state, _, _ := s.inspect(ctx)
@@ -1897,6 +1956,88 @@ func recoveryAnchorState(ctx context.Context, dir, anchorRef, preserved string) 
 	return existing == preserved, existing != preserved
 }
 
+func recoveryAnchorOwnerPath(workDir, anchorRef string) (string, error) {
+	gitDir, err := worktreeGitDir(workDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(gitDir, filepath.FromSlash(anchorRef)+".owner"), nil
+}
+
+func recoveryAnchorOwnerValue(run *db.Run, stage *db.RecoveryAnchorStage) string {
+	return fmt.Sprintf("run=%s\nrepo=%s\ngate=%s\nbranch=%s\nref=%s\nold=%s\nnew=%s\ngeneration=%s\n", run.ID, stage.RepoID, stage.GatePath, stage.Branch, stage.Ref, stage.OldSHA, stage.NewSHA, stage.OwnerGeneration)
+}
+
+func ensureRecoveryAnchorOwner(workDir string, run *db.Run, stage *db.RecoveryAnchorStage) error {
+	path, err := recoveryAnchorOwnerPath(workDir, stage.Ref)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	want := recoveryAnchorOwnerValue(run, stage)
+	info, statErr := os.Lstat(path)
+	if statErr == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("recovery anchor owner is noncanonical")
+		}
+		got, readErr := os.ReadFile(path)
+		if readErr != nil || string(got) != want {
+			return fmt.Errorf("recovery anchor owner conflicts with the durable stage")
+		}
+		return nil
+	}
+	if !os.IsNotExist(statErr) {
+		return statErr
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := file.WriteString(want); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+func verifyRecoveryAnchorOwner(workDir string, run *db.Run, stage *db.RecoveryAnchorStage) error {
+	path, err := recoveryAnchorOwnerPath(workDir, stage.Ref)
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("recovery anchor owner is noncanonical")
+	}
+	value, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if string(value) != recoveryAnchorOwnerValue(run, stage) {
+		return fmt.Errorf("recovery anchor owner conflicts with the durable stage")
+	}
+	return nil
+}
+
+func verifyRecoveryAnchorObject(ctx context.Context, workDir, preserved string) error {
+	if !isExactFullObjectID(preserved) {
+		return fmt.Errorf("recovery anchor is not a canonical object id")
+	}
+	if _, err := git.Run(git.WithSanitizedGateConfig(ctx), workDir, "cat-file", "-e", preserved+"^{commit}"); err != nil {
+		return fmt.Errorf("recovery anchor object is unavailable: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) recoveryAnchorStageMatches(ctx context.Context, run *db.Run, stage *db.RecoveryAnchorStage, anchorRef, preserved string) (valid, staged bool) {
 	if s == nil || run == nil || stage == nil || stage.RepoID != s.Repo.ID || filepath.Clean(stage.GatePath) != filepath.Clean(s.GateDir) || stage.Branch != run.Branch || stage.Ref != anchorRef || stage.NewSHA != preserved || stage.OldSHA != internalZeroObjectID(preserved) || stage.OwnerGeneration == "" || stage.AuthorityEndpoint == "" {
 		return false, false
@@ -1904,11 +2045,47 @@ func (s *Service) recoveryAnchorStageMatches(ctx context.Context, run *db.Run, s
 	if stage.State != db.RecoveryAnchorStagePrepared && stage.State != db.RecoveryAnchorStageStaged {
 		return false, false
 	}
+	if err := verifyRecoveryAnchorOwner(s.workDir(), run, stage); err != nil {
+		return false, false
+	}
+	if err := verifyRecoveryAnchorObject(ctx, s.workDir(), preserved); err != nil {
+		return false, false
+	}
 	consumed, err := s.DB.ConsumedInternalRefMutationExists(db.InternalRefMutationSpec{RepoID: s.Repo.ID, GatePath: s.GateDir, Branch: run.Branch, Ref: anchorRef, OldSHA: stage.OldSHA, NewSHA: stage.NewSHA, Operation: "recover-anchor", Scope: db.InternalRefMutationScopePrivate}, stage.AuthorityEndpoint)
-	if err != nil || !consumed {
+	if err != nil {
+		return false, false
+	}
+	if !consumed && stage.State == db.RecoveryAnchorStageStaged {
 		return false, false
 	}
 	return true, stage.State == db.RecoveryAnchorStageStaged
+}
+
+func (s *Service) commitRecoveryAnchorEvidence(ctx context.Context, lock *custodyLock, run *db.Run, stage *db.RecoveryAnchorStage, anchorRef, preserved string) error {
+	mutationCtx, capability, err := s.internalGateContext(ctx, lock, run.Branch, anchorRef, stage.OldSHA, preserved, "recover-anchor")
+	if err != nil {
+		return err
+	}
+	request := InternalRefMutationAuthorization{Capability: capability, Phase: "prepared", GatePath: s.GateDir, Branch: run.Branch, Ref: anchorRef, OldSHA: stage.OldSHA, NewSHA: preserved, Operation: "recover-anchor", Scope: db.InternalRefMutationScopePrivate}
+	if s.InternalMutationConsumed != nil {
+		if err := s.InternalMutationConsumed(capability); err != nil {
+			return err
+		}
+	} else if err := AuthorizeInternalRefMutation(stage.AuthorityEndpoint, request); err != nil {
+		return err
+	}
+	request.Phase = "committed"
+	if s.InternalMutationConsumed != nil {
+		if err := s.InternalMutationConsumed(capability); err != nil {
+			return err
+		}
+	} else if err := AuthorizeInternalRefMutation(stage.AuthorityEndpoint, request); err != nil {
+		return err
+	}
+	if err := verifyRecoveryAnchorObject(mutationCtx, s.workDir(), preserved); err != nil {
+		return err
+	}
+	return s.DB.MarkRecoveryAnchorStageStaged(run.ID, stage.OwnerGeneration)
 }
 
 func (s *Service) stageRecoveryAnchor(ctx context.Context, lock *custodyLock, run *db.Run, preserved, anchorRef string) string {
@@ -1931,7 +2108,7 @@ func (s *Service) stageRecoveryAnchor(ctx context.Context, lock *custodyLock, ru
 		if staged {
 			return ""
 		}
-		if err := s.DB.MarkRecoveryAnchorStageStaged(run.ID, stage.OwnerGeneration); err != nil {
+		if err := s.commitRecoveryAnchorEvidence(ctx, lock, run, stage, anchorRef, preserved); err != nil {
 			return "blocked_recover_preserve_failed"
 		}
 		return ""
@@ -1957,11 +2134,15 @@ func (s *Service) stageRecoveryAnchor(ctx context.Context, lock *custodyLock, ru
 	if err := s.DB.PrepareRecoveryAnchorStage(db.RecoveryAnchorStage{RunID: run.ID, RepoID: s.Repo.ID, GatePath: s.GateDir, Branch: run.Branch, Ref: anchorRef, OldSHA: oldSHA, NewSHA: preserved, OwnerGeneration: generation, AuthorityEndpoint: endpoint}); err != nil {
 		return "blocked_recover_preserve_failed"
 	}
+	stage = &db.RecoveryAnchorStage{RunID: run.ID, RepoID: s.Repo.ID, GatePath: s.GateDir, Branch: run.Branch, Ref: anchorRef, OldSHA: oldSHA, NewSHA: preserved, OwnerGeneration: generation, AuthorityEndpoint: endpoint, State: db.RecoveryAnchorStagePrepared}
+	if err := ensureRecoveryAnchorOwner(s.workDir(), run, stage); err != nil {
+		return "blocked_recover_preserve_failed"
+	}
 	mutationCtx, capability, err := s.internalGateContext(ctx, lock, run.Branch, anchorRef, oldSHA, preserved, "recover-anchor")
 	if err != nil {
 		return "blocked_recover_preserve_failed"
 	}
-	request := InternalRefMutationAuthorization{Capability: capability, Phase: "committed", GatePath: s.GateDir, Branch: run.Branch, Ref: anchorRef, OldSHA: oldSHA, NewSHA: preserved, Operation: "recover-anchor", Scope: db.InternalRefMutationScopePrivate}
+	request := InternalRefMutationAuthorization{Capability: capability, Phase: "prepared", GatePath: s.GateDir, Branch: run.Branch, Ref: anchorRef, OldSHA: oldSHA, NewSHA: preserved, Operation: "recover-anchor", Scope: db.InternalRefMutationScopePrivate}
 	if s.InternalMutationConsumed != nil {
 		if err := s.InternalMutationConsumed(capability); err != nil {
 			return "blocked_recover_preserve_failed"
@@ -1969,11 +2150,37 @@ func (s *Service) stageRecoveryAnchor(ctx context.Context, lock *custodyLock, ru
 	} else if err := AuthorizeInternalRefMutation(endpoint, request); err != nil {
 		return "blocked_recover_preserve_failed"
 	}
-	if _, err := git.Run(git.WithSanitizedGateConfig(mutationCtx), s.workDir(), "update-ref", anchorRef, preserved, oldSHA); err != nil {
+	writeAnchor := func(writeCtx context.Context) error {
+		_, err := git.Run(git.WithSanitizedGateConfig(writeCtx), s.workDir(), "update-ref", anchorRef, preserved, oldSHA)
+		return err
+	}
+	if s.ManagedPrivateRefMutation != nil {
+		if err := s.ManagedPrivateRefMutation(mutationCtx, anchorRef, oldSHA, preserved, writeAnchor); err != nil {
+			return "blocked_recover_preserve_failed"
+		}
+	} else if err := writeAnchor(mutationCtx); err != nil {
 		return "blocked_recover_preserve_failed"
 	}
 	anchored, err := readDirectLooseWorktreeRef(s.workDir(), anchorRef)
 	if err != nil || anchored != preserved {
+		return "blocked_recover_preserve_failed"
+	}
+	if err := verifyRecoveryAnchorObject(mutationCtx, s.workDir(), preserved); err != nil {
+		return "blocked_recover_preserve_failed"
+	}
+	request.Phase = "committed"
+	if s.InternalMutationConsumed != nil {
+		if err := s.InternalMutationConsumed(capability); err != nil {
+			return "blocked_recover_preserve_failed"
+		}
+	} else if err := AuthorizeInternalRefMutation(endpoint, request); err != nil {
+		return "blocked_recover_preserve_failed"
+	}
+	anchored, err = readDirectLooseWorktreeRef(s.workDir(), anchorRef)
+	if err != nil || anchored != preserved {
+		return "blocked_recover_preserve_failed"
+	}
+	if err := verifyRecoveryAnchorObject(mutationCtx, s.workDir(), preserved); err != nil {
 		return "blocked_recover_preserve_failed"
 	}
 	if err := s.DB.MarkRecoveryAnchorStageStaged(run.ID, generation); err != nil {

@@ -154,6 +154,56 @@ func TestManagedGateAuthorityCannotBeUnlinkedByInternalWriter(t *testing.T) {
 	}
 }
 
+func TestManagedGateAuthorityRejectsMarkerLoss(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	ref := "refs/heads/feature/recover"
+	authority, err := AcquireManagedGateRefAuthority(f.gate, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(authority.Path()); err != nil {
+		_ = authority.Release()
+		t.Fatal(err)
+	}
+	if err := authority.Validate(f.gate, ref); err == nil {
+		t.Fatal("managed gate authority accepted a missing marker")
+	}
+	if err := authority.Invalidate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStageRecoveryAnchorUsesPreparedThenCommittedAuthority(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover:refs/no-mistakes/recovery-source")
+	lock, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	if _, err := lock.ensureInternalMutationAuthority(f.db); err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	f.service.InternalMutationConsumed = func(string) error {
+		calls++
+		return nil
+	}
+	if safety := f.service.stageRecoveryAnchor(f.ctx, lock, f.run, f.preserved, f.anchorRef()); safety != "" {
+		t.Fatalf("stageRecoveryAnchor() safety = %q", safety)
+	}
+	if calls != 2 {
+		t.Fatalf("internal mutation phases = %d, want prepared and committed", calls)
+	}
+	stage, err := f.db.GetRecoveryAnchorStage(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stage == nil || stage.State != db.RecoveryAnchorStageStaged {
+		t.Fatalf("recovery anchor stage = %#v, want staged", stage)
+	}
+}
+
 func TestReconcileOrdinaryGateRefHoldsLockAcrossJournalUpdate(t *testing.T) {
 	f := newRecoverFixture(t, "cancelled")
 	lock, err := acquireCustodyLock(f.service, f.run)
