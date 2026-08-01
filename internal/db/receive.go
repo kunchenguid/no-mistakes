@@ -711,8 +711,21 @@ func (d *DB) ApplyReceiveTransactionBatch(phase, sessionID, capability string, i
 			return fmt.Errorf("receive transaction: reservation %s is not in expected %s phase", input.ID, phase)
 		}
 		if phase == "committed" && strings.HasPrefix(input.Ref, "refs/heads/") {
-			if _, err := tx.Exec(`INSERT INTO managed_gate_refs (repo_id, gate_path, ref, head, updated_at) SELECT repo_id, gate_path, ref, ?, ? FROM receive_reservations WHERE id = ? ON CONFLICT(repo_id, gate_path, ref) DO UPDATE SET head = excluded.head, updated_at = excluded.updated_at`, NormalizeManagedGateHead(input.NewSHA), now(), input.ID); err != nil {
-				return fmt.Errorf("receive transaction: record managed gate ref: %w", err)
+			var managedHead string
+			managedErr := tx.QueryRow(`SELECT head FROM managed_gate_refs WHERE repo_id = ? AND gate_path = (SELECT gate_path FROM receive_reservations WHERE id = ?) AND ref = ?`, input.RepoID, input.ID, input.Ref).Scan(&managedHead)
+			switch {
+			case managedErr == sql.ErrNoRows:
+				if _, err := tx.Exec(`INSERT INTO managed_gate_refs (repo_id, gate_path, ref, head, updated_at) SELECT repo_id, gate_path, ref, ?, ? FROM receive_reservations WHERE id = ?`, NormalizeManagedGateHead(input.NewSHA), now(), input.ID); err != nil {
+					return fmt.Errorf("receive transaction: record managed gate ref: %w", err)
+				}
+			case managedErr != nil:
+				return fmt.Errorf("receive transaction: read managed gate ref: %w", managedErr)
+			case NormalizeManagedGateHead(managedHead) != NormalizeManagedGateHead(input.OldSHA):
+				return fmt.Errorf("receive transaction: managed gate journal changed from %s to %s", input.OldSHA, managedHead)
+			default:
+				if _, err := tx.Exec(`UPDATE managed_gate_refs SET head = ?, updated_at = ? WHERE repo_id = ? AND gate_path = (SELECT gate_path FROM receive_reservations WHERE id = ?) AND ref = ? AND head = ?`, NormalizeManagedGateHead(input.NewSHA), now(), input.RepoID, input.ID, input.Ref, NormalizeManagedGateHead(input.OldSHA)); err != nil {
+					return fmt.Errorf("receive transaction: advance managed gate ref: %w", err)
+				}
 			}
 		}
 	}

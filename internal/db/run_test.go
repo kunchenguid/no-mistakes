@@ -974,8 +974,15 @@ func TestSetRunCustodyReturnedCAS(t *testing.T) {
 			t.Fatalf("mark custody invalid: %v", err)
 		}
 		got, _ := d.GetRun(run.ID)
-		if got.CustodyReturnedAt == nil || got.CustodyTransitionPhase == nil || *got.CustodyTransitionPhase != CustodyPhaseInvalid {
+		if got.CustodyReturnedAt != nil || got.CustodyTransitionPhase == nil || *got.CustodyTransitionPhase != CustodyPhaseInvalid {
 			t.Fatalf("invalid custody state = %#v", got)
+		}
+		if err := d.ClearInvalidRunCustody(context.Background(), run.ID); err != nil {
+			t.Fatalf("clear invalid custody: %v", err)
+		}
+		got, _ = d.GetRun(run.ID)
+		if got.CustodyReturnedAt != nil || got.CustodyTransitionPhase != nil || got.Error != nil {
+			t.Fatalf("reconciled custody state = %#v", got)
 		}
 	})
 

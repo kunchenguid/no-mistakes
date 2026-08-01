@@ -727,7 +727,7 @@ func (d *DB) MarkRunCustodyInvalid(ctx context.Context, runID, token, reason str
 	if runID == "" || reason == "" {
 		return ErrRunCustodyCAS
 	}
-	query := `UPDATE runs SET custody_transition_phase = ?, error = ?, updated_at = ?
+	query := `UPDATE runs SET custody_returned_at = NULL, custody_transition_phase = ?, error = ?, updated_at = ?
 			 WHERE id = ? AND custody_returned_at IS NOT NULL`
 	args := []any{CustodyPhaseInvalid, reason, now(), runID}
 	if token == "" {
@@ -743,6 +743,25 @@ func (d *DB) MarkRunCustodyInvalid(ctx context.Context, runID, token, reason str
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("mark run custody invalid: affected rows: %w", err)
+	}
+	if rows != 1 {
+		return ErrRunCustodyCAS
+	}
+	return nil
+}
+
+func (d *DB) ClearInvalidRunCustody(ctx context.Context, runID string) error {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return ErrRunCustodyCAS
+	}
+	result, err := d.sql.ExecContext(ctx, `UPDATE runs SET custody_transition_token = NULL, custody_transition_phase = NULL, error = NULL, updated_at = ? WHERE id = ? AND custody_transition_phase = ? AND custody_returned_at IS NULL`, now(), runID, CustodyPhaseInvalid)
+	if err != nil {
+		return fmt.Errorf("clear invalid run custody: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("clear invalid run custody: affected rows: %w", err)
 	}
 	if rows != 1 {
 		return ErrRunCustodyCAS

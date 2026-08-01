@@ -135,6 +135,17 @@ func TestLegacyPublicationProofRejectsUnsupportedTarget(t *testing.T) {
 	}
 }
 
+func TestRecoveryTargetIdentityRejectsMismatchedTarget(t *testing.T) {
+	prURL := "https://github.com/example/parent/pull/7"
+	if _, err := recoveryTargetIdentity(context.Background(), "https://github.com/example/fork.git", &prURL); err == nil {
+		t.Fatal("mismatched publication target was accepted")
+	}
+	identity, err := recoveryTargetIdentity(context.Background(), "https://github.com/example/parent.git", &prURL)
+	if err != nil || identity != prURL {
+		t.Fatalf("matching publication identity = %q, %v", identity, err)
+	}
+}
+
 func TestManagedGateAuthorityLossPersistsQuarantine(t *testing.T) {
 	p, database := newRefreshRunFixture(t)
 	repo, head := setupTestGitRepo(t, p, database, "managed-authority-loss")
@@ -250,6 +261,72 @@ func TestRecoveryReconcilesQuarantineBeforeManagedGuard(t *testing.T) {
 	}
 	if quarantine != nil {
 		t.Fatalf("quarantine remains after authenticated reconciliation: %#v", quarantine)
+	}
+	manager.Shutdown()
+}
+
+func TestRecoveryReconcilesQuarantineAfterStaleManagedGuard(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "recovery-stale-guard")
+	ref := "refs/heads/main"
+	if err := database.SetManagedGateRefHead(repo.ID, p.RepoDir(repo.ID), ref, head); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewRunManager(database, p, nil)
+	if err := manager.ensureManagedGateGuard(repo, ref); err != nil {
+		t.Fatal(err)
+	}
+	oldGuard := manager.managedGateGuards[managedGateGuardKey(repo.ID, ref)]
+	if oldGuard == nil {
+		t.Fatal("managed gate guard was not installed")
+	}
+	if err := database.QuarantineGateRef(repo.ID, p.RepoDir(repo.ID), ref, head, head, "authority-lost"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(oldGuard.Path()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.reconcileManagedGateQuarantine(context.Background(), repo, ref); err != nil {
+		t.Fatalf("reconcile stale managed gate guard: %v", err)
+	}
+	newGuard := manager.managedGateGuards[managedGateGuardKey(repo.ID, ref)]
+	if newGuard == nil || newGuard == oldGuard {
+		t.Fatal("stale managed gate guard was retained")
+	}
+	manager.Shutdown()
+}
+
+func TestManagedGateLedgerQuarantinesRawProjectionWrite(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "managed-ledger-raw-write")
+	ref := "refs/heads/main"
+	if err := database.SetManagedGateRefHead(repo.ID, p.RepoDir(repo.ID), ref, head); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewRunManager(database, p, nil)
+	if err := manager.ensureManagedGateGuard(repo, ref); err != nil {
+		t.Fatal(err)
+	}
+	guard := manager.managedGateGuards[managedGateGuardKey(repo.ID, ref)]
+	if guard == nil {
+		t.Fatal("managed gate guard was not installed")
+	}
+	if err := os.Remove(guard.Path()); err != nil {
+		t.Fatal(err)
+	}
+	zero := strings.Repeat("0", 40)
+	if _, err := git.Run(git.WithSanitizedGateConfig(context.Background()), p.RepoDir(repo.ID), "-c", "core.hooksPath="+t.TempDir(), "update-ref", ref, zero, head); err != nil {
+		t.Fatalf("raw projection write: %v", err)
+	}
+	if err := manager.ensureManagedGateGuard(repo, ref); err == nil {
+		t.Fatal("raw projection write was accepted by managed ledger")
+	}
+	quarantine, err := database.GetGateRefQuarantine(repo.ID, p.RepoDir(repo.ID), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quarantine == nil {
+		t.Fatal("raw projection write was not quarantined")
 	}
 	manager.Shutdown()
 }

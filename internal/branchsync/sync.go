@@ -516,10 +516,10 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		}
 		state, run, _ = s.inspect(ctx)
 	}
-	if run != nil && run.CustodyReturnedAt != nil && run.CustodyTransitionPhase != nil && *run.CustodyTransitionPhase == db.CustodyPhaseInvalid {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_custody_invalid", "the previous custody transition was invalidated after an authority failure; reconcile the returned custody state before retrying; no files or refs were changed")
+	if run != nil && custodyInvalid(run) {
+		return s.reconcileInvalidCustody(ctx, state, run, keepLocal)
 	}
-	if run != nil && run.CustodyReturnedAt != nil {
+	if run != nil && custodyReturnedComplete(run) {
 		quarantine, quarantineErr := s.DB.GetGateRefQuarantine(s.Repo.ID, s.GateDir, "refs/heads/"+run.Branch)
 		if quarantineErr != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the returned custody quarantine could not be read; custody remains fail-closed; no files or refs were changed")
@@ -528,7 +528,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_quarantined", "the returned custody state is quarantined after an authority transition; reconcile the ordinary gate before retrying; no files or refs were changed")
 		}
 	}
-	if run != nil && run.CustodyReturnedAt != nil {
+	if run != nil && custodyReturnedComplete(run) {
 		lock, err := s.acquireRecoveryLock(run)
 		if err != nil {
 			return custodyLockFailure(state, err)
@@ -876,6 +876,63 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 	return s.finishRecoverAtGateHead(ctx, run, false, transition, lock, expectedGateHead)
 }
 
+func custodyInvalid(run *db.Run) bool {
+	return run != nil && run.CustodyTransitionPhase != nil && *run.CustodyTransitionPhase == db.CustodyPhaseInvalid
+}
+
+func custodyReturnedComplete(run *db.Run) bool {
+	return run != nil && run.CustodyReturnedAt != nil && !custodyInvalid(run)
+}
+
+func (s *Service) reconcileInvalidCustody(ctx context.Context, state State, run *db.Run, keepLocal bool) State {
+	if run == nil || !terminalRunStatus(run.Status) {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_custody_invalid", "the invalid custody state is not owned by a terminal run; custody remains fail-closed and no files or refs were changed")
+	}
+	if latest, ok := s.latestRunForBranch(run.Branch); !ok || latest.ID != run.ID {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_newer_run", "a newer run owns this repository branch; the invalid custody state was not reconciled and no files or refs were changed")
+	}
+	currentRepo, err := s.DB.GetRepo(run.RepoID)
+	if err != nil || currentRepo == nil || runHasPublication(run) {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "the invalid custody state has publication or repository ambiguity; custody remains fail-closed and no files or refs were changed")
+	}
+	if safety := s.verifyLegacyRunUnpublished(ctx, run, run.Branch, currentRepo); safety != "" {
+		return blockedPlan(state, StatePipelineOwned, safety, "the invalid custody state has no exact unpublished-publication proof; custody remains fail-closed and no files or refs were changed")
+	}
+	quarantine, err := s.DB.GetGateRefQuarantine(s.Repo.ID, s.GateDir, "refs/heads/"+run.Branch)
+	if err != nil || quarantine != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_quarantined", "the invalid custody state still has an ordinary gate quarantine; reconcile the gate before retrying and no files or refs were changed")
+	}
+	lock, err := s.acquireRecoveryLock(run)
+	if err != nil {
+		return custodyLockFailure(state, err)
+	}
+	defer lock.Release()
+	if strings.TrimSpace(s.GateDir) == "" || !s.gateConfigCurrent() {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "the invalid custody state cannot be reconciled without managed gate fencing; no files or refs were changed")
+	}
+	gateRef := "refs/heads/" + run.Branch
+	gateHead, err := s.readManagedGateRefForMutation(gateRef)
+	if err != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the invalid custody gate head could not be authenticated; no files or refs were changed")
+	}
+	validGateHead := db.NormalizeManagedGateHead(gateHead) == db.NormalizeManagedGateHead(run.HeadSHA)
+	if !validGateHead && run.SubmittedHeadSHA != nil && state.Local.Head == *run.SubmittedHeadSHA && gateHead == state.Local.Head {
+		staged, stageErr := readDirectLooseGateRef(s.GateDir, custodyReturnRef(run.ID))
+		validGateHead = stageErr == nil && staged == state.Local.Head
+	}
+	if !validGateHead {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the invalid custody gate head no longer matches an exact recoverable projection; no files or refs were changed")
+	}
+	if err := s.withVerifiedRecoveryAnchor(ctx, run, func() error { return nil }); err != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_anchor_conflict", "the invalid custody state has no exact staged recovery anchor; no files or refs were changed")
+	}
+	if err := s.DB.ClearInvalidRunCustody(ctx, run.ID); err != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_custody_race", "the invalid custody state could not be atomically reconciled; no files or refs were changed")
+	}
+	lock.Release()
+	return s.Recover(ctx, keepLocal)
+}
+
 func (s *Service) acquireRecoveryLock(run *db.Run) (*custodyLock, error) {
 	if s.beforeCustodyLock != nil {
 		s.beforeCustodyLock()
@@ -1008,7 +1065,7 @@ func (s *Service) updateOrdinaryGateRef(ctx context.Context, lock *custodyLock, 
 					}
 					return fmt.Errorf("managed gate ref changed during authoritative update")
 				}
-				if err := s.DB.SetManagedGateRefHead(s.Repo.ID, s.GateDir, ref, newSHA); err != nil {
+				if err := s.DB.AdvanceManagedGateRefHead(s.Repo.ID, s.GateDir, ref, oldSHA, newSHA); err != nil {
 					return err
 				}
 				if err := s.DB.ClearGateRefLock(lock.runID, generation); err != nil {
@@ -1056,7 +1113,7 @@ func (s *Service) updateOrdinaryGateRef(ctx context.Context, lock *custodyLock, 
 			return err
 		}
 	}
-	if err := s.DB.SetManagedGateRefHead(s.Repo.ID, s.GateDir, ref, newSHA); err != nil {
+	if err := s.DB.AdvanceManagedGateRefHead(s.Repo.ID, s.GateDir, ref, oldSHA, newSHA); err != nil {
 		return err
 	}
 	if err := gateLock.Release(); err != nil {
@@ -1100,7 +1157,7 @@ func (s *Service) reconcileCompletedOrdinaryGateRefMutation(runID, branch, ref, 
 		if err != nil || !consumed {
 			return false, err
 		}
-		if err := s.DB.SetManagedGateRefHead(s.Repo.ID, s.GateDir, ref, newSHA); err != nil {
+		if err := s.DB.AdvanceManagedGateRefHead(s.Repo.ID, s.GateDir, ref, oldSHA, newSHA); err != nil {
 			return false, err
 		}
 		final, err := s.ManagedGateRefRead(ref)
@@ -1168,7 +1225,7 @@ func (s *Service) reconcileCompletedOrdinaryGateRefMutation(runID, branch, ref, 
 	if !consumed {
 		return false, nil
 	}
-	if err := s.DB.SetManagedGateRefHead(s.Repo.ID, s.GateDir, ref, newSHA); err != nil {
+	if err := s.DB.AdvanceManagedGateRefHead(s.Repo.ID, s.GateDir, ref, oldSHA, newSHA); err != nil {
 		return false, err
 	}
 	final, finalErr := readManagedGateRef(s.GateDir, ref)
@@ -2573,7 +2630,7 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 	}
 	if run.LastPushedSHA == nil || run.PushTargetFingerprint == nil || run.PushRef == nil || run.PushGeneration == nil || run.SubmittedHeadSHA == nil {
 		if run.SubmittedHeadSHA != nil && run.HeadSHA != ptr(run.SubmittedHeadSHA) {
-			if run.CustodyReturnedAt != nil {
+			if custodyReturnedComplete(run) {
 				s.classifyCustodyReturned(ctx, &state)
 				return state, run, true
 			}
@@ -2608,7 +2665,7 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		state.Error = "this run has no exact successful push provenance and cannot be synchronized safely"
 		return state, run, false
 	}
-	if run.HeadSHA != ptr(run.LastPushedSHA) && run.CustodyReturnedAt == nil {
+	if run.HeadSHA != ptr(run.LastPushedSHA) && !custodyReturnedComplete(run) {
 		s.classifyPipelineOwned(ctx, &state, run, "the pipeline head has not been successfully bound to the push target; do not make local follow-up commits yet")
 		return state, run, false
 	}
@@ -2834,7 +2891,7 @@ func duplicateBranchCheckout(ctx context.Context, dir, branch string) bool {
 }
 
 func unpublishedPipelineHead(run *db.Run) bool {
-	if run == nil || run.SubmittedHeadSHA == nil || run.CustodyReturnedAt != nil {
+	if run == nil || run.SubmittedHeadSHA == nil || custodyReturnedComplete(run) {
 		return false
 	}
 	if run.LastPushedSHA == nil {

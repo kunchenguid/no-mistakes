@@ -199,8 +199,36 @@ func TestInvalidCustodyStampDoesNotReportRecovered(t *testing.T) {
 	if state.Recovered {
 		t.Fatal("invalid custody stamp was reported as recovered")
 	}
-	if state.Safety != "blocked_recover_custody_invalid" {
+	run, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.CustodyReturnedAt != nil || run.CustodyTransitionPhase == nil || *run.CustodyTransitionPhase != db.CustodyPhaseInvalid {
+		t.Fatalf("invalid custody state was not preserved: %#v", run)
+	}
+	if state.Safety == "custody_returned" {
 		t.Fatalf("invalid custody safety = %q", state.Safety)
+	}
+}
+
+func TestInvalidCustodyStateReconcilesAfterExactProof(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	if state := f.service.Recover(f.ctx, false); !state.Recovered {
+		t.Fatalf("initial custody recovery = %#v", state)
+	}
+	if err := f.db.MarkRunCustodyInvalid(context.Background(), f.run.ID, "", "authority was lost"); err != nil {
+		t.Fatal(err)
+	}
+	state := f.service.Recover(f.ctx, false)
+	if !state.Recovered {
+		t.Fatalf("invalid custody retry = %#v", state)
+	}
+	run, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.CustodyReturnedAt == nil || run.CustodyTransitionPhase != nil && *run.CustodyTransitionPhase == db.CustodyPhaseInvalid {
+		t.Fatalf("reconciled custody state = %#v", run)
 	}
 }
 

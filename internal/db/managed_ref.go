@@ -68,3 +68,30 @@ func (d *DB) SetManagedGateRefHead(repoID, gatePath, ref, head string) error {
 	}
 	return nil
 }
+
+func (d *DB) AdvanceManagedGateRefHead(repoID, gatePath, ref, oldHead, newHead string) error {
+	repoID = strings.TrimSpace(repoID)
+	gatePath = strings.TrimSpace(gatePath)
+	ref = strings.TrimSpace(ref)
+	oldHead = NormalizeManagedGateHead(oldHead)
+	newHead = NormalizeManagedGateHead(newHead)
+	if repoID == "" || gatePath == "" || ref == "" {
+		return fmt.Errorf("advance managed gate ref: exact identity is required")
+	}
+	result, err := d.sql.Exec(`UPDATE managed_gate_refs SET head = ?, updated_at = ? WHERE repo_id = ? AND gate_path = ? AND ref = ? AND head = ?`, newHead, now(), repoID, gatePath, ref, oldHead)
+	if err != nil {
+		return fmt.Errorf("advance managed gate ref: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("advance managed gate ref: affected rows: %w", err)
+	}
+	if rows != 1 {
+		managed, getErr := d.GetManagedGateRef(repoID, gatePath, ref)
+		if getErr == nil && managed != nil && NormalizeManagedGateHead(managed.Head) == newHead {
+			return nil
+		}
+		return fmt.Errorf("advance managed gate ref: journal head changed")
+	}
+	return nil
+}
