@@ -90,6 +90,10 @@ It allows a legitimate forward commit made by an agent, but aborts the run if an
 The template does not control commits created by the Rebase, CI, or Push steps.
 The CI step uses `no-mistakes: apply CI fixes`, and the Push step uses `no-mistakes: apply agent fixes` for remaining uncommitted changes.
 
+Every fix commit the pipeline authors - across the Review, Test, Document, Lint, CI, and Push steps - is created with `git commit -s`, adding a `Signed-off-by` trailer derived from the committing identity.
+A [DCO](https://developercertificate.org/)-gated repository therefore accepts these commits directly, without a follow-up remediation commit that only adds the trailer.
+The trailer always matches the commit author, so it is harmless on repositories that do not require DCO.
+
 ## Step rounds
 
 Each execution of a step (initial run or follow-up auto-fix run) is recorded as a "round" in the database.

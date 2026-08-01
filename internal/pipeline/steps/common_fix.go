@@ -138,7 +138,12 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
 		return fmt.Errorf("stage %s changes: %w", stepName, err)
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", commitMessage); err != nil {
+	// Sign off pipeline-authored fixes so DCO-gated repositories accept them
+	// directly, without a follow-up remediation commit that only adds the
+	// Signed-off-by trailer. The trailer is derived from the committer identity,
+	// so it always matches the commit author; it is harmless on repositories
+	// that do not require DCO.
+	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-s", "-m", commitMessage); err != nil {
 		return fmt.Errorf("commit %s changes: %w", stepName, err)
 	}
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
