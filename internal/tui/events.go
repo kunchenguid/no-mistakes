@@ -230,7 +230,7 @@ func (m *Model) applySnapshot(run *ipc.RunInfo) {
 func (m *Model) reconcileGateState(steps []ipc.StepResultInfo, oldFindings, findings map[types.StepName]string) {
 	oldGate := awaitingStep(m.steps)
 	newGate := awaitingStep(steps)
-	if sameGateState(oldGate, newGate, m.stepFindings, findings) {
+	if sameGateState(oldGate, newGate, oldFindings, findings) {
 		return
 	}
 	if oldGate != nil {
