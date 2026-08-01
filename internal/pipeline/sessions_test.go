@@ -368,6 +368,56 @@ func TestRunSessions_FallbackResumesWithItsActualProvider(t *testing.T) {
 
 // TestRunSessions_AgentChangeDiscardsStoredSession proves a stored identity
 // from a different adapter is never fed to the current one.
+func TestRunSessions_QuotaFallbackResetsSessionAtAgentBoundary(t *testing.T) {
+	d, run := sessionTestDB(t)
+	claude := newFakeSessionAgent()
+	claude.name = "claude"
+	pi := newFakeSessionAgent()
+	pi.name = "pi"
+	fallback := agent.NewFallback([]agent.Agent{claude, pi})
+
+	rs := NewRunSessions(d, run.ID, fallback, true)
+	if _, err := rs.Run(context.Background(), fallback, SessionRoleReviewer, agent.RunOpts{Prompt: "initial review"}, nil); err != nil {
+		t.Fatalf("initial review: %v", err)
+	}
+	claude.failResumes["sess-1"] = errors.New("claude exited: exit status 1: session limit")
+
+	result, err := rs.Run(context.Background(), fallback, SessionRoleReviewer, agent.RunOpts{Prompt: "quota review"}, nil)
+	if err != nil {
+		t.Fatalf("quota review: %v", err)
+	}
+	if result.Provider != "pi" || result.SessionID == "" {
+		t.Fatalf("fallback result = %+v, want pi session", result)
+	}
+	if len(claude.calls) != 2 || len(pi.calls) != 1 {
+		t.Fatalf("calls = claude %d pi %d, want 2/1", len(claude.calls), len(pi.calls))
+	}
+	if claude.calls[1].session == nil || claude.calls[1].session.ID != "sess-1" {
+		t.Fatalf("quota must be observed while resuming claude, got %+v", claude.calls[1].session)
+	}
+	if pi.calls[0].session == nil || pi.calls[0].session.ID != "" {
+		t.Fatalf("fallback identity must start a fresh pi session, got %+v", pi.calls[0].session)
+	}
+
+	if _, err := rs.Run(context.Background(), fallback, SessionRoleReviewer, agent.RunOpts{Prompt: "rereview"}, nil); err != nil {
+		t.Fatalf("rereview: %v", err)
+	}
+	if len(claude.calls) != 2 {
+		t.Fatalf("claude was retried after quota identity switch: %d calls", len(claude.calls))
+	}
+	last := pi.calls[len(pi.calls)-1]
+	if last.session == nil || last.session.ID == "" {
+		t.Fatalf("rereview must resume pi's replacement session, got %+v", last.session)
+	}
+	stored, err := d.GetRunAgentSessions(run.ID)
+	if err != nil {
+		t.Fatalf("stored sessions: %v", err)
+	}
+	if len(stored) != 1 || stored[0].Agent != "pi" {
+		t.Fatalf("stored session after fallback = %+v, want pi only", stored)
+	}
+}
+
 func TestRunSessions_AgentChangeDiscardsStoredSession(t *testing.T) {
 	d, run := sessionTestDB(t)
 	if err := d.UpsertRunAgentSession(run.ID, string(SessionRoleReviewer), "codex", "codex-thread"); err != nil {
