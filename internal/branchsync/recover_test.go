@@ -1630,8 +1630,8 @@ func TestRecoverConcurrentKeepLocalDoesNotRollbackCompletedTransition(t *testing
 	case <-time.After(5 * time.Second):
 		t.Fatal("second recovery did not complete")
 	}
-	if !firstState.Recovered && !secondState.Recovered {
-		t.Fatalf("concurrent recoveries both failed: first=%#v second=%#v", firstState, secondState)
+	if !firstState.Recovered || secondState.Recovered {
+		t.Fatalf("concurrent recovery ownership: first=%#v second=%#v", firstState, secondState)
 	}
 	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != mustRun(t, f.local, "rev-parse", "HEAD") {
 		t.Fatalf("completed concurrent recovery gate = %s, want local head", got)

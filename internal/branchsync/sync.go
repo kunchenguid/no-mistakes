@@ -646,6 +646,11 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 	if s.beforeGateReset != nil {
 		s.beforeGateReset()
 	}
+	lock, err := acquireCustodyLock(s, run)
+	if err != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_custody_race", "another custody recovery is active for this repository branch; no files or ordinary refs were changed")
+	}
+	defer lock.Release()
 	precheck, currentGateHead, ok := s.recheckRecoverKeepLocal(ctx, state, gateHead)
 	if !ok {
 		return precheck
