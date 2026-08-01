@@ -98,7 +98,7 @@ If no entry is available, the gate fails before its first pipeline step.
 If a pipeline invocation fails because that agent process cannot start or exits with an error, no-mistakes retries that invocation with the next available fallback.
 An explicit quota, session-limit, or rate-limit signal is also eligible for the next configured agent after the current invocation has ended.
 Quota fallback starts the replacement agent cold and keeps the same run, step, branch custody, prior commits, finding decisions, and remaining retry budget.
-The replacement follows the resolved list order and the normal availability and authentication checks from run startup.
+The replacement follows the resolved list order and the executable and adapter-support availability checks performed at run startup.
 A generic failure or silent exit does not become a quota fallback, and structured findings or schema/output validation problems do not trigger fallback.
 If the ordered path is exhausted, the run fails with a bounded agent-and-reason summary that does not include provider output or secrets.
 When session reuse is enabled, a quota fallback discards the exhausted provider's session identity before recording or resuming the replacement provider's session.
