@@ -454,8 +454,8 @@ func TestMethodConstants(t *testing.T) {
 		}
 		seen[m] = true
 	}
-	if len(methods) != 14 {
-		t.Errorf("expected 14 methods, got %d", len(methods))
+	if len(methods) != 15 {
+		t.Errorf("expected 15 methods, got %d", len(methods))
 	}
 }
 
