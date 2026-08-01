@@ -13,7 +13,7 @@ func TestPatchClaudeFixtureStructuredRunRewritesAssistantText(t *testing.T) {
 	patched, err := patchClaudeFixture(raw, Action{
 		Text:       "scenario text",
 		Structured: map[string]any{"summary": "patched summary"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("patchClaudeFixture: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestPatchClaudeFixtureAddsAssistantEventWhenMissing(t *testing.T) {
 	patched, err := patchClaudeFixture(raw, Action{
 		Text:       "scenario text",
 		Structured: map[string]any{"summary": "patched summary"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("patchClaudeFixture: %v", err)
 	}
@@ -91,6 +91,68 @@ func TestPatchClaudeFixtureAddsAssistantEventWhenMissing(t *testing.T) {
 	}
 }
 
+func TestMandatedSkillsReadsThePromptsSkillRequirement(t *testing.T) {
+	prompt := "- Run the review by invoking the `comprehensive-code-review` skill (Skill tool, no arguments) against the review scope above"
+	got := mandatedSkills(prompt)
+	if len(got) != 1 || got[0] != "comprehensive-code-review" {
+		t.Fatalf("mandatedSkills = %v, want [comprehensive-code-review]", got)
+	}
+	if got := mandatedSkills("Fix the findings below and commit."); len(got) != 0 {
+		t.Fatalf("mandatedSkills on a prompt with no requirement = %v, want none", got)
+	}
+	dup := "invoke the `comprehensive-code-review` skill; the `comprehensive-code-review` skill is mandatory"
+	if got := mandatedSkills(dup); len(got) != 1 {
+		t.Fatalf("mandatedSkills = %v, want one entry per skill", got)
+	}
+}
+
+// TestPatchClaudeFixtureReportsMandatedSkillUse pins the wire shape the claude
+// adapter reads skill use from: a Skill tool_use content item in an assistant
+// event. Without it every review step fails closed on the skill requirement.
+func TestPatchClaudeFixtureReportsMandatedSkillUse(t *testing.T) {
+	raw := []byte("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"recorded\"}]}}\n{\"type\":\"result\",\"result\":\"recorded result\",\"structured_output\":{\"summary\":\"recorded summary\"}}\n")
+	patched, err := patchClaudeFixture(raw, Action{
+		Text:       "scenario text",
+		Structured: map[string]any{"summary": "patched summary"},
+	}, []string{"comprehensive-code-review"})
+	if err != nil {
+		t.Fatalf("patchClaudeFixture: %v", err)
+	}
+	if got := claudeSkillsUsed(t, patched); len(got) != 1 || got[0] != "comprehensive-code-review" {
+		t.Fatalf("skills reported on the wire = %v, want [comprehensive-code-review]", got)
+	}
+}
+
+// claudeSkillsUsed extracts skill names the way internal/agent's claude adapter
+// does, so the fake and the parser cannot drift apart silently.
+func claudeSkillsUsed(t *testing.T, stream []byte) []string {
+	t.Helper()
+	skills := []string{}
+	for _, line := range bytes.Split(bytes.TrimSpace(stream), []byte("\n")) {
+		var event struct {
+			Type    string `json:"type"`
+			Message struct {
+				Content []struct {
+					Type  string `json:"type"`
+					Name  string `json:"name"`
+					Input struct {
+						Skill string `json:"skill"`
+					} `json:"input"`
+				} `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(line, &event); err != nil || event.Type != "assistant" {
+			continue
+		}
+		for _, c := range event.Message.Content {
+			if c.Type == "tool_use" && c.Name == "Skill" && c.Input.Skill != "" {
+				skills = append(skills, c.Input.Skill)
+			}
+		}
+	}
+	return skills
+}
+
 func TestPatchClaudeFixtureStructuredRunPreservesNonTextAssistantContent(t *testing.T) {
 	t.Helper()
 
@@ -98,7 +160,7 @@ func TestPatchClaudeFixtureStructuredRunPreservesNonTextAssistantContent(t *test
 	patched, err := patchClaudeFixture(raw, Action{
 		Text:       "scenario text",
 		Structured: map[string]any{"summary": "patched summary"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("patchClaudeFixture: %v", err)
 	}

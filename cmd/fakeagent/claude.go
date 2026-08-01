@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 )
 
 func runClaude(args []string, promptReader io.Reader, scenario *Scenario) int {
@@ -20,6 +21,11 @@ func runClaude(args []string, promptReader io.Reader, scenario *Scenario) int {
 	if err := applyAction(action); err != nil {
 		return 1
 	}
+
+	// A prompt that mandates a skill is answered by an agent that actually
+	// invokes it: no-mistakes fails a review turn whose stream reports no
+	// Skill use, so the fake has to report the use on the wire too.
+	skills := mandatedSkills(prompt)
 
 	// Fixture mode: replay the real claude wire envelope captured by
 	// recordfixture, but splice in scenario-driven content for the
@@ -38,7 +44,7 @@ func runClaude(args []string, promptReader io.Reader, scenario *Scenario) int {
 		fmt.Fprintf(os.Stderr, "fakeagent: claude fixture: %v\n", err)
 		return 1
 	} else if data != nil {
-		patched, err := patchClaudeFixture(data, action)
+		patched, err := patchClaudeFixture(data, action, skills)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "fakeagent: claude patch: %v\n", err)
 			return 1
@@ -61,9 +67,9 @@ func runClaude(args []string, promptReader io.Reader, scenario *Scenario) int {
 				"input_tokens":  100,
 				"output_tokens": 50,
 			},
-			"content": []any{
+			"content": append([]any{
 				map[string]any{"type": "text", "text": action.textOrDefault()},
-			},
+			}, skillToolUses(skills)...),
 		},
 	})
 	_ = enc.Encode(map[string]any{
@@ -89,8 +95,8 @@ func runClaude(args []string, promptReader io.Reader, scenario *Scenario) int {
 // which may not satisfy the schemas every step in the pipeline expects
 // (e.g. document.go's unmarshalRequiredFindings requires "summary").
 // Patching keeps the wire shape real but the content predictable.
-func patchClaudeFixture(raw []byte, action Action) ([]byte, error) {
-	if action.Structured == nil && action.StructuredRaw == "" {
+func patchClaudeFixture(raw []byte, action Action, skills []string) ([]byte, error) {
+	if action.Structured == nil && action.StructuredRaw == "" && len(skills) == 0 {
 		return raw, nil
 	}
 	structuredJSON := action.structuredJSON()
@@ -112,7 +118,7 @@ func patchClaudeFixture(raw []byte, action Action) ([]byte, error) {
 		}
 		if probe.Type == "assistant" {
 			seenAssistant = true
-			patched, err := patchClaudeAssistantEvent(line, text)
+			patched, err := patchClaudeAssistantEvent(line, text, skillsOnce(&skills))
 			if err != nil {
 				return nil, err
 			}
@@ -126,7 +132,7 @@ func patchClaudeFixture(raw []byte, action Action) ([]byte, error) {
 			continue
 		}
 		if !seenAssistant {
-			assistant, err := patchClaudeAssistantEvent([]byte(`{"type":"assistant","message":{"content":[]}}`), text)
+			assistant, err := patchClaudeAssistantEvent([]byte(`{"type":"assistant","message":{"content":[]}}`), text, skillsOnce(&skills))
 			if err != nil {
 				return nil, err
 			}
@@ -150,14 +156,14 @@ func patchClaudeFixture(raw []byte, action Action) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func patchClaudeAssistantEvent(line []byte, text string) ([]byte, error) {
+func patchClaudeAssistantEvent(line []byte, text string, skills []string) ([]byte, error) {
 	var event map[string]any
 	if err := json.Unmarshal(line, &event); err != nil {
 		return nil, fmt.Errorf("parse assistant event: %w", err)
 	}
 	message, _ := event["message"].(map[string]any)
 	if message != nil {
-		message["content"] = patchClaudeAssistantContent(message["content"], text)
+		message["content"] = append(patchClaudeAssistantContent(message["content"], text), skillToolUses(skills)...)
 		event["message"] = message
 	}
 	patched, err := json.Marshal(event)
@@ -199,6 +205,47 @@ func patchClaudeAssistantContent(raw any, text string) []any {
 		patched = append(patched, map[string]any{"type": "text", "text": text})
 	}
 	return patched
+}
+
+// skillsOnce returns the pending skills and clears them, so a stream with
+// several assistant events reports each skill exactly once.
+func skillsOnce(pending *[]string) []string {
+	skills := *pending
+	*pending = nil
+	return skills
+}
+
+// skillToolUses renders skill invocations in the wire shape the claude adapter
+// counts: a tool_use content item named Skill carrying the skill name.
+func skillToolUses(skills []string) []any {
+	items := make([]any, 0, len(skills))
+	for _, skill := range skills {
+		items = append(items, map[string]any{
+			"type":  "tool_use",
+			"name":  "Skill",
+			"input": map[string]any{"skill": skill},
+		})
+	}
+	return items
+}
+
+// skillMandatePattern matches how pipeline prompts name a mandatory skill:
+// a backticked skill name immediately followed by the word "skill".
+var skillMandatePattern = regexp.MustCompile("`([A-Za-z0-9][A-Za-z0-9._-]*)` skill")
+
+// mandatedSkills lists, in first-mention order and without duplicates, the
+// skills the prompt requires the agent to invoke.
+func mandatedSkills(prompt string) []string {
+	skills := []string{}
+	seen := map[string]bool{}
+	for _, match := range skillMandatePattern.FindAllStringSubmatch(prompt, -1) {
+		if seen[match[1]] {
+			continue
+		}
+		seen[match[1]] = true
+		skills = append(skills, match[1])
+	}
+	return skills
 }
 
 func hasClaudeSchema(args []string) bool {
