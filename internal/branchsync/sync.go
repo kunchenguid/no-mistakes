@@ -516,6 +516,14 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			return custodyLockFailure(state, err)
 		}
 		defer lock.Release()
+		if err := s.reclaimStampedGateRefLock(lock, run); err != nil {
+			state.Recovered = false
+			state.Changed = false
+			state.Safety = "blocked_recover_gate_race"
+			state.Error = fmt.Sprintf("the stamped custody recovery left an ambiguous ordinary gate lock (%v); custody remains returned but the lock was not reclaimed; re-run recovery after the lock owner is gone", err)
+			state.NextAction = nil
+			return state
+		}
 		s.cleanupRecoverMarkers(ctx, lock, run)
 		if token := run.CustodyTransitionToken; token != nil {
 			_ = s.DB.ClearRunCustodyTransition(ctx, run.ID, *token)
@@ -1179,7 +1187,23 @@ func (s *Service) finishRecoverAtGateHead(ctx context.Context, run *db.Run, chan
 		state.NextAction = nil
 		return state
 	}
-	gateLock, gateLockErr := acquireGateRefLock(s.GateDir, "refs/heads/"+run.Branch, authorityEndpoint)
+	lockGeneration, generationErr := newGateRefLockGeneration()
+	if generationErr != nil {
+		state, _, _ := s.inspect(ctx)
+		state.Changed = changed
+		state.Recovered = false
+		state.Safety = "blocked_recover_gate_race"
+		state.Error = "the ordinary gate ref lock generation could not be created; custody was not stamped; re-run recovery"
+		state.NextAction = nil
+		return state
+	}
+	gateRef := "refs/heads/" + run.Branch
+	owner := gateRefLockOwner{
+		RunID: run.ID, RepoID: s.Repo.ID, GatePath: s.GateDir, Branch: run.Branch,
+		Ref: gateRef, OwnerGeneration: lockGeneration, AuthorityEndpoint: authorityEndpoint,
+		ExpectedHead: expectedGateHead,
+	}
+	gateLock, gateLockErr := acquireOwnedGateRefLock(s.GateDir, gateRef, owner)
 	if gateLockErr != nil {
 		state, _, _ := s.inspect(ctx)
 		state.Changed = changed
@@ -1189,6 +1213,21 @@ func (s *Service) finishRecoverAtGateHead(ctx context.Context, run *db.Run, chan
 		state.NextAction = nil
 		return state
 	}
+	if err := s.DB.PrepareGateRefLock(db.GateRefLockJournal{
+		RunID: run.ID, RepoID: s.Repo.ID, GatePath: s.GateDir, Branch: run.Branch, Ref: gateRef,
+		LockPath: gateLock.path, OwnerGeneration: owner.OwnerGeneration, AuthorityEndpoint: owner.AuthorityEndpoint,
+		ExpectedHead: expectedGateHead, FileIdentity: gateLock.identity,
+	}); err != nil {
+		gateLock.Release()
+		state, _, _ := s.inspect(ctx)
+		state.Changed = changed
+		state.Recovered = false
+		state.Safety = "blocked_recover_gate_race"
+		state.Error = "the ordinary gate lock ownership journal could not be persisted; custody was not stamped; re-run recovery"
+		state.NextAction = nil
+		return state
+	}
+	gateLock.database = s.DB
 	releaseGateLock := func() {
 		if gateLock != nil {
 			gateLock.Release()
@@ -1263,6 +1302,16 @@ func (s *Service) finishRecoverAtGateHead(ctx context.Context, run *db.Run, chan
 		state.NextAction = nil
 		return state
 	}
+	if err := s.DB.MarkGateRefLockStamped(run.ID, owner.OwnerGeneration); err != nil {
+		gateLock.database = nil
+		state, _, _ := s.inspect(ctx)
+		state.Changed = changed
+		state.Recovered = true
+		state.Safety = "blocked_recover_gate_race"
+		state.Error = "custody was stamped but the ordinary gate lock ownership journal could not be finalized; re-run recovery to reclaim it"
+		state.NextAction = nil
+		return state
+	}
 	s.cleanupRecoverMarkers(ctx, lock, run)
 	if transition != nil {
 		_ = transition.owner.ReleaseStamped(ctx, run.ID)
@@ -1271,6 +1320,79 @@ func (s *Service) finishRecoverAtGateHead(ctx context.Context, run *db.Run, chan
 	state.Recovered = true
 	state.Changed = changed
 	return state
+}
+
+func (s *Service) reclaimStampedGateRefLock(lock *custodyLock, run *db.Run) error {
+	if s == nil || s.DB == nil || s.Repo == nil || lock == nil || lock.file == nil || run == nil {
+		return fmt.Errorf("stamped gate lock reclaim requires active ownership")
+	}
+	if _, err := lock.file.Stat(); err != nil {
+		return fmt.Errorf("branch ownership lock is no longer live")
+	}
+	if !git.LooksLikeBareRepository(s.GateDir) || !s.gateConfigCurrent() {
+		return fmt.Errorf("managed gate fencing configuration is unavailable")
+	}
+	journal, err := s.DB.GetGateRefLock(run.ID)
+	if err != nil || journal == nil {
+		return err
+	}
+	if journal.State != db.GateRefLockStatePrepared && journal.State != db.GateRefLockStateStamped {
+		return fmt.Errorf("gate lock ownership journal has an unknown state")
+	}
+	if journal.RepoID != s.Repo.ID || journal.Branch != run.Branch || journal.Ref != "refs/heads/"+run.Branch || journal.ExpectedHead == "" || journal.OwnerGeneration == "" || journal.AuthorityEndpoint == "" || journal.FileIdentity == "" {
+		return fmt.Errorf("gate lock ownership journal does not match the stamped run")
+	}
+	if journal.GatePath != s.GateDir || journal.LockPath != filepath.Join(s.GateDir, filepath.FromSlash(journal.Ref)+".lock") {
+		return fmt.Errorf("gate lock ownership journal path changed")
+	}
+	current, err := s.DB.GetRun(run.ID)
+	if err != nil || current == nil || current.CustodyReturnedAt == nil {
+		return fmt.Errorf("the exact custody stamp could not be re-read")
+	}
+	if conn, dialErr := dialInternalMutationAuthority(journal.AuthorityEndpoint); dialErr == nil {
+		_ = conn.Close()
+		return fmt.Errorf("the recorded gate lock authority is still live")
+	}
+	gateHead, err := readLockedGateRef(s.GateDir, journal.Ref)
+	if err != nil || gateHead != journal.ExpectedHead {
+		return fmt.Errorf("ordinary gate ref changed before stamped lock reclaim")
+	}
+	if _, err := os.Stat(journal.LockPath); os.IsNotExist(err) {
+		return s.DB.ClearGateRefLock(run.ID, journal.OwnerGeneration)
+	} else if err != nil {
+		return fmt.Errorf("inspect stamped gate lock: %w", err)
+	}
+	owner, err := readOwnedGateRefLock(journal.LockPath)
+	if err != nil {
+		return err
+	}
+	if owner.RunID != journal.RunID || owner.RepoID != journal.RepoID || owner.GatePath != journal.GatePath || owner.Branch != journal.Branch || owner.Ref != journal.Ref || owner.OwnerGeneration != journal.OwnerGeneration || owner.AuthorityEndpoint != journal.AuthorityEndpoint || owner.ExpectedHead != journal.ExpectedHead {
+		return fmt.Errorf("stamped gate lock owner changed")
+	}
+	identity, err := gateRefFileIdentity(journal.LockPath)
+	if err != nil || identity != journal.FileIdentity {
+		return fmt.Errorf("stamped gate lock file identity changed")
+	}
+	file, err := os.OpenFile(journal.LockPath, os.O_RDWR, 0o644)
+	if err != nil {
+		return fmt.Errorf("open stamped gate lock: %w", err)
+	}
+	defer file.Close()
+	if err := acquireGateRefOSLock(file); err != nil {
+		return fmt.Errorf("acquire stamped gate lock: %w", err)
+	}
+	defer releaseGateRefOSLock(file)
+	if identity, err := gateRefFileIdentity(journal.LockPath); err != nil || identity != journal.FileIdentity {
+		return fmt.Errorf("stamped gate lock file identity changed during reclaim")
+	}
+	gateHead, err = readLockedGateRef(s.GateDir, journal.Ref)
+	if err != nil || gateHead != journal.ExpectedHead {
+		return fmt.Errorf("ordinary gate ref changed before stamped lock reclaim")
+	}
+	if err := os.Remove(journal.LockPath); err != nil {
+		return fmt.Errorf("remove stamped gate lock: %w", err)
+	}
+	return s.DB.ClearGateRefLock(run.ID, journal.OwnerGeneration)
 }
 
 func releaseCustodyOwner(state State, owner *db.CustodyTransition) State {

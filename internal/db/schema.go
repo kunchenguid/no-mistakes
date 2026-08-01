@@ -201,6 +201,25 @@ CREATE TABLE IF NOT EXISTS internal_ref_mutations (
 
 CREATE INDEX IF NOT EXISTS internal_ref_mutations_active
     ON internal_ref_mutations (repo_id, gate_path, state, created_at);
+
+CREATE TABLE IF NOT EXISTS gate_ref_locks (
+    run_id           TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    repo_id          TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    gate_path        TEXT NOT NULL,
+    branch           TEXT NOT NULL,
+    ref              TEXT NOT NULL,
+    lock_path        TEXT NOT NULL,
+    owner_generation TEXT NOT NULL,
+    authority_endpoint TEXT NOT NULL,
+    expected_head    TEXT NOT NULL,
+    file_identity    TEXT NOT NULL,
+    state            TEXT NOT NULL DEFAULT 'prepared',
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS gate_ref_locks_active
+    ON gate_ref_locks (repo_id, gate_path, state, updated_at);
 `
 
 // migrationStatements hold additive schema changes applied to databases that
@@ -274,6 +293,8 @@ var migrationStatements = []string{
 	`CREATE INDEX IF NOT EXISTS internal_ref_mutations_active ON internal_ref_mutations (repo_id, gate_path, state, created_at)`,
 	`ALTER TABLE internal_ref_mutations ADD COLUMN authority_endpoint TEXT NOT NULL DEFAULT ''`,
 	`UPDATE internal_ref_mutations SET state = 'consumed', updated_at = created_at WHERE authority_endpoint = '' AND state IN ('issued', 'prepared')`,
+	`CREATE TABLE IF NOT EXISTS gate_ref_locks (run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE, repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE, gate_path TEXT NOT NULL, branch TEXT NOT NULL, ref TEXT NOT NULL, lock_path TEXT NOT NULL, owner_generation TEXT NOT NULL, authority_endpoint TEXT NOT NULL, expected_head TEXT NOT NULL, file_identity TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'prepared', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS gate_ref_locks_active ON gate_ref_locks (repo_id, gate_path, state, updated_at)`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,

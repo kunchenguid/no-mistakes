@@ -17,11 +17,12 @@ import (
 var ErrCustodyLockHeld = errors.New("custody recovery is already running")
 
 type BranchOwnershipLock struct {
-	file            *os.File
-	lockPath        string
-	authorityPrefix string
-	authorityMu     sync.Mutex
-	authority       *internalMutationAuthority
+	file                *os.File
+	lockPath            string
+	authorityPrefix     string
+	authorityMu         sync.Mutex
+	authority           *internalMutationAuthority
+	authorityGeneration string
 }
 
 type custodyLock = BranchOwnershipLock

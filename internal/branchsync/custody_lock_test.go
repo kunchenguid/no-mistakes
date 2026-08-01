@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
@@ -55,6 +57,35 @@ func TestInternalMutationCapabilityRequiresActiveBranchLock(t *testing.T) {
 	}
 	restarted.file = nil
 	restarted.closeInternalMutationAuthority()
+}
+
+func TestInternalMutationAuthorityClosesIdleClientsOnShutdown(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	lock, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err := lock.ensureInternalMutationAuthority(f.db)
+	if err != nil {
+		lock.Release()
+		t.Fatal(err)
+	}
+	conn, err := dialInternalMutationAuthority(endpoint)
+	if err != nil {
+		lock.Release()
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	done := make(chan struct{})
+	go func() {
+		lock.Release()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("authority shutdown waited on an idle client")
+	}
 }
 
 func TestGateRefLockBlocksHooksPathOverride(t *testing.T) {
@@ -123,6 +154,58 @@ func TestGateRefLockRemovesStaleOwnedLockAfterAuthorityExit(t *testing.T) {
 		t.Fatalf("stale owned gate lock blocked retry: %v", err)
 	}
 	newGateLock.Release()
+}
+
+func TestStampedRecoveryReclaimsOwnedGateLockAfterCrash(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	branchLock, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := branchLock.ensureInternalMutationAuthority(f.db)
+	if err != nil {
+		branchLock.Release()
+		t.Fatal(err)
+	}
+	generation, err := newGateRefLockGeneration()
+	if err != nil {
+		branchLock.Release()
+		t.Fatal(err)
+	}
+	ref := "refs/heads/" + f.run.Branch
+	owner := gateRefLockOwner{RunID: f.run.ID, RepoID: f.repo.ID, GatePath: f.gate, Branch: f.run.Branch, Ref: ref, OwnerGeneration: generation, AuthorityEndpoint: authority, ExpectedHead: f.preserved}
+	gateLock, err := acquireOwnedGateRefLock(f.gate, ref, owner)
+	if err != nil {
+		branchLock.Release()
+		t.Fatal(err)
+	}
+	if err := f.db.PrepareGateRefLock(db.GateRefLockJournal{RunID: f.run.ID, RepoID: f.repo.ID, GatePath: f.gate, Branch: f.run.Branch, Ref: ref, LockPath: gateLock.path, OwnerGeneration: generation, AuthorityEndpoint: authority, ExpectedHead: f.preserved, FileIdentity: gateLock.identity}); err != nil {
+		gateLock.Release()
+		branchLock.Release()
+		t.Fatal(err)
+	}
+	if err := f.db.SetRunCustodyReturnedCAS(f.run); err != nil {
+		gateLock.Release()
+		branchLock.Release()
+		t.Fatal(err)
+	}
+	if err := gateLock.file.Close(); err != nil {
+		branchLock.Release()
+		t.Fatal(err)
+	}
+	gateLock.file = nil
+	branchLock.Release()
+
+	state := f.service.Recover(f.ctx, true)
+	if !state.Recovered {
+		t.Fatalf("stamped recovery did not reclaim crashed gate lock: %#v", state)
+	}
+	if _, err := os.Stat(gateLock.path); !os.IsNotExist(err) {
+		t.Fatalf("crashed gate lock still exists: %v", err)
+	}
+	if journal, err := f.db.GetGateRefLock(f.run.ID); err != nil || journal != nil {
+		t.Fatalf("stale gate lock journal = %#v, %v", journal, err)
+	}
 }
 
 func TestCustodyLockRejectsLiveSecondAttemptAndReleasesAfterOwnerExit(t *testing.T) {

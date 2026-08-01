@@ -681,6 +681,9 @@ func writeGateFileAtomic(path string, content []byte, mode os.FileMode, pattern 
 // rendered managed hook and a version marker for the non-hook config contract.
 // Bump the marker when receive or worktree config requirements change.
 func GateConfigCurrent(bareDir string) bool {
+	if !isBareGitDir(bareDir) {
+		return false
+	}
 	content, err := os.ReadFile(filepath.Join(bareDir, gateConfigStampFile))
 	if err != nil || string(content) != gateConfigStampContent() {
 		return false
@@ -692,12 +695,61 @@ func GateConfigCurrent(bareDir string) bool {
 	if err != nil || string(preReceive) != PreReceiveHookScript() {
 		return false
 	}
+	if !gateHookExecutable(filepath.Join(bareDir, "hooks", "pre-receive")) {
+		return false
+	}
 	referenceTransaction, err := os.ReadFile(filepath.Join(bareDir, "hooks", "reference-transaction"))
 	if err != nil || string(referenceTransaction) != ReferenceTransactionHookScript() {
 		return false
 	}
+	if !gateHookExecutable(filepath.Join(bareDir, "hooks", "reference-transaction")) {
+		return false
+	}
 	receivePack, err := os.ReadFile(ReceivePackWrapperPath(bareDir))
-	return err == nil && string(receivePack) == ReceivePackWrapperScript()
+	if err != nil || string(receivePack) != ReceivePackWrapperScript() || !gateHookExecutable(ReceivePackWrapperPath(bareDir)) {
+		return false
+	}
+	return gateWorktreeConfigCurrent(bareDir)
+}
+
+func gateHookExecutable(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0
+}
+
+func gateWorktreeConfigCurrent(bareDir string) bool {
+	hooksDir, err := filepath.Abs(filepath.Join(bareDir, "hooks"))
+	if err != nil {
+		return false
+	}
+	config, err := os.ReadFile(filepath.Join(bareDir, "config.worktree"))
+	if err != nil {
+		return false
+	}
+	values := map[string]string{}
+	section := ""
+	for _, raw := range strings.Split(string(config), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]")))
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || section != "core" {
+			continue
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		value = strings.TrimSpace(value)
+		values[key] = value
+	}
+	configuredHooks, ok := values["hookspath"]
+	if !ok || filepath.IsAbs(configuredHooks) == false || filepath.Clean(configuredHooks) != filepath.Clean(hooksDir) {
+		return false
+	}
+	return strings.EqualFold(values["bare"], "true")
 }
 
 // MarkGateConfigCurrent atomically records a fully completed gate migration.

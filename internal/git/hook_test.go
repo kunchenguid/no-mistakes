@@ -198,6 +198,12 @@ func TestRefreshManagedPreReceiveHookPreservesCustomHook(t *testing.T) {
 
 func TestGateConfigCurrentRejectsMissingOrTamperedAdmissionHook(t *testing.T) {
 	bare := t.TempDir()
+	if err := InitBare(context.Background(), bare); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureHooksPathIsolation(context.Background(), bare); err != nil {
+		t.Fatalf("isolate hooks path: %v", err)
+	}
 	if err := RefreshManagedGateHooks(bare); err != nil {
 		t.Fatalf("install hooks: %v", err)
 	}
@@ -223,6 +229,29 @@ func TestGateConfigCurrentRejectsMissingOrTamperedAdmissionHook(t *testing.T) {
 	}
 	if GateConfigCurrent(bare) {
 		t.Fatal("tampered admission hook must invalidate the gate stamp")
+	}
+	if err := os.WriteFile(pre, []byte(PreReceiveHookScript()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(referenceTransaction, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if GateConfigCurrent(bare) {
+		t.Fatal("non-executable reference transaction hook must invalidate the gate stamp")
+	}
+	if err := os.Chmod(referenceTransaction, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configWorktree := filepath.Join(bare, "config.worktree")
+	config, err := os.ReadFile(configWorktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configWorktree, append(config, []byte("\n[core]\n\thookspath = /tmp\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if GateConfigCurrent(bare) {
+		t.Fatal("wrong effective hooks path must invalidate the gate stamp")
 	}
 }
 

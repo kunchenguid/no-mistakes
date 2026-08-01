@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 )
@@ -25,21 +26,25 @@ type InternalRefMutationAuthorization struct {
 }
 
 type internalMutationAuthority struct {
-	listener net.Listener
-	endpoint string
-	database *db.DB
-	done     chan struct{}
-	wg       sync.WaitGroup
-	mu       sync.Mutex
-	closed   bool
+	listener   net.Listener
+	endpoint   string
+	database   *db.DB
+	owner      *BranchOwnershipLock
+	generation string
+	done       chan struct{}
+	wg         sync.WaitGroup
+	mu         sync.Mutex
+	closed     bool
+	connMu     sync.Mutex
+	conns      map[net.Conn]struct{}
 }
 
-func newInternalMutationAuthority(database *db.DB, endpoint string) (*internalMutationAuthority, error) {
+func newInternalMutationAuthority(database *db.DB, endpoint string, owner *BranchOwnershipLock, generation string) (*internalMutationAuthority, error) {
 	listener, endpoint, err := listenInternalMutationAuthority(endpoint)
 	if err != nil {
 		return nil, err
 	}
-	authority := &internalMutationAuthority{listener: listener, endpoint: endpoint, database: database, done: make(chan struct{})}
+	authority := &internalMutationAuthority{listener: listener, endpoint: endpoint, database: database, owner: owner, generation: generation, done: make(chan struct{}), conns: make(map[net.Conn]struct{})}
 	go authority.serve()
 	return authority, nil
 }
@@ -51,7 +56,17 @@ func (a *internalMutationAuthority) serve() {
 		if err != nil {
 			return
 		}
+		a.mu.Lock()
+		if a.closed {
+			a.mu.Unlock()
+			_ = conn.Close()
+			continue
+		}
+		a.connMu.Lock()
+		a.conns[conn] = struct{}{}
+		a.connMu.Unlock()
 		a.wg.Add(1)
+		a.mu.Unlock()
 		go func() {
 			defer a.wg.Done()
 			a.handle(conn)
@@ -60,7 +75,13 @@ func (a *internalMutationAuthority) serve() {
 }
 
 func (a *internalMutationAuthority) handle(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		a.connMu.Lock()
+		delete(a.conns, conn)
+		a.connMu.Unlock()
+		_ = conn.Close()
+	}()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	var request InternalRefMutationAuthorization
 	response := struct {
 		Error string `json:"error,omitempty"`
@@ -74,10 +95,18 @@ func (a *internalMutationAuthority) handle(conn net.Conn) {
 }
 
 func (a *internalMutationAuthority) authorize(request InternalRefMutationAuthorization) error {
+	if a.owner == nil {
+		return db.ErrInternalRefMutation
+	}
+	a.owner.authorityMu.Lock()
+	defer a.owner.authorityMu.Unlock()
 	a.mu.Lock()
-	closed := a.closed
+	closed := a.closed || a.owner.authority != a || a.owner.authorityGeneration != a.generation
 	a.mu.Unlock()
-	if closed {
+	if closed || a.owner.file == nil {
+		return db.ErrInternalRefMutation
+	}
+	if _, err := a.owner.file.Stat(); err != nil {
 		return db.ErrInternalRefMutation
 	}
 	return a.database.AdvanceInternalRefMutation(a.endpoint, request.Phase, request.GatePath, request.Branch, request.Ref, request.OldSHA, request.NewSHA, request.Operation, request.Scope, request.Capability)
@@ -95,6 +124,15 @@ func (a *internalMutationAuthority) close() {
 	a.closed = true
 	_ = a.listener.Close()
 	a.mu.Unlock()
+	a.connMu.Lock()
+	connections := make([]net.Conn, 0, len(a.conns))
+	for conn := range a.conns {
+		connections = append(connections, conn)
+	}
+	a.connMu.Unlock()
+	for _, conn := range connections {
+		_ = conn.Close()
+	}
 	<-a.done
 	a.wg.Wait()
 	_ = a.database.InvalidateInternalRefMutations(a.endpoint)
@@ -102,14 +140,17 @@ func (a *internalMutationAuthority) close() {
 }
 
 func (l *BranchOwnershipLock) ensureInternalMutationAuthority(database *db.DB) (string, error) {
-	if l == nil || l.file == nil || database == nil {
+	if l == nil || database == nil {
+		return "", fmt.Errorf("issue internal ref mutation: active branch lock is required")
+	}
+	l.authorityMu.Lock()
+	defer l.authorityMu.Unlock()
+	if l.file == nil {
 		return "", fmt.Errorf("issue internal ref mutation: active branch lock is required")
 	}
 	if _, err := l.file.Stat(); err != nil {
 		return "", fmt.Errorf("issue internal ref mutation: active branch lock is required")
 	}
-	l.authorityMu.Lock()
-	defer l.authorityMu.Unlock()
 	if l.authority != nil {
 		return l.authority.endpoint, nil
 	}
@@ -120,7 +161,11 @@ func (l *BranchOwnershipLock) ensureInternalMutationAuthority(database *db.DB) (
 	if err != nil {
 		return "", fmt.Errorf("issue internal ref mutation: generate authority generation: %w", err)
 	}
-	authority, err := newInternalMutationAuthority(database, endpoint)
+	generation, err := newGateRefLockGeneration()
+	if err != nil {
+		return "", fmt.Errorf("issue internal ref mutation: generate lock generation: %w", err)
+	}
+	authority, err := newInternalMutationAuthority(database, endpoint, l, generation)
 	if err != nil {
 		return "", fmt.Errorf("issue internal ref mutation: open live authority: %w", err)
 	}
@@ -129,6 +174,7 @@ func (l *BranchOwnershipLock) ensureInternalMutationAuthority(database *db.DB) (
 		return "", fmt.Errorf("issue internal ref mutation: retire stale authority capabilities: %w", err)
 	}
 	l.authority = authority
+	l.authorityGeneration = generation
 	return authority.endpoint, nil
 }
 
@@ -159,6 +205,7 @@ func AuthorizeInternalRefMutation(endpoint string, request InternalRefMutationAu
 		return fmt.Errorf("authorize internal ref mutation: %w", err)
 	}
 	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	if err := json.NewEncoder(conn).Encode(request); err != nil {
 		return fmt.Errorf("authorize internal ref mutation: send request: %w", err)
 	}
