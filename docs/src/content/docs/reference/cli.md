@@ -255,7 +255,8 @@ no-mistakes axi abort --run <id>
 Use it to reap an orphaned CI monitor whose worktree was torn down before the PR merged - the run id is shown in `axi run` output and in the `axi` home view.
 Aborting an id that is not an active run is a successful no-op.
 When the daemon is already running, `axi abort` can cancel an active run even if the global config file has become invalid, because it is not starting a fresh run.
-Branch-scoped abort waits for the cancellation state to persist, then renders the refreshed `branch_sync` object and its exact next action, if any.
+Both abort surfaces report a completed cancellation only after the exact run positively confirms a terminal state within the bounded wait; success then includes the terminal `run_status`, and branch-scoped abort renders the refreshed `branch_sync` object and its exact next action, if any.
+When terminal quiescence cannot be confirmed - the bounded wait expires, the wait is cancelled, or a status read fails - abort exits nonzero, states explicitly that cancellation was requested but terminal quiescence is unconfirmed, includes the last structured run state when one is available, and never claims `aborted: true` or presents user-owned or recoverable ownership guidance as authoritative; re-run the abort or watch `axi status --run <id>` until a terminal status is confirmed.
 Pipeline-created commits remain preserved in the gate and a recoverable cancellation points directly to `no-mistakes axi sync --recover`; when the submitted head never moved, cancellation instead reports `state: user_owned` with no sync action.
 While a run is active, do not use `axi abort` or `no-mistakes rerun` to go fix a finding yourself.
 That cancels the pipeline's in-flight work and forces a full re-validation; use `axi respond --action fix` at the gate so the pipeline applies and re-checks the fix.

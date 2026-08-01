@@ -27,7 +27,9 @@ const triggerWaitTimeout = 5 * time.Second
 
 // abortStateWaitTimeout bounds the post-cancel wait for the executor to
 // persist its terminal state before AXI renders refreshed custody guidance.
-const abortStateWaitTimeout = 10 * time.Second
+// It is a variable only so regression tests can shorten the bounded wait;
+// production always uses the default.
+var abortStateWaitTimeout = 10 * time.Second
 
 // terminalStatus reports whether a run has reached a final state.
 func terminalStatus(status string) bool {
@@ -892,11 +894,18 @@ func runAxiAbort(cmd *cobra.Command, runID string) error {
 	if err := env.client.Call(ipc.MethodCancelRun, &ipc.CancelRunParams{RunID: active.Run.ID}, &result); err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("abort run: %v", err))
 	}
-	waitForTerminalRun(ctx, env.client, active.Run.ID, abortStateWaitTimeout)
+	// Success and the final ownership state may only be reported after the
+	// exact run positively confirmed terminal quiescence; anything else exits
+	// nonzero with the unconfirmed contract.
+	final, confirmed, reason := waitForTerminalRun(ctx, env.client, active.Run.ID, abortStateWaitTimeout)
+	if !confirmed {
+		return emitUnconfirmedAbort(cmd, active.Run.ID, active.Run.Branch, reason, final)
+	}
 	fields := []toon.Field{
 		toon.Field{Key: "aborted", Value: true},
 		toon.Field{Key: "run", Value: active.Run.ID},
 		toon.Field{Key: "branch", Value: active.Run.Branch},
+		toon.Field{Key: "run_status", Value: string(final.Status)},
 	}
 	state := inspectAxiBranchSync(ctx, env)
 	if state.Pipeline.RunID == active.Run.ID && relevantCachedSyncState(state) {
@@ -925,27 +934,65 @@ func runAxiAbort(cmd *cobra.Command, runID string) error {
 	return nil
 }
 
-func waitForTerminalRun(ctx context.Context, client *ipc.Client, runID string, timeout time.Duration) *ipc.RunInfo {
+// waitForTerminalRun polls until the exact run reports a terminal status.
+// confirmed is true only when a fresh read positively proved terminal
+// quiescence; a cancelled context, an exhausted bounded wait, or a failed
+// status read returns the last observed run state (possibly nil) with
+// confirmed false and a reason naming what prevented confirmation. Callers
+// must never present a completed abort or authoritative final ownership
+// guidance without confirmed true.
+func waitForTerminalRun(ctx context.Context, client *ipc.Client, runID string, timeout time.Duration) (run *ipc.RunInfo, confirmed bool, reason string) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
+	var last *ipc.RunInfo
 	for {
-		run, err := getRunInfo(client, runID)
+		observed, err := getRunInfo(client, runID)
 		if err != nil {
-			return nil
+			return last, false, fmt.Sprintf("the run state could not be read: %v", err)
 		}
-		if run != nil && terminalStatus(string(run.Status)) {
-			return run
+		if observed != nil {
+			last = observed
+		}
+		if observed != nil && terminalStatus(string(observed.Status)) {
+			return observed, true, ""
 		}
 		select {
 		case <-ctx.Done():
-			return run
+			return last, false, "the wait was cancelled before a terminal state was observed"
 		case <-timer.C:
-			return run
+			return last, false, fmt.Sprintf("the run did not report a terminal state within the bounded %s wait", timeout)
 		case <-ticker.C:
 		}
 	}
+}
+
+// emitUnconfirmedAbort reports the accepted not-yet-quiescent abort contract:
+// cancellation was requested but terminal quiescence is unconfirmed, so the
+// command exits nonzero, includes the last structured run state when one is
+// available, and presents no completed-abort claim and no authoritative
+// user-owned or recoverable ownership guidance.
+func emitUnconfirmedAbort(cmd *cobra.Command, runID, branch, reason string, last *ipc.RunInfo) error {
+	fields := []toon.Field{
+		{Key: "error", Value: fmt.Sprintf("cancellation was requested for run %s, but terminal quiescence is unconfirmed: %s", runID, reason)},
+		{Key: "cancellation_requested", Value: true},
+		{Key: "terminal_confirmed", Value: false},
+		{Key: "run", Value: runID},
+	}
+	if branch != "" {
+		fields = append(fields, toon.Field{Key: "branch", Value: branch})
+	}
+	if last != nil {
+		fields = append(fields, runObjectFieldWithKey("run_state", runViewFromIPC(last)))
+	}
+	fields = append(fields, toon.Field{Key: "help", Value: []string{
+		"Run `no-mistakes axi status --run " + runID + "` to observe the run until it reports a terminal status",
+		"Re-run `no-mistakes axi abort` once the daemon is reachable; a repeated abort is an idempotent no-op",
+		"Do not treat the branch as released or recoverable until a terminal status is confirmed",
+	}})
+	emitDoc(cmd, fields...)
+	return &exitError{code: 1}
 }
 
 // runAxiAbortByRunID cancels a run by its id directly via the daemon, without
@@ -992,9 +1039,17 @@ func runAxiAbortByRunID(cmd *cobra.Command, runID string) error {
 		}
 		return emitError(cmd, 1, fmt.Sprintf("abort run: %v", err))
 	}
+	// Explicit --run cancellation carries the same quiescence contract as the
+	// ordinary surface: no completed abort without a positively confirmed
+	// terminal state for the exact run.
+	final, confirmed, reason := waitForTerminalRun(cmd.Context(), client, runID, abortStateWaitTimeout)
+	if !confirmed {
+		return emitUnconfirmedAbort(cmd, runID, "", reason, final)
+	}
 	emitDoc(cmd,
 		toon.Field{Key: "aborted", Value: true},
 		toon.Field{Key: "run", Value: runID},
+		toon.Field{Key: "run_status", Value: string(final.Status)},
 	)
 	return nil
 }
