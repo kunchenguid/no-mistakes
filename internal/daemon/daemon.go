@@ -831,6 +831,21 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.RerunResult{RunID: runID}, nil
 	})
 
+	srv.Handle(ipc.MethodRecover, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
+		var p ipc.RecoverParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		state, err := mgr.HandleRecover(ctx, p.RepoID, p.Branch, p.KeepLocal)
+		if err != nil {
+			return nil, err
+		}
+		return &state, nil
+	})
+
 	srv.Handle(ipc.MethodPushReceived, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		// Hooks execute in a managed bare gate by definition, so only the
 		// authenticated peer ancestry is meaningful at this ingress.

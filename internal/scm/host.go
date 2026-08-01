@@ -209,3 +209,7 @@ type CheckRerunner interface {
 	// check names no job the provider can re-run.
 	RerunCheck(ctx context.Context, pr *PR, check Check) error
 }
+
+type HistoricalPublicationVerifier interface {
+	VerifyUnpublishedHistory(ctx context.Context, branch, submitted, preserved string) error
+}

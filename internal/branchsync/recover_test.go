@@ -169,6 +169,9 @@ func (f *recoverFixture) anchorRef() string { return "refs/no-mistakes/recover/"
 func (f *recoverFixture) moveGateBranchToSubmitted() {
 	f.t.Helper()
 	mustRun(f.t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted)
+	if err := f.db.SetManagedGateRefHead(f.repo.ID, f.gate, "refs/heads/feature/recover", f.submitted); err != nil {
+		f.t.Fatal(err)
+	}
 }
 
 func (f *recoverFixture) custodyReturned() bool {
@@ -2193,6 +2196,20 @@ func TestRecoverRejectsSymbolicRecoveryAnchor(t *testing.T) {
 	}
 	if f.custodyReturned() {
 		t.Fatal("symbolic recovery anchor stamped custody")
+	}
+}
+
+func TestRecoverRejectsUnjournaledExactRecoveryAnchor(t *testing.T) {
+	f := newRecoverFixture(t, types.RunFailed)
+	mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover:refs/no-mistakes/recovery-target")
+	f.moveGateBranchToSubmitted()
+	mustRun(t, f.local, "update-ref", f.anchorRef(), f.preserved)
+	state := f.service.Recover(f.ctx, true)
+	if state.Recovered || state.Safety != "blocked_recover_anchor_conflict" {
+		t.Fatalf("unjournaled exact recovery anchor = %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("unjournaled exact recovery anchor stamped custody")
 	}
 }
 

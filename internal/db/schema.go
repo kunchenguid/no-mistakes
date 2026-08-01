@@ -266,6 +266,24 @@ CREATE TABLE IF NOT EXISTS custody_ref_stages (
 
 CREATE INDEX IF NOT EXISTS custody_ref_stages_active
     ON custody_ref_stages (repo_id, gate_path, state, updated_at);
+
+CREATE TABLE IF NOT EXISTS recovery_anchor_stages (
+    run_id             TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    repo_id            TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    gate_path          TEXT NOT NULL,
+    branch             TEXT NOT NULL,
+    ref                TEXT NOT NULL,
+    old_sha            TEXT NOT NULL,
+    new_sha            TEXT NOT NULL,
+    owner_generation   TEXT NOT NULL,
+    authority_endpoint TEXT NOT NULL,
+    state              TEXT NOT NULL DEFAULT 'prepared',
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS recovery_anchor_stages_active
+    ON recovery_anchor_stages (repo_id, gate_path, state, updated_at);
 `
 
 // migrationStatements hold additive schema changes applied to databases that
@@ -348,6 +366,8 @@ var migrationStatements = []string{
 	`CREATE INDEX IF NOT EXISTS managed_gate_refs_active ON managed_gate_refs (repo_id, gate_path, updated_at)`,
 	`CREATE TABLE IF NOT EXISTS custody_ref_stages (run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE, repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE, gate_path TEXT NOT NULL, branch TEXT NOT NULL, ref TEXT NOT NULL, old_sha TEXT NOT NULL, new_sha TEXT NOT NULL, owner_generation TEXT NOT NULL, authority_endpoint TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'prepared', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
 	`CREATE INDEX IF NOT EXISTS custody_ref_stages_active ON custody_ref_stages (repo_id, gate_path, state, updated_at)`,
+	`CREATE TABLE IF NOT EXISTS recovery_anchor_stages (run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE, repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE, gate_path TEXT NOT NULL, branch TEXT NOT NULL, ref TEXT NOT NULL, old_sha TEXT NOT NULL, new_sha TEXT NOT NULL, owner_generation TEXT NOT NULL, authority_endpoint TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'prepared', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS recovery_anchor_stages_active ON recovery_anchor_stages (repo_id, gate_path, state, updated_at)`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,

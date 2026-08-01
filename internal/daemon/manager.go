@@ -25,6 +25,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/scm/github"
+	"github.com/kunchenguid/no-mistakes/internal/scm/gitlab"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -113,6 +117,39 @@ func (m *RunManager) ensureManagedGateGuard(repo *db.Repo, ref string) error {
 	return nil
 }
 
+func (m *RunManager) managedGateRefMutation(repoID, gateDir string) func(context.Context, string, string, string, func(string, string) error, func() error) error {
+	return func(ctx context.Context, ref, oldSHA, newSHA string, prepare func(string, string) error, commit func() error) error {
+		m.managedGateMu.Lock()
+		defer m.managedGateMu.Unlock()
+		guard := m.managedGateGuards[managedGateGuardKey(repoID, ref)]
+		if guard == nil {
+			return fmt.Errorf("managed gate authority is unavailable")
+		}
+		if err := prepare(guard.Path(), guard.Identity()); err != nil {
+			return err
+		}
+		if err := guard.UpdateRef(ctx, gateDir, ref, oldSHA, newSHA); err != nil {
+			return err
+		}
+		return commit()
+	}
+}
+
+func (m *RunManager) managedGateRefRead(repoID, gateDir, ref string) func(string) (string, error) {
+	return func(requestedRef string) (string, error) {
+		if requestedRef != ref {
+			return "", fmt.Errorf("managed gate authority ref mismatch")
+		}
+		m.managedGateMu.Lock()
+		defer m.managedGateMu.Unlock()
+		guard := m.managedGateGuards[managedGateGuardKey(repoID, ref)]
+		if guard == nil {
+			return "", fmt.Errorf("managed gate authority is unavailable")
+		}
+		return branchsync.ReadManagedGateRefUnderAuthority(guard, gateDir, ref)
+	}
+}
+
 func (m *RunManager) releaseManagedGateGuard(repoID, ref string) error {
 	if m == nil {
 		return nil
@@ -157,6 +194,86 @@ func (m *RunManager) mustListRepos() []*db.Repo {
 		return nil
 	}
 	return repos
+}
+
+func (m *RunManager) HandleRecover(ctx context.Context, repoID, branch string, keepLocal bool) (branchsync.State, error) {
+	repo, err := m.db.GetRepo(strings.TrimSpace(repoID))
+	if err != nil {
+		return branchsync.State{}, fmt.Errorf("get repo: %w", err)
+	}
+	if repo == nil {
+		return branchsync.State{}, fmt.Errorf("unknown repo %s", repoID)
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" || branch == "HEAD" || strings.Contains(branch, "..") || strings.ContainsAny(branch, "\x00\n") {
+		return branchsync.State{}, fmt.Errorf("invalid recovery branch")
+	}
+	ref := "refs/heads/" + branch
+	if err := m.ensureManagedGateGuard(repo, ref); err != nil {
+		return branchsync.State{}, fmt.Errorf("acquire managed gate authority for recovery: %w", err)
+	}
+	service := &branchsync.Service{
+		DB:                     m.db,
+		Repo:                   repo,
+		WorkDir:                repo.WorkingPath,
+		GateDir:                m.paths.RepoDir(repo.ID),
+		Paths:                  m.paths,
+		ManagedGateRefMutation: m.managedGateRefMutation(repo.ID, m.paths.RepoDir(repo.ID)),
+		ManagedGateRefRead:     m.managedGateRefRead(repo.ID, m.paths.RepoDir(repo.ID), ref),
+		LegacyPublicationProof: m.legacyPublicationProof,
+	}
+	return service.Recover(ctx, keepLocal), nil
+}
+
+func (m *RunManager) legacyPublicationProof(ctx context.Context, run *db.Run, branch string, targets []string) error {
+	if run == nil || !reviewObjectID(run.HeadSHA) || run.SubmittedHeadSHA == nil || !reviewObjectID(*run.SubmittedHeadSHA) {
+		return fmt.Errorf("legacy publication proof has no canonical preserved head")
+	}
+	submitted := *run.SubmittedHeadSHA
+	seen := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		fingerprint := branchsync.TargetFingerprint(target)
+		if _, ok := seen[fingerprint]; ok {
+			continue
+		}
+		seen[fingerprint] = struct{}{}
+		cmdFactory := func(cmdCtx context.Context, name string, args ...string) *exec.Cmd {
+			cmd := exec.CommandContext(cmdCtx, name, args...)
+			shellenv.ConfigureShellCommand(cmd)
+			return cmd
+		}
+		var verifier scm.HistoricalPublicationVerifier
+		provider := scm.DetectProviderContext(ctx, target)
+		switch provider {
+		case scm.ProviderGitHub:
+			host := scm.ResolveHost(ctx, target)
+			verifier = github.New(cmdFactory, func() bool { _, err := exec.LookPath("gh"); return err == nil }, host, github.HostPrefixedSlugForHost(target, host))
+		case scm.ProviderGitLab:
+			host := scm.ResolveHost(ctx, target)
+			verifier = gitlab.New(cmdFactory, func() bool { _, err := exec.LookPath("glab"); return err == nil }, host, gitlab.ProjectPath(target))
+		default:
+			continue
+		}
+		if verifier == nil {
+			return fmt.Errorf("historical publication proof is unavailable for %s", provider)
+		}
+		if err := verifier.VerifyUnpublishedHistory(ctx, branch, submitted, run.HeadSHA); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func reviewObjectID(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, char := range value {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 type recoveredRunPlan struct {

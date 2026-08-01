@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,9 @@ import (
 	toON "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
+	"github.com/kunchenguid/no-mistakes/internal/daemon"
+	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/spf13/cobra"
 )
@@ -101,6 +105,38 @@ func openSyncService() (*branchsync.Service, func(), error) {
 		return nil, nil, err
 	}
 	return &branchsync.Service{DB: d, Repo: repo, WorkDir: ".", GateDir: p.RepoDir(repo.ID), Paths: p}, func() { _ = d.Close() }, nil
+}
+
+func recoverViaDaemon(ctx context.Context, keepLocal bool) (branchsync.State, error) {
+	p, d, err := openResources()
+	if err != nil {
+		return branchsync.State{}, err
+	}
+	defer d.Close()
+	repo, err := findRepo(d)
+	if err != nil {
+		return branchsync.State{}, err
+	}
+	branch, err := git.CurrentBranch(ctx, ".")
+	if err != nil {
+		return branchsync.State{}, fmt.Errorf("get current branch: %w", err)
+	}
+	if branch == "HEAD" {
+		return branchsync.State{}, fmt.Errorf("not on a branch")
+	}
+	if err := daemon.EnsureDaemon(p); err != nil {
+		return branchsync.State{}, fmt.Errorf("start daemon: %w", err)
+	}
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		return branchsync.State{}, fmt.Errorf("connect to daemon: %w", err)
+	}
+	defer client.Close()
+	var state branchsync.State
+	if err := client.Call(ipc.MethodRecover, &ipc.RecoverParams{RepoID: repo.ID, Branch: branch, KeepLocal: keepLocal}, &state); err != nil {
+		return branchsync.State{}, fmt.Errorf("recover custody: %w", err)
+	}
+	return state, nil
 }
 
 func runHumanSync(cmd *cobra.Command, check, yes bool) error {
@@ -224,7 +260,10 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 		}
 	}
 
-	recovered := service.Recover(cmd.Context(), keepLocal)
+	recovered, recoverErr := recoverViaDaemon(cmd.Context(), keepLocal)
+	if recoverErr != nil {
+		return recoverErr
+	}
 	observed = recovered
 	printHumanSyncState(cmd, recovered)
 	if recovered.Recovered {
@@ -314,22 +353,26 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
 		mode = "recover"
 	}
 	var state branchsync.State
+	var err error
 	result := "error"
 	defer func() { trackSyncAttempt("axi-sync", "axi", mode, state, result, started) }()
 
-	service, closeFn, err := openSyncService()
-	if err != nil {
-		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
-	}
-	defer closeFn()
-
-	switch {
-	case check:
-		state = service.Refresh(cmd.Context())
-	case recover:
-		state = service.Recover(cmd.Context(), keepLocal)
-	default:
-		state = service.Apply(cmd.Context())
+	if recover {
+		state, err = recoverViaDaemon(cmd.Context(), keepLocal)
+		if err != nil {
+			return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
+		}
+	} else {
+		service, closeFn, err := openSyncService()
+		if err != nil {
+			return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
+		}
+		defer closeFn()
+		if check {
+			state = service.Refresh(cmd.Context())
+		} else {
+			state = service.Apply(cmd.Context())
+		}
 	}
 	fields := []toON.Field{branchSyncField(state)}
 	if state.Error != "" {
