@@ -967,6 +967,9 @@ func (m *RunManager) reconcileReceiveReservations(ctx context.Context) {
 		return
 	}
 	for _, session := range sessions {
+		if session.Phase != "admitted" && session.Phase != "aborted" {
+			continue
+		}
 		if err := m.db.RetireReceiveSession(session.ID); err != nil && !errors.Is(err, db.ErrReceiveSessionPending) {
 			slog.Warn("active receive session remains after startup reconciliation", "session_id", session.ID, "phase", session.Phase, "error", err)
 		}

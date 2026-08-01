@@ -117,6 +117,41 @@ func TestRunCreationRefusesPendingReceiveReservation(t *testing.T) {
 	}
 }
 
+func TestReceiveStartupPreservesIssuedSession(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, err := database.InsertRepoWithID("issued-receive-repo", "/nonexistent/work", "https://example.com/owner/issued-receive", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := p.RepoDir(repo.ID)
+	if err := database.RegisterReceiveSession(repo.ID, gate, "issued-session", "issued-capability"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.RegisterReceiveSession(repo.ID, gate, "aborted-session", "aborted-capability"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ReserveReceivesForAuthenticatedSession("aborted-session", "aborted-capability", []db.ReceiveReservationInput{{
+		RepoID: repo.ID, GatePath: gate, Branch: "main", Ref: "refs/heads/main",
+		OldSHA: "0000000000000000000000000000000000000000", NewSHA: "1111111111111111111111111111111111111111",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AbortReceiveSession(repo.ID, gate, "aborted-session", "aborted-capability"); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewRunManager(database, p, nil)
+	manager.reconcileReceiveReservations(context.Background())
+
+	sessions, err := database.GetActiveReceiveSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != "issued-session" || sessions[0].Phase != "issued" {
+		t.Fatalf("receive sessions after startup = %#v, want only active issued session", sessions)
+	}
+}
+
 func TestRerunReadsGateOnlyAfterCustodyOwnershipLock(t *testing.T) {
 	t.Setenv("NM_DEMO", "1")
 	p, database := newRefreshRunFixture(t)
