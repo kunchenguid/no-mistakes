@@ -21,7 +21,13 @@ type quotaFallbackError struct {
 	attempts []quotaFallbackAttempt
 }
 
-const fallbackEvidenceLimit = 8 * 1024
+type providerQuotaError struct {
+	err    error
+	reason string
+}
+
+func (e *providerQuotaError) Error() string { return e.err.Error() }
+func (e *providerQuotaError) Unwrap() error { return e.err }
 
 func (e *quotaFallbackError) Error() string {
 	parts := make([]string, 0, len(e.attempts))
@@ -44,16 +50,12 @@ func IsQuotaFallbackError(err error) bool {
 // explicit quota, session-limit, or rate-limit evidence. Quota replacement is
 // synchronous and starts the next provider with no provider-native session.
 func NewFallback(agents []Agent) Agent {
-	switch len(agents) {
-	case 0:
+	if len(agents) == 0 {
 		return nil
-	case 1:
-		return agents[0]
-	default:
-		copied := make([]Agent, len(agents))
-		copy(copied, agents)
-		return &fallbackAgent{agents: copied}
 	}
+	copied := make([]Agent, len(agents))
+	copy(copied, agents)
+	return &fallbackAgent{agents: copied}
 }
 
 func (a *fallbackAgent) Name() string {
@@ -155,22 +157,6 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 			currentOpts.Session = nil
 			currentOpts.SessionFallback = false
 		}
-		var streamed strings.Builder
-		previousChunk := currentOpts.OnChunk
-		currentOpts.OnChunk = func(text string) {
-			if previousChunk != nil {
-				previousChunk(text)
-			}
-			if text == "" {
-				return
-			}
-			streamed.WriteString(text)
-			if streamed.Len() > fallbackEvidenceLimit {
-				text := streamed.String()
-				streamed.Reset()
-				streamed.WriteString(text[len(text)-fallbackEvidenceLimit:])
-			}
-		}
 		startedAt := time.Now()
 		result, err := current.Run(ctx, currentOpts)
 		if !ReportsAgentAttempts(current) {
@@ -187,7 +173,7 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 			return nil, err
 		}
 
-		reason, isQuota := quotaErrorReason(err, streamed.String())
+		reason, isQuota := quotaErrorReason(err)
 		if isQuota {
 			quotaSeen = true
 			path = append(path, quotaFallbackAttempt{agent: current.Name(), reason: reason})
@@ -236,6 +222,9 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 }
 
 func (a *fallbackAgent) Close() error {
+	if len(a.agents) == 1 {
+		return a.agents[0].Close()
+	}
 	var errs []string
 	for _, ag := range a.agents {
 		if err := ag.Close(); err != nil {
@@ -248,15 +237,30 @@ func (a *fallbackAgent) Close() error {
 	return nil
 }
 
-func quotaErrorReason(err error, evidence ...string) (string, bool) {
+// ClassifyProviderError marks an invocation error using only provider or
+// process diagnostics captured separately from assistant output.
+func ClassifyProviderError(err error, diagnostics ...string) error {
 	if err == nil {
+		return nil
+	}
+	for _, diagnostic := range diagnostics {
+		if reason, ok := quotaDiagnosticReason(diagnostic); ok {
+			return &providerQuotaError{err: err, reason: reason}
+		}
+	}
+	return err
+}
+
+func quotaErrorReason(err error) (string, bool) {
+	var quotaErr *providerQuotaError
+	if !errors.As(err, &quotaErr) {
 		return "", false
 	}
-	message := err.Error()
-	if len(evidence) > 0 {
-		message += "\n" + evidence[0]
-	}
-	msg := strings.ToLower(message)
+	return quotaErr.reason, true
+}
+
+func quotaDiagnosticReason(diagnostic string) (string, bool) {
+	msg := strings.ToLower(diagnostic)
 	if strings.Contains(msg, "session limit") ||
 		strings.Contains(msg, "session_limit") ||
 		strings.Contains(msg, "usage limit") ||
@@ -281,9 +285,6 @@ func quotaErrorReason(err error, evidence ...string) (string, bool) {
 }
 
 func fallbackFailureReason(err error) string {
-	if _, ok := quotaErrorReason(err); ok {
-		return "quota limit"
-	}
 	if isAgentUnavailableError(err) {
 		return "agent unavailable"
 	}

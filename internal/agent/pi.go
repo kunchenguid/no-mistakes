@@ -96,7 +96,7 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	if waitErr != nil {
 		stderr := strings.TrimSpace(string(stderrBuf))
 		if stderr != "" {
-			retErr := fmt.Errorf("pi exited: %w: %s", waitErr, stderr)
+			retErr := ClassifyProviderError(fmt.Errorf("pi exited: %w: %s", waitErr, stderr), stderr)
 			emitAgentExited(opts, "pi", pid, retErr)
 			return nil, retErr
 		}
@@ -106,7 +106,7 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 	}
 
 	if pp.assistantError != "" {
-		retErr := fmt.Errorf("pi reported error: %s", pp.assistantError)
+		retErr := ClassifyProviderError(fmt.Errorf("pi reported error: %s", pp.assistantError), pp.assistantError)
 		emitAgentExited(opts, "pi", pid, retErr)
 		return nil, retErr
 	}

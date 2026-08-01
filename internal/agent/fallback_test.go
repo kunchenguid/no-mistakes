@@ -90,7 +90,7 @@ func TestFallbackAgentDoesNotFallBackOnFindingsResult(t *testing.T) {
 }
 
 func TestFallbackAgentDoesNotFallBackOnStructuredOutputError(t *testing.T) {
-	parseErr := errors.New(`codex output parse: invalid JSON (output snippet: "not json")`)
+	parseErr := errors.New(`codex output parse: invalid JSON (output snippet: "rate limit")`)
 	first := &fallbackTestAgent{
 		name: "codex",
 		run: func() (*Result, error) {
@@ -125,7 +125,8 @@ func TestFallbackAgentFallsBackOnExplicitQuotaExit(t *testing.T) {
 	first := &fallbackTestAgent{
 		name: "claude",
 		run: func() (*Result, error) {
-			return nil, errors.New("claude exited: exit status 1: You've hit your session limit")
+			err := errors.New("claude exited: exit status 1: You've hit your session limit")
+			return nil, ClassifyProviderError(err, "You've hit your session limit")
 		},
 	}
 	second := &fallbackTestAgent{
@@ -147,25 +148,26 @@ func TestFallbackAgentFallsBackOnExplicitQuotaExit(t *testing.T) {
 	}
 }
 
-func TestFallbackAgentUsesExplicitStreamedQuotaEvidenceAfterExit(t *testing.T) {
+func TestFallbackAgentIgnoresAssistantQuotaLanguage(t *testing.T) {
+	invocationErr := errors.New("claude exited: exit status 1")
 	first := &fallbackTestAgent{
 		name: "claude",
 		runWithOpts: func(opts RunOpts) (*Result, error) {
-			opts.OnChunk("You've hit your weekly limit · resets later")
-			return nil, errors.New("claude exited: exit status 1: ")
+			opts.OnChunk("The review mentions a rate limit")
+			return nil, invocationErr
 		},
 	}
 	second := &fallbackTestAgent{
 		name: "pi",
-		run:  func() (*Result, error) { return &Result{Text: "recovered"}, nil },
+		run:  func() (*Result, error) { return &Result{Text: "must not run"}, nil },
 	}
 
-	result, err := NewFallback([]Agent{first, second}).Run(context.Background(), RunOpts{OnChunk: func(string) {}})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
+	_, err := NewFallback([]Agent{first, second}).Run(context.Background(), RunOpts{OnChunk: func(string) {}})
+	if !errors.Is(err, invocationErr) {
+		t.Fatalf("Run() error = %v, want original invocation error", err)
 	}
-	if result == nil || result.Text != "recovered" {
-		t.Fatalf("Run() result = %+v, want recovery", result)
+	if second.calls != 0 {
+		t.Fatalf("fallback calls = %d, want 0", second.calls)
 	}
 }
 
@@ -173,13 +175,15 @@ func TestFallbackAgentReportsAllQuotaExhaustionWithoutSecrets(t *testing.T) {
 	first := &fallbackTestAgent{
 		name: "claude",
 		run: func() (*Result, error) {
-			return nil, errors.New("claude exited: exit status 1: weekly limit; token=secret-one")
+			err := errors.New("claude exited: exit status 1: weekly limit; token=secret-one")
+			return nil, ClassifyProviderError(err, "weekly limit; token=secret-one")
 		},
 	}
 	second := &fallbackTestAgent{
 		name: "pi",
 		run: func() (*Result, error) {
-			return nil, errors.New("pi exited: exit status 1: rate_limit_error; token=secret-two")
+			err := errors.New("pi exited: exit status 1: rate_limit_error; token=secret-two")
+			return nil, ClassifyProviderError(err, "rate_limit_error; token=secret-two")
 		},
 	}
 
@@ -197,6 +201,24 @@ func TestFallbackAgentReportsAllQuotaExhaustionWithoutSecrets(t *testing.T) {
 		if strings.Contains(message, secret) {
 			t.Fatalf("error leaked secret %q: %s", secret, message)
 		}
+	}
+}
+
+func TestFallbackAgentSingletonSanitizesQuotaExhaustion(t *testing.T) {
+	only := &fallbackTestAgent{
+		name: "claude",
+		run: func() (*Result, error) {
+			err := errors.New("claude exited: weekly limit; token=secret")
+			return nil, ClassifyProviderError(err, "weekly limit; token=secret")
+		},
+	}
+
+	_, err := NewFallback([]Agent{only}).Run(context.Background(), RunOpts{})
+	if !IsQuotaFallbackError(err) {
+		t.Fatalf("error = %v, want quota fallback error", err)
+	}
+	if strings.Contains(err.Error(), "secret") || !strings.Contains(err.Error(), "claude (session/quota limit)") {
+		t.Fatalf("error = %q, want bounded classification without diagnostic", err)
 	}
 }
 
@@ -232,7 +254,8 @@ func TestFallbackAgentNeverSwitchesWhileInvocationIsActive(t *testing.T) {
 		runWithOpts: func(RunOpts) (*Result, error) {
 			close(started)
 			<-release
-			return nil, errors.New("claude exited: exit status 1: rate limit")
+			err := errors.New("claude exited: exit status 1: rate limit")
+			return nil, ClassifyProviderError(err, "rate limit")
 		},
 	}
 	second := &fallbackTestAgent{

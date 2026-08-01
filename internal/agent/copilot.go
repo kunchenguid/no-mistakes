@@ -77,7 +77,7 @@ func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 	detail := copilotErrorDetail(copilotErr, string(stderrBuf))
 	if waitErr != nil {
 		if detail != "" {
-			retErr := fmt.Errorf("copilot exited: %w: %s", waitErr, detail)
+			retErr := ClassifyProviderError(fmt.Errorf("copilot exited: %w: %s", waitErr, detail), copilotErr, string(stderrBuf))
 			emitAgentExited(opts, "copilot", pid, retErr)
 			return nil, retErr
 		}
@@ -87,7 +87,7 @@ func (a *copilotAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 	}
 	if exitCode != 0 {
 		if detail != "" {
-			retErr := fmt.Errorf("copilot reported exit code %d: %s", exitCode, detail)
+			retErr := ClassifyProviderError(fmt.Errorf("copilot reported exit code %d: %s", exitCode, detail), copilotErr, string(stderrBuf))
 			emitAgentExited(opts, "copilot", pid, retErr)
 			return nil, retErr
 		}

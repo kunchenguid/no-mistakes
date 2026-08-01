@@ -31,7 +31,8 @@ func (a *quotaFixAgent) Run(_ context.Context, _ agent.RunOpts) (*agent.Result, 
 		}
 		quotaTestGit(a.workDir, "add", "prior-fix.txt")
 		quotaTestGit(a.workDir, "commit", "-m", "prior pipeline fix")
-		return nil, errors.New("claude exited: exit status 1: session limit")
+		err := errors.New("claude exited: exit status 1: session limit")
+		return nil, agent.ClassifyProviderError(err, "session limit")
 	}
 	return &agent.Result{Text: "validated"}, nil
 }
@@ -146,7 +147,7 @@ func (a *quotaOnceAgent) Run(context.Context, agent.RunOpts) (*agent.Result, err
 
 func TestExecutor_QuotaFallbackAppliesToOtherAgentDrivenSteps(t *testing.T) {
 	database, p, run, repo := setupTest(t)
-	first := &quotaOnceAgent{name: "claude", err: errors.New("claude exited: exit status 1: rate_limit_error")}
+	first := &quotaOnceAgent{name: "claude", err: agent.ClassifyProviderError(errors.New("claude exited: exit status 1: rate_limit_error"), "rate_limit_error")}
 	second := &quotaFixAgent{name: "pi"}
 	step := &adaptiveCallStep{
 		name: types.StepTest,
