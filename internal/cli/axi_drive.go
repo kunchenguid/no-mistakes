@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -942,16 +943,36 @@ func runAxiAbort(cmd *cobra.Command, runID string) error {
 // must never present a completed abort or authoritative final ownership
 // guidance without confirmed true.
 func waitForTerminalRun(ctx context.Context, client *ipc.Client, runID string, timeout time.Duration) (run *ipc.RunInfo, confirmed bool, reason string) {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	var last *ipc.RunInfo
 	for {
-		observed, err := getRunInfo(client, runID)
-		if err != nil {
-			return last, false, fmt.Sprintf("the run state could not be read: %v", err)
+		remaining := timeout
+		if deadline, ok := waitCtx.Deadline(); ok {
+			remaining = time.Until(deadline)
+			if remaining <= 0 {
+				return last, false, fmt.Sprintf("the run did not report a terminal state within the bounded %s wait", timeout)
+			}
 		}
+		var result ipc.GetRunResult
+		err := client.CallWithContext(waitCtx, ipc.MethodGetRun, &ipc.GetRunParams{RunID: runID}, &result, remaining)
+		if err != nil {
+			switch waitCtx.Err() {
+			case context.Canceled:
+				return last, false, "the in-flight run state read was cancelled before a terminal state was observed"
+			case context.DeadlineExceeded:
+				return last, false, fmt.Sprintf("the in-flight run state read did not complete within the bounded %s wait", timeout)
+			default:
+				var timeoutErr interface{ Timeout() bool }
+				if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+					return last, false, fmt.Sprintf("the in-flight run state read did not complete within the bounded %s wait", timeout)
+				}
+				return last, false, fmt.Sprintf("the run state could not be read: %v", err)
+			}
+		}
+		observed := result.Run
 		if observed != nil {
 			last = observed
 		}
@@ -959,9 +980,10 @@ func waitForTerminalRun(ctx context.Context, client *ipc.Client, runID string, t
 			return observed, true, ""
 		}
 		select {
-		case <-ctx.Done():
-			return last, false, "the wait was cancelled before a terminal state was observed"
-		case <-timer.C:
+		case <-waitCtx.Done():
+			if waitCtx.Err() == context.Canceled {
+				return last, false, "the wait was cancelled before a terminal state was observed"
+			}
 			return last, false, fmt.Sprintf("the run did not report a terminal state within the bounded %s wait", timeout)
 		case <-ticker.C:
 		}

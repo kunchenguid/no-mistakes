@@ -22,7 +22,7 @@ import (
 // accepted, but what the post-cancel terminal wait observes is controlled per
 // test. The registered repo, worktree, socket, and NM_HOME are all real, so
 // `axi abort` runs end to end through the CLI.
-func newAbortQuiescenceFixture(t *testing.T, getRun func(call int) (*ipc.RunInfo, error)) {
+func newAbortQuiescenceFixture(t *testing.T, getRun func(context.Context, int) (*ipc.RunInfo, error)) {
 	t.Helper()
 	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
@@ -77,9 +77,9 @@ func newAbortQuiescenceFixture(t *testing.T, getRun func(call int) (*ipc.RunInfo
 		return &ipc.CancelRunResult{OK: true}, nil
 	})
 	calls := 0
-	srv.Handle(ipc.MethodGetRun, func(context.Context, json.RawMessage) (interface{}, error) {
+	srv.Handle(ipc.MethodGetRun, func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
 		calls++
-		run, err := getRun(calls)
+		run, err := getRun(ctx, calls)
 		if err != nil {
 			return nil, err
 		}
@@ -111,7 +111,7 @@ func newAbortQuiescenceFixture(t *testing.T, getRun func(call int) (*ipc.RunInfo
 	chdir(t, local)
 }
 
-func runningRunForever(int) (*ipc.RunInfo, error) {
+func runningRunForever(context.Context, int) (*ipc.RunInfo, error) {
 	return &ipc.RunInfo{ID: "run-quiesce", Branch: "feature/abort", Status: types.RunRunning}, nil
 }
 
@@ -148,7 +148,7 @@ func TestAxiAbortRefusesSuccessWhileTerminalQuiescenceUnconfirmed(t *testing.T) 
 		}
 	})
 	t.Run("status read failure", func(t *testing.T) {
-		newAbortQuiescenceFixture(t, func(int) (*ipc.RunInfo, error) {
+		newAbortQuiescenceFixture(t, func(context.Context, int) (*ipc.RunInfo, error) {
 			return nil, errors.New("scripted status read failure")
 		})
 		out, err := executeCmd("axi", "abort")
@@ -176,7 +176,7 @@ func TestAxiAbortByRunIDRefusesSuccessWhileTerminalQuiescenceUnconfirmed(t *test
 		}
 	})
 	t.Run("status read failure", func(t *testing.T) {
-		newAbortQuiescenceFixture(t, func(int) (*ipc.RunInfo, error) {
+		newAbortQuiescenceFixture(t, func(context.Context, int) (*ipc.RunInfo, error) {
 			return nil, errors.New("scripted status read failure")
 		})
 		out, err := executeCmd("axi", "abort", "--run", "run-quiesce")
@@ -186,7 +186,7 @@ func TestAxiAbortByRunIDRefusesSuccessWhileTerminalQuiescenceUnconfirmed(t *test
 		assertUnconfirmedAbortOutput(t, "abort --run", out)
 	})
 	t.Run("confirmed terminal reports completion", func(t *testing.T) {
-		newAbortQuiescenceFixture(t, func(int) (*ipc.RunInfo, error) {
+		newAbortQuiescenceFixture(t, func(context.Context, int) (*ipc.RunInfo, error) {
 			return &ipc.RunInfo{ID: "run-quiesce", Branch: "feature/abort", Status: types.RunCancelled}, nil
 		})
 		out, err := executeCmd("axi", "abort", "--run", "run-quiesce")
@@ -199,4 +199,33 @@ func TestAxiAbortByRunIDRefusesSuccessWhileTerminalQuiescenceUnconfirmed(t *test
 			}
 		}
 	})
+}
+
+func TestAxiAbortStatusReadStallRespectsBoundedWait(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "branch scoped", args: []string{"axi", "abort"}},
+		{name: "explicit run", args: []string{"axi", "abort", "--run", "run-quiesce"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			newAbortQuiescenceFixture(t, func(ctx context.Context, _ int) (*ipc.RunInfo, error) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			})
+			started := time.Now()
+			out, err := executeCmd(tc.args...)
+			if err == nil {
+				t.Fatalf("abort with a stalled status read must exit nonzero:\n%s", out)
+			}
+			if elapsed := time.Since(started); elapsed > time.Second {
+				t.Fatalf("stalled status read exceeded bounded wait: %s\n%s", elapsed, out)
+			}
+			assertUnconfirmedAbortOutput(t, tc.name, out)
+			if !strings.Contains(out, "in-flight run state read did not complete") {
+				t.Errorf("stalled status read omitted precise timeout reason:\n%s", out)
+			}
+		})
+	}
 }
