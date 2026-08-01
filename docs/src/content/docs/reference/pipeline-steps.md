@@ -24,11 +24,11 @@ Review flags every newly added violation and requires same-pattern tests encount
 
 ## Intent
 
-Uses agent-supplied intent when a run provides it, otherwise infers the author's intent from recent local Claude Code, Codex, OpenCode, Rovo Dev, Pi, or GitHub Copilot CLI transcripts.
+Uses explicit intent when a run provides it, including exact explicit intent inherited by a rerun, otherwise infers the author's intent from recent local Claude Code, Codex, OpenCode, Rovo Dev, Pi, or GitHub Copilot CLI transcripts.
 This is best-effort context, and when available it is included in rebase fixes, review checks and fixes, test detection, evidence validation, and fixes, documentation checks and fixes, lint detection and fixes, CI auto-fixes, and PR drafting.
 
 **Behavior:**
-- Uses run-supplied intent verbatim and skips transcript-based inference, even when `intent.enabled` is false
+- Treats newly supplied explicit intent (`agent`) and exact inherited rerun intent (`rerun`) as authoritative acceptance criteria, while preserving their distinct sources, and skips transcript-based inference even when `intent.enabled` is false
 - Runs transcript-based inference only when `intent.enabled` is true
 - Matches local agent transcripts against non-deleted changed files when present, falling back to all changed files for all-deletion diffs, may use the configured pipeline agent to disambiguate plausible matches, and summarizes the likely author intent with that agent
 - Stores the derived summary, source, session ID, and match score on the run

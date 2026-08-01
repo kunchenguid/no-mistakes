@@ -29,6 +29,8 @@ func TestRerunIntentProvenanceJourney(t *testing.T) {
 	h.WaitForRun(explicitBranch, 90*time.Second)
 	if out, err := h.RunInDir(explicitWT, "rerun", "--intent", " "); err == nil || !strings.Contains(out, "--intent must not be empty") {
 		t.Fatalf("blank rerun intent should be rejected, err=%v output=%s", err, out)
+	} else {
+		t.Logf("CLI rejected blank explicit intent: %s", strings.TrimSpace(out))
 	}
 	originalExplicit := runCLIAndWait(t, h, explicitWT, explicitBranch, "rerun", "--intent", explicit)
 	assertCompletedRerunFixture(t, h, originalExplicit, explicit, "agent")
@@ -73,6 +75,7 @@ func runCLIAndWait(t *testing.T, h *Harness, dir, branch string, args ...string)
 	if !strings.Contains(out, "Rerun started") {
 		t.Fatalf("%s output missing rerun confirmation:\n%s", strings.Join(args, " "), out)
 	}
+	t.Logf("CLI %s: %s", strings.Join(args, " "), strings.TrimSpace(out))
 	run := h.WaitForRun(branch, 90*time.Second)
 	if run.Status != types.RunCompleted {
 		t.Fatalf("%s status=%s error=%v", strings.Join(args, " "), run.Status, run.Error)
@@ -92,4 +95,5 @@ func assertCompletedRerunFixture(t *testing.T, h *Harness, run *ipc.RunInfo, wan
 	if intent.source == nil || *intent.source != wantSource {
 		t.Fatalf("run %s intent_source=%v, want %q", run.ID, intent.source, wantSource)
 	}
+	t.Logf("persisted run %s: intent_source=%q intent=%q", run.ID, *intent.source, *intent.summary)
 }

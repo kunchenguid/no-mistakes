@@ -294,7 +294,9 @@ no-mistakes rerun --intent "the revised user goal"
 Starts a new pipeline run using the last-known head SHA on the current branch.
 If the selected prior run has explicit intent, rerun inherits it exactly by default;
 otherwise it performs fresh intent inference. `--intent` supplies a new canonical
-explicit intent in either case. If another run is active on that branch, rerun
+explicit intent in either case. Inherited intent keeps distinct rerun provenance;
+an override is recorded as newly supplied explicit intent, while fresh inference
+records the transcript source. If another run is active on that branch, rerun
 cancels it before starting over. Treat rerun as a between-runs action after a
 failed or cancelled outcome, or after you have committed a separate fix outside
 an active run; do not use it to bypass a gate.
