@@ -542,7 +542,8 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 }
 
 // HandleRerun creates a new run for the latest gate head on a branch. An
-// optional intent is stamped onto the new run.
+// explicit intent overrides the selected run. Otherwise an authoritative
+// intent is inherited byte-for-byte; runs without one infer intent afresh.
 func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, skipSteps []types.StepName, intent string) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
@@ -586,7 +587,20 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 		baseSHA = matchingHead.BaseSHA
 	}
 
-	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent)
+	intentSource := db.RunIntentSourceAgent
+	if strings.TrimSpace(intent) == "" {
+		intentSource = ""
+		if latestForBranch.Intent != nil && latestForBranch.IntentSource != nil &&
+			db.IsAuthoritativeRunIntentSource(*latestForBranch.IntentSource) {
+			// Do not normalize or regenerate this value. The selected run's
+			// persisted bytes are the canonical acceptance criteria for the
+			// replacement run.
+			intent = *latestForBranch.Intent
+			intentSource = db.RunIntentSourceRerun
+		}
+	}
+
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
 }
 
 // fetchRunDefaultBranch fetches the trusted branch from the refreshed
@@ -607,6 +621,13 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
 func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent)
+}
+
+// startRunWithIntentSource is the common run-creation path. source is empty
+// when no intent is supplied, RunIntentSourceAgent for a new explicit
+// override, and RunIntentSourceRerun for inherited explicit intent.
+func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -651,16 +672,21 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 		return "", fmt.Errorf("create run: %w", err)
 	}
 
-	// Stamp an agent-supplied intent onto the run before the pipeline starts,
-	// so the intent step finds it already present and skips transcript-based
-	// inference. A persist failure is non-fatal: the intent step would simply
-	// fall back to inference.
-	if trimmed := strings.TrimSpace(intent); trimmed != "" {
-		if err := m.db.UpdateRunIntent(run.ID, db.RunIntent{Summary: trimmed, Source: db.RunIntentSourceAgent, Score: 1}); err != nil {
-			slog.Warn("failed to persist agent-supplied intent", "run_id", run.ID, "error", err)
+	// Stamp an explicit or inherited intent onto the run before the pipeline
+	// starts, so the intent step skips transcript-based inference. Inherited
+	// intent is deliberately not trimmed: its persisted bytes are canonical.
+	storedIntent := intent
+	if source != db.RunIntentSourceRerun {
+		storedIntent = strings.TrimSpace(storedIntent)
+	}
+	if strings.TrimSpace(storedIntent) != "" {
+		if source == "" {
+			source = db.RunIntentSourceAgent
+		}
+		if err := m.db.UpdateRunIntent(run.ID, db.RunIntent{Summary: storedIntent, Source: source, Score: 1}); err != nil {
+			slog.Warn("failed to persist run intent", "run_id", run.ID, "error", err)
 		} else {
-			run.Intent = &trimmed
-			source := db.RunIntentSourceAgent
+			run.Intent = &storedIntent
 			run.IntentSource = &source
 			score := 1.0
 			run.IntentScore = &score

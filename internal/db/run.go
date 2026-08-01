@@ -450,6 +450,18 @@ func (d *DB) UpdateRunErrorStatus(id, errMsg string, status types.RunStatus) err
 // authoritative acceptance criteria rather than a low-confidence hint.
 const RunIntentSourceAgent = "agent"
 
+// RunIntentSourceRerun marks an authoritative intent inherited from the run
+// selected for a rerun. It remains authoritative, but the distinct value keeps
+// inherited intent inspectable instead of confusing it with a new override.
+const RunIntentSourceRerun = "rerun"
+
+// IsAuthoritativeRunIntentSource reports whether a run's intent came from an
+// explicit operator/agent contract, either directly or through rerun
+// inheritance.
+func IsAuthoritativeRunIntentSource(source string) bool {
+	return source == RunIntentSourceAgent || source == RunIntentSourceRerun
+}
+
 // RunIntent carries the four intent-related columns persisted on a run.
 type RunIntent struct {
 	Summary   string

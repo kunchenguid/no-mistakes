@@ -55,8 +55,11 @@ task along with the command:
      non-default branch, so the work must land there before you run.
   3. **Then validate**, passing the user's task as your `--intent`. The task
      text is exactly what the user set out to accomplish, in their own words, so
-     it *is* the intent - pass it through, enriched with the decisions and
-     tradeoffs you made while doing the work (see
+     it *is* the intent - preserve requirements stated directly by the user,
+     including constraints, exclusions, acceptance criteria, and later decisions;
+     do not condense them into a diff summary or drop them while adding
+     implementation context. Enrich it with the decisions and tradeoffs you
+     made while doing the work (see
      [Intent is required](#intent-is-required)).
 
 
