@@ -524,6 +524,47 @@ func TestTUIOverflow_SnapshotGateReplacesPreviousRoundDiffAndInflightFetch(t *te
 	}
 }
 
+func TestTUIOverflow_SnapshotGateClearsStaleGateState(t *testing.T) {
+	m := ciRunningModel(false)
+	m.steps = []ipc.StepResultInfo{{
+		ID: "review-row", RunID: "run-1", StepName: types.StepReview,
+		Status: types.StepStatusAwaitingApproval, RoundCount: 1,
+	}}
+	m.stepFindings[types.StepReview] = `{"findings":[{"id":"old","severity":"error","description":"old"}]}`
+	m.findingSelections[types.StepReview] = map[string]bool{"old": true}
+	m.findingCursor[types.StepReview] = 3
+	m.findingInstructions[types.StepReview] = map[string]string{"old": "old note"}
+	m.addedFindings[types.StepReview] = []types.Finding{{ID: "user-old", Description: "old user finding"}}
+	m.editor = &editorState{step: types.StepReview}
+
+	newFindings := `{"findings":[{"id":"new","severity":"warning","description":"new"}]}`
+	m.applySnapshot(&ipc.RunInfo{
+		ID: "run-1", Status: types.RunRunning, StateRev: 20,
+		Steps: []ipc.StepResultInfo{{
+			ID: "review-row", RunID: "run-1", StepName: types.StepReview,
+			Status: types.StepStatusAwaitingApproval, RoundCount: 2,
+			FindingsJSON: &newFindings,
+		}},
+	})
+
+	if _, ok := m.findingInstructions[types.StepReview]; ok {
+		t.Fatal("snapshot retained stale finding instructions")
+	}
+	if len(m.addedFindings[types.StepReview]) != 0 {
+		t.Fatal("snapshot retained stale user-added findings")
+	}
+	if m.editor != nil {
+		t.Fatal("snapshot retained an editor for the replaced gate")
+	}
+	if m.findingCursor[types.StepReview] != 0 {
+		t.Fatalf("finding cursor = %d, want 0", m.findingCursor[types.StepReview])
+	}
+	selected := m.findingSelections[types.StepReview]
+	if len(selected) != 1 || !selected["new"] || selected["old"] {
+		t.Fatalf("finding selection = %#v, want only new finding", selected)
+	}
+}
+
 func TestTUIOverflow_ReconnectClearsGenerationScopedAsyncState(t *testing.T) {
 	m := ciRunningModel(false)
 	m.reconcilePending = true
