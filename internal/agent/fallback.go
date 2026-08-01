@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -313,6 +314,8 @@ func quotaErrorReason(err error) (string, bool) {
 	return quotaErr.reason, true
 }
 
+var providerStatus429RE = regexp.MustCompile(`\b(?:http|status(?: code)?|failed with)\s*[:=]?\s*429\b`)
+
 func quotaDiagnosticReason(diagnostic string) (string, bool) {
 	msg := strings.ToLower(diagnostic)
 	if strings.Contains(msg, "quota exceeded") ||
@@ -336,8 +339,7 @@ func quotaDiagnosticReason(diagnostic string) (string, bool) {
 		strings.Contains(msg, "rate limited") ||
 		limitStatus(msg, "rate limit") ||
 		strings.Contains(msg, "too many requests") ||
-		strings.Contains(msg, "http 429") ||
-		strings.Contains(msg, "status 429") {
+		providerStatus429RE.MatchString(msg) {
 		return "rate limit", true
 	}
 	return "", false

@@ -320,9 +320,25 @@ func TestClassifyProviderErrorRequiresExhaustionEvidence(t *testing.T) {
 			t.Fatalf("diagnostic %q classified as quota exhaustion: %v", diagnostic, got)
 		}
 	}
-	for _, diagnostic := range []string{"rate_limit_error", "session_limit_error", "quota_exceeded", "rate limit exceeded", "HTTP 429 Too Many Requests"} {
+	for _, diagnostic := range []string{
+		"rate_limit_error",
+		"session_limit_error",
+		"quota_exceeded",
+		"rate limit exceeded",
+		"HTTP 429 Too Many Requests",
+		"request failed with 429: provider unavailable",
+	} {
 		if got := ClassifyProviderError(generic, diagnostic); got == generic {
 			t.Fatalf("diagnostic %q was not classified", diagnostic)
+		}
+	}
+	for _, diagnostic := range []string{
+		"request failed with 1429",
+		"processed 429 tokens",
+		"provider error 429",
+	} {
+		if got := ClassifyProviderError(generic, diagnostic); got != generic {
+			t.Fatalf("diagnostic %q classified without a bounded status signal: %v", diagnostic, got)
 		}
 	}
 }
