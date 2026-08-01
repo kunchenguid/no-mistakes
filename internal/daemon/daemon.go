@@ -623,18 +623,39 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		run, err := d.GetRun(p.RunID)
+		info, err := runSnapshot(mgr, p.RunID, func(runID string) (*ipc.RunInfo, error) {
+			run, err := d.GetRun(runID)
+			if err != nil {
+				return nil, fmt.Errorf("get run: %w", err)
+			}
+			if run == nil {
+				return nil, fmt.Errorf("run not found: %s", runID)
+			}
+			steps, err := d.GetStepsByRun(runID)
+			if err != nil {
+				return nil, fmt.Errorf("get steps: %w", err)
+			}
+			return runToInfo(d, run, steps), nil
+		})
 		if err != nil {
-			return nil, fmt.Errorf("get run: %w", err)
+			return nil, err
 		}
-		if run == nil {
-			return nil, fmt.Errorf("run not found: %s", p.RunID)
+		return &ipc.GetRunResult{Run: info}, nil
+	})
+
+	// The fix-review diff is derived on demand instead of riding the event
+	// stream, so a very large change can no longer produce an oversized frame
+	// that takes the whole subscription down with it.
+	srv.Handle(ipc.MethodGetStepDiff, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.GetStepDiffParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		steps, err := d.GetStepsByRun(p.RunID)
+		diff, truncated, err := mgr.StepDiff(ctx, p.RunID)
 		if err != nil {
-			return nil, fmt.Errorf("get steps: %w", err)
+			return nil, err
 		}
-		return &ipc.GetRunResult{Run: runToInfo(d, run, steps)}, nil
+		return &ipc.GetStepDiffResult{Diff: diff, Truncated: truncated}, nil
 	})
 
 	srv.Handle(ipc.MethodGetRuns, func(_ context.Context, params json.RawMessage) (interface{}, error) {
@@ -731,7 +752,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.SkipSteps, p.Intent)
+		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent)
 		if err != nil {
 			return nil, err
 		}
@@ -793,9 +814,12 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		// Register before returning the prepared stream. The IPC server sends
 		// its acknowledgement only after this point, so a client's immediate
 		// full reconciliation cannot race an unregistered subscription.
-		ch, unsub := mgr.Subscribe(p.RunID)
+		sub, err := mgr.Subscribe(p.RunID)
+		if err != nil {
+			return nil, err
+		}
 		var unsubscribeOnce sync.Once
-		cleanup := func() { unsubscribeOnce.Do(unsub) }
+		cleanup := func() { unsubscribeOnce.Do(sub.Close) }
 		go func() {
 			<-ctx.Done()
 			cleanup()
@@ -803,20 +827,40 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return func(send func(interface{}) error) error {
 			defer cleanup()
 			for {
-				select {
-				case event, ok := <-ch:
-					if !ok {
-						return nil // channel closed (run completed)
-					}
-					if err := send(event); err != nil {
-						return err // client disconnected
-					}
-				case <-ctx.Done():
-					return nil
+				event, ok := sub.Next(ctx)
+				if !ok {
+					return nil // stream finished (run completed or cancelled)
+				}
+				if err := send(event); err != nil {
+					return err // client disconnected
 				}
 			}
 		}, nil
 	})
+}
+
+// runSnapshot reads an authoritative run snapshot and stamps it with the state
+// revision sampled BEFORE the read.
+//
+// The ordering is the whole point and must not be reversed. Every producer
+// writes state and only then broadcasts (see the executor's emitters), so a
+// revision sampled first is never newer than the snapshot that follows it:
+//
+//   - every event at or below the sampled revision already has its write
+//     reflected in the read, so nothing is lost by the consumer skipping it;
+//   - every event above it is still delivered and still exceeds the snapshot's
+//     revision, so the consumer still applies it on top.
+//
+// Sampling after the read would let a transition that landed in between be
+// skipped by the consumer's monotonic guard and never repaired.
+func runSnapshot(mgr *RunManager, runID string, read func(string) (*ipc.RunInfo, error)) (*ipc.RunInfo, error) {
+	stateRev := mgr.StateRev(runID)
+	info, err := read(runID)
+	if err != nil {
+		return nil, err
+	}
+	info.StateRev = stateRev
+	return info, nil
 }
 
 func gateContextResult(result gatecontext.Result) ipc.GateContextResult {
@@ -843,6 +887,7 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		PRURL:              r.PRURL,
 		Error:              r.Error,
 		CIReady:            r.CIReadyAt != nil,
+		CIReadyNoCI:        r.CIReadyNoCI,
 		AwaitingAgent:      r.AwaitingAgentSince != nil,
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CreatedAt:          r.CreatedAt,

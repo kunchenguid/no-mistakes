@@ -55,8 +55,11 @@ task along with the command:
      non-default branch, so the work must land there before you run.
   3. **Then validate**, passing the user's task as your `--intent`. The task
      text is exactly what the user set out to accomplish, in their own words, so
-     it *is* the intent - pass it through, enriched with the decisions and
-     tradeoffs you made while doing the work (see
+     it *is* the intent - preserve requirements stated directly by the user,
+     including constraints, exclusions, acceptance criteria, and later decisions;
+     do not condense them into a diff summary or drop them while adding
+     implementation context. Enrich it with the decisions and tradeoffs you
+     made while doing the work (see
      [Intent is required](#intent-is-required)).
 
 
@@ -210,12 +213,15 @@ Run the pipeline and decide on its findings as they come up:
       awaiting approval. You rarely need this; omit it to answer the active gate.
 3. Repeat step 2 until the output has an `outcome:` instead of a `gate:`. The
    outcomes are:
-   - `checks-passed` - the change is validated and CI is green, but the PR is
-     not merged yet. **You are done driving the pipeline.** Do not wait for the
-     merge: tell the user the PR is ready and ask them to review and merge it
-     (the PR link is in the `help` line). no-mistakes keeps monitoring the PR
-     in the background until it is merged, closed, or its configured idle
-     timeout elapses, so a human can watch it in the TUI.
+   - `checks-passed` - the change is validated and CI is green (or the
+     trusted default-branch config declares `no_ci: true` and no checks are
+     registered - the help line names that declaration when it applies), but
+     the PR is not merged yet. **You are done driving the pipeline.** Do not
+     wait for the merge: tell the user the PR is ready and ask them to review
+     and merge it (the PR link is in the `help` line). A generic empty forge
+     check list without that declaration is not ready. no-mistakes keeps
+     monitoring the PR in the background until it is merged, closed, or its
+     configured idle timeout elapses, so a human can watch it in the TUI.
    - `passed` - the changes cleared the gate and the PR was merged or closed.
    - `failed` or `cancelled` - they did not; read the output and address it.
      Fix whatever the output points at (a failing test, a lint error, a finding
@@ -238,8 +244,10 @@ After synchronization, commit the follow-up on top and re-run `no-mistakes axi r
 This preserves every prior gate-fix commit regardless of its configured subject.
 
 The CI step deliberately keeps watching the PR after checks pass, so
-`axi run` returns `checks-passed` the moment checks are green rather than
+`axi run` returns `checks-passed` the moment checks are green (or a trusted
+`no_ci: true` declaration covers a zero-check repository) rather than
 blocking on the human merge. Never poll or re-run waiting for the merge yourself.
+Never treat "no CI checks reported" alone as green.
 
 Because that monitor stays live, a PR that falls behind the default branch or
 hits a merge conflict after checks pass - commonly because another PR merged

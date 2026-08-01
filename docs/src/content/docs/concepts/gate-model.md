@@ -65,7 +65,7 @@ That is a core design choice, not an implementation detail.
 8. After local checks pass, the push step forwards the branch to the configured push target only after verifying that the update will not discard unincorporated commits already on that target, and the PR step creates or updates the pull request.
    For GitHub fork routing, the push target is the fork and the PR base repository is the parent from `origin`.
 9. The CI step keeps watching the open PR until it is merged, closed, or its configured idle timeout elapses with no base-branch movement, and can auto-fix failures or merge conflicts when supported.
-   While it watches, the TUI and terminal title surface a `Checks passed` signal once checks are green and the PR is mergeable, and `no-mistakes axi` returns `outcome: checks-passed` with instructions to summarize the run and list any pipeline fixes, so agents stop and ask you to review and merge it.
+   While it watches, the TUI and terminal title surface a `Checks passed` signal once checks are green and the PR is mergeable (or the trusted default-branch config declares [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci) and no checks are registered), and `no-mistakes axi` returns `outcome: checks-passed` with instructions to summarize the run and list any pipeline fixes, so agents stop and ask you to review and merge it. An empty forge response without that declaration stays not-ready.
 
 **Key design decisions:**
 

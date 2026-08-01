@@ -15,7 +15,6 @@ import (
 )
 
 const (
-	defaultChecksGracePeriod          = 60 * time.Second
 	defaultBaseBranchTipResolveWindow = 30 * time.Second
 	defaultPublishedHeadResolveWindow = 30 * time.Second
 )
@@ -32,12 +31,16 @@ const (
 
 // CIStep monitors an open PR until it is merged, closed, or its configured idle
 // timeout elapses, auto-fixing CI failures.
+//
+// Empty check lists are never treated as green unless the resolved config
+// carries the trusted default-branch `no_ci: true` declaration (config.Config.NoCI).
+// A feature branch cannot self-declare that value. When checks exist, their
+// actual states are always processed normally - even on a declared no-CI repo.
 type CIStep struct {
 	lastFixedChecks      string               // sorted check names from last fix attempt, to avoid re-fixing
 	lastFixedCompletedAt map[string]time.Time // terminally failed check completion times seen before the last fix attempt
 	ciFixAttempts        int                  // number of CI auto-fix attempts made
 	transientReruns      checkRerunBudget     // per-check rerun budget spent on provider-reported transient failures
-	checksGracePeriod    time.Duration        // minimum wait before trusting empty CI checks (0 = default 60s)
 	pollIntervalOverride time.Duration        // if set, overrides computed poll interval (for testing)
 	waitForNextPoll      func(context.Context, time.Duration) error
 	now                  func() time.Time
@@ -114,13 +117,6 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 	default:
 		return false, fmt.Errorf("PR state is unresolved: %q", state)
 	}
-}
-
-func (s *CIStep) gracePeriod() time.Duration {
-	if s.checksGracePeriod > 0 {
-		return s.checksGracePeriod
-	}
-	return defaultChecksGracePeriod
 }
 
 func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
@@ -250,7 +246,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			}
 		}
 
-		elapsed := now().Sub(started)
 		if !unlimited && now().Sub(timeoutAnchor) >= timeout {
 			return timeoutOutcome()
 		}
@@ -309,7 +304,15 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			lastMonitorLog = ""
 			sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
 		} else {
-			pending := hasPendingChecks(checks)
+			// checksPending is the narrow execution state: only checks that are
+			// actively running or queued block a rerun or issue escalation. A
+			// provider-cancelled check is terminal enough to enter the transient
+			// rerun policy, even though it is not a verdict on the code.
+			checksPending := hasPendingChecks(checks)
+			// readinessPending is deliberately broader: any state that is not a
+			// conclusive pass, failure, or skip must keep the PR non-ready. This
+			// includes cancelled and unknown provider states.
+			readinessPending := checksPending || hasUnresolvedChecks(checks)
 			failing := failingCheckNames(checks)
 
 			// If a terminally failed check completed after our last fix push,
@@ -330,7 +333,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			// excluded outright: no rerun can ever clear one, so it must reach
 			// the fix agent on its first observation.
 			rerunIssued := false
-			if !pending && !mergeConflict {
+			if !checksPending && !mergeConflict {
 				issued, rerunOutcome := s.rerunTransientChecks(sctx, host, pr, checks)
 				if rerunOutcome != nil {
 					// The published head moved, so this run never delivered the
@@ -361,7 +364,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			timeoutFailingChecks = append(timeoutFailingChecks[:0], mergeCheckNames(reportedIssues, awaitingRerun)...)
 
 			if hasIssues || len(awaitingRerun) > 0 {
-				if err := sctx.DB.SetRunCIReady(sctx.Run.ID, false); err != nil {
+				if err := setCIMonitorReadiness(sctx, false, false); err != nil {
 					return nil, err
 				}
 			}
@@ -372,7 +375,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				// check: it never counted as a failing check, so nothing above
 				// cleared it.
 				lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
-			} else if hasIssues && pending {
+			} else if hasIssues && checksPending {
+				// Issue handling waits only for checks that can still complete on
+				// their own. A cancelled check whose rerun budget is exhausted must
+				// reach the approval gate instead of waiting forever.
 				lastMonitorLog = ""
 				if pendingCheckMatchesLastFixed(checks, s.lastFixedChecks) {
 					s.lastFixedChecks = ""
@@ -456,20 +462,33 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				case !prStateKnown || !mergeabilityKnown:
 					clearCIMonitorReady(sctx)
 					lastMonitorLog = ""
-				case pending:
+				case readinessPending:
 					// Checks are (re-)running with no failures yet. Surface this
 					// so a PR that passed checks and starts re-running clears the
 					// previous passed-checks signal instead of looking stale.
+					// The broader readiness state is intentional here: cancelled
+					// and unknown checks must never be promoted as green.
+					// Applies even when no_ci is declared: registered checks are
+					// never waived.
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
-				case len(checks) == 0 && elapsed < s.gracePeriod():
-					clearCIMonitorReady(sctx)
-					// CI checks may not be registered yet, keep polling.
-					lastMonitorLog = ""
-					sctx.Log("no CI checks reported yet, waiting for checks to register...")
 				case len(checks) == 0:
-					lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
-				default:
+					// Empty forge results are ready ONLY with positive durable
+					// evidence from trusted default-branch config (no_ci: true).
+					// Without that declaration, keep waiting - delayed registration
+					// is common and must never look green. Elapsed time is not
+					// evidence; there is no grace-period promotion path.
+					if sctx.Config != nil && sctx.Config.NoCI {
+						lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
+					} else {
+						clearCIMonitorReady(sctx)
+						lastMonitorLog = ""
+						sctx.Log("no CI checks reported yet, waiting for checks to register...")
+					}
+				case allChecksPassed(checks):
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
+				default:
+					clearCIMonitorReady(sctx)
+					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
 				}
 			}
 		}
@@ -505,7 +524,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) string {
 	if message != previous {
 		ready := message == ciChecksPassedMsg || message == ciNoChecksPassedMsg
-		if err := sctx.DB.SetRunCIReady(sctx.Run.ID, ready); err != nil {
+		declaredNoCI := message == ciNoChecksPassedMsg
+		if err := setCIMonitorReadiness(sctx, ready, declaredNoCI); err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not persist CI readiness: %v", err))
 		}
 		sctx.Log(message)
@@ -514,7 +534,18 @@ func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) st
 }
 
 func clearCIMonitorReady(sctx *pipeline.StepContext) {
-	if err := sctx.DB.SetRunCIReady(sctx.Run.ID, false); err != nil {
+	if err := setCIMonitorReadiness(sctx, false, false); err != nil {
 		sctx.Log(fmt.Sprintf("warning: could not clear CI readiness: %v", err))
 	}
+}
+
+func setCIMonitorReadiness(sctx *pipeline.StepContext, ready, declaredNoCI bool) error {
+	declaredNoCI = ready && declaredNoCI
+	if err := sctx.DB.SetRunCIReadyWithReason(sctx.Run.ID, ready, declaredNoCI); err != nil {
+		return err
+	}
+	if sctx.CIReadinessChanged != nil {
+		sctx.CIReadinessChanged(ready, declaredNoCI)
+	}
+	return nil
 }

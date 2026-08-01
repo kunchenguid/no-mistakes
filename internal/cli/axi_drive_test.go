@@ -80,7 +80,7 @@ func TestDriveRun_HealthyWaitStaysWithinRequestBudget(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
 	defer cancel()
-	_, _, err := driveRun(ctx, io.Discard, client, socketPath, "run-1", false, nil)
+	_, _, err := driveRun(ctx, io.Discard, client, socketPath, "run-1", false)
 	if err == nil || err != context.DeadlineExceeded {
 		t.Fatalf("driveRun error = %v, want context deadline", err)
 	}
@@ -136,7 +136,7 @@ func TestDriveRunDetectsTerminalStateAfterReconnect(t *testing.T) {
 	reconciler := newRunReconciler(source, "run-1")
 	defer reconciler.Close()
 
-	run, ciReady, err := driveRunWithReconciler(context.Background(), io.Discard, nil, reconciler, "run-1", false, nil)
+	run, ciReady, err := driveRunWithReconciler(context.Background(), io.Discard, nil, reconciler, "run-1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,46 +315,54 @@ func (s *scriptedRunStateSource) Reconcile(context.Context, string) (*ipc.RunInf
 }
 
 func TestCIReadyToMerge(t *testing.T) {
-	passedLogs := []string{
-		"monitoring CI for PR #42 (timeout: 4h)...",
-		cimonitor.ChecksPassedMsg,
-	}
-	runningLogs := []string{"monitoring CI for PR #42 (timeout: 4h)..."}
-
 	tests := []struct {
 		name     string
 		rv       runView
-		ciLogs   []string
+		ciReady  bool
 		wantStop bool
 	}{
 		{
 			name:     "ci running and checks passed",
 			rv:       ciRunView(types.StepStatusRunning),
-			ciLogs:   passedLogs,
+			ciReady:  true,
 			wantStop: true,
 		},
 		{
 			name:     "ci running but checks not passed yet",
 			rv:       ciRunView(types.StepStatusRunning),
-			ciLogs:   runningLogs,
 			wantStop: false,
 		},
 		{
 			name:     "checks passed but ci step already completed",
 			rv:       ciRunView(types.StepStatusCompleted),
-			ciLogs:   passedLogs,
 			wantStop: false,
 		},
 		{
 			name:     "no ci step in run",
 			rv:       runView{Status: string(types.RunRunning), Steps: []stepView{{Name: string(types.StepPR), Status: string(types.StepStatusCompleted)}}},
-			ciLogs:   passedLogs,
+			wantStop: false,
+		},
+		{
+			name:     "declared no_ci with zero checks is ready",
+			rv:       ciRunView(types.StepStatusRunning),
+			ciReady:  true,
+			wantStop: true,
+		},
+		{
+			name:     "ready-looking agent output is ignored without persisted readiness",
+			rv:       ciRunView(types.StepStatusRunning),
+			wantStop: false,
+		},
+		{
+			name:     "PR 607 generic empty checks never ready",
+			rv:       ciRunView(types.StepStatusRunning),
 			wantStop: false,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ciReadyToMerge(tt.rv, tt.ciLogs); got != tt.wantStop {
+			tt.rv.CIReady = tt.ciReady
+			if got := ciReadyToMerge(tt.rv); got != tt.wantStop {
 				t.Errorf("ciReadyToMerge() = %v, want %v", got, tt.wantStop)
 			}
 		})
@@ -469,6 +477,7 @@ func TestRenderDriveResult_ChecksPassed(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"outcome: checks-passed",
+		"CI checks passed",
 		"https://github.com/user/repo/pull/42",
 		"merge",
 		"Summarize this pipeline run for the user",
@@ -480,12 +489,63 @@ func TestRenderDriveResult_ChecksPassed(t *testing.T) {
 	if strings.Contains(got, "outcome: passed\n") {
 		t.Errorf("checks-passed must not report a terminal passed outcome:\n%s", got)
 	}
+	if strings.Contains(got, "declares no CI") {
+		t.Errorf("all-green path must not claim no_ci declaration:\n%s", got)
+	}
 	// No fixes were applied, so neither the fixes table nor the
 	// acknowledge-your-misses instruction should appear.
 	for _, reject := range []string{"fixes[", "acknowledge"} {
 		if strings.Contains(got, reject) {
 			t.Errorf("checks-passed output without fixes must not contain %q:\n%s", reject, got)
 		}
+	}
+}
+
+func TestRenderDriveResult_DeclaredNoCIChecksPassed(t *testing.T) {
+	run := &ipc.RunInfo{
+		ID:          "run-1",
+		Branch:      "feature/x",
+		Status:      types.RunRunning,
+		HeadSHA:     "abcdef1234567890",
+		PRURL:       strptr("https://github.com/user/repo/pull/42"),
+		CIReadyNoCI: true,
+		Steps: []ipc.StepResultInfo{
+			{StepName: types.StepCI, Status: types.StepStatusRunning},
+		},
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+
+	// PR 607-shaped empty generic marker is not an authoritative readiness state.
+	pr607Logs := []string{
+		"monitoring CI for PR #607 (timeout: 4h0m0s)...",
+		"mergeable state still pending: PENDING",
+		"mergeable state still pending: PENDING",
+		"no CI checks reported - still monitoring until merged or closed",
+	}
+	if cimonitor.ChecksPassed(pr607Logs) || ciReadyToMerge(runViewFromIPC(run)) {
+		t.Fatal("PR 607 empty-checks sequence must not be agent-facing ready")
+	}
+
+	run.CIReady = true
+	if err := renderDriveResult(cmd, run, true); err != nil {
+		t.Fatalf("declared no_ci checks-passed must exit 0, got error: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"outcome: checks-passed",
+		"declares no CI",
+		"no_ci: true",
+		"https://github.com/user/repo/pull/42",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("declared no_ci output missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "CI checks passed - the PR is ready") {
+		t.Errorf("declared no_ci path must not silently equate empty results with green:\n%s", got)
 	}
 }
 
@@ -599,5 +659,75 @@ func TestRenderDriveResult_FailedHasNoSummarizeInstruction(t *testing.T) {
 	got := out.String()
 	if strings.Contains(got, "Summarize this pipeline run for the user") {
 		t.Errorf("failed outcome must not carry the success summary instruction:\n%s", got)
+	}
+}
+
+// A stream gap is state-bearing for the reconciler: it forces exactly one
+// authoritative read, which is how a transition the daemon had to coalesce
+// away reaches AXI. Subscribe-first behaviour and the single-read budget are
+// unchanged.
+func TestRunReconciler_StreamGapForcesOneAuthoritativeRead(t *testing.T) {
+	events := make(chan ipc.Event, 4)
+	source := &scriptedRunStateSource{
+		subscriptions: []scriptedSubscription{{events: events}},
+		runs: []*ipc.RunInfo{
+			{ID: "run-1", Status: types.RunRunning, StateRev: 3},
+			{ID: "run-1", Status: types.RunCompleted, StateRev: 71},
+		},
+	}
+	reconciler := newRunReconciler(source, "run-1")
+	defer reconciler.Close()
+	// Disable the slow lost-event backstop so only the gap can wake the
+	// reconciler; otherwise the heartbeat would mask a missing gap route.
+	reconciler.heartbeatInterval = time.Hour
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	first, err := reconciler.Next(ctx)
+	if err != nil || first.Status != types.RunRunning {
+		t.Fatalf("initial Next = %#v, %v", first, err)
+	}
+	events <- ipc.Event{Type: ipc.EventStreamGap, RunID: "run-1", StateRev: 71}
+	after, err := reconciler.Next(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != types.RunCompleted {
+		t.Fatalf("post-gap status = %q, want the authoritative terminal state", after.Status)
+	}
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	if got := strings.Join(source.operations, ","); got != "subscribe,reconcile,reconcile" {
+		t.Fatalf("operations = %s, want exactly one extra reconciliation for the gap", got)
+	}
+}
+
+// An event type this build does not recognise must be treated as state-bearing
+// rather than ignored, so a future producer cannot strand a consumer.
+func TestRunReconciler_UnknownEventTypeIsTreatedAsStateBearing(t *testing.T) {
+	events := make(chan ipc.Event, 2)
+	source := &scriptedRunStateSource{
+		subscriptions: []scriptedSubscription{{events: events}},
+		runs: []*ipc.RunInfo{
+			{ID: "run-1", Status: types.RunRunning},
+			{ID: "run-1", Status: types.RunCompleted},
+		},
+	}
+	reconciler := newRunReconciler(source, "run-1")
+	defer reconciler.Close()
+	reconciler.heartbeatInterval = time.Hour
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := reconciler.Next(ctx); err != nil {
+		t.Fatal(err)
+	}
+	events <- ipc.Event{Type: ipc.EventType("some_future_event"), RunID: "run-1"}
+	after, err := reconciler.Next(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != types.RunCompleted {
+		t.Fatalf("status after unknown event = %q, want a reconciliation", after.Status)
 	}
 }

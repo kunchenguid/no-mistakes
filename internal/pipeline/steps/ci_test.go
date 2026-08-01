@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -569,6 +570,28 @@ func TestCIStep_UncertainProviderStateClearsPersistedReadiness(t *testing.T) {
 	}
 }
 
+func TestCIMonitorReadinessChangeNotifiesConsumers(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	var changes [][2]bool
+	sctx.CIReadinessChanged = func(ready, declaredNoCI bool) {
+		changes = append(changes, [2]bool{ready, declaredNoCI})
+	}
+
+	logCIMonitorStatus(sctx, ciNoChecksPassedMsg, "")
+	clearCIMonitorReady(sctx)
+
+	want := [][2]bool{{true, true}, {false, false}}
+	if len(changes) != len(want) {
+		t.Fatalf("readiness changes = %v, want %v", changes, want)
+	}
+	for i := range want {
+		if changes[i] != want[i] {
+			t.Errorf("readiness change %d = %v, want %v", i, changes[i], want[i])
+		}
+	}
+}
+
 func TestCIStep_OpenPRKeepsMonitoringAfterChecksPass(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -604,78 +627,89 @@ func TestCIStep_OpenPRKeepsMonitoringAfterChecksPass(t *testing.T) {
 	}
 }
 
-func TestCIStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
+// TestCIStep_EmptyChecksWithoutNoCIStaysNotReadyPastOldGracePeriod proves the
+// PR 607 failure mode is closed: a generic empty forge response never becomes
+// ready, even after the historical 60s grace period and longer timing windows.
+func TestCIStep_EmptyChecksWithoutNoCIStaysNotReadyPastOldGracePeriod(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	// Fake gh returns OPEN state, empty checks, no comments
 	env := fakeCIGH(t, "OPEN", "[]")
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Config.CITimeout = 5 * time.Second
+	sctx.Config.CITimeout = 10 * time.Minute
+	sctx.Config.NoCI = false
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	current := started
-	var waits []time.Duration
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sctx.Ctx = ctx
 
+	const oldGrace = 60 * time.Second
 	step := &CIStep{
-		checksGracePeriod:    200 * time.Millisecond,
-		pollIntervalOverride: 75 * time.Millisecond,
+		pollIntervalOverride: 30 * time.Second,
 		now:                  func() time.Time { return current },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
-			waits = append(waits, interval)
-			if current.Sub(started) >= 200*time.Millisecond {
+			current = current.Add(interval)
+			// Past the old 60s grace and well into multi-minute delayed registration.
+			if current.Sub(started) > 3*time.Minute {
 				cancel()
 				return ctx.Err()
 			}
-			current = current.Add(interval)
 			return nil
 		},
 	}
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected cancellation after grace-period monitoring continued, got %v", err)
+		t.Fatalf("expected continued waiting after empty checks, got %v", err)
 	}
-	if elapsed := current.Sub(started); elapsed < 200*time.Millisecond {
-		t.Errorf("CI exited in %v, expected to wait at least 200ms grace period", elapsed)
-	}
-	if len(waits) != 4 {
-		t.Fatalf("expected 3 grace-period waits plus one continued-monitoring wait, got %v", waits)
-	}
-	for _, interval := range waits[:3] {
-		if interval != 75*time.Millisecond {
-			t.Fatalf("expected 75ms waits during grace period, got %v", waits)
-		}
+	if current.Sub(started) <= oldGrace {
+		t.Fatalf("test did not advance past old grace period: elapsed %v", current.Sub(started))
 	}
 	for _, l := range logs {
-		if strings.Contains(l, "CI timeout reached") {
-			t.Fatal("expected cancellation before CI timeout")
+		if l == cimonitor.NoChecksPassedMsg || l == cimonitor.ChecksPassedMsg {
+			t.Fatalf("empty checks without no_ci must not emit ready marker, got logs: %v", logs)
+		}
+		if l == "no CI checks reported - still monitoring until merged or closed" {
+			t.Fatalf("legacy empty-as-green marker must not be emitted, got logs: %v", logs)
 		}
 	}
-	found := false
+	foundWaiting := false
 	for _, l := range logs {
-		if strings.Contains(l, "no CI checks reported - still monitoring until merged or closed") {
-			found = true
+		if strings.Contains(l, "waiting for checks to register") {
+			foundWaiting = true
 			break
 		}
 	}
-	if !found {
-		t.Fatalf("expected continued-monitoring log after grace period, got: %v", logs)
+	if !foundWaiting {
+		t.Fatalf("expected waiting-for-registration log, got: %v", logs)
+	}
+	if cimonitor.ChecksPassed(logs) {
+		t.Fatalf("cimonitor must report not-ready for empty checks without no_ci, logs: %v", logs)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt != nil {
+		t.Fatalf("expected CI readiness unset without no_ci, got %v", *dbRun.CIReadyAt)
 	}
 }
 
-func TestCIStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
+// TestCIStep_EmptyChecksWithTrustedNoCIBecomesReady proves a positively
+// declared no-CI repository with zero checks returns the selected
+// all-checks-passed agent-facing result, with the declaration inspectable in
+// the log line.
+func TestCIStep_EmptyChecksWithTrustedNoCIBecomesReady(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -683,10 +717,11 @@ func TestCIStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Config.CITimeout = 5 * time.Second
+	sctx.Config.CITimeout = 10 * time.Second
+	sctx.Config.NoCI = true
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -695,33 +730,216 @@ func TestCIStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
 	defer cancel()
 	sctx.Ctx = ctx
 
-	current := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	step := &CIStep{
-		checksGracePeriod:    50 * time.Millisecond,
-		pollIntervalOverride: 10 * time.Millisecond,
-		now:                  func() time.Time { return current },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
 		},
 	}
-	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected cancellation after first grace-period wait, got %v", err)
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected continued monitoring after declared no-CI ready, got %v", err)
 	}
-
 	found := false
 	for _, l := range logs {
-		if strings.Contains(l, "waiting for checks to register") {
+		if l == cimonitor.NoChecksPassedMsg {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected grace-period waiting log, got: %v", logs)
+		t.Fatalf("expected declared no_ci ready marker, got: %v", logs)
+	}
+	if !cimonitor.ChecksPassed(logs) {
+		t.Fatal("declared no_ci with zero checks must be agent-facing ready")
+	}
+	if !cimonitor.DeclaredNoCI(logs) {
+		t.Fatal("declared no_ci ready path must expose DeclaredNoCI evidence")
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt == nil {
+		t.Fatal("expected CI readiness persisted for declared no_ci")
 	}
 }
 
-func TestCIStep_NonEmptyPassingChecksSkipGracePeriodAndContinueMonitoring(t *testing.T) {
+// TestCIStep_DelayedCheckRegistrationStaysNotReadyUntilGreen replays the
+// delayed-registration path: empty forge results stay not-ready, pending
+// checks stay not-ready, failures stay failures, and only all-green becomes
+// ready.
+func TestCIStep_DelayedCheckRegistrationStaysNotReadyUntilGreen(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksSequence := []string{
+		`[]`,
+		`[]`,
+		`[{"name":"e2e","state":"PENDING","bucket":"pending"}]`,
+		`[{"name":"e2e","state":"FAILURE","bucket":"fail","completedAt":"2026-07-30T08:06:01Z"}]`,
+		`[{"name":"e2e","state":"SUCCESS","bucket":"pass","completedAt":"2026-07-30T08:10:00Z"}]`,
+	}
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
+
+	prURL := "https://github.com/test/repo/pull/607"
+	ag := &mockAgent{name: "test"}
+	// auto_fix.ci = 0 so the failure parks rather than auto-fixing; we only
+	// care about readiness transitions across the delayed-registration path.
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Minute
+	sctx.Config.NoCI = false
+	zero := 0
+	sctx.Config.AutoFix.CI = zero
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	phase := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			phase++
+			switch phase {
+			case 1, 2:
+				if cimonitor.ChecksPassed(logs) {
+					t.Fatalf("phase %d empty checks must not be ready; logs=%v", phase, logs)
+				}
+				dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if dbRun.CIReadyAt != nil {
+					t.Fatalf("phase %d must not persist readiness", phase)
+				}
+				return nil
+			case 3:
+				if cimonitor.ChecksPassed(logs) {
+					t.Fatalf("pending checks must not be ready; logs=%v", logs)
+				}
+				foundRunning := false
+				for _, l := range logs {
+					if l == cimonitor.ChecksRunningMsg {
+						foundRunning = true
+						break
+					}
+				}
+				if !foundRunning {
+					t.Fatalf("expected running marker after delayed registration, logs=%v", logs)
+				}
+				return nil
+			case 4:
+				// Failure should park the step; Execute returns before another wait.
+				return nil
+			default:
+				cancel()
+				return ctx.Err()
+			}
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected failure outcome without error, got err=%v outcome=%v", err, outcome)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("expected failure to park for approval, got %#v", outcome)
+	}
+	if cimonitor.ChecksPassed(logs) {
+		t.Fatalf("failed checks must not be ready; logs=%v", logs)
+	}
+
+	// Resume with green checks on a fresh step instance (same empty→pending→green
+	// contract after a fix round). Prove green becomes ready.
+	logs = nil
+	env = fakeCIGH(t, "OPEN", `[{"name":"e2e","state":"SUCCESS","bucket":"pass"}]`)
+	sctx.Env = env
+	sctx.Ctx = context.Background()
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+	greenStep := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+	_, err = greenStep.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected continued monitoring after green, got %v", err)
+	}
+	if !cimonitor.ChecksPassed(logs) {
+		t.Fatalf("all-green must be ready; logs=%v", logs)
+	}
+	if cimonitor.DeclaredNoCI(logs) {
+		t.Fatal("all-green path must not report DeclaredNoCI")
+	}
+}
+
+// TestCIStep_DeclaredNoCIWithUnexpectedChecksHonorsThem proves no_ci never
+// waives registered pending or failing checks.
+func TestCIStep_DeclaredNoCIWithUnexpectedChecksHonorsThem(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksSequence := []string{
+		`[{"name":"surprise","state":"PENDING","bucket":"pending"}]`,
+		`[{"name":"surprise","state":"FAILURE","bucket":"fail","completedAt":"2026-07-30T08:06:01Z"}]`,
+	}
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
+
+	prURL := "https://github.com/test/repo/pull/99"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Minute
+	sctx.Config.NoCI = true
+	zero := 0
+	sctx.Config.AutoFix.CI = zero
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	phase := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			phase++
+			if phase == 1 {
+				if cimonitor.ChecksPassed(logs) {
+					t.Fatalf("pending unexpected checks must not be ready under no_ci; logs=%v", logs)
+				}
+				return nil
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected failure outcome, got err=%v", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("expected failing unexpected checks to park, got %#v", outcome)
+	}
+	for _, l := range logs {
+		if l == cimonitor.NoChecksPassedMsg {
+			t.Fatalf("no_ci ready marker must not fire while checks are registered; logs=%v", logs)
+		}
+	}
+	if cimonitor.ChecksPassed(logs) {
+		t.Fatalf("failing checks under no_ci must not be ready; logs=%v", logs)
+	}
+}
+
+func TestCIStep_NonEmptyPassingChecksContinueMonitoring(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -744,7 +962,6 @@ func TestCIStep_NonEmptyPassingChecksSkipGracePeriodAndContinueMonitoring(t *tes
 
 	pollCount := 0
 	step := &CIStep{
-		checksGracePeriod: 10 * time.Second,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			cancel()
@@ -1796,9 +2013,9 @@ func TestCIStep_TimedOutCheckEscalatesWithoutRerunning(t *testing.T) {
 	}
 }
 
-// Reruns are opt-out: with the budget at 0 nothing is re-run and a cancelled
-// check keeps the exact behavior it had before this policy existed.
-func TestCIStep_ZeroRerunBudgetRestoresPreviousBehavior(t *testing.T) {
+// Reruns are opt-out: with the budget at 0 nothing is re-run. The cancelled
+// check still remains unresolved and therefore cannot make the PR look ready.
+func TestCIStep_ZeroRerunBudgetKeepsCancelledCheckNotReady(t *testing.T) {
 	t.Parallel()
 	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
 
@@ -1838,17 +2055,17 @@ func TestCIStep_ZeroRerunBudgetRestoresPreviousBehavior(t *testing.T) {
 	if len(ag.calls) != 0 {
 		t.Fatalf("expected no fix-agent round, got %d", len(ag.calls))
 	}
-	// Before this policy a cancelled check was neither failing nor pending, so
-	// the monitor reported the PR as green. With the budget at 0 that is exactly
-	// what still happens.
-	sawPassed := false
+	sawRunning := false
 	for _, l := range logs {
 		if l == ciChecksPassedMsg {
-			sawPassed = true
+			t.Fatalf("a cancelled check must not report checks passed; logs: %v", logs)
+		}
+		if l == ciChecksRunningMsg {
+			sawRunning = true
 		}
 	}
-	if !sawPassed {
-		t.Fatalf("expected the pre-policy behavior for a cancelled check, got: %v", logs)
+	if !sawRunning {
+		t.Fatalf("expected a cancelled check to remain unresolved, got: %v", logs)
 	}
 }
 

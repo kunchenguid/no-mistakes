@@ -137,7 +137,7 @@ func TestModel_Update_RerunKeyStartsNewRunAndSwitchesModel(t *testing.T) {
 		if err := json.Unmarshal(raw, &params); err != nil {
 			return nil, err
 		}
-		if params.RepoID != "repo-001" || params.Branch != "feature/foo" {
+		if params.RepoID != "repo-001" || params.Branch != "feature/foo" || params.PreviousRunID != "run-001" {
 			return nil, fmt.Errorf("unexpected rerun params: %#v", params)
 		}
 		return &ipc.RerunResult{RunID: newRun.ID}, nil

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -11,11 +12,16 @@ import (
 )
 
 func newRerunCmd() *cobra.Command {
-	return &cobra.Command{
+	var intent string
+	cmd := &cobra.Command{
 		Use:   "rerun",
 		Short: "Rerun the pipeline for the current branch",
+		Long:  "Rerun the pipeline for the current branch. By default, an explicit intent from the selected prior run is inherited; otherwise intent is inferred afresh. Use --intent to replace either with a new explicit intent.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("intent") && strings.TrimSpace(intent) == "" {
+				return fmt.Errorf("--intent must not be empty")
+			}
 			return trackCommand("rerun", func() error {
 				p, d, err := openResources()
 				if err != nil {
@@ -47,7 +53,7 @@ func newRerunCmd() *cobra.Command {
 				defer client.Close()
 
 				var result ipc.RerunResult
-				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch}, &result); err != nil {
+				if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repo.ID, Branch: branch, Intent: intent}, &result); err != nil {
 					return fmt.Errorf("rerun pipeline: %w", err)
 				}
 
@@ -56,4 +62,6 @@ func newRerunCmd() *cobra.Command {
 			})
 		},
 	}
+	cmd.Flags().StringVar(&intent, "intent", "", "explicit intent for this rerun (overrides inherited intent or fresh inference)")
+	return cmd
 }

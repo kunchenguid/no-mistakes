@@ -187,7 +187,7 @@ done:
 	// The exact count depends on timing, but the channel MUST close.
 }
 
-func TestSubscribeToCompletedRunReturnsClosedChannel(t *testing.T) {
+func TestSubscribeToCompletedRunYieldsOneGapThenCloses(t *testing.T) {
 	// Use a fast step so the run completes quickly.
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
 		return []pipeline.Step{&mockPassStep{name: types.StepTest}}
@@ -229,7 +229,9 @@ func TestSubscribeToCompletedRunReturnsClosedChannel(t *testing.T) {
 		}
 	}
 
-	// Subscribe to the already-completed run. The channel should be immediately closed.
+	// Subscribe to the already-completed run. Every subscription opens with
+	// one stream-gap frame so the subscriber gets exactly one chance to
+	// reconcile the terminal state, and then the stream closes.
 	ch, cancelSub, err := ipc.Subscribe(p.Socket(), &ipc.SubscribeParams{RunID: pushResult.RunID})
 	if err != nil {
 		t.Fatal(err)
@@ -237,11 +239,22 @@ func TestSubscribeToCompletedRunReturnsClosedChannel(t *testing.T) {
 	defer cancelSub()
 
 	select {
+	case first, ok := <-ch:
+		if !ok {
+			t.Fatal("expected one stream-gap frame before the stream closes")
+		}
+		if first.Type != ipc.EventStreamGap {
+			t.Fatalf("first frame = %s, want %s", first.Type, ipc.EventStreamGap)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no frame for completed run")
+	}
+
+	select {
 	case _, ok := <-ch:
 		if ok {
-			t.Fatal("expected channel to be closed for completed run, but received an event")
+			t.Fatal("expected the stream to close after the single gap frame")
 		}
-		// Channel closed - expected
 	case <-time.After(5 * time.Second):
 		t.Fatal("channel was not closed for completed run")
 	}

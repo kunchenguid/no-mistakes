@@ -26,6 +26,7 @@ type Run struct {
 	PRState               *string
 	PRStateObservedAt     *int64
 	CIReadyAt             *int64
+	CIReadyNoCI           bool
 	LastPushedSHA         *string
 	PushTargetKind        *string
 	PushTargetFingerprint *string
@@ -59,14 +60,14 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
 	return row.Scan(
 		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.SubmittedHeadSHA, &r.ReviewApprovedHeadSHA, &r.Status,
-		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt,
+		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive,
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
@@ -77,6 +78,10 @@ func scanRun(row interface {
 
 // InsertRun creates a new run record.
 func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
+	return d.InsertRunWithIntent(repoID, branch, headSHA, baseSHA, nil)
+}
+
+func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent *RunIntent) (*Run, error) {
 	ts := now()
 	r := &Run{
 		ID:               newID(),
@@ -89,9 +94,15 @@ func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
 		CreatedAt:        ts,
 		UpdatedAt:        ts,
 	}
+	if intent != nil {
+		r.Intent = &intent.Summary
+		r.IntentSource = &intent.Source
+		r.IntentSessionID = &intent.SessionID
+		r.IntentScore = &intent.Score
+	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.Status, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
@@ -399,11 +410,21 @@ func finalizeTerminalPRRun(tx *sql.Tx, id string, ts int64) error {
 // SetRunCIReady persists checks-passed readiness so fresh TUI and AXI attaches
 // do not depend on receiving a historical log line.
 func (d *DB) SetRunCIReady(id string, ready bool) error {
+	return d.SetRunCIReadyWithReason(id, ready, false)
+}
+
+func (d *DB) SetRunCIReadyWithReason(id string, ready, declaredNoCI bool) error {
+	readyValue := 0
+	declaredValue := 0
 	var readyAt any
 	if ready {
+		readyValue = 1
 		readyAt = now()
+		if declaredNoCI {
+			declaredValue = 1
+		}
 	}
-	_, err := d.sql.Exec(`UPDATE runs SET ci_ready_at = ?, updated_at = ? WHERE id = ? AND ((ci_ready_at IS NULL AND ? = 1) OR (ci_ready_at IS NOT NULL AND ? = 0))`, readyAt, now(), id, ready, ready)
+	_, err := d.sql.Exec(`UPDATE runs SET ci_ready_at = ?, ci_ready_no_ci = ?, updated_at = ? WHERE id = ? AND ((ci_ready_at IS NULL AND ? = 1) OR (ci_ready_at IS NOT NULL AND ? = 0) OR (COALESCE(ci_ready_no_ci, 0) != ?))`, readyAt, declaredValue, now(), id, readyValue, readyValue, declaredValue)
 	if err != nil {
 		return fmt.Errorf("set run CI ready: %w", err)
 	}
@@ -450,6 +471,18 @@ func (d *DB) UpdateRunErrorStatus(id, errMsg string, status types.RunStatus) err
 // Prompt-construction code branches on this to frame an explicit intent as
 // authoritative acceptance criteria rather than a low-confidence hint.
 const RunIntentSourceAgent = "agent"
+
+// RunIntentSourceRerun marks an authoritative intent inherited from the run
+// selected for a rerun. It remains authoritative, but the distinct value keeps
+// inherited intent inspectable instead of confusing it with a new override.
+const RunIntentSourceRerun = "rerun"
+
+// IsAuthoritativeRunIntentSource reports whether a run's intent came from an
+// explicit operator/agent contract, either directly or through rerun
+// inheritance.
+func IsAuthoritativeRunIntentSource(source string) bool {
+	return source == RunIntentSourceAgent || source == RunIntentSourceRerun
+}
 
 // RunIntent carries the four intent-related columns persisted on a run.
 type RunIntent struct {

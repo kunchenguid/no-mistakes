@@ -416,6 +416,70 @@ func TestMerge_CarriesReviewPathInstructions(t *testing.T) {
 	}
 }
 
+// TestParseRepoConfig_NoCI_Semantics locks in missing/null/false as falsy
+// (CI expected) and only an explicit true as the positive no-CI declaration.
+func TestParseRepoConfig_NoCI_Semantics(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{"missing", "commands:\n  test: go test ./...\n", false},
+		{"null", "no_ci: null\n", false},
+		{"tilde_null", "no_ci: ~\n", false},
+		{"explicit_false", "no_ci: false\n", false},
+		{"true", "no_ci: true\n", true},
+	}
+	for _, c := range cases {
+		cfg, err := LoadRepoFromBytes([]byte(c.yaml))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if cfg.NoCI != c.want {
+			t.Errorf("%s: NoCI=%v want %v", c.name, cfg.NoCI, c.want)
+		}
+	}
+}
+
+// TestEffectiveRepoConfig_NoCITrustedOnly proves a feature branch cannot add
+// or clear no_ci to bypass CI: the value comes only from trusted default-branch
+// config, and allow_repo_commands does not leak a pushed declaration.
+func TestEffectiveRepoConfig_NoCITrustedOnly(t *testing.T) {
+	// Contributor pushes true; trusted default-branch is false (CI expected).
+	got := EffectiveRepoConfig(&RepoConfig{NoCI: true}, &RepoConfig{NoCI: false}, false)
+	if got.NoCI {
+		t.Error("pushed=true trusted=false: no_ci must stay OFF (feature branch cannot self-declare)")
+	}
+	// Contributor pushes false; trusted default-branch intentionally has no CI.
+	got = EffectiveRepoConfig(&RepoConfig{NoCI: false}, &RepoConfig{NoCI: true}, false)
+	if !got.NoCI {
+		t.Error("pushed=false trusted=true: no_ci must stay ON (pushed cannot clear the declaration)")
+	}
+	// allow_repo_commands must NOT leak the pushed no_ci (it governs commands/agent only).
+	got = EffectiveRepoConfig(&RepoConfig{NoCI: true}, &RepoConfig{NoCI: false}, true)
+	if got.NoCI {
+		t.Error("allow_repo_commands must not let a pushed no_ci declaration through")
+	}
+	// No trusted copy -> false; CI remains expected.
+	got = EffectiveRepoConfig(&RepoConfig{NoCI: true}, nil, false)
+	if got.NoCI {
+		t.Error("nil trusted: no_ci must be false; CI is expected without positive evidence")
+	}
+}
+
+// TestMerge_CarriesNoCI proves the resolved Config carries the trusted-resolved
+// no_ci declaration into the pipeline.
+func TestMerge_CarriesNoCI(t *testing.T) {
+	got := Merge(&GlobalConfig{}, &RepoConfig{NoCI: true})
+	if !got.NoCI {
+		t.Error("Merge must carry NoCI into the resolved Config")
+	}
+	got = Merge(&GlobalConfig{}, &RepoConfig{NoCI: false})
+	if got.NoCI {
+		t.Error("Merge must keep NoCI false by default")
+	}
+}
+
 // TestMerge_CarriesDisableProjectSettings proves the resolved Config carries the
 // trusted-resolved opt-out.
 func TestMerge_CarriesDisableProjectSettings(t *testing.T) {

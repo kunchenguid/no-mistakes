@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -152,7 +150,7 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 		}
 	}
 
-	run, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, autoYes, ciLogReader(env.p))
+	run, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, autoYes)
 	if err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}
@@ -417,15 +415,13 @@ func rerunParams(repoID, branch string, skipSteps []types.StepName, intent strin
 // agent driving the run must not block on that human action, so once CI checks
 // pass driveRun returns with ciReady=true: the change is validated and the PR is
 // ready for a human to merge. The daemon keeps monitoring in the background.
-// readCILog reads the CI step's log lines for runID; it may be nil (no early
-// stop) and returns nil when no log exists yet.
-func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, socketPath, runID string, autoApprove bool, readCILog func(string) []string) (run *ipc.RunInfo, ciReady bool, err error) {
+func driveRun(ctx context.Context, progress io.Writer, client *ipc.Client, socketPath, runID string, autoApprove bool) (run *ipc.RunInfo, ciReady bool, err error) {
 	reconciler := newRunReconciler(&ipcRunStateSource{socketPath: socketPath}, runID)
 	defer reconciler.Close()
-	return driveRunWithReconciler(ctx, progress, client, reconciler, runID, autoApprove, readCILog)
+	return driveRunWithReconciler(ctx, progress, client, reconciler, runID, autoApprove)
 }
 
-func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc.Client, reconciler *runReconciler, runID string, autoApprove bool, readCILog func(string) []string) (run *ipc.RunInfo, ciReady bool, err error) {
+func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc.Client, reconciler *runReconciler, runID string, autoApprove bool) (run *ipc.RunInfo, ciReady bool, err error) {
 	pp := &progressPrinter{w: progress, seen: map[string]string{}}
 	fixedSteps := map[string]bool{}
 	pendingGate := ""
@@ -465,38 +461,25 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 			continue
 		}
 		pendingGate = ""
-		// CI is green but the PR is unmerged: hand control back rather than
-		// waiting on a human merge. This holds even under autoApprove, since
-		// the agent cannot approve away a human's merge.
-		if readCILog != nil && ciReadyToMerge(rv, readCILog(runID)) {
+		// CI readiness is established but the PR is unmerged: hand control back
+		// rather than waiting on a human merge. This holds even under autoApprove,
+		// since the agent cannot approve away a human's merge.
+		if ciReadyToMerge(rv) {
 			return run, true, nil
 		}
 	}
 }
 
-// ciReadyToMerge reports whether the CI step is actively monitoring and its logs
-// show all checks have passed, meaning the PR is ready for a human to merge. It
-// reads CI state through the same parser the TUI uses (see cimonitor) so the two
-// surfaces never disagree about when a run is "done" from the agent's view.
-func ciReadyToMerge(rv runView, ciLogs []string) bool {
+// ciReadyToMerge reports whether the CI step is actively monitoring and the
+// daemon has persisted checks-passed readiness.
+func ciReadyToMerge(rv runView) bool {
+	activity := cimonitor.FromAuthoritative(rv.CIReady, rv.CIReadyNoCI, nil)
 	for _, s := range rv.Steps {
 		if s.Name == string(types.StepCI) {
-			return s.Status == string(types.StepStatusRunning) && cimonitor.ChecksPassed(ciLogs)
+			return s.Status == string(types.StepStatusRunning) && activity.Ready
 		}
 	}
 	return false
-}
-
-// ciLogReader returns a reader of the CI step's log lines for a run, sourced
-// from the same on-disk log the daemon writes and `axi logs` reads.
-func ciLogReader(p *paths.Paths) func(string) []string {
-	return func(runID string) []string {
-		data, err := os.ReadFile(filepath.Join(p.RunLogDir(runID), string(types.StepCI)+".log"))
-		if err != nil {
-			return nil
-		}
-		return splitLogLines(string(data))
-	}
 }
 
 // gateResolution decides how --yes answers an approval gate. A gate with
@@ -581,10 +564,11 @@ func sendRespond(client *ipc.Client, runID string, step types.StepName, action t
 }
 
 // renderDriveResult prints the run snapshot plus one of: the active gate (exit
-// 0, a normal decision point), a checks-passed outcome (exit 0, CI is green and
-// the PR is ready for a human to merge), or the terminal outcome (exit 0 when
-// passed, exit 1 when blocked, failed, or cancelled). Successful outcomes also
-// carry the fixes the pipeline applied and reporting instructions, so the agent
+// 0, a normal decision point), a checks-passed outcome (exit 0, CI readiness is
+// established by green checks or the trusted no_ci declaration and the PR is
+// ready for a human to merge), or the terminal outcome (exit 0 when passed,
+// exit 1 when blocked, failed, or cancelled). Successful outcomes also carry
+// the fixes the pipeline applied and reporting instructions, so the agent
 // closes the loop with the user instead of stopping at "it passed".
 func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error {
 	rv := runViewFromIPC(run)
@@ -595,14 +579,18 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 		hasBranchSync = true
 	}
 
-	// CI passed but the run is intentionally still monitoring for a human
-	// merge. Report it as a distinct, successful outcome so the agent stops
-	// and asks the user to review and merge instead of waiting.
+	// CI readiness is established but the run is intentionally still monitoring
+	// for a human merge. Report it as a distinct, successful outcome so the
+	// agent stops and asks the user to review and merge instead of waiting.
 	if ciReady {
+		activity := cimonitor.FromAuthoritative(rv.CIReady, rv.CIReadyNoCI, nil)
 		fields = append(fields, toon.Field{Key: "outcome", Value: "checks-passed"})
 		merge := "CI checks passed - the PR is ready. Ask the user to review and merge it."
+		if activity.DeclaredNoCI {
+			merge = "Repository declares no CI (no_ci: true on the trusted default branch) and no checks are registered - treated as all checks passed. Ask the user to review and merge it."
+		}
 		if rv.PRURL != "" {
-			merge = fmt.Sprintf("CI checks passed - the PR is ready. Ask the user to review and merge it: %s", rv.PRURL)
+			merge = fmt.Sprintf("%s: %s", strings.TrimSuffix(merge, "."), rv.PRURL)
 		}
 		fixes := rv.fixRows()
 		fields = appendFixesField(fields, fixes)
@@ -807,7 +795,7 @@ func runAxiRespond(cmd *cobra.Command, ra respondArgs) error {
 		return emitError(cmd, 1, fmt.Sprintf("wait for %s: %v", stepName, err))
 	}
 
-	final, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes, ciLogReader(env.p))
+	final, ciReady, err := driveRun(ctx, cmd.ErrOrStderr(), env.client, env.p.Socket(), runID, ra.autoYes)
 	if err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("drive run: %v", err))
 	}

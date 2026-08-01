@@ -409,6 +409,7 @@ func TestReviewStep_ConformanceObligationTracksIntentProvenance(t *testing.T) {
 		wantAuthority   bool
 	}{
 		{"agent source is authoritative", db.RunIntentSourceAgent, true, true},
+		{"inherited source is authoritative", db.RunIntentSourceRerun, true, true},
 		{"inferred source stays a hint", "claude", false, false},
 	}
 	for _, tc := range cases {

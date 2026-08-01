@@ -113,7 +113,7 @@ Without `--yes`, an agent driving `axi run` should stop when a gate contains `ac
 Review gates include a `note` field reminding agents that `auto_fix.review` defaults to `0`, so blocking and ask-user review findings park for a decision unless configuration explicitly opts back into review auto-fix.
 Long-running `axi run` calls are working, not stalled; if one returns a `gate:`, read that output and answer it with `axi respond`.
 Backgrounding a call is fine for an agent harness, but the run never advances past a gate on its own.
-When the CI step is still monitoring an open PR and checks are green, `axi run` exits successfully with `outcome: checks-passed` instead of waiting for a human merge.
+When the CI step is still monitoring an open PR and checks are green - or the trusted default-branch config declares [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci) with no registered checks - `axi run` exits successfully with `outcome: checks-passed` instead of waiting for a human merge. A generic empty check list without that declaration is not ready.
 Treat that as the agent stopping point: ask the user to review and merge the PR from the `help` line.
 If that PR later falls behind the default branch or hits a merge conflict, do not run `axi run`, `rerun`, or a manual rebase while the CI monitor is still running.
 The monitor auto-rebases onto the base, resolves actual conflicts, and re-pushes the branch; a PR that is merely behind but clean needs no command.
@@ -141,7 +141,7 @@ no-mistakes axi respond --action skip
 | `--add-finding`  | `string` | (none)        | JSON finding object to add and fix                                   |
 | `-y`, `--yes`    | `bool`   | `false`       | Auto-resolve every subsequent gate until a decision point or outcome |
 
-After the explicit response, `--yes` uses the same auto-resolution behavior as `axi run --yes`: have the pipeline fix `auto-fix` and `ask-user` findings once, approve the fix review, approve gates that only contain non-actionable `no-op` findings, and stop at `outcome: checks-passed` when CI is green but the PR still needs a human merge.
+After the explicit response, `--yes` uses the same auto-resolution behavior as `axi run --yes`: have the pipeline fix `auto-fix` and `ask-user` findings once, approve the fix review, approve gates that only contain non-actionable `no-op` findings, and stop at `outcome: checks-passed` when the CI monitor reports readiness but the PR still needs a human merge.
 Each `axi respond` blocks until the next gate, CI-ready decision point, or final outcome.
 If it returns another `gate:`, answer that gate; do not idle-wait for the run to move forward by itself.
 When the daemon is already running, `axi respond` can continue an active run even if the global config file has become invalid, because it is not starting a fresh run.
@@ -194,6 +194,7 @@ The ordinary worktree mutation is either a strict fast-forward of the invoking c
 When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and moves to the pipeline head with reset semantics.
 Genuine divergence still reports `safety: blocked_diverged` and changes nothing.
 Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head after relation-specific preservation checks.
+When the local gate branch is exactly at a newer same-branch pushed binding and Git proves that an older terminal run's unpublished preserved head is its ancestor, branch synchronization selects the newer binding; missing gate evidence, non-ancestor heads, or different or ambiguous target provenance remain blocked.
 Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
 Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
 Run `axi sync` only when structured output offers `next_action.code: sync`; process any blocked state instead of substituting reset, stash, merge, rebase, force, or branch replacement.
@@ -287,11 +288,22 @@ Rerun the pipeline for the current branch.
 
 ```sh
 no-mistakes rerun
+no-mistakes rerun --intent "the revised user goal"
 ```
 
 Starts a new pipeline run using the last-known head SHA on the current branch.
-If another run is active on that branch, rerun cancels it before starting over.
-Treat rerun as a between-runs action after a failed or cancelled outcome, or after you have committed a separate fix outside an active run; do not use it to bypass a gate.
+If the selected prior run has explicit intent, rerun inherits it exactly by default;
+otherwise it performs fresh intent inference. `--intent` supplies a new canonical
+explicit intent in either case. Inherited intent keeps distinct rerun provenance;
+an override is recorded as newly supplied explicit intent, while fresh inference
+records the transcript source. If another run is active on that branch, rerun
+cancels it before starting over. Treat rerun as a between-runs action after a
+failed or cancelled outcome, or after you have committed a separate fix outside
+an active run; do not use it to bypass a gate.
+
+| Flag | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `--intent` | `string` | (none) | Explicit intent overriding inherited intent or fresh inference |
 
 ## no-mistakes sync
 

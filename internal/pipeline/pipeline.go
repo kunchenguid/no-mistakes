@@ -38,16 +38,18 @@ type StepContext struct {
 	UserIntent string
 	// IntentSource records the provenance of UserIntent so steps can weigh
 	// its authority. db.RunIntentSourceAgent ("agent") means the driving
-	// agent supplied it explicitly via `axi run --intent` (authoritative
-	// acceptance criteria); an agent name ("claude", "codex", ...) means it
-	// was inferred from a transcript (a hint). Empty when no intent exists.
+	// agent supplied it explicitly via `axi run --intent`; db.RunIntentSourceRerun
+	// ("rerun") means that authoritative intent was inherited. Both are
+	// authoritative acceptance criteria; an agent name ("claude", "codex", ...)
+	// means it was inferred from a transcript (a hint). Empty when no intent exists.
 	IntentSource string
 	// Sessions manages the run's durable review-loop agent sessions
 	// (reviewer and fixer roles). nil runs every invocation cold.
 	Sessions *RunSessions
 	// Shared carries in-memory run-scoped results one step hands to a later
 	// step in the same run (e.g. the combined document+lint pass).
-	Shared *RunShared
+	Shared             *RunShared
+	CIReadinessChanged func(ready, declaredNoCI bool)
 }
 
 // RunAgentSession executes one turn of a durable review-loop role session,
