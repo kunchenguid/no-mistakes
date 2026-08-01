@@ -53,6 +53,11 @@ RECEIVE_INPUT=$(mktemp "$GATE_DIR/.no-mistakes-receive.XXXXXX") || {
   printf 'no-mistakes: cannot reserve gate receive before ref mutation\n' >&2
   exit 1
 }
+RECEIVE_SESSION="$GATE_DIR/.no-mistakes-receive-session.$PPID"
+if ! : > "$RECEIVE_SESSION"; then
+  printf 'no-mistakes: cannot persist gate receive identity\n' >&2
+  exit 1
+fi
 trap 'rm -f "$RECEIVE_INPUT"' 0 1 2 3 15
 if ! cat > "$RECEIVE_INPUT"; then
   printf 'no-mistakes: cannot read gate receive updates\n' >&2
@@ -72,6 +77,16 @@ while IFS=' ' read -r oldrev newrev refname; do
   if [ $status -ne 0 ]; then
     printf 'no-mistakes: gate push refused before ref mutation:\n%s\n' "$out" >&2
     exit $status
+  fi
+  case "$out" in
+    ''|*[![:alnum:]_-]*)
+      printf 'no-mistakes: admit push returned an invalid receive identity\n' >&2
+      exit 1
+      ;;
+  esac
+  if ! printf '%s %s %s %s\n' "$out" "$oldrev" "$newrev" "$refname" >> "$RECEIVE_SESSION"; then
+    printf 'no-mistakes: cannot persist gate receive identity\n' >&2
+    exit 1
   fi
 done < "$RECEIVE_INPUT"
 USER_HOOK="$GATE_DIR/hooks/` + preservedPreReceiveHook + `"
@@ -180,6 +195,27 @@ case "$GATE_DIR" in
   /*) ;;
   *) GATE_DIR=$(/bin/pwd -P 2>/dev/null || pwd -P 2>/dev/null || pwd) ;;
 esac
+USER_HOOK="$GATE_DIR/hooks/` + preservedReferenceTransactionHook + `"
+PARENT_COMMAND=$(ps -p "$PPID" -o command= 2>/dev/null || :)
+RECEIVE_OWNED=0
+case "$PARENT_COMMAND" in
+  *git-receive-pack*) RECEIVE_OWNED=1 ;;
+esac
+case "${GIT_QUARANTINE_PATH:-}" in
+  "$GATE_DIR"/objects/*) RECEIVE_OWNED=1 ;;
+esac
+if [ "$RECEIVE_OWNED" -eq 0 ]; then
+  if [ -x "$USER_HOOK" ]; then
+    "$USER_HOOK" "$PHASE"
+    exit $?
+  fi
+  exit 0
+fi
+RECEIVE_SESSION="$GATE_DIR/.no-mistakes-receive-session.$PPID"
+if [ ! -s "$RECEIVE_SESSION" ]; then
+  printf 'no-mistakes: receive session evidence is missing\n' >&2
+  exit 1
+fi
 RECEIVE_INPUT=$(mktemp "$GATE_DIR/.no-mistakes-reference-transaction.XXXXXX") || {
   printf 'no-mistakes: cannot record reference transaction evidence\n' >&2
   exit 1
@@ -191,14 +227,28 @@ if ! cat > "$RECEIVE_INPUT"; then
 fi
 while IFS=' ' read -r oldrev newrev refname; do
   [ -z "$refname" ] && continue
-  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon receive-transaction --gate "$GATE_DIR" --phase "$PHASE" --ref "$refname" --old "$oldrev" --new "$newrev" 2>&1)
+  reservation_id=
+  matches=0
+  while IFS=' ' read -r candidate candidate_old candidate_new candidate_ref; do
+    if [ "$candidate_old" = "$oldrev" ] && [ "$candidate_new" = "$newrev" ] && [ "$candidate_ref" = "$refname" ]; then
+      reservation_id=$candidate
+      matches=$((matches + 1))
+    fi
+  done < "$RECEIVE_SESSION"
+  if [ "$matches" -ne 1 ]; then
+    printf 'no-mistakes: receive session evidence does not match %s\n' "$refname" >&2
+    exit 1
+  fi
+  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon receive-transaction --gate "$GATE_DIR" --phase "$PHASE" --reservation-id "$reservation_id" --ref "$refname" --old "$oldrev" --new "$newrev" 2>&1)
   status=$?
   if [ $status -ne 0 ]; then
     printf 'no-mistakes: reference transaction evidence refused for %s (%s):\n%s\n' "$refname" "$PHASE" "$out" >&2
     exit $status
   fi
 done < "$RECEIVE_INPUT"
-USER_HOOK="$GATE_DIR/hooks/` + preservedReferenceTransactionHook + `"
+if [ "$PHASE" = committed ] || [ "$PHASE" = aborted ]; then
+  rm -f "$RECEIVE_SESSION"
+fi
 if [ -x "$USER_HOOK" ]; then
   "$USER_HOOK" "$PHASE" < "$RECEIVE_INPUT"
   exit $?

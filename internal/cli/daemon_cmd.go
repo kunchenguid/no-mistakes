@@ -43,7 +43,7 @@ func newDaemonCmd() *cobra.Command {
 }
 
 func newDaemonReceiveTransactionCmd() *cobra.Command {
-	var gate, phase, ref, oldSHA, newSHA string
+	var gate, phase, reservationID, ref, oldSHA, newSHA string
 	cmd := &cobra.Command{
 		Use:    "receive-transaction",
 		Short:  "Record an authoritative git receive transaction phase",
@@ -63,16 +63,18 @@ func newDaemonReceiveTransactionCmd() *cobra.Command {
 				return fmt.Errorf("connect to daemon: %w", err)
 			}
 			defer client.Close()
-			return client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: phase, Ref: ref, Old: oldSHA, New: newSHA}, nil)
+			return client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: phase, ReservationID: reservationID, Ref: ref, Old: oldSHA, New: newSHA}, nil)
 		},
 	}
 	cmd.Flags().StringVar(&gate, "gate", "", "bare repo path for the receive transaction")
 	cmd.Flags().StringVar(&phase, "phase", "", "git reference-transaction phase")
+	cmd.Flags().StringVar(&reservationID, "reservation-id", "", "exact receive reservation identity")
 	cmd.Flags().StringVar(&ref, "ref", "", "git ref name")
 	cmd.Flags().StringVar(&oldSHA, "old", "", "previous commit SHA")
 	cmd.Flags().StringVar(&newSHA, "new", "", "new commit SHA")
 	_ = cmd.MarkFlagRequired("gate")
 	_ = cmd.MarkFlagRequired("phase")
+	_ = cmd.MarkFlagRequired("reservation-id")
 	_ = cmd.MarkFlagRequired("ref")
 	_ = cmd.MarkFlagRequired("old")
 	_ = cmd.MarkFlagRequired("new")
@@ -117,6 +119,10 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 				return err
 			}
 			if !result.Context.Nested {
+				if result.ReservationID == "" {
+					return fmt.Errorf("admit push returned no receive reservation")
+				}
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), result.ReservationID)
 				return nil
 			}
 			return emitGateContextRefusal(cmd, gatecontext.Result{

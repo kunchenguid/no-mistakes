@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/logstore"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -289,6 +290,47 @@ func setupTestGitRepo(t *testing.T, p *paths.Paths, d *db.DB, repoID string) (*d
 	_ = ctx
 
 	return repo, headSHA
+}
+
+func commitTestReceive(t *testing.T, d *db.DB, repoID, gatePath, branch, ref, oldSHA, newSHA string) {
+	commitTestReceiveWithOptions(t, d, repoID, gatePath, branch, ref, oldSHA, newSHA, nil, "")
+}
+
+func commitTestReceiveWithOptions(t *testing.T, d *db.DB, repoID, gatePath, branch, ref, oldSHA, newSHA string, skipSteps []types.StepName, intent string) {
+	t.Helper()
+	reservation, err := d.ReserveReceive(repoID, gatePath, branch, ref, oldSHA, newSHA, skipSteps, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.MarkReceivePreparedForID(reservation.ID, repoID, branch, ref, oldSHA, newSHA); err != nil {
+		t.Fatal(err)
+	}
+	current, err := git.Run(context.Background(), gatePath, "rev-parse", "-q", "--verify", ref)
+	if err != nil {
+		if oldSHA != "0000000000000000000000000000000000000000" {
+			t.Fatalf("read current gate ref: %v", err)
+		}
+		if newSHA != "0000000000000000000000000000000000000000" {
+			if _, err := git.Run(context.Background(), gatePath, "update-ref", ref, newSHA); err != nil {
+				t.Fatal(err)
+			}
+		}
+	} else if strings.TrimSpace(current) != newSHA {
+		current = strings.TrimSpace(current)
+		if current != oldSHA {
+			t.Fatalf("gate ref = %s, want old %s or new %s", current, oldSHA, newSHA)
+		}
+		if newSHA == "0000000000000000000000000000000000000000" {
+			if _, err := git.Run(context.Background(), gatePath, "update-ref", "-d", ref, oldSHA); err != nil {
+				t.Fatal(err)
+			}
+		} else if _, err := git.Run(context.Background(), gatePath, "update-ref", ref, newSHA, oldSHA); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.MarkReceiveCommittedForID(reservation.ID, repoID, branch, ref, oldSHA, newSHA); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func gitCmd(t *testing.T, dir string, args ...string) {

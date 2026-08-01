@@ -118,9 +118,12 @@ or phase details when authenticated ancestry cannot identify them uniquely.
 An existing custom `pre-receive` hook is preserved and runs after admission.
 
 The `reference-transaction` hook records the exact Git transaction phase for
-each admitted ref. A prepared or committed transaction remains fenced across
-daemon restarts until the corresponding committed or aborted evidence arrives;
-the daemon never infers an aborted receive from an unchanged ref.
+each admitted receive-pack ref, using the reservation identity created by
+pre-receive. Internal daemon ref updates run the preserved custom hook without
+being mistaken for receives. A prepared or committed transaction remains
+fenced across daemon restarts until the corresponding committed or aborted
+evidence arrives; the daemon never infers an aborted receive from an unchanged
+ref.
 
 When `git push no-mistakes <branch>` lands, the bare repo's `post-receive` hook
 fires. It resolves the gate to an absolute bare-repo path using Git's own view

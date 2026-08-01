@@ -745,10 +745,11 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if result.Nested {
 			return nil, fmt.Errorf("%s", gatecontext.RefusalMessage(result))
 		}
-		if err := mgr.HandleAdmitPush(ctx, &p); err != nil {
+		reservationID, err := mgr.HandleAdmitPush(ctx, &p)
+		if err != nil {
 			return nil, err
 		}
-		return &ipc.AdmitPushResult{Context: gateContextResult(result)}, nil
+		return &ipc.AdmitPushResult{Context: gateContextResult(result), ReservationID: reservationID}, nil
 	})
 
 	srv.Handle(ipc.MethodReceiveTransaction, func(ctx context.Context, params json.RawMessage) (interface{}, error) {

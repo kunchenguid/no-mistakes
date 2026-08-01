@@ -583,34 +583,40 @@ func assertGateTrustedConfigReadable(ctx context.Context, wtDir, defaultBranch, 
 	return nil
 }
 
-func (m *RunManager) HandleAdmitPush(ctx context.Context, params *ipc.AdmitPushParams) error {
+func (m *RunManager) HandleAdmitPush(ctx context.Context, params *ipc.AdmitPushParams) (string, error) {
 	if params == nil {
-		return fmt.Errorf("admit push: missing parameters")
+		return "", fmt.Errorf("admit push: missing parameters")
 	}
 	repo, branch, err := m.receiveRepo(params.Gate, params.Ref)
 	if err != nil {
-		return err
+		return "", err
 	}
 	lock, err := branchsync.AcquireBranchOwnershipLock(m.paths, repo, repo.WorkingPath, branch)
 	if err != nil {
-		return fmt.Errorf("acquire branch ownership lock: %w", err)
+		return "", fmt.Errorf("acquire branch ownership lock: %w", err)
 	}
 	defer lock.Release()
 	current, exists, err := gateReceiveRef(ctx, m.paths.RepoDir(repo.ID), params.Ref)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !receiveOldMatches(current, exists, params.Old) {
-		return fmt.Errorf("gate ref %s is not at expected old head %s", params.Ref, params.Old)
+		return "", fmt.Errorf("gate ref %s is not at expected old head %s", params.Ref, params.Old)
 	}
-	_, err = m.db.ReserveReceive(repo.ID, m.paths.RepoDir(repo.ID), branch, params.Ref, params.Old, params.New, params.SkipSteps, params.Intent)
-	return err
+	reservation, err := m.db.ReserveReceive(repo.ID, m.paths.RepoDir(repo.ID), branch, params.Ref, params.Old, params.New, params.SkipSteps, params.Intent)
+	if err != nil {
+		return "", err
+	}
+	return reservation.ID, nil
 }
 
 func (m *RunManager) HandleReceiveTransaction(ctx context.Context, params *ipc.ReceiveTransactionParams) error {
 	if params == nil {
 		return fmt.Errorf("receive transaction: missing parameters")
 	}
+	if strings.TrimSpace(params.ReservationID) == "" {
+		return fmt.Errorf("receive transaction: reservation identity is required")
+	}
 	repo, branch, err := m.receiveRepo(params.Gate, params.Ref)
 	if err != nil {
 		return err
@@ -620,13 +626,20 @@ func (m *RunManager) HandleReceiveTransaction(ctx context.Context, params *ipc.R
 		return fmt.Errorf("acquire branch ownership lock: %w", err)
 	}
 	defer lock.Release()
+	reservation, err := m.db.GetReceiveReservation(params.ReservationID)
+	if err != nil {
+		return err
+	}
+	if reservation == nil || reservation.RepoID != repo.ID || reservation.Branch != branch || reservation.Ref != params.Ref || reservation.OldSHA != params.Old || reservation.NewSHA != params.New {
+		return fmt.Errorf("receive transaction: reservation identity does not match the exact receive")
+	}
 	switch params.Phase {
 	case "prepared":
-		err = m.db.MarkReceivePrepared(repo.ID, branch, params.Ref, params.Old, params.New)
+		err = m.db.MarkReceivePreparedForID(params.ReservationID, repo.ID, branch, params.Ref, params.Old, params.New)
 	case "committed":
-		err = m.db.MarkReceiveCommitted(repo.ID, branch, params.Ref, params.Old, params.New)
+		err = m.db.MarkReceiveCommittedForID(params.ReservationID, repo.ID, branch, params.Ref, params.Old, params.New)
 	case "aborted":
-		err = m.db.MarkReceiveAborted(repo.ID, branch, params.Ref, params.Old, params.New)
+		err = m.db.MarkReceiveAbortedForID(params.ReservationID, repo.ID, branch, params.Ref, params.Old, params.New)
 	default:
 		return fmt.Errorf("receive transaction: unsupported phase %q", params.Phase)
 	}
@@ -692,7 +705,6 @@ func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo
 	if err != nil {
 		return "", err
 	}
-	legacyNotification := reservation == nil
 	if reservation == nil {
 		history, historyErr := m.db.GetLatestReceiveReservation(repo.ID, branch, params.Ref, params.Old, params.New)
 		if historyErr != nil {
@@ -707,10 +719,7 @@ func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo
 			}
 			return "", fmt.Errorf("published receive reservation has no run")
 		}
-		reservation, err = m.db.ReserveReceive(repo.ID, m.paths.RepoDir(repo.ID), branch, params.Ref, params.Old, params.New, params.SkipSteps, params.Intent)
-		if err != nil {
-			return "", err
-		}
+		return "", fmt.Errorf("receive transaction evidence is missing; refusing unbound notification")
 	}
 	if reservation.State == db.ReceiveReservationPublished {
 		if isZeroObjectID(reservation.NewSHA) {
@@ -722,9 +731,7 @@ func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo
 		return *reservation.RunID, nil
 	}
 	if reservation.State == db.ReceiveReservationReserved || reservation.State == db.ReceiveReservationPrepared {
-		if !legacyNotification {
-			return "", fmt.Errorf("receive reservation is awaiting authoritative transaction evidence")
-		}
+		return "", fmt.Errorf("receive reservation is awaiting authoritative transaction evidence")
 	} else if reservation.State != db.ReceiveReservationCommitted {
 		return "", fmt.Errorf("receive reservation is no longer pending")
 	}
@@ -752,10 +759,10 @@ func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo
 		}
 		return "", fmt.Errorf("receive ref %s is at %s, reservation expects deletion", reservation.Ref, current)
 	}
-	if !exists && !legacyNotification {
+	if !exists {
 		return "", fmt.Errorf("receive ref %s is unavailable; reservation remains pending", reservation.Ref)
 	}
-	if exists && current == reservation.OldSHA && !legacyNotification {
+	if exists && current == reservation.OldSHA {
 		return "", fmt.Errorf("receive ref %s is still at its old head; reservation remains pending", reservation.Ref)
 	}
 	if exists && current != reservation.NewSHA {

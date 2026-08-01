@@ -59,6 +59,7 @@ func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "telemetry-run-repo")
+	commitTestReceive(t, d, "telemetry-run-repo", p.RepoDir("telemetry-run-repo"), "main", "refs/heads/main", "0000000000000000000000000000000000000000", headSHA)
 
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
@@ -120,6 +121,7 @@ func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "skip-run-repo")
+	commitTestReceiveWithOptions(t, d, "skip-run-repo", p.RepoDir("skip-run-repo"), "main", "refs/heads/main", "0000000000000000000000000000000000000000", headSHA, []types.StepName{types.StepReview}, "")
 
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
@@ -186,12 +188,12 @@ func TestPushReservationSurvivesOwnershipLockContention(t *testing.T) {
 		t.Fatalf("admit push: %v", err)
 	}
 	for _, phase := range []string{"prepared"} {
-		if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: params.Gate, Phase: phase, Ref: params.Ref, Old: params.Old, New: params.New}, nil); err != nil {
+		if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: params.Gate, Phase: phase, ReservationID: admitted.ReservationID, Ref: params.Ref, Old: params.Old, New: params.New}, nil); err != nil {
 			t.Fatalf("receive transaction %s: %v", phase, err)
 		}
 	}
 	gitCmd(t, p.RepoDir(repo.ID), "update-ref", "refs/heads/main", newSHA, oldSHA)
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: params.Gate, Phase: "committed", Ref: params.Ref, Old: params.Old, New: params.New}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: params.Gate, Phase: "committed", ReservationID: admitted.ReservationID, Ref: params.Ref, Old: params.Old, New: params.New}, nil); err != nil {
 		t.Fatalf("receive transaction committed: %v", err)
 	}
 
@@ -274,6 +276,35 @@ func TestPendingReceiveDoesNotReuseRunBeforeRefMutation(t *testing.T) {
 	}
 }
 
+func TestPushReceivedRefusesUnboundNotification(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+	_, headSHA := setupTestGitRepo(t, p, d, "unbound-notification-repo")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("unbound-notification-repo"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &result)
+	if err == nil || !strings.Contains(err.Error(), "evidence is missing") {
+		t.Fatalf("unbound notification error = %v, want missing evidence", err)
+	}
+	if runs, err := d.GetRunsByRepo("unbound-notification-repo"); err != nil {
+		t.Fatal(err)
+	} else if len(runs) != 0 {
+		t.Fatalf("runs after unbound notification = %d, want 0", len(runs))
+	}
+}
+
 func TestReceiveCreatesDistinctRunForSameHeadWithDifferentReservation(t *testing.T) {
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
 		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
@@ -301,11 +332,11 @@ func TestReceiveCreatesDistinctRunForSameHeadWithDifferentReservation(t *testing
 		t.Fatal(err)
 	}
 	firstParams := &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: preservedSHA, Intent: "first"}
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", Ref: ref, Old: oldSHA, New: preservedSHA}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: preservedSHA}, nil); err != nil {
 		t.Fatalf("first receive transaction prepared: %v", err)
 	}
 	gitCmd(t, gatePath, "update-ref", ref, preservedSHA, oldSHA)
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", Ref: ref, Old: oldSHA, New: preservedSHA}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: preservedSHA}, nil); err != nil {
 		t.Fatalf("first receive transaction committed: %v", err)
 	}
 	var firstResult ipc.PushReceivedResult
@@ -328,11 +359,11 @@ func TestReceiveCreatesDistinctRunForSameHeadWithDifferentReservation(t *testing
 	if err := client.Call(ipc.MethodAdmitPush, secondParams, &admitted); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", Ref: ref, Old: alternateSHA, New: preservedSHA}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: admitted.ReservationID, Ref: ref, Old: alternateSHA, New: preservedSHA}, nil); err != nil {
 		t.Fatalf("second receive transaction prepared: %v", err)
 	}
 	gitCmd(t, gatePath, "update-ref", ref, preservedSHA, alternateSHA)
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", Ref: ref, Old: alternateSHA, New: preservedSHA}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: admitted.ReservationID, Ref: ref, Old: alternateSHA, New: preservedSHA}, nil); err != nil {
 		t.Fatalf("second receive transaction committed: %v", err)
 	}
 	var secondResult ipc.PushReceivedResult
@@ -372,11 +403,11 @@ func TestReceiveDeletionReservationReconcilesWithoutRun(t *testing.T) {
 	if pending, err := d.GetPendingReceiveReservationsForBranch(repo.ID, "main"); err != nil || len(pending) != 1 {
 		t.Fatalf("pending deletion reservations = %d, %v", len(pending), err)
 	}
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", Ref: ref, Old: oldSHA, New: zeroSHA}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: zeroSHA}, nil); err != nil {
 		t.Fatalf("deletion receive transaction prepared: %v", err)
 	}
 	gitCmd(t, gatePath, "update-ref", "-d", ref, oldSHA)
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", Ref: ref, Old: oldSHA, New: zeroSHA}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: zeroSHA}, nil); err != nil {
 		t.Fatalf("deletion receive transaction committed: %v", err)
 	}
 
@@ -410,6 +441,8 @@ func TestPushReceivedAllowsDifferentBranchRunsConcurrently(t *testing.T) {
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "concurrent-branch-repo")
+	commitTestReceive(t, d, "concurrent-branch-repo", p.RepoDir("concurrent-branch-repo"), "feature/one", "refs/heads/feature/one", "0000000000000000000000000000000000000000", headSHA)
+	commitTestReceive(t, d, "concurrent-branch-repo", p.RepoDir("concurrent-branch-repo"), "feature/two", "refs/heads/feature/two", "0000000000000000000000000000000000000000", headSHA)
 
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
@@ -511,6 +544,8 @@ func TestPushReceivedConcurrentDifferentBranchRunsAvoidSharedConfigLock(t *testi
 
 	const repoID = "concurrent-config-lock-repo"
 	_, headSHA := setupTestGitRepo(t, p, d, repoID)
+	commitTestReceive(t, d, repoID, p.RepoDir(repoID), "feature/one", "refs/heads/feature/one", "0000000000000000000000000000000000000000", headSHA)
+	commitTestReceive(t, d, repoID, p.RepoDir(repoID), "feature/two", "refs/heads/feature/two", "0000000000000000000000000000000000000000", headSHA)
 
 	// Mirror a real gate: enable the per-worktree config isolation that
 	// `no-mistakes init` installs, which is what lets identity writes avoid the
@@ -588,6 +623,7 @@ func TestRerunSkipStepsConfiguresExecutor(t *testing.T) {
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "skip-rerun-repo")
+	commitTestReceive(t, d, "skip-rerun-repo", p.RepoDir("skip-rerun-repo"), "main", "refs/heads/main", "0000000000000000000000000000000000000000", headSHA)
 
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
@@ -642,6 +678,7 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "selected-rerun-repo")
+	commitTestReceive(t, d, "selected-rerun-repo", p.RepoDir("selected-rerun-repo"), "main", "refs/heads/main", "0000000000000000000000000000000000000000", headSHA)
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
 		t.Fatal(err)
@@ -710,6 +747,7 @@ func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 	}
 
 	repo, headSHA := setupTestGitRepo(t, p, d, "intent-start-run-repo")
+	commitTestReceive(t, d, "intent-start-run-repo", p.RepoDir("intent-start-run-repo"), "main", "refs/heads/main", "0000000000000000000000000000000000000000", headSHA)
 	writeManagerClaudeFixture(t, fakeHome, repo.WorkingPath, []string{
 		`{"type":"user","cwd":` + testJSONString(t, repo.WorkingPath) + `,"timestamp":"2026-04-18T02:15:37.407Z","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"please update test.txt"}}`,
 	})
@@ -779,6 +817,7 @@ func TestPushReceivedTracksRunTelemetryAfterPanic(t *testing.T) {
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "telemetry-panic-repo")
+	commitTestReceive(t, d, "telemetry-panic-repo", p.RepoDir("telemetry-panic-repo"), "main", "refs/heads/main", "0000000000000000000000000000000000000000", headSHA)
 
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
@@ -839,6 +878,7 @@ func TestPushReceivedDemoModeBypassesAgentResolution(t *testing.T) {
 	}
 
 	_, headSHA := setupTestGitRepo(t, p, d, "testrepo-demo")
+	commitTestReceive(t, d, "testrepo-demo", p.RepoDir("testrepo-demo"), "main", "refs/heads/main", "0000000000000000000000000000000000000000", headSHA)
 
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {

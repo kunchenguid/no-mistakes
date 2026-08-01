@@ -176,11 +176,12 @@ type AdmitPushParams struct {
 }
 
 type ReceiveTransactionParams struct {
-	Gate  string `json:"gate"`
-	Phase string `json:"phase"`
-	Ref   string `json:"ref"`
-	Old   string `json:"old"`
-	New   string `json:"new"`
+	Gate          string `json:"gate"`
+	Phase         string `json:"phase"`
+	ReservationID string `json:"reservation_id"`
+	Ref           string `json:"ref"`
+	Old           string `json:"old"`
+	New           string `json:"new"`
 }
 
 // HealthParams has no fields but exists for consistency.
@@ -239,7 +240,8 @@ type GateContextResult struct {
 
 // AdmitPushResult is returned before a receive hook permits ref mutation.
 type AdmitPushResult struct {
-	Context GateContextResult `json:"context"`
+	Context       GateContextResult `json:"context"`
+	ReservationID string            `json:"reservation_id,omitempty"`
 }
 
 // HealthResult confirms the daemon is alive.

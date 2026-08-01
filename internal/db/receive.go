@@ -186,10 +186,24 @@ func (d *DB) CompleteReceiveReservation(id, runID string) error {
 }
 
 func (d *DB) MarkReceivePrepared(repoID, branch, ref, oldSHA, newSHA string) error {
+	return d.markReceivePrepared("", repoID, branch, ref, oldSHA, newSHA)
+}
+
+func (d *DB) MarkReceivePreparedForID(id, repoID, branch, ref, oldSHA, newSHA string) error {
+	return d.markReceivePrepared(id, repoID, branch, ref, oldSHA, newSHA)
+}
+
+func (d *DB) markReceivePrepared(id, repoID, branch, ref, oldSHA, newSHA string) error {
 	if err := validateReceiveTransition(branch, ref, oldSHA, newSHA); err != nil {
 		return fmt.Errorf("mark receive prepared: %w", err)
 	}
-	result, err := d.sql.Exec(`UPDATE receive_reservations SET state = ?, updated_at = ? WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state = ?`, ReceiveReservationPrepared, now(), repoID, branch, ref, oldSHA, newSHA, ReceiveReservationReserved)
+	query := `UPDATE receive_reservations SET state = ?, updated_at = ? WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state = ?`
+	args := []any{ReceiveReservationPrepared, now(), repoID, branch, ref, oldSHA, newSHA, ReceiveReservationReserved}
+	if id != "" {
+		query = `UPDATE receive_reservations SET state = ?, updated_at = ? WHERE id = ? AND repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state = ?`
+		args = []any{ReceiveReservationPrepared, now(), id, repoID, branch, ref, oldSHA, newSHA, ReceiveReservationReserved}
+	}
+	result, err := d.sql.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("mark receive prepared: %w", err)
 	}
@@ -198,7 +212,12 @@ func (d *DB) MarkReceivePrepared(repoID, branch, ref, oldSHA, newSHA string) err
 	} else if rows == 1 {
 		return nil
 	}
-	current, err := d.GetLatestReceiveReservation(repoID, branch, ref, oldSHA, newSHA)
+	var current *ReceiveReservation
+	if id != "" {
+		current, err = d.GetReceiveReservation(id)
+	} else {
+		current, err = d.GetLatestReceiveReservation(repoID, branch, ref, oldSHA, newSHA)
+	}
 	if err != nil {
 		return err
 	}
@@ -209,10 +228,24 @@ func (d *DB) MarkReceivePrepared(repoID, branch, ref, oldSHA, newSHA string) err
 }
 
 func (d *DB) MarkReceiveCommitted(repoID, branch, ref, oldSHA, newSHA string) error {
+	return d.markReceiveCommitted("", repoID, branch, ref, oldSHA, newSHA)
+}
+
+func (d *DB) MarkReceiveCommittedForID(id, repoID, branch, ref, oldSHA, newSHA string) error {
+	return d.markReceiveCommitted(id, repoID, branch, ref, oldSHA, newSHA)
+}
+
+func (d *DB) markReceiveCommitted(id, repoID, branch, ref, oldSHA, newSHA string) error {
 	if err := validateReceiveTransition(branch, ref, oldSHA, newSHA); err != nil {
 		return fmt.Errorf("mark receive committed: %w", err)
 	}
-	result, err := d.sql.Exec(`UPDATE receive_reservations SET state = ?, updated_at = ? WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state = ?`, ReceiveReservationCommitted, now(), repoID, branch, ref, oldSHA, newSHA, ReceiveReservationPrepared)
+	query := `UPDATE receive_reservations SET state = ?, updated_at = ? WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state = ?`
+	args := []any{ReceiveReservationCommitted, now(), repoID, branch, ref, oldSHA, newSHA, ReceiveReservationPrepared}
+	if id != "" {
+		query = `UPDATE receive_reservations SET state = ?, updated_at = ? WHERE id = ? AND repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state = ?`
+		args = []any{ReceiveReservationCommitted, now(), id, repoID, branch, ref, oldSHA, newSHA, ReceiveReservationPrepared}
+	}
+	result, err := d.sql.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("mark receive committed: %w", err)
 	}
@@ -221,7 +254,12 @@ func (d *DB) MarkReceiveCommitted(repoID, branch, ref, oldSHA, newSHA string) er
 	} else if rows == 1 {
 		return nil
 	}
-	current, err := d.GetLatestReceiveReservation(repoID, branch, ref, oldSHA, newSHA)
+	var current *ReceiveReservation
+	if id != "" {
+		current, err = d.GetReceiveReservation(id)
+	} else {
+		current, err = d.GetLatestReceiveReservation(repoID, branch, ref, oldSHA, newSHA)
+	}
 	if err != nil {
 		return err
 	}
@@ -232,10 +270,24 @@ func (d *DB) MarkReceiveCommitted(repoID, branch, ref, oldSHA, newSHA string) er
 }
 
 func (d *DB) MarkReceiveAborted(repoID, branch, ref, oldSHA, newSHA string) error {
+	return d.markReceiveAborted("", repoID, branch, ref, oldSHA, newSHA)
+}
+
+func (d *DB) MarkReceiveAbortedForID(id, repoID, branch, ref, oldSHA, newSHA string) error {
+	return d.markReceiveAborted(id, repoID, branch, ref, oldSHA, newSHA)
+}
+
+func (d *DB) markReceiveAborted(id, repoID, branch, ref, oldSHA, newSHA string) error {
 	if err := validateReceiveTransition(branch, ref, oldSHA, newSHA); err != nil {
 		return fmt.Errorf("mark receive aborted: %w", err)
 	}
-	result, err := d.sql.Exec(`UPDATE receive_reservations SET state = ?, updated_at = ? WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state IN (?, ?)`, ReceiveReservationRetired, now(), repoID, branch, ref, oldSHA, newSHA, ReceiveReservationReserved, ReceiveReservationPrepared)
+	query := `UPDATE receive_reservations SET state = ?, updated_at = ? WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state IN (?, ?)`
+	args := []any{ReceiveReservationRetired, now(), repoID, branch, ref, oldSHA, newSHA, ReceiveReservationReserved, ReceiveReservationPrepared}
+	if id != "" {
+		query = `UPDATE receive_reservations SET state = ?, updated_at = ? WHERE id = ? AND repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state IN (?, ?)`
+		args = []any{ReceiveReservationRetired, now(), id, repoID, branch, ref, oldSHA, newSHA, ReceiveReservationReserved, ReceiveReservationPrepared}
+	}
+	result, err := d.sql.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("mark receive aborted: %w", err)
 	}
@@ -244,7 +296,12 @@ func (d *DB) MarkReceiveAborted(repoID, branch, ref, oldSHA, newSHA string) erro
 	} else if rows == 1 {
 		return nil
 	}
-	current, err := d.GetLatestReceiveReservation(repoID, branch, ref, oldSHA, newSHA)
+	var current *ReceiveReservation
+	if id != "" {
+		current, err = d.GetReceiveReservation(id)
+	} else {
+		current, err = d.GetLatestReceiveReservation(repoID, branch, ref, oldSHA, newSHA)
+	}
 	if err != nil {
 		return err
 	}

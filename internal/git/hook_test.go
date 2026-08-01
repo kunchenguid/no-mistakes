@@ -21,6 +21,8 @@ func TestPreReceiveHookScript(t *testing.T) {
 		"--old \"$oldrev\"",
 		"--new \"$newrev\"",
 		"mktemp \"$GATE_DIR/.no-mistakes-receive.XXXXXX\"",
+		"RECEIVE_SESSION=\"$GATE_DIR/.no-mistakes-receive-session.$PPID\"",
+		"admit push returned an invalid receive identity",
 		"gate push refused before ref mutation",
 		preservedPreReceiveHook,
 	} {
@@ -45,6 +47,10 @@ func TestReferenceTransactionHookScript(t *testing.T) {
 		"prepared|committed|aborted",
 		"daemon receive-transaction --gate \"$GATE_DIR\"",
 		"--phase \"$PHASE\"",
+		"--reservation-id \"$reservation_id\"",
+		"git-receive-pack",
+		"receive session evidence is missing",
+		"RECEIVE_OWNED=0",
 		"mktemp \"$GATE_DIR/.no-mistakes-reference-transaction.XXXXXX\"",
 		preservedReferenceTransactionHook,
 	} {
