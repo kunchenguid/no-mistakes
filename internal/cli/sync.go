@@ -301,7 +301,7 @@ func humanSyncSummary(state branchsync.State) string {
 		if state.Safety == branchsync.SafetySafeEquivalentAdvance {
 			return "diverged, but local changes are represented in the pipeline head; guarded advance verified"
 		}
-		if state.NextAction != nil && state.NextAction.Code == "sync" {
+		if state.NextAction != nil && state.NextAction.Code == branchsync.NextActionSync {
 			return "diverged; refresh required to verify equivalent pipeline content"
 		}
 		return "diverged from the pipeline-pushed head; manual reconciliation required"
@@ -479,7 +479,7 @@ func branchSyncField(state branchsync.State) toON.Field {
 	}
 	if state.NextAction != nil {
 		fields = append(fields, toON.Field{Key: "next_action", Value: toON.NewObject(
-			toON.Field{Key: "code", Value: state.NextAction.Code},
+			toON.Field{Key: "code", Value: string(state.NextAction.Code)},
 			toON.Field{Key: "command", Value: state.NextAction.Command},
 		)})
 	}

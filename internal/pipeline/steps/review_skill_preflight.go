@@ -41,6 +41,12 @@ func reviewSkillSearchRoots(workDir string) []string {
 // components; the bound leaves headroom without walking an arbitrary tree.
 const reviewSkillPluginWalkDepth = 8
 
+// reviewSkillPluginWalkBudget caps how many distinct directories one walk may
+// read. Depth alone bounds nothing useful against fan-out: a single symlink to
+// a large tree (or to /) stays within eight levels while costing an unbounded
+// number of readdirs.
+const reviewSkillPluginWalkBudget = 2048
+
 // reviewSkillDirs enumerates the directories a skill named name can occupy:
 // the bases skill.Install writes (.claude/skills, .agents/skills) plus the
 // Claude Code plugin layouts, since a plugin-provided skill is invoked as
@@ -60,33 +66,62 @@ func reviewSkillDirs(root, name string) []string {
 // reviewSkillPluginDirs walks .claude/plugins for any skills/<name> directory,
 // treating an unreadable subtree as absent. Directories are resolved with Stat
 // rather than the walk entry's own type, so a plugin (or a marketplace cache)
-// installed as a symlink resolves the way the shipped layouts do; the depth
-// bound is what keeps that from following a cycle forever, and a match is
-// taken before the bound applies so a skill sitting exactly at it still counts.
+// installed as a symlink resolves the way the shipped layouts do, and a match is
+// taken before the depth bound applies so a skill sitting exactly at it still
+// counts.
+//
+// One of the roots is the run's worktree, i.e. the contributor's pushed branch,
+// so the tree being walked is untrusted input to the daemon. Following symlinks
+// makes cycles and fan-out reachable, and the depth bound stops neither: a
+// resolved-path visited set is what terminates a cycle (and keeps an aliased
+// directory from being reported twice), and the directory budget is what bounds
+// breadth.
 func reviewSkillPluginDirs(root, name string) []string {
-	return appendReviewSkillPluginDirs(nil, filepath.Join(root, ".claude", "plugins"), name, 1)
+	w := &reviewSkillPluginWalk{name: name, visited: make(map[string]struct{}), budget: reviewSkillPluginWalkBudget}
+	w.walk(filepath.Join(root, ".claude", "plugins"), 1)
+	return w.dirs
 }
 
-func appendReviewSkillPluginDirs(dirs []string, dir, name string, depth int) []string {
+type reviewSkillPluginWalk struct {
+	name    string
+	visited map[string]struct{}
+	budget  int
+	dirs    []string
+}
+
+func (w *reviewSkillPluginWalk) walk(dir string, depth int) {
+	if w.budget <= 0 {
+		return
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return
+	}
+	if _, seen := w.visited[resolved]; seen {
+		return
+	}
+	w.visited[resolved] = struct{}{}
+	w.budget--
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return dirs
+		return
 	}
+	inSkillsDir := filepath.Base(dir) == "skills"
 	for _, entry := range entries {
 		path := filepath.Join(dir, entry.Name())
 		info, err := os.Stat(path)
 		if err != nil || !info.IsDir() {
 			continue
 		}
-		if entry.Name() == name && filepath.Base(dir) == "skills" {
-			dirs = append(dirs, path)
+		if inSkillsDir && entry.Name() == w.name {
+			w.dirs = append(w.dirs, path)
 			continue
 		}
 		if depth < reviewSkillPluginWalkDepth {
-			dirs = appendReviewSkillPluginDirs(dirs, path, name, depth+1)
+			w.walk(path, depth+1)
 		}
 	}
-	return dirs
 }
 
 // reviewSkillJudgeable reports whether this machine has a skill library at all.

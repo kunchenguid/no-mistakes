@@ -55,13 +55,13 @@ func TestEmitIntentRequiredError_CarriesBranchSyncNextAction(t *testing.T) {
 // way forward would send the agent in a circle; the code still travels in the
 // branch_sync next_action field.
 func TestEmitIntentRequiredError_OmitsTakeCommitsHintForNonSyncNextAction(t *testing.T) {
-	for _, code := range []string{
+	for _, code := range []branchsync.NextActionCode{
 		branchsync.NextActionRunPipeline,
 		branchsync.NextActionInspectWorktree,
 		branchsync.NextActionContinueActiveRun,
 		branchsync.NextActionInspectAndReconcileManually,
 	} {
-		t.Run(code, func(t *testing.T) {
+		t.Run(string(code), func(t *testing.T) {
 			state := branchsync.State{
 				State:      branchsync.StateLocalAhead,
 				NextAction: &branchsync.NextAction{Code: code, Command: "no-mistakes axi status"},
@@ -78,7 +78,7 @@ func TestEmitIntentRequiredError_OmitsTakeCommitsHintForNonSyncNextAction(t *tes
 			if strings.Contains(got, "Take the pipeline's commits first") {
 				t.Errorf("%s must not be labelled as taking the pipeline's commits:\n%s", code, got)
 			}
-			if !strings.Contains(got, "next_action") || !strings.Contains(got, code) {
+			if !strings.Contains(got, "next_action") || !strings.Contains(got, string(code)) {
 				t.Errorf("next_action %s must still travel in the document:\n%s", code, got)
 			}
 		})
@@ -88,13 +88,13 @@ func TestEmitIntentRequiredError_OmitsTakeCommitsHintForNonSyncNextAction(t *tes
 // The sync and recovery codes are the ones that genuinely take or re-check the
 // pipeline's commits, so those keep the prose hint.
 func TestEmitIntentRequiredError_KeepsTakeCommitsHintForSyncCodes(t *testing.T) {
-	for _, code := range []string{
+	for _, code := range []branchsync.NextActionCode{
 		branchsync.NextActionSync,
 		branchsync.NextActionCheckSync,
 		branchsync.NextActionRecoverCustody,
 		branchsync.NextActionRetry,
 	} {
-		t.Run(code, func(t *testing.T) {
+		t.Run(string(code), func(t *testing.T) {
 			state := branchsync.State{
 				State:      branchsync.StateBehind,
 				NextAction: &branchsync.NextAction{Code: code, Command: "no-mistakes axi sync"},

@@ -889,7 +889,7 @@ func TestNextActionCommandsAreTheAgentAxiForm(t *testing.T) {
 			t.Fatal(err)
 		}
 		state := f.service.Refresh(f.ctx)
-		if state.NextAction == nil || state.NextAction.Code != "retry" {
+		if state.NextAction == nil || state.NextAction.Code != NextActionRetry {
 			t.Fatalf("offline next action = %#v", state.NextAction)
 		}
 		if got := state.NextAction.Command; got != "no-mistakes axi sync --check" {

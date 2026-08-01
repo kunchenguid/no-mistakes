@@ -114,33 +114,90 @@ type RemoteState struct {
 }
 
 type NextAction struct {
-	Code    string
+	Code    NextActionCode
 	Command string
 }
 
-// Next-action codes. They are the machine-readable half of a NextAction and
-// travel to agents in the branch_sync document, so consumers outside this
-// package match on these constants rather than restating the vocabulary.
+// NextActionCode is the machine-readable half of a NextAction. It is a named
+// type so a bare string literal can neither construct nor compare against one,
+// which is what keeps the vocabulary from drifting back out into its consumers.
+type NextActionCode string
+
+// Next-action codes. They travel to agents in the branch_sync document and are
+// documented verbatim in the generated sync-recovery skill and the CLI
+// reference, so their exact strings are a compatibility surface: renaming one
+// is a breaking change, not a refactor.
 const (
 	// NextActionSync takes the pipeline's commits into the worktree.
-	NextActionSync = "sync"
+	NextActionSync NextActionCode = "sync"
 	// NextActionCheckSync re-inspects synchronization before deciding.
-	NextActionCheckSync = "check_sync"
+	NextActionCheckSync NextActionCode = "check_sync"
 	// NextActionRecoverCustody takes back a terminal run's unpublished commits.
-	NextActionRecoverCustody = "recover_custody"
+	NextActionRecoverCustody NextActionCode = "recover_custody"
 	// NextActionRetry re-runs the synchronization that failed transiently.
-	NextActionRetry = "retry"
+	NextActionRetry NextActionCode = "retry"
 	// NextActionRunPipeline starts a fresh run for local work.
-	NextActionRunPipeline = "run_pipeline"
+	NextActionRunPipeline NextActionCode = "run_pipeline"
 	// NextActionInspectWorktree asks the operator to look at a dirty or
 	// unexpected worktree.
-	NextActionInspectWorktree = "inspect_worktree"
+	NextActionInspectWorktree NextActionCode = "inspect_worktree"
 	// NextActionContinueActiveRun waits on the run that already owns the branch.
-	NextActionContinueActiveRun = "continue_active_run"
+	NextActionContinueActiveRun NextActionCode = "continue_active_run"
 	// NextActionInspectAndReconcileManually is the fail-safe: nothing automatic
 	// is provably safe here.
-	NextActionInspectAndReconcileManually = "inspect_and_reconcile_manually"
+	NextActionInspectAndReconcileManually NextActionCode = "inspect_and_reconcile_manually"
 )
+
+// allNextActionCodes is the complete minted vocabulary. Classifying predicates
+// are tested against it, so a newly minted code fails until it is deliberately
+// classified rather than silently defaulting.
+var allNextActionCodes = []NextActionCode{
+	NextActionSync,
+	NextActionCheckSync,
+	NextActionRecoverCustody,
+	NextActionRetry,
+	NextActionRunPipeline,
+	NextActionInspectWorktree,
+	NextActionContinueActiveRun,
+	NextActionInspectAndReconcileManually,
+}
+
+// Each code has exactly one paired command, so the pairing lives here rather
+// than at the construction sites: a right-code/stale-command mismatch is
+// invisible at a call site but obvious in one list.
+func syncAction() *NextAction {
+	return &NextAction{Code: NextActionSync, Command: "no-mistakes axi sync"}
+}
+
+func checkSyncAction() *NextAction {
+	return &NextAction{Code: NextActionCheckSync, Command: "no-mistakes axi sync --check"}
+}
+
+func recoverCustodyAction() *NextAction {
+	return &NextAction{Code: NextActionRecoverCustody, Command: "no-mistakes axi sync --recover"}
+}
+
+func retryAction() *NextAction {
+	return &NextAction{Code: NextActionRetry, Command: "no-mistakes axi sync --check"}
+}
+
+func runPipelineAction() *NextAction {
+	return &NextAction{Code: NextActionRunPipeline, Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
+}
+
+func inspectWorktreeAction() *NextAction {
+	return &NextAction{Code: NextActionInspectWorktree, Command: "git status"}
+}
+
+func continueActiveRunAction() *NextAction {
+	return &NextAction{Code: NextActionContinueActiveRun, Command: "no-mistakes axi status"}
+}
+
+// reconcileManuallyAction is the one parameterized builder: the reconciliation
+// command names the ref the local head has to be compared against.
+func reconcileManuallyAction(ref string) *NextAction {
+	return &NextAction{Code: NextActionInspectAndReconcileManually, Command: "git log --oneline --left-right HEAD..." + ref}
+}
 
 // IsSynchronization reports whether the action actually takes or re-checks the
 // pipeline's commits. Most codes do not: NextActionRunPipeline starts a run,
@@ -283,7 +340,7 @@ func (s *Service) Refresh(ctx context.Context) State {
 		state.State = StateOffline
 		state.Safety = "blocked_offline"
 		state.Error = "could not refresh the configured push target; no files or refs were changed"
-		state.NextAction = &NextAction{Code: NextActionRetry, Command: "no-mistakes axi sync --check"}
+		state.NextAction = retryAction()
 		return state
 	}
 	state.Remote.Freshness = "live"
@@ -656,7 +713,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		if !state.Local.Clean {
 			state.Relation = RelationBehind
 			blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_dirty", fmt.Sprintf("the invoking worktree is not clean (%s); commit or stash first and re-run the recovery, or use --keep-local to return custody at the current head without moving the worktree; no files or refs were changed", state.Local.Reason))
-			blocked.NextAction = &NextAction{Code: NextActionInspectWorktree, Command: "git status"}
+			blocked.NextAction = inspectWorktreeAction()
 			return blocked
 		}
 		return s.recoverFastForward(ctx, run, state, preserved)
@@ -675,7 +732,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		}
 		state.Relation = RelationDiverged
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_diverged", BlockedRecoverDivergedMessage(anchorRef))
-		blocked.NextAction = &NextAction{Code: NextActionInspectAndReconcileManually, Command: "git log --oneline --left-right HEAD..." + anchorRef}
+		blocked.NextAction = reconcileManuallyAction(anchorRef)
 		return blocked
 	}
 }
@@ -748,7 +805,7 @@ func (s *Service) recoverFastForward(ctx context.Context, run *db.Run, state Sta
 		state.Relation = RelationEqual
 		state.Safety = "blocked_post_recover_" + finalReason
 		state.Error = "HEAD reached the preserved pipeline head, but a Git hook left the worktree non-clean; custody was not recorded"
-		state.NextAction = &NextAction{Code: NextActionInspectWorktree, Command: "git status"}
+		state.NextAction = inspectWorktreeAction()
 		return state
 	}
 	return s.finishRecover(ctx, run, true)
@@ -1061,7 +1118,7 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		state.State = StatePushInProgress
 		state.Safety = "blocked_push_in_progress"
 		state.Pipeline.Phase = "push"
-		state.NextAction = &NextAction{Code: NextActionContinueActiveRun, Command: "no-mistakes axi status"}
+		state.NextAction = continueActiveRunAction()
 		return state, run, false
 	}
 	if run.LastPushedSHA == nil || run.PushTargetFingerprint == nil || run.PushRef == nil || run.PushGeneration == nil || run.SubmittedHeadSHA == nil {
@@ -1134,7 +1191,7 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		state.State = StateDirty
 		state.Safety = "blocked_" + reason
 		state.Error = "the invoking worktree is not completely clean; no network read or mutation was attempted"
-		state.NextAction = &NextAction{Code: NextActionInspectWorktree, Command: "git status"}
+		state.NextAction = inspectWorktreeAction()
 		return state, run, false
 	}
 
@@ -1159,7 +1216,7 @@ func (s *Service) classifyRelation(ctx context.Context, state *State, pushed, ba
 			state.State = StateLocalAhead
 			state.Relation = RelationAhead
 			state.Safety = "blocked_local_ahead"
-			state.NextAction = &NextAction{Code: NextActionRunPipeline, Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
+			state.NextAction = runPipelineAction()
 			return
 		default:
 			if equivalentDivergence(ctx, s.workDir(), state.Local.Head, pushed, base) {
@@ -1170,14 +1227,14 @@ func (s *Service) classifyRelation(ctx context.Context, state *State, pushed, ba
 				} else {
 					state.Safety = "refresh_required"
 				}
-				state.NextAction = &NextAction{Code: NextActionSync, Command: "no-mistakes axi sync"}
+				state.NextAction = syncAction()
 				state.Error = ""
 				return
 			}
 			state.State = StateDiverged
 			state.Relation = RelationDiverged
 			state.Safety = "blocked_diverged"
-			state.NextAction = &NextAction{Code: NextActionInspectAndReconcileManually, Command: "git log --oneline --left-right HEAD..." + pushed}
+			state.NextAction = reconcileManuallyAction(pushed)
 			state.Error = "local and pipeline-pushed histories have diverged; no files or refs were changed"
 			return
 		}
@@ -1189,7 +1246,7 @@ func (s *Service) classifyRelation(ctx context.Context, state *State, pushed, ba
 		state.Relation = RelationUnknown
 		state.Safety = "blocked_relation_unknown"
 		state.Error = "the pipeline-pushed commit is not available locally; run an explicit synchronization check"
-		state.NextAction = &NextAction{Code: NextActionCheckSync, Command: "no-mistakes axi sync --check"}
+		state.NextAction = checkSyncAction()
 		return
 	}
 	if live {
@@ -1197,7 +1254,7 @@ func (s *Service) classifyRelation(ctx context.Context, state *State, pushed, ba
 	} else {
 		state.Safety = "refresh_required"
 	}
-	state.NextAction = &NextAction{Code: NextActionSync, Command: "no-mistakes axi sync"}
+	state.NextAction = syncAction()
 }
 
 func syncAnchorRef(runID string) string {
@@ -1397,12 +1454,12 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	if terminalRunStatus(run.Status) {
 		state.Safety = "blocked_pipeline_owned_recoverable"
 		state.Error = "the run finished " + string(run.Status) + " with unpublished pipeline commits preserved in the local gate; recover custody before any local follow-up commit"
-		state.NextAction = &NextAction{Code: NextActionRecoverCustody, Command: "no-mistakes axi sync --recover"}
+		state.NextAction = recoverCustodyAction()
 		return
 	}
 	state.Safety = "blocked_pipeline_owned"
 	state.Error = activeMessage
-	state.NextAction = &NextAction{Code: NextActionContinueActiveRun, Command: "no-mistakes axi status"}
+	state.NextAction = continueActiveRunAction()
 }
 
 // classifyUserOwned reports a branch released by its terminal outcome: the
@@ -1448,7 +1505,7 @@ func (s *Service) classifyCustodyReturned(ctx context.Context, state *State) {
 	state.State = StateCustodyReturned
 	state.Safety = "custody_returned"
 	state.Error = ""
-	state.NextAction = &NextAction{Code: NextActionRunPipeline, Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
+	state.NextAction = runPipelineAction()
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, state.Pipeline.CurrentHead)
 }
 
