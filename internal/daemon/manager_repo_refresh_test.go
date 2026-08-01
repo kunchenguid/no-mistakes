@@ -183,6 +183,35 @@ func TestRerunReadsGateOnlyAfterCustodyOwnershipLock(t *testing.T) {
 	}
 }
 
+func TestRerunRefusesQuarantinedGateRef(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "rerun-quarantined-gate-repo")
+	previous, err := database.InsertRun(repo.ID, "main", head, refreshTestZeroSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(previous.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QuarantineGateRef(repo.ID, p.RepoDir(repo.ID), "refs/heads/main", head, "rewritten", "test quarantine"); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewRunManager(database, p, nil)
+	t.Cleanup(manager.Shutdown)
+	if _, err := manager.HandleRerun(context.Background(), repo.ID, "main", previous.ID, nil, ""); err == nil || !strings.Contains(err.Error(), "quarantined") {
+		t.Fatalf("rerun with quarantined gate error = %v", err)
+	}
+	runs, err := database.GetRunsByRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].ID != previous.ID {
+		t.Fatalf("rerun with quarantined gate changed runs: %#v", runs)
+	}
+}
+
 func TestRecoveredRunResumeRefusesCustodyOwnershipLockContention(t *testing.T) {
 	t.Setenv("NM_DEMO", "1")
 	p, database := newRefreshRunFixture(t)

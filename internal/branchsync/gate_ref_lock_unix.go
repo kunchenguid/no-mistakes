@@ -22,3 +22,10 @@ func acquireGateRefOSLock(file *os.File) error {
 func releaseGateRefOSLock(file *os.File) {
 	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 }
+
+func removeHeldGateRefLock(lock *gateRefLock) error {
+	if lock == nil || lock.path == "" {
+		return fmt.Errorf("stamped gate lock handle is unavailable")
+	}
+	return os.Remove(lock.path)
+}

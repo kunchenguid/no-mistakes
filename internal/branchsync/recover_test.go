@@ -152,6 +152,9 @@ func newRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
 	if statusErr != nil {
 		t.Fatal(statusErr)
 	}
+	if err := database.SetManagedGateRefHead(repo.ID, gate, "refs/heads/feature/recover", preserved); err != nil {
+		t.Fatal(err)
+	}
 	run, _ = database.GetRun(run.ID)
 	return &recoverFixture{
 		t: t, ctx: ctx, db: database, repo: repo, run: run, dbPath: dbPath,
@@ -1965,14 +1968,36 @@ func TestRecoverCrashAfterGateMoveIsRetryable(t *testing.T) {
 	if refused.Recovered || refused.Safety != "blocked_recover_diverged" {
 		t.Fatalf("crash-boundary setup recovery = %#v", refused)
 	}
-	source, err := filepath.Abs(f.local)
+	kept := mustRun(t, f.local, "rev-parse", "HEAD")
+	lock, err := acquireCustodyLock(f.service, f.run)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustRun(t, f.gate, "update-ref", custodyOriginalRef(f.run.ID), f.preserved)
-	mustRun(t, f.gate, "fetch", "--no-tags", "--no-write-fetch-head", source, "+refs/heads/feature/recover:"+custodyReturnRef(f.run.ID))
-	kept := mustRun(t, f.local, "rev-parse", "HEAD")
-	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", kept, f.preserved)
+	owner, err := f.db.BeginRunCustodyTransition(f.ctx, f.run)
+	if err != nil {
+		lock.Release()
+		t.Fatal(err)
+	}
+	if _, err := f.service.prepareCustodyOriginal(f.ctx, lock, f.run.Branch, f.run.ID, f.preserved); err != nil {
+		lock.Release()
+		t.Fatal(err)
+	}
+	source, err := filepath.Abs(f.local)
+	if err != nil {
+		lock.Release()
+		t.Fatal(err)
+	}
+	if err := f.service.fetchGatePrivateRef(f.ctx, lock, f.run.Branch, source, custodyReturnRef(f.run.ID), "", kept); err != nil {
+		lock.Release()
+		t.Fatal(err)
+	}
+	stage, err := f.db.GetCustodyRefStage(f.run.ID)
+	if err != nil || stage == nil || stage.State != db.CustodyRefStageStaged {
+		lock.Release()
+		t.Fatalf("journaled custody stage = %#v, %v", stage, err)
+	}
+	lock.Release()
+	_ = owner
 
 	recovered := f.service.Recover(f.ctx, true)
 	if !recovered.Recovered || recovered.Changed {
@@ -1983,6 +2008,69 @@ func TestRecoverCrashAfterGateMoveIsRetryable(t *testing.T) {
 	}
 	if run, err := f.db.GetRun(f.run.ID); err != nil || run.CustodyTransitionToken != nil {
 		t.Fatalf("crash-boundary retry left custody owner: %#v, %v", run, err)
+	}
+}
+
+func TestRecoverKeepLocalReturnsCustodyForGateObjectOnlyPreservedHead(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	f.moveGateBranchToSubmitted()
+	if err := f.db.SetManagedGateRefHead(f.repo.ID, f.gate, "refs/heads/feature/recover", f.submitted); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("ordinary gate head = %s, want submitted %s", got, f.submitted)
+	}
+	if _, err := gitpkg.Run(f.ctx, f.gate, "cat-file", "-e", f.preserved+"^{commit}"); err != nil {
+		t.Fatalf("preserved gate object missing: %v", err)
+	}
+	if got, err := gitpkg.LsRemote(f.ctx, f.local, f.remote, "refs/heads/feature/recover"); err != nil || got != f.submitted {
+		t.Fatalf("ordinary remote head = %s, %v; want submitted %s", got, err, f.submitted)
+	}
+
+	recovered := f.service.Recover(f.ctx, true)
+	if !recovered.Recovered || recovered.Changed {
+		t.Fatalf("gate-object-only recovery = %#v", recovered)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("local head = %s, want submitted %s", got, f.submitted)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("ordinary gate head after recovery = %s, want submitted %s", got, f.submitted)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("recovery anchor = %s, want preserved %s", got, f.preserved)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("gate-object-only recovery did not stamp custody")
+	}
+}
+
+func TestRecoverRefusesUnjournaledRewrittenGateHead(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	stateDB, err := sql.Open("sqlite", f.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stateDB.Exec(`DELETE FROM managed_gate_refs WHERE repo_id = ? AND gate_path = ? AND ref = ?`, f.repo.ID, f.gate, "refs/heads/feature/recover"); err != nil {
+		stateDB.Close()
+		t.Fatal(err)
+	}
+	stateDB.Close()
+	f.moveGateBranchToSubmitted()
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.preserved, f.submitted)
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Safety != "blocked_recover_gate_quarantined" {
+		t.Fatalf("unjournaled rewritten gate recovery = %#v", state)
+	}
+	quarantine, err := f.db.GetGateRefQuarantine(f.repo.ID, f.gate, "refs/heads/feature/recover")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quarantine == nil || quarantine.ExpectedHead != f.submitted || quarantine.ObservedHead != f.preserved {
+		t.Fatalf("unjournaled gate quarantine = %#v", quarantine)
+	}
+	if f.custodyReturned() {
+		t.Fatal("unjournaled rewritten gate recovery stamped custody")
 	}
 }
 

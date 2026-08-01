@@ -86,7 +86,9 @@ func acquireGateRefLock(gateDir, ref, authorityEndpoint string) (*gateRefLock, e
 }
 
 func isManagedGateRef(ref string) bool {
-	return strings.HasPrefix(strings.TrimSpace(ref), "refs/heads/") || strings.HasPrefix(strings.TrimSpace(ref), "refs/no-mistakes/")
+	raw := ref
+	ref = strings.TrimSpace(ref)
+	return ref != "" && raw == ref && !strings.Contains(ref, "\\") && !strings.Contains(ref, "//") && !strings.Contains(ref, "/./") && !strings.Contains(ref, "/../") && !strings.HasSuffix(ref, "/") && (strings.HasPrefix(ref, "refs/heads/") || strings.HasPrefix(ref, "refs/no-mistakes/"))
 }
 
 func newGateRefLockGeneration() (string, error) {
@@ -294,28 +296,40 @@ func (l *gateRefLock) release(database *db.DB) error {
 }
 
 func readLockedGateRef(gateDir, ref string) (string, error) {
-	return readLockedGateRefAtDepth(gateDir, ref, 0)
-}
-
-func readLockedGateRefAtDepth(gateDir, ref string, depth int) (string, error) {
-	if depth > 8 || strings.TrimSpace(gateDir) == "" || !strings.HasPrefix(ref, "refs/") {
+	if strings.TrimSpace(gateDir) == "" || !isManagedGateRef(ref) {
 		return "", fmt.Errorf("read locked gate ref: invalid ref")
 	}
-	loose, err := os.ReadFile(filepath.Join(gateDir, filepath.FromSlash(ref)))
-	if err == nil {
+	loosePath := filepath.Join(gateDir, filepath.FromSlash(ref))
+	if err := rejectSymlinkPath(gateDir, ref); err != nil {
+		return "", err
+	}
+	looseInfo, statErr := os.Lstat(loosePath)
+	if statErr == nil {
+		if !looseInfo.Mode().IsRegular() {
+			return "", fmt.Errorf("read locked gate ref: noncanonical loose ref %s", ref)
+		}
+		loose, err := os.ReadFile(loosePath)
+		if err != nil {
+			return "", err
+		}
 		value := strings.TrimSpace(string(loose))
-		if strings.HasPrefix(value, "ref: ") {
-			return readLockedGateRefAtDepth(gateDir, strings.TrimSpace(strings.TrimPrefix(value, "ref: ")), depth+1)
+		if strings.HasPrefix(value, "ref:") {
+			return "", fmt.Errorf("read locked gate ref: symbolic ref %s", ref)
 		}
 		if value == "" || strings.ContainsAny(value, " \t\r\n") {
 			return "", fmt.Errorf("read locked gate ref: malformed loose ref %s", ref)
 		}
 		return value, nil
 	}
-	if !os.IsNotExist(err) {
-		return "", err
+	if !os.IsNotExist(statErr) {
+		return "", statErr
 	}
-	packed, err := os.ReadFile(filepath.Join(gateDir, "packed-refs"))
+	packedPath := filepath.Join(gateDir, "packed-refs")
+	packedInfo, packedStatErr := os.Lstat(packedPath)
+	if packedStatErr == nil && !packedInfo.Mode().IsRegular() {
+		return "", fmt.Errorf("read locked gate ref: noncanonical packed refs")
+	}
+	packed, err := os.ReadFile(packedPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", fmt.Errorf("read locked gate ref: %w: %s", errGateRefAbsent, ref)
@@ -329,6 +343,27 @@ func readLockedGateRefAtDepth(gateDir, ref string, depth int) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("read locked gate ref: %w: %s", errGateRefAbsent, ref)
+}
+
+func rejectSymlinkPath(gateDir, ref string) error {
+	current := filepath.Clean(gateDir)
+	for _, part := range strings.Split(filepath.FromSlash(ref), string(filepath.Separator)) {
+		if part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspect canonical gate ref path: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("read locked gate ref: symlinked ref path %s", ref)
+		}
+	}
+	return nil
 }
 
 func (l *gateRefLock) Release() error {

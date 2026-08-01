@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -110,6 +111,31 @@ func TestGateRefLockBlocksHooksPathOverride(t *testing.T) {
 	}
 	if got, err := readLockedGateRef(f.gate, "refs/heads/feature/recover"); err != nil || got != f.preserved {
 		t.Fatalf("locked gate branch = %s, want %s", got, f.preserved)
+	}
+}
+
+func TestReadLockedGateRefRejectsLinkedRefs(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	refPath := filepath.Join(f.gate, filepath.FromSlash("refs/heads/feature/recover"))
+	if err := os.WriteFile(refPath, []byte("ref: refs/heads/other\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readLockedGateRef(f.gate, "refs/heads/feature/recover"); err == nil {
+		t.Fatal("symbolic ordinary ref was accepted")
+	}
+
+	payload := filepath.Join(t.TempDir(), "linked-ref")
+	if err := os.WriteFile(payload, []byte(f.preserved+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(refPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(payload, refPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readLockedGateRef(f.gate, "refs/heads/feature/recover"); err == nil {
+		t.Fatal("symlinked ordinary ref was accepted")
 	}
 }
 

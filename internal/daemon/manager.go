@@ -1123,9 +1123,29 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	defer ownershipLock.Release()
 
 	gateDir := m.paths.RepoDir(repo.ID)
+	quarantine, err := m.db.GetGateRefQuarantine(repo.ID, gateDir, "refs/heads/"+branch)
+	if err != nil {
+		return "", fmt.Errorf("check managed gate ref quarantine: %w", err)
+	}
+	if quarantine != nil {
+		return "", fmt.Errorf("managed gate ref refs/heads/%s is quarantined after an unbound transition from %s to %s; reconcile it before rerun", branch, quarantine.ExpectedHead, quarantine.ObservedHead)
+	}
 	headSHA, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("resolve gate head: %w", err)
+	}
+	managedGateRef, err := m.db.GetManagedGateRef(repo.ID, gateDir, "refs/heads/"+branch)
+	if err != nil {
+		return "", fmt.Errorf("read managed gate ref journal: %w", err)
+	}
+	if managedGateRef == nil {
+		return "", fmt.Errorf("managed gate ref refs/heads/%s has no authoritative head journal; reconcile it before rerun", branch)
+	}
+	if db.NormalizeManagedGateHead(managedGateRef.Head) != db.NormalizeManagedGateHead(headSHA) {
+		if err := m.db.QuarantineGateRef(repo.ID, gateDir, "refs/heads/"+branch, managedGateRef.Head, headSHA, "unbound-or-unexpected-gate-ref"); err != nil {
+			return "", fmt.Errorf("quarantine managed gate ref: %w", err)
+		}
+		return "", fmt.Errorf("managed gate ref refs/heads/%s changed from journaled head %s to %s; reconcile it before rerun", branch, managedGateRef.Head, headSHA)
 	}
 
 	runs, err := m.db.GetRunsByRepo(repoID)
