@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/logstore"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -280,6 +281,15 @@ func setupTestGitRepo(t *testing.T, p *paths.Paths, d *db.DB, repoID string) (*d
 	// does). Without this the trusted-config fetch fails, which now aborts the
 	// run (the disable_project_settings security boundary).
 	gitCmd(t, bareDir, "remote", "add", "origin", bareDir)
+
+	// Give the gate the per-worktree config scope a real one gets at init, via
+	// the production routine rather than a hand-written approximation. Steps
+	// that must not leak a setting into sibling worktrees write in that scope
+	// and fail closed without it, so a fixture missing it fails runs that
+	// succeed in production.
+	if err := git.IsolateHooksPath(ctx, bareDir); err != nil {
+		t.Fatal(err)
+	}
 
 	// Register repo in DB.
 	repo, err := d.InsertRepoWithID(repoID, workDir, "https://github.com/test/repo", "main")
