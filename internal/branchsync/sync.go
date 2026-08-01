@@ -119,8 +119,9 @@ func CanApply(state State) bool {
 
 // Service synchronizes only the invoking worktree. Repo is the registered
 // repository record, while WorkDir may be its main or a linked worktree.
-// GateDir is the repo's local bare gate; Recover reads preserved pipeline
-// heads from it and is the only method that touches it.
+// GateDir is the repo's local bare gate; selection may read its exact branch
+// head and ancestry as provenance evidence, while Recover is the only method
+// that mutates it.
 type Service struct {
 	DB      *db.DB
 	Repo    *db.Repo
@@ -198,8 +199,9 @@ func displayTarget(raw string) string {
 	return safeurl.Redact(raw)
 }
 
-// InspectCached reads local Git and persisted provenance without fetching or
-// mutating refs, the index, or the worktree.
+// InspectCached reads local Git, persisted provenance, and read-only gate
+// ancestry evidence without fetching or mutating refs, the index, or the
+// worktree.
 func (s *Service) InspectCached(ctx context.Context) State {
 	state, _, _ := s.inspect(ctx)
 	return state
@@ -697,13 +699,23 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		return state, nil, false
 	}
 	var run *db.Run
+	var newerPushed *db.Run
 	for _, candidate := range runs {
 		if candidate.Branch != branch {
 			continue
 		}
 		if candidate.Status == types.RunPending || candidate.Status == types.RunRunning || unpublishedPipelineHead(candidate) {
+			// A terminal unpublished run can be superseded only by a newer
+			// exact binding whose pushed head is proven, in the local gate, to
+			// contain the preserved head. Active ownership remains absolute.
+			if unpublishedPipelineHead(candidate) && s.supersededUnpublishedRun(ctx, candidate, newerPushed, branch) {
+				continue
+			}
 			run = candidate
 			break
+		}
+		if newerPushed == nil && exactPushedBinding(s.Repo, candidate, branch) {
+			newerPushed = candidate
 		}
 		// Custody-returned runs stay selectable so a recovered branch reports
 		// custody_returned (or its ordinary post-push classification) instead
@@ -988,6 +1000,33 @@ func unpublishedPipelineHead(run *db.Run) bool {
 		return run.HeadSHA != ptr(run.SubmittedHeadSHA)
 	}
 	return run.HeadSHA != ptr(run.LastPushedSHA)
+}
+
+func exactPushedBinding(repo *db.Repo, run *db.Run, branch string) bool {
+	return repo != nil && run != nil && run.Branch == branch && !run.PushActive && run.HeadSHA != "" &&
+		run.LastPushedSHA != nil && run.HeadSHA == ptr(run.LastPushedSHA) &&
+		run.PushTargetKind != nil && ptr(run.PushTargetKind) == targetKind(repo) &&
+		run.PushTargetFingerprint != nil && ptr(run.PushTargetFingerprint) == TargetFingerprint(repo.PushURL()) &&
+		run.PushRef != nil && ptr(run.PushRef) == "refs/heads/"+branch &&
+		run.PushGeneration != nil
+}
+
+// supersededUnpublishedRun proves the narrow rerun relationship needed to
+// ignore an older terminal unpublished head during branch selection. The gate
+// is read-only evidence: its exact branch head must equal the newer push
+// binding, and Git must prove the older preserved head is its ancestor. Any
+// missing or conflicting evidence leaves the older run authoritative.
+func (s *Service) supersededUnpublishedRun(ctx context.Context, older, newer *db.Run, branch string) bool {
+	if older == nil || newer == nil || !terminalRunStatus(older.Status) || !unpublishedPipelineHead(older) ||
+		strings.TrimSpace(s.GateDir) == "" || older.HeadSHA == "" || newer.LastPushedSHA == nil {
+		return false
+	}
+	pushed := ptr(newer.LastPushedSHA)
+	gateHead, err := git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
+	if err != nil || gateHead != pushed {
+		return false
+	}
+	return isAncestor(ctx, s.GateDir, older.HeadSHA, pushed)
 }
 
 func terminalRunStatus(status types.RunStatus) bool {

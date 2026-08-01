@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -426,6 +427,207 @@ func newCLIRecoverFixture(t *testing.T) cliRecoverFixture {
 	}
 	chdir(t, local)
 	return cliRecoverFixture{local: local, gate: gate, submitted: submitted, preserved: preserved}
+}
+
+type cliStaleUnpublishedFixture struct {
+	local, gate, base, localHead, unpublished, pushed string
+}
+
+// newCLIStaleUnpublishedFixture builds the exact same-branch provenance race:
+// an older terminal run owns U, while a newer run has an exact pushed
+// descendant P. The gate and remote are both at P, and the clean worktree is
+// still at L, the ancestor before U.
+func newCLIStaleUnpublishedFixture(t *testing.T) cliStaleUnpublishedFixture {
+	t.Helper()
+	return newCLIStaleUnpublishedFixtureWithRelation(t, true)
+}
+
+func newCLIStaleUnpublishedFixtureWithRelation(t *testing.T, pushedDescendant bool) cliStaleUnpublishedFixture {
+	t.Helper()
+	nmHome := filepath.Join(t.TempDir(), "nm-home")
+	t.Setenv("NM_HOME", nmHome)
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	cliGit(t, root, "init", "--bare", remote)
+	local := filepath.Join(root, "operator")
+	cliGit(t, root, "init", "-b", "main", local)
+	cliGit(t, local, "config", "user.name", "Test")
+	cliGit(t, local, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(local, "file.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "add", "file.txt")
+	cliGit(t, local, "commit", "-m", "base")
+	base := cliGit(t, local, "rev-parse", "HEAD")
+	cliGit(t, local, "checkout", "-b", "feature/sync")
+	if err := os.WriteFile(filepath.Join(local, "file.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "commit", "-am", "feature")
+	localHead := cliGit(t, local, "rev-parse", "HEAD")
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registeredRoot, err := git.FindGitRoot(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := database.InsertRepo(registeredRoot, remote, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := p.RepoDir(repo.ID)
+	cliGit(t, filepath.Dir(gate), "init", "--bare", gate)
+
+	pipeline := filepath.Join(root, "pipeline-old")
+	cliGit(t, root, "-c", "core.autocrlf=false", "clone", local, pipeline)
+	cliGit(t, pipeline, "config", "user.name", "Pipeline")
+	cliGit(t, pipeline, "config", "user.email", "pipeline@example.com")
+	cliGit(t, pipeline, "checkout", "feature/sync")
+	if err := os.WriteFile(filepath.Join(pipeline, "older-fix.txt"), []byte("older\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, pipeline, "add", "older-fix.txt")
+	cliGit(t, pipeline, "commit", "-m", "older pipeline fix")
+	unpublished := cliGit(t, pipeline, "rev-parse", "HEAD")
+	cliGit(t, pipeline, "push", gate, "HEAD:refs/heads/feature/sync")
+
+	older, err := database.InsertRun(repo.ID, "feature/sync", localHead, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(older.ID, unpublished); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(older.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ensure the database's created_at ordering cannot depend on ULID tie
+	// breaking: the pushed rerun is definitively newer than the failed run.
+	time.Sleep(1100 * time.Millisecond)
+	newer := filepath.Join(root, "pipeline-new")
+	pipelineSource := gate
+	if !pushedDescendant {
+		pipelineSource = local
+	}
+	cliGit(t, root, "-c", "core.autocrlf=false", "clone", pipelineSource, newer)
+	cliGit(t, newer, "config", "user.name", "Pipeline")
+	cliGit(t, newer, "config", "user.email", "pipeline@example.com")
+	cliGit(t, newer, "checkout", "feature/sync")
+	if err := os.WriteFile(filepath.Join(newer, "newer-fix.txt"), []byte("newer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, newer, "add", "newer-fix.txt")
+	cliGit(t, newer, "commit", "-m", "newer pipeline fix")
+	pushed := cliGit(t, newer, "rev-parse", "HEAD")
+	cliGit(t, newer, "push", remote, "HEAD:refs/heads/feature/sync")
+	gatePushArgs := []string{"push", gate, "HEAD:refs/heads/feature/sync"}
+	if !pushedDescendant {
+		gatePushArgs = []string{"push", "--force", gate, "HEAD:refs/heads/feature/sync"}
+	}
+	cliGit(t, newer, gatePushArgs...)
+
+	latestSubmitted := unpublished
+	if !pushedDescendant {
+		latestSubmitted = localHead
+	}
+	latest, err := database.InsertRun(repo.ID, "feature/sync", latestSubmitted, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(latest.ID, pushed); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPushBinding(latest.ID, db.PushBinding{HeadSHA: pushed, TargetKind: "upstream", TargetFingerprint: branchsync.TargetFingerprint(remote), Ref: "refs/heads/feature/sync"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(latest.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, local)
+	return cliStaleUnpublishedFixture{local: local, gate: gate, base: base, localHead: localHead, unpublished: unpublished, pushed: pushed}
+}
+
+func TestAxiSyncOlderUnpublishedRunSelectsNewerPushedDescendant(t *testing.T) {
+	f := newCLIStaleUnpublishedFixture(t)
+	out, err := executeCmd("axi", "sync")
+	if err != nil {
+		t.Fatalf("descendant sync: %v\n%s", err, out)
+	}
+	for _, want := range []string{"state: synchronized", "status: completed", "current_head: " + f.pushed, "pushed_head: " + f.pushed, "changed: true"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("descendant sync missing %q:\n%s", want, out)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.pushed {
+		t.Fatalf("sync HEAD = %s, want pushed descendant %s", got, f.pushed)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/sync"); got != f.pushed {
+		t.Fatalf("sync moved gate to %s, want unchanged pushed head %s", got, f.pushed)
+	}
+}
+
+func TestAxiSyncOlderUnpublishedNonAncestorStillRefuses(t *testing.T) {
+	f := newCLIStaleUnpublishedFixtureWithRelation(t, false)
+	out, err := executeCmd("axi", "sync")
+	var ee *exitError
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("non-ancestor sync should refuse, got %#v\n%s", err, out)
+	}
+	for _, want := range []string{"state: pipeline_owned", "status: failed", f.unpublished} {
+		if !strings.Contains(out, want) {
+			t.Errorf("non-ancestor sync missing refusal evidence %q:\n%s", want, out)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.localHead {
+		t.Fatalf("refused non-ancestor sync moved HEAD to %s", got)
+	}
+
+	out, err = executeCmd("axi", "sync", "--recover")
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("non-ancestor recovery should refuse, got %#v\n%s", err, out)
+	}
+	if !strings.Contains(out, "safety: blocked_recover_gate_diverged") {
+		t.Fatalf("non-ancestor recovery did not remain fail-closed:\n%s", out)
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.localHead {
+		t.Fatalf("refused non-ancestor recovery moved HEAD to %s", got)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/sync"); got != f.pushed {
+		t.Fatalf("refused non-ancestor recovery moved gate to %s", got)
+	}
+}
+
+func TestAxiSyncOlderUnpublishedMissingGateDoesNotSupersede(t *testing.T) {
+	f := newCLIStaleUnpublishedFixture(t)
+	cliGit(t, f.gate, "update-ref", "-d", "refs/heads/feature/sync")
+
+	out, err := executeCmd("axi", "sync")
+	var ee *exitError
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("missing-gate sync should refuse, got %#v\n%s", err, out)
+	}
+	for _, want := range []string{"state: pipeline_owned", "status: failed", f.unpublished} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing-gate sync missing refusal evidence %q:\n%s", want, out)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.localHead {
+		t.Fatalf("missing-gate refusal moved HEAD to %s", got)
+	}
 }
 
 func TestAxiSyncCheckSurfacesRecoveryForTerminalPrePushRun(t *testing.T) {
