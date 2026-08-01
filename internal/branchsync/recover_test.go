@@ -105,6 +105,7 @@ func newRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
 	mustWrite(t, filepath.Join(local, "file.txt"), "feature\n")
 	mustRun(t, local, "commit", "-am", "feature")
 	submitted := mustRun(t, local, "rev-parse", "HEAD")
+	mustRun(t, local, "push", remote, "refs/heads/feature/recover:refs/heads/feature/recover")
 
 	// The gate receives the submitted branch, then the pipeline commits fixes
 	// onto the gate branch; nothing is ever pushed to the upstream.
@@ -599,6 +600,67 @@ func TestRecoverGateAtLocalSubmittedHeadAnchorsRecordedHead(t *testing.T) {
 			t.Fatal("racing branch switch recover stamped custody")
 		}
 	})
+}
+
+func TestRecoverLegacyRunRequiresFreshUnpublishedRemoteProof(t *testing.T) {
+	t.Run("unpublished", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunCancelled)
+		f.moveGateBranchToSubmitted()
+		state := f.service.Recover(f.ctx, true)
+		if !state.Recovered || !f.custodyReturned() {
+			t.Fatalf("legacy unpublished recovery = %#v", state)
+		}
+	})
+
+	t.Run("published", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunCancelled)
+		mustRun(t, f.remote, "fetch", f.gate, "+refs/heads/feature/recover:refs/heads/feature/recover")
+		f.moveGateBranchToSubmitted()
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Safety != "blocked_recover_publication" {
+			t.Fatalf("legacy published recovery = %#v", state)
+		}
+		if f.custodyReturned() {
+			t.Fatal("legacy published recovery stamped custody")
+		}
+	})
+
+	t.Run("unavailable", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunCancelled)
+		f.moveGateBranchToSubmitted()
+		if err := os.RemoveAll(f.remote); err != nil {
+			t.Fatal(err)
+		}
+		state := f.service.Recover(f.ctx, true)
+		if state.Recovered || state.Safety != "blocked_recover_publication" {
+			t.Fatalf("legacy unavailable recovery = %#v", state)
+		}
+		if f.custodyReturned() {
+			t.Fatal("legacy unavailable recovery stamped custody")
+		}
+	})
+}
+
+func TestRecoverRefusesRemotePushBeforeDatabaseBindingCrash(t *testing.T) {
+	f := newRecoverFixture(t, types.RunPending)
+	attempt := db.PublicationAttempt{HeadSHA: f.preserved, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/recover"}
+	if err := f.db.SetRunPushActive(f.run.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.RecordRunPublicationAttempt(f.run.ID, attempt); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, f.remote, "fetch", f.gate, "+refs/heads/feature/recover:refs/heads/feature/recover")
+	if _, err := f.db.RecoverStaleRuns("crashed during push"); err != nil {
+		t.Fatal(err)
+	}
+	state := f.service.Recover(f.ctx, true)
+	if state.Recovered || state.Safety != "blocked_recover_publication" {
+		t.Fatalf("remote-push-before-binding recovery = %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("remote-push-before-binding recovery stamped custody")
+	}
 }
 
 func TestRecoverMovedGateExactAnchorDisconfirmingCases(t *testing.T) {

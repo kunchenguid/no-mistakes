@@ -14,6 +14,7 @@ import (
 // before custody could be stamped. Callers must retain immutable recovery
 // anchors and retry from freshly inspected state.
 var ErrRunCustodyCAS = errors.New("run custody compare-and-swap lost")
+var ErrRunPublicationCAS = errors.New("run publication compare-and-swap lost")
 
 const (
 	CustodyPhasePreparing = "preparing"
@@ -171,21 +172,25 @@ type Run struct {
 	// ReviewApprovedHeadSHA is the exact commit approved by the last
 	// successfully completed full review. It is nil for legacy runs and until
 	// review completes; mutable run/worktree heads never infer this authority.
-	ReviewApprovedHeadSHA  *string
-	Status                 types.RunStatus
-	PRURL                  *string
-	PRState                *string
-	PRStateObservedAt      *int64
-	CIReadyAt              *int64
-	CIReadyNoCI            bool
-	LastPushedSHA          *string
-	PushTargetKind         *string
-	PushTargetFingerprint  *string
-	PushRef                *string
-	LastPushedAt           *int64
-	PushGeneration         *int64
-	PushActive             bool
-	TerminalHeadVerifiedAt *int64
+	ReviewApprovedHeadSHA               *string
+	Status                              types.RunStatus
+	PRURL                               *string
+	PRState                             *string
+	PRStateObservedAt                   *int64
+	CIReadyAt                           *int64
+	CIReadyNoCI                         bool
+	LastPushedSHA                       *string
+	PushTargetKind                      *string
+	PushTargetFingerprint               *string
+	PushRef                             *string
+	LastPushedAt                        *int64
+	PushGeneration                      *int64
+	PushActive                          bool
+	TerminalHeadVerifiedAt              *int64
+	PublicationAttemptHeadSHA           *string
+	PublicationAttemptTargetKind        *string
+	PublicationAttemptTargetFingerprint *string
+	PublicationAttemptRef               *string
 	// CustodyReturnedAt is non-nil once a guarded branch-sync recovery
 	// explicitly ended this run's ownership of an unpublished pipeline head
 	// (terminal run whose head was never successfully pushed, or moved after
@@ -214,7 +219,7 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, custody_transition_token, custody_transition_phase, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, publication_attempt_head_sha, publication_attempt_target_kind, publication_attempt_target_fingerprint, publication_attempt_ref, custody_returned_at, custody_transition_token, custody_transition_phase, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 const custodyAuthorityPredicate = `id = ? AND repo_id = ? AND branch = ? AND head_sha = ? AND base_sha = ?
 		   AND submitted_head_sha IS ? AND review_approved_head_sha IS ? AND status = ?
@@ -236,6 +241,7 @@ func scanRun(row interface {
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
+		&r.PublicationAttemptHeadSHA, &r.PublicationAttemptTargetKind, &r.PublicationAttemptTargetFingerprint, &r.PublicationAttemptRef,
 		&r.CustodyReturnedAt, &r.CustodyTransitionToken, &r.CustodyTransitionPhase, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
@@ -414,13 +420,114 @@ type PushBinding struct {
 	Ref               string
 }
 
+type PublicationAttempt struct {
+	HeadSHA           string
+	TargetKind        string
+	TargetFingerprint string
+	Ref               string
+}
+
+func (d *DB) RecordRunPublicationAttempt(id string, attempt PublicationAttempt) error {
+	result, err := d.sql.Exec(`UPDATE runs SET publication_attempt_head_sha = ?, publication_attempt_target_kind = ?, publication_attempt_target_fingerprint = ?, publication_attempt_ref = ?, updated_at = ?
+		WHERE id = ? AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL
+		AND publication_attempt_head_sha IS NULL AND publication_attempt_target_kind IS NULL AND publication_attempt_target_fingerprint IS NULL AND publication_attempt_ref IS NULL`,
+		attempt.HeadSHA, attempt.TargetKind, attempt.TargetFingerprint, attempt.Ref, now(), id)
+	if err != nil {
+		return fmt.Errorf("record run publication attempt: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("record run publication attempt: affected rows: %w", err)
+	} else if rows == 1 {
+		return nil
+	}
+	current, getErr := d.GetRun(id)
+	if getErr != nil {
+		return getErr
+	}
+	if current != nil && samePublicationAttempt(current, attempt) {
+		return nil
+	}
+	if current != nil && (current.CustodyReturnedAt != nil || current.CustodyTransitionToken != nil || current.CustodyTransitionPhase != nil) {
+		return ErrRunCustodyCAS
+	}
+	return ErrRunPublicationCAS
+}
+
+func (d *DB) ReconcileRunPublicationAttempt(id string) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin publication reconciliation: %w", err)
+	}
+	defer tx.Rollback()
+
+	var attemptHead, attemptKind, attemptFingerprint, attemptRef sql.NullString
+	var pushedHead, pushedKind, pushedFingerprint, pushedRef sql.NullString
+	if err := tx.QueryRow(`SELECT publication_attempt_head_sha, publication_attempt_target_kind, publication_attempt_target_fingerprint, publication_attempt_ref, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref FROM runs WHERE id = ?`, id).Scan(
+		&attemptHead, &attemptKind, &attemptFingerprint, &attemptRef, &pushedHead, &pushedKind, &pushedFingerprint, &pushedRef,
+	); err == sql.ErrNoRows {
+		return ErrRunPublicationCAS
+	} else if err != nil {
+		return fmt.Errorf("read publication reconciliation: %w", err)
+	}
+	if !attemptHead.Valid && !attemptKind.Valid && !attemptFingerprint.Valid && !attemptRef.Valid {
+		return nil
+	}
+	if !attemptHead.Valid || !attemptKind.Valid || !attemptFingerprint.Valid || !attemptRef.Valid ||
+		!pushedHead.Valid || !pushedKind.Valid || !pushedFingerprint.Valid || !pushedRef.Valid ||
+		attemptHead.String != pushedHead.String || attemptKind.String != pushedKind.String || attemptFingerprint.String != pushedFingerprint.String || attemptRef.String != pushedRef.String {
+		return ErrRunPublicationCAS
+	}
+	result, err := tx.Exec(`UPDATE runs SET publication_attempt_head_sha = NULL, publication_attempt_target_kind = NULL, publication_attempt_target_fingerprint = NULL, publication_attempt_ref = NULL, updated_at = ?
+		WHERE id = ? AND publication_attempt_head_sha = ? AND publication_attempt_target_kind = ? AND publication_attempt_target_fingerprint = ? AND publication_attempt_ref = ?`,
+		now(), id, attemptHead.String, attemptKind.String, attemptFingerprint.String, attemptRef.String)
+	if err != nil {
+		return fmt.Errorf("clear reconciled publication attempt: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("clear reconciled publication attempt: affected rows: %w", err)
+	} else if rows != 1 {
+		return ErrRunPublicationCAS
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit publication reconciliation: %w", err)
+	}
+	return nil
+}
+
+func samePublicationAttempt(run *Run, attempt PublicationAttempt) bool {
+	return run != nil && run.PublicationAttemptHeadSHA != nil && run.PublicationAttemptTargetKind != nil && run.PublicationAttemptTargetFingerprint != nil && run.PublicationAttemptRef != nil &&
+		*run.PublicationAttemptHeadSHA == attempt.HeadSHA && *run.PublicationAttemptTargetKind == attempt.TargetKind && *run.PublicationAttemptTargetFingerprint == attempt.TargetFingerprint && *run.PublicationAttemptRef == attempt.Ref
+}
+
 // UpdateRunPushBinding advances a run's successful-push provenance and
 // increments its generation. It is called for both a completed push and a
 // freshly verified already-up-to-date push.
 func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin update run push binding: %w", err)
+	}
+	defer tx.Rollback()
+	var attemptHead, attemptKind, attemptFingerprint, attemptRef sql.NullString
+	var custodyReturned sql.NullInt64
+	var transitionToken, transitionPhase sql.NullString
+	if err := tx.QueryRow(`SELECT publication_attempt_head_sha, publication_attempt_target_kind, publication_attempt_target_fingerprint, publication_attempt_ref, custody_returned_at, custody_transition_token, custody_transition_phase FROM runs WHERE id = ?`, id).Scan(
+		&attemptHead, &attemptKind, &attemptFingerprint, &attemptRef, &custodyReturned, &transitionToken, &transitionPhase,
+	); err == sql.ErrNoRows {
+		return ErrRunCustodyCAS
+	} else if err != nil {
+		return fmt.Errorf("read run push binding authority: %w", err)
+	}
+	if custodyReturned.Valid || transitionToken.Valid || transitionPhase.Valid {
+		return ErrRunCustodyCAS
+	}
+	journalPresent := attemptHead.Valid || attemptKind.Valid || attemptFingerprint.Valid || attemptRef.Valid
+	if journalPresent && (!attemptHead.Valid || !attemptKind.Valid || !attemptFingerprint.Valid || !attemptRef.Valid || attemptHead.String != binding.HeadSHA || attemptKind.String != binding.TargetKind || attemptFingerprint.String != binding.TargetFingerprint || attemptRef.String != binding.Ref) {
+		return ErrRunPublicationCAS
+	}
 	ts := now()
-	result, err := d.sql.Exec(
-		`UPDATE runs SET last_pushed_sha = ?, push_target_kind = ?, push_target_fingerprint = ?, push_ref = ?, last_pushed_at = ?, push_generation = COALESCE(push_generation, 0) + 1, updated_at = ? WHERE id = ? AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL`,
+	result, err := tx.Exec(
+		`UPDATE runs SET last_pushed_sha = ?, push_target_kind = ?, push_target_fingerprint = ?, push_ref = ?, last_pushed_at = ?, push_generation = COALESCE(push_generation, 0) + 1, publication_attempt_head_sha = NULL, publication_attempt_target_kind = NULL, publication_attempt_target_fingerprint = NULL, publication_attempt_ref = NULL, updated_at = ? WHERE id = ? AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL`,
 		binding.HeadSHA, binding.TargetKind, binding.TargetFingerprint, binding.Ref, ts, ts, id,
 	)
 	if err != nil {
@@ -430,6 +537,9 @@ func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
 		return fmt.Errorf("update run push binding: affected rows: %w", err)
 	} else if rows != 1 {
 		return ErrRunCustodyCAS
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit run push binding: %w", err)
 	}
 	return nil
 }

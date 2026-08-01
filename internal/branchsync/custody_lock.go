@@ -59,6 +59,19 @@ func custodyLockPath(s *Service, run *db.Run) string {
 			root = mainRoot
 		}
 	}
-	key := sha256.Sum256([]byte(run.RepoID + "\x00" + run.ID + "\x00" + run.Branch))
+	repository := s.Repo.WorkingPath
+	if repository == "" {
+		repository = s.workDir()
+		if mainRoot, err := git.FindMainRepoRoot(repository); err == nil {
+			repository = mainRoot
+		}
+	}
+	if absolute, err := filepath.Abs(repository); err == nil {
+		repository = absolute
+	}
+	if resolved, err := filepath.EvalSymlinks(repository); err == nil {
+		repository = resolved
+	}
+	key := sha256.Sum256([]byte(filepath.Clean(repository) + "\x00" + run.Branch))
 	return filepath.Join(root, ".no-mistakes", "custody-locks", hex.EncodeToString(key[:])+".lock")
 }

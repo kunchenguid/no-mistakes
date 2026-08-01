@@ -430,6 +430,60 @@ func TestRunPushBindingIsForwardOnlyAndLegacyRowsStayNullable(t *testing.T) {
 	}
 }
 
+func TestPublicationAttemptJournalRequiresExactBindingToReconcile(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/repo-publication-journal", "https://example.com/repo.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := PublicationAttempt{HeadSHA: "published", TargetKind: "upstream", TargetFingerprint: "target", Ref: "refs/heads/feature"}
+	if err := d.RecordRunPublicationAttempt(run.ID, attempt); err != nil {
+		t.Fatalf("record publication attempt: %v", err)
+	}
+	if err := d.ReconcileRunPublicationAttempt(run.ID); !errors.Is(err, ErrRunPublicationCAS) {
+		t.Fatalf("unbound publication reconciliation = %v", err)
+	}
+	got, _ := d.GetRun(run.ID)
+	if got.PublicationAttemptHeadSHA == nil {
+		t.Fatal("unresolved publication journal was cleared without a binding")
+	}
+
+	if err := d.UpdateRunPushBinding(run.ID, PushBinding{
+		HeadSHA: attempt.HeadSHA, TargetKind: attempt.TargetKind,
+		TargetFingerprint: attempt.TargetFingerprint, Ref: attempt.Ref,
+	}); err != nil {
+		t.Fatalf("exact publication binding: %v", err)
+	}
+	got, _ = d.GetRun(run.ID)
+	if got.PublicationAttemptHeadSHA != nil || got.LastPushedSHA == nil || *got.LastPushedSHA != attempt.HeadSHA {
+		t.Fatalf("reconciled publication journal = %#v", got)
+	}
+}
+
+func TestReconcilePublicationAttemptClearsOnlyMatchingExistingBinding(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/repo-publication-reconcile", "https://example.com/repo.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := PublicationAttempt{HeadSHA: "published", TargetKind: "upstream", TargetFingerprint: "target", Ref: "refs/heads/feature"}
+	if err := d.RecordRunPublicationAttempt(run.ID, attempt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.sql.Exec(`UPDATE runs SET last_pushed_sha = ?, push_target_kind = ?, push_target_fingerprint = ?, push_ref = ? WHERE id = ?`, attempt.HeadSHA, attempt.TargetKind, attempt.TargetFingerprint, attempt.Ref, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ReconcileRunPublicationAttempt(run.ID); err != nil {
+		t.Fatalf("reconcile matching publication binding: %v", err)
+	}
+	got, _ := d.GetRun(run.ID)
+	if got.PublicationAttemptHeadSHA != nil {
+		t.Fatalf("matching publication journal remained: %#v", got)
+	}
+}
+
 func TestUpdateRunPRURL(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

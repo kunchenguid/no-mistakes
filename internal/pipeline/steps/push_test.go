@@ -233,6 +233,41 @@ func TestPushStep_BindsRemoteAndDatabaseToVerifiedCommitWhenHEADMovesDuringPush(
 	)
 }
 
+func TestPushStepRecordsPublicationAttemptBeforePush(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	t.Setenv("FAKE_CLI_MODE", "git-push-error")
+	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	recordReviewApproval(t, sctx, headSHA)
+	if _, err := (&PushStep{}).Execute(sctx); err == nil {
+		t.Fatal("expected push failure")
+	}
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PublicationAttemptHeadSHA == nil || *run.PublicationAttemptHeadSHA != headSHA || run.PublicationAttemptRef == nil || *run.PublicationAttemptRef != "refs/heads/feature" {
+		t.Fatalf("publication attempt journal = %#v", run)
+	}
+	if run.PushActive {
+		t.Fatal("push-active marker remained set after failed push")
+	}
+}
+
 func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
 	t.Parallel()
 	// When push retries after a prior UpdateRunHeadSHA failure, there are no

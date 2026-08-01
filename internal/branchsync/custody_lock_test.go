@@ -24,6 +24,31 @@ func TestCustodyLockRejectsLiveSecondAttemptAndReleasesAfterOwnerExit(t *testing
 	third.Release()
 }
 
+func TestCustodyLockIsSharedByRepositoryBranchAcrossRuns(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	first, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Release()
+
+	newer := *f.run
+	newer.ID = "newer-run"
+	second, err := acquireCustodyLock(f.service, &newer)
+	if second != nil || !errors.Is(err, ErrCustodyLockHeld) {
+		t.Fatalf("newer run custody lock = %#v, %v", second, err)
+	}
+
+	otherBranch := newer
+	otherBranch.ID = "other-branch-run"
+	otherBranch.Branch = "other-branch"
+	third, err := acquireCustodyLock(f.service, &otherBranch)
+	if err != nil || third == nil {
+		t.Fatalf("other branch custody lock = %#v, %v", third, err)
+	}
+	third.Release()
+}
+
 func TestCustodyLockFailurePreservesNonContentionErrors(t *testing.T) {
 	state := State{State: StatePipelineOwned}
 	if got := custodyLockFailure(state, fmt.Errorf("permission denied")); got.Safety != "blocked_recover_custody_lock" {

@@ -167,6 +167,11 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 	if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
 		targetKind = "fork"
 	}
+	if err := sctx.DB.RecordRunPublicationAttempt(sctx.Run.ID, db.PublicationAttempt{
+		HeadSHA: newHeadSHA, TargetKind: targetKind, TargetFingerprint: branchsync.TargetFingerprint(pushURL), Ref: ref,
+	}); err != nil {
+		return false, err
+	}
 	persistBinding := func() error {
 		remoteOut, err := stepGitRun(sctx, "ls-remote", pushURL, ref)
 		if err != nil {

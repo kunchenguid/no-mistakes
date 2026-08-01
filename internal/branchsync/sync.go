@@ -498,6 +498,12 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return refusal
 	}
 	state, run, _ := s.inspect(ctx)
+	if run != nil && publicationAttemptPresent(run) {
+		if err := s.DB.ReconcileRunPublicationAttempt(run.ID); err != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "a publication attempt has no exact durable push binding; custody was not returned and no files or refs were changed")
+		}
+		state, run, _ = s.inspect(ctx)
+	}
 	if run != nil && run.CustodyReturnedAt != nil {
 		lock, err := s.acquireRecoveryLock(run)
 		if err != nil {
@@ -558,6 +564,9 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 	if latest, ok := s.latestRunForBranch(run.Branch); !ok || latest.ID != run.ID {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_newer_run", "a newer run owns this repository branch; custody was not returned and no files or refs were changed")
+	}
+	if safety := s.verifyLegacyRunUnpublished(ctx, run, branch); safety != "" {
+		return blockedPlan(state, StatePipelineOwned, safety, "the legacy run has no durable publication journal and the configured remote does not freshly prove the submitted head is still unpublished; custody was not returned and no files or refs were changed")
 	}
 	anchored, anchorConflict := recoveryAnchorState(ctx, wd, anchorRef, preserved)
 	if anchorConflict {
@@ -1169,10 +1178,48 @@ func runHasPublication(run *db.Run) bool {
 	}
 	if run.LastPushedSHA != nil || run.PushTargetKind != nil || run.PushTargetFingerprint != nil ||
 		run.PushRef != nil || positiveInt64(run.LastPushedAt) || positiveInt64(run.PushGeneration) || run.PushActive ||
+		publicationAttemptPresent(run) ||
 		run.PRURL != nil || run.PRStateObservedAt != nil || run.CIReadyAt != nil {
 		return true
 	}
 	return run.PRState != nil && normalizePRState(run.PRState) != "none"
+}
+
+func publicationAttemptPresent(run *db.Run) bool {
+	return run != nil && (run.PublicationAttemptHeadSHA != nil || run.PublicationAttemptTargetKind != nil || run.PublicationAttemptTargetFingerprint != nil || run.PublicationAttemptRef != nil)
+}
+
+func (s *Service) verifyLegacyRunUnpublished(ctx context.Context, run *db.Run, branch string) string {
+	if run == nil || runHasPublication(run) {
+		return ""
+	}
+	if run.SubmittedHeadSHA == nil || !isExactFullObjectID(ptr(run.SubmittedHeadSHA)) {
+		return "blocked_recover_publication"
+	}
+	target := strings.TrimSpace(s.Repo.PushURL())
+	if target == "" {
+		return "blocked_recover_publication"
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
+	defer cancel()
+	out, err := git.Run(queryCtx, s.workDir(), "ls-remote", target, "refs/heads/"+branch)
+	if err != nil {
+		return "blocked_recover_publication"
+	}
+	lines := make([]string, 0, 1)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, strings.TrimSpace(line))
+		}
+	}
+	if len(lines) != 1 {
+		return "blocked_recover_publication"
+	}
+	fields := strings.Fields(lines[0])
+	if len(fields) != 2 || fields[1] != "refs/heads/"+branch || !isExactFullObjectID(fields[0]) || fields[0] != ptr(run.SubmittedHeadSHA) {
+		return "blocked_recover_publication"
+	}
+	return ""
 }
 
 func positiveInt64(value *int64) bool {
