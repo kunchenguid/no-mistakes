@@ -627,7 +627,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			return s.recoverKeepLocal(ctx, run, state, gateHead)
 		}
 		state.Relation = RelationDiverged
-		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_diverged", fmt.Sprintf("the local branch and the preserved pipeline head have diverged; the preserved commits are anchored at %s - reconcile manually and re-run the recovery, run `no-mistakes rerun` to resume validating the preserved head, or use --keep-local to keep the current head; no files or refs were changed", anchorRef))
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_diverged", fmt.Sprintf("the local branch and the preserved pipeline head have diverged; the preserved commits are anchored at %s - reconcile manually and re-run the recovery; `no-mistakes rerun` is available, but rerun starts from the current ordinary gate branch, not the recovery anchor; use --keep-local to keep the current head; no files or refs were changed", anchorRef))
 		blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "git log --oneline --left-right HEAD..." + anchorRef}
 		return blocked
 	}
@@ -655,6 +655,14 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 	if originalExists && gateHead != state.Local.Head && originalGateHead != gateHead {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the custody transition marker no longer matches the gate branch; re-run the recovery after reconciling the gate; no local files or ordinary refs were changed")
 	}
+	var transitionToken string
+	if gateHead != state.Local.Head || originalExists {
+		var err error
+		transitionToken, err = s.DB.AcquireRunCustodyTransition(run)
+		if err != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_custody_race", "the custody transition is owned by a changed or concurrent run; no files or ordinary refs were changed")
+		}
+	}
 	if gateHead != state.Local.Head {
 		if !originalExists {
 			var err error
@@ -681,12 +689,15 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 		}
 		_, casErr := git.Run(ctx, s.GateDir, "update-ref", "refs/heads/"+state.Local.Branch, state.Local.Head, gateHead)
 		if casErr != nil {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the gate branch changed while custody was being returned; re-run after reconciling the gate; the durable run-owned custody marker was retained and no local files or ordinary refs were changed")
+			currentGateHead, currentErr := git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+state.Local.Branch+"^{commit}")
+			if currentErr != nil || currentGateHead != state.Local.Head {
+				return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the gate branch changed while custody was being returned; re-run after reconciling the gate; the durable run-owned custody marker was retained and no local files or ordinary refs were changed")
+			}
 		}
 	}
 	var transition *custodyGateTransition
 	if originalExists {
-		transition = &custodyGateTransition{branch: state.Local.Branch, original: originalGateHead, current: state.Local.Head}
+		transition = &custodyGateTransition{branch: state.Local.Branch, original: originalGateHead, current: state.Local.Head, token: transitionToken}
 	}
 	if s.beforeRecoverStamp != nil {
 		s.beforeRecoverStamp()
@@ -765,6 +776,7 @@ type custodyGateTransition struct {
 	branch   string
 	original string
 	current  string
+	token    string
 }
 
 func custodyOriginalHead(ctx context.Context, gateDir, runID string) (string, bool) {
@@ -836,6 +848,20 @@ func (s *Service) recoverKeepLocalFailure(ctx context.Context, state State, run 
 	if transition == nil {
 		return state
 	}
+	released, err := s.DB.ReleaseRunCustodyTransition(run.ID, transition.token)
+	if err != nil {
+		state.Safety = "blocked_recover_custody_race"
+		state.Error = "the custody transition could not be released after the gate changed; custody was not stamped; re-run from freshly inspected state"
+		return state
+	}
+	if !released {
+		if current, err := s.DB.GetRun(run.ID); err == nil && current != nil && current.CustodyReturnedAt != nil {
+			state, _, _ = s.inspect(ctx)
+			state.Recovered = true
+			state.Changed = false
+		}
+		return state
+	}
 	if err := s.restoreCustodyGate(ctx, transition); err != nil {
 		state.Safety = "blocked_recover_gate_race"
 		state.Error = "the gate changed before custody could be recorded and the ordinary gate ref could not be restored; custody was not stamped; re-run after reconciling the gate"
@@ -852,18 +878,34 @@ func (s *Service) finishRecover(ctx context.Context, run *db.Run, changed bool) 
 }
 
 func (s *Service) finishRecoverWithTransition(ctx context.Context, run *db.Run, changed bool, transition *custodyGateTransition) State {
-	if err := s.DB.SetRunCustodyReturnedCAS(run); err != nil {
+	var stampErr error
+	if transition != nil {
+		stampErr = s.DB.CompleteRunCustodyTransition(run, transition.token)
+	} else {
+		stampErr = s.DB.SetRunCustodyReturnedCAS(run)
+	}
+	if stampErr != nil {
 		if transition != nil {
-			if restoreErr := s.restoreCustodyGate(ctx, transition); restoreErr != nil {
-				state, _, _ := s.inspect(ctx)
-				state.Changed = changed
-				state.Recovered = false
-				state.Safety = "blocked_recover_gate_race"
-				state.Error = "the exact run ownership or publication authority changed before custody could be recorded, and the ordinary gate ref changed again before it could be restored; custody was not stamped; re-run after reconciling the gate"
-				state.NextAction = nil
-				return state
+			released, releaseErr := s.DB.ReleaseRunCustodyTransition(run.ID, transition.token)
+			if releaseErr == nil && released {
+				if restoreErr := s.restoreCustodyGate(ctx, transition); restoreErr != nil {
+					state, _, _ := s.inspect(ctx)
+					state.Changed = changed
+					state.Recovered = false
+					state.Safety = "blocked_recover_gate_race"
+					state.Error = "the exact run ownership or publication authority changed before custody could be recorded, and the ordinary gate ref changed again before it could be restored; custody was not stamped; re-run after reconciling the gate"
+					state.NextAction = nil
+					return state
+				}
+				s.cleanupRecoverMarkers(ctx, run)
+			} else if releaseErr == nil && !released {
+				if current, err := s.DB.GetRun(run.ID); err == nil && current != nil && current.CustodyReturnedAt != nil {
+					state, _, _ := s.inspect(ctx)
+					state.Recovered = true
+					state.Changed = changed
+					return state
+				}
 			}
-			s.cleanupRecoverMarkers(ctx, run)
 		}
 		state, _, _ := s.inspect(ctx)
 		state.Changed = changed

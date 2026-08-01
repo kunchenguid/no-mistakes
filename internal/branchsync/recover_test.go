@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -415,6 +416,9 @@ func TestRecoverDivergedRefusesButKeepLocalReturnsCustody(t *testing.T) {
 	}
 	if !strings.Contains(refused.Error, f.anchorRef()) || !strings.Contains(refused.Error, "--keep-local") {
 		t.Fatalf("diverged refusal not actionable: %q", refused.Error)
+	}
+	if !strings.Contains(refused.Error, "rerun starts from the current ordinary gate branch") {
+		t.Fatalf("diverged refusal has stale rerun guidance: %q", refused.Error)
 	}
 	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
 		t.Fatalf("diverged refusal did not anchor preserved commits: %s", got)
@@ -1538,6 +1542,55 @@ func TestRecoverFinalCustodyCASRejectsConcurrentAuthorityChanges(t *testing.T) {
 			t.Fatal("concurrent publication did not prevent custody stamp")
 		}
 	})
+}
+
+func TestRecoverConcurrentKeepLocalDoesNotRollbackCompletedTransition(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
+	mustRun(t, f.local, "add", "rescope.txt")
+	mustRun(t, f.local, "commit", "-m", "diverging rescope")
+
+	firstAtStamp := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var first atomic.Bool
+	f.service.beforeRecoverStamp = func() {
+		if first.CompareAndSwap(false, true) {
+			close(firstAtStamp)
+			<-releaseFirst
+		}
+	}
+
+	firstResult := make(chan State, 1)
+	go func() { firstResult <- f.service.Recover(f.ctx, true) }()
+	select {
+	case <-firstAtStamp:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first recovery did not reach the custody stamp boundary")
+	}
+
+	secondResult := make(chan State, 1)
+	go func() { secondResult <- f.service.Recover(f.ctx, true) }()
+	var second State
+	select {
+	case second = <-secondResult:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second recovery did not complete")
+	}
+	if !second.Recovered {
+		t.Fatalf("second recovery = %#v", second)
+	}
+	close(releaseFirst)
+	select {
+	case <-firstResult:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first recovery did not complete")
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != mustRun(t, f.local, "rev-parse", "HEAD") {
+		t.Fatalf("completed concurrent recovery gate = %s, want local head", got)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("completed concurrent recovery lost custody stamp")
+	}
 }
 
 func TestRunHasPublicationTreatsLegacyZeroGenerationAsUnpublished(t *testing.T) {

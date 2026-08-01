@@ -21,7 +21,7 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 		switch state.State {
 		case branchsync.StatePipelineOwned:
 			if recoverableBranchSync(state) {
-				message = "Run ended without publishing its pipeline commits; they are preserved in the local gate. Recover custody to take the branch back, or rerun to resume validation."
+				message = "Run ended without publishing its pipeline commits; they are preserved in the local gate. Recover custody to take the branch back, or rerun from the current ordinary gate branch."
 				footer = "u recover custody"
 			} else {
 				message = "Local branch unchanged; the pipeline fix is not pushed yet. Do not make follow-up commits."
@@ -116,7 +116,7 @@ func renderRecoverConfirmation(state branchsync.State, width int) string {
 	fmt.Fprintf(&b, "Local branch:   %s\n", state.Local.Branch)
 	fmt.Fprintf(&b, "Local HEAD:     %s\n", state.Local.Head)
 	fmt.Fprintf(&b, "Preserved HEAD: %s\n\n", state.Pipeline.CurrentHead)
-	b.WriteString("Dirty or diverged worktrees refuse without changes; `no-mistakes sync --recover\n--keep-local` keeps the current head instead. `no-mistakes rerun` resumes validation.")
+	b.WriteString("Dirty or diverged worktrees refuse without changes; `no-mistakes sync --recover\n--keep-local` keeps the current head instead. `no-mistakes rerun` starts from the current ordinary gate branch, not the recovery anchor.")
 	return renderBoxWithFooter("Confirm custody recovery", b.String(), width, "u/enter recover  ·  esc cancel")
 }
 

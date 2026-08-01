@@ -888,3 +888,57 @@ func TestSetRunCustodyReturnedCAS(t *testing.T) {
 		}
 	})
 }
+
+func TestRunCustodyTransitionOwnership(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/custody-transition", "git@github.com:user/custody.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feat", "submitted", "base")
+	if err := d.UpdateRunHeadSHA(run.ID, "preserved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
+		t.Fatal(err)
+	}
+	expected, _ := d.GetRun(run.ID)
+
+	token, err := d.AcquireRunCustodyTransition(expected)
+	if err != nil || token == "" {
+		t.Fatalf("acquire custody transition = %q, %v", token, err)
+	}
+	retryToken, err := d.AcquireRunCustodyTransition(expected)
+	if err != nil || retryToken == token || retryToken == "" {
+		t.Fatalf("retry custody transition = %q, %v, want a new token", retryToken, err)
+	}
+
+	released, err := d.ReleaseRunCustodyTransition(run.ID, token)
+	if err != nil || released {
+		t.Fatalf("release custody transition = %v, %v", released, err)
+	}
+	released, err = d.ReleaseRunCustodyTransition(run.ID, retryToken)
+	if err != nil || !released {
+		t.Fatalf("release current custody transition = %v, %v", released, err)
+	}
+	released, err = d.ReleaseRunCustodyTransition(run.ID, retryToken)
+	if err != nil || released {
+		t.Fatalf("repeat release custody transition = %v, %v", released, err)
+	}
+
+	expected, _ = d.GetRun(run.ID)
+	token, err = d.AcquireRunCustodyTransition(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.CompleteRunCustodyTransition(expected, token); err != nil {
+		t.Fatalf("complete custody transition: %v", err)
+	}
+	if err := d.CompleteRunCustodyTransition(expected, token); !errors.Is(err, ErrRunCustodyCAS) {
+		t.Fatalf("repeat complete custody transition = %v", err)
+	}
+	if released, err := d.ReleaseRunCustodyTransition(run.ID, token); err != nil || released {
+		t.Fatalf("release completed custody transition = %v, %v", released, err)
+	}
+	got, _ := d.GetRun(run.ID)
+	if got.CustodyReturnedAt == nil || got.CustodyTransitionToken != nil {
+		t.Fatalf("completed custody transition = %#v", got)
+	}
+}

@@ -45,8 +45,9 @@ type Run struct {
 	// (terminal run whose head was never successfully pushed, or moved after
 	// the last push). It never changes push provenance; it only records that
 	// the operator worktree took the branch back.
-	CustodyReturnedAt *int64
-	Error             *string
+	CustodyReturnedAt      *int64
+	CustodyTransitionToken *string
+	Error                  *string
 	// AwaitingAgentSince is the unix-seconds timestamp at which the run parked
 	// at a gate awaiting the driving agent's response (an awaiting_approval or
 	// fix_review step). It is nil whenever the run is not parked: the executor
@@ -66,7 +67,19 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, custody_transition_token, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+
+const custodyAuthorityPredicate = `id = ? AND repo_id = ? AND branch = ? AND head_sha = ? AND base_sha = ?
+		   AND submitted_head_sha IS ? AND review_approved_head_sha IS ? AND status = ?
+		   AND pr_url IS ? AND pr_state IS ? AND pr_state_observed_at IS ? AND ci_ready_at IS ?
+		   AND last_pushed_sha IS ? AND push_target_kind IS ? AND push_target_fingerprint IS ?
+		   AND push_ref IS ? AND last_pushed_at IS ? AND push_generation IS ?
+		   AND status IN ('completed', 'failed', 'cancelled')
+		   AND NOT EXISTS (
+			SELECT 1 FROM runs newer
+			 WHERE newer.repo_id = runs.repo_id AND newer.branch = runs.branch
+			   AND (newer.created_at > runs.created_at OR (newer.created_at = runs.created_at AND newer.id > runs.id))
+		   )`
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -76,7 +89,7 @@ func scanRun(row interface {
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
-		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
+		&r.CustodyReturnedAt, &r.CustodyTransitionToken, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -274,27 +287,13 @@ func (d *DB) SetRunCustodyReturnedCAS(expected *Run) error {
 		return ErrRunCustodyCAS
 	}
 	ts := now()
+	args := append([]any{ts, ts}, custodyAuthorityArgs(expected)...)
 	result, err := d.sql.Exec(`
 		UPDATE runs SET custody_returned_at = ?, updated_at = ?
-		 WHERE id = ? AND repo_id = ? AND branch = ? AND head_sha = ? AND base_sha = ?
-		   AND submitted_head_sha IS ? AND review_approved_head_sha IS ? AND status = ?
-		   AND pr_url IS ? AND pr_state IS ? AND pr_state_observed_at IS ? AND ci_ready_at IS ?
-		   AND last_pushed_sha IS ? AND push_target_kind IS ? AND push_target_fingerprint IS ?
-		   AND push_ref IS ? AND last_pushed_at IS ? AND push_generation IS ?
-		   AND COALESCE(push_active, 0) = 0 AND custody_returned_at IS NULL
-		   AND error IS ? AND awaiting_agent_since IS ?
-		   AND status IN ('completed', 'failed', 'cancelled')
-		   AND NOT EXISTS (
-			SELECT 1 FROM runs newer
-			 WHERE newer.repo_id = runs.repo_id AND newer.branch = runs.branch
-			   AND (newer.created_at > runs.created_at OR (newer.created_at = runs.created_at AND newer.id > runs.id))
-		   )`,
-		ts, ts, expected.ID, expected.RepoID, expected.Branch, expected.HeadSHA, expected.BaseSHA,
-		nullableRunString(expected.SubmittedHeadSHA), nullableRunString(expected.ReviewApprovedHeadSHA), expected.Status,
-		nullableRunString(expected.PRURL), nullableRunString(expected.PRState), nullableRunInt64(expected.PRStateObservedAt), nullableRunInt64(expected.CIReadyAt),
-		nullableRunString(expected.LastPushedSHA), nullableRunString(expected.PushTargetKind), nullableRunString(expected.PushTargetFingerprint),
-		nullableRunString(expected.PushRef), nullableRunInt64(expected.LastPushedAt), nullableRunInt64(expected.PushGeneration),
-		nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince),
+		 WHERE `+custodyAuthorityPredicate+`
+		   AND COALESCE(push_active, 0) = 0 AND custody_returned_at IS NULL AND custody_transition_token IS NULL
+		   AND error IS ? AND awaiting_agent_since IS ?`,
+		append(args, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))...,
 	)
 	if err != nil {
 		return fmt.Errorf("set run custody returned CAS: %w", err)
@@ -307,6 +306,86 @@ func (d *DB) SetRunCustodyReturnedCAS(expected *Run) error {
 		return ErrRunCustodyCAS
 	}
 	return nil
+}
+
+func (d *DB) AcquireRunCustodyTransition(expected *Run) (string, error) {
+	if expected == nil {
+		return "", ErrRunCustodyCAS
+	}
+	token := newID()
+	args := append([]any{token, now()}, custodyAuthorityArgs(expected)...)
+	result, err := d.sql.Exec(
+		`UPDATE runs SET custody_transition_token = ?, updated_at = ? WHERE `+custodyAuthorityPredicate+`
+		   AND custody_returned_at IS NULL
+		   AND COALESCE(push_active, 0) = 0 AND error IS ? AND awaiting_agent_since IS ?`,
+		append(args, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))...,
+	)
+	if err != nil {
+		return "", fmt.Errorf("acquire run custody transition: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return "", fmt.Errorf("acquire run custody transition: affected rows: %w", err)
+	}
+	if rows == 1 {
+		return token, nil
+	}
+	return "", ErrRunCustodyCAS
+}
+
+func (d *DB) CompleteRunCustodyTransition(expected *Run, token string) error {
+	if expected == nil || token == "" {
+		return ErrRunCustodyCAS
+	}
+	args := append([]any{now(), now()}, custodyAuthorityArgs(expected)...)
+	args = append(args, token, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))
+	result, err := d.sql.Exec(
+		`UPDATE runs SET custody_returned_at = ?, custody_transition_token = NULL, updated_at = ?
+		 WHERE `+custodyAuthorityPredicate+`
+		   AND custody_returned_at IS NULL AND custody_transition_token = ?
+		   AND COALESCE(push_active, 0) = 0 AND error IS ? AND awaiting_agent_since IS ?`,
+		args...,
+	)
+	if err != nil {
+		return fmt.Errorf("complete run custody transition: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("complete run custody transition: affected rows: %w", err)
+	}
+	if rows != 1 {
+		return ErrRunCustodyCAS
+	}
+	return nil
+}
+
+func (d *DB) ReleaseRunCustodyTransition(runID, token string) (bool, error) {
+	if runID == "" || token == "" {
+		return false, nil
+	}
+	result, err := d.sql.Exec(
+		`UPDATE runs SET custody_transition_token = NULL, updated_at = ?
+		 WHERE id = ? AND custody_transition_token = ? AND custody_returned_at IS NULL`,
+		now(), runID, token,
+	)
+	if err != nil {
+		return false, fmt.Errorf("release run custody transition: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("release run custody transition: affected rows: %w", err)
+	}
+	return rows == 1, nil
+}
+
+func custodyAuthorityArgs(expected *Run) []any {
+	return []any{
+		expected.ID, expected.RepoID, expected.Branch, expected.HeadSHA, expected.BaseSHA,
+		nullableRunString(expected.SubmittedHeadSHA), nullableRunString(expected.ReviewApprovedHeadSHA), expected.Status,
+		nullableRunString(expected.PRURL), nullableRunString(expected.PRState), nullableRunInt64(expected.PRStateObservedAt), nullableRunInt64(expected.CIReadyAt),
+		nullableRunString(expected.LastPushedSHA), nullableRunString(expected.PushTargetKind), nullableRunString(expected.PushTargetFingerprint),
+		nullableRunString(expected.PushRef), nullableRunInt64(expected.LastPushedAt), nullableRunInt64(expected.PushGeneration),
+	}
 }
 
 func nullableRunString(value *string) any {
