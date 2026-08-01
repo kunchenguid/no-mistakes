@@ -121,6 +121,26 @@ func TestFallbackAgent_ForwardsSessionCapability(t *testing.T) {
 	}
 }
 
+func TestClassifyProviderErrorSanitizesLifecycleDiagnostics(t *testing.T) {
+	const secretDiagnostic = "weekly limit; token=raw-provider-secret"
+	classified := ClassifyProviderError(errors.New("provider failed: "+secretDiagnostic), secretDiagnostic)
+
+	var event LifecycleEvent
+	emitAgentExited(RunOpts{OnLifecycle: func(got LifecycleEvent) { event = got }}, "claude", 42, classified)
+	if strings.Contains(classified.Error(), secretDiagnostic) || strings.Contains(event.Message, secretDiagnostic) {
+		t.Fatalf("classified quota diagnostic leaked: error=%q event=%q", classified, event.Message)
+	}
+	if !strings.Contains(classified.Error(), "session/quota limit") {
+		t.Fatalf("classified error = %q, want bounded quota reason", classified)
+	}
+
+	generic := errors.New("provider failed: diagnostic retained")
+	emitAgentExited(RunOpts{OnLifecycle: func(got LifecycleEvent) { event = got }}, "claude", 42, ClassifyProviderError(generic, "diagnostic retained"))
+	if !strings.Contains(event.Message, generic.Error()) {
+		t.Fatalf("generic lifecycle event = %q, want original diagnostic", event.Message)
+	}
+}
+
 func TestFallbackAgentFallsBackOnExplicitQuotaExit(t *testing.T) {
 	first := &fallbackTestAgent{
 		name: "claude",

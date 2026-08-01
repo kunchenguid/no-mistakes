@@ -34,7 +34,9 @@ type providerQuotaError struct {
 	reason string
 }
 
-func (e *providerQuotaError) Error() string { return e.err.Error() }
+func (e *providerQuotaError) Error() string {
+	return fmt.Sprintf("provider quota unavailable: %s", e.reason)
+}
 func (e *providerQuotaError) Unwrap() error { return e.err }
 
 func (e *quotaFallbackError) Error() string {
