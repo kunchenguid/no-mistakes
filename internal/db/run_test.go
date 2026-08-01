@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -901,41 +902,34 @@ func TestRunCustodyTransitionOwnership(t *testing.T) {
 	}
 	expected, _ := d.GetRun(run.ID)
 
-	token, err := d.AcquireRunCustodyTransition(expected)
-	if err != nil || token == "" {
-		t.Fatalf("acquire custody transition = %q, %v", token, err)
+	transition, err := d.BeginRunCustodyTransition(context.Background(), expected)
+	if err != nil || transition == nil || transition.Token() == "" {
+		t.Fatalf("begin custody transition = %#v, %v", transition, err)
 	}
-	retryToken, err := d.AcquireRunCustodyTransition(expected)
-	if err != nil || retryToken == token || retryToken == "" {
-		t.Fatalf("retry custody transition = %q, %v, want a new token", retryToken, err)
+	if err := transition.Release(); err != nil {
+		t.Fatalf("release custody transition: %v", err)
 	}
-
-	released, err := d.ReleaseRunCustodyTransition(run.ID, token)
-	if err != nil || released {
-		t.Fatalf("release custody transition = %v, %v", released, err)
-	}
-	released, err = d.ReleaseRunCustodyTransition(run.ID, retryToken)
-	if err != nil || !released {
-		t.Fatalf("release current custody transition = %v, %v", released, err)
-	}
-	released, err = d.ReleaseRunCustodyTransition(run.ID, retryToken)
-	if err != nil || released {
-		t.Fatalf("repeat release custody transition = %v, %v", released, err)
-	}
-
 	expected, _ = d.GetRun(run.ID)
-	token, err = d.AcquireRunCustodyTransition(expected)
+	if expected.CustodyTransitionToken != nil {
+		t.Fatal("released custody transition left an owner token")
+	}
+
+	transition, err = d.BeginRunCustodyTransition(context.Background(), expected)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := d.CompleteRunCustodyTransition(expected, token); err != nil {
+	if err := transition.Complete(context.Background(), expected); err != nil {
 		t.Fatalf("complete custody transition: %v", err)
 	}
-	if err := d.CompleteRunCustodyTransition(expected, token); !errors.Is(err, ErrRunCustodyCAS) {
+	if err := transition.Complete(context.Background(), expected); !errors.Is(err, ErrRunCustodyCAS) {
 		t.Fatalf("repeat complete custody transition = %v", err)
 	}
-	if released, err := d.ReleaseRunCustodyTransition(run.ID, token); err != nil || released {
-		t.Fatalf("release completed custody transition = %v, %v", released, err)
+	stamped, _ := d.GetRun(run.ID)
+	if stamped.CustodyReturnedAt == nil || stamped.CustodyTransitionToken == nil {
+		t.Fatalf("stamped custody transition lost its cleanup owner: %#v", stamped)
+	}
+	if err := transition.ReleaseStamped(context.Background(), run.ID); err != nil {
+		t.Fatalf("release stamped custody transition: %v", err)
 	}
 	got, _ := d.GetRun(run.ID)
 	if got.CustodyReturnedAt == nil || got.CustodyTransitionToken != nil {

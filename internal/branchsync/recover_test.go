@@ -74,6 +74,7 @@ type recoverFixture struct {
 	repo      *db.Repo
 	run       *db.Run
 	service   *Service
+	dbPath    string
 	local     string
 	gate      string
 	remote    string
@@ -122,7 +123,8 @@ func newRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
 	preserved := mustRun(t, pipeline, "rev-parse", "HEAD")
 	mustRun(t, pipeline, "push", "origin", "HEAD:refs/heads/feature/recover")
 
-	database, err := db.Open(filepath.Join(root, "state.sqlite"))
+	dbPath := filepath.Join(root, "state.sqlite")
+	database, err := db.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +151,7 @@ func newRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
 	}
 	run, _ = database.GetRun(run.ID)
 	return &recoverFixture{
-		t: t, ctx: ctx, db: database, repo: repo, run: run,
+		t: t, ctx: ctx, db: database, repo: repo, run: run, dbPath: dbPath,
 		service: &Service{DB: database, Repo: repo, WorkDir: local, GateDir: gate},
 		local:   local, gate: gate, remote: remote,
 		base: base, submitted: submitted, preserved: preserved,
@@ -1442,6 +1444,9 @@ func TestRecoverKeepLocalRechecksAfterGateCASBeforeStamp(t *testing.T) {
 		if f.custodyReturned() {
 			t.Fatal("post-cas local commit stamped custody")
 		}
+		if run, err := f.db.GetRun(f.run.ID); err != nil || run.CustodyTransitionToken != nil {
+			t.Fatalf("post-cas local commit left custody owner: %#v, %v", run, err)
+		}
 		f.service.beforeRecoverStamp = nil
 		retry := f.service.Recover(f.ctx, true)
 		if !retry.Recovered || retry.Changed {
@@ -1475,42 +1480,61 @@ func TestRecoverKeepLocalRechecksAfterGateCASBeforeStamp(t *testing.T) {
 	})
 }
 
-func TestRecoverFinalCustodyCASRejectsConcurrentAuthorityChanges(t *testing.T) {
+func TestRecoverSerializesConcurrentAuthorityChanges(t *testing.T) {
 	t.Run("newer owning run", func(t *testing.T) {
 		f := newRecoverFixture(t, types.RunCancelled)
-		f.moveGateBranchToSubmitted()
+		competing, err := db.Open(f.dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer competing.Close()
+		done := make(chan error, 1)
 		f.service.beforeRecoverStamp = func() {
-			if _, err := f.db.InsertRun(f.repo.ID, f.run.Branch, f.submitted, f.base); err != nil {
-				t.Fatal(err)
-			}
+			go func() {
+				_, err := competing.InsertRun(f.repo.ID, f.run.Branch, f.submitted, f.base)
+				done <- err
+			}()
 		}
 
 		state := f.service.Recover(f.ctx, true)
-		if state.Recovered || state.Safety != "blocked_recover_custody_race" {
-			t.Fatalf("concurrent newer-owner recovery = %#v", state)
+		if !state.Recovered {
+			t.Fatalf("serialized newer-owner recovery = %#v", state)
 		}
-		if f.custodyReturned() {
-			t.Fatal("concurrent newer owner did not prevent custody stamp")
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if !f.custodyReturned() {
+			t.Fatal("serialized newer owner lost custody stamp")
 		}
 	})
 
-	t.Run("newer owning run after gate reset restores ordinary ref", func(t *testing.T) {
+	t.Run("newer owning run after gate reset", func(t *testing.T) {
 		f := newRecoverFixture(t, types.RunCancelled)
 		mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
 		mustRun(t, f.local, "add", "rescope.txt")
 		mustRun(t, f.local, "commit", "-m", "diverging rescope")
 
+		competing, err := db.Open(f.dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer competing.Close()
+		done := make(chan error, 1)
 		f.service.beforeRecoverStamp = func() {
-			if _, err := f.db.InsertRun(f.repo.ID, f.run.Branch, f.submitted, f.base); err != nil {
-				t.Fatal(err)
-			}
+			go func() {
+				_, err := competing.InsertRun(f.repo.ID, f.run.Branch, f.submitted, f.base)
+				done <- err
+			}()
 		}
 		state := f.service.Recover(f.ctx, true)
-		if state.Recovered || state.Safety != "blocked_recover_custody_race" {
-			t.Fatalf("late newer-owner recovery = %#v", state)
+		if !state.Recovered {
+			t.Fatalf("serialized late newer-owner recovery = %#v", state)
 		}
-		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
-			t.Fatalf("late newer-owner gate = %s, want preserved %s", got, f.preserved)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != mustRun(t, f.local, "rev-parse", "HEAD") {
+			t.Fatalf("late newer-owner gate = %s, want local head", got)
 		}
 		if _, err := gitpkg.Run(f.ctx, f.gate, "show-ref", "--verify", custodyReturnRef(f.run.ID)); err == nil {
 			t.Fatal("late newer-owner recovery left custody marker")
@@ -1518,28 +1542,36 @@ func TestRecoverFinalCustodyCASRejectsConcurrentAuthorityChanges(t *testing.T) {
 		if _, err := gitpkg.Run(f.ctx, f.gate, "show-ref", "--verify", custodyOriginalRef(f.run.ID)); err == nil {
 			t.Fatal("late newer-owner recovery left original gate marker")
 		}
-		if f.custodyReturned() {
-			t.Fatal("late newer owner did not prevent custody stamp")
+		if !f.custodyReturned() {
+			t.Fatal("late newer owner lost custody stamp")
 		}
 	})
 
 	t.Run("publication binding", func(t *testing.T) {
 		f := newRecoverFixture(t, types.RunCancelled)
-		f.moveGateBranchToSubmitted()
+		competing, err := db.Open(f.dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer competing.Close()
+		done := make(chan error, 1)
 		f.service.beforeRecoverStamp = func() {
-			if err := f.db.UpdateRunPushBinding(f.run.ID, db.PushBinding{
-				HeadSHA: f.submitted, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/recover",
-			}); err != nil {
-				t.Fatal(err)
-			}
+			go func() {
+				done <- competing.UpdateRunPushBinding(f.run.ID, db.PushBinding{
+					HeadSHA: f.submitted, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/recover",
+				})
+			}()
 		}
 
 		state := f.service.Recover(f.ctx, true)
-		if state.Recovered || state.Safety != "blocked_recover_custody_race" {
-			t.Fatalf("concurrent publication recovery = %#v", state)
+		if !state.Recovered {
+			t.Fatalf("serialized publication recovery = %#v", state)
 		}
-		if f.custodyReturned() {
-			t.Fatal("concurrent publication did not prevent custody stamp")
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if !f.custodyReturned() {
+			t.Fatal("serialized publication lost custody stamp")
 		}
 	})
 }
@@ -1552,6 +1584,7 @@ func TestRecoverConcurrentKeepLocalDoesNotRollbackCompletedTransition(t *testing
 
 	firstAtStamp := make(chan struct{})
 	releaseFirst := make(chan struct{})
+	secondStarted := make(chan struct{})
 	var first atomic.Bool
 	f.service.beforeRecoverStamp = func() {
 		if first.CompareAndSwap(false, true) {
@@ -1559,6 +1592,13 @@ func TestRecoverConcurrentKeepLocalDoesNotRollbackCompletedTransition(t *testing
 			<-releaseFirst
 		}
 	}
+	secondDB, err := db.Open(f.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondDB.Close()
+	secondService := &Service{DB: secondDB, Repo: f.repo, WorkDir: f.local, GateDir: f.gate}
+	secondService.beforeGateReset = func() { close(secondStarted) }
 
 	firstResult := make(chan State, 1)
 	go func() { firstResult <- f.service.Recover(f.ctx, true) }()
@@ -1569,27 +1609,103 @@ func TestRecoverConcurrentKeepLocalDoesNotRollbackCompletedTransition(t *testing
 	}
 
 	secondResult := make(chan State, 1)
-	go func() { secondResult <- f.service.Recover(f.ctx, true) }()
-	var second State
+	go func() { secondResult <- secondService.Recover(f.ctx, true) }()
 	select {
-	case second = <-secondResult:
+	case <-secondStarted:
 	case <-time.After(5 * time.Second):
-		t.Fatal("second recovery did not complete")
-	}
-	if !second.Recovered {
-		t.Fatalf("second recovery = %#v", second)
+		t.Fatal("second recovery did not start")
 	}
 	close(releaseFirst)
 	select {
-	case <-firstResult:
+	case first := <-firstResult:
+		if !first.Recovered {
+			t.Fatalf("first recovery = %#v", first)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("first recovery did not complete")
+	}
+	select {
+	case second := <-secondResult:
+		if second.Recovered {
+			t.Fatalf("concurrent second recovery unexpectedly succeeded: %#v", second)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("second recovery did not complete")
 	}
 	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != mustRun(t, f.local, "rev-parse", "HEAD") {
 		t.Fatalf("completed concurrent recovery gate = %s, want local head", got)
 	}
 	if !f.custodyReturned() {
 		t.Fatal("completed concurrent recovery lost custody stamp")
+	}
+}
+
+func TestRecoverCrashAfterGateMoveIsRetryable(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
+	mustRun(t, f.local, "add", "rescope.txt")
+	mustRun(t, f.local, "commit", "-m", "diverging rescope")
+
+	refused := f.service.Recover(f.ctx, false)
+	if refused.Recovered || refused.Safety != "blocked_recover_diverged" {
+		t.Fatalf("crash-boundary setup recovery = %#v", refused)
+	}
+	source, err := filepath.Abs(f.local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, f.gate, "update-ref", custodyOriginalRef(f.run.ID), f.preserved)
+	mustRun(t, f.gate, "fetch", "--no-tags", "--no-write-fetch-head", source, "+refs/heads/feature/recover:"+custodyReturnRef(f.run.ID))
+	kept := mustRun(t, f.local, "rev-parse", "HEAD")
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", kept, f.preserved)
+
+	recovered := f.service.Recover(f.ctx, true)
+	if !recovered.Recovered || recovered.Changed {
+		t.Fatalf("crash-boundary retry = %#v", recovered)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("crash-boundary retry did not stamp custody")
+	}
+	if run, err := f.db.GetRun(f.run.ID); err != nil || run.CustodyTransitionToken != nil {
+		t.Fatalf("crash-boundary retry left custody owner: %#v, %v", run, err)
+	}
+}
+
+func TestRecoverRetryReconcilesStampedOwner(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
+	mustRun(t, f.local, "add", "rescope.txt")
+	mustRun(t, f.local, "commit", "-m", "diverging rescope")
+	if state := f.service.Recover(f.ctx, false); state.Recovered || state.Safety != "blocked_recover_diverged" {
+		t.Fatalf("stamped-owner setup recovery = %#v", state)
+	}
+	source, err := filepath.Abs(f.local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, f.gate, "update-ref", custodyOriginalRef(f.run.ID), f.preserved)
+	mustRun(t, f.gate, "fetch", "--no-tags", "--no-write-fetch-head", source, "+refs/heads/feature/recover:"+custodyReturnRef(f.run.ID))
+	kept := mustRun(t, f.local, "rev-parse", "HEAD")
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", kept, f.preserved)
+
+	owner, err := f.db.BeginRunCustodyTransition(f.ctx, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Complete(f.ctx, f.run); err != nil {
+		t.Fatal(err)
+	}
+	stamped, _ := f.db.GetRun(f.run.ID)
+	if stamped.CustodyReturnedAt == nil || stamped.CustodyTransitionToken == nil {
+		t.Fatalf("stamped owner state = %#v", stamped)
+	}
+
+	recovered := f.service.Recover(f.ctx, true)
+	if !recovered.Recovered {
+		t.Fatalf("stamped-owner retry = %#v", recovered)
+	}
+	if run, err := f.db.GetRun(f.run.ID); err != nil || run.CustodyTransitionToken != nil {
+		t.Fatalf("stamped-owner retry left owner: %#v, %v", run, err)
 	}
 }
 

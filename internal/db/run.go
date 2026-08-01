@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -13,6 +14,75 @@ import (
 // before custody could be stamped. Callers must retain immutable recovery
 // anchors and retry from freshly inspected state.
 var ErrRunCustodyCAS = errors.New("run custody compare-and-swap lost")
+
+type CustodyTransition struct {
+	db      *DB
+	tx      *sql.Tx
+	token   string
+	stamped bool
+}
+
+func (t *CustodyTransition) Token() string {
+	if t == nil {
+		return ""
+	}
+	return t.token
+}
+
+func (t *CustodyTransition) Complete(ctx context.Context, expected *Run) error {
+	if t == nil || t.tx == nil || expected == nil || t.token == "" {
+		return ErrRunCustodyCAS
+	}
+	args := append([]any{now(), now()}, custodyAuthorityArgs(expected)...)
+	args = append(args, t.token, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))
+	result, err := t.tx.ExecContext(
+		ctx,
+		`UPDATE runs SET custody_returned_at = ?, updated_at = ?
+		 WHERE `+custodyAuthorityPredicate+`
+		   AND custody_returned_at IS NULL AND custody_transition_token = ?
+		   AND COALESCE(push_active, 0) = 0 AND error IS ? AND awaiting_agent_since IS ?`,
+		args...,
+	)
+	if err != nil {
+		return fmt.Errorf("complete run custody transition: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("complete run custody transition: affected rows: %w", err)
+	}
+	if rows != 1 {
+		return ErrRunCustodyCAS
+	}
+	if err := t.tx.Commit(); err != nil {
+		t.tx = nil
+		return fmt.Errorf("complete run custody transition: commit: %w", err)
+	}
+	t.tx = nil
+	t.stamped = true
+	return nil
+}
+
+func (t *CustodyTransition) Release() error {
+	if t == nil || t.tx == nil {
+		return nil
+	}
+	err := t.tx.Rollback()
+	t.tx = nil
+	if errors.Is(err, sql.ErrTxDone) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("release run custody transition: %w", err)
+	}
+	return nil
+}
+
+func (t *CustodyTransition) ReleaseStamped(ctx context.Context, runID string) error {
+	if t == nil || !t.stamped || t.db == nil {
+		return nil
+	}
+	return t.db.ClearRunCustodyTransition(ctx, runID, t.token)
+}
 
 // Run represents a pipeline run.
 type Run struct {
@@ -308,74 +378,63 @@ func (d *DB) SetRunCustodyReturnedCAS(expected *Run) error {
 	return nil
 }
 
-func (d *DB) AcquireRunCustodyTransition(expected *Run) (string, error) {
+func (d *DB) BeginRunCustodyTransition(ctx context.Context, expected *Run) (*CustodyTransition, error) {
 	if expected == nil {
-		return "", ErrRunCustodyCAS
+		return nil, ErrRunCustodyCAS
+	}
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin run custody transition: %w", err)
 	}
 	token := newID()
 	args := append([]any{token, now()}, custodyAuthorityArgs(expected)...)
-	result, err := d.sql.Exec(
+	result, err := tx.ExecContext(
+		ctx,
 		`UPDATE runs SET custody_transition_token = ?, updated_at = ? WHERE `+custodyAuthorityPredicate+`
-		   AND custody_returned_at IS NULL
+		   AND custody_returned_at IS NULL AND custody_transition_token IS NULL
 		   AND COALESCE(push_active, 0) = 0 AND error IS ? AND awaiting_agent_since IS ?`,
 		append(args, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))...,
 	)
 	if err != nil {
-		return "", fmt.Errorf("acquire run custody transition: %w", err)
+		_ = tx.Rollback()
+		return nil, fmt.Errorf("begin run custody transition: %w", err)
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return "", fmt.Errorf("acquire run custody transition: affected rows: %w", err)
-	}
-	if rows == 1 {
-		return token, nil
-	}
-	return "", ErrRunCustodyCAS
-}
-
-func (d *DB) CompleteRunCustodyTransition(expected *Run, token string) error {
-	if expected == nil || token == "" {
-		return ErrRunCustodyCAS
-	}
-	args := append([]any{now(), now()}, custodyAuthorityArgs(expected)...)
-	args = append(args, token, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))
-	result, err := d.sql.Exec(
-		`UPDATE runs SET custody_returned_at = ?, custody_transition_token = NULL, updated_at = ?
-		 WHERE `+custodyAuthorityPredicate+`
-		   AND custody_returned_at IS NULL AND custody_transition_token = ?
-		   AND COALESCE(push_active, 0) = 0 AND error IS ? AND awaiting_agent_since IS ?`,
-		args...,
-	)
-	if err != nil {
-		return fmt.Errorf("complete run custody transition: %w", err)
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("complete run custody transition: affected rows: %w", err)
+		_ = tx.Rollback()
+		return nil, fmt.Errorf("begin run custody transition: affected rows: %w", err)
 	}
 	if rows != 1 {
-		return ErrRunCustodyCAS
+		_ = tx.Rollback()
+		return nil, ErrRunCustodyCAS
 	}
-	return nil
+	return &CustodyTransition{db: d, tx: tx, token: token}, nil
 }
 
-func (d *DB) ReleaseRunCustodyTransition(runID, token string) (bool, error) {
+func (d *DB) ClearRunCustodyTransition(ctx context.Context, runID, token string) error {
 	if runID == "" || token == "" {
-		return false, nil
+		return nil
 	}
-	result, err := d.sql.Exec(
+	result, err := d.sql.ExecContext(ctx,
 		`UPDATE runs SET custody_transition_token = NULL, updated_at = ?
-		 WHERE id = ? AND custody_transition_token = ? AND custody_returned_at IS NULL`,
+		 WHERE id = ? AND custody_transition_token = ? AND custody_returned_at IS NOT NULL`,
 		now(), runID, token,
 	)
 	if err != nil {
-		return false, fmt.Errorf("release run custody transition: %w", err)
+		return fmt.Errorf("clear run custody transition: %w", err)
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return false, fmt.Errorf("release run custody transition: affected rows: %w", err)
+		return fmt.Errorf("clear run custody transition: affected rows: %w", err)
 	}
-	return rows == 1, nil
+	if rows != 1 {
+		current, getErr := d.GetRun(runID)
+		if getErr == nil && current != nil && current.CustodyReturnedAt != nil && current.CustodyTransitionToken == nil {
+			return nil
+		}
+		return ErrRunCustodyCAS
+	}
+	return nil
 }
 
 func custodyAuthorityArgs(expected *Run) []any {
