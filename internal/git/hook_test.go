@@ -21,7 +21,10 @@ func TestPreReceiveHookScript(t *testing.T) {
 		"--old \"$oldrev\"",
 		"--new \"$newrev\"",
 		"mktemp \"$GATE_DIR/.no-mistakes-receive.XXXXXX\"",
-		"RECEIVE_SESSION=\"$GATE_DIR/.no-mistakes-receive-session.$PPID\"",
+		"NO_MISTAKES_RECEIVE_SESSION_ID",
+		"NO_MISTAKES_RECEIVE_CAPABILITY_FILE",
+		"--receive-session-id \"$RECEIVE_SESSION_ID\"",
+		"--receive-capability \"$RECEIVE_CAPABILITY\"",
 		"admit push returned an invalid receive identity",
 		"gate push refused before ref mutation",
 		preservedPreReceiveHook,
@@ -48,9 +51,11 @@ func TestReferenceTransactionHookScript(t *testing.T) {
 		"daemon receive-transaction --gate \"$GATE_DIR\"",
 		"--phase \"$PHASE\"",
 		"--reservation-id \"$reservation_id\"",
-		"git-receive-pack",
-		"receive session evidence is missing",
-		"RECEIVE_OWNED=0",
+		"authenticated receive capability is incomplete",
+		"NO_MISTAKES_RECEIVE_MANIFEST",
+		"authenticated receive capability",
+		"--receive-session-id \"$RECEIVE_SESSION_ID\"",
+		"--receive-capability \"$RECEIVE_CAPABILITY\"",
 		"mktemp \"$GATE_DIR/.no-mistakes-reference-transaction.XXXXXX\"",
 		preservedReferenceTransactionHook,
 	} {
@@ -60,6 +65,27 @@ func TestReferenceTransactionHookScript(t *testing.T) {
 	}
 	if !strings.Contains(script, "\"$USER_HOOK\" \"$PHASE\" < \"$RECEIVE_INPUT\"") {
 		t.Fatal("reference transaction hook must preserve phase and input for a user hook")
+	}
+}
+
+func TestReceivePackWrapperScript(t *testing.T) {
+	script := ReceivePackWrapperScript()
+	for _, want := range []string{
+		"# no-mistakes managed receive-pack wrapper",
+		"/dev/urandom",
+		"NO_MISTAKES_RECEIVE_SESSION_ID",
+		"NO_MISTAKES_RECEIVE_CAPABILITY",
+		"NO_MISTAKES_RECEIVE_CAPABILITY_FILE",
+		"NO_MISTAKES_RECEIVE_MANIFEST",
+		"exec git-receive-pack \"$@\"",
+		"umask 077",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("receive-pack wrapper missing %q", want)
+		}
+	}
+	if strings.Contains(script, "PPID") || strings.Contains(script, "GIT_QUARANTINE_PATH") {
+		t.Fatal("receive-pack wrapper must not use process or quarantine heuristics")
 	}
 }
 

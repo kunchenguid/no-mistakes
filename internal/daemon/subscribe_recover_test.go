@@ -38,10 +38,12 @@ func TestSubscribeReceivesEvents(t *testing.T) {
 
 	var pushResult ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("testrepo-sub1"),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("testrepo-sub1"),
+		Ref:               "refs/heads/main",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &pushResult)
 	if err != nil {
 		t.Fatal(err)
@@ -132,10 +134,12 @@ func TestSubscribeToSlowRunReceivesEvents(t *testing.T) {
 
 	var pushResult ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("testrepo-sub2"),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("testrepo-sub2"),
+		Ref:               "refs/heads/main",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &pushResult)
 	if err != nil {
 		t.Fatal(err)
@@ -162,10 +166,12 @@ func TestSubscribeToSlowRunReceivesEvents(t *testing.T) {
 
 	var pushResult2 ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("testrepo-sub2"),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("testrepo-sub2"),
+		Ref:               "refs/heads/main",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &pushResult2)
 	if err != nil {
 		t.Fatal(err)
@@ -207,10 +213,12 @@ func TestSubscribeToCompletedRunYieldsOneGapThenCloses(t *testing.T) {
 
 	var pushResult ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("testrepo-sub-done"),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("testrepo-sub-done"),
+		Ref:               "refs/heads/main",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &pushResult)
 	if err != nil {
 		t.Fatal(err)

@@ -14,18 +14,18 @@ func TestReceiveReservationLifecycle(t *testing.T) {
 	}
 	oldSHA := "1111111111111111111111111111111111111111"
 	newSHA := "2222222222222222222222222222222222222222"
-	first, err := d.ReserveReceive("repo", "/gate/repo.git", "feature", "refs/heads/feature", oldSHA, newSHA, []types.StepName{types.StepReview}, "intent")
+	first, err := d.ReserveReceiveForSession("repo", "/gate/repo.git", "feature", "refs/heads/feature", oldSHA, newSHA, "session-lifecycle", "cap-lifecycle", []types.StepName{types.StepReview}, "intent")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := d.ReserveReceive("repo", "/gate/repo.git", "feature", "refs/heads/feature", oldSHA, newSHA, nil, "different")
+	second, err := d.ReserveReceiveForSession("repo", "/gate/repo.git", "feature", "refs/heads/feature", oldSHA, newSHA, "session-lifecycle", "cap-lifecycle", nil, "different")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if second.ID != first.ID || second.State != ReceiveReservationReserved {
 		t.Fatalf("duplicate reservation = %#v, want original pending reservation", second)
 	}
-	if _, err := d.ReserveReceive("repo", "/gate/repo.git", "feature", "refs/heads/feature", oldSHA, "3333333333333333333333333333333333333333", nil, ""); !errors.Is(err, ErrReceiveReservationConflict) {
+	if _, err := d.ReserveReceiveForSession("repo", "/gate/repo.git", "feature", "refs/heads/feature", oldSHA, "3333333333333333333333333333333333333333", "session-other", "cap-other", nil, ""); !errors.Is(err, ErrReceiveReservationConflict) {
 		t.Fatalf("conflicting reservation error = %v, want ErrReceiveReservationConflict", err)
 	}
 	if err := d.MarkReceivePrepared("repo", "feature", "refs/heads/feature", oldSHA, newSHA); err != nil {
@@ -51,7 +51,7 @@ func TestReceiveReservationLifecycle(t *testing.T) {
 	if len(pending) != 0 {
 		t.Fatalf("pending reservations after completion = %d", len(pending))
 	}
-	third, err := d.ReserveReceive("repo", "/gate/repo.git", "feature", "refs/heads/feature", oldSHA, newSHA, nil, "")
+	third, err := d.ReserveReceiveForSession("repo", "/gate/repo.git", "feature", "refs/heads/feature", oldSHA, newSHA, "session-later", "cap-later", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,12 +60,35 @@ func TestReceiveReservationLifecycle(t *testing.T) {
 	}
 }
 
+func TestReceiveReservationBindsIdenticalTransitionsToSession(t *testing.T) {
+	d := openTestDB(t)
+	if _, err := d.InsertRepoWithID("repo", "/work/repo", "https://example.com/repo.git", "main"); err != nil {
+		t.Fatal(err)
+	}
+	oldSHA := "1111111111111111111111111111111111111111"
+	newSHA := "2222222222222222222222222222222222222222"
+	first, err := d.ReserveReceiveForSession("repo", "/gate/repo.git", "main", "refs/heads/main", oldSHA, newSHA, "session-a", "cap-a", nil, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := d.ReserveReceiveForSession("repo", "/gate/repo.git", "main", "refs/heads/main", oldSHA, newSHA, "session-a", "cap-a", nil, "retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry.ID != first.ID {
+		t.Fatalf("same-session retry created %q, want %q", retry.ID, first.ID)
+	}
+	if _, err := d.ReserveReceiveForSession("repo", "/gate/repo.git", "main", "refs/heads/main", oldSHA, newSHA, "session-b", "cap-b", nil, "second"); !errors.Is(err, ErrReceiveReservationConflict) {
+		t.Fatalf("different identical receive error = %v, want conflict", err)
+	}
+}
+
 func TestReceiveReservationRetiresOnlyWhenPending(t *testing.T) {
 	d := openTestDB(t)
 	if _, err := d.InsertRepoWithID("repo", "/work/repo", "https://example.com/repo.git", "main"); err != nil {
 		t.Fatal(err)
 	}
-	reservation, err := d.ReserveReceive("repo", "/gate/repo.git", "feature", "refs/heads/feature", "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222", nil, "")
+	reservation, err := d.ReserveReceiveForSession("repo", "/gate/repo.git", "feature", "refs/heads/feature", "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222", "session-retire", "cap-retire", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +112,7 @@ func TestReceiveReservationSupportsDeletion(t *testing.T) {
 	if _, err := d.InsertRepoWithID("repo", "/work/repo", "https://example.com/repo.git", "main"); err != nil {
 		t.Fatal(err)
 	}
-	reservation, err := d.ReserveReceive("repo", "/gate/repo.git", "main", "refs/heads/main", "1111111111111111111111111111111111111111", "0000000000000000000000000000000000000000", nil, "")
+	reservation, err := d.ReserveReceiveForSession("repo", "/gate/repo.git", "main", "refs/heads/main", "1111111111111111111111111111111111111111", "0000000000000000000000000000000000000000", "session-delete", "cap-delete", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +141,7 @@ func TestReceiveReservationAbortedEvidenceRetiresPendingState(t *testing.T) {
 	}
 	oldSHA := "1111111111111111111111111111111111111111"
 	newSHA := "2222222222222222222222222222222222222222"
-	reservation, err := d.ReserveReceive("repo", "/gate/repo.git", "main", "refs/heads/main", oldSHA, newSHA, nil, "")
+	reservation, err := d.ReserveReceiveForSession("repo", "/gate/repo.git", "main", "refs/heads/main", oldSHA, newSHA, "session-abort", "cap-abort", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -69,10 +69,12 @@ func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 
 	var result ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("telemetry-run-repo"),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("telemetry-run-repo"),
+		Ref:               "refs/heads/main",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &result)
 	if err != nil {
 		t.Fatal(err)
@@ -131,11 +133,13 @@ func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
 
 	var result ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate:      p.RepoDir("skip-run-repo"),
-		Ref:       "refs/heads/main",
-		Old:       "0000000000000000000000000000000000000000",
-		New:       headSHA,
-		SkipSteps: []types.StepName{types.StepReview},
+		Gate:              p.RepoDir("skip-run-repo"),
+		Ref:               "refs/heads/main",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		SkipSteps:         []types.StepName{types.StepReview},
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &result)
 	if err != nil {
 		t.Fatal(err)
@@ -182,18 +186,18 @@ func TestPushReservationSurvivesOwnershipLockContention(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	params := &ipc.PushReceivedParams{Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: oldSHA, New: newSHA}
+	params := &ipc.PushReceivedParams{Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: oldSHA, New: newSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}
 	var admitted ipc.AdmitPushResult
-	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: params.Gate, Ref: params.Ref, Old: params.Old, New: params.New}, &admitted); err != nil {
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: params.Gate, Ref: params.Ref, Old: params.Old, New: params.New, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, &admitted); err != nil {
 		t.Fatalf("admit push: %v", err)
 	}
 	for _, phase := range []string{"prepared"} {
-		if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: params.Gate, Phase: phase, ReservationID: admitted.ReservationID, Ref: params.Ref, Old: params.Old, New: params.New}, nil); err != nil {
+		if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: params.Gate, Phase: phase, ReservationID: admitted.ReservationID, Ref: params.Ref, Old: params.Old, New: params.New, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
 			t.Fatalf("receive transaction %s: %v", phase, err)
 		}
 	}
 	gitCmd(t, p.RepoDir(repo.ID), "update-ref", "refs/heads/main", newSHA, oldSHA)
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: params.Gate, Phase: "committed", ReservationID: admitted.ReservationID, Ref: params.Ref, Old: params.Old, New: params.New}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: params.Gate, Phase: "committed", ReservationID: admitted.ReservationID, Ref: params.Ref, Old: params.Old, New: params.New, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
 		t.Fatalf("receive transaction committed: %v", err)
 	}
 
@@ -245,7 +249,7 @@ func TestPendingReceiveDoesNotReuseRunBeforeRefMutation(t *testing.T) {
 	if _, err := d.InsertRun(repo.ID, "main", newSHA, oldSHA); err != nil {
 		t.Fatal(err)
 	}
-	reservation, err := d.ReserveReceive(repo.ID, p.RepoDir(repo.ID), "main", "refs/heads/main", oldSHA, newSHA, nil, "")
+	reservation, err := d.ReserveReceiveForSession(repo.ID, p.RepoDir(repo.ID), "main", "refs/heads/main", oldSHA, newSHA, testReceiveSessionID, testReceiveCapability, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,6 +262,7 @@ func TestPendingReceiveDoesNotReuseRunBeforeRefMutation(t *testing.T) {
 	var result ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: oldSHA, New: newSHA,
+		ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability,
 	}, &result)
 	if err == nil {
 		t.Fatal("notification succeeded before the gate ref reached the reserved head")
@@ -290,10 +295,12 @@ func TestPushReceivedRefusesUnboundNotification(t *testing.T) {
 
 	var result ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("unbound-notification-repo"),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("unbound-notification-repo"),
+		Ref:               "refs/heads/main",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &result)
 	if err == nil || !strings.Contains(err.Error(), "evidence is missing") {
 		t.Fatalf("unbound notification error = %v, want missing evidence", err)
@@ -328,15 +335,15 @@ func TestReceiveCreatesDistinctRunForSameHeadWithDifferentReservation(t *testing
 	gatePath := p.RepoDir(repo.ID)
 	ref := "refs/heads/main"
 	var admitted ipc.AdmitPushResult
-	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: preservedSHA, Intent: "first"}, &admitted); err != nil {
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: preservedSHA, Intent: "first", ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, &admitted); err != nil {
 		t.Fatal(err)
 	}
-	firstParams := &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: preservedSHA, Intent: "first"}
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: preservedSHA}, nil); err != nil {
+	firstParams := &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: preservedSHA, Intent: "first", ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: preservedSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
 		t.Fatalf("first receive transaction prepared: %v", err)
 	}
 	gitCmd(t, gatePath, "update-ref", ref, preservedSHA, oldSHA)
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: preservedSHA}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: preservedSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
 		t.Fatalf("first receive transaction committed: %v", err)
 	}
 	var firstResult ipc.PushReceivedResult
@@ -355,19 +362,19 @@ func TestReceiveCreatesDistinctRunForSameHeadWithDifferentReservation(t *testing
 	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/tmp/alternate")
 	gitCmd(t, gatePath, "update-ref", ref, alternateSHA, preservedSHA)
 
-	secondParams := &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: alternateSHA, New: preservedSHA, Intent: "second"}
+	secondParams := &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: alternateSHA, New: preservedSHA, Intent: "second", ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}
 	if err := client.Call(ipc.MethodAdmitPush, secondParams, &admitted); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: admitted.ReservationID, Ref: ref, Old: alternateSHA, New: preservedSHA}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: admitted.ReservationID, Ref: ref, Old: alternateSHA, New: preservedSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
 		t.Fatalf("second receive transaction prepared: %v", err)
 	}
 	gitCmd(t, gatePath, "update-ref", ref, preservedSHA, alternateSHA)
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: admitted.ReservationID, Ref: ref, Old: alternateSHA, New: preservedSHA}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: admitted.ReservationID, Ref: ref, Old: alternateSHA, New: preservedSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
 		t.Fatalf("second receive transaction committed: %v", err)
 	}
 	var secondResult ipc.PushReceivedResult
-	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: alternateSHA, New: preservedSHA, Intent: "second"}, &secondResult); err != nil {
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: alternateSHA, New: preservedSHA, Intent: "second", ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, &secondResult); err != nil {
 		t.Fatal(err)
 	}
 	if secondResult.RunID == firstResult.RunID {
@@ -397,22 +404,22 @@ func TestReceiveDeletionReservationReconcilesWithoutRun(t *testing.T) {
 	}
 	defer client.Close()
 	var admitted ipc.AdmitPushResult
-	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: zeroSHA}, &admitted); err != nil {
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: zeroSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, &admitted); err != nil {
 		t.Fatal(err)
 	}
 	if pending, err := d.GetPendingReceiveReservationsForBranch(repo.ID, "main"); err != nil || len(pending) != 1 {
 		t.Fatalf("pending deletion reservations = %d, %v", len(pending), err)
 	}
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: zeroSHA}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: zeroSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
 		t.Fatalf("deletion receive transaction prepared: %v", err)
 	}
 	gitCmd(t, gatePath, "update-ref", "-d", ref, oldSHA)
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: zeroSHA}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: zeroSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
 		t.Fatalf("deletion receive transaction committed: %v", err)
 	}
 
 	var result ipc.PushReceivedResult
-	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: zeroSHA}, &result)
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: zeroSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, &result)
 	if err == nil || !strings.Contains(err.Error(), "ref deletion") {
 		t.Fatalf("deletion notification error = %v, want ref deletion", err)
 	}
@@ -429,7 +436,7 @@ func TestReceiveDeletionReservationReconcilesWithoutRun(t *testing.T) {
 		t.Fatalf("pending reservations after deletion = %d, want 0", len(reservations))
 	}
 
-	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: zeroSHA}, &result); err == nil || !strings.Contains(err.Error(), "ref deletion") {
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: zeroSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, &result); err == nil || !strings.Contains(err.Error(), "ref deletion") {
 		t.Fatalf("duplicate deletion notification error = %v, want ref deletion", err)
 	}
 }
@@ -452,10 +459,12 @@ func TestPushReceivedAllowsDifferentBranchRunsConcurrently(t *testing.T) {
 
 	var first ipc.PushReceivedResult
 	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("concurrent-branch-repo"),
-		Ref:  "refs/heads/feature/one",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("concurrent-branch-repo"),
+		Ref:               "refs/heads/feature/one",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &first); err != nil {
 		t.Fatal(err)
 	}
@@ -463,10 +472,12 @@ func TestPushReceivedAllowsDifferentBranchRunsConcurrently(t *testing.T) {
 
 	var second ipc.PushReceivedResult
 	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("concurrent-branch-repo"),
-		Ref:  "refs/heads/feature/two",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("concurrent-branch-repo"),
+		Ref:               "refs/heads/feature/two",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &second); err != nil {
 		t.Fatal(err)
 	}
@@ -571,10 +582,12 @@ func TestPushReceivedConcurrentDifferentBranchRunsAvoidSharedConfigLock(t *testi
 			defer client.Close()
 			var res ipc.PushReceivedResult
 			errs[i] = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate: p.RepoDir(repoID),
-				Ref:  "refs/heads/" + br,
-				Old:  "0000000000000000000000000000000000000000",
-				New:  headSHA,
+				Gate:              p.RepoDir(repoID),
+				Ref:               "refs/heads/" + br,
+				Old:               "0000000000000000000000000000000000000000",
+				New:               headSHA,
+				ReceiveSessionID:  testReceiveSessionID,
+				ReceiveCapability: testReceiveCapability,
 			}, &res)
 		}(i, br)
 	}
@@ -633,10 +646,12 @@ func TestRerunSkipStepsConfiguresExecutor(t *testing.T) {
 
 	var first ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("skip-rerun-repo"),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("skip-rerun-repo"),
+		Ref:               "refs/heads/main",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &first)
 	if err != nil {
 		t.Fatal(err)
@@ -687,10 +702,12 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 
 	var first ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("selected-rerun-repo"),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("selected-rerun-repo"),
+		Ref:               "refs/heads/main",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &first)
 	if err != nil {
 		t.Fatal(err)
@@ -761,10 +778,12 @@ func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 	started := time.Now()
 	var result ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("intent-start-run-repo"),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("intent-start-run-repo"),
+		Ref:               "refs/heads/main",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &result)
 	if err != nil {
 		t.Fatal(err)
@@ -827,10 +846,12 @@ func TestPushReceivedTracksRunTelemetryAfterPanic(t *testing.T) {
 
 	var result ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("telemetry-panic-repo"),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("telemetry-panic-repo"),
+		Ref:               "refs/heads/main",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &result)
 	if err != nil {
 		t.Fatal(err)
@@ -888,10 +909,12 @@ func TestPushReceivedDemoModeBypassesAgentResolution(t *testing.T) {
 
 	var result ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("testrepo-demo"),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("testrepo-demo"),
+		Ref:               "refs/heads/main",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &result)
 	if err != nil {
 		t.Fatal(err)

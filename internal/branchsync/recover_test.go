@@ -239,7 +239,7 @@ func TestActivePrePushRunStaysBlockedWithoutRecovery(t *testing.T) {
 
 func TestRecoverRefusesPendingGateReceiveReservation(t *testing.T) {
 	f := newRecoverFixture(t, types.RunCancelled)
-	if _, err := f.db.ReserveReceive(f.repo.ID, f.gate, f.run.Branch, "refs/heads/"+f.run.Branch, f.submitted, f.preserved, nil, ""); err != nil {
+	if _, err := f.db.ReserveReceiveForSession(f.repo.ID, f.gate, f.run.Branch, "refs/heads/"+f.run.Branch, f.submitted, f.preserved, "recover-session", "recover-capability", nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	recovered := f.service.Recover(f.ctx, false)
@@ -257,7 +257,7 @@ func TestRecoverRefusesPendingGateReceiveReservation(t *testing.T) {
 func TestRecoverRechecksReceiveReservationAfterLockAcquisition(t *testing.T) {
 	f := newRecoverFixture(t, types.RunCancelled)
 	f.service.beforeCustodyLock = func() {
-		if _, err := f.db.ReserveReceive(f.repo.ID, f.gate, f.run.Branch, "refs/heads/"+f.run.Branch, f.submitted, f.preserved, nil, ""); err != nil {
+		if _, err := f.db.ReserveReceiveForSession(f.repo.ID, f.gate, f.run.Branch, "refs/heads/"+f.run.Branch, f.submitted, f.preserved, "recover-race-session", "recover-race-capability", nil, ""); err != nil {
 			t.Fatalf("reserve receive during recovery: %v", err)
 		}
 	}

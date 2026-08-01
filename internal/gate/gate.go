@@ -217,6 +217,9 @@ func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL, reposDir 
 	if err := ensureWorkingRemote(ctx, absRoot, bareDir, reposDir, refresh); err != nil {
 		return fmt.Errorf("add remote: %w", err)
 	}
+	if err := git.SetRemoteReceivePack(ctx, absRoot, RemoteName, git.ReceivePackWrapperPath(bareDir)); err != nil {
+		return fmt.Errorf("configure managed receive-pack wrapper: %w", err)
+	}
 
 	return nil
 }

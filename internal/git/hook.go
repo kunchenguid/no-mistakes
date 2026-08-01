@@ -16,11 +16,56 @@ var runGit = RunBare
 const gateConfigStampFile = "no-mistakes-gate-config"
 const preservedPreReceiveHook = "pre-receive.no-mistakes-user"
 const preservedReferenceTransactionHook = "reference-transaction.no-mistakes-user"
+const receivePackWrapperName = "no-mistakes-receive-pack"
+
+func ReceivePackWrapperPath(bareDir string) string {
+	abs, err := filepath.Abs(filepath.Join(bareDir, "hooks", receivePackWrapperName))
+	if err != nil {
+		return filepath.Join(bareDir, "hooks", receivePackWrapperName)
+	}
+	return abs
+}
+
+func ReceivePackWrapperScript() string {
+	return `#!/bin/sh
+# no-mistakes managed receive-pack wrapper
+set -eu
+if [ "$#" -lt 1 ]; then
+  printf 'no-mistakes: receive-pack repository is missing\n' >&2
+  exit 1
+fi
+GATE_DIR=$1
+case "$GATE_DIR" in
+  /*) ;;
+  *) GATE_DIR=$(cd "$GATE_DIR" 2>/dev/null && (/bin/pwd -P 2>/dev/null || pwd -P) || exit 1) ;;
+esac
+umask 077
+random_hex() {
+  dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'
+}
+RECEIVE_SESSION_ID=$(random_hex)
+RECEIVE_CAPABILITY=$(random_hex)
+if [ "${#RECEIVE_SESSION_ID}" -ne 64 ] || [ "${#RECEIVE_CAPABILITY}" -ne 64 ]; then
+  printf 'no-mistakes: cannot create authenticated receive capability\n' >&2
+  exit 1
+fi
+RECEIVE_CAPABILITY_FILE=$(mktemp "$GATE_DIR/.no-mistakes-receive-capability.XXXXXX") || exit 1
+RECEIVE_MANIFEST=$(mktemp "$GATE_DIR/.no-mistakes-receive-manifest.XXXXXX") || {
+  rm -f "$RECEIVE_CAPABILITY_FILE"
+  exit 1
+}
+printf '%s %s\n' "$RECEIVE_SESSION_ID" "$RECEIVE_CAPABILITY" > "$RECEIVE_CAPABILITY_FILE"
+export NO_MISTAKES_RECEIVE_SESSION_ID="$RECEIVE_SESSION_ID"
+export NO_MISTAKES_RECEIVE_CAPABILITY="$RECEIVE_CAPABILITY"
+export NO_MISTAKES_RECEIVE_CAPABILITY_FILE="$RECEIVE_CAPABILITY_FILE"
+export NO_MISTAKES_RECEIVE_MANIFEST="$RECEIVE_MANIFEST"
+trap 'rm -f "$RECEIVE_CAPABILITY_FILE" "$RECEIVE_MANIFEST"' 0 1 2 3 15
+exec git-receive-pack "$@"
+`
+}
 
 // PreReceiveHookScript returns the fail-closed admission hook that runs before
-// Git mutates any managed gate ref. The daemon authenticates the hook process's
-// ancestry, so a validation-step descendant cannot bypass CLI guards with a
-// direct push.
+// Git mutates any managed gate ref.
 func PreReceiveHookScript() string {
 	exe, err := os.Executable()
 	if err != nil {
@@ -53,9 +98,25 @@ RECEIVE_INPUT=$(mktemp "$GATE_DIR/.no-mistakes-receive.XXXXXX") || {
   printf 'no-mistakes: cannot reserve gate receive before ref mutation\n' >&2
   exit 1
 }
-RECEIVE_SESSION="$GATE_DIR/.no-mistakes-receive-session.$PPID"
-if ! : > "$RECEIVE_SESSION"; then
-  printf 'no-mistakes: cannot persist gate receive identity\n' >&2
+RECEIVE_SESSION_ID=${NO_MISTAKES_RECEIVE_SESSION_ID:-}
+RECEIVE_CAPABILITY=${NO_MISTAKES_RECEIVE_CAPABILITY:-}
+RECEIVE_CAPABILITY_FILE=${NO_MISTAKES_RECEIVE_CAPABILITY_FILE:-}
+RECEIVE_MANIFEST=${NO_MISTAKES_RECEIVE_MANIFEST:-}
+if [ -z "$RECEIVE_SESSION_ID" ] || [ -z "$RECEIVE_CAPABILITY" ] || [ -z "$RECEIVE_CAPABILITY_FILE" ] || [ -z "$RECEIVE_MANIFEST" ]; then
+  printf 'no-mistakes: authenticated receive capability is missing\n' >&2
+  exit 1
+fi
+if [ ! -f "$RECEIVE_CAPABILITY_FILE" ] || [ ! -f "$RECEIVE_MANIFEST" ]; then
+  printf 'no-mistakes: authenticated receive capability file is missing\n' >&2
+  exit 1
+fi
+set --
+if ! read -r capability_session capability_value < "$RECEIVE_CAPABILITY_FILE"; then
+  printf 'no-mistakes: cannot read authenticated receive capability\n' >&2
+  exit 1
+fi
+if [ "$capability_session" != "$RECEIVE_SESSION_ID" ] || [ "$capability_value" != "$RECEIVE_CAPABILITY" ]; then
+  printf 'no-mistakes: authenticated receive capability does not match\n' >&2
   exit 1
 fi
 trap 'rm -f "$RECEIVE_INPUT"' 0 1 2 3 15
@@ -72,7 +133,7 @@ while IFS=' ' read -r oldrev newrev refname; do
     set -- "$@" --push-option "$opt"
     i=$((i + 1))
   done
-  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon admit-push --gate "$GATE_DIR" --ref "$refname" --old "$oldrev" --new "$newrev" "$@" 2>&1)
+  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon admit-push --gate "$GATE_DIR" --ref "$refname" --old "$oldrev" --new "$newrev" --receive-session-id "$RECEIVE_SESSION_ID" --receive-capability "$RECEIVE_CAPABILITY" "$@" 2>&1)
   status=$?
   if [ $status -ne 0 ]; then
     printf 'no-mistakes: gate push refused before ref mutation:\n%s\n' "$out" >&2
@@ -84,7 +145,7 @@ while IFS=' ' read -r oldrev newrev refname; do
       exit 1
       ;;
   esac
-  if ! printf '%s %s %s %s\n' "$out" "$oldrev" "$newrev" "$refname" >> "$RECEIVE_SESSION"; then
+  if ! printf '%s %s %s %s\n' "$out" "$oldrev" "$newrev" "$refname" >> "$RECEIVE_MANIFEST"; then
     printf 'no-mistakes: cannot persist gate receive identity\n' >&2
     exit 1
   fi
@@ -144,6 +205,9 @@ func RefreshManagedPreReceiveHook(bareDir string) (bool, error) {
 
 // RefreshManagedGateHooks owns the complete receive boundary.
 func RefreshManagedGateHooks(bareDir string) error {
+	if _, err := RefreshManagedReceivePackWrapper(bareDir); err != nil {
+		return err
+	}
 	if _, err := RefreshManagedPreReceiveHook(bareDir); err != nil {
 		return err
 	}
@@ -154,6 +218,26 @@ func RefreshManagedGateHooks(bareDir string) error {
 		return err
 	}
 	return nil
+}
+
+func RefreshManagedReceivePackWrapper(bareDir string) (bool, error) {
+	hooksDir := filepath.Join(bareDir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		return false, err
+	}
+	path := ReceivePackWrapperPath(bareDir)
+	desired := []byte(ReceivePackWrapperScript())
+	existing, err := os.ReadFile(path)
+	if err == nil && string(existing) == string(desired) {
+		return false, nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := writeGateFileAtomic(path, desired, 0o755, ".receive-pack-*"); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func ReferenceTransactionHookScript() string {
@@ -196,24 +280,23 @@ case "$GATE_DIR" in
   *) GATE_DIR=$(/bin/pwd -P 2>/dev/null || pwd -P 2>/dev/null || pwd) ;;
 esac
 USER_HOOK="$GATE_DIR/hooks/` + preservedReferenceTransactionHook + `"
-PARENT_COMMAND=$(ps -p "$PPID" -o command= 2>/dev/null || :)
-RECEIVE_OWNED=0
-case "$PARENT_COMMAND" in
-  *git-receive-pack*) RECEIVE_OWNED=1 ;;
-esac
-case "${GIT_QUARANTINE_PATH:-}" in
-  "$GATE_DIR"/objects/*) RECEIVE_OWNED=1 ;;
-esac
-if [ "$RECEIVE_OWNED" -eq 0 ]; then
+RECEIVE_SESSION_ID=${NO_MISTAKES_RECEIVE_SESSION_ID:-}
+RECEIVE_CAPABILITY=${NO_MISTAKES_RECEIVE_CAPABILITY:-}
+RECEIVE_CAPABILITY_FILE=${NO_MISTAKES_RECEIVE_CAPABILITY_FILE:-}
+RECEIVE_MANIFEST=${NO_MISTAKES_RECEIVE_MANIFEST:-}
+if [ -z "$RECEIVE_SESSION_ID" ] && [ -z "$RECEIVE_CAPABILITY" ] && [ -z "$RECEIVE_CAPABILITY_FILE" ] && [ -z "$RECEIVE_MANIFEST" ]; then
   if [ -x "$USER_HOOK" ]; then
     "$USER_HOOK" "$PHASE"
     exit $?
   fi
   exit 0
 fi
-RECEIVE_SESSION="$GATE_DIR/.no-mistakes-receive-session.$PPID"
-if [ ! -s "$RECEIVE_SESSION" ]; then
-  printf 'no-mistakes: receive session evidence is missing\n' >&2
+if [ -z "$RECEIVE_SESSION_ID" ] || [ -z "$RECEIVE_CAPABILITY" ] || [ -z "$RECEIVE_CAPABILITY_FILE" ] || [ -z "$RECEIVE_MANIFEST" ] || [ ! -f "$RECEIVE_CAPABILITY_FILE" ] || [ ! -f "$RECEIVE_MANIFEST" ]; then
+  printf 'no-mistakes: authenticated receive capability is incomplete\n' >&2
+  exit 1
+fi
+if ! read -r capability_session capability_value < "$RECEIVE_CAPABILITY_FILE" || [ "$capability_session" != "$RECEIVE_SESSION_ID" ] || [ "$capability_value" != "$RECEIVE_CAPABILITY" ]; then
+  printf 'no-mistakes: authenticated receive capability does not match\n' >&2
   exit 1
 fi
 RECEIVE_INPUT=$(mktemp "$GATE_DIR/.no-mistakes-reference-transaction.XXXXXX") || {
@@ -234,21 +317,18 @@ while IFS=' ' read -r oldrev newrev refname; do
       reservation_id=$candidate
       matches=$((matches + 1))
     fi
-  done < "$RECEIVE_SESSION"
+  done < "$RECEIVE_MANIFEST"
   if [ "$matches" -ne 1 ]; then
     printf 'no-mistakes: receive session evidence does not match %s\n' "$refname" >&2
     exit 1
   fi
-  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon receive-transaction --gate "$GATE_DIR" --phase "$PHASE" --reservation-id "$reservation_id" --ref "$refname" --old "$oldrev" --new "$newrev" 2>&1)
+  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon receive-transaction --gate "$GATE_DIR" --phase "$PHASE" --reservation-id "$reservation_id" --ref "$refname" --old "$oldrev" --new "$newrev" --receive-session-id "$RECEIVE_SESSION_ID" --receive-capability "$RECEIVE_CAPABILITY" 2>&1)
   status=$?
   if [ $status -ne 0 ]; then
     printf 'no-mistakes: reference transaction evidence refused for %s (%s):\n%s\n' "$refname" "$PHASE" "$out" >&2
     exit $status
   fi
 done < "$RECEIVE_INPUT"
-if [ "$PHASE" = committed ] || [ "$PHASE" = aborted ]; then
-  rm -f "$RECEIVE_SESSION"
-fi
 if [ -x "$USER_HOOK" ]; then
   "$USER_HOOK" "$PHASE" < "$RECEIVE_INPUT"
   exit $?
@@ -345,13 +425,27 @@ case "$GATE_DIR" in
   *) GATE_DIR=$(/bin/pwd -P 2>/dev/null || pwd -P 2>/dev/null || pwd) ;;
 esac
 LOG="$GATE_DIR/notify-push.log"
+RECEIVE_SESSION_ID=${NO_MISTAKES_RECEIVE_SESSION_ID:-}
+RECEIVE_CAPABILITY=${NO_MISTAKES_RECEIVE_CAPABILITY:-}
+RECEIVE_CAPABILITY_FILE=${NO_MISTAKES_RECEIVE_CAPABILITY_FILE:-}
+RECEIVE_MANIFEST=${NO_MISTAKES_RECEIVE_MANIFEST:-}
+if [ -z "$RECEIVE_SESSION_ID" ] || [ -z "$RECEIVE_CAPABILITY" ] || [ -z "$RECEIVE_CAPABILITY_FILE" ] || [ -z "$RECEIVE_MANIFEST" ] || [ ! -f "$RECEIVE_CAPABILITY_FILE" ] || [ ! -f "$RECEIVE_MANIFEST" ]; then
+  printf 'no-mistakes: authenticated receive capability is missing; refusing unbound notification\n' >&2
+  exit 1
+fi
+if ! read -r capability_session capability_value < "$RECEIVE_CAPABILITY_FILE" || [ "$capability_session" != "$RECEIVE_SESSION_ID" ] || [ "$capability_value" != "$RECEIVE_CAPABILITY" ]; then
+  printf 'no-mistakes: authenticated receive capability does not match\n' >&2
+  exit 1
+fi
 nm_ts() { date '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo unknown; }
 notify_failed=0
 while read oldrev newrev refname; do
 	  set -- --gate "$GATE_DIR" \
 	    --ref "$refname" \
 	    --old "$oldrev" \
-	    --new "$newrev"
+	    --new "$newrev" \
+	    --receive-session-id "$RECEIVE_SESSION_ID" \
+	    --receive-capability "$RECEIVE_CAPABILITY"
 	  i=0
 	  while [ "$i" -lt "${GIT_PUSH_OPTION_COUNT:-0}" ]; do
 	    opt=$(printenv "GIT_PUSH_OPTION_$i" 2>/dev/null || :)
@@ -489,7 +583,11 @@ func GateConfigCurrent(bareDir string) bool {
 		return false
 	}
 	referenceTransaction, err := os.ReadFile(filepath.Join(bareDir, "hooks", "reference-transaction"))
-	return err == nil && string(referenceTransaction) == ReferenceTransactionHookScript()
+	if err != nil || string(referenceTransaction) != ReferenceTransactionHookScript() {
+		return false
+	}
+	receivePack, err := os.ReadFile(ReceivePackWrapperPath(bareDir))
+	return err == nil && string(receivePack) == ReceivePackWrapperScript()
 }
 
 // MarkGateConfigCurrent atomically records a fully completed gate migration.
@@ -504,8 +602,8 @@ func MarkGateConfigCurrent(bareDir string) error {
 }
 
 func gateConfigStampContent() string {
-	sum := sha256.Sum256([]byte("gate-config-v3\x00" + PreReceiveHookScript() + "\x00" + ReferenceTransactionHookScript() + "\x00" + PostReceiveHookScript()))
-	return fmt.Sprintf("v3:%x\n", sum)
+	sum := sha256.Sum256([]byte("gate-config-v4\x00" + ReceivePackWrapperScript() + "\x00" + PreReceiveHookScript() + "\x00" + ReferenceTransactionHookScript() + "\x00" + PostReceiveHookScript()))
+	return fmt.Sprintf("v4:%x\n", sum)
 }
 
 // IsolateHooksPath protects the gate's post-receive hook from being

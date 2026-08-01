@@ -141,6 +141,11 @@ func EnsureRemote(ctx context.Context, dir, name, url string) error {
 	return AddRemote(ctx, dir, name, url)
 }
 
+func SetRemoteReceivePack(ctx context.Context, dir, name, command string) error {
+	_, err := Run(ctx, dir, "config", "remote."+name+".receivepack", command)
+	return err
+}
+
 // RemoveRemote removes a named remote from the repo at dir.
 func RemoveRemote(ctx context.Context, dir, name string) error {
 	_, err := Run(ctx, dir, "remote", "remove", name)

@@ -68,12 +68,15 @@ func (e *RPCError) Error() string { return e.Message }
 // intent from local transcripts.
 type PushReceivedParams struct {
 	// Gate is the absolute path to the gate bare repo.
-	Gate      string           `json:"gate"`
-	Ref       string           `json:"ref"`
-	Old       string           `json:"old"`
-	New       string           `json:"new"`
-	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
-	Intent    string           `json:"intent,omitempty"`
+	Gate              string           `json:"gate"`
+	Ref               string           `json:"ref"`
+	Old               string           `json:"old"`
+	New               string           `json:"new"`
+	SkipSteps         []types.StepName `json:"skip_steps,omitempty"`
+	Intent            string           `json:"intent,omitempty"`
+	ReceiveSessionID  string           `json:"receive_session_id,omitempty"`
+	ReceiveCapability string           `json:"receive_capability,omitempty"`
+	ReservationID     string           `json:"reservation_id,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -167,21 +170,25 @@ type GateContextParams struct {
 // AdmitPushParams carries the exact managed gate update to admit and reserve
 // before Git mutates the ref.
 type AdmitPushParams struct {
-	Gate      string           `json:"gate"`
-	Ref       string           `json:"ref"`
-	Old       string           `json:"old"`
-	New       string           `json:"new"`
-	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
-	Intent    string           `json:"intent,omitempty"`
+	Gate              string           `json:"gate"`
+	Ref               string           `json:"ref"`
+	Old               string           `json:"old"`
+	New               string           `json:"new"`
+	SkipSteps         []types.StepName `json:"skip_steps,omitempty"`
+	Intent            string           `json:"intent,omitempty"`
+	ReceiveSessionID  string           `json:"receive_session_id"`
+	ReceiveCapability string           `json:"receive_capability"`
 }
 
 type ReceiveTransactionParams struct {
-	Gate          string `json:"gate"`
-	Phase         string `json:"phase"`
-	ReservationID string `json:"reservation_id"`
-	Ref           string `json:"ref"`
-	Old           string `json:"old"`
-	New           string `json:"new"`
+	Gate              string `json:"gate"`
+	Phase             string `json:"phase"`
+	ReservationID     string `json:"reservation_id"`
+	Ref               string `json:"ref"`
+	Old               string `json:"old"`
+	New               string `json:"new"`
+	ReceiveSessionID  string `json:"receive_session_id"`
+	ReceiveCapability string `json:"receive_capability"`
 }
 
 // HealthParams has no fields but exists for consistency.

@@ -292,13 +292,18 @@ func setupTestGitRepo(t *testing.T, p *paths.Paths, d *db.DB, repoID string) (*d
 	return repo, headSHA
 }
 
+const (
+	testReceiveSessionID  = "test-receive-session"
+	testReceiveCapability = "test-receive-capability"
+)
+
 func commitTestReceive(t *testing.T, d *db.DB, repoID, gatePath, branch, ref, oldSHA, newSHA string) {
 	commitTestReceiveWithOptions(t, d, repoID, gatePath, branch, ref, oldSHA, newSHA, nil, "")
 }
 
 func commitTestReceiveWithOptions(t *testing.T, d *db.DB, repoID, gatePath, branch, ref, oldSHA, newSHA string, skipSteps []types.StepName, intent string) {
 	t.Helper()
-	reservation, err := d.ReserveReceive(repoID, gatePath, branch, ref, oldSHA, newSHA, skipSteps, intent)
+	reservation, err := d.ReserveReceiveForSession(repoID, gatePath, branch, ref, oldSHA, newSHA, testReceiveSessionID, testReceiveCapability, skipSteps, intent)
 	if err != nil {
 		t.Fatal(err)
 	}

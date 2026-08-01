@@ -100,7 +100,7 @@ func TestRunCreationRefusesPendingReceiveReservation(t *testing.T) {
 	t.Setenv("NM_DEMO", "1")
 	p, database := newRefreshRunFixture(t)
 	repo, head := setupTestGitRepo(t, p, database, "pending-receive-run-repo")
-	if _, err := database.ReserveReceive(repo.ID, p.RepoDir(repo.ID), "main", "refs/heads/main", refreshTestZeroSHA, head, nil, ""); err != nil {
+	if _, err := database.ReserveReceiveForSession(repo.ID, p.RepoDir(repo.ID), "main", "refs/heads/main", refreshTestZeroSHA, head, testReceiveSessionID, testReceiveCapability, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	manager := NewRunManager(database, p, nil)

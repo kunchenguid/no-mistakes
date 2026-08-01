@@ -111,11 +111,12 @@ agent edit files, and commit fixes. Your day-to-day working tree stays clean.
 
 ### Receive hooks
 
-Before Git changes a managed gate ref, the `pre-receive` hook asks the daemon
-to authorize the pushing process. The daemon refuses descendants of an active
-validation step before mutation, including direct pushes, and safely omits run
-or phase details when authenticated ancestry cannot identify them uniquely.
-An existing custom `pre-receive` hook is preserved and runs after admission.
+Before Git changes a managed gate ref, the managed receive-pack wrapper creates
+a private random session capability for that exact receive. The `pre-receive`
+hook verifies that capability and asks the daemon to authorize each ref before
+mutation. The daemon refuses descendants of an active validation step before
+mutation, including direct pushes. An existing custom `pre-receive` hook is
+preserved and runs after admission.
 
 The `reference-transaction` hook records the exact Git transaction phase for
 each admitted receive-pack ref, using the reservation identity created by
@@ -130,8 +131,9 @@ fires. It resolves the gate to an absolute bare-repo path using Git's own view
 of the repository, falling back to the hook location if needed, then calls
 `no-mistakes daemon notify-push` with that gate path, ref name, old/new SHAs,
 and any Git push options such as `no-mistakes.skip=test,lint`.
-For compatibility with older managed hooks, `notify-push` also normalizes
-relative gate paths before handing them to the daemon.
+Older hooks without the managed receive-pack capability are refused until the
+gate is migrated; `notify-push` still normalizes relative gate paths before
+handing them to the daemon.
 The post-receive hook never blocks an already admitted push - Git ignores its
 exit status - but notification failures are surfaced to the pushing client on
 stderr and appended to `notify-push.log` in the bare repo for later inspection.

@@ -43,7 +43,7 @@ func newDaemonCmd() *cobra.Command {
 }
 
 func newDaemonReceiveTransactionCmd() *cobra.Command {
-	var gate, phase, reservationID, ref, oldSHA, newSHA string
+	var gate, phase, reservationID, ref, oldSHA, newSHA, receiveSessionID, receiveCapability string
 	cmd := &cobra.Command{
 		Use:    "receive-transaction",
 		Short:  "Record an authoritative git receive transaction phase",
@@ -63,7 +63,7 @@ func newDaemonReceiveTransactionCmd() *cobra.Command {
 				return fmt.Errorf("connect to daemon: %w", err)
 			}
 			defer client.Close()
-			return client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: phase, ReservationID: reservationID, Ref: ref, Old: oldSHA, New: newSHA}, nil)
+			return client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: phase, ReservationID: reservationID, Ref: ref, Old: oldSHA, New: newSHA, ReceiveSessionID: receiveSessionID, ReceiveCapability: receiveCapability}, nil)
 		},
 	}
 	cmd.Flags().StringVar(&gate, "gate", "", "bare repo path for the receive transaction")
@@ -72,12 +72,16 @@ func newDaemonReceiveTransactionCmd() *cobra.Command {
 	cmd.Flags().StringVar(&ref, "ref", "", "git ref name")
 	cmd.Flags().StringVar(&oldSHA, "old", "", "previous commit SHA")
 	cmd.Flags().StringVar(&newSHA, "new", "", "new commit SHA")
+	cmd.Flags().StringVar(&receiveSessionID, "receive-session-id", "", "authenticated receive session identity")
+	cmd.Flags().StringVar(&receiveCapability, "receive-capability", "", "authenticated receive capability")
 	_ = cmd.MarkFlagRequired("gate")
 	_ = cmd.MarkFlagRequired("phase")
 	_ = cmd.MarkFlagRequired("reservation-id")
 	_ = cmd.MarkFlagRequired("ref")
 	_ = cmd.MarkFlagRequired("old")
 	_ = cmd.MarkFlagRequired("new")
+	_ = cmd.MarkFlagRequired("receive-session-id")
+	_ = cmd.MarkFlagRequired("receive-capability")
 	return cmd
 }
 
@@ -86,6 +90,8 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 	var ref string
 	var oldSHA string
 	var newSHA string
+	var receiveSessionID string
+	var receiveCapability string
 	var pushOptions []string
 	cmd := &cobra.Command{
 		Use:    "admit-push",
@@ -115,7 +121,7 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 			}
 			defer client.Close()
 			var result ipc.AdmitPushResult
-			if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: newSHA, SkipSteps: skipSteps, Intent: intent}, &result); err != nil {
+			if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: newSHA, SkipSteps: skipSteps, Intent: intent, ReceiveSessionID: receiveSessionID, ReceiveCapability: receiveCapability}, &result); err != nil {
 				return err
 			}
 			if !result.Context.Nested {
@@ -140,11 +146,15 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 	cmd.Flags().StringVar(&ref, "ref", "", "git ref name")
 	cmd.Flags().StringVar(&oldSHA, "old", "", "previous commit SHA")
 	cmd.Flags().StringVar(&newSHA, "new", "", "new commit SHA")
+	cmd.Flags().StringVar(&receiveSessionID, "receive-session-id", "", "authenticated receive session identity")
+	cmd.Flags().StringVar(&receiveCapability, "receive-capability", "", "authenticated receive capability")
 	cmd.Flags().StringArrayVar(&pushOptions, "push-option", nil, "git push option")
 	_ = cmd.MarkFlagRequired("gate")
 	_ = cmd.MarkFlagRequired("ref")
 	_ = cmd.MarkFlagRequired("old")
 	_ = cmd.MarkFlagRequired("new")
+	_ = cmd.MarkFlagRequired("receive-session-id")
+	_ = cmd.MarkFlagRequired("receive-capability")
 	return cmd
 }
 
@@ -153,6 +163,8 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 	var ref string
 	var oldSHA string
 	var newSHA string
+	var receiveSessionID string
+	var receiveCapability string
 	var pushOptions []string
 
 	cmd := &cobra.Command{
@@ -187,12 +199,14 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 
 			var result ipc.PushReceivedResult
 			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:      gatePath,
-				Ref:       ref,
-				Old:       oldSHA,
-				New:       newSHA,
-				SkipSteps: skipSteps,
-				Intent:    intent,
+				Gate:              gatePath,
+				Ref:               ref,
+				Old:               oldSHA,
+				New:               newSHA,
+				SkipSteps:         skipSteps,
+				Intent:            intent,
+				ReceiveSessionID:  receiveSessionID,
+				ReceiveCapability: receiveCapability,
 			}, &result)
 		},
 	}
@@ -201,11 +215,15 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 	cmd.Flags().StringVar(&ref, "ref", "", "git ref name")
 	cmd.Flags().StringVar(&oldSHA, "old", "", "previous commit SHA")
 	cmd.Flags().StringVar(&newSHA, "new", "", "new commit SHA")
+	cmd.Flags().StringVar(&receiveSessionID, "receive-session-id", "", "authenticated receive session identity")
+	cmd.Flags().StringVar(&receiveCapability, "receive-capability", "", "authenticated receive capability")
 	cmd.Flags().StringArrayVar(&pushOptions, "push-option", nil, "git push option")
 	_ = cmd.MarkFlagRequired("gate")
 	_ = cmd.MarkFlagRequired("ref")
 	_ = cmd.MarkFlagRequired("old")
 	_ = cmd.MarkFlagRequired("new")
+	_ = cmd.MarkFlagRequired("receive-session-id")
+	_ = cmd.MarkFlagRequired("receive-capability")
 
 	return cmd
 }

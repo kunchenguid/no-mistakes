@@ -497,7 +497,7 @@ var ensureGateHooksPathIsolation = git.EnsureHooksPathIsolation
 // filesystem-only pass instead of six Git subprocesses per gate.
 func migrateGateConfigs(ctx context.Context, d *db.DB, p *paths.Paths) gateMigrationStats {
 	var stats gateMigrationStats
-	candidates := make(map[string]struct{})
+	candidates := make(map[string]string)
 	reposDir := filepath.Clean(p.ReposDir())
 
 	repos, err := d.GetRepos()
@@ -512,7 +512,7 @@ func migrateGateConfigs(ctx context.Context, d *db.DB, p *paths.Paths) gateMigra
 				slog.Warn("rejecting unsafe authoritative gate path", "repo_id", repo.ID)
 				continue
 			}
-			candidates[bareDir] = struct{}{}
+			candidates[bareDir] = repo.WorkingPath
 		}
 	}
 
@@ -531,7 +531,9 @@ func migrateGateConfigs(ctx context.Context, d *db.DB, p *paths.Paths) gateMigra
 			stats.Rejected++
 			continue
 		}
-		candidates[filepath.Join(reposDir, name)] = struct{}{}
+		if _, exists := candidates[filepath.Join(reposDir, name)]; !exists {
+			candidates[filepath.Join(reposDir, name)] = ""
+		}
 	}
 
 	dirs := make([]string, 0, len(candidates))
@@ -556,7 +558,7 @@ func migrateGateConfigs(ctx context.Context, d *db.DB, p *paths.Paths) gateMigra
 			continue
 		}
 		stats.Gates++
-		if err := migrateGateConfig(ctx, bareDir); err != nil {
+		if err := migrateGateConfig(ctx, bareDir, candidates[bareDir]); err != nil {
 			stats.Failed++
 			slog.Warn("migrate gate config failed", "bare", bareDir, "error", err)
 			continue
@@ -566,12 +568,17 @@ func migrateGateConfigs(ctx context.Context, d *db.DB, p *paths.Paths) gateMigra
 	return stats
 }
 
-func migrateGateConfig(ctx context.Context, bareDir string) error {
+func migrateGateConfig(ctx context.Context, bareDir, workingPath string) error {
 	if err := git.RefreshManagedGateHooks(bareDir); err != nil {
 		return fmt.Errorf("refresh managed receive hooks: %w", err)
 	}
 	if _, err := git.RunBare(ctx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
 		return fmt.Errorf("enable push options: %w", err)
+	}
+	if strings.TrimSpace(workingPath) != "" {
+		if err := git.SetRemoteReceivePack(ctx, workingPath, "no-mistakes", git.ReceivePackWrapperPath(bareDir)); err != nil {
+			return fmt.Errorf("configure managed receive-pack wrapper: %w", err)
+		}
 	}
 	isolated, err := ensureGateHooksPathIsolation(ctx, bareDir)
 	if err != nil {

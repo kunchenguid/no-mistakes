@@ -1,6 +1,7 @@
 package db
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -21,27 +22,44 @@ const (
 var ErrReceiveReservationConflict = errors.New("another receive reservation is pending for this repository branch")
 
 type ReceiveReservation struct {
-	ID        string
-	RepoID    string
-	GatePath  string
-	Branch    string
-	Ref       string
-	OldSHA    string
-	NewSHA    string
-	SkipSteps []types.StepName
-	Intent    string
-	State     string
-	RunID     *string
-	CreatedAt int64
-	UpdatedAt int64
+	ID             string
+	RepoID         string
+	GatePath       string
+	Branch         string
+	Ref            string
+	OldSHA         string
+	NewSHA         string
+	SessionID      string
+	CapabilityHash string
+	SkipSteps      []types.StepName
+	Intent         string
+	State          string
+	RunID          *string
+	CreatedAt      int64
+	UpdatedAt      int64
 }
 
-func (d *DB) ReserveReceive(repoID, gatePath, branch, ref, oldSHA, newSHA string, skipSteps []types.StepName, intent string) (*ReceiveReservation, error) {
+const receiveReservationSelect = `SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, receive_session_id, receive_capability_hash, skip_steps, intent, state, run_id, created_at, updated_at FROM receive_reservations`
+
+func (d *DB) ReserveReceiveForSession(repoID, gatePath, branch, ref, oldSHA, newSHA, sessionID, capability string, skipSteps []types.StepName, intent string) (*ReceiveReservation, error) {
+	return d.reserveReceive(repoID, gatePath, branch, ref, oldSHA, newSHA, sessionID, capability, skipSteps, intent)
+}
+
+func (d *DB) reserveReceive(repoID, gatePath, branch, ref, oldSHA, newSHA, sessionID, capability string, skipSteps []types.StepName, intent string) (*ReceiveReservation, error) {
 	if strings.TrimSpace(repoID) == "" || strings.TrimSpace(gatePath) == "" || strings.TrimSpace(branch) == "" {
 		return nil, fmt.Errorf("reserve receive: repository, gate path, and branch are required")
 	}
 	if err := validateReceiveTransition(branch, ref, oldSHA, newSHA); err != nil {
 		return nil, fmt.Errorf("reserve receive: %w", err)
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	capability = strings.TrimSpace(capability)
+	if (sessionID == "") != (capability == "") {
+		return nil, fmt.Errorf("reserve receive: receive session and capability are required together")
+	}
+	capabilityHash := ""
+	if capability != "" {
+		capabilityHash = receiveCapabilityHash(capability)
 	}
 	encodedSteps, err := json.Marshal(skipSteps)
 	if err != nil {
@@ -54,7 +72,16 @@ func (d *DB) ReserveReceive(repoID, gatePath, branch, ref, oldSHA, newSHA string
 	}
 	defer tx.Rollback()
 
-	if existing, err := scanReceiveReservation(tx.QueryRow(`SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, skip_steps, intent, state, run_id, created_at, updated_at FROM receive_reservations WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state IN (?, ?, ?) ORDER BY created_at, id LIMIT 1`, repoID, branch, ref, oldSHA, newSHA, ReceiveReservationReserved, ReceiveReservationPrepared, ReceiveReservationCommitted)); err == nil {
+	existingQuery := receiveReservationSelect + ` WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state IN (?, ?, ?) ORDER BY created_at, id LIMIT 1`
+	existingArgs := []any{repoID, branch, ref, oldSHA, newSHA, ReceiveReservationReserved, ReceiveReservationPrepared, ReceiveReservationCommitted}
+	if sessionID != "" {
+		existingQuery = receiveReservationSelect + ` WHERE repo_id = ? AND receive_session_id = ? AND ref = ? AND old_sha = ? AND new_sha = ? ORDER BY created_at DESC, id DESC LIMIT 1`
+		existingArgs = []any{repoID, sessionID, ref, oldSHA, newSHA}
+	}
+	if existing, err := scanReceiveReservation(tx.QueryRow(existingQuery, existingArgs...)); err == nil {
+		if sessionID != "" && existing.CapabilityHash != capabilityHash {
+			return nil, fmt.Errorf("reserve receive: capability does not match existing session")
+		}
 		return existing, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("reserve receive: read existing reservation: %w", err)
@@ -68,17 +95,21 @@ func (d *DB) ReserveReceive(repoID, gatePath, branch, ref, oldSHA, newSHA string
 		return nil, fmt.Errorf("reserve receive: check pending reservation: %w", err)
 	}
 	id := newID()
-	if _, err := tx.Exec(`INSERT INTO receive_reservations (id, repo_id, gate_path, branch, ref, old_sha, new_sha, skip_steps, intent, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, repoID, gatePath, branch, ref, oldSHA, newSHA, string(encodedSteps), intent, ReceiveReservationReserved, ts, ts); err != nil {
+	var sessionArg, capabilityArg any
+	if sessionID != "" {
+		sessionArg, capabilityArg = sessionID, capabilityHash
+	}
+	if _, err := tx.Exec(`INSERT INTO receive_reservations (id, repo_id, gate_path, branch, ref, old_sha, new_sha, receive_session_id, receive_capability_hash, skip_steps, intent, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, repoID, gatePath, branch, ref, oldSHA, newSHA, sessionArg, capabilityArg, string(encodedSteps), intent, ReceiveReservationReserved, ts, ts); err != nil {
 		return nil, fmt.Errorf("reserve receive: insert: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("reserve receive: commit: %w", err)
 	}
-	return &ReceiveReservation{ID: id, RepoID: repoID, GatePath: gatePath, Branch: branch, Ref: ref, OldSHA: oldSHA, NewSHA: newSHA, SkipSteps: skipSteps, Intent: intent, State: ReceiveReservationReserved, CreatedAt: ts, UpdatedAt: ts}, nil
+	return &ReceiveReservation{ID: id, RepoID: repoID, GatePath: gatePath, Branch: branch, Ref: ref, OldSHA: oldSHA, NewSHA: newSHA, SessionID: sessionID, CapabilityHash: capabilityHash, SkipSteps: skipSteps, Intent: intent, State: ReceiveReservationReserved, CreatedAt: ts, UpdatedAt: ts}, nil
 }
 
 func (d *DB) GetPendingReceiveReservation(repoID, branch, ref, oldSHA, newSHA string) (*ReceiveReservation, error) {
-	reservation, err := scanReceiveReservation(d.sql.QueryRow(`SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, skip_steps, intent, state, run_id, created_at, updated_at FROM receive_reservations WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state IN (?, ?, ?) ORDER BY created_at, id LIMIT 1`, repoID, branch, ref, oldSHA, newSHA, ReceiveReservationReserved, ReceiveReservationPrepared, ReceiveReservationCommitted))
+	reservation, err := scanReceiveReservation(d.sql.QueryRow(receiveReservationSelect+` WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND state IN (?, ?, ?) ORDER BY created_at, id LIMIT 1`, repoID, branch, ref, oldSHA, newSHA, ReceiveReservationReserved, ReceiveReservationPrepared, ReceiveReservationCommitted))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -88,8 +119,19 @@ func (d *DB) GetPendingReceiveReservation(repoID, branch, ref, oldSHA, newSHA st
 	return reservation, nil
 }
 
+func (d *DB) GetPendingReceiveReservationForSession(repoID, branch, ref, oldSHA, newSHA, sessionID, capability string) (*ReceiveReservation, error) {
+	reservation, err := scanReceiveReservation(d.sql.QueryRow(receiveReservationSelect+` WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND receive_session_id = ? AND receive_capability_hash = ? AND state IN (?, ?, ?) ORDER BY created_at, id LIMIT 1`, repoID, branch, ref, oldSHA, newSHA, strings.TrimSpace(sessionID), receiveCapabilityHash(capability), ReceiveReservationReserved, ReceiveReservationPrepared, ReceiveReservationCommitted))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get pending receive reservation for session: %w", err)
+	}
+	return reservation, nil
+}
+
 func (d *DB) GetLatestReceiveReservation(repoID, branch, ref, oldSHA, newSHA string) (*ReceiveReservation, error) {
-	reservation, err := scanReceiveReservation(d.sql.QueryRow(`SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, skip_steps, intent, state, run_id, created_at, updated_at FROM receive_reservations WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? ORDER BY created_at DESC, id DESC LIMIT 1`, repoID, branch, ref, oldSHA, newSHA))
+	reservation, err := scanReceiveReservation(d.sql.QueryRow(receiveReservationSelect+` WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? ORDER BY created_at DESC, id DESC LIMIT 1`, repoID, branch, ref, oldSHA, newSHA))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -99,8 +141,19 @@ func (d *DB) GetLatestReceiveReservation(repoID, branch, ref, oldSHA, newSHA str
 	return reservation, nil
 }
 
+func (d *DB) GetLatestReceiveReservationForSession(repoID, branch, ref, oldSHA, newSHA, sessionID, capability string) (*ReceiveReservation, error) {
+	reservation, err := scanReceiveReservation(d.sql.QueryRow(receiveReservationSelect+` WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND receive_session_id = ? AND receive_capability_hash = ? ORDER BY created_at DESC, id DESC LIMIT 1`, repoID, branch, ref, oldSHA, newSHA, strings.TrimSpace(sessionID), receiveCapabilityHash(capability)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get latest receive reservation for session: %w", err)
+	}
+	return reservation, nil
+}
+
 func (d *DB) GetReceiveReservation(id string) (*ReceiveReservation, error) {
-	reservation, err := scanReceiveReservation(d.sql.QueryRow(`SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, skip_steps, intent, state, run_id, created_at, updated_at FROM receive_reservations WHERE id = ?`, id))
+	reservation, err := scanReceiveReservation(d.sql.QueryRow(receiveReservationSelect+` WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -111,7 +164,7 @@ func (d *DB) GetReceiveReservation(id string) (*ReceiveReservation, error) {
 }
 
 func (d *DB) GetPendingReceiveReservations() ([]*ReceiveReservation, error) {
-	rows, err := d.sql.Query(`SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, skip_steps, intent, state, run_id, created_at, updated_at FROM receive_reservations WHERE state IN (?, ?, ?) ORDER BY created_at, id`, ReceiveReservationReserved, ReceiveReservationPrepared, ReceiveReservationCommitted)
+	rows, err := d.sql.Query(receiveReservationSelect+` WHERE state IN (?, ?, ?) ORDER BY created_at, id`, ReceiveReservationReserved, ReceiveReservationPrepared, ReceiveReservationCommitted)
 	if err != nil {
 		return nil, fmt.Errorf("get pending receive reservations: %w", err)
 	}
@@ -131,7 +184,7 @@ func (d *DB) GetPendingReceiveReservations() ([]*ReceiveReservation, error) {
 }
 
 func (d *DB) GetPendingReceiveReservationsForBranch(repoID, branch string) ([]*ReceiveReservation, error) {
-	rows, err := d.sql.Query(`SELECT id, repo_id, gate_path, branch, ref, old_sha, new_sha, skip_steps, intent, state, run_id, created_at, updated_at FROM receive_reservations WHERE repo_id = ? AND branch = ? AND state IN (?, ?, ?) ORDER BY created_at, id`, repoID, branch, ReceiveReservationReserved, ReceiveReservationPrepared, ReceiveReservationCommitted)
+	rows, err := d.sql.Query(receiveReservationSelect+` WHERE repo_id = ? AND branch = ? AND state IN (?, ?, ?) ORDER BY created_at, id`, repoID, branch, ReceiveReservationReserved, ReceiveReservationPrepared, ReceiveReservationCommitted)
 	if err != nil {
 		return nil, fmt.Errorf("get pending receive reservations for branch: %w", err)
 	}
@@ -337,9 +390,15 @@ type receiveReservationScanner interface {
 
 func scanReceiveReservation(row receiveReservationScanner) (*ReceiveReservation, error) {
 	reservation := &ReceiveReservation{}
-	var encodedSteps, intent, runID sql.NullString
-	if err := row.Scan(&reservation.ID, &reservation.RepoID, &reservation.GatePath, &reservation.Branch, &reservation.Ref, &reservation.OldSHA, &reservation.NewSHA, &encodedSteps, &intent, &reservation.State, &runID, &reservation.CreatedAt, &reservation.UpdatedAt); err != nil {
+	var sessionID, capabilityHash, encodedSteps, intent, runID sql.NullString
+	if err := row.Scan(&reservation.ID, &reservation.RepoID, &reservation.GatePath, &reservation.Branch, &reservation.Ref, &reservation.OldSHA, &reservation.NewSHA, &sessionID, &capabilityHash, &encodedSteps, &intent, &reservation.State, &runID, &reservation.CreatedAt, &reservation.UpdatedAt); err != nil {
 		return nil, err
+	}
+	if sessionID.Valid {
+		reservation.SessionID = sessionID.String
+	}
+	if capabilityHash.Valid {
+		reservation.CapabilityHash = capabilityHash.String
 	}
 	if encodedSteps.Valid && encodedSteps.String != "" {
 		if err := json.Unmarshal([]byte(encodedSteps.String), &reservation.SkipSteps); err != nil {
@@ -353,6 +412,15 @@ func scanReceiveReservation(row receiveReservationScanner) (*ReceiveReservation,
 		reservation.RunID = &runID.String
 	}
 	return reservation, nil
+}
+
+func receiveCapabilityHash(capability string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(capability)))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func (r *ReceiveReservation) MatchesSession(sessionID, capability string) bool {
+	return r != nil && r.SessionID == strings.TrimSpace(sessionID) && r.CapabilityHash != "" && r.CapabilityHash == receiveCapabilityHash(capability)
 }
 
 func receiveObjectID(value string) bool {
