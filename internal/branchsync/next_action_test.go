@@ -1,6 +1,7 @@
 package branchsync
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -98,13 +99,12 @@ func TestAllNextActionCodesCoversEveryDeclaredConstant(t *testing.T) {
 			if !ok || gen.Tok != token.CONST {
 				continue
 			}
+			if !declaresNextActionCode(gen) {
+				continue
+			}
 			for _, spec := range gen.Specs {
 				value, ok := spec.(*ast.ValueSpec)
 				if !ok {
-					continue
-				}
-				typeName, ok := value.Type.(*ast.Ident)
-				if !ok || typeName.Name != "NextActionCode" {
 					continue
 				}
 				for i, ident := range value.Names {
@@ -113,14 +113,9 @@ func TestAllNextActionCodesCoversEveryDeclaredConstant(t *testing.T) {
 						t.Errorf("constant %s has no literal value", ident.Name)
 						continue
 					}
-					lit, ok := value.Values[i].(*ast.BasicLit)
-					if !ok || lit.Kind != token.STRING {
-						t.Errorf("constant %s is not a string literal", ident.Name)
-						continue
-					}
-					wire, err := strconv.Unquote(lit.Value)
+					wire, err := stringConstValue(value.Values[i])
 					if err != nil {
-						t.Errorf("unquote %s: %v", ident.Name, err)
+						t.Errorf("constant %s: %v", ident.Name, err)
 						continue
 					}
 					if !listed[wire] {
@@ -133,4 +128,55 @@ func TestAllNextActionCodesCoversEveryDeclaredConstant(t *testing.T) {
 	if declared != len(allNextActionCodes) {
 		t.Errorf("declared %d NextActionCode constants, allNextActionCodes lists %d", declared, len(allNextActionCodes))
 	}
+}
+
+// declaresNextActionCode reports whether a const block mints the vocabulary, in
+// any of the forms it can be written: an explicit NextActionCode spec type, or a
+// NextActionCode("...") conversion. Once a block qualifies, every constant in it
+// is checked, because an untyped string sibling is assignable to
+// NextActionCode everywhere the typed ones are and would otherwise slip through.
+func declaresNextActionCode(gen *ast.GenDecl) bool {
+	for _, spec := range gen.Specs {
+		value, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+		if ident, ok := value.Type.(*ast.Ident); ok && ident.Name == "NextActionCode" {
+			return true
+		}
+		for _, expr := range value.Values {
+			if isNextActionCodeConversion(expr) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isNextActionCodeConversion(expr ast.Expr) bool {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	ident, ok := call.Fun.(*ast.Ident)
+	return ok && ident.Name == "NextActionCode"
+}
+
+func stringConstValue(expr ast.Expr) (string, error) {
+	if isNextActionCodeConversion(expr) {
+		call := expr.(*ast.CallExpr)
+		if len(call.Args) != 1 {
+			return "", fmt.Errorf("NextActionCode conversion takes %d arguments", len(call.Args))
+		}
+		expr = call.Args[0]
+	}
+	lit, ok := expr.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return "", fmt.Errorf("value is not a string literal")
+	}
+	wire, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return "", fmt.Errorf("unquote value: %w", err)
+	}
+	return wire, nil
 }
