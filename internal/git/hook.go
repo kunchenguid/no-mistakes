@@ -44,9 +44,8 @@ random_hex() {
   dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'
 }
 RECEIVE_SESSION_ID=$(random_hex)
-RECEIVE_CAPABILITY=$(random_hex)
-if [ "${#RECEIVE_SESSION_ID}" -ne 64 ] || [ "${#RECEIVE_CAPABILITY}" -ne 64 ]; then
-  printf 'no-mistakes: cannot create authenticated receive capability\n' >&2
+if [ "${#RECEIVE_SESSION_ID}" -ne 64 ]; then
+  printf 'no-mistakes: cannot create receive session identity\n' >&2
   exit 1
 fi
 RECEIVE_CAPABILITY_FILE=$(mktemp "$GATE_DIR/.no-mistakes-receive-capability.XXXXXX") || exit 1
@@ -54,13 +53,23 @@ RECEIVE_MANIFEST=$(mktemp "$GATE_DIR/.no-mistakes-receive-manifest.XXXXXX") || {
   rm -f "$RECEIVE_CAPABILITY_FILE"
   exit 1
 }
-printf '%s %s\n' "$RECEIVE_SESSION_ID" "$RECEIVE_CAPABILITY" > "$RECEIVE_CAPABILITY_FILE"
 export NO_MISTAKES_RECEIVE_SESSION_ID="$RECEIVE_SESSION_ID"
-export NO_MISTAKES_RECEIVE_CAPABILITY="$RECEIVE_CAPABILITY"
-export NO_MISTAKES_RECEIVE_CAPABILITY_FILE="$RECEIVE_CAPABILITY_FILE"
 export NO_MISTAKES_RECEIVE_MANIFEST="$RECEIVE_MANIFEST"
 trap 'rm -f "$RECEIVE_CAPABILITY_FILE" "$RECEIVE_MANIFEST"' 0 1 2 3 15
-exec git-receive-pack "$@"
+exec 3<"$RECEIVE_CAPABILITY_FILE"
+exec 4>"$RECEIVE_CAPABILITY_FILE"
+exec 5<"$RECEIVE_CAPABILITY_FILE"
+exec 6<"$RECEIVE_CAPABILITY_FILE"
+exec 7<"$RECEIVE_CAPABILITY_FILE"
+exec 8<"$RECEIVE_CAPABILITY_FILE"
+rm -f "$RECEIVE_CAPABILITY_FILE"
+if git-receive-pack "$@"; then
+  status=0
+else
+  status=$?
+fi
+rm -f "$RECEIVE_MANIFEST"
+exit "$status"
 `
 }
 
@@ -98,60 +107,67 @@ RECEIVE_INPUT=$(mktemp "$GATE_DIR/.no-mistakes-receive.XXXXXX") || {
   printf 'no-mistakes: cannot reserve gate receive before ref mutation\n' >&2
   exit 1
 }
-RECEIVE_SESSION_ID=${NO_MISTAKES_RECEIVE_SESSION_ID:-}
-RECEIVE_CAPABILITY=${NO_MISTAKES_RECEIVE_CAPABILITY:-}
-RECEIVE_CAPABILITY_FILE=${NO_MISTAKES_RECEIVE_CAPABILITY_FILE:-}
-RECEIVE_MANIFEST=${NO_MISTAKES_RECEIVE_MANIFEST:-}
-if [ -z "$RECEIVE_SESSION_ID" ] || [ -z "$RECEIVE_CAPABILITY" ] || [ -z "$RECEIVE_CAPABILITY_FILE" ] || [ -z "$RECEIVE_MANIFEST" ]; then
-  printf 'no-mistakes: authenticated receive capability is missing\n' >&2
-  exit 1
-fi
-if [ ! -f "$RECEIVE_CAPABILITY_FILE" ] || [ ! -f "$RECEIVE_MANIFEST" ]; then
-  printf 'no-mistakes: authenticated receive capability file is missing\n' >&2
-  exit 1
-fi
-set --
-if ! read -r capability_session capability_value < "$RECEIVE_CAPABILITY_FILE"; then
-  printf 'no-mistakes: cannot read authenticated receive capability\n' >&2
-  exit 1
-fi
-if [ "$capability_session" != "$RECEIVE_SESSION_ID" ] || [ "$capability_value" != "$RECEIVE_CAPABILITY" ]; then
-  printf 'no-mistakes: authenticated receive capability does not match\n' >&2
-  exit 1
-fi
 trap 'rm -f "$RECEIVE_INPUT"' 0 1 2 3 15
+RECEIVE_SESSION_ID=${NO_MISTAKES_RECEIVE_SESSION_ID:-}
+RECEIVE_MANIFEST=${NO_MISTAKES_RECEIVE_MANIFEST:-}
+if [ -z "$RECEIVE_SESSION_ID" ] || [ -z "$RECEIVE_MANIFEST" ]; then
+  printf 'no-mistakes: receive session is missing\n' >&2
+  exit 1
+fi
+if [ ! -f "$RECEIVE_MANIFEST" ]; then
+  printf 'no-mistakes: receive manifest is missing\n' >&2
+  exit 1
+fi
 if ! cat > "$RECEIVE_INPUT"; then
   printf 'no-mistakes: cannot read gate receive updates\n' >&2
   exit 1
 fi
-while IFS=' ' read -r oldrev newrev refname; do
+set --
+i=0
+while [ "$i" -lt "${GIT_PUSH_OPTION_COUNT:-0}" ]; do
+  opt=$(printenv "GIT_PUSH_OPTION_$i" 2>/dev/null || :)
+  set -- "$@" --push-option "$opt"
+  i=$((i + 1))
+done
+out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon admit-push --gate "$GATE_DIR" --receive-session-id "$RECEIVE_SESSION_ID" "$@" < "$RECEIVE_INPUT" 2>&1)
+status=$?
+if [ $status -ne 0 ]; then
+  printf 'no-mistakes: gate push refused before ref mutation:\n%s\n' "$out" >&2
+  exit $status
+fi
+receive_capability=
+while IFS=' ' read -r reservation_id capability oldrev newrev refname; do
   [ -z "$refname" ] && continue
-  set --
-  i=0
-  while [ "$i" -lt "${GIT_PUSH_OPTION_COUNT:-0}" ]; do
-    opt=$(printenv "GIT_PUSH_OPTION_$i" 2>/dev/null || :)
-    set -- "$@" --push-option "$opt"
-    i=$((i + 1))
-  done
-  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon admit-push --gate "$GATE_DIR" --ref "$refname" --old "$oldrev" --new "$newrev" --receive-session-id "$RECEIVE_SESSION_ID" --receive-capability "$RECEIVE_CAPABILITY" "$@" 2>&1)
-  status=$?
-  if [ $status -ne 0 ]; then
-    printf 'no-mistakes: gate push refused before ref mutation:\n%s\n' "$out" >&2
-    exit $status
+  if [ -z "$reservation_id" ] || [ -z "$capability" ] || [ -z "$oldrev" ] || [ -z "$newrev" ] || [ -z "$refname" ]; then
+    printf 'no-mistakes: admit push returned an invalid receive identity\n' >&2
+    exit 1
   fi
-  case "$out" in
-    ''|*[![:alnum:]_-]*)
+  case "$reservation_id$capability" in
+    *[![:alnum:]_-]*)
       printf 'no-mistakes: admit push returned an invalid receive identity\n' >&2
       exit 1
       ;;
   esac
-  if ! printf '%s %s %s %s\n' "$out" "$oldrev" "$newrev" "$refname" >> "$RECEIVE_MANIFEST"; then
+  if [ -z "$receive_capability" ]; then
+    receive_capability=$capability
+    if ! printf '%s\n' "$receive_capability" >&4; then
+      printf 'no-mistakes: cannot retain receive capability\n' >&2
+      exit 1
+    fi
+  elif [ "$receive_capability" != "$capability" ]; then
+    printf 'no-mistakes: receive capability changed within one session\n' >&2
+    exit 1
+  fi
+  if ! printf '%s %s %s %s\n' "$reservation_id" "$oldrev" "$newrev" "$refname" >> "$RECEIVE_MANIFEST"; then
     printf 'no-mistakes: cannot persist gate receive identity\n' >&2
     exit 1
   fi
-done < "$RECEIVE_INPUT"
+done <<EOF
+$out
+EOF
 USER_HOOK="$GATE_DIR/hooks/` + preservedPreReceiveHook + `"
 if [ -x "$USER_HOOK" ]; then
+  exec 3<&- 4>&- 5<&- 6<&- 7<&- 8<&-
   "$USER_HOOK" < "$RECEIVE_INPUT"
   exit $?
 fi
@@ -281,22 +297,16 @@ case "$GATE_DIR" in
 esac
 USER_HOOK="$GATE_DIR/hooks/` + preservedReferenceTransactionHook + `"
 RECEIVE_SESSION_ID=${NO_MISTAKES_RECEIVE_SESSION_ID:-}
-RECEIVE_CAPABILITY=${NO_MISTAKES_RECEIVE_CAPABILITY:-}
-RECEIVE_CAPABILITY_FILE=${NO_MISTAKES_RECEIVE_CAPABILITY_FILE:-}
 RECEIVE_MANIFEST=${NO_MISTAKES_RECEIVE_MANIFEST:-}
-if [ -z "$RECEIVE_SESSION_ID" ] && [ -z "$RECEIVE_CAPABILITY" ] && [ -z "$RECEIVE_CAPABILITY_FILE" ] && [ -z "$RECEIVE_MANIFEST" ]; then
+if [ -z "$RECEIVE_SESSION_ID" ] && [ -z "$RECEIVE_MANIFEST" ]; then
   if [ -x "$USER_HOOK" ]; then
     "$USER_HOOK" "$PHASE"
     exit $?
   fi
   exit 0
 fi
-if [ -z "$RECEIVE_SESSION_ID" ] || [ -z "$RECEIVE_CAPABILITY" ] || [ -z "$RECEIVE_CAPABILITY_FILE" ] || [ -z "$RECEIVE_MANIFEST" ] || [ ! -f "$RECEIVE_CAPABILITY_FILE" ] || [ ! -f "$RECEIVE_MANIFEST" ]; then
-  printf 'no-mistakes: authenticated receive capability is incomplete\n' >&2
-  exit 1
-fi
-if ! read -r capability_session capability_value < "$RECEIVE_CAPABILITY_FILE" || [ "$capability_session" != "$RECEIVE_SESSION_ID" ] || [ "$capability_value" != "$RECEIVE_CAPABILITY" ]; then
-  printf 'no-mistakes: authenticated receive capability does not match\n' >&2
+if [ -z "$RECEIVE_SESSION_ID" ] || [ -z "$RECEIVE_MANIFEST" ] || [ ! -f "$RECEIVE_MANIFEST" ]; then
+  printf 'no-mistakes: receive session evidence is incomplete\n' >&2
   exit 1
 fi
 RECEIVE_INPUT=$(mktemp "$GATE_DIR/.no-mistakes-reference-transaction.XXXXXX") || {
@@ -308,6 +318,11 @@ if ! cat > "$RECEIVE_INPUT"; then
   printf 'no-mistakes: cannot read reference transaction updates\n' >&2
   exit 1
 fi
+TRANSACTION_INPUT=$(mktemp "$GATE_DIR/.no-mistakes-reference-evidence.XXXXXX") || {
+  printf 'no-mistakes: cannot prepare reference transaction evidence\n' >&2
+  exit 1
+}
+trap 'rm -f "$RECEIVE_INPUT" "$TRANSACTION_INPUT"' 0 1 2 3 15
 while IFS=' ' read -r oldrev newrev refname; do
   [ -z "$refname" ] && continue
   reservation_id=
@@ -322,14 +337,24 @@ while IFS=' ' read -r oldrev newrev refname; do
     printf 'no-mistakes: receive session evidence does not match %s\n' "$refname" >&2
     exit 1
   fi
-  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon receive-transaction --gate "$GATE_DIR" --phase "$PHASE" --reservation-id "$reservation_id" --ref "$refname" --old "$oldrev" --new "$newrev" --receive-session-id "$RECEIVE_SESSION_ID" --receive-capability "$RECEIVE_CAPABILITY" 2>&1)
-  status=$?
-  if [ $status -ne 0 ]; then
-    printf 'no-mistakes: reference transaction evidence refused for %s (%s):\n%s\n' "$refname" "$PHASE" "$out" >&2
-    exit $status
+  if ! printf '%s %s %s %s\n' "$reservation_id" "$oldrev" "$newrev" "$refname" >> "$TRANSACTION_INPUT"; then
+    printf 'no-mistakes: cannot persist reference transaction evidence\n' >&2
+    exit 1
   fi
 done < "$RECEIVE_INPUT"
+CAPABILITY_FD=3
+case "$PHASE" in
+  committed) CAPABILITY_FD=5 ;;
+  aborted) CAPABILITY_FD=6 ;;
+esac
+out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon receive-transaction --gate "$GATE_DIR" --phase "$PHASE" --receive-session-id "$RECEIVE_SESSION_ID" --receive-capability-fd "$CAPABILITY_FD" < "$TRANSACTION_INPUT" 2>&1)
+status=$?
+if [ $status -ne 0 ]; then
+  printf 'no-mistakes: reference transaction evidence refused (%s):\n%s\n' "$PHASE" "$out" >&2
+  exit $status
+fi
 if [ -x "$USER_HOOK" ]; then
+  exec 3<&- 4>&- 5<&- 6<&- 7<&- 8<&-
   "$USER_HOOK" "$PHASE" < "$RECEIVE_INPUT"
   exit $?
 fi
@@ -426,57 +451,50 @@ case "$GATE_DIR" in
 esac
 LOG="$GATE_DIR/notify-push.log"
 RECEIVE_SESSION_ID=${NO_MISTAKES_RECEIVE_SESSION_ID:-}
-RECEIVE_CAPABILITY=${NO_MISTAKES_RECEIVE_CAPABILITY:-}
-RECEIVE_CAPABILITY_FILE=${NO_MISTAKES_RECEIVE_CAPABILITY_FILE:-}
 RECEIVE_MANIFEST=${NO_MISTAKES_RECEIVE_MANIFEST:-}
-if [ -z "$RECEIVE_SESSION_ID" ] || [ -z "$RECEIVE_CAPABILITY" ] || [ -z "$RECEIVE_CAPABILITY_FILE" ] || [ -z "$RECEIVE_MANIFEST" ] || [ ! -f "$RECEIVE_CAPABILITY_FILE" ] || [ ! -f "$RECEIVE_MANIFEST" ]; then
-  printf 'no-mistakes: authenticated receive capability is missing; refusing unbound notification\n' >&2
-  exit 1
-fi
-if ! read -r capability_session capability_value < "$RECEIVE_CAPABILITY_FILE" || [ "$capability_session" != "$RECEIVE_SESSION_ID" ] || [ "$capability_value" != "$RECEIVE_CAPABILITY" ]; then
-  printf 'no-mistakes: authenticated receive capability does not match\n' >&2
+if [ -z "$RECEIVE_SESSION_ID" ] || [ -z "$RECEIVE_MANIFEST" ] || [ ! -f "$RECEIVE_MANIFEST" ]; then
+  printf 'no-mistakes: receive session is missing; refusing unbound notification\n' >&2
   exit 1
 fi
 nm_ts() { date '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || echo unknown; }
+RECEIVE_INPUT=$(mktemp "$GATE_DIR/.no-mistakes-post-receive.XXXXXX") || exit 1
+trap 'rm -f "$RECEIVE_INPUT"' 0 1 2 3 15
+if ! cat > "$RECEIVE_INPUT"; then
+  printf 'no-mistakes: cannot read post-receive updates\n' >&2
+  exit 1
+fi
 notify_failed=0
-while read oldrev newrev refname; do
-	  set -- --gate "$GATE_DIR" \
-	    --ref "$refname" \
-	    --old "$oldrev" \
-	    --new "$newrev" \
-	    --receive-session-id "$RECEIVE_SESSION_ID" \
-	    --receive-capability "$RECEIVE_CAPABILITY"
-	  i=0
-	  while [ "$i" -lt "${GIT_PUSH_OPTION_COUNT:-0}" ]; do
-	    opt=$(printenv "GIT_PUSH_OPTION_$i" 2>/dev/null || :)
-	    set -- "$@" --push-option "$opt"
-	    i=$((i + 1))
-	  done
-	  attempt=1
-	  out=""
-	  status=1
-	  while [ "$attempt" -le 3 ]; do
-	    out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon notify-push "$@" 2>&1)
-	    status=$?
-	    [ $status -eq 0 ] && break
-	    if [ "$attempt" -lt 3 ]; then
-	      sleep 1
-	    fi
-	    attempt=$((attempt + 1))
-	  done
+set -- --gate "$GATE_DIR" --receive-session-id "$RECEIVE_SESSION_ID" --receive-capability-fd 7
+i=0
+while [ "$i" -lt "${GIT_PUSH_OPTION_COUNT:-0}" ]; do
+  opt=$(printenv "GIT_PUSH_OPTION_$i" 2>/dev/null || :)
+  set -- "$@" --push-option "$opt"
+  i=$((i + 1))
+done
+attempt=1
+out=""
+status=1
+while [ "$attempt" -le 3 ]; do
+  out=$(NM_HOOK_HELPER=1 "$NM_BIN" daemon notify-push "$@" < "$RECEIVE_INPUT" 2>&1)
+  status=$?
+  [ $status -eq 0 ] && break
+  if [ "$attempt" -lt 3 ]; then
+    sleep 1
+  fi
+  attempt=$((attempt + 1))
+done
   if [ $status -ne 0 ]; then
     notify_failed=1
     {
-      printf '[%s] notify-push failed for %s (exit %d)\n' "$(nm_ts)" "$refname" "$status"
+      printf '[%s] notify-push failed for batch (exit %d)\n' "$(nm_ts)" "$status"
       printf '%s\n\n' "$out"
     } >> "$LOG"
     {
-      printf 'no-mistakes: notify-push failed for %s (exit %d):\n' "$refname" "$status"
+      printf 'no-mistakes: notify-push failed for batch (exit %d):\n' "$status"
       printf '%s\n' "$out"
       printf 'See %s for full history.\n' "$LOG"
     } >&2
   fi
-done
 
 if [ "$notify_failed" -eq 0 ]; then
   cat >&2 <<'BANNER'

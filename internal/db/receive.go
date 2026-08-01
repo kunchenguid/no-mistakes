@@ -45,6 +45,20 @@ func (d *DB) ReserveReceiveForSession(repoID, gatePath, branch, ref, oldSHA, new
 	return d.reserveReceive(repoID, gatePath, branch, ref, oldSHA, newSHA, sessionID, capability, skipSteps, intent)
 }
 
+func (d *DB) ReceiveSessionCapabilityMatches(repoID, sessionID, capability string) (bool, error) {
+	repoID = strings.TrimSpace(repoID)
+	sessionID = strings.TrimSpace(sessionID)
+	capability = strings.TrimSpace(capability)
+	if repoID == "" || sessionID == "" || capability == "" {
+		return false, nil
+	}
+	var count int
+	if err := d.sql.QueryRow(`SELECT COUNT(*) FROM receive_reservations WHERE repo_id = ? AND receive_session_id = ? AND receive_capability_hash = ? AND state IN (?, ?, ?)`, repoID, sessionID, receiveCapabilityHash(capability), ReceiveReservationReserved, ReceiveReservationPrepared, ReceiveReservationCommitted).Scan(&count); err != nil {
+		return false, fmt.Errorf("check receive capability: %w", err)
+	}
+	return count > 0, nil
+}
+
 func (d *DB) reserveReceive(repoID, gatePath, branch, ref, oldSHA, newSHA, sessionID, capability string, skipSteps []types.StepName, intent string) (*ReceiveReservation, error) {
 	if strings.TrimSpace(repoID) == "" || strings.TrimSpace(gatePath) == "" || strings.TrimSpace(branch) == "" {
 		return nil, fmt.Errorf("reserve receive: repository, gate path, and branch are required")

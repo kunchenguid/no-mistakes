@@ -25,6 +25,15 @@ func TestReceiveReservationLifecycle(t *testing.T) {
 	if second.ID != first.ID || second.State != ReceiveReservationReserved {
 		t.Fatalf("duplicate reservation = %#v, want original pending reservation", second)
 	}
+	if matches, err := d.ReceiveSessionCapabilityMatches("repo", "session-lifecycle", "cap-lifecycle"); err != nil || !matches {
+		t.Fatalf("issued capability match = %v, %v", matches, err)
+	}
+	if matches, err := d.ReceiveSessionCapabilityMatches("other-repo", "session-lifecycle", "cap-lifecycle"); err != nil || matches {
+		t.Fatalf("cross-repository capability match = %v, %v", matches, err)
+	}
+	if matches, err := d.ReceiveSessionCapabilityMatches("repo", "session-lifecycle", "wrong-capability"); err != nil || matches {
+		t.Fatalf("forged capability match = %v, %v", matches, err)
+	}
 	if _, err := d.ReserveReceiveForSession("repo", "/gate/repo.git", "feature", "refs/heads/feature", oldSHA, "3333333333333333333333333333333333333333", "session-other", "cap-other", nil, ""); !errors.Is(err, ErrReceiveReservationConflict) {
 		t.Fatalf("conflicting reservation error = %v, want ErrReceiveReservationConflict", err)
 	}
@@ -50,6 +59,9 @@ func TestReceiveReservationLifecycle(t *testing.T) {
 	}
 	if len(pending) != 0 {
 		t.Fatalf("pending reservations after completion = %d", len(pending))
+	}
+	if matches, err := d.ReceiveSessionCapabilityMatches("repo", "session-lifecycle", "cap-lifecycle"); err != nil || matches {
+		t.Fatalf("completed capability match = %v, %v", matches, err)
 	}
 	third, err := d.ReserveReceiveForSession("repo", "/gate/repo.git", "feature", "refs/heads/feature", oldSHA, newSHA, "session-later", "cap-later", nil, "")
 	if err != nil {

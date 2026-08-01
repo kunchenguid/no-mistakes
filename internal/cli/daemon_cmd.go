@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -43,7 +44,8 @@ func newDaemonCmd() *cobra.Command {
 }
 
 func newDaemonReceiveTransactionCmd() *cobra.Command {
-	var gate, phase, reservationID, ref, oldSHA, newSHA, receiveSessionID, receiveCapability string
+	var gate, phase, reservationID, ref, oldSHA, newSHA, receiveSessionID string
+	var receiveCapabilityFD int = -1
 	cmd := &cobra.Command{
 		Use:    "receive-transaction",
 		Short:  "Record an authoritative git receive transaction phase",
@@ -51,6 +53,13 @@ func newDaemonReceiveTransactionCmd() *cobra.Command {
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			gatePath, err := normalizeNotifyGatePath(gate)
+			if err != nil {
+				return err
+			}
+			if receiveCapabilityFD < 0 {
+				return fmt.Errorf("receive capability descriptor is required")
+			}
+			receiveCapability, err := readReceiveCapability(receiveCapabilityFD)
 			if err != nil {
 				return err
 			}
@@ -63,7 +72,36 @@ func newDaemonReceiveTransactionCmd() *cobra.Command {
 				return fmt.Errorf("connect to daemon: %w", err)
 			}
 			defer client.Close()
-			return client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: phase, ReservationID: reservationID, Ref: ref, Old: oldSHA, New: newSHA, ReceiveSessionID: receiveSessionID, ReceiveCapability: receiveCapability}, nil)
+			allFields := reservationID != "" && ref != "" && oldSHA != "" && newSHA != ""
+			anyFields := reservationID != "" || ref != "" || oldSHA != "" || newSHA != ""
+			if anyFields && !allFields {
+				return fmt.Errorf("receive transaction requires reservation, ref, old, and new together")
+			}
+			if allFields {
+				return client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: phase, ReservationID: reservationID, Ref: ref, Old: oldSHA, New: newSHA, ReceiveSessionID: receiveSessionID, ReceiveCapability: receiveCapability}, nil)
+			}
+			scanner := bufio.NewScanner(cmd.InOrStdin())
+			seen := false
+			for scanner.Scan() {
+				fields := strings.Fields(scanner.Text())
+				if len(fields) == 0 {
+					continue
+				}
+				if len(fields) != 4 {
+					return fmt.Errorf("receive transaction input must contain reservation, old, new, and ref")
+				}
+				seen = true
+				if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: phase, ReservationID: fields[0], Ref: fields[3], Old: fields[1], New: fields[2], ReceiveSessionID: receiveSessionID, ReceiveCapability: receiveCapability}, nil); err != nil {
+					return err
+				}
+			}
+			if err := scanner.Err(); err != nil {
+				return fmt.Errorf("read receive transaction input: %w", err)
+			}
+			if !seen {
+				return fmt.Errorf("receive transaction input is empty")
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&gate, "gate", "", "bare repo path for the receive transaction")
@@ -73,15 +111,10 @@ func newDaemonReceiveTransactionCmd() *cobra.Command {
 	cmd.Flags().StringVar(&oldSHA, "old", "", "previous commit SHA")
 	cmd.Flags().StringVar(&newSHA, "new", "", "new commit SHA")
 	cmd.Flags().StringVar(&receiveSessionID, "receive-session-id", "", "authenticated receive session identity")
-	cmd.Flags().StringVar(&receiveCapability, "receive-capability", "", "authenticated receive capability")
+	cmd.Flags().IntVar(&receiveCapabilityFD, "receive-capability-fd", -1, "protected descriptor containing the receive capability")
 	_ = cmd.MarkFlagRequired("gate")
 	_ = cmd.MarkFlagRequired("phase")
-	_ = cmd.MarkFlagRequired("reservation-id")
-	_ = cmd.MarkFlagRequired("ref")
-	_ = cmd.MarkFlagRequired("old")
-	_ = cmd.MarkFlagRequired("new")
 	_ = cmd.MarkFlagRequired("receive-session-id")
-	_ = cmd.MarkFlagRequired("receive-capability")
 	return cmd
 }
 
@@ -91,7 +124,7 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 	var oldSHA string
 	var newSHA string
 	var receiveSessionID string
-	var receiveCapability string
+	var receiveCapabilityFD int = -1
 	var pushOptions []string
 	cmd := &cobra.Command{
 		Use:    "admit-push",
@@ -115,31 +148,65 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			var receiveCapability string
+			if receiveCapabilityFD >= 0 {
+				receiveCapability, err = readReceiveCapability(receiveCapabilityFD)
+				if err != nil {
+					return err
+				}
+			}
 			client, err := ipc.Dial(p.Socket())
 			if err != nil {
 				return fmt.Errorf("connect to daemon: %w", err)
 			}
 			defer client.Close()
-			var result ipc.AdmitPushResult
-			if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: newSHA, SkipSteps: skipSteps, Intent: intent, ReceiveSessionID: receiveSessionID, ReceiveCapability: receiveCapability}, &result); err != nil {
-				return err
-			}
-			if !result.Context.Nested {
-				if result.ReservationID == "" {
+			admit := func(values []string) error {
+				var result ipc.AdmitPushResult
+				if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: values[2], Old: values[0], New: values[1], SkipSteps: skipSteps, Intent: intent, ReceiveSessionID: receiveSessionID, ReceiveCapability: receiveCapability}, &result); err != nil {
+					return err
+				}
+				if result.Context.Nested {
+					return emitGateContextRefusal(cmd, gatecontext.Result{Nested: result.Context.Nested, ManagedGit: result.Context.ManagedGit, AgentDescendant: result.Context.AgentDescendant, DaemonDescendant: result.Context.DaemonDescendant, MarkerPresent: result.Context.MarkerPresent, RunID: result.Context.RunID, Phase: result.Context.Phase})
+				}
+				if result.ReservationID == "" || result.ReceiveCapability == "" {
 					return fmt.Errorf("admit push returned no receive reservation")
 				}
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), result.ReservationID)
+				if receiveCapability == "" {
+					receiveCapability = result.ReceiveCapability
+				}
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s %s %s\n", result.ReservationID, receiveCapability, values[0], values[1], values[2])
 				return nil
 			}
-			return emitGateContextRefusal(cmd, gatecontext.Result{
-				Nested:           result.Context.Nested,
-				ManagedGit:       result.Context.ManagedGit,
-				AgentDescendant:  result.Context.AgentDescendant,
-				DaemonDescendant: result.Context.DaemonDescendant,
-				MarkerPresent:    result.Context.MarkerPresent,
-				RunID:            result.Context.RunID,
-				Phase:            result.Context.Phase,
-			})
+			allFields := ref != "" && oldSHA != "" && newSHA != ""
+			anyFields := ref != "" || oldSHA != "" || newSHA != ""
+			if anyFields && !allFields {
+				return fmt.Errorf("admit push requires ref, old, and new together")
+			}
+			if allFields {
+				return admit([]string{oldSHA, newSHA, ref})
+			}
+			scanner := bufio.NewScanner(cmd.InOrStdin())
+			seen := false
+			for scanner.Scan() {
+				fields := strings.Fields(scanner.Text())
+				if len(fields) == 0 {
+					continue
+				}
+				if len(fields) != 3 {
+					return fmt.Errorf("admit push input must contain old, new, and ref")
+				}
+				seen = true
+				if err := admit([]string{fields[0], fields[1], fields[2]}); err != nil {
+					return err
+				}
+			}
+			if err := scanner.Err(); err != nil {
+				return fmt.Errorf("read admit push input: %w", err)
+			}
+			if !seen {
+				return fmt.Errorf("admit push input is empty")
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&gate, "gate", "", "bare repo path that is about to receive a push")
@@ -147,14 +214,10 @@ func newDaemonAdmitPushCmd() *cobra.Command {
 	cmd.Flags().StringVar(&oldSHA, "old", "", "previous commit SHA")
 	cmd.Flags().StringVar(&newSHA, "new", "", "new commit SHA")
 	cmd.Flags().StringVar(&receiveSessionID, "receive-session-id", "", "authenticated receive session identity")
-	cmd.Flags().StringVar(&receiveCapability, "receive-capability", "", "authenticated receive capability")
+	cmd.Flags().IntVar(&receiveCapabilityFD, "receive-capability-fd", -1, "protected descriptor containing the receive capability")
 	cmd.Flags().StringArrayVar(&pushOptions, "push-option", nil, "git push option")
 	_ = cmd.MarkFlagRequired("gate")
-	_ = cmd.MarkFlagRequired("ref")
-	_ = cmd.MarkFlagRequired("old")
-	_ = cmd.MarkFlagRequired("new")
 	_ = cmd.MarkFlagRequired("receive-session-id")
-	_ = cmd.MarkFlagRequired("receive-capability")
 	return cmd
 }
 
@@ -164,7 +227,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 	var oldSHA string
 	var newSHA string
 	var receiveSessionID string
-	var receiveCapability string
+	var receiveCapabilityFD int = -1
 	var pushOptions []string
 
 	cmd := &cobra.Command{
@@ -191,23 +254,53 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				return err
 			}
 
+			if receiveCapabilityFD < 0 {
+				return fmt.Errorf("receive capability descriptor is required")
+			}
+			receiveCapability, err := readReceiveCapability(receiveCapabilityFD)
+			if err != nil {
+				return err
+			}
 			client, err := ipc.Dial(p.Socket())
 			if err != nil {
 				return fmt.Errorf("connect to daemon: %w", err)
 			}
 			defer client.Close()
 
-			var result ipc.PushReceivedResult
-			return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-				Gate:              gatePath,
-				Ref:               ref,
-				Old:               oldSHA,
-				New:               newSHA,
-				SkipSteps:         skipSteps,
-				Intent:            intent,
-				ReceiveSessionID:  receiveSessionID,
-				ReceiveCapability: receiveCapability,
-			}, &result)
+			allFields := ref != "" && oldSHA != "" && newSHA != ""
+			anyFields := ref != "" || oldSHA != "" || newSHA != ""
+			if anyFields && !allFields {
+				return fmt.Errorf("push notification requires ref, old, and new together")
+			}
+			notify := func(values []string) error {
+				var result ipc.PushReceivedResult
+				return client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: values[0], Old: values[1], New: values[2], SkipSteps: skipSteps, Intent: intent, ReceiveSessionID: receiveSessionID, ReceiveCapability: receiveCapability}, &result)
+			}
+			if allFields {
+				return notify([]string{ref, oldSHA, newSHA})
+			}
+			scanner := bufio.NewScanner(cmd.InOrStdin())
+			seen := false
+			for scanner.Scan() {
+				fields := strings.Fields(scanner.Text())
+				if len(fields) == 0 {
+					continue
+				}
+				if len(fields) != 3 {
+					return fmt.Errorf("push notification input must contain old, new, and ref")
+				}
+				seen = true
+				if err := notify([]string{fields[2], fields[0], fields[1]}); err != nil {
+					return err
+				}
+			}
+			if err := scanner.Err(); err != nil {
+				return fmt.Errorf("read push notification input: %w", err)
+			}
+			if !seen {
+				return fmt.Errorf("push notification input is empty")
+			}
+			return nil
 		},
 	}
 
@@ -216,16 +309,35 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 	cmd.Flags().StringVar(&oldSHA, "old", "", "previous commit SHA")
 	cmd.Flags().StringVar(&newSHA, "new", "", "new commit SHA")
 	cmd.Flags().StringVar(&receiveSessionID, "receive-session-id", "", "authenticated receive session identity")
-	cmd.Flags().StringVar(&receiveCapability, "receive-capability", "", "authenticated receive capability")
+	cmd.Flags().IntVar(&receiveCapabilityFD, "receive-capability-fd", -1, "protected descriptor containing the receive capability")
 	cmd.Flags().StringArrayVar(&pushOptions, "push-option", nil, "git push option")
 	_ = cmd.MarkFlagRequired("gate")
-	_ = cmd.MarkFlagRequired("ref")
-	_ = cmd.MarkFlagRequired("old")
-	_ = cmd.MarkFlagRequired("new")
 	_ = cmd.MarkFlagRequired("receive-session-id")
-	_ = cmd.MarkFlagRequired("receive-capability")
 
 	return cmd
+}
+
+func readReceiveCapability(fd int) (string, error) {
+	if fd < 0 {
+		return "", fmt.Errorf("receive capability descriptor is required")
+	}
+	file := os.NewFile(uintptr(fd), "receive-capability")
+	if file == nil {
+		return "", fmt.Errorf("receive capability descriptor is invalid")
+	}
+	defer file.Close()
+	if _, err := file.Seek(0, 0); err != nil {
+		return "", fmt.Errorf("rewind receive capability: %w", err)
+	}
+	value, err := io.ReadAll(file)
+	if err != nil {
+		return "", fmt.Errorf("read receive capability: %w", err)
+	}
+	capability := strings.TrimSpace(string(value))
+	if capability == "" || strings.IndexFunc(capability, func(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' }) >= 0 {
+		return "", fmt.Errorf("receive capability is invalid")
+	}
+	return capability, nil
 }
 
 func normalizeNotifyGatePath(gate string) (string, error) {

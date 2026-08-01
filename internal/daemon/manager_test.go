@@ -188,16 +188,18 @@ func TestPushReservationSurvivesOwnershipLockContention(t *testing.T) {
 	defer client.Close()
 	params := &ipc.PushReceivedParams{Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: oldSHA, New: newSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}
 	var admitted ipc.AdmitPushResult
-	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: params.Gate, Ref: params.Ref, Old: params.Old, New: params.New, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, &admitted); err != nil {
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: params.Gate, Ref: params.Ref, Old: params.Old, New: params.New, ReceiveSessionID: testReceiveSessionID}, &admitted); err != nil {
 		t.Fatalf("admit push: %v", err)
 	}
+	params.ReceiveCapability = admitted.ReceiveCapability
+	transactionCapability := admitted.ReceiveCapability
 	for _, phase := range []string{"prepared"} {
-		if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: params.Gate, Phase: phase, ReservationID: admitted.ReservationID, Ref: params.Ref, Old: params.Old, New: params.New, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
+		if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: params.Gate, Phase: phase, ReservationID: admitted.ReservationID, Ref: params.Ref, Old: params.Old, New: params.New, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: transactionCapability}, nil); err != nil {
 			t.Fatalf("receive transaction %s: %v", phase, err)
 		}
 	}
 	gitCmd(t, p.RepoDir(repo.ID), "update-ref", "refs/heads/main", newSHA, oldSHA)
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: params.Gate, Phase: "committed", ReservationID: admitted.ReservationID, Ref: params.Ref, Old: params.Old, New: params.New, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: params.Gate, Phase: "committed", ReservationID: admitted.ReservationID, Ref: params.Ref, Old: params.Old, New: params.New, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: transactionCapability}, nil); err != nil {
 		t.Fatalf("receive transaction committed: %v", err)
 	}
 
@@ -312,6 +314,36 @@ func TestPushReceivedRefusesUnboundNotification(t *testing.T) {
 	}
 }
 
+func TestPushReceivedRejectsReservationIDWithWrongCapability(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+	_, headSHA := setupTestGitRepo(t, p, d, "forged-reservation-notification-repo")
+	commitTestReceive(t, d, "forged-reservation-notification-repo", p.RepoDir("forged-reservation-notification-repo"), "main", "refs/heads/main", "0000000000000000000000000000000000000000", headSHA)
+	reservation, err := d.GetLatestReceiveReservation("forged-reservation-notification-repo", "main", "refs/heads/main", "0000000000000000000000000000000000000000", headSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reservation == nil {
+		t.Fatal("receive reservation is missing")
+	}
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: p.RepoDir("forged-reservation-notification-repo"), Ref: "refs/heads/main", Old: "0000000000000000000000000000000000000000", New: headSHA, ReservationID: reservation.ID, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: "forged-capability"}, &result)
+	if err == nil || !strings.Contains(err.Error(), "session does not match") {
+		t.Fatalf("forged reservation notification error = %v", err)
+	}
+	if runs, err := d.GetRunsByRepo("forged-reservation-notification-repo"); err != nil {
+		t.Fatal(err)
+	} else if len(runs) != 0 {
+		t.Fatalf("runs after forged notification = %d, want 0", len(runs))
+	}
+}
+
 func TestReceiveCreatesDistinctRunForSameHeadWithDifferentReservation(t *testing.T) {
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
 		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
@@ -335,15 +367,15 @@ func TestReceiveCreatesDistinctRunForSameHeadWithDifferentReservation(t *testing
 	gatePath := p.RepoDir(repo.ID)
 	ref := "refs/heads/main"
 	var admitted ipc.AdmitPushResult
-	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: preservedSHA, Intent: "first", ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, &admitted); err != nil {
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: preservedSHA, Intent: "first", ReceiveSessionID: testReceiveSessionID}, &admitted); err != nil {
 		t.Fatal(err)
 	}
-	firstParams := &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: preservedSHA, Intent: "first", ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: preservedSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
+	firstParams := &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: preservedSHA, Intent: "first", ReceiveSessionID: testReceiveSessionID, ReceiveCapability: admitted.ReceiveCapability}
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: preservedSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: admitted.ReceiveCapability}, nil); err != nil {
 		t.Fatalf("first receive transaction prepared: %v", err)
 	}
 	gitCmd(t, gatePath, "update-ref", ref, preservedSHA, oldSHA)
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: preservedSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: preservedSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: admitted.ReceiveCapability}, nil); err != nil {
 		t.Fatalf("first receive transaction committed: %v", err)
 	}
 	var firstResult ipc.PushReceivedResult
@@ -362,19 +394,20 @@ func TestReceiveCreatesDistinctRunForSameHeadWithDifferentReservation(t *testing
 	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/tmp/alternate")
 	gitCmd(t, gatePath, "update-ref", ref, alternateSHA, preservedSHA)
 
-	secondParams := &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: alternateSHA, New: preservedSHA, Intent: "second", ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}
+	secondSession := "test-receive-session-second"
+	secondParams := &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: alternateSHA, New: preservedSHA, Intent: "second", ReceiveSessionID: secondSession}
 	if err := client.Call(ipc.MethodAdmitPush, secondParams, &admitted); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: admitted.ReservationID, Ref: ref, Old: alternateSHA, New: preservedSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: admitted.ReservationID, Ref: ref, Old: alternateSHA, New: preservedSHA, ReceiveSessionID: secondSession, ReceiveCapability: admitted.ReceiveCapability}, nil); err != nil {
 		t.Fatalf("second receive transaction prepared: %v", err)
 	}
 	gitCmd(t, gatePath, "update-ref", ref, preservedSHA, alternateSHA)
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: admitted.ReservationID, Ref: ref, Old: alternateSHA, New: preservedSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: admitted.ReservationID, Ref: ref, Old: alternateSHA, New: preservedSHA, ReceiveSessionID: secondSession, ReceiveCapability: admitted.ReceiveCapability}, nil); err != nil {
 		t.Fatalf("second receive transaction committed: %v", err)
 	}
 	var secondResult ipc.PushReceivedResult
-	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: alternateSHA, New: preservedSHA, Intent: "second", ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, &secondResult); err != nil {
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: alternateSHA, New: preservedSHA, Intent: "second", ReceiveSessionID: secondSession, ReceiveCapability: admitted.ReceiveCapability}, &secondResult); err != nil {
 		t.Fatal(err)
 	}
 	if secondResult.RunID == firstResult.RunID {
@@ -404,22 +437,23 @@ func TestReceiveDeletionReservationReconcilesWithoutRun(t *testing.T) {
 	}
 	defer client.Close()
 	var admitted ipc.AdmitPushResult
-	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: zeroSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, &admitted); err != nil {
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: zeroSHA, ReceiveSessionID: testReceiveSessionID}, &admitted); err != nil {
 		t.Fatal(err)
 	}
+	deletionCapability := admitted.ReceiveCapability
 	if pending, err := d.GetPendingReceiveReservationsForBranch(repo.ID, "main"); err != nil || len(pending) != 1 {
 		t.Fatalf("pending deletion reservations = %d, %v", len(pending), err)
 	}
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: zeroSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: zeroSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: deletionCapability}, nil); err != nil {
 		t.Fatalf("deletion receive transaction prepared: %v", err)
 	}
 	gitCmd(t, gatePath, "update-ref", "-d", ref, oldSHA)
-	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: zeroSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: zeroSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: deletionCapability}, nil); err != nil {
 		t.Fatalf("deletion receive transaction committed: %v", err)
 	}
 
 	var result ipc.PushReceivedResult
-	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: zeroSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, &result)
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: zeroSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: deletionCapability}, &result)
 	if err == nil || !strings.Contains(err.Error(), "ref deletion") {
 		t.Fatalf("deletion notification error = %v, want ref deletion", err)
 	}
@@ -436,7 +470,7 @@ func TestReceiveDeletionReservationReconcilesWithoutRun(t *testing.T) {
 		t.Fatalf("pending reservations after deletion = %d, want 0", len(reservations))
 	}
 
-	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: zeroSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, &result); err == nil || !strings.Contains(err.Error(), "ref deletion") {
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: zeroSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: deletionCapability}, &result); err == nil || !strings.Contains(err.Error(), "ref deletion") {
 		t.Fatalf("duplicate deletion notification error = %v, want ref deletion", err)
 	}
 }

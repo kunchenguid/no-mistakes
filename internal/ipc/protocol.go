@@ -177,7 +177,7 @@ type AdmitPushParams struct {
 	SkipSteps         []types.StepName `json:"skip_steps,omitempty"`
 	Intent            string           `json:"intent,omitempty"`
 	ReceiveSessionID  string           `json:"receive_session_id"`
-	ReceiveCapability string           `json:"receive_capability"`
+	ReceiveCapability string           `json:"receive_capability,omitempty"`
 }
 
 type ReceiveTransactionParams struct {
@@ -247,8 +247,9 @@ type GateContextResult struct {
 
 // AdmitPushResult is returned before a receive hook permits ref mutation.
 type AdmitPushResult struct {
-	Context       GateContextResult `json:"context"`
-	ReservationID string            `json:"reservation_id,omitempty"`
+	Context           GateContextResult `json:"context"`
+	ReservationID     string            `json:"reservation_id,omitempty"`
+	ReceiveCapability string            `json:"receive_capability,omitempty"`
 }
 
 // HealthResult confirms the daemon is alive.
