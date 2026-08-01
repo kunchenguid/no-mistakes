@@ -933,6 +933,34 @@ func TestRecoverKeepLocalRefusesUnverifiedGateMutation(t *testing.T) {
 	}
 }
 
+func TestFetchGatePrivateRefTreatsExactExistingDestinationAsStaged(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	lock, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	destination := custodyReturnRef(f.run.ID)
+	mustRun(t, f.gate, "update-ref", destination, f.submitted)
+	if err := f.service.fetchGatePrivateRef(f.ctx, lock, f.run.Branch, f.local, destination, "", f.submitted); err != nil {
+		t.Fatalf("exact staged destination was not accepted: %v", err)
+	}
+}
+
+func TestFetchGatePrivateRefRejectsConflictingExistingDestination(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	lock, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	destination := custodyReturnRef(f.run.ID)
+	mustRun(t, f.gate, "update-ref", destination, f.preserved)
+	if err := f.service.fetchGatePrivateRef(f.ctx, lock, f.run.Branch, f.local, destination, "", f.submitted); err == nil {
+		t.Fatal("conflicting staged destination was accepted")
+	}
+}
+
 // TestRecoverGateDivergenceAndUnavailabilityFailClosed: recovery must refuse
 // whenever the preserved head cannot be verified and anchored - a moved gate
 // branch, a deleted gate branch, or a missing gate.

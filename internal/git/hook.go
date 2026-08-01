@@ -713,8 +713,8 @@ func GateConfigCurrent(bareDir string) bool {
 }
 
 func gateHookExecutable(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0
+	info, err := os.Lstat(path)
+	return err == nil && !info.IsDir() && gateHookExecutableMode(info)
 }
 
 func gateWorktreeConfigCurrent(bareDir string) bool {

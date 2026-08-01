@@ -113,6 +113,22 @@ func TestGateRefLockBlocksHooksPathOverride(t *testing.T) {
 	}
 }
 
+func TestUpdateGateRefRefusesBeforeOrdinaryMutation(t *testing.T) {
+	f := newRecoverFixture(t, "cancelled")
+	branchLock, err := acquireCustodyLock(f.service, f.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer branchLock.Release()
+	f.service.InternalMutationConsumed = func(string) error { return errors.New("live authority refused mutation") }
+	if err := f.service.updateGateRef(f.ctx, branchLock, f.run.Branch, "refs/heads/feature/recover", f.preserved, f.submitted); err == nil {
+		t.Fatal("ordinary mutation unexpectedly succeeded")
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.preserved {
+		t.Fatalf("ordinary gate ref changed to %s, want %s", got, f.preserved)
+	}
+}
+
 func TestGateRefLockRemovesStaleOwnedLockAfterAuthorityExit(t *testing.T) {
 	f := newRecoverFixture(t, "cancelled")
 	branchLock, err := acquireCustodyLock(f.service, f.run)

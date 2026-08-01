@@ -128,14 +128,22 @@ func NonInteractiveEnvFrom(base []string, dir string) []string {
 }
 
 func sanitizedGateConfigEnv(dir string) []string {
-	base := make([]string, 0, len(os.Environ()))
-	for _, entry := range os.Environ() {
+	return SanitizedGateConfigEnvFrom(os.Environ(), dir)
+}
+
+func SanitizedGateConfigEnv(dir string) []string {
+	return SanitizedGateConfigEnvFrom(os.Environ(), dir)
+}
+
+func SanitizedGateConfigEnvFrom(base []string, dir string) []string {
+	filtered := make([]string, 0, len(base))
+	for _, entry := range base {
 		key, _, _ := strings.Cut(entry, "=")
 		if strings.HasPrefix(key, "GIT_CONFIG_") {
 			continue
 		}
-		base = append(base, entry)
+		filtered = append(filtered, entry)
 	}
-	env := NonInteractiveEnvFrom(base, dir)
+	env := NonInteractiveEnvFrom(filtered, dir)
 	return append(env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
 }

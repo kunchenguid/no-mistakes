@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/lifecycle"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -142,6 +143,9 @@ func runManagedReceivePack(cmd *cobra.Command, gate string, args []string) (retE
 	if !sameCLIPath(gatePath, p.RepoDir(repoID)) {
 		return fmt.Errorf("managed gate path does not match no-mistakes repository")
 	}
+	if !git.LooksLikeBareRepository(gatePath) || !git.GateConfigCurrent(gatePath) {
+		return fmt.Errorf("managed gate fencing configuration is missing or tampered")
+	}
 	database, err := db.Open(p.DB())
 	if err != nil {
 		return fmt.Errorf("open receive database: %w", err)
@@ -198,6 +202,7 @@ func runManagedReceivePack(cmd *cobra.Command, gate string, args []string) (retE
 	transport.Configure(child)
 	child.Env = append(os.Environ(), "NO_MISTAKES_RECEIVE_SESSION_ID="+sessionID, "NO_MISTAKES_RECEIVE_MANIFEST="+manifestPath)
 	child.Env = append(child.Env, transport.Env()...)
+	child.Env = git.SanitizedGateConfigEnvFrom(child.Env, gatePath)
 	shellenv.ConfigureShellCommand(child)
 	return shellenv.RunShellCommand(child)
 }

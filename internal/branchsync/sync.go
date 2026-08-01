@@ -859,6 +859,9 @@ func (s *Service) updateGateRef(ctx context.Context, lock *custodyLock, branch, 
 	if newSHA == "" {
 		newSHA = internalZeroObjectID(oldSHA)
 	}
+	if strings.HasPrefix(ref, "refs/heads/") {
+		return s.updateOrdinaryGateRef(ctx, lock, branch, ref, oldSHA, newSHA)
+	}
 	mutationCtx, capability, err := s.internalGateContext(ctx, lock, branch, ref, oldSHA, newSHA, "update-ref")
 	if err != nil {
 		return err
@@ -885,14 +888,69 @@ func (s *Service) updateGateRef(ctx context.Context, lock *custodyLock, branch, 
 	return s.verifyInternalMutationConsumed(capability)
 }
 
+func (s *Service) updateOrdinaryGateRef(ctx context.Context, lock *custodyLock, branch, ref, oldSHA, newSHA string) error {
+	authority, err := lock.ensureInternalMutationAuthority(s.DB)
+	if err != nil {
+		return err
+	}
+	gateLock, err := acquireGateRefLock(s.GateDir, ref, authority)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if gateLock != nil && !gateLock.released {
+			gateLock.closeKeepJournal()
+		}
+	}()
+	mutationCtx, capability, err := s.internalGateContext(ctx, lock, branch, ref, oldSHA, newSHA, "update-ref")
+	if err != nil {
+		return err
+	}
+	request := InternalRefMutationAuthorization{Capability: capability, Phase: "prepared", GatePath: s.GateDir, Branch: branch, Ref: ref, OldSHA: oldSHA, NewSHA: newSHA, Operation: "update-ref", Scope: db.InternalRefMutationScopeOrdinary}
+	if s.InternalMutationConsumed != nil {
+		if err := s.InternalMutationConsumed(capability); err != nil {
+			return err
+		}
+	} else if err := AuthorizeInternalRefMutation(authority, request); err != nil {
+		return err
+	}
+	if err := gateLock.commitRef(mutationCtx, s.GateDir, ref, oldSHA, newSHA); err != nil {
+		return err
+	}
+	if s.InternalMutationConsumed == nil {
+		request.Phase = "committed"
+		if err := AuthorizeInternalRefMutation(authority, request); err != nil {
+			return err
+		}
+	}
+	if err := gateLock.Release(); err != nil {
+		return err
+	}
+	gateLock = nil
+	return nil
+}
+
 func (s *Service) fetchGatePrivateRef(ctx context.Context, lock *custodyLock, branch, source, destination, oldSHA, newSHA string) error {
 	if !git.LooksLikeBareRepository(s.GateDir) || !s.gateConfigCurrent() {
 		return fmt.Errorf("managed gate fencing configuration is missing or tampered")
 	}
 	oldSHA = strings.TrimSpace(oldSHA)
 	newSHA = strings.TrimSpace(newSHA)
+	mutationCtx := git.WithSanitizedGateConfig(ctx)
+	if strings.HasPrefix(destination, "refs/no-mistakes/") && newSHA != "" && !git.IsZeroSHA(newSHA) {
+		existing, existingErr := git.Run(mutationCtx, s.GateDir, "show-ref", "--verify", "--hash", destination)
+		if existingErr == nil {
+			if existing != newSHA {
+				return fmt.Errorf("managed private ref %s names %s, expected %s", destination, existing, newSHA)
+			}
+			if _, err := git.Run(mutationCtx, s.GateDir, "cat-file", "-e", existing+"^{commit}"); err != nil {
+				return fmt.Errorf("managed private ref %s has no exact object: %w", destination, err)
+			}
+			return nil
+		}
+	}
 	if oldSHA == "" {
-		oldSHA, _ = git.Run(ctx, s.GateDir, "rev-parse", destination+"^{commit}")
+		oldSHA, _ = git.Run(mutationCtx, s.GateDir, "rev-parse", destination+"^{commit}")
 		if oldSHA == "" {
 			oldSHA = internalZeroObjectID(newSHA)
 		}

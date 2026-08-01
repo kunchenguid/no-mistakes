@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,8 @@ const gateRefLockMarker = "no-mistakes gate lock authority:"
 const gateRefLockOwnerMarker = "no-mistakes gate lock owner:"
 
 var removeGateRefLock = os.Remove
+
+var errGateRefAbsent = errors.New("gate ref is absent")
 
 type gateRefLockOwner struct {
 	RunID             string `json:"run_id"`
@@ -41,12 +44,12 @@ type gateRefLock struct {
 }
 
 func acquireGateRefLock(gateDir, ref, authorityEndpoint string) (*gateRefLock, error) {
-	if strings.TrimSpace(gateDir) == "" || !strings.HasPrefix(ref, "refs/heads/") || strings.TrimSpace(authorityEndpoint) == "" {
-		return nil, fmt.Errorf("ordinary gate ref lock requires a managed branch ref")
+	if strings.TrimSpace(gateDir) == "" || !isManagedGateRef(ref) || strings.TrimSpace(authorityEndpoint) == "" {
+		return nil, fmt.Errorf("managed gate ref lock requires a managed ref")
 	}
 	path := filepath.Join(gateDir, filepath.FromSlash(ref)+".lock")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("create ordinary gate ref lock directory: %w", err)
+		return nil, fmt.Errorf("create managed gate ref lock directory: %w", err)
 	}
 	marker := []byte(gateRefLockMarker + " " + strings.TrimSpace(authorityEndpoint) + "\n")
 	for attempt := 0; attempt < 2; attempt++ {
@@ -55,20 +58,24 @@ func acquireGateRefLock(gateDir, ref, authorityEndpoint string) (*gateRefLock, e
 			return &gateRefLock{file: file, path: path}, nil
 		}
 		if !os.IsExist(err) {
-			return nil, fmt.Errorf("acquire ordinary gate ref lock: %w", err)
+			return nil, fmt.Errorf("acquire managed gate ref lock: %w", err)
 		}
 		stale, staleErr := staleGateRefLock(path)
 		if staleErr != nil {
-			return nil, fmt.Errorf("acquire ordinary gate ref lock: %w", staleErr)
+			return nil, fmt.Errorf("acquire managed gate ref lock: %w", staleErr)
 		}
 		if !stale {
-			return nil, fmt.Errorf("acquire ordinary gate ref lock: another Git transaction owns %s", ref)
+			return nil, fmt.Errorf("acquire managed gate ref lock: another Git transaction owns %s", ref)
 		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("remove stale ordinary gate ref lock: %w", err)
+			return nil, fmt.Errorf("remove stale managed gate ref lock: %w", err)
 		}
 	}
-	return nil, fmt.Errorf("acquire ordinary gate ref lock: stale lock contention for %s", ref)
+	return nil, fmt.Errorf("acquire managed gate ref lock: stale lock contention for %s", ref)
+}
+
+func isManagedGateRef(ref string) bool {
+	return strings.HasPrefix(strings.TrimSpace(ref), "refs/heads/") || strings.HasPrefix(strings.TrimSpace(ref), "refs/no-mistakes/")
 }
 
 func newGateRefLockGeneration() (string, error) {
@@ -288,7 +295,10 @@ func readLockedGateRefAtDepth(gateDir, ref string, depth int) (string, error) {
 	}
 	packed, err := os.ReadFile(filepath.Join(gateDir, "packed-refs"))
 	if err != nil {
-		return "", fmt.Errorf("read locked gate ref: %s is absent", ref)
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("read locked gate ref: %w: %s", errGateRefAbsent, ref)
+		}
+		return "", err
 	}
 	for _, line := range strings.Split(string(packed), "\n") {
 		fields := strings.Fields(line)
@@ -296,7 +306,7 @@ func readLockedGateRefAtDepth(gateDir, ref string, depth int) (string, error) {
 			return fields[0], nil
 		}
 	}
-	return "", fmt.Errorf("read locked gate ref: %s is absent", ref)
+	return "", fmt.Errorf("read locked gate ref: %w: %s", errGateRefAbsent, ref)
 }
 
 func (l *gateRefLock) Release() error {
