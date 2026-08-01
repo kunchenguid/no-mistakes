@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.44.2](https://github.com/kunchenguid/no-mistakes/compare/v1.44.1...v1.44.2) (2026-08-01)
+
+
+### Bug Fixes
+
+* **cimonitor:** require trusted no-CI evidence for readiness ([#628](https://github.com/kunchenguid/no-mistakes/issues/628)) ([90885ee](https://github.com/kunchenguid/no-mistakes/commit/90885ee7c8f60b5558a5896414d3f50e759ca5da))
+* **daemon:** preserve run state under event stream pressure ([#626](https://github.com/kunchenguid/no-mistakes/issues/626)) ([58b52ee](https://github.com/kunchenguid/no-mistakes/commit/58b52eeec186466891e902590ee91f56c9b76508))
+
 ## [1.44.1](https://github.com/kunchenguid/no-mistakes/compare/v1.44.0...v1.44.1) (2026-08-01)
 
 
