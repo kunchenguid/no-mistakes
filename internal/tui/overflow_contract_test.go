@@ -423,6 +423,9 @@ func TestTUIOverflow_UnknownStateEventRequestsAuthoritativeReconciliation(t *tes
 // it from the event stream costs the user nothing.
 func TestTUIOverflow_FixReviewDiffIsFetchedOnDemand(t *testing.T) {
 	m := ciRunningModel(false)
+	m.steps = append(m.steps, ipc.StepResultInfo{
+		RunID: "run-1", StepName: types.StepReview, Status: types.StepStatusRunning,
+	})
 	m.fetchStepDiff = func(step types.StepName) (string, error) {
 		if step != types.StepReview {
 			return "", fmt.Errorf("unexpected step %s", step)
