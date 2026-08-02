@@ -158,13 +158,18 @@ func newRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
 	}
 	evidence := make([]db.PublicationEvidenceInput, 0, len(targets))
 	for _, target := range targets {
+		if strings.TrimSpace(target.RequestLineage) == "" || target.RequestLineage == db.PublicationTargetRequestLineageMigrationPending {
+			if err := database.ReconcileRunPublicationTargetLineage(run.ID, target.TargetFingerprint, "none"); err != nil {
+				t.Fatalf("reconcile publication lineage: %v", err)
+			}
+		}
 		evidence = append(evidence, db.PublicationEvidenceInput{
 			TargetFingerprint: target.TargetFingerprint,
 			Ref:               target.Ref,
 			TargetVersion:     target.TargetVersion,
 			RemoteHash:        "fixture-remote-evidence",
 			ProviderHash:      "fixture-provider-evidence",
-			Cursor:            "audit;hasNextPage=false;fixture-complete-cursor",
+			Cursor:            "audit-cutoff=1754136000;provider-date:1754136000;audit;hasNextPage=false;fixture-complete-cursor",
 			Since:             run.CreatedAt,
 			Until:             run.UpdatedAt,
 		})

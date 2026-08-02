@@ -1523,6 +1523,7 @@ func TestCustodyTransitionFencesPublicationWriters(t *testing.T) {
 	if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
 		t.Fatal(err)
 	}
+	seedTestPublicationEvidence(t, d, run)
 	expected, _ := d.GetRun(run.ID)
 	transition, err := d.BeginRunCustodyTransition(context.Background(), expected)
 	if err != nil {

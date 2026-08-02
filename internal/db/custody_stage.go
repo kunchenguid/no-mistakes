@@ -68,10 +68,23 @@ func (d *DB) MarkCustodyRefStageStaged(runID, ownerGeneration string) error {
 }
 
 func (d *DB) ConsumedInternalRefMutationExists(spec InternalRefMutationSpec, authorityEndpoint string) (bool, error) {
-	var count int
-	err := d.sql.QueryRow(`SELECT COUNT(*) FROM internal_ref_mutations WHERE repo_id = ? AND gate_path = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND operation = ? AND scope = ? AND authority_endpoint = ? AND state = ?`, strings.TrimSpace(spec.RepoID), strings.TrimSpace(spec.GatePath), strings.TrimSpace(spec.Branch), strings.TrimSpace(spec.Ref), strings.TrimSpace(spec.OldSHA), strings.TrimSpace(spec.NewSHA), strings.TrimSpace(spec.Operation), strings.TrimSpace(spec.Scope), strings.TrimSpace(authorityEndpoint), InternalRefMutationStateConsumed).Scan(&count)
+	rows, err := d.sql.Query(`SELECT gate_path FROM internal_ref_mutations WHERE repo_id = ? AND branch = ? AND ref = ? AND old_sha = ? AND new_sha = ? AND operation = ? AND scope = ? AND authority_endpoint = ? AND state = ?`, strings.TrimSpace(spec.RepoID), strings.TrimSpace(spec.Branch), strings.TrimSpace(spec.Ref), strings.TrimSpace(spec.OldSHA), strings.TrimSpace(spec.NewSHA), strings.TrimSpace(spec.Operation), strings.TrimSpace(spec.Scope), strings.TrimSpace(authorityEndpoint), InternalRefMutationStateConsumed)
 	if err != nil {
 		return false, fmt.Errorf("find consumed internal ref mutation: %w", err)
 	}
-	return count == 1, nil
+	defer rows.Close()
+	wanted := canonicalGatePath(spec.GatePath)
+	for rows.Next() {
+		var gatePath string
+		if err := rows.Scan(&gatePath); err != nil {
+			return false, fmt.Errorf("find consumed internal ref mutation: %w", err)
+		}
+		if canonicalGatePath(gatePath) == wanted {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("find consumed internal ref mutation: %w", err)
+	}
+	return false, nil
 }

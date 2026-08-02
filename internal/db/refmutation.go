@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -48,7 +49,7 @@ type InternalRefMutation struct {
 
 func (d *DB) IssueInternalRefMutation(spec InternalRefMutationSpec, authorityEndpoint string) (string, error) {
 	spec.RepoID = strings.TrimSpace(spec.RepoID)
-	spec.GatePath = strings.TrimSpace(spec.GatePath)
+	spec.GatePath = canonicalGatePath(spec.GatePath)
 	spec.Branch = strings.TrimSpace(spec.Branch)
 	spec.Ref = strings.TrimSpace(spec.Ref)
 	spec.OldSHA = strings.TrimSpace(spec.OldSHA)
@@ -120,7 +121,7 @@ func (d *DB) AdvanceInternalRefMutation(authorityEndpoint, phase, gatePath, bran
 	if err != nil {
 		return err
 	}
-	if mutation.AuthorityEndpoint != strings.TrimSpace(authorityEndpoint) || mutation.GatePath != strings.TrimSpace(gatePath) || mutation.Branch != strings.TrimSpace(branch) || mutation.Ref != strings.TrimSpace(ref) || mutation.OldSHA != strings.TrimSpace(oldSHA) || mutation.NewSHA != strings.TrimSpace(newSHA) || mutation.Operation != strings.TrimSpace(operation) || mutation.Scope != strings.TrimSpace(scope) {
+	if mutation.AuthorityEndpoint != strings.TrimSpace(authorityEndpoint) || canonicalGatePath(mutation.GatePath) != canonicalGatePath(gatePath) || mutation.Branch != strings.TrimSpace(branch) || mutation.Ref != strings.TrimSpace(ref) || mutation.OldSHA != strings.TrimSpace(oldSHA) || mutation.NewSHA != strings.TrimSpace(newSHA) || mutation.Operation != strings.TrimSpace(operation) || mutation.Scope != strings.TrimSpace(scope) {
 		return ErrInternalRefMutation
 	}
 	from := InternalRefMutationStateIssued
@@ -144,6 +145,21 @@ func (d *DB) AdvanceInternalRefMutation(authorityEndpoint, phase, gatePath, bran
 		return ErrInternalRefMutation
 	}
 	return nil
+}
+
+func canonicalGatePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return clean
+	}
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return clean
 }
 
 func randomCapability() (string, error) {

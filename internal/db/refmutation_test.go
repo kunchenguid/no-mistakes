@@ -1,6 +1,10 @@
 package db
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestInternalRefMutationCapabilityIsExactAndOneTime(t *testing.T) {
 	d := openTestDB(t)
@@ -48,5 +52,41 @@ func TestInternalRefMutationCapabilityIsExactAndOneTime(t *testing.T) {
 	private.Scope = InternalRefMutationScopeOrdinary
 	if _, err := d.IssueInternalRefMutation(private, "test-authority"); err == nil {
 		t.Fatal("private ref accepted ordinary scope")
+	}
+}
+
+func TestInternalRefMutationCanonicalizesGatePathAliases(t *testing.T) {
+	d := openTestDB(t)
+	realGate := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "gate.git")
+	if err := os.Symlink(realGate, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := d.InsertRepoWithID("repo-1", filepath.Join(t.TempDir(), "working"), "https://example.test/repo", "main"); err != nil {
+		t.Fatalf("insert repo: %v", err)
+	}
+	spec := InternalRefMutationSpec{
+		RepoID: "repo-1", GatePath: realGate, Branch: "feature",
+		Ref: "refs/no-mistakes/recover/run-1", OldSHA: "old", NewSHA: "new",
+		Operation: "recover-anchor", Scope: InternalRefMutationScopePrivate,
+	}
+	capability, err := d.IssueInternalRefMutation(spec, "test-authority")
+	if err != nil {
+		t.Fatalf("issue capability: %v", err)
+	}
+	if err := d.AdvanceInternalRefMutation("test-authority", "prepared", alias, spec.Branch, spec.Ref, spec.OldSHA, spec.NewSHA, spec.Operation, spec.Scope, capability); err != nil {
+		t.Fatalf("prepare capability through alias: %v", err)
+	}
+	if err := d.AdvanceInternalRefMutation("test-authority", "committed", alias, spec.Branch, spec.Ref, spec.OldSHA, spec.NewSHA, spec.Operation, spec.Scope, capability); err != nil {
+		t.Fatalf("commit capability through alias: %v", err)
+	}
+	aliasSpec := spec
+	aliasSpec.GatePath = alias
+	consumed, err := d.ConsumedInternalRefMutationExists(aliasSpec, "test-authority")
+	if err != nil {
+		t.Fatalf("find consumed capability through alias: %v", err)
+	}
+	if !consumed {
+		t.Fatal("consumed capability through alias was not found")
 	}
 }

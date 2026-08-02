@@ -595,6 +595,9 @@ func TestPushReservationSurvivesOwnershipLockContention(t *testing.T) {
 		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
 	})
 	repo, oldSHA := setupTestGitRepo(t, p, d, "reserved-push-repo")
+	if _, err := d.ReplaceRepoURLs(repo.ID, p.RepoDir(repo.ID), ""); err != nil {
+		t.Fatalf("use local publication target: %v", err)
+	}
 	gitCmd(t, repo.WorkingPath, "config", "user.email", "test@test.com")
 	gitCmd(t, repo.WorkingPath, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "received.txt"), []byte("received\n"), 0o644); err != nil {

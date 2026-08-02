@@ -423,6 +423,34 @@ func newCLIRecoverFixture(t *testing.T) cliRecoverFixture {
 	if err := database.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
 		t.Fatal(err)
 	}
+	targets, err := database.ListRunPublicationTargets(run.ID)
+	if err != nil || len(targets) == 0 {
+		t.Fatalf("publication targets = %#v, %v", targets, err)
+	}
+	evidence := make([]db.PublicationEvidenceInput, 0, len(targets))
+	for _, target := range targets {
+		if strings.TrimSpace(target.RequestLineage) == "" || target.RequestLineage == db.PublicationTargetRequestLineageMigrationPending {
+			if err := database.ReconcileRunPublicationTargetLineage(run.ID, target.TargetFingerprint, "none"); err != nil {
+				t.Fatalf("reconcile publication lineage: %v", err)
+			}
+		}
+		evidence = append(evidence, db.PublicationEvidenceInput{
+			TargetFingerprint: target.TargetFingerprint,
+			Ref:               target.Ref,
+			TargetVersion:     target.TargetVersion,
+			RemoteHash:        "fixture-remote-evidence",
+			ProviderHash:      "fixture-provider-evidence",
+			Cursor:            "audit-cutoff=1754136000;provider-date:1754136000;audit;hasNextPage=false;fixture-complete-cursor",
+			Since:             run.CreatedAt,
+			Until:             run.UpdatedAt,
+		})
+	}
+	if _, err := database.RecordRunPublicationEvidence(run.ID, evidence); err != nil {
+		t.Fatalf("record publication evidence: %v", err)
+	}
+	if err := database.SetManagedGateRefHead(repo.ID, gate, "refs/heads/feature/recover", preserved); err != nil {
+		t.Fatalf("seed managed gate head: %v", err)
+	}
 	if err := database.Close(); err != nil {
 		t.Fatal(err)
 	}

@@ -591,6 +591,12 @@ func (m *RunManager) validatePublicationLedger(ctx context.Context, run *db.Run)
 			return fmt.Errorf("publication target set changed")
 		}
 	}
+	if run.PublicationEvidenceHash != "" && run.PublicationEvidenceGeneration > 0 {
+		if err := m.db.ValidateRunPublicationEvidence(run); err != nil {
+			return fmt.Errorf("validate durable publication evidence: %w", err)
+		}
+		return nil
+	}
 	publicationTargets, err := m.publicationTargetURLs(ctx, repo, run.Branch)
 	if err != nil {
 		return fmt.Errorf("enumerate publication targets for historical proof: %w", err)
@@ -1799,8 +1805,15 @@ func (m *RunManager) HandleReceiveTransactionBatch(ctx context.Context, params *
 			if err := m.verifyManagedGateRefCommit(repo, item.update.Ref, current, exists, item.update.Old, item.update.New); err != nil {
 				return err
 			}
-		} else if err := m.verifyManagedGateRefHead(repo, item.update.Ref, current, exists, item.update.Old); err != nil {
-			return err
+		} else {
+			if err := m.verifyManagedGateRefHead(repo, item.update.Ref, current, exists, item.update.Old); err != nil {
+				return err
+			}
+			if params.Phase == "prepared" {
+				if err := m.releaseManagedGateGuard(repo.ID, item.update.Ref); err != nil {
+					return fmt.Errorf("release managed gate authority after receive preparation: %w", err)
+				}
+			}
 		}
 		inputs[i] = db.ReceiveTransactionInput{ID: item.update.ReservationID, RepoID: repo.ID, Branch: item.branch, Ref: item.update.Ref, OldSHA: item.update.Old, NewSHA: item.update.New}
 	}
@@ -2642,7 +2655,7 @@ func (m *RunManager) publicationTargetInputs(ctx context.Context, repo *db.Repo,
 func (m *RunManager) submissionTargetLineage(ctx context.Context, target, branch, submitted string) (string, error) {
 	provider := scm.DetectProviderContext(ctx, target)
 	if provider != scm.ProviderGitHub && provider != scm.ProviderGitLab {
-		return "", nil
+		return "none", nil
 	}
 	cmdFactory := func(cmdCtx context.Context, name string, args ...string) *exec.Cmd {
 		cmd := exec.CommandContext(cmdCtx, name, args...)
@@ -2703,6 +2716,9 @@ func (m *RunManager) publicationTargetURLs(ctx context.Context, repo *db.Repo, b
 		return nil, fmt.Errorf("list working-clone remotes: %w", err)
 	}
 	for _, remote := range strings.Fields(remoteOutput) {
+		if remote == gate.RemoteName {
+			continue
+		}
 		fetchURLs, err := git.GetConfiguredRemoteURLs(ctx, repo.WorkingPath, remote)
 		if err != nil || len(fetchURLs) != 1 || strings.TrimSpace(fetchURLs[0]) == "" {
 			if err == nil {

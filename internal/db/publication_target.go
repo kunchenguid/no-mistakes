@@ -545,6 +545,21 @@ func (d *DB) ValidateRunPublicationTargetLedger(runID string) error {
 	return nil
 }
 
+// ValidateRunPublicationEvidence checks the durable publication proof without
+// mutating the target ledger or the run. The custody CAS repeats this check at
+// the stamp boundary; recovery uses this read-only form before changing refs.
+func (d *DB) ValidateRunPublicationEvidence(run *Run) error {
+	if d == nil || run == nil {
+		return ErrRunCustodyCAS
+	}
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin validate publication evidence: %w", err)
+	}
+	defer tx.Rollback()
+	return validateRunPublicationEvidenceTx(tx, run)
+}
+
 func (d *DB) RecordRunPublicationEvidence(runID string, inputs []PublicationEvidenceInput) (*RunPublicationTargetSet, error) {
 	return d.RecordRunPublicationEvidenceWithLineage(runID, nil, inputs)
 }
