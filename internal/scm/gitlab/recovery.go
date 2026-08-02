@@ -260,7 +260,7 @@ func (h *Host) verifyUnpublishedAuditHistory(ctx context.Context, branch, submit
 }
 
 func gitlabAuditTargetRef(raw json.RawMessage, requestSet map[string]struct{}, branch string) (string, bool, bool) {
-	refValue, refKey := gitlabAuditRefField(raw, "ref", "branch", "head_ref", "source_ref", "source_branch", "target_ref")
+	refValue, _ := gitlabAuditRefField(raw, "ref", "branch", "head_ref", "source_ref", "source_branch", "target_ref")
 	ref := normalizeGitLabRef(refValue)
 	if number := gitlabAuditField(raw, "merge_request_iid", "merge_request_number", "merge_request_id", "request_iid"); number != "" {
 		candidate := "refs/merge-requests/" + number + "/head"
@@ -282,15 +282,9 @@ func gitlabAuditTargetRef(raw json.RawMessage, requestSet map[string]struct{}, b
 		return ref, true, false
 	}
 	if strings.HasPrefix(ref, "refs/merge-requests/") || strings.HasPrefix(ref, "refs/heads/") {
-		return ref, false, len(requestSet) == 0
-	}
-	if refKey != "ref" && refKey != "branch" {
 		return ref, false, true
 	}
-	if len(requestSet) == 0 || gitlabAuditIsRenameOrDelete(raw) {
-		return ref, false, true
-	}
-	return ref, false, false
+	return ref, false, true
 }
 
 func gitlabAuditRefField(raw json.RawMessage, keys ...string) (string, string) {
@@ -335,11 +329,6 @@ func gitlabAuditRefField(raw json.RawMessage, keys ...string) (string, string) {
 		}
 	}
 	return "", ""
-}
-
-func gitlabAuditIsRenameOrDelete(raw json.RawMessage) bool {
-	action := strings.ToLower(gitlabAuditField(raw, "action", "action_name", "event", "event_type", "type", "operation"))
-	return strings.Contains(action, "rename") || strings.Contains(action, "delete")
 }
 
 func gitlabAuditValidateHeadValues(raw json.RawMessage, submitted string) error {
@@ -468,20 +457,55 @@ func gitlabAuditValidateRefRename(raw json.RawMessage) error {
 	if err != nil {
 		return err
 	}
+	var oldRef, newRef string
+	found := false
 	for _, pair := range [][2]string{{"old_ref", "new_ref"}, {"from_ref", "to_ref"}, {"previous_ref", "current_ref"}, {"old_branch", "new_branch"}} {
-		if len(refs[pair[0]]) == 0 && len(refs[pair[1]]) == 0 {
+		hasOld := len(refs[pair[0]]) > 0
+		hasNew := len(refs[pair[1]]) > 0
+		if !hasOld && !hasNew {
 			continue
 		}
-		if len(refs[pair[0]]) == 0 || len(refs[pair[1]]) == 0 {
+		if hasOld != hasNew {
 			return fmt.Errorf("rename ref pair %s/%s is incomplete", pair[0], pair[1])
 		}
-		oldRef, newRef := refs[pair[0]][0], refs[pair[1]][0]
-		if !gitlabAuditCanonicalRef(oldRef) || !gitlabAuditCanonicalRef(newRef) || normalizeGitLabRef(oldRef) == normalizeGitLabRef(newRef) {
+		pairOld, err := gitlabAuditRenameRefValue(refs[pair[0]])
+		if err != nil {
+			return fmt.Errorf("rename action has invalid old ref: %w", err)
+		}
+		pairNew, err := gitlabAuditRenameRefValue(refs[pair[1]])
+		if err != nil {
+			return fmt.Errorf("rename action has invalid new ref: %w", err)
+		}
+		if pairOld == pairNew {
 			return errors.New("rename action lacks canonical distinct old/new refs")
 		}
-		return nil
+		if found && (oldRef != pairOld || newRef != pairNew) {
+			return errors.New("rename action contains conflicting ref aliases")
+		}
+		oldRef, newRef, found = pairOld, pairNew, true
 	}
-	return errors.New("rename action lacks canonical old/new refs")
+	if !found {
+		return errors.New("rename action lacks canonical old/new refs")
+	}
+	return nil
+}
+
+func gitlabAuditRenameRefValue(values []string) (string, error) {
+	if len(values) == 0 {
+		return "", errors.New("rename ref is missing")
+	}
+	normalized := ""
+	for _, value := range values {
+		if !gitlabAuditCanonicalRef(value) {
+			return "", fmt.Errorf("%q is not a canonical Git ref", value)
+		}
+		candidate := normalizeGitLabRef(value)
+		if normalized != "" && normalized != candidate {
+			return "", errors.New("rename ref has conflicting values")
+		}
+		normalized = candidate
+	}
+	return normalized, nil
 }
 
 func gitlabAuditRefValues(raw json.RawMessage) (map[string][]string, error) {
@@ -529,11 +553,21 @@ func gitlabAuditRefValues(raw json.RawMessage) (map[string][]string, error) {
 func gitlabAuditCanonicalRef(ref string) bool {
 	original := ref
 	ref = strings.TrimSpace(ref)
-	if ref == "" || original != ref || strings.ContainsAny(ref, " \t\r\n~^:?*[\\") || strings.Contains(ref, "..") || strings.Contains(ref, "//") || strings.Contains(ref, "@{") {
+	if ref == "" || original != ref || ref == "@" || (!strings.HasPrefix(ref, "refs/") && strings.HasPrefix(ref, "-")) || strings.ContainsAny(ref, "~^:?*[\\") || strings.Contains(ref, "..") || strings.Contains(ref, "//") || strings.Contains(ref, "@{") || strings.HasPrefix(ref, "/") || strings.HasSuffix(ref, "/") {
 		return false
 	}
-	ref = normalizeGitLabRef(ref)
-	return ref != "" && ref != "." && !strings.HasPrefix(ref, ".") && !strings.HasSuffix(ref, ".")
+	for _, component := range strings.Split(ref, "/") {
+		if component == "" || component == "." || component == ".." || strings.HasPrefix(component, ".") || strings.HasSuffix(component, ".") || strings.HasSuffix(component, ".lock") {
+			return false
+		}
+		for _, char := range component {
+			if char <= 0x20 || char == 0x7f {
+				return false
+			}
+		}
+	}
+	normalized := normalizeGitLabRef(ref)
+	return normalized != "" && !strings.HasPrefix(normalized, "-")
 }
 
 func gitlabAuditLooksLikePublication(raw json.RawMessage) bool {

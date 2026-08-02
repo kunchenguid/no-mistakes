@@ -254,7 +254,7 @@ func (h *Host) verifyUnpublishedAuditHistory(ctx context.Context, branch, submit
 }
 
 func githubAuditTargetRef(raw json.RawMessage, requestSet map[string]struct{}, branch string) (string, bool, bool) {
-	refValue, refKey := githubAuditRefField(raw, "ref", "branch", "head_ref", "source_ref", "source_branch", "target_ref")
+	refValue, _ := githubAuditRefField(raw, "ref", "branch", "head_ref", "source_ref", "source_branch", "target_ref")
 	ref := normalizeGitHubRef(refValue)
 	if number := githubAuditField(raw, "pull_request_number", "pull_number", "pull_request_id", "request_number"); number != "" {
 		candidate := "refs/pull/" + number + "/head"
@@ -276,15 +276,9 @@ func githubAuditTargetRef(raw json.RawMessage, requestSet map[string]struct{}, b
 		return ref, true, false
 	}
 	if strings.HasPrefix(ref, "refs/pull/") || strings.HasPrefix(ref, "refs/heads/") {
-		return ref, false, len(requestSet) == 0
-	}
-	if refKey != "ref" && refKey != "branch" {
 		return ref, false, true
 	}
-	if len(requestSet) == 0 || githubAuditIsRenameOrDelete(raw) {
-		return ref, false, true
-	}
-	return ref, false, false
+	return ref, false, true
 }
 
 func githubAuditRefField(raw json.RawMessage, keys ...string) (string, string) {
@@ -329,11 +323,6 @@ func githubAuditRefField(raw json.RawMessage, keys ...string) (string, string) {
 		}
 	}
 	return "", ""
-}
-
-func githubAuditIsRenameOrDelete(raw json.RawMessage) bool {
-	action := strings.ToLower(githubAuditField(raw, "action", "action_name", "event", "event_type", "type", "operation"))
-	return strings.Contains(action, "rename") || strings.Contains(action, "delete")
 }
 
 func githubAuditValidateHeadValues(raw json.RawMessage, submitted string) error {
@@ -462,20 +451,55 @@ func githubAuditValidateRefRename(raw json.RawMessage) error {
 	if err != nil {
 		return err
 	}
+	var oldRef, newRef string
+	found := false
 	for _, pair := range [][2]string{{"old_ref", "new_ref"}, {"from_ref", "to_ref"}, {"previous_ref", "current_ref"}, {"old_branch", "new_branch"}} {
-		if len(refs[pair[0]]) == 0 && len(refs[pair[1]]) == 0 {
+		hasOld := len(refs[pair[0]]) > 0
+		hasNew := len(refs[pair[1]]) > 0
+		if !hasOld && !hasNew {
 			continue
 		}
-		if len(refs[pair[0]]) == 0 || len(refs[pair[1]]) == 0 {
+		if hasOld != hasNew {
 			return fmt.Errorf("rename ref pair %s/%s is incomplete", pair[0], pair[1])
 		}
-		oldRef, newRef := refs[pair[0]][0], refs[pair[1]][0]
-		if !githubAuditCanonicalRef(oldRef) || !githubAuditCanonicalRef(newRef) || normalizeGitHubRef(oldRef) == normalizeGitHubRef(newRef) {
+		pairOld, err := githubAuditRenameRefValue(refs[pair[0]])
+		if err != nil {
+			return fmt.Errorf("rename action has invalid old ref: %w", err)
+		}
+		pairNew, err := githubAuditRenameRefValue(refs[pair[1]])
+		if err != nil {
+			return fmt.Errorf("rename action has invalid new ref: %w", err)
+		}
+		if pairOld == pairNew {
 			return errors.New("rename action lacks canonical distinct old/new refs")
 		}
-		return nil
+		if found && (oldRef != pairOld || newRef != pairNew) {
+			return errors.New("rename action contains conflicting ref aliases")
+		}
+		oldRef, newRef, found = pairOld, pairNew, true
 	}
-	return errors.New("rename action lacks canonical old/new refs")
+	if !found {
+		return errors.New("rename action lacks canonical old/new refs")
+	}
+	return nil
+}
+
+func githubAuditRenameRefValue(values []string) (string, error) {
+	if len(values) == 0 {
+		return "", errors.New("rename ref is missing")
+	}
+	normalized := ""
+	for _, value := range values {
+		if !githubAuditCanonicalRef(value) {
+			return "", fmt.Errorf("%q is not a canonical Git ref", value)
+		}
+		candidate := normalizeGitHubRef(value)
+		if normalized != "" && normalized != candidate {
+			return "", errors.New("rename ref has conflicting values")
+		}
+		normalized = candidate
+	}
+	return normalized, nil
 }
 
 func githubAuditRefValues(raw json.RawMessage) (map[string][]string, error) {
@@ -523,11 +547,21 @@ func githubAuditRefValues(raw json.RawMessage) (map[string][]string, error) {
 func githubAuditCanonicalRef(ref string) bool {
 	original := ref
 	ref = strings.TrimSpace(ref)
-	if ref == "" || original != ref || strings.ContainsAny(ref, " \t\r\n~^:?*[\\") || strings.Contains(ref, "..") || strings.Contains(ref, "//") || strings.Contains(ref, "@{") {
+	if ref == "" || original != ref || ref == "@" || (!strings.HasPrefix(ref, "refs/") && strings.HasPrefix(ref, "-")) || strings.ContainsAny(ref, "~^:?*[\\") || strings.Contains(ref, "..") || strings.Contains(ref, "//") || strings.Contains(ref, "@{") || strings.HasPrefix(ref, "/") || strings.HasSuffix(ref, "/") {
 		return false
 	}
-	ref = normalizeGitHubRef(ref)
-	return ref != "" && ref != "." && !strings.HasPrefix(ref, ".") && !strings.HasSuffix(ref, ".")
+	for _, component := range strings.Split(ref, "/") {
+		if component == "" || component == "." || component == ".." || strings.HasPrefix(component, ".") || strings.HasSuffix(component, ".") || strings.HasSuffix(component, ".lock") {
+			return false
+		}
+		for _, char := range component {
+			if char <= 0x20 || char == 0x7f {
+				return false
+			}
+		}
+	}
+	normalized := normalizeGitHubRef(ref)
+	return normalized != "" && !strings.HasPrefix(normalized, "-")
 }
 
 func githubAuditLooksLikePublication(raw json.RawMessage) bool {

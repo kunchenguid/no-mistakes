@@ -499,6 +499,13 @@ func TestGitLabAuditHeadValidationRequiresCanonicalTargetEvidence(t *testing.T) 
 		{name: "rename missing refs", raw: `{"action":"rename","before":"` + a + `","after":"` + a + `"}`, want: true},
 		{name: "canonical rename", raw: `{"action":"rename","old_ref":"feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: false},
 		{name: "rename noncanonical ref", raw: `{"action":"rename","old_ref":"feature..old","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename leading dash", raw: `{"action":"rename","old_ref":"-feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename lock ref", raw: `{"action":"rename","old_ref":"feature.lock","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename leading slash", raw: `{"action":"rename","old_ref":"/feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename trailing slash", raw: `{"action":"rename","old_ref":"feature/","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename conflicting aliases", raw: `{"action":"rename","old_ref":"feature","new_ref":"renamed-feature","from_ref":"other","to_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename partial alias", raw: `{"action":"rename","old_ref":"feature","new_ref":"renamed-feature","from_ref":"other","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename consistent aliases", raw: `{"action":"rename","old_ref":"feature","new_ref":"renamed-feature","from_ref":"refs/heads/feature","to_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -512,8 +519,8 @@ func TestGitLabAuditHeadValidationRequiresCanonicalTargetEvidence(t *testing.T) 
 
 func TestGitLabAuditTargetClassificationFailsClosedForAmbiguousEvents(t *testing.T) {
 	requestSet := map[string]struct{}{"refs/merge-requests/7/head": {}}
-	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"ref":"other","action":"push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || ambiguous {
-		t.Fatalf("unrelated GitLab audit event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"ref":"other","action":"push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("non-current GitLab audit event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
 	}
 	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"action":"push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
 		t.Fatalf("ambiguous GitLab audit event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
@@ -530,8 +537,8 @@ func TestGitLabAuditTargetClassificationFailsClosedForAmbiguousEvents(t *testing
 	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"source_branch":"renamed-feature","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
 		t.Fatalf("renamed GitLab source event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
 	}
-	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"ref":"renamed-feature","action":"push","after":"`+strings.Repeat("a", 40)+`"}`), nil, "feature"); targeted || !ambiguous {
-		t.Fatalf("unbound renamed GitLab ref event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"ref":"renamed-feature","action":"push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("renamed GitLab ref event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
 	}
 	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"old_ref":"feature","new_ref":"renamed-feature","action":"rename","before":"`+strings.Repeat("a", 40)+`","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
 		t.Fatalf("GitLab rename event without current ref classified as targeted=%v ambiguous=%v", targeted, ambiguous)

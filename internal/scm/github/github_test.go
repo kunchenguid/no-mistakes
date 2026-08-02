@@ -894,6 +894,13 @@ func TestGitHubAuditHeadValidationRequiresCanonicalTargetEvidence(t *testing.T) 
 		{name: "rename missing refs", raw: `{"action":"git.rename","before":"` + a + `","after":"` + a + `"}`, want: true},
 		{name: "canonical rename", raw: `{"action":"git.rename","old_ref":"feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: false},
 		{name: "rename noncanonical ref", raw: `{"action":"git.rename","old_ref":"feature..old","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename leading dash", raw: `{"action":"git.rename","old_ref":"-feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename lock ref", raw: `{"action":"git.rename","old_ref":"feature.lock","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename leading slash", raw: `{"action":"git.rename","old_ref":"/feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename trailing slash", raw: `{"action":"git.rename","old_ref":"feature/","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename conflicting aliases", raw: `{"action":"git.rename","old_ref":"feature","new_ref":"renamed-feature","from_ref":"other","to_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename partial alias", raw: `{"action":"git.rename","old_ref":"feature","new_ref":"renamed-feature","from_ref":"other","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename consistent aliases", raw: `{"action":"git.rename","old_ref":"feature","new_ref":"renamed-feature","from_ref":"refs/heads/feature","to_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -907,8 +914,8 @@ func TestGitHubAuditHeadValidationRequiresCanonicalTargetEvidence(t *testing.T) 
 
 func TestGitHubAuditTargetClassificationFailsClosedForAmbiguousEvents(t *testing.T) {
 	requestSet := map[string]struct{}{"refs/pull/7/head": {}}
-	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"ref":"other","action":"git.push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || ambiguous {
-		t.Fatalf("unrelated GitHub audit event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"ref":"other","action":"git.push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("non-current GitHub audit event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
 	}
 	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"action":"git.push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
 		t.Fatalf("ambiguous GitHub audit event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
@@ -925,8 +932,8 @@ func TestGitHubAuditTargetClassificationFailsClosedForAmbiguousEvents(t *testing
 	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"source_branch":"renamed-feature","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
 		t.Fatalf("renamed GitHub source event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
 	}
-	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"ref":"renamed-feature","action":"git.push","after":"`+strings.Repeat("a", 40)+`"}`), nil, "feature"); targeted || !ambiguous {
-		t.Fatalf("unbound renamed GitHub ref event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"ref":"renamed-feature","action":"git.push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("renamed GitHub ref event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
 	}
 	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"old_ref":"feature","new_ref":"renamed-feature","action":"git.rename","before":"`+strings.Repeat("a", 40)+`","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
 		t.Fatalf("GitHub rename event without current ref classified as targeted=%v ambiguous=%v", targeted, ambiguous)
