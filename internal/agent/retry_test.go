@@ -65,6 +65,16 @@ func TestClassifyTransient_Positive(t *testing.T) {
 			errMsg:  `Post "https://api.anthropic.com": net/http: TLS handshake timeout`,
 			wantSub: "tls",
 		},
+		{
+			name:    "stream idle timeout",
+			errMsg:  `claude exited: exit status 1: API Error: Stream idle timeout - no chunks received`,
+			wantSub: "stream idle timeout",
+		},
+		{
+			name:    "response stalled mid-stream",
+			errMsg:  `claude exited: exit status 1: API Error: Response stalled mid-stream. The response above may be incomplete.`,
+			wantSub: "stream stalled",
+		},
 	}
 
 	for _, tc := range cases {

@@ -144,6 +144,9 @@ var transientNeedles = []struct {
 	{"temporary failure in name resolution", "dns temporary failure"},
 	{"tls handshake", "tls handshake failure"},
 	{"unexpected eof", "unexpected eof"},
+	{"stream idle timeout", "stream idle timeout"},
+	{"no chunks received", "stream idle timeout"},
+	{"response stalled mid-stream", "stream stalled mid-stream"},
 }
 
 // classifyTransient reports whether an error message looks like a transient

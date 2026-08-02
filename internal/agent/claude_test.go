@@ -714,6 +714,17 @@ func TestClaudeStdinHelper(t *testing.T) {
 		for {
 			time.Sleep(time.Second)
 		}
+	case "stall", "stall-then-succeed":
+		// Reproduce a stalled claude stream exactly as the CLI reports one: the
+		// diagnostic arrives as assistant text on stdout, stderr stays empty,
+		// and no result event is ever emitted.
+		attempt := recordClaudeHelperAttempt()
+		if mode == "stall-then-succeed" && attempt > 1 {
+			emitClaudeHelperResult()
+			return
+		}
+		_, _ = io.WriteString(os.Stdout, `{"type":"assistant","session_id":"helper-session","message":{"model":"helper-model","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"API Error: Stream idle timeout - no chunks received"}]}}`+"\n")
+		os.Exit(1)
 	case "read":
 		prompt, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -735,6 +746,26 @@ func TestClaudeStdinHelper(t *testing.T) {
 	default:
 		os.Exit(5)
 	}
+}
+
+// recordClaudeHelperAttempt appends one byte per invocation to the counter file
+// and returns the 1-indexed attempt number, so the helper can behave
+// differently across the retry loop's separate processes.
+func recordClaudeHelperAttempt() int {
+	path := os.Getenv("NM_CLAUDE_STDIN_ATTEMPTS")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		os.Exit(6)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteString("x"); err != nil {
+		os.Exit(6)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		os.Exit(6)
+	}
+	return len(data)
 }
 
 func emitClaudeHelperResult() {
@@ -779,4 +810,138 @@ func claudeArgsContainPair(args []string, flag, value string) bool {
 		}
 	}
 	return false
+}
+
+// The claude CLI reports its own transport failures as assistant text on the
+// stdout event stream and leaves stderr empty, so these cover the two halves of
+// surviving one: the exit error has to name the cause, and classifyTransient
+// has to see that name in order to spend a retry.
+
+func TestClaudeStream_APIErrorsKeepOnlyCLIDiagnostics(t *testing.T) {
+	var stream claudeStream
+	onChunk := stream.tee(nil)
+	onChunk("Scope pinned. Spawning all five review agents in one batch.")
+	onChunk("API Error: Response stalled mid-stream. The response above may be incomplete.")
+	onChunk("Standards agent stalled on the large diff. Respawning it.")
+	onChunk("API Error: Response stalled mid-stream. The response above may be incomplete.")
+	onChunk("API Error: Stream idle timeout - no chunks received\n")
+
+	got := stream.apiErrors()
+	for _, want := range []string{
+		"API Error: Response stalled mid-stream. The response above may be incomplete.",
+		"API Error: Stream idle timeout - no chunks received",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("api errors %q missing %q", got, want)
+		}
+	}
+	if n := strings.Count(got, "Response stalled"); n != 1 {
+		t.Errorf("repeated diagnostic kept %d times, want 1: %q", n, got)
+	}
+	for _, leaked := range []string{"Scope pinned", "Standards agent stalled", "Respawning"} {
+		if strings.Contains(got, leaked) {
+			t.Errorf("model output %q leaked into persisted diagnostics: %q", leaked, got)
+		}
+	}
+}
+
+func TestClaudeStream_APIErrorsAreBounded(t *testing.T) {
+	var stream claudeStream
+	onChunk := stream.tee(nil)
+	for i := 0; i < 200; i++ {
+		onChunk("API Error: " + strings.Repeat("x", 400) + strconv.Itoa(i) + "\n")
+	}
+	if got := len(stream.apiErrors()); got > claudeAPIErrorLimit {
+		t.Fatalf("api errors length %d exceeds bound %d", got, claudeAPIErrorLimit)
+	}
+}
+
+func TestClaudeStream_TeeForwardsEveryChunk(t *testing.T) {
+	var forwarded []string
+	var stream claudeStream
+	onChunk := stream.tee(func(chunk string) { forwarded = append(forwarded, chunk) })
+	onChunk("one")
+	onChunk("two")
+	if !slices.Equal(forwarded, []string{"one", "two"}) {
+		t.Fatalf("forwarded chunks = %v, want [one two]", forwarded)
+	}
+}
+
+func TestClaudeExitError_ReportsStreamDiagnosticWhenStderrEmpty(t *testing.T) {
+	var stream claudeStream
+	stream.tee(nil)("API Error: Stream idle timeout - no chunks received")
+
+	err := claudeExitError(errors.New("exit status 1"), nil, &stream)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "Stream idle timeout") {
+		t.Fatalf("error %q does not name the stream failure", err)
+	}
+	if _, ok := classifyTransient(err); !ok {
+		t.Fatalf("error %q is not classified transient, so the run would not retry", err)
+	}
+}
+
+func TestClaudeExitError_PrefersStderrDetail(t *testing.T) {
+	var stream claudeStream
+	stream.tee(nil)("API Error: Stream idle timeout - no chunks received")
+
+	err := claudeExitError(errors.New("exit status 1"), []byte("claude: command not found"), &stream)
+	if !strings.Contains(err.Error(), "command not found") {
+		t.Fatalf("error %q dropped the stderr detail", err)
+	}
+	if strings.Contains(err.Error(), "Stream idle timeout") {
+		t.Fatalf("error %q mixed stream diagnostics into a real stderr failure", err)
+	}
+}
+
+func TestClaudeExitError_NoTrailingSeparatorWithoutDetail(t *testing.T) {
+	err := claudeExitError(errors.New("exit status 1"), nil, &claudeStream{})
+	if got := err.Error(); got != "claude exited: exit status 1" {
+		t.Fatalf("error = %q, want no empty detail separator", got)
+	}
+}
+
+func TestClaudeAgent_StreamStallIsReportedAndRetried(t *testing.T) {
+	defer withFastBackoff(t)()
+	countPath := filepath.Join(t.TempDir(), "attempts")
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "stall-then-succeed")
+	t.Setenv("NM_CLAUDE_STDIN_ATTEMPTS", countPath)
+	a := newClaudeStdinHelperAgent(t)
+
+	result, err := a.Run(context.Background(), RunOpts{Prompt: "review", CWD: t.TempDir()})
+	if err != nil {
+		t.Fatalf("run through a recoverable stream stall: %v", err)
+	}
+	if result.SessionID != "helper-session" {
+		t.Fatalf("session ID = %q, want helper-session", result.SessionID)
+	}
+	if got := claudeHelperAttempts(t, countPath); got != 2 {
+		t.Fatalf("claude invoked %d times, want 2 (one stall, one success)", got)
+	}
+}
+
+func TestClaudeAgent_ExhaustedStreamStallNamesTheCause(t *testing.T) {
+	defer withFastBackoff(t)()
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "stall")
+	t.Setenv("NM_CLAUDE_STDIN_ATTEMPTS", filepath.Join(t.TempDir(), "attempts"))
+	a := newClaudeStdinHelperAgent(t)
+
+	_, err := a.Run(context.Background(), RunOpts{Prompt: "review", CWD: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected the exhausted stall to fail")
+	}
+	if !strings.Contains(err.Error(), "Stream idle timeout") {
+		t.Fatalf("error %q does not name the stream failure", err)
+	}
+}
+
+func claudeHelperAttempts(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read helper attempt counter: %v", err)
+	}
+	return len(strings.TrimSpace(string(data)))
 }

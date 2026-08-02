@@ -24,6 +24,102 @@ var errNoStructuredOutput = errors.New("claude returned no structured output")
 
 const claudeScannerMaxTokenSize = 256 * 1024 * 1024
 
+// claudeAPIErrorPrefix is how the claude CLI labels its own transport failures
+// ("API Error: Stream idle timeout - no chunks received"). The CLI writes them
+// as assistant text on the stdout event stream, not to stderr.
+const claudeAPIErrorPrefix = "API Error:"
+
+// claudeAPIErrorLimit bounds the diagnostics lifted out of the stream, which
+// end up in a step error and therefore in runs.error.
+const claudeAPIErrorLimit = 512
+
+// claudeStream captures the assistant text stream so a non-zero exit can report
+// why claude stopped. Without it the exit error is built from an empty stderr,
+// which both hides the cause from the user and leaves classifyTransient nothing
+// to recognize, so a recoverable stall fails the run instead of retrying.
+// It keeps only the CLI's own API Error diagnostics, deduplicated and bounded.
+// It deliberately keeps nothing else: the rest of the stream is model output
+// about the user's code, and these errors are persisted to runs.error.
+type claudeStream struct {
+	found []string
+	seen  map[string]bool
+	size  int
+}
+
+// tee returns a chunk callback that scans the stream and forwards to onChunk.
+func (s *claudeStream) tee(onChunk func(string)) func(string) {
+	return func(chunk string) {
+		s.observe(chunk)
+		if onChunk != nil {
+			onChunk(chunk)
+		}
+	}
+}
+
+// observe records the API Error diagnostics in one assistant text block. The
+// block is the delimiter: the CLI emits a diagnostic without a guaranteed
+// trailing newline, so concatenated blocks would run it into the next reply.
+func (s *claudeStream) observe(chunk string) {
+	for {
+		start := strings.Index(chunk, claudeAPIErrorPrefix)
+		if start < 0 || s.size >= claudeAPIErrorLimit {
+			return
+		}
+		body := chunk[start+len(claudeAPIErrorPrefix):]
+		end := len(body)
+		if next := strings.Index(body, claudeAPIErrorPrefix); next >= 0 {
+			end = next
+		}
+		if nl := strings.IndexAny(body[:end], "\r\n"); nl >= 0 {
+			end = nl
+		}
+		s.add(claudeAPIErrorPrefix + strings.TrimRight(body[:end], " \t"))
+		chunk = body
+	}
+}
+
+func (s *claudeStream) add(line string) {
+	if s.seen == nil {
+		s.seen = make(map[string]bool)
+	}
+	if s.seen[line] {
+		return
+	}
+	s.seen[line] = true
+	s.found = append(s.found, line)
+	s.size += len(line)
+}
+
+// apiErrors renders the retained diagnostics as a single bounded detail string.
+func (s *claudeStream) apiErrors() string {
+	joined := strings.Join(s.found, "; ")
+	if len(joined) > claudeAPIErrorLimit {
+		joined = joined[:claudeAPIErrorLimit]
+	}
+	return joined
+}
+
+// claudeExitError explains a non-zero claude exit, preferring stderr and
+// falling back to the CLI diagnostics carried on the event stream.
+func claudeExitError(waitErr error, stderr []byte, stream *claudeStream) error {
+	if detail := strings.TrimSpace(string(stderr)); detail != "" {
+		return fmt.Errorf("claude exited: %w: %s", waitErr, detail)
+	}
+	if detail := stream.apiErrors(); detail != "" {
+		return fmt.Errorf("claude exited: %w: %s", waitErr, detail)
+	}
+	return fmt.Errorf("claude exited: %w", waitErr)
+}
+
+// withClaudeStreamDetail appends the stream's CLI diagnostics to msg when there
+// are any, so a bare failure never reads as an unexplained one.
+func withClaudeStreamDetail(msg string, stream *claudeStream) string {
+	if detail := stream.apiErrors(); detail != "" {
+		return msg + ": " + detail
+	}
+	return msg
+}
+
 // claudeAgent spawns the claude CLI for each invocation.
 type claudeAgent struct {
 	bin       string
@@ -98,7 +194,8 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 
 	var usage TokenUsage
 	var result *claudeResult
-	if err := parseClaudeEvents(ctx, started.stdout, opts.OnChunk, &usage, &result); err != nil {
+	var stream claudeStream
+	if err := parseClaudeEvents(ctx, started.stdout, stream.tee(opts.OnChunk), &usage, &result); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		retErr := fmt.Errorf("claude parse events: %w", err)
@@ -109,13 +206,13 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	waitErr := started.wait()
 	stderrWG.Wait()
 	if waitErr != nil {
-		retErr := fmt.Errorf("claude exited: %w: %s", waitErr, string(stderrBuf))
+		retErr := claudeExitError(waitErr, stderrBuf, &stream)
 		emitAgentExited(opts, "claude", pid, retErr)
 		return nil, retErr
 	}
 
 	if result == nil {
-		retErr := fmt.Errorf("claude returned no result event")
+		retErr := errors.New(withClaudeStreamDetail("claude returned no result event", &stream))
 		emitAgentExited(opts, "claude", pid, retErr)
 		return nil, retErr
 	}
