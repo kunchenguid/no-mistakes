@@ -403,6 +403,17 @@ func TestVerifyUnpublishedRefHistoryRejectsPreservedBranchHead(t *testing.T) {
 	}
 }
 
+func TestVerifyUnpublishedRefHistoryRejectsEmptyCoverage(t *testing.T) {
+	t.Parallel()
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/events?per_page=100": {stdout: "[]\n"},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedRefHistory(context.Background(), "refs/heads/feature", strings.Repeat("a", 40), strings.Repeat("b", 40), 0, 0); err == nil {
+		t.Fatal("empty ref history passed as complete evidence")
+	}
+}
+
 func TestVerifyUnpublishedHistoryInspectsRenamedNoMergeRequestHistory(t *testing.T) {
 	t.Parallel()
 	a := strings.Repeat("a", 40)

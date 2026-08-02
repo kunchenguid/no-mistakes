@@ -3,6 +3,8 @@ package github
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -98,20 +100,37 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 }
 
 func (h *Host) VerifyUnpublishedRefHistory(ctx context.Context, branch, submitted, preserved string, since, until int64) error {
+	_, err := h.VerifyUnpublishedRefHistoryEvidence(ctx, branch, submitted, preserved, since, until)
+	return err
+}
+
+func (h *Host) VerifyUnpublishedTargetHistory(ctx context.Context, branch, submitted, preserved string, since, until int64) (scm.HistoricalPublicationEvidence, error) {
+	if err := h.VerifyUnpublishedHistory(ctx, branch, submitted, preserved, since, until, ""); err != nil {
+		return scm.HistoricalPublicationEvidence{}, err
+	}
+	return h.VerifyUnpublishedRefHistoryEvidence(ctx, branch, submitted, preserved, since, until)
+}
+
+func (h *Host) VerifyUnpublishedRefHistoryEvidence(ctx context.Context, branch, submitted, preserved string, since, until int64) (scm.HistoricalPublicationEvidence, error) {
 	if err := h.Available(ctx); err != nil {
-		return err
+		return scm.HistoricalPublicationEvidence{}, err
 	}
 	if strings.TrimSpace(h.repo) == "" {
-		return errors.New("GitHub repository identity is unavailable")
+		return scm.HistoricalPublicationEvidence{}, errors.New("GitHub repository identity is unavailable")
 	}
 	var events []json.RawMessage
-	if err := h.apiPages(ctx, "repos/"+h.apiRepoPath()+"/events?per_page=100", &events); err != nil {
-		return fmt.Errorf("inspect GitHub ref history: %w", err)
+	endpoint := "repos/" + h.apiRepoPath() + "/events?per_page=100"
+	pages, err := h.apiPagesWithCoverage(ctx, endpoint, &events)
+	if err != nil {
+		return scm.HistoricalPublicationEvidence{}, fmt.Errorf("inspect GitHub ref history: %w", err)
+	}
+	if pages == 0 || len(events) == 0 {
+		return scm.HistoricalPublicationEvidence{}, errors.New("GitHub ref history is incomplete")
 	}
 	for _, event := range events {
 		inWindow, err := recoveryEventInWindow(event, since, until)
 		if err != nil {
-			return fmt.Errorf("GitHub ref history has incomplete timestamps: %w", err)
+			return scm.HistoricalPublicationEvidence{}, fmt.Errorf("GitHub ref history has incomplete timestamps: %w", err)
 		}
 		if !inWindow {
 			continue
@@ -119,14 +138,69 @@ func (h *Host) VerifyUnpublishedRefHistory(ctx context.Context, branch, submitte
 		related, _ := recoveryBranchRelation([]json.RawMessage{event}, branch)
 		if related {
 			if recoveryRefEventContainsSHA(event, preserved) {
-				return fmt.Errorf("GitHub branch %s history contains the preserved unpublished head", branch)
+				return scm.HistoricalPublicationEvidence{}, fmt.Errorf("GitHub branch %s history contains the preserved unpublished head", branch)
 			}
 			if recoveryRefEventChanged(event, submitted) {
-				return fmt.Errorf("GitHub branch %s history contains a head other than the submitted head", branch)
+				return scm.HistoricalPublicationEvidence{}, fmt.Errorf("GitHub branch %s history contains a head other than the submitted head", branch)
 			}
 		}
 	}
-	return nil
+	cursor, err := recoveryEventCursor(events, since, until)
+	if err != nil {
+		return scm.HistoricalPublicationEvidence{}, fmt.Errorf("GitHub ref history has incomplete coverage: %w", err)
+	}
+	return scm.HistoricalPublicationEvidence{
+		Hash:     recoveryEvidenceHash(endpoint, branch, submitted, preserved, events),
+		Cursor:   cursor,
+		Coverage: fmt.Sprintf("github-events-pages=%d;events=%d", pages, len(events)),
+	}, nil
+}
+
+func recoveryEventCursor(events []json.RawMessage, since, until int64) (string, error) {
+	max := int64(0)
+	for _, raw := range events {
+		var event struct {
+			CreatedAt string `json:"created_at"`
+			Timestamp string `json:"timestamp"`
+		}
+		if err := json.Unmarshal(raw, &event); err != nil {
+			return "", err
+		}
+		stamp := strings.TrimSpace(event.CreatedAt)
+		if stamp == "" {
+			stamp = strings.TrimSpace(event.Timestamp)
+		}
+		if stamp == "" {
+			return "", errors.New("missing event timestamp")
+		}
+		when, err := time.Parse(time.RFC3339, stamp)
+		if err != nil {
+			return "", err
+		}
+		if unix := when.Unix(); unix > max {
+			max = unix
+		}
+	}
+	if since > 0 && max < since {
+		return "", errors.New("event history does not cover the run interval")
+	}
+	if until > 0 && max > until {
+		return fmt.Sprintf("%d", max), nil
+	}
+	return fmt.Sprintf("%d", max), nil
+}
+
+func recoveryEvidenceHash(endpoint, branch, submitted, preserved string, events []json.RawMessage) string {
+	hash := sha256.New()
+	for _, value := range []string{endpoint, branch, submitted, preserved} {
+		hash.Write([]byte(value))
+		hash.Write([]byte{0})
+	}
+	for _, event := range events {
+		hash.Write(event)
+		hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func recoveryRecordInWindow(created, updated string, since, until int64) (bool, error) {
@@ -355,6 +429,11 @@ func (h *Host) apiRepoPath() string {
 }
 
 func (h *Host) apiPages(ctx context.Context, endpoint string, dst interface{}) error {
+	_, err := h.apiPagesWithCoverage(ctx, endpoint, dst)
+	return err
+}
+
+func (h *Host) apiPagesWithCoverage(ctx context.Context, endpoint string, dst interface{}) (int, error) {
 	args := []string{"api", "--paginate"}
 	if h.host != "" && !strings.EqualFold(h.host, "github.com") {
 		args = append(args, "--hostname", h.host)
@@ -363,7 +442,7 @@ func (h *Host) apiPages(ctx context.Context, endpoint string, dst interface{}) e
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(out))
 	var merged []json.RawMessage
@@ -372,13 +451,13 @@ func (h *Host) apiPages(ctx context.Context, endpoint string, dst interface{}) e
 		if err := decoder.Decode(&raw); errors.Is(err, io.EOF) {
 			break
 		} else if err != nil {
-			return err
+			return 0, err
 		} else {
 			merged = append(merged, raw)
 		}
 	}
 	if len(merged) == 0 {
-		return errors.New("GitHub API returned no JSON")
+		return 0, errors.New("GitHub API returned no JSON")
 	}
 	var combined []byte
 	if len(merged) == 1 {
@@ -388,15 +467,18 @@ func (h *Host) apiPages(ctx context.Context, endpoint string, dst interface{}) e
 		for _, raw := range merged {
 			var page []json.RawMessage
 			if err := json.Unmarshal(raw, &page); err != nil {
-				return err
+				return 0, err
 			}
 			values = append(values, page...)
 		}
 		var err error
 		combined, err = json.Marshal(values)
 		if err != nil {
-			return err
+			return 0, err
 		}
 	}
-	return json.Unmarshal(combined, dst)
+	if err := json.Unmarshal(combined, dst); err != nil {
+		return 0, err
+	}
+	return len(merged), nil
 }

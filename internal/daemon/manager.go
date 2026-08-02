@@ -566,24 +566,67 @@ func (m *RunManager) validatePublicationLedger(ctx context.Context, run *db.Run)
 	for _, target := range publicationTargets {
 		targetURLs = append(targetURLs, target.url)
 	}
-	if err := m.verifyRemotePublicationProof(ctx, run, repo, publicationTargets, recorded); err != nil {
-		return fmt.Errorf("verify remote publication proof: %w", err)
+	remoteEvidence, err := m.verifyRemotePublicationSnapshot(ctx, run, repo, publicationTargets, recorded)
+	if err != nil {
+		return fmt.Errorf("verify remote publication snapshot: %w", err)
 	}
-	if err := m.legacyPublicationProof(ctx, run, run.Branch, targetURLs); err != nil {
+	providerEvidence, err := m.legacyPublicationEvidence(ctx, run, run.Branch, targetURLs)
+	if err != nil {
 		return fmt.Errorf("verify historical publication proof: %w", err)
+	}
+	providerEvidenceAgain, err := m.legacyPublicationEvidence(ctx, run, run.Branch, targetURLs)
+	if err != nil {
+		return fmt.Errorf("verify historical publication stability: %w", err)
 	}
 	if err := m.db.MarkRunPublicationTargetsVerifiedNoAttempt(run.ID); err != nil {
 		return fmt.Errorf("finalize migrated publication provenance: %w", err)
 	}
+	evidence := make([]db.PublicationEvidenceInput, 0, len(recorded))
+	for _, target := range recorded {
+		remote, ok := remoteEvidence[target.TargetFingerprint]
+		if !ok {
+			return fmt.Errorf("publication evidence is missing remote target %s", target.TargetFingerprint)
+		}
+		provider, ok := providerEvidence[target.TargetFingerprint]
+		if !ok {
+			return fmt.Errorf("publication evidence is missing provider target %s", target.TargetFingerprint)
+		}
+		stable, ok := providerEvidenceAgain[target.TargetFingerprint]
+		if !ok || stable.Hash != provider.Hash || stable.Cursor != provider.Cursor || stable.Coverage != provider.Coverage {
+			return fmt.Errorf("publication evidence changed during recovery for target %s", target.TargetFingerprint)
+		}
+		evidence = append(evidence, db.PublicationEvidenceInput{
+			TargetFingerprint: target.TargetFingerprint,
+			Ref:               target.Ref,
+			TargetVersion:     target.TargetVersion,
+			RemoteHash:        remote.Hash,
+			ProviderHash:      provider.Hash,
+			Cursor:            provider.Cursor + "|" + remote.Cursor,
+			Since:             run.CreatedAt,
+			Until:             run.UpdatedAt,
+		})
+	}
+	set, err := m.db.RecordRunPublicationEvidence(run.ID, evidence)
+	if err != nil {
+		return fmt.Errorf("record publication evidence: %w", err)
+	}
+	run.PublicationEvidenceHash = set.EvidenceHash
+	run.PublicationEvidenceGeneration = set.EvidenceGeneration
 	return nil
 }
 
 func (m *RunManager) legacyPublicationProof(ctx context.Context, run *db.Run, branch string, targets []string) error {
+	_, err := m.legacyPublicationEvidence(ctx, run, branch, targets)
+	return err
+}
+
+func (m *RunManager) legacyPublicationEvidence(ctx context.Context, run *db.Run, branch string, targets []string) (map[string]scm.HistoricalPublicationEvidence, error) {
 	if run == nil || !reviewObjectID(run.HeadSHA) || run.SubmittedHeadSHA == nil || !reviewObjectID(*run.SubmittedHeadSHA) {
-		return fmt.Errorf("legacy publication proof has no canonical preserved head")
+		return nil, fmt.Errorf("legacy publication proof has no canonical preserved head")
 	}
 	submitted := *run.SubmittedHeadSHA
 	seen := make(map[string]struct{}, len(targets))
+	evidence := make(map[string]scm.HistoricalPublicationEvidence, len(targets))
 	for _, target := range targets {
 		fingerprint := db.PublicationTargetFingerprint(target)
 		if _, ok := seen[fingerprint]; ok {
@@ -605,89 +648,139 @@ func (m *RunManager) legacyPublicationProof(ctx context.Context, run *db.Run, br
 			host := scm.ResolveHost(ctx, target)
 			verifier = gitlab.New(cmdFactory, func() bool { _, err := exec.LookPath("glab"); return err == nil }, host, gitlab.ProjectPath(target))
 		default:
-			return fmt.Errorf("historical publication proof is unavailable for target %s: unsupported provider %s", target, provider)
+			return nil, fmt.Errorf("historical publication proof is unavailable for target %s: unsupported provider %s", safeurl.Redact(target), provider)
 		}
 		if verifier == nil {
-			return fmt.Errorf("historical publication proof is unavailable for %s", provider)
+			return nil, fmt.Errorf("historical publication proof is unavailable for %s", provider)
 		}
 		if run.CreatedAt <= 0 || run.UpdatedAt < run.CreatedAt {
-			return fmt.Errorf("historical publication proof has no valid run interval")
+			return nil, fmt.Errorf("historical publication proof has no valid run interval")
 		}
 		targetIdentity, targetRef, identityErr := m.recoveryTargetIdentityForRun(ctx, target, targets, run)
 		if identityErr != nil {
-			return identityErr
+			return nil, identityErr
 		}
-		if refVerifier, ok := verifier.(scm.HistoricalRefPublicationVerifier); ok {
-			if err := refVerifier.VerifyUnpublishedRefHistory(ctx, targetRef, submitted, run.HeadSHA, run.CreatedAt, run.UpdatedAt); err != nil {
-				return err
-			}
-		} else {
-			return fmt.Errorf("historical ref publication proof is unavailable for %s", provider)
+		targetVerifier, ok := verifier.(scm.HistoricalTargetPublicationVerifier)
+		if !ok {
+			return nil, fmt.Errorf("historical target publication proof is unavailable for %s", provider)
 		}
 		targetBranch := strings.TrimPrefix(targetRef, "refs/heads/")
-		if err := verifier.VerifyUnpublishedHistory(ctx, targetBranch, submitted, run.HeadSHA, run.CreatedAt, run.UpdatedAt, targetIdentity); err != nil {
-			return err
+		if targetIdentity != "" {
+			if err := verifier.VerifyUnpublishedHistory(ctx, targetBranch, submitted, run.HeadSHA, run.CreatedAt, run.UpdatedAt, targetIdentity); err != nil {
+				return nil, err
+			}
 		}
+		proof, err := targetVerifier.VerifyUnpublishedTargetHistory(ctx, targetBranch, submitted, run.HeadSHA, run.CreatedAt, run.UpdatedAt)
+		if err != nil {
+			return nil, err
+		}
+		evidence[fingerprint] = proof
 	}
-	return nil
+	return evidence, nil
 }
 
 func (m *RunManager) verifyRemotePublicationProof(ctx context.Context, run *db.Run, repo *db.Repo, targets []publicationTargetURL, recorded []db.RunPublicationTarget) error {
+	_, err := m.verifyRemotePublicationSnapshot(ctx, run, repo, targets, recorded)
+	return err
+}
+
+func (m *RunManager) verifyRemotePublicationSnapshot(ctx context.Context, run *db.Run, repo *db.Repo, targets []publicationTargetURL, recorded []db.RunPublicationTarget) (map[string]scm.HistoricalPublicationEvidence, error) {
 	if run == nil || repo == nil || run.SubmittedHeadSHA == nil || !reviewObjectID(*run.SubmittedHeadSHA) {
-		return fmt.Errorf("remote publication proof has no canonical submitted head")
+		return nil, fmt.Errorf("remote publication proof has no canonical submitted head")
 	}
 	if len(targets) != len(recorded) {
-		return fmt.Errorf("remote publication target set changed")
+		return nil, fmt.Errorf("remote publication target set changed")
 	}
 	byFingerprint := make(map[string]db.RunPublicationTarget, len(recorded))
 	for _, target := range recorded {
 		if _, duplicate := byFingerprint[target.TargetFingerprint]; duplicate {
-			return fmt.Errorf("remote publication target ledger is duplicated")
+			return nil, fmt.Errorf("remote publication target ledger is duplicated")
 		}
 		byFingerprint[target.TargetFingerprint] = target
 	}
+	for attempt := 0; attempt < 3; attempt++ {
+		first, err := m.readRemotePublicationSnapshot(ctx, run, repo, targets, recorded, byFingerprint)
+		if err != nil {
+			return nil, err
+		}
+		second, err := m.readRemotePublicationSnapshot(ctx, run, repo, targets, recorded, byFingerprint)
+		if err != nil {
+			return nil, err
+		}
+		if equalPublicationEvidence(first, second) {
+			return first, nil
+		}
+	}
+	return nil, fmt.Errorf("remote publication evidence did not stabilize")
+}
+
+func (m *RunManager) readRemotePublicationSnapshot(ctx context.Context, run *db.Run, repo *db.Repo, targets []publicationTargetURL, recorded []db.RunPublicationTarget, byFingerprint map[string]db.RunPublicationTarget) (map[string]scm.HistoricalPublicationEvidence, error) {
 	seen := make(map[string]struct{}, len(targets))
+	evidence := make(map[string]scm.HistoricalPublicationEvidence, len(targets))
 	for _, target := range targets {
 		fingerprint := db.PublicationTargetFingerprint(target.url)
-		if _, duplicate := seen[fingerprint]; duplicate {
-			return fmt.Errorf("remote publication target is duplicated")
-		}
-		seen[fingerprint] = struct{}{}
 		record, ok := byFingerprint[fingerprint]
 		if !ok || record.Ref == "" || record.State != db.PublicationTargetNoAttempt {
-			return fmt.Errorf("remote publication target is not bound to the durable ledger")
+			return nil, fmt.Errorf("remote publication target is not bound to the durable ledger")
 		}
 		current, err := git.LsRemote(ctx, repo.WorkingPath, target.url, record.Ref)
 		if err != nil {
-			return fmt.Errorf("read remote branch %s from %s: %w", record.Ref, target.url, err)
+			return nil, fmt.Errorf("read remote branch %s from %s: %s", record.Ref, safeurl.Redact(target.url), safeurl.RedactText(err.Error()))
 		}
 		if current != *run.SubmittedHeadSHA {
-			return fmt.Errorf("remote branch %s from %s is %s, want submitted head %s", record.Ref, target.url, current, *run.SubmittedHeadSHA)
+			return nil, fmt.Errorf("remote branch %s from %s is %s, want submitted head %s", record.Ref, safeurl.Redact(target.url), current, *run.SubmittedHeadSHA)
 		}
-		for _, pattern := range []string{"refs/pull/*/head", "refs/merge-requests/*/head", "refs/changes/*"} {
-			output, err := git.Run(ctx, repo.WorkingPath, "ls-remote", target.url, pattern)
+		parts := []string{fingerprint, record.Ref, current}
+		if strings.TrimSpace(record.PRRequestIdentity) != "" {
+			requestRef, err := publicationRequestRef(ctx, target.url, record.PRRequestIdentity)
 			if err != nil {
-				return fmt.Errorf("read remote publication refs %s from %s: %w", pattern, target.url, err)
+				return nil, err
 			}
-			for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
-				if strings.TrimSpace(line) == "" {
-					continue
-				}
-				fields := strings.Fields(line)
-				if len(fields) != 2 || !reviewObjectID(fields[0]) || fields[1] == "" || fields[0] != *run.SubmittedHeadSHA {
-					refName := "<malformed>"
-					if len(fields) > 1 {
-						refName = fields[len(fields)-1]
-					}
-					return fmt.Errorf("remote publication ref %q from %s is not the submitted head", refName, target.url)
-				}
+			requestHead, err := git.LsRemote(ctx, repo.WorkingPath, target.url, requestRef)
+			if err != nil {
+				return nil, fmt.Errorf("read exact publication ref %s from %s: %s", requestRef, safeurl.Redact(target.url), safeurl.RedactText(err.Error()))
 			}
+			if requestHead != *run.SubmittedHeadSHA {
+				return nil, fmt.Errorf("exact publication ref %s from %s is not the submitted head", requestRef, safeurl.Redact(target.url))
+			}
+			parts = append(parts, requestRef, requestHead)
 		}
+		hash := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+		evidence[fingerprint] = scm.HistoricalPublicationEvidence{Hash: hex.EncodeToString(hash[:]), Cursor: "remote-" + hex.EncodeToString(hash[:8]), Coverage: "exact-refs"}
+		seen[fingerprint] = struct{}{}
 	}
 	if len(seen) != len(recorded) {
-		return fmt.Errorf("remote publication target set changed")
+		return nil, fmt.Errorf("remote publication target set changed")
 	}
-	return nil
+	return evidence, nil
+}
+
+func equalPublicationEvidence(left, right map[string]scm.HistoricalPublicationEvidence) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		other, ok := right[key]
+		if !ok || value != other {
+			return false
+		}
+	}
+	return true
+}
+
+func publicationRequestRef(ctx context.Context, target, identity string) (string, error) {
+	number, err := scm.ExtractPRNumber(identity)
+	if err != nil {
+		return "", fmt.Errorf("submission-time publication request identity is invalid")
+	}
+	switch scm.DetectProviderContext(ctx, target) {
+	case scm.ProviderGitHub:
+		return "refs/pull/" + number + "/head", nil
+	case scm.ProviderGitLab:
+		return "refs/merge-requests/" + number + "/head", nil
+	default:
+		return "", fmt.Errorf("exact publication ref is unavailable for provider %s", scm.DetectProviderContext(ctx, target))
+	}
 }
 
 func (m *RunManager) recoveryTargetIdentityForRun(ctx context.Context, target string, targets []string, run *db.Run) (string, string, error) {

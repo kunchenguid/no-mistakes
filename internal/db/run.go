@@ -118,6 +118,9 @@ func (t *CustodyTransition) Complete(ctx context.Context, expected *Run) error {
 	if err := validateRunPublicationTargetLedgerTx(tx, t.runID, true); err != nil {
 		return fmt.Errorf("%w: publication target ledger changed: %v", ErrRunCustodyCAS, err)
 	}
+	if err := validateRunPublicationEvidenceTx(tx, expected); err != nil {
+		return fmt.Errorf("%w: publication evidence changed: %v", ErrRunCustodyCAS, err)
+	}
 	args := []any{now(), CustodyPhaseStamped, now()}
 	args = append(args, custodyAuthorityArgs(expected)...)
 	args = append(args, t.token, CustodyPhaseGateMoved, PublicationJournalReady, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))
@@ -218,6 +221,8 @@ type Run struct {
 	PublicationAttemptTargetKind        *string
 	PublicationAttemptTargetFingerprint *string
 	PublicationAttemptRef               *string
+	PublicationEvidenceHash             string
+	PublicationEvidenceGeneration       int64
 	// CustodyReturnedAt is non-nil once a guarded branch-sync recovery
 	// explicitly ended this run's ownership of an unpublished pipeline head
 	// (terminal run whose head was never successfully pushed, or moved after
@@ -802,6 +807,9 @@ func (d *DB) SetRunCustodyReturnedCAS(expected *Run) error {
 	defer tx.Rollback()
 	if err := validateRunPublicationTargetLedgerTx(tx, expected.ID, true); err != nil {
 		return fmt.Errorf("%w: publication target ledger changed: %v", ErrRunCustodyCAS, err)
+	}
+	if err := validateRunPublicationEvidenceTx(tx, expected); err != nil {
+		return fmt.Errorf("%w: publication evidence changed: %v", ErrRunCustodyCAS, err)
 	}
 	ts := now()
 	args := append([]any{ts, ts}, custodyAuthorityArgs(expected)...)

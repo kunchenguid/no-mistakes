@@ -244,6 +244,7 @@ func TestVerifyRemotePublicationProofRejectsPreservedHeads(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		recorded[0].PRRequestIdentity = "https://github.com/example/repo/pull/7"
 		manager := NewRunManager(database, p, nil)
 		t.Cleanup(manager.Shutdown)
 		if err := manager.verifyRemotePublicationProof(context.Background(), run, repo, []publicationTargetURL{{kind: "upstream", url: bare}}, recorded); err == nil {

@@ -117,9 +117,34 @@ CREATE TABLE IF NOT EXISTS run_publication_target_sets (
     state           TEXT NOT NULL CHECK (state IN ('complete', 'ambiguous')),
     generation      INTEGER NOT NULL DEFAULT 0,
     provenance      TEXT NOT NULL,
+    evidence_hash   TEXT NOT NULL DEFAULT '',
+    evidence_cursor TEXT NOT NULL DEFAULT '',
+    evidence_generation INTEGER NOT NULL DEFAULT 0,
+    evidence_provenance TEXT NOT NULL DEFAULT '',
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS run_publication_evidence (
+    run_id              TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    target_fingerprint  TEXT NOT NULL,
+    ref                 TEXT NOT NULL,
+    target_version      INTEGER NOT NULL,
+    remote_hash         TEXT NOT NULL,
+    provider_hash       TEXT NOT NULL,
+    evidence_hash       TEXT NOT NULL,
+    cursor              TEXT NOT NULL,
+    since               INTEGER NOT NULL,
+    until               INTEGER NOT NULL,
+    generation          INTEGER NOT NULL,
+    provenance          TEXT NOT NULL,
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    PRIMARY KEY (run_id, target_fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS run_publication_evidence_active
+    ON run_publication_evidence (run_id, generation, target_fingerprint);
 
 CREATE TABLE IF NOT EXISTS step_results (
     id               TEXT PRIMARY KEY,
@@ -391,6 +416,12 @@ var migrationStatements = []string{
 	`CREATE TABLE IF NOT EXISTS run_publication_targets (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, target_kind TEXT NOT NULL, target_fingerprint TEXT NOT NULL, ref TEXT NOT NULL, target_version INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'no_attempt' CHECK (state IN ('no_attempt', 'attempted', 'published', 'ambiguous')), request_identity TEXT, attempt_head_sha TEXT, generation INTEGER NOT NULL DEFAULT 0, provenance TEXT NOT NULL DEFAULT '', pr_state TEXT NOT NULL DEFAULT 'no_attempt' CHECK (pr_state IN ('no_attempt', 'prepared', 'opened', 'ambiguous')), pr_request_identity TEXT, pr_generation INTEGER NOT NULL DEFAULT 0, pr_provenance TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (run_id, target_fingerprint))`,
 	`CREATE INDEX IF NOT EXISTS run_publication_targets_active ON run_publication_targets (run_id, state, target_fingerprint)`,
 	`CREATE TABLE IF NOT EXISTS run_publication_target_sets (run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE, target_count INTEGER NOT NULL, target_set_hash TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('complete', 'ambiguous')), generation INTEGER NOT NULL DEFAULT 0, provenance TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+	`ALTER TABLE run_publication_target_sets ADD COLUMN evidence_hash TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE run_publication_target_sets ADD COLUMN evidence_cursor TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE run_publication_target_sets ADD COLUMN evidence_generation INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE run_publication_target_sets ADD COLUMN evidence_provenance TEXT NOT NULL DEFAULT ''`,
+	`CREATE TABLE IF NOT EXISTS run_publication_evidence (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, target_fingerprint TEXT NOT NULL, ref TEXT NOT NULL, target_version INTEGER NOT NULL, remote_hash TEXT NOT NULL, provider_hash TEXT NOT NULL, evidence_hash TEXT NOT NULL, cursor TEXT NOT NULL, since INTEGER NOT NULL, until INTEGER NOT NULL, generation INTEGER NOT NULL, provenance TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (run_id, target_fingerprint))`,
+	`CREATE INDEX IF NOT EXISTS run_publication_evidence_active ON run_publication_evidence (run_id, generation, target_fingerprint)`,
 	`ALTER TABLE receive_reservations ADD COLUMN receive_session_id TEXT`,
 	`ALTER TABLE receive_reservations ADD COLUMN receive_capability_hash TEXT`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS receive_reservations_session_transition ON receive_reservations (repo_id, receive_session_id, ref, old_sha, new_sha) WHERE receive_session_id IS NOT NULL`,

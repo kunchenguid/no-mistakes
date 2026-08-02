@@ -540,6 +540,62 @@ func TestRunPublicationTargetsAreBoundPerTarget(t *testing.T) {
 	}
 }
 
+func TestRunPublicationEvidenceBindsCustodyCAS(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/repo-publication-evidence", "https://github.com/example/evidence.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets, err := d.ListRunPublicationTargets(run.ID)
+	if err != nil || len(targets) != 1 {
+		t.Fatalf("publication targets = %#v, %v", targets, err)
+	}
+	set, err := d.RecordRunPublicationEvidence(run.ID, []PublicationEvidenceInput{{
+		TargetFingerprint: targets[0].TargetFingerprint,
+		Ref:               targets[0].Ref,
+		TargetVersion:     targets[0].TargetVersion,
+		RemoteHash:        "remote-a",
+		ProviderHash:      "provider-a",
+		Cursor:            "cursor-a",
+		Since:             run.CreatedAt,
+		Until:             run.UpdatedAt,
+	}})
+	if err != nil {
+		t.Fatalf("record publication evidence: %v", err)
+	}
+	if set.EvidenceHash == "" || set.EvidenceGeneration == 0 {
+		t.Fatalf("publication evidence snapshot = %#v", set)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected.PublicationEvidenceHash = set.EvidenceHash
+	expected.PublicationEvidenceGeneration = set.EvidenceGeneration
+	if _, err := d.RecordRunPublicationEvidence(run.ID, []PublicationEvidenceInput{{
+		TargetFingerprint: targets[0].TargetFingerprint,
+		Ref:               targets[0].Ref,
+		TargetVersion:     targets[0].TargetVersion,
+		RemoteHash:        "remote-b",
+		ProviderHash:      "provider-b",
+		Cursor:            "cursor-b",
+		Since:             run.CreatedAt,
+		Until:             run.UpdatedAt,
+	}}); err != nil {
+		t.Fatalf("record changed publication evidence: %v", err)
+	}
+	if err := d.SetRunCustodyReturnedCAS(expected); !errors.Is(err, ErrRunCustodyCAS) {
+		t.Fatalf("custody CAS after evidence change = %v, want compare-and-swap failure", err)
+	}
+}
+
 func TestRunPublicationTargetPushAndPRChannelsAdvanceIndependently(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepo("/tmp/repo-publication-channels", "https://github.com/example/parent.git", "main")

@@ -217,3 +217,17 @@ type HistoricalPublicationVerifier interface {
 type HistoricalRefPublicationVerifier interface {
 	VerifyUnpublishedRefHistory(ctx context.Context, branch, submitted, preserved string, since, until int64) error
 }
+
+type HistoricalPublicationEvidence struct {
+	Hash     string
+	Cursor   string
+	Coverage string
+}
+
+type HistoricalTargetPublicationVerifier interface {
+	VerifyUnpublishedTargetHistory(ctx context.Context, branch, submitted, preserved string, since, until int64) (HistoricalPublicationEvidence, error)
+}
+
+type HistoricalRefPublicationEvidenceVerifier interface {
+	VerifyUnpublishedRefHistoryEvidence(ctx context.Context, branch, submitted, preserved string, since, until int64) (HistoricalPublicationEvidence, error)
+}

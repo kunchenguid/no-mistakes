@@ -798,6 +798,17 @@ func TestVerifyUnpublishedRefHistoryRejectsPreservedBranchHead(t *testing.T) {
 	}
 }
 
+func TestVerifyUnpublishedRefHistoryRejectsEmptyCoverage(t *testing.T) {
+	t.Parallel()
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+		"gh api --paginate repos/test/repo/events?per_page=100": {stdout: "[]\n"},
+	}), nil, "", "test/repo")
+	if err := host.VerifyUnpublishedRefHistory(context.Background(), "refs/heads/feature", strings.Repeat("a", 40), strings.Repeat("b", 40), 0, 0); err == nil {
+		t.Fatal("empty ref history passed as complete evidence")
+	}
+}
+
 func TestVerifyUnpublishedHistoryInspectsRenamedNoPullRequestHistory(t *testing.T) {
 	t.Parallel()
 	a := strings.Repeat("a", 40)
