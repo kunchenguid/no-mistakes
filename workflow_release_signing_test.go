@@ -65,12 +65,13 @@ type wfStrategy struct {
 }
 
 type wfStep struct {
-	Name string            `yaml:"name"`
-	Uses string            `yaml:"uses"`
-	If   string            `yaml:"if"`
-	Env  map[string]string `yaml:"env"`
-	Run  string            `yaml:"run"`
-	With map[string]string `yaml:"with"`
+	Name  string            `yaml:"name"`
+	Uses  string            `yaml:"uses"`
+	If    string            `yaml:"if"`
+	Shell string            `yaml:"shell"`
+	Env   map[string]string `yaml:"env"`
+	Run   string            `yaml:"run"`
+	With  map[string]string `yaml:"with"`
 }
 
 func loadReleaseWorkflowDoc(t *testing.T) *wfDoc {
