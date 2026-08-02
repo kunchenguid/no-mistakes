@@ -631,6 +631,28 @@ func TestUpdateRunReviewApprovedHeadSHAReplacesAuthority(t *testing.T) {
 	}
 }
 
+func TestUpdateRunBaseBranchRecordsEmptyAndExplicitSelections(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "head", "base")
+	if run.BaseBranch != nil {
+		t.Fatalf("new run base branch = %#v, want unresolved nil", run.BaseBranch)
+	}
+
+	for _, want := range []string{"", "release/next"} {
+		if err := d.UpdateRunBaseBranch(run.ID, want); err != nil {
+			t.Fatal(err)
+		}
+		got, err := d.GetRun(run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.BaseBranch == nil || *got.BaseBranch != want {
+			t.Fatalf("stored base branch = %#v, want %q", got.BaseBranch, want)
+		}
+	}
+}
+
 func TestUpdateRunHeadSHA(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

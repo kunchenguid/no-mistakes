@@ -65,6 +65,36 @@ func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
 	}
 }
 
+func TestRestoreRecoveredBaseBranchUsesRunSnapshot(t *testing.T) {
+	stored := "release/next"
+	cfg := &config.Config{BaseBranch: "release/later"}
+	run := &db.Run{Branch: "feature", BaseBranch: &stored}
+	if err := restoreRecoveredBaseBranch(cfg, run); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BaseBranch != stored {
+		t.Fatalf("recovered base branch = %q, want run snapshot %q", cfg.BaseBranch, stored)
+	}
+}
+
+func TestRestoreRecoveredBaseBranchKeepsLegacyRunOnDefault(t *testing.T) {
+	cfg := &config.Config{BaseBranch: "release/new"}
+	if err := restoreRecoveredBaseBranch(cfg, &db.Run{Branch: "feature"}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BaseBranch != "" {
+		t.Fatalf("legacy recovered base branch = %q, want default-branch behavior", cfg.BaseBranch)
+	}
+}
+
+func TestRestoreRecoveredBaseBranchRejectsCorruptSnapshot(t *testing.T) {
+	stored := "refs/heads/main"
+	err := restoreRecoveredBaseBranch(&config.Config{}, &db.Run{Branch: "feature", BaseBranch: &stored})
+	if err == nil || !strings.Contains(err.Error(), "invalid") {
+		t.Fatalf("restore error = %v, want invalid snapshot refusal", err)
+	}
+}
+
 // TestLoadTrustedRepoConfig_FailClosedOnFetchFailure is the regression test for
 // the supply-chain RCE review item #1: when the default-branch fetch fails,
 // startRun passes an empty trustedSHA, and loadTrustedRepoConfig MUST return

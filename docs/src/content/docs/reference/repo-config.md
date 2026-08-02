@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, and `no_ci` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, `no_ci`, and `base_branch` only from that trusted copy.
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
@@ -162,6 +162,28 @@ If checks still appear on a declared no-CI repository, their actual states are p
 
 This field is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`.
 A feature branch cannot self-declare `no_ci: true` to bypass checks, and cannot clear a trusted declaration either.
+
+### base_branch
+
+Explicit integration base for the pipeline: the branch it rebases onto, scopes the diff for review, test, document, and lint against, and targets when opening a pull request.
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | `""` (use the repository's default branch) |
+
+Set this when a repository's work integrates into a branch other than its default one, for example a long-lived preservation or release-train branch:
+
+```yaml
+base_branch: captain/preserve-firstmate-project-touch-d78
+```
+
+Leave it unset for the normal case. An empty or missing value keeps the existing behavior exactly: the repository's default branch is the base everywhere.
+
+The value must be a plain branch name — not a full `refs/...` ref, not a glob, and not a revision expression such as `main..feature` or `main@{1}`. The run stops before any rebase, push, or pull-request call when the configured base is syntactically unsafe, names the branch under validation (a branch cannot be its own base), or does not resolve to exactly one branch on the remote. It never silently falls back to the default branch, which would rebase onto and open a pull request against the wrong history.
+
+This field is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`.
+The base decides what gets reviewed, so a pushed branch that could name its own base could name itself and reduce the reviewed diff to nothing.
 
 ### commands.test
 

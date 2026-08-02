@@ -2,13 +2,126 @@ package steps
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 )
+
+// baseBranch returns the branch every base-relative pipeline operation is
+// scoped to: rebase target, diff/review/test/document/lint scope, and PR base.
+//
+// It is the repository's trusted explicit base_branch when one is configured,
+// otherwise the repository's default branch - so a repo with no explicit base
+// behaves exactly as before. The value is validated by
+// assertBaseBranchUsable before any step acts on it; this accessor is the
+// single read point so a step cannot accidentally keep using DefaultBranch.
+//
+// Repo.DefaultBranch deliberately keeps its other jobs (trusted-config anchor
+// in the daemon, telemetry branch role): the base a contributor merges into is
+// not the same fact as the branch the maintainer's trusted config lives on.
+func baseBranch(sctx *pipeline.StepContext) string {
+	if sctx.Config != nil {
+		if explicit := strings.TrimSpace(sctx.Config.BaseBranch); explicit != "" {
+			return explicit
+		}
+	}
+	if sctx.Repo == nil {
+		return ""
+	}
+	return strings.TrimSpace(sctx.Repo.DefaultBranch)
+}
+
+// assertBaseBranchUsable fails closed when an explicit base is unsafe or would
+// defeat the gate.
+//
+// Two rejections, both fatal to the run rather than merely logged:
+//   - a syntactically unsafe or ambiguous ref (config.ValidateBaseBranch), so
+//     nothing option-like or revision-operator-like ever reaches a git argv;
+//   - a base equal to the run's own branch, which would make the reviewed diff
+//     empty and open a self-targeting PR.
+//
+// A repo with no explicit base skips both checks and keeps current behavior.
+func assertBaseBranchUsable(sctx *pipeline.StepContext) error {
+	if sctx.Config == nil {
+		return nil
+	}
+	explicit := strings.TrimSpace(sctx.Config.BaseBranch)
+	if explicit == "" {
+		return nil
+	}
+	if err := config.ValidateBaseBranch(explicit); err != nil {
+		return fmt.Errorf("explicit base branch rejected: %w", err)
+	}
+	if sctx.Run != nil {
+		branch := strings.TrimPrefix(strings.TrimSpace(sctx.Run.Branch), "refs/heads/")
+		if branch != "" && branch == explicit {
+			return fmt.Errorf("explicit base branch %q is the branch under validation; a branch cannot be its own base", explicit)
+		}
+	}
+	return nil
+}
+
+// assertBaseBranchResolvable verifies an explicit base actually exists on the
+// remote the run integrates with, and that it names exactly one ref. An
+// unresolved or ambiguous base must stop the run before a rebase or PR rather
+// than silently degrade to the default branch, which would rebase and open a
+// PR against the wrong history.
+//
+// It is a no-op when no explicit base is configured: the default-branch path
+// keeps its existing tolerant fetch-and-fall-back behavior.
+func assertBaseBranchResolvable(ctx context.Context, sctx *pipeline.StepContext) error {
+	if sctx.Config == nil {
+		return nil
+	}
+	explicit := strings.TrimSpace(sctx.Config.BaseBranch)
+	if explicit == "" {
+		return nil
+	}
+	out, err := git.Run(ctx, sctx.WorkDir, "ls-remote", "--heads", resolveUpstreamURL(sctx), "refs/heads/"+explicit)
+	if err != nil {
+		return fmt.Errorf("could not resolve explicit base branch %q on the remote: %w", explicit, err)
+	}
+	var matches int
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) != "" {
+			matches++
+		}
+	}
+	switch {
+	case matches == 0:
+		return fmt.Errorf("explicit base branch %q does not exist on the remote", explicit)
+	case matches > 1:
+		return fmt.Errorf("explicit base branch %q is ambiguous on the remote (%d matching refs)", explicit, matches)
+	}
+	return nil
+}
+
+// PrepareExplicitBaseBranch validates, resolves, and fetches the trusted
+// explicit integration base before pipeline step dispatch.
+func PrepareExplicitBaseBranch(ctx context.Context, sctx *pipeline.StepContext) error {
+	if err := assertBaseBranchUsable(sctx); err != nil {
+		return err
+	}
+	if sctx.Config == nil || strings.TrimSpace(sctx.Config.BaseBranch) == "" {
+		return nil
+	}
+	if err := assertBaseBranchResolvable(ctx, sctx); err != nil {
+		return err
+	}
+	base := strings.TrimSpace(sctx.Config.BaseBranch)
+	if err := fetchRunUpstreamBranch(ctx, sctx, base); err != nil {
+		return fmt.Errorf("could not fetch explicit base branch %q: %w", base, err)
+	}
+	if _, err := git.ResolveRef(ctx, sctx.WorkDir, "refs/remotes/origin/"+base); err != nil {
+		return fmt.Errorf("could not resolve fetched explicit base branch %q: %w", base, err)
+	}
+	return nil
+}
 
 // reviewWorkload returns the bounded change size (files + net lines) between
 // base and head for local telemetry, or nil when the diff-stat cannot be

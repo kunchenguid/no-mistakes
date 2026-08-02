@@ -169,13 +169,13 @@ This means the live remote branch changed after the pipeline's last observed hea
 Fetch and inspect the configured push target, then rebase or merge the remote work into your branch before pushing through `no-mistakes` again.
 If the overwrite is intentional, push manually to the actual remote after reviewing the commits that would be discarded.
 
-### Rebase pauses because the branch carries unpushed default-branch commits
+### Rebase pauses because the branch carries unpushed base-branch commits
 
-This means the branch was created from a local default branch that is ahead of `origin/<default_branch>`, so its history includes commits that exist only on your local default branch.
+This means the branch was created from a local pipeline base branch that is ahead of `origin/<base_branch>`, so its history includes commits that exist only on your local base branch. The pipeline base is [`base_branch`](/no-mistakes/reference/repo-config/#base_branch) when configured, otherwise the repository's default branch.
 `no-mistakes` pauses with an `ask-user` finding instead of silently bundling that unrelated local work into the PR.
 
-Push the default branch to `origin` if those commits belong in the shared base, or rebase your feature branch onto `origin/<default_branch>` to remove the unrelated work before running the gate again.
-Approve the finding only when you intentionally want that local default-branch work to stay in the branch.
+Push the base branch to the upstream remote if those commits belong in the shared base, or rebase your feature branch onto `origin/<base_branch>` to remove the unrelated work before running the gate again.
+Approve the finding only when you intentionally want that local base-branch work to stay in the branch.
 
 ## `git push no-mistakes` doesn't start a pipeline
 
@@ -229,7 +229,7 @@ Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requ
 - Self-hosted GitHub Enterprise on a hostname that is not `github.com` isn't detected because `gh` isn't configured for the host; run `gh auth login --hostname your-ghe.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`gh auth status --hostname your-ghe.example.com`), so a stale token on `github.com` or any other configured gh host can no longer falsely mark the GHE repo as unauthenticated.
 - Self-hosted GitLab on a hostname with no `gitlab` marker isn't detected because `glab` isn't configured for the host; run `glab auth login --hostname your-gitlab.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`glab auth status --hostname your-gitlab.example.com`), so a stale token on `gitlab.com` or any other configured glab host can no longer falsely mark the self-hosted repo as unauthenticated.
 - A GitLab, Bitbucket, or Azure DevOps repo record has a fork URL set; fork MR/PR routing is currently GitHub-only
-- You pushed the default branch (PR step always skips on the default branch)
+- You pushed the pipeline base branch (the PR step always skips that branch)
 
 ## CI step stuck or timed out
 

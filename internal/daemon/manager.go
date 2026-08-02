@@ -224,7 +224,36 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	}
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
-	return config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)), nil
+	cfg := config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands))
+	if err := restoreRecoveredBaseBranch(cfg, run); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func restoreRecoveredBaseBranch(cfg *config.Config, run *db.Run) error {
+	if cfg == nil || run == nil {
+		return fmt.Errorf("recovered run base branch state is incomplete")
+	}
+	if run.BaseBranch == nil {
+		cfg.BaseBranch = ""
+		return nil
+	}
+	base := *run.BaseBranch
+	if base != strings.TrimSpace(base) {
+		return fmt.Errorf("recovered run base branch %q has leading or trailing whitespace", base)
+	}
+	if base != "" {
+		if err := config.ValidateBaseBranch(base); err != nil {
+			return fmt.Errorf("recovered run base branch is invalid: %w", err)
+		}
+		branch := strings.TrimPrefix(strings.TrimSpace(run.Branch), "refs/heads/")
+		if branch != "" && branch == base {
+			return fmt.Errorf("recovered run base branch %q is the branch under validation", base)
+		}
+	}
+	cfg.BaseBranch = base
+	return nil
 }
 
 func newPipelineAgent(ctx context.Context, cfg *config.Config, lookPath func(string) (string, error)) (agent.Agent, error) {
@@ -843,6 +872,25 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
+	baseBranch := strings.TrimSpace(cfg.BaseBranch)
+	baseContext := &pipeline.StepContext{
+		Ctx:     ctx,
+		Run:     run,
+		Repo:    repo,
+		WorkDir: wtDir,
+		Config:  cfg,
+	}
+	if err := steps.PrepareExplicitBaseBranch(ctx, baseContext); err != nil {
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("prepare_base_branch")
+		return "", err
+	}
+	if err := m.db.UpdateRunBaseBranch(run.ID, baseBranch); err != nil {
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("persist_base_branch")
+		return "", err
+	}
+	run.BaseBranch = &baseBranch
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
 	var ag agent.Agent

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -140,6 +141,52 @@ type RepoConfig struct {
 	// registered pending or failing check. No inference from workflow files,
 	// prior history, branch names, or grace-period expiry.
 	NoCI bool `yaml:"no_ci"`
+	// BaseBranch overrides the branch the pipeline treats as the integration
+	// base: what rebase rebases onto, what diff/review/test/document/lint scope
+	// against, and what a pull request targets. Empty (the default) keeps the
+	// repository's default branch, so absent configuration is exactly current
+	// behavior.
+	//
+	// It is honored ONLY from the trusted default-branch copy of
+	// .no-mistakes.yaml (see EffectiveRepoConfig). A pushed branch that could
+	// name its own base could point the base at its own tip, collapsing the
+	// reviewed diff to nothing and walking the review gate. Same reason
+	// document/disable_project_settings are trusted-only.
+	BaseBranch string `yaml:"base_branch"`
+}
+
+// baseBranchPattern accepts the plain branch names a base may take: segments of
+// safe characters joined by "/". It deliberately excludes anything git would
+// treat as an option, a pathspec escape, a ref-spec, or a glob.
+var baseBranchPattern = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._-]*(/[A-Za-z0-9._][A-Za-z0-9._-]*)*$`)
+
+// ValidateBaseBranch checks an explicit base_branch value for the shapes that
+// would be unsafe or ambiguous to hand to git and the SCM host. It is a pure
+// syntactic gate; whether the ref actually exists on the remote is checked
+// separately by the pipeline before any rebase, push, or PR mutation.
+//
+// An empty value is not valid here: callers treat empty as "unset" and never
+// reach this function with one.
+func ValidateBaseBranch(name string) error {
+	if name != strings.TrimSpace(name) {
+		return fmt.Errorf("base_branch %q has leading or trailing whitespace", name)
+	}
+	if name == "" {
+		return errors.New("base_branch is empty")
+	}
+	if strings.HasPrefix(name, "refs/") {
+		return fmt.Errorf("base_branch %q must be a plain branch name, not a full ref", name)
+	}
+	if !baseBranchPattern.MatchString(name) {
+		return fmt.Errorf("base_branch %q is not a valid branch name", name)
+	}
+	if strings.HasSuffix(name, ".lock") || strings.Contains(name, ".lock/") {
+		return fmt.Errorf("base_branch %q must not use a .lock component", name)
+	}
+	if strings.Contains(name, "..") || strings.Contains(name, "@{") {
+		return fmt.Errorf("base_branch %q contains a git revision operator", name)
+	}
+	return nil
 }
 
 // DocumentRaw is the YAML representation of document-step settings.
@@ -281,6 +328,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Review                 ReviewRaw   `yaml:"review"`
 		DisableProjectSettings bool        `yaml:"disable_project_settings"`
 		NoCI                   bool        `yaml:"no_ci"`
+		BaseBranch             string      `yaml:"base_branch"`
 	}
 	var raw repoConfigRaw
 	if err := value.Decode(&raw); err != nil {
@@ -299,6 +347,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Review = raw.Review
 	c.DisableProjectSettings = raw.DisableProjectSettings
 	c.NoCI = raw.NoCI
+	c.BaseBranch = strings.TrimSpace(raw.BaseBranch)
 	return nil
 }
 
@@ -361,6 +410,10 @@ type Config struct {
 	// intentionally has no CI (see the RepoConfig field). When true and the
 	// forge reports zero checks, the CI monitor treats that as all-checks-passed.
 	NoCI bool
+	// BaseBranch is the resolved, trusted-only explicit integration base (see
+	// the RepoConfig field). Empty means "use the repository's default
+	// branch", which is the pre-existing behavior.
+	BaseBranch string
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -1336,11 +1389,17 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// default-branch copy so a pushed branch cannot self-declare no-CI and
 		// bypass checks that the default branch still expects.
 		effective.NoCI = trusted.NoCI
+		// base_branch decides what the pipeline diffs, reviews, rebases onto,
+		// and targets with a PR. Trusted-only for the same reason as the two
+		// above: a pushed branch that could name its own base could name
+		// itself and reduce the reviewed delta to nothing.
+		effective.BaseBranch = trusted.BaseBranch
 	} else {
 		effective.Document = DocumentRaw{}
 		effective.Review = ReviewRaw{}
 		effective.DisableProjectSettings = false
 		effective.NoCI = false
+		effective.BaseBranch = ""
 	}
 	if allowRepoCommands {
 		return &effective
@@ -1530,6 +1589,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
 		NoCI:                   repo.NoCI,
+		BaseBranch:             strings.TrimSpace(repo.BaseBranch),
 	}
 
 	if repo.Agent != "" {

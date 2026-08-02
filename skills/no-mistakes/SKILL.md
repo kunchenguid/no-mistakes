@@ -250,11 +250,13 @@ The CI step deliberately keeps watching the PR after checks pass, so
 blocking on the human merge. Never poll or re-run waiting for the merge yourself.
 Never treat "no CI checks reported" alone as green.
 
-Because that monitor stays live, a PR that falls behind the default branch or
-hits a merge conflict after checks pass - commonly because another PR merged
-first - needs **no command from you**: never hand-rebase. When the CI monitor
-sees an actual conflict it **rebases onto the base, resolves it, and re-pushes
-the branch itself**; a PR that is merely behind but still clean needs nothing
+Because that monitor stays live, a PR that falls behind its configured pipeline
+base branch or hits a merge conflict after checks pass - commonly because
+another PR merged first - needs **no command from you**: never hand-rebase. The
+pipeline base may be an explicit non-default branch; when `base_branch` is
+unset, it is the repository's default branch. When the CI monitor sees an
+actual conflict it **rebases onto the base, resolves it, and re-pushes the
+branch itself**; a PR that is merely behind but still clean needs nothing
 either, since the platform merges it. The one exception is when that monitor is
 no longer running - the PR was closed, the run was aborted or superseded, it
 idle-timed-out, or its auto-fix attempts were exhausted - in which case recover

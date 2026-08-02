@@ -131,6 +131,80 @@ func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
 	}
 }
 
+func TestPushReceivedPreparesExplicitBaseBeforeSkippedRebase(t *testing.T) {
+	prepared := make(chan error, 1)
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{
+			&mockPassStep{name: types.StepRebase},
+			&observePreparedBaseStep{branch: "release/next", prepared: prepared},
+		}
+	})
+
+	repo, _ := setupTestGitRepo(t, p, d, "explicit-base-preflight")
+	configPath := filepath.Join(repo.WorkingPath, ".no-mistakes.yaml")
+	configBody := "base_branch: release/next\nauto_fix:\n  lint: 0\n  test: 0\n  review: 0\n"
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", ".no-mistakes.yaml")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "configure explicit base")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main")
+
+	gitCmd(t, repo.WorkingPath, "checkout", "-b", "release/next")
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "release.txt"), []byte("next\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "release.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "prepare release")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/release/next")
+
+	gitCmd(t, repo.WorkingPath, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "feature.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "feature")
+	headSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/feature")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate:      p.RepoDir(repo.ID),
+		Ref:       "refs/heads/feature",
+		Old:       "0000000000000000000000000000000000000000",
+		New:       headSHA,
+		SkipSteps: []types.StepName{types.StepRebase},
+	}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if run := waitForRunTerminalState(t, d, result.RunID); run.Status != types.RunCompleted {
+		t.Fatalf("run status = %s, want completed (error: %v)", run.Status, run.Error)
+	} else if run.BaseBranch == nil || *run.BaseBranch != "release/next" {
+		t.Fatalf("persisted base branch = %#v, want release/next", run.BaseBranch)
+	}
+	if err := <-prepared; err != nil {
+		t.Fatalf("explicit base was not fetched before step dispatch: %v", err)
+	}
+}
+
+type observePreparedBaseStep struct {
+	branch   string
+	prepared chan<- error
+}
+
+func (s *observePreparedBaseStep) Name() types.StepName { return types.StepIntent }
+
+func (s *observePreparedBaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	_, err := git.ResolveRef(sctx.Ctx, sctx.WorkDir, "refs/remotes/origin/"+s.branch)
+	s.prepared <- err
+	return &pipeline.StepOutcome{}, nil
+}
+
 func TestPushReceivedAllowsDifferentBranchRunsConcurrently(t *testing.T) {
 	started := make(chan string, 2)
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {

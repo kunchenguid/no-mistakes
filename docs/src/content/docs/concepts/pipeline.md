@@ -49,7 +49,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 
 - **Intent first** so downstream agent prompts and generated PR descriptions can include author intent supplied by the agent or inferred from transcripts.
 - **Rebase next** so everything else runs against the latest upstream and pushed-branch target.
-  It also stops when the branch would silently bundle commits from a local default branch that were never pushed to `origin/<default_branch>`.
+  It also stops when the branch would silently bundle commits from the local pipeline base that were never pushed to `origin/<base_branch>`.
   If there's no diff left after the rebase, the pipeline skips the rest.
 - **Review before test** so the agent reads fresh code, not code it may have touched during fixes.
 - **Document after test** so docs are updated against code that's known to work.

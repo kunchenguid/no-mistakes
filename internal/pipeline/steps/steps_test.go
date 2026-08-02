@@ -133,6 +133,10 @@ func fakeGHHandler(args []string) {
 		os.Exit(1)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "edit" {
+		if os.Getenv("FAKE_CLI_GH_EDIT_ERROR") != "" {
+			fmt.Fprintln(os.Stderr, "simulated PR update failure")
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "create" {

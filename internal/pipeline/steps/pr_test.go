@@ -97,6 +97,35 @@ func TestPRStep_UpdatesExistingPR(t *testing.T) {
 	}
 }
 
+func TestPRStep_ExistingPRUpdateFailureFailsClosed(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, _ := fakeGH(t, "https://github.com/test/repo/pull/42")
+	env = append(env, "FAKE_CLI_GH_EDIT_ERROR=1")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := (&PRStep{}).Execute(sctx)
+	if err == nil {
+		t.Fatal("expected an existing PR update failure to fail the PR step")
+	}
+	if outcome != nil {
+		t.Fatalf("outcome = %+v, want nil after failed PR update", outcome)
+	}
+	if !strings.Contains(err.Error(), "update existing pull request") {
+		t.Fatalf("error = %q, want existing PR update context", err)
+	}
+}
+
 func TestPRStep_BitbucketUpdatesExistingPR(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

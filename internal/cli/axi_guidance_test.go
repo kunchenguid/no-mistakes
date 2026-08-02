@@ -22,6 +22,9 @@ import (
 // auto-rebases and re-pushes such a PR, so the agent runs no command and never
 // hand-rebases, and `no-mistakes rerun` is only the dead-monitor recovery.
 var canonicalStaleMonitorPhrases = []string{
+	"pipeline base",
+	"explicit non-default branch",
+	"`base_branch`",
 	"never hand-rebase",
 	"re-pushes",
 	"no-mistakes rerun",

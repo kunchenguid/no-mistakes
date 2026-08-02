@@ -56,12 +56,20 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	ctx := sctx.Ctx
 
+	// Validate the explicit base before any PR lookup or creation: an unsafe
+	// or self-referential base must stop the run, not open a PR against the
+	// wrong target.
+	if err := assertBaseBranchUsable(sctx); err != nil {
+		return nil, err
+	}
+
 	branch := sctx.Run.Branch
 	if strings.HasPrefix(branch, "refs/heads/") {
 		branch = strings.TrimPrefix(branch, "refs/heads/")
 	}
-	if branch == sctx.Repo.DefaultBranch {
-		sctx.Log(fmt.Sprintf("skipping PR creation on default branch %s", branch))
+	base := baseBranch(sctx)
+	if branch == base {
+		sctx.Log(fmt.Sprintf("skipping PR creation on base branch %s", branch))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	provider := scm.DetectProviderContext(ctx, sctx.Repo.UpstreamURL)
@@ -75,15 +83,21 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 
+	// The base must exist on the remote before a PR targets it; an unresolved
+	// or ambiguous base fails the run rather than silently retargeting.
+	if err := assertBaseBranchResolvable(ctx, sctx); err != nil {
+		return nil, err
+	}
+
 	// Resolve the branch base so PR summaries cover the full branch delta.
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, base)
 	content, err := s.buildPRContent(sctx, branch, baseSHA, scm.MaxPRBodyChars(provider))
 	if err != nil {
 		return nil, err
 	}
 
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
-	existing, err := host.FindPR(ctx, branch, sctx.Repo.DefaultBranch)
+	existing, err := host.FindPR(ctx, branch, base)
 	if err != nil {
 		return nil, err
 	}
@@ -91,8 +105,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
 		updated, err := host.UpdatePR(ctx, existing, scm.PRContent(content))
 		if err != nil {
-			sctx.Log(fmt.Sprintf("warning: failed to update PR: %v", err))
-			updated = existing
+			return nil, fmt.Errorf("update existing pull request: %w", err)
 		}
 		if updated != nil && updated.URL != "" {
 			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, updated.URL); err != nil {
@@ -104,7 +117,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 
 	sctx.Log("creating pull request...")
-	created, err := host.CreatePR(ctx, branch, sctx.Repo.DefaultBranch, scm.PRContent(content))
+	created, err := host.CreatePR(ctx, branch, base, scm.PRContent(content))
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +159,7 @@ Context:
 - branch: %s
 - base commit: %s
 - target commit: %s
-- default branch: %s
+- base branch (what this change merges into): %s
 
 Rules:
 - Cover the full branch delta, not just the latest commit.
@@ -162,7 +175,7 @@ Diff stat:
 %s
 
 Final diff paths and statuses:
-%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, sctx.Repo.DefaultBranch, conventional.ReleaseTypeRule, diffStat, finalDiff, userIntentPromptSection(sctx), executionContextPromptSection())
+%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, baseBranch(sctx), conventional.ReleaseTypeRule, diffStat, finalDiff, userIntentPromptSection(sctx), executionContextPromptSection())
 
 	prompt += prBodyBudgetPromptSection(bodyLimit)
 
