@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.45.1](https://github.com/kunchenguid/no-mistakes/compare/v1.45.0...v1.45.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* **pipeline:** independently review automatic fixes ([#634](https://github.com/kunchenguid/no-mistakes/issues/634)) ([f2538db](https://github.com/kunchenguid/no-mistakes/commit/f2538db8c81127cffbd0da58574ee6275aa5a11a))
+
 ## [1.45.0](https://github.com/kunchenguid/no-mistakes/compare/v1.44.2...v1.45.0) (2026-08-02)
 
 
