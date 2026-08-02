@@ -147,21 +147,34 @@ func TestRecoveryTargetIdentityRejectsMismatchedTarget(t *testing.T) {
 }
 
 func TestRecoveryTargetIdentitySeparatesPublicationTargets(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
 	parent := "https://github.com/example/parent.git"
 	fork := "https://github.com/example/fork.git"
-	prURL := "https://github.com/example/parent/pull/7"
-	attemptFingerprint := branchsync.TargetFingerprint(fork)
-	run := &db.Run{
-		PRURL:                               &prURL,
-		PublicationAttemptTargetFingerprint: &attemptFingerprint,
+	repo, err := database.InsertRepoWithFork(t.TempDir(), parent, fork, "main")
+	if err != nil {
+		t.Fatal(err)
 	}
+	run, err := database.InsertRun(repo.ID, "feature", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prURL := "https://github.com/example/parent/pull/7"
+	if err := database.UpdateRunPRURLForTarget(run.ID, prURL, "upstream", db.PublicationTargetFingerprint(parent)); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewRunManager(database, p, nil)
+	t.Cleanup(manager.Shutdown)
 	targets := []string{parent, fork}
 
-	identity, err := recoveryTargetIdentityForRun(context.Background(), parent, targets, run)
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := manager.recoveryTargetIdentityForRun(context.Background(), parent, targets, run)
 	if err != nil || identity != prURL {
 		t.Fatalf("parent publication identity = %q, %v; want %q", identity, err, prURL)
 	}
-	identity, err = recoveryTargetIdentityForRun(context.Background(), fork, targets, run)
+	identity, err = manager.recoveryTargetIdentityForRun(context.Background(), fork, targets, run)
 	if err != nil || identity != "" {
 		t.Fatalf("fork publication identity = %q, %v; want no PR identity", identity, err)
 	}
@@ -199,6 +212,32 @@ func TestRestoreManagedGateGuardsQuarantinesUnjournaledBranch(t *testing.T) {
 		t.Fatalf("startup quarantine = %#v, want observed head %s", quarantine, head)
 	}
 	manager.Shutdown()
+}
+
+func TestRestoreManagedGateGuardsPropagatesEnumerationError(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, _ := setupTestGitRepo(t, p, database, "restore-enumeration-error")
+	if err := os.RemoveAll(p.RepoDir(repo.ID)); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewRunManager(database, p, nil)
+	defer manager.Shutdown()
+	if err := manager.restoreManagedGateGuards(); err == nil {
+		t.Fatal("managed gate enumeration error was swallowed")
+	}
+}
+
+func TestRestoreManagedGateGuardsPropagatesQuarantinePersistenceError(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	setupTestGitRepo(t, p, database, "restore-quarantine-error")
+	manager := NewRunManager(database, p, nil)
+	defer manager.Shutdown()
+	manager.quarantineGateRef = func(string, string, string, string, string, string) error {
+		return errors.New("quarantine persistence failed")
+	}
+	if err := manager.restoreManagedGateGuards(); err == nil {
+		t.Fatal("quarantine persistence error was swallowed")
+	}
 }
 
 func TestManagedGateAuthorityLossPersistsQuarantine(t *testing.T) {

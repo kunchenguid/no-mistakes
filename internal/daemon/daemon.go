@@ -215,7 +215,9 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, sta
 	slog.Info("daemon process launched", "pid", pidRecord.PID)
 
 	// Recovery remains exclusive and completes before IPC is bound.
-	recoverOnStartup(d, p, mgr)
+	if err := recoverOnStartup(d, p, mgr); err != nil {
+		return fmt.Errorf("startup recovery: %w", err)
+	}
 
 	srv := ipc.NewServer()
 
@@ -351,7 +353,7 @@ func writeDaemonPIDFile(path string, record daemonPIDFile) error {
 // best-effort migrates gate bare repos in place so older installs pick up
 // the per-worktree hookspath isolation introduced for issue #122 when Git
 // supports config --worktree.
-func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
+func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) error {
 	orphanStarted := time.Now()
 	reapOrphanedServers(p)
 	logStartupPhase("orphan_servers", orphanStarted)
@@ -394,7 +396,7 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 		for _, plan := range plans {
 			_ = plan.agent.Close()
 		}
-		return
+		return fmt.Errorf("recover stale runs: %w", err)
 	}
 	if count > 0 {
 		slog.Info("recovered stale runs from previous crash", "count", count)
@@ -406,7 +408,10 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	logStartupPhase("worktree_cleanup", worktreeStarted)
 	mgr.resumeRecoveredRuns(plans)
 	mgr.reconcileReceiveReservations(context.Background())
-	mgr.restoreManagedGateGuards()
+	if err := mgr.restoreManagedGateGuards(); err != nil {
+		return fmt.Errorf("restore managed gate guards: %w", err)
+	}
+	return nil
 }
 
 // cleanupOrphanWorktrees removes worktree directories left behind by runs

@@ -409,33 +409,51 @@ func (m *RunManager) releaseManagedGateGuard(repoID, ref string) error {
 	return nil
 }
 
-func (m *RunManager) restoreManagedGateGuards() {
+func (m *RunManager) restoreManagedGateGuards() error {
 	if m == nil || m.db == nil {
-		return
+		return nil
 	}
-	for _, repo := range m.mustListRepos() {
+	repos, err := m.db.GetRepos()
+	if err != nil {
+		return fmt.Errorf("list registered repositories: %w", err)
+	}
+	for _, repo := range repos {
 		refs, err := m.startupManagedGateRefs(repo)
 		if err != nil {
-			continue
+			return fmt.Errorf("enumerate managed refs for repository %s: %w", repo.ID, err)
 		}
 		for _, ref := range refs {
 			if err := m.ensureManagedGateGuard(repo, ref); err != nil {
-				if quarantine, quarantineErr := m.db.GetGateRefQuarantine(repo.ID, m.paths.RepoDir(repo.ID), ref); quarantineErr == nil && quarantine != nil {
+				quarantine, quarantineErr := m.db.GetGateRefQuarantine(repo.ID, m.paths.RepoDir(repo.ID), ref)
+				if quarantineErr != nil {
+					return fmt.Errorf("read managed-ref quarantine for repository %s ref %s: %w", repo.ID, ref, quarantineErr)
+				}
+				if quarantine != nil {
 					continue
 				}
 				managed, managedErr := m.db.GetManagedGateRef(repo.ID, m.paths.RepoDir(repo.ID), ref)
+				if managedErr != nil {
+					return fmt.Errorf("read managed-ref journal for repository %s ref %s: %w", repo.ID, ref, managedErr)
+				}
 				expected := ""
-				if managedErr == nil && managed != nil {
+				if managed != nil {
 					expected = managed.Head
 				}
 				observed, observedErr := git.Run(git.WithSanitizedGateConfig(context.Background()), m.paths.RepoDir(repo.ID), "rev-parse", ref+"^{commit}")
 				if observedErr != nil {
 					observed = ""
 				}
-				_ = m.db.QuarantineGateRef(repo.ID, m.paths.RepoDir(repo.ID), ref, expected, strings.TrimSpace(observed), "managed-gate-authority-unavailable")
+				quarantineFn := m.quarantineGateRef
+				if quarantineFn == nil {
+					quarantineFn = m.db.QuarantineGateRef
+				}
+				if quarantineErr := quarantineFn(repo.ID, m.paths.RepoDir(repo.ID), ref, expected, strings.TrimSpace(observed), "managed-gate-authority-unavailable"); quarantineErr != nil {
+					return fmt.Errorf("persist managed-ref quarantine for repository %s ref %s: %w", repo.ID, ref, quarantineErr)
+				}
 			}
 		}
 	}
+	return nil
 }
 
 func (m *RunManager) startupManagedGateRefs(repo *db.Repo) ([]string, error) {
@@ -466,17 +484,6 @@ func (m *RunManager) startupManagedGateRefs(repo *db.Repo) ([]string, error) {
 	}
 	sort.Strings(result)
 	return result, nil
-}
-
-func (m *RunManager) mustListRepos() []*db.Repo {
-	if m == nil || m.db == nil {
-		return nil
-	}
-	repos, err := m.db.GetRepos()
-	if err != nil {
-		return nil
-	}
-	return repos
 }
 
 func (m *RunManager) HandleRecover(ctx context.Context, repoID, branch string, keepLocal bool) (branchsync.State, error) {
@@ -520,7 +527,7 @@ func (m *RunManager) legacyPublicationProof(ctx context.Context, run *db.Run, br
 	submitted := *run.SubmittedHeadSHA
 	seen := make(map[string]struct{}, len(targets))
 	for _, target := range targets {
-		fingerprint := branchsync.TargetFingerprint(target)
+		fingerprint := db.PublicationTargetFingerprint(target)
 		if _, ok := seen[fingerprint]; ok {
 			continue
 		}
@@ -548,7 +555,7 @@ func (m *RunManager) legacyPublicationProof(ctx context.Context, run *db.Run, br
 		if run.CreatedAt <= 0 || run.UpdatedAt < run.CreatedAt {
 			return fmt.Errorf("historical publication proof has no valid run interval")
 		}
-		targetIdentity, identityErr := recoveryTargetIdentityForRun(ctx, target, targets, run)
+		targetIdentity, identityErr := m.recoveryTargetIdentityForRun(ctx, target, targets, run)
 		if identityErr != nil {
 			return identityErr
 		}
@@ -559,42 +566,86 @@ func (m *RunManager) legacyPublicationProof(ctx context.Context, run *db.Run, br
 	return nil
 }
 
-func recoveryTargetIdentityForRun(ctx context.Context, target string, targets []string, run *db.Run) (string, error) {
-	if run == nil {
-		return "", fmt.Errorf("submission-time publication identity has no run")
+func (m *RunManager) recoveryTargetIdentityForRun(ctx context.Context, target string, targets []string, run *db.Run) (string, error) {
+	if m == nil || m.db == nil || run == nil {
+		return "", fmt.Errorf("submission-time publication identity has no durable run ledger")
 	}
-	targetFingerprints := make(map[string]struct{}, len(targets))
+	recorded, err := m.db.ListRunPublicationTargets(run.ID)
+	if err != nil {
+		return "", fmt.Errorf("read submission-time publication targets: %w", err)
+	}
+	if len(recorded) == 0 {
+		return "", fmt.Errorf("submission-time publication targets are not initialized")
+	}
+	current := make(map[string]struct{}, len(targets))
 	for _, candidate := range targets {
-		fingerprint := branchsync.TargetFingerprint(candidate)
-		if fingerprint != "" {
-			targetFingerprints[fingerprint] = struct{}{}
+		fingerprint := db.PublicationTargetFingerprint(candidate)
+		if fingerprint == "" {
+			return "", fmt.Errorf("submission-time publication target has no canonical identity")
+		}
+		current[fingerprint] = struct{}{}
+	}
+	byFingerprint := make(map[string]*db.RunPublicationTarget, len(recorded))
+	for index := range recorded {
+		item := &recorded[index]
+		if _, ok := current[item.TargetFingerprint]; !ok {
+			return "", fmt.Errorf("submission-time publication target is absent from the current target set")
+		}
+		if _, duplicate := byFingerprint[item.TargetFingerprint]; duplicate {
+			return "", fmt.Errorf("submission-time publication target identity is duplicated")
+		}
+		if item.State == db.PublicationTargetAmbiguous {
+			return "", fmt.Errorf("submission-time publication target evidence is ambiguous")
+		}
+		byFingerprint[item.TargetFingerprint] = item
+	}
+	for fingerprint := range current {
+		if _, ok := byFingerprint[fingerprint]; !ok {
+			return "", fmt.Errorf("submission-time publication target is missing from the durable ledger")
 		}
 	}
-	for _, fingerprint := range []*string{run.PublicationAttemptTargetFingerprint, run.PushTargetFingerprint} {
-		if fingerprint == nil || strings.TrimSpace(*fingerprint) == "" {
-			continue
+	targetFingerprint := db.PublicationTargetFingerprint(target)
+	targetRecord := byFingerprint[targetFingerprint]
+	if targetRecord == nil || targetRecord.Ref != "refs/heads/"+strings.TrimPrefix(strings.TrimSpace(run.Branch), "refs/heads/") {
+		return "", fmt.Errorf("submission-time publication target ref is not bound to the run branch")
+	}
+	prURL := ""
+	if run.PRURL != nil {
+		prURL = strings.TrimSpace(*run.PRURL)
+	}
+	matchedFingerprint := ""
+	if prURL != "" {
+		for _, candidate := range targets {
+			if _, matchErr := recoveryTargetIdentity(ctx, candidate, &prURL); matchErr == nil {
+				candidateFingerprint := db.PublicationTargetFingerprint(candidate)
+				if matchedFingerprint != "" && matchedFingerprint != candidateFingerprint {
+					return "", fmt.Errorf("submission-time publication identity matches multiple targets")
+				}
+				matchedFingerprint = candidateFingerprint
+			}
 		}
-		if _, ok := targetFingerprints[strings.TrimSpace(*fingerprint)]; !ok {
-			return "", fmt.Errorf("submission-time publication attempt target is absent from the recovery target set")
+		if matchedFingerprint == "" {
+			return "", fmt.Errorf("submission-time publication identity does not match any recovery target")
 		}
 	}
-	if run.PRURL == nil || strings.TrimSpace(*run.PRURL) == "" {
-		return "", nil
-	}
-	prURL := strings.TrimSpace(*run.PRURL)
-	var matchedFingerprint string
-	for _, candidate := range targets {
-		_, err := recoveryTargetIdentity(ctx, candidate, &prURL)
-		if err == nil {
-			matchedFingerprint = branchsync.TargetFingerprint(candidate)
-			break
+	for fingerprint, item := range byFingerprint {
+		if item.RequestIdentity != "" {
+			if prURL == "" || fingerprint != matchedFingerprint || item.RequestIdentity != prURL {
+				return "", fmt.Errorf("submission-time publication identity is bound to the wrong target")
+			}
+		}
+		if (item.State == db.PublicationTargetAttempted || item.State == db.PublicationTargetPublished) && item.RequestIdentity == "" {
+			return "", fmt.Errorf("submission-time publication target %s has no durable request identity", fingerprint)
 		}
 	}
-	if matchedFingerprint == "" {
-		return "", fmt.Errorf("submission-time publication identity does not match any recovery target")
-	}
-	if branchsync.TargetFingerprint(target) == matchedFingerprint {
+	if prURL != "" && targetFingerprint == matchedFingerprint && targetRecord.RequestIdentity == "" {
+		if err := m.db.SetRunPublicationTargetIdentity(run.ID, targetFingerprint, prURL); err != nil {
+			return "", fmt.Errorf("bind submission-time publication identity: %w", err)
+		}
 		return prURL, nil
+	}
+	if targetFingerprint == matchedFingerprint {
+		return targetRecord.RequestIdentity, nil
 	}
 	return "", nil
 }
@@ -1894,6 +1945,11 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
 	}
+	if err := m.seedRunPublicationTargets(ctx, repo, run, branch); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("record publication targets: %s", err))
+		trackStartFailure("publication_targets")
+		return "", fmt.Errorf("record publication targets: %w", err)
+	}
 
 	// Create worktree from the gate bare repo.
 	gateDir := m.paths.RepoDir(repo.ID)
@@ -2139,6 +2195,54 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	}()
 
 	return run.ID, nil
+}
+
+func (m *RunManager) seedRunPublicationTargets(ctx context.Context, repo *db.Repo, run *db.Run, branch string) error {
+	if m == nil || m.db == nil || repo == nil || run == nil {
+		return fmt.Errorf("publication target ledger requires a repository and run")
+	}
+	inputs := db.PublicationTargetInputs(repo, branch)
+	remoteOutput, err := git.Run(ctx, repo.WorkingPath, "remote")
+	if err != nil {
+		return fmt.Errorf("list working-clone remotes: %w", err)
+	}
+	seen := make(map[string]struct{}, len(inputs))
+	for _, input := range inputs {
+		seen[input.TargetFingerprint] = struct{}{}
+	}
+	for _, remote := range strings.Fields(remoteOutput) {
+		fetchURLs, err := git.GetConfiguredRemoteURLs(ctx, repo.WorkingPath, remote)
+		if err != nil || len(fetchURLs) != 1 || strings.TrimSpace(fetchURLs[0]) == "" {
+			if err == nil {
+				err = fmt.Errorf("remote %s has %d fetch URLs", remote, len(fetchURLs))
+			}
+			return fmt.Errorf("read remote %s fetch URL: %w", remote, err)
+		}
+		pushURLs, err := git.GetConfiguredRemotePushURLs(ctx, repo.WorkingPath, remote)
+		if err != nil || len(pushURLs) != 1 || strings.TrimSpace(pushURLs[0]) == "" {
+			if err == nil {
+				err = fmt.Errorf("remote %s has %d push URLs", remote, len(pushURLs))
+			}
+			return fmt.Errorf("read remote %s push URL: %w", remote, err)
+		}
+		for _, raw := range []string{fetchURLs[0], pushURLs[0]} {
+			fingerprint := db.PublicationTargetFingerprint(raw)
+			if _, ok := seen[fingerprint]; ok {
+				continue
+			}
+			seen[fingerprint] = struct{}{}
+			inputs = append(inputs, db.PublicationTargetInput{
+				TargetKind:        "remote",
+				TargetFingerprint: fingerprint,
+				Ref:               "refs/heads/" + strings.TrimPrefix(strings.TrimSpace(branch), "refs/heads/"),
+				TargetVersion:     repo.URLVersion,
+			})
+		}
+	}
+	if err := m.db.SeedRunPublicationTargets(run.ID, inputs); err != nil {
+		return err
+	}
+	return nil
 }
 
 // addRunPerformanceSummary attaches the bounded per-run performance rollup

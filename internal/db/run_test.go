@@ -411,18 +411,19 @@ func TestRunPushBindingIsForwardOnlyAndLegacyRowsStayNullable(t *testing.T) {
 	if run.SubmittedHeadSHA == nil || *run.SubmittedHeadSHA != "submitted" || run.LastPushedSHA != nil {
 		t.Fatalf("new run provenance = %#v", run)
 	}
-	binding := PushBinding{HeadSHA: "pushed-1", TargetKind: "fork", TargetFingerprint: "digest-only", Ref: "refs/heads/feature"}
+	fingerprint := publicationTargetFingerprint(repo.PushURL())
+	binding := PushBinding{HeadSHA: "pushed-1", TargetKind: "upstream", TargetFingerprint: fingerprint, Ref: "refs/heads/feature"}
 	if err := d.UpdateRunPushBinding(run.ID, binding); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.UpdateRunPushBinding(run.ID, PushBinding{HeadSHA: "pushed-2", TargetKind: "fork", TargetFingerprint: "digest-only", Ref: "refs/heads/feature"}); err != nil {
+	if err := d.UpdateRunPushBinding(run.ID, PushBinding{HeadSHA: "pushed-2", TargetKind: "upstream", TargetFingerprint: fingerprint, Ref: "refs/heads/feature"}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := d.GetRun(run.ID)
 	if got.LastPushedSHA == nil || *got.LastPushedSHA != "pushed-2" || got.PushGeneration == nil || *got.PushGeneration != 2 {
 		t.Fatalf("push binding = %#v", got)
 	}
-	if got.PushTargetFingerprint == nil || *got.PushTargetFingerprint != "digest-only" {
+	if got.PushTargetFingerprint == nil || *got.PushTargetFingerprint != fingerprint {
 		t.Fatalf("target fingerprint = %#v", got.PushTargetFingerprint)
 	}
 	if got.SubmittedHeadSHA == nil || *got.SubmittedHeadSHA != "submitted" {
@@ -481,6 +482,52 @@ func TestNewRunHasExactPublicationJournalTarget(t *testing.T) {
 	}
 	if run.PublicationJournalTargetVersion == nil || *run.PublicationJournalTargetVersion != repo.URLVersion {
 		t.Fatalf("publication journal target version = %#v, want %d", run.PublicationJournalTargetVersion, repo.URLVersion)
+	}
+}
+
+func TestRunPublicationTargetsAreBoundPerTarget(t *testing.T) {
+	d := openTestDB(t)
+	parent := "https://github.com/example/parent.git"
+	fork := "https://github.com/example/fork.git"
+	repo, err := d.InsertRepoWithFork("/tmp/repo-publication-targets", parent, fork, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets, err := d.ListRunPublicationTargets(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("publication target count = %d, want 2", len(targets))
+	}
+	parentFingerprint := publicationTargetFingerprint(parent)
+	forkFingerprint := publicationTargetFingerprint(fork)
+	if err := d.RecordRunPublicationAttempt(run.ID, PublicationAttempt{HeadSHA: "attempted", TargetKind: "fork", TargetFingerprint: forkFingerprint, Ref: "refs/heads/feature"}); err != nil {
+		t.Fatalf("record fork publication attempt: %v", err)
+	}
+	if err := d.UpdateRunPushBinding(run.ID, PushBinding{HeadSHA: "attempted", TargetKind: "fork", TargetFingerprint: forkFingerprint, Ref: "refs/heads/feature"}); err != nil {
+		t.Fatalf("record fork publication: %v", err)
+	}
+	if err := d.UpdateRunPRURLForTarget(run.ID, "https://github.com/example/parent/pull/7", "upstream", parentFingerprint); err != nil {
+		t.Fatalf("record parent publication identity: %v", err)
+	}
+	targets, err = d.ListRunPublicationTargets(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byFingerprint := make(map[string]RunPublicationTarget, len(targets))
+	for _, target := range targets {
+		byFingerprint[target.TargetFingerprint] = target
+	}
+	if got := byFingerprint[forkFingerprint]; got.State != PublicationTargetPublished || got.AttemptHeadSHA != "attempted" {
+		t.Fatalf("fork publication target = %#v", got)
+	}
+	if got := byFingerprint[parentFingerprint]; got.State != PublicationTargetAttempted || got.RequestIdentity != "https://github.com/example/parent/pull/7" {
+		t.Fatalf("parent publication target = %#v", got)
 	}
 }
 
@@ -1026,7 +1073,7 @@ func TestSetRunCustodyReturnedCAS(t *testing.T) {
 			t.Fatal(err)
 		}
 		expected, _ := d.GetRun(run.ID)
-		if err := d.UpdateRunPushBinding(run.ID, PushBinding{HeadSHA: "submitted", TargetKind: "upstream", TargetFingerprint: "target", Ref: "refs/heads/feat"}); err != nil {
+		if err := d.UpdateRunPushBinding(run.ID, PushBinding{HeadSHA: "submitted", TargetKind: "upstream", TargetFingerprint: publicationTargetFingerprint(repo.PushURL()), Ref: "refs/heads/feat"}); err != nil {
 			t.Fatal(err)
 		}
 		if err := d.SetRunCustodyReturnedCAS(expected); !errors.Is(err, ErrRunCustodyCAS) {
@@ -1106,7 +1153,7 @@ func TestCustodyTransitionFencesPublicationWriters(t *testing.T) {
 	if err := d.SetRunPushActive(run.ID, true); !errors.Is(err, ErrRunCustodyCAS) {
 		t.Fatalf("push entry during custody = %v", err)
 	}
-	if err := d.UpdateRunPushBinding(run.ID, PushBinding{HeadSHA: "preserved", TargetKind: "upstream", TargetFingerprint: "target", Ref: "refs/heads/feat"}); !errors.Is(err, ErrRunCustodyCAS) {
+	if err := d.UpdateRunPushBinding(run.ID, PushBinding{HeadSHA: "preserved", TargetKind: "upstream", TargetFingerprint: publicationTargetFingerprint(repo.PushURL()), Ref: "refs/heads/feat"}); !errors.Is(err, ErrRunCustodyCAS) {
 		t.Fatalf("push binding during custody = %v", err)
 	}
 	if err := d.UpdateRunHeadSHA(run.ID, "late"); !errors.Is(err, ErrRunCustodyCAS) {

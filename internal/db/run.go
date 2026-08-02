@@ -317,12 +317,25 @@ func (d *DB) InsertRunWithIntentAndReceiveReservation(repoID, branch, headSHA, b
 		r.IntentSessionID = &intent.SessionID
 		r.IntentScore = &intent.Score
 	}
-	_, err = d.sql.Exec(
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin insert run: %w", err)
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(
 		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, receive_reservation_id, status, pr_state, publication_journal_state, publication_journal_target_kind, publication_journal_target_fingerprint, publication_journal_ref, publication_journal_target_version, intent, intent_source, intent_session_id, intent_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.ReceiveReservationID, r.Status, r.PublicationJournalState, r.PublicationJournalTargetKind, r.PublicationJournalTargetFingerprint, r.PublicationJournalRef, r.PublicationJournalTargetVersion, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
+	}
+	if repo != nil {
+		if err := seedRunPublicationTargetsTx(tx, r.ID, PublicationTargetInputs(repo, branch), "submission"); err != nil {
+			return nil, fmt.Errorf("seed run publication targets: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit insert run: %w", err)
 	}
 	return r, nil
 }
@@ -502,6 +515,49 @@ func (d *DB) UpdateRunPRURL(id, prURL string) error {
 	return nil
 }
 
+func (d *DB) UpdateRunPRURLForTarget(id, prURL, targetKind, targetFingerprint string) error {
+	id = strings.TrimSpace(id)
+	prURL = strings.TrimSpace(prURL)
+	targetKind = strings.TrimSpace(targetKind)
+	targetFingerprint = strings.TrimSpace(targetFingerprint)
+	if id == "" || prURL == "" || targetKind == "" || targetFingerprint == "" {
+		return ErrRunPublicationCAS
+	}
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin update run PR target: %w", err)
+	}
+	defer tx.Rollback()
+	var state, currentKind, currentIdentity string
+	if err := tx.QueryRow(`SELECT state, target_kind, COALESCE(request_identity, '') FROM run_publication_targets WHERE run_id = ? AND target_fingerprint = ?`, id, targetFingerprint).Scan(&state, &currentKind, &currentIdentity); err == sql.ErrNoRows {
+		return ErrRunPublicationCAS
+	} else if err != nil {
+		return fmt.Errorf("read run PR target: %w", err)
+	}
+	if state == PublicationTargetAmbiguous || currentKind != targetKind || (currentIdentity != "" && currentIdentity != prURL) {
+		return ErrRunPublicationCAS
+	}
+	ts := now()
+	result, err := tx.Exec(`UPDATE runs SET pr_url = ?, pr_state = CASE WHEN pr_state IN ('merged', 'closed') THEN pr_state ELSE 'open' END, pr_state_observed_at = ?, updated_at = ? WHERE id = ? AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL`, prURL, ts, ts, id)
+	if err != nil {
+		return fmt.Errorf("update run PR target: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("update run PR target: affected rows: %w", err)
+	} else if rows != 1 {
+		return ErrRunCustodyCAS
+	}
+	if currentIdentity == "" {
+		if _, err := tx.Exec(`UPDATE run_publication_targets SET request_identity = ?, state = CASE WHEN state = ? THEN ? ELSE state END, generation = generation + 1, provenance = ?, updated_at = ? WHERE run_id = ? AND target_fingerprint = ? AND state != ?`, prURL, PublicationTargetNoAttempt, PublicationTargetAttempted, "pipeline-pr", ts, id, targetFingerprint, PublicationTargetAmbiguous); err != nil {
+			return fmt.Errorf("journal run PR target: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit run PR target: %w", err)
+	}
+	return nil
+}
+
 // PushBinding records the exact target and commit proven by a successful
 // pipeline-owned push. TargetFingerprint is a one-way digest and must never be
 // a raw URL.
@@ -523,7 +579,24 @@ func (d *DB) RecordRunPublicationAttempt(id string, attempt PublicationAttempt) 
 	if attempt.HeadSHA == "" || attempt.TargetKind == "" || attempt.TargetFingerprint == "" || attempt.Ref == "" {
 		return ErrRunPublicationCAS
 	}
-	result, err := d.sql.Exec(`UPDATE runs SET publication_journal_state = ?, publication_attempt_head_sha = ?, publication_attempt_target_kind = ?, publication_attempt_target_fingerprint = ?, publication_attempt_ref = ?, updated_at = ?
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin record run publication attempt: %w", err)
+	}
+	defer tx.Rollback()
+	var targetState, targetKind, targetRef, targetHead string
+	if err := tx.QueryRow(`SELECT state, target_kind, ref, COALESCE(attempt_head_sha, '') FROM run_publication_targets WHERE run_id = ? AND target_fingerprint = ?`, id, attempt.TargetFingerprint).Scan(&targetState, &targetKind, &targetRef, &targetHead); err == sql.ErrNoRows {
+		return ErrRunPublicationCAS
+	} else if err != nil {
+		return fmt.Errorf("read run publication target: %w", err)
+	}
+	if targetState == PublicationTargetAmbiguous || targetKind != attempt.TargetKind || targetRef != attempt.Ref {
+		return ErrRunPublicationCAS
+	}
+	if targetState == PublicationTargetAttempted && targetHead != "" && targetHead != attempt.HeadSHA {
+		return ErrRunPublicationCAS
+	}
+	result, err := tx.Exec(`UPDATE runs SET publication_journal_state = ?, publication_attempt_head_sha = ?, publication_attempt_target_kind = ?, publication_attempt_target_fingerprint = ?, publication_attempt_ref = ?, updated_at = ?
 		WHERE id = ? AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL
 		AND publication_journal_state = ? AND publication_journal_target_kind = ? AND publication_journal_target_fingerprint = ? AND publication_journal_ref = ?
 		AND publication_journal_target_version IS NOT NULL
@@ -536,8 +609,15 @@ func (d *DB) RecordRunPublicationAttempt(id string, attempt PublicationAttempt) 
 	if rows, err := result.RowsAffected(); err != nil {
 		return fmt.Errorf("record run publication attempt: affected rows: %w", err)
 	} else if rows == 1 {
+		if _, err := tx.Exec(`UPDATE run_publication_targets SET state = ?, attempt_head_sha = ?, generation = generation + 1, provenance = ?, updated_at = ? WHERE run_id = ? AND target_fingerprint = ? AND state != ?`, PublicationTargetAttempted, attempt.HeadSHA, "pipeline-attempt", now(), id, attempt.TargetFingerprint, PublicationTargetAmbiguous); err != nil {
+			return fmt.Errorf("journal run publication target attempt: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit run publication attempt: %w", err)
+		}
 		return nil
 	}
+	tx.Rollback()
 	current, getErr := d.GetRun(id)
 	if getErr != nil {
 		return getErr
@@ -628,6 +708,18 @@ func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
 	if custodyReturned.Valid || transitionToken.Valid || transitionPhase.Valid {
 		return ErrRunCustodyCAS
 	}
+	var targetState, targetKind, targetRef, targetHead string
+	if err := tx.QueryRow(`SELECT state, target_kind, ref, COALESCE(attempt_head_sha, '') FROM run_publication_targets WHERE run_id = ? AND target_fingerprint = ?`, id, binding.TargetFingerprint).Scan(&targetState, &targetKind, &targetRef, &targetHead); err == sql.ErrNoRows {
+		return ErrRunPublicationCAS
+	} else if err != nil {
+		return fmt.Errorf("read run publication target for push: %w", err)
+	}
+	if targetState == PublicationTargetAmbiguous || targetKind != binding.TargetKind || targetRef != binding.Ref {
+		return ErrRunPublicationCAS
+	}
+	if targetState == PublicationTargetAttempted && targetHead != binding.HeadSHA {
+		return ErrRunPublicationCAS
+	}
 	if journalState.Valid && journalState.String == PublicationJournalAttempted && (!journalVersion.Valid || !attemptHead.Valid || !attemptKind.Valid || !attemptFingerprint.Valid || !attemptRef.Valid) {
 		return ErrRunPublicationCAS
 	}
@@ -647,6 +739,9 @@ func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
 		return fmt.Errorf("update run push binding: affected rows: %w", err)
 	} else if rows != 1 {
 		return ErrRunCustodyCAS
+	}
+	if _, err := tx.Exec(`UPDATE run_publication_targets SET state = ?, attempt_head_sha = ?, generation = generation + 1, provenance = ?, updated_at = ? WHERE run_id = ? AND target_fingerprint = ? AND state != ?`, PublicationTargetPublished, binding.HeadSHA, "push-verified", ts, id, binding.TargetFingerprint, PublicationTargetAmbiguous); err != nil {
+		return fmt.Errorf("journal run publication target push: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit run push binding: %w", err)
