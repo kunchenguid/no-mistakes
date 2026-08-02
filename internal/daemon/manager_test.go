@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -18,6 +19,33 @@ import (
 )
 
 // --- RunManager integration tests ---
+
+func TestValidateRecoveredSessionProviders_RejectsUnavailableFixerProvider(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repo, err := database.InsertRepo("/tmp/repo", "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpsertRunAgentSession(run.ID, string(pipeline.SessionRoleFixer), "codex", "fixer-session"); err != nil {
+		t.Fatal(err)
+	}
+	claude, err := agent.New(types.AgentClaude, "claude", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer claude.Close()
+	if err := validateRecoveredSessionProviders(database, run.ID, claude); err == nil || !strings.Contains(err.Error(), `session provider "codex" is no longer configured`) {
+		t.Fatalf("validate recovered fixer provider error = %v", err)
+	}
+}
 
 func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	recorder := &telemetryRecorder{}

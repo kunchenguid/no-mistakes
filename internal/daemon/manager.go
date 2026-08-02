@@ -189,7 +189,7 @@ func validateRecoveredSessionProviders(database *db.DB, runID string, ag agent.A
 		if session.Agent == "" || session.SessionID == "" {
 			return fmt.Errorf("recovered run has incomplete session metadata")
 		}
-		if !agent.SupportsSessionProvider(ag, session.Agent) {
+		if session.Role == string(pipeline.SessionRoleFixer) && !agent.SupportsSessionProvider(ag, session.Agent) {
 			return fmt.Errorf("session provider %q is no longer configured", session.Agent)
 		}
 	}
