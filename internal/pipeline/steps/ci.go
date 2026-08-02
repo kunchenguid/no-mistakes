@@ -344,14 +344,33 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				}
 				rerunIssued = issued
 			}
-			// A check the provider cancelled again after this run spent its
-			// rerun is unresolved, not green, and it is not a job failure
-			// either: it reaches its own approval gate below rather than the
-			// fix agent. A check whose rerun the provider has not published yet
-			// is neither, so the monitor keeps waiting for it.
+			// A cancelled check is unresolved, not green, and it is not a job
+			// failure either: it reaches its own approval gate below rather
+			// than the fix agent. A check whose rerun the provider has not
+			// published yet is neither, so the monitor keeps waiting for it.
 			var unresolvedCancelled, awaitingRerun []string
 			if !rerunIssued {
 				unresolvedCancelled, awaitingRerun = s.transientReruns.cancelledAfterRerun(checks)
+				// A cancelled check this run never re-ran is just as unresolved,
+				// and just as final: the provider published a conclusion for it,
+				// and with no rerun outstanding nothing this run is waiting on
+				// will ever replace it. It has to reach the same gate, or a
+				// repository on the default rerun budget of 0 polls a rollup
+				// that has already stopped moving until its idle timeout.
+				// Checks that can still finish on their own are excluded, so a
+				// cancellation observed alongside a running check keeps waiting.
+				// Beyond that there is no settling window, for the same reason
+				// a genuine failure gets none: a status rollup is per commit,
+				// so a cancellation in it belongs to the commit under test and
+				// cannot be a leftover from a head this run already replaced.
+				//
+				// Only the cancel bucket qualifies. A check whose state this
+				// version does not recognize is not known to be terminal, so it
+				// stays on the wait-then-timeout path rather than being
+				// escalated as a conclusion the provider never reported.
+				if !checksPending {
+					unresolvedCancelled = mergeCheckNames(unresolvedCancelled, s.transientReruns.cancelledWithoutRerun(checks))
+				}
 			}
 			sort.Strings(failing)
 			sort.Strings(unresolvedCancelled)
@@ -389,13 +408,13 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				lastMonitorLog = ""
 				if !hasFailures && !mergeConflict && !sctx.Fixing {
 					// Every remaining issue is a check the provider cancelled
-					// again rather than a verdict on the code. No fix can clear
-					// one, so this parks for a decision instead of spending a
+					// rather than a verdict on the code. No fix can clear one,
+					// so this parks for a decision instead of spending a
 					// fix-agent round on a run that never tested anything. The
 					// CI step's outcomes are never auto-fixable, so sctx.Fixing
 					// here means the user answered that gate with "fix": that
 					// deliberate override is honored rather than re-parked.
-					return ciUnresolvedCancelledOutcome(unresolvedCancelled), nil
+					return ciUnresolvedCancelledOutcome(unresolvedCancelled, s.transientReruns.used), nil
 				}
 				// All checks done, issues present - fix or report.
 				// The fix agent is asked to repair job failures; a check the
