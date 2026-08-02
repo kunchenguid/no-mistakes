@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	toon "github.com/toon-format/toon-go"
+
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -509,20 +511,50 @@ func TestAxiSurfacesReportUserOwnedReleaseAfterUnmovedPrePushAbort(t *testing.T)
 	if err != nil {
 		t.Fatalf("status: %v\n%s", err, status)
 	}
-	for _, want := range []string{
-		"status: cancelled",
-		"branch_sync:",
-		"branch: feature/recover",
-		"head: " + f.submitted,
-		"submitted_head: " + f.submitted,
-		"current_head: " + f.submitted,
-		"relation: equal",
-		"state: user_owned",
-		"safety: user_owned",
-	} {
-		if !strings.Contains(status, want) {
-			t.Errorf("status missing %q:\n%s", want, status)
-		}
+	var document struct {
+		Run struct {
+			Status string `toon:"status"`
+		} `toon:"run"`
+		BranchSync struct {
+			State string `toon:"state"`
+			Local struct {
+				Branch string `toon:"branch"`
+				Head   string `toon:"head"`
+			} `toon:"local"`
+			Pipeline struct {
+				SubmittedHead string `toon:"submitted_head"`
+				CurrentHead   string `toon:"current_head"`
+			} `toon:"pipeline"`
+			Relation string `toon:"relation"`
+			Safety   string `toon:"safety"`
+		} `toon:"branch_sync"`
+	}
+	if err := toon.UnmarshalString(status, &document); err != nil {
+		t.Fatalf("decode status: %v\n%s", err, status)
+	}
+	if got, want := document.Run.Status, string(types.RunCancelled); got != want {
+		t.Errorf("run status = %q, want %q", got, want)
+	}
+	if got, want := document.BranchSync.State, "user_owned"; got != want {
+		t.Errorf("branch sync state = %q, want %q", got, want)
+	}
+	if got, want := document.BranchSync.Local.Branch, "feature/recover"; got != want {
+		t.Errorf("local branch = %q, want %q", got, want)
+	}
+	if got, want := document.BranchSync.Local.Head, f.submitted; got != want {
+		t.Errorf("local head = %q, want %q", got, want)
+	}
+	if got, want := document.BranchSync.Pipeline.SubmittedHead, f.submitted; got != want {
+		t.Errorf("submitted head = %q, want %q", got, want)
+	}
+	if got, want := document.BranchSync.Pipeline.CurrentHead, f.submitted; got != want {
+		t.Errorf("current head = %q, want %q", got, want)
+	}
+	if got, want := document.BranchSync.Relation, "equal"; got != want {
+		t.Errorf("relation = %q, want %q", got, want)
+	}
+	if got, want := document.BranchSync.Safety, "user_owned"; got != want {
+		t.Errorf("safety = %q, want %q", got, want)
 	}
 	for _, forbidden := range []string{"recover_custody", "next_action", "blocked_wrong_branch", "pipeline_owned"} {
 		if strings.Contains(status, forbidden) {
