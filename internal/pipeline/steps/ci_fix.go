@@ -167,6 +167,11 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 	if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
 		targetKind = "fork"
 	}
+	if err := sctx.DB.RecordRunPublicationAttempt(sctx.Run.ID, db.PublicationAttempt{
+		HeadSHA: newHeadSHA, TargetKind: targetKind, TargetFingerprint: branchsync.TargetFingerprint(pushURL), Ref: ref,
+	}); err != nil {
+		return false, err
+	}
 	persistBinding := func() error {
 		remoteOut, err := stepGitRun(sctx, "ls-remote", pushURL, ref)
 		if err != nil {
@@ -191,7 +196,7 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 		if err := persistBinding(); err != nil {
 			return false, err
 		}
-		if _, err := stepGitRun(sctx, "update-ref", ref, newHeadSHA); err != nil {
+		if err := updateLocalBranchRef(sctx, ref, newHeadSHA); err != nil {
 			return false, fmt.Errorf("update local branch ref: %w", err)
 		}
 		sctx.Run.HeadSHA = newHeadSHA
@@ -207,7 +212,7 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 		return false, err
 	}
 
-	if _, err := stepGitRun(sctx, "update-ref", ref, newHeadSHA); err != nil {
+	if err := updateLocalBranchRef(sctx, ref, newHeadSHA); err != nil {
 		return false, fmt.Errorf("update local branch ref: %w", err)
 	}
 	sctx.Run.HeadSHA = newHeadSHA

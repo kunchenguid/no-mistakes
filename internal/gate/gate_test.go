@@ -277,7 +277,9 @@ func TestInitRefusesManagedValidationWorktreeBeforePartialMutation(t *testing.T)
 		t.Fatalf("init outer gate: %v", err)
 	}
 	gateDir := p.RepoDir(repo.ID)
-	if out, err := gitpkg.Run(ctx, gateDir, "fetch", workDir, "HEAD:refs/heads/feature"); err != nil {
+	// This is fixture construction, not a managed pipeline mutation. The
+	// initialized gate deliberately rejects ordinary writes to managed refs.
+	if out, err := gitpkg.Run(ctx, gateDir, "-c", "core.hooksPath="+t.TempDir(), "fetch", workDir, "HEAD:refs/heads/feature"); err != nil {
 		t.Fatalf("seed gate: %v\n%s", err, out)
 	}
 	managed := p.WorktreeDir(repo.ID, "outer-run")
@@ -1065,6 +1067,18 @@ func TestInit_PostReceiveSurvivesHooksPathPoisoning(t *testing.T) {
 	preHookPath := filepath.Join(bareDir, "hooks", "pre-receive")
 	if err := os.WriteFile(preHookPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatalf("write admission stub: %v", err)
+	}
+	// The receive-pack wrapper and reference-transaction hook are exercised by
+	// the daemon/gate integration tests. This test only needs an unbound Git
+	// receive so it can isolate the post-receive hook lookup from those
+	// authenticated receive boundaries.
+	referenceHookPath := filepath.Join(bareDir, "hooks", "reference-transaction")
+	if err := os.WriteFile(referenceHookPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write reference transaction stub: %v", err)
+	}
+	receivePackPath := gitpkg.ReceivePackWrapperPath(bareDir)
+	if err := os.WriteFile(receivePackPath, []byte("#!/bin/sh\nexec git-receive-pack \"$@\"\n"), 0o755); err != nil {
+		t.Fatalf("write receive-pack stub: %v", err)
 	}
 
 	// Simulate husky: pnpm install in a pipeline worktree runs

@@ -17,6 +17,18 @@ func TestPreReceiveHookScript(t *testing.T) {
 		"NM_BIN='/opt/No Mistakes/no-mistakes'",
 		"git rev-parse --absolute-git-dir",
 		"daemon admit-push --gate \"$GATE_DIR\"",
+		"mktemp \"$GATE_DIR/.no-mistakes-receive.XXXXXX\"",
+		"NO_MISTAKES_RECEIVE_SESSION_ID",
+		"--receive-session-id \"$RECEIVE_SESSION_ID\"",
+		"--receive-capability-fd 3",
+		"--receive-capability-handle",
+		"NO_MISTAKES_RECEIVE_CAPABILITY_ADMIT_HANDLE",
+		"abort_receive_batch",
+		"--phase aborted",
+		"NO_MISTAKES_RECEIVE_CAPABILITY_ABORTED_HANDLE",
+		"pre-receive rejection",
+		"%s %s %s %s\\n",
+		"admit push returned an invalid receive identity",
 		"gate push refused before ref mutation",
 		preservedPreReceiveHook,
 	} {
@@ -24,11 +36,135 @@ func TestPreReceiveHookScript(t *testing.T) {
 			t.Errorf("pre-receive hook missing %q", want)
 		}
 	}
-	if strings.Contains(script, "read oldrev") {
-		t.Fatal("admission wrapper must leave stdin untouched for a preserved user hook")
+	if !strings.Contains(script, "cat > \"$RECEIVE_INPUT\"") || !strings.Contains(script, "< \"$RECEIVE_INPUT\"") {
+		t.Fatal("admission wrapper must preserve receive input for a user hook")
+	}
+	abortAt := strings.Index(script, "abort_receive_batch()")
+	admitAt := strings.Index(script, "daemon admit-push")
+	if abortAt < 0 || admitAt < 0 || abortAt > admitAt {
+		t.Fatal("pre-receive abort path must be defined before admission")
+	}
+	for _, want := range []string{"abort_receive_batch || :", "cannot persist gate receive identity", "gate push refused before ref mutation"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("pre-receive hook missing abort coverage for %q", want)
+		}
 	}
 	if !strings.Contains(script, "exit $status") {
 		t.Fatal("admission failure must reject the ref update")
+	}
+}
+
+func TestReferenceTransactionHookScript(t *testing.T) {
+	script := referenceTransactionHookScript("/opt/No Mistakes/no-mistakes")
+	for _, want := range []string{
+		"#!/bin/sh",
+		"# no-mistakes reference-transaction hook",
+		"NM_BIN='/opt/No Mistakes/no-mistakes'",
+		"preparing|prepared|committed|aborted",
+		"if [ \"$PHASE\" = preparing ]; then",
+		"defer our fencing",
+		"daemon receive-transaction --gate \"$GATE_DIR\"",
+		"--phase \"$PHASE\"",
+		"--receive-capability-fd \"$CAPABILITY_FD\"",
+		"--receive-capability-handle",
+		"NO_MISTAKES_RECEIVE_CAPABILITY_PREPARED_HANDLE",
+		"NO_MISTAKES_RECEIVE_MANIFEST",
+		"--receive-session-id \"$RECEIVE_SESSION_ID\"",
+		"TRANSACTION_INPUT",
+		"mktemp \"$GATE_DIR/.no-mistakes-reference-transaction.XXXXXX\"",
+		"NO_MISTAKES_INTERNAL_MUTATION_CAPABILITY",
+		"NO_MISTAKES_INTERNAL_MUTATION_OPERATION",
+		"NO_MISTAKES_INTERNAL_MUTATION_BRANCH",
+		"NO_MISTAKES_INTERNAL_MUTATION_AUTHORITY",
+		"daemon authorize-ref-mutation --gate \"$GATE_DIR\" --authority",
+		"internal mutation capability is required",
+		preservedReferenceTransactionHook,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("reference transaction hook missing %q", want)
+		}
+	}
+	if !strings.Contains(script, "\"$USER_HOOK\" \"$PHASE\" < \"$RECEIVE_INPUT\"") {
+		t.Fatal("reference transaction hook must preserve phase and input for a user hook")
+	}
+	if strings.Contains(script, "--receive-capability \"") {
+		t.Fatal("reference transaction hook must not put the capability in argv")
+	}
+}
+
+func TestReferenceTransactionRejectsUnboundManagedRefUpdate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("reference-transaction hooks are POSIX shell scripts")
+	}
+	ctx := context.Background()
+	bare := filepath.Join(t.TempDir(), "gate.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	work := seedGate(t, filepath.Dir(bare), bare)
+	oldSHA := strings.TrimSpace(runGitOrFatal(t, bare, "rev-parse", "refs/heads/main"))
+	runGitOrFatal(t, work, "commit", "--allow-empty", "-m", "second")
+	newSHA := strings.TrimSpace(runGitOrFatal(t, work, "rev-parse", "HEAD"))
+	if _, err := RefreshManagedReferenceTransactionHook(bare); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("git", "-C", bare, "update-ref", "refs/heads/main", newSHA, oldSHA)
+	cmd.Env = append(os.Environ(), "NO_MISTAKES_INTERNAL_MUTATION_CAPABILITY=")
+	if output, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("unbound ordinary ref update unexpectedly succeeded: %s", output)
+	}
+	if got := strings.TrimSpace(runGitOrFatal(t, bare, "rev-parse", "refs/heads/main")); got != oldSHA {
+		t.Fatalf("unbound update changed ordinary ref to %s, want %s", got, oldSHA)
+	}
+}
+
+func TestReceivePackWrapperScript(t *testing.T) {
+	script := ReceivePackWrapperScript()
+	for _, want := range []string{
+		"# no-mistakes managed receive-pack wrapper",
+		"daemon receive-pack --gate \"$GATE_DIR\"",
+		"exec \"$NM_BIN\"",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("receive-pack wrapper missing %q", want)
+		}
+	}
+	if strings.Contains(script, "PPID") || strings.Contains(script, "GIT_QUARANTINE_PATH") {
+		t.Fatal("receive-pack wrapper must not use process or quarantine heuristics")
+	}
+	if strings.Contains(script, "NO_MISTAKES_RECEIVE_CAPABILITY=") || strings.Contains(script, "git-receive-pack \"$@\"") || strings.Contains(script, "/dev/urandom") {
+		t.Fatal("receive-pack wrapper must delegate session ownership to the daemon launcher")
+	}
+}
+
+func TestRefreshManagedReferenceTransactionHookPreservesCustomHook(t *testing.T) {
+	bare := t.TempDir()
+	hooks := filepath.Join(bare, "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	custom := []byte("#!/bin/sh\necho custom\n")
+	if err := os.WriteFile(filepath.Join(hooks, "reference-transaction"), custom, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := RefreshManagedReferenceTransactionHook(bare)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected managed wrapper installation")
+	}
+	preserved, err := os.ReadFile(filepath.Join(hooks, preservedReferenceTransactionHook))
+	if err != nil {
+		t.Fatalf("read preserved hook: %v", err)
+	}
+	if string(preserved) != string(custom) {
+		t.Fatalf("preserved hook changed: %q", preserved)
+	}
+	managed, err := os.ReadFile(filepath.Join(hooks, "reference-transaction"))
+	if err != nil || !isManagedReferenceTransactionHook(managed) {
+		t.Fatalf("managed transaction hook missing: %v", err)
 	}
 }
 
@@ -64,6 +200,12 @@ func TestRefreshManagedPreReceiveHookPreservesCustomHook(t *testing.T) {
 
 func TestGateConfigCurrentRejectsMissingOrTamperedAdmissionHook(t *testing.T) {
 	bare := t.TempDir()
+	if err := InitBare(context.Background(), bare); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureHooksPathIsolation(context.Background(), bare); err != nil {
+		t.Fatalf("isolate hooks path: %v", err)
+	}
 	if err := RefreshManagedGateHooks(bare); err != nil {
 		t.Fatalf("install hooks: %v", err)
 	}
@@ -73,12 +215,94 @@ func TestGateConfigCurrentRejectsMissingOrTamperedAdmissionHook(t *testing.T) {
 	if !GateConfigCurrent(bare) {
 		t.Fatal("fresh managed admission hook should be current")
 	}
+	referenceTransaction := filepath.Join(bare, "hooks", "reference-transaction")
+	if err := os.WriteFile(referenceTransaction, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if GateConfigCurrent(bare) {
+		t.Fatal("tampered reference transaction hook must invalidate the gate stamp")
+	}
+	if err := os.WriteFile(referenceTransaction, []byte(ReferenceTransactionHookScript()), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	pre := filepath.Join(bare, "hooks", "pre-receive")
 	if err := os.WriteFile(pre, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if GateConfigCurrent(bare) {
 		t.Fatal("tampered admission hook must invalidate the gate stamp")
+	}
+	if err := os.WriteFile(pre, []byte(PreReceiveHookScript()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(referenceTransaction, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if GateConfigCurrent(bare) {
+		t.Fatal("non-executable reference transaction hook must invalidate the gate stamp")
+	}
+	if err := os.Chmod(referenceTransaction, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configWorktree := filepath.Join(bare, "config.worktree")
+	config, err := os.ReadFile(configWorktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configWorktree, append(config, []byte("\n[core]\n\thookspath = /tmp\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if GateConfigCurrent(bare) {
+		t.Fatal("wrong effective hooks path must invalidate the gate stamp")
+	}
+	localConfigPath := filepath.Join(bare, "config")
+	localConfig, err := os.ReadFile(localConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localConfig = []byte(strings.Replace(string(localConfig), "worktreeconfig = true", "worktreeconfig = false", 1))
+	if err := os.WriteFile(localConfigPath, localConfig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if GateConfigCurrent(bare) {
+		t.Fatal("disabled worktree config must invalidate the gate stamp")
+	}
+}
+
+func TestGateConfigCurrentRejectsSymlinkedAdmissionHook(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink hook semantics are Unix-specific")
+	}
+	bare := t.TempDir()
+	if err := InitBare(context.Background(), bare); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureHooksPathIsolation(context.Background(), bare); err != nil {
+		t.Fatalf("isolate hooks path: %v", err)
+	}
+	if err := RefreshManagedGateHooks(bare); err != nil {
+		t.Fatalf("install hooks: %v", err)
+	}
+	if err := MarkGateConfigCurrent(bare); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(bare, "hooks", "pre-receive")
+	target := filepath.Join(t.TempDir(), "pre-receive")
+	content, err := os.ReadFile(hook)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(hook); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, hook); err != nil {
+		t.Fatal(err)
+	}
+	if GateConfigCurrent(bare) {
+		t.Fatal("symlinked admission hook must invalidate the gate stamp")
 	}
 }
 
@@ -94,9 +318,8 @@ func TestPostReceiveHookScript(t *testing.T) {
 		t.Fatal("hook should embed the no-mistakes executable path")
 	}
 
-	// should read oldrev newrev refname
-	if !strings.Contains(script, "read oldrev newrev refname") {
-		t.Fatal("hook should read ref update args")
+	if !strings.Contains(script, "cat > \"$RECEIVE_INPUT\"") {
+		t.Fatal("hook should preserve ref update input")
 	}
 
 	if strings.Contains(script, "--gate \"$(pwd)\"") {
@@ -119,6 +342,9 @@ func TestPostReceiveHookScript(t *testing.T) {
 	}
 	if strings.Contains(script, "nc -U") {
 		t.Fatal("hook should not depend on netcat")
+	}
+	if strings.Contains(script, "--receive-capability \"") {
+		t.Fatal("post-receive hook must not put the capability in argv")
 	}
 	if strings.Contains(script, "eval") {
 		t.Fatal("hook should not use eval to read push options")
@@ -215,10 +441,8 @@ func TestPostReceiveHookScriptDoesNotEvaluatePushOptions(t *testing.T) {
 	}
 
 	markerPath := filepath.Join(base, "pwned")
-	cmd := exec.Command("/bin/sh", hookPath)
-	cmd.Dir = bare
-	cmd.Stdin = strings.NewReader("oldrev newrev refs/heads/main\n")
-	cmd.Env = append(os.Environ(),
+	cmd := authenticatedPostReceiveCommand(t, hookPath, bare, "oldrev newrev refs/heads/main\n")
+	cmd.Env = append(cmd.Env,
 		"GIT_PUSH_OPTION_COUNT=1",
 		"GIT_PUSH_OPTION_0=ok; touch "+markerPath,
 	)
@@ -371,10 +595,8 @@ func TestPostReceiveHook_ResolvesAbsoluteGateDir(t *testing.T) {
 	// Poison PWD so the shell `pwd` builtin returns "." (the reported failure
 	// state). git resolves the repo via the real cwd, not $PWD, so the fix's
 	// `git rev-parse --absolute-git-dir` still returns the bare dir.
-	cmd := exec.Command("/bin/sh", hookPath)
-	cmd.Dir = bare
-	cmd.Stdin = strings.NewReader("oldrev newrev refs/heads/main\n")
-	cmd.Env = append(os.Environ(), "PWD=.")
+	cmd := authenticatedPostReceiveCommand(t, hookPath, bare, "oldrev newrev refs/heads/main\n")
+	cmd.Env = append(cmd.Env, "PWD=.")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("run hook: %v: %s", err, out)
 	}
@@ -441,13 +663,8 @@ func TestPostReceiveHook_FallsBackToHookLocationForGateDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command("/bin/sh", hookPath)
-	cmd.Dir = bare
-	cmd.Stdin = strings.NewReader("oldrev newrev refs/heads/main\n")
-	cmd.Env = []string{
-		"PATH=" + fakePath,
-		"PWD=.",
-	}
+	cmd := authenticatedPostReceiveCommand(t, hookPath, bare, "oldrev newrev refs/heads/main\n")
+	cmd.Env = append(cmd.Env, "PATH="+fakePath+":/usr/bin:/bin", "PWD=.")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("run hook: %v: %s", err, out)
 	}
@@ -488,6 +705,33 @@ func gateArgFromArgv(argv string) string {
 	return ""
 }
 
+func authenticatedPostReceiveCommand(t *testing.T, hookPath, bare, input string) *exec.Cmd {
+	t.Helper()
+	manifest := filepath.Join(bare, ".receive-manifest")
+	if err := os.WriteFile(manifest, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	capability := filepath.Join(bare, ".receive-capability")
+	if err := os.WriteFile(capability, []byte("test-capability\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	capFile, err := os.Open(capability)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", "-c", "exec 7<&3; exec \"$1\"", "hook", hookPath)
+	cmd.Dir = bare
+	cmd.Stdin = strings.NewReader(input)
+	cmd.Env = append(os.Environ(), "NO_MISTAKES_RECEIVE_SESSION_ID=test-session", "NO_MISTAKES_RECEIVE_MANIFEST="+manifest)
+	cmd.ExtraFiles = []*os.File{capFile}
+	t.Cleanup(func() {
+		_ = capFile.Close()
+		_ = os.Remove(manifest)
+		_ = os.Remove(capability)
+	})
+	return cmd
+}
+
 // TestPostReceiveHook_SurfacesNotifyFailures covers issue #122 defect 2:
 // when notify-push fails (daemon down, missing-hook state, etc.), the user
 // must see the failure on stderr instead of getting a clean-looking push.
@@ -508,23 +752,6 @@ func TestPostReceiveHook_SurfacesNotifyFailures(t *testing.T) {
 	if err := InitBare(ctx, bare); err != nil {
 		t.Fatal(err)
 	}
-	work := filepath.Join(base, "work")
-	if out, err := exec.Command("git", "init", work).CombinedOutput(); err != nil {
-		t.Fatalf("init work: %v: %s", err, out)
-	}
-	if out, err := exec.Command("git", "-C", work, "config", "user.email", "t@t.com").CombinedOutput(); err != nil {
-		t.Fatalf("config email: %v: %s", err, out)
-	}
-	if out, err := exec.Command("git", "-C", work, "config", "user.name", "T").CombinedOutput(); err != nil {
-		t.Fatalf("config name: %v: %s", err, out)
-	}
-	if out, err := exec.Command("git", "-C", work, "remote", "add", "gate", bare).CombinedOutput(); err != nil {
-		t.Fatalf("add remote: %v: %s", err, out)
-	}
-	if out, err := exec.Command("git", "-C", work, "commit", "--allow-empty", "-m", "init").CombinedOutput(); err != nil {
-		t.Fatalf("commit: %v: %s", err, out)
-	}
-
 	// Fake no-mistakes binary that always fails notify-push with a
 	// distinctive marker on stderr.
 	fakeBin := filepath.Join(base, "fake-no-mistakes")
@@ -543,9 +770,9 @@ func TestPostReceiveHook_SurfacesNotifyFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Push. We don't care whether `git push` exits zero (post-receive
-	// exit code is ignored by git); we care that the failure surfaced.
-	pushOut, _ := exec.Command("git", "-C", work, "push", "gate", "HEAD:refs/heads/main").CombinedOutput()
+	// Invoke the hook with the private descriptor a managed receive supplies.
+	hookCmd := authenticatedPostReceiveCommand(t, hookPath, bare, "oldrev newrev refs/heads/main\n")
+	pushOut, _ := hookCmd.CombinedOutput()
 
 	if !strings.Contains(string(pushOut), "TESTMARKER notify failed") {
 		t.Errorf("push output should surface notify-push stderr to the client, got:\n%s", pushOut)

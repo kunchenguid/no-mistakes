@@ -193,6 +193,12 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, sta
 	defer agent.SetServerPIDsDir("")
 
 	mgr := NewRunManager(d, p, stepFactory)
+	startupReady := false
+	defer func() {
+		if !startupReady {
+			mgr.Shutdown()
+		}
+	}()
 
 	// Publish process identity as soon as the singleton lock is held. Startup
 	// callers can now distinguish a launched child from IPC readiness and detect
@@ -215,7 +221,9 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, sta
 	slog.Info("daemon process launched", "pid", pidRecord.PID)
 
 	// Recovery remains exclusive and completes before IPC is bound.
-	recoverOnStartup(d, p, mgr)
+	if err := recoverOnStartup(d, p, mgr); err != nil {
+		return fmt.Errorf("startup recovery: %w", err)
+	}
 
 	srv := ipc.NewServer()
 
@@ -261,10 +269,12 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, sta
 		<-serveErrCh
 		return fmt.Errorf("confirm IPC health: %w", err)
 	}
+	startupReady = true
 	logStartupPhase("ipc_health", healthStarted)
 	slog.Info("daemon ready", "socket", socketPath, "pid", os.Getpid(), "startup_ms", time.Since(startupStarted).Milliseconds())
 
 	if err := <-serveErrCh; err != nil {
+		doShutdown("listener failure")
 		return fmt.Errorf("serve: %w", err)
 	}
 	doShutdown("listener closed")
@@ -351,7 +361,7 @@ func writeDaemonPIDFile(path string, record daemonPIDFile) error {
 // best-effort migrates gate bare repos in place so older installs pick up
 // the per-worktree hookspath isolation introduced for issue #122 when Git
 // supports config --worktree.
-func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
+func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) error {
 	orphanStarted := time.Now()
 	reapOrphanedServers(p)
 	logStartupPhase("orphan_servers", orphanStarted)
@@ -394,7 +404,7 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 		for _, plan := range plans {
 			_ = plan.agent.Close()
 		}
-		return
+		return fmt.Errorf("recover stale runs: %w", err)
 	}
 	if count > 0 {
 		slog.Info("recovered stale runs from previous crash", "count", count)
@@ -404,7 +414,15 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	worktreeStarted := time.Now()
 	cleanupOrphanWorktrees(d, p)
 	logStartupPhase("worktree_cleanup", worktreeStarted)
+	mgr.reconcileReceiveReservations(context.Background())
+	if err := mgr.restoreManagedGateGuards(); err != nil {
+		for _, plan := range plans {
+			_ = plan.agent.Close()
+		}
+		return fmt.Errorf("restore managed gate guards: %w", err)
+	}
 	mgr.resumeRecoveredRuns(plans)
+	return nil
 }
 
 // cleanupOrphanWorktrees removes worktree directories left behind by runs
@@ -496,7 +514,7 @@ var ensureGateHooksPathIsolation = git.EnsureHooksPathIsolation
 // filesystem-only pass instead of six Git subprocesses per gate.
 func migrateGateConfigs(ctx context.Context, d *db.DB, p *paths.Paths) gateMigrationStats {
 	var stats gateMigrationStats
-	candidates := make(map[string]struct{})
+	candidates := make(map[string]string)
 	reposDir := filepath.Clean(p.ReposDir())
 
 	repos, err := d.GetRepos()
@@ -511,7 +529,7 @@ func migrateGateConfigs(ctx context.Context, d *db.DB, p *paths.Paths) gateMigra
 				slog.Warn("rejecting unsafe authoritative gate path", "repo_id", repo.ID)
 				continue
 			}
-			candidates[bareDir] = struct{}{}
+			candidates[bareDir] = repo.WorkingPath
 		}
 	}
 
@@ -530,7 +548,9 @@ func migrateGateConfigs(ctx context.Context, d *db.DB, p *paths.Paths) gateMigra
 			stats.Rejected++
 			continue
 		}
-		candidates[filepath.Join(reposDir, name)] = struct{}{}
+		if _, exists := candidates[filepath.Join(reposDir, name)]; !exists {
+			candidates[filepath.Join(reposDir, name)] = ""
+		}
 	}
 
 	dirs := make([]string, 0, len(candidates))
@@ -555,7 +575,7 @@ func migrateGateConfigs(ctx context.Context, d *db.DB, p *paths.Paths) gateMigra
 			continue
 		}
 		stats.Gates++
-		if err := migrateGateConfig(ctx, bareDir); err != nil {
+		if err := migrateGateConfig(ctx, bareDir, candidates[bareDir]); err != nil {
 			stats.Failed++
 			slog.Warn("migrate gate config failed", "bare", bareDir, "error", err)
 			continue
@@ -565,12 +585,17 @@ func migrateGateConfigs(ctx context.Context, d *db.DB, p *paths.Paths) gateMigra
 	return stats
 }
 
-func migrateGateConfig(ctx context.Context, bareDir string) error {
+func migrateGateConfig(ctx context.Context, bareDir, workingPath string) error {
 	if err := git.RefreshManagedGateHooks(bareDir); err != nil {
 		return fmt.Errorf("refresh managed receive hooks: %w", err)
 	}
 	if _, err := git.RunBare(ctx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
 		return fmt.Errorf("enable push options: %w", err)
+	}
+	if strings.TrimSpace(workingPath) != "" {
+		if err := git.SetRemoteReceivePack(ctx, workingPath, "no-mistakes", git.ReceivePackWrapperPath(bareDir)); err != nil {
+			return fmt.Errorf("configure managed receive-pack wrapper: %w", err)
+		}
 	}
 	isolated, err := ensureGateHooksPathIsolation(ctx, bareDir)
 	if err != nil {
@@ -741,7 +766,70 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err != nil {
 			return nil, err
 		}
-		return &ipc.AdmitPushResult{Context: gateContextResult(result)}, nil
+		if result.Nested {
+			return nil, fmt.Errorf("%s", gatecontext.RefusalMessage(result))
+		}
+		reservationID, err := mgr.HandleAdmitPush(ctx, &p)
+		if err != nil {
+			return nil, err
+		}
+		return &ipc.AdmitPushResult{Context: gateContextResult(result), ReservationID: reservationID}, nil
+	})
+
+	srv.Handle(ipc.MethodAdmitPushBatch, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.AdmitPushBatchParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		if strings.TrimSpace(p.Gate) == "" {
+			return nil, fmt.Errorf("gate path is required")
+		}
+		result, err := classify(ctx, "", false, true)
+		if err != nil {
+			return nil, err
+		}
+		if result.Nested {
+			return nil, fmt.Errorf("%s", gatecontext.RefusalMessage(result))
+		}
+		reservationIDs, err := mgr.HandleAdmitPushBatch(ctx, &p)
+		if err != nil {
+			return nil, err
+		}
+		return &ipc.AdmitPushBatchResult{Context: gateContextResult(result), ReservationIDs: reservationIDs}, nil
+	})
+
+	srv.Handle(ipc.MethodReceiveTransaction, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, true); err != nil {
+			return nil, err
+		}
+		var p ipc.ReceiveTransactionParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		if strings.TrimSpace(p.Gate) == "" {
+			return nil, fmt.Errorf("gate path is required")
+		}
+		if err := mgr.HandleReceiveTransaction(ctx, &p); err != nil {
+			return nil, err
+		}
+		return struct{}{}, nil
+	})
+
+	srv.Handle(ipc.MethodReceiveTxnBatch, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, true); err != nil {
+			return nil, err
+		}
+		var p ipc.ReceiveTransactionBatchParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		if strings.TrimSpace(p.Gate) == "" {
+			return nil, fmt.Errorf("gate path is required")
+		}
+		if err := mgr.HandleReceiveTransactionBatch(ctx, &p); err != nil {
+			return nil, err
+		}
+		return struct{}{}, nil
 	})
 
 	srv.Handle(ipc.MethodRerun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -759,6 +847,21 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.RerunResult{RunID: runID}, nil
 	})
 
+	srv.Handle(ipc.MethodRecover, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
+		var p ipc.RecoverParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		state, err := mgr.HandleRecover(ctx, p.RepoID, p.Branch, p.KeepLocal, p.WorkDir)
+		if err != nil {
+			return nil, err
+		}
+		return &state, nil
+	})
+
 	srv.Handle(ipc.MethodPushReceived, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		// Hooks execute in a managed bare gate by definition, so only the
 		// authenticated peer ancestry is meaningful at this ingress.
@@ -774,7 +877,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err != nil {
 			return nil, err
 		}
-		return &ipc.PushReceivedResult{RunID: runID}, nil
+		return &ipc.PushReceivedResult{RunID: runID, Deleted: isZeroObjectID(p.New)}, nil
 	})
 
 	srv.Handle(ipc.MethodRespond, func(ctx context.Context, params json.RawMessage) (interface{}, error) {

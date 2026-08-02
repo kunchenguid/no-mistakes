@@ -333,6 +333,9 @@ func TestAxiCustodyRecoveryJourney(t *testing.T) {
 	}
 
 	submitted := h.CommitChange("feature/recover-journey", "feature.txt", "unsafe\n", "add unsafe feature")
+	if out, pushErr := h.runGit(context.Background(), h.WorkDir, "push", "origin", "feature/recover-journey"); pushErr != nil {
+		t.Fatalf("publish submitted baseline: %v\n%s", pushErr, out)
+	}
 	operator := h.AddWorktree("feature/recover-journey")
 	gateOut, err := h.RunInDir(operator, "axi", "run", "--intent", "guard the feature before cancellation")
 	if err != nil || !strings.Contains(gateOut, "sync-1") {
@@ -409,7 +412,6 @@ func TestAxiCustodyRecoveryJourney(t *testing.T) {
 	if gitErr != nil || strings.TrimSpace(string(preservedAfterBlockedRunBytes)) != preserved {
 		t.Fatalf("blocked fresh run changed preserved gate head to %s (err %v), want %s", strings.TrimSpace(string(preservedAfterBlockedRunBytes)), gitErr, preserved)
 	}
-
 	// The stranded state must surface the recovery action instead of a dead end.
 	checkOut, err := h.RunInDir(operator, "axi", "sync", "--check")
 	if err == nil {

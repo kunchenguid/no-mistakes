@@ -81,6 +81,10 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, err
 	}
+	publicationTargetFingerprint := db.PublicationTargetFingerprint(sctx.Repo.UpstreamURL)
+	if err := sctx.DB.PrepareRunPublicationTargetAttempt(sctx.Run.ID, "upstream", publicationTargetFingerprint, "refs/heads/"+branch); err != nil {
+		return nil, fmt.Errorf("journal pull request attempt: %w", err)
+	}
 
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
 	existing, err := host.FindPR(ctx, branch, sctx.Repo.DefaultBranch)
@@ -95,8 +99,8 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			updated = existing
 		}
 		if updated != nil && updated.URL != "" {
-			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, updated.URL); err != nil {
-				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", updated.URL, "err", err)
+			if err := sctx.DB.UpdateRunPRURLForTarget(sctx.Run.ID, updated.URL, "upstream", publicationTargetFingerprint); err != nil {
+				return nil, fmt.Errorf("persist PR URL: %w", err)
 			}
 			return &pipeline.StepOutcome{PRURL: updated.URL}, nil
 		}
@@ -112,8 +116,8 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{}, nil
 	}
 	sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
-	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {
-		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
+	if err := sctx.DB.UpdateRunPRURLForTarget(sctx.Run.ID, created.URL, "upstream", publicationTargetFingerprint); err != nil {
+		return nil, fmt.Errorf("persist PR URL: %w", err)
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
 }

@@ -778,7 +778,7 @@ func assertAttachMissingRun(t *testing.T, h *Harness) {
 func assertDaemonNotifyPushUnknownRepo(t *testing.T, h *Harness) {
 	t.Helper()
 	missingGate := filepath.Join(h.NMHome, "repos", "missing-repo.git")
-	out, err := h.Run("daemon", "notify-push", "--gate", missingGate, "--ref", "refs/heads/main", "--old", "aaa", "--new", "bbb")
+	out, err := h.RunWithReceiveCapability("daemon", "notify-push", "--gate", missingGate, "--receive-session-id", "e2e-test-session", "--receive-capability-fd", "3", "--ref", "refs/heads/main", "--old", "aaa", "--new", "bbb")
 	if err == nil {
 		t.Fatalf("daemon notify-push for unknown repo should fail, got output:\n%s", out)
 	}
@@ -787,7 +787,7 @@ func assertDaemonNotifyPushUnknownRepo(t *testing.T, h *Harness) {
 	}
 
 	invalidGate := filepath.Join(h.NMHome, "repos", "not-a-git-suffix")
-	out, err = h.Run("daemon", "notify-push", "--gate", invalidGate, "--ref", "refs/heads/main", "--old", "aaa", "--new", "bbb")
+	out, err = h.RunWithReceiveCapability("daemon", "notify-push", "--gate", invalidGate, "--receive-session-id", "e2e-test-session", "--receive-capability-fd", "3", "--ref", "refs/heads/main", "--old", "aaa", "--new", "bbb")
 	if err == nil {
 		t.Fatalf("daemon notify-push for invalid gate path should fail, got output:\n%s", out)
 	}
@@ -880,7 +880,8 @@ func assertRunsEmpty(t *testing.T, h *Harness) {
 func assertRerunNoPreviousRun(t *testing.T, h *Harness) {
 	t.Helper()
 	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
-	if out, err := h.runGit(context.Background(), gateDir, "fetch", h.WorkDir, "main:refs/heads/main"); err != nil {
+	fixtureHooks := t.TempDir()
+	if out, err := h.runGit(context.Background(), gateDir, "-c", "core.hooksPath="+fixtureHooks, "fetch", h.WorkDir, "main:refs/heads/main"); err != nil {
 		t.Fatalf("seed gate main ref before rerun: %v\n%s", err, out)
 	}
 	out, err := h.Run("rerun")
@@ -1307,11 +1308,6 @@ func assertGateRefDeletionDoesNotCreateRun(t *testing.T, h *Harness, branch stri
 	out, err := h.runGit(ctx, h.WorkDir, "push", "no-mistakes", ":"+branch)
 	if err != nil {
 		t.Fatalf("delete gate branch %s should not fail git push: %v\n%s", branch, err, out)
-	}
-	for _, want := range []string{"notify-push failed", "ref deletion"} {
-		if !strings.Contains(string(out), want) {
-			t.Errorf("delete gate branch output should contain %q, got:\n%s", want, out)
-		}
 	}
 	after := h.Runs()
 	if len(after) != len(before) {
@@ -1994,16 +1990,29 @@ func waitForStepStatus(t *testing.T, h *Harness, branch string, stepName types.S
 func assertSupersededRunCancellation(t *testing.T, h *Harness) {
 	t.Helper()
 	slowCommand := filepath.Join(h.BinDir, "nm-superseded-test-e2e")
+	startedMarker := slowCommand + ".started"
+	_ = os.Remove(startedMarker)
 	// Keep the first run deterministically active even when the full e2e suite
 	// is CPU-saturated. Cancellation reaps the process group, so this does not
 	// add wall time on the passing path.
-	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 120\n"), 0o755); err != nil {
+	slowScript := "#!/bin/sh\ntouch " + shellQuote(startedMarker) + "\nsleep 120\n"
+	if err := os.WriteFile(slowCommand, []byte(slowScript), 0o755); err != nil {
 		t.Fatalf("write superseded slow test command: %v", err)
 	}
 	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-superseded-test-e2e\n  lint: true\n"
 	h.CommitChange("superseded-run", ".no-mistakes.yaml", config, "configure superseded slow test")
 	h.PushToGate("superseded-run")
 	first := waitForStepStatus(t, h, "superseded-run", types.StepTest, types.StepStatusRunning, 60*time.Second)
+	startedDeadline := time.Now().Add(60 * time.Second)
+	for {
+		if _, err := os.Stat(startedMarker); err == nil {
+			break
+		}
+		if time.Now().After(startedDeadline) {
+			t.Fatalf("superseded slow test command did not start")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatalf("replace superseded test command with fast version: %v", err)
 	}

@@ -2,6 +2,7 @@ package gitlab
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -297,6 +298,286 @@ func TestFindPRReturnsCLIError(t *testing.T) {
 	}
 	if pr != nil {
 		t.Fatalf("FindPR() PR = %+v, want nil", pr)
+	}
+}
+
+func TestVerifyUnpublishedHistoryRejectsPreservedHead(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	p := strings.Repeat("b", 40)
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/merge_requests?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"iid":7,"source_branch":"renamed-feature","sha":"%s"}]`+"\n", a),
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/versions?per_page=100": {
+			stdout: fmt.Sprintf(`[{"head_commit_sha":"%s"}]`+"\n", p),
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/resource_state_events?per_page=100": {
+			stdout: "[]\n",
+		},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0, "https://gitlab.example.com/group/project/-/merge_requests/7"); err == nil {
+		t.Fatal("VerifyUnpublishedHistory() error = nil, want preserved-head rejection")
+	}
+}
+
+func TestVerifyUnpublishedHistoryIgnoresUnrelatedMergeRequests(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	q := strings.Repeat("c", 40)
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/merge_requests?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"iid":7,"source_branch":"renamed-feature","sha":"%s"},{"iid":8,"source_branch":"other","sha":"%s"}]`+"\n", a, q),
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/versions?per_page=100":              {stdout: "[]\n"},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/resource_state_events?per_page=100": {stdout: "[]\n"},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, strings.Repeat("b", 40), 0, 0, "https://gitlab.example.com/group/project/-/merge_requests/7"); err != nil {
+		t.Fatalf("VerifyUnpublishedHistory() error = %v, want unrelated MR ignored", err)
+	}
+}
+
+func TestVerifyUnpublishedHistoryAllowsNoMergeRequestIdentity(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/merge_requests?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"iid":7,"source_branch":"feature","sha":"%s"}]`+"\n", a),
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/versions?per_page=100":              {stdout: "[]\n"},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/resource_state_events?per_page=100": {stdout: "[]\n"},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, strings.Repeat("b", 40), 0, 0, ""); err != nil {
+		t.Fatalf("VerifyUnpublishedHistory() error = %v, want no-MR target accepted", err)
+	}
+}
+
+func TestVerifyUnpublishedHistoryIgnoresUnrelatedNoMergeRequestIdentity(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	p := strings.Repeat("b", 40)
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/merge_requests?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"iid":7,"source_branch":"other","sha":"%s"}]`+"\n", a),
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/resource_state_events?per_page=100": {stdout: `[{"source_branch":"other"}]` + "\n"},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0, ""); err != nil {
+		t.Fatalf("unrelated merge request history = %v, want ignored", err)
+	}
+}
+
+func TestVerifyUnpublishedHistoryUsesRenamedTargetLineage(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	p := strings.Repeat("b", 40)
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/merge_requests?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"iid":7,"source_branch":"renamed-feature","sha":"%s"}]`+"\n", a),
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/versions?per_page=100": {stdout: `[]` + "\n"},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/resource_state_events?per_page=100": {
+			stdout: fmt.Sprintf(`[{"source_branch":"feature","head_commit_sha":"%s"}]`+"\n", p),
+		},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0, ""); err == nil {
+		t.Fatal("renamed target lineage containing preserved head was accepted")
+	}
+}
+
+func TestVerifyUnpublishedRefHistoryRejectsPreservedBranchHead(t *testing.T) {
+	t.Parallel()
+	p := strings.Repeat("b", 40)
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/events?per_page=100": {
+			stdout: fmt.Sprintf(`[{"created_at":"2026-08-01T12:00:00Z","push_data":{"ref":"feature","commit_to":"%s"}}]`+"\n", p),
+		},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedRefHistory(context.Background(), "refs/heads/feature", strings.Repeat("a", 40), p, 0, 0); err == nil {
+		t.Fatal("preserved branch head passed historical ref publication proof")
+	}
+}
+
+func TestVerifyUnpublishedRefHistoryRejectsEmptyCoverage(t *testing.T) {
+	t.Parallel()
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/events?per_page=100": {stdout: "[]\n"},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedRefHistory(context.Background(), "refs/heads/feature", strings.Repeat("a", 40), strings.Repeat("b", 40), 0, 0); err == nil {
+		t.Fatal("empty ref history passed as complete evidence")
+	}
+}
+
+func TestVerifyUnpublishedRefHistoryRejectsTruncatedOlderCoverage(t *testing.T) {
+	t.Parallel()
+	since := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).Unix()
+	until := time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC).Unix()
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/events?per_page=100": {
+			stdout: `[{"created_at":"2026-08-01T12:00:00Z","push_data":{"ref":"feature","commit_to":"` + strings.Repeat("a", 40) + `"}}]` + "\n",
+		},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedRefHistory(context.Background(), "refs/heads/feature", strings.Repeat("a", 40), strings.Repeat("b", 40), since, until); err == nil {
+		t.Fatal("truncated ref history passed as complete evidence")
+	}
+}
+
+func TestGitLabAuditCoverageRequiresExhaustedPagination(t *testing.T) {
+	if _, _, complete, err := gitlabIncludedAuditEvents([]byte("HTTP/2 200 OK\r\nX-Next-Page: 2\r\n\r\n[]\n")); err != nil || complete {
+		t.Fatalf("incomplete GitLab audit pages = complete %v, err %v", complete, err)
+	}
+	events, pages, complete, err := gitlabIncludedAuditEvents([]byte("HTTP/2 200 OK\r\nX-Next-Page:\r\n\r\n[]\n"))
+	if err != nil || pages != 1 || !complete || len(events) != 0 {
+		t.Fatalf("complete GitLab audit pages = events %d pages %d complete %v err %v", len(events), pages, complete, err)
+	}
+}
+
+func TestParseGitLabAuditPageRequiresProviderDateAndCursor(t *testing.T) {
+	page, err := parseGitLabAuditPage([]byte("HTTP/2 200 OK\r\nDate: Sun, 02 Aug 2026 12:00:00 GMT\r\nX-Next-Page: 2\r\n\r\n[{\"id\":1}]\n"))
+	if err != nil || page.serverDate != time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC).Unix() || page.nextPage != 2 || len(page.events) != 1 {
+		t.Fatalf("GitLab audit page = %#v, err %v", page, err)
+	}
+	if _, err := parseGitLabAuditPage([]byte("HTTP/2 200 OK\r\n\r\n[]\n")); err == nil {
+		t.Fatal("GitLab audit page without provider date was accepted")
+	}
+}
+
+func TestGitLabAuditPagesRejectsNonemptyPageWithoutProviderContinuation(t *testing.T) {
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab api --include projects/group%2Fproject/audit_events?created_before=1&page=1": {
+			stdout: "HTTP/2 200 OK\r\nDate: Sun, 02 Aug 2026 12:00:00 GMT\r\n\r\n[{\"id\":1}]\n",
+		},
+	}), nil, "", "group/project")
+	if _, _, _, _, err := host.gitlabAuditPages(context.Background(), "projects/group%2Fproject/audit_events?created_before=1", 1, 0); err == nil {
+		t.Fatal("GitLab audit pagination accepted a nonempty page without a provider continuation")
+	}
+}
+
+func TestGitLabAuditPagesFollowsProviderContinuationToEmptyPage(t *testing.T) {
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab api --include projects/group%2Fproject/audit_events?created_before=1970-01-01T00%3A00%3A01Z&page=1": {
+			stdout: "HTTP/2 200 OK\r\nDate: Sun, 02 Aug 2026 12:00:00 GMT\r\nX-Next-Page: 2\r\n\r\n[{\"id\":1}]\n",
+		},
+		"glab api --include projects/group%2Fproject/audit_events?created_before=1970-01-01T00%3A00%3A01Z&page=2": {
+			stdout: "HTTP/2 200 OK\r\nDate: Sun, 02 Aug 2026 12:00:00 GMT\r\n\r\n[]\n",
+		},
+	}), nil, "", "group/project")
+	events, pages, _, chain, err := host.gitlabAuditPages(context.Background(), "projects/group%2Fproject/audit_events", 1, 1)
+	if err != nil || len(events) != 1 || pages != 2 || chain != "1,2" {
+		t.Fatalf("GitLab audit pagination = events %d pages %d chain %q err %v", len(events), pages, chain, err)
+	}
+}
+
+func TestGitLabAuditHeadValidationRequiresCanonicalTargetEvidence(t *testing.T) {
+	a := strings.Repeat("a", 40)
+	zero := strings.Repeat("0", 40)
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "abbreviated", raw: `{"before":"` + a + `","after":"abc"}`, want: true},
+		{name: "uppercase", raw: `{"before":"` + a + `","after":"` + strings.Repeat("A", 40) + `"}`, want: true},
+		{name: "missing old head for push", raw: `{"action":"push","after":"` + a + `"}`, want: true},
+		{name: "delete new head is not zero", raw: `{"action":"delete","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "canonical push", raw: `{"action":"push","before":"` + a + `","after":"` + a + `"}`, want: false},
+		{name: "create before only", raw: `{"action":"create","before":"` + zero + `"}`, want: true},
+		{name: "create after only", raw: `{"action":"create","after":"` + a + `"}`, want: true},
+		{name: "canonical create", raw: `{"action":"create","before":"` + zero + `","after":"` + a + `"}`, want: false},
+		{name: "delete after only", raw: `{"action":"delete","after":"` + zero + `"}`, want: true},
+		{name: "canonical delete", raw: `{"action":"delete","before":"` + a + `","after":"` + zero + `"}`, want: false},
+		{name: "force push missing side", raw: `{"action":"force_push","before":"` + a + `"}`, want: true},
+		{name: "conflicting pairs", raw: `{"action":"push","before":"` + a + `","after":"` + a + `","oldrev":"` + zero + `","newrev":"` + a + `"}`, want: true},
+		{name: "rename missing refs", raw: `{"action":"rename","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "canonical rename", raw: `{"action":"rename","old_ref":"feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: false},
+		{name: "rename noncanonical ref", raw: `{"action":"rename","old_ref":"feature..old","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename leading dash", raw: `{"action":"rename","old_ref":"-feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename full ref leading dash", raw: `{"action":"rename","old_ref":"refs/heads/-feature","new_ref":"refs/heads/renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: false},
+		{name: "rename lock ref", raw: `{"action":"rename","old_ref":"feature.lock","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename leading slash", raw: `{"action":"rename","old_ref":"/feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename trailing slash", raw: `{"action":"rename","old_ref":"feature/","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename conflicting aliases", raw: `{"action":"rename","old_ref":"feature","new_ref":"renamed-feature","from_ref":"other","to_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename partial alias", raw: `{"action":"rename","old_ref":"feature","new_ref":"renamed-feature","from_ref":"other","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename consistent aliases", raw: `{"action":"rename","old_ref":"feature","new_ref":"renamed-feature","from_ref":"refs/heads/feature","to_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := gitlabAuditValidateHeadValues(json.RawMessage(tc.raw), a)
+			if (err != nil) != tc.want {
+				t.Fatalf("gitlabAuditValidateHeadValues() error = %v, want error %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestGitLabAuditTargetClassificationFailsClosedForAmbiguousEvents(t *testing.T) {
+	requestSet := map[string]struct{}{"refs/merge-requests/7/head": {}}
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"ref":"other","action":"push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("non-current GitLab audit event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"action":"push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("ambiguous GitLab audit event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if ref, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"ref":"feature","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); ref != "feature" || !targeted || ambiguous {
+		t.Fatalf("target GitLab audit event = %q targeted=%v ambiguous=%v", ref, targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"merge_request_iid":99,"after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("disappeared GitLab merge request event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"merge_request_iid":99,"after":"`+strings.Repeat("a", 40)+`"}`), nil, "feature"); targeted || !ambiguous {
+		t.Fatalf("unbound GitLab merge request event without lineage classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"source_branch":"renamed-feature","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("renamed GitLab source event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"ref":"renamed-feature","action":"push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("renamed GitLab ref event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"old_ref":"feature","new_ref":"renamed-feature","action":"rename","before":"`+strings.Repeat("a", 40)+`","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("GitLab rename event without current ref classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+}
+
+func TestVerifyUnpublishedHistoryInspectsRenamedNoMergeRequestHistory(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/merge_requests?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"iid":7,"source_branch":"renamed-feature","sha":"%s"}]`+"\n", a),
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/versions?per_page=100":              {stdout: "[]\n"},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/resource_state_events?per_page=100": {stdout: `[{"source_branch":"feature"}]` + "\n"},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, strings.Repeat("b", 40), 0, 0, ""); err != nil {
+		t.Fatalf("renamed merge request history = %v, want complete history inspection", err)
+	}
+}
+
+func TestVerifyUnpublishedHistoryRejectsPreservedHeadInRenamedNoMergeRequestIdentity(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	p := strings.Repeat("b", 40)
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/merge_requests?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"iid":7,"source_branch":"renamed-feature","sha":"%s"}]`+"\n", a),
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/versions?per_page=100": {
+			stdout: fmt.Sprintf(`[{"head_commit_sha":"%s"}]`+"\n", p),
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/resource_state_events?per_page=100": {stdout: `[{"source_branch":"feature"}]` + "\n"},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0, ""); err == nil {
+		t.Fatal("renamed merge request containing preserved head was accepted")
 	}
 }
 

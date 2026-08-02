@@ -9,20 +9,24 @@ import (
 
 // JSON-RPC 2.0 method names.
 const (
-	MethodPushReceived   = "push_received"
-	MethodGetRun         = "get_run"
-	MethodGetStepDiff    = "get_step_diff"
-	MethodGetRuns        = "get_runs"
-	MethodGetRunsForHead = "get_runs_for_head"
-	MethodGetActiveRun   = "get_active_run"
-	MethodRerun          = "rerun"
-	MethodSubscribe      = "subscribe"
-	MethodRespond        = "respond"
-	MethodCancelRun      = "cancel_run"
-	MethodGateContext    = "gate_context"
-	MethodAdmitPush      = "admit_push"
-	MethodHealth         = "health"
-	MethodShutdown       = "shutdown"
+	MethodPushReceived       = "push_received"
+	MethodGetRun             = "get_run"
+	MethodGetStepDiff        = "get_step_diff"
+	MethodGetRuns            = "get_runs"
+	MethodGetRunsForHead     = "get_runs_for_head"
+	MethodGetActiveRun       = "get_active_run"
+	MethodRerun              = "rerun"
+	MethodRecover            = "recover"
+	MethodSubscribe          = "subscribe"
+	MethodRespond            = "respond"
+	MethodCancelRun          = "cancel_run"
+	MethodGateContext        = "gate_context"
+	MethodAdmitPush          = "admit_push"
+	MethodAdmitPushBatch     = "admit_push_batch"
+	MethodReceiveTransaction = "receive_transaction"
+	MethodReceiveTxnBatch    = "receive_transaction_batch"
+	MethodHealth             = "health"
+	MethodShutdown           = "shutdown"
 )
 
 // JSON-RPC 2.0 error codes.
@@ -67,12 +71,15 @@ func (e *RPCError) Error() string { return e.Message }
 // intent from local transcripts.
 type PushReceivedParams struct {
 	// Gate is the absolute path to the gate bare repo.
-	Gate      string           `json:"gate"`
-	Ref       string           `json:"ref"`
-	Old       string           `json:"old"`
-	New       string           `json:"new"`
-	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
-	Intent    string           `json:"intent,omitempty"`
+	Gate              string           `json:"gate"`
+	Ref               string           `json:"ref"`
+	Old               string           `json:"old"`
+	New               string           `json:"new"`
+	SkipSteps         []types.StepName `json:"skip_steps,omitempty"`
+	Intent            string           `json:"intent,omitempty"`
+	ReceiveSessionID  string           `json:"receive_session_id,omitempty"`
+	ReceiveCapability string           `json:"receive_capability,omitempty"`
+	ReservationID     string           `json:"reservation_id,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -130,6 +137,13 @@ type RerunParams struct {
 	Intent        string           `json:"intent,omitempty"`
 }
 
+type RecoverParams struct {
+	RepoID    string `json:"repo_id"`
+	Branch    string `json:"branch"`
+	KeepLocal bool   `json:"keep_local,omitempty"`
+	WorkDir   string `json:"work_dir,omitempty"`
+}
+
 // SubscribeParams starts an event stream for a run.
 type SubscribeParams struct {
 	RunID string `json:"run_id"`
@@ -163,10 +177,58 @@ type GateContextParams struct {
 	MarkerPresent bool   `json:"marker_present,omitempty"`
 }
 
-// AdmitPushParams asks whether a local receive hook's authenticated process
-// ancestry is allowed to mutate a managed gate ref.
+// AdmitPushParams carries the exact managed gate update to admit and reserve
+// before Git mutates the ref.
 type AdmitPushParams struct {
-	Gate string `json:"gate"`
+	Gate              string           `json:"gate"`
+	Ref               string           `json:"ref"`
+	Old               string           `json:"old"`
+	New               string           `json:"new"`
+	SkipSteps         []types.StepName `json:"skip_steps,omitempty"`
+	Intent            string           `json:"intent,omitempty"`
+	ReceiveSessionID  string           `json:"receive_session_id"`
+	ReceiveCapability string           `json:"receive_capability,omitempty"`
+}
+
+type AdmitPushUpdate struct {
+	Ref       string           `json:"ref"`
+	Old       string           `json:"old"`
+	New       string           `json:"new"`
+	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
+	Intent    string           `json:"intent,omitempty"`
+}
+
+type AdmitPushBatchParams struct {
+	Gate              string            `json:"gate"`
+	Updates           []AdmitPushUpdate `json:"updates"`
+	ReceiveSessionID  string            `json:"receive_session_id"`
+	ReceiveCapability string            `json:"receive_capability"`
+}
+
+type ReceiveTransactionParams struct {
+	Gate              string `json:"gate"`
+	Phase             string `json:"phase"`
+	ReservationID     string `json:"reservation_id"`
+	Ref               string `json:"ref"`
+	Old               string `json:"old"`
+	New               string `json:"new"`
+	ReceiveSessionID  string `json:"receive_session_id"`
+	ReceiveCapability string `json:"receive_capability"`
+}
+
+type ReceiveTransactionUpdate struct {
+	ReservationID string `json:"reservation_id"`
+	Ref           string `json:"ref"`
+	Old           string `json:"old"`
+	New           string `json:"new"`
+}
+
+type ReceiveTransactionBatchParams struct {
+	Gate              string                     `json:"gate"`
+	Phase             string                     `json:"phase"`
+	Updates           []ReceiveTransactionUpdate `json:"updates"`
+	ReceiveSessionID  string                     `json:"receive_session_id"`
+	ReceiveCapability string                     `json:"receive_capability"`
 }
 
 // HealthParams has no fields but exists for consistency.
@@ -179,7 +241,8 @@ type ShutdownParams struct{}
 
 // PushReceivedResult confirms the push was accepted.
 type PushReceivedResult struct {
-	RunID string `json:"run_id"`
+	RunID   string `json:"run_id"`
+	Deleted bool   `json:"deleted,omitempty"`
 }
 
 // GetRunResult wraps a single run.
@@ -225,7 +288,13 @@ type GateContextResult struct {
 
 // AdmitPushResult is returned before a receive hook permits ref mutation.
 type AdmitPushResult struct {
-	Context GateContextResult `json:"context"`
+	Context       GateContextResult `json:"context"`
+	ReservationID string            `json:"reservation_id,omitempty"`
+}
+
+type AdmitPushBatchResult struct {
+	Context        GateContextResult `json:"context"`
+	ReservationIDs []string          `json:"reservation_ids"`
 }
 
 // HealthResult confirms the daemon is alive.

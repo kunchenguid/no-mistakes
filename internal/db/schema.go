@@ -7,8 +7,45 @@ CREATE TABLE IF NOT EXISTS repos (
     upstream_url   TEXT NOT NULL,
     fork_url       TEXT,
     default_branch TEXT NOT NULL DEFAULT 'main',
+    url_version    INTEGER NOT NULL DEFAULT 0,
     created_at     INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS receive_sessions (
+    id                    TEXT PRIMARY KEY,
+    repo_id               TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    gate_path             TEXT NOT NULL,
+    capability_hash      TEXT NOT NULL,
+    state                 TEXT NOT NULL DEFAULT 'active',
+    phase                 TEXT NOT NULL DEFAULT 'issued',
+    batch_hash            TEXT NOT NULL DEFAULT '',
+    created_at            INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS receive_sessions_active
+    ON receive_sessions (repo_id, id, state);
+
+CREATE TABLE IF NOT EXISTS receive_reservations (
+    id          TEXT PRIMARY KEY,
+    repo_id     TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    gate_path   TEXT NOT NULL,
+    branch      TEXT NOT NULL,
+    ref         TEXT NOT NULL,
+    old_sha     TEXT NOT NULL,
+    new_sha     TEXT NOT NULL,
+    receive_session_id TEXT,
+    receive_capability_hash TEXT,
+    skip_steps  TEXT,
+    intent      TEXT,
+    state       TEXT NOT NULL DEFAULT 'reserved',
+    run_id      TEXT,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS receive_reservations_pending_branch
+    ON receive_reservations (repo_id, branch, state, created_at, id);
 
 CREATE TABLE IF NOT EXISTS runs (
     id                   TEXT PRIMARY KEY,
@@ -17,6 +54,7 @@ CREATE TABLE IF NOT EXISTS runs (
     head_sha                TEXT NOT NULL,
     base_sha                TEXT NOT NULL,
     submitted_head_sha      TEXT,
+    receive_reservation_id  TEXT,
     review_approved_head_sha TEXT,
     status                  TEXT NOT NULL DEFAULT 'pending',
     pr_url                  TEXT,
@@ -31,13 +69,83 @@ CREATE TABLE IF NOT EXISTS runs (
     last_pushed_at          INTEGER,
     push_generation         INTEGER,
     push_active             INTEGER NOT NULL DEFAULT 0,
-    terminal_head_verified_at INTEGER,
+	terminal_head_verified_at INTEGER,
+	publication_journal_state TEXT,
+	publication_journal_target_kind TEXT,
+	publication_journal_target_fingerprint TEXT,
+	publication_journal_ref TEXT,
+	publication_journal_target_version INTEGER,
+	publication_attempt_head_sha TEXT,
+	publication_attempt_target_kind TEXT,
+	publication_attempt_target_fingerprint TEXT,
+	publication_attempt_ref TEXT,
+	custody_transition_phase TEXT,
     error                   TEXT,
     awaiting_agent_since INTEGER,
     parked_ms            INTEGER,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS run_publication_targets (
+    run_id             TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    target_kind        TEXT NOT NULL,
+    target_fingerprint TEXT NOT NULL,
+    ref                TEXT NOT NULL,
+    target_version     INTEGER NOT NULL,
+    request_lineage    TEXT NOT NULL DEFAULT '',
+    state              TEXT NOT NULL DEFAULT 'no_attempt' CHECK (state IN ('no_attempt', 'attempted', 'published', 'ambiguous')),
+    request_identity   TEXT,
+    attempt_head_sha   TEXT,
+    generation         INTEGER NOT NULL DEFAULT 0,
+    provenance         TEXT NOT NULL DEFAULT '',
+    pr_state           TEXT NOT NULL DEFAULT 'no_attempt' CHECK (pr_state IN ('no_attempt', 'prepared', 'opened', 'ambiguous')),
+    pr_request_identity TEXT,
+    pr_generation      INTEGER NOT NULL DEFAULT 0,
+    pr_provenance      TEXT NOT NULL DEFAULT '',
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL,
+    PRIMARY KEY (run_id, target_fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS run_publication_targets_active
+    ON run_publication_targets (run_id, state, target_fingerprint);
+
+CREATE TABLE IF NOT EXISTS run_publication_target_sets (
+    run_id          TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    target_count    INTEGER NOT NULL,
+    target_set_hash TEXT NOT NULL,
+    state           TEXT NOT NULL CHECK (state IN ('complete', 'ambiguous')),
+    generation      INTEGER NOT NULL DEFAULT 0,
+    provenance      TEXT NOT NULL,
+    evidence_hash   TEXT NOT NULL DEFAULT '',
+    evidence_cursor TEXT NOT NULL DEFAULT '',
+    evidence_generation INTEGER NOT NULL DEFAULT 0,
+    evidence_provenance TEXT NOT NULL DEFAULT '',
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS run_publication_evidence (
+    run_id              TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    target_fingerprint  TEXT NOT NULL,
+    ref                 TEXT NOT NULL,
+    target_version      INTEGER NOT NULL,
+    remote_hash         TEXT NOT NULL,
+    provider_hash       TEXT NOT NULL,
+    evidence_hash       TEXT NOT NULL,
+    cursor              TEXT NOT NULL,
+    since               INTEGER NOT NULL,
+    until               INTEGER NOT NULL,
+    generation          INTEGER NOT NULL,
+    provenance          TEXT NOT NULL,
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    PRIMARY KEY (run_id, target_fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS run_publication_evidence_active
+    ON run_publication_evidence (run_id, generation, target_fingerprint);
 
 CREATE TABLE IF NOT EXISTS step_results (
     id               TEXT PRIMARY KEY,
@@ -133,6 +241,109 @@ CREATE TABLE IF NOT EXISTS intent_cache (
     session_id  TEXT NOT NULL,
     created_at  INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS internal_ref_mutations (
+    id                 TEXT PRIMARY KEY,
+    repo_id            TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    gate_path          TEXT NOT NULL,
+    branch             TEXT NOT NULL,
+    ref                TEXT NOT NULL,
+    old_sha            TEXT NOT NULL,
+    new_sha            TEXT NOT NULL,
+    operation          TEXT NOT NULL,
+    scope              TEXT NOT NULL,
+    capability_hash    TEXT NOT NULL UNIQUE,
+    authority_endpoint TEXT NOT NULL,
+    state              TEXT NOT NULL DEFAULT 'issued',
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS internal_ref_mutations_active
+    ON internal_ref_mutations (repo_id, gate_path, state, created_at);
+
+CREATE TABLE IF NOT EXISTS gate_ref_locks (
+    run_id           TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    repo_id          TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    gate_path        TEXT NOT NULL,
+    branch           TEXT NOT NULL,
+    ref              TEXT NOT NULL,
+    lock_path        TEXT NOT NULL,
+    owner_generation TEXT NOT NULL,
+	authority_endpoint TEXT NOT NULL,
+	expected_head    TEXT NOT NULL,
+	new_head         TEXT NOT NULL DEFAULT '',
+	file_identity    TEXT NOT NULL,
+    state            TEXT NOT NULL DEFAULT 'prepared',
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS gate_ref_locks_active
+    ON gate_ref_locks (repo_id, gate_path, state, updated_at);
+
+CREATE TABLE IF NOT EXISTS gate_ref_quarantines (
+    repo_id       TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    gate_path     TEXT NOT NULL,
+    ref           TEXT NOT NULL,
+    expected_head TEXT NOT NULL,
+    observed_head TEXT NOT NULL,
+    reason        TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL,
+    PRIMARY KEY (repo_id, gate_path, ref)
+);
+
+CREATE INDEX IF NOT EXISTS gate_ref_quarantines_active
+    ON gate_ref_quarantines (repo_id, gate_path, updated_at);
+
+CREATE TABLE IF NOT EXISTS managed_gate_refs (
+    repo_id    TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    gate_path  TEXT NOT NULL,
+    ref        TEXT NOT NULL,
+    head       TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (repo_id, gate_path, ref)
+);
+
+CREATE INDEX IF NOT EXISTS managed_gate_refs_active
+    ON managed_gate_refs (repo_id, gate_path, updated_at);
+
+CREATE TABLE IF NOT EXISTS custody_ref_stages (
+    run_id             TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    repo_id            TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    gate_path          TEXT NOT NULL,
+    branch             TEXT NOT NULL,
+    ref                TEXT NOT NULL,
+    old_sha            TEXT NOT NULL,
+    new_sha            TEXT NOT NULL,
+    owner_generation   TEXT NOT NULL,
+    authority_endpoint TEXT NOT NULL,
+    state              TEXT NOT NULL DEFAULT 'prepared',
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS custody_ref_stages_active
+    ON custody_ref_stages (repo_id, gate_path, state, updated_at);
+
+CREATE TABLE IF NOT EXISTS recovery_anchor_stages (
+    run_id             TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    repo_id            TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    gate_path          TEXT NOT NULL,
+    branch             TEXT NOT NULL,
+    ref                TEXT NOT NULL,
+    old_sha            TEXT NOT NULL,
+    new_sha            TEXT NOT NULL,
+    owner_generation   TEXT NOT NULL,
+    authority_endpoint TEXT NOT NULL,
+    state              TEXT NOT NULL DEFAULT 'prepared',
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS recovery_anchor_stages_active
+    ON recovery_anchor_stages (repo_id, gate_path, state, updated_at);
 `
 
 // migrationStatements hold additive schema changes applied to databases that
@@ -140,6 +351,11 @@ CREATE TABLE IF NOT EXISTS intent_cache (
 // idempotent via its error being tolerated when the column already exists.
 var migrationStatements = []string{
 	`ALTER TABLE repos ADD COLUMN fork_url TEXT`,
+	`ALTER TABLE repos ADD COLUMN url_version INTEGER NOT NULL DEFAULT 0`,
+	`CREATE TABLE IF NOT EXISTS receive_sessions (id TEXT PRIMARY KEY, repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE, gate_path TEXT NOT NULL, capability_hash TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'active', phase TEXT NOT NULL DEFAULT 'issued', batch_hash TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS receive_sessions_active ON receive_sessions (repo_id, id, state)`,
+	`ALTER TABLE receive_sessions ADD COLUMN phase TEXT NOT NULL DEFAULT 'issued'`,
+	`ALTER TABLE receive_sessions ADD COLUMN batch_hash TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,
@@ -162,6 +378,8 @@ var migrationStatements = []string{
 	// Branch synchronization provenance is intentionally nullable. Historical
 	// rows stay unbound because mutable head_sha cannot prove a successful push.
 	`ALTER TABLE runs ADD COLUMN submitted_head_sha TEXT`,
+	`ALTER TABLE runs ADD COLUMN receive_reservation_id TEXT`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS runs_receive_reservation ON runs (receive_reservation_id) WHERE receive_reservation_id IS NOT NULL`,
 	// Review authority is nullable and never backfilled. A historical mutable
 	// head_sha cannot prove which exact commit a completed review approved.
 	`ALTER TABLE runs ADD COLUMN review_approved_head_sha TEXT`,
@@ -173,6 +391,15 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN push_generation INTEGER`,
 	`ALTER TABLE runs ADD COLUMN push_active INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE runs ADD COLUMN terminal_head_verified_at INTEGER`,
+	`ALTER TABLE runs ADD COLUMN publication_journal_state TEXT`,
+	`ALTER TABLE runs ADD COLUMN publication_journal_target_kind TEXT`,
+	`ALTER TABLE runs ADD COLUMN publication_journal_target_fingerprint TEXT`,
+	`ALTER TABLE runs ADD COLUMN publication_journal_ref TEXT`,
+	`ALTER TABLE runs ADD COLUMN publication_journal_target_version INTEGER`,
+	`ALTER TABLE runs ADD COLUMN publication_attempt_head_sha TEXT`,
+	`ALTER TABLE runs ADD COLUMN publication_attempt_target_kind TEXT`,
+	`ALTER TABLE runs ADD COLUMN publication_attempt_target_fingerprint TEXT`,
+	`ALTER TABLE runs ADD COLUMN publication_attempt_ref TEXT`,
 	`ALTER TABLE runs ADD COLUMN pr_state TEXT`,
 	`ALTER TABLE runs ADD COLUMN pr_state_observed_at INTEGER`,
 	`ALTER TABLE runs ADD COLUMN ci_ready_at INTEGER`,
@@ -181,6 +408,40 @@ var migrationStatements = []string{
 	// unpublished head this run produced; a timestamp means an explicit
 	// guarded recovery ended that ownership (internal/branchsync).
 	`ALTER TABLE runs ADD COLUMN custody_returned_at INTEGER`,
+	`ALTER TABLE runs ADD COLUMN custody_transition_token TEXT`,
+	`ALTER TABLE runs ADD COLUMN custody_transition_phase TEXT`,
+	`ALTER TABLE run_publication_targets ADD COLUMN pr_state TEXT NOT NULL DEFAULT 'no_attempt' CHECK (pr_state IN ('no_attempt', 'prepared', 'opened', 'ambiguous'))`,
+	`ALTER TABLE run_publication_targets ADD COLUMN pr_request_identity TEXT`,
+	`ALTER TABLE run_publication_targets ADD COLUMN pr_generation INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE run_publication_targets ADD COLUMN pr_provenance TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE run_publication_targets ADD COLUMN request_lineage TEXT NOT NULL DEFAULT ''`,
+	`CREATE TABLE IF NOT EXISTS run_publication_targets (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, target_kind TEXT NOT NULL, target_fingerprint TEXT NOT NULL, ref TEXT NOT NULL, target_version INTEGER NOT NULL, request_lineage TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT 'no_attempt' CHECK (state IN ('no_attempt', 'attempted', 'published', 'ambiguous')), request_identity TEXT, attempt_head_sha TEXT, generation INTEGER NOT NULL DEFAULT 0, provenance TEXT NOT NULL DEFAULT '', pr_state TEXT NOT NULL DEFAULT 'no_attempt' CHECK (pr_state IN ('no_attempt', 'prepared', 'opened', 'ambiguous')), pr_request_identity TEXT, pr_generation INTEGER NOT NULL DEFAULT 0, pr_provenance TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (run_id, target_fingerprint))`,
+	`CREATE INDEX IF NOT EXISTS run_publication_targets_active ON run_publication_targets (run_id, state, target_fingerprint)`,
+	`CREATE TABLE IF NOT EXISTS run_publication_target_sets (run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE, target_count INTEGER NOT NULL, target_set_hash TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('complete', 'ambiguous')), generation INTEGER NOT NULL DEFAULT 0, provenance TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+	`ALTER TABLE run_publication_target_sets ADD COLUMN evidence_hash TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE run_publication_target_sets ADD COLUMN evidence_cursor TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE run_publication_target_sets ADD COLUMN evidence_generation INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE run_publication_target_sets ADD COLUMN evidence_provenance TEXT NOT NULL DEFAULT ''`,
+	`CREATE TABLE IF NOT EXISTS run_publication_evidence (run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, target_fingerprint TEXT NOT NULL, ref TEXT NOT NULL, target_version INTEGER NOT NULL, remote_hash TEXT NOT NULL, provider_hash TEXT NOT NULL, evidence_hash TEXT NOT NULL, cursor TEXT NOT NULL, since INTEGER NOT NULL, until INTEGER NOT NULL, generation INTEGER NOT NULL, provenance TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (run_id, target_fingerprint))`,
+	`CREATE INDEX IF NOT EXISTS run_publication_evidence_active ON run_publication_evidence (run_id, generation, target_fingerprint)`,
+	`ALTER TABLE receive_reservations ADD COLUMN receive_session_id TEXT`,
+	`ALTER TABLE receive_reservations ADD COLUMN receive_capability_hash TEXT`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS receive_reservations_session_transition ON receive_reservations (repo_id, receive_session_id, ref, old_sha, new_sha) WHERE receive_session_id IS NOT NULL`,
+	`CREATE TABLE IF NOT EXISTS internal_ref_mutations (id TEXT PRIMARY KEY, repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE, gate_path TEXT NOT NULL, branch TEXT NOT NULL, ref TEXT NOT NULL, old_sha TEXT NOT NULL, new_sha TEXT NOT NULL, operation TEXT NOT NULL, scope TEXT NOT NULL, capability_hash TEXT NOT NULL UNIQUE, authority_endpoint TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'issued', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS internal_ref_mutations_active ON internal_ref_mutations (repo_id, gate_path, state, created_at)`,
+	`ALTER TABLE internal_ref_mutations ADD COLUMN authority_endpoint TEXT NOT NULL DEFAULT ''`,
+	`UPDATE internal_ref_mutations SET state = 'consumed', updated_at = created_at WHERE authority_endpoint = '' AND state IN ('issued', 'prepared')`,
+	`CREATE TABLE IF NOT EXISTS gate_ref_locks (run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE, repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE, gate_path TEXT NOT NULL, branch TEXT NOT NULL, ref TEXT NOT NULL, lock_path TEXT NOT NULL, owner_generation TEXT NOT NULL, authority_endpoint TEXT NOT NULL, expected_head TEXT NOT NULL, new_head TEXT NOT NULL DEFAULT '', file_identity TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'prepared', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS gate_ref_locks_active ON gate_ref_locks (repo_id, gate_path, state, updated_at)`,
+	`ALTER TABLE gate_ref_locks ADD COLUMN new_head TEXT NOT NULL DEFAULT ''`,
+	`CREATE TABLE IF NOT EXISTS gate_ref_quarantines (repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE, gate_path TEXT NOT NULL, ref TEXT NOT NULL, expected_head TEXT NOT NULL, observed_head TEXT NOT NULL, reason TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (repo_id, gate_path, ref))`,
+	`CREATE INDEX IF NOT EXISTS gate_ref_quarantines_active ON gate_ref_quarantines (repo_id, gate_path, updated_at)`,
+	`CREATE TABLE IF NOT EXISTS managed_gate_refs (repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE, gate_path TEXT NOT NULL, ref TEXT NOT NULL, head TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (repo_id, gate_path, ref))`,
+	`CREATE INDEX IF NOT EXISTS managed_gate_refs_active ON managed_gate_refs (repo_id, gate_path, updated_at)`,
+	`CREATE TABLE IF NOT EXISTS custody_ref_stages (run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE, repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE, gate_path TEXT NOT NULL, branch TEXT NOT NULL, ref TEXT NOT NULL, old_sha TEXT NOT NULL, new_sha TEXT NOT NULL, owner_generation TEXT NOT NULL, authority_endpoint TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'prepared', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS custody_ref_stages_active ON custody_ref_stages (repo_id, gate_path, state, updated_at)`,
+	`CREATE TABLE IF NOT EXISTS recovery_anchor_stages (run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE, repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE, gate_path TEXT NOT NULL, branch TEXT NOT NULL, ref TEXT NOT NULL, old_sha TEXT NOT NULL, new_sha TEXT NOT NULL, owner_generation TEXT NOT NULL, authority_endpoint TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'prepared', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+	`CREATE INDEX IF NOT EXISTS recovery_anchor_stages_active ON recovery_anchor_stages (repo_id, gate_path, state, updated_at)`,
 	`ALTER TABLE step_results ADD COLUMN last_activity_at INTEGER`,
 	`ALTER TABLE step_results ADD COLUMN last_activity TEXT`,
 	`ALTER TABLE step_results ADD COLUMN agent_pid INTEGER`,

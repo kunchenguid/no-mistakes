@@ -27,6 +27,7 @@ func TestSubscribeReceivesEvents(t *testing.T) {
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "testrepo-sub1")
+	commitTestReceive(t, d, "testrepo-sub1", p.RepoDir("testrepo-sub1"), "main", "refs/heads/main", "0000000000000000000000000000000000000000", headSHA)
 
 	// Trigger a push to get a run ID.
 	client, err := ipc.Dial(p.Socket())
@@ -37,10 +38,12 @@ func TestSubscribeReceivesEvents(t *testing.T) {
 
 	var pushResult ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("testrepo-sub1"),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("testrepo-sub1"),
+		Ref:               "refs/heads/main",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &pushResult)
 	if err != nil {
 		t.Fatal(err)
@@ -120,6 +123,7 @@ func TestSubscribeToSlowRunReceivesEvents(t *testing.T) {
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "testrepo-sub2")
+	commitTestReceive(t, d, "testrepo-sub2", p.RepoDir("testrepo-sub2"), "main", "refs/heads/main", "0000000000000000000000000000000000000000", headSHA)
 
 	// Trigger a push first.
 	client, err := ipc.Dial(p.Socket())
@@ -130,10 +134,12 @@ func TestSubscribeToSlowRunReceivesEvents(t *testing.T) {
 
 	var pushResult ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("testrepo-sub2"),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("testrepo-sub2"),
+		Ref:               "refs/heads/main",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &pushResult)
 	if err != nil {
 		t.Fatal(err)
@@ -156,13 +162,21 @@ func TestSubscribeToSlowRunReceivesEvents(t *testing.T) {
 	// Cancel the run (by sending another push, which cancels active runs).
 	started2 := make(chan struct{})
 	slowStep.started = started2
+	secondSessionID := "test-receive-session-2"
+	secondCapability := "test-receive-capability-2"
+	if err := d.RegisterReceiveSession("testrepo-sub2", p.RepoDir("testrepo-sub2"), secondSessionID, secondCapability); err != nil {
+		t.Fatal(err)
+	}
+	commitTestReceiveWithSession(t, d, "testrepo-sub2", p.RepoDir("testrepo-sub2"), "main", "refs/heads/main", "0000000000000000000000000000000000000000", headSHA, secondSessionID, secondCapability)
 
 	var pushResult2 ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("testrepo-sub2"),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("testrepo-sub2"),
+		Ref:               "refs/heads/main",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  secondSessionID,
+		ReceiveCapability: secondCapability,
 	}, &pushResult2)
 	if err != nil {
 		t.Fatal(err)
@@ -194,6 +208,7 @@ func TestSubscribeToCompletedRunYieldsOneGapThenCloses(t *testing.T) {
 	})
 
 	_, headSHA := setupTestGitRepo(t, p, d, "testrepo-sub-done")
+	commitTestReceive(t, d, "testrepo-sub-done", p.RepoDir("testrepo-sub-done"), "main", "refs/heads/main", "0000000000000000000000000000000000000000", headSHA)
 
 	client, err := ipc.Dial(p.Socket())
 	if err != nil {
@@ -203,10 +218,12 @@ func TestSubscribeToCompletedRunYieldsOneGapThenCloses(t *testing.T) {
 
 	var pushResult ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
-		Gate: p.RepoDir("testrepo-sub-done"),
-		Ref:  "refs/heads/main",
-		Old:  "0000000000000000000000000000000000000000",
-		New:  headSHA,
+		Gate:              p.RepoDir("testrepo-sub-done"),
+		Ref:               "refs/heads/main",
+		Old:               "0000000000000000000000000000000000000000",
+		New:               headSHA,
+		ReceiveSessionID:  testReceiveSessionID,
+		ReceiveCapability: testReceiveCapability,
 	}, &pushResult)
 	if err != nil {
 		t.Fatal(err)
@@ -369,7 +386,15 @@ func TestRecoverOnStartup_FinalizesLegacyTerminalPRRun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			repo, err := database.InsertRepoWithID("terminal-pr-"+state, t.TempDir(), "https://github.com/test/repo", "main")
+			workDir := filepath.Join(root, "work")
+			if out, initErr := exec.Command("git", "init", workDir).CombinedOutput(); initErr != nil {
+				t.Fatalf("init working repository: %v: %s", initErr, out)
+			}
+			gateDir := p.RepoDir("terminal-pr-" + state)
+			if initErr := gitpkg.InitBare(context.Background(), gateDir); initErr != nil {
+				t.Fatalf("init gate: %v", initErr)
+			}
+			repo, err := database.InsertRepoWithID("terminal-pr-"+state, workDir, "https://github.com/test/repo", "main")
 			if err != nil {
 				t.Fatal(err)
 			}

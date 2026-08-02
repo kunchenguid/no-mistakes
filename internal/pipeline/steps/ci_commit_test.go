@@ -106,9 +106,7 @@ func TestCIStep_CommitAndPushTargetsForkWhenConfigured(t *testing.T) {
 	}
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Repo.UpstreamURL = parent
-	sctx.Repo.ForkURL = fork
+	sctx := newTestContextWithDBRecordsForRepo(t, ag, dir, baseSHA, headSHA, config.Commands{}, parent, fork)
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &CIStep{}
@@ -147,7 +145,7 @@ func TestCIStep_CommitAndPushRedactsForkURLInGitErrors(t *testing.T) {
 	})
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecordsForRepo(t, ag, dir, baseSHA, headSHA, config.Commands{}, "https://github.com/parent/project.git", "https://user:secret@example.com/fork/project.git")
 	sctx.Env = env
 	sctx.Repo.UpstreamURL = "https://github.com/parent/project.git"
 	sctx.Repo.ForkURL = "https://user:secret@example.com/fork/project.git"
@@ -279,7 +277,7 @@ func TestCIStep_CommitAndPush_UsesStepEnvForAllGitCommands(t *testing.T) {
 	}
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
@@ -355,7 +353,7 @@ func TestCIStep_CommitAndPush_GitCommandsUseStandardCredentialEnv(t *testing.T) 
 	t.Setenv("PATH", t.TempDir())
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"

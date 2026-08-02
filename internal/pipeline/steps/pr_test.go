@@ -103,9 +103,8 @@ func TestPRStep_BitbucketUpdatesExistingPR(t *testing.T) {
 	api := newFakeBitbucketPRAPI(t, 42, "https://bitbucket.org/test/repo/pull-requests/42")
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecordsForRepo(t, ag, dir, baseSHA, headSHA, config.Commands{}, "https://bitbucket.org/test/repo.git", "")
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
-	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
@@ -148,9 +147,8 @@ func TestPRStep_BitbucketUpdatesExistingPRWithoutHTMLLink(t *testing.T) {
 	api.createdPRURL = ""
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecordsForRepo(t, ag, dir, baseSHA, headSHA, config.Commands{}, "https://bitbucket.org/test/repo.git", "")
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
-	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 	api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		api.lastAuthHeader = r.Header.Get("Authorization")
 
@@ -324,10 +322,8 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 			return &agent.Result{Output: payload}, nil
 		},
 	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecordsForRepo(t, ag, dir, baseSHA, headSHA, config.Commands{}, "https://github.com/parent-owner/no-mistakes.git", "https://github.com/fork-owner/no-mistakes.git")
 	sctx.Env = env
-	sctx.Repo.UpstreamURL = "https://github.com/parent-owner/no-mistakes.git"
-	sctx.Repo.ForkURL = "https://github.com/fork-owner/no-mistakes.git"
 	sctx.Run.Branch = "refs/heads/feature"
 
 	step := &PRStep{}
@@ -364,9 +360,8 @@ func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
 
 	findings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecordsForRepo(t, ag, dir, baseSHA, headSHA, config.Commands{}, "https://bitbucket.org/test/repo.git", "")
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
-	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
 	if err != nil {
 		t.Fatal(err)
@@ -416,9 +411,8 @@ func TestPRStep_BitbucketCreatesNewPRWithoutHTMLLink(t *testing.T) {
 
 	findings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecordsForRepo(t, ag, dir, baseSHA, headSHA, config.Commands{}, "https://bitbucket.org/test/repo.git", "")
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
-	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
 	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
 	if err != nil {
 		t.Fatal(err)
@@ -508,8 +502,7 @@ func TestPRStep_BitbucketUsesProcessEnvWhenStepEnvIsNil(t *testing.T) {
 			return &agent.Result{Output: payload}, nil
 		},
 	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+	sctx := newTestContextWithDBRecordsForRepo(t, ag, dir, baseSHA, headSHA, config.Commands{}, "https://bitbucket.org/test/repo.git", "")
 
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
@@ -1640,9 +1633,8 @@ func TestPRStep_GitLabCreatesNewMR(t *testing.T) {
 			return &agent.Result{Output: payload}, nil
 		},
 	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecordsForRepo(t, ag, dir, baseSHA, headSHA, config.Commands{}, "https://gitlab.com/test/repo.git", "")
 	sctx.Env = env
-	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
 
 	step := &PRStep{}
 	if _, err := step.Execute(sctx); err != nil {
@@ -1665,8 +1657,7 @@ func TestPRStep_SkipsWhenProviderCLIUnavailable(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+	sctx := newTestContextWithDBRecordsForRepo(t, ag, dir, baseSHA, headSHA, config.Commands{}, "https://gitlab.com/test/repo.git", "")
 	sctx.Env = []string{"PATH=" + t.TempDir()}
 
 	step := &PRStep{}

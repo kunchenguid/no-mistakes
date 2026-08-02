@@ -190,8 +190,15 @@ func TestAttachTracksTUIPageview(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	workDir := filepath.Join(nmHome, "work")
+	cliGit(t, nmHome, "init", workDir)
+	gateDir := p.RepoDir("repo-1")
+	cliGit(t, filepath.Dir(gateDir), "init", "--bare", gateDir)
 
-	repo, err := d.InsertRepoWithID("repo-1", "/tmp/repo", "https://github.com/test/repo", "main")
+	repo, err := d.InsertRepoWithID("repo-1", workDir, "https://github.com/test/repo", "main")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -36,7 +36,7 @@ no-mistakes init --fork-url git@github.com:you/my-repo.git
 | ------------ | -------- | ------- | ----------------------------------------------------------------------------- |
 | `--fork-url` | `string` | (none)  | GitHub fork remote URL to push branches to while opening PRs against `origin` |
 
-Creates or refreshes a local bare repo, installs the managed pre-receive admission and post-receive notification hooks, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
+Creates or refreshes a local bare repo, installs the managed pre-receive admission, reference-transaction evidence, and post-receive notification hooks, best-effort isolates the gate repo's hook path from shared git config changes when Git supports `config --worktree`, adds or repairs the `no-mistakes` git remote, detects the default branch, records or updates the repo in SQLite, installs the `/no-mistakes` agent skill at user level into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, and ensures the daemon is running, installing the managed service when available and falling back to a detached daemon otherwise.
 `init` writes no skill files into the repo; the user-level copies cover every supported agent (`~/.claude/skills` for Claude Code, `~/.agents/skills` for Codex, OpenCode, Rovo Dev, and Pi) across all repos.
 If the home `.claude` links to `.agents`, `.claude/skills` links to `.agents/skills`, or the reverse, `init` follows that layout and still makes the skill readable from both logical paths.
 If the repo still contains a vendored skill copy written by an older no-mistakes version, `init` leaves it untouched and prints a notice that it is no longer needed and can be removed.
@@ -205,14 +205,19 @@ A run that goes terminal (cancelled, failed, or completed without a push stage) 
 A run whose terminalization verifies that the managed worktree head never changed from the submitted head releases the branch instead: the terminal outcome, including cancellation, ends ownership; status reports `state: user_owned` with the same exact ownership facts and no `next_action`; the branch and head are immediately usable for any separately authorized delivery; and nothing blocks a direct push or PR.
 Without that positive terminal head evidence, custody stays recoverable rather than being guessed away.
 While a run is still active, it reports `state: pipeline_owned`, the exact submitted/current heads and their relation, and `next_action.code: continue_active_run` with `no-mistakes axi status`, even when its head has not moved yet.
-`--recover` verifies the run is terminal, anchors the preserved head under `refs/no-mistakes/recover/<run>` in the invoking repository, and stamps custody returned so a fresh run can start.
+`--recover` verifies the run is terminal and anchors the preserved head under `refs/no-mistakes/recover/<run>` in the invoking repository before it can stamp custody returned.
 For equal or ahead worktrees where the preserved head is already locally reachable, recovery writes that anchor locally without gate access.
 For behind or diverged worktrees, recovery verifies the preserved head at the local gate branch and fetches it into the anchor before fast-forwarding only a clean behind worktree or refusing with the anchor named.
+If a terminal unpublished run's gate branch and local head both remain at the recorded submitted head, recovery may instead fetch the preserved head from the configured local gate by its canonical full object ID. The run must still be the newest owner of the branch, have no push/PR/CI publication provenance, and have no conflicting recovery anchor. Non-`--keep-local` leaves every ordinary ref untouched and refuses with the exact anchor plus explicit choices; `--keep-local` stamps custody at the submitted head without moving the worktree, ordinary gate branch, origin branch, or PR.
 A dirty or diverged worktree refuses with explicit choices.
-When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
-`no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
-A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
+When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it when needed, so a concurrent gate push wins and the recovery refuses instead. A private run-owned custody marker makes a crash after that gate compare-and-swap retryable; the final custody stamp is itself a full run-authority compare-and-swap that rejects newer runs and concurrent publication writes.
+`no-mistakes rerun` starts a new run from the current ordinary gate branch; it does not select or validate the preserved recovery anchor when those differ.
+A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`. A publication-bearing run is refused pending publication reconciliation and receives no custody stamp.
 On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pipeline-created exists to recover, and no file, ref, or database row changes.
+
+Historical unpublished recovery requires complete, target-bound publication evidence for the run interval. For GitHub and GitLab targets, provider audit history must expose an authoritative HTTP server-date cutoff and an explicit empty-page pagination terminator; local targets use their recorded request lineage and local ref evidence. Missing evidence or audit access, rate limiting, truncated history, or an unstable cutoff fails closed without custody. Legacy rows with missing submission-time request lineage are reconciled only by complete target proof and an atomic target-ledger update.
+
+Historical custody recovery and local managed-gate fencing own the `gate_ref_locks` journal. This boundary is compatible with open PR #614: PR #614 is complementary future forward-head transition journaling, not a runtime dependency of this recovery path, and the two changes keep their journal schemas and ownership scopes separate.
 
 ## no-mistakes axi logs
 
@@ -296,7 +301,8 @@ no-mistakes rerun
 no-mistakes rerun --intent "the revised user goal"
 ```
 
-Starts a new pipeline run using the last-known head SHA on the current branch.
+Starts a new pipeline run using the head of the current branch's ordinary gate ref.
+It does not select a private `refs/no-mistakes/recover/<run>` anchor.
 If the selected prior run has explicit intent, rerun inherits it exactly by default;
 otherwise it performs fresh intent inference. `--intent` supplies a new canonical
 explicit intent in either case. Inherited intent keeps distinct rerun provenance;

@@ -95,6 +95,11 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err != nil {
 		return nil, fmt.Errorf("push to %s: %w", pushTarget, err)
 	}
+	if err := sctx.DB.RecordRunPublicationAttempt(sctx.Run.ID, db.PublicationAttempt{
+		HeadSHA: headBeingPushed, TargetKind: pushTarget, TargetFingerprint: branchsync.TargetFingerprint(pushURL), Ref: ref,
+	}); err != nil {
+		return nil, err
+	}
 	switch {
 	case decision.newBranch:
 		// New branch: regular push (no force needed).
@@ -127,7 +132,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	}
 
 	if newHeadSHA != "" {
-		if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, newHeadSHA); err != nil {
+		if err := updateLocalBranchRef(sctx, ref, newHeadSHA); err != nil {
 			return nil, fmt.Errorf("update local branch ref: %w", err)
 		}
 	}

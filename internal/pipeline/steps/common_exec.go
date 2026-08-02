@@ -186,6 +186,14 @@ func stepGitRun(sctx *pipeline.StepContext, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+func updateLocalBranchRef(sctx *pipeline.StepContext, ref, newSHA string) error {
+	if sctx.UpdateBranchRef != nil {
+		return sctx.UpdateBranchRef(sctx.Ctx, ref, sctx.Run.HeadSHA, newSHA)
+	}
+	_, err := stepGitRun(sctx, "update-ref", ref, newSHA)
+	return err
+}
+
 func stepGitHeadSHA(sctx *pipeline.StepContext) (string, error) {
 	return stepGitRun(sctx, "rev-parse", "HEAD")
 }

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -495,7 +496,25 @@ func Run(socketPath string, client *ipc.Client, run *ipc.RunInfo, latestVersion 
 		model.syncService = service
 		model.syncRefresh = func() branchsync.State { return service.Refresh(context.Background()) }
 		model.syncApply = func() branchsync.State { return service.Apply(context.Background()) }
-		model.syncRecover = func() branchsync.State { return service.Recover(context.Background(), false) }
+		model.syncRecover = func() branchsync.State {
+			var state branchsync.State
+			if client == nil || run == nil {
+				state.Error = "the daemon recovery authority is unavailable"
+				state.Safety = "blocked_recover_gate_race"
+				return state
+			}
+			workDir, err := os.Getwd()
+			if err != nil {
+				state.Error = fmt.Sprintf("resolve recovery worktree: %v", err)
+				state.Safety = "blocked_recover_gate_race"
+				return state
+			}
+			if err := client.Call(ipc.MethodRecover, &ipc.RecoverParams{RepoID: run.RepoID, Branch: run.Branch, WorkDir: workDir}, &state); err != nil {
+				state.Error = err.Error()
+				state.Safety = "blocked_recover_gate_race"
+			}
+			return state
+		}
 		model.refreshCachedSync()
 	}
 	p := tea.NewProgram(model, tea.WithAltScreen())

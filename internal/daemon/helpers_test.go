@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/logstore"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -282,13 +283,79 @@ func setupTestGitRepo(t *testing.T, p *paths.Paths, d *db.DB, repoID string) (*d
 	gitCmd(t, bareDir, "remote", "add", "origin", bareDir)
 
 	// Register repo in DB.
-	repo, err := d.InsertRepoWithID(repoID, workDir, "https://github.com/test/repo", "main")
+	repo, err := d.InsertRepoWithID(repoID, workDir, bareDir, "main")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.RegisterReceiveSession(repo.ID, p.RepoDir(repo.ID), testReceiveSessionID, testReceiveCapability); err != nil {
 		t.Fatal(err)
 	}
 	_ = ctx
 
 	return repo, headSHA
+}
+
+const (
+	testReceiveSessionID  = "test-receive-session"
+	testReceiveCapability = "test-receive-capability"
+)
+
+func commitTestReceive(t *testing.T, d *db.DB, repoID, gatePath, branch, ref, oldSHA, newSHA string) {
+	commitTestReceiveWithSession(t, d, repoID, gatePath, branch, ref, oldSHA, newSHA, testReceiveSessionID, testReceiveCapability)
+}
+
+func commitTestReceiveWithOptions(t *testing.T, d *db.DB, repoID, gatePath, branch, ref, oldSHA, newSHA string, skipSteps []types.StepName, intent string) {
+	commitTestReceiveWithSessionAndOptions(t, d, repoID, gatePath, branch, ref, oldSHA, newSHA, testReceiveSessionID, testReceiveCapability, skipSteps, intent)
+}
+
+func commitTestReceiveWithSession(t *testing.T, d *db.DB, repoID, gatePath, branch, ref, oldSHA, newSHA, sessionID, capability string) {
+	commitTestReceiveWithSessionAndOptions(t, d, repoID, gatePath, branch, ref, oldSHA, newSHA, sessionID, capability, nil, "")
+}
+
+func commitTestReceiveWithSessionAndOptions(t *testing.T, d *db.DB, repoID, gatePath, branch, ref, oldSHA, newSHA, sessionID, capability string, skipSteps []types.StepName, intent string) {
+	t.Helper()
+	reservation, err := d.ReserveReceiveForSession(repoID, gatePath, branch, ref, oldSHA, newSHA, sessionID, capability, skipSteps, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.MarkReceivePreparedForID(reservation.ID, repoID, branch, ref, oldSHA, newSHA); err != nil {
+		t.Fatal(err)
+	}
+	current, err := git.Run(context.Background(), gatePath, "rev-parse", "-q", "--verify", ref)
+	if err != nil {
+		if oldSHA != "0000000000000000000000000000000000000000" {
+			t.Fatalf("read current gate ref: %v", err)
+		}
+		if newSHA != "0000000000000000000000000000000000000000" {
+			if _, err := git.Run(context.Background(), gatePath, "update-ref", ref, newSHA); err != nil {
+				t.Fatal(err)
+			}
+		}
+	} else if strings.TrimSpace(current) != newSHA {
+		current = strings.TrimSpace(current)
+		if current != oldSHA {
+			t.Fatalf("gate ref = %s, want old %s or new %s", current, oldSHA, newSHA)
+		}
+		if newSHA == "0000000000000000000000000000000000000000" {
+			if _, err := git.Run(context.Background(), gatePath, "update-ref", "-d", ref, oldSHA); err != nil {
+				t.Fatal(err)
+			}
+		} else if _, err := git.Run(context.Background(), gatePath, "update-ref", ref, newSHA, oldSHA); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.MarkReceiveCommittedForID(reservation.ID, repoID, branch, ref, oldSHA, newSHA); err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(ref, "refs/heads/") {
+		managedHead := newSHA
+		if isZeroObjectID(newSHA) {
+			managedHead = ""
+		}
+		if err := d.SetManagedGateRefHead(repoID, gatePath, ref, managedHead); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func gitCmd(t *testing.T, dir string, args ...string) {

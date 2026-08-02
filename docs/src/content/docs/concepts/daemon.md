@@ -118,7 +118,7 @@ On startup, the daemon checks for runs that were left in `pending` or `running` 
 - Reaps orphaned managed agent servers left behind by a crashed daemon or setup wizard
 - Removes orphaned worktree directories via `git worktree remove --force` - but never one whose run is still `pending` or `running`; only leftovers from terminal runs or directories with no matching run record are removed
 - Migrates gates named by authoritative repository records, plus legacy directories with the strict `<repoID>.git` shape. Before changing an unstamped candidate, it validates that the directory is a bare repository without relying on the current directory or ancestor Git discovery; unrelated and malformed directories are rejected without hook or Git mutation
-- For a validated legacy gate, installs or refreshes the no-mistakes-managed pre-receive admission and post-receive notification hooks, preserving an existing custom pre-receive hook behind the admission wrapper, then enables push-option support and reapplies per-worktree hook-path isolation
+- For a validated legacy gate, installs or refreshes the no-mistakes-managed receive-pack wrapper, pre-receive admission, reference-transaction evidence, and post-receive notification hooks, preserving existing custom pre-receive and reference-transaction hooks behind their managed wrappers, then enables push-option support and reapplies per-worktree hook-path isolation
 - Records a content-versioned gate configuration stamp only after the whole migration succeeds. Normal restarts check current stamped gates from the filesystem without rerunning the mutating Git commands
 - Clears any parked-awaiting-agent marker so a recovered failed run is not shown as still waiting for `axi respond`
 

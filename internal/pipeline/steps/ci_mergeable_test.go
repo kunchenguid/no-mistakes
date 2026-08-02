@@ -397,7 +397,7 @@ func TestCIStep_WaitsForPendingChecksBeforeFixing(t *testing.T) {
 	}
 
 	prURL := "https://github.com/test/repo/pull/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecordsForRepo(t, ag, dir, baseSHA, headSHA, config.Commands{}, upstream, "")
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream

@@ -28,6 +28,33 @@ func TestRefExists(t *testing.T) {
 	}
 }
 
+func TestRefExistsBareUnderSafeBareRepositoryExplicit(t *testing.T) {
+	setSafeBareRepositoryExplicit(t)
+	ctx := context.Background()
+	source := initTestRepo(t)
+	bare := filepath.Join(t.TempDir(), "gate.git")
+	if err := InitBare(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	run(t, source, "git", "remote", "add", "gate", bare)
+	run(t, source, "git", "push", "gate", "HEAD:refs/heads/main")
+
+	if ok, err := RefExistsBare(ctx, bare, "refs/heads/main"); err != nil || !ok {
+		t.Fatalf("RefExistsBare existing ref = %v, %v", ok, err)
+	}
+	if ok, err := RefExists(ctx, bare, "refs/heads/missing"); err != nil || ok {
+		t.Fatalf("RefExists missing bare ref = %v, %v", ok, err)
+	}
+	want := run(t, source, "git", "rev-parse", "HEAD")
+	got, err := ResolveRefBare(ctx, bare, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("ResolveRefBare = %q, want %q", got, want)
+	}
+}
+
 func TestShowFile_AtHEAD(t *testing.T) {
 	ctx := context.Background()
 	repo := initTestRepo(t)

@@ -76,6 +76,14 @@ var gitRepoTemplate struct {
 	headSHA string
 }
 
+// Cache the real Git path before individual tests replace PATH with a fake
+// CLI directory. Publication-aware fixtures must still be able to inspect
+// the repository's origin after that replacement.
+var testGitPath = func() string {
+	path, _ := exec.LookPath("git")
+	return path
+}()
+
 func ensureGitRepoTemplate(t *testing.T) {
 	t.Helper()
 	gitRepoTemplate.once.Do(func() {
@@ -403,11 +411,31 @@ func recordReviewApproval(t *testing.T, sctx *pipeline.StepContext, headSHA stri
 }
 
 func newTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA string, cmds config.Commands) *pipeline.StepContext {
+	upstream := "https://github.com/test/repo"
+	gitPath := testGitPath
+	if gitPath == "" {
+		gitPath = "git"
+	}
+	cmd := exec.Command(gitPath, "remote", "get-url", "origin")
+	cmd.Dir = workDir
+	if out, err := cmd.Output(); err == nil && strings.TrimSpace(string(out)) != "" {
+		upstream = strings.TrimSpace(string(out))
+	}
+	return newTestContextWithDBRecordsForRepo(t, ag, workDir, baseSHA, headSHA, cmds, upstream, "")
+}
+
+func newTestContextWithDBRecordsForRepo(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA string, cmds config.Commands, upstream, fork string) *pipeline.StepContext {
 	t.Helper()
 	sctx := newTestContext(t, ag, workDir, baseSHA, headSHA, cmds)
 
 	// Insert repo + run records so DB queries work
-	repo, err := sctx.DB.InsertRepo(workDir, "https://github.com/test/repo", "main")
+	var repo *db.Repo
+	var err error
+	if strings.TrimSpace(fork) != "" {
+		repo, err = sctx.DB.InsertRepoWithFork(workDir, upstream, fork, "main")
+	} else {
+		repo, err = sctx.DB.InsertRepo(workDir, upstream, "main")
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,13 +2,18 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	toON "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
+	"github.com/kunchenguid/no-mistakes/internal/daemon"
+	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/spf13/cobra"
 )
@@ -27,12 +32,12 @@ func newSyncCmd() *cobra.Command {
 			"branch to the verified pipeline head with reset semantics. It never stashes,\n" +
 			"merges genuine divergence, rebases, switches branches, or updates a remote.\n" +
 			"--check performs the fresh proof without applying it.\n" +
-			"--recover returns custody of a branch whose run went terminal with unpublished\n" +
-			"pipeline commits: it anchors the preserved head, fast-forwards a clean behind\n" +
-			"worktree to it, and frees the branch for a fresh run. A run cancelled before\n" +
-			"the pipeline changed anything releases the branch by itself (user_owned) and\n" +
-			"makes --recover a no-op. --recover --keep-local keeps the current local head\n" +
-			"instead and never touches the worktree.",
+			"--recover handles a branch whose run went terminal with unpublished\n" +
+			"pipeline commits: it anchors the preserved head before returning custody,\n" +
+			"fast-forwarding a clean behind worktree only when the guarded recovery can\n" +
+			"do so. A run cancelled before the pipeline changed anything releases the\n" +
+			"branch by itself (user_owned) and makes --recover a no-op. --recover --keep-local keeps\n" +
+			"the current local head instead and never touches the worktree.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if check && yes {
@@ -101,6 +106,42 @@ func openSyncService() (*branchsync.Service, func(), error) {
 		return nil, nil, err
 	}
 	return &branchsync.Service{DB: d, Repo: repo, WorkDir: ".", GateDir: p.RepoDir(repo.ID), Paths: p}, func() { _ = d.Close() }, nil
+}
+
+func recoverViaDaemon(ctx context.Context, keepLocal bool) (branchsync.State, error) {
+	p, d, err := openResources()
+	if err != nil {
+		return branchsync.State{}, err
+	}
+	defer d.Close()
+	repo, err := findRepo(d)
+	if err != nil {
+		return branchsync.State{}, err
+	}
+	branch, err := git.CurrentBranch(ctx, ".")
+	if err != nil {
+		return branchsync.State{}, fmt.Errorf("get current branch: %w", err)
+	}
+	if branch == "HEAD" {
+		return branchsync.State{}, fmt.Errorf("not on a branch")
+	}
+	workDir, err := filepath.Abs(".")
+	if err != nil {
+		return branchsync.State{}, fmt.Errorf("resolve invoking worktree: %w", err)
+	}
+	if err := daemon.EnsureDaemon(p); err != nil {
+		return branchsync.State{}, fmt.Errorf("start daemon: %w", err)
+	}
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		return branchsync.State{}, fmt.Errorf("connect to daemon: %w", err)
+	}
+	defer client.Close()
+	var state branchsync.State
+	if err := client.Call(ipc.MethodRecover, &ipc.RecoverParams{RepoID: repo.ID, Branch: branch, KeepLocal: keepLocal, WorkDir: workDir}, &state); err != nil {
+		return branchsync.State{}, fmt.Errorf("recover custody: %w", err)
+	}
+	return state, nil
 }
 
 func runHumanSync(cmd *cobra.Command, check, yes bool) error {
@@ -224,7 +265,10 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 		}
 	}
 
-	recovered := service.Recover(cmd.Context(), keepLocal)
+	recovered, recoverErr := recoverViaDaemon(cmd.Context(), keepLocal)
+	if recoverErr != nil {
+		return recoverErr
+	}
 	observed = recovered
 	printHumanSyncState(cmd, recovered)
 	if recovered.Recovered {
@@ -267,7 +311,7 @@ func humanSyncSummary(state branchsync.State) string {
 	switch state.State {
 	case branchsync.StatePipelineOwned:
 		if state.Safety == "blocked_pipeline_owned_recoverable" {
-			return "run ended without publishing its pipeline commits; recover custody with `no-mistakes sync --recover` (or `no-mistakes rerun` to resume validation)"
+			return "run ended without publishing its pipeline commits; recover custody with `no-mistakes sync --recover`; rerun starts from the current ordinary gate branch"
 		}
 		return "pipeline fix is not pushed yet; do not make local follow-up commits"
 	case branchsync.StateCustodyReturned:
@@ -314,22 +358,26 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
 		mode = "recover"
 	}
 	var state branchsync.State
+	var err error
 	result := "error"
 	defer func() { trackSyncAttempt("axi-sync", "axi", mode, state, result, started) }()
 
-	service, closeFn, err := openSyncService()
-	if err != nil {
-		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
-	}
-	defer closeFn()
-
-	switch {
-	case check:
-		state = service.Refresh(cmd.Context())
-	case recover:
-		state = service.Recover(cmd.Context(), keepLocal)
-	default:
-		state = service.Apply(cmd.Context())
+	if recover {
+		state, err = recoverViaDaemon(cmd.Context(), keepLocal)
+		if err != nil {
+			return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
+		}
+	} else {
+		service, closeFn, err := openSyncService()
+		if err != nil {
+			return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
+		}
+		defer closeFn()
+		if check {
+			state = service.Refresh(cmd.Context())
+		} else {
+			state = service.Apply(cmd.Context())
+		}
 	}
 	fields := []toON.Field{branchSyncField(state)}
 	if state.Error != "" {
@@ -340,7 +388,7 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
 		help = append(help, "Run `"+state.NextAction.Command+"`")
 	}
 	if state.Safety == "blocked_pipeline_owned_recoverable" {
-		help = append(help, "Run `no-mistakes rerun` instead to resume validating the preserved pipeline head")
+		help = append(help, "`no-mistakes rerun` is available, but rerun starts from the current ordinary gate branch, not the preserved recovery anchor")
 	}
 	if len(help) > 0 {
 		fields = append(fields, toON.Field{Key: "help", Value: help})

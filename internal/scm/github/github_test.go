@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -690,6 +691,303 @@ func TestAvailableFallsBackToUnscopedAuthWhenHostUnknown(t *testing.T) {
 
 	if err := host.Available(context.Background()); err != nil {
 		t.Fatalf("Available() error = %v, want nil", err)
+	}
+}
+
+func TestVerifyUnpublishedHistoryRejectsPreservedHead(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	p := strings.Repeat("b", 40)
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+		"gh api --paginate repos/test/repo/pulls?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"number":7,"head":{"ref":"renamed-feature","sha":"%s"}}]`+"\n", a),
+		},
+		"gh api --paginate repos/test/repo/pulls/7/commits?per_page=100": {
+			stdout: fmt.Sprintf(`[{"sha":"%s"}]`+"\n", p),
+		},
+		"gh api --paginate repos/test/repo/issues/7/timeline?per_page=100": {
+			stdout: "[]\n",
+		},
+	}), nil, "", "test/repo")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0, "https://github.com/test/repo/pull/7"); err == nil {
+		t.Fatal("VerifyUnpublishedHistory() error = nil, want preserved-head rejection")
+	}
+}
+
+func TestVerifyUnpublishedHistoryIgnoresUnrelatedPullRequests(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	q := strings.Repeat("c", 40)
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+		"gh api --paginate repos/test/repo/pulls?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"number":7,"head":{"ref":"renamed-feature","sha":"%s"}},{"number":8,"head":{"ref":"other","sha":"%s"}}]`+"\n", a, q),
+		},
+		"gh api --paginate repos/test/repo/pulls/7/commits?per_page=100":   {stdout: "[]\n"},
+		"gh api --paginate repos/test/repo/issues/7/timeline?per_page=100": {stdout: "[]\n"},
+	}), nil, "", "test/repo")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, strings.Repeat("b", 40), 0, 0, "https://github.com/test/repo/pull/7"); err != nil {
+		t.Fatalf("VerifyUnpublishedHistory() error = %v, want unrelated PR ignored", err)
+	}
+}
+
+func TestVerifyUnpublishedHistoryAllowsNoPullRequestIdentity(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+		"gh api --paginate repos/test/repo/pulls?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"number":7,"head":{"ref":"feature","sha":"%s"}}]`+"\n", a),
+		},
+		"gh api --paginate repos/test/repo/pulls/7/commits?per_page=100":   {stdout: "[]\n"},
+		"gh api --paginate repos/test/repo/issues/7/timeline?per_page=100": {stdout: "[]\n"},
+	}), nil, "", "test/repo")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, strings.Repeat("b", 40), 0, 0, ""); err != nil {
+		t.Fatalf("VerifyUnpublishedHistory() error = %v, want no-PR target accepted", err)
+	}
+}
+
+func TestVerifyUnpublishedHistoryIgnoresUnrelatedNoPullRequestIdentity(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	p := strings.Repeat("b", 40)
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+		"gh api --paginate repos/test/repo/pulls?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"number":7,"head":{"ref":"other","sha":"%s"}}]`+"\n", a),
+		},
+		"gh api --paginate repos/test/repo/issues/7/timeline?per_page=100": {stdout: `[{"head_ref":"other"}]` + "\n"},
+	}), nil, "", "test/repo")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0, ""); err != nil {
+		t.Fatalf("unrelated pull request history = %v, want ignored", err)
+	}
+}
+
+func TestVerifyUnpublishedHistoryUsesRenamedTargetLineage(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	p := strings.Repeat("b", 40)
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+		"gh api --paginate repos/test/repo/pulls?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"number":7,"head":{"ref":"renamed-feature","sha":"%s"}}]`+"\n", a),
+		},
+		"gh api --paginate repos/test/repo/pulls/7/commits?per_page=100": {
+			stdout: `[]` + "\n",
+		},
+		"gh api --paginate repos/test/repo/issues/7/timeline?per_page=100": {
+			stdout: fmt.Sprintf(`[{"head_ref":"feature","head_sha":"%s"}]`+"\n", p),
+		},
+	}), nil, "", "test/repo")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0, ""); err == nil {
+		t.Fatal("renamed target lineage containing preserved head was accepted")
+	}
+}
+
+func TestVerifyUnpublishedRefHistoryRejectsPreservedBranchHead(t *testing.T) {
+	t.Parallel()
+	p := strings.Repeat("b", 40)
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+		"gh api --paginate repos/test/repo/events?per_page=100": {
+			stdout: fmt.Sprintf(`[{"created_at":"2026-08-01T12:00:00Z","payload":{"ref":"refs/heads/feature","head":"%s"}}]`+"\n", p),
+		},
+	}), nil, "", "test/repo")
+	if err := host.VerifyUnpublishedRefHistory(context.Background(), "refs/heads/feature", strings.Repeat("a", 40), p, 0, 0); err == nil {
+		t.Fatal("preserved branch head passed historical ref publication proof")
+	}
+}
+
+func TestVerifyUnpublishedRefHistoryRejectsEmptyCoverage(t *testing.T) {
+	t.Parallel()
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+		"gh api --paginate repos/test/repo/events?per_page=100": {stdout: "[]\n"},
+	}), nil, "", "test/repo")
+	if err := host.VerifyUnpublishedRefHistory(context.Background(), "refs/heads/feature", strings.Repeat("a", 40), strings.Repeat("b", 40), 0, 0); err == nil {
+		t.Fatal("empty ref history passed as complete evidence")
+	}
+}
+
+func TestVerifyUnpublishedRefHistoryRejectsTruncatedOlderCoverage(t *testing.T) {
+	t.Parallel()
+	since := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).Unix()
+	until := time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC).Unix()
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+		"gh api --paginate repos/test/repo/events?per_page=100": {
+			stdout: `[{"created_at":"2026-08-01T12:00:00Z","payload":{"ref":"refs/heads/feature","head":"` + strings.Repeat("a", 40) + `"}}]` + "\n",
+		},
+	}), nil, "", "test/repo")
+	if err := host.VerifyUnpublishedRefHistory(context.Background(), "refs/heads/feature", strings.Repeat("a", 40), strings.Repeat("b", 40), since, until); err == nil {
+		t.Fatal("truncated ref history passed as complete evidence")
+	}
+}
+
+func TestGitHubAuditCoverageRequiresExhaustedPagination(t *testing.T) {
+	if _, _, complete, err := githubIncludedAuditEvents([]byte("HTTP/2 200 OK\r\nLink: <next>; rel=\"next\"\r\n\r\n[]\n")); err != nil || complete {
+		t.Fatalf("incomplete GitHub audit pages = complete %v, err %v", complete, err)
+	}
+	events, pages, complete, err := githubIncludedAuditEvents([]byte("HTTP/2 200 OK\r\n\r\n[]\n"))
+	if err != nil || pages != 1 || !complete || len(events) != 0 {
+		t.Fatalf("complete GitHub audit pages = events %d pages %d complete %v err %v", len(events), pages, complete, err)
+	}
+}
+
+func TestParseGitHubAuditPageRequiresProviderDateAndCursor(t *testing.T) {
+	page, err := parseGitHubAuditPage([]byte("HTTP/2 200 OK\r\nDate: Sun, 02 Aug 2026 12:00:00 GMT\r\nLink: <https://example.test?page=2>; rel=\"next\"\r\n\r\n[{\"id\":1}]\n"))
+	if err != nil || page.serverDate != time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC).Unix() || page.nextPage != 2 || len(page.events) != 1 {
+		t.Fatalf("GitHub audit page = %#v, err %v", page, err)
+	}
+	if _, err := parseGitHubAuditPage([]byte("HTTP/2 200 OK\r\n\r\n[]\n")); err == nil {
+		t.Fatal("GitHub audit page without provider date was accepted")
+	}
+}
+
+func TestGitHubAuditPagesRejectsNonemptyPageWithoutProviderContinuation(t *testing.T) {
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --include orgs/test/audit-log?before=1&page=1": {
+			stdout: "HTTP/2 200 OK\r\nDate: Sun, 02 Aug 2026 12:00:00 GMT\r\n\r\n[{\"id\":1}]\n",
+		},
+	}), nil, "", "test/repo")
+	if _, _, _, _, err := host.githubAuditPages(context.Background(), "orgs/test/audit-log?before=1", 1, 0); err == nil {
+		t.Fatal("GitHub audit pagination accepted a nonempty page without a provider continuation")
+	}
+}
+
+func TestGitHubAuditPagesFollowsProviderContinuationToEmptyPage(t *testing.T) {
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --include orgs/test/audit-log?before=1000&page=1": {
+			stdout: "HTTP/2 200 OK\r\nDate: Sun, 02 Aug 2026 12:00:00 GMT\r\nLink: <https://example.test?page=2>; rel=\"next\"\r\n\r\n[{\"id\":1}]\n",
+		},
+		"gh api --include orgs/test/audit-log?before=1000&page=2": {
+			stdout: "HTTP/2 200 OK\r\nDate: Sun, 02 Aug 2026 12:00:00 GMT\r\n\r\n[]\n",
+		},
+	}), nil, "", "test/repo")
+	events, pages, _, chain, err := host.githubAuditPages(context.Background(), "orgs/test/audit-log", 1, 1)
+	if err != nil || len(events) != 1 || pages != 2 || chain != "1,2" {
+		t.Fatalf("GitHub audit pagination = events %d pages %d chain %q err %v", len(events), pages, chain, err)
+	}
+}
+
+func TestGitHubAuditHeadValidationRequiresCanonicalTargetEvidence(t *testing.T) {
+	a := strings.Repeat("a", 40)
+	zero := strings.Repeat("0", 40)
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "abbreviated", raw: `{"before":"` + a + `","after":"abc"}`, want: true},
+		{name: "uppercase", raw: `{"before":"` + a + `","after":"` + strings.Repeat("A", 40) + `"}`, want: true},
+		{name: "missing old head for push", raw: `{"action":"git.push","after":"` + a + `"}`, want: true},
+		{name: "delete new head is not zero", raw: `{"action":"git.delete","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "canonical push", raw: `{"action":"git.push","before":"` + a + `","after":"` + a + `"}`, want: false},
+		{name: "create before only", raw: `{"action":"git.create","before":"` + zero + `"}`, want: true},
+		{name: "create after only", raw: `{"action":"git.create","after":"` + a + `"}`, want: true},
+		{name: "canonical create", raw: `{"action":"git.create","before":"` + zero + `","after":"` + a + `"}`, want: false},
+		{name: "delete after only", raw: `{"action":"git.delete","after":"` + zero + `"}`, want: true},
+		{name: "canonical delete", raw: `{"action":"git.delete","before":"` + a + `","after":"` + zero + `"}`, want: false},
+		{name: "force push missing side", raw: `{"action":"git.force_push","before":"` + a + `"}`, want: true},
+		{name: "conflicting pairs", raw: `{"action":"git.push","before":"` + a + `","after":"` + a + `","oldrev":"` + zero + `","newrev":"` + a + `"}`, want: true},
+		{name: "rename missing refs", raw: `{"action":"git.rename","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "canonical rename", raw: `{"action":"git.rename","old_ref":"feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: false},
+		{name: "rename noncanonical ref", raw: `{"action":"git.rename","old_ref":"feature..old","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename leading dash", raw: `{"action":"git.rename","old_ref":"-feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename full ref leading dash", raw: `{"action":"git.rename","old_ref":"refs/heads/-feature","new_ref":"refs/heads/renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: false},
+		{name: "rename lock ref", raw: `{"action":"git.rename","old_ref":"feature.lock","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename leading slash", raw: `{"action":"git.rename","old_ref":"/feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename trailing slash", raw: `{"action":"git.rename","old_ref":"feature/","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename conflicting aliases", raw: `{"action":"git.rename","old_ref":"feature","new_ref":"renamed-feature","from_ref":"other","to_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename partial alias", raw: `{"action":"git.rename","old_ref":"feature","new_ref":"renamed-feature","from_ref":"other","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename consistent aliases", raw: `{"action":"git.rename","old_ref":"feature","new_ref":"renamed-feature","from_ref":"refs/heads/feature","to_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := githubAuditValidateHeadValues(json.RawMessage(tc.raw), a)
+			if (err != nil) != tc.want {
+				t.Fatalf("githubAuditValidateHeadValues() error = %v, want error %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestGitHubAuditTargetClassificationFailsClosedForAmbiguousEvents(t *testing.T) {
+	requestSet := map[string]struct{}{"refs/pull/7/head": {}}
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"ref":"other","action":"git.push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("non-current GitHub audit event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"action":"git.push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("ambiguous GitHub audit event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if ref, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"ref":"feature","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); ref != "feature" || !targeted || ambiguous {
+		t.Fatalf("target GitHub audit event = %q targeted=%v ambiguous=%v", ref, targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"pull_number":99,"after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("disappeared GitHub pull request event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"pull_number":99,"after":"`+strings.Repeat("a", 40)+`"}`), nil, "feature"); targeted || !ambiguous {
+		t.Fatalf("unbound GitHub pull request event without lineage classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"source_branch":"renamed-feature","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("renamed GitHub source event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"ref":"renamed-feature","action":"git.push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("renamed GitHub ref event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"old_ref":"feature","new_ref":"renamed-feature","action":"git.rename","before":"`+strings.Repeat("a", 40)+`","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("GitHub rename event without current ref classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+}
+
+func TestDiscoverSubmissionRequestRefsIncludesInactivePullRequest(t *testing.T) {
+	a := strings.Repeat("a", 40)
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+		"gh api --paginate repos/test/repo/pulls?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"number":7,"created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-02T00:00:00Z","head":{"ref":"feature","sha":"%s"}}]`+"\n", a),
+		},
+		"gh api --paginate repos/test/repo/issues/7/timeline?per_page=100": {stdout: "[]\n"},
+	}), nil, "", "test/repo")
+	refs, err := host.DiscoverSubmissionRequestRefs(context.Background(), "feature", a)
+	if err != nil || len(refs) != 1 || refs[0] != "refs/pull/7/head" {
+		t.Fatalf("submission request refs = %#v, err %v", refs, err)
+	}
+}
+
+func TestVerifyUnpublishedHistoryInspectsRenamedNoPullRequestHistory(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+		"gh api --paginate repos/test/repo/pulls?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"number":7,"head":{"ref":"renamed-feature","sha":"%s"}}]`+"\n", a),
+		},
+		"gh api --paginate repos/test/repo/pulls/7/commits?per_page=100":   {stdout: "[]\n"},
+		"gh api --paginate repos/test/repo/issues/7/timeline?per_page=100": {stdout: `[{"head_ref":"feature"}]` + "\n"},
+	}), nil, "", "test/repo")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, strings.Repeat("b", 40), 0, 0, ""); err != nil {
+		t.Fatalf("renamed pull request history = %v, want complete history inspection", err)
+	}
+}
+
+func TestVerifyUnpublishedHistoryRejectsPreservedHeadInRenamedNoPullRequestIdentity(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	p := strings.Repeat("b", 40)
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+		"gh api --paginate repos/test/repo/pulls?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"number":7,"head":{"ref":"renamed-feature","sha":"%s"}}]`+"\n", a),
+		},
+		"gh api --paginate repos/test/repo/pulls/7/commits?per_page=100": {
+			stdout: fmt.Sprintf(`[{"sha":"%s"}]`+"\n", p),
+		},
+		"gh api --paginate repos/test/repo/issues/7/timeline?per_page=100": {stdout: `[{"head_ref":"feature"}]` + "\n"},
+	}), nil, "", "test/repo")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0, ""); err == nil {
+		t.Fatal("renamed pull request containing preserved head was accepted")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -354,8 +355,9 @@ type cliRecoverFixture struct {
 // operator worktree sits at the submitted head with no push binding.
 func newCLIRecoverFixture(t *testing.T) cliRecoverFixture {
 	t.Helper()
-	nmHome := filepath.Join(t.TempDir(), "nm-home")
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
+	t.Setenv("NM_TEST_START_DAEMON", "1")
 	root := t.TempDir()
 	remote := filepath.Join(root, "remote.git")
 	cliGit(t, root, "init", "--bare", remote)
@@ -422,11 +424,43 @@ func newCLIRecoverFixture(t *testing.T) cliRecoverFixture {
 	if err := database.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
 		t.Fatal(err)
 	}
+	targets, err := database.ListRunPublicationTargets(run.ID)
+	if err != nil || len(targets) == 0 {
+		t.Fatalf("publication targets = %#v, %v", targets, err)
+	}
+	evidence := make([]db.PublicationEvidenceInput, 0, len(targets))
+	for _, target := range targets {
+		if strings.TrimSpace(target.RequestLineage) == "" || target.RequestLineage == db.PublicationTargetRequestLineageMigrationPending {
+			if err := database.ReconcileRunPublicationTargetLineage(run.ID, target.TargetFingerprint, "none"); err != nil {
+				t.Fatalf("reconcile publication lineage: %v", err)
+			}
+		}
+		evidence = append(evidence, db.PublicationEvidenceInput{
+			TargetFingerprint: target.TargetFingerprint,
+			Ref:               target.Ref,
+			TargetVersion:     target.TargetVersion,
+			RemoteHash:        "fixture-remote-evidence",
+			ProviderHash:      "fixture-provider-evidence",
+			Cursor:            "audit-cutoff=1754136000;provider-date:1754136000;audit;hasNextPage=false;fixture-complete-cursor",
+			Since:             run.CreatedAt,
+			Until:             run.UpdatedAt,
+		})
+	}
+	if _, err := database.RecordRunPublicationEvidence(run.ID, evidence); err != nil {
+		t.Fatalf("record publication evidence: %v", err)
+	}
+	if err := database.SetManagedGateRefHead(repo.ID, gate, "refs/heads/feature/recover", preserved); err != nil {
+		t.Fatalf("seed managed gate head: %v", err)
+	}
 	if err := database.Close(); err != nil {
 		t.Fatal(err)
 	}
 	chdir(t, local)
-	return cliRecoverFixture{local: local, gate: gate, submitted: submitted, preserved: preserved}
+	return cliRecoverFixture{local: local, gate: gate, submitted: submitted, preserved: preserved, runID: run.ID}
+}
+
+func (f cliRecoverFixture) anchorRef() string {
+	return "refs/no-mistakes/recover/" + f.runID
 }
 
 // newCLIUnmovedAbortFixture reproduces the pre-push abort taken when delivery
@@ -435,7 +469,11 @@ func newCLIRecoverFixture(t *testing.T) cliRecoverFixture {
 // provenance or custody stamp exists.
 func newCLIUnmovedAbortFixture(t *testing.T) cliRecoverFixture {
 	t.Helper()
-	nmHome := filepath.Join(t.TempDir(), "nm-home")
+	// The detached daemon re-execs this test binary. Tell the test harness to
+	// honor its explicit `daemon run --root` child invocation instead of
+	// entering the test suite again.
+	t.Setenv("NM_TEST_START_DAEMON", "1")
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 	root := t.TempDir()
 	remote := filepath.Join(root, "remote.git")
@@ -613,7 +651,7 @@ func newCLIStaleUnpublishedFixtureWithRelation(t *testing.T, pushedDescendant bo
 
 func newCLIStaleUnpublishedFixtureWithOptions(t *testing.T, pushedDescendant bool, provenance olderTargetProvenance) cliStaleUnpublishedFixture {
 	t.Helper()
-	nmHome := filepath.Join(t.TempDir(), "nm-home")
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 	root := t.TempDir()
 	remote := filepath.Join(root, "remote.git")
@@ -650,7 +688,12 @@ func newCLIStaleUnpublishedFixtureWithOptions(t *testing.T, pushedDescendant boo
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo, err := database.InsertRepo(registeredRoot, remote, "main")
+	var repo *db.Repo
+	if provenance == olderTargetConflicting {
+		repo, err = database.InsertRepoWithFork(registeredRoot, remote, remote+"-previous", "main")
+	} else {
+		repo, err = database.InsertRepo(registeredRoot, remote, "main")
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -669,6 +712,9 @@ func newCLIStaleUnpublishedFixtureWithOptions(t *testing.T, pushedDescendant boo
 	cliGit(t, pipeline, "commit", "-m", "older pipeline fix")
 	unpublished := cliGit(t, pipeline, "rev-parse", "HEAD")
 	cliGit(t, pipeline, "push", gate, "HEAD:refs/heads/feature/sync")
+	if err := database.SetManagedGateRefHead(repo.ID, gate, "refs/heads/feature/sync", unpublished); err != nil {
+		t.Fatalf("seed older managed gate head: %v", err)
+	}
 
 	older, err := database.InsertRun(repo.ID, "feature/sync", localHead, base)
 	if err != nil {
@@ -676,11 +722,18 @@ func newCLIStaleUnpublishedFixtureWithOptions(t *testing.T, pushedDescendant boo
 	}
 	if provenance != olderTargetMissing {
 		fingerprint := branchsync.TargetFingerprint(remote)
+		targetKind := "upstream"
 		if provenance == olderTargetConflicting {
 			fingerprint = branchsync.TargetFingerprint(remote + "-previous")
+			targetKind = "fork"
 		}
-		if err := database.UpdateRunPushBinding(older.ID, db.PushBinding{HeadSHA: localHead, TargetKind: "upstream", TargetFingerprint: fingerprint, Ref: "refs/heads/feature/sync"}); err != nil {
+		if err := database.UpdateRunPushBinding(older.ID, db.PushBinding{HeadSHA: localHead, TargetKind: targetKind, TargetFingerprint: fingerprint, Ref: "refs/heads/feature/sync"}); err != nil {
 			t.Fatal(err)
+		}
+		if provenance == olderTargetConflicting {
+			if _, err := database.UpdateRepoForkURL(repo.ID, ""); err != nil {
+				t.Fatalf("remove retired fork target: %v", err)
+			}
 		}
 	}
 	if err := database.UpdateRunHeadSHA(older.ID, unpublished); err != nil {
@@ -714,6 +767,9 @@ func newCLIStaleUnpublishedFixtureWithOptions(t *testing.T, pushedDescendant boo
 		gatePushArgs = []string{"push", "--force", gate, "HEAD:refs/heads/feature/sync"}
 	}
 	cliGit(t, newer, gatePushArgs...)
+	if err := database.SetManagedGateRefHead(repo.ID, gate, "refs/heads/feature/sync", pushed); err != nil {
+		t.Fatalf("seed newer managed gate head: %v", err)
+	}
 
 	latestSubmitted := unpublished
 	if !pushedDescendant {
@@ -778,7 +834,7 @@ func TestAxiSyncOlderUnpublishedNonAncestorStillRefuses(t *testing.T) {
 	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
 		t.Fatalf("non-ancestor recovery should refuse, got %#v\n%s", err, out)
 	}
-	if !strings.Contains(out, "safety: blocked_recover_unverified_head") {
+	if !strings.Contains(out, "safety: blocked_recover_newer_run") {
 		t.Fatalf("non-ancestor recovery did not remain fail-closed:\n%s", out)
 	}
 	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.localHead {
@@ -852,6 +908,7 @@ func TestAxiSyncCheckSurfacesRecoveryForTerminalPrePushRun(t *testing.T) {
 		"code: recover_custody",
 		"command: no-mistakes axi sync --recover",
 		"no-mistakes rerun",
+		"rerun starts from the current ordinary gate branch",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stranded check missing %q:\n%s", want, out)
@@ -921,6 +978,47 @@ func TestAxiSyncRecoverDivergedRefusesThenKeepLocalSucceeds(t *testing.T) {
 	}
 }
 
+func TestAxiSyncRecoverMovedGateAnchorsAndReturnsActionableHelp(t *testing.T) {
+	f := newCLIRecoverFixture(t)
+	cliGit(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted)
+	beforeLocalRefs := cliRefSnapshot(t, f.local)
+	beforeGateRefs := cliRefSnapshot(t, f.gate)
+	beforeStatus := cliGit(t, f.local, "status", "--porcelain=v1")
+
+	out, err := executeCmd("axi", "sync", "--recover")
+	var ee *exitError
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("moved-gate recover should exit 1, got %#v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"safety: blocked_recover_diverged",
+		"relation: diverged",
+		f.anchorRef(),
+		"no-mistakes axi sync --recover --keep-local",
+		"no-mistakes rerun",
+		"rerun starts from the current ordinary gate branch",
+		"git log --oneline --left-right HEAD..." + f.anchorRef(),
+		"no files or refs were changed except the recovery anchor",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("moved-gate recover output missing %q:\n%s", want, out)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("non-keep-local moved HEAD to %s, want submitted %s", got, f.submitted)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("non-keep-local moved gate branch to %s, want submitted %s", got, f.submitted)
+	}
+	if got := cliGit(t, f.local, "status", "--porcelain=v1"); got != beforeStatus {
+		t.Fatalf("non-keep-local touched worktree status: before %q after %q", beforeStatus, got)
+	}
+	assertOnlyCLIRefChange(t, beforeLocalRefs, cliRefSnapshot(t, f.local), f.anchorRef(), f.preserved)
+	if afterGateRefs := cliRefSnapshot(t, f.gate); !reflect.DeepEqual(beforeGateRefs, afterGateRefs) {
+		t.Fatalf("non-keep-local touched gate refs:\nbefore=%v\nafter=%v", beforeGateRefs, afterGateRefs)
+	}
+}
+
 func TestSyncRecoverFlagValidation(t *testing.T) {
 	newCLIRecoverFixture(t)
 	for _, args := range [][]string{
@@ -972,6 +1070,40 @@ func cliGit(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
 	}
 	return strings.TrimSpace(out)
+}
+
+func cliRefSnapshot(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	out := cliGit(t, dir, "for-each-ref", "--format=%(refname)=%(objectname)")
+	refs := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		name, sha, ok := strings.Cut(line, "=")
+		if !ok {
+			t.Fatalf("malformed ref line %q", line)
+		}
+		refs[name] = sha
+	}
+	return refs
+}
+
+func assertOnlyCLIRefChange(t *testing.T, before, after map[string]string, changedRef, changedSHA string) {
+	t.Helper()
+	if got := after[changedRef]; got != changedSHA {
+		t.Fatalf("changed ref %s = %s, want %s", changedRef, got, changedSHA)
+	}
+	withoutChanged := make(map[string]string, len(after))
+	for name, sha := range after {
+		if name == changedRef {
+			continue
+		}
+		withoutChanged[name] = sha
+	}
+	if !reflect.DeepEqual(before, withoutChanged) {
+		t.Fatalf("unexpected ref changes:\nbefore=%v\nafter=%v", before, after)
+	}
 }
 
 func asExitError(err error, target **exitError) bool {

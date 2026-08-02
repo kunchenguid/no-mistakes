@@ -54,7 +54,23 @@ func RunBare(ctx context.Context, bareDir string, args ...string) (string, error
 func runInDir(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = NonInteractiveEnv(dir)
+	if sanitizedGateConfig(ctx) {
+		cmd.Env = sanitizedGateConfigEnv(dir)
+	} else {
+		cmd.Env = NonInteractiveEnv(dir)
+	}
+	if capability := internalMutationCapability(ctx); capability != "" {
+		cmd.Env = append(cmd.Env, "NO_MISTAKES_INTERNAL_MUTATION_CAPABILITY="+capability)
+	}
+	if operation := internalMutationOperation(ctx); operation != "" {
+		cmd.Env = append(cmd.Env, "NO_MISTAKES_INTERNAL_MUTATION_OPERATION="+operation)
+	}
+	if branch := internalMutationBranch(ctx); branch != "" {
+		cmd.Env = append(cmd.Env, "NO_MISTAKES_INTERNAL_MUTATION_BRANCH="+branch)
+	}
+	if endpoint := internalMutationAuthority(ctx); endpoint != "" {
+		cmd.Env = append(cmd.Env, "NO_MISTAKES_INTERNAL_MUTATION_AUTHORITY="+endpoint)
+	}
 	winproc.Harden(cmd)
 	out, err := cmd.Output()
 	if err != nil {
@@ -141,6 +157,11 @@ func EnsureRemote(ctx context.Context, dir, name, url string) error {
 	return AddRemote(ctx, dir, name, url)
 }
 
+func SetRemoteReceivePack(ctx context.Context, dir, name, command string) error {
+	_, err := Run(ctx, dir, "config", "remote."+name+".receivepack", command)
+	return err
+}
+
 // RemoveRemote removes a named remote from the repo at dir.
 func RemoveRemote(ctx context.Context, dir, name string) error {
 	_, err := Run(ctx, dir, "remote", "remove", name)
@@ -165,6 +186,16 @@ func GetConfiguredRemoteURLs(ctx context.Context, dir, name string) ([]string, e
 	out, err := Run(ctx, dir, "config", "--null", "--get-all", "remote."+name+".url")
 	if err != nil {
 		return nil, err
+	}
+	return strings.Split(strings.TrimSuffix(out, "\x00"), "\x00"), nil
+}
+
+// GetConfiguredRemotePushURLs returns every literal push URL configured for a
+// remote. When no pushurl is configured, Git pushes to the remote's URL.
+func GetConfiguredRemotePushURLs(ctx context.Context, dir, name string) ([]string, error) {
+	out, err := Run(ctx, dir, "config", "--null", "--get-all", "remote."+name+".pushurl")
+	if err != nil {
+		return GetConfiguredRemoteURLs(ctx, dir, name)
 	}
 	return strings.Split(strings.TrimSuffix(out, "\x00"), "\x00"), nil
 }
@@ -440,6 +471,14 @@ func FetchRemoteBranchToPrivateRef(ctx context.Context, dir, remote, branch, loc
 	return err
 }
 
+// FetchRemoteRefToPrivateRef fetches one exact ref into a caller-owned private
+// ref without touching FETCH_HEAD or ordinary remote-tracking refs.
+func FetchRemoteRefToPrivateRef(ctx context.Context, dir, remote, sourceRef, localRef string) error {
+	refspec := fmt.Sprintf("+%s:%s", sourceRef, localRef)
+	_, err := Run(ctx, dir, "fetch", "--no-tags", "--no-write-fetch-head", remote, refspec)
+	return err
+}
+
 // Push pushes HEAD to a remote ref. If forceWithLease is true, it uses an
 // explicit expected remote SHA for safe force-push.
 func Push(ctx context.Context, dir, remote, ref, expectedSHA string, forceWithLease bool) error {
@@ -608,6 +647,9 @@ func ResolveRef(ctx context.Context, dir, ref string) (string, error) {
 // `git rev-parse --verify --quiet` so a missing ref is a clean (nil, false)
 // result rather than a loud error.
 func RefExists(ctx context.Context, dir, ref string) (bool, error) {
+	if isBareGitDir(dir) {
+		return RefExistsBare(ctx, dir, ref)
+	}
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	cmd.Env = NonInteractiveEnv(dir)
 	winproc.Harden(cmd)
@@ -619,6 +661,25 @@ func RefExists(ctx context.Context, dir, ref string) (bool, error) {
 		return false, fmt.Errorf("git rev-parse %s: %w", ref, err)
 	}
 	return true, nil
+}
+
+func RefExistsBare(ctx context.Context, bareDir, ref string) (bool, error) {
+	if _, err := RunBare(ctx, bareDir, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("git rev-parse %s: %w", ref, err)
+	}
+	return true, nil
+}
+
+func ResolveRefBare(ctx context.Context, bareDir, ref string) (string, error) {
+	out, err := RunBare(ctx, bareDir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolve ref %s: %w", ref, err)
+	}
+	return out, nil
 }
 
 // ShowFile returns the content of path as stored at the given ref (e.g.

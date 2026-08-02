@@ -209,3 +209,36 @@ type CheckRerunner interface {
 	// check names no job the provider can re-run.
 	RerunCheck(ctx context.Context, pr *PR, check Check) error
 }
+
+type HistoricalPublicationVerifier interface {
+	VerifyUnpublishedHistory(ctx context.Context, branch, submitted, preserved string, since, until int64, targetIdentity string) error
+}
+
+type HistoricalRefPublicationVerifier interface {
+	VerifyUnpublishedRefHistory(ctx context.Context, branch, submitted, preserved string, since, until int64) error
+}
+
+type HistoricalPublicationEvidence struct {
+	Hash        string
+	Cursor      string
+	Coverage    string
+	RequestRefs []string
+	HighWater   string
+	Complete    bool
+}
+
+type HistoricalTargetPublicationVerifier interface {
+	VerifyUnpublishedTargetHistory(ctx context.Context, branch, submitted, preserved string, since, until int64) (HistoricalPublicationEvidence, error)
+}
+
+type HistoricalTargetPublicationVerifierAtCutoff interface {
+	VerifyUnpublishedTargetHistoryAtCutoff(ctx context.Context, branch, submitted, preserved string, since, until, cutoff int64) (HistoricalPublicationEvidence, error)
+}
+
+type SubmissionTargetLineageVerifier interface {
+	DiscoverSubmissionRequestRefs(ctx context.Context, branch, submitted string) ([]string, error)
+}
+
+type HistoricalRefPublicationEvidenceVerifier interface {
+	VerifyUnpublishedRefHistoryEvidence(ctx context.Context, branch, submitted, preserved string, since, until int64) (HistoricalPublicationEvidence, error)
+}

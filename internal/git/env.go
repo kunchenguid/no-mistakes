@@ -1,10 +1,78 @@
 package git
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
+
+type internalMutationCapabilityKey struct{}
+type internalMutationOperationKey struct{}
+type internalMutationBranchKey struct{}
+type internalMutationAuthorityKey struct{}
+type sanitizedGateConfigKey struct{}
+
+func WithInternalMutationCapability(ctx context.Context, capability string) context.Context {
+	return context.WithValue(ctx, internalMutationCapabilityKey{}, capability)
+}
+
+func WithInternalMutationOperation(ctx context.Context, operation string) context.Context {
+	return context.WithValue(ctx, internalMutationOperationKey{}, operation)
+}
+
+func WithInternalMutationBranch(ctx context.Context, branch string) context.Context {
+	return context.WithValue(ctx, internalMutationBranchKey{}, branch)
+}
+
+func WithInternalMutationAuthority(ctx context.Context, endpoint string) context.Context {
+	return context.WithValue(ctx, internalMutationAuthorityKey{}, endpoint)
+}
+
+func WithSanitizedGateConfig(ctx context.Context) context.Context {
+	return context.WithValue(ctx, sanitizedGateConfigKey{}, true)
+}
+
+func internalMutationCapability(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	capability, _ := ctx.Value(internalMutationCapabilityKey{}).(string)
+	return capability
+}
+
+func internalMutationOperation(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	operation, _ := ctx.Value(internalMutationOperationKey{}).(string)
+	return operation
+}
+
+func internalMutationBranch(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	branch, _ := ctx.Value(internalMutationBranchKey{}).(string)
+	return branch
+}
+
+func internalMutationAuthority(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	endpoint, _ := ctx.Value(internalMutationAuthorityKey{}).(string)
+	return endpoint
+}
+
+func sanitizedGateConfig(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(sanitizedGateConfigKey{}).(bool)
+	return value
+}
 
 // NonInteractiveEnv returns the environment for a subprocess that may invoke
 // git, with git forced into a fully non-interactive mode. It is intended for
@@ -57,4 +125,25 @@ func NonInteractiveEnvFrom(base []string, dir string) []string {
 		}
 	}
 	return env
+}
+
+func sanitizedGateConfigEnv(dir string) []string {
+	return SanitizedGateConfigEnvFrom(os.Environ(), dir)
+}
+
+func SanitizedGateConfigEnv(dir string) []string {
+	return SanitizedGateConfigEnvFrom(os.Environ(), dir)
+}
+
+func SanitizedGateConfigEnvFrom(base []string, dir string) []string {
+	filtered := make([]string, 0, len(base))
+	for _, entry := range base {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "GIT_CONFIG_") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	env := NonInteractiveEnvFrom(filtered, dir)
+	return append(env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
 }
