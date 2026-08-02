@@ -341,17 +341,30 @@ func TestVerifyUnpublishedHistoryIgnoresUnrelatedMergeRequests(t *testing.T) {
 func TestVerifyUnpublishedHistoryAllowsNoMergeRequestIdentity(t *testing.T) {
 	t.Parallel()
 	a := strings.Repeat("a", 40)
-	q := strings.Repeat("c", 40)
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
 		"glab auth status": {},
 		"glab api --paginate projects/group%2Fproject/merge_requests?state=all&per_page=100": {
-			stdout: fmt.Sprintf(`[{"iid":7,"source_branch":"feature","sha":"%s"},{"iid":8,"source_branch":"other","sha":"%s"}]`+"\n", a, q),
+			stdout: fmt.Sprintf(`[{"iid":7,"source_branch":"feature","sha":"%s"}]`+"\n", a),
 		},
 		"glab api --paginate projects/group%2Fproject/merge_requests/7/versions?per_page=100":              {stdout: "[]\n"},
 		"glab api --paginate projects/group%2Fproject/merge_requests/7/resource_state_events?per_page=100": {stdout: "[]\n"},
 	}), nil, "", "group/project")
 	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, strings.Repeat("b", 40), 0, 0, ""); err != nil {
 		t.Fatalf("VerifyUnpublishedHistory() error = %v, want no-MR target accepted", err)
+	}
+}
+
+func TestVerifyUnpublishedHistoryRejectsRenamedNoMergeRequestIdentity(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/merge_requests?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"iid":7,"source_branch":"renamed-feature","sha":"%s"}]`+"\n", a),
+		},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, strings.Repeat("b", 40), 0, 0, ""); err == nil {
+		t.Fatal("renamed merge request was accepted without submission identity")
 	}
 }
 

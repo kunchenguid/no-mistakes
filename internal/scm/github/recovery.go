@@ -55,7 +55,7 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 			continue
 		}
 		if targetNumber == "" && pull.Head.Ref != branch {
-			continue
+			return fmt.Errorf("GitHub pull request %d has no complete submission-time target identity", pull.Number)
 		}
 		matched = true
 		if pull.Head.SHA == "" || pull.Head.SHA != submitted {

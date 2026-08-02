@@ -317,7 +317,15 @@ func (m *RunManager) validateManagedGateGuardLocked(repoID, gateDir, ref string,
 		return fmt.Errorf("read managed gate authority ledger: %w", err)
 	}
 	if managed == nil {
-		return nil
+		cause := fmt.Errorf("managed gate authority ledger is missing for %s", ref)
+		repo, repoErr := m.db.GetRepo(repoID)
+		if repoErr != nil || repo == nil {
+			return cause
+		}
+		if quarantineErr := m.quarantineManagedGateGuardLocked(repo, ref, cause); quarantineErr != nil {
+			return quarantineErr
+		}
+		return cause
 	}
 	current, err := branchsync.ReadManagedGateRefUnderAuthority(guard, gateDir, ref)
 	if err != nil {
@@ -406,16 +414,58 @@ func (m *RunManager) restoreManagedGateGuards() {
 		return
 	}
 	for _, repo := range m.mustListRepos() {
-		refs, err := m.db.ListManagedGateRefs(repo.ID, m.paths.RepoDir(repo.ID))
+		refs, err := m.startupManagedGateRefs(repo)
 		if err != nil {
 			continue
 		}
-		for _, managed := range refs {
-			if err := m.ensureManagedGateGuard(repo, managed.Ref); err != nil {
-				_ = m.db.QuarantineGateRef(repo.ID, managed.GatePath, managed.Ref, managed.Head, managed.Head, "managed-gate-authority-unavailable")
+		for _, ref := range refs {
+			if err := m.ensureManagedGateGuard(repo, ref); err != nil {
+				if quarantine, quarantineErr := m.db.GetGateRefQuarantine(repo.ID, m.paths.RepoDir(repo.ID), ref); quarantineErr == nil && quarantine != nil {
+					continue
+				}
+				managed, managedErr := m.db.GetManagedGateRef(repo.ID, m.paths.RepoDir(repo.ID), ref)
+				expected := ""
+				if managedErr == nil && managed != nil {
+					expected = managed.Head
+				}
+				observed, observedErr := git.Run(git.WithSanitizedGateConfig(context.Background()), m.paths.RepoDir(repo.ID), "rev-parse", ref+"^{commit}")
+				if observedErr != nil {
+					observed = ""
+				}
+				_ = m.db.QuarantineGateRef(repo.ID, m.paths.RepoDir(repo.ID), ref, expected, strings.TrimSpace(observed), "managed-gate-authority-unavailable")
 			}
 		}
 	}
+}
+
+func (m *RunManager) startupManagedGateRefs(repo *db.Repo) ([]string, error) {
+	if repo == nil {
+		return nil, fmt.Errorf("startup managed gate refs require a repository")
+	}
+	gateDir := m.paths.RepoDir(repo.ID)
+	refs := make(map[string]struct{})
+	managed, err := m.db.ListManagedGateRefs(repo.ID, gateDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range managed {
+		refs[item.Ref] = struct{}{}
+	}
+	out, err := git.Run(git.WithSanitizedGateConfig(context.Background()), gateDir, "for-each-ref", "--format=%(refname)", "refs/heads")
+	if err != nil {
+		return nil, err
+	}
+	for _, ref := range strings.Fields(out) {
+		if strings.HasPrefix(ref, "refs/heads/") {
+			refs[ref] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(refs))
+	for ref := range refs {
+		result = append(result, ref)
+	}
+	sort.Strings(result)
+	return result, nil
 }
 
 func (m *RunManager) mustListRepos() []*db.Repo {
@@ -498,7 +548,7 @@ func (m *RunManager) legacyPublicationProof(ctx context.Context, run *db.Run, br
 		if run.CreatedAt <= 0 || run.UpdatedAt < run.CreatedAt {
 			return fmt.Errorf("historical publication proof has no valid run interval")
 		}
-		targetIdentity, identityErr := recoveryTargetIdentity(ctx, target, run.PRURL)
+		targetIdentity, identityErr := recoveryTargetIdentityForRun(ctx, target, targets, run)
 		if identityErr != nil {
 			return identityErr
 		}
@@ -507,6 +557,46 @@ func (m *RunManager) legacyPublicationProof(ctx context.Context, run *db.Run, br
 		}
 	}
 	return nil
+}
+
+func recoveryTargetIdentityForRun(ctx context.Context, target string, targets []string, run *db.Run) (string, error) {
+	if run == nil {
+		return "", fmt.Errorf("submission-time publication identity has no run")
+	}
+	targetFingerprints := make(map[string]struct{}, len(targets))
+	for _, candidate := range targets {
+		fingerprint := branchsync.TargetFingerprint(candidate)
+		if fingerprint != "" {
+			targetFingerprints[fingerprint] = struct{}{}
+		}
+	}
+	for _, fingerprint := range []*string{run.PublicationAttemptTargetFingerprint, run.PushTargetFingerprint} {
+		if fingerprint == nil || strings.TrimSpace(*fingerprint) == "" {
+			continue
+		}
+		if _, ok := targetFingerprints[strings.TrimSpace(*fingerprint)]; !ok {
+			return "", fmt.Errorf("submission-time publication attempt target is absent from the recovery target set")
+		}
+	}
+	if run.PRURL == nil || strings.TrimSpace(*run.PRURL) == "" {
+		return "", nil
+	}
+	prURL := strings.TrimSpace(*run.PRURL)
+	var matchedFingerprint string
+	for _, candidate := range targets {
+		_, err := recoveryTargetIdentity(ctx, candidate, &prURL)
+		if err == nil {
+			matchedFingerprint = branchsync.TargetFingerprint(candidate)
+			break
+		}
+	}
+	if matchedFingerprint == "" {
+		return "", fmt.Errorf("submission-time publication identity does not match any recovery target")
+	}
+	if branchsync.TargetFingerprint(target) == matchedFingerprint {
+		return prURL, nil
+	}
+	return "", nil
 }
 
 func recoveryTargetIdentity(ctx context.Context, target string, prURL *string) (string, error) {

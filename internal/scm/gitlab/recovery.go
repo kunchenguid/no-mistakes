@@ -58,7 +58,7 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 			continue
 		}
 		if targetNumber == "" && mergeRequest.SourceBranch != branch {
-			continue
+			return fmt.Errorf("GitLab merge request %d has no complete submission-time target identity", mergeRequest.IID)
 		}
 		matched = true
 		head := mergeRequest.SHA

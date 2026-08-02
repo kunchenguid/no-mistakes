@@ -146,6 +146,61 @@ func TestRecoveryTargetIdentityRejectsMismatchedTarget(t *testing.T) {
 	}
 }
 
+func TestRecoveryTargetIdentitySeparatesPublicationTargets(t *testing.T) {
+	parent := "https://github.com/example/parent.git"
+	fork := "https://github.com/example/fork.git"
+	prURL := "https://github.com/example/parent/pull/7"
+	attemptFingerprint := branchsync.TargetFingerprint(fork)
+	run := &db.Run{
+		PRURL:                               &prURL,
+		PublicationAttemptTargetFingerprint: &attemptFingerprint,
+	}
+	targets := []string{parent, fork}
+
+	identity, err := recoveryTargetIdentityForRun(context.Background(), parent, targets, run)
+	if err != nil || identity != prURL {
+		t.Fatalf("parent publication identity = %q, %v; want %q", identity, err, prURL)
+	}
+	identity, err = recoveryTargetIdentityForRun(context.Background(), fork, targets, run)
+	if err != nil || identity != "" {
+		t.Fatalf("fork publication identity = %q, %v; want no PR identity", identity, err)
+	}
+}
+
+func TestManagedGateMissingLedgerIsQuarantined(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "managed-missing-ledger")
+	ref := "refs/heads/main"
+	manager := NewRunManager(database, p, nil)
+	if err := manager.ensureManagedGateGuard(repo, ref); err == nil {
+		t.Fatal("managed gate authority was accepted without a ledger row")
+	}
+	quarantine, err := database.GetGateRefQuarantine(repo.ID, p.RepoDir(repo.ID), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quarantine == nil || quarantine.ObservedHead != head {
+		t.Fatalf("missing-ledger quarantine = %#v, want observed head %s", quarantine, head)
+	}
+	manager.Shutdown()
+}
+
+func TestRestoreManagedGateGuardsQuarantinesUnjournaledBranch(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "restore-missing-ledger")
+	ref := "refs/heads/main"
+	manager := NewRunManager(database, p, nil)
+	manager.restoreManagedGateGuards()
+	quarantine, err := database.GetGateRefQuarantine(repo.ID, p.RepoDir(repo.ID), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quarantine == nil || quarantine.ObservedHead != head {
+		t.Fatalf("startup quarantine = %#v, want observed head %s", quarantine, head)
+	}
+	manager.Shutdown()
+}
+
 func TestManagedGateAuthorityLossPersistsQuarantine(t *testing.T) {
 	p, database := newRefreshRunFixture(t)
 	repo, head := setupTestGitRepo(t, p, database, "managed-authority-loss")
