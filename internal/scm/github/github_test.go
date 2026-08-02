@@ -873,6 +873,7 @@ func TestGitHubAuditPagesFollowsProviderContinuationToEmptyPage(t *testing.T) {
 
 func TestGitHubAuditHeadValidationRequiresCanonicalTargetEvidence(t *testing.T) {
 	a := strings.Repeat("a", 40)
+	zero := strings.Repeat("0", 40)
 	cases := []struct {
 		name string
 		raw  string
@@ -883,6 +884,16 @@ func TestGitHubAuditHeadValidationRequiresCanonicalTargetEvidence(t *testing.T) 
 		{name: "missing old head for push", raw: `{"action":"git.push","after":"` + a + `"}`, want: true},
 		{name: "delete new head is not zero", raw: `{"action":"git.delete","before":"` + a + `","after":"` + a + `"}`, want: true},
 		{name: "canonical push", raw: `{"action":"git.push","before":"` + a + `","after":"` + a + `"}`, want: false},
+		{name: "create before only", raw: `{"action":"git.create","before":"` + zero + `"}`, want: true},
+		{name: "create after only", raw: `{"action":"git.create","after":"` + a + `"}`, want: true},
+		{name: "canonical create", raw: `{"action":"git.create","before":"` + zero + `","after":"` + a + `"}`, want: false},
+		{name: "delete after only", raw: `{"action":"git.delete","after":"` + zero + `"}`, want: true},
+		{name: "canonical delete", raw: `{"action":"git.delete","before":"` + a + `","after":"` + zero + `"}`, want: false},
+		{name: "force push missing side", raw: `{"action":"git.force_push","before":"` + a + `"}`, want: true},
+		{name: "conflicting pairs", raw: `{"action":"git.push","before":"` + a + `","after":"` + a + `","oldrev":"` + zero + `","newrev":"` + a + `"}`, want: true},
+		{name: "rename missing refs", raw: `{"action":"git.rename","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "canonical rename", raw: `{"action":"git.rename","old_ref":"feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: false},
+		{name: "rename noncanonical ref", raw: `{"action":"git.rename","old_ref":"feature..old","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -905,8 +916,8 @@ func TestGitHubAuditTargetClassificationFailsClosedForAmbiguousEvents(t *testing
 	if ref, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"ref":"feature","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); ref != "feature" || !targeted || ambiguous {
 		t.Fatalf("target GitHub audit event = %q targeted=%v ambiguous=%v", ref, targeted, ambiguous)
 	}
-	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"pull_number":99,"after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || ambiguous {
-		t.Fatalf("known-unrelated GitHub pull request event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"pull_number":99,"after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("disappeared GitHub pull request event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
 	}
 	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"pull_number":99,"after":"`+strings.Repeat("a", 40)+`"}`), nil, "feature"); targeted || !ambiguous {
 		t.Fatalf("unbound GitHub pull request event without lineage classified as targeted=%v ambiguous=%v", targeted, ambiguous)
@@ -916,6 +927,9 @@ func TestGitHubAuditTargetClassificationFailsClosedForAmbiguousEvents(t *testing
 	}
 	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"ref":"renamed-feature","action":"git.push","after":"`+strings.Repeat("a", 40)+`"}`), nil, "feature"); targeted || !ambiguous {
 		t.Fatalf("unbound renamed GitHub ref event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"old_ref":"feature","new_ref":"renamed-feature","action":"git.rename","before":"`+strings.Repeat("a", 40)+`","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("GitHub rename event without current ref classified as targeted=%v ambiguous=%v", targeted, ambiguous)
 	}
 }
 

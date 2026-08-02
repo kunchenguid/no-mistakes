@@ -238,7 +238,7 @@ func (h *Host) verifyUnpublishedAuditHistory(ctx context.Context, branch, submit
 		if recoveryJSONContainsSHA(event, preserved) {
 			return scm.HistoricalPublicationEvidence{}, errors.New("GitHub organization audit log contains the preserved unpublished head")
 		}
-		if after := githubAuditField(event, "after", "commit_to", "newrev"); after != "" && recoverySHA(after) && after != submitted {
+		if after := githubAuditField(event, "after", "commit_to", "newrev"); after != "" && recoverySHA(after) && !isZeroRecoverySHA(after) && after != submitted {
 			return scm.HistoricalPublicationEvidence{}, errors.New("GitHub organization audit log contains a changed target head")
 		}
 		relevantEvents = append(relevantEvents, event)
@@ -261,10 +261,10 @@ func githubAuditTargetRef(raw json.RawMessage, requestSet map[string]struct{}, b
 		if _, ok := requestSet[candidate]; ok {
 			return candidate, true, false
 		}
-		return candidate, false, len(requestSet) == 0
+		return candidate, false, true
 	}
 	if ref == "" {
-		if githubAuditHasAnyField(raw, "ref", "branch", "head_ref", "source_ref", "source_branch", "target_ref", "pull_request_number", "pull_number", "pull_request_id", "request_number") || (githubAuditHasAnyField(raw, "before", "after", "head_sha", "commit_sha", "commit_to", "oldrev", "newrev", "sha", "head_sha_after", "head_sha_before") && githubAuditLooksLikePublication(raw)) {
+		if githubAuditHasAnyField(raw, "ref", "branch", "head_ref", "source_ref", "source_branch", "target_ref", "old_ref", "new_ref", "from_ref", "to_ref", "previous_ref", "current_ref", "old_branch", "new_branch", "pull_request_number", "pull_number", "pull_request_id", "request_number") || (githubAuditHasAnyField(raw, "before", "after", "head", "head_sha", "head_commit_sha", "commit_sha", "commit_to", "oldrev", "newrev", "old_sha", "new_sha", "sha", "head_sha_after", "head_sha_before") && githubAuditLooksLikePublication(raw)) {
 			return "", false, true
 		}
 		return "", false, false
@@ -354,19 +354,31 @@ func githubAuditValidateHeadValues(raw json.RawMessage, submitted string) error 
 			}
 		}
 	}
+	oldHead, newHead, hasPair, err := githubAuditHeadPair(fields)
+	if err != nil {
+		return err
+	}
 	action := strings.ToLower(githubAuditField(raw, "action", "action_name", "event", "event_type", "type", "operation"))
-	if strings.Contains(action, "delete") {
-		if !githubAuditHasHeadPair(fields) || githubAuditPairIsZero(fields, false) || !githubAuditPairIsZero(fields, true) {
-			return errors.New("delete action lacks canonical old/new head evidence")
+	switch {
+	case strings.Contains(action, "create"):
+		if !hasPair || !isZeroRecoverySHA(oldHead) || isZeroRecoverySHA(newHead) {
+			return errors.New("create action lacks canonical zero-old/full-new head evidence")
 		}
-	}
-	if strings.Contains(action, "push") || strings.Contains(action, "force") || strings.Contains(action, "update") {
-		if !githubAuditHasHeadPair(fields) || githubAuditPairIsZero(fields, true) {
-			return errors.New("update action lacks canonical old/new head evidence")
+	case strings.Contains(action, "delete"):
+		if !hasPair || isZeroRecoverySHA(oldHead) || !isZeroRecoverySHA(newHead) {
+			return errors.New("delete action lacks canonical full-old/zero-new head evidence")
 		}
-	}
-	if strings.Contains(action, "create") && githubAuditPairIsZero(fields, true) {
-		return errors.New("create action lacks a canonical new head")
+	case strings.Contains(action, "rename"):
+		if !hasPair || isZeroRecoverySHA(oldHead) || isZeroRecoverySHA(newHead) {
+			return errors.New("rename action lacks canonical old/new head evidence")
+		}
+		if err := githubAuditValidateRefRename(raw); err != nil {
+			return err
+		}
+	case strings.Contains(action, "push") || strings.Contains(action, "force") || strings.Contains(action, "update"):
+		if !hasPair || isZeroRecoverySHA(oldHead) || isZeroRecoverySHA(newHead) {
+			return errors.New("update action lacks canonical full old/new head evidence")
+		}
 	}
 	return nil
 }
@@ -414,27 +426,108 @@ func githubAuditHeadValues(raw json.RawMessage) (map[string][]string, error) {
 	return fields, nil
 }
 
-func githubAuditHasHeadPair(fields map[string][]string) bool {
+func githubAuditHeadPair(fields map[string][]string) (string, string, bool, error) {
+	var oldHead, newHead string
+	found := false
 	for _, pair := range [][2]string{{"before", "after"}, {"oldrev", "newrev"}, {"commit_from", "commit_to"}, {"head_sha_before", "head_sha_after"}, {"old_sha", "new_sha"}} {
-		if len(fields[pair[0]]) > 0 && len(fields[pair[1]]) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func githubAuditPairIsZero(fields map[string][]string, newValue bool) bool {
-	for _, pair := range [][2]string{{"before", "after"}, {"oldrev", "newrev"}, {"commit_from", "commit_to"}, {"head_sha_before", "head_sha_after"}, {"old_sha", "new_sha"}} {
-		if len(fields[pair[0]]) == 0 || len(fields[pair[1]]) == 0 {
+		hasOld := len(fields[pair[0]]) > 0
+		hasNew := len(fields[pair[1]]) > 0
+		if !hasOld && !hasNew {
 			continue
 		}
-		value := fields[pair[1]][0]
-		if !newValue {
-			value = fields[pair[0]][0]
+		if hasOld != hasNew {
+			return "", "", false, fmt.Errorf("head pair %s/%s is incomplete", pair[0], pair[1])
 		}
-		return isZeroRecoverySHA(value)
+		pairOld, pairNew := fields[pair[0]][0], fields[pair[1]][0]
+		for _, value := range fields[pair[0]] {
+			if value != pairOld {
+				return "", "", false, fmt.Errorf("head field %s has conflicting values", pair[0])
+			}
+		}
+		for _, value := range fields[pair[1]] {
+			if value != pairNew {
+				return "", "", false, fmt.Errorf("head field %s has conflicting values", pair[1])
+			}
+		}
+		if found && (oldHead != pairOld || newHead != pairNew) {
+			return "", "", false, errors.New("head evidence contains conflicting old/new pairs")
+		}
+		oldHead, newHead, found = pairOld, pairNew, true
 	}
-	return false
+	return oldHead, newHead, found, nil
+}
+
+func githubAuditValidateRefRename(raw json.RawMessage) error {
+	refs, err := githubAuditRefValues(raw)
+	if err != nil {
+		return err
+	}
+	for _, pair := range [][2]string{{"old_ref", "new_ref"}, {"from_ref", "to_ref"}, {"previous_ref", "current_ref"}, {"old_branch", "new_branch"}} {
+		if len(refs[pair[0]]) == 0 && len(refs[pair[1]]) == 0 {
+			continue
+		}
+		if len(refs[pair[0]]) == 0 || len(refs[pair[1]]) == 0 {
+			return fmt.Errorf("rename ref pair %s/%s is incomplete", pair[0], pair[1])
+		}
+		oldRef, newRef := refs[pair[0]][0], refs[pair[1]][0]
+		if !githubAuditCanonicalRef(oldRef) || !githubAuditCanonicalRef(newRef) || normalizeGitHubRef(oldRef) == normalizeGitHubRef(newRef) {
+			return errors.New("rename action lacks canonical distinct old/new refs")
+		}
+		return nil
+	}
+	return errors.New("rename action lacks canonical old/new refs")
+}
+
+func githubAuditRefValues(raw json.RawMessage) (map[string][]string, error) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	wanted := map[string]struct{}{
+		"old_ref": {}, "new_ref": {}, "from_ref": {}, "to_ref": {}, "previous_ref": {}, "current_ref": {},
+		"old_branch": {}, "new_branch": {},
+	}
+	refs := make(map[string][]string)
+	var visit func(any) error
+	visit = func(item any) error {
+		switch typed := item.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				lower := strings.ToLower(key)
+				if _, ok := wanted[lower]; ok {
+					value, ok := child.(string)
+					if !ok {
+						return fmt.Errorf("%s is not a string", key)
+					}
+					refs[lower] = append(refs[lower], value)
+				}
+				if err := visit(child); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				if err := visit(child); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := visit(value); err != nil {
+		return nil, err
+	}
+	return refs, nil
+}
+
+func githubAuditCanonicalRef(ref string) bool {
+	original := ref
+	ref = strings.TrimSpace(ref)
+	if ref == "" || original != ref || strings.ContainsAny(ref, " \t\r\n~^:?*[\\") || strings.Contains(ref, "..") || strings.Contains(ref, "//") || strings.Contains(ref, "@{") {
+		return false
+	}
+	ref = normalizeGitHubRef(ref)
+	return ref != "" && ref != "." && !strings.HasPrefix(ref, ".") && !strings.HasSuffix(ref, ".")
 }
 
 func githubAuditLooksLikePublication(raw json.RawMessage) bool {

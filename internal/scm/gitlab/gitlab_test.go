@@ -478,6 +478,7 @@ func TestGitLabAuditPagesFollowsProviderContinuationToEmptyPage(t *testing.T) {
 
 func TestGitLabAuditHeadValidationRequiresCanonicalTargetEvidence(t *testing.T) {
 	a := strings.Repeat("a", 40)
+	zero := strings.Repeat("0", 40)
 	cases := []struct {
 		name string
 		raw  string
@@ -488,6 +489,16 @@ func TestGitLabAuditHeadValidationRequiresCanonicalTargetEvidence(t *testing.T) 
 		{name: "missing old head for push", raw: `{"action":"push","after":"` + a + `"}`, want: true},
 		{name: "delete new head is not zero", raw: `{"action":"delete","before":"` + a + `","after":"` + a + `"}`, want: true},
 		{name: "canonical push", raw: `{"action":"push","before":"` + a + `","after":"` + a + `"}`, want: false},
+		{name: "create before only", raw: `{"action":"create","before":"` + zero + `"}`, want: true},
+		{name: "create after only", raw: `{"action":"create","after":"` + a + `"}`, want: true},
+		{name: "canonical create", raw: `{"action":"create","before":"` + zero + `","after":"` + a + `"}`, want: false},
+		{name: "delete after only", raw: `{"action":"delete","after":"` + zero + `"}`, want: true},
+		{name: "canonical delete", raw: `{"action":"delete","before":"` + a + `","after":"` + zero + `"}`, want: false},
+		{name: "force push missing side", raw: `{"action":"force_push","before":"` + a + `"}`, want: true},
+		{name: "conflicting pairs", raw: `{"action":"push","before":"` + a + `","after":"` + a + `","oldrev":"` + zero + `","newrev":"` + a + `"}`, want: true},
+		{name: "rename missing refs", raw: `{"action":"rename","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "canonical rename", raw: `{"action":"rename","old_ref":"feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: false},
+		{name: "rename noncanonical ref", raw: `{"action":"rename","old_ref":"feature..old","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -510,8 +521,8 @@ func TestGitLabAuditTargetClassificationFailsClosedForAmbiguousEvents(t *testing
 	if ref, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"ref":"feature","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); ref != "feature" || !targeted || ambiguous {
 		t.Fatalf("target GitLab audit event = %q targeted=%v ambiguous=%v", ref, targeted, ambiguous)
 	}
-	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"merge_request_iid":99,"after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || ambiguous {
-		t.Fatalf("known-unrelated GitLab merge request event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"merge_request_iid":99,"after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("disappeared GitLab merge request event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
 	}
 	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"merge_request_iid":99,"after":"`+strings.Repeat("a", 40)+`"}`), nil, "feature"); targeted || !ambiguous {
 		t.Fatalf("unbound GitLab merge request event without lineage classified as targeted=%v ambiguous=%v", targeted, ambiguous)
@@ -521,6 +532,9 @@ func TestGitLabAuditTargetClassificationFailsClosedForAmbiguousEvents(t *testing
 	}
 	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"ref":"renamed-feature","action":"push","after":"`+strings.Repeat("a", 40)+`"}`), nil, "feature"); targeted || !ambiguous {
 		t.Fatalf("unbound renamed GitLab ref event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"old_ref":"feature","new_ref":"renamed-feature","action":"rename","before":"`+strings.Repeat("a", 40)+`","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("GitLab rename event without current ref classified as targeted=%v ambiguous=%v", targeted, ambiguous)
 	}
 }
 
