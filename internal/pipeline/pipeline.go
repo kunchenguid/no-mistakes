@@ -43,8 +43,9 @@ type StepContext struct {
 	// authoritative acceptance criteria; an agent name ("claude", "codex", ...)
 	// means it was inferred from a transcript (a hint). Empty when no intent exists.
 	IntentSource string
-	// Sessions manages the run's durable review-loop agent sessions
-	// (reviewer and fixer roles). nil runs every invocation cold.
+	// Sessions manages the run's durable review-fixer session. The session
+	// machinery remains role-generic for legacy recovery; nil runs every
+	// invocation cold.
 	Sessions *RunSessions
 	// Shared carries in-memory run-scoped results one step hands to a later
 	// step in the same run (e.g. the combined document+lint pass).

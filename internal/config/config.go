@@ -569,11 +569,10 @@ step_quiet_warning: "10m"
 # connection before failing instead of hanging.
 daemon_connect_timeout: "3s"
 
-# Reuse one durable agent session per run for the review loop: the reviewer
-# keeps a single session across the initial review and every full rereview,
-# and review fixes keep a separate fixer session. Roles never share a session.
-# Supported for claude and codex; other agents run cold. Set false to force
-# every agent invocation cold.
+# Reuse one durable fixer session per run across review-fix turns. Review turns
+# always run session-free so a rereview never resumes the session that prescribed
+# its fixes. Supported for claude and codex; other agents run cold. Set false to
+# force every agent invocation cold.
 session_reuse: true
 
 # Log level for daemon output
