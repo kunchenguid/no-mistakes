@@ -301,12 +301,20 @@ const (
 )
 
 func commitTestReceive(t *testing.T, d *db.DB, repoID, gatePath, branch, ref, oldSHA, newSHA string) {
-	commitTestReceiveWithOptions(t, d, repoID, gatePath, branch, ref, oldSHA, newSHA, nil, "")
+	commitTestReceiveWithSession(t, d, repoID, gatePath, branch, ref, oldSHA, newSHA, testReceiveSessionID, testReceiveCapability)
 }
 
 func commitTestReceiveWithOptions(t *testing.T, d *db.DB, repoID, gatePath, branch, ref, oldSHA, newSHA string, skipSteps []types.StepName, intent string) {
+	commitTestReceiveWithSessionAndOptions(t, d, repoID, gatePath, branch, ref, oldSHA, newSHA, testReceiveSessionID, testReceiveCapability, skipSteps, intent)
+}
+
+func commitTestReceiveWithSession(t *testing.T, d *db.DB, repoID, gatePath, branch, ref, oldSHA, newSHA, sessionID, capability string) {
+	commitTestReceiveWithSessionAndOptions(t, d, repoID, gatePath, branch, ref, oldSHA, newSHA, sessionID, capability, nil, "")
+}
+
+func commitTestReceiveWithSessionAndOptions(t *testing.T, d *db.DB, repoID, gatePath, branch, ref, oldSHA, newSHA, sessionID, capability string, skipSteps []types.StepName, intent string) {
 	t.Helper()
-	reservation, err := d.ReserveReceiveForSession(repoID, gatePath, branch, ref, oldSHA, newSHA, testReceiveSessionID, testReceiveCapability, skipSteps, intent)
+	reservation, err := d.ReserveReceiveForSession(repoID, gatePath, branch, ref, oldSHA, newSHA, sessionID, capability, skipSteps, intent)
 	if err != nil {
 		t.Fatal(err)
 	}

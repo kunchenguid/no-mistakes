@@ -112,8 +112,11 @@ func runRecursiveIncident(t *testing.T, agentName, executable, expectedPhase str
 			t.Errorf("safe read-only action %s was unavailable:\n%s", label, section)
 		}
 	}
-	if got := strings.Count(output, "code: nested_gate_context"); got < 14 {
-		t.Fatalf("structured refusals = %d, want at least 14:\n%s", got, output)
+	// The direct gate push is rejected earlier by the managed receive fence,
+	// before it can reach the nested-gate classifier, so the 13 command-level
+	// attempts are the structured refusal set.
+	if got := strings.Count(output, "code: nested_gate_context"); got < 13 {
+		t.Fatalf("structured refusals = %d, want at least 13:\n%s", got, output)
 	}
 	for _, want := range []string{
 		outer.ID,

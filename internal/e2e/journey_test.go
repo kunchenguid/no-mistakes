@@ -1990,16 +1990,29 @@ func waitForStepStatus(t *testing.T, h *Harness, branch string, stepName types.S
 func assertSupersededRunCancellation(t *testing.T, h *Harness) {
 	t.Helper()
 	slowCommand := filepath.Join(h.BinDir, "nm-superseded-test-e2e")
+	startedMarker := slowCommand + ".started"
+	_ = os.Remove(startedMarker)
 	// Keep the first run deterministically active even when the full e2e suite
 	// is CPU-saturated. Cancellation reaps the process group, so this does not
 	// add wall time on the passing path.
-	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 120\n"), 0o755); err != nil {
+	slowScript := "#!/bin/sh\ntouch " + shellQuote(startedMarker) + "\nsleep 120\n"
+	if err := os.WriteFile(slowCommand, []byte(slowScript), 0o755); err != nil {
 		t.Fatalf("write superseded slow test command: %v", err)
 	}
 	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-superseded-test-e2e\n  lint: true\n"
 	h.CommitChange("superseded-run", ".no-mistakes.yaml", config, "configure superseded slow test")
 	h.PushToGate("superseded-run")
 	first := waitForStepStatus(t, h, "superseded-run", types.StepTest, types.StepStatusRunning, 60*time.Second)
+	startedDeadline := time.Now().Add(60 * time.Second)
+	for {
+		if _, err := os.Stat(startedMarker); err == nil {
+			break
+		}
+		if time.Now().After(startedDeadline) {
+			t.Fatalf("superseded slow test command did not start")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatalf("replace superseded test command with fast version: %v", err)
 	}

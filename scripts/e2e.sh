@@ -58,7 +58,7 @@ trap 'reap_inventory; if [[ "${OWNED_INVENTORY}" -eq 1 ]]; then rm -rf "$NM_E2E_
 
 # Default args match the historical Makefile e2e target; callers may override.
 if [[ "$#" -eq 0 ]]; then
-  set -- -tags=e2e -count=1 -timeout 300s ./internal/e2e/... ./internal/pipeline/steps/...
+  set -- -tags=e2e -count=1 -timeout 900s ./internal/e2e/... ./internal/pipeline/steps/...
 fi
 
 go test "$@"

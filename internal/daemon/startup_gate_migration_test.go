@@ -41,7 +41,11 @@ func TestMigrateGateConfigsRejectsInvalidDirectoriesAndSkipsCurrentGates(t *test
 			t.Fatalf("init %s gate: %v", id, err)
 		}
 	}
-	if _, err := database.InsertRepoWithID(registeredID, filepath.Join(parent, "source"), "https://example.com/registered.git", "main"); err != nil {
+	registeredSource := filepath.Join(t.TempDir(), "source")
+	if out, err := exec.Command("git", "init", registeredSource).CombinedOutput(); err != nil {
+		t.Fatalf("init registered source: %v: %s", err, out)
+	}
+	if _, err := database.InsertRepoWithID(registeredID, registeredSource, "https://example.com/registered.git", "main"); err != nil {
 		t.Fatal(err)
 	}
 

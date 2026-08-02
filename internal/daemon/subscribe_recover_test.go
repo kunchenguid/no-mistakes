@@ -162,7 +162,12 @@ func TestSubscribeToSlowRunReceivesEvents(t *testing.T) {
 	// Cancel the run (by sending another push, which cancels active runs).
 	started2 := make(chan struct{})
 	slowStep.started = started2
-	commitTestReceive(t, d, "testrepo-sub2", p.RepoDir("testrepo-sub2"), "main", "refs/heads/main", "0000000000000000000000000000000000000000", headSHA)
+	secondSessionID := "test-receive-session-2"
+	secondCapability := "test-receive-capability-2"
+	if err := d.RegisterReceiveSession("testrepo-sub2", p.RepoDir("testrepo-sub2"), secondSessionID, secondCapability); err != nil {
+		t.Fatal(err)
+	}
+	commitTestReceiveWithSession(t, d, "testrepo-sub2", p.RepoDir("testrepo-sub2"), "main", "refs/heads/main", "0000000000000000000000000000000000000000", headSHA, secondSessionID, secondCapability)
 
 	var pushResult2 ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
@@ -170,8 +175,8 @@ func TestSubscribeToSlowRunReceivesEvents(t *testing.T) {
 		Ref:               "refs/heads/main",
 		Old:               "0000000000000000000000000000000000000000",
 		New:               headSHA,
-		ReceiveSessionID:  testReceiveSessionID,
-		ReceiveCapability: testReceiveCapability,
+		ReceiveSessionID:  secondSessionID,
+		ReceiveCapability: secondCapability,
 	}, &pushResult2)
 	if err != nil {
 		t.Fatal(err)
@@ -381,7 +386,15 @@ func TestRecoverOnStartup_FinalizesLegacyTerminalPRRun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			repo, err := database.InsertRepoWithID("terminal-pr-"+state, t.TempDir(), "https://github.com/test/repo", "main")
+			workDir := filepath.Join(root, "work")
+			if out, initErr := exec.Command("git", "init", workDir).CombinedOutput(); initErr != nil {
+				t.Fatalf("init working repository: %v: %s", initErr, out)
+			}
+			gateDir := p.RepoDir("terminal-pr-" + state)
+			if initErr := gitpkg.InitBare(context.Background(), gateDir); initErr != nil {
+				t.Fatalf("init gate: %v", initErr)
+			}
+			repo, err := database.InsertRepoWithID("terminal-pr-"+state, workDir, "https://github.com/test/repo", "main")
 			if err != nil {
 				t.Fatal(err)
 			}

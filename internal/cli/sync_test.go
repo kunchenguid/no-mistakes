@@ -469,7 +469,11 @@ func (f cliRecoverFixture) anchorRef() string {
 // provenance or custody stamp exists.
 func newCLIUnmovedAbortFixture(t *testing.T) cliRecoverFixture {
 	t.Helper()
-	nmHome := filepath.Join(t.TempDir(), "nm-home")
+	// The detached daemon re-execs this test binary. Tell the test harness to
+	// honor its explicit `daemon run --root` child invocation instead of
+	// entering the test suite again.
+	t.Setenv("NM_TEST_START_DAEMON", "1")
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 	root := t.TempDir()
 	remote := filepath.Join(root, "remote.git")

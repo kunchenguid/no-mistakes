@@ -1068,6 +1068,18 @@ func TestInit_PostReceiveSurvivesHooksPathPoisoning(t *testing.T) {
 	if err := os.WriteFile(preHookPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatalf("write admission stub: %v", err)
 	}
+	// The receive-pack wrapper and reference-transaction hook are exercised by
+	// the daemon/gate integration tests. This test only needs an unbound Git
+	// receive so it can isolate the post-receive hook lookup from those
+	// authenticated receive boundaries.
+	referenceHookPath := filepath.Join(bareDir, "hooks", "reference-transaction")
+	if err := os.WriteFile(referenceHookPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write reference transaction stub: %v", err)
+	}
+	receivePackPath := gitpkg.ReceivePackWrapperPath(bareDir)
+	if err := os.WriteFile(receivePackPath, []byte("#!/bin/sh\nexec git-receive-pack \"$@\"\n"), 0o755); err != nil {
+		t.Fatalf("write receive-pack stub: %v", err)
+	}
 
 	// Simulate husky: pnpm install in a pipeline worktree runs
 	// `git config core.hookspath .husky/_`. Because worktrees share local
