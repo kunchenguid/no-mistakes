@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.45.2](https://github.com/kunchenguid/no-mistakes/compare/v1.45.1...v1.45.2) (2026-08-02)
+
+
+### Bug Fixes
+
+* **pipeline:** stop polling terminal cancelled CI checks ([#637](https://github.com/kunchenguid/no-mistakes/issues/637)) ([eb826b4](https://github.com/kunchenguid/no-mistakes/commit/eb826b4c5ff5d06b619f3344ecf014c7e7d31001))
+* **update:** authenticate GitHub release requests ([#636](https://github.com/kunchenguid/no-mistakes/issues/636)) ([c0920cd](https://github.com/kunchenguid/no-mistakes/commit/c0920cd1675d562ee7d5e97a6b45d0cba82edde6))
+
 ## [1.45.1](https://github.com/kunchenguid/no-mistakes/compare/v1.45.0...v1.45.1) (2026-08-02)
 
 
