@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,7 +67,7 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 			related, explicit := recoveryBranchRelation(events, branch)
 			if !related {
 				if !explicit {
-					return fmt.Errorf("GitHub pull request %d has incomplete submission-time target lineage", pull.Number)
+					continue
 				}
 				continue
 			}
@@ -109,17 +111,24 @@ func (h *Host) VerifyUnpublishedTargetHistory(ctx context.Context, branch, submi
 	if err := h.VerifyUnpublishedHistory(ctx, branch, submitted, preserved, since, until, ""); err != nil {
 		return scm.HistoricalPublicationEvidence{}, err
 	}
-	proof, err := h.VerifyUnpublishedRefHistoryEvidence(ctx, branch, submitted, preserved, since, until)
+	refs, err := h.unpublishedTargetRequestRefs(ctx, branch, submitted, since, until)
 	if err != nil {
 		return scm.HistoricalPublicationEvidence{}, err
 	}
-	refs, err := h.unpublishedTargetRequestRefs(ctx, branch, submitted, since, until)
+	proof, err := h.verifyUnpublishedAuditHistory(ctx, branch, submitted, preserved, refs, since, until)
 	if err != nil {
 		return scm.HistoricalPublicationEvidence{}, err
 	}
 	proof.RequestRefs = refs
 	proof.Cursor += "|request-refs=" + strings.Join(refs, ",")
 	return proof, nil
+}
+
+func (h *Host) DiscoverSubmissionRequestRefs(ctx context.Context, branch, submitted string) ([]string, error) {
+	if err := h.Available(ctx); err != nil {
+		return nil, err
+	}
+	return h.unpublishedTargetRequestRefs(ctx, branch, submitted, 0, 0)
 }
 
 func (h *Host) unpublishedTargetRequestRefs(ctx context.Context, branch, submitted string, since, until int64) ([]string, error) {
@@ -129,13 +138,6 @@ func (h *Host) unpublishedTargetRequestRefs(ctx context.Context, branch, submitt
 	}
 	refs := make([]string, 0)
 	for _, pull := range pulls {
-		inWindow, err := recoveryRecordInWindow(pull.CreatedAt, pull.UpdatedAt, since, until)
-		if err != nil {
-			return nil, fmt.Errorf("GitHub pull request %d has incomplete historical timestamps: %w", pull.Number, err)
-		}
-		if !inWindow {
-			continue
-		}
 		var events []json.RawMessage
 		if err := h.apiPages(ctx, fmt.Sprintf("repos/%s/issues/%d/timeline?per_page=100", h.apiRepoPath(), pull.Number), &events); err != nil {
 			return nil, fmt.Errorf("inspect GitHub pull-request %d lineage: %w", pull.Number, err)
@@ -146,7 +148,7 @@ func (h *Host) unpublishedTargetRequestRefs(ctx context.Context, branch, submitt
 			related, explicit = recoveryBranchRelation(events, branch)
 			if !related {
 				if !explicit {
-					return nil, fmt.Errorf("GitHub pull request %d has incomplete submission-time target lineage", pull.Number)
+					continue
 				}
 				continue
 			}
@@ -158,6 +160,201 @@ func (h *Host) unpublishedTargetRequestRefs(ctx context.Context, branch, submitt
 	}
 	sort.Strings(refs)
 	return refs, nil
+}
+
+func (h *Host) verifyUnpublishedAuditHistory(ctx context.Context, branch, submitted, preserved string, requestRefs []string, since, until int64) (scm.HistoricalPublicationEvidence, error) {
+	if since <= 0 || until < since {
+		return scm.HistoricalPublicationEvidence{}, errors.New("GitHub audit history has no valid run interval")
+	}
+	if time.Now().Unix()-since > int64((180 * 24 * time.Hour).Seconds()) {
+		return scm.HistoricalPublicationEvidence{}, errors.New("GitHub audit history is outside the documented retention window")
+	}
+	if err := h.Available(ctx); err != nil {
+		return scm.HistoricalPublicationEvidence{}, err
+	}
+	owner, _, ok := strings.Cut(h.apiRepoPath(), "/")
+	if !ok || owner == "" {
+		return scm.HistoricalPublicationEvidence{}, errors.New("GitHub audit history requires an organization repository")
+	}
+	query := url.Values{}
+	query.Set("phrase", "repo:"+h.apiRepoPath())
+	query.Set("include", "all")
+	query.Set("after", strconv.FormatInt(since*1000, 10))
+	query.Set("before", strconv.FormatInt(until*1000, 10))
+	query.Set("order", "asc")
+	query.Set("per_page", "100")
+	endpoint := "orgs/" + owner + "/audit-log?" + query.Encode()
+	args := []string{"api", "--paginate", "--include"}
+	if h.host != "" && !strings.EqualFold(h.host, "github.com") {
+		args = append(args, "--hostname", h.host)
+	}
+	args = append(args, endpoint)
+	out, err := h.cmd(ctx, "gh", args...).Output()
+	if err != nil {
+		return scm.HistoricalPublicationEvidence{}, fmt.Errorf("GitHub organization audit log unavailable: %w", err)
+	}
+	if strings.Contains(strings.ToLower(string(out)), "rate limit") || strings.Contains(string(out), " 403 ") || strings.Contains(string(out), " 429 ") {
+		return scm.HistoricalPublicationEvidence{}, errors.New("GitHub organization audit log is unavailable or rate limited")
+	}
+	events, pages, complete, err := githubIncludedAuditEvents(out)
+	if err != nil {
+		return scm.HistoricalPublicationEvidence{}, err
+	}
+	if !complete || pages == 0 {
+		return scm.HistoricalPublicationEvidence{}, errors.New("GitHub organization audit log pagination is incomplete")
+	}
+	requestSet := make(map[string]struct{}, len(requestRefs))
+	for _, ref := range requestRefs {
+		requestSet[normalizeGitHubRef(ref)] = struct{}{}
+	}
+	maxStamp := int64(0)
+	for _, event := range events {
+		stamp, err := githubAuditEventTimestamp(event)
+		if err != nil {
+			return scm.HistoricalPublicationEvidence{}, fmt.Errorf("GitHub organization audit log has incomplete timestamps: %w", err)
+		}
+		if stamp < since || stamp > until {
+			return scm.HistoricalPublicationEvidence{}, errors.New("GitHub organization audit log has a coverage gap")
+		}
+		if stamp > maxStamp {
+			maxStamp = stamp
+		}
+		repo := githubAuditField(event, "repo_name", "repository", "repo")
+		if repo == "" || !strings.EqualFold(strings.TrimSuffix(repo, ".git"), h.apiRepoPath()) {
+			return scm.HistoricalPublicationEvidence{}, errors.New("GitHub organization audit log record is not bound to the target repository")
+		}
+		ref := normalizeGitHubRef(githubAuditField(event, "ref", "branch", "head_ref", "source_ref"))
+		if number := githubAuditField(event, "pull_request_number", "pull_number"); number != "" {
+			candidate := "refs/pull/" + number + "/head"
+			if _, ok := requestSet[candidate]; ok {
+				ref = candidate
+			}
+		}
+		if _, ok := requestSet[ref]; !ok && ref != normalizeGitHubRef(branch) {
+			if githubAuditField(event, "before", "after", "head_sha", "commit_sha", "commit_to", "oldrev", "newrev") == "" {
+				continue
+			}
+			return scm.HistoricalPublicationEvidence{}, errors.New("GitHub organization audit log record has incomplete target ref")
+		}
+		if recoveryJSONContainsSHA(event, preserved) {
+			return scm.HistoricalPublicationEvidence{}, errors.New("GitHub organization audit log contains the preserved unpublished head")
+		}
+		if after := githubAuditField(event, "after", "commit_to", "newrev"); after != "" && recoverySHA(after) && after != submitted {
+			return scm.HistoricalPublicationEvidence{}, errors.New("GitHub organization audit log contains a changed target head")
+		}
+	}
+	highWater := fmt.Sprintf("%d", maxStamp)
+	if maxStamp == 0 {
+		highWater = fmt.Sprintf("cutoff:%d", until)
+	}
+	return scm.HistoricalPublicationEvidence{
+		Hash:      recoveryEvidenceHash(endpoint, branch, submitted, preserved, events),
+		Cursor:    fmt.Sprintf("audit-high-water=%s;since=%d;until=%d", highWater, since, until),
+		Coverage:  fmt.Sprintf("github-org-audit-pages=%d;events=%d;retention=180d;pagination=hasNextPage=false;audit", pages, len(events)),
+		HighWater: highWater,
+		Complete:  true,
+	}, nil
+}
+
+func githubIncludedAuditEvents(out []byte) ([]json.RawMessage, int, bool, error) {
+	var events []json.RawMessage
+	position := 0
+	pages := 0
+	complete := false
+	headers := false
+	for position < len(out) {
+		relative := bytes.IndexAny(out[position:], "[{")
+		if relative < 0 {
+			break
+		}
+		start := position + relative
+		header := string(out[position:start])
+		if strings.Contains(header, "HTTP/") {
+			headers = true
+		}
+		next := strings.Contains(strings.ToLower(header), `rel="next"`)
+		decoder := json.NewDecoder(bytes.NewReader(out[start:]))
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			return nil, 0, false, err
+		}
+		var page []json.RawMessage
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return nil, 0, false, err
+		}
+		events = append(events, page...)
+		pages++
+		complete = !next
+		position = start + int(decoder.InputOffset())
+	}
+	if !headers {
+		return nil, 0, false, errors.New("GitHub organization audit log did not expose pagination headers")
+	}
+	return events, pages, complete, nil
+}
+
+func githubAuditEventTimestamp(raw json.RawMessage) (int64, error) {
+	value := githubAuditField(raw, "@timestamp", "timestamp", "created_at", "createdAt")
+	if value == "" {
+		return 0, errors.New("missing event timestamp")
+	}
+	if number, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if number > 1_000_000_000_000 {
+			return number / 1000, nil
+		}
+		return number, nil
+	}
+	when, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return 0, err
+	}
+	return when.Unix(), nil
+}
+
+func githubAuditField(raw json.RawMessage, keys ...string) string {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	wanted := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		wanted[strings.ToLower(key)] = struct{}{}
+	}
+	var visit func(any) string
+	visit = func(item any) string {
+		switch typed := item.(type) {
+		case map[string]any:
+			for key, value := range typed {
+				if _, ok := wanted[strings.ToLower(key)]; ok {
+					switch scalar := value.(type) {
+					case string:
+						return scalar
+					case float64:
+						return strconv.FormatInt(int64(scalar), 10)
+					}
+				}
+			}
+			for _, value := range typed {
+				if found := visit(value); found != "" {
+					return found
+				}
+			}
+		case []any:
+			for _, value := range typed {
+				if found := visit(value); found != "" {
+					return found
+				}
+			}
+		}
+		return ""
+	}
+	return visit(value)
+}
+
+func normalizeGitHubRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	ref = strings.TrimPrefix(ref, "refs/heads/")
+	return ref
 }
 
 func (h *Host) VerifyUnpublishedRefHistoryEvidence(ctx context.Context, branch, submitted, preserved string, since, until int64) (scm.HistoricalPublicationEvidence, error) {

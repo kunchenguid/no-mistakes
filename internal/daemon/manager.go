@@ -530,6 +530,9 @@ func (m *RunManager) validatePublicationLedger(ctx context.Context, run *db.Run)
 	if run.PRURL != nil && strings.TrimSpace(*run.PRURL) != "" || run.LastPushedSHA != nil || run.PublicationAttemptHeadSHA != nil {
 		return fmt.Errorf("legacy publication evidence is present")
 	}
+	if run.SubmittedHeadSHA == nil || !reviewObjectID(*run.SubmittedHeadSHA) {
+		return fmt.Errorf("publication ledger has no canonical submitted head")
+	}
 	if err := m.db.ValidateRunPublicationTargetLedger(run.ID); err != nil {
 		return fmt.Errorf("validate publication target ledger: %w", err)
 	}
@@ -537,7 +540,7 @@ func (m *RunManager) validatePublicationLedger(ctx context.Context, run *db.Run)
 	if err != nil || repo == nil {
 		return fmt.Errorf("publication target repository is unavailable")
 	}
-	inputs, err := m.publicationTargetInputs(ctx, repo, run.Branch)
+	inputs, err := m.publicationTargetInputs(ctx, repo, run.Branch, *run.SubmittedHeadSHA)
 	if err != nil {
 		return fmt.Errorf("enumerate publication targets: %w", err)
 	}
@@ -554,7 +557,7 @@ func (m *RunManager) validatePublicationLedger(ctx context.Context, run *db.Run)
 	}
 	for _, target := range recorded {
 		input, ok := byFingerprint[target.TargetFingerprint]
-		if !ok || input.TargetKind != target.TargetKind || input.Ref != target.Ref || input.TargetVersion != target.TargetVersion {
+		if !ok || input.TargetKind != target.TargetKind || input.Ref != target.Ref || input.TargetVersion != target.TargetVersion || input.RequestLineage != target.RequestLineage {
 			return fmt.Errorf("publication target set changed")
 		}
 	}
@@ -632,6 +635,14 @@ func (m *RunManager) legacyPublicationEvidence(ctx context.Context, run *db.Run,
 		return nil, fmt.Errorf("legacy publication proof has no canonical preserved head")
 	}
 	submitted := *run.SubmittedHeadSHA
+	recorded, err := m.db.ListRunPublicationTargets(run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("read submission-time publication targets: %w", err)
+	}
+	recordedByFingerprint := make(map[string]db.RunPublicationTarget, len(recorded))
+	for _, item := range recorded {
+		recordedByFingerprint[item.TargetFingerprint] = item
+	}
 	seen := make(map[string]struct{}, len(targets))
 	evidence := make(map[string]scm.HistoricalPublicationEvidence, len(targets))
 	for _, target := range targets {
@@ -681,9 +692,38 @@ func (m *RunManager) legacyPublicationEvidence(ctx context.Context, run *db.Run,
 		if err != nil {
 			return nil, err
 		}
+		targetRecord, ok := recordedByFingerprint[fingerprint]
+		if !ok || strings.TrimSpace(targetRecord.RequestLineage) == "" {
+			return nil, fmt.Errorf("submission-time publication request lineage is unavailable")
+		}
+		expectedRefs := publicationLineageRefs(targetRecord.RequestLineage)
+		actualRefs := append([]string(nil), proof.RequestRefs...)
+		sort.Strings(expectedRefs)
+		sort.Strings(actualRefs)
+		if !equalStrings(expectedRefs, actualRefs) {
+			return nil, fmt.Errorf("submission-time publication request lineage changed")
+		}
+		if !proof.Complete || strings.TrimSpace(proof.HighWater) == "" || !strings.Contains(proof.Coverage, "audit") || !strings.Contains(proof.Coverage, "hasNextPage=false") {
+			return nil, fmt.Errorf("historical publication proof for %s is incomplete", provider)
+		}
 		evidence[fingerprint] = proof
 	}
 	return evidence, nil
+}
+
+func publicationLineageRefs(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "none" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	refs := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			refs = append(refs, part)
+		}
+	}
+	return refs
 }
 
 func (m *RunManager) verifyRemotePublicationProof(ctx context.Context, run *db.Run, repo *db.Repo, targets []publicationTargetURL, recorded []db.RunPublicationTarget) error {
@@ -755,7 +795,8 @@ func (m *RunManager) readRemotePublicationSnapshot(ctx context.Context, run *db.
 			}
 		}
 		hash := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
-		evidence[fingerprint] = scm.HistoricalPublicationEvidence{Hash: hex.EncodeToString(hash[:]), Cursor: "remote-" + hex.EncodeToString(hash[:8]), Coverage: "exact-refs"}
+		cursor := "remote-" + hex.EncodeToString(hash[:8])
+		evidence[fingerprint] = scm.HistoricalPublicationEvidence{Hash: hex.EncodeToString(hash[:]), Cursor: cursor, Coverage: "exact-refs;history-bound", HighWater: cursor, Complete: true}
 		seen[fingerprint] = struct{}{}
 	}
 	if len(seen) != len(recorded) {
@@ -770,7 +811,7 @@ func equalPublicationEvidence(left, right map[string]scm.HistoricalPublicationEv
 	}
 	for key, value := range left {
 		other, ok := right[key]
-		if !ok || value.Hash != other.Hash || value.Cursor != other.Cursor || value.Coverage != other.Coverage || !equalStrings(value.RequestRefs, other.RequestRefs) {
+		if !ok || value.Hash != other.Hash || value.Cursor != other.Cursor || value.Coverage != other.Coverage || value.HighWater != other.HighWater || value.Complete != other.Complete || !equalStrings(value.RequestRefs, other.RequestRefs) {
 			return false
 		}
 	}
@@ -2198,7 +2239,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		runIntent = &db.RunIntent{Summary: storedIntent, Source: source, Score: 1}
 	}
 
-	targetInputs, err := m.publicationTargetInputs(ctx, repo, branch)
+	targetInputs, err := m.publicationTargetInputs(ctx, repo, branch, headSHA)
 	if err != nil {
 		trackStartFailure("publication_targets")
 		return "", fmt.Errorf("enumerate publication targets: %w", err)
@@ -2455,7 +2496,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	return run.ID, nil
 }
 
-func (m *RunManager) publicationTargetInputs(ctx context.Context, repo *db.Repo, branch string) ([]db.PublicationTargetInput, error) {
+func (m *RunManager) publicationTargetInputs(ctx context.Context, repo *db.Repo, branch, submitted string) ([]db.PublicationTargetInput, error) {
 	if m == nil || repo == nil {
 		return nil, fmt.Errorf("publication target ledger requires a repository")
 	}
@@ -2466,14 +2507,50 @@ func (m *RunManager) publicationTargetInputs(ctx context.Context, repo *db.Repo,
 	inputs := make([]db.PublicationTargetInput, 0, len(targets))
 	ref := "refs/heads/" + strings.TrimPrefix(strings.TrimSpace(branch), "refs/heads/")
 	for _, target := range targets {
+		lineage, err := m.submissionTargetLineage(ctx, target.url, branch, submitted)
+		if err != nil {
+			return nil, err
+		}
 		inputs = append(inputs, db.PublicationTargetInput{
 			TargetKind:        target.kind,
 			TargetFingerprint: db.PublicationTargetFingerprint(target.url),
 			Ref:               ref,
 			TargetVersion:     repo.URLVersion,
+			RequestLineage:    lineage,
 		})
 	}
 	return inputs, nil
+}
+
+func (m *RunManager) submissionTargetLineage(ctx context.Context, target, branch, submitted string) (string, error) {
+	provider := scm.DetectProviderContext(ctx, target)
+	if provider != scm.ProviderGitHub && provider != scm.ProviderGitLab {
+		return "", nil
+	}
+	cmdFactory := func(cmdCtx context.Context, name string, args ...string) *exec.Cmd {
+		cmd := exec.CommandContext(cmdCtx, name, args...)
+		shellenv.ConfigureShellCommand(cmd)
+		return cmd
+	}
+	host := scm.ResolveHost(ctx, target)
+	var verifier scm.SubmissionTargetLineageVerifier
+	switch provider {
+	case scm.ProviderGitHub:
+		verifier = github.New(cmdFactory, func() bool { _, err := exec.LookPath("gh"); return err == nil }, host, github.HostPrefixedSlugForHost(target, host))
+	case scm.ProviderGitLab:
+		verifier = gitlab.New(cmdFactory, func() bool { _, err := exec.LookPath("glab"); return err == nil }, host, gitlab.ProjectPath(target))
+	}
+	if verifier == nil {
+		return "", fmt.Errorf("submission-time publication lineage is unavailable for provider %s", provider)
+	}
+	refs, err := verifier.DiscoverSubmissionRequestRefs(ctx, strings.TrimPrefix(strings.TrimSpace(branch), "refs/heads/"), strings.TrimSpace(submitted))
+	if err != nil {
+		return "", fmt.Errorf("discover submission-time publication lineage: %w", err)
+	}
+	if len(refs) == 0 {
+		return "none", nil
+	}
+	return strings.Join(refs, ","), nil
 }
 
 type publicationTargetURL struct {

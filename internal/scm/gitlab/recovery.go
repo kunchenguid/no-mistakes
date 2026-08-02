@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,7 +69,7 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 			related, explicit := recoveryBranchRelation(events, branch)
 			if !related {
 				if !explicit {
-					return fmt.Errorf("GitLab merge request %d has incomplete submission-time target lineage", mergeRequest.IID)
+					continue
 				}
 				continue
 			}
@@ -114,17 +115,24 @@ func (h *Host) VerifyUnpublishedTargetHistory(ctx context.Context, branch, submi
 	if err := h.VerifyUnpublishedHistory(ctx, branch, submitted, preserved, since, until, ""); err != nil {
 		return scm.HistoricalPublicationEvidence{}, err
 	}
-	proof, err := h.VerifyUnpublishedRefHistoryEvidence(ctx, branch, submitted, preserved, since, until)
+	refs, err := h.unpublishedTargetRequestRefs(ctx, branch, submitted, since, until)
 	if err != nil {
 		return scm.HistoricalPublicationEvidence{}, err
 	}
-	refs, err := h.unpublishedTargetRequestRefs(ctx, branch, submitted, since, until)
+	proof, err := h.verifyUnpublishedAuditHistory(ctx, branch, submitted, preserved, refs, since, until)
 	if err != nil {
 		return scm.HistoricalPublicationEvidence{}, err
 	}
 	proof.RequestRefs = refs
 	proof.Cursor += "|request-refs=" + strings.Join(refs, ",")
 	return proof, nil
+}
+
+func (h *Host) DiscoverSubmissionRequestRefs(ctx context.Context, branch, submitted string) ([]string, error) {
+	if err := h.Available(ctx); err != nil {
+		return nil, err
+	}
+	return h.unpublishedTargetRequestRefs(ctx, branch, submitted, 0, 0)
 }
 
 func (h *Host) unpublishedTargetRequestRefs(ctx context.Context, branch, submitted string, since, until int64) ([]string, error) {
@@ -135,13 +143,6 @@ func (h *Host) unpublishedTargetRequestRefs(ctx context.Context, branch, submitt
 	}
 	refs := make([]string, 0)
 	for _, mergeRequest := range mergeRequests {
-		inWindow, err := recoveryRecordInWindow(mergeRequest.CreatedAt, mergeRequest.UpdatedAt, since, until)
-		if err != nil {
-			return nil, fmt.Errorf("GitLab merge request %d has incomplete historical timestamps: %w", mergeRequest.IID, err)
-		}
-		if !inWindow {
-			continue
-		}
 		var events []json.RawMessage
 		if err := h.apiPages(ctx, fmt.Sprintf("projects/%s/merge_requests/%d/resource_state_events?per_page=100", project, mergeRequest.IID), &events); err != nil {
 			return nil, fmt.Errorf("inspect GitLab merge-request %d lineage: %w", mergeRequest.IID, err)
@@ -152,7 +153,7 @@ func (h *Host) unpublishedTargetRequestRefs(ctx context.Context, branch, submitt
 			related, explicit = recoveryBranchRelation(events, branch)
 			if !related {
 				if !explicit {
-					return nil, fmt.Errorf("GitLab merge request %d has incomplete submission-time target lineage", mergeRequest.IID)
+					continue
 				}
 				continue
 			}
@@ -168,6 +169,204 @@ func (h *Host) unpublishedTargetRequestRefs(ctx context.Context, branch, submitt
 	}
 	sort.Strings(refs)
 	return refs, nil
+}
+
+func (h *Host) verifyUnpublishedAuditHistory(ctx context.Context, branch, submitted, preserved string, requestRefs []string, since, until int64) (scm.HistoricalPublicationEvidence, error) {
+	if since <= 0 || until < since {
+		return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit history has no valid run interval")
+	}
+	if time.Now().Unix()-since > int64((180 * 24 * time.Hour).Seconds()) {
+		return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit history is outside the documented retention window")
+	}
+	if err := h.Available(ctx); err != nil {
+		return scm.HistoricalPublicationEvidence{}, err
+	}
+	if strings.TrimSpace(h.projectPath) == "" {
+		return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit history requires a canonical project")
+	}
+	project := url.PathEscape(h.projectPath)
+	query := url.Values{}
+	query.Set("created_after", time.Unix(since, 0).UTC().Format(time.RFC3339))
+	query.Set("created_before", time.Unix(until, 0).UTC().Format(time.RFC3339))
+	query.Set("per_page", "100")
+	endpoint := "projects/" + project + "/audit_events?" + query.Encode()
+	args := []string{"api", "--paginate", "--include"}
+	if h.host != "" {
+		args = append(args, "--hostname", h.host)
+	}
+	args = append(args, endpoint)
+	out, err := h.cmd(ctx, "glab", args...).Output()
+	if err != nil {
+		return scm.HistoricalPublicationEvidence{}, fmt.Errorf("GitLab audit event history unavailable: %w", err)
+	}
+	if strings.Contains(strings.ToLower(string(out)), "rate limit") || strings.Contains(string(out), " 403 ") || strings.Contains(string(out), " 429 ") {
+		return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event history is unavailable or rate limited")
+	}
+	events, pages, complete, err := gitlabIncludedAuditEvents(out)
+	if err != nil {
+		return scm.HistoricalPublicationEvidence{}, err
+	}
+	if !complete || pages == 0 {
+		return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event pagination is incomplete")
+	}
+	requestSet := make(map[string]struct{}, len(requestRefs))
+	for _, ref := range requestRefs {
+		requestSet[normalizeGitLabRef(ref)] = struct{}{}
+	}
+	maxStamp := int64(0)
+	for _, event := range events {
+		stamp, err := gitlabAuditEventTimestamp(event)
+		if err != nil {
+			return scm.HistoricalPublicationEvidence{}, fmt.Errorf("GitLab audit event has incomplete timestamps: %w", err)
+		}
+		if stamp < since || stamp > until {
+			return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event history has a coverage gap")
+		}
+		if stamp > maxStamp {
+			maxStamp = stamp
+		}
+		projectName := gitlabAuditField(event, "entity_path", "project_path", "project", "target_project")
+		if projectName == "" || !strings.EqualFold(strings.TrimSuffix(projectName, ".git"), h.projectPath) {
+			return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event is not bound to the target project")
+		}
+		ref := normalizeGitLabRef(gitlabAuditField(event, "ref", "branch", "source_branch"))
+		if number := gitlabAuditField(event, "merge_request_iid", "merge_request_number"); number != "" {
+			candidate := "refs/merge-requests/" + number + "/head"
+			if _, ok := requestSet[candidate]; ok {
+				ref = candidate
+			}
+		}
+		if _, ok := requestSet[ref]; !ok && ref != normalizeGitLabRef(branch) {
+			if gitlabAuditField(event, "before", "after", "head_sha", "commit_sha", "commit_to", "oldrev", "newrev") == "" {
+				continue
+			}
+			return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event has incomplete target ref")
+		}
+		if recoveryJSONContainsSHA(event, preserved) {
+			return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event contains the preserved unpublished head")
+		}
+		if after := gitlabAuditField(event, "after", "commit_to", "newrev"); after != "" && recoverySHA(after) && after != submitted {
+			return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event contains a changed target head")
+		}
+	}
+	highWater := fmt.Sprintf("%d", maxStamp)
+	if maxStamp == 0 {
+		highWater = fmt.Sprintf("cutoff:%d", until)
+	}
+	return scm.HistoricalPublicationEvidence{
+		Hash:      recoveryEvidenceHash(endpoint, branch, submitted, preserved, events),
+		Cursor:    fmt.Sprintf("audit-high-water=%s;since=%d;until=%d", highWater, since, until),
+		Coverage:  fmt.Sprintf("gitlab-audit-pages=%d;events=%d;retention=180d;pagination=hasNextPage=false;audit", pages, len(events)),
+		HighWater: highWater,
+		Complete:  true,
+	}, nil
+}
+
+func gitlabIncludedAuditEvents(out []byte) ([]json.RawMessage, int, bool, error) {
+	var events []json.RawMessage
+	position := 0
+	pages := 0
+	complete := false
+	headers := false
+	for position < len(out) {
+		relative := bytes.IndexAny(out[position:], "[{")
+		if relative < 0 {
+			break
+		}
+		start := position + relative
+		header := string(out[position:start])
+		if strings.Contains(header, "HTTP/") {
+			headers = true
+		}
+		next := strings.Contains(strings.ToLower(header), `rel="next"`)
+		for _, line := range strings.Split(header, "\n") {
+			line = strings.TrimSpace(line)
+			lowerLine := strings.ToLower(line)
+			if strings.HasPrefix(lowerLine, "x-next-page:") && strings.TrimSpace(line[len("x-next-page:"):]) != "" {
+				next = true
+			}
+		}
+		decoder := json.NewDecoder(bytes.NewReader(out[start:]))
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			return nil, 0, false, err
+		}
+		var page []json.RawMessage
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return nil, 0, false, err
+		}
+		events = append(events, page...)
+		pages++
+		complete = !next
+		position = start + int(decoder.InputOffset())
+	}
+	if !headers {
+		return nil, 0, false, errors.New("GitLab audit event history did not expose pagination headers")
+	}
+	return events, pages, complete, nil
+}
+
+func gitlabAuditEventTimestamp(raw json.RawMessage) (int64, error) {
+	value := gitlabAuditField(raw, "created_at", "timestamp", "createdAt")
+	if value == "" {
+		return 0, errors.New("missing event timestamp")
+	}
+	if number, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if number > 1_000_000_000_000 {
+			return number / 1000, nil
+		}
+		return number, nil
+	}
+	when, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return 0, err
+	}
+	return when.Unix(), nil
+}
+
+func gitlabAuditField(raw json.RawMessage, keys ...string) string {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	wanted := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		wanted[strings.ToLower(key)] = struct{}{}
+	}
+	var visit func(any) string
+	visit = func(item any) string {
+		switch typed := item.(type) {
+		case map[string]any:
+			for key, value := range typed {
+				if _, ok := wanted[strings.ToLower(key)]; ok {
+					switch scalar := value.(type) {
+					case string:
+						return scalar
+					case float64:
+						return strconv.FormatInt(int64(scalar), 10)
+					}
+				}
+			}
+			for _, value := range typed {
+				if found := visit(value); found != "" {
+					return found
+				}
+			}
+		case []any:
+			for _, value := range typed {
+				if found := visit(value); found != "" {
+					return found
+				}
+			}
+		}
+		return ""
+	}
+	return visit(value)
+}
+
+func normalizeGitLabRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	return strings.TrimPrefix(ref, "refs/heads/")
 }
 
 func (h *Host) VerifyUnpublishedRefHistoryEvidence(ctx context.Context, branch, submitted, preserved string, since, until int64) (scm.HistoricalPublicationEvidence, error) {

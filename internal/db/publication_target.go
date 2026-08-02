@@ -31,6 +31,7 @@ type PublicationTargetInput struct {
 	TargetFingerprint string
 	Ref               string
 	TargetVersion     int64
+	RequestLineage    string
 }
 
 type RunPublicationTarget struct {
@@ -39,6 +40,7 @@ type RunPublicationTarget struct {
 	TargetFingerprint string
 	Ref               string
 	TargetVersion     int64
+	RequestLineage    string
 	State             string
 	RequestIdentity   string
 	AttemptHeadSHA    string
@@ -116,6 +118,7 @@ func normalizePublicationTargetInputs(inputs []PublicationTargetInput) ([]Public
 		input.TargetKind = strings.TrimSpace(input.TargetKind)
 		input.TargetFingerprint = strings.TrimSpace(input.TargetFingerprint)
 		input.Ref = strings.TrimSpace(input.Ref)
+		input.RequestLineage = strings.TrimSpace(input.RequestLineage)
 		if input.TargetKind == "" || input.TargetFingerprint == "" || input.Ref == "" || input.TargetVersion < 0 {
 			return nil, ErrRunPublicationCAS
 		}
@@ -140,7 +143,7 @@ func normalizePublicationTargetInputs(inputs []PublicationTargetInput) ([]Public
 func publicationTargetSetHash(inputs []PublicationTargetInput) string {
 	parts := make([]string, 0, len(inputs))
 	for _, input := range inputs {
-		parts = append(parts, strings.Join([]string{input.TargetKind, input.TargetFingerprint, input.Ref, fmt.Sprintf("%d", input.TargetVersion)}, "\x00"))
+		parts = append(parts, strings.Join([]string{input.TargetKind, input.TargetFingerprint, input.Ref, fmt.Sprintf("%d", input.TargetVersion), input.RequestLineage}, "\x00"))
 	}
 	sort.Strings(parts)
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x01")))
@@ -155,6 +158,7 @@ func PublicationTargetSetHash(targets []RunPublicationTarget) string {
 			TargetFingerprint: target.TargetFingerprint,
 			Ref:               target.Ref,
 			TargetVersion:     target.TargetVersion,
+			RequestLineage:    target.RequestLineage,
 		})
 	}
 	normalized, err := normalizePublicationTargetInputs(inputs)
@@ -203,7 +207,7 @@ func seedRunPublicationTargetsTx(tx *sql.Tx, runID string, inputs []PublicationT
 	}
 	ts := now()
 	for _, input := range normalized {
-		if _, err := tx.Exec(`INSERT INTO run_publication_targets (run_id, target_kind, target_fingerprint, ref, target_version, state, generation, provenance, pr_state, pr_generation, pr_provenance, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?, ?)`, runID, input.TargetKind, input.TargetFingerprint, input.Ref, input.TargetVersion, PublicationTargetNoAttempt, provenance, PublicationTargetPRNoAttempt, provenance, ts, ts); err != nil {
+		if _, err := tx.Exec(`INSERT INTO run_publication_targets (run_id, target_kind, target_fingerprint, ref, target_version, request_lineage, state, generation, provenance, pr_state, pr_generation, pr_provenance, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?, ?)`, runID, input.TargetKind, input.TargetFingerprint, input.Ref, input.TargetVersion, input.RequestLineage, PublicationTargetNoAttempt, provenance, PublicationTargetPRNoAttempt, provenance, ts, ts); err != nil {
 			return fmt.Errorf("seed publication target: %w", err)
 		}
 	}
@@ -226,7 +230,7 @@ func (d *DB) SeedRunPublicationTargets(runID string, inputs []PublicationTargetI
 }
 
 func (d *DB) ListRunPublicationTargets(runID string) ([]RunPublicationTarget, error) {
-	rows, err := d.sql.Query(`SELECT run_id, target_kind, target_fingerprint, ref, target_version, state, COALESCE(request_identity, ''), COALESCE(attempt_head_sha, ''), generation, provenance, pr_state, COALESCE(pr_request_identity, ''), pr_generation, pr_provenance FROM run_publication_targets WHERE run_id = ? ORDER BY target_fingerprint`, strings.TrimSpace(runID))
+	rows, err := d.sql.Query(`SELECT run_id, target_kind, target_fingerprint, ref, target_version, COALESCE(request_lineage, ''), state, COALESCE(request_identity, ''), COALESCE(attempt_head_sha, ''), generation, provenance, pr_state, COALESCE(pr_request_identity, ''), pr_generation, pr_provenance FROM run_publication_targets WHERE run_id = ? ORDER BY target_fingerprint`, strings.TrimSpace(runID))
 	if err != nil {
 		return nil, fmt.Errorf("list run publication targets: %w", err)
 	}
@@ -234,7 +238,7 @@ func (d *DB) ListRunPublicationTargets(runID string) ([]RunPublicationTarget, er
 	var targets []RunPublicationTarget
 	for rows.Next() {
 		var target RunPublicationTarget
-		if err := rows.Scan(&target.RunID, &target.TargetKind, &target.TargetFingerprint, &target.Ref, &target.TargetVersion, &target.State, &target.RequestIdentity, &target.AttemptHeadSHA, &target.Generation, &target.Provenance, &target.PRState, &target.PRRequestIdentity, &target.PRGeneration, &target.PRProvenance); err != nil {
+		if err := rows.Scan(&target.RunID, &target.TargetKind, &target.TargetFingerprint, &target.Ref, &target.TargetVersion, &target.RequestLineage, &target.State, &target.RequestIdentity, &target.AttemptHeadSHA, &target.Generation, &target.Provenance, &target.PRState, &target.PRRequestIdentity, &target.PRGeneration, &target.PRProvenance); err != nil {
 			return nil, fmt.Errorf("scan run publication target: %w", err)
 		}
 		targets = append(targets, target)
@@ -262,7 +266,7 @@ func validateRunPublicationTargetLedgerTx(tx *sql.Tx, runID string, requireVerif
 	if err := tx.QueryRow(`SELECT run_id, target_count, target_set_hash, state, generation, provenance, COALESCE(evidence_hash, ''), COALESCE(evidence_cursor, ''), COALESCE(evidence_generation, 0), COALESCE(evidence_provenance, '') FROM run_publication_target_sets WHERE run_id = ?`, strings.TrimSpace(runID)).Scan(&set.RunID, &set.TargetCount, &set.TargetSetHash, &set.State, &set.Generation, &set.Provenance, &set.EvidenceHash, &set.EvidenceCursor, &set.EvidenceGeneration, &set.EvidenceProvenance); err != nil {
 		return ErrRunPublicationCAS
 	}
-	rows, err := tx.Query(`SELECT run_id, target_kind, target_fingerprint, ref, target_version, state, COALESCE(request_identity, ''), COALESCE(attempt_head_sha, ''), generation, provenance, pr_state, COALESCE(pr_request_identity, ''), pr_generation, pr_provenance FROM run_publication_targets WHERE run_id = ? ORDER BY target_fingerprint`, strings.TrimSpace(runID))
+	rows, err := tx.Query(`SELECT run_id, target_kind, target_fingerprint, ref, target_version, COALESCE(request_lineage, ''), state, COALESCE(request_identity, ''), COALESCE(attempt_head_sha, ''), generation, provenance, pr_state, COALESCE(pr_request_identity, ''), pr_generation, pr_provenance FROM run_publication_targets WHERE run_id = ? ORDER BY target_fingerprint`, strings.TrimSpace(runID))
 	if err != nil {
 		return fmt.Errorf("read publication target ledger: %w", err)
 	}
@@ -270,7 +274,7 @@ func validateRunPublicationTargetLedgerTx(tx *sql.Tx, runID string, requireVerif
 	var targets []RunPublicationTarget
 	for rows.Next() {
 		var target RunPublicationTarget
-		if err := rows.Scan(&target.RunID, &target.TargetKind, &target.TargetFingerprint, &target.Ref, &target.TargetVersion, &target.State, &target.RequestIdentity, &target.AttemptHeadSHA, &target.Generation, &target.Provenance, &target.PRState, &target.PRRequestIdentity, &target.PRGeneration, &target.PRProvenance); err != nil {
+		if err := rows.Scan(&target.RunID, &target.TargetKind, &target.TargetFingerprint, &target.Ref, &target.TargetVersion, &target.RequestLineage, &target.State, &target.RequestIdentity, &target.AttemptHeadSHA, &target.Generation, &target.Provenance, &target.PRState, &target.PRRequestIdentity, &target.PRGeneration, &target.PRProvenance); err != nil {
 			return fmt.Errorf("scan publication target ledger: %w", err)
 		}
 		targets = append(targets, target)
@@ -544,7 +548,7 @@ func (d *DB) RecordRunPublicationEvidence(runID string, inputs []PublicationEvid
 }
 
 func listPublicationTargetsTx(tx *sql.Tx, runID string) ([]RunPublicationTarget, error) {
-	rows, err := tx.Query(`SELECT run_id, target_kind, target_fingerprint, ref, target_version, state, COALESCE(request_identity, ''), COALESCE(attempt_head_sha, ''), generation, provenance, pr_state, COALESCE(pr_request_identity, ''), pr_generation, pr_provenance FROM run_publication_targets WHERE run_id = ? ORDER BY target_fingerprint`, runID)
+	rows, err := tx.Query(`SELECT run_id, target_kind, target_fingerprint, ref, target_version, COALESCE(request_lineage, ''), state, COALESCE(request_identity, ''), COALESCE(attempt_head_sha, ''), generation, provenance, pr_state, COALESCE(pr_request_identity, ''), pr_generation, pr_provenance FROM run_publication_targets WHERE run_id = ? ORDER BY target_fingerprint`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("read publication targets: %w", err)
 	}
@@ -552,7 +556,7 @@ func listPublicationTargetsTx(tx *sql.Tx, runID string) ([]RunPublicationTarget,
 	var targets []RunPublicationTarget
 	for rows.Next() {
 		var target RunPublicationTarget
-		if err := rows.Scan(&target.RunID, &target.TargetKind, &target.TargetFingerprint, &target.Ref, &target.TargetVersion, &target.State, &target.RequestIdentity, &target.AttemptHeadSHA, &target.Generation, &target.Provenance, &target.PRState, &target.PRRequestIdentity, &target.PRGeneration, &target.PRProvenance); err != nil {
+		if err := rows.Scan(&target.RunID, &target.TargetKind, &target.TargetFingerprint, &target.Ref, &target.TargetVersion, &target.RequestLineage, &target.State, &target.RequestIdentity, &target.AttemptHeadSHA, &target.Generation, &target.Provenance, &target.PRState, &target.PRRequestIdentity, &target.PRGeneration, &target.PRProvenance); err != nil {
 			return nil, fmt.Errorf("scan publication target: %w", err)
 		}
 		targets = append(targets, target)
@@ -564,23 +568,27 @@ func listPublicationTargetsTx(tx *sql.Tx, runID string) ([]RunPublicationTarget,
 }
 
 func validateRunPublicationEvidenceTx(tx *sql.Tx, expected *Run) error {
-	if expected == nil || strings.TrimSpace(expected.PublicationEvidenceHash) == "" {
-		return nil
-	}
-	var hash, provenance string
-	var generation int64
-	if err := tx.QueryRow(`SELECT COALESCE(evidence_hash, ''), COALESCE(evidence_generation, 0), COALESCE(evidence_provenance, '') FROM run_publication_target_sets WHERE run_id = ?`, expected.ID).Scan(&hash, &generation, &provenance); err != nil {
+	if expected == nil || strings.TrimSpace(expected.PublicationEvidenceHash) == "" || expected.PublicationEvidenceGeneration <= 0 {
 		return ErrRunCustodyCAS
 	}
-	if hash != expected.PublicationEvidenceHash || generation != expected.PublicationEvidenceGeneration || provenance != "target-scoped-complete-v1" {
+	var hash, cursor, provenance string
+	var generation int64
+	var targetCount int
+	if err := tx.QueryRow(`SELECT COALESCE(evidence_hash, ''), COALESCE(evidence_cursor, ''), COALESCE(evidence_generation, 0), COALESCE(evidence_provenance, ''), target_count FROM run_publication_target_sets WHERE run_id = ?`, expected.ID).Scan(&hash, &cursor, &generation, &provenance, &targetCount); err != nil {
+		return ErrRunCustodyCAS
+	}
+	if hash == "" || cursor == "" || targetCount <= 0 || hash != expected.PublicationEvidenceHash || generation != expected.PublicationEvidenceGeneration || generation <= 0 || provenance != "target-scoped-complete-v1" {
 		return ErrRunCustodyCAS
 	}
 	var count int
 	if err := tx.QueryRow(`SELECT count(*) FROM run_publication_evidence WHERE run_id = ? AND generation = ? AND provenance = ?`, expected.ID, expected.PublicationEvidenceGeneration, "target-scoped-complete-v1").Scan(&count); err != nil {
 		return ErrRunCustodyCAS
 	}
-	var targetCount int
-	if err := tx.QueryRow(`SELECT target_count FROM run_publication_target_sets WHERE run_id = ?`, expected.ID).Scan(&targetCount); err != nil || count != targetCount || count == 0 {
+	if count != targetCount || count == 0 {
+		return ErrRunCustodyCAS
+	}
+	var invalid int
+	if err := tx.QueryRow(`SELECT count(*) FROM run_publication_evidence AS evidence JOIN run_publication_targets AS target ON target.run_id = evidence.run_id AND target.target_fingerprint = evidence.target_fingerprint WHERE evidence.run_id = ? AND (evidence.ref <> target.ref OR evidence.target_version <> target.target_version OR evidence.evidence_hash = '' OR evidence.remote_hash = '' OR evidence.provider_hash = '' OR evidence.cursor = '' OR evidence.cursor NOT LIKE '%audit%' OR evidence.cursor NOT LIKE '%hasNextPage=false%' OR evidence.since <= 0 OR evidence.until < evidence.since)`, expected.ID).Scan(&invalid); err != nil || invalid != 0 {
 		return ErrRunCustodyCAS
 	}
 	return nil

@@ -824,6 +824,31 @@ func TestVerifyUnpublishedRefHistoryRejectsTruncatedOlderCoverage(t *testing.T) 
 	}
 }
 
+func TestGitHubAuditCoverageRequiresExhaustedPagination(t *testing.T) {
+	if _, _, complete, err := githubIncludedAuditEvents([]byte("HTTP/2 200 OK\r\nLink: <next>; rel=\"next\"\r\n\r\n[]\n")); err != nil || complete {
+		t.Fatalf("incomplete GitHub audit pages = complete %v, err %v", complete, err)
+	}
+	events, pages, complete, err := githubIncludedAuditEvents([]byte("HTTP/2 200 OK\r\n\r\n[]\n"))
+	if err != nil || pages != 1 || !complete || len(events) != 0 {
+		t.Fatalf("complete GitHub audit pages = events %d pages %d complete %v err %v", len(events), pages, complete, err)
+	}
+}
+
+func TestDiscoverSubmissionRequestRefsIncludesInactivePullRequest(t *testing.T) {
+	a := strings.Repeat("a", 40)
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+		"gh api --paginate repos/test/repo/pulls?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"number":7,"created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-02T00:00:00Z","head":{"ref":"feature","sha":"%s"}}]`+"\n", a),
+		},
+		"gh api --paginate repos/test/repo/issues/7/timeline?per_page=100": {stdout: "[]\n"},
+	}), nil, "", "test/repo")
+	refs, err := host.DiscoverSubmissionRequestRefs(context.Background(), "feature", a)
+	if err != nil || len(refs) != 1 || refs[0] != "refs/pull/7/head" {
+		t.Fatalf("submission request refs = %#v, err %v", refs, err)
+	}
+}
+
 func TestVerifyUnpublishedHistoryInspectsRenamedNoPullRequestHistory(t *testing.T) {
 	t.Parallel()
 	a := strings.Repeat("a", 40)

@@ -1219,6 +1219,19 @@ func TestRecoverStaleRunsNoStaleRuns(t *testing.T) {
 }
 
 func TestSetRunCustodyReturnedCAS(t *testing.T) {
+	t.Run("rejects missing publication evidence", func(t *testing.T) {
+		d := openTestDB(t)
+		repo, _ := d.InsertRepo("/home/user/custody-no-evidence", "git@github.com:user/custody.git", "main")
+		run, _ := d.InsertRun(repo.ID, "feat", strings.Repeat("a", 40), strings.Repeat("b", 40))
+		if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
+			t.Fatal(err)
+		}
+		expected, _ := d.GetRun(run.ID)
+		if err := d.SetRunCustodyReturnedCAS(expected); !errors.Is(err, ErrRunCustodyCAS) {
+			t.Fatalf("custody CAS without evidence = %v, want ErrRunCustodyCAS", err)
+		}
+	})
+
 	t.Run("stamps unchanged newest terminal run", func(t *testing.T) {
 		d := openTestDB(t)
 		repo, _ := d.InsertRepo("/home/user/custody-success", "git@github.com:user/custody.git", "main")
@@ -1229,6 +1242,7 @@ func TestSetRunCustodyReturnedCAS(t *testing.T) {
 		if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
 			t.Fatal(err)
 		}
+		seedTestPublicationEvidence(t, d, run)
 		expected, _ := d.GetRun(run.ID)
 
 		if err := d.SetRunCustodyReturnedCAS(expected); err != nil {
@@ -1257,6 +1271,7 @@ func TestSetRunCustodyReturnedCAS(t *testing.T) {
 		if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
 			t.Fatal(err)
 		}
+		seedTestPublicationEvidence(t, d, run)
 		expected, _ := d.GetRun(run.ID)
 		if err := d.SetRunCustodyReturnedCAS(expected); err != nil {
 			t.Fatal(err)
@@ -1336,6 +1351,7 @@ func TestRunCustodyTransitionOwnership(t *testing.T) {
 	if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
 		t.Fatal(err)
 	}
+	seedTestPublicationEvidence(t, d, run)
 	expected, _ := d.GetRun(run.ID)
 
 	transition, err := d.BeginRunCustodyTransition(context.Background(), expected)
@@ -1376,6 +1392,30 @@ func TestRunCustodyTransitionOwnership(t *testing.T) {
 	got, _ := d.GetRun(run.ID)
 	if got.CustodyReturnedAt == nil || got.CustodyTransitionToken != nil {
 		t.Fatalf("completed custody transition = %#v", got)
+	}
+}
+
+func seedTestPublicationEvidence(t *testing.T, d *DB, run *Run) {
+	t.Helper()
+	targets, err := d.ListRunPublicationTargets(run.ID)
+	if err != nil || len(targets) == 0 {
+		t.Fatalf("publication targets = %#v, %v", targets, err)
+	}
+	inputs := make([]PublicationEvidenceInput, 0, len(targets))
+	for _, target := range targets {
+		inputs = append(inputs, PublicationEvidenceInput{
+			TargetFingerprint: target.TargetFingerprint,
+			Ref:               target.Ref,
+			TargetVersion:     target.TargetVersion,
+			RemoteHash:        "test-remote-evidence",
+			ProviderHash:      "test-provider-evidence",
+			Cursor:            "audit;hasNextPage=false;test-complete-cursor",
+			Since:             run.CreatedAt,
+			Until:             run.UpdatedAt,
+		})
+	}
+	if _, err := d.RecordRunPublicationEvidence(run.ID, inputs); err != nil {
+		t.Fatalf("record test publication evidence: %v", err)
 	}
 }
 

@@ -223,10 +223,16 @@ type HistoricalPublicationEvidence struct {
 	Cursor      string
 	Coverage    string
 	RequestRefs []string
+	HighWater   string
+	Complete    bool
 }
 
 type HistoricalTargetPublicationVerifier interface {
 	VerifyUnpublishedTargetHistory(ctx context.Context, branch, submitted, preserved string, since, until int64) (HistoricalPublicationEvidence, error)
+}
+
+type SubmissionTargetLineageVerifier interface {
+	DiscoverSubmissionRequestRefs(ctx context.Context, branch, submitted string) ([]string, error)
 }
 
 type HistoricalRefPublicationEvidenceVerifier interface {

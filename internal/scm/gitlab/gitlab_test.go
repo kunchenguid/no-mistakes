@@ -429,6 +429,16 @@ func TestVerifyUnpublishedRefHistoryRejectsTruncatedOlderCoverage(t *testing.T) 
 	}
 }
 
+func TestGitLabAuditCoverageRequiresExhaustedPagination(t *testing.T) {
+	if _, _, complete, err := gitlabIncludedAuditEvents([]byte("HTTP/2 200 OK\r\nX-Next-Page: 2\r\n\r\n[]\n")); err != nil || complete {
+		t.Fatalf("incomplete GitLab audit pages = complete %v, err %v", complete, err)
+	}
+	events, pages, complete, err := gitlabIncludedAuditEvents([]byte("HTTP/2 200 OK\r\nX-Next-Page:\r\n\r\n[]\n"))
+	if err != nil || pages != 1 || !complete || len(events) != 0 {
+		t.Fatalf("complete GitLab audit pages = events %d pages %d complete %v err %v", len(events), pages, complete, err)
+	}
+}
+
 func TestVerifyUnpublishedHistoryInspectsRenamedNoMergeRequestHistory(t *testing.T) {
 	t.Parallel()
 	a := strings.Repeat("a", 40)

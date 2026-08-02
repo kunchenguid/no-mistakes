@@ -152,6 +152,26 @@ func newRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
 	if statusErr != nil {
 		t.Fatal(statusErr)
 	}
+	targets, err := database.ListRunPublicationTargets(run.ID)
+	if err != nil || len(targets) == 0 {
+		t.Fatalf("publication targets = %#v, %v", targets, err)
+	}
+	evidence := make([]db.PublicationEvidenceInput, 0, len(targets))
+	for _, target := range targets {
+		evidence = append(evidence, db.PublicationEvidenceInput{
+			TargetFingerprint: target.TargetFingerprint,
+			Ref:               target.Ref,
+			TargetVersion:     target.TargetVersion,
+			RemoteHash:        "fixture-remote-evidence",
+			ProviderHash:      "fixture-provider-evidence",
+			Cursor:            "audit;hasNextPage=false;fixture-complete-cursor",
+			Since:             run.CreatedAt,
+			Until:             run.UpdatedAt,
+		})
+	}
+	if _, err := database.RecordRunPublicationEvidence(run.ID, evidence); err != nil {
+		t.Fatal(err)
+	}
 	if err := database.SetManagedGateRefHead(repo.ID, gate, "refs/heads/feature/recover", preserved); err != nil {
 		t.Fatal(err)
 	}
