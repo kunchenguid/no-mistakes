@@ -308,7 +308,7 @@ func TestCIStep_TimeoutWithMergeConflictAndCheckLookupError_NeedsApproval(t *tes
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	env := fakeCIGHChecksError(t, "OPEN", "CONFLICTING", "gh checks failed")
+	env := fakeCIGHChecksError(t, "OPEN", "CONFLICTING", "gh checks failed for https://token:secret@example.com/test/repo")
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
@@ -316,6 +316,10 @@ func TestCIStep_TimeoutWithMergeConflictAndCheckLookupError_NeedsApproval(t *tes
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 2 * time.Second
+	var logs []string
+	sctx.Log = func(message string) {
+		logs = append(logs, message)
+	}
 
 	started := time.Unix(1700000000, 0)
 	now := started
@@ -335,6 +339,14 @@ func TestCIStep_TimeoutWithMergeConflictAndCheckLookupError_NeedsApproval(t *tes
 	}
 	if !outcome.NeedsApproval {
 		t.Fatal("expected NeedsApproval when merge conflict remains known but checks lookup fails")
+	}
+	joinedLogs := strings.Join(logs, "\n")
+	const wantWarning = "warning: could not check CI: gh pr checks: exit status 1: gh checks failed for https://redacted@example.com/test/repo"
+	if !strings.Contains(joinedLogs, wantWarning) {
+		t.Fatalf("CI logs = %q, want warning %q", joinedLogs, wantWarning)
+	}
+	if strings.Contains(joinedLogs, "secret") {
+		t.Fatalf("CI logs exposed credential: %q", joinedLogs)
 	}
 
 	var findings Findings

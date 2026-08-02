@@ -9,9 +9,13 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
+
+const maxGHChecksDiagnosticBytes = 200
 
 // CmdFactory builds an exec.Cmd in the caller's workdir with the caller's env.
 type CmdFactory func(ctx context.Context, name string, args ...string) *exec.Cmd
@@ -304,6 +308,9 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		if strings.Contains(string(out), "no checks reported") {
 			return nil, nil
 		}
+		if diagnostic := compactGHChecksDiagnostic(out); diagnostic != "" {
+			return nil, fmt.Errorf("gh pr checks: %w: %s", err, diagnostic)
+		}
 		return nil, fmt.Errorf("gh pr checks: %w", err)
 	}
 	var raw []struct {
@@ -326,6 +333,27 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		checks = append(checks, scm.Check{Name: r.Name, Bucket: normalizeCheckBucket(r.Bucket, r.State), CompletedAt: completedAt})
 	}
 	return checks, nil
+}
+
+// compactGHChecksDiagnostic keeps repeated CI polling warnings useful without
+// allowing multiline, credentialled, or unbounded CLI output into step logs.
+func compactGHChecksDiagnostic(output []byte) string {
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.ToValidUTF8(strings.TrimSpace(line), "�")
+		if line == "" {
+			continue
+		}
+		line = safeurl.RedactText(line)
+		if len(line) > maxGHChecksDiagnosticBytes {
+			end := maxGHChecksDiagnosticBytes
+			for end > 0 && !utf8.RuneStart(line[end]) {
+				end--
+			}
+			line = line[:end]
+		}
+		return line
+	}
+	return ""
 }
 
 func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {
