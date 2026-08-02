@@ -535,8 +535,63 @@ func TestRunPublicationTargetsAreBoundPerTarget(t *testing.T) {
 	if got := byFingerprint[forkFingerprint]; got.State != PublicationTargetPublished || got.AttemptHeadSHA != "attempted" {
 		t.Fatalf("fork publication target = %#v", got)
 	}
-	if got := byFingerprint[parentFingerprint]; got.State != PublicationTargetAttempted || got.RequestIdentity != "https://github.com/example/parent/pull/7" {
+	if got := byFingerprint[parentFingerprint]; got.State != PublicationTargetNoAttempt || got.PRState != PublicationTargetPROpened || got.PRRequestIdentity != "https://github.com/example/parent/pull/7" {
 		t.Fatalf("parent publication target = %#v", got)
+	}
+}
+
+func TestRunPublicationTargetPushAndPRChannelsAdvanceIndependently(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/repo-publication-channels", "https://github.com/example/parent.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := publicationTargetFingerprint(repo.UpstreamURL)
+	if err := d.UpdateRunPushBinding(run.ID, PushBinding{HeadSHA: "pushed", TargetKind: "upstream", TargetFingerprint: fingerprint, Ref: "refs/heads/feature"}); err != nil {
+		t.Fatalf("record upstream push: %v", err)
+	}
+	if err := d.PrepareRunPublicationTargetAttempt(run.ID, "upstream", fingerprint, "refs/heads/feature"); err != nil {
+		t.Fatalf("prepare upstream PR after push: %v", err)
+	}
+	if err := d.UpdateRunPRURLForTarget(run.ID, "https://github.com/example/parent/pull/8", "upstream", fingerprint); err != nil {
+		t.Fatalf("record upstream PR after push: %v", err)
+	}
+	targets, err := d.ListRunPublicationTargets(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("publication target count = %d, want 1", len(targets))
+	}
+	got := targets[0]
+	if got.State != PublicationTargetPublished || got.AttemptHeadSHA != "pushed" {
+		t.Fatalf("push channel = %#v", got)
+	}
+	if got.PRState != PublicationTargetPROpened || got.PRRequestIdentity != "https://github.com/example/parent/pull/8" {
+		t.Fatalf("PR channel = %#v", got)
+	}
+}
+
+func TestRunPublicationTargetPreparedPRBlocksUnpublishedValidation(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/repo-publication-prepared", "https://github.com/example/parent.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := publicationTargetFingerprint(repo.UpstreamURL)
+	if err := d.PrepareRunPublicationTargetAttempt(run.ID, "upstream", fingerprint, "refs/heads/feature"); err != nil {
+		t.Fatalf("prepare PR attempt: %v", err)
+	}
+	if err := d.ValidateRunPublicationTargetLedger(run.ID); err == nil {
+		t.Fatal("prepared PR target passed unpublished ledger validation")
 	}
 }
 

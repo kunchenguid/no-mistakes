@@ -536,12 +536,12 @@ func (d *DB) UpdateRunPRURLForTarget(id, prURL, targetKind, targetFingerprint st
 	}
 	defer tx.Rollback()
 	var state, currentKind, currentIdentity string
-	if err := tx.QueryRow(`SELECT state, target_kind, COALESCE(request_identity, '') FROM run_publication_targets WHERE run_id = ? AND target_fingerprint = ?`, id, targetFingerprint).Scan(&state, &currentKind, &currentIdentity); err == sql.ErrNoRows {
+	if err := tx.QueryRow(`SELECT pr_state, target_kind, COALESCE(pr_request_identity, '') FROM run_publication_targets WHERE run_id = ? AND target_fingerprint = ?`, id, targetFingerprint).Scan(&state, &currentKind, &currentIdentity); err == sql.ErrNoRows {
 		return ErrRunPublicationCAS
 	} else if err != nil {
 		return fmt.Errorf("read run PR target: %w", err)
 	}
-	if state == PublicationTargetAmbiguous || currentKind != targetKind || (currentIdentity != "" && currentIdentity != prURL) {
+	if state != PublicationTargetPRNoAttempt && state != PublicationTargetPRPrepared && state != PublicationTargetPROpened || currentKind != targetKind || (currentIdentity != "" && currentIdentity != prURL) {
 		return ErrRunPublicationCAS
 	}
 	ts := now()
@@ -554,8 +554,8 @@ func (d *DB) UpdateRunPRURLForTarget(id, prURL, targetKind, targetFingerprint st
 	} else if rows != 1 {
 		return ErrRunCustodyCAS
 	}
-	if currentIdentity == "" {
-		if _, err := tx.Exec(`UPDATE run_publication_targets SET request_identity = ?, state = CASE WHEN state = ? THEN ? ELSE state END, generation = generation + 1, provenance = ?, updated_at = ? WHERE run_id = ? AND target_fingerprint = ? AND state != ?`, prURL, PublicationTargetNoAttempt, PublicationTargetAttempted, "pipeline-pr", ts, id, targetFingerprint, PublicationTargetAmbiguous); err != nil {
+	if currentIdentity == "" || state != PublicationTargetPROpened {
+		if _, err := tx.Exec(`UPDATE run_publication_targets SET pr_request_identity = ?, pr_state = CASE WHEN pr_state IN (?, ?) THEN ? ELSE pr_state END, pr_generation = pr_generation + 1, pr_provenance = ?, updated_at = ? WHERE run_id = ? AND target_fingerprint = ? AND pr_state != ?`, prURL, PublicationTargetPRNoAttempt, PublicationTargetPRPrepared, PublicationTargetPROpened, "pipeline-pr", ts, id, targetFingerprint, PublicationTargetPRAmbiguous); err != nil {
 			return fmt.Errorf("journal run PR target: %w", err)
 		}
 	}

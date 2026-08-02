@@ -518,8 +518,47 @@ func (m *RunManager) HandleRecover(ctx context.Context, repoID, branch string, k
 		ManagedGateRefFinalize:    m.managedGateRefFinalize(repo.ID, m.paths.RepoDir(repo.ID), ref),
 		ManagedPrivateRefMutation: m.managedPrivateRefMutation,
 		LegacyPublicationProof:    m.legacyPublicationProof,
+		PublicationLedgerValidate: m.validatePublicationLedger,
 	}
 	return service.Recover(ctx, keepLocal), nil
+}
+
+func (m *RunManager) validatePublicationLedger(ctx context.Context, run *db.Run) error {
+	if m == nil || m.db == nil || run == nil {
+		return fmt.Errorf("submission-time publication target ledger is unavailable")
+	}
+	if run.PRURL != nil && strings.TrimSpace(*run.PRURL) != "" || run.LastPushedSHA != nil || run.PublicationAttemptHeadSHA != nil {
+		return fmt.Errorf("legacy publication evidence is present")
+	}
+	if err := m.db.ValidateRunPublicationTargetLedger(run.ID); err != nil {
+		return fmt.Errorf("validate publication target ledger: %w", err)
+	}
+	repo, err := m.db.GetRepo(run.RepoID)
+	if err != nil || repo == nil {
+		return fmt.Errorf("publication target repository is unavailable")
+	}
+	inputs, err := m.publicationTargetInputs(ctx, repo, run.Branch)
+	if err != nil {
+		return fmt.Errorf("enumerate publication targets: %w", err)
+	}
+	recorded, err := m.db.ListRunPublicationTargets(run.ID)
+	if err != nil {
+		return fmt.Errorf("read publication target ledger: %w", err)
+	}
+	byFingerprint := make(map[string]db.PublicationTargetInput, len(inputs))
+	for _, input := range inputs {
+		byFingerprint[input.TargetFingerprint] = input
+	}
+	if len(recorded) != len(inputs) {
+		return fmt.Errorf("publication target set changed")
+	}
+	for _, target := range recorded {
+		input, ok := byFingerprint[target.TargetFingerprint]
+		if !ok || input.TargetKind != target.TargetKind || input.Ref != target.Ref || input.TargetVersion != target.TargetVersion {
+			return fmt.Errorf("publication target set changed")
+		}
+	}
+	return nil
 }
 
 func (m *RunManager) legacyPublicationProof(ctx context.Context, run *db.Run, branch string, targets []string) error {
@@ -576,6 +615,9 @@ func (m *RunManager) recoveryTargetIdentityForRun(ctx context.Context, target st
 	if err != nil {
 		return "", fmt.Errorf("read submission-time publication targets: %w", err)
 	}
+	if err := m.db.ValidateRunPublicationTargetLedger(run.ID); err != nil {
+		return "", fmt.Errorf("validate submission-time publication target ledger: %w", err)
+	}
 	targetSet, err := m.db.GetRunPublicationTargetSet(run.ID)
 	if err != nil {
 		return "", fmt.Errorf("read submission-time publication target set: %w", err)
@@ -606,15 +648,8 @@ func (m *RunManager) recoveryTargetIdentityForRun(ctx context.Context, target st
 			if item.RequestIdentity != "" || item.AttemptHeadSHA != "" {
 				return "", fmt.Errorf("submission-time publication target no-attempt record is inconsistent")
 			}
-		case db.PublicationTargetAttempted:
-		case db.PublicationTargetPublished:
-			if item.RequestIdentity == "" || item.AttemptHeadSHA == "" {
-				return "", fmt.Errorf("submission-time publication target published record is incomplete")
-			}
-		case db.PublicationTargetAmbiguous:
-			return "", fmt.Errorf("submission-time publication target evidence is ambiguous")
 		default:
-			return "", fmt.Errorf("submission-time publication target has unknown state")
+			return "", fmt.Errorf("submission-time publication target has publication evidence")
 		}
 		if _, ok := current[item.TargetFingerprint]; !ok {
 			return "", fmt.Errorf("submission-time publication target is absent from the current target set")
@@ -637,25 +672,6 @@ func (m *RunManager) recoveryTargetIdentityForRun(ctx context.Context, target st
 	if targetRecord == nil || targetRecord.Ref != "refs/heads/"+strings.TrimPrefix(strings.TrimSpace(run.Branch), "refs/heads/") {
 		return "", fmt.Errorf("submission-time publication target ref is not bound to the run branch")
 	}
-	targetURLs := make(map[string]string, len(targets))
-	for _, candidate := range targets {
-		targetURLs[db.PublicationTargetFingerprint(candidate)] = candidate
-	}
-	for fingerprint, item := range byFingerprint {
-		if item.RequestIdentity != "" {
-			candidate := targetURLs[fingerprint]
-			if candidate == "" {
-				return "", fmt.Errorf("submission-time publication identity target is missing")
-			}
-			identity := item.RequestIdentity
-			if _, matchErr := recoveryTargetIdentity(ctx, candidate, &identity); matchErr != nil {
-				return "", fmt.Errorf("submission-time publication identity is bound to the wrong target: %w", matchErr)
-			}
-		}
-		if (item.State == db.PublicationTargetAttempted || item.State == db.PublicationTargetPublished) && item.RequestIdentity == "" {
-			return "", fmt.Errorf("submission-time publication target %s has no durable request identity", fingerprint)
-		}
-	}
 	if run.PRURL != nil && strings.TrimSpace(*run.PRURL) != "" {
 		legacyPRURL := strings.TrimSpace(*run.PRURL)
 		matched := false
@@ -669,7 +685,8 @@ func (m *RunManager) recoveryTargetIdentityForRun(ctx context.Context, target st
 			return "", fmt.Errorf("run PR identity is not bound to a durable publication target")
 		}
 	}
-	return targetRecord.RequestIdentity, nil
+	_ = ctx
+	return "", nil
 }
 
 func validPublicationTargetFingerprint(value string) bool {

@@ -2128,6 +2128,28 @@ func TestRecoverKeepLocalReturnsCustodyForGateObjectOnlyPreservedHead(t *testing
 	}
 }
 
+func TestRecoverRevalidatesPublicationLedgerAtFinalCustodyBoundary(t *testing.T) {
+	f := newRecoverFixture(t, types.RunCancelled)
+	var calls atomic.Int32
+	f.service.PublicationLedgerValidate = func(context.Context, *db.Run) error {
+		if calls.Add(1) == 2 {
+			return errors.New("publication ledger changed before custody CAS")
+		}
+		return nil
+	}
+	f.moveGateBranchToSubmitted()
+	state := f.service.Recover(f.ctx, true)
+	if state.Recovered {
+		t.Fatalf("recovery succeeded after final ledger validation failed: %#v", state)
+	}
+	if calls.Load() < 2 {
+		t.Fatalf("publication ledger validation calls = %d, want at least 2", calls.Load())
+	}
+	if f.custodyReturned() {
+		t.Fatal("custody was stamped after final publication ledger validation failed")
+	}
+}
+
 func TestRecoverRefusesUnjournaledRewrittenGateHead(t *testing.T) {
 	f := newRecoverFixture(t, types.RunCancelled)
 	stateDB, err := sql.Open("sqlite", f.dbPath)

@@ -170,13 +170,8 @@ func TestRecoveryTargetIdentitySeparatesPublicationTargets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity, err := manager.recoveryTargetIdentityForRun(context.Background(), parent, targets, run)
-	if err != nil || identity != prURL {
-		t.Fatalf("parent publication identity = %q, %v; want %q", identity, err, prURL)
-	}
-	identity, err = manager.recoveryTargetIdentityForRun(context.Background(), fork, targets, run)
-	if err != nil || identity != "" {
-		t.Fatalf("fork publication identity = %q, %v; want no PR identity", identity, err)
+	if _, err := manager.recoveryTargetIdentityForRun(context.Background(), parent, targets, run); err == nil {
+		t.Fatal("published PR target passed unpublished recovery validation")
 	}
 }
 

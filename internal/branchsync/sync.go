@@ -144,6 +144,7 @@ type Service struct {
 	ManagedGateRefFinalize    func(context.Context, string, string, func() error, func() error) error
 	ManagedPrivateRefMutation func(context.Context, string, string, string, func(context.Context) error) error
 	LegacyPublicationProof    func(context.Context, *db.Run, string, []string) error
+	PublicationLedgerValidate func(context.Context, *db.Run) error
 
 	beforeApply              func()
 	beforeGateReset          func()
@@ -630,6 +631,9 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if run.LastPushedSHA != nil && run.HeadSHA != ptr(run.LastPushedSHA) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "the mutable run head differs from its exact published head; the publication owner must reconcile the run before custody can be returned; no files or refs were changed")
 	}
+	if err := s.validatePublicationLedger(ctx, run); err != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "the per-target publication ledger is not an exact complete no-attempt record; the publication owner must reconcile it before custody can be returned; no files or refs were changed")
+	}
 	if runHasPublication(run) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "the run has publication provenance; the publication owner must reconcile it before custody can be returned; no files or refs were changed")
 	}
@@ -894,6 +898,9 @@ func (s *Service) reconcileInvalidCustody(ctx context.Context, state State, run 
 	currentRepo, err := s.DB.GetRepo(run.RepoID)
 	if err != nil || currentRepo == nil || runHasPublication(run) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "the invalid custody state has publication or repository ambiguity; custody remains fail-closed and no files or refs were changed")
+	}
+	if err := s.validatePublicationLedger(ctx, run); err != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_publication", "the invalid custody state has an incomplete publication ledger; custody remains fail-closed and no files or refs were changed")
 	}
 	if safety := s.verifyLegacyRunUnpublished(ctx, run, run.Branch, currentRepo); safety != "" {
 		return blockedPlan(state, StatePipelineOwned, safety, "the invalid custody state has no exact unpublished-publication proof; custody remains fail-closed and no files or refs were changed")
@@ -1654,6 +1661,9 @@ func (s *Service) finishRecoverAtGateHead(ctx context.Context, run *db.Run, chan
 		}
 		gateRef := "refs/heads/" + run.Branch
 		stampErr := s.ManagedGateRefFinalize(ctx, gateRef, expectedGateHead, func() error {
+			if err := s.validatePublicationLedger(ctx, run); err != nil {
+				return err
+			}
 			return s.withVerifiedRecoveryAnchor(ctx, run, func() error {
 				if transition != nil {
 					return transition.owner.Complete(ctx, run)
@@ -1793,6 +1803,9 @@ func (s *Service) finishRecoverAtGateHead(ctx context.Context, run *db.Run, chan
 		return state
 	}
 	stampErr := s.withVerifiedRecoveryAnchor(ctx, run, func() error {
+		if err := s.validatePublicationLedger(ctx, run); err != nil {
+			return err
+		}
 		if transition != nil {
 			return transition.owner.Complete(ctx, run)
 		}
@@ -1845,6 +1858,19 @@ func (s *Service) finishRecoverAtGateHead(ctx context.Context, run *db.Run, chan
 	state.Recovered = true
 	state.Changed = changed
 	return state
+}
+
+func (s *Service) validatePublicationLedger(ctx context.Context, run *db.Run) error {
+	if s == nil || s.DB == nil || run == nil {
+		return db.ErrRunPublicationCAS
+	}
+	if run.PRURL != nil && strings.TrimSpace(*run.PRURL) != "" || run.LastPushedSHA != nil || run.PublicationAttemptHeadSHA != nil {
+		return db.ErrRunPublicationCAS
+	}
+	if s.PublicationLedgerValidate != nil {
+		return s.PublicationLedgerValidate(ctx, run)
+	}
+	return s.DB.ValidateRunPublicationTargetLedger(run.ID)
 }
 
 func (s *Service) reclaimStampedGateRefLock(lock *custodyLock, run *db.Run) error {
