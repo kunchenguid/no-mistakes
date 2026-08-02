@@ -569,13 +569,17 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if quarantineErr != nil {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the managed gate quarantine journal could not be read; custody was not returned and no files or refs were changed")
 	}
+	movedQuarantinedGateAtSubmitted := false
 	if quarantine != nil {
 		currentQuarantinedHead, currentQuarantinedErr := git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+run.Branch+"^{commit}")
-		if currentQuarantinedErr != nil || db.NormalizeManagedGateHead(currentQuarantinedHead) != db.NormalizeManagedGateHead(quarantine.ExpectedHead) {
+		movedQuarantinedGateAtSubmitted = currentQuarantinedErr == nil && run.SubmittedHeadSHA != nil && state.Local.Branch == run.Branch && state.Local.Head == *run.SubmittedHeadSHA && db.NormalizeManagedGateHead(currentQuarantinedHead) == db.NormalizeManagedGateHead(*run.SubmittedHeadSHA) && db.NormalizeManagedGateHead(currentQuarantinedHead) == db.NormalizeManagedGateHead(quarantine.ObservedHead)
+		if currentQuarantinedErr != nil || (db.NormalizeManagedGateHead(currentQuarantinedHead) != db.NormalizeManagedGateHead(quarantine.ExpectedHead) && !movedQuarantinedGateAtSubmitted) {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_quarantined", fmt.Sprintf("the ordinary gate ref is quarantined after an unbound transition from %s to %s; reconcile it before retrying recovery", quarantine.ExpectedHead, quarantine.ObservedHead))
 		}
-		if err := s.DB.ClearGateRefQuarantine(s.Repo.ID, s.GateDir, "refs/heads/"+run.Branch); err != nil {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the reconciled gate quarantine could not be cleared; custody was not returned and no files or refs were changed")
+		if !movedQuarantinedGateAtSubmitted {
+			if err := s.DB.ClearGateRefQuarantine(s.Repo.ID, s.GateDir, "refs/heads/"+run.Branch); err != nil {
+				return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the reconciled gate quarantine could not be cleared; custody was not returned and no files or refs were changed")
+			}
 		}
 	}
 	if run.TerminalHeadVerifiedAt == nil {
@@ -684,7 +688,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	// custody resumes here: the gate either equals the current kept local head,
 	// or equals the durable run-owned custody marker from the prior CAS.
 	resumedKeepLocal := keepLocal && anchored && (gateHead == local || (custodyHead != "" && gateHead == custodyHead))
-	movedGateAtSubmitted := run.SubmittedHeadSHA != nil && gateHead == local && local == *run.SubmittedHeadSHA
+	movedGateAtSubmitted := movedQuarantinedGateAtSubmitted || (run.SubmittedHeadSHA != nil && gateHead == local && local == *run.SubmittedHeadSHA)
 	if gateHead != preserved && !resumedKeepLocal && !movedGateAtSubmitted {
 		if quarantineErr := s.DB.QuarantineGateRef(s.Repo.ID, s.GateDir, "refs/heads/"+branch, preserved, gateHead, "unbound-or-unexpected-gate-ref"); quarantineErr != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", fmt.Sprintf("the gate branch is at %s instead of %s and the quarantine journal could not be persisted; custody was not returned and no files or refs were changed", gateHead, preserved))
@@ -706,7 +710,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			if err := s.DB.SetManagedGateRefHead(s.Repo.ID, s.GateDir, "refs/heads/"+branch, ptr(run.SubmittedHeadSHA)); err != nil {
 				return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the managed gate head journal could not be initialized; custody was not returned and no files or refs were changed")
 			}
-		} else if db.NormalizeManagedGateHead(managedGateRef.Head) != db.NormalizeManagedGateHead(gateHead) {
+		} else if db.NormalizeManagedGateHead(managedGateRef.Head) != db.NormalizeManagedGateHead(gateHead) && !movedGateAtSubmitted {
 			if err := s.DB.QuarantineGateRef(s.Repo.ID, s.GateDir, "refs/heads/"+branch, managedGateRef.Head, gateHead, "unbound-or-unexpected-gate-ref"); err != nil {
 				return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the managed gate head mismatch could not be quarantined; custody was not returned and no files or refs were changed")
 			}

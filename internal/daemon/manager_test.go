@@ -848,7 +848,26 @@ func TestReceiveCreatesDistinctRunForSameHeadWithDifferentReservation(t *testing
 	gitCmd(t, repo.WorkingPath, "commit", "-m", "alternate")
 	alternateSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
 	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/tmp/alternate")
+	setupSession := "test-receive-session-setup"
+	if err := d.RegisterReceiveSession(repo.ID, gatePath, setupSession, testReceiveCapability); err != nil {
+		t.Fatal(err)
+	}
+	var setupAdmitted ipc.AdmitPushResult
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: preservedSHA, New: alternateSHA, Intent: "setup", ReceiveSessionID: setupSession, ReceiveCapability: testReceiveCapability}, &setupAdmitted); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: setupAdmitted.ReservationID, Ref: ref, Old: preservedSHA, New: alternateSHA, ReceiveSessionID: setupSession, ReceiveCapability: testReceiveCapability}, nil); err != nil {
+		t.Fatalf("setup receive transaction prepared: %v", err)
+	}
 	gitCmd(t, gatePath, "update-ref", ref, alternateSHA, preservedSHA)
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: setupAdmitted.ReservationID, Ref: ref, Old: preservedSHA, New: alternateSHA, ReceiveSessionID: setupSession, ReceiveCapability: testReceiveCapability}, nil); err != nil {
+		t.Fatalf("setup receive transaction committed: %v", err)
+	}
+	var setupResult ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: gatePath, Ref: ref, Old: preservedSHA, New: alternateSHA, Intent: "setup", ReceiveSessionID: setupSession, ReceiveCapability: testReceiveCapability}, &setupResult); err != nil {
+		t.Fatalf("setup push received: %v", err)
+	}
+	waitForRunTerminalState(t, d, setupResult.RunID)
 
 	secondSession := "test-receive-session-second"
 	if err := d.RegisterReceiveSession(repo.ID, gatePath, secondSession, testReceiveCapability); err != nil {

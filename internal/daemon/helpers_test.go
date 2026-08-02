@@ -283,7 +283,7 @@ func setupTestGitRepo(t *testing.T, p *paths.Paths, d *db.DB, repoID string) (*d
 	gitCmd(t, bareDir, "remote", "add", "origin", bareDir)
 
 	// Register repo in DB.
-	repo, err := d.InsertRepoWithID(repoID, workDir, "https://github.com/test/repo", "main")
+	repo, err := d.InsertRepoWithID(repoID, workDir, bareDir, "main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,6 +338,15 @@ func commitTestReceiveWithOptions(t *testing.T, d *db.DB, repoID, gatePath, bran
 	}
 	if err := d.MarkReceiveCommittedForID(reservation.ID, repoID, branch, ref, oldSHA, newSHA); err != nil {
 		t.Fatal(err)
+	}
+	if strings.HasPrefix(ref, "refs/heads/") {
+		managedHead := newSHA
+		if isZeroObjectID(newSHA) {
+			managedHead = ""
+		}
+		if err := d.SetManagedGateRefHead(repoID, gatePath, ref, managedHead); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

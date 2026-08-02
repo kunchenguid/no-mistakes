@@ -355,8 +355,9 @@ type cliRecoverFixture struct {
 // operator worktree sits at the submitted head with no push binding.
 func newCLIRecoverFixture(t *testing.T) cliRecoverFixture {
 	t.Helper()
-	nmHome := filepath.Join(t.TempDir(), "nm-home")
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
+	t.Setenv("NM_TEST_START_DAEMON", "1")
 	root := t.TempDir()
 	remote := filepath.Join(root, "remote.git")
 	cliGit(t, root, "init", "--bare", remote)

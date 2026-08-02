@@ -234,23 +234,115 @@ func (m *RunManager) reconcileManagedGateQuarantine(ctx context.Context, repo *d
 	return nil
 }
 
+// acquireManagedGateGuardLocked returns the live authority while the caller
+// holds managedGateMu. It deliberately does not validate the database head;
+// recovery may need to inspect a quarantined projection before it can prove
+// whether the journal can be advanced.
+func (m *RunManager) acquireManagedGateGuardLocked(repoID, gateDir, ref string) (*branchsync.ManagedGateRefAuthority, bool, error) {
+	key := managedGateGuardKey(repoID, ref)
+	guard := m.managedGateGuards[key]
+	ownedHere := false
+	if guard != nil {
+		if err := guard.Validate(gateDir, ref); err != nil {
+			if invalidateErr := guard.Invalidate(); invalidateErr != nil {
+				return nil, false, fmt.Errorf("invalidate stale managed gate authority: %w", invalidateErr)
+			}
+			delete(m.managedGateGuards, key)
+			guard = nil
+		}
+	}
+	if guard == nil {
+		var err error
+		guard, err = branchsync.AcquireManagedGateRefAuthority(gateDir, ref)
+		if err != nil {
+			return nil, false, err
+		}
+		ownedHere = true
+	}
+	return guard, ownedHere, nil
+}
+
+// reconcileRecoveryManagedGateGuardLocked advances a quarantined managed-head
+// journal only when the live ref is exactly the caller's already-verified old
+// head. The custody service holds the branch and recovery locks while calling
+// this function, so the journal update remains part of that transition.
+func (m *RunManager) reconcileRecoveryManagedGateGuardLocked(repoID, gateDir, ref, expected string, guard *branchsync.ManagedGateRefAuthority) error {
+	current, err := branchsync.ReadManagedGateRefUnderAuthority(guard, gateDir, ref)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(expected) != "" && db.NormalizeManagedGateHead(current) != db.NormalizeManagedGateHead(expected) {
+		return fmt.Errorf("managed gate ref changed from expected %s to %s", expected, current)
+	}
+	quarantine, err := m.db.GetGateRefQuarantine(repoID, gateDir, ref)
+	if err != nil {
+		return err
+	}
+	if quarantine != nil {
+		if db.NormalizeManagedGateHead(current) == db.NormalizeManagedGateHead(quarantine.ExpectedHead) {
+			if err := m.db.ClearGateRefQuarantine(repoID, gateDir, ref); err != nil {
+				return err
+			}
+		} else {
+			if db.NormalizeManagedGateHead(current) != db.NormalizeManagedGateHead(quarantine.ObservedHead) {
+				return fmt.Errorf("quarantined managed gate ref changed from observed %s to %s", quarantine.ObservedHead, current)
+			}
+			managed, managedErr := m.db.GetManagedGateRef(repoID, gateDir, ref)
+			if managedErr != nil {
+				return managedErr
+			}
+			if managed == nil || db.NormalizeManagedGateHead(managed.Head) != db.NormalizeManagedGateHead(quarantine.ExpectedHead) {
+				return fmt.Errorf("quarantined managed gate ref has no matching journaled head")
+			}
+			if err := m.db.SetManagedGateRefHead(repoID, gateDir, ref, current); err != nil {
+				return err
+			}
+			if err := m.db.ClearGateRefQuarantine(repoID, gateDir, ref); err != nil {
+				return err
+			}
+		}
+		key := managedGateGuardKey(repoID, ref)
+		delete(m.managedGateQuarantine, key)
+		delete(m.managedGateQuarantinePersisted, key)
+	}
+	return m.validateManagedGateGuardLocked(repoID, gateDir, ref, guard)
+}
+
 func (m *RunManager) managedGateRefMutation(repoID, gateDir string) func(context.Context, string, string, string, func(string, string) error, func() error) error {
 	return func(ctx context.Context, ref, oldSHA, newSHA string, prepare func(string, string) error, commit func() error) error {
 		m.managedGateMu.Lock()
-		defer m.managedGateMu.Unlock()
-		guard := m.managedGateGuards[managedGateGuardKey(repoID, ref)]
-		if guard == nil {
-			return fmt.Errorf("managed gate authority is unavailable")
+		guard, ownedHere, err := m.acquireManagedGateGuardLocked(repoID, gateDir, ref)
+		if err != nil {
+			m.managedGateMu.Unlock()
+			return err
 		}
-		if err := m.validateManagedGateGuardLocked(repoID, gateDir, ref, guard); err != nil {
+		if err := m.reconcileRecoveryManagedGateGuardLocked(repoID, gateDir, ref, oldSHA, guard); err != nil {
+			if ownedHere {
+				_ = guard.Release()
+			}
+			m.managedGateMu.Unlock()
 			return err
 		}
 		if err := prepare(guard.Path(), guard.Identity()); err != nil {
+			if ownedHere {
+				_ = guard.Release()
+			}
+			m.managedGateMu.Unlock()
 			return err
 		}
 		if err := guard.UpdateRef(ctx, gateDir, ref, oldSHA, newSHA); err != nil {
+			if ownedHere {
+				_ = guard.Release()
+			}
+			m.managedGateMu.Unlock()
 			return err
 		}
+		if ownedHere {
+			m.managedGateGuards[managedGateGuardKey(repoID, ref)] = guard
+		}
+		// Keep the authority file held across commit, but release the Go mutex:
+		// commit re-enters managedGateRefRead.
+		m.managedGateMu.Unlock()
 		return commit()
 	}
 }
@@ -261,15 +353,20 @@ func (m *RunManager) managedGateRefRead(repoID, gateDir, ref string) func(string
 			return "", fmt.Errorf("managed gate authority ref mismatch")
 		}
 		m.managedGateMu.Lock()
-		defer m.managedGateMu.Unlock()
-		guard := m.managedGateGuards[managedGateGuardKey(repoID, ref)]
-		if guard == nil {
-			return "", fmt.Errorf("managed gate authority is unavailable")
-		}
-		if err := m.validateManagedGateGuardLocked(repoID, gateDir, ref, guard); err != nil {
+		guard, ownedHere, err := m.acquireManagedGateGuardLocked(repoID, gateDir, ref)
+		if err != nil {
+			m.managedGateMu.Unlock()
 			return "", err
 		}
-		return branchsync.ReadManagedGateRefUnderAuthority(guard, gateDir, ref)
+		if ownedHere {
+			m.managedGateGuards[managedGateGuardKey(repoID, ref)] = guard
+		}
+		current, readErr := branchsync.ReadManagedGateRefUnderAuthority(guard, gateDir, ref)
+		if readErr != nil && ownedHere {
+			_ = guard.Release()
+		}
+		m.managedGateMu.Unlock()
+		return current, readErr
 	}
 }
 
@@ -279,47 +376,71 @@ func (m *RunManager) managedGateRefFinalize(repoID, gateDir, ref string) func(co
 			return fmt.Errorf("managed gate authority ref mismatch")
 		}
 		m.managedGateMu.Lock()
-		defer m.managedGateMu.Unlock()
-		guard := m.managedGateGuards[managedGateGuardKey(repoID, ref)]
-		if guard == nil {
-			return fmt.Errorf("managed gate authority is unavailable")
+		guard, ownedHere, err := m.acquireManagedGateGuardLocked(repoID, gateDir, ref)
+		if err != nil {
+			m.managedGateMu.Unlock()
+			return err
 		}
-		if err := m.validateManagedGateGuardLocked(repoID, gateDir, ref, guard); err != nil {
+		if err := m.reconcileRecoveryManagedGateGuardLocked(repoID, gateDir, ref, expected, guard); err != nil {
+			if ownedHere {
+				_ = guard.Release()
+			}
+			m.managedGateMu.Unlock()
 			return err
 		}
 		current, err := branchsync.ReadManagedGateRefUnderAuthority(guard, gateDir, ref)
 		if err != nil {
+			if ownedHere {
+				_ = guard.Release()
+			}
+			m.managedGateMu.Unlock()
 			return err
 		}
 		if db.NormalizeManagedGateHead(current) != db.NormalizeManagedGateHead(expected) {
+			if ownedHere {
+				_ = guard.Release()
+			}
+			m.managedGateMu.Unlock()
 			return fmt.Errorf("managed gate ref changed during final custody check")
+		}
+		if ownedHere {
+			m.managedGateGuards[managedGateGuardKey(repoID, ref)] = guard
 		}
 		if err := stamp(); err != nil {
 			if rollbackErr := rollback(); rollbackErr != nil {
+				m.managedGateMu.Unlock()
 				return fmt.Errorf("managed custody stamp failed: %w; rollback failed: %v", err, rollbackErr)
 			}
+			m.managedGateMu.Unlock()
 			return err
 		}
 		if err := m.validateManagedGateGuardLocked(repoID, gateDir, ref, guard); err != nil {
 			if rollbackErr := rollback(); rollbackErr != nil {
+				m.managedGateMu.Unlock()
 				return fmt.Errorf("managed gate authority was lost after custody stamp: %w; rollback failed: %v", err, rollbackErr)
 			}
+			m.managedGateMu.Unlock()
 			return fmt.Errorf("managed gate authority was lost after custody stamp: %w", err)
 		}
 		current, err = branchsync.ReadManagedGateRefUnderAuthority(guard, gateDir, ref)
 		if err != nil {
 			if rollbackErr := rollback(); rollbackErr != nil {
+				m.managedGateMu.Unlock()
 				return fmt.Errorf("managed gate ref could not be re-read after custody stamp: %w; rollback failed: %v", err, rollbackErr)
 			}
+			m.managedGateMu.Unlock()
 			return fmt.Errorf("managed gate ref could not be re-read after custody stamp: %w", err)
 		}
 		if db.NormalizeManagedGateHead(current) != db.NormalizeManagedGateHead(expected) {
 			if rollbackErr := rollback(); rollbackErr != nil {
+				m.managedGateMu.Unlock()
 				return fmt.Errorf("managed gate ref changed after final custody stamp; rollback failed: %v", rollbackErr)
 			}
+			m.managedGateMu.Unlock()
 			return fmt.Errorf("managed gate ref changed after final custody stamp")
 		}
 		_ = ctx
+		m.managedGateMu.Unlock()
 		return nil
 	}
 }
@@ -530,12 +651,6 @@ func (m *RunManager) HandleRecover(ctx context.Context, repoID, branch string, k
 		return branchsync.State{}, fmt.Errorf("invalid recovery branch")
 	}
 	ref := "refs/heads/" + branch
-	if err := m.reconcileManagedGateQuarantine(ctx, repo, ref); err != nil {
-		return branchsync.State{}, fmt.Errorf("reconcile managed gate quarantine for recovery: %w", err)
-	}
-	if err := m.ensureManagedGateGuard(repo, ref); err != nil {
-		return branchsync.State{}, fmt.Errorf("acquire managed gate authority for recovery: %w", err)
-	}
 	service := &branchsync.Service{
 		DB:                        m.db,
 		Repo:                      repo,
