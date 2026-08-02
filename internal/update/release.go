@@ -9,10 +9,30 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"time"
 )
+
+// githubToken reads a GitHub token from the environment, honoring GITHUB_TOKEN
+// before falling back to GH_TOKEN, so requests can authenticate against
+// GitHub's API and avoid the tighter anonymous rate limit.
+func githubToken() string {
+	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+		return token
+	}
+	return os.Getenv("GH_TOKEN")
+}
+
+// applyGitHubAuth sets the Authorization header GitHub's API expects when a
+// token is present in the environment; it leaves the request untouched
+// (anonymous) otherwise.
+func applyGitHubAuth(req *http.Request) {
+	if token := githubToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+}
 
 type releaseAsset struct {
 	Name               string `json:"name"`
@@ -94,6 +114,7 @@ func (u *updater) fetchLatestRelease(ctx context.Context) (*releaseResponse, err
 	if err != nil {
 		return nil, fmt.Errorf("build release request: %w", err)
 	}
+	applyGitHubAuth(req)
 	resp, err := u.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch latest release: %w", err)
@@ -208,6 +229,7 @@ func (u *updater) fetchAllReleases(ctx context.Context) ([]releaseResponse, erro
 	if err != nil {
 		return nil, fmt.Errorf("build releases request: %w", err)
 	}
+	applyGitHubAuth(req)
 	resp, err := u.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch releases: %w", err)
@@ -235,6 +257,7 @@ func (u *updater) fetchTagNames(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build tags request: %w", err)
 	}
+	applyGitHubAuth(req)
 	resp, err := u.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch tags: %w", err)
@@ -270,6 +293,7 @@ func (u *updater) fetchReleaseByTag(ctx context.Context, tag string) (*releaseRe
 	if err != nil {
 		return nil, fmt.Errorf("build release-by-tag request: %w", err)
 	}
+	applyGitHubAuth(req)
 	resp, err := u.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch release for tag %s: %w", tag, err)
@@ -306,6 +330,7 @@ func (u *updater) downloadAsset(ctx context.Context, assetURL string, limit int6
 	if err != nil {
 		return nil, fmt.Errorf("build download request: %w", err)
 	}
+	applyGitHubAuth(req)
 	resp, err := u.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("download asset: %w", err)
