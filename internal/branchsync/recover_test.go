@@ -172,6 +172,8 @@ func (f *recoverFixture) custodyReturned() bool {
 // pipeline_owned, but safety identifies it as recoverable, exposes the run's
 // terminal status, and offers the guarded custody-return action.
 func TestTerminalPrePushRunSurfacesGuardedCustodyRecovery(t *testing.T) {
+	t.Parallel()
+
 	for _, status := range []types.RunStatus{types.RunCancelled, types.RunFailed, types.RunCompleted} {
 		t.Run(string(status), func(t *testing.T) {
 			f := newRecoverFixture(t, status)
@@ -196,6 +198,8 @@ func TestTerminalPrePushRunSurfacesGuardedCustodyRecovery(t *testing.T) {
 // class split: while the run is still active the pre-push block is correct and
 // no custody-return action may be offered.
 func TestActivePrePushRunStaysBlockedWithoutRecovery(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunRunning)
 	state := f.service.InspectCached(f.ctx)
 	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned" {
@@ -225,6 +229,8 @@ func TestActivePrePushRunStaysBlockedWithoutRecovery(t *testing.T) {
 // to the preserved head, stamp custody returned, and leave the branch free for
 // a fresh run.
 func TestRecoverCleanBehindFastForwardsAndReturnsCustody(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	state := f.service.Recover(f.ctx, false)
 	if !state.Recovered || !state.Changed {
@@ -269,6 +275,8 @@ func TestRecoverCleanBehindFastForwardsAndReturnsCustody(t *testing.T) {
 }
 
 func TestRecoverFastForwardRechecksCurrentBranchBeforeMerge(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	f.service.beforeRecoverFastForward = func() {
 		mustRun(t, f.local, "checkout", "-b", "other-clean-branch", f.submitted)
@@ -289,6 +297,8 @@ func TestRecoverFastForwardRechecksCurrentBranchBeforeMerge(t *testing.T) {
 }
 
 func TestRecoverReportsDirtyFinalStateWhenPostMergeHookMutatesWorktree(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	hooks := filepath.Join(f.local, ".git", "hooks")
 	hook := filepath.Join(hooks, "post-merge")
@@ -310,6 +320,8 @@ func TestRecoverReportsDirtyFinalStateWhenPostMergeHookMutatesWorktree(t *testin
 
 // TestRecoverIdempotentAfterSuccess proves a repeated recover is a safe no-op.
 func TestRecoverIdempotentAfterSuccess(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	if first := f.service.Recover(f.ctx, false); !first.Recovered {
 		t.Fatalf("first recover = %#v", first)
@@ -323,6 +335,8 @@ func TestRecoverIdempotentAfterSuccess(t *testing.T) {
 // TestRecoverWorktreeAlreadyAtPreservedHeadReturnsCustodyWithoutMutation
 // covers the equal cell: nothing to reconcile, custody return only.
 func TestRecoverWorktreeAlreadyAtPreservedHeadReturnsCustodyWithoutMutation(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover")
 	mustRun(t, f.local, "merge", "--ff-only", f.preserved)
@@ -344,6 +358,8 @@ func TestRecoverWorktreeAlreadyAtPreservedHeadReturnsCustodyWithoutMutation(t *t
 // TestRecoverLocalAheadOfPreservedHeadReturnsCustodyWithoutMutation covers the
 // ahead cell: the preserved commits are already incorporated locally.
 func TestRecoverLocalAheadOfPreservedHeadReturnsCustodyWithoutMutation(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunFailed)
 	mustRun(t, f.local, "fetch", f.gate, "refs/heads/feature/recover")
 	mustRun(t, f.local, "merge", "--ff-only", f.preserved)
@@ -369,6 +385,8 @@ func TestRecoverLocalAheadOfPreservedHeadReturnsCustodyWithoutMutation(t *testin
 // TestRecoverDirtyWorktreeRefusesWithoutMutation covers the behind+dirty cell:
 // never fast-forward over uncommitted changes; refuse with actionable options.
 func TestRecoverDirtyWorktreeRefusesWithoutMutation(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "dirty\n")
 	state := f.service.Recover(f.ctx, false)
@@ -391,6 +409,8 @@ func TestRecoverDirtyWorktreeRefusesWithoutMutation(t *testing.T) {
 // the explicit choice - custody at the local head, gate reset to it atomically,
 // preserved commits still reachable through the anchor ref.
 func TestRecoverDivergedRefusesButKeepLocalReturnsCustody(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
 	mustRun(t, f.local, "add", "rescope.txt")
@@ -433,6 +453,8 @@ func TestRecoverDivergedRefusesButKeepLocalReturnsCustody(t *testing.T) {
 // the explicit keep-local choice on a dirty worktree: no worktree mutation is
 // needed, so dirtiness must not block it, and the gate follows the kept head.
 func TestRecoverKeepLocalDirtyBehindReturnsCustodyWithoutTouchingWorktree(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "dirty rescope\n")
 	state := f.service.Recover(f.ctx, true)
@@ -457,6 +479,8 @@ func TestRecoverKeepLocalDirtyBehindReturnsCustodyWithoutTouchingWorktree(t *tes
 // whenever the preserved head cannot be verified and anchored - a moved gate
 // branch, a deleted gate branch, or a missing gate.
 func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
+	t.Parallel()
+
 	t.Run("gate branch moved", func(t *testing.T) {
 		f := newRecoverFixture(t, types.RunCancelled)
 		writer := filepath.Join(t.TempDir(), "writer")
@@ -504,6 +528,8 @@ func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 // and the branch classifies as local_ahead against the pushed binding, whose
 // existing run_pipeline guidance publishes the recovered commits.
 func TestRecoverTerminalPostPushRunWithMovedHead(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	// The run pushed the submitted head upstream, then the pipeline moved on.
 	mustRun(t, f.local, "push", f.remote, "refs/heads/feature/recover:refs/heads/feature/recover")
@@ -539,6 +565,8 @@ func TestRecoverTerminalPostPushRunWithMovedHead(t *testing.T) {
 // TestRecoverRefusesWhenNothingIsStranded pins the not-applicable guard: a
 // healthy behind state (successful push binding) must not be recoverable.
 func TestRecoverRefusesWhenNothingIsStranded(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	state := f.service.Recover(f.ctx, false)
 	if state.Recovered || state.Safety != "blocked_recover_not_applicable" {
@@ -613,6 +641,8 @@ func newUnmovedRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixt
 }
 
 func TestCancellationReconcilesCommittedWorktreeHeadBeforeReleaseClassification(t *testing.T) {
+	t.Parallel()
+
 	f := newUnmovedRecoverFixture(t, types.RunCancelled)
 	if err := f.db.UpdateRunStatus(f.run.ID, types.RunPending); err != nil {
 		t.Fatal(err)
@@ -663,6 +693,8 @@ func TestCancellationReconcilesCommittedWorktreeHeadBeforeReleaseClassification(
 }
 
 func TestCancellationReleaseRequiresVerifiedManagedHead(t *testing.T) {
+	t.Parallel()
+
 	for _, tt := range []struct {
 		name       string
 		worktree   bool
@@ -715,6 +747,8 @@ func TestCancellationReleaseRequiresVerifiedManagedHead(t *testing.T) {
 }
 
 func TestSuccessfulSkippedDeliveryReleasesVerifiedUnmovedHead(t *testing.T) {
+	t.Parallel()
+
 	f := newUnmovedRecoverFixture(t, types.RunCancelled)
 	if err := f.db.UpdateRunStatus(f.run.ID, types.RunPending); err != nil {
 		t.Fatal(err)
@@ -758,6 +792,8 @@ func TestSuccessfulSkippedDeliveryReleasesVerifiedUnmovedHead(t *testing.T) {
 }
 
 func TestLegacyTerminalUnmovedRunKeepsRecoverableCustody(t *testing.T) {
+	t.Parallel()
+
 	f := newUnmovedRecoverFixture(t, types.RunCancelled)
 	if err := f.db.UpdateRunStatus(f.run.ID, types.RunCancelled); err != nil {
 		t.Fatal(err)
@@ -778,6 +814,8 @@ func TestLegacyTerminalUnmovedRunKeepsRecoverableCustody(t *testing.T) {
 // ambiguity, and never recoverable pipeline custody (cancellation releases
 // ownership; there is nothing pipeline-created to recover).
 func TestTerminalUnmovedPrePushRunReportsUserOwnedRelease(t *testing.T) {
+	t.Parallel()
+
 	for _, status := range []types.RunStatus{types.RunCancelled, types.RunFailed} {
 		t.Run(string(status), func(t *testing.T) {
 			f := newUnmovedRecoverFixture(t, status)
@@ -811,6 +849,8 @@ func TestTerminalUnmovedPrePushRunReportsUserOwnedRelease(t *testing.T) {
 // of the unmoved shape: while the run is active the branch is pipeline-owned
 // with a precise reason, recovery refuses as run-active, and nothing mutates.
 func TestActiveUnmovedRunBlocksAsPipelineOwnedWithoutRecovery(t *testing.T) {
+	t.Parallel()
+
 	f := newUnmovedRecoverFixture(t, types.RunRunning)
 	state := f.service.InspectCached(f.ctx)
 	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned" {
@@ -861,6 +901,8 @@ func assertReleasedNoOpRecover(t *testing.T, f *recoverFixture, keepLocal bool, 
 // TestRecoverOnReleasedBranchIsIdempotentNoOp: cancellation already released
 // the branch, so recovery has nothing to do and repeating it changes nothing.
 func TestRecoverOnReleasedBranchIsIdempotentNoOp(t *testing.T) {
+	t.Parallel()
+
 	f := newUnmovedRecoverFixture(t, types.RunCancelled)
 	assertReleasedNoOpRecover(t, f, false, f.submitted)
 	assertReleasedNoOpRecover(t, f, false, f.submitted)
@@ -871,6 +913,8 @@ func TestRecoverOnReleasedBranchIsIdempotentNoOp(t *testing.T) {
 // stays user_owned with the dirt exposed as a fact, and recovery leaves every
 // byte alone.
 func TestReleasedBranchWithDirtyDirectPRWorkStaysUserOwnedUntouched(t *testing.T) {
+	t.Parallel()
+
 	f := newUnmovedRecoverFixture(t, types.RunCancelled)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "direct-pr edit\n")
 	state := f.service.InspectCached(f.ctx)
@@ -888,6 +932,8 @@ func TestReleasedBranchWithDirtyDirectPRWorkStaysUserOwnedUntouched(t *testing.T
 // hold: an out-of-band gate mutation neither leaks into the worktree nor gets
 // rewritten, and the branch stays user-owned.
 func TestReleasedBranchIgnoresHiddenManagedCopyTip(t *testing.T) {
+	t.Parallel()
+
 	f := newUnmovedRecoverFixture(t, types.RunCancelled)
 	writer := filepath.Join(t.TempDir(), "writer")
 	mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
@@ -914,6 +960,8 @@ func TestReleasedBranchIgnoresHiddenManagedCopyTip(t *testing.T) {
 // rewriting it is their own action, and no recovery path may "correct" it by
 // moving the worktree or the gate, clean, dirty, or with --keep-local.
 func TestReleasedBranchAfterUserResetOrDivergenceStaysUserOwned(t *testing.T) {
+	t.Parallel()
+
 	t.Run("reset behind clean", func(t *testing.T) {
 		f := newUnmovedRecoverFixture(t, types.RunCancelled)
 		mustRun(t, f.local, "reset", "--hard", f.base)
@@ -949,6 +997,8 @@ func TestReleasedBranchAfterUserResetOrDivergenceStaysUserOwned(t *testing.T) {
 // binding governs, and the stranded older run can never steal selection or be
 // recovered underneath them.
 func TestUnmovedRunSelectionPrefersNewerAuthoritativeRuns(t *testing.T) {
+	t.Parallel()
+
 	t.Run("newer active run wins", func(t *testing.T) {
 		f := newUnmovedRecoverFixture(t, types.RunCancelled)
 		time.Sleep(1100 * time.Millisecond)
@@ -998,6 +1048,8 @@ func TestUnmovedRunSelectionPrefersNewerAuthoritativeRuns(t *testing.T) {
 // branch and a detached HEAD keep their precise refusals, and neither path can
 // stamp custody on the stranded run.
 func TestUnmovedRunWrongContextsStayRefusedWithoutStamp(t *testing.T) {
+	t.Parallel()
+
 	t.Run("different branch", func(t *testing.T) {
 		f := newUnmovedRecoverFixture(t, types.RunCancelled)
 		mustRun(t, f.local, "checkout", "-b", "feature/other")
@@ -1034,6 +1086,8 @@ func TestUnmovedRunWrongContextsStayRefusedWithoutStamp(t *testing.T) {
 // atomic compare-and-swap, so a racing push to the gate wins and recovery
 // refuses instead of clobbering the newer gate head.
 func TestRecoverConcurrentGatePushLosesCleanly(t *testing.T) {
+	t.Parallel()
+
 	f := newRecoverFixture(t, types.RunCancelled)
 	mustWrite(t, filepath.Join(f.local, "rescope.txt"), "rescope\n")
 	mustRun(t, f.local, "add", "rescope.txt")

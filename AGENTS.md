@@ -120,6 +120,8 @@ Safest local verification sequence after non-trivial changes:
 - Packages whose tests can start a daemon or touch ambient state (`cmd/no-mistakes`, `internal/cli`, `internal/update`) use a package-wide `TestMain` that points `NM_HOME` and `HOME` at fresh temp dirs and disables telemetry/update-check env vars, so a full test run never touches a real `~/.no-mistakes`. Follow the same pattern in new such packages.
 - `paths.New()` refuses the default `~/.no-mistakes` root under `go test`; tests that touch app state must set `NM_HOME` to a temp dir, and only the production-default path test may opt in with `NO_MISTAKES_ALLOW_DEFAULT_ROOT_IN_TESTS=1`.
 - Isolate filesystem and environment state with `t.TempDir()` and `t.Setenv()`.
+- The Windows CI leg is process-spawn bound, not compute bound: git-backed packages cost roughly 10x their Linux time (`internal/git` 5.7s -> 53s, `internal/branchsync` 31s -> 415s), so the job's wall floor is the slowest single package. Keep long git-heavy packages off the serial critical path (`internal/branchsync` runs `t.Parallel()` for exactly that reason) and keep the Defender scan-exclusion step in `ci.yml`, whose comment owns the rationale. Regressions: `TestCIWorkflow_WindowsTestsRunWithScanExclusions`, `TestCIWorkflow_WindowsHangSurfacesAsGoTimeoutNotJobCancellation`.
+- Go applies an implicit GOOS constraint from a filename suffix, so a test file named `*_windows_test.go` (or `_linux`, `_darwin`) silently compiles only on that platform. Name platform-agnostic tests about Windows something else.
 
 **Repo Config Trust Boundary (security)**
 
