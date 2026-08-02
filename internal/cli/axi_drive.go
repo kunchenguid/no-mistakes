@@ -1031,9 +1031,10 @@ func emitUnconfirmedAbort(cmd *cobra.Command, runID, branch, reason string, last
 // runAxiAbortByRunID cancels a run by its id directly via the daemon, without
 // resolving a repo, branch, or worktree. This is how an orphaned monitor run -
 // one whose worktree was torn down before the PR merged - gets reaped from
-// outside. A run lives only in the running daemon's memory, so if the daemon is
-// not running, or the id is not an active run, there is nothing to cancel and
-// we report a successful no-op (the desired end state is already reached).
+// outside. A stopped daemon is never started: the durable database record then
+// decides whether the exact run is terminal, still nonterminal, or unknown.
+// Likewise, a daemon's no-active-run response is resolved through one bounded
+// durable-state read before this command reports success.
 func runAxiAbortByRunID(cmd *cobra.Command, runID string) error {
 	p, err := paths.New()
 	if err != nil {

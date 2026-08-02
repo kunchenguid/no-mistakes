@@ -839,9 +839,9 @@ func TestAxiRunReportsInvalidGlobalConfig(t *testing.T) {
 }
 
 // TestAxiAbortByRunIDNoOpWhenDaemonStopped covers the abort-by-id path when no
-// daemon is running: a run only exists in a live daemon's memory, so there is
-// nothing to cancel and the command reports a successful no-op without needing
-// a repo or worktree.
+// daemon is running and the durable database proves the requested id is
+// unknown. That exact case remains a successful no-op without needing a repo
+// or worktree.
 func TestAxiAbortByRunIDNoOpWhenDaemonStopped(t *testing.T) {
 	nmHome := t.TempDir()
 	t.Setenv("NM_HOME", nmHome)
