@@ -664,6 +664,93 @@ func TestPushReservationSurvivesOwnershipLockContention(t *testing.T) {
 	}
 }
 
+func TestReceiveTransactionPreparedAllowsGitNativeRefLock(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+	repo, oldSHA := setupTestGitRepo(t, p, d, "prepared-native-ref-lock-repo")
+	gitCmd(t, repo.WorkingPath, "config", "user.email", "test@test.com")
+	gitCmd(t, repo.WorkingPath, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "next.txt"), []byte("next\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "next.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "next")
+	newSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/tmp/next")
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	gatePath := p.RepoDir(repo.ID)
+	ref := "refs/heads/main"
+	var admitted ipc.AdmitPushResult
+	if err := client.Call(ipc.MethodAdmitPush, &ipc.AdmitPushParams{Gate: gatePath, Ref: ref, Old: oldSHA, New: newSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, &admitted); err != nil {
+		t.Fatal(err)
+	}
+
+	nativeLockPath := filepath.Join(gatePath, filepath.FromSlash(ref)+".lock")
+	nativeLock, err := os.OpenFile(nativeLockPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("create Git native ref lock: %v", err)
+	}
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "prepared", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: newSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
+		nativeLock.Close()
+		t.Fatalf("prepared receive transaction under Git lock: %v", err)
+	}
+	if err := nativeLock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(nativeLockPath); err != nil {
+		t.Fatal(err)
+	}
+
+	gitCmd(t, gatePath, "update-ref", ref, newSHA, oldSHA)
+	if err := client.Call(ipc.MethodReceiveTransaction, &ipc.ReceiveTransactionParams{Gate: gatePath, Phase: "committed", ReservationID: admitted.ReservationID, Ref: ref, Old: oldSHA, New: newSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, nil); err != nil {
+		t.Fatalf("committed receive transaction: %v", err)
+	}
+}
+
+func TestPushReceivedReleasesManagedGateAuthorityForActiveRun(t *testing.T) {
+	started := make(chan struct{})
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockSlowStep{name: types.StepReview, started: started}}
+	})
+	repo, oldSHA := setupTestGitRepo(t, p, d, "active-run-managed-ref-repo")
+	gitCmd(t, repo.WorkingPath, "config", "user.email", "test@test.com")
+	gitCmd(t, repo.WorkingPath, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "next.txt"), []byte("next\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "next.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "next")
+	newSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/tmp/next")
+	commitTestReceive(t, d, repo.ID, p.RepoDir(repo.ID), "main", "refs/heads/main", oldSHA, newSHA)
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{Gate: p.RepoDir(repo.ID), Ref: "refs/heads/main", Old: oldSHA, New: newSHA, ReceiveSessionID: testReceiveSessionID, ReceiveCapability: testReceiveCapability}, &result); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("active run did not start")
+	}
+
+	lockPath := filepath.Join(p.RepoDir(repo.ID), filepath.FromSlash("refs/heads/main")+".lock")
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("managed gate authority after active run = %v, want released", err)
+	}
+}
+
 func TestPendingReceiveDoesNotReuseRunBeforeRefMutation(t *testing.T) {
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
 		return []pipeline.Step{&mockPassStep{name: types.StepReview}}

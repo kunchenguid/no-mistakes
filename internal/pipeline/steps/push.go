@@ -132,7 +132,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	}
 
 	if newHeadSHA != "" {
-		if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, newHeadSHA); err != nil {
+		if err := updateLocalBranchRef(sctx, ref, newHeadSHA); err != nil {
 			return nil, fmt.Errorf("update local branch ref: %w", err)
 		}
 	}

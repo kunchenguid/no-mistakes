@@ -149,7 +149,7 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 		return err
 	}
 	ref := normalizedBranchRef(sctx.Run.Branch)
-	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA); err != nil {
+	if err := updateLocalBranchRef(sctx, ref, headSHA); err != nil {
 		return fmt.Errorf("update local branch ref: %w", err)
 	}
 	sctx.Run.HeadSHA = headSHA

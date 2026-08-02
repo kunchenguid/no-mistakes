@@ -141,6 +141,7 @@ type RecoverParams struct {
 	RepoID    string `json:"repo_id"`
 	Branch    string `json:"branch"`
 	KeepLocal bool   `json:"keep_local,omitempty"`
+	WorkDir   string `json:"work_dir,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.

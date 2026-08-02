@@ -64,6 +64,7 @@ type Executor struct {
 
 	gateReconcileInterval time.Duration
 	gateReconcileTimeout  time.Duration
+	updateBranchRef       BranchRefUpdater
 }
 
 // SetSkippedSteps configures steps that should be marked skipped without running.
@@ -76,6 +77,12 @@ func (e *Executor) SetSkippedSteps(steps []types.StepName) {
 	for _, step := range steps {
 		e.skips[step] = true
 	}
+}
+
+// SetBranchRefUpdater supplies the daemon-owned authorization path for
+// pipeline updates to the ordinary branch ref.
+func (e *Executor) SetBranchRefUpdater(updater BranchRefUpdater) {
+	e.updateBranchRef = updater
 }
 
 // NewExecutor creates a pipeline executor.
@@ -701,6 +708,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		IntentSource:     userIntentSource,
 		Sessions:         e.sessions,
 		Shared:           e.shared,
+		UpdateBranchRef:  e.updateBranchRef,
 		Fixing:           state.fixing,
 		PreviousFindings: state.previousFindings,
 		Log:              writeLog,

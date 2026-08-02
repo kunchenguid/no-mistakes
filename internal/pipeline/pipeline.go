@@ -12,6 +12,10 @@ import (
 
 var ErrFatalGateReconciliation = errors.New("fatal gate reconciliation")
 
+// BranchRefUpdater authorizes and applies a pipeline-owned ordinary branch-ref
+// update. Standalone pipeline tests leave it nil and use Git directly.
+type BranchRefUpdater func(context.Context, string, string, string) error
+
 // StepContext provides shared resources to pipeline steps during execution.
 type StepContext struct {
 	Ctx              context.Context
@@ -51,6 +55,9 @@ type StepContext struct {
 	// step in the same run (e.g. the combined document+lint pass).
 	Shared             *RunShared
 	CIReadinessChanged func(ready, declaredNoCI bool)
+	// UpdateBranchRef routes managed gate branch updates through the daemon's
+	// live branch-ownership authority when the pipeline runs in a gate.
+	UpdateBranchRef BranchRefUpdater
 }
 
 // RunAgentSession executes one turn of a durable review-loop role session,

@@ -61,6 +61,9 @@ func publicationCutoff(ctx context.Context, fingerprint string) int64 {
 func publicationCutoffsFromEvidence(evidence map[string]scm.HistoricalPublicationEvidence) (map[string]int64, error) {
 	cutoffs := make(map[string]int64, len(evidence))
 	for fingerprint, proof := range evidence {
+		if strings.TrimSpace(proof.HighWater) == "local-snapshot" {
+			continue
+		}
 		value := strings.TrimPrefix(strings.TrimSpace(proof.HighWater), "provider-date:")
 		cutoff, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || cutoff <= 0 {
@@ -561,6 +564,48 @@ func (m *RunManager) releaseManagedGateGuard(repoID, ref string) error {
 	return nil
 }
 
+func (m *RunManager) pipelineBranchRefUpdater(repo *db.Repo) pipeline.BranchRefUpdater {
+	return func(ctx context.Context, ref, oldSHA, newSHA string) error {
+		if repo == nil || !strings.HasPrefix(ref, "refs/heads/") {
+			return fmt.Errorf("pipeline branch ref update requires an ordinary managed ref")
+		}
+		oldSHA = strings.TrimSpace(oldSHA)
+		newSHA = strings.TrimSpace(newSHA)
+		if oldSHA == "" || newSHA == "" {
+			return fmt.Errorf("pipeline branch ref update requires exact old and new heads")
+		}
+		branch := branchFromRef(ref)
+		lock, err := branchsync.AcquireBranchOwnershipLock(m.paths, repo, repo.WorkingPath, branch)
+		if err != nil {
+			return fmt.Errorf("acquire branch ownership lock for pipeline ref update: %w", err)
+		}
+		defer lock.Release()
+		gateDir := m.paths.RepoDir(repo.ID)
+		capability, authority, err := branchsync.IssueInternalRefMutation(m.db, lock, db.InternalRefMutationSpec{
+			RepoID: repo.ID, GatePath: gateDir, Branch: branch, Ref: ref,
+			OldSHA: oldSHA, NewSHA: newSHA, Operation: "update-ref", Scope: db.InternalRefMutationScopeOrdinary,
+		})
+		if err != nil {
+			return err
+		}
+		mutationCtx := git.WithInternalMutationCapability(ctx, capability)
+		mutationCtx = git.WithInternalMutationOperation(mutationCtx, "update-ref")
+		mutationCtx = git.WithInternalMutationBranch(mutationCtx, branch)
+		mutationCtx = git.WithInternalMutationAuthority(mutationCtx, authority)
+		if _, err := git.Run(mutationCtx, gateDir, "update-ref", ref, newSHA, oldSHA); err != nil {
+			return err
+		}
+		mutation, err := m.db.GetInternalRefMutation(capability)
+		if err != nil {
+			return err
+		}
+		if mutation.State != db.InternalRefMutationStateConsumed {
+			return fmt.Errorf("pipeline branch ref update was not authorized")
+		}
+		return m.db.AdvanceManagedGateRefHead(repo.ID, gateDir, ref, oldSHA, newSHA)
+	}
+}
+
 func (m *RunManager) restoreManagedGateGuards() error {
 	if m == nil || m.db == nil {
 		return nil
@@ -638,7 +683,7 @@ func (m *RunManager) startupManagedGateRefs(repo *db.Repo) ([]string, error) {
 	return result, nil
 }
 
-func (m *RunManager) HandleRecover(ctx context.Context, repoID, branch string, keepLocal bool) (branchsync.State, error) {
+func (m *RunManager) HandleRecover(ctx context.Context, repoID, branch string, keepLocal bool, requestedWorkDir string) (branchsync.State, error) {
 	repo, err := m.db.GetRepo(strings.TrimSpace(repoID))
 	if err != nil {
 		return branchsync.State{}, fmt.Errorf("get repo: %w", err)
@@ -651,10 +696,22 @@ func (m *RunManager) HandleRecover(ctx context.Context, repoID, branch string, k
 		return branchsync.State{}, fmt.Errorf("invalid recovery branch")
 	}
 	ref := "refs/heads/" + branch
+	workDir := repo.WorkingPath
+	if strings.TrimSpace(requestedWorkDir) != "" {
+		resolved, resolveErr := filepath.Abs(requestedWorkDir)
+		if resolveErr != nil {
+			return branchsync.State{}, fmt.Errorf("resolve recovery worktree: %w", resolveErr)
+		}
+		mainRoot, rootErr := git.FindMainRepoRoot(resolved)
+		if rootErr != nil || !samePath(mainRoot, repo.WorkingPath) {
+			return branchsync.State{}, fmt.Errorf("recovery worktree does not belong to registered repository")
+		}
+		workDir = resolved
+	}
 	service := &branchsync.Service{
 		DB:                        m.db,
 		Repo:                      repo,
-		WorkDir:                   repo.WorkingPath,
+		WorkDir:                   workDir,
 		GateDir:                   m.paths.RepoDir(repo.ID),
 		Paths:                     m.paths,
 		ManagedGateRefMutation:    m.managedGateRefMutation(repo.ID, m.paths.RepoDir(repo.ID)),
@@ -830,11 +887,6 @@ func (m *RunManager) legacyPublicationEvidence(ctx context.Context, run *db.Run,
 		case scm.ProviderGitLab:
 			host := scm.ResolveHost(ctx, target)
 			verifier = gitlab.New(cmdFactory, func() bool { _, err := exec.LookPath("glab"); return err == nil }, host, gitlab.ProjectPath(target))
-		default:
-			return nil, fmt.Errorf("historical publication proof is unavailable for target %s: unsupported provider %s", safeurl.Redact(target), provider)
-		}
-		if verifier == nil {
-			return nil, fmt.Errorf("historical publication proof is unavailable for %s", provider)
 		}
 		if run.CreatedAt <= 0 || run.UpdatedAt < run.CreatedAt {
 			return nil, fmt.Errorf("historical publication proof has no valid run interval")
@@ -842,6 +894,38 @@ func (m *RunManager) legacyPublicationEvidence(ctx context.Context, run *db.Run,
 		targetIdentity, targetRef, identityErr := m.recoveryTargetIdentityForRun(ctx, target, targets, run)
 		if identityErr != nil {
 			return nil, identityErr
+		}
+		targetRecord, ok := recordedByFingerprint[fingerprint]
+		if !ok {
+			return nil, fmt.Errorf("submission-time publication request lineage is unavailable")
+		}
+		if provider == scm.ProviderUnknown {
+			if !isLocalPublicationTarget(target) {
+				return nil, fmt.Errorf("historical publication proof is unavailable for target %s: unsupported provider %s", safeurl.Redact(target), provider)
+			}
+			if targetIdentity != "" {
+				return nil, fmt.Errorf("local publication target has unsupported request identity")
+			}
+			repo, repoErr := m.db.GetRepo(run.RepoID)
+			if repoErr != nil || repo == nil {
+				return nil, fmt.Errorf("local publication proof has no registered repository")
+			}
+			proof, proofErr := m.localPublicationEvidence(ctx, repo.WorkingPath, target, targetRef, submitted, publicationLineageRefs(targetRecord.RequestLineage))
+			if proofErr != nil {
+				return nil, proofErr
+			}
+			actualRefs := append([]string(nil), proof.RequestRefs...)
+			sort.Strings(actualRefs)
+			expectedRefs := publicationLineageRefs(targetRecord.RequestLineage)
+			sort.Strings(expectedRefs)
+			if !equalStrings(expectedRefs, actualRefs) {
+				return nil, fmt.Errorf("submission-time publication request lineage changed")
+			}
+			evidence[fingerprint] = proof
+			continue
+		}
+		if verifier == nil {
+			return nil, fmt.Errorf("historical publication proof is unavailable for %s", provider)
 		}
 		targetVerifier, ok := verifier.(scm.HistoricalTargetPublicationVerifier)
 		if !ok {
@@ -866,10 +950,6 @@ func (m *RunManager) legacyPublicationEvidence(ctx context.Context, run *db.Run,
 		if err != nil {
 			return nil, err
 		}
-		targetRecord, ok := recordedByFingerprint[fingerprint]
-		if !ok {
-			return nil, fmt.Errorf("submission-time publication request lineage is unavailable")
-		}
 		actualRefs := append([]string(nil), proof.RequestRefs...)
 		sort.Strings(actualRefs)
 		if strings.TrimSpace(targetRecord.RequestLineage) != "" && targetRecord.RequestLineage != db.PublicationTargetRequestLineageMigrationPending {
@@ -885,6 +965,65 @@ func (m *RunManager) legacyPublicationEvidence(ctx context.Context, run *db.Run,
 		evidence[fingerprint] = proof
 	}
 	return evidence, nil
+}
+
+func isLocalPublicationTarget(target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "." || target == ".." || strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../") {
+		return true
+	}
+	return filepath.IsAbs(target) || strings.HasPrefix(strings.ToLower(target), "file://")
+}
+
+func (m *RunManager) localPublicationEvidence(ctx context.Context, workDir, target, ref, submitted string, requestRefs []string) (scm.HistoricalPublicationEvidence, error) {
+	current, err := git.LsRemote(ctx, workDir, target, ref)
+	if err != nil {
+		return scm.HistoricalPublicationEvidence{}, fmt.Errorf("read local publication branch %s: %s", ref, safeurl.RedactText(err.Error()))
+	}
+	if current != submitted {
+		return scm.HistoricalPublicationEvidence{}, fmt.Errorf("local publication branch %s is %s, want submitted head %s", ref, current, submitted)
+	}
+	for _, requestRef := range requestRefs {
+		requestHead, requestErr := git.LsRemote(ctx, workDir, target, requestRef)
+		if requestErr != nil {
+			return scm.HistoricalPublicationEvidence{}, fmt.Errorf("read local publication ref %s: %s", requestRef, safeurl.RedactText(requestErr.Error()))
+		}
+		if requestHead != submitted {
+			return scm.HistoricalPublicationEvidence{}, fmt.Errorf("local publication ref %s is not the submitted head", requestRef)
+		}
+	}
+	if !localRemotePublicationRefsClean(ctx, workDir, target, submitted) {
+		return scm.HistoricalPublicationEvidence{}, fmt.Errorf("local publication refs are not an exact submitted-head snapshot")
+	}
+	parts := append([]string{target, ref, current}, requestRefs...)
+	hash := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return scm.HistoricalPublicationEvidence{
+		Hash:        hex.EncodeToString(hash[:]),
+		Cursor:      "local-exact-refs",
+		Coverage:    "exact-refs;local-target",
+		HighWater:   "local-snapshot",
+		Complete:    true,
+		RequestRefs: append([]string(nil), requestRefs...),
+	}, nil
+}
+
+func localRemotePublicationRefsClean(ctx context.Context, dir, remote, submitted string) bool {
+	for _, pattern := range []string{"refs/pull/*/head", "refs/merge-requests/*/head", "refs/changes/*"} {
+		out, err := git.Run(ctx, dir, "ls-remote", remote, pattern)
+		if err != nil {
+			return false
+		}
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) != 2 || !reviewObjectID(fields[0]) || strings.TrimSpace(fields[1]) == "" || fields[0] != submitted {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func publicationLineageRefs(value string) []string {
@@ -1446,6 +1585,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	defer ownershipLock.Release()
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
+	executor.SetBranchRefUpdater(m.pipelineBranchRefUpdater(plan.repo))
 	done := make(chan struct{})
 	m.mu.Lock()
 	m.executors[plan.run.ID] = executor
@@ -1803,7 +1943,7 @@ func (m *RunManager) HandleAdmitPushBatch(ctx context.Context, params *ipc.Admit
 		if err != nil {
 			return nil, err
 		}
-		if err := m.verifyManagedGateRefHead(repo, item.update.Ref, current, exists, item.update.Old); err != nil {
+		if err := m.verifyManagedGateRefHead(repo, item.update.Ref, current, exists, item.update.Old, true); err != nil {
 			return nil, err
 		}
 		if !receiveOldMatches(current, exists, item.update.Old) {
@@ -1921,7 +2061,8 @@ func (m *RunManager) HandleReceiveTransactionBatch(ctx context.Context, params *
 				return err
 			}
 		} else {
-			if err := m.verifyManagedGateRefHead(repo, item.update.Ref, current, exists, item.update.Old); err != nil {
+			acquireAuthority := params.Phase != "prepared"
+			if err := m.verifyManagedGateRefHead(repo, item.update.Ref, current, exists, item.update.Old, acquireAuthority); err != nil {
 				return err
 			}
 			if params.Phase == "prepared" {
@@ -2017,7 +2158,7 @@ func (m *RunManager) ensureManagedGateRefAvailable(repo *db.Repo, ref string) er
 	return nil
 }
 
-func (m *RunManager) verifyManagedGateRefHead(repo *db.Repo, ref, current string, exists bool, expectedOld string) error {
+func (m *RunManager) verifyManagedGateRefHead(repo *db.Repo, ref, current string, exists bool, expectedOld string, acquireAuthority bool) error {
 	if repo == nil || !strings.HasPrefix(strings.TrimSpace(ref), "refs/heads/") {
 		return nil
 	}
@@ -2051,6 +2192,9 @@ func (m *RunManager) verifyManagedGateRefHead(repo *db.Repo, ref, current string
 		if err := m.db.SetManagedGateRefHead(repo.ID, m.paths.RepoDir(repo.ID), ref, db.NormalizeManagedGateHead(expectedOld)); err != nil {
 			return err
 		}
+		if !acquireAuthority {
+			return nil
+		}
 		return m.ensureManagedGateGuard(repo, ref)
 	}
 	if db.NormalizeManagedGateHead(managed.Head) != observed {
@@ -2058,6 +2202,9 @@ func (m *RunManager) verifyManagedGateRefHead(repo *db.Repo, ref, current string
 			return err
 		}
 		return fmt.Errorf("managed gate ref %s changed from journaled head %s to %s; the ref was quarantined", ref, managed.Head, observed)
+	}
+	if !acquireAuthority {
+		return nil
 	}
 	return m.ensureManagedGateGuard(repo, ref)
 }
@@ -2167,7 +2314,7 @@ func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo
 	if err != nil {
 		return "", err
 	}
-	if err := m.verifyManagedGateRefHead(repo, reservation.Ref, current, exists, reservation.OldSHA); err != nil {
+	if err := m.verifyManagedGateRefHead(repo, reservation.Ref, current, exists, reservation.OldSHA, true); err != nil {
 		return "", err
 	}
 	if isZeroObjectID(reservation.NewSHA) {
@@ -2194,6 +2341,9 @@ func (m *RunManager) reconcileReceiveReservationLocked(ctx context.Context, repo
 	runID, err := m.startRunWithIntentSourceLocked(ctx, repo, branch, reservation.NewSHA, reservation.OldSHA, "push", reservation.SkipSteps, reservation.Intent, db.RunIntentSourceAgent, lock, reservation.ID)
 	if err != nil {
 		return "", err
+	}
+	if err := m.releaseManagedGateGuard(repo.ID, reservation.Ref); err != nil {
+		return runID, fmt.Errorf("release managed gate authority for active run: %w", err)
 	}
 	if err := completeReservation(runID); err != nil {
 		return runID, err
@@ -2644,6 +2794,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	// Create executor with event broadcast.
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
+	executor.SetBranchRefUpdater(m.pipelineBranchRefUpdater(repo))
 	executor.SetSkippedSteps(skipSteps)
 
 	// Track executor.

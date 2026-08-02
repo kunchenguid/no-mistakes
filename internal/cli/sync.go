@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -124,6 +125,10 @@ func recoverViaDaemon(ctx context.Context, keepLocal bool) (branchsync.State, er
 	if branch == "HEAD" {
 		return branchsync.State{}, fmt.Errorf("not on a branch")
 	}
+	workDir, err := filepath.Abs(".")
+	if err != nil {
+		return branchsync.State{}, fmt.Errorf("resolve invoking worktree: %w", err)
+	}
 	if err := daemon.EnsureDaemon(p); err != nil {
 		return branchsync.State{}, fmt.Errorf("start daemon: %w", err)
 	}
@@ -133,7 +138,7 @@ func recoverViaDaemon(ctx context.Context, keepLocal bool) (branchsync.State, er
 	}
 	defer client.Close()
 	var state branchsync.State
-	if err := client.Call(ipc.MethodRecover, &ipc.RecoverParams{RepoID: repo.ID, Branch: branch, KeepLocal: keepLocal}, &state); err != nil {
+	if err := client.Call(ipc.MethodRecover, &ipc.RecoverParams{RepoID: repo.ID, Branch: branch, KeepLocal: keepLocal, WorkDir: workDir}, &state); err != nil {
 		return branchsync.State{}, fmt.Errorf("recover custody: %w", err)
 	}
 	return state, nil

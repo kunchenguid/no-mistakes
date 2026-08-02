@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -502,7 +503,13 @@ func Run(socketPath string, client *ipc.Client, run *ipc.RunInfo, latestVersion 
 				state.Safety = "blocked_recover_gate_race"
 				return state
 			}
-			if err := client.Call(ipc.MethodRecover, &ipc.RecoverParams{RepoID: run.RepoID, Branch: run.Branch}, &state); err != nil {
+			workDir, err := os.Getwd()
+			if err != nil {
+				state.Error = fmt.Sprintf("resolve recovery worktree: %v", err)
+				state.Safety = "blocked_recover_gate_race"
+				return state
+			}
+			if err := client.Call(ipc.MethodRecover, &ipc.RecoverParams{RepoID: run.RepoID, Branch: run.Branch, WorkDir: workDir}, &state); err != nil {
 				state.Error = err.Error()
 				state.Safety = "blocked_recover_gate_race"
 			}

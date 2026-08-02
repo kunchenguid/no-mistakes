@@ -855,7 +855,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		state, err := mgr.HandleRecover(ctx, p.RepoID, p.Branch, p.KeepLocal)
+		state, err := mgr.HandleRecover(ctx, p.RepoID, p.Branch, p.KeepLocal, p.WorkDir)
 		if err != nil {
 			return nil, err
 		}

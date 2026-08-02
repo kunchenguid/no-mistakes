@@ -779,7 +779,7 @@ func validateRunPublicationEvidenceTx(tx *sql.Tx, expected *Run) error {
 		return ErrRunCustodyCAS
 	}
 	var invalid int
-	if err := tx.QueryRow(`SELECT count(*) FROM run_publication_evidence AS evidence JOIN run_publication_targets AS target ON target.run_id = evidence.run_id AND target.target_fingerprint = evidence.target_fingerprint WHERE evidence.run_id = ? AND (evidence.ref <> target.ref OR evidence.target_version <> target.target_version OR evidence.evidence_hash = '' OR evidence.remote_hash = '' OR evidence.provider_hash = '' OR evidence.cursor = '' OR evidence.cursor NOT LIKE '%audit%' OR evidence.cursor NOT LIKE '%hasNextPage=false%' OR evidence.cursor NOT LIKE '%audit-cutoff=%' OR evidence.cursor NOT LIKE '%provider-date:%' OR evidence.since <= 0 OR evidence.until < evidence.since)`, expected.ID).Scan(&invalid); err != nil || invalid != 0 {
+	if err := tx.QueryRow(`SELECT count(*) FROM run_publication_evidence AS evidence JOIN run_publication_targets AS target ON target.run_id = evidence.run_id AND target.target_fingerprint = evidence.target_fingerprint WHERE evidence.run_id = ? AND (evidence.ref <> target.ref OR evidence.target_version <> target.target_version OR evidence.evidence_hash = '' OR evidence.remote_hash = '' OR evidence.provider_hash = '' OR evidence.cursor = '' OR (evidence.cursor NOT LIKE '%audit%' OR evidence.cursor NOT LIKE '%hasNextPage=false%' OR evidence.cursor NOT LIKE '%audit-cutoff=%' OR evidence.cursor NOT LIKE '%provider-date:%') AND evidence.cursor NOT LIKE 'local-exact-refs|%' OR evidence.since <= 0 OR evidence.until < evidence.since)`, expected.ID).Scan(&invalid); err != nil || invalid != 0 {
 		return ErrRunCustodyCAS
 	}
 	return nil
