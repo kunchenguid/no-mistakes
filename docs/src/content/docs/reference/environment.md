@@ -79,6 +79,28 @@ Alternatively, authenticate the Azure DevOps extension with `az devops login`.
 
 See [Provider Integration](/no-mistakes/guides/provider-integration/#azure-devops).
 
+## `GITHUB_TOKEN`
+
+GitHub token used to authenticate updater release requests.
+
+|         |          |
+| ------- | -------- |
+| Type    | `string` |
+| Default | (none)   |
+
+When set, the updater sends the token as a Bearer authorization header for release metadata requests, including background update checks, and release asset downloads. `GITHUB_TOKEN` takes precedence over `GH_TOKEN`; when neither variable is set, these requests remain anonymous. The token is not printed, logged, or persisted.
+
+## `GH_TOKEN`
+
+Fallback GitHub token used by `no-mistakes update` when `GITHUB_TOKEN` is unset or empty.
+
+|         |          |
+| ------- | -------- |
+| Type    | `string` |
+| Default | (none)   |
+
+See [`GITHUB_TOKEN`](#github_token) for the updater's authentication behavior and precedence.
+
 ## `NO_MISTAKES_NO_UPDATE_CHECK`
 
 Disable background update checks.

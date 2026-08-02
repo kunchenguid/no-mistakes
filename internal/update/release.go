@@ -141,7 +141,7 @@ func (u *updater) fetchLatestRelease(ctx context.Context) (*releaseResponse, err
 }
 
 // fetchLatestReleaseIncludingPrereleases finds the highest-semver release including
-// prereleases. The unauthenticated /releases listing endpoint can lag minutes behind
+// prereleases. GitHub's /releases listing endpoint can lag minutes behind
 // reality at GitHub's edge, so we cross-reference it with /tags (fresher in practice)
 // and fall through to fetching the specific tag's release directly when the listing
 // hasn't caught up yet.
