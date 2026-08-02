@@ -418,7 +418,14 @@ func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Config.CITimeout = 10 * time.Second
+	// This test asserts the checks-passed re-announcement across a CI warning,
+	// and exits by cancelling on the third poll - it never asserts the idle
+	// timeout. A 10s timeout made that exit race real wall-clock time: under
+	// -race a poll costs ~5s, so the timeout fired after two polls and Execute
+	// returned the timeout outcome (nil error) before the cancelling third poll
+	// ever ran. Give the monitor a timeout that cannot fire so the assertion
+	// depends only on the poll sequence.
+	sctx.Config.CITimeout = time.Hour
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -429,6 +436,9 @@ func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
 
 	waits := 0
 	step := &CIStep{
+		// Keep the polls off the real `git fetch` against the placeholder
+		// upstream URL; this test does not exercise timeout re-arming.
+		baseBranchTip: stubBaseBranchTip,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			waits++
 			if waits == 3 {
