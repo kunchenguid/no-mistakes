@@ -71,9 +71,10 @@ type GlobalConfig struct {
 	StepQuietWarning     time.Duration       `yaml:"-"`
 	DaemonConnectTimeout time.Duration       `yaml:"-"`
 	LogLevel             string              `yaml:"log_level"`
-	// SessionReuse controls per-run, per-role agent session reuse in the
-	// review loop (one durable reviewer session across full reviews, a
-	// separate durable fixer session across fix turns). Default true; set
+	// SessionReuse controls per-run agent session reuse in the review loop:
+	// one durable fixer session across review-fix turns. Review turns always
+	// run session-free so the rereview never resumes the session whose
+	// findings prescribed the fixes it certifies. Default true; set
 	// session_reuse: false to force every invocation cold.
 	SessionReuse bool `yaml:"-"`
 	AutoFix      AutoFixRaw
@@ -568,11 +569,10 @@ step_quiet_warning: "10m"
 # connection before failing instead of hanging.
 daemon_connect_timeout: "3s"
 
-# Reuse one durable agent session per run for the review loop: the reviewer
-# keeps a single session across the initial review and every full rereview,
-# and review fixes keep a separate fixer session. Roles never share a session.
-# Supported for claude and codex; other agents run cold. Set false to force
-# every agent invocation cold.
+# Reuse one durable fixer session per run across review-fix turns. Review turns
+# always run session-free so a rereview never resumes the session that prescribed
+# its fixes. Supported for claude and codex; other agents run cold. Set false to
+# force every agent invocation cold.
 session_reuse: true
 
 # Log level for daemon output

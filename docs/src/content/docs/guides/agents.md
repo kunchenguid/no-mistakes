@@ -201,7 +201,8 @@ Five global config fields tune resolution and invocation, and the [Global Config
 
 ## Review session reuse
 
-With the default `session_reuse: true`, Claude and Codex keep one durable reviewer session and a separate review-fixer session per run, every rereview still evaluates the entire branch diff, and resume failures fall back to fresh same-role sessions instead of skipping review.
+With the default `session_reuse: true`, Claude and Codex keep one durable review-fixer session per run, and resume failures fall back to a fresh fixer session instead of skipping the fix turn.
+Review turns always run in fresh, session-free invocations: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them.
 The [`session_reuse` field reference](/no-mistakes/reference/global-config/#session_reuse) owns the exact reuse, fallback, privacy, and restart-recovery semantics.
 
 ## Agent interface
@@ -214,7 +215,7 @@ All agents implement the same interface. Each invocation receives:
 - **JSONSchema** - optional structured output schema for typed responses
 - **OnChunk** - callback for streaming text output to the TUI
 - **OnLifecycle** - callback for native subprocess start, exit, and retry activity that is recorded in step logs and AXI active-step status
-- **Session** - optional no-mistakes-owned native session identity for review-loop reuse
+- **Session** - optional no-mistakes-owned native session identity for review-fixer reuse
 - **Purpose** - local performance label for the pipeline duty served
 
 Each invocation returns:
@@ -255,14 +256,14 @@ Use `intent.disabled_readers` to disable specific transcript sources, or set `in
 ## Claude
 
 Spawns a `claude` subprocess for each invocation with `--output-format stream-json`. The print-mode user prompt is sent as text on stdin rather than placed in the process arguments. By default it also adds `--dangerously-skip-permissions`, unless you already set your own Claude permission flag through `agent_args_override`. Reads JSONL events from stdout. Supports native structured output via `--json-schema`.
-For review-loop reuse, Claude starts a stream-json session and resumes it with `claude -p --resume <id>`.
+For review-fixer reuse, Claude starts a stream-json session and resumes it with `claude -p --resume <id>`.
 
 ## Codex
 
 Spawns a `codex` subprocess for each invocation with `exec --json`. When structured output is requested, no-mistakes also writes a normalized schema file and passes it with `--output-schema`. By default it also adds `--dangerously-bypass-approvals-and-sandbox`, unless you already set your own Codex approval or sandbox flag through `agent_args_override`. Reads JSONL events. Structured output is returned from the final `agent_message` text, with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose, then validates the result against the normalized schema.
 Codex model and config overrides, such as `-m gpt-5.4`, `-c service_tier="priority"`, or `-c model_reasoning_effort="low"`, belong in global `agent_args_override.codex`.
-For review-loop reuse, Codex resumes the reported thread with `codex exec resume <id> <prompt>`.
-That resume command has a narrower flag surface than `codex exec`, so a resume that rejects an override falls back to a fresh same-role session rather than skipping the review turn.
+For review-fixer reuse, Codex resumes the reported thread with `codex exec resume <id> <prompt>`.
+That resume command has a narrower flag surface than `codex exec`, so a resume that rejects an override falls back to a fresh fixer session rather than skipping the fix turn.
 
 ## Rovo Dev
 

@@ -10,12 +10,19 @@ import (
 )
 
 // SessionRole identifies which durable review-loop session an invocation
-// belongs to. The reviewer role spans the initial full review and every full
-// rereview in a run; the fixer role spans every review-fix turn. The two are
-// never mixed, so the reviewer never inherits the fixer's working context.
+// belongs to. The fixer role spans every review-fix turn of a run and is the
+// only role that resumes a session. Review turns deliberately run session-free:
+// a rereview certifies fixes implementing the previous review turn's findings,
+// so resuming any review session would seat the prescriber of those fixes as
+// their certifier and degrade the rereview into checking that its own
+// prescription was implemented.
 type SessionRole string
 
 const (
+	// SessionRoleReviewer is legacy: review turns no longer create or resume
+	// sessions. The constant remains so crash recovery keeps accepting
+	// persisted rows written by earlier versions (see
+	// validateRecoveredSessionProviders); such rows are never resumed.
 	SessionRoleReviewer SessionRole = "reviewer"
 	SessionRoleFixer    SessionRole = "review-fixer"
 )

@@ -43,8 +43,9 @@ type StepContext struct {
 	// authoritative acceptance criteria; an agent name ("claude", "codex", ...)
 	// means it was inferred from a transcript (a hint). Empty when no intent exists.
 	IntentSource string
-	// Sessions manages the run's durable review-loop agent sessions
-	// (reviewer and fixer roles). nil runs every invocation cold.
+	// Sessions manages the run's durable review-fixer session. The session
+	// machinery remains role-generic for legacy recovery; nil runs every
+	// invocation cold.
 	Sessions *RunSessions
 	// Shared carries in-memory run-scoped results one step hands to a later
 	// step in the same run (e.g. the combined document+lint pass).
@@ -57,9 +58,10 @@ type StepContext struct {
 }
 
 // RunAgentSession executes one turn of a durable review-loop role session,
-// running cold when sessions are unavailable. Only the review step's
-// reviewer/fixer turns use this; every other agent invocation goes through
-// sctx.Agent.Run directly and stays session-isolated.
+// running cold when sessions are unavailable. Only the review step's fixer
+// turns use this; every other agent invocation - including every review turn,
+// which must stay independent of the session that prescribed the fixes under
+// review - goes through sctx.Agent.Run directly and stays session-isolated.
 func (sctx *StepContext) RunAgentSession(role SessionRole, opts agent.RunOpts) (*agent.Result, error) {
 	if sctx.Sessions == nil {
 		return sctx.Agent.Run(sctx.Ctx, opts)

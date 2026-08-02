@@ -498,6 +498,9 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 	if err := d.SetRunAwaitingAgent(run.ID); err != nil {
 		t.Fatal(err)
 	}
+	if err := d.UpsertRunAgentSession(run.ID, string(pipeline.SessionRoleReviewer), "codex", "legacy-reviewer-session"); err != nil {
+		t.Fatal(err)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {

@@ -3,10 +3,11 @@ package db
 import "fmt"
 
 // RunAgentSession is the minimum session-resume metadata for one durable
-// per-run, per-role agent session (the review loop's reviewer and fixer
-// roles). Only the adapter-native session identity is stored - never prompts,
+// per-run, per-role agent session. Production resumes only the review-fixer
+// role; legacy reviewer rows remain readable for crash recovery but are never
+// resumed. Only the adapter-native session identity is stored - never prompts,
 // transcripts, or any conversation content - so the review loop can resume
-// its role sessions across parking and daemon process boundaries.
+// its fixer session across parking and daemon process boundaries.
 type RunAgentSession struct {
 	RunID     string
 	Role      string

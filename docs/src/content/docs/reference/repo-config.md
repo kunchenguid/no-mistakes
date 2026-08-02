@@ -366,13 +366,14 @@ A rerun request returns as soon as the provider accepts it, while the new attemp
 A poll that still reads the exact completion the rerun was requested for has observed nothing new, so the monitor waits for a bounded couple of polls rather than escalating a check it never actually re-ran.
 A provider that accepts a rerun and never publishes it cannot stall the run past that.
 
-A cancelled check that comes back cancelled after its rerun pauses the step for user approval, so the pull request never looks green.
+A cancelled check that no rerun is going to replace pauses the step for user approval when cancellation is the only remaining issue, so the pull request never looks green.
+That is a check that came back cancelled after its rerun, and - at the default budget of `0`, once the budget is spent, or on a provider with no rerun API - the cancellation itself: the provider has already published its conclusion for that check and will not publish another one on its own, so there is nothing left for the monitor to wait for.
 It does not enter the `auto_fix.ci` loop and never consumes an auto-fix attempt: a cancellation is the provider reporting itself, so there is nothing for the fix agent to repair and no reason to let it edit code the provider never tested.
 Answering that gate with `fix` is still honored, and the fix round you asked for is told about the cancelled check alongside any other issue.
 
-Reruns are also skipped, with no change in behavior, when:
+Reruns are skipped when:
 
-- The provider has no rerun API (only GitHub implements one today; GitLab, Bitbucket Cloud, and Azure DevOps escalate as before).
+- The provider has no rerun API (only GitHub implements one today; GitLab, Bitbucket Cloud, and Azure DevOps reach the approval gate without a rerun).
 - The check's details link names nothing the provider can re-run, for example a third-party status pointing at an external dashboard, or a link under a workflow run that names no job the API accepts. A link naming one job re-runs that job; a link naming only the workflow run re-runs that run's failed jobs; an unrecognized link is widened into neither.
 - The published branch head no longer equals the commit the run delivered. That case terminates with the expected and observed commits instead: re-running checks against a different head would certify a revision this run never produced. See [pipeline steps: CI](/no-mistakes/reference/pipeline-steps/#ci).
 
