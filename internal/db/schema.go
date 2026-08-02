@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS runs (
     last_pushed_at          INTEGER,
     push_generation         INTEGER,
     push_active             INTEGER NOT NULL DEFAULT 0,
+    terminal_head_verified_at INTEGER,
     error                   TEXT,
     awaiting_agent_since INTEGER,
     parked_ms            INTEGER,
@@ -185,6 +186,12 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN intent_score REAL`,
 	`ALTER TABLE runs ADD COLUMN awaiting_agent_since INTEGER`,
 	`ALTER TABLE runs ADD COLUMN parked_ms INTEGER`,
+	// The CI step's per-check rerun budget. It is durable because a run
+	// recovered after a daemon restart would otherwise get a fresh budget and
+	// could issue reruns beyond the documented limit; the reservation is
+	// written before the provider call, so a crash mid-request spends the
+	// budget rather than silently granting a free retry.
+	`ALTER TABLE runs ADD COLUMN ci_rerun_state TEXT`,
 	// Branch synchronization provenance is intentionally nullable. Historical
 	// rows stay unbound because mutable head_sha cannot prove a successful push.
 	`ALTER TABLE runs ADD COLUMN submitted_head_sha TEXT`,
@@ -198,6 +205,7 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN last_pushed_at INTEGER`,
 	`ALTER TABLE runs ADD COLUMN push_generation INTEGER`,
 	`ALTER TABLE runs ADD COLUMN push_active INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE runs ADD COLUMN terminal_head_verified_at INTEGER`,
 	`ALTER TABLE runs ADD COLUMN pr_state TEXT`,
 	`ALTER TABLE runs ADD COLUMN pr_state_observed_at INTEGER`,
 	`ALTER TABLE runs ADD COLUMN ci_ready_at INTEGER`,

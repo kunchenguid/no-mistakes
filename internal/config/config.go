@@ -44,6 +44,19 @@ const (
 	// Any non-positive ci_timeout, or the keywords "unlimited", "none",
 	// "off", and "never", resolves to this.
 	CITimeoutUnlimited = time.Duration(-1)
+	// DefaultCIRerunTransient is the per-check rerun budget the CI step uses
+	// when ci.rerun_transient is unset. It is 0 because GitHub's CANCELLED
+	// conclusion does not carry a cause: the same value covers a provider
+	// aborting its own infrastructure, a maintainer stopping a runaway or
+	// unsafe job, and repository concurrency with cancel-in-progress. Until a
+	// reliable cause signal exists, restarting on that ambiguity risks
+	// re-running work a person deliberately stopped, so rerunning cancelled
+	// checks is an explicit opt-in rather than a default.
+	DefaultCIRerunTransient = 0
+	// MaxCIRerunTransient caps ci.rerun_transient. Reruns are cheap compared
+	// with an agent round, but they are not free: each one keeps the monitor
+	// polling the same commit, so the budget stays small by construction.
+	MaxCIRerunTransient = 5
 )
 
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
@@ -64,9 +77,14 @@ type GlobalConfig struct {
 	// session_reuse: false to force every invocation cold.
 	SessionReuse bool `yaml:"-"`
 	AutoFix      AutoFixRaw
-	Commit       CommitRaw
-	Intent       IntentRaw
-	Test         TestRaw
+	// CI is the operator's own CI-step floor. It is the only place the rerun
+	// budget can be set for a repository whose default branch this machine's
+	// user does not control (the common case when contributing to someone
+	// else's project), and a trusted repo value still wins over it.
+	CI     CIRaw
+	Commit CommitRaw
+	Intent IntentRaw
+	Test   TestRaw
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -83,6 +101,7 @@ type globalConfigRaw struct {
 	LogLevel             string              `yaml:"log_level"`
 	SessionReuse         *bool               `yaml:"session_reuse"`
 	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
+	CI                   CIRaw               `yaml:"ci"`
 	Commit               CommitRaw           `yaml:"commit"`
 	Intent               IntentRaw           `yaml:"intent"`
 	Test                 TestRaw             `yaml:"test"`
@@ -102,6 +121,7 @@ type RepoConfig struct {
 	// the pushed branch controls nothing that executes.
 	AllowRepoCommands bool       `yaml:"allow_repo_commands"`
 	AutoFix           AutoFixRaw `yaml:"auto_fix"`
+	CI                CIRaw      `yaml:"ci"`
 	Commit            CommitRaw  `yaml:"commit"`
 	Intent            IntentRaw  `yaml:"intent"`
 	Test              TestRaw    `yaml:"test"`
@@ -274,6 +294,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		IgnorePatterns         []string    `yaml:"ignore_patterns"`
 		AllowRepoCommands      bool        `yaml:"allow_repo_commands"`
 		AutoFix                AutoFixRaw  `yaml:"auto_fix"`
+		CI                     CIRaw       `yaml:"ci"`
 		Commit                 CommitRaw   `yaml:"commit"`
 		Intent                 IntentRaw   `yaml:"intent"`
 		Test                   TestRaw     `yaml:"test"`
@@ -292,6 +313,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.IgnorePatterns = raw.IgnorePatterns
 	c.AllowRepoCommands = raw.AllowRepoCommands
 	c.AutoFix = raw.AutoFix
+	c.CI = raw.CI
 	c.Commit = raw.Commit
 	c.Intent = raw.Intent
 	c.Test = raw.Test
@@ -321,6 +343,22 @@ type AutoFixRaw struct {
 	Rebase   *int `yaml:"rebase"`
 }
 
+// CIRaw is the YAML representation of CI-step settings.
+// Pointer fields distinguish "not set" (nil) from "set to 0" (disabled).
+type CIRaw struct {
+	RerunTransient *int `yaml:"rerun_transient"`
+}
+
+// CI holds the resolved CI-step settings.
+type CI struct {
+	// RerunTransient is how many times the CI step may re-run a single check
+	// the provider reported as cancelled - the one terminal outcome it
+	// attributes to itself rather than to the job - before that check reaches
+	// an approval gate. 0 disables reruns and restores the behavior of
+	// escalating every failure on sight.
+	RerunTransient int
+}
+
 // AutoFix holds resolved per-step auto-fix attempt limits.
 // A value of 0 means auto-fix is disabled (requires manual approval).
 type AutoFix struct {
@@ -347,6 +385,7 @@ type Config struct {
 	Commands             Commands
 	IgnorePatterns       []string
 	AutoFix              AutoFix
+	CI                   CI
 	Commit               Commit
 	Intent               Intent
 	Test                 Test
@@ -565,6 +604,17 @@ auto_fix:
   review: 0
   document: 3
   ci: 3
+
+# How many times the CI step may re-run a single check the provider reported as
+# cancelled before that check reaches an approval gate instead of the fix agent.
+# Defaults to 0: a cancelled conclusion does not identify who cancelled, so a
+# rerun can restart a job a maintainer or a concurrency rule stopped on purpose.
+# Raise this only for repositories whose cancellations are known to be
+# provider-side. Each rerun is another workflow run billed to the repository
+# being contributed to. A repository that sets ci.rerun_transient on its own
+# default branch overrides this value.
+ci:
+  rerun_transient: 0
 
 # Auto-fix commit subject template. Available variables: {{.Step}} and {{.Summary}}.
 # Repo config may override this value.
@@ -1145,6 +1195,7 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 		raw.AutoFix.CI = raw.AutoFix.Babysit
 	}
 	cfg.AutoFix = raw.AutoFix
+	cfg.CI = raw.CI
 	cfg.Commit = raw.Commit
 	cfg.Intent = raw.Intent
 	cfg.Test = raw.Test
@@ -1298,8 +1349,11 @@ func validatePathInstructionGlob(pattern string) error {
 // pushed branch must not steer the reviewer that gates it. DisableProjectSettings
 // is also trusted-only so a pushed branch cannot enable or defeat the gate-agent
 // project-instruction boundary. NoCI is trusted-only so a pushed branch cannot
-// self-declare no-CI and bypass its own checks. All four ignore allowRepoCommands,
-// which scopes only the code-executing selection fields. When allowRepoCommands is
+// self-declare no-CI and bypass its own checks, and CI (the transient-rerun
+// budget) is trusted-only because every rerun it authorizes is another
+// provider-side workflow run billed to the repository. All five ignore
+// allowRepoCommands, which scopes only the code-executing selection fields.
+// When allowRepoCommands is
 // true the maintainer has explicitly opted in (via allow_repo_commands on the
 // TRUSTED default-branch copy) to honoring the pushed branch's commands and
 // agent selection.
@@ -1311,7 +1365,7 @@ func validatePathInstructionGlob(pattern string) error {
 //
 // Non-executing fields (ignore patterns, auto-fix, commit, intent, test) are
 // always taken from the pushed copy, matching prior behavior, since they cannot
-// run arbitrary shell or select a process.
+// run arbitrary shell, select a process, or spend the maintainer's CI minutes.
 func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *RepoConfig {
 	if pushed == nil {
 		pushed = &RepoConfig{}
@@ -1336,11 +1390,17 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// default-branch copy so a pushed branch cannot self-declare no-CI and
 		// bypass checks that the default branch still expects.
 		effective.NoCI = trusted.NoCI
+		// ci.rerun_transient spends the maintainer's resources rather than the
+		// contributor's: every rerun is another provider-side workflow run
+		// billed to the repository. It is trusted-only for that reason, so a
+		// pushed branch cannot raise its own rerun budget to the cap.
+		effective.CI = trusted.CI
 	} else {
 		effective.Document = DocumentRaw{}
 		effective.Review = ReviewRaw{}
 		effective.DisableProjectSettings = false
 		effective.NoCI = false
+		effective.CI = CIRaw{}
 	}
 	if allowRepoCommands {
 		return &effective
@@ -1440,6 +1500,26 @@ func autoFixDefaults() AutoFix {
 	}
 }
 
+// ciDefaults returns the default CI-step settings. Rerunning cancelled checks
+// is off by default: a CANCELLED conclusion does not say who cancelled, so the
+// safe baseline is to escalate rather than risk restarting a job a maintainer
+// or a concurrency rule deliberately stopped. Repositories that know their
+// cancellations are provider-side opt in via ci.rerun_transient.
+func ciDefaults() CI {
+	return CI{RerunTransient: DefaultCIRerunTransient}
+}
+
+// applyCIOverrides applies non-nil raw values onto resolved defaults, clamping
+// the rerun budget into range: a negative value disables reruns rather than
+// inverting the bound, and anything above MaxCIRerunTransient is capped so a
+// typo cannot keep a run polling one commit indefinitely.
+func applyCIOverrides(dst *CI, src *CIRaw) {
+	if src.RerunTransient == nil {
+		return
+	}
+	dst.RerunTransient = min(max(*src.RerunTransient, 0), MaxCIRerunTransient)
+}
+
 // applyAutoFixOverrides applies non-nil raw values onto resolved defaults.
 func applyAutoFixOverrides(dst *AutoFix, src *AutoFixRaw) {
 	if src.Lint != nil {
@@ -1491,6 +1571,14 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	applyAutoFixOverrides(&af, &global.AutoFix)
 	applyAutoFixOverrides(&af, &repo.AutoFix)
 
+	ci := ciDefaults()
+	// The operator's global value is a machine-wide floor they can always set;
+	// the repo value is trusted-only (EffectiveRepoConfig sourced it from the
+	// default branch), so the maintainer of the repository still has the last
+	// word on how many workflow runs their project is billed for.
+	applyCIOverrides(&ci, &global.CI)
+	applyCIOverrides(&ci, &repo.CI)
+
 	intent := intentDefaults()
 	applyIntentOverrides(&intent, &global.Intent)
 	applyIntentOverrides(&intent, &repo.Intent)
@@ -1521,6 +1609,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Commands:             repo.Commands,
 		IgnorePatterns:       repo.IgnorePatterns,
 		AutoFix:              af,
+		CI:                   ci,
 		Commit:               commit,
 		Intent:               intent,
 		Test:                 test,

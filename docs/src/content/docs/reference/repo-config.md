@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, and `no_ci` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, `no_ci`, and `ci.rerun_transient` only from that trusted copy.
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
@@ -63,6 +63,10 @@ auto_fix:
   document: 3
   lint: 5
   ci: 3
+
+# Read only from the trusted default branch: each rerun is another workflow run.
+ci:
+  rerun_transient: 0
 
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
@@ -326,6 +330,51 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 `auto_fix.ci` covers the CI step's CI failure and merge-conflict auto-fix attempts.
 
 Legacy alias: `auto_fix.babysit`.
+
+### ci.rerun_transient
+
+How many times the CI step may re-run a single check the provider reported as cancelled before that check reaches an approval gate.
+
+| | |
+|---|---|
+| Type | `int` |
+| Default | `0` |
+| Range | `0` to `5`; values outside it are clamped |
+| Trust | Read only from the trusted default branch |
+
+Every rerun this budget authorizes is another provider-side workflow run billed to the repository, so the value is read only from the trusted default-branch copy of this file, exactly like `document.instructions` and `disable_project_settings`.
+A pushed branch cannot raise its own rerun budget.
+The default is `0` because a cancelled conclusion does not identify its cause: the same value covers the provider aborting its own infrastructure, a maintainer stopping a runaway or unsafe job, and repository concurrency with `cancel-in-progress`.
+Rerunning on that ambiguity can restart work someone deliberately stopped, so raise this only for a repository whose cancellations are known to be provider-side.
+
+With no trusted copy of this file, the operator's own [`ci.rerun_transient`](/no-mistakes/reference/global-config/#cirerun_transient) applies, then the built-in default.
+A value set here always wins over the global one, so the maintainer of the repository has the last word on how many workflow runs their project is billed for.
+
+A rerun is requested only when the provider itself reported the outcome as `cancelled`, which is the one terminal outcome it attributes to itself rather than to the job:
+
+- `failure`, `error`, `action_required`, and `startup_failure` are the job's own verdict on the commit, so they escalate on the first failure with no added latency.
+- `timed_out` means the job exceeded its own `timeout-minutes`, which is usually the branch's own code hanging. Re-running it burns another full timeout window reproducing the same failure, so it is treated as a genuine failure and is not opt-in.
+- `stale` is already treated as skipped rather than failed, so it never reaches this decision.
+- An outcome no-mistakes recognizes as none of the above never earns a rerun either.
+
+A single non-cancelled failure, or a merge conflict, suppresses the rerun for that poll: the fix agent is needed regardless, and no rerun can clear a merge conflict.
+
+The budget is per check per run and is spent when the rerun is requested, so a provider that refuses the request cannot be retried in a loop.
+Check names are not unique on a pull request, so same-named checks share one budget.
+
+A rerun request returns as soon as the provider accepts it, while the new attempt replaces the cancelled check in the status rollup a moment later.
+A poll that still reads the exact completion the rerun was requested for has observed nothing new, so the monitor waits for a bounded couple of polls rather than escalating a check it never actually re-ran.
+A provider that accepts a rerun and never publishes it cannot stall the run past that.
+
+A cancelled check that comes back cancelled after its rerun pauses the step for user approval, so the pull request never looks green.
+It does not enter the `auto_fix.ci` loop and never consumes an auto-fix attempt: a cancellation is the provider reporting itself, so there is nothing for the fix agent to repair and no reason to let it edit code the provider never tested.
+Answering that gate with `fix` is still honored, and the fix round you asked for is told about the cancelled check alongside any other issue.
+
+Reruns are also skipped, with no change in behavior, when:
+
+- The provider has no rerun API (only GitHub implements one today; GitLab, Bitbucket Cloud, and Azure DevOps escalate as before).
+- The check's details link names nothing the provider can re-run, for example a third-party status pointing at an external dashboard, or a link under a workflow run that names no job the API accepts. A link naming one job re-runs that job; a link naming only the workflow run re-runs that run's failed jobs; an unrecognized link is widened into neither.
+- The published branch head no longer equals the commit the run delivered. That case terminates with the expected and observed commits instead: re-running checks against a different head would certify a revision this run never produced. See [pipeline steps: CI](/no-mistakes/reference/pipeline-steps/#ci).
 
 ### commit.fix_message
 

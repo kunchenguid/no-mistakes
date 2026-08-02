@@ -44,6 +44,11 @@ var canonicalBranchSyncPhrases = []string{
 	"recover_custody",
 	"no-mistakes axi sync --recover",
 	"preserved in the local gate",
+	// Cancellation releases a run that never changed the submitted head
+	// (v1.44.2 dogfood catch): every surface must name the released state and
+	// that it needs no recovery.
+	"user_owned",
+	"before changing the submitted head",
 }
 
 const canonicalPipelineAgentPrerequisite = "a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`"

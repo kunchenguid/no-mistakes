@@ -50,6 +50,9 @@ auto_fix:
   lint: 3
   ci: 3
 
+ci:
+  rerun_transient: 0
+
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
 
@@ -311,6 +314,26 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 Legacy alias: `auto_fix.babysit`.
 
 These are global defaults. Per-repo config can override individual steps.
+
+### ci.rerun_transient
+
+How many times the CI step may re-run a single check the provider reported as cancelled before that check reaches an approval gate.
+
+| | |
+|---|---|
+| Type | `int` |
+| Default | `0` |
+| Range | `0` to `5`; values outside it are clamped |
+
+```yaml
+ci:
+  rerun_transient: 0
+```
+
+Each rerun is another provider-side workflow run billed to the repository being contributed to.
+Set `0` here to never spend someone else's CI minutes; this is the only place to make that choice for a repository whose default branch you do not control.
+
+The per-repo [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_transient) overrides this value and owns the classification, the trust boundary, and every case that skips the rerun.
 
 ### commit.fix_message
 

@@ -183,6 +183,119 @@ func TestLoadRepo_AutoFixFromFile(t *testing.T) {
 	}
 }
 
+func TestMerge_CIRerunTransientDefaultsToOnePerCheck(t *testing.T) {
+	cfg := Merge(DefaultGlobalConfig(), &RepoConfig{})
+	if cfg.CI.RerunTransient != DefaultCIRerunTransient {
+		t.Fatalf("ci.rerun_transient = %d, want %d", cfg.CI.RerunTransient, DefaultCIRerunTransient)
+	}
+}
+
+func TestMerge_CIRerunTransientFromRepoConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want int
+	}{
+		{"explicit budget", "ci:\n  rerun_transient: 2\n", 2},
+		{"zero disables reruns", "ci:\n  rerun_transient: 0\n", 0},
+		{"negative disables reruns", "ci:\n  rerun_transient: -3\n", 0},
+		{"above cap is capped", "ci:\n  rerun_transient: 99\n", MaxCIRerunTransient},
+		{"unset keeps the default", "ci: {}\n", DefaultCIRerunTransient},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, ".no-mistakes.yaml"), []byte(tc.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			repo, err := LoadRepo(dir)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			cfg := Merge(DefaultGlobalConfig(), repo)
+			if cfg.CI.RerunTransient != tc.want {
+				t.Fatalf("ci.rerun_transient = %d, want %d", cfg.CI.RerunTransient, tc.want)
+			}
+		})
+	}
+}
+
+// The budget is trusted-only per repository, so contributing to a project whose
+// default branch this operator does not control would otherwise leave them no
+// way to decline spending someone else's CI minutes. The global value is that
+// switch, and a repository that states its own preference still overrides it.
+func TestMerge_CIRerunTransientGlobalOverrideYieldsToTrustedRepoValue(t *testing.T) {
+	globalOff := 0
+	global := DefaultGlobalConfig()
+	global.CI.RerunTransient = &globalOff
+
+	if got := Merge(global, &RepoConfig{}).CI.RerunTransient; got != globalOff {
+		t.Fatalf("ci.rerun_transient with no repo value = %d, want the global %d", got, globalOff)
+	}
+
+	repoBudget := 2
+	repo := &RepoConfig{}
+	repo.CI.RerunTransient = &repoBudget
+	if got := Merge(global, repo).CI.RerunTransient; got != repoBudget {
+		t.Fatalf("ci.rerun_transient = %d, want the trusted repo value %d", got, repoBudget)
+	}
+}
+
+func TestLoadGlobal_CIRerunTransientFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("ci:\n  rerun_transient: 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.CI.RerunTransient == nil {
+		t.Fatal("global ci.rerun_transient override was not loaded")
+	}
+	if *cfg.CI.RerunTransient != 0 {
+		t.Fatalf("global ci.rerun_transient = %d, want 0", *cfg.CI.RerunTransient)
+	}
+}
+
+// Every rerun ci.rerun_transient authorizes is another provider-side workflow
+// run billed to the repository, so the budget is read only from the trusted
+// default-branch copy: a pushed branch must not be able to raise its own.
+func TestEffectiveRepoConfig_CIRerunTransientTrustedOnly(t *testing.T) {
+	pushedBudget := MaxCIRerunTransient
+	trustedBudget := 0
+	pushed := &RepoConfig{}
+	pushed.CI.RerunTransient = &pushedBudget
+	trusted := &RepoConfig{}
+	trusted.CI.RerunTransient = &trustedBudget
+
+	effective := EffectiveRepoConfig(pushed, trusted, false)
+	if effective.CI.RerunTransient == nil || *effective.CI.RerunTransient != trustedBudget {
+		t.Fatalf("ci.rerun_transient = %v, want %d from the trusted copy", effective.CI.RerunTransient, trustedBudget)
+	}
+	if got := Merge(DefaultGlobalConfig(), effective).CI.RerunTransient; got != trustedBudget {
+		t.Fatalf("resolved ci.rerun_transient = %d, want %d", got, trustedBudget)
+	}
+
+	// allow_repo_commands opts in to pushed commands and agent selection, never
+	// to spending the maintainer's CI minutes.
+	optedIn := EffectiveRepoConfig(pushed, trusted, true)
+	if optedIn.CI.RerunTransient == nil || *optedIn.CI.RerunTransient != trustedBudget {
+		t.Fatalf("ci.rerun_transient with allow_repo_commands = %v, want %d", optedIn.CI.RerunTransient, trustedBudget)
+	}
+
+	// No trusted copy means no repository-set budget at all, not the pushed one.
+	withoutTrusted := EffectiveRepoConfig(pushed, nil, false)
+	if withoutTrusted.CI.RerunTransient != nil {
+		t.Fatalf("ci.rerun_transient without a trusted copy = %v, want unset", withoutTrusted.CI.RerunTransient)
+	}
+	if got := Merge(DefaultGlobalConfig(), withoutTrusted).CI.RerunTransient; got != DefaultCIRerunTransient {
+		t.Fatalf("resolved ci.rerun_transient without a trusted copy = %d, want the built-in default %d", got, DefaultCIRerunTransient)
+	}
+}
+
 func TestLoadRepo_ReviewPathInstructions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".no-mistakes.yaml")

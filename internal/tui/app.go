@@ -508,7 +508,8 @@ func tuiRelevantSyncState(state branchsync.State) bool {
 	case branchsync.StatePipelineOwned, branchsync.StatePushInProgress, branchsync.StateBehind,
 		branchsync.StateLocalAhead, branchsync.StateDiverged, branchsync.StateDirty,
 		branchsync.StateMergedRemoteRetained, branchsync.StateMergedRemoteRemoved,
-		branchsync.StateClosed, branchsync.StateTargetChanged, branchsync.StateCustodyReturned:
+		branchsync.StateClosed, branchsync.StateTargetChanged, branchsync.StateCustodyReturned,
+		branchsync.StateUserOwned:
 		return true
 	default:
 		return false

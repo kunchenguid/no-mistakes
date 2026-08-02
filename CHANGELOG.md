@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.45.0](https://github.com/kunchenguid/no-mistakes/compare/v1.44.2...v1.45.0) (2026-08-02)
+
+
+### Features
+
+* **pipeline:** re-run provider-cancelled CI checks before escalating ([#595](https://github.com/kunchenguid/no-mistakes/issues/595)) ([1753783](https://github.com/kunchenguid/no-mistakes/commit/17537830a92de42e0b8c3848bfab8e2301be8923))
+
+
+### Bug Fixes
+
+* **cli:** confirm abort truth before releasing branch custody ([#631](https://github.com/kunchenguid/no-mistakes/issues/631)) ([a93dc8f](https://github.com/kunchenguid/no-mistakes/commit/a93dc8ff6a942d8d69fce97c3afc1bb11bf3fdc6))
+
+## [1.44.2](https://github.com/kunchenguid/no-mistakes/compare/v1.44.1...v1.44.2) (2026-08-01)
+
+
+### Bug Fixes
+
+* **cimonitor:** require trusted no-CI evidence for readiness ([#628](https://github.com/kunchenguid/no-mistakes/issues/628)) ([90885ee](https://github.com/kunchenguid/no-mistakes/commit/90885ee7c8f60b5558a5896414d3f50e759ca5da))
+* **daemon:** preserve run state under event stream pressure ([#626](https://github.com/kunchenguid/no-mistakes/issues/626)) ([58b52ee](https://github.com/kunchenguid/no-mistakes/commit/58b52eeec186466891e902590ee91f56c9b76508))
+
 ## [1.44.1](https://github.com/kunchenguid/no-mistakes/compare/v1.44.0...v1.44.1) (2026-08-01)
 
 

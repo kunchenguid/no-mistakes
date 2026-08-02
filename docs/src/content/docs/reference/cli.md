@@ -185,7 +185,7 @@ no-mistakes axi sync --recover --run <FULL-RUN-ID> --adopt-forward-head <FULL-CO
 | Flag                   | Type     | Default | Description                                                                  |
 | ---------------------- | -------- | ------- | ---------------------------------------------------------------------------- |
 | `--check`              | `bool`   | `false` | Verify the live target and exact plan without changing `HEAD`                |
-| `--recover`            | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits |
+| `--recover`            | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
 | `--keep-local`         | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree    |
 | `--run`                | `string` | (none)  | With `--recover --adopt-forward-head`: exact complete 26-character run ID    |
 | `--adopt-forward-head` | `string` | (none)  | With `--recover --run`: exact lowercase 40- or 64-hex candidate commit ID    |
@@ -193,7 +193,7 @@ no-mistakes axi sync --recover --run <FULL-RUN-ID> --adopt-forward-head <FULL-CO
 The default command is an explicit non-interactive apply request and never prompts.
 Ordinary check, apply, and custody-recovery modes return the complete `branch_sync` object as TOON.
 The paired exact historical-repair mode instead returns its recovery mode, state and safety classification, whether anything changed, whether custody was returned, its current phase, the exact run/repository/branch and commit identities, the candidate anchor, and any refusal reason.
-Exit code `0` means an eligible check, applied synchronization or recovery, already-synchronized or custody-returned no-op, or expected merged-and-removed no-op; blocked operational states return `1`.
+Exit code `0` means an eligible check, applied synchronization or recovery, already-synchronized, custody-returned, or user-owned no-op, or expected merged-and-removed no-op; blocked operational states return `1`.
 The ordinary worktree mutation is either a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA, or an equivalent-diverged advance.
 When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and moves to the pipeline head with reset semantics.
 Genuine divergence still reports `safety: blocked_diverged` and changes nothing.
@@ -205,8 +205,10 @@ Run the ordinary `axi sync` apply mode only when structured output offers `next_
 
 ### Custody recovery
 
-A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head leaves the branch `pipeline_owned` with `safety: blocked_pipeline_owned_recoverable`, the run's terminal `pipeline.status`, and `next_action.code: recover_custody`.
-While the run is still active, the same state stays blocked and reports `next_action.code: continue_active_run` with `no-mistakes axi status`.
+A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head leaves the branch `pipeline_owned` with `safety: blocked_pipeline_owned_recoverable`, the run's terminal `pipeline.status`, the exact `submitted_head`/`current_head`/`relation` ownership facts, and `next_action.code: recover_custody`.
+A run whose terminalization verifies that the managed worktree head never changed from the submitted head releases the branch instead: the terminal outcome, including cancellation, ends ownership; status reports `state: user_owned` with the same exact ownership facts and no `next_action`; the branch and head are immediately usable for any separately authorized delivery; and nothing blocks a direct push or PR.
+Without that positive terminal head evidence, custody stays recoverable rather than being guessed away.
+While a run is still active, it reports `state: pipeline_owned`, the exact submitted/current heads and their relation, and `next_action.code: continue_active_run` with `no-mistakes axi status`, even when its head has not moved yet.
 `--recover` verifies the run is terminal, anchors the preserved head under `refs/no-mistakes/recover/<run>` in the invoking repository, and stamps custody returned so a fresh run can start.
 For equal or ahead worktrees where the preserved head is already locally reachable, recovery writes that anchor locally without gate access.
 For behind or diverged worktrees, recovery verifies the preserved head at the local gate branch and fetches it into the anchor before fast-forwarding only a clean behind worktree or refusing with the anchor named.
@@ -214,6 +216,7 @@ A dirty or diverged worktree refuses with explicit choices.
 When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
 `no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
+On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pipeline-created exists to recover, and no file, ref, or database row changes.
 
 The paired `--run <FULL-RUN-ID> --adopt-forward-head <FULL-COMMIT-ID>` form is a narrower operator-authorized historical repair, not generic descendant adoption. Both flags are required together and only with `--recover`; prefixes, lowercase run IDs, abbreviated SHAs, refs, tags, revision expressions, `--check`, and `--keep-local` are refused. The exact run must be the latest same-branch row, exactly completed with Intent through Lint successful and Push, PR, and CI skipped, with no error, awaiting-agent, publication, or competing active-run state. The invoking registered branch must be uniquely checked out and clean at its exact submitted head, that submitted head must be a strict ancestor of the recorded head, and the recorded head must be a strict ancestor of the explicit candidate. Any recorded review-approved head must also be ancestral to the candidate, and the exact gate branch must equal the candidate. The repair anchors the candidate, records an immutable audit tuple, advances only by strict fast-forward, and returns custody only after the final local, gate, anchor, run, step, and audit proof succeeds.
 
@@ -260,10 +263,12 @@ no-mistakes axi abort --run <id>
 
 `--run` does not need a repo, branch, or worktree, so it works from anywhere.
 Use it to reap an orphaned CI monitor whose worktree was torn down before the PR merged - the run id is shown in `axi run` output and in the `axi` home view.
-Aborting an id that is not an active run is a successful no-op.
+A `--run` id that is not currently active is resolved against the exact run's durable record rather than trusted blindly: a known already-terminal run returns an idempotent success carrying its terminal `run_status` with no fabricated new cancellation, a positively proven unknown id keeps the documented successful no-op with no fabricated state, and a run that is recorded as still nonterminal or cannot be read returns the nonzero terminal-unconfirmed contract.
+When the daemon is not running, nothing can be cancelled and abort never starts one: the durable record alone decides the same three outcomes, and a recorded nonterminal run reports that cancellation could not be requested.
 When the daemon is already running, `axi abort` can cancel an active run even if the global config file has become invalid, because it is not starting a fresh run.
-Branch-scoped abort waits for the cancellation state to persist, then renders the refreshed `branch_sync` object and its exact next action.
-Pipeline-created commits remain preserved in the gate and a recoverable cancellation points directly to `no-mistakes axi sync --recover`.
+Both abort surfaces report a completed cancellation only after the exact run positively confirms a terminal state within the bounded wait; success then includes the terminal `run_status`, and branch-scoped abort renders the refreshed `branch_sync` object and its exact next action, if any.
+When terminal quiescence cannot be confirmed - the bounded wait expires, the wait is cancelled, or a status read fails - abort exits nonzero, states explicitly that cancellation was requested but terminal quiescence is unconfirmed, includes the last structured run state when one is available, and never claims `aborted: true` or presents user-owned or recoverable ownership guidance as authoritative; re-run the abort or watch `axi status --run <id>` until a terminal status is confirmed.
+Pipeline-created commits remain preserved in the gate and a recoverable cancellation points directly to `no-mistakes axi sync --recover`; when the submitted head never moved, cancellation instead reports `state: user_owned` with no sync action.
 While a run is active, do not use `axi abort` or `no-mistakes rerun` to go fix a finding yourself.
 That cancels the pipeline's in-flight work and forces a full re-validation; use `axi respond --action fix` at the gate so the pipeline applies and re-checks the fix.
 
@@ -332,7 +337,7 @@ no-mistakes sync --recover --run <FULL-RUN-ID> --adopt-forward-head <FULL-COMMIT
 | ---------------------- | -------- | ------- | --------------------------------------------------------------- |
 | `--check`              | `bool`   | `false` | Verify and print the fresh plan without changing `HEAD`         |
 | `-y`, `--yes`          | `bool`   | `false` | Apply an eligible guarded synchronization without an interactive prompt |
-| `--recover`            | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits |
+| `--recover`            | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
 | `--keep-local`         | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree |
 | `--run`                | `string` | (none)  | With `--recover --adopt-forward-head`: exact complete 26-character run ID |
 | `--adopt-forward-head` | `string` | (none)  | With `--recover --run`: exact lowercase 40- or 64-hex candidate commit ID |

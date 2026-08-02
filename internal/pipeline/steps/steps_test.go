@@ -355,11 +355,24 @@ func fakeCIGHHandler(args []string) {
 		fmt.Println(checksJSON)
 		os.Exit(0)
 	}
+	if strings.Contains(joined, "run rerun") {
+		fakeCIGHRerun()
+	}
 	if strings.Contains(joined, "run view") {
 		fmt.Println("error log output")
 		os.Exit(0)
 	}
 	os.Exit(1)
+}
+
+// fakeCIGHRerun answers `gh run rerun`, failing when FAKE_CLI_RERUN_ERR asks it
+// to so tests can exercise a provider that refuses the request.
+func fakeCIGHRerun() {
+	if rerunErr := os.Getenv("FAKE_CLI_RERUN_ERR"); rerunErr != "" {
+		fmt.Fprintln(os.Stderr, rerunErr)
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
 
 func fakeCIGHSequenceHandler(args []string) {
@@ -415,6 +428,9 @@ func fakeCIGHSequenceHandler(args []string) {
 		}
 		fmt.Println(entries[index])
 		os.Exit(0)
+	}
+	if strings.Contains(joined, "run rerun") {
+		fakeCIGHRerun()
 	}
 	if strings.Contains(joined, "run view") {
 		fmt.Println("error log output")

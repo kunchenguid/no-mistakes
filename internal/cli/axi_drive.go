@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -27,7 +29,9 @@ const triggerWaitTimeout = 5 * time.Second
 
 // abortStateWaitTimeout bounds the post-cancel wait for the executor to
 // persist its terminal state before AXI renders refreshed custody guidance.
-const abortStateWaitTimeout = 10 * time.Second
+// It is a variable only so regression tests can shorten the bounded wait;
+// production always uses the default.
+var abortStateWaitTimeout = 10 * time.Second
 
 // terminalStatus reports whether a run has reached a final state.
 func terminalStatus(status string) bool {
@@ -265,7 +269,18 @@ func inspectAxiBranchSync(ctx context.Context, env *axiEnv) branchsync.State {
 func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.State {
 	state := inspectAxiBranchSync(ctx, env)
 	switch state.State {
-	case branchsync.StatePipelineOwned, branchsync.StatePushInProgress:
+	case branchsync.StatePipelineOwned:
+		// The ownership block exists to keep a fresh push from discarding
+		// pipeline commits that live only in the gate. An ACTIVE run whose
+		// head has not moved yet holds none, so the pre-existing supersede
+		// flow (push new commits over an in-flight run) stays available; a
+		// terminal unmoved run never reaches here because cancellation
+		// releases the branch as user_owned.
+		if branchsync.RunHeadUnmoved(state) {
+			return nil
+		}
+		return &state
+	case branchsync.StatePushInProgress:
 		return &state
 	default:
 		return nil
@@ -863,11 +878,17 @@ func runAxiAbort(cmd *cobra.Command, runID string) error {
 	}
 
 	if active.Run == nil {
-		// Idempotent: nothing to abort is a successful no-op.
-		emitDoc(cmd,
-			toon.Field{Key: "aborted", Value: false},
-			toon.Field{Key: "detail", Value: "no active run (no-op)"},
-		)
+		// Idempotent: nothing to abort is a successful no-op that still
+		// reports the branch's current structured ownership state, so a
+		// repeated abort returns the same final truth as the aborting call.
+		fields := []toon.Field{
+			{Key: "aborted", Value: false},
+			{Key: "detail", Value: "no active run (no-op)"},
+		}
+		if state := inspectAxiBranchSync(ctx, env); relevantCachedSyncState(state) {
+			fields = append(fields, branchSyncField(state))
+		}
+		emitDoc(cmd, fields...)
 		return nil
 	}
 
@@ -875,11 +896,18 @@ func runAxiAbort(cmd *cobra.Command, runID string) error {
 	if err := env.client.Call(ipc.MethodCancelRun, &ipc.CancelRunParams{RunID: active.Run.ID}, &result); err != nil {
 		return emitError(cmd, 1, fmt.Sprintf("abort run: %v", err))
 	}
-	waitForTerminalRun(ctx, env.client, active.Run.ID, abortStateWaitTimeout)
+	// Success and the final ownership state may only be reported after the
+	// exact run positively confirmed terminal quiescence; anything else exits
+	// nonzero with the unconfirmed contract.
+	final, confirmed, reason := waitForTerminalRun(ctx, env.client, active.Run.ID, abortStateWaitTimeout)
+	if !confirmed {
+		return emitUnconfirmedAbort(cmd, active.Run.ID, active.Run.Branch, reason, runViewPtrFromIPC(final), true)
+	}
 	fields := []toon.Field{
 		toon.Field{Key: "aborted", Value: true},
 		toon.Field{Key: "run", Value: active.Run.ID},
 		toon.Field{Key: "branch", Value: active.Run.Branch},
+		toon.Field{Key: "run_status", Value: string(final.Status)},
 	}
 	state := inspectAxiBranchSync(ctx, env)
 	if state.Pipeline.RunID == active.Run.ID && relevantCachedSyncState(state) {
@@ -888,10 +916,17 @@ func runAxiAbort(cmd *cobra.Command, runID string) error {
 	help := []string{
 		"Run `no-mistakes axi sync --check` before any local follow-up commit - a cancelled run can leave unpublished pipeline commits preserved in the local gate, and the check offers the guarded custody recovery",
 	}
-	if state.Pipeline.RunID == active.Run.ID && state.NextAction != nil {
-		help = []string{
-			"Run `" + state.NextAction.Command + "`",
-			branchSyncAgentGuidance,
+	if state.Pipeline.RunID == active.Run.ID {
+		switch {
+		case state.NextAction != nil:
+			help = []string{
+				"Run `" + state.NextAction.Command + "`",
+				branchSyncAgentGuidance,
+			}
+		case state.State == branchsync.StateUserOwned:
+			help = []string{
+				"Cancellation released this branch: the exact branch and head are yours and immediately usable - no sync action is needed",
+			}
 		}
 	}
 	fields = append(fields,
@@ -901,35 +936,105 @@ func runAxiAbort(cmd *cobra.Command, runID string) error {
 	return nil
 }
 
-func waitForTerminalRun(ctx context.Context, client *ipc.Client, runID string, timeout time.Duration) *ipc.RunInfo {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+// waitForTerminalRun polls until the exact run reports a terminal status.
+// confirmed is true only when a fresh read positively proved terminal
+// quiescence; a cancelled context, an exhausted bounded wait, or a failed
+// status read returns the last observed run state (possibly nil) with
+// confirmed false and a reason naming what prevented confirmation. Callers
+// must never present a completed abort or authoritative final ownership
+// guidance without confirmed true.
+func waitForTerminalRun(ctx context.Context, client *ipc.Client, runID string, timeout time.Duration) (run *ipc.RunInfo, confirmed bool, reason string) {
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
+	var last *ipc.RunInfo
 	for {
-		run, err := getRunInfo(client, runID)
-		if err != nil {
-			return nil
+		remaining := timeout
+		if deadline, ok := waitCtx.Deadline(); ok {
+			remaining = time.Until(deadline)
+			if remaining <= 0 {
+				return last, false, fmt.Sprintf("the run did not report a terminal state within the bounded %s wait", timeout)
+			}
 		}
-		if run != nil && terminalStatus(string(run.Status)) {
-			return run
+		var result ipc.GetRunResult
+		err := client.CallWithContext(waitCtx, ipc.MethodGetRun, &ipc.GetRunParams{RunID: runID}, &result, remaining)
+		if err != nil {
+			switch waitCtx.Err() {
+			case context.Canceled:
+				return last, false, "the in-flight run state read was cancelled before a terminal state was observed"
+			case context.DeadlineExceeded:
+				return last, false, fmt.Sprintf("the in-flight run state read did not complete within the bounded %s wait", timeout)
+			default:
+				var timeoutErr interface{ Timeout() bool }
+				if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+					return last, false, fmt.Sprintf("the in-flight run state read did not complete within the bounded %s wait", timeout)
+				}
+				return last, false, fmt.Sprintf("the run state could not be read: %v", err)
+			}
+		}
+		observed := result.Run
+		if observed == nil {
+			return last, false, "the run state response did not identify a run"
+		}
+		if observed.ID != runID {
+			return last, false, fmt.Sprintf("the run state response identified run %s instead of the requested run %s", observed.ID, runID)
+		}
+		last = observed
+		if terminalStatus(string(observed.Status)) {
+			return observed, true, ""
 		}
 		select {
-		case <-ctx.Done():
-			return run
-		case <-timer.C:
-			return run
+		case <-waitCtx.Done():
+			if waitCtx.Err() == context.Canceled {
+				return last, false, "the wait was cancelled before a terminal state was observed"
+			}
+			return last, false, fmt.Sprintf("the run did not report a terminal state within the bounded %s wait", timeout)
 		case <-ticker.C:
 		}
 	}
 }
 
+// emitUnconfirmedAbort reports the accepted not-yet-quiescent abort contract:
+// terminal quiescence is unconfirmed, so the command exits nonzero, includes
+// the last structured run state when one is available, and presents no
+// completed-abort claim and no authoritative user-owned or recoverable
+// ownership guidance. requested records whether a cancellation request
+// actually reached the daemon; a daemon-unavailable path never requested one
+// and must not claim it did.
+func emitUnconfirmedAbort(cmd *cobra.Command, runID, branch, reason string, last *runView, requested bool) error {
+	message := fmt.Sprintf("cancellation was requested for run %s, but terminal quiescence is unconfirmed: %s", runID, reason)
+	if !requested {
+		message = fmt.Sprintf("cancellation could not be requested for run %s, and terminal quiescence is unconfirmed: %s", runID, reason)
+	}
+	fields := []toon.Field{
+		{Key: "error", Value: message},
+		{Key: "cancellation_requested", Value: requested},
+		{Key: "terminal_confirmed", Value: false},
+		{Key: "run", Value: runID},
+	}
+	if branch != "" {
+		fields = append(fields, toon.Field{Key: "branch", Value: branch})
+	}
+	if last != nil {
+		fields = append(fields, runObjectFieldWithKey("run_state", *last))
+	}
+	fields = append(fields, toon.Field{Key: "help", Value: []string{
+		"Run `no-mistakes axi status --run " + runID + "` to observe the run until it reports a terminal status",
+		"Re-run `no-mistakes axi abort` once the daemon is reachable; a repeated abort is an idempotent no-op",
+		"Do not treat the branch as released or recoverable until a terminal status is confirmed",
+	}})
+	emitDoc(cmd, fields...)
+	return &exitError{code: 1}
+}
+
 // runAxiAbortByRunID cancels a run by its id directly via the daemon, without
 // resolving a repo, branch, or worktree. This is how an orphaned monitor run -
 // one whose worktree was torn down before the PR merged - gets reaped from
-// outside. A run lives only in the running daemon's memory, so if the daemon is
-// not running, or the id is not an active run, there is nothing to cancel and
-// we report a successful no-op (the desired end state is already reached).
+// outside. A stopped daemon is never started: the durable database record then
+// decides whether the exact run is terminal, still nonterminal, or unknown.
+// Likewise, a daemon's no-active-run response is resolved through one bounded
+// durable-state read before this command reports success.
 func runAxiAbortByRunID(cmd *cobra.Command, runID string) error {
 	p, err := paths.New()
 	if err != nil {
@@ -940,12 +1045,7 @@ func runAxiAbortByRunID(cmd *cobra.Command, runID string) error {
 	}
 
 	if alive, _ := daemon.IsRunning(p); !alive {
-		emitDoc(cmd,
-			toon.Field{Key: "aborted", Value: false},
-			toon.Field{Key: "run", Value: runID},
-			toon.Field{Key: "detail", Value: "daemon not running, so no active run to cancel (no-op)"},
-		)
-		return nil
+		return resolveDaemonDownAbortTruth(cmd, p, runID)
 	}
 
 	client, err := ipc.Dial(p.Socket())
@@ -957,22 +1057,126 @@ func runAxiAbortByRunID(cmd *cobra.Command, runID string) error {
 	var result ipc.CancelRunResult
 	if err := client.Call(ipc.MethodCancelRun, &ipc.CancelRunParams{RunID: runID}, &result); err != nil {
 		// The daemon reports an unknown/inactive run id as "no active run
-		// <id>". Treat that as an idempotent no-op: the run is already gone.
+		// <id>". That result alone is not terminal truth: resolve the exact
+		// run's durable state before deciding between the idempotent
+		// terminal no-op, the documented unknown-id no-op, and the nonzero
+		// terminal-unconfirmed contract.
 		if strings.Contains(err.Error(), "no active run") {
-			emitDoc(cmd,
-				toon.Field{Key: "aborted", Value: false},
-				toon.Field{Key: "run", Value: runID},
-				toon.Field{Key: "detail", Value: "no active run with that id (no-op)"},
-			)
-			return nil
+			return resolveInactiveAbortTruth(cmd, client, runID)
 		}
 		return emitError(cmd, 1, fmt.Sprintf("abort run: %v", err))
+	}
+	// Explicit --run cancellation carries the same quiescence contract as the
+	// ordinary surface: no completed abort without a positively confirmed
+	// terminal state for the exact run.
+	final, confirmed, reason := waitForTerminalRun(cmd.Context(), client, runID, abortStateWaitTimeout)
+	if !confirmed {
+		return emitUnconfirmedAbort(cmd, runID, "", reason, runViewPtrFromIPC(final), true)
 	}
 	emitDoc(cmd,
 		toon.Field{Key: "aborted", Value: true},
 		toon.Field{Key: "run", Value: runID},
+		toon.Field{Key: "run_status", Value: string(final.Status)},
 	)
 	return nil
+}
+
+// runViewPtrFromIPC adapts an optional IPC run snapshot for the unconfirmed
+// abort emission, which renders whatever last structured state is available.
+func runViewPtrFromIPC(run *ipc.RunInfo) *runView {
+	if run == nil {
+		return nil
+	}
+	view := runViewFromIPC(run)
+	return &view
+}
+
+// resolveInactiveAbortTruth decides what a cancel_run "no active run" result
+// actually means by resolving the exact run's durable state through one
+// bounded, cancellation-aware get_run read: an already-terminal run is an
+// idempotent success carrying its terminal run_status (no new cancellation is
+// fabricated), a positively proven unknown id keeps the documented no-op, and
+// a still-nonterminal or unreadable run is the nonzero terminal-unconfirmed
+// contract.
+func resolveInactiveAbortTruth(cmd *cobra.Command, client *ipc.Client, runID string) error {
+	ctx, cancel := context.WithTimeout(cmd.Context(), abortStateWaitTimeout)
+	defer cancel()
+	var result ipc.GetRunResult
+	err := client.CallWithContext(ctx, ipc.MethodGetRun, &ipc.GetRunParams{RunID: runID}, &result, abortStateWaitTimeout)
+	if err != nil {
+		// The daemon's durable lookup names a genuinely unknown id
+		// explicitly; only that exact proof preserves the documented no-op.
+		if isExactRunNotFound(err, runID) {
+			emitDoc(cmd,
+				toon.Field{Key: "aborted", Value: false},
+				toon.Field{Key: "run", Value: runID},
+				toon.Field{Key: "detail", Value: "no run with that id exists (no-op)"},
+			)
+			return nil
+		}
+		return emitUnconfirmedAbort(cmd, runID, "", fmt.Sprintf("the daemon reported no active run, and the exact run's durable state could not be read: %v", err), nil, true)
+	}
+	run := result.Run
+	if run == nil {
+		return emitUnconfirmedAbort(cmd, runID, "", "the daemon returned a run state response without the requested run", nil, true)
+	}
+	if run.ID != runID {
+		return emitUnconfirmedAbort(cmd, runID, "", fmt.Sprintf("the daemon returned durable state for run %s instead of the requested run %s", run.ID, runID), nil, true)
+	}
+	if terminalStatus(string(run.Status)) {
+		emitDoc(cmd,
+			toon.Field{Key: "aborted", Value: false},
+			toon.Field{Key: "run", Value: runID},
+			toon.Field{Key: "run_status", Value: string(run.Status)},
+			toon.Field{Key: "detail", Value: "run is already terminal (idempotent no-op)"},
+		)
+		return nil
+	}
+	return emitUnconfirmedAbort(cmd, runID, run.Branch, fmt.Sprintf("the daemon reported no active run, but the exact run's durable state is still %s", run.Status), runViewPtrFromIPC(run), true)
+}
+
+// resolveDaemonDownAbortTruth is the consistent daemon-unavailable treatment:
+// nothing can be cancelled without a daemon, so the durable run record alone
+// decides. A recorded terminal run resolves idempotently with its terminal
+// status, an id with no durable record keeps the documented no-op, and a
+// recorded nonterminal or unreadable run is the nonzero terminal-unconfirmed
+// contract - never a claimed cancellation and never a started daemon.
+func resolveDaemonDownAbortTruth(cmd *cobra.Command, p *paths.Paths, runID string) error {
+	database, err := db.Open(p.DB())
+	if err != nil {
+		return emitUnconfirmedAbort(cmd, runID, "", fmt.Sprintf("the daemon is not running and the durable run record could not be opened: %v", err), nil, false)
+	}
+	defer database.Close()
+	run, err := database.GetRun(runID)
+	if err != nil {
+		return emitUnconfirmedAbort(cmd, runID, "", fmt.Sprintf("the daemon is not running and the durable run record could not be read: %v", err), nil, false)
+	}
+	if run == nil {
+		emitDoc(cmd,
+			toon.Field{Key: "aborted", Value: false},
+			toon.Field{Key: "run", Value: runID},
+			toon.Field{Key: "detail", Value: "daemon not running and no run with that id is recorded (no-op)"},
+		)
+		return nil
+	}
+	if run.ID != runID {
+		return emitUnconfirmedAbort(cmd, runID, "", fmt.Sprintf("the durable record identified run %s instead of the requested run %s", run.ID, runID), nil, false)
+	}
+	if terminalStatus(string(run.Status)) {
+		emitDoc(cmd,
+			toon.Field{Key: "aborted", Value: false},
+			toon.Field{Key: "run", Value: runID},
+			toon.Field{Key: "run_status", Value: string(run.Status)},
+			toon.Field{Key: "detail", Value: "daemon not running; run is already terminal (idempotent no-op)"},
+		)
+		return nil
+	}
+	return emitUnconfirmedAbort(cmd, runID, run.Branch, fmt.Sprintf("the daemon is not running, so cancellation cannot be requested, and the durable run record is still %s", run.Status), nil, false)
+}
+
+func isExactRunNotFound(err error, runID string) bool {
+	var rpcErr *ipc.RPCError
+	return errors.As(err, &rpcErr) && rpcErr.Message == "run not found: "+runID
 }
 
 func splitCSV(s string) []string {

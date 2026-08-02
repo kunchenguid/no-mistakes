@@ -366,6 +366,39 @@ func TestUpdateRunStatus(t *testing.T) {
 	}
 }
 
+func TestVerifiedHeadAndTerminalStatusPersistAtomically(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/atomic-head", "https://github.com/test/atomic-head", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.sql.Exec(`CREATE TRIGGER reject_verified_terminal
+		BEFORE UPDATE OF terminal_head_verified_at ON runs
+		WHEN NEW.terminal_head_verified_at IS NOT NULL
+		BEGIN
+			SELECT RAISE(FAIL, 'injected verified terminal failure');
+		END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunErrorStatusWithVerifiedHead(run.ID, "cancelled", types.RunCancelled, "pipeline-head"); err == nil {
+		t.Fatal("verified terminal update unexpectedly succeeded")
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != types.RunRunning || got.HeadSHA != "submitted" || got.TerminalHeadVerifiedAt != nil {
+		t.Fatalf("failed atomic update changed run = status %s head %s verified %#v", got.Status, got.HeadSHA, got.TerminalHeadVerifiedAt)
+	}
+}
+
 func TestRunPushBindingIsForwardOnlyAndLegacyRowsStayNullable(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/tmp/repo-sync-binding", "https://example.com/repo.git", "main")

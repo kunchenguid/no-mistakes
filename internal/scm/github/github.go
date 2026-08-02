@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"strings"
 	"time"
@@ -297,7 +298,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		return nil, err
 	}
 	args := append([]string{"pr", "checks", selector}, h.repoArgs()...)
-	args = append(args, "--json", "name,state,bucket,completedAt")
+	args = append(args, "--json", "name,state,bucket,completedAt,link")
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -311,6 +312,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		State       string `json:"state"`
 		Bucket      string `json:"bucket"`
 		CompletedAt string `json:"completedAt"`
+		Link        string `json:"link"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return nil, fmt.Errorf("parse CI checks: %w", err)
@@ -323,9 +325,103 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 				completedAt = parsed
 			}
 		}
-		checks = append(checks, scm.Check{Name: r.Name, Bucket: normalizeCheckBucket(r.Bucket, r.State), CompletedAt: completedAt})
+		checks = append(checks, scm.Check{
+			Name:        r.Name,
+			Bucket:      normalizeCheckBucket(r.Bucket, r.State),
+			State:       strings.ToUpper(strings.TrimSpace(r.State)),
+			CompletedAt: completedAt,
+			Link:        strings.TrimSpace(r.Link),
+		})
 	}
 	return checks, nil
+}
+
+// RerunCheck re-runs the Actions job behind check for the same commit, so a
+// check the provider cancelled rather than failed can be retried without a new
+// push. The job is identified from the check's details link, which is the only
+// run/job identity `gh pr checks` reports: a link naming a job re-runs just that
+// job (and its dependencies), and a link naming only a run re-runs that run's
+// failed jobs. Anything else - a third-party status pointing at an external
+// dashboard, or a run path this backend cannot read - names no re-runnable job,
+// and the error says so rather than falling back to a wider rerun.
+func (h *Host) RerunCheck(ctx context.Context, _ *scm.PR, check scm.Check) error {
+	rerunArgs, ok := rerunTargetArgs(check.Link)
+	if !ok {
+		return fmt.Errorf("check %q has no GitHub Actions job to re-run", check.Name)
+	}
+	args := append([]string{"run", "rerun"}, rerunArgs...)
+	args = append(args, h.repoArgs()...)
+	cmd := h.cmd(ctx, "gh", args...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("gh run rerun: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+// rerunTargetArgs turns a check's details link into the `gh run rerun`
+// arguments that re-run exactly that work, or reports that the link names
+// nothing this backend can re-run.
+func rerunTargetArgs(link string) ([]string, bool) {
+	runID, jobID, ok := actionsRerunTarget(link)
+	switch {
+	case !ok:
+		return nil, false
+	case jobID != "":
+		return []string{"--job", jobID}, true
+	default:
+		return []string{runID, "--failed"}, true
+	}
+}
+
+// actionsRerunTarget resolves the Actions run, and where possible the exact job,
+// that a check's details URL names. It parses the URL and reads only its path:
+// a real details URL routinely carries a query (?check_suite_focus=true) or a
+// step fragment (#step:4:12), and neither belongs to the job identity.
+//
+// Only ".../actions/runs/<run-id>/job/<id>" yields a job id, because that `id`
+// is the job's databaseId, which is what `gh run rerun --job` requires. Two
+// shapes are deliberately rejected rather than downgraded to the whole run:
+// the browser's ".../runs/<run-id>/jobs/<n>" form, whose number is a per-run
+// display index the API answers with 404, and any other unrecognized path under
+// a run. Re-running a run re-runs every failed job in it, so widening one
+// check's rerun into all of them on an unparsable link is a blast radius this
+// policy must not take; a link that names only the run itself is the one case
+// where that is exactly what it points at.
+func actionsRerunTarget(link string) (runID, jobID string, ok bool) {
+	parsed, err := url.Parse(strings.TrimSpace(link))
+	if err != nil {
+		return "", "", false
+	}
+	const runsSegment = "/actions/runs/"
+	idx := strings.Index(parsed.Path, runsSegment)
+	if idx < 0 {
+		return "", "", false
+	}
+	segments := strings.Split(strings.Trim(parsed.Path[idx+len(runsSegment):], "/"), "/")
+	if len(segments) == 0 || !isNumericID(segments[0]) {
+		return "", "", false
+	}
+	runID = segments[0]
+	switch {
+	case len(segments) == 1:
+		return runID, "", true
+	case len(segments) == 3 && segments[1] == "job" && isNumericID(segments[2]):
+		return runID, segments[2], true
+	default:
+		return "", "", false
+	}
+}
+
+func isNumericID(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.MergeableState, error) {
