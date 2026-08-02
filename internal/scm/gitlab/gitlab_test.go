@@ -439,6 +439,16 @@ func TestGitLabAuditCoverageRequiresExhaustedPagination(t *testing.T) {
 	}
 }
 
+func TestParseGitLabAuditPageRequiresProviderDateAndCursor(t *testing.T) {
+	page, err := parseGitLabAuditPage([]byte("HTTP/2 200 OK\r\nDate: Sun, 02 Aug 2026 12:00:00 GMT\r\nX-Next-Page: 2\r\n\r\n[{\"id\":1}]\n"))
+	if err != nil || page.serverDate != time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC).Unix() || page.nextPage != 2 || len(page.events) != 1 {
+		t.Fatalf("GitLab audit page = %#v, err %v", page, err)
+	}
+	if _, err := parseGitLabAuditPage([]byte("HTTP/2 200 OK\r\n\r\n[]\n")); err == nil {
+		t.Fatal("GitLab audit page without provider date was accepted")
+	}
+}
+
 func TestVerifyUnpublishedHistoryInspectsRenamedNoMergeRequestHistory(t *testing.T) {
 	t.Parallel()
 	a := strings.Repeat("a", 40)

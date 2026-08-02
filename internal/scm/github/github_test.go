@@ -834,6 +834,16 @@ func TestGitHubAuditCoverageRequiresExhaustedPagination(t *testing.T) {
 	}
 }
 
+func TestParseGitHubAuditPageRequiresProviderDateAndCursor(t *testing.T) {
+	page, err := parseGitHubAuditPage([]byte("HTTP/2 200 OK\r\nDate: Sun, 02 Aug 2026 12:00:00 GMT\r\nLink: <https://example.test?page=2>; rel=\"next\"\r\n\r\n[{\"id\":1}]\n"))
+	if err != nil || page.serverDate != time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC).Unix() || page.nextPage != 2 || len(page.events) != 1 {
+		t.Fatalf("GitHub audit page = %#v, err %v", page, err)
+	}
+	if _, err := parseGitHubAuditPage([]byte("HTTP/2 200 OK\r\n\r\n[]\n")); err == nil {
+		t.Fatal("GitHub audit page without provider date was accepted")
+	}
+}
+
 func TestDiscoverSubmissionRequestRefsIncludesInactivePullRequest(t *testing.T) {
 	a := strings.Repeat("a", 40)
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{

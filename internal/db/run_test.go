@@ -554,6 +554,13 @@ func TestRunPublicationEvidenceBindsCustodyCAS(t *testing.T) {
 	if err != nil || len(targets) != 1 {
 		t.Fatalf("publication targets = %#v, %v", targets, err)
 	}
+	if err := d.ReconcileRunPublicationTargetLineage(run.ID, targets[0].TargetFingerprint, "none"); err != nil {
+		t.Fatalf("reconcile publication lineage: %v", err)
+	}
+	targets, err = d.ListRunPublicationTargets(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	set, err := d.RecordRunPublicationEvidence(run.ID, []PublicationEvidenceInput{{
 		TargetFingerprint: targets[0].TargetFingerprint,
 		Ref:               targets[0].Ref,
@@ -757,6 +764,37 @@ func TestMigrationBackfillsPendingPRProvenanceForExistingLedger(t *testing.T) {
 	}
 	if len(targets) != 1 || targets[0].PRProvenance != PublicationTargetPRProvenanceMigrationPending {
 		t.Fatalf("migrated PR provenance = %#v, want %q", targets, PublicationTargetPRProvenanceMigrationPending)
+	}
+}
+
+func TestLegacyPublicationLineageReconcilesAtomically(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/repo-publication-lineage-reconcile", "https://github.com/example/parent.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := PublicationTargetFingerprint(repo.UpstreamURL)
+	lineage := "refs/pull/7/head"
+	if err := d.ReconcileRunPublicationTargetLineage(run.ID, fingerprint, lineage); err != nil {
+		t.Fatalf("reconcile publication lineage: %v", err)
+	}
+	targets, err := d.ListRunPublicationTargets(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].RequestLineage != lineage {
+		t.Fatalf("reconciled targets = %#v", targets)
+	}
+	set, err := d.GetRunPublicationTargetSet(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set == nil || set.TargetSetHash != PublicationTargetSetHash(targets) || set.Generation == 0 {
+		t.Fatalf("reconciled target set = %#v", set)
 	}
 }
 
@@ -1403,13 +1441,18 @@ func seedTestPublicationEvidence(t *testing.T, d *DB, run *Run) {
 	}
 	inputs := make([]PublicationEvidenceInput, 0, len(targets))
 	for _, target := range targets {
+		if strings.TrimSpace(target.RequestLineage) == "" || target.RequestLineage == PublicationTargetRequestLineageMigrationPending {
+			if err := d.ReconcileRunPublicationTargetLineage(run.ID, target.TargetFingerprint, "none"); err != nil {
+				t.Fatalf("reconcile test publication lineage: %v", err)
+			}
+		}
 		inputs = append(inputs, PublicationEvidenceInput{
 			TargetFingerprint: target.TargetFingerprint,
 			Ref:               target.Ref,
 			TargetVersion:     target.TargetVersion,
 			RemoteHash:        "test-remote-evidence",
 			ProviderHash:      "test-provider-evidence",
-			Cursor:            "audit;hasNextPage=false;test-complete-cursor",
+			Cursor:            "audit-cutoff=1754136000;provider-date:1754136000;audit;hasNextPage=false;test-complete-cursor",
 			Since:             run.CreatedAt,
 			Until:             run.UpdatedAt,
 		})

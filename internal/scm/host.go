@@ -231,6 +231,10 @@ type HistoricalTargetPublicationVerifier interface {
 	VerifyUnpublishedTargetHistory(ctx context.Context, branch, submitted, preserved string, since, until int64) (HistoricalPublicationEvidence, error)
 }
 
+type HistoricalTargetPublicationVerifierAtCutoff interface {
+	VerifyUnpublishedTargetHistoryAtCutoff(ctx context.Context, branch, submitted, preserved string, since, until, cutoff int64) (HistoricalPublicationEvidence, error)
+}
+
 type SubmissionTargetLineageVerifier interface {
 	DiscoverSubmissionRequestRefs(ctx context.Context, branch, submitted string) ([]string, error)
 }

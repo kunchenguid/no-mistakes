@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,6 +42,34 @@ type StepFactory func() []pipeline.Step
 var recoveredConfigFetchTimeout = 10 * time.Second
 
 var fetchRecoveredRemoteBranch = git.FetchRemoteBranch
+
+type publicationCutoffsContextKey struct{}
+
+func withPublicationCutoffs(ctx context.Context, cutoffs map[string]int64) context.Context {
+	copyCutoffs := make(map[string]int64, len(cutoffs))
+	for fingerprint, cutoff := range cutoffs {
+		copyCutoffs[fingerprint] = cutoff
+	}
+	return context.WithValue(ctx, publicationCutoffsContextKey{}, copyCutoffs)
+}
+
+func publicationCutoff(ctx context.Context, fingerprint string) int64 {
+	cutoffs, _ := ctx.Value(publicationCutoffsContextKey{}).(map[string]int64)
+	return cutoffs[fingerprint]
+}
+
+func publicationCutoffsFromEvidence(evidence map[string]scm.HistoricalPublicationEvidence) (map[string]int64, error) {
+	cutoffs := make(map[string]int64, len(evidence))
+	for fingerprint, proof := range evidence {
+		value := strings.TrimPrefix(strings.TrimSpace(proof.HighWater), "provider-date:")
+		cutoff, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || cutoff <= 0 {
+			return nil, fmt.Errorf("publication evidence for %s has no provider-issued cutoff", fingerprint)
+		}
+		cutoffs[fingerprint] = cutoff
+	}
+	return cutoffs, nil
+}
 
 // RunManager tracks active pipeline executors and manages run lifecycle.
 type RunManager struct {
@@ -557,7 +586,8 @@ func (m *RunManager) validatePublicationLedger(ctx context.Context, run *db.Run)
 	}
 	for _, target := range recorded {
 		input, ok := byFingerprint[target.TargetFingerprint]
-		if !ok || input.TargetKind != target.TargetKind || input.Ref != target.Ref || input.TargetVersion != target.TargetVersion || input.RequestLineage != target.RequestLineage {
+		lineagePending := strings.TrimSpace(target.RequestLineage) == "" || target.RequestLineage == db.PublicationTargetRequestLineageMigrationPending
+		if !ok || input.TargetKind != target.TargetKind || input.Ref != target.Ref || input.TargetVersion != target.TargetVersion || !lineagePending && input.RequestLineage != target.RequestLineage {
 			return fmt.Errorf("publication target set changed")
 		}
 	}
@@ -569,27 +599,40 @@ func (m *RunManager) validatePublicationLedger(ctx context.Context, run *db.Run)
 	for _, target := range publicationTargets {
 		targetURLs = append(targetURLs, target.url)
 	}
+	remoteBefore, err := m.verifyRemotePublicationSnapshotWithRequestRefs(ctx, run, repo, publicationTargets, recorded, publicationRequestRefsFromTargets(recorded))
+	if err != nil {
+		return fmt.Errorf("verify pre-cutoff remote publication snapshot: %w", err)
+	}
 	providerEvidence, err := m.legacyPublicationEvidence(ctx, run, run.Branch, targetURLs)
 	if err != nil {
 		return fmt.Errorf("verify historical publication proof: %w", err)
 	}
+	cutoffs, err := publicationCutoffsFromEvidence(providerEvidence)
+	if err != nil {
+		return fmt.Errorf("verify provider publication cutoff: %w", err)
+	}
+	proofCtx := withPublicationCutoffs(ctx, cutoffs)
+	recorded, err = m.db.ListRunPublicationTargets(run.ID)
+	if err != nil {
+		return fmt.Errorf("reload reconciled publication target ledger: %w", err)
+	}
 	requestRefs := publicationRequestRefs(providerEvidence)
-	remoteEvidence, err := m.verifyRemotePublicationSnapshotWithRequestRefs(ctx, run, repo, publicationTargets, recorded, requestRefs)
+	remoteEvidence, err := m.verifyRemotePublicationSnapshotWithRequestRefs(proofCtx, run, repo, publicationTargets, recorded, requestRefs)
 	if err != nil {
 		return fmt.Errorf("verify remote publication snapshot: %w", err)
 	}
-	providerEvidenceAgain, err := m.legacyPublicationEvidence(ctx, run, run.Branch, targetURLs)
+	providerEvidenceAgain, err := m.legacyPublicationEvidence(proofCtx, run, run.Branch, targetURLs)
 	if err != nil {
 		return fmt.Errorf("verify historical publication stability: %w", err)
 	}
 	if !equalPublicationEvidence(providerEvidence, providerEvidenceAgain) {
 		return fmt.Errorf("publication history evidence did not stabilize")
 	}
-	remoteEvidenceAgain, err := m.verifyRemotePublicationSnapshotWithRequestRefs(ctx, run, repo, publicationTargets, recorded, publicationRequestRefs(providerEvidenceAgain))
+	remoteEvidenceAgain, err := m.verifyRemotePublicationSnapshotWithRequestRefs(proofCtx, run, repo, publicationTargets, recorded, publicationRequestRefs(providerEvidenceAgain))
 	if err != nil {
 		return fmt.Errorf("verify final remote publication snapshot: %w", err)
 	}
-	if !equalPublicationEvidence(remoteEvidence, remoteEvidenceAgain) {
+	if len(remoteBefore) != len(recorded) || !equalPublicationEvidence(remoteEvidence, remoteEvidenceAgain) {
 		return fmt.Errorf("remote publication evidence did not stabilize")
 	}
 	if err := m.db.MarkRunPublicationTargetsVerifiedNoAttempt(run.ID); err != nil {
@@ -688,20 +731,39 @@ func (m *RunManager) legacyPublicationEvidence(ctx context.Context, run *db.Run,
 				return nil, err
 			}
 		}
-		proof, err := targetVerifier.VerifyUnpublishedTargetHistory(ctx, targetBranch, submitted, run.HeadSHA, run.CreatedAt, run.UpdatedAt)
+		var proof scm.HistoricalPublicationEvidence
+		var err error
+		if verifierAtCutoff, ok := verifier.(scm.HistoricalTargetPublicationVerifierAtCutoff); ok {
+			proof, err = verifierAtCutoff.VerifyUnpublishedTargetHistoryAtCutoff(ctx, targetBranch, submitted, run.HeadSHA, run.CreatedAt, run.UpdatedAt, publicationCutoff(ctx, fingerprint))
+		} else {
+			if publicationCutoff(ctx, fingerprint) != 0 {
+				return nil, fmt.Errorf("historical publication verifier cannot honor the provider cutoff")
+			}
+			proof, err = targetVerifier.VerifyUnpublishedTargetHistory(ctx, targetBranch, submitted, run.HeadSHA, run.CreatedAt, run.UpdatedAt)
+		}
 		if err != nil {
 			return nil, err
 		}
 		targetRecord, ok := recordedByFingerprint[fingerprint]
-		if !ok || strings.TrimSpace(targetRecord.RequestLineage) == "" {
+		if !ok {
 			return nil, fmt.Errorf("submission-time publication request lineage is unavailable")
 		}
-		expectedRefs := publicationLineageRefs(targetRecord.RequestLineage)
 		actualRefs := append([]string(nil), proof.RequestRefs...)
-		sort.Strings(expectedRefs)
 		sort.Strings(actualRefs)
-		if !equalStrings(expectedRefs, actualRefs) {
-			return nil, fmt.Errorf("submission-time publication request lineage changed")
+		lineage := "none"
+		if len(actualRefs) > 0 {
+			lineage = strings.Join(actualRefs, ",")
+		}
+		if strings.TrimSpace(targetRecord.RequestLineage) == "" || targetRecord.RequestLineage == db.PublicationTargetRequestLineageMigrationPending {
+			if err := m.db.ReconcileRunPublicationTargetLineage(run.ID, fingerprint, lineage); err != nil {
+				return nil, fmt.Errorf("reconcile legacy publication request lineage: %w", err)
+			}
+		} else {
+			expectedRefs := publicationLineageRefs(targetRecord.RequestLineage)
+			sort.Strings(expectedRefs)
+			if !equalStrings(expectedRefs, actualRefs) {
+				return nil, fmt.Errorf("submission-time publication request lineage changed")
+			}
 		}
 		if !proof.Complete || strings.TrimSpace(proof.HighWater) == "" || !strings.Contains(proof.Coverage, "audit") || !strings.Contains(proof.Coverage, "hasNextPage=false") {
 			return nil, fmt.Errorf("historical publication proof for %s is incomplete", provider)
@@ -795,8 +857,16 @@ func (m *RunManager) readRemotePublicationSnapshot(ctx context.Context, run *db.
 			}
 		}
 		hash := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
-		cursor := "remote-" + hex.EncodeToString(hash[:8])
-		evidence[fingerprint] = scm.HistoricalPublicationEvidence{Hash: hex.EncodeToString(hash[:]), Cursor: cursor, Coverage: "exact-refs;history-bound", HighWater: cursor, Complete: true}
+		cutoff := publicationCutoff(ctx, fingerprint)
+		cursor := "remote-cutoff=unbound;" + hex.EncodeToString(hash[:8])
+		highWater := "pre-cutoff"
+		coverage := "exact-refs;pre-cutoff"
+		if cutoff > 0 {
+			cursor = fmt.Sprintf("remote-cutoff=%d;%s", cutoff, hex.EncodeToString(hash[:8]))
+			highWater = fmt.Sprintf("provider-date:%d", cutoff)
+			coverage = fmt.Sprintf("exact-refs;history-bound;provider-date=%d", cutoff)
+		}
+		evidence[fingerprint] = scm.HistoricalPublicationEvidence{Hash: hex.EncodeToString(hash[:]), Cursor: cursor, Coverage: coverage, HighWater: highWater, Complete: true}
 		seen[fingerprint] = struct{}{}
 	}
 	if len(seen) != len(recorded) {
@@ -834,6 +904,17 @@ func publicationRequestRefs(evidence map[string]scm.HistoricalPublicationEvidenc
 	refs := make(map[string][]string, len(evidence))
 	for fingerprint, proof := range evidence {
 		refs[fingerprint] = append([]string(nil), proof.RequestRefs...)
+	}
+	return refs
+}
+
+func publicationRequestRefsFromTargets(targets []db.RunPublicationTarget) map[string][]string {
+	refs := make(map[string][]string, len(targets))
+	for _, target := range targets {
+		if target.RequestLineage == db.PublicationTargetRequestLineageMigrationPending {
+			continue
+		}
+		refs[target.TargetFingerprint] = publicationLineageRefs(target.RequestLineage)
 	}
 	return refs
 }

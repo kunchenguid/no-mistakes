@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -112,6 +113,10 @@ func (h *Host) VerifyUnpublishedRefHistory(ctx context.Context, branch, submitte
 }
 
 func (h *Host) VerifyUnpublishedTargetHistory(ctx context.Context, branch, submitted, preserved string, since, until int64) (scm.HistoricalPublicationEvidence, error) {
+	return h.VerifyUnpublishedTargetHistoryAtCutoff(ctx, branch, submitted, preserved, since, until, 0)
+}
+
+func (h *Host) VerifyUnpublishedTargetHistoryAtCutoff(ctx context.Context, branch, submitted, preserved string, since, until, cutoff int64) (scm.HistoricalPublicationEvidence, error) {
 	if err := h.VerifyUnpublishedHistory(ctx, branch, submitted, preserved, since, until, ""); err != nil {
 		return scm.HistoricalPublicationEvidence{}, err
 	}
@@ -119,7 +124,7 @@ func (h *Host) VerifyUnpublishedTargetHistory(ctx context.Context, branch, submi
 	if err != nil {
 		return scm.HistoricalPublicationEvidence{}, err
 	}
-	proof, err := h.verifyUnpublishedAuditHistory(ctx, branch, submitted, preserved, refs, since, until)
+	proof, err := h.verifyUnpublishedAuditHistory(ctx, branch, submitted, preserved, refs, since, until, cutoff)
 	if err != nil {
 		return scm.HistoricalPublicationEvidence{}, err
 	}
@@ -171,7 +176,7 @@ func (h *Host) unpublishedTargetRequestRefs(ctx context.Context, branch, submitt
 	return refs, nil
 }
 
-func (h *Host) verifyUnpublishedAuditHistory(ctx context.Context, branch, submitted, preserved string, requestRefs []string, since, until int64) (scm.HistoricalPublicationEvidence, error) {
+func (h *Host) verifyUnpublishedAuditHistory(ctx context.Context, branch, submitted, preserved string, requestRefs []string, since, until, cutoff int64) (scm.HistoricalPublicationEvidence, error) {
 	if since <= 0 || until < since {
 		return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit history has no valid run interval")
 	}
@@ -187,43 +192,30 @@ func (h *Host) verifyUnpublishedAuditHistory(ctx context.Context, branch, submit
 	project := url.PathEscape(h.projectPath)
 	query := url.Values{}
 	query.Set("created_after", time.Unix(since, 0).UTC().Format(time.RFC3339))
-	query.Set("created_before", time.Unix(until, 0).UTC().Format(time.RFC3339))
 	query.Set("per_page", "100")
 	endpoint := "projects/" + project + "/audit_events?" + query.Encode()
-	args := []string{"api", "--paginate", "--include"}
-	if h.host != "" {
-		args = append(args, "--hostname", h.host)
-	}
-	args = append(args, endpoint)
-	out, err := h.cmd(ctx, "glab", args...).Output()
-	if err != nil {
-		return scm.HistoricalPublicationEvidence{}, fmt.Errorf("GitLab audit event history unavailable: %w", err)
-	}
-	if strings.Contains(strings.ToLower(string(out)), "rate limit") || strings.Contains(string(out), " 403 ") || strings.Contains(string(out), " 429 ") {
-		return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event history is unavailable or rate limited")
-	}
-	events, pages, complete, err := gitlabIncludedAuditEvents(out)
+	events, pages, pageCutoff, pageChain, err := h.gitlabAuditPages(ctx, endpoint, since, cutoff)
 	if err != nil {
 		return scm.HistoricalPublicationEvidence{}, err
 	}
-	if !complete || pages == 0 {
+	if pages == 0 || pageCutoff <= 0 {
 		return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event pagination is incomplete")
+	}
+	cutoff = pageCutoff
+	if cutoff < since {
+		return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event cutoff predates the run")
 	}
 	requestSet := make(map[string]struct{}, len(requestRefs))
 	for _, ref := range requestRefs {
 		requestSet[normalizeGitLabRef(ref)] = struct{}{}
 	}
-	maxStamp := int64(0)
 	for _, event := range events {
 		stamp, err := gitlabAuditEventTimestamp(event)
 		if err != nil {
 			return scm.HistoricalPublicationEvidence{}, fmt.Errorf("GitLab audit event has incomplete timestamps: %w", err)
 		}
-		if stamp < since || stamp > until {
+		if stamp < since || stamp > until || stamp > cutoff {
 			return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event history has a coverage gap")
-		}
-		if stamp > maxStamp {
-			maxStamp = stamp
 		}
 		projectName := gitlabAuditField(event, "entity_path", "project_path", "project", "target_project")
 		if projectName == "" || !strings.EqualFold(strings.TrimSuffix(projectName, ".git"), h.projectPath) {
@@ -249,17 +241,123 @@ func (h *Host) verifyUnpublishedAuditHistory(ctx context.Context, branch, submit
 			return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event contains a changed target head")
 		}
 	}
-	highWater := fmt.Sprintf("%d", maxStamp)
-	if maxStamp == 0 {
-		highWater = fmt.Sprintf("cutoff:%d", until)
-	}
+	highWater := fmt.Sprintf("provider-date:%d", cutoff)
 	return scm.HistoricalPublicationEvidence{
-		Hash:      recoveryEvidenceHash(endpoint, branch, submitted, preserved, events),
-		Cursor:    fmt.Sprintf("audit-high-water=%s;since=%d;until=%d", highWater, since, until),
-		Coverage:  fmt.Sprintf("gitlab-audit-pages=%d;events=%d;retention=180d;pagination=hasNextPage=false;audit", pages, len(events)),
+		Hash:      recoveryEvidenceHash(fmt.Sprintf("%s|cutoff=%d|pages=%s", endpoint, cutoff, pageChain), branch, submitted, preserved, events),
+		Cursor:    fmt.Sprintf("audit-cutoff=%d;since=%d;until=%d;pages=%s", cutoff, since, until, pageChain),
+		Coverage:  fmt.Sprintf("gitlab-audit-pages=%d;events=%d;retention=180d;pagination=hasNextPage=false;empty-page-terminator;provider-date;audit", pages, len(events)),
 		HighWater: highWater,
 		Complete:  true,
 	}, nil
+}
+
+type gitlabAuditPage struct {
+	events     []json.RawMessage
+	serverDate int64
+	nextPage   int
+}
+
+func (h *Host) gitlabAuditPages(ctx context.Context, endpoint string, since, cutoff int64) ([]json.RawMessage, int, int64, string, error) {
+	var events []json.RawMessage
+	pageChain := make([]string, 0)
+	pageCutoff := cutoff
+	for pageNumber := 1; pageNumber <= 10000; pageNumber++ {
+		pageURL, err := url.Parse(endpoint)
+		if err != nil {
+			return nil, 0, 0, "", err
+		}
+		query := pageURL.Query()
+		query.Set("page", strconv.Itoa(pageNumber))
+		if pageCutoff > 0 {
+			query.Set("created_before", time.Unix(pageCutoff, 0).UTC().Format(time.RFC3339))
+		}
+		pageURL.RawQuery = query.Encode()
+		args := []string{"api", "--include"}
+		if h.host != "" {
+			args = append(args, "--hostname", h.host)
+		}
+		args = append(args, pageURL.String())
+		out, err := h.cmd(ctx, "glab", args...).Output()
+		if err != nil {
+			return nil, 0, 0, "", fmt.Errorf("GitLab audit event history unavailable: %w", err)
+		}
+		if strings.Contains(strings.ToLower(string(out)), "rate limit") || strings.Contains(string(out), " 403 ") || strings.Contains(string(out), " 429 ") {
+			return nil, 0, 0, "", errors.New("GitLab audit event history is unavailable or rate limited")
+		}
+		page, err := parseGitLabAuditPage(out)
+		if err != nil {
+			return nil, 0, 0, "", err
+		}
+		if pageCutoff == 0 {
+			pageCutoff = page.serverDate
+		}
+		if page.serverDate < pageCutoff {
+			return nil, 0, 0, "", errors.New("GitLab audit event history server time moved backwards")
+		}
+		pageChain = append(pageChain, strconv.Itoa(pageNumber))
+		if page.nextPage != 0 && page.nextPage != pageNumber+1 {
+			return nil, 0, 0, "", errors.New("GitLab audit event history pagination has a cursor gap")
+		}
+		events = append(events, page.events...)
+		if len(page.events) == 0 {
+			if page.nextPage != 0 {
+				return nil, 0, 0, "", errors.New("GitLab audit event history returned an empty page with a next cursor")
+			}
+			return events, pageNumber, pageCutoff, strings.Join(pageChain, ","), nil
+		}
+	}
+	return nil, 0, 0, "", errors.New("GitLab audit event history pagination exceeded the safety bound")
+}
+
+func parseGitLabAuditPage(out []byte) (gitlabAuditPage, error) {
+	start := bytes.IndexByte(out, '[')
+	if start < 0 {
+		return gitlabAuditPage{}, errors.New("GitLab audit event history returned no JSON page")
+	}
+	header := string(out[:start])
+	statusOK := false
+	serverDate := int64(0)
+	nextPage := 0
+	for _, line := range strings.Split(header, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "HTTP/") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				return gitlabAuditPage{}, errors.New("GitLab audit event history returned an invalid HTTP status")
+			}
+			status, err := strconv.Atoi(fields[1])
+			if err != nil || status < 200 || status >= 300 {
+				return gitlabAuditPage{}, errors.New("GitLab audit event history returned a non-success status")
+			}
+			statusOK = true
+		}
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "date:") {
+			when, err := http.ParseTime(strings.TrimSpace(line[len("date:"):]))
+			if err != nil {
+				return gitlabAuditPage{}, fmt.Errorf("GitLab audit event history returned an invalid server date: %w", err)
+			}
+			serverDate = when.Unix()
+		}
+		if strings.HasPrefix(lower, "x-next-page:") {
+			value := strings.TrimSpace(line[len("x-next-page:"):])
+			if value != "" {
+				var err error
+				nextPage, err = strconv.Atoi(value)
+				if err != nil || nextPage <= 0 {
+					return gitlabAuditPage{}, errors.New("GitLab audit event history returned an invalid next cursor")
+				}
+			}
+		}
+	}
+	if !statusOK || serverDate <= 0 {
+		return gitlabAuditPage{}, errors.New("GitLab audit event history did not expose an authoritative server date")
+	}
+	var events []json.RawMessage
+	if err := json.Unmarshal(out[start:], &events); err != nil {
+		return gitlabAuditPage{}, fmt.Errorf("decode GitLab audit event history page: %w", err)
+	}
+	return gitlabAuditPage{events: events, serverDate: serverDate, nextPage: nextPage}, nil
 }
 
 func gitlabIncludedAuditEvents(out []byte) ([]json.RawMessage, int, bool, error) {
@@ -297,7 +395,7 @@ func gitlabIncludedAuditEvents(out []byte) ([]json.RawMessage, int, bool, error)
 		}
 		events = append(events, page...)
 		pages++
-		complete = !next
+		complete = len(page) == 0 && !next
 		position = start + int(decoder.InputOffset())
 	}
 	if !headers {
