@@ -330,6 +330,31 @@ func TestAxiAbortByRunIDResolvesDurableTerminalTruth(t *testing.T) {
 		}
 		assertUnconfirmedAbortOutput(t, "abort --run", out)
 	})
+	t.Run("nil run response is unconfirmed", func(t *testing.T) {
+		newAbortQuiescenceFixtureWithCancel(t, func(context.Context, int) (*ipc.RunInfo, error) {
+			return nil, nil
+		}, noActiveRunErr("run-quiesce"))
+		out, err := executeCmd("axi", "abort", "--run", "run-quiesce")
+		t.Logf("nil-run CLI output:\n%s", out)
+		if err == nil {
+			t.Fatalf("nil get_run response must exit nonzero:\n%s", out)
+		}
+		assertUnconfirmedAbortOutput(t, "abort --run", out)
+	})
+	t.Run("mismatched run response is unconfirmed", func(t *testing.T) {
+		newAbortQuiescenceFixtureWithCancel(t, func(context.Context, int) (*ipc.RunInfo, error) {
+			return &ipc.RunInfo{ID: "run-other", Branch: "feature/other", Status: types.RunCancelled}, nil
+		}, noActiveRunErr("run-quiesce"))
+		out, err := executeCmd("axi", "abort", "--run", "run-quiesce")
+		t.Logf("mismatched-run CLI output:\n%s", out)
+		if err == nil {
+			t.Fatalf("mismatched get_run response must exit nonzero:\n%s", out)
+		}
+		assertUnconfirmedAbortOutput(t, "abort --run", out)
+		if strings.Contains(out, "run_status: cancelled") {
+			t.Fatalf("mismatched get_run response supplied terminal truth:\n%s", out)
+		}
+	})
 	t.Run("genuinely unknown id keeps documented no-op", func(t *testing.T) {
 		newAbortQuiescenceFixtureWithCancel(t, func(context.Context, int) (*ipc.RunInfo, error) {
 			return nil, errors.New("run not found: run-unknown")

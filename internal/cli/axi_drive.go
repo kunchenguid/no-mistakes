@@ -974,10 +974,14 @@ func waitForTerminalRun(ctx context.Context, client *ipc.Client, runID string, t
 			}
 		}
 		observed := result.Run
-		if observed != nil {
-			last = observed
+		if observed == nil {
+			return last, false, "the run state response did not identify a run"
 		}
-		if observed != nil && terminalStatus(string(observed.Status)) {
+		if observed.ID != runID {
+			return last, false, fmt.Sprintf("the run state response identified run %s instead of the requested run %s", observed.ID, runID)
+		}
+		last = observed
+		if terminalStatus(string(observed.Status)) {
 			return observed, true, ""
 		}
 		select {
@@ -1101,7 +1105,7 @@ func resolveInactiveAbortTruth(cmd *cobra.Command, client *ipc.Client, runID str
 	if err != nil {
 		// The daemon's durable lookup names a genuinely unknown id
 		// explicitly; only that exact proof preserves the documented no-op.
-		if strings.Contains(err.Error(), "run not found") {
+		if isExactRunNotFound(err, runID) {
 			emitDoc(cmd,
 				toon.Field{Key: "aborted", Value: false},
 				toon.Field{Key: "run", Value: runID},
@@ -1113,12 +1117,10 @@ func resolveInactiveAbortTruth(cmd *cobra.Command, client *ipc.Client, runID str
 	}
 	run := result.Run
 	if run == nil {
-		emitDoc(cmd,
-			toon.Field{Key: "aborted", Value: false},
-			toon.Field{Key: "run", Value: runID},
-			toon.Field{Key: "detail", Value: "no run with that id exists (no-op)"},
-		)
-		return nil
+		return emitUnconfirmedAbort(cmd, runID, "", "the daemon returned a run state response without the requested run", nil, true)
+	}
+	if run.ID != runID {
+		return emitUnconfirmedAbort(cmd, runID, "", fmt.Sprintf("the daemon returned durable state for run %s instead of the requested run %s", run.ID, runID), nil, true)
 	}
 	if terminalStatus(string(run.Status)) {
 		emitDoc(cmd,
@@ -1156,6 +1158,9 @@ func resolveDaemonDownAbortTruth(cmd *cobra.Command, p *paths.Paths, runID strin
 		)
 		return nil
 	}
+	if run.ID != runID {
+		return emitUnconfirmedAbort(cmd, runID, "", fmt.Sprintf("the durable record identified run %s instead of the requested run %s", run.ID, runID), nil, false)
+	}
 	if terminalStatus(string(run.Status)) {
 		emitDoc(cmd,
 			toon.Field{Key: "aborted", Value: false},
@@ -1166,6 +1171,11 @@ func resolveDaemonDownAbortTruth(cmd *cobra.Command, p *paths.Paths, runID strin
 		return nil
 	}
 	return emitUnconfirmedAbort(cmd, runID, run.Branch, fmt.Sprintf("the daemon is not running, so cancellation cannot be requested, and the durable run record is still %s", run.Status), nil, false)
+}
+
+func isExactRunNotFound(err error, runID string) bool {
+	var rpcErr *ipc.RPCError
+	return errors.As(err, &rpcErr) && rpcErr.Message == "run not found: "+runID
 }
 
 func splitCSV(s string) []string {
