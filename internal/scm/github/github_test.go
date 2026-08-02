@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -841,6 +842,19 @@ func TestParseGitHubAuditPageRequiresProviderDateAndCursor(t *testing.T) {
 	}
 	if _, err := parseGitHubAuditPage([]byte("HTTP/2 200 OK\r\n\r\n[]\n")); err == nil {
 		t.Fatal("GitHub audit page without provider date was accepted")
+	}
+}
+
+func TestGitHubAuditTargetClassificationFailsClosedForAmbiguousEvents(t *testing.T) {
+	requestSet := map[string]struct{}{"refs/pull/7/head": {}}
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"ref":"other","action":"git.push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || ambiguous {
+		t.Fatalf("unrelated GitHub audit event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"action":"git.push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("ambiguous GitHub audit event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if ref, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"ref":"feature","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); ref != "feature" || !targeted || ambiguous {
+		t.Fatalf("target GitHub audit event = %q targeted=%v ambiguous=%v", ref, targeted, ambiguous)
 	}
 }
 

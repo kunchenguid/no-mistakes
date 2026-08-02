@@ -77,6 +77,11 @@ type PublicationEvidenceInput struct {
 	Until             int64
 }
 
+type PublicationTargetLineageInput struct {
+	TargetFingerprint string
+	RequestLineage    string
+}
+
 func PublicationTargetFingerprint(raw string) string {
 	return publicationTargetFingerprint(raw)
 }
@@ -541,6 +546,10 @@ func (d *DB) ValidateRunPublicationTargetLedger(runID string) error {
 }
 
 func (d *DB) RecordRunPublicationEvidence(runID string, inputs []PublicationEvidenceInput) (*RunPublicationTargetSet, error) {
+	return d.RecordRunPublicationEvidenceWithLineage(runID, nil, inputs)
+}
+
+func (d *DB) RecordRunPublicationEvidenceWithLineage(runID string, lineages []PublicationTargetLineageInput, inputs []PublicationEvidenceInput) (*RunPublicationTargetSet, error) {
 	runID = strings.TrimSpace(runID)
 	if runID == "" || len(inputs) == 0 {
 		return nil, ErrRunPublicationCAS
@@ -550,6 +559,12 @@ func (d *DB) RecordRunPublicationEvidence(runID string, inputs []PublicationEvid
 		return nil, fmt.Errorf("begin record publication evidence: %w", err)
 	}
 	defer tx.Rollback()
+	if err := reconcilePublicationTargetLineageTx(tx, runID, lineages); err != nil {
+		return nil, err
+	}
+	if err := verifyPublicationTargetsNoAttemptTx(tx, runID); err != nil {
+		return nil, err
+	}
 	if err := validateRunPublicationTargetLedgerTx(tx, runID, true); err != nil {
 		return nil, err
 	}
@@ -612,6 +627,100 @@ func (d *DB) RecordRunPublicationEvidence(runID string, inputs []PublicationEvid
 		return nil, fmt.Errorf("commit publication evidence: %w", err)
 	}
 	return &set, nil
+}
+
+func reconcilePublicationTargetLineageTx(tx *sql.Tx, runID string, lineages []PublicationTargetLineageInput) error {
+	if len(lineages) == 0 {
+		return nil
+	}
+	var custodyReturned sql.NullInt64
+	var transitionToken, transitionPhase sql.NullString
+	if err := tx.QueryRow(`SELECT custody_returned_at, custody_transition_token, custody_transition_phase FROM runs WHERE id = ?`, runID).Scan(&custodyReturned, &transitionToken, &transitionPhase); err != nil {
+		return ErrRunCustodyCAS
+	}
+	if custodyReturned.Valid || transitionToken.Valid || transitionPhase.Valid {
+		return ErrRunCustodyCAS
+	}
+	targets, err := listPublicationTargetsTx(tx, runID)
+	if err != nil {
+		return err
+	}
+	byFingerprint := make(map[string]RunPublicationTarget, len(targets))
+	pending := make(map[string]struct{})
+	for _, target := range targets {
+		byFingerprint[target.TargetFingerprint] = target
+		if strings.TrimSpace(target.RequestLineage) == "" || target.RequestLineage == PublicationTargetRequestLineageMigrationPending {
+			pending[target.TargetFingerprint] = struct{}{}
+		}
+	}
+	if len(pending) != len(lineages) {
+		return ErrRunPublicationCAS
+	}
+	seen := make(map[string]struct{}, len(lineages))
+	for _, input := range lineages {
+		input.TargetFingerprint = strings.TrimSpace(input.TargetFingerprint)
+		input.RequestLineage = strings.TrimSpace(input.RequestLineage)
+		if input.TargetFingerprint == "" || input.RequestLineage == "" {
+			return ErrRunPublicationCAS
+		}
+		if _, duplicate := seen[input.TargetFingerprint]; duplicate {
+			return ErrRunPublicationCAS
+		}
+		seen[input.TargetFingerprint] = struct{}{}
+		target, ok := byFingerprint[input.TargetFingerprint]
+		if !ok || target.State != PublicationTargetNoAttempt || target.PRState != PublicationTargetPRNoAttempt || target.RequestLineage != "" && target.RequestLineage != PublicationTargetRequestLineageMigrationPending {
+			return ErrRunPublicationCAS
+		}
+		result, err := tx.Exec(`UPDATE run_publication_targets SET request_lineage = ?, generation = generation + 1, provenance = ?, updated_at = ? WHERE run_id = ? AND target_fingerprint = ? AND state = ? AND pr_state = ? AND (COALESCE(request_lineage, '') = '' OR request_lineage = ?)`, input.RequestLineage, "legacy-lineage-reconciled", now(), runID, input.TargetFingerprint, PublicationTargetNoAttempt, PublicationTargetPRNoAttempt, PublicationTargetRequestLineageMigrationPending)
+		if err != nil {
+			return fmt.Errorf("reconcile publication lineage: %w", err)
+		}
+		if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+			return ErrRunPublicationCAS
+		}
+	}
+	if len(seen) != len(pending) {
+		return ErrRunPublicationCAS
+	}
+	targets, err = listPublicationTargetsTx(tx, runID)
+	if err != nil {
+		return err
+	}
+	var targetCount int
+	var setState, currentHash string
+	if err := tx.QueryRow(`SELECT target_count, state, target_set_hash FROM run_publication_target_sets WHERE run_id = ?`, runID).Scan(&targetCount, &setState, &currentHash); err != nil || setState != PublicationTargetSetComplete || targetCount != len(targets) || targetCount == 0 {
+		return ErrRunPublicationCAS
+	}
+	newHash := PublicationTargetSetHash(targets)
+	if newHash == "" {
+		return ErrRunPublicationCAS
+	}
+	if newHash != currentHash {
+		if _, err := tx.Exec(`UPDATE run_publication_target_sets SET target_set_hash = ?, generation = generation + 1, updated_at = ? WHERE run_id = ? AND state = ? AND target_count = ?`, newHash, now(), runID, PublicationTargetSetComplete, targetCount); err != nil {
+			return fmt.Errorf("update reconciled publication target set: %w", err)
+		}
+	}
+	return nil
+}
+
+func verifyPublicationTargetsNoAttemptTx(tx *sql.Tx, runID string) error {
+	if err := validateRunPublicationTargetLedgerTx(tx, runID, false); err != nil {
+		return err
+	}
+	result, err := tx.Exec(`UPDATE run_publication_targets SET pr_provenance = ?, pr_generation = pr_generation + 1, updated_at = ? WHERE run_id = ? AND state = ? AND pr_state = ? AND pr_provenance = ?`, PublicationTargetPRProvenanceVerifiedNoAttempt, now(), strings.TrimSpace(runID), PublicationTargetNoAttempt, PublicationTargetPRNoAttempt, PublicationTargetPRProvenanceMigrationPending)
+	if err != nil {
+		return fmt.Errorf("verify publication target ledger: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("verify publication target ledger: affected rows: %w", err)
+	}
+	if rows > 0 {
+		if _, err := tx.Exec(`UPDATE run_publication_target_sets SET generation = generation + 1, updated_at = ? WHERE run_id = ?`, now(), strings.TrimSpace(runID)); err != nil {
+			return fmt.Errorf("advance verified publication target set generation: %w", err)
+		}
+	}
+	return nil
 }
 
 func listPublicationTargetsTx(tx *sql.Tx, runID string) ([]RunPublicationTarget, error) {

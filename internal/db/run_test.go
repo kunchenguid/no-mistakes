@@ -798,6 +798,57 @@ func TestLegacyPublicationLineageReconcilesAtomically(t *testing.T) {
 	}
 }
 
+func TestPublicationEvidenceReconcilesAllLineageAtomically(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepoWithFork("/tmp/repo-publication-lineage-evidence", "https://github.com/example/parent.git", "https://github.com/example/fork.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets, err := d.ListRunPublicationTargets(run.ID)
+	if err != nil || len(targets) != 2 {
+		t.Fatalf("publication targets = %#v, %v", targets, err)
+	}
+	lineages := make([]PublicationTargetLineageInput, 0, len(targets))
+	evidence := make([]PublicationEvidenceInput, 0, len(targets))
+	for _, target := range targets {
+		lineage := "none"
+		if target.TargetKind == "fork" {
+			lineage = "refs/pull/7/head"
+		}
+		lineages = append(lineages, PublicationTargetLineageInput{TargetFingerprint: target.TargetFingerprint, RequestLineage: lineage})
+		evidence = append(evidence, PublicationEvidenceInput{
+			TargetFingerprint: target.TargetFingerprint,
+			Ref:               target.Ref,
+			TargetVersion:     target.TargetVersion,
+			RemoteHash:        target.TargetFingerprint + "-remote",
+			ProviderHash:      target.TargetFingerprint + "-provider",
+			Cursor:            "audit-cutoff=1754136000;provider-date:1754136000;audit;hasNextPage=false;atomic",
+			Since:             run.CreatedAt,
+			Until:             run.UpdatedAt,
+		})
+	}
+	set, err := d.RecordRunPublicationEvidenceWithLineage(run.ID, lineages, evidence)
+	if err != nil {
+		t.Fatalf("record publication evidence with lineage: %v", err)
+	}
+	if set.EvidenceHash == "" || set.EvidenceGeneration == 0 || set.TargetSetHash == "" || set.Generation == 0 {
+		t.Fatalf("publication evidence target set = %#v", set)
+	}
+	updated, err := d.ListRunPublicationTargets(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range updated {
+		if target.RequestLineage == "" || target.RequestLineage == PublicationTargetRequestLineageMigrationPending || target.PRProvenance == "" {
+			t.Fatalf("publication target was not atomically reconciled: %#v", target)
+		}
+	}
+}
+
 func TestRunPublicationTargetStateRejectsUnknownValue(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepo("/tmp/repo-publication-state", "https://example.com/repo.git", "main")

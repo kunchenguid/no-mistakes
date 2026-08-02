@@ -2,6 +2,7 @@ package gitlab
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -446,6 +447,19 @@ func TestParseGitLabAuditPageRequiresProviderDateAndCursor(t *testing.T) {
 	}
 	if _, err := parseGitLabAuditPage([]byte("HTTP/2 200 OK\r\n\r\n[]\n")); err == nil {
 		t.Fatal("GitLab audit page without provider date was accepted")
+	}
+}
+
+func TestGitLabAuditTargetClassificationFailsClosedForAmbiguousEvents(t *testing.T) {
+	requestSet := map[string]struct{}{"refs/merge-requests/7/head": {}}
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"ref":"other","action":"push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || ambiguous {
+		t.Fatalf("unrelated GitLab audit event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"action":"push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("ambiguous GitLab audit event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if ref, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"ref":"feature","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); ref != "feature" || !targeted || ambiguous {
+		t.Fatalf("target GitLab audit event = %q targeted=%v ambiguous=%v", ref, targeted, ambiguous)
 	}
 }
 

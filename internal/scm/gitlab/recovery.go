@@ -209,30 +209,34 @@ func (h *Host) verifyUnpublishedAuditHistory(ctx context.Context, branch, submit
 	for _, ref := range requestRefs {
 		requestSet[normalizeGitLabRef(ref)] = struct{}{}
 	}
+	relevantEvents := make([]json.RawMessage, 0, len(events))
 	for _, event := range events {
+		projectName := gitlabAuditField(event, "entity_path", "project_path", "project", "target_project")
+		if projectName == "" {
+			return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event has ambiguous project identity")
+		}
+		if !strings.EqualFold(strings.TrimSuffix(projectName, ".git"), h.projectPath) {
+			continue
+		}
+		ref, targeted, ambiguous := gitlabAuditTargetRef(event, requestSet, branch)
+		if ambiguous {
+			return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event has ambiguous target identity")
+		}
+		if !targeted {
+			continue
+		}
 		stamp, err := gitlabAuditEventTimestamp(event)
 		if err != nil {
 			return scm.HistoricalPublicationEvidence{}, fmt.Errorf("GitLab audit event has incomplete timestamps: %w", err)
 		}
-		if stamp < since || stamp > until || stamp > cutoff {
+		if stamp < since {
+			continue
+		}
+		if stamp > cutoff {
 			return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event history has a coverage gap")
 		}
-		projectName := gitlabAuditField(event, "entity_path", "project_path", "project", "target_project")
-		if projectName == "" || !strings.EqualFold(strings.TrimSuffix(projectName, ".git"), h.projectPath) {
-			return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event is not bound to the target project")
-		}
-		ref := normalizeGitLabRef(gitlabAuditField(event, "ref", "branch", "source_branch"))
-		if number := gitlabAuditField(event, "merge_request_iid", "merge_request_number"); number != "" {
-			candidate := "refs/merge-requests/" + number + "/head"
-			if _, ok := requestSet[candidate]; ok {
-				ref = candidate
-			}
-		}
-		if _, ok := requestSet[ref]; !ok && ref != normalizeGitLabRef(branch) {
-			if gitlabAuditField(event, "before", "after", "head_sha", "commit_sha", "commit_to", "oldrev", "newrev") == "" {
-				continue
-			}
-			return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event has incomplete target ref")
+		if gitlabAuditField(event, "before", "after", "head_sha", "commit_sha", "commit_to", "oldrev", "newrev", "sha", "head_sha_after", "head_sha_before") == "" {
+			return scm.HistoricalPublicationEvidence{}, fmt.Errorf("GitLab audit event target %s has no verifiable head", ref)
 		}
 		if recoveryJSONContainsSHA(event, preserved) {
 			return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event contains the preserved unpublished head")
@@ -240,15 +244,80 @@ func (h *Host) verifyUnpublishedAuditHistory(ctx context.Context, branch, submit
 		if after := gitlabAuditField(event, "after", "commit_to", "newrev"); after != "" && recoverySHA(after) && after != submitted {
 			return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event contains a changed target head")
 		}
+		relevantEvents = append(relevantEvents, event)
 	}
 	highWater := fmt.Sprintf("provider-date:%d", cutoff)
 	return scm.HistoricalPublicationEvidence{
-		Hash:      recoveryEvidenceHash(fmt.Sprintf("%s|cutoff=%d|pages=%s", endpoint, cutoff, pageChain), branch, submitted, preserved, events),
+		Hash:      recoveryEvidenceHash(fmt.Sprintf("%s|cutoff=%d|pages=%s", endpoint, cutoff, pageChain), branch, submitted, preserved, relevantEvents),
 		Cursor:    fmt.Sprintf("audit-cutoff=%d;since=%d;until=%d;pages=%s", cutoff, since, until, pageChain),
-		Coverage:  fmt.Sprintf("gitlab-audit-pages=%d;events=%d;retention=180d;pagination=hasNextPage=false;empty-page-terminator;provider-date;audit", pages, len(events)),
+		Coverage:  fmt.Sprintf("gitlab-audit-pages=%d;events=%d;retention=180d;pagination=hasNextPage=false;empty-page-terminator;provider-date;audit", pages, len(relevantEvents)),
 		HighWater: highWater,
 		Complete:  true,
 	}, nil
+}
+
+func gitlabAuditTargetRef(raw json.RawMessage, requestSet map[string]struct{}, branch string) (string, bool, bool) {
+	ref := normalizeGitLabRef(gitlabAuditField(raw, "ref", "branch", "head_ref", "source_ref", "source_branch", "target_ref"))
+	if number := gitlabAuditField(raw, "merge_request_iid", "merge_request_number", "merge_request_id", "request_iid"); number != "" {
+		candidate := "refs/merge-requests/" + number + "/head"
+		if _, ok := requestSet[candidate]; ok {
+			return candidate, true, false
+		}
+		if ref == "" {
+			return candidate, false, false
+		}
+	}
+	if ref == "" {
+		if gitlabAuditHasAnyField(raw, "ref", "branch", "head_ref", "source_ref", "source_branch", "target_ref", "merge_request_iid", "merge_request_number", "merge_request_id", "request_iid") || (gitlabAuditHasAnyField(raw, "before", "after", "head_sha", "commit_sha", "commit_to", "oldrev", "newrev", "sha", "head_sha_after", "head_sha_before") && gitlabAuditLooksLikePublication(raw)) {
+			return "", false, true
+		}
+		return "", false, false
+	}
+	if ref == normalizeGitLabRef(branch) {
+		return ref, true, false
+	}
+	if _, ok := requestSet[ref]; ok {
+		return ref, true, false
+	}
+	return ref, false, false
+}
+
+func gitlabAuditLooksLikePublication(raw json.RawMessage) bool {
+	action := strings.ToLower(gitlabAuditField(raw, "action", "action_name", "event", "event_type", "type", "operation"))
+	return strings.Contains(action, "push") || strings.Contains(action, "force") || strings.Contains(action, "ref") || strings.Contains(action, "branch") || strings.Contains(action, "merge") || strings.Contains(action, "request") || strings.Contains(action, "create") || strings.Contains(action, "update") || strings.Contains(action, "delete") || strings.Contains(action, "rename")
+}
+
+func gitlabAuditHasAnyField(raw json.RawMessage, keys ...string) bool {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return false
+	}
+	wanted := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		wanted[strings.ToLower(key)] = struct{}{}
+	}
+	var visit func(any) bool
+	visit = func(item any) bool {
+		switch typed := item.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				if _, ok := wanted[strings.ToLower(key)]; ok {
+					return true
+				}
+				if visit(child) {
+					return true
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				if visit(child) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return visit(value)
 }
 
 type gitlabAuditPage struct {

@@ -599,7 +599,7 @@ func (m *RunManager) validatePublicationLedger(ctx context.Context, run *db.Run)
 	for _, target := range publicationTargets {
 		targetURLs = append(targetURLs, target.url)
 	}
-	remoteBefore, err := m.verifyRemotePublicationSnapshotWithRequestRefs(ctx, run, repo, publicationTargets, recorded, publicationRequestRefsFromTargets(recorded))
+	remoteBefore, err := m.verifyRemotePublicationSnapshotWithRequestRefs(ctx, run, repo, publicationTargets, recorded, publicationRequestRefsFromInputs(inputs))
 	if err != nil {
 		return fmt.Errorf("verify pre-cutoff remote publication snapshot: %w", err)
 	}
@@ -632,15 +632,16 @@ func (m *RunManager) validatePublicationLedger(ctx context.Context, run *db.Run)
 	if err != nil {
 		return fmt.Errorf("verify final remote publication snapshot: %w", err)
 	}
-	if len(remoteBefore) != len(recorded) || !equalPublicationEvidence(remoteEvidence, remoteEvidenceAgain) {
+	if !equalRemotePublicationEvidence(remoteBefore, remoteEvidence) || !equalRemotePublicationEvidence(remoteEvidence, remoteEvidenceAgain) {
 		return fmt.Errorf("remote publication evidence did not stabilize")
 	}
-	if err := m.db.MarkRunPublicationTargetsVerifiedNoAttempt(run.ID); err != nil {
-		return fmt.Errorf("finalize migrated publication provenance: %w", err)
+	lineageUpdates, err := publicationLineageUpdates(recorded, providerEvidence)
+	if err != nil {
+		return fmt.Errorf("reconcile publication request lineage: %w", err)
 	}
 	evidence := make([]db.PublicationEvidenceInput, 0, len(recorded))
 	for _, target := range recorded {
-		remote, ok := remoteEvidence[target.TargetFingerprint]
+		remote, ok := remoteBefore[target.TargetFingerprint]
 		if !ok {
 			return fmt.Errorf("publication evidence is missing remote target %s", target.TargetFingerprint)
 		}
@@ -659,7 +660,7 @@ func (m *RunManager) validatePublicationLedger(ctx context.Context, run *db.Run)
 			Until:             run.UpdatedAt,
 		})
 	}
-	set, err := m.db.RecordRunPublicationEvidence(run.ID, evidence)
+	set, err := m.db.RecordRunPublicationEvidenceWithLineage(run.ID, lineageUpdates, evidence)
 	if err != nil {
 		return fmt.Errorf("record publication evidence: %w", err)
 	}
@@ -750,15 +751,7 @@ func (m *RunManager) legacyPublicationEvidence(ctx context.Context, run *db.Run,
 		}
 		actualRefs := append([]string(nil), proof.RequestRefs...)
 		sort.Strings(actualRefs)
-		lineage := "none"
-		if len(actualRefs) > 0 {
-			lineage = strings.Join(actualRefs, ",")
-		}
-		if strings.TrimSpace(targetRecord.RequestLineage) == "" || targetRecord.RequestLineage == db.PublicationTargetRequestLineageMigrationPending {
-			if err := m.db.ReconcileRunPublicationTargetLineage(run.ID, fingerprint, lineage); err != nil {
-				return nil, fmt.Errorf("reconcile legacy publication request lineage: %w", err)
-			}
-		} else {
+		if strings.TrimSpace(targetRecord.RequestLineage) != "" && targetRecord.RequestLineage != db.PublicationTargetRequestLineageMigrationPending {
 			expectedRefs := publicationLineageRefs(targetRecord.RequestLineage)
 			sort.Strings(expectedRefs)
 			if !equalStrings(expectedRefs, actualRefs) {
@@ -888,6 +881,19 @@ func equalPublicationEvidence(left, right map[string]scm.HistoricalPublicationEv
 	return true
 }
 
+func equalRemotePublicationEvidence(left, right map[string]scm.HistoricalPublicationEvidence) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		other, ok := right[key]
+		if !ok || value.Hash != other.Hash || !value.Complete || !other.Complete {
+			return false
+		}
+	}
+	return true
+}
+
 func equalStrings(left, right []string) bool {
 	if len(left) != len(right) {
 		return false
@@ -917,6 +923,36 @@ func publicationRequestRefsFromTargets(targets []db.RunPublicationTarget) map[st
 		refs[target.TargetFingerprint] = publicationLineageRefs(target.RequestLineage)
 	}
 	return refs
+}
+
+func publicationRequestRefsFromInputs(inputs []db.PublicationTargetInput) map[string][]string {
+	refs := make(map[string][]string, len(inputs))
+	for _, input := range inputs {
+		refs[input.TargetFingerprint] = publicationLineageRefs(input.RequestLineage)
+	}
+	return refs
+}
+
+func publicationLineageUpdates(targets []db.RunPublicationTarget, evidence map[string]scm.HistoricalPublicationEvidence) ([]db.PublicationTargetLineageInput, error) {
+	updates := make([]db.PublicationTargetLineageInput, 0)
+	for _, target := range targets {
+		if strings.TrimSpace(target.RequestLineage) != "" && target.RequestLineage != db.PublicationTargetRequestLineageMigrationPending {
+			continue
+		}
+		proof, ok := evidence[target.TargetFingerprint]
+		if !ok {
+			return nil, fmt.Errorf("publication evidence is missing target %s", target.TargetFingerprint)
+		}
+		refs := append([]string(nil), proof.RequestRefs...)
+		sort.Strings(refs)
+		lineage := "none"
+		if len(refs) > 0 {
+			lineage = strings.Join(refs, ",")
+		}
+		updates = append(updates, db.PublicationTargetLineageInput{TargetFingerprint: target.TargetFingerprint, RequestLineage: lineage})
+	}
+	sort.Slice(updates, func(i, j int) bool { return updates[i].TargetFingerprint < updates[j].TargetFingerprint })
+	return updates, nil
 }
 
 func publicationRequestRef(ctx context.Context, target, identity string) (string, error) {
