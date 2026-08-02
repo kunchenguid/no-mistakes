@@ -845,6 +845,55 @@ func TestParseGitHubAuditPageRequiresProviderDateAndCursor(t *testing.T) {
 	}
 }
 
+func TestGitHubAuditPagesRejectsNonemptyPageWithoutProviderContinuation(t *testing.T) {
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --include orgs/test/audit-log?before=1&page=1": {
+			stdout: "HTTP/2 200 OK\r\nDate: Sun, 02 Aug 2026 12:00:00 GMT\r\n\r\n[{\"id\":1}]\n",
+		},
+	}), nil, "", "test/repo")
+	if _, _, _, _, err := host.githubAuditPages(context.Background(), "orgs/test/audit-log?before=1", 1, 0); err == nil {
+		t.Fatal("GitHub audit pagination accepted a nonempty page without a provider continuation")
+	}
+}
+
+func TestGitHubAuditPagesFollowsProviderContinuationToEmptyPage(t *testing.T) {
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh api --include orgs/test/audit-log?before=1000&page=1": {
+			stdout: "HTTP/2 200 OK\r\nDate: Sun, 02 Aug 2026 12:00:00 GMT\r\nLink: <https://example.test?page=2>; rel=\"next\"\r\n\r\n[{\"id\":1}]\n",
+		},
+		"gh api --include orgs/test/audit-log?before=1000&page=2": {
+			stdout: "HTTP/2 200 OK\r\nDate: Sun, 02 Aug 2026 12:00:00 GMT\r\n\r\n[]\n",
+		},
+	}), nil, "", "test/repo")
+	events, pages, _, chain, err := host.githubAuditPages(context.Background(), "orgs/test/audit-log", 1, 1)
+	if err != nil || len(events) != 1 || pages != 2 || chain != "1,2" {
+		t.Fatalf("GitHub audit pagination = events %d pages %d chain %q err %v", len(events), pages, chain, err)
+	}
+}
+
+func TestGitHubAuditHeadValidationRequiresCanonicalTargetEvidence(t *testing.T) {
+	a := strings.Repeat("a", 40)
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "abbreviated", raw: `{"before":"` + a + `","after":"abc"}`, want: true},
+		{name: "uppercase", raw: `{"before":"` + a + `","after":"` + strings.Repeat("A", 40) + `"}`, want: true},
+		{name: "missing old head for push", raw: `{"action":"git.push","after":"` + a + `"}`, want: true},
+		{name: "delete new head is not zero", raw: `{"action":"git.delete","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "canonical push", raw: `{"action":"git.push","before":"` + a + `","after":"` + a + `"}`, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := githubAuditValidateHeadValues(json.RawMessage(tc.raw), a)
+			if (err != nil) != tc.want {
+				t.Fatalf("githubAuditValidateHeadValues() error = %v, want error %v", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestGitHubAuditTargetClassificationFailsClosedForAmbiguousEvents(t *testing.T) {
 	requestSet := map[string]struct{}{"refs/pull/7/head": {}}
 	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"ref":"other","action":"git.push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || ambiguous {
@@ -855,6 +904,18 @@ func TestGitHubAuditTargetClassificationFailsClosedForAmbiguousEvents(t *testing
 	}
 	if ref, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"ref":"feature","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); ref != "feature" || !targeted || ambiguous {
 		t.Fatalf("target GitHub audit event = %q targeted=%v ambiguous=%v", ref, targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"pull_number":99,"after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || ambiguous {
+		t.Fatalf("known-unrelated GitHub pull request event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"pull_number":99,"after":"`+strings.Repeat("a", 40)+`"}`), nil, "feature"); targeted || !ambiguous {
+		t.Fatalf("unbound GitHub pull request event without lineage classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"source_branch":"renamed-feature","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("renamed GitHub source event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := githubAuditTargetRef(json.RawMessage(`{"ref":"renamed-feature","action":"git.push","after":"`+strings.Repeat("a", 40)+`"}`), nil, "feature"); targeted || !ambiguous {
+		t.Fatalf("unbound renamed GitHub ref event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
 	}
 }
 

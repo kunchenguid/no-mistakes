@@ -450,6 +450,55 @@ func TestParseGitLabAuditPageRequiresProviderDateAndCursor(t *testing.T) {
 	}
 }
 
+func TestGitLabAuditPagesRejectsNonemptyPageWithoutProviderContinuation(t *testing.T) {
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab api --include projects/group%2Fproject/audit_events?created_before=1&page=1": {
+			stdout: "HTTP/2 200 OK\r\nDate: Sun, 02 Aug 2026 12:00:00 GMT\r\n\r\n[{\"id\":1}]\n",
+		},
+	}), nil, "", "group/project")
+	if _, _, _, _, err := host.gitlabAuditPages(context.Background(), "projects/group%2Fproject/audit_events?created_before=1", 1, 0); err == nil {
+		t.Fatal("GitLab audit pagination accepted a nonempty page without a provider continuation")
+	}
+}
+
+func TestGitLabAuditPagesFollowsProviderContinuationToEmptyPage(t *testing.T) {
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab api --include projects/group%2Fproject/audit_events?created_before=1970-01-01T00%3A00%3A01Z&page=1": {
+			stdout: "HTTP/2 200 OK\r\nDate: Sun, 02 Aug 2026 12:00:00 GMT\r\nX-Next-Page: 2\r\n\r\n[{\"id\":1}]\n",
+		},
+		"glab api --include projects/group%2Fproject/audit_events?created_before=1970-01-01T00%3A00%3A01Z&page=2": {
+			stdout: "HTTP/2 200 OK\r\nDate: Sun, 02 Aug 2026 12:00:00 GMT\r\n\r\n[]\n",
+		},
+	}), nil, "", "group/project")
+	events, pages, _, chain, err := host.gitlabAuditPages(context.Background(), "projects/group%2Fproject/audit_events", 1, 1)
+	if err != nil || len(events) != 1 || pages != 2 || chain != "1,2" {
+		t.Fatalf("GitLab audit pagination = events %d pages %d chain %q err %v", len(events), pages, chain, err)
+	}
+}
+
+func TestGitLabAuditHeadValidationRequiresCanonicalTargetEvidence(t *testing.T) {
+	a := strings.Repeat("a", 40)
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "abbreviated", raw: `{"before":"` + a + `","after":"abc"}`, want: true},
+		{name: "uppercase", raw: `{"before":"` + a + `","after":"` + strings.Repeat("A", 40) + `"}`, want: true},
+		{name: "missing old head for push", raw: `{"action":"push","after":"` + a + `"}`, want: true},
+		{name: "delete new head is not zero", raw: `{"action":"delete","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "canonical push", raw: `{"action":"push","before":"` + a + `","after":"` + a + `"}`, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := gitlabAuditValidateHeadValues(json.RawMessage(tc.raw), a)
+			if (err != nil) != tc.want {
+				t.Fatalf("gitlabAuditValidateHeadValues() error = %v, want error %v", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestGitLabAuditTargetClassificationFailsClosedForAmbiguousEvents(t *testing.T) {
 	requestSet := map[string]struct{}{"refs/merge-requests/7/head": {}}
 	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"ref":"other","action":"push","after":"`+strings.Repeat("b", 40)+`"}`), requestSet, "feature"); targeted || ambiguous {
@@ -460,6 +509,18 @@ func TestGitLabAuditTargetClassificationFailsClosedForAmbiguousEvents(t *testing
 	}
 	if ref, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"ref":"feature","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); ref != "feature" || !targeted || ambiguous {
 		t.Fatalf("target GitLab audit event = %q targeted=%v ambiguous=%v", ref, targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"merge_request_iid":99,"after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || ambiguous {
+		t.Fatalf("known-unrelated GitLab merge request event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"merge_request_iid":99,"after":"`+strings.Repeat("a", 40)+`"}`), nil, "feature"); targeted || !ambiguous {
+		t.Fatalf("unbound GitLab merge request event without lineage classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"source_branch":"renamed-feature","after":"`+strings.Repeat("a", 40)+`"}`), requestSet, "feature"); targeted || !ambiguous {
+		t.Fatalf("renamed GitLab source event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
+	}
+	if _, targeted, ambiguous := gitlabAuditTargetRef(json.RawMessage(`{"ref":"renamed-feature","action":"push","after":"`+strings.Repeat("a", 40)+`"}`), nil, "feature"); targeted || !ambiguous {
+		t.Fatalf("unbound renamed GitLab ref event classified as targeted=%v ambiguous=%v", targeted, ambiguous)
 	}
 }
 

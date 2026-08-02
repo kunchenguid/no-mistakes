@@ -205,6 +205,9 @@ func (h *Host) verifyUnpublishedAuditHistory(ctx context.Context, branch, submit
 	if cutoff < since {
 		return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event cutoff predates the run")
 	}
+	if !recoverySHA(submitted) || !recoverySHAForFormat(preserved, submitted) {
+		return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit history has noncanonical object IDs")
+	}
 	requestSet := make(map[string]struct{}, len(requestRefs))
 	for _, ref := range requestRefs {
 		requestSet[normalizeGitLabRef(ref)] = struct{}{}
@@ -235,8 +238,8 @@ func (h *Host) verifyUnpublishedAuditHistory(ctx context.Context, branch, submit
 		if stamp > cutoff {
 			return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event history has a coverage gap")
 		}
-		if gitlabAuditField(event, "before", "after", "head_sha", "commit_sha", "commit_to", "oldrev", "newrev", "sha", "head_sha_after", "head_sha_before") == "" {
-			return scm.HistoricalPublicationEvidence{}, fmt.Errorf("GitLab audit event target %s has no verifiable head", ref)
+		if err := gitlabAuditValidateHeadValues(event, submitted); err != nil {
+			return scm.HistoricalPublicationEvidence{}, fmt.Errorf("GitLab audit event target %s has invalid head evidence: %w", ref, err)
 		}
 		if recoveryJSONContainsSHA(event, preserved) {
 			return scm.HistoricalPublicationEvidence{}, errors.New("GitLab audit event contains the preserved unpublished head")
@@ -257,15 +260,14 @@ func (h *Host) verifyUnpublishedAuditHistory(ctx context.Context, branch, submit
 }
 
 func gitlabAuditTargetRef(raw json.RawMessage, requestSet map[string]struct{}, branch string) (string, bool, bool) {
-	ref := normalizeGitLabRef(gitlabAuditField(raw, "ref", "branch", "head_ref", "source_ref", "source_branch", "target_ref"))
+	refValue, refKey := gitlabAuditRefField(raw, "ref", "branch", "head_ref", "source_ref", "source_branch", "target_ref")
+	ref := normalizeGitLabRef(refValue)
 	if number := gitlabAuditField(raw, "merge_request_iid", "merge_request_number", "merge_request_id", "request_iid"); number != "" {
 		candidate := "refs/merge-requests/" + number + "/head"
 		if _, ok := requestSet[candidate]; ok {
 			return candidate, true, false
 		}
-		if ref == "" {
-			return candidate, false, false
-		}
+		return candidate, false, len(requestSet) == 0
 	}
 	if ref == "" {
 		if gitlabAuditHasAnyField(raw, "ref", "branch", "head_ref", "source_ref", "source_branch", "target_ref", "merge_request_iid", "merge_request_number", "merge_request_id", "request_iid") || (gitlabAuditHasAnyField(raw, "before", "after", "head_sha", "commit_sha", "commit_to", "oldrev", "newrev", "sha", "head_sha_after", "head_sha_before") && gitlabAuditLooksLikePublication(raw)) {
@@ -279,7 +281,166 @@ func gitlabAuditTargetRef(raw json.RawMessage, requestSet map[string]struct{}, b
 	if _, ok := requestSet[ref]; ok {
 		return ref, true, false
 	}
+	if strings.HasPrefix(ref, "refs/merge-requests/") || strings.HasPrefix(ref, "refs/heads/") {
+		return ref, false, len(requestSet) == 0
+	}
+	if refKey != "ref" && refKey != "branch" {
+		return ref, false, true
+	}
+	if len(requestSet) == 0 || gitlabAuditIsRenameOrDelete(raw) {
+		return ref, false, true
+	}
 	return ref, false, false
+}
+
+func gitlabAuditRefField(raw json.RawMessage, keys ...string) (string, string) {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return "", ""
+	}
+	var find func(any, string) (string, bool)
+	find = func(item any, wanted string) (string, bool) {
+		switch typed := item.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				if strings.ToLower(key) != wanted {
+					continue
+				}
+				switch scalar := child.(type) {
+				case string:
+					if strings.TrimSpace(scalar) != "" {
+						return scalar, true
+					}
+				case float64:
+					return strconv.FormatInt(int64(scalar), 10), true
+				}
+			}
+			for _, child := range typed {
+				if found, ok := find(child, wanted); ok {
+					return found, true
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				if found, ok := find(child, wanted); ok {
+					return found, true
+				}
+			}
+		}
+		return "", false
+	}
+	for _, key := range keys {
+		if found, ok := find(value, strings.ToLower(key)); ok {
+			return found, strings.ToLower(key)
+		}
+	}
+	return "", ""
+}
+
+func gitlabAuditIsRenameOrDelete(raw json.RawMessage) bool {
+	action := strings.ToLower(gitlabAuditField(raw, "action", "action_name", "event", "event_type", "type", "operation"))
+	return strings.Contains(action, "rename") || strings.Contains(action, "delete")
+}
+
+func gitlabAuditValidateHeadValues(raw json.RawMessage, submitted string) error {
+	fields, err := gitlabAuditHeadValues(raw)
+	if err != nil {
+		return err
+	}
+	if len(fields) == 0 {
+		return errors.New("no verifiable head")
+	}
+	for key, values := range fields {
+		for _, value := range values {
+			if !recoverySHAForFormat(value, submitted) {
+				return fmt.Errorf("%s is not a canonical object ID", key)
+			}
+			if !isZeroRecoverySHA(value) && value != submitted {
+				return fmt.Errorf("%s names a different head", key)
+			}
+		}
+	}
+	action := strings.ToLower(gitlabAuditField(raw, "action", "action_name", "event", "event_type", "type", "operation"))
+	if strings.Contains(action, "delete") {
+		if !gitlabAuditHasHeadPair(fields) || gitlabAuditPairIsZero(fields, false) || !gitlabAuditPairIsZero(fields, true) {
+			return errors.New("delete action lacks canonical old/new head evidence")
+		}
+	}
+	if strings.Contains(action, "push") || strings.Contains(action, "force") || strings.Contains(action, "update") {
+		if !gitlabAuditHasHeadPair(fields) || gitlabAuditPairIsZero(fields, true) {
+			return errors.New("update action lacks canonical old/new head evidence")
+		}
+	}
+	if strings.Contains(action, "create") && gitlabAuditPairIsZero(fields, true) {
+		return errors.New("create action lacks a canonical new head")
+	}
+	return nil
+}
+
+func gitlabAuditHeadValues(raw json.RawMessage) (map[string][]string, error) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	wanted := map[string]struct{}{
+		"before": {}, "after": {}, "head": {}, "head_sha": {}, "head_sha_before": {}, "head_sha_after": {},
+		"commit_sha": {}, "commit_from": {}, "commit_to": {}, "head_commit_sha": {}, "oldrev": {}, "newrev": {}, "old_sha": {}, "new_sha": {},
+		"sha": {},
+	}
+	fields := make(map[string][]string)
+	var visit func(any) error
+	visit = func(item any) error {
+		switch typed := item.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				lower := strings.ToLower(key)
+				if _, ok := wanted[lower]; ok {
+					value, ok := child.(string)
+					if !ok {
+						return fmt.Errorf("%s is not a string", key)
+					}
+					fields[lower] = append(fields[lower], value)
+				}
+				if err := visit(child); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				if err := visit(child); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := visit(value); err != nil {
+		return nil, err
+	}
+	return fields, nil
+}
+
+func gitlabAuditHasHeadPair(fields map[string][]string) bool {
+	for _, pair := range [][2]string{{"before", "after"}, {"oldrev", "newrev"}, {"commit_from", "commit_to"}, {"head_sha_before", "head_sha_after"}, {"old_sha", "new_sha"}} {
+		if len(fields[pair[0]]) > 0 && len(fields[pair[1]]) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func gitlabAuditPairIsZero(fields map[string][]string, newValue bool) bool {
+	for _, pair := range [][2]string{{"before", "after"}, {"oldrev", "newrev"}, {"commit_from", "commit_to"}, {"head_sha_before", "head_sha_after"}, {"old_sha", "new_sha"}} {
+		if len(fields[pair[0]]) == 0 || len(fields[pair[1]]) == 0 {
+			continue
+		}
+		value := fields[pair[1]][0]
+		if !newValue {
+			value = fields[pair[0]][0]
+		}
+		return isZeroRecoverySHA(value)
+	}
+	return false
 }
 
 func gitlabAuditLooksLikePublication(raw json.RawMessage) bool {
@@ -330,7 +491,17 @@ func (h *Host) gitlabAuditPages(ctx context.Context, endpoint string, since, cut
 	var events []json.RawMessage
 	pageChain := make([]string, 0)
 	pageCutoff := cutoff
-	for pageNumber := 1; pageNumber <= 10000; pageNumber++ {
+	nextPage := 1
+	seenPages := make(map[int]struct{})
+	for pages := 0; pages < 10000; pages++ {
+		pageNumber := nextPage
+		if pageNumber <= 0 {
+			return nil, 0, 0, "", errors.New("GitLab audit event history returned an invalid pagination cursor")
+		}
+		if _, seen := seenPages[pageNumber]; seen {
+			return nil, 0, 0, "", errors.New("GitLab audit event history pagination repeated a cursor")
+		}
+		seenPages[pageNumber] = struct{}{}
 		pageURL, err := url.Parse(endpoint)
 		if err != nil {
 			return nil, 0, 0, "", err
@@ -364,16 +535,20 @@ func (h *Host) gitlabAuditPages(ctx context.Context, endpoint string, since, cut
 			return nil, 0, 0, "", errors.New("GitLab audit event history server time moved backwards")
 		}
 		pageChain = append(pageChain, strconv.Itoa(pageNumber))
-		if page.nextPage != 0 && page.nextPage != pageNumber+1 {
-			return nil, 0, 0, "", errors.New("GitLab audit event history pagination has a cursor gap")
-		}
 		events = append(events, page.events...)
 		if len(page.events) == 0 {
 			if page.nextPage != 0 {
 				return nil, 0, 0, "", errors.New("GitLab audit event history returned an empty page with a next cursor")
 			}
-			return events, pageNumber, pageCutoff, strings.Join(pageChain, ","), nil
+			return events, pages + 1, pageCutoff, strings.Join(pageChain, ","), nil
 		}
+		if page.nextPage == 0 || page.nextPage <= pageNumber {
+			return nil, 0, 0, "", errors.New("GitLab audit event history returned a nonempty page without an authoritative continuation cursor")
+		}
+		if page.nextPage != pageNumber+1 {
+			return nil, 0, 0, "", errors.New("GitLab audit event history pagination has a cursor gap")
+		}
+		nextPage = page.nextPage
 	}
 	return nil, 0, 0, "", errors.New("GitLab audit event history pagination exceeded the safety bound")
 }
@@ -827,11 +1002,24 @@ func recoveryRefSHAKey(key string) bool {
 }
 
 func recoverySHA(value string) bool {
-	if len(value) != 40 {
+	if len(value) != 40 && len(value) != 64 {
 		return false
 	}
 	for _, char := range value {
-		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func recoverySHAForFormat(value, format string) bool {
+	return recoverySHA(value) && (len(format) == 40 || len(format) == 64) && len(value) == len(format)
+}
+
+func isZeroRecoverySHA(value string) bool {
+	for _, char := range value {
+		if char != '0' {
 			return false
 		}
 	}
