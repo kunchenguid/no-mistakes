@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.45.0](https://github.com/kunchenguid/no-mistakes/compare/v1.44.2...v1.45.0) (2026-08-02)
+
+
+### Features
+
+* **pipeline:** re-run provider-cancelled CI checks before escalating ([#595](https://github.com/kunchenguid/no-mistakes/issues/595)) ([1753783](https://github.com/kunchenguid/no-mistakes/commit/17537830a92de42e0b8c3848bfab8e2301be8923))
+
+
+### Bug Fixes
+
+* **cli:** confirm abort truth before releasing branch custody ([#631](https://github.com/kunchenguid/no-mistakes/issues/631)) ([a93dc8f](https://github.com/kunchenguid/no-mistakes/commit/a93dc8ff6a942d8d69fce97c3afc1bb11bf3fdc6))
+
 ## [1.44.2](https://github.com/kunchenguid/no-mistakes/compare/v1.44.1...v1.44.2) (2026-08-01)
 
 
