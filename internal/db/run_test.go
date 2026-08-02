@@ -595,6 +595,60 @@ func TestRunPublicationTargetPreparedPRBlocksUnpublishedValidation(t *testing.T)
 	}
 }
 
+func TestCustodyCASRejectsPublicationTargetChannelChanges(t *testing.T) {
+	t.Run("prepared PR cannot be stamped", func(t *testing.T) {
+		d := openTestDB(t)
+		repo, err := d.InsertRepo("/tmp/repo-publication-custody-race", "https://github.com/example/parent.git", "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
+			t.Fatal(err)
+		}
+		fingerprint := publicationTargetFingerprint(repo.UpstreamURL)
+		if err := d.PrepareRunPublicationTargetAttempt(run.ID, "upstream", fingerprint, "refs/heads/feature"); err != nil {
+			t.Fatal(err)
+		}
+		expected, err := d.GetRun(run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := d.SetRunCustodyReturnedCAS(expected); !errors.Is(err, ErrRunCustodyCAS) {
+			t.Fatalf("custody CAS after prepared PR = %v, want ErrRunCustodyCAS", err)
+		}
+	})
+
+	t.Run("PR preparation cannot enter an active custody transition", func(t *testing.T) {
+		d := openTestDB(t)
+		repo, err := d.InsertRepo("/tmp/repo-publication-custody-transition", "https://github.com/example/parent.git", "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
+			t.Fatal(err)
+		}
+		expected, err := d.GetRun(run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.BeginRunCustodyTransition(context.Background(), expected); err != nil {
+			t.Fatal(err)
+		}
+		fingerprint := publicationTargetFingerprint(repo.UpstreamURL)
+		if err := d.PrepareRunPublicationTargetAttempt(run.ID, "upstream", fingerprint, "refs/heads/feature"); !errors.Is(err, ErrRunCustodyCAS) {
+			t.Fatalf("PR preparation during custody = %v, want ErrRunCustodyCAS", err)
+		}
+	})
+}
+
 func TestLegacyPublicationTargetsWithoutSubmissionGraphRemainAmbiguous(t *testing.T) {
 	d := openTestDB(t)
 	repo, err := d.InsertRepo("/tmp/repo-legacy-publication-targets", "https://github.com/example/parent.git", "main")
@@ -621,6 +675,31 @@ func TestLegacyPublicationTargetsWithoutSubmissionGraphRemainAmbiguous(t *testin
 	}
 	if len(targets) != 0 {
 		t.Fatalf("legacy targets = %#v, want no inferred current targets", targets)
+	}
+}
+
+func TestMigrationBackfillsPendingPRProvenanceForExistingLedger(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/repo-publication-migration", "https://github.com/example/parent.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.sql.Exec(`UPDATE run_publication_targets SET pr_provenance = '' WHERE run_id = ?`, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateRunPublicationTargets(d.sql); err != nil {
+		t.Fatal(err)
+	}
+	targets, err := d.ListRunPublicationTargets(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].PRProvenance != PublicationTargetPRProvenanceMigrationPending {
+		t.Fatalf("migrated PR provenance = %#v, want %q", targets, PublicationTargetPRProvenanceMigrationPending)
 	}
 }
 

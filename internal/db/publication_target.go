@@ -15,10 +15,12 @@ const (
 	PublicationTargetPublished = "published"
 	PublicationTargetAmbiguous = "ambiguous"
 
-	PublicationTargetPRNoAttempt = "no_attempt"
-	PublicationTargetPRPrepared  = "prepared"
-	PublicationTargetPROpened    = "opened"
-	PublicationTargetPRAmbiguous = "ambiguous"
+	PublicationTargetPRNoAttempt                   = "no_attempt"
+	PublicationTargetPRPrepared                    = "prepared"
+	PublicationTargetPROpened                      = "opened"
+	PublicationTargetPRAmbiguous                   = "ambiguous"
+	PublicationTargetPRProvenanceMigrationPending  = "migration-pending"
+	PublicationTargetPRProvenanceVerifiedNoAttempt = "verified-no-attempt"
 
 	PublicationTargetSetComplete  = "complete"
 	PublicationTargetSetAmbiguous = "ambiguous"
@@ -240,6 +242,46 @@ func (d *DB) GetRunPublicationTargetSet(runID string) (*RunPublicationTargetSet,
 	return &set, nil
 }
 
+func validateRunPublicationTargetLedgerTx(tx *sql.Tx, runID string, requireVerified bool) error {
+	var set RunPublicationTargetSet
+	if err := tx.QueryRow(`SELECT run_id, target_count, target_set_hash, state, generation, provenance FROM run_publication_target_sets WHERE run_id = ?`, strings.TrimSpace(runID)).Scan(&set.RunID, &set.TargetCount, &set.TargetSetHash, &set.State, &set.Generation, &set.Provenance); err != nil {
+		return ErrRunPublicationCAS
+	}
+	rows, err := tx.Query(`SELECT run_id, target_kind, target_fingerprint, ref, target_version, state, COALESCE(request_identity, ''), COALESCE(attempt_head_sha, ''), generation, provenance, pr_state, COALESCE(pr_request_identity, ''), pr_generation, pr_provenance FROM run_publication_targets WHERE run_id = ? ORDER BY target_fingerprint`, strings.TrimSpace(runID))
+	if err != nil {
+		return fmt.Errorf("read publication target ledger: %w", err)
+	}
+	defer rows.Close()
+	var targets []RunPublicationTarget
+	for rows.Next() {
+		var target RunPublicationTarget
+		if err := rows.Scan(&target.RunID, &target.TargetKind, &target.TargetFingerprint, &target.Ref, &target.TargetVersion, &target.State, &target.RequestIdentity, &target.AttemptHeadSHA, &target.Generation, &target.Provenance, &target.PRState, &target.PRRequestIdentity, &target.PRGeneration, &target.PRProvenance); err != nil {
+			return fmt.Errorf("scan publication target ledger: %w", err)
+		}
+		targets = append(targets, target)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read publication target ledger: %w", err)
+	}
+	if set.State != PublicationTargetSetComplete || set.TargetCount == 0 || set.TargetCount != len(targets) || set.Generation < 0 || strings.TrimSpace(set.Provenance) == "" || set.TargetSetHash != PublicationTargetSetHash(targets) {
+		return ErrRunPublicationCAS
+	}
+	seen := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		if target.TargetKind == "" || target.TargetFingerprint == "" || target.Ref == "" || target.TargetVersion < 0 || target.Generation < 0 || strings.TrimSpace(target.Provenance) == "" || target.State != PublicationTargetNoAttempt || target.RequestIdentity != "" || target.AttemptHeadSHA != "" {
+			return ErrRunPublicationCAS
+		}
+		if target.PRState != PublicationTargetPRNoAttempt || target.PRRequestIdentity != "" || target.PRGeneration < 0 || strings.TrimSpace(target.PRProvenance) == "" || requireVerified && target.PRProvenance == PublicationTargetPRProvenanceMigrationPending {
+			return ErrRunPublicationCAS
+		}
+		if _, ok := seen[target.TargetFingerprint]; ok {
+			return ErrRunPublicationCAS
+		}
+		seen[target.TargetFingerprint] = struct{}{}
+	}
+	return nil
+}
+
 func (d *DB) PrepareRunPublicationTargetAttempt(runID, targetKind, targetFingerprint, ref string) error {
 	runID = strings.TrimSpace(runID)
 	targetKind = strings.TrimSpace(targetKind)
@@ -262,6 +304,16 @@ func (d *DB) PrepareRunPublicationTargetAttempt(runID, targetKind, targetFingerp
 	if setState != PublicationTargetSetComplete {
 		return ErrRunPublicationCAS
 	}
+	var custodyReturned sql.NullInt64
+	var transitionToken, transitionPhase sql.NullString
+	if err := tx.QueryRow(`SELECT custody_returned_at, custody_transition_token, custody_transition_phase FROM runs WHERE id = ?`, runID).Scan(&custodyReturned, &transitionToken, &transitionPhase); err == sql.ErrNoRows {
+		return ErrRunCustodyCAS
+	} else if err != nil {
+		return fmt.Errorf("read publication custody authority: %w", err)
+	}
+	if custodyReturned.Valid || transitionToken.Valid || transitionPhase.Valid {
+		return ErrRunCustodyCAS
+	}
 	var prState, currentKind, currentRef string
 	if err := tx.QueryRow(`SELECT pr_state, target_kind, ref FROM run_publication_targets WHERE run_id = ? AND target_fingerprint = ?`, runID, targetFingerprint).Scan(&prState, &currentKind, &currentRef); err == sql.ErrNoRows {
 		return ErrRunPublicationCAS
@@ -283,6 +335,9 @@ func (d *DB) PrepareRunPublicationTargetAttempt(runID, targetKind, targetFingerp
 	} else if rows != 1 {
 		return ErrRunPublicationCAS
 	}
+	if _, err := tx.Exec(`UPDATE run_publication_target_sets SET generation = generation + 1, updated_at = ? WHERE run_id = ?`, now(), runID); err != nil {
+		return fmt.Errorf("advance publication target set generation: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit prepare publication target: %w", err)
 	}
@@ -301,6 +356,16 @@ func (d *DB) SetRunPublicationTargetIdentity(runID, fingerprint, identity string
 		return fmt.Errorf("begin set publication target identity: %w", err)
 	}
 	defer tx.Rollback()
+	var custodyReturned sql.NullInt64
+	var transitionToken, transitionPhase sql.NullString
+	if err := tx.QueryRow(`SELECT custody_returned_at, custody_transition_token, custody_transition_phase FROM runs WHERE id = ?`, runID).Scan(&custodyReturned, &transitionToken, &transitionPhase); err == sql.ErrNoRows {
+		return ErrRunCustodyCAS
+	} else if err != nil {
+		return fmt.Errorf("read publication custody authority: %w", err)
+	}
+	if custodyReturned.Valid || transitionToken.Valid || transitionPhase.Valid {
+		return ErrRunCustodyCAS
+	}
 	var state, current string
 	if err := tx.QueryRow(`SELECT pr_state, COALESCE(pr_request_identity, '') FROM run_publication_targets WHERE run_id = ? AND target_fingerprint = ?`, runID, fingerprint).Scan(&state, &current); err == sql.ErrNoRows {
 		return ErrRunPublicationCAS
@@ -316,8 +381,40 @@ func (d *DB) SetRunPublicationTargetIdentity(runID, fingerprint, identity string
 	if _, err := tx.Exec(`UPDATE run_publication_targets SET pr_request_identity = ?, pr_state = CASE WHEN pr_state IN (?, ?) THEN ? ELSE pr_state END, pr_generation = pr_generation + 1, pr_provenance = ?, updated_at = ? WHERE run_id = ? AND target_fingerprint = ? AND pr_state != ?`, identity, PublicationTargetPRNoAttempt, PublicationTargetPRPrepared, PublicationTargetPROpened, "submission-identity", now(), runID, fingerprint, PublicationTargetPRAmbiguous); err != nil {
 		return fmt.Errorf("set publication target identity: %w", err)
 	}
+	if _, err := tx.Exec(`UPDATE run_publication_target_sets SET generation = generation + 1, updated_at = ? WHERE run_id = ?`, now(), runID); err != nil {
+		return fmt.Errorf("advance publication target set generation: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit publication target identity: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) MarkRunPublicationTargetsVerifiedNoAttempt(runID string) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin verify publication target ledger: %w", err)
+	}
+	defer tx.Rollback()
+	if err := validateRunPublicationTargetLedgerTx(tx, runID, false); err != nil {
+		return err
+	}
+	result, err := tx.Exec(`UPDATE run_publication_targets SET pr_provenance = ?, pr_generation = pr_generation + 1, updated_at = ? WHERE run_id = ? AND state = ? AND pr_state = ? AND pr_provenance = ?`, PublicationTargetPRProvenanceVerifiedNoAttempt, now(), strings.TrimSpace(runID), PublicationTargetNoAttempt, PublicationTargetPRNoAttempt, PublicationTargetPRProvenanceMigrationPending)
+	if err != nil {
+		return fmt.Errorf("verify publication target ledger: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("verify publication target ledger: affected rows: %w", err)
+	} else if rows > 0 {
+		if _, err := tx.Exec(`UPDATE run_publication_target_sets SET generation = generation + 1, updated_at = ? WHERE run_id = ?`, now(), strings.TrimSpace(runID)); err != nil {
+			return fmt.Errorf("advance verified publication target set generation: %w", err)
+		}
+	}
+	if err := validateRunPublicationTargetLedgerTx(tx, runID, true); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit verified publication target ledger: %w", err)
 	}
 	return nil
 }
@@ -358,6 +455,9 @@ func (d *DB) ValidateRunPublicationTargetLedger(runID string) error {
 }
 
 func migrateRunPublicationTargets(sqlDB *sql.DB) error {
+	if _, err := sqlDB.Exec(`UPDATE run_publication_targets SET pr_provenance = ? WHERE pr_state = ? AND pr_provenance = ''`, PublicationTargetPRProvenanceMigrationPending, PublicationTargetPRNoAttempt); err != nil {
+		return err
+	}
 	rows, err := sqlDB.Query(`SELECT id, branch, publication_attempt_head_sha, publication_attempt_target_kind, publication_attempt_target_fingerprint, publication_attempt_ref, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, publication_journal_target_version FROM runs WHERE NOT EXISTS (SELECT 1 FROM run_publication_target_sets WHERE run_publication_target_sets.run_id = runs.id)`)
 	if err != nil {
 		return err

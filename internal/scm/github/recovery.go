@@ -54,12 +54,12 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 		if targetNumber != "" && fmt.Sprint(pull.Number) != targetNumber {
 			continue
 		}
-		if targetNumber == "" && pull.Head.Ref != branch {
-			return fmt.Errorf("GitHub pull request %d has no complete submission-time target identity", pull.Number)
-		}
 		matched = true
-		if pull.Head.SHA == "" || pull.Head.SHA != submitted {
+		if targetNumber != "" && (pull.Head.SHA == "" || pull.Head.SHA != submitted) {
 			return fmt.Errorf("GitHub pull request %d has a changed head", pull.Number)
+		}
+		if pull.Head.SHA == preserved {
+			return fmt.Errorf("GitHub pull request %d history contains the preserved unpublished head", pull.Number)
 		}
 		var commits []struct {
 			SHA string `json:"sha"`

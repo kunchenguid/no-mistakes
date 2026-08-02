@@ -558,6 +558,20 @@ func (m *RunManager) validatePublicationLedger(ctx context.Context, run *db.Run)
 			return fmt.Errorf("publication target set changed")
 		}
 	}
+	publicationTargets, err := m.publicationTargetURLs(ctx, repo, run.Branch)
+	if err != nil {
+		return fmt.Errorf("enumerate publication targets for historical proof: %w", err)
+	}
+	targetURLs := make([]string, 0, len(publicationTargets))
+	for _, target := range publicationTargets {
+		targetURLs = append(targetURLs, target.url)
+	}
+	if err := m.legacyPublicationProof(ctx, run, run.Branch, targetURLs); err != nil {
+		return fmt.Errorf("verify historical publication proof: %w", err)
+	}
+	if err := m.db.MarkRunPublicationTargetsVerifiedNoAttempt(run.ID); err != nil {
+		return fmt.Errorf("finalize migrated publication provenance: %w", err)
+	}
 	return nil
 }
 
@@ -672,11 +686,18 @@ func (m *RunManager) recoveryTargetIdentityForRun(ctx context.Context, target st
 	if targetRecord == nil || targetRecord.Ref != "refs/heads/"+strings.TrimPrefix(strings.TrimSpace(run.Branch), "refs/heads/") {
 		return "", fmt.Errorf("submission-time publication target ref is not bound to the run branch")
 	}
+	if targetRecord.PRRequestIdentity != "" {
+		identity, err := recoveryTargetIdentity(ctx, target, &targetRecord.PRRequestIdentity)
+		if err != nil {
+			return "", err
+		}
+		return identity, nil
+	}
 	if run.PRURL != nil && strings.TrimSpace(*run.PRURL) != "" {
 		legacyPRURL := strings.TrimSpace(*run.PRURL)
 		matched := false
 		for _, item := range byFingerprint {
-			if item.RequestIdentity == legacyPRURL {
+			if item.PRRequestIdentity == legacyPRURL {
 				matched = true
 				break
 			}
@@ -2248,16 +2269,51 @@ func (m *RunManager) publicationTargetInputs(ctx context.Context, repo *db.Repo,
 	if m == nil || repo == nil {
 		return nil, fmt.Errorf("publication target ledger requires a repository")
 	}
-	baseInputs := db.PublicationTargetInputs(repo, branch)
-	inputs := make([]db.PublicationTargetInput, 0, len(baseInputs)+4)
-	inputs = append(inputs, baseInputs...)
+	targets, err := m.publicationTargetURLs(ctx, repo, branch)
+	if err != nil {
+		return nil, err
+	}
+	inputs := make([]db.PublicationTargetInput, 0, len(targets))
+	ref := "refs/heads/" + strings.TrimPrefix(strings.TrimSpace(branch), "refs/heads/")
+	for _, target := range targets {
+		inputs = append(inputs, db.PublicationTargetInput{
+			TargetKind:        target.kind,
+			TargetFingerprint: db.PublicationTargetFingerprint(target.url),
+			Ref:               ref,
+			TargetVersion:     repo.URLVersion,
+		})
+	}
+	return inputs, nil
+}
+
+type publicationTargetURL struct {
+	kind string
+	url  string
+}
+
+func (m *RunManager) publicationTargetURLs(ctx context.Context, repo *db.Repo, branch string) ([]publicationTargetURL, error) {
+	if m == nil || repo == nil {
+		return nil, fmt.Errorf("publication target history requires a repository")
+	}
+	targets := make([]publicationTargetURL, 0, 6)
+	seen := make(map[string]struct{})
+	add := func(kind, raw string) {
+		raw = strings.TrimSpace(raw)
+		fingerprint := db.PublicationTargetFingerprint(raw)
+		if raw == "" || fingerprint == "" {
+			return
+		}
+		if _, ok := seen[fingerprint]; ok {
+			return
+		}
+		seen[fingerprint] = struct{}{}
+		targets = append(targets, publicationTargetURL{kind: kind, url: raw})
+	}
+	add("upstream", repo.UpstreamURL)
+	add("fork", repo.ForkURL)
 	remoteOutput, err := git.Run(ctx, repo.WorkingPath, "remote")
 	if err != nil {
 		return nil, fmt.Errorf("list working-clone remotes: %w", err)
-	}
-	seen := make(map[string]struct{}, len(inputs))
-	for _, input := range inputs {
-		seen[input.TargetFingerprint] = struct{}{}
 	}
 	for _, remote := range strings.Fields(remoteOutput) {
 		fetchURLs, err := git.GetConfiguredRemoteURLs(ctx, repo.WorkingPath, remote)
@@ -2275,20 +2331,10 @@ func (m *RunManager) publicationTargetInputs(ctx context.Context, repo *db.Repo,
 			return nil, fmt.Errorf("read remote %s push URL: %w", remote, err)
 		}
 		for _, raw := range []string{fetchURLs[0], pushURLs[0]} {
-			fingerprint := db.PublicationTargetFingerprint(raw)
-			if _, ok := seen[fingerprint]; ok {
-				continue
-			}
-			seen[fingerprint] = struct{}{}
-			inputs = append(inputs, db.PublicationTargetInput{
-				TargetKind:        "remote",
-				TargetFingerprint: fingerprint,
-				Ref:               "refs/heads/" + strings.TrimPrefix(strings.TrimSpace(branch), "refs/heads/"),
-				TargetVersion:     repo.URLVersion,
-			})
+			add("remote", raw)
 		}
 	}
-	return inputs, nil
+	return targets, nil
 }
 
 // addRunPerformanceSummary attaches the bounded per-run performance rollup

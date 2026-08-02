@@ -110,10 +110,18 @@ func (t *CustodyTransition) Complete(ctx context.Context, expected *Run) error {
 	if t == nil || t.db == nil || expected == nil || t.runID == "" || t.token == "" {
 		return ErrRunCustodyCAS
 	}
+	tx, err := t.db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin complete run custody transition: %w", err)
+	}
+	defer tx.Rollback()
+	if err := validateRunPublicationTargetLedgerTx(tx, t.runID, true); err != nil {
+		return fmt.Errorf("%w: publication target ledger changed: %v", ErrRunCustodyCAS, err)
+	}
 	args := []any{now(), CustodyPhaseStamped, now()}
 	args = append(args, custodyAuthorityArgs(expected)...)
 	args = append(args, t.token, CustodyPhaseGateMoved, PublicationJournalReady, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))
-	result, err := t.db.sql.ExecContext(
+	result, err := tx.ExecContext(
 		ctx,
 		`UPDATE runs SET custody_returned_at = ?, custody_transition_phase = ?, updated_at = ?
 		 WHERE `+custodyAuthorityPredicate+`
@@ -133,6 +141,9 @@ func (t *CustodyTransition) Complete(ctx context.Context, expected *Run) error {
 	}
 	if rows != 1 {
 		return ErrRunCustodyCAS
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit complete run custody transition: %w", err)
 	}
 	return nil
 }
@@ -535,6 +546,16 @@ func (d *DB) UpdateRunPRURLForTarget(id, prURL, targetKind, targetFingerprint st
 		return fmt.Errorf("begin update run PR target: %w", err)
 	}
 	defer tx.Rollback()
+	var custodyReturned sql.NullInt64
+	var transitionToken, transitionPhase sql.NullString
+	if err := tx.QueryRow(`SELECT custody_returned_at, custody_transition_token, custody_transition_phase FROM runs WHERE id = ?`, id).Scan(&custodyReturned, &transitionToken, &transitionPhase); err == sql.ErrNoRows {
+		return ErrRunCustodyCAS
+	} else if err != nil {
+		return fmt.Errorf("read PR publication custody authority: %w", err)
+	}
+	if custodyReturned.Valid || transitionToken.Valid || transitionPhase.Valid {
+		return ErrRunCustodyCAS
+	}
 	var state, currentKind, currentIdentity string
 	if err := tx.QueryRow(`SELECT pr_state, target_kind, COALESCE(pr_request_identity, '') FROM run_publication_targets WHERE run_id = ? AND target_fingerprint = ?`, id, targetFingerprint).Scan(&state, &currentKind, &currentIdentity); err == sql.ErrNoRows {
 		return ErrRunPublicationCAS
@@ -557,6 +578,9 @@ func (d *DB) UpdateRunPRURLForTarget(id, prURL, targetKind, targetFingerprint st
 	if currentIdentity == "" || state != PublicationTargetPROpened {
 		if _, err := tx.Exec(`UPDATE run_publication_targets SET pr_request_identity = ?, pr_state = CASE WHEN pr_state IN (?, ?) THEN ? ELSE pr_state END, pr_generation = pr_generation + 1, pr_provenance = ?, updated_at = ? WHERE run_id = ? AND target_fingerprint = ? AND pr_state != ?`, prURL, PublicationTargetPRNoAttempt, PublicationTargetPRPrepared, PublicationTargetPROpened, "pipeline-pr", ts, id, targetFingerprint, PublicationTargetPRAmbiguous); err != nil {
 			return fmt.Errorf("journal run PR target: %w", err)
+		}
+		if _, err := tx.Exec(`UPDATE run_publication_target_sets SET generation = generation + 1, updated_at = ? WHERE run_id = ?`, ts, id); err != nil {
+			return fmt.Errorf("advance publication target set generation: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -618,6 +642,9 @@ func (d *DB) RecordRunPublicationAttempt(id string, attempt PublicationAttempt) 
 	} else if rows == 1 {
 		if _, err := tx.Exec(`UPDATE run_publication_targets SET state = ?, attempt_head_sha = ?, generation = generation + 1, provenance = ?, updated_at = ? WHERE run_id = ? AND target_fingerprint = ? AND state != ?`, PublicationTargetAttempted, attempt.HeadSHA, "pipeline-attempt", now(), id, attempt.TargetFingerprint, PublicationTargetAmbiguous); err != nil {
 			return fmt.Errorf("journal run publication target attempt: %w", err)
+		}
+		if _, err := tx.Exec(`UPDATE run_publication_target_sets SET generation = generation + 1, updated_at = ? WHERE run_id = ?`, now(), id); err != nil {
+			return fmt.Errorf("advance publication target set generation: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit run publication attempt: %w", err)
@@ -750,6 +777,9 @@ func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
 	if _, err := tx.Exec(`UPDATE run_publication_targets SET state = ?, attempt_head_sha = ?, generation = generation + 1, provenance = ?, updated_at = ? WHERE run_id = ? AND target_fingerprint = ? AND state != ?`, PublicationTargetPublished, binding.HeadSHA, "push-verified", ts, id, binding.TargetFingerprint, PublicationTargetAmbiguous); err != nil {
 		return fmt.Errorf("journal run publication target push: %w", err)
 	}
+	if _, err := tx.Exec(`UPDATE run_publication_target_sets SET generation = generation + 1, updated_at = ? WHERE run_id = ?`, ts, id); err != nil {
+		return fmt.Errorf("advance publication target set generation: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit run push binding: %w", err)
 	}
@@ -765,9 +795,17 @@ func (d *DB) SetRunCustodyReturnedCAS(expected *Run) error {
 	if expected == nil {
 		return ErrRunCustodyCAS
 	}
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin set run custody returned CAS: %w", err)
+	}
+	defer tx.Rollback()
+	if err := validateRunPublicationTargetLedgerTx(tx, expected.ID, true); err != nil {
+		return fmt.Errorf("%w: publication target ledger changed: %v", ErrRunCustodyCAS, err)
+	}
 	ts := now()
 	args := append([]any{ts, ts}, custodyAuthorityArgs(expected)...)
-	result, err := d.sql.Exec(`
+	result, err := tx.Exec(`
 		UPDATE runs SET custody_returned_at = ?, updated_at = ?
 			 WHERE `+custodyAuthorityPredicate+`
 		   AND COALESCE(push_active, 0) = 0 AND custody_returned_at IS NULL AND custody_transition_token IS NULL AND custody_transition_phase IS NULL
@@ -785,6 +823,9 @@ func (d *DB) SetRunCustodyReturnedCAS(expected *Run) error {
 	}
 	if rows != 1 {
 		return ErrRunCustodyCAS
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit set run custody returned CAS: %w", err)
 	}
 	return nil
 }
@@ -876,10 +917,18 @@ func (d *DB) BeginRunCustodyTransition(ctx context.Context, expected *Run) (*Cus
 		return nil, ErrRunCustodyCAS
 	}
 	token := newID()
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin run custody transition transaction: %w", err)
+	}
+	defer tx.Rollback()
+	if err := validateRunPublicationTargetLedgerTx(tx, expected.ID, true); err != nil {
+		return nil, fmt.Errorf("%w: publication target ledger changed: %v", ErrRunCustodyCAS, err)
+	}
 	args := []any{token, CustodyPhasePreparing, now()}
 	args = append(args, custodyAuthorityArgs(expected)...)
 	args = append(args, PublicationJournalReady, nullableRunString(expected.Error), nullableRunInt64(expected.AwaitingAgentSince))
-	result, err := d.sql.ExecContext(
+	result, err := tx.ExecContext(
 		ctx,
 		`UPDATE runs SET custody_transition_token = ?, custody_transition_phase = ?, updated_at = ? WHERE `+custodyAuthorityPredicate+`
 		   AND custody_returned_at IS NULL AND custody_transition_token IS NULL
@@ -898,6 +947,9 @@ func (d *DB) BeginRunCustodyTransition(ctx context.Context, expected *Run) (*Cus
 	}
 	if rows != 1 {
 		return nil, ErrRunCustodyCAS
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit begin run custody transition: %w", err)
 	}
 	return &CustodyTransition{db: d, runID: expected.ID, token: token}, nil
 }

@@ -57,16 +57,16 @@ func (h *Host) VerifyUnpublishedHistory(ctx context.Context, branch, submitted, 
 		if targetNumber != "" && fmt.Sprint(mergeRequest.IID) != targetNumber {
 			continue
 		}
-		if targetNumber == "" && mergeRequest.SourceBranch != branch {
-			return fmt.Errorf("GitLab merge request %d has no complete submission-time target identity", mergeRequest.IID)
-		}
 		matched = true
 		head := mergeRequest.SHA
 		if head == "" {
 			head = mergeRequest.DiffRefs.HeadSHA
 		}
-		if head == "" || head != submitted {
+		if targetNumber != "" && (head == "" || head != submitted) {
 			return fmt.Errorf("GitLab merge request %d has a changed head", mergeRequest.IID)
+		}
+		if head == preserved {
+			return fmt.Errorf("GitLab merge request %d history contains the preserved unpublished head", mergeRequest.IID)
 		}
 		var versions []json.RawMessage
 		if err := h.apiPages(ctx, fmt.Sprintf("projects/%s/merge_requests/%d/versions?per_page=100", project, mergeRequest.IID), &versions); err != nil {

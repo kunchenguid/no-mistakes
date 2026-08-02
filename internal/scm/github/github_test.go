@@ -747,7 +747,7 @@ func TestVerifyUnpublishedHistoryAllowsNoPullRequestIdentity(t *testing.T) {
 	}
 }
 
-func TestVerifyUnpublishedHistoryRejectsRenamedNoPullRequestIdentity(t *testing.T) {
+func TestVerifyUnpublishedHistoryInspectsRenamedNoPullRequestHistory(t *testing.T) {
 	t.Parallel()
 	a := strings.Repeat("a", 40)
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
@@ -755,9 +755,30 @@ func TestVerifyUnpublishedHistoryRejectsRenamedNoPullRequestIdentity(t *testing.
 		"gh api --paginate repos/test/repo/pulls?state=all&per_page=100": {
 			stdout: fmt.Sprintf(`[{"number":7,"head":{"ref":"renamed-feature","sha":"%s"}}]`+"\n", a),
 		},
+		"gh api --paginate repos/test/repo/pulls/7/commits?per_page=100":   {stdout: "[]\n"},
+		"gh api --paginate repos/test/repo/issues/7/timeline?per_page=100": {stdout: "[]\n"},
 	}), nil, "", "test/repo")
-	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, strings.Repeat("b", 40), 0, 0, ""); err == nil {
-		t.Fatal("renamed pull request was accepted without submission identity")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, strings.Repeat("b", 40), 0, 0, ""); err != nil {
+		t.Fatalf("renamed pull request history = %v, want complete history inspection", err)
+	}
+}
+
+func TestVerifyUnpublishedHistoryRejectsPreservedHeadInRenamedNoPullRequestIdentity(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	p := strings.Repeat("b", 40)
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status": {},
+		"gh api --paginate repos/test/repo/pulls?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"number":7,"head":{"ref":"renamed-feature","sha":"%s"}}]`+"\n", a),
+		},
+		"gh api --paginate repos/test/repo/pulls/7/commits?per_page=100": {
+			stdout: fmt.Sprintf(`[{"sha":"%s"}]`+"\n", p),
+		},
+		"gh api --paginate repos/test/repo/issues/7/timeline?per_page=100": {stdout: "[]\n"},
+	}), nil, "", "test/repo")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0, ""); err == nil {
+		t.Fatal("renamed pull request containing preserved head was accepted")
 	}
 }
 

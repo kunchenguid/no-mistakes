@@ -135,6 +135,29 @@ func TestLegacyPublicationProofRejectsUnsupportedTarget(t *testing.T) {
 	}
 }
 
+func TestValidatePublicationLedgerRequiresHistoricalProof(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	workDir := filepath.Join(t.TempDir(), "work")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "init")
+	gitCmd(t, workDir, "remote", "add", "origin", "https://unsupported.example/repo.git")
+	repo, err := database.InsertRepoWithID("historical-proof", workDir, "https://unsupported.example/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewRunManager(database, p, nil)
+	t.Cleanup(manager.Shutdown)
+	if err := manager.validatePublicationLedger(context.Background(), run); err == nil {
+		t.Fatal("publication ledger passed without historical provider proof")
+	}
+}
+
 func TestRecoveryTargetIdentityRejectsMismatchedTarget(t *testing.T) {
 	prURL := "https://github.com/example/parent/pull/7"
 	if _, err := recoveryTargetIdentity(context.Background(), "https://github.com/example/fork.git", &prURL); err == nil {
