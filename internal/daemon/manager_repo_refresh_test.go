@@ -183,6 +183,18 @@ func TestRerunReadsGateOnlyAfterCustodyOwnershipLock(t *testing.T) {
 	}
 }
 
+func TestRerunWithoutPreviousRunChecksRunsBeforeGateJournal(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, _ := setupTestGitRepo(t, p, database, "rerun-without-previous-run-repo")
+
+	manager := NewRunManager(database, p, nil)
+	t.Cleanup(manager.Shutdown)
+	if _, err := manager.HandleRerun(context.Background(), repo.ID, "main", "", nil, ""); err == nil || !strings.Contains(err.Error(), "no previous run") {
+		t.Fatalf("rerun without previous run error = %v, want no previous run", err)
+	}
+}
+
 func TestRerunRefusesQuarantinedGateRef(t *testing.T) {
 	t.Setenv("NM_DEMO", "1")
 	p, database := newRefreshRunFixture(t)

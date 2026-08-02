@@ -273,6 +273,33 @@ func (h *Harness) Run(args ...string) (string, error) {
 	return h.RunInDir(h.WorkDir, args...)
 }
 
+// RunWithReceiveCapability invokes the no-mistakes binary with the same
+// fd-based receive capability transport used by the managed git hooks.
+func (h *Harness) RunWithReceiveCapability(args ...string) (string, error) {
+	h.t.Helper()
+	capability, err := os.CreateTemp(h.NMHome, "receive-capability-")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = capability.Close() }()
+	if _, err := capability.WriteString("e2e-test-capability\n"); err != nil {
+		return "", err
+	}
+	if _, err := capability.Seek(0, 0); err != nil {
+		return "", err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, h.NMBin, args...)
+	cmd.Dir = h.WorkDir
+	cmd.Env = mergedEnv(os.Environ(), nil)
+	cmd.ExtraFiles = []*os.File{capability}
+	out, err := cmd.CombinedOutput()
+	h.syncDaemonOwnership()
+	return string(out), err
+}
+
 // RunInDir invokes the no-mistakes binary in dir and returns stdout+stderr.
 func (h *Harness) RunInDir(dir string, args ...string) (string, error) {
 	h.t.Helper()

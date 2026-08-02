@@ -221,7 +221,9 @@ func newTopologyFixture(t *testing.T) *topologyFixture {
 		t.Fatalf("init gate: %v", err)
 	}
 	gateDir := p.RepoDir(repo.ID)
-	run(t, gateDir, "git", "fetch", work, "HEAD:refs/heads/feature")
+	// This is fixture construction, not a managed pipeline mutation. The
+	// initialized gate deliberately rejects ordinary writes to managed refs.
+	run(t, gateDir, "git", "-c", "core.hooksPath="+t.TempDir(), "fetch", work, "HEAD:refs/heads/feature")
 	managed := filepath.Join(p.WorktreesDir(), repo.ID, "managed-run")
 	run(t, gateDir, "git", "worktree", "add", "--detach", managed, "refs/heads/feature")
 	return &topologyFixture{p: p, d: database, root: root, work: work, gate: gateDir, managed: managed, origin: origin, repoID: repo.ID}

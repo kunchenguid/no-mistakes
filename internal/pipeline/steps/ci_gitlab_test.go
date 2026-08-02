@@ -237,7 +237,7 @@ func TestCIStep_GitLabAutoFixIncludesJobTrace(t *testing.T) {
 	}
 
 	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecordsForRepo(t, ag, dir, baseSHA, headSHA, config.Commands{}, upstream, "")
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream

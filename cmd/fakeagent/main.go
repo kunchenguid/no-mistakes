@@ -81,6 +81,13 @@ func runGhForkPRStub(args []string) int {
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		return 0
 	}
+	if len(args) >= 1 && args[0] == "api" {
+		// Publication-ledger setup asks for historical pull-request lineage.
+		// The e2e repository has no remote PRs, so an empty API result is the
+		// deterministic equivalent of GitHub returning no matching requests.
+		fmt.Println("[]")
+		return 0
+	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "list" {
 		head := argAfter(args, "--head")
 		if strings.Contains(head, ":") {

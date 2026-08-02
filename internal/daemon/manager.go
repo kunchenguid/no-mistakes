@@ -2439,6 +2439,21 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	}
 	defer ownershipLock.Release()
 
+	runs, err := m.db.GetRunsByRepo(repoID)
+	if err != nil {
+		return "", fmt.Errorf("get runs: %w", err)
+	}
+	var latestForBranch *db.Run
+	for _, run := range runs {
+		if run.Branch == branch {
+			latestForBranch = run
+			break
+		}
+	}
+	if latestForBranch == nil {
+		return "", fmt.Errorf("no previous run for branch %s", branch)
+	}
+
 	gateDir := m.paths.RepoDir(repo.ID)
 	ref := "refs/heads/" + branch
 	key := managedGateGuardKey(repo.ID, ref)
@@ -2479,27 +2494,15 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		return "", fmt.Errorf("managed gate ref refs/heads/%s changed from journaled head %s to %s; reconcile it before rerun", branch, managedGateRef.Head, headSHA)
 	}
 
-	runs, err := m.db.GetRunsByRepo(repoID)
-	if err != nil {
-		return "", fmt.Errorf("get runs: %w", err)
-	}
-
-	var latestForBranch *db.Run
 	var matchingHead *db.Run
 	for _, run := range runs {
 		if run.Branch != branch {
 			continue
 		}
-		if latestForBranch == nil {
-			latestForBranch = run
-		}
 		if run.HeadSHA == headSHA {
 			matchingHead = run
 			break
 		}
-	}
-	if latestForBranch == nil {
-		return "", fmt.Errorf("no previous run for branch %s", branch)
 	}
 	selectedRun := latestForBranch
 	if previousRunID != "" {

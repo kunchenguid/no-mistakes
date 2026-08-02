@@ -283,7 +283,7 @@ if [ ! -f "$NM_BIN" ]; then
 fi
 PHASE=$1
 case "$PHASE" in
-  prepared|committed|aborted) ;;
+  preparing|prepared|committed|aborted) ;;
   *)
     printf 'no-mistakes: unsupported reference transaction phase %s\n' "$PHASE" >&2
     exit 1
@@ -306,6 +306,17 @@ case "$GATE_DIR" in
   *) GATE_DIR=$(/bin/pwd -P 2>/dev/null || pwd -P 2>/dev/null || pwd) ;;
 esac
 USER_HOOK="$GATE_DIR/hooks/` + preservedReferenceTransactionHook + `"
+# Git 2.50 added "preparing" before references are locked. It is not the
+# receive admission point: the authenticated capability is reserved for the
+# existing "prepared" phase, where rejecting the hook still aborts the
+# transaction. Preserve the new phase for a user hook, then defer our fencing.
+if [ "$PHASE" = preparing ]; then
+  if [ -x "$USER_HOOK" ]; then
+    "$USER_HOOK" "$PHASE"
+    exit $?
+  fi
+  exit 0
+fi
 RECEIVE_SESSION_ID=${NO_MISTAKES_RECEIVE_SESSION_ID:-}
 RECEIVE_MANIFEST=${NO_MISTAKES_RECEIVE_MANIFEST:-}
 INTERNAL_CAPABILITY=${NO_MISTAKES_INTERNAL_MUTATION_CAPABILITY:-}

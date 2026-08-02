@@ -277,7 +277,9 @@ func TestInitRefusesManagedValidationWorktreeBeforePartialMutation(t *testing.T)
 		t.Fatalf("init outer gate: %v", err)
 	}
 	gateDir := p.RepoDir(repo.ID)
-	if out, err := gitpkg.Run(ctx, gateDir, "fetch", workDir, "HEAD:refs/heads/feature"); err != nil {
+	// This is fixture construction, not a managed pipeline mutation. The
+	// initialized gate deliberately rejects ordinary writes to managed refs.
+	if out, err := gitpkg.Run(ctx, gateDir, "-c", "core.hooksPath="+t.TempDir(), "fetch", workDir, "HEAD:refs/heads/feature"); err != nil {
 		t.Fatalf("seed gate: %v\n%s", err, out)
 	}
 	managed := p.WorktreeDir(repo.ID, "outer-run")

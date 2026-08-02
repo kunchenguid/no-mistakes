@@ -410,9 +410,7 @@ func TestPushStep_TargetsForkWhenConfigured(t *testing.T) {
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Repo.UpstreamURL = parent
-	sctx.Repo.ForkURL = fork
+	sctx := newTestContextWithDBRecordsForRepo(t, ag, dir, baseSHA, headSHA, config.Commands{}, parent, fork)
 	sctx.Run.Branch = "feature"
 	recordReviewApproval(t, sctx, headSHA)
 
@@ -454,9 +452,7 @@ func TestPushStep_RedactsForkURLInGitErrors(t *testing.T) {
 	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
 
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Repo.UpstreamURL = "https://github.com/parent/project.git"
-	sctx.Repo.ForkURL = "https://user:secret@example.com/fork/project.git"
+	sctx := newTestContextWithDBRecordsForRepo(t, ag, dir, baseSHA, headSHA, config.Commands{}, "https://github.com/parent/project.git", "https://user:secret@example.com/fork/project.git")
 	sctx.Run.Branch = "refs/heads/feature"
 	recordReviewApproval(t, sctx, headSHA)
 

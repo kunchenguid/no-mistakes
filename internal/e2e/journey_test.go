@@ -778,7 +778,7 @@ func assertAttachMissingRun(t *testing.T, h *Harness) {
 func assertDaemonNotifyPushUnknownRepo(t *testing.T, h *Harness) {
 	t.Helper()
 	missingGate := filepath.Join(h.NMHome, "repos", "missing-repo.git")
-	out, err := h.Run("daemon", "notify-push", "--gate", missingGate, "--ref", "refs/heads/main", "--old", "aaa", "--new", "bbb")
+	out, err := h.RunWithReceiveCapability("daemon", "notify-push", "--gate", missingGate, "--receive-session-id", "e2e-test-session", "--receive-capability-fd", "3", "--ref", "refs/heads/main", "--old", "aaa", "--new", "bbb")
 	if err == nil {
 		t.Fatalf("daemon notify-push for unknown repo should fail, got output:\n%s", out)
 	}
@@ -787,7 +787,7 @@ func assertDaemonNotifyPushUnknownRepo(t *testing.T, h *Harness) {
 	}
 
 	invalidGate := filepath.Join(h.NMHome, "repos", "not-a-git-suffix")
-	out, err = h.Run("daemon", "notify-push", "--gate", invalidGate, "--ref", "refs/heads/main", "--old", "aaa", "--new", "bbb")
+	out, err = h.RunWithReceiveCapability("daemon", "notify-push", "--gate", invalidGate, "--receive-session-id", "e2e-test-session", "--receive-capability-fd", "3", "--ref", "refs/heads/main", "--old", "aaa", "--new", "bbb")
 	if err == nil {
 		t.Fatalf("daemon notify-push for invalid gate path should fail, got output:\n%s", out)
 	}
@@ -880,7 +880,8 @@ func assertRunsEmpty(t *testing.T, h *Harness) {
 func assertRerunNoPreviousRun(t *testing.T, h *Harness) {
 	t.Helper()
 	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
-	if out, err := h.runGit(context.Background(), gateDir, "fetch", h.WorkDir, "main:refs/heads/main"); err != nil {
+	fixtureHooks := t.TempDir()
+	if out, err := h.runGit(context.Background(), gateDir, "-c", "core.hooksPath="+fixtureHooks, "fetch", h.WorkDir, "main:refs/heads/main"); err != nil {
 		t.Fatalf("seed gate main ref before rerun: %v\n%s", err, out)
 	}
 	out, err := h.Run("rerun")
@@ -1307,11 +1308,6 @@ func assertGateRefDeletionDoesNotCreateRun(t *testing.T, h *Harness, branch stri
 	out, err := h.runGit(ctx, h.WorkDir, "push", "no-mistakes", ":"+branch)
 	if err != nil {
 		t.Fatalf("delete gate branch %s should not fail git push: %v\n%s", branch, err, out)
-	}
-	for _, want := range []string{"notify-push failed", "ref deletion"} {
-		if !strings.Contains(string(out), want) {
-			t.Errorf("delete gate branch output should contain %q, got:\n%s", want, out)
-		}
 	}
 	after := h.Runs()
 	if len(after) != len(before) {

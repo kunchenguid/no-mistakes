@@ -27,6 +27,10 @@ type syncFixture struct {
 }
 
 func newSyncFixture(t *testing.T) *syncFixture {
+	return newSyncFixtureWithParent(t, "")
+}
+
+func newSyncFixtureWithParent(t *testing.T, parent string) *syncFixture {
 	t.Helper()
 	ctx := context.Background()
 	root := t.TempDir()
@@ -59,7 +63,12 @@ func newSyncFixture(t *testing.T) *syncFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { database.Close() })
-	repo, err := database.InsertRepo(local, remote, "main")
+	var repo *db.Repo
+	if parent == "" {
+		repo, err = database.InsertRepo(local, remote, "main")
+	} else {
+		repo, err = database.InsertRepoWithFork(local, parent, remote, "main")
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,8 +79,12 @@ func newSyncFixture(t *testing.T) *syncFixture {
 	if err := database.UpdateRunHeadSHA(run.ID, pushed); err != nil {
 		t.Fatal(err)
 	}
+	targetKind := "upstream"
+	if parent != "" {
+		targetKind = "fork"
+	}
 	if err := database.UpdateRunPushBinding(run.ID, db.PushBinding{
-		HeadSHA: pushed, TargetKind: "upstream", TargetFingerprint: TargetFingerprint(remote), Ref: "refs/heads/feature/sync",
+		HeadSHA: pushed, TargetKind: targetKind, TargetFingerprint: TargetFingerprint(remote), Ref: "refs/heads/feature/sync",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -775,18 +788,9 @@ func TestWrongBranchRefusesAsAmbiguousContext(t *testing.T) {
 }
 
 func TestForkTargetNeverReadsParentOrigin(t *testing.T) {
-	f := newSyncFixture(t)
 	parent := filepath.Join(t.TempDir(), "parent.git")
 	mustRun(t, filepath.Dir(parent), "init", "--bare", parent)
-	updated, err := f.db.UpdateRepoMetadataWithFork(f.repo.ID, parent, f.remote, "main")
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.service.Repo = updated
-	// Rebind as a fork because target identity is part of the proof.
-	if err := f.db.UpdateRunPushBinding(f.run.ID, db.PushBinding{HeadSHA: f.pushed, TargetKind: "fork", TargetFingerprint: TargetFingerprint(f.remote), Ref: "refs/heads/feature/sync"}); err != nil {
-		t.Fatal(err)
-	}
+	f := newSyncFixtureWithParent(t, parent)
 	state := f.service.Refresh(f.ctx)
 	if state.State != StateBehind || state.Target.Kind != "fork" || state.Remote.ObservedHead != f.pushed {
 		t.Fatalf("state = %#v", state)

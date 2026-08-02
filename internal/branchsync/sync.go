@@ -565,6 +565,12 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if !terminalRunStatus(run.Status) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_run_active", "the run that owns this branch is still active; drive it to completion or abort it first; no files or refs were changed")
 	}
+	if latest, ok := s.latestRunForBranch(run.Branch); !ok || latest.ID != run.ID {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_newer_run", "a newer run owns this repository branch while an older unpublished pipeline head remains stranded; custody was not returned and no files or refs were changed")
+	}
+	if run.SubmittedHeadSHA != nil && run.HeadSHA == *run.SubmittedHeadSHA && run.TerminalHeadVerifiedAt == nil && s.hasOlderStrandedRun(run) {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_newer_run", "a newer run owns this repository branch while an older unpublished pipeline head remains stranded; custody was not returned and no files or refs were changed")
+	}
 	quarantine, quarantineErr := s.DB.GetGateRefQuarantine(s.Repo.ID, s.GateDir, "refs/heads/"+run.Branch)
 	if quarantineErr != nil {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_race", "the managed gate quarantine journal could not be read; custody was not returned and no files or refs were changed")
@@ -592,15 +598,32 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the preserved gate head could not be read; no files or refs were changed")
 		}
 		if gateHead != run.HeadSHA {
-			if !isAncestor(ctx, s.GateDir, run.HeadSHA, gateHead) {
+			// A cancelled unpublished rebase can leave the rewritten pipeline
+			// object P only in the gate while the ordinary gate and operator
+			// branch both remain at the submitted object A. This is the narrow
+			// historical custody-return boundary: accept it only when every
+			// identity is exact and P is present as a full object in the gate.
+			exactSubmittedBoundary := run.SubmittedHeadSHA != nil &&
+				isExactFullObjectID(run.HeadSHA) &&
+				state.Local.Branch == run.Branch &&
+				state.Local.Head == *run.SubmittedHeadSHA &&
+				gateHead == *run.SubmittedHeadSHA &&
+				objectExists(ctx, s.GateDir, run.HeadSHA)
+			if !exactSubmittedBoundary && !isAncestor(ctx, s.GateDir, run.HeadSHA, gateHead) {
 				return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the gate head does not descend from the recorded head; no files or refs were changed")
 			}
-			if err := s.DB.UpdateRunHeadSHA(run.ID, gateHead); err != nil {
+			if exactSubmittedBoundary {
+				// Keep the recorded rewritten object P authoritative for the
+				// later exact-object anchor. Do not adopt ordinary gate head A.
+				state.Pipeline.CurrentHead = run.HeadSHA
+				state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, run.HeadSHA)
+			} else if err := s.DB.UpdateRunHeadSHA(run.ID, gateHead); err != nil {
 				return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the verified gate head could not be preserved; no files or refs were changed")
+			} else {
+				run.HeadSHA = gateHead
+				state.Pipeline.CurrentHead = gateHead
+				state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, gateHead)
 			}
-			run.HeadSHA = gateHead
-			state.Pipeline.CurrentHead = gateHead
-			state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, gateHead)
 		}
 	}
 
@@ -611,9 +634,6 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	anchorRef := recoverAnchorRef(run.ID)
 	if !isExactFullObjectID(preserved) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_invalid_head", "the recorded pipeline head is not one canonical full 40- or 64-hex object ID; no files or refs were changed")
-	}
-	if latest, ok := s.latestRunForBranch(run.Branch); !ok || latest.ID != run.ID {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_newer_run", "a newer run owns this repository branch; custody was not returned and no files or refs were changed")
 	}
 	lock, lockErr := s.acquireRecoveryLock(run)
 	if lockErr != nil {
@@ -2031,6 +2051,34 @@ func (s *Service) latestRunForBranch(branch string) (*db.Run, bool) {
 		}
 	}
 	return nil, false
+}
+
+// hasOlderStrandedRun identifies the narrow ownership collision where a
+// newer terminal run has not verified its worktree head while an older run
+// still owns unpublished pipeline commits. Recovery must report the newer
+// owner instead of trying to anchor the newer run's ordinary submitted head.
+func (s *Service) hasOlderStrandedRun(run *db.Run) bool {
+	if s == nil || run == nil {
+		return false
+	}
+	runs, err := s.DB.GetRunsByRepo(s.Repo.ID)
+	if err != nil {
+		return false
+	}
+	seen := false
+	for _, candidate := range runs {
+		if candidate.ID == run.ID {
+			seen = true
+			continue
+		}
+		if !seen || candidate.Branch != run.Branch || candidate.CustodyReturnedAt != nil || !terminalRunStatus(candidate.Status) || !unpublishedPipelineHead(candidate) {
+			continue
+		}
+		if candidate.SubmittedHeadSHA != nil && candidate.HeadSHA != *candidate.SubmittedHeadSHA {
+			return true
+		}
+	}
+	return false
 }
 
 func isExactFullObjectID(value string) bool {
