@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	toon "github.com/toon-format/toon-go"
+
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -540,13 +542,28 @@ func TestAxiPrePushAbortUnmovedHeadCustodyJourney(t *testing.T) {
 	if err != nil {
 		t.Fatalf("axi status: %v\n%s", err, statusOut)
 	}
+	var statusDoc struct {
+		BranchSync struct {
+			Pipeline struct {
+				SubmittedHead string `toon:"submitted_head"`
+				CurrentHead   string `toon:"current_head"`
+			} `toon:"pipeline"`
+		} `toon:"branch_sync"`
+	}
+	if err := toon.UnmarshalString(statusOut, &statusDoc); err != nil {
+		t.Fatalf("decode axi status TOON: %v\n%s", err, statusOut)
+	}
+	if got := statusDoc.BranchSync.Pipeline.SubmittedHead; got != submitted {
+		t.Errorf("submitted head = %q, want %q\n%s", got, submitted, statusOut)
+	}
+	if got := statusDoc.BranchSync.Pipeline.CurrentHead; got != submitted {
+		t.Errorf("current head = %q, want %q\n%s", got, submitted, statusOut)
+	}
 	for _, want := range []string{
 		run.ID,
 		"status: cancelled",
 		"branch_sync:",
 		"branch: feature/unmoved-abort",
-		"submitted_head: " + submitted,
-		"current_head: " + submitted,
 		"relation: equal",
 		"state: user_owned",
 		"safety: user_owned",
