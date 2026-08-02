@@ -699,6 +699,13 @@ func TestCustodyCASRejectsPublicationTargetChannelChanges(t *testing.T) {
 		if err := d.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
 			t.Fatal(err)
 		}
+		targets, err := d.ListRunPublicationTargets(run.ID)
+		if err != nil || len(targets) != 1 {
+			t.Fatalf("publication targets = %#v, %v", targets, err)
+		}
+		if err := d.ReconcileRunPublicationTargetLineage(run.ID, targets[0].TargetFingerprint, "none"); err != nil {
+			t.Fatalf("reconcile publication lineage: %v", err)
+		}
 		expected, err := d.GetRun(run.ID)
 		if err != nil {
 			t.Fatal(err)

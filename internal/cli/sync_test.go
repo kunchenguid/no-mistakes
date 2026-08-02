@@ -647,7 +647,7 @@ func newCLIStaleUnpublishedFixtureWithRelation(t *testing.T, pushedDescendant bo
 
 func newCLIStaleUnpublishedFixtureWithOptions(t *testing.T, pushedDescendant bool, provenance olderTargetProvenance) cliStaleUnpublishedFixture {
 	t.Helper()
-	nmHome := filepath.Join(t.TempDir(), "nm-home")
+	nmHome := makeSocketSafeTempDir(t)
 	t.Setenv("NM_HOME", nmHome)
 	root := t.TempDir()
 	remote := filepath.Join(root, "remote.git")
@@ -684,7 +684,12 @@ func newCLIStaleUnpublishedFixtureWithOptions(t *testing.T, pushedDescendant boo
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo, err := database.InsertRepo(registeredRoot, remote, "main")
+	var repo *db.Repo
+	if provenance == olderTargetConflicting {
+		repo, err = database.InsertRepoWithFork(registeredRoot, remote, remote+"-previous", "main")
+	} else {
+		repo, err = database.InsertRepo(registeredRoot, remote, "main")
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -703,6 +708,9 @@ func newCLIStaleUnpublishedFixtureWithOptions(t *testing.T, pushedDescendant boo
 	cliGit(t, pipeline, "commit", "-m", "older pipeline fix")
 	unpublished := cliGit(t, pipeline, "rev-parse", "HEAD")
 	cliGit(t, pipeline, "push", gate, "HEAD:refs/heads/feature/sync")
+	if err := database.SetManagedGateRefHead(repo.ID, gate, "refs/heads/feature/sync", unpublished); err != nil {
+		t.Fatalf("seed older managed gate head: %v", err)
+	}
 
 	older, err := database.InsertRun(repo.ID, "feature/sync", localHead, base)
 	if err != nil {
@@ -710,11 +718,18 @@ func newCLIStaleUnpublishedFixtureWithOptions(t *testing.T, pushedDescendant boo
 	}
 	if provenance != olderTargetMissing {
 		fingerprint := branchsync.TargetFingerprint(remote)
+		targetKind := "upstream"
 		if provenance == olderTargetConflicting {
 			fingerprint = branchsync.TargetFingerprint(remote + "-previous")
+			targetKind = "fork"
 		}
-		if err := database.UpdateRunPushBinding(older.ID, db.PushBinding{HeadSHA: localHead, TargetKind: "upstream", TargetFingerprint: fingerprint, Ref: "refs/heads/feature/sync"}); err != nil {
+		if err := database.UpdateRunPushBinding(older.ID, db.PushBinding{HeadSHA: localHead, TargetKind: targetKind, TargetFingerprint: fingerprint, Ref: "refs/heads/feature/sync"}); err != nil {
 			t.Fatal(err)
+		}
+		if provenance == olderTargetConflicting {
+			if _, err := database.UpdateRepoForkURL(repo.ID, ""); err != nil {
+				t.Fatalf("remove retired fork target: %v", err)
+			}
 		}
 	}
 	if err := database.UpdateRunHeadSHA(older.ID, unpublished); err != nil {
@@ -748,6 +763,9 @@ func newCLIStaleUnpublishedFixtureWithOptions(t *testing.T, pushedDescendant boo
 		gatePushArgs = []string{"push", "--force", gate, "HEAD:refs/heads/feature/sync"}
 	}
 	cliGit(t, newer, gatePushArgs...)
+	if err := database.SetManagedGateRefHead(repo.ID, gate, "refs/heads/feature/sync", pushed); err != nil {
+		t.Fatalf("seed newer managed gate head: %v", err)
+	}
 
 	latestSubmitted := unpublished
 	if !pushedDescendant {
