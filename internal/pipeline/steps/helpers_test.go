@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -565,6 +566,22 @@ func fakeCIGHSequenceLogged(t *testing.T, state string, checks []string) (env []
 	t.Helper()
 	logFile = filepath.Join(t.TempDir(), "gh.log")
 	return append(fakeCIGHSequence(t, state, checks), "FAKE_CLI_LOG="+logFile), logFile
+}
+
+// fakeCIGHSequenceLoggedFailingPRReady is fakeCIGHSequenceLogged whose
+// `gh pr ready` fails its first failures invocations and succeeds after that,
+// so tests can exercise a transient publish failure on the CI-green edge.
+func fakeCIGHSequenceLoggedFailingPRReady(t *testing.T, state string, checks []string, failures int) (env []string, logFile string) {
+	t.Helper()
+	env, logFile = fakeCIGHSequenceLogged(t, state, checks)
+	countPath := filepath.Join(t.TempDir(), "pr-ready-count.txt")
+	if err := os.WriteFile(countPath, []byte("0"), 0o644); err != nil {
+		t.Fatalf("write pr ready attempt count: %v", err)
+	}
+	return append(env,
+		"FAKE_CLI_PR_READY_FAILURES="+strconv.Itoa(failures),
+		"FAKE_CLI_PR_READY_COUNT_PATH="+countPath,
+	), logFile
 }
 
 func fakeCIGHNoChecks(t *testing.T) []string {

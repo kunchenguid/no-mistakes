@@ -331,6 +331,106 @@ func TestCIStep_WithoutDraftUntilReadyNeverMarksPRReady(t *testing.T) {
 	}
 }
 
+// A transient provider failure on the first green poll must not strand the PR
+// as a draft for the rest of the run: the whole point of the flag is that
+// reviewers get tagged once CI is green, so a later green poll retries.
+func TestCIStep_DraftUntilReadyRetriesATransientPublishFailure(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, logFile := fakeCIGHSequenceLoggedFailingPRReady(t, "OPEN",
+		[]string{`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`}, 1)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Run.DraftUntilReady = true
+	sctx.Config.CITimeout = time.Hour
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		baseBranchTip: stubBaseBranchTip,
+		waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
+			polls++
+			if polls < 3 {
+				return nil
+			}
+			cancel()
+			return ctx.Err()
+		},
+	}
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected monitoring to continue until cancelled, got %v", err)
+	}
+
+	// Poll 1 fails, poll 2 succeeds, poll 3 is latched off again.
+	if got := countGHInvocations(t, logFile, "pr ready"); got != 2 {
+		t.Fatalf("gh pr ready invocations = %d, want 2 (one failure retried once)\nlog:\n%s", got, readFakeCLILog(t, logFile))
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "warning: could not mark PR ready for review") {
+		t.Fatalf("expected the transient failure to be logged as a warning, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "ready for review") {
+		t.Fatalf("expected the retry to publish the PR, got:\n%s", joined)
+	}
+}
+
+// The retry budget is bounded: a provider that keeps failing must stop being
+// called entirely rather than being hit once per poll for the rest of the run.
+func TestCIStep_DraftUntilReadyStopsPublishingAfterItsAttemptBudget(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, logFile := fakeCIGHSequenceLoggedFailingPRReady(t, "OPEN",
+		[]string{`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`}, 1000)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Run.DraftUntilReady = true
+	sctx.Config.CITimeout = time.Hour
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	// Poll well past the budget so an unbounded retry would show up as extra
+	// provider calls.
+	const greenPolls = maxMarkPRReadyAttempts + 3
+	polls := 0
+	step := &CIStep{
+		baseBranchTip: stubBaseBranchTip,
+		waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
+			polls++
+			if polls < greenPolls {
+				return nil
+			}
+			cancel()
+			return ctx.Err()
+		},
+	}
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected monitoring to continue until cancelled, got %v", err)
+	}
+
+	if got := countGHInvocations(t, logFile, "pr ready"); got != maxMarkPRReadyAttempts {
+		t.Fatalf("gh pr ready invocations = %d, want exactly %d over %d green polls\nlog:\n%s",
+			got, maxMarkPRReadyAttempts, greenPolls, readFakeCLILog(t, logFile))
+	}
+}
+
 // Ready is one-way: a PR that goes green, red, then green again is marked ready
 // exactly once and is never converted back to a draft.
 func TestCIStep_DraftUntilReadyIsOneWayAcrossACIRegression(t *testing.T) {

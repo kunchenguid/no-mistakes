@@ -29,6 +29,12 @@ const (
 	ciChecksRunningMsg  = cimonitor.ChecksRunningMsg
 )
 
+// maxMarkPRReadyAttempts bounds how many CI-green polls of one run may ask the
+// provider to publish a `--draft-until-ready` draft. A transient failure gets a
+// couple of retries on later green polls; a persistent one gives up for good
+// rather than calling the provider once per poll for the rest of the run.
+const maxMarkPRReadyAttempts = 3
+
 // CIStep monitors an open PR until it is merged, closed, or its configured idle
 // timeout elapses, auto-fixing CI failures.
 //
@@ -44,10 +50,12 @@ type CIStep struct {
 	pollIntervalOverride time.Duration        // if set, overrides computed poll interval (for testing)
 	waitForNextPoll      func(context.Context, time.Duration) error
 	now                  func() time.Time
-	// markedPRReady latches the one-way draft -> ready transition for this run,
-	// so the CI-green edge publishes the PR at most once no matter how many
-	// polls observe green (see markPRReadyOnCIGreen).
-	markedPRReady bool
+	// markedPRReady latches the one-way draft -> ready transition for this run
+	// once it has succeeded, so the CI-green edge publishes the PR at most once
+	// no matter how many polls observe green. markPRReadyAttempts bounds the
+	// retries a failed publish may take (see markPRReadyOnCIGreen).
+	markedPRReady       bool
+	markPRReadyAttempts int
 	// baseBranchTip resolves the current tip SHA of the upstream default
 	// branch. The bool is false when the SHA is a fallback/unknown value and
 	// must not re-arm the timeout. Overridable for testing; defaults to
@@ -574,13 +582,20 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 //
 // The transition is one-way. If CI later goes red the PR stays published: a
 // draft the reviewers already started reading must never be yanked back, and
-// the run-scoped latch also keeps a red/green flap from re-publishing. The
-// latch is claimed before the call so a provider failure is not retried on
-// every subsequent poll. That failure is logged and nothing more: this is a
-// cosmetic review-timing transition and it must never fail a run whose code is
-// green.
+// the run-scoped latch also keeps a red/green flap from re-publishing.
+//
+// The latch is claimed on success, so a transient provider failure (a network
+// blip, a 5xx, a rate limit) does not strand the PR as a draft for the rest of
+// the run - a later green poll retries it. Attempts are bounded by
+// maxMarkPRReadyAttempts so a persistent failure still stops calling the
+// provider instead of retrying on every poll. A failure is logged and nothing
+// more: this is a cosmetic review-timing transition and it must never fail a
+// run whose code is green.
 func (s *CIStep) markPRReadyOnCIGreen(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) {
-	if s.markedPRReady || sctx.Run == nil || !sctx.Run.DraftUntilReady {
+	if s.markedPRReady || s.markPRReadyAttempts >= maxMarkPRReadyAttempts {
+		return
+	}
+	if sctx.Run == nil || !sctx.Run.DraftUntilReady {
 		return
 	}
 	if !host.Capabilities().Draft {
@@ -594,11 +609,12 @@ func (s *CIStep) markPRReadyOnCIGreen(sctx *pipeline.StepContext, host scm.Host,
 	if isDraft, known := sctx.Shared.PRDraftState(); known && !isDraft {
 		return
 	}
-	s.markedPRReady = true
+	s.markPRReadyAttempts++
 	if err := host.MarkPRReady(sctx.Ctx, pr); err != nil {
 		sctx.Log(fmt.Sprintf("warning: could not mark PR ready for review: %v", err))
 		return
 	}
+	s.markedPRReady = true
 	sctx.Log("CI is green - marked pull request ready for review")
 }
 

@@ -332,7 +332,7 @@ func fakeCIGHHandler(args []string) {
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "ready" {
-		os.Exit(0)
+		fakeCIGHPRReady()
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
 		if mergeableErr != "" {
@@ -371,6 +371,35 @@ func fakeCIGHHandler(args []string) {
 	os.Exit(1)
 }
 
+// fakeCIGHPRReady answers `gh pr ready`, failing its first
+// FAKE_CLI_PR_READY_FAILURES invocations so tests can exercise a transient
+// provider failure on the draft -> ready publish and its bounded retry. The
+// attempt count lives in FAKE_CLI_PR_READY_COUNT_PATH because every invocation
+// is a fresh process.
+func fakeCIGHPRReady() {
+	failures, _ := strconv.Atoi(os.Getenv("FAKE_CLI_PR_READY_FAILURES"))
+	countPath := os.Getenv("FAKE_CLI_PR_READY_COUNT_PATH")
+	if failures <= 0 || countPath == "" {
+		os.Exit(0)
+	}
+	attempts := 0
+	if raw, err := os.ReadFile(countPath); err == nil {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil {
+			attempts = parsed
+		}
+	}
+	attempts++
+	if err := os.WriteFile(countPath, []byte(strconv.Itoa(attempts)), 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if attempts <= failures {
+		fmt.Fprintln(os.Stderr, "could not mark pull request ready for review")
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
 // fakeCIGHRerun answers `gh run rerun`, failing when FAKE_CLI_RERUN_ERR asks it
 // to so tests can exercise a provider that refuses the request.
 func fakeCIGHRerun() {
@@ -393,7 +422,7 @@ func fakeCIGHSequenceHandler(args []string) {
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "ready" {
-		os.Exit(0)
+		fakeCIGHPRReady()
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
 		if mergeableErr != "" {
