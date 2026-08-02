@@ -500,6 +500,7 @@ func TestGitLabAuditHeadValidationRequiresCanonicalTargetEvidence(t *testing.T) 
 		{name: "canonical rename", raw: `{"action":"rename","old_ref":"feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: false},
 		{name: "rename noncanonical ref", raw: `{"action":"rename","old_ref":"feature..old","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
 		{name: "rename leading dash", raw: `{"action":"rename","old_ref":"-feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
+		{name: "rename full ref leading dash", raw: `{"action":"rename","old_ref":"refs/heads/-feature","new_ref":"refs/heads/renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: false},
 		{name: "rename lock ref", raw: `{"action":"rename","old_ref":"feature.lock","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
 		{name: "rename leading slash", raw: `{"action":"rename","old_ref":"/feature","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},
 		{name: "rename trailing slash", raw: `{"action":"rename","old_ref":"feature/","new_ref":"renamed-feature","before":"` + a + `","after":"` + a + `"}`, want: true},

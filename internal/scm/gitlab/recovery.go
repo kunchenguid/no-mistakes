@@ -567,7 +567,7 @@ func gitlabAuditCanonicalRef(ref string) bool {
 		}
 	}
 	normalized := normalizeGitLabRef(ref)
-	return normalized != "" && !strings.HasPrefix(normalized, "-")
+	return normalized != ""
 }
 
 func gitlabAuditLooksLikePublication(raw json.RawMessage) bool {
