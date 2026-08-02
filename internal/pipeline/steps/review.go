@@ -161,7 +161,7 @@ Previous review findings to address:
 	// net-deleted-author-lines git-diff backstop for the removal-of-required
 	// class - a fixer round that net-deletes author-added lines parks
 	// regardless of intent source. Held pending a scope decision.
-	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
+	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
 
 	// Path-scoped repository review guidance, taken from the trusted
 	// default-branch config copy (regardless of allow_repo_commands) so a pushed
@@ -234,11 +234,17 @@ Risk assessment (after listing all findings):
 	)
 
 	// Every review turn - the initial review and every post-fix rereview -
-	// resumes the run's single durable reviewer session. The prompt above
-	// still demands a full review of the complete branch diff each turn; the
-	// session only carries the reviewer's own prior context, never the
-	// fixer's (that role has its own isolated session in executeFixMode).
-	result, err := sctx.RunAgentSession(pipeline.SessionRoleReviewer, agent.RunOpts{
+	// deliberately runs session-free. Round N's fixes implement round N-1's
+	// review findings, so resuming any prior review turn's session would seat
+	// the prescriber of those fixes as their certifier: the rereview then
+	// verifies that its own prescription was implemented instead of judging
+	// whether the pipeline-authored code is correct (the mechanism behind a
+	// real shipped defect where one fix round wrote both wrong code and the
+	// test blessing it, and the resumed reviewer session passed them). The
+	// cross-round context a rereview legitimately needs travels in the
+	// explicit sanitized round-history section above; only the fixer keeps a
+	// durable session (executeFixMode), because it certifies nothing.
+	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: reviewFindingsSchema,
@@ -277,6 +283,27 @@ Risk assessment (after listing all findings):
 		Findings:      string(findingsJSON),
 		FixSummary:    fixSummary,
 	})
+}
+
+// fixRoundProvenanceClause reframes a rereview's fix-round changes as
+// pipeline-authored code under the author-grade adversarial standard. Without
+// it, the round-history section reads as "found and fixed" and invites less
+// scrutiny of exactly the code the pipeline itself just wrote: the fixer
+// authors both code and tests in one round, so the only independent check
+// that code ever gets is this rereview. Empty outside fix mode, leaving the
+// initial review prompt unchanged.
+func fixRoundProvenanceClause(sctx *pipeline.StepContext) string {
+	if !sctx.Fixing {
+		return ""
+	}
+	return `
+
+Fix-round provenance:
+- This is a re-review after this run's automated fix round(s): every commit after the starting head, plus any uncommitted worktree changes, was authored by the pipeline's own fixer agent, not by the change author.
+- Review that pipeline-authored code with exactly the same adversarial standard as the author's original changes. It is unreviewed new code, not a settled resolution of the findings that prompted it.
+- Prior findings and fix summaries are claims, not evidence. Verify each claimed fix against the current code, and independently judge whether behavior the fix rounds introduced is correct, not merely whether it implements what was prescribed.
+- A test added or changed in the same fix round as the code it exercises is part of that round's claim, not independent proof: judge whether its asserted outcome is the right outcome and whether it could still pass with the code wrong.
+`
 }
 
 // approvedReviewOutcome captures the immutable commit examined by this full

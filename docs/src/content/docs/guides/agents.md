@@ -201,7 +201,8 @@ Five global config fields tune resolution and invocation, and the [Global Config
 
 ## Review session reuse
 
-With the default `session_reuse: true`, Claude and Codex keep one durable reviewer session and a separate review-fixer session per run, every rereview still evaluates the entire branch diff, and resume failures fall back to fresh same-role sessions instead of skipping review.
+With the default `session_reuse: true`, Claude and Codex keep one durable review-fixer session per run, and resume failures fall back to a fresh fixer session instead of skipping the fix turn.
+Review turns always run in fresh, session-free invocations: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them.
 The [`session_reuse` field reference](/no-mistakes/reference/global-config/#session_reuse) owns the exact reuse, fallback, privacy, and restart-recovery semantics.
 
 ## Agent interface

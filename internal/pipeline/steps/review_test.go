@@ -316,6 +316,92 @@ func TestReviewStep_DurableFixAdequacyContract(t *testing.T) {
 	}
 }
 
+// The rereview that certifies a fix round examines code the pipeline itself
+// authored, moments earlier, to the previous review turn's prescription. The
+// prompt must reframe that code as unreviewed new work under the same
+// adversarial standard as the author's changes - prior findings and fix
+// summaries are claims, and a same-round test is part of the claim, not
+// independent proof. This pins the contract wording; the initial review must
+// stay unchanged. Class regression for a pipeline-authored defect (code plus
+// blessing test written by one fix round) certified with zero findings.
+func TestReviewStep_RereviewTreatsFixRoundsAsPipelineAuthoredCode(t *testing.T) {
+	t.Parallel()
+	provenanceContract := []string{
+		"Fix-round provenance:",
+		"was authored by the pipeline's own fixer agent, not by the change author",
+		"same adversarial standard as the author's original changes",
+		"unreviewed new code, not a settled resolution of the findings that prompted it",
+		"Prior findings and fix summaries are claims, not evidence",
+		"not merely whether it implements what was prescribed",
+		"part of that round's claim, not independent proof",
+		"whether it could still pass with the code wrong",
+	}
+
+	t.Run("rereview_carries_the_provenance_contract", func(t *testing.T) {
+		t.Parallel()
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+		callCount := 0
+		ag := &mockAgent{
+			name: "test",
+			runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				callCount++
+				if callCount == 1 {
+					os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644)
+					return &agent.Result{Output: json.RawMessage(`{"summary":"address findings"}`)}, nil
+				}
+				j, _ := json.Marshal(Findings{Summary: "clean"})
+				return &agent.Result{Output: j}, nil
+			},
+		}
+
+		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		sctx.Fixing = true
+		sctx.PreviousFindings = `{"findings":[{"id":"review-1","severity":"warning","file":"main.go","description":"possible nil deref"}],"summary":"1 issue"}`
+
+		if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+			t.Fatal(err)
+		}
+		if len(ag.calls) != 2 {
+			t.Fatalf("expected fix + rereview calls, got %d", len(ag.calls))
+		}
+		rereviewPrompt := ag.calls[1].Prompt
+		for _, want := range provenanceContract {
+			if !strings.Contains(rereviewPrompt, want) {
+				t.Errorf("rereview prompt missing provenance contract %q:\n%s", want, rereviewPrompt)
+			}
+		}
+		if strings.Contains(ag.calls[0].Prompt, "Fix-round provenance:") {
+			t.Error("fixer prompt must not carry the reviewer's provenance contract")
+		}
+	})
+
+	t.Run("initial_review_stays_unchanged", func(t *testing.T) {
+		t.Parallel()
+		dir, baseSHA, headSHA := setupGitRepo(t)
+
+		findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+		ag := &mockAgent{
+			name: "test",
+			runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: findingsJSON}, nil
+			},
+		}
+
+		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+			t.Fatal(err)
+		}
+		if len(ag.calls) != 1 {
+			t.Fatalf("expected 1 review call, got %d", len(ag.calls))
+		}
+		if strings.Contains(ag.calls[0].Prompt, "Fix-round provenance:") {
+			t.Errorf("initial review prompt must not carry the fix-round provenance contract:\n%s", ag.calls[0].Prompt)
+		}
+	})
+}
+
 func TestReviewStep_FixMode_RequiresPreviousFindings(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

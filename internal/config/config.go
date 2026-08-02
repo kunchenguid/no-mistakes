@@ -71,9 +71,10 @@ type GlobalConfig struct {
 	StepQuietWarning     time.Duration       `yaml:"-"`
 	DaemonConnectTimeout time.Duration       `yaml:"-"`
 	LogLevel             string              `yaml:"log_level"`
-	// SessionReuse controls per-run, per-role agent session reuse in the
-	// review loop (one durable reviewer session across full reviews, a
-	// separate durable fixer session across fix turns). Default true; set
+	// SessionReuse controls per-run agent session reuse in the review loop:
+	// one durable fixer session across review-fix turns. Review turns always
+	// run session-free so the rereview never resumes the session whose
+	// findings prescribed the fixes it certifies. Default true; set
 	// session_reuse: false to force every invocation cold.
 	SessionReuse bool `yaml:"-"`
 	AutoFix      AutoFixRaw

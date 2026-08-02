@@ -88,10 +88,12 @@ func sessionTestDB(t *testing.T) (*db.DB, *db.Run) {
 	return d, run
 }
 
-// TestRunSessions_ReviewerReusesOneSession proves N review rounds share one
-// durable reviewer session: the first turn starts it, every later turn
-// resumes the same identity.
-func TestRunSessions_ReviewerReusesOneSession(t *testing.T) {
+// TestRunSessions_RoleReusesOneSession proves the RunSessions machinery keeps
+// one durable session per role: the first turn starts it, every later turn
+// resumes the same identity. Which roles production actually resumes is
+// review.go policy, pinned in steps/review_session_test.go (fixer only;
+// review turns bypass RunSessions entirely).
+func TestRunSessions_RoleReusesOneSession(t *testing.T) {
 	d, run := sessionTestDB(t)
 	fake := newFakeSessionAgent()
 	rs := NewRunSessions(d, run.ID, fake, true)
@@ -116,10 +118,12 @@ func TestRunSessions_ReviewerReusesOneSession(t *testing.T) {
 	}
 }
 
-// TestRunSessions_FixerSessionIsDistinctFromReviewer proves the fixer role
-// keeps its own durable session that is never the reviewer's, in both
-// directions and across interleaved turns.
-func TestRunSessions_FixerSessionIsDistinctFromReviewer(t *testing.T) {
+// TestRunSessions_RolesKeepDistinctSessions proves two roles interleaved on
+// one RunSessions never exchange identities, in both directions. Legacy
+// "reviewer" rows can still coexist with fixer rows on recovered runs, so
+// cross-role isolation in the machinery remains a real property even though
+// production review turns no longer call RunSessions.
+func TestRunSessions_RolesKeepDistinctSessions(t *testing.T) {
 	d, run := sessionTestDB(t)
 	fake := newFakeSessionAgent()
 	rs := NewRunSessions(d, run.ID, fake, true)
