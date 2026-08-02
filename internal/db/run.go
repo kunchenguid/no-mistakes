@@ -251,7 +251,7 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, receive_reservation_id, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, publication_journal_state, publication_journal_target_kind, publication_journal_target_fingerprint, publication_journal_ref, publication_journal_target_version, publication_attempt_head_sha, publication_attempt_target_kind, publication_attempt_target_fingerprint, publication_attempt_ref, custody_returned_at, custody_transition_token, custody_transition_phase, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, receive_reservation_id, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, publication_journal_state, publication_journal_target_kind, publication_journal_target_fingerprint, publication_journal_ref, publication_journal_target_version, publication_attempt_head_sha, publication_attempt_target_kind, publication_attempt_target_fingerprint, publication_attempt_ref, COALESCE((SELECT evidence_hash FROM run_publication_target_sets WHERE run_id = runs.id), ''), COALESCE((SELECT evidence_generation FROM run_publication_target_sets WHERE run_id = runs.id), 0), custody_returned_at, custody_transition_token, custody_transition_phase, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 const custodyAuthorityPredicate = `id = ? AND repo_id = ? AND branch = ? AND head_sha = ? AND base_sha = ?
 		   AND submitted_head_sha IS ? AND review_approved_head_sha IS ? AND status = ?
@@ -280,6 +280,7 @@ func scanRun(row interface {
 		&r.PublicationJournalState, &r.PublicationJournalTargetKind, &r.PublicationJournalTargetFingerprint, &r.PublicationJournalRef,
 		&r.PublicationJournalTargetVersion,
 		&r.PublicationAttemptHeadSHA, &r.PublicationAttemptTargetKind, &r.PublicationAttemptTargetFingerprint, &r.PublicationAttemptRef,
+		&r.PublicationEvidenceHash, &r.PublicationEvidenceGeneration,
 		&r.CustodyReturnedAt, &r.CustodyTransitionToken, &r.CustodyTransitionPhase, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,

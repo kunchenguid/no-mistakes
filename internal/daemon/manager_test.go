@@ -244,10 +244,11 @@ func TestVerifyRemotePublicationProofRejectsPreservedHeads(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		recorded[0].PRRequestIdentity = "https://github.com/example/repo/pull/7"
 		manager := NewRunManager(database, p, nil)
 		t.Cleanup(manager.Shutdown)
-		if err := manager.verifyRemotePublicationProof(context.Background(), run, repo, []publicationTargetURL{{kind: "upstream", url: bare}}, recorded); err == nil {
+		if _, err := manager.verifyRemotePublicationSnapshotWithRequestRefs(context.Background(), run, repo, []publicationTargetURL{{kind: "upstream", url: bare}}, recorded, map[string][]string{
+			recorded[0].TargetFingerprint: []string{"refs/pull/7/head"},
+		}); err == nil {
 			t.Fatal("remote pull-request ref containing preserved head passed publication proof")
 		}
 	})

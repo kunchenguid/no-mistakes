@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -113,7 +114,60 @@ func (h *Host) VerifyUnpublishedTargetHistory(ctx context.Context, branch, submi
 	if err := h.VerifyUnpublishedHistory(ctx, branch, submitted, preserved, since, until, ""); err != nil {
 		return scm.HistoricalPublicationEvidence{}, err
 	}
-	return h.VerifyUnpublishedRefHistoryEvidence(ctx, branch, submitted, preserved, since, until)
+	proof, err := h.VerifyUnpublishedRefHistoryEvidence(ctx, branch, submitted, preserved, since, until)
+	if err != nil {
+		return scm.HistoricalPublicationEvidence{}, err
+	}
+	refs, err := h.unpublishedTargetRequestRefs(ctx, branch, submitted, since, until)
+	if err != nil {
+		return scm.HistoricalPublicationEvidence{}, err
+	}
+	proof.RequestRefs = refs
+	proof.Cursor += "|request-refs=" + strings.Join(refs, ",")
+	return proof, nil
+}
+
+func (h *Host) unpublishedTargetRequestRefs(ctx context.Context, branch, submitted string, since, until int64) ([]string, error) {
+	project := url.PathEscape(h.projectPath)
+	var mergeRequests []recoveryMergeRequest
+	if err := h.apiPages(ctx, fmt.Sprintf("projects/%s/merge_requests?state=all&per_page=100", project), &mergeRequests); err != nil {
+		return nil, fmt.Errorf("inspect GitLab merge-request lineage: %w", err)
+	}
+	refs := make([]string, 0)
+	for _, mergeRequest := range mergeRequests {
+		inWindow, err := recoveryRecordInWindow(mergeRequest.CreatedAt, mergeRequest.UpdatedAt, since, until)
+		if err != nil {
+			return nil, fmt.Errorf("GitLab merge request %d has incomplete historical timestamps: %w", mergeRequest.IID, err)
+		}
+		if !inWindow {
+			continue
+		}
+		var events []json.RawMessage
+		if err := h.apiPages(ctx, fmt.Sprintf("projects/%s/merge_requests/%d/resource_state_events?per_page=100", project, mergeRequest.IID), &events); err != nil {
+			return nil, fmt.Errorf("inspect GitLab merge-request %d lineage: %w", mergeRequest.IID, err)
+		}
+		related := mergeRequest.SourceBranch == branch
+		if !related {
+			var explicit bool
+			related, explicit = recoveryBranchRelation(events, branch)
+			if !related {
+				if !explicit {
+					return nil, fmt.Errorf("GitLab merge request %d has incomplete submission-time target lineage", mergeRequest.IID)
+				}
+				continue
+			}
+		}
+		head := mergeRequest.SHA
+		if head == "" {
+			head = mergeRequest.DiffRefs.HeadSHA
+		}
+		if head == "" || head != submitted {
+			return nil, fmt.Errorf("GitLab merge request %d has a changed head", mergeRequest.IID)
+		}
+		refs = append(refs, fmt.Sprintf("refs/merge-requests/%d/head", mergeRequest.IID))
+	}
+	sort.Strings(refs)
+	return refs, nil
 }
 
 func (h *Host) VerifyUnpublishedRefHistoryEvidence(ctx context.Context, branch, submitted, preserved string, since, until int64) (scm.HistoricalPublicationEvidence, error) {
@@ -158,11 +212,12 @@ func (h *Host) VerifyUnpublishedRefHistoryEvidence(ctx context.Context, branch, 
 	return scm.HistoricalPublicationEvidence{
 		Hash:     recoveryEvidenceHash(endpoint, branch, submitted, preserved, events),
 		Cursor:   cursor,
-		Coverage: fmt.Sprintf("gitlab-events-pages=%d;events=%d", pages, len(events)),
+		Coverage: fmt.Sprintf("gitlab-events-pages=%d;events=%d;pagination=exhausted", pages, len(events)),
 	}, nil
 }
 
 func recoveryEventCursor(events []json.RawMessage, since, until int64) (string, error) {
+	min := int64(0)
 	max := int64(0)
 	for _, raw := range events {
 		var event struct {
@@ -183,14 +238,18 @@ func recoveryEventCursor(events []json.RawMessage, since, until int64) (string, 
 		if err != nil {
 			return "", err
 		}
-		if unix := when.Unix(); unix > max {
+		unix := when.Unix()
+		if min == 0 || unix < min {
+			min = unix
+		}
+		if unix > max {
 			max = unix
 		}
 	}
-	if since > 0 && max < since {
+	if since > 0 && min > since {
 		return "", errors.New("event history does not cover the run interval")
 	}
-	return fmt.Sprintf("%d", max), nil
+	return fmt.Sprintf("oldest=%d;newest=%d;since=%d;until=%d", min, max, since, until), nil
 }
 
 func recoveryEvidenceHash(endpoint, branch, submitted, preserved string, events []json.RawMessage) string {

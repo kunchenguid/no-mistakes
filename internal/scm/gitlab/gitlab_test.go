@@ -414,6 +414,21 @@ func TestVerifyUnpublishedRefHistoryRejectsEmptyCoverage(t *testing.T) {
 	}
 }
 
+func TestVerifyUnpublishedRefHistoryRejectsTruncatedOlderCoverage(t *testing.T) {
+	t.Parallel()
+	since := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).Unix()
+	until := time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC).Unix()
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/events?per_page=100": {
+			stdout: `[{"created_at":"2026-08-01T12:00:00Z","push_data":{"ref":"feature","commit_to":"` + strings.Repeat("a", 40) + `"}}]` + "\n",
+		},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedRefHistory(context.Background(), "refs/heads/feature", strings.Repeat("a", 40), strings.Repeat("b", 40), since, until); err == nil {
+		t.Fatal("truncated ref history passed as complete evidence")
+	}
+}
+
 func TestVerifyUnpublishedHistoryInspectsRenamedNoMergeRequestHistory(t *testing.T) {
 	t.Parallel()
 	a := strings.Repeat("a", 40)

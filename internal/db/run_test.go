@@ -577,8 +577,9 @@ func TestRunPublicationEvidenceBindsCustodyCAS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected.PublicationEvidenceHash = set.EvidenceHash
-	expected.PublicationEvidenceGeneration = set.EvidenceGeneration
+	if expected.PublicationEvidenceHash != set.EvidenceHash || expected.PublicationEvidenceGeneration != set.EvidenceGeneration {
+		t.Fatalf("reloaded publication evidence = %q/%d, want %q/%d", expected.PublicationEvidenceHash, expected.PublicationEvidenceGeneration, set.EvidenceHash, set.EvidenceGeneration)
+	}
 	if _, err := d.RecordRunPublicationEvidence(run.ID, []PublicationEvidenceInput{{
 		TargetFingerprint: targets[0].TargetFingerprint,
 		Ref:               targets[0].Ref,

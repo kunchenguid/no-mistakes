@@ -219,9 +219,10 @@ type HistoricalRefPublicationVerifier interface {
 }
 
 type HistoricalPublicationEvidence struct {
-	Hash     string
-	Cursor   string
-	Coverage string
+	Hash        string
+	Cursor      string
+	Coverage    string
+	RequestRefs []string
 }
 
 type HistoricalTargetPublicationVerifier interface {
