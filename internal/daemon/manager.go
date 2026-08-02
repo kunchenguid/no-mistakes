@@ -566,6 +566,9 @@ func (m *RunManager) validatePublicationLedger(ctx context.Context, run *db.Run)
 	for _, target := range publicationTargets {
 		targetURLs = append(targetURLs, target.url)
 	}
+	if err := m.verifyRemotePublicationProof(ctx, run, repo, publicationTargets, recorded); err != nil {
+		return fmt.Errorf("verify remote publication proof: %w", err)
+	}
 	if err := m.legacyPublicationProof(ctx, run, run.Branch, targetURLs); err != nil {
 		return fmt.Errorf("verify historical publication proof: %w", err)
 	}
@@ -610,44 +613,110 @@ func (m *RunManager) legacyPublicationProof(ctx context.Context, run *db.Run, br
 		if run.CreatedAt <= 0 || run.UpdatedAt < run.CreatedAt {
 			return fmt.Errorf("historical publication proof has no valid run interval")
 		}
-		targetIdentity, identityErr := m.recoveryTargetIdentityForRun(ctx, target, targets, run)
+		targetIdentity, targetRef, identityErr := m.recoveryTargetIdentityForRun(ctx, target, targets, run)
 		if identityErr != nil {
 			return identityErr
 		}
-		if err := verifier.VerifyUnpublishedHistory(ctx, branch, submitted, run.HeadSHA, run.CreatedAt, run.UpdatedAt, targetIdentity); err != nil {
+		if refVerifier, ok := verifier.(scm.HistoricalRefPublicationVerifier); ok {
+			if err := refVerifier.VerifyUnpublishedRefHistory(ctx, targetRef, submitted, run.HeadSHA, run.CreatedAt, run.UpdatedAt); err != nil {
+				return err
+			}
+		} else {
+			return fmt.Errorf("historical ref publication proof is unavailable for %s", provider)
+		}
+		targetBranch := strings.TrimPrefix(targetRef, "refs/heads/")
+		if err := verifier.VerifyUnpublishedHistory(ctx, targetBranch, submitted, run.HeadSHA, run.CreatedAt, run.UpdatedAt, targetIdentity); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (m *RunManager) recoveryTargetIdentityForRun(ctx context.Context, target string, targets []string, run *db.Run) (string, error) {
+func (m *RunManager) verifyRemotePublicationProof(ctx context.Context, run *db.Run, repo *db.Repo, targets []publicationTargetURL, recorded []db.RunPublicationTarget) error {
+	if run == nil || repo == nil || run.SubmittedHeadSHA == nil || !reviewObjectID(*run.SubmittedHeadSHA) {
+		return fmt.Errorf("remote publication proof has no canonical submitted head")
+	}
+	if len(targets) != len(recorded) {
+		return fmt.Errorf("remote publication target set changed")
+	}
+	byFingerprint := make(map[string]db.RunPublicationTarget, len(recorded))
+	for _, target := range recorded {
+		if _, duplicate := byFingerprint[target.TargetFingerprint]; duplicate {
+			return fmt.Errorf("remote publication target ledger is duplicated")
+		}
+		byFingerprint[target.TargetFingerprint] = target
+	}
+	seen := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		fingerprint := db.PublicationTargetFingerprint(target.url)
+		if _, duplicate := seen[fingerprint]; duplicate {
+			return fmt.Errorf("remote publication target is duplicated")
+		}
+		seen[fingerprint] = struct{}{}
+		record, ok := byFingerprint[fingerprint]
+		if !ok || record.Ref == "" || record.State != db.PublicationTargetNoAttempt {
+			return fmt.Errorf("remote publication target is not bound to the durable ledger")
+		}
+		current, err := git.LsRemote(ctx, repo.WorkingPath, target.url, record.Ref)
+		if err != nil {
+			return fmt.Errorf("read remote branch %s from %s: %w", record.Ref, target.url, err)
+		}
+		if current != *run.SubmittedHeadSHA {
+			return fmt.Errorf("remote branch %s from %s is %s, want submitted head %s", record.Ref, target.url, current, *run.SubmittedHeadSHA)
+		}
+		for _, pattern := range []string{"refs/pull/*/head", "refs/merge-requests/*/head", "refs/changes/*"} {
+			output, err := git.Run(ctx, repo.WorkingPath, "ls-remote", target.url, pattern)
+			if err != nil {
+				return fmt.Errorf("read remote publication refs %s from %s: %w", pattern, target.url, err)
+			}
+			for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+				if strings.TrimSpace(line) == "" {
+					continue
+				}
+				fields := strings.Fields(line)
+				if len(fields) != 2 || !reviewObjectID(fields[0]) || fields[1] == "" || fields[0] != *run.SubmittedHeadSHA {
+					refName := "<malformed>"
+					if len(fields) > 1 {
+						refName = fields[len(fields)-1]
+					}
+					return fmt.Errorf("remote publication ref %q from %s is not the submitted head", refName, target.url)
+				}
+			}
+		}
+	}
+	if len(seen) != len(recorded) {
+		return fmt.Errorf("remote publication target set changed")
+	}
+	return nil
+}
+
+func (m *RunManager) recoveryTargetIdentityForRun(ctx context.Context, target string, targets []string, run *db.Run) (string, string, error) {
 	if m == nil || m.db == nil || run == nil {
-		return "", fmt.Errorf("submission-time publication identity has no durable run ledger")
+		return "", "", fmt.Errorf("submission-time publication identity has no durable run ledger")
 	}
 	recorded, err := m.db.ListRunPublicationTargets(run.ID)
 	if err != nil {
-		return "", fmt.Errorf("read submission-time publication targets: %w", err)
+		return "", "", fmt.Errorf("read submission-time publication targets: %w", err)
 	}
 	if err := m.db.ValidateRunPublicationTargetLedger(run.ID); err != nil {
-		return "", fmt.Errorf("validate submission-time publication target ledger: %w", err)
+		return "", "", fmt.Errorf("validate submission-time publication target ledger: %w", err)
 	}
 	targetSet, err := m.db.GetRunPublicationTargetSet(run.ID)
 	if err != nil {
-		return "", fmt.Errorf("read submission-time publication target set: %w", err)
+		return "", "", fmt.Errorf("read submission-time publication target set: %w", err)
 	}
 	if targetSet == nil || targetSet.State != db.PublicationTargetSetComplete || targetSet.TargetCount != len(recorded) || targetSet.TargetCount == 0 || targetSet.Generation < 0 || strings.TrimSpace(targetSet.Provenance) == "" || targetSet.TargetSetHash != db.PublicationTargetSetHash(recorded) {
-		return "", fmt.Errorf("submission-time publication targets are not initialized")
+		return "", "", fmt.Errorf("submission-time publication targets are not initialized")
 	}
 	repo, err := m.db.GetRepo(run.RepoID)
 	if err != nil || repo == nil {
-		return "", fmt.Errorf("submission-time publication target repository is unavailable")
+		return "", "", fmt.Errorf("submission-time publication target repository is unavailable")
 	}
 	current := make(map[string]struct{}, len(targets))
 	for _, candidate := range targets {
 		fingerprint := db.PublicationTargetFingerprint(candidate)
 		if fingerprint == "" {
-			return "", fmt.Errorf("submission-time publication target has no canonical identity")
+			return "", "", fmt.Errorf("submission-time publication target has no canonical identity")
 		}
 		current[fingerprint] = struct{}{}
 	}
@@ -655,43 +724,43 @@ func (m *RunManager) recoveryTargetIdentityForRun(ctx context.Context, target st
 	for index := range recorded {
 		item := &recorded[index]
 		if item.TargetKind == "" || !validPublicationTargetFingerprint(item.TargetFingerprint) || item.Ref == "" || item.TargetVersion < 0 || item.TargetVersion != repo.URLVersion || item.Generation < 0 || item.Provenance == "" {
-			return "", fmt.Errorf("submission-time publication target record is malformed")
+			return "", "", fmt.Errorf("submission-time publication target record is malformed")
 		}
 		switch item.State {
 		case db.PublicationTargetNoAttempt:
 			if item.RequestIdentity != "" || item.AttemptHeadSHA != "" {
-				return "", fmt.Errorf("submission-time publication target no-attempt record is inconsistent")
+				return "", "", fmt.Errorf("submission-time publication target no-attempt record is inconsistent")
 			}
 		default:
-			return "", fmt.Errorf("submission-time publication target has publication evidence")
+			return "", "", fmt.Errorf("submission-time publication target has publication evidence")
 		}
 		if _, ok := current[item.TargetFingerprint]; !ok {
-			return "", fmt.Errorf("submission-time publication target is absent from the current target set")
+			return "", "", fmt.Errorf("submission-time publication target is absent from the current target set")
 		}
 		if _, duplicate := byFingerprint[item.TargetFingerprint]; duplicate {
-			return "", fmt.Errorf("submission-time publication target identity is duplicated")
+			return "", "", fmt.Errorf("submission-time publication target identity is duplicated")
 		}
 		byFingerprint[item.TargetFingerprint] = item
 	}
 	if targetSet.TargetCount != len(current) {
-		return "", fmt.Errorf("submission-time publication target set changed")
+		return "", "", fmt.Errorf("submission-time publication target set changed")
 	}
 	for fingerprint := range current {
 		if _, ok := byFingerprint[fingerprint]; !ok {
-			return "", fmt.Errorf("submission-time publication target is missing from the durable ledger")
+			return "", "", fmt.Errorf("submission-time publication target is missing from the durable ledger")
 		}
 	}
 	targetFingerprint := db.PublicationTargetFingerprint(target)
 	targetRecord := byFingerprint[targetFingerprint]
 	if targetRecord == nil || targetRecord.Ref != "refs/heads/"+strings.TrimPrefix(strings.TrimSpace(run.Branch), "refs/heads/") {
-		return "", fmt.Errorf("submission-time publication target ref is not bound to the run branch")
+		return "", "", fmt.Errorf("submission-time publication target ref is not bound to the run branch")
 	}
 	if targetRecord.PRRequestIdentity != "" {
 		identity, err := recoveryTargetIdentity(ctx, target, &targetRecord.PRRequestIdentity)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		return identity, nil
+		return identity, targetRecord.Ref, nil
 	}
 	if run.PRURL != nil && strings.TrimSpace(*run.PRURL) != "" {
 		legacyPRURL := strings.TrimSpace(*run.PRURL)
@@ -703,11 +772,10 @@ func (m *RunManager) recoveryTargetIdentityForRun(ctx context.Context, target st
 			}
 		}
 		if !matched {
-			return "", fmt.Errorf("run PR identity is not bound to a durable publication target")
+			return "", "", fmt.Errorf("run PR identity is not bound to a durable publication target")
 		}
 	}
-	_ = ctx
-	return "", nil
+	return "", targetRecord.Ref, nil
 }
 
 func validPublicationTargetFingerprint(value string) bool {
@@ -2296,17 +2364,20 @@ func (m *RunManager) publicationTargetURLs(ctx context.Context, repo *db.Repo, b
 		return nil, fmt.Errorf("publication target history requires a repository")
 	}
 	targets := make([]publicationTargetURL, 0, 6)
-	seen := make(map[string]struct{})
+	indices := make(map[string]int)
 	add := func(kind, raw string) {
 		raw = strings.TrimSpace(raw)
 		fingerprint := db.PublicationTargetFingerprint(raw)
 		if raw == "" || fingerprint == "" {
 			return
 		}
-		if _, ok := seen[fingerprint]; ok {
+		if index, ok := indices[fingerprint]; ok {
+			if kind == "remote" {
+				targets[index].url = raw
+			}
 			return
 		}
-		seen[fingerprint] = struct{}{}
+		indices[fingerprint] = len(targets)
 		targets = append(targets, publicationTargetURL{kind: kind, url: raw})
 	}
 	add("upstream", repo.UpstreamURL)

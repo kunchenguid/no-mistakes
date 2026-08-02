@@ -158,6 +158,100 @@ func TestValidatePublicationLedgerRequiresHistoricalProof(t *testing.T) {
 	}
 }
 
+func TestVerifyRemotePublicationProofRejectsPreservedHeads(t *testing.T) {
+	t.Run("ordinary branch", func(t *testing.T) {
+		p, database := newRefreshRunFixture(t)
+		bare := filepath.Join(t.TempDir(), "remote.git")
+		work := filepath.Join(t.TempDir(), "work")
+		gitCmd(t, "", "init", "--bare", bare)
+		if err := os.MkdirAll(work, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, work, "init")
+		gitCmd(t, work, "config", "user.email", "test@test.com")
+		gitCmd(t, work, "config", "user.name", "Test")
+		if err := os.WriteFile(filepath.Join(work, "file.txt"), []byte("A\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, work, "add", "file.txt")
+		gitCmd(t, work, "commit", "-m", "A")
+		a := gitOutput(t, work, "rev-parse", "HEAD")
+		gitCmd(t, work, "branch", "-M", "feature")
+		gitCmd(t, work, "push", bare, "feature:refs/heads/feature")
+		if err := os.WriteFile(filepath.Join(work, "file.txt"), []byte("P\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, work, "commit", "-am", "P")
+		pHead := gitOutput(t, work, "rev-parse", "HEAD")
+		gitCmd(t, bare, "fetch", work, pHead+":refs/keep/recovery")
+		gitCmd(t, bare, "update-ref", "refs/heads/feature", pHead, a)
+		repo, err := database.InsertRepoWithID("remote-proof-branch", work, bare, "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := database.InsertRun(repo.ID, "feature", pHead, a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.SubmittedHeadSHA = &a
+		recorded, err := database.ListRunPublicationTargets(run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manager := NewRunManager(database, p, nil)
+		t.Cleanup(manager.Shutdown)
+		if err := manager.verifyRemotePublicationProof(context.Background(), run, repo, []publicationTargetURL{{kind: "upstream", url: bare}}, recorded); err == nil {
+			t.Fatal("remote branch containing preserved head passed publication proof")
+		}
+	})
+
+	t.Run("pull request ref", func(t *testing.T) {
+		p, database := newRefreshRunFixture(t)
+		bare := filepath.Join(t.TempDir(), "remote.git")
+		work := filepath.Join(t.TempDir(), "work")
+		gitCmd(t, "", "init", "--bare", bare)
+		if err := os.MkdirAll(work, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, work, "init")
+		gitCmd(t, work, "config", "user.email", "test@test.com")
+		gitCmd(t, work, "config", "user.name", "Test")
+		if err := os.WriteFile(filepath.Join(work, "file.txt"), []byte("A\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, work, "add", "file.txt")
+		gitCmd(t, work, "commit", "-m", "A")
+		a := gitOutput(t, work, "rev-parse", "HEAD")
+		gitCmd(t, work, "branch", "-M", "feature")
+		if err := os.WriteFile(filepath.Join(work, "file.txt"), []byte("P\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, work, "commit", "-am", "P")
+		pHead := gitOutput(t, work, "rev-parse", "HEAD")
+		gitCmd(t, bare, "fetch", work, pHead+":refs/keep/recovery")
+		gitCmd(t, bare, "update-ref", "refs/heads/feature", a)
+		gitCmd(t, bare, "update-ref", "refs/pull/7/head", pHead)
+		repo, err := database.InsertRepoWithID("remote-proof-pr", work, bare, "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := database.InsertRun(repo.ID, "feature", pHead, a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.SubmittedHeadSHA = &a
+		recorded, err := database.ListRunPublicationTargets(run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manager := NewRunManager(database, p, nil)
+		t.Cleanup(manager.Shutdown)
+		if err := manager.verifyRemotePublicationProof(context.Background(), run, repo, []publicationTargetURL{{kind: "upstream", url: bare}}, recorded); err == nil {
+			t.Fatal("remote pull-request ref containing preserved head passed publication proof")
+		}
+	})
+}
+
 func TestRecoveryTargetIdentityRejectsMismatchedTarget(t *testing.T) {
 	prURL := "https://github.com/example/parent/pull/7"
 	if _, err := recoveryTargetIdentity(context.Background(), "https://github.com/example/fork.git", &prURL); err == nil {
@@ -193,7 +287,7 @@ func TestRecoveryTargetIdentitySeparatesPublicationTargets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.recoveryTargetIdentityForRun(context.Background(), parent, targets, run); err == nil {
+	if _, _, err := manager.recoveryTargetIdentityForRun(context.Background(), parent, targets, run); err == nil {
 		t.Fatal("published PR target passed unpublished recovery validation")
 	}
 }

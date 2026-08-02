@@ -213,3 +213,7 @@ type CheckRerunner interface {
 type HistoricalPublicationVerifier interface {
 	VerifyUnpublishedHistory(ctx context.Context, branch, submitted, preserved string, since, until int64, targetIdentity string) error
 }
+
+type HistoricalRefPublicationVerifier interface {
+	VerifyUnpublishedRefHistory(ctx context.Context, branch, submitted, preserved string, since, until int64) error
+}

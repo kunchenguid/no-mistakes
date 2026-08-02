@@ -354,6 +354,55 @@ func TestVerifyUnpublishedHistoryAllowsNoMergeRequestIdentity(t *testing.T) {
 	}
 }
 
+func TestVerifyUnpublishedHistoryIgnoresUnrelatedNoMergeRequestIdentity(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	p := strings.Repeat("b", 40)
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/merge_requests?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"iid":7,"source_branch":"other","sha":"%s"}]`+"\n", a),
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/resource_state_events?per_page=100": {stdout: `[{"source_branch":"other"}]` + "\n"},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0, ""); err != nil {
+		t.Fatalf("unrelated merge request history = %v, want ignored", err)
+	}
+}
+
+func TestVerifyUnpublishedHistoryUsesRenamedTargetLineage(t *testing.T) {
+	t.Parallel()
+	a := strings.Repeat("a", 40)
+	p := strings.Repeat("b", 40)
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/merge_requests?state=all&per_page=100": {
+			stdout: fmt.Sprintf(`[{"iid":7,"source_branch":"renamed-feature","sha":"%s"}]`+"\n", a),
+		},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/versions?per_page=100": {stdout: `[]` + "\n"},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/resource_state_events?per_page=100": {
+			stdout: fmt.Sprintf(`[{"source_branch":"feature","head_commit_sha":"%s"}]`+"\n", p),
+		},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0, ""); err == nil {
+		t.Fatal("renamed target lineage containing preserved head was accepted")
+	}
+}
+
+func TestVerifyUnpublishedRefHistoryRejectsPreservedBranchHead(t *testing.T) {
+	t.Parallel()
+	p := strings.Repeat("b", 40)
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab auth status": {},
+		"glab api --paginate projects/group%2Fproject/events?per_page=100": {
+			stdout: fmt.Sprintf(`[{"created_at":"2026-08-01T12:00:00Z","push_data":{"ref":"feature","commit_to":"%s"}}]`+"\n", p),
+		},
+	}), nil, "", "group/project")
+	if err := host.VerifyUnpublishedRefHistory(context.Background(), "refs/heads/feature", strings.Repeat("a", 40), p, 0, 0); err == nil {
+		t.Fatal("preserved branch head passed historical ref publication proof")
+	}
+}
+
 func TestVerifyUnpublishedHistoryInspectsRenamedNoMergeRequestHistory(t *testing.T) {
 	t.Parallel()
 	a := strings.Repeat("a", 40)
@@ -363,7 +412,7 @@ func TestVerifyUnpublishedHistoryInspectsRenamedNoMergeRequestHistory(t *testing
 			stdout: fmt.Sprintf(`[{"iid":7,"source_branch":"renamed-feature","sha":"%s"}]`+"\n", a),
 		},
 		"glab api --paginate projects/group%2Fproject/merge_requests/7/versions?per_page=100":              {stdout: "[]\n"},
-		"glab api --paginate projects/group%2Fproject/merge_requests/7/resource_state_events?per_page=100": {stdout: "[]\n"},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/resource_state_events?per_page=100": {stdout: `[{"source_branch":"feature"}]` + "\n"},
 	}), nil, "", "group/project")
 	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, strings.Repeat("b", 40), 0, 0, ""); err != nil {
 		t.Fatalf("renamed merge request history = %v, want complete history inspection", err)
@@ -382,7 +431,7 @@ func TestVerifyUnpublishedHistoryRejectsPreservedHeadInRenamedNoMergeRequestIden
 		"glab api --paginate projects/group%2Fproject/merge_requests/7/versions?per_page=100": {
 			stdout: fmt.Sprintf(`[{"head_commit_sha":"%s"}]`+"\n", p),
 		},
-		"glab api --paginate projects/group%2Fproject/merge_requests/7/resource_state_events?per_page=100": {stdout: "[]\n"},
+		"glab api --paginate projects/group%2Fproject/merge_requests/7/resource_state_events?per_page=100": {stdout: `[{"source_branch":"feature"}]` + "\n"},
 	}), nil, "", "group/project")
 	if err := host.VerifyUnpublishedHistory(context.Background(), "feature", a, p, 0, 0, ""); err == nil {
 		t.Fatal("renamed merge request containing preserved head was accepted")
