@@ -79,6 +79,9 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if err := d.sql.QueryRow("SELECT count(*) FROM run_publication_targets").Scan(&count); err != nil {
 		t.Fatalf("run_publication_targets table missing: %v", err)
 	}
+	if err := d.sql.QueryRow("SELECT count(*) FROM run_publication_target_sets").Scan(&count); err != nil {
+		t.Fatalf("run_publication_target_sets table missing: %v", err)
+	}
 	if !hasColumn(t, d, "repos", "fork_url") {
 		t.Fatal("repos.fork_url column missing from fresh schema")
 	}

@@ -193,6 +193,12 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, sta
 	defer agent.SetServerPIDsDir("")
 
 	mgr := NewRunManager(d, p, stepFactory)
+	startupReady := false
+	defer func() {
+		if !startupReady {
+			mgr.Shutdown()
+		}
+	}()
 
 	// Publish process identity as soon as the singleton lock is held. Startup
 	// callers can now distinguish a launched child from IPC readiness and detect
@@ -263,10 +269,12 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, sta
 		<-serveErrCh
 		return fmt.Errorf("confirm IPC health: %w", err)
 	}
+	startupReady = true
 	logStartupPhase("ipc_health", healthStarted)
 	slog.Info("daemon ready", "socket", socketPath, "pid", os.Getpid(), "startup_ms", time.Since(startupStarted).Milliseconds())
 
 	if err := <-serveErrCh; err != nil {
+		doShutdown("listener failure")
 		return fmt.Errorf("serve: %w", err)
 	}
 	doShutdown("listener closed")
@@ -406,11 +414,14 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) error {
 	worktreeStarted := time.Now()
 	cleanupOrphanWorktrees(d, p)
 	logStartupPhase("worktree_cleanup", worktreeStarted)
-	mgr.resumeRecoveredRuns(plans)
 	mgr.reconcileReceiveReservations(context.Background())
 	if err := mgr.restoreManagedGateGuards(); err != nil {
+		for _, plan := range plans {
+			_ = plan.agent.Close()
+		}
 		return fmt.Errorf("restore managed gate guards: %w", err)
 	}
+	mgr.resumeRecoveredRuns(plans)
 	return nil
 }
 

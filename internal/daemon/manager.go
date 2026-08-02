@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -574,8 +576,16 @@ func (m *RunManager) recoveryTargetIdentityForRun(ctx context.Context, target st
 	if err != nil {
 		return "", fmt.Errorf("read submission-time publication targets: %w", err)
 	}
-	if len(recorded) == 0 {
+	targetSet, err := m.db.GetRunPublicationTargetSet(run.ID)
+	if err != nil {
+		return "", fmt.Errorf("read submission-time publication target set: %w", err)
+	}
+	if targetSet == nil || targetSet.State != db.PublicationTargetSetComplete || targetSet.TargetCount != len(recorded) || targetSet.TargetCount == 0 || targetSet.Generation < 0 || strings.TrimSpace(targetSet.Provenance) == "" || targetSet.TargetSetHash != db.PublicationTargetSetHash(recorded) {
 		return "", fmt.Errorf("submission-time publication targets are not initialized")
+	}
+	repo, err := m.db.GetRepo(run.RepoID)
+	if err != nil || repo == nil {
+		return "", fmt.Errorf("submission-time publication target repository is unavailable")
 	}
 	current := make(map[string]struct{}, len(targets))
 	for _, candidate := range targets {
@@ -588,16 +598,34 @@ func (m *RunManager) recoveryTargetIdentityForRun(ctx context.Context, target st
 	byFingerprint := make(map[string]*db.RunPublicationTarget, len(recorded))
 	for index := range recorded {
 		item := &recorded[index]
+		if item.TargetKind == "" || !validPublicationTargetFingerprint(item.TargetFingerprint) || item.Ref == "" || item.TargetVersion < 0 || item.TargetVersion != repo.URLVersion || item.Generation < 0 || item.Provenance == "" {
+			return "", fmt.Errorf("submission-time publication target record is malformed")
+		}
+		switch item.State {
+		case db.PublicationTargetNoAttempt:
+			if item.RequestIdentity != "" || item.AttemptHeadSHA != "" {
+				return "", fmt.Errorf("submission-time publication target no-attempt record is inconsistent")
+			}
+		case db.PublicationTargetAttempted:
+		case db.PublicationTargetPublished:
+			if item.RequestIdentity == "" || item.AttemptHeadSHA == "" {
+				return "", fmt.Errorf("submission-time publication target published record is incomplete")
+			}
+		case db.PublicationTargetAmbiguous:
+			return "", fmt.Errorf("submission-time publication target evidence is ambiguous")
+		default:
+			return "", fmt.Errorf("submission-time publication target has unknown state")
+		}
 		if _, ok := current[item.TargetFingerprint]; !ok {
 			return "", fmt.Errorf("submission-time publication target is absent from the current target set")
 		}
 		if _, duplicate := byFingerprint[item.TargetFingerprint]; duplicate {
 			return "", fmt.Errorf("submission-time publication target identity is duplicated")
 		}
-		if item.State == db.PublicationTargetAmbiguous {
-			return "", fmt.Errorf("submission-time publication target evidence is ambiguous")
-		}
 		byFingerprint[item.TargetFingerprint] = item
+	}
+	if targetSet.TargetCount != len(current) {
+		return "", fmt.Errorf("submission-time publication target set changed")
 	}
 	for fingerprint := range current {
 		if _, ok := byFingerprint[fingerprint]; !ok {
@@ -609,45 +637,47 @@ func (m *RunManager) recoveryTargetIdentityForRun(ctx context.Context, target st
 	if targetRecord == nil || targetRecord.Ref != "refs/heads/"+strings.TrimPrefix(strings.TrimSpace(run.Branch), "refs/heads/") {
 		return "", fmt.Errorf("submission-time publication target ref is not bound to the run branch")
 	}
-	prURL := ""
-	if run.PRURL != nil {
-		prURL = strings.TrimSpace(*run.PRURL)
-	}
-	matchedFingerprint := ""
-	if prURL != "" {
-		for _, candidate := range targets {
-			if _, matchErr := recoveryTargetIdentity(ctx, candidate, &prURL); matchErr == nil {
-				candidateFingerprint := db.PublicationTargetFingerprint(candidate)
-				if matchedFingerprint != "" && matchedFingerprint != candidateFingerprint {
-					return "", fmt.Errorf("submission-time publication identity matches multiple targets")
-				}
-				matchedFingerprint = candidateFingerprint
-			}
-		}
-		if matchedFingerprint == "" {
-			return "", fmt.Errorf("submission-time publication identity does not match any recovery target")
-		}
+	targetURLs := make(map[string]string, len(targets))
+	for _, candidate := range targets {
+		targetURLs[db.PublicationTargetFingerprint(candidate)] = candidate
 	}
 	for fingerprint, item := range byFingerprint {
 		if item.RequestIdentity != "" {
-			if prURL == "" || fingerprint != matchedFingerprint || item.RequestIdentity != prURL {
-				return "", fmt.Errorf("submission-time publication identity is bound to the wrong target")
+			candidate := targetURLs[fingerprint]
+			if candidate == "" {
+				return "", fmt.Errorf("submission-time publication identity target is missing")
+			}
+			identity := item.RequestIdentity
+			if _, matchErr := recoveryTargetIdentity(ctx, candidate, &identity); matchErr != nil {
+				return "", fmt.Errorf("submission-time publication identity is bound to the wrong target: %w", matchErr)
 			}
 		}
 		if (item.State == db.PublicationTargetAttempted || item.State == db.PublicationTargetPublished) && item.RequestIdentity == "" {
 			return "", fmt.Errorf("submission-time publication target %s has no durable request identity", fingerprint)
 		}
 	}
-	if prURL != "" && targetFingerprint == matchedFingerprint && targetRecord.RequestIdentity == "" {
-		if err := m.db.SetRunPublicationTargetIdentity(run.ID, targetFingerprint, prURL); err != nil {
-			return "", fmt.Errorf("bind submission-time publication identity: %w", err)
+	if run.PRURL != nil && strings.TrimSpace(*run.PRURL) != "" {
+		legacyPRURL := strings.TrimSpace(*run.PRURL)
+		matched := false
+		for _, item := range byFingerprint {
+			if item.RequestIdentity == legacyPRURL {
+				matched = true
+				break
+			}
 		}
-		return prURL, nil
+		if !matched {
+			return "", fmt.Errorf("run PR identity is not bound to a durable publication target")
+		}
 	}
-	if targetFingerprint == matchedFingerprint {
-		return targetRecord.RequestIdentity, nil
+	return targetRecord.RequestIdentity, nil
+}
+
+func validPublicationTargetFingerprint(value string) bool {
+	if len(value) != hex.EncodedLen(sha256.Size) {
+		return false
 	}
-	return "", nil
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
 
 func recoveryTargetIdentity(ctx context.Context, target string, prURL *string) (string, error) {
@@ -1940,15 +1970,15 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		runIntent = &db.RunIntent{Summary: storedIntent, Source: source, Score: 1}
 	}
 
-	run, err := m.db.InsertRunWithIntentAndReceiveReservation(repo.ID, branch, headSHA, baseSHA, runIntent, receiveReservationID)
+	targetInputs, err := m.publicationTargetInputs(ctx, repo, branch)
+	if err != nil {
+		trackStartFailure("publication_targets")
+		return "", fmt.Errorf("enumerate publication targets: %w", err)
+	}
+	run, err := m.db.InsertRunWithIntentAndReceiveReservationAndTargets(repo.ID, branch, headSHA, baseSHA, runIntent, receiveReservationID, targetInputs)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
-	}
-	if err := m.seedRunPublicationTargets(ctx, repo, run, branch); err != nil {
-		m.db.UpdateRunError(run.ID, fmt.Sprintf("record publication targets: %s", err))
-		trackStartFailure("publication_targets")
-		return "", fmt.Errorf("record publication targets: %w", err)
 	}
 
 	// Create worktree from the gate bare repo.
@@ -2197,14 +2227,16 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 	return run.ID, nil
 }
 
-func (m *RunManager) seedRunPublicationTargets(ctx context.Context, repo *db.Repo, run *db.Run, branch string) error {
-	if m == nil || m.db == nil || repo == nil || run == nil {
-		return fmt.Errorf("publication target ledger requires a repository and run")
+func (m *RunManager) publicationTargetInputs(ctx context.Context, repo *db.Repo, branch string) ([]db.PublicationTargetInput, error) {
+	if m == nil || repo == nil {
+		return nil, fmt.Errorf("publication target ledger requires a repository")
 	}
-	inputs := db.PublicationTargetInputs(repo, branch)
+	baseInputs := db.PublicationTargetInputs(repo, branch)
+	inputs := make([]db.PublicationTargetInput, 0, len(baseInputs)+4)
+	inputs = append(inputs, baseInputs...)
 	remoteOutput, err := git.Run(ctx, repo.WorkingPath, "remote")
 	if err != nil {
-		return fmt.Errorf("list working-clone remotes: %w", err)
+		return nil, fmt.Errorf("list working-clone remotes: %w", err)
 	}
 	seen := make(map[string]struct{}, len(inputs))
 	for _, input := range inputs {
@@ -2216,14 +2248,14 @@ func (m *RunManager) seedRunPublicationTargets(ctx context.Context, repo *db.Rep
 			if err == nil {
 				err = fmt.Errorf("remote %s has %d fetch URLs", remote, len(fetchURLs))
 			}
-			return fmt.Errorf("read remote %s fetch URL: %w", remote, err)
+			return nil, fmt.Errorf("read remote %s fetch URL: %w", remote, err)
 		}
 		pushURLs, err := git.GetConfiguredRemotePushURLs(ctx, repo.WorkingPath, remote)
 		if err != nil || len(pushURLs) != 1 || strings.TrimSpace(pushURLs[0]) == "" {
 			if err == nil {
 				err = fmt.Errorf("remote %s has %d push URLs", remote, len(pushURLs))
 			}
-			return fmt.Errorf("read remote %s push URL: %w", remote, err)
+			return nil, fmt.Errorf("read remote %s push URL: %w", remote, err)
 		}
 		for _, raw := range []string{fetchURLs[0], pushURLs[0]} {
 			fingerprint := db.PublicationTargetFingerprint(raw)
@@ -2239,10 +2271,7 @@ func (m *RunManager) seedRunPublicationTargets(ctx context.Context, repo *db.Rep
 			})
 		}
 	}
-	if err := m.db.SeedRunPublicationTargets(run.ID, inputs); err != nil {
-		return err
-	}
-	return nil
+	return inputs, nil
 }
 
 // addRunPerformanceSummary attaches the bounded per-run performance rollup

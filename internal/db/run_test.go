@@ -3,7 +3,9 @@ package db
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -504,6 +506,13 @@ func TestRunPublicationTargetsAreBoundPerTarget(t *testing.T) {
 	if len(targets) != 2 {
 		t.Fatalf("publication target count = %d, want 2", len(targets))
 	}
+	set, err := d.GetRunPublicationTargetSet(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set == nil || set.State != PublicationTargetSetComplete || set.TargetCount != len(targets) || set.TargetSetHash != PublicationTargetSetHash(targets) {
+		t.Fatalf("publication target set = %#v, targets = %#v", set, targets)
+	}
 	parentFingerprint := publicationTargetFingerprint(parent)
 	forkFingerprint := publicationTargetFingerprint(fork)
 	if err := d.RecordRunPublicationAttempt(run.ID, PublicationAttempt{HeadSHA: "attempted", TargetKind: "fork", TargetFingerprint: forkFingerprint, Ref: "refs/heads/feature"}); err != nil {
@@ -528,6 +537,50 @@ func TestRunPublicationTargetsAreBoundPerTarget(t *testing.T) {
 	}
 	if got := byFingerprint[parentFingerprint]; got.State != PublicationTargetAttempted || got.RequestIdentity != "https://github.com/example/parent/pull/7" {
 		t.Fatalf("parent publication target = %#v", got)
+	}
+}
+
+func TestLegacyPublicationTargetsWithoutSubmissionGraphRemainAmbiguous(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/repo-legacy-publication-targets", "https://github.com/example/parent.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.sql.Exec(`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, status, pr_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'failed', 'none', ?, ?)`, "legacy-no-graph", repo.ID, "feature", strings.Repeat("a", 40), strings.Repeat("b", 40), time.Now().Unix(), time.Now().Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateRunPublicationTargets(d.sql); err != nil {
+		t.Fatal(err)
+	}
+	set, err := d.GetRunPublicationTargetSet("legacy-no-graph")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set == nil || set.State != PublicationTargetSetAmbiguous {
+		t.Fatalf("legacy target set = %#v, want ambiguous", set)
+	}
+	targets, err := d.ListRunPublicationTargets("legacy-no-graph")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 0 {
+		t.Fatalf("legacy targets = %#v, want no inferred current targets", targets)
+	}
+}
+
+func TestRunPublicationTargetStateRejectsUnknownValue(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/repo-publication-state", "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.sql.Exec(`UPDATE run_publication_targets SET state = 'corrupt' WHERE run_id = ?`, run.ID); err == nil {
+		t.Fatal("unknown publication target state was accepted")
 	}
 }
 

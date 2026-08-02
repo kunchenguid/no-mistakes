@@ -403,11 +403,21 @@ func recordReviewApproval(t *testing.T, sctx *pipeline.StepContext, headSHA stri
 }
 
 func newTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA string, cmds config.Commands) *pipeline.StepContext {
+	return newTestContextWithDBRecordsForRepo(t, ag, workDir, baseSHA, headSHA, cmds, "https://github.com/test/repo", "")
+}
+
+func newTestContextWithDBRecordsForRepo(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA string, cmds config.Commands, upstream, fork string) *pipeline.StepContext {
 	t.Helper()
 	sctx := newTestContext(t, ag, workDir, baseSHA, headSHA, cmds)
 
 	// Insert repo + run records so DB queries work
-	repo, err := sctx.DB.InsertRepo(workDir, "https://github.com/test/repo", "main")
+	var repo *db.Repo
+	var err error
+	if strings.TrimSpace(fork) != "" {
+		repo, err = sctx.DB.InsertRepoWithFork(workDir, upstream, fork, "main")
+	} else {
+		repo, err = sctx.DB.InsertRepo(workDir, upstream, "main")
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

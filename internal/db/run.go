@@ -280,6 +280,10 @@ func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent
 }
 
 func (d *DB) InsertRunWithIntentAndReceiveReservation(repoID, branch, headSHA, baseSHA string, intent *RunIntent, reservationID string) (*Run, error) {
+	return d.InsertRunWithIntentAndReceiveReservationAndTargets(repoID, branch, headSHA, baseSHA, intent, reservationID, nil)
+}
+
+func (d *DB) InsertRunWithIntentAndReceiveReservationAndTargets(repoID, branch, headSHA, baseSHA string, intent *RunIntent, reservationID string, targets []PublicationTargetInput) (*Run, error) {
 	ts := now()
 	repo, err := d.GetRepo(repoID)
 	if err != nil {
@@ -330,7 +334,10 @@ func (d *DB) InsertRunWithIntentAndReceiveReservation(repoID, branch, headSHA, b
 		return nil, fmt.Errorf("insert run: %w", err)
 	}
 	if repo != nil {
-		if err := seedRunPublicationTargetsTx(tx, r.ID, PublicationTargetInputs(repo, branch), "submission"); err != nil {
+		if targets == nil {
+			targets = PublicationTargetInputs(repo, branch)
+		}
+		if err := seedRunPublicationTargetsTx(tx, r.ID, targets, "submission"); err != nil {
 			return nil, fmt.Errorf("seed run publication targets: %w", err)
 		}
 	}
