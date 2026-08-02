@@ -249,7 +249,7 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 
 **Default auto-fix limit:** `3` total CI auto-fix attempts.
 
-**Default transient rerun budget:** `1` rerun per cancelled check per run, before that check reaches an approval gate.
+**Default transient rerun budget:** `0` reruns per cancelled check per run, before that check reaches an approval gate.
 
 ## Step statuses
 
