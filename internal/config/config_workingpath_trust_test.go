@@ -1,6 +1,11 @@
 package config
 
-import "testing"
+import (
+	"slices"
+	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
+)
 
 // The working-path copy exists for gated repos whose default branch is owned by
 // a team that does not run no-mistakes, so there is nowhere trusted to commit
@@ -44,6 +49,56 @@ func TestMergeWorkingPathTrusted_DoesNotMergeAllowRepoCommands(t *testing.T) {
 	if got := MergeWorkingPathTrusted(trusted, workingPath); got.AllowRepoCommands {
 		t.Fatal("AllowRepoCommands = true, want false: the working-path copy must not be able to enable pushed-branch commands")
 	}
+}
+
+// agent selects which process launches with the maintainer's credentials, so
+// each way the working-path copy can change it is pinned: a list replaces the
+// trusted list AND re-derives the single Agent from its head, a bare agent
+// replaces the single value AND clears a trusted list that would otherwise
+// keep winning at resolution, and an absent agent changes neither.
+func TestMergeWorkingPathTrusted_AgentSelection(t *testing.T) {
+	trustedConfig := func() *RepoConfig {
+		return &RepoConfig{
+			Agent:  types.AgentClaude,
+			Agents: []types.AgentName{types.AgentClaude, types.AgentCodex},
+		}
+	}
+
+	t.Run("working-path list replaces the trusted list and its head", func(t *testing.T) {
+		trusted := trustedConfig()
+		workingPath := &RepoConfig{Agents: []types.AgentName{types.AgentCodex, types.AgentClaude}}
+
+		got := MergeWorkingPathTrusted(trusted, workingPath)
+
+		if !slices.Equal(got.Agents, workingPath.Agents) {
+			t.Errorf("Agents = %v, want the working-path list %v", got.Agents, workingPath.Agents)
+		}
+		if got.Agent != types.AgentCodex {
+			t.Errorf("Agent = %q, want %q re-derived from the working-path list head", got.Agent, types.AgentCodex)
+		}
+		if !slices.Equal(trusted.Agents, trustedConfig().Agents) {
+			t.Errorf("trusted config mutated: %v", trusted.Agents)
+		}
+	})
+
+	t.Run("working-path single agent clears the trusted fallback list", func(t *testing.T) {
+		got := MergeWorkingPathTrusted(trustedConfig(), &RepoConfig{Agent: types.AgentCodex})
+
+		if got.Agent != types.AgentCodex {
+			t.Errorf("Agent = %q, want the working-path value to win", got.Agent)
+		}
+		if len(got.Agents) != 0 {
+			t.Errorf("Agents = %v, want it cleared: a leftover trusted list would outrank the agent the maintainer chose", got.Agents)
+		}
+	})
+
+	t.Run("absent working-path agent keeps the trusted selection", func(t *testing.T) {
+		got := MergeWorkingPathTrusted(trustedConfig(), &RepoConfig{Commands: Commands{Test: "imr verify"}})
+
+		if got.Agent != types.AgentClaude || !slices.Equal(got.Agents, trustedConfig().Agents) {
+			t.Errorf("Agent = %q, Agents = %v, want the trusted selection untouched", got.Agent, got.Agents)
+		}
+	})
 }
 
 func TestMergeWorkingPathTrusted_DisableProjectSettingsTrueWins(t *testing.T) {

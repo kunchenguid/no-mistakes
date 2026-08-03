@@ -30,6 +30,44 @@ func TestWriteDirThenCheckDir(t *testing.T) {
 	}
 }
 
+// A reference file the generator stopped producing is drift too: it stays
+// committed and readable while `no-mistakes init` no longer ships it, so agents
+// read stale guidance nothing regenerates. The check must fail on it, and
+// regenerating must be the fix.
+func TestGeneratedDirRejectsAndRemovesOrphanFiles(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "no-mistakes")
+	if err := writeDir(dir); err != nil {
+		t.Fatalf("writeDir: %v", err)
+	}
+	orphan := filepath.Join(dir, "retired-reference.md")
+	if err := os.WriteFile(orphan, []byte("stale guidance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := checkDir(dir)
+	if err == nil {
+		t.Fatal("checkDir accepted a file the generator does not produce")
+	}
+	if !strings.Contains(err.Error(), "retired-reference.md") {
+		t.Errorf("error = %q, want it to name the orphan file", err)
+	}
+
+	if err := writeDir(dir); err != nil {
+		t.Fatalf("writeDir: %v", err)
+	}
+	if _, statErr := os.Stat(orphan); !os.IsNotExist(statErr) {
+		t.Errorf("orphan survived regeneration: %v", statErr)
+	}
+	for _, f := range skill.Files() {
+		if _, statErr := os.Stat(filepath.Join(dir, f.Name)); statErr != nil {
+			t.Errorf("pruning removed a generated file: %v", statErr)
+		}
+	}
+	if err := checkDir(dir); err != nil {
+		t.Errorf("checkDir after regeneration: %v", err)
+	}
+}
+
 // TestCheckDirDetectsReferenceFileDrift is the CI guard: editing or deleting a
 // disclosed reference file must fail the check just like a stale SKILL.md.
 func TestCheckDirDetectsReferenceFileDrift(t *testing.T) {

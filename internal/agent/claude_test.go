@@ -883,16 +883,55 @@ func TestClaudeExitError_ReportsStreamDiagnosticWhenStderrEmpty(t *testing.T) {
 	}
 }
 
-func TestClaudeExitError_PrefersStderrDetail(t *testing.T) {
+// Both channels are reported: stderr leads, and the stream diagnostic still
+// reaches the error. Anything at all on stderr - a warning, a deprecation
+// notice - used to suppress the stall detail entirely, and that detail is the
+// only text classifyTransient can match to spend a retry on.
+func TestClaudeExitError_ReportsStderrAndStreamDetail(t *testing.T) {
 	var stream claudeStream
 	stream.tee(nil)("API Error: Stream idle timeout - no chunks received")
 
-	err := claudeExitError(errors.New("exit status 1"), []byte("claude: command not found"), &stream)
-	if !strings.Contains(err.Error(), "command not found") {
+	err := claudeExitError(errors.New("exit status 1"), []byte("warning: --print is deprecated"), &stream)
+	if !strings.Contains(err.Error(), "--print is deprecated") {
 		t.Fatalf("error %q dropped the stderr detail", err)
 	}
-	if strings.Contains(err.Error(), "Stream idle timeout") {
-		t.Fatalf("error %q mixed stream diagnostics into a real stderr failure", err)
+	if !strings.Contains(err.Error(), "Stream idle timeout") {
+		t.Fatalf("error %q dropped the stream diagnostic behind stderr noise", err)
+	}
+	if _, ok := classifyTransient(err); !ok {
+		t.Fatalf("error %q is not classified transient, so the stalled run would not retry", err)
+	}
+}
+
+// A stderr failure that already names the cause is reported once, not twice.
+func TestClaudeExitError_DoesNotRepeatADetailStderrAlreadyCarries(t *testing.T) {
+	var stream claudeStream
+	stream.tee(nil)("API Error: Stream idle timeout - no chunks received")
+
+	err := claudeExitError(errors.New("exit status 1"), []byte("API Error: Stream idle timeout - no chunks received"), &stream)
+	if n := strings.Count(err.Error(), "Stream idle timeout"); n != 1 {
+		t.Fatalf("error %q names the same diagnostic %d times, want 1", err, n)
+	}
+}
+
+// The CLI's prefix is a line prefix. Model prose that merely mentions it is
+// not a transport diagnostic, and capturing it would present the model's own
+// words as why claude stopped - persisted to runs.error.
+func TestClaudeStream_IgnoresTheLiteralInsideModelProse(t *testing.T) {
+	var stream claudeStream
+	onChunk := stream.tee(nil)
+	onChunk("The retry classifier matches on API Error: overloaded_error, which is why the run retries.\n")
+
+	if got := stream.apiErrors(); got != "" {
+		t.Fatalf("api errors = %q, want empty: model prose is not a transport diagnostic", got)
+	}
+
+	onChunk("API Error: Stream idle timeout - no chunks received\n")
+	if got := stream.apiErrors(); !strings.Contains(got, "Stream idle timeout") {
+		t.Fatalf("api errors = %q, want the CLI's own diagnostic kept", got)
+	}
+	if strings.Contains(stream.apiErrors(), "retry classifier") {
+		t.Fatalf("api errors = %q leaked model prose", stream.apiErrors())
 	}
 }
 

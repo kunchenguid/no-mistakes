@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/skill"
 )
@@ -46,7 +47,9 @@ func main() {
 	fmt.Printf("genskill: wrote %s\n", dir)
 }
 
-// writeDir renders every skill file into dir, creating it if needed.
+// writeDir renders every skill file into dir, creating it if needed, and
+// removes anything else: dir is generated output, so a file the generator no
+// longer produces is a retired or renamed reference that must not survive.
 func writeDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
@@ -57,10 +60,21 @@ func writeDir(dir string) error {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
 	}
+	orphans, err := orphanNames(dir)
+	if err != nil {
+		return err
+	}
+	for _, name := range orphans {
+		path := filepath.Join(dir, name)
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("remove %s: %w", path, err)
+		}
+	}
 	return nil
 }
 
-// checkDir reports the first committed skill file that is missing or stale.
+// checkDir reports the first committed skill file that is missing, stale, or
+// no longer generated at all.
 func checkDir(dir string) error {
 	for _, f := range skill.Files() {
 		path := filepath.Join(dir, f.Name)
@@ -72,5 +86,32 @@ func checkDir(dir string) error {
 			return fmt.Errorf("%s is stale; run `go run ./cmd/genskill` and commit the result", path)
 		}
 	}
+	orphans, err := orphanNames(dir)
+	if err != nil {
+		return err
+	}
+	if len(orphans) > 0 {
+		return fmt.Errorf("%s contains files the generator does not produce (%s); run `go run ./cmd/genskill` and commit the result",
+			dir, strings.Join(orphans, ", "))
+	}
 	return nil
+}
+
+// orphanNames lists the entries of dir that skill.Files() does not produce.
+func orphanNames(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read dir %s: %w", dir, err)
+	}
+	generated := make(map[string]bool, len(skill.Files()))
+	for _, f := range skill.Files() {
+		generated[f.Name] = true
+	}
+	var orphans []string
+	for _, e := range entries {
+		if !generated[e.Name()] {
+			orphans = append(orphans, e.Name())
+		}
+	}
+	return orphans, nil
 }

@@ -1,11 +1,15 @@
 package steps
 
 import (
+	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // The review loop's cost is dominated by the per-aspect sub-agents
@@ -126,6 +130,79 @@ func TestReviewBreadthForRound_NarrowedRoundsKeepSpecConformance(t *testing.T) {
 			t.Errorf("round %d: skillInvocation() = %q, want it to name %q", round, b.skillInvocation(), specConformanceAspect)
 		}
 	}
+}
+
+// Breadth only saves anything if the narrowed invocation and the severity floor
+// actually reach the agent, so this runs ReviewStep end to end against recorded
+// round history rather than the renderer alone: the round the step derives from
+// the database is what selects the breadth.
+func TestReviewStep_NarrowsThePromptOnceRoundsPassTheThreshold(t *testing.T) {
+	t.Parallel()
+
+	run := func(t *testing.T, recordedRounds int) string {
+		t.Helper()
+		dir, baseSHA, headSHA := setupGitRepo(t)
+
+		findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+		ag := &mockAgent{
+			name: "test",
+			runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: findingsJSON}, nil
+			},
+		}
+
+		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		sctx.Config.Review.NarrowAfterRound = 2
+		sr, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sctx.StepResultID = sr.ID
+		prior := `{"findings":[],"summary":"clean"}`
+		for i := 1; i <= recordedRounds; i++ {
+			if _, err := sctx.DB.InsertStepRound(sctx.StepResultID, i, "initial", &prior, nil, 10); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+			t.Fatal(err)
+		}
+		if len(ag.calls) != 1 {
+			t.Fatalf("expected 1 review call, got %d", len(ag.calls))
+		}
+		return ag.calls[0].Prompt
+	}
+
+	t.Run("round at the threshold stays a full sweep", func(t *testing.T) {
+		t.Parallel()
+		prompt := run(t, 1)
+		if !strings.Contains(prompt, fullSweepSkillInvocation) {
+			t.Errorf("prompt lost the full-sweep invocation:\n%s", prompt)
+		}
+		if strings.Contains(prompt, "naming exactly these aspects") {
+			t.Errorf("prompt narrowed the aspect list on round 2 of narrow_after_round=2:\n%s", prompt)
+		}
+		if strings.Contains(prompt, "later round of an ongoing review") {
+			t.Errorf("prompt applied a severity floor before the threshold:\n%s", prompt)
+		}
+	})
+
+	t.Run("round past the threshold narrows aspects and floor", func(t *testing.T) {
+		t.Parallel()
+		prompt := run(t, 2)
+		if strings.Contains(prompt, fullSweepSkillInvocation) {
+			t.Errorf("prompt kept the full-sweep invocation past the threshold:\n%s", prompt)
+		}
+		for _, aspect := range coreReviewAspects {
+			if !strings.Contains(prompt, aspect) {
+				t.Errorf("prompt missing narrowed aspect %q:\n%s", aspect, prompt)
+			}
+		}
+		if !strings.Contains(prompt, reviewBreadthForRound(3, 2).severityRule()) {
+			t.Errorf("prompt missing the warning floor:\n%s", prompt)
+		}
+	})
 }
 
 // A namespaced skill name (plugin or directory-scoped install) still satisfies

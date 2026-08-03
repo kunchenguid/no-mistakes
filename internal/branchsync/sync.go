@@ -1125,8 +1125,18 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 			// whose custody was explicitly returned: custody cannot be handed
 			// back to the operator and then reclaimed by an older run, and the
 			// gate branch has moved past that older head, so its custody could
-			// never be proven again. Active ownership remains absolute.
-			if unpublishedPipelineHead(candidate) && terminalRunStatus(candidate.Status) && newerReturned != nil {
+			// never be proven again.
+			//
+			// The returned-custody rule carries no gate containment proof, so
+			// it is confined to the only case where dropping custody can lose
+			// nothing: an older run whose recorded head never left the head the
+			// operator submitted (a run that died mid-step, leaving a terminal
+			// status with no head verification). A run that MOVED the head
+			// holds pipeline-authored commits, so it keeps blocking until its
+			// own custody is recovered or proven contained. Active ownership
+			// remains absolute.
+			if unpublishedPipelineHead(candidate) && terminalRunStatus(candidate.Status) &&
+				runHeadUnmoved(candidate) && newerReturned != nil {
 				continue
 			}
 			if unpublishedPipelineHead(candidate) && s.supersededUnpublishedRun(ctx, candidate, newerPushed, branch) {

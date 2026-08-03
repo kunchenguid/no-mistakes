@@ -56,25 +56,39 @@ func (s *claudeStream) tee(onChunk func(string)) func(string) {
 	}
 }
 
-// observe records the API Error diagnostics in one assistant text block. The
-// block is the delimiter: the CLI emits a diagnostic without a guaranteed
-// trailing newline, so concatenated blocks would run it into the next reply.
+// observe records the API Error diagnostics in one assistant text block, line
+// by line: the CLI writes each diagnostic as its own line.
 func (s *claudeStream) observe(chunk string) {
-	for {
-		start := strings.Index(chunk, claudeAPIErrorPrefix)
-		if start < 0 || s.size >= claudeAPIErrorLimit {
+	for line := range strings.SplitSeq(chunk, "\n") {
+		if s.size >= claudeAPIErrorLimit {
 			return
 		}
-		body := chunk[start+len(claudeAPIErrorPrefix):]
+		s.observeLine(strings.TrimRight(line, "\r"))
+	}
+}
+
+// observeLine records the diagnostics on a single line. Only a line that
+// STARTS with the CLI's own prefix counts: an unanchored search also captures
+// model prose that merely mentions the literal, and these strings are then
+// persisted to runs.error and presented as why claude stopped. Because the CLI
+// emits a diagnostic without a guaranteed trailing newline, a second prefix
+// later in the same line opens the next diagnostic and closes this one.
+func (s *claudeStream) observeLine(line string) {
+	rest := strings.TrimLeft(line, " \t")
+	if !strings.HasPrefix(rest, claudeAPIErrorPrefix) {
+		return
+	}
+	for s.size < claudeAPIErrorLimit {
+		body := rest[len(claudeAPIErrorPrefix):]
 		end := len(body)
 		if next := strings.Index(body, claudeAPIErrorPrefix); next >= 0 {
 			end = next
 		}
-		if nl := strings.IndexAny(body[:end], "\r\n"); nl >= 0 {
-			end = nl
-		}
 		s.add(claudeAPIErrorPrefix + strings.TrimRight(body[:end], " \t"))
-		chunk = body
+		if end == len(body) {
+			return
+		}
+		rest = body[end:]
 	}
 }
 
@@ -99,16 +113,30 @@ func (s *claudeStream) apiErrors() string {
 	return joined
 }
 
-// claudeExitError explains a non-zero claude exit, preferring stderr and
-// falling back to the CLI diagnostics carried on the event stream.
+// claudeExitError explains a non-zero claude exit from both channels: stderr
+// leads, and the CLI diagnostics carried on the event stream are appended
+// rather than used only as a fallback. Anything at all on stderr - a warning,
+// a deprecation notice - would otherwise hide the stall detail, which is the
+// only text classifyTransient can recognize to spend a retry on.
 func claudeExitError(waitErr error, stderr []byte, stream *claudeStream) error {
-	if detail := strings.TrimSpace(string(stderr)); detail != "" {
-		return fmt.Errorf("claude exited: %w: %s", waitErr, detail)
-	}
-	if detail := stream.apiErrors(); detail != "" {
+	if detail := claudeFailureDetail(stderr, stream); detail != "" {
 		return fmt.Errorf("claude exited: %w: %s", waitErr, detail)
 	}
 	return fmt.Errorf("claude exited: %w", waitErr)
+}
+
+// claudeFailureDetail joins whatever each channel reported, skipping a stream
+// diagnostic stderr already carries so the error never says it twice.
+func claudeFailureDetail(stderr []byte, stream *claudeStream) string {
+	var details []string
+	errText := strings.TrimSpace(string(stderr))
+	if errText != "" {
+		details = append(details, errText)
+	}
+	if detail := stream.apiErrors(); detail != "" && !strings.Contains(errText, detail) {
+		details = append(details, detail)
+	}
+	return strings.Join(details, "; ")
 }
 
 // withClaudeStreamDetail appends the stream's CLI diagnostics to msg when there
@@ -198,7 +226,12 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	if err := parseClaudeEvents(ctx, started.stdout, stream.tee(opts.OnChunk), &usage, &result); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
+		// A stall can surface as a truncated event stream, so this path needs
+		// the same diagnostic the wait-error and no-result paths carry.
 		retErr := fmt.Errorf("claude parse events: %w", err)
+		if detail := claudeFailureDetail(stderrBuf, &stream); detail != "" {
+			retErr = fmt.Errorf("claude parse events: %w: %s", err, detail)
+		}
 		emitAgentExited(opts, "claude", pid, retErr)
 		return nil, retErr
 	}

@@ -1774,28 +1774,58 @@ func TestRecoverRefusesUnverifiedHeadTheGateNeverReceived(t *testing.T) {
 	}
 }
 
+// unrelatedHead builds a commit that is neither an ancestor nor a descendant
+// of the preserved pipeline head, so a supersession that quietly depended on
+// containment could not be satisfied by it.
+func (f *recoverFixture) unrelatedHead() string {
+	f.t.Helper()
+	clone := filepath.Join(f.t.TempDir(), "unrelated")
+	mustRun(f.t, filepath.Dir(clone), "-c", "core.autocrlf=false", "clone", f.gate, clone)
+	configureIdentity(f.t, clone)
+	mustRun(f.t, clone, "checkout", "--detach", f.submitted)
+	mustWrite(f.t, filepath.Join(clone, "unrelated.txt"), "unrelated work\n")
+	mustRun(f.t, clone, "add", "unrelated.txt")
+	mustRun(f.t, clone, "commit", "-m", "unrelated work")
+	head := mustRun(f.t, clone, "rev-parse", "HEAD")
+	mustRun(f.t, clone, "push", "origin", "HEAD:refs/heads/unrelated")
+	return head
+}
+
+// insertCustodyReturnedRun records a newer run on the same branch whose
+// custody was explicitly handed back to the operator at head.
+func (f *recoverFixture) insertCustodyReturnedRun(head string) *db.Run {
+	f.t.Helper()
+	newer, err := f.db.InsertRun(f.repo.ID, "feature/recover", head, f.base)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatusWithVerifiedHead(newer.ID, types.RunCancelled, head); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := f.db.SetRunCustodyReturned(newer.ID); err != nil {
+		f.t.Fatal(err)
+	}
+	return newer
+}
+
 // TestNewerCustodyReturnedRunSupersedesOlderUnpublishedRun covers the branch
 // state a second recovery leaves behind: once a later run on the same branch
-// has explicitly returned custody, an older terminal run's claim on that
-// branch is stale, and re-blocking on it strands the branch with no recovery
-// that can succeed - the gate branch has legitimately moved past the older
-// run's head, so its custody can never be proven again.
+// has explicitly returned custody, an older terminal run whose head never left
+// the submitted head has a stale claim, and re-blocking on it strands the
+// branch with no recovery that can succeed - the gate branch has legitimately
+// moved past that head, so its custody can never be proven again. The newer
+// run's head is deliberately unrelated to the older run's, so the supersession
+// cannot be passing on an incidental containment relation.
 func TestNewerCustodyReturnedRunSupersedesOlderUnpublishedRun(t *testing.T) {
 	t.Parallel()
 
 	f := newRecoverFixture(t, types.RunFailed)
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, f.submitted); err != nil {
+		t.Fatal(err)
+	}
 	f.unverifyTerminalHead(types.RunFailed)
 
-	newer, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.preserved, f.base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.db.UpdateRunStatusWithVerifiedHead(newer.ID, types.RunCancelled, f.preserved); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.db.SetRunCustodyReturned(newer.ID); err != nil {
-		t.Fatal(err)
-	}
+	newer := f.insertCustodyReturnedRun(f.unrelatedHead())
 
 	state := f.service.InspectCached(f.ctx)
 	if state.Pipeline.RunID != newer.ID {
@@ -1803,5 +1833,48 @@ func TestNewerCustodyReturnedRunSupersedesOlderUnpublishedRun(t *testing.T) {
 	}
 	if state.State == StatePipelineOwned {
 		t.Fatalf("stale older run re-blocked the branch: %#v", state)
+	}
+}
+
+// The returned-custody rule carries no containment proof, so it must never
+// reach an older run that MOVED the head: those pipeline-authored commits are
+// only reachable through that run's own recovery, and dropping its custody
+// would leave them unanchored and unmentioned.
+func TestNewerCustodyReturnedRunDoesNotSupersedeOlderRunWithPipelineCommits(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	f.unverifyTerminalHead(types.RunFailed)
+
+	f.insertCustodyReturnedRun(f.unrelatedHead())
+
+	state := f.service.InspectCached(f.ctx)
+	if state.Pipeline.RunID != f.run.ID {
+		t.Fatalf("selected run = %s, want the older run holding pipeline commits %s", state.Pipeline.RunID, f.run.ID)
+	}
+	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned_recoverable" {
+		t.Fatalf("older run with pipeline commits was dropped: %#v", state)
+	}
+}
+
+// The safety half of the same rule: an ACTIVE older run still owns the branch
+// absolutely. This is the supersession case above with nothing changed but the
+// older run's status, so only the active-ownership conjunct can decide it.
+func TestActiveOlderRunIsNotSupersededByNewerCustodyReturnedRun(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunRunning)
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, f.submitted); err != nil {
+		t.Fatal(err)
+	}
+
+	f.insertCustodyReturnedRun(f.unrelatedHead())
+
+	state := f.service.InspectCached(f.ctx)
+	if state.Pipeline.RunID != f.run.ID {
+		t.Fatalf("selected run = %s, want the active older run %s", state.Pipeline.RunID, f.run.ID)
+	}
+	if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned" {
+		t.Fatalf("active older run stopped blocking the branch: %#v", state)
 	}
 }

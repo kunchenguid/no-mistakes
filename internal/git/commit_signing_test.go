@@ -86,7 +86,10 @@ func TestDisableCommitSigning_WritesPerWorktreeScopeOnGateWorktrees(t *testing.T
 	if got := run(t, wtA, "git", "config", "--worktree", "--get", "commit.gpgsign"); got != "false" {
 		t.Errorf("worktree a commit.gpgsign = %q, want %q", got, "false")
 	}
-	cmd := exec.Command("git", "config", "--worktree", "--get", "commit.gpgsign")
+	// Read worktree b's EFFECTIVE value, not its own per-worktree scope: a
+	// regression that writes to the bare's shared config is invisible to a
+	// --worktree read, which is exactly the leak this asserts against.
+	cmd := exec.Command("git", "config", "--get", "commit.gpgsign")
 	cmd.Dir = wtB
 	if out, err := cmd.Output(); err == nil {
 		t.Errorf("worktree b inherited the write in shared scope: %q", out)
