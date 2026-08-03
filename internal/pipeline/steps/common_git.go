@@ -22,74 +22,85 @@ func reviewWorkload(ctx context.Context, workDir, base, head string) *agent.Invo
 	return &agent.InvocationWorkload{Files: files, Lines: lines}
 }
 
+// pipelineBaseBranch returns the configured PR target, falling back to the
+// repository default branch exactly as before when pr.base_branch is unset.
+// Config.PR is trusted-only; the daemon resolved its explicit branch from the
+// upstream parent before constructing the executor.
+func pipelineBaseBranch(sctx *pipeline.StepContext) string {
+	if sctx != nil && sctx.Config != nil {
+		if branch := strings.TrimSpace(sctx.Config.PR.BaseBranch); branch != "" {
+			return branch
+		}
+	}
+	if sctx != nil && sctx.Repo != nil {
+		return strings.TrimSpace(sctx.Repo.DefaultBranch)
+	}
+	return ""
+}
+
 // resolveBaseSHA returns a usable base SHA for diff/log operations.
 // When baseSHA is the zero ref (new branch push), it tries git merge-base
-// against the default branch, falling back to the empty tree SHA.
-func resolveBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch string) string {
+// against the intended PR base branch, falling back to the empty tree SHA.
+func resolveBaseSHA(ctx context.Context, workDir, baseSHA, baseBranch string) string {
 	if !git.IsZeroSHA(baseSHA) {
 		return baseSHA
 	}
-	if mb := mergeBaseWithDefaultBranch(ctx, workDir, defaultBranch); mb != "" {
+	if mb := mergeBaseWithBranch(ctx, workDir, baseBranch); mb != "" {
 		return mb
 	}
 	return git.EmptyTreeSHA
 }
 
-// resolveBranchBaseSHA returns the branch base commit relative to the default
-// branch when possible. This keeps pipeline steps scoped to the full branch,
-// not just the last pushed delta. If merge-base cannot be determined, it falls
+// resolveBranchBaseSHA returns the branch base commit relative to the intended
+// PR base branch when possible. This keeps pipeline steps scoped to the full
+// branch, not just the last pushed delta. If merge-base cannot be determined, it falls
 // back to resolveBaseSHA.
-func resolveBranchBaseSHA(ctx context.Context, workDir, fallbackBaseSHA, defaultBranch string) string {
-	if mb := mergeBaseWithDefaultBranch(ctx, workDir, defaultBranch); mb != "" {
+func resolveBranchBaseSHA(ctx context.Context, workDir, fallbackBaseSHA, baseBranch string) string {
+	if mb := mergeBaseWithBranch(ctx, workDir, baseBranch); mb != "" {
 		return mb
 	}
-	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, defaultBranch)
+	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, baseBranch)
 }
 
-func resolveDefaultBranchTipSHA(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, defaultBranch string) string {
-	sha, _ := resolveDefaultBranchTip(ctx, workDir, upstreamURL, fallbackBaseSHA, defaultBranch)
+func resolveDefaultBranchTipSHA(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, baseBranch string) string {
+	sha, _ := resolveDefaultBranchTip(ctx, workDir, upstreamURL, fallbackBaseSHA, baseBranch)
 	return sha
 }
 
-func resolveRunDefaultBranchTipSHA(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, defaultBranch string) string {
-	sha, _ := resolveRunDefaultBranchTip(ctx, sctx, fallbackBaseSHA, defaultBranch)
-	return sha
-}
-
-func resolveRunDefaultBranchTip(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, defaultBranch string) (string, bool) {
-	if strings.TrimSpace(defaultBranch) != "" {
-		if err := fetchRunUpstreamBranch(ctx, sctx, defaultBranch); err != nil {
-			return unresolvedDefaultBranchTip(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch), false
+func resolveRunDefaultBranchTip(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, baseBranch string) (string, bool) {
+	if strings.TrimSpace(baseBranch) != "" {
+		if err := fetchRunUpstreamBranch(ctx, sctx, baseBranch); err != nil {
+			return unresolvedDefaultBranchTip(ctx, sctx.WorkDir, fallbackBaseSHA, baseBranch), false
 		}
-		sha, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "origin/"+defaultBranch)
+		sha, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "origin/"+baseBranch)
 		if err == nil && strings.TrimSpace(sha) != "" {
 			return strings.TrimSpace(sha), true
 		}
 	}
-	return resolveBaseSHA(ctx, sctx.WorkDir, fallbackBaseSHA, defaultBranch), false
+	return resolveBaseSHA(ctx, sctx.WorkDir, fallbackBaseSHA, baseBranch), false
 }
 
-func resolveDefaultBranchTip(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, defaultBranch string) (string, bool) {
-	if strings.TrimSpace(defaultBranch) != "" {
+func resolveDefaultBranchTip(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, baseBranch string) (string, bool) {
+	if strings.TrimSpace(baseBranch) != "" {
 		remoteName := resolveUpstreamRemoteName(ctx, workDir, upstreamURL)
-		if err := git.FetchRemoteBranch(ctx, workDir, remoteName, defaultBranch); err != nil {
-			return unresolvedDefaultBranchTip(ctx, workDir, fallbackBaseSHA, defaultBranch), false
+		if err := git.FetchRemoteBranch(ctx, workDir, remoteName, baseBranch); err != nil {
+			return unresolvedDefaultBranchTip(ctx, workDir, fallbackBaseSHA, baseBranch), false
 		}
-		for _, ref := range []string{remoteName + "/" + defaultBranch, defaultBranch} {
+		for _, ref := range []string{remoteName + "/" + baseBranch, baseBranch} {
 			sha, err := git.Run(ctx, workDir, "rev-parse", "--verify", ref)
 			if err == nil && strings.TrimSpace(sha) != "" {
 				return strings.TrimSpace(sha), true
 			}
 		}
 	}
-	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, defaultBranch), false
+	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, baseBranch), false
 }
 
-func unresolvedDefaultBranchTip(ctx context.Context, workDir, fallbackBaseSHA, defaultBranch string) string {
+func unresolvedDefaultBranchTip(ctx context.Context, workDir, fallbackBaseSHA, baseBranch string) string {
 	if !git.IsZeroSHA(fallbackBaseSHA) {
 		return fallbackBaseSHA
 	}
-	sha, localErr := git.Run(ctx, workDir, "rev-parse", "--verify", defaultBranch)
+	sha, localErr := git.Run(ctx, workDir, "rev-parse", "--verify", baseBranch)
 	if localErr == nil && strings.TrimSpace(sha) != "" {
 		return strings.TrimSpace(sha)
 	}
@@ -113,11 +124,11 @@ func resolveUpstreamRemoteName(ctx context.Context, workDir, upstreamURL string)
 	return "origin"
 }
 
-func mergeBaseWithDefaultBranch(ctx context.Context, workDir, defaultBranch string) string {
-	if strings.TrimSpace(defaultBranch) == "" {
+func mergeBaseWithBranch(ctx context.Context, workDir, baseBranch string) string {
+	if strings.TrimSpace(baseBranch) == "" {
 		return ""
 	}
-	for _, ref := range []string{"origin/" + defaultBranch, defaultBranch} {
+	for _, ref := range []string{"origin/" + baseBranch, baseBranch} {
 		mb, err := git.Run(ctx, workDir, "merge-base", "HEAD", ref)
 		if err == nil && strings.TrimSpace(mb) != "" {
 			return strings.TrimSpace(mb)

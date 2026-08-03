@@ -205,10 +205,10 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	if err != nil {
 		return nil, fmt.Errorf("load repo config: %w", err)
 	}
+	fetchCtx, cancel := context.WithTimeout(ctx, recoveredConfigFetchTimeout)
+	defer cancel()
 	var trustedSHA string
 	if repo.DefaultBranch != "" {
-		fetchCtx, cancel := context.WithTimeout(ctx, recoveredConfigFetchTimeout)
-		defer cancel()
 		if err := fetchRecoveredRemoteBranch(fetchCtx, workDir, "origin", repo.DefaultBranch); err != nil {
 			slog.Warn("failed to fetch default branch while recovering run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
 		} else if sha, err := git.ResolveRef(ctx, workDir, "refs/remotes/origin/"+repo.DefaultBranch); err != nil {
@@ -224,7 +224,11 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	}
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
-	return config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)), nil
+	cfg := config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands))
+	if err := ensureConfiguredPRBaseBranch(fetchCtx, workDir, repo, cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 func newPipelineAgent(ctx context.Context, cfg *config.Config, lookPath func(string) (string, error)) (agent.Agent, error) {
@@ -673,18 +677,56 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
 }
 
-// fetchRunDefaultBranch fetches the trusted branch from the refreshed
+// fetchRunUpstreamBranch fetches one branch from the refreshed upstream
 // registration when it differs from the gate worktree's inherited origin. It
 // updates only the run worktree's existing origin tracking ref and never
 // rewrites clone or gate remote configuration. When the values agree after
 // redaction, origin remains authoritative so embedded credentials retained in
 // the gate can still authenticate without ever entering the database.
-func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) error {
+//
+// This always routes through the upstream parent, never Repo.ForkURL: fork
+// routing changes where the feature branch is pushed, not where its PR lands or
+// where the configured PR base is resolved.
+func fetchRunUpstreamBranch(ctx context.Context, workDir string, repo *db.Repo, branch string) error {
 	originURL, err := git.GetRemoteURL(ctx, workDir, "origin")
 	if !repo.URLsVerified || (err == nil && safeurl.Redact(originURL) == repo.UpstreamURL) {
-		return git.FetchRemoteBranch(ctx, workDir, "origin", repo.DefaultBranch)
+		return git.FetchRemoteBranch(ctx, workDir, "origin", branch)
 	}
-	return git.FetchRemoteBranchToRef(ctx, workDir, repo.UpstreamURL, repo.DefaultBranch, "refs/remotes/origin/"+repo.DefaultBranch)
+	return git.FetchRemoteBranchToRef(ctx, workDir, repo.UpstreamURL, branch, "refs/remotes/origin/"+branch)
+}
+
+// ensureConfiguredPRBaseBranch validates and freshly resolves an explicit
+// pr.base_branch on the upstream parent before the pipeline starts. Empty is a
+// deliberate no-op so repositories without the setting retain the exact legacy
+// default-branch behavior (including its existing fallback/error semantics).
+// Syntax was already checked while parsing the trusted config, but Git is the
+// final authority and this second check also protects direct Config callers.
+func ensureConfiguredPRBaseBranch(ctx context.Context, workDir string, repo *db.Repo, cfg *config.Config) error {
+	if cfg == nil {
+		return nil
+	}
+	branch := cfg.PR.BaseBranch
+	if branch == "" {
+		return nil
+	}
+	if branch != strings.TrimSpace(branch) {
+		return fmt.Errorf("configured pr.base_branch %q is not a valid short Git branch name", branch)
+	}
+	validated, err := git.Run(ctx, workDir, "check-ref-format", "--branch", branch)
+	if err != nil || strings.TrimSpace(validated) != branch || strings.HasPrefix(branch, "refs/") {
+		if err != nil {
+			return fmt.Errorf("configured pr.base_branch %q is not a valid short Git branch name: %w", branch, err)
+		}
+		return fmt.Errorf("configured pr.base_branch %q is not a valid short Git branch name", branch)
+	}
+	if err := fetchRunUpstreamBranch(ctx, workDir, repo, branch); err != nil {
+		return fmt.Errorf("configured pr.base_branch %q could not be fetched from the upstream repository; create or push that branch, then retry: %w", branch, err)
+	}
+	ref := "refs/remotes/origin/" + branch
+	if _, err := git.ResolveRef(ctx, workDir, ref); err != nil {
+		return fmt.Errorf("configured pr.base_branch %q did not resolve at upstream ref %s after fetch: %w", branch, ref, err)
+	}
+	return nil
 }
 
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
@@ -777,7 +819,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	// branch has already removed - silently running stale shell.
 	var trustedSHA string
 	if repo.DefaultBranch != "" {
-		fetchErr := fetchRunDefaultBranch(ctx, wtDir, repo)
+		fetchErr := fetchRunUpstreamBranch(ctx, wtDir, repo, repo.DefaultBranch)
 		if fetchErr != nil {
 			slog.Warn("failed to fetch default branch into worktree; trusted config disabled (commands/agent from pushed branch will be dropped)", "run_id", run.ID, "branch", repo.DefaultBranch, "error", fetchErr)
 		} else if sha, err := git.ResolveRef(ctx, wtDir, "refs/remotes/origin/"+repo.DefaultBranch); err != nil {
@@ -843,6 +885,11 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
+	if err := ensureConfiguredPRBaseBranch(ctx, wtDir, repo, cfg); err != nil {
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("resolve_pr_base_branch")
+		return "", err
+	}
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
 	var ag agent.Agent

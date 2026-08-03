@@ -256,6 +256,69 @@ func TestRebaseStep_ForkSyncsPushBranchBeforeDefaultBranch(t *testing.T) {
 	}
 }
 
+func TestRebaseStep_ConfiguredPRBaseComposesWithForkDelivery(t *testing.T) {
+	parent := t.TempDir()
+	fork := t.TempDir()
+	gitCmd(t, parent, "init", "--bare")
+	gitCmd(t, fork, "init", "--bare")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	gitCmd(t, dir, "remote", "add", "origin", parent)
+	if err := os.WriteFile(filepath.Join(dir, "main.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", ".")
+	gitCmd(t, dir, "commit", "-m", "main")
+	mainSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", fork, "main")
+
+	gitCmd(t, dir, "checkout", "-b", "quality-assurance")
+	if err := os.WriteFile(filepath.Join(dir, "qa.txt"), []byte("qa-only base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", ".")
+	gitCmd(t, dir, "commit", "-m", "qa base")
+	qaSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "quality-assurance")
+
+	gitCmd(t, dir, "checkout", "-b", "feature", mainSHA)
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", ".")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", fork, "feature")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, mainSHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = parent
+	sctx.Repo.ForkURL = fork
+	sctx.Config.PR.BaseBranch = "quality-assurance"
+
+	outcome, err := (&RebaseStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatalf("unexpected configured-base rebase finding: %s", outcome.Findings)
+	}
+	if mergeBase := gitCmd(t, dir, "merge-base", "HEAD", qaSHA); mergeBase != qaSHA {
+		t.Fatalf("feature was not rebased onto upstream configured PR base: merge-base %s, want %s", mergeBase, qaSHA)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "qa.txt")); err != nil {
+		t.Fatalf("configured PR base content missing after rebase: %v", err)
+	}
+	if out, err := exec.Command("git", "--git-dir="+fork, "rev-parse", "--verify", "refs/heads/quality-assurance").CombinedOutput(); err == nil {
+		t.Fatalf("test precondition failed: fork unexpectedly has PR base branch: %s", out)
+	}
+}
+
 func TestRebaseStep_FixModeNonConflictFailureReturnsError(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()

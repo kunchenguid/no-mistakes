@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, `no_ci`, and `ci.rerun_transient` only from that trusted copy.
+The daemon also reads `pr.base_branch`, `document.instructions`, `review.path_instructions`, `disable_project_settings`, `no_ci`, and `ci.rerun_transient` only from that trusted copy.
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
@@ -31,6 +31,11 @@ commands:
 ignore_patterns:
   - "*.generated.go"
   - "vendor/**"
+
+# Optional PR and pipeline base. Read only from the trusted default branch.
+# When omitted, the repository default branch remains the base.
+pr:
+  base_branch: quality-assurance
 
 # Optional documentation ownership policy, read only from the trusted default branch.
 document:
@@ -85,6 +90,28 @@ test:
 
 ## Fields
 
+### pr.base_branch
+
+Set the upstream branch into which ordinary pull requests should integrate.
+
+| | |
+| --- | --- |
+| Type | `string` (short Git branch name) |
+| Default | Repository default branch |
+
+```yaml
+pr:
+  base_branch: quality-assurance
+```
+
+When unset, no-mistakes behaves exactly as before: branch deltas, rebases, pull-request discovery and creation, PR summaries, and CI base-tip monitoring use the repository's discovered default branch. When set, those operations consistently use `pr.base_branch` instead. This supports release flows where feature PRs land in an integration branch and promotion from that branch to the repository default is handled separately.
+
+The target must be a short branch name such as `quality-assurance`, not a full ref such as `refs/heads/quality-assurance`. Option-like names, whitespace, ref traversal or revision syntax, control characters, and other names Git rejects are invalid. Before a run launches an agent, no-mistakes fetches the configured branch from the upstream repository and requires it to resolve. A missing, malformed, unsafe, or unreachable target fails the run with an error naming `pr.base_branch`; no-mistakes never silently falls back to the default branch for an explicit value.
+
+This setting changes the **PR and pipeline base**, not the repository default branch. The daemon still fetches the actual default branch at a pinned commit and reads security-sensitive gate configuration from that trusted copy. `pr.base_branch` is itself honored only from that trusted default-branch copy, regardless of [`allow_repo_commands`](#allow_repo_commands), so a feature branch cannot redirect its own PR or diff scope.
+
+With GitHub fork routing, the distinction remains the same: the initialized fork is only the feature-branch push target. `pr.base_branch` is resolved in the upstream parent, and `gh --repo` and `--base` continue to target that parent while `--head <fork-owner>:<branch>` identifies the fork branch. GitLab, Bitbucket, and Azure DevOps fork routing remain unsupported as documented in the PR step reference.
+
 ### agent
 
 Override the default agent for this repo and its setup-wizard suggestions.
@@ -125,7 +152,7 @@ Opt in to honoring the code-executing selection fields (`commands.{test,lint,for
 | Type | `bool` |
 | Default | `false` |
 
-This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. This opt-in covers those two fields only; `document.instructions`, `review.path_instructions`, and `disable_project_settings` stay trusted-only either way. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
+This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. This opt-in covers those two fields only; `pr.base_branch`, `document.instructions`, `review.path_instructions`, and `disable_project_settings` stay trusted-only either way. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
 
 ### disable_project_settings
 

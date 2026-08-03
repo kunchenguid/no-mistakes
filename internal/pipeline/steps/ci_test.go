@@ -18,6 +18,40 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+func TestCIStep_MonitorsConfiguredPRBaseTip(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main:quality-assurance")
+	gitCmd(t, dir, "update-ref", "-d", "refs/remotes/origin/quality-assurance")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeCIGHMergeable(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`, "MERGEABLE")
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.PR.BaseBranch = "quality-assurance"
+	sctx.Config.CITimeout = time.Minute
+	ctx, cancel := context.WithCancel(context.Background())
+	sctx.Ctx = ctx
+	step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+		cancel()
+		return context.Canceled
+	}}
+
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation after first successful poll, got %v", err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "refs/remotes/origin/quality-assurance"); got != baseSHA {
+		t.Fatalf("CI monitored base tip %s, want configured upstream tip %s", got, baseSHA)
+	}
+	if _, err := exec.Command("git", "--git-dir="+upstream, "rev-parse", "--verify", "refs/heads/main").CombinedOutput(); err == nil {
+		t.Fatal("test precondition failed: upstream unexpectedly has repository default branch")
+	}
+}
+
 func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

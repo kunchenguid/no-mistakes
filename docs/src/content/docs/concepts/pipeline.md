@@ -25,7 +25,7 @@ This page is the overview. For each step's exact behavior, defaults, skip rules,
 
 The pipeline is opinionated so that "passed the gate" has a stable meaning:
 
-- the branch was checked against fresh remote upstream and the pushed-branch target first
+- the branch was checked against the fresh intended PR base in upstream and the pushed-branch target first
 - review, tests, user-facing test evidence when available, docs, and lint happened before any branch push to the configured target
 - the human stayed in control when a step needed judgment
 - the final branch update was guarded against discarding unincorporated commits already on the push target
@@ -36,7 +36,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 | # | Step | What it does | Default auto-fix limit |
 |---|---|---|---|
 | 1 | **Intent** | Use supplied intent or infer it from recent local agent transcripts | n/a |
-| 2 | **Rebase** | Fetch fresh remote upstream and the configured branch target, then rebase your branch onto them | `3` |
+| 2 | **Rebase** | Fetch the fresh PR base from upstream and the configured push target, then rebase your branch onto them | `3` |
 | 3 | **Review** | AI code review of your diff | `0` (requires approval) |
 | 4 | **Test** | Targeted local validation of the change and intent (not a full CI suite), plus evidence when intent is available | `3` |
 | 5 | **Document** | Update docs when needed and report unresolved gaps | initial pass |
@@ -48,8 +48,9 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 ## Why these steps, in this order
 
 - **Intent first** so downstream agent prompts and generated PR descriptions can include author intent supplied by the agent or inferred from transcripts.
-- **Rebase next** so everything else runs against the latest upstream and pushed-branch target.
-  It also stops when the branch would silently bundle commits from a local default branch that were never pushed to `origin/<default_branch>`.
+- **Rebase next** so everything else runs against the latest intended PR base and pushed-branch target.
+  The PR base defaults to the repository default branch and can be set with trusted [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch).
+  Rebase also stops when the branch would silently bundle commits from the corresponding local base branch that were never pushed upstream.
   If there's no diff left after the rebase, the pipeline skips the rest.
 - **Review before test** so the agent reads fresh code, not code it may have touched during fixes.
 - **Document after test** so docs are updated against code that's known to work.
@@ -76,6 +77,7 @@ See [Auto-Fix Loop](/no-mistakes/concepts/auto-fix/) for how the fix cycle works
 You can't reorder steps. You *can*:
 
 - Swap the agent, or configure an ordered fallback list, globally or per-repo.
+- Set an upstream integration branch for ordinary PRs with `pr.base_branch`.
 - Set explicit `commands.lint`, `commands.format`, and an optional **targeted** `commands.test` (local intent validation only; not a full CI suite).
 - Store test evidence locally by default or opt into committed in-repo evidence with `test.evidence.store_in_repo`.
 - Control auto-fix limits per step.

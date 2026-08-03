@@ -248,14 +248,14 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	featureHead := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "feature")
 
-	gitCmd(t, dir, "checkout", "main")
+	gitCmd(t, dir, "checkout", "-b", "quality-assurance", "main")
 	if err := os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("base updated\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitCmd(t, dir, "add", "shared.txt")
-	gitCmd(t, dir, "commit", "-m", "main update")
-	mainTip := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "commit", "-m", "qa update")
+	qaTip := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "quality-assurance")
 	gitCmd(t, dir, "checkout", "feature")
 
 	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
@@ -280,6 +280,7 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Repo.DefaultBranch = "main"
+	sctx.Config.PR.BaseBranch = "quality-assurance"
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}
 
@@ -296,8 +297,8 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	if capturedPrompt == "" {
 		t.Fatal("expected agent to receive a prompt")
 	}
-	if !strings.Contains(capturedPrompt, "base commit: "+mainTip) {
-		t.Fatalf("expected prompt to use base branch tip %s, got:\n%s", mainTip, capturedPrompt)
+	if !strings.Contains(capturedPrompt, "base commit: "+qaTip) {
+		t.Fatalf("expected prompt to use configured PR base tip %s, got:\n%s", qaTip, capturedPrompt)
 	}
 	if strings.Contains(capturedPrompt, "base commit: "+baseSHA) {
 		t.Fatalf("expected prompt to avoid merge-base %s, got:\n%s", baseSHA, capturedPrompt)

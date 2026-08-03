@@ -44,10 +44,10 @@ type CIStep struct {
 	pollIntervalOverride time.Duration        // if set, overrides computed poll interval (for testing)
 	waitForNextPoll      func(context.Context, time.Duration) error
 	now                  func() time.Time
-	// baseBranchTip resolves the current tip SHA of the upstream default
-	// branch. The bool is false when the SHA is a fallback/unknown value and
-	// must not re-arm the timeout. Overridable for testing; defaults to
-	// fetching the upstream default branch.
+	// baseBranchTip resolves the current tip SHA of the intended upstream PR
+	// base. The bool is false when the SHA is a fallback/unknown value and must
+	// not re-arm the timeout. Overridable for testing; defaults to fetching the
+	// configured PR base (or the repository default when unset).
 	baseBranchTip func(context.Context) (string, bool)
 }
 
@@ -190,7 +190,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	baseBranchTip := s.baseBranchTip
 	if baseBranchTip == nil {
 		baseBranchTip = func(ctx context.Context) (string, bool) {
-			return resolveRunDefaultBranchTip(ctx, sctx, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+			return resolveRunDefaultBranchTip(ctx, sctx, sctx.Run.BaseSHA, pipelineBaseBranch(sctx))
 		}
 	}
 	started := now()

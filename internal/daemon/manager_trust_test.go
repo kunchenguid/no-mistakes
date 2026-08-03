@@ -15,6 +15,133 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 )
 
+func TestEnsureConfiguredPRBaseBranch_DefaultDoesNotAddValidation(t *testing.T) {
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "init")
+
+	err := ensureConfiguredPRBaseBranch(context.Background(), workDir, &db.Repo{DefaultBranch: "main"}, &config.Config{})
+	if err != nil {
+		t.Fatalf("unset pr.base_branch changed legacy startup behavior: %v", err)
+	}
+}
+
+func TestEnsureConfiguredPRBaseBranch_FetchesUpstreamNotFork(t *testing.T) {
+	ctx := context.Background()
+	upstream := filepath.Join(t.TempDir(), "upstream.git")
+	fork := filepath.Join(t.TempDir(), "fork.git")
+	gitCmd(t, "", "init", "--bare", upstream)
+	gitCmd(t, "", "init", "--bare", fork)
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "--initial-branch=main")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(seed, "base.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".")
+	gitCmd(t, seed, "commit", "-m", "main")
+	gitCmd(t, seed, "remote", "add", "origin", upstream)
+	gitCmd(t, seed, "push", "origin", "main")
+	gitCmd(t, seed, "checkout", "-b", "quality-assurance")
+	if err := os.WriteFile(filepath.Join(seed, "qa.txt"), []byte("upstream qa\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".")
+	gitCmd(t, seed, "commit", "-m", "upstream qa")
+	want := gitOutput(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", "origin", "quality-assurance")
+	// The fork deliberately has no quality-assurance branch. A fetch routed to
+	// the push target instead of the parent would fail.
+	gitCmd(t, seed, "push", fork, "main")
+
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "clone", upstream, ".")
+	gitCmd(t, workDir, "update-ref", "-d", "refs/remotes/origin/quality-assurance")
+	repo := &db.Repo{UpstreamURL: upstream, ForkURL: fork, DefaultBranch: "main"}
+	cfg := &config.Config{PR: config.PR{BaseBranch: "quality-assurance"}}
+	if err := ensureConfiguredPRBaseBranch(ctx, workDir, repo, cfg); err != nil {
+		t.Fatal(err)
+	}
+	got := gitOutput(t, workDir, "rev-parse", "refs/remotes/origin/quality-assurance")
+	if got != want {
+		t.Fatalf("configured PR base resolved to %s, want upstream tip %s", got, want)
+	}
+}
+
+func TestEnsureConfiguredPRBaseBranch_RejectsMissingAndUnsafeTargets(t *testing.T) {
+	upstream := filepath.Join(t.TempDir(), "upstream.git")
+	gitCmd(t, "", "init", "--bare", upstream)
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "init")
+	gitCmd(t, workDir, "remote", "add", "origin", upstream)
+	repo := &db.Repo{UpstreamURL: upstream, DefaultBranch: "main"}
+
+	for _, branch := range []string{"missing-branch", "refs/heads/main", "-unsafe"} {
+		t.Run(strings.ReplaceAll(branch, "/", "_"), func(t *testing.T) {
+			cfg := &config.Config{PR: config.PR{BaseBranch: branch}}
+			err := ensureConfiguredPRBaseBranch(context.Background(), workDir, repo, cfg)
+			if err == nil {
+				t.Fatalf("expected configured PR base %q to fail", branch)
+			}
+			if !strings.Contains(err.Error(), "pr.base_branch") || !strings.Contains(err.Error(), branch) {
+				t.Fatalf("error %q is not actionable for target %q", err, branch)
+			}
+		})
+	}
+}
+
+func TestLoadRecoveredConfig_PRBaseComesFromTrustedDefaultBranch(t *testing.T) {
+	upstream := filepath.Join(t.TempDir(), "upstream.git")
+	gitCmd(t, "", "init", "--bare", upstream)
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "--initial-branch=main")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(seed, ".no-mistakes.yaml"), []byte("pr:\n  base_branch: quality-assurance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seed, "base.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".")
+	gitCmd(t, seed, "commit", "-m", "trusted config")
+	gitCmd(t, seed, "remote", "add", "origin", upstream)
+	gitCmd(t, seed, "push", "origin", "main")
+	gitCmd(t, seed, "branch", "quality-assurance")
+	gitCmd(t, seed, "push", "origin", "quality-assurance")
+
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(seed, ".no-mistakes.yaml"), []byte("pr:\n  base_branch: attacker-target\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".no-mistakes.yaml")
+	gitCmd(t, seed, "commit", "-m", "attempt redirect")
+	gitCmd(t, seed, "push", "origin", "feature")
+
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "clone", upstream, ".")
+	gitCmd(t, workDir, "checkout", "feature")
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewRunManager(nil, p, nil)
+	cfg, err := mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "run"}, &db.Repo{UpstreamURL: upstream, DefaultBranch: "main"}, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PR.BaseBranch != "quality-assurance" {
+		t.Fatalf("effective PR base = %q, want trusted quality-assurance", cfg.PR.BaseBranch)
+	}
+	if _, err := git.ResolveRef(context.Background(), workDir, "refs/remotes/origin/quality-assurance"); err != nil {
+		t.Fatalf("trusted configured PR base was not resolved: %v", err)
+	}
+	if _, err := git.ResolveRef(context.Background(), workDir, "refs/remotes/origin/attacker-target"); err == nil {
+		t.Fatal("pushed branch redirected PR base fetch")
+	}
+}
+
 func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
 	oldTimeout := recoveredConfigFetchTimeout
 	recoveredConfigFetchTimeout = 20 * time.Millisecond

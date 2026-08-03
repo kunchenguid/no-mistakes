@@ -126,6 +126,10 @@ type RepoConfig struct {
 	Commit            CommitRaw  `yaml:"commit"`
 	Intent            IntentRaw  `yaml:"intent"`
 	Test              TestRaw    `yaml:"test"`
+	// PR carries pull-request routing policy. BaseBranch is honored only from
+	// the trusted default-branch copy (see EffectiveRepoConfig), so a pushed
+	// feature branch cannot redirect its own pull request or pipeline delta.
+	PR PRRaw `yaml:"pr"`
 	// Document carries the repository's documentation placement policy. It
 	// steers the document step's gate prompt, so it is honored ONLY from the
 	// trusted default-branch copy of .no-mistakes.yaml (see
@@ -161,6 +165,13 @@ type RepoConfig struct {
 	// registered pending or failing check. No inference from workflow files,
 	// prior history, branch names, or grace-period expiry.
 	NoCI bool `yaml:"no_ci"`
+}
+
+// PRRaw is the YAML representation of pull-request routing settings.
+type PRRaw struct {
+	// BaseBranch is the upstream branch into which ordinary pull requests
+	// integrate. Empty preserves the repository default branch as the target.
+	BaseBranch string `yaml:"base_branch"`
 }
 
 // DocumentRaw is the YAML representation of document-step settings.
@@ -299,6 +310,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Commit                 CommitRaw   `yaml:"commit"`
 		Intent                 IntentRaw   `yaml:"intent"`
 		Test                   TestRaw     `yaml:"test"`
+		PR                     PRRaw       `yaml:"pr"`
 		Document               DocumentRaw `yaml:"document"`
 		Review                 ReviewRaw   `yaml:"review"`
 		DisableProjectSettings bool        `yaml:"disable_project_settings"`
@@ -318,6 +330,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Commit = raw.Commit
 	c.Intent = raw.Intent
 	c.Test = raw.Test
+	c.PR = raw.PR
 	c.Document = raw.Document
 	c.Review = raw.Review
 	c.DisableProjectSettings = raw.DisableProjectSettings
@@ -392,6 +405,7 @@ type Config struct {
 	Test                 Test
 	Document             Document
 	Review               Review
+	PR                   PR
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -401,6 +415,13 @@ type Config struct {
 	// intentionally has no CI (see the RepoConfig field). When true and the
 	// forge reports zero checks, the CI monitor treats that as all-checks-passed.
 	NoCI bool
+}
+
+// PR is the resolved pull-request routing config. BaseBranch comes only from
+// the trusted default-branch repo config. Empty means use the repository's
+// discovered default branch, preserving legacy behavior.
+type PR struct {
+	BaseBranch string
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -1269,11 +1290,52 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	if err := validateReviewRaw(cfg.Review); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
+	if err := validatePRRaw(cfg.PR); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
 	if cfg.AutoFix.CI == nil {
 		cfg.AutoFix.CI = cfg.AutoFix.Babysit
 	}
 
 	return cfg, nil
+}
+
+// validatePRRaw rejects values that cannot safely name one upstream branch.
+// The daemon additionally asks Git to validate the name and proves the branch
+// resolves after fetching it from upstream before the pipeline starts. Keeping
+// the structural validation here makes malformed trusted config fail at parse
+// time, while the remote check remains the source of truth for existence.
+func validatePRRaw(pr PRRaw) error {
+	branch := pr.BaseBranch
+	if branch == "" {
+		return nil
+	}
+	if branch != strings.TrimSpace(branch) {
+		return errors.New("pr.base_branch must not contain leading or trailing whitespace")
+	}
+	if branch == "@" || branch == "HEAD" || strings.HasPrefix(branch, "-") || strings.HasPrefix(branch, "refs/") {
+		return fmt.Errorf("pr.base_branch %q must be a short branch name, not an option or full ref", branch)
+	}
+	if strings.HasPrefix(branch, "/") || strings.HasSuffix(branch, "/") || strings.Contains(branch, "//") {
+		return fmt.Errorf("pr.base_branch %q has an empty path component", branch)
+	}
+	if strings.Contains(branch, "..") || strings.Contains(branch, "@{") {
+		return fmt.Errorf("pr.base_branch %q contains a disallowed ref sequence", branch)
+	}
+	if strings.ContainsAny(branch, " ~^:?*[\\") {
+		return fmt.Errorf("pr.base_branch %q contains a character Git does not allow in branch names", branch)
+	}
+	for _, r := range branch {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("pr.base_branch %q contains a control character", branch)
+		}
+	}
+	for _, component := range strings.Split(branch, "/") {
+		if strings.HasPrefix(component, ".") || strings.HasSuffix(component, ".") || strings.HasSuffix(component, ".lock") {
+			return fmt.Errorf("pr.base_branch %q contains an unsafe ref component %q", branch, component)
+		}
+	}
+	return nil
 }
 
 // validateReviewRaw fails the config closed on a review.path_instructions list
@@ -1349,10 +1411,11 @@ func validatePathInstructionGlob(pattern string) error {
 // pushed branch must not steer the reviewer that gates it. DisableProjectSettings
 // is also trusted-only so a pushed branch cannot enable or defeat the gate-agent
 // project-instruction boundary. NoCI is trusted-only so a pushed branch cannot
-// self-declare no-CI and bypass its own checks, and CI (the transient-rerun
-// budget) is trusted-only because every rerun it authorizes is another
-// provider-side workflow run billed to the repository. All five ignore
-// allowRepoCommands, which scopes only the code-executing selection fields.
+// self-declare no-CI and bypass its own checks, CI (the transient-rerun budget)
+// is trusted-only because every rerun it authorizes is another provider-side
+// workflow run billed to the repository, and PR is trusted-only because it
+// selects the base used for diffs, rebases, and forge delivery. All of these
+// ignore allowRepoCommands, which scopes only the code-executing fields.
 // When allowRepoCommands is
 // true the maintainer has explicitly opted in (via allow_repo_commands on the
 // TRUSTED default-branch copy) to honoring the pushed branch's commands and
@@ -1395,12 +1458,17 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// billed to the repository. It is trusted-only for that reason, so a
 		// pushed branch cannot raise its own rerun budget to the cap.
 		effective.CI = trusted.CI
+		// PR routing changes branch deltas, rebases, and the forge target. It is
+		// gate control, so it always comes from the trusted default branch and
+		// is never covered by allow_repo_commands.
+		effective.PR = trusted.PR
 	} else {
 		effective.Document = DocumentRaw{}
 		effective.Review = ReviewRaw{}
 		effective.DisableProjectSettings = false
 		effective.NoCI = false
 		effective.CI = CIRaw{}
+		effective.PR = PRRaw{}
 	}
 	if allowRepoCommands {
 		return &effective
@@ -1615,6 +1683,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Test:                 test,
 		Document:             Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		Review:               Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
+		PR:                   PR{BaseBranch: repo.PR.BaseBranch},
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
