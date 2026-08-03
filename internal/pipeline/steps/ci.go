@@ -315,6 +315,17 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			readinessPending := checksPending || hasUnresolvedChecks(checks)
 			failing := failingCheckNames(checks)
 
+			// A rerun the provider has answered is no longer outstanding. This
+			// runs before anything reads the rerun bookkeeping so a resolved
+			// rerun cannot be re-opened by a later poll that no longer reports
+			// the check, which would park a green head on a cancellation the
+			// provider already replaced.
+			if s.transientReruns.retireResolvedReruns(checks) {
+				if err := s.persistRerunBudget(sctx); err != nil {
+					sctx.Log(fmt.Sprintf("warning: could not persist the retired rerun state: %v", err))
+				}
+			}
+
 			// If a terminally failed check completed after our last fix push,
 			// CI has already re-run since we pushed (possibly too fast to
 			// observe as pending between polls). Treat this as a new iteration

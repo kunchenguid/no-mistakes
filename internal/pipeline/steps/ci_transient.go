@@ -189,6 +189,60 @@ func (b *checkRerunBudget) spend(check scm.Check) int {
 	return b.spent[check.Name]
 }
 
+// retireResolvedReruns drops the outstanding-rerun record for every check whose
+// replacement the provider has now published, and reports whether it retired
+// any. A rerun is outstanding only until the provider answers it; once it has,
+// the record has done its job and keeping it turns a resolved rerun into a
+// permanent claim on the run.
+//
+// That claim is not harmless. cancelledAfterRerun treats every name still in
+// b.rollup as a rerun awaiting publication, so any later poll where the name is
+// absent from the rollup - a path-filtered job that does not run on the head the
+// pipeline pushed next, a provider that stops reporting a retired check - is
+// attributed to a rerun that was already answered. The bounded grace then runs
+// out and the check latches as "cancelled again after its rerun" for the rest of
+// the run, so a head whose every reported check is green can never reach
+// checks-passed and the run keeps cycling in its fixing state until the CI idle
+// timeout.
+//
+// Only a conclusive bucket retires a record, and only when no same-named check
+// is still outstanding. A pending check is the rerun actually running, a
+// cancelled one is the outcome the rerun was meant to replace, and an
+// unrecognized bucket is no evidence at all - all three stay tracked, so the
+// transitional-gap protection still covers a rerun the provider has not
+// published. Retiring a record never changes a check's own bucket: it removes
+// only this run's claim that a rerun is still outstanding, so no cancelled,
+// failing, or pending check can be promoted to green by it. The spent budget is
+// deliberately left intact, so a later cancellation of the same check cannot
+// earn more reruns than ci.rerun_transient authorized.
+func (b *checkRerunBudget) retireResolvedReruns(checks []scm.Check) bool {
+	if len(b.rollup) == 0 {
+		return false
+	}
+	resolved := map[string]bool{}
+	outstanding := map[string]bool{}
+	for _, check := range checks {
+		if _, tracked := b.rollup[check.Name]; !tracked {
+			continue
+		}
+		switch check.Bucket {
+		case scm.CheckBucketPass, scm.CheckBucketFail, scm.CheckBucketSkip:
+			resolved[check.Name] = true
+		default:
+			outstanding[check.Name] = true
+		}
+	}
+	retired := false
+	for name := range resolved {
+		if outstanding[name] {
+			continue
+		}
+		delete(b.rollup, name)
+		retired = true
+	}
+	return retired
+}
+
 // cancelledAfterRerun partitions the checks this run already spent a rerun on
 // into the ones the provider cancelled again (unresolved: nothing but a
 // decision can clear them) and the ones whose rerun it has not published yet

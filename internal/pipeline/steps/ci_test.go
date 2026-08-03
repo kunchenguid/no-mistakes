@@ -2405,3 +2405,90 @@ func TestCIStep_RefusedRerunSpendsBudgetAndEscalates(t *testing.T) {
 		t.Fatalf("expected the refused rerun to be surfaced, got: %v", logs)
 	}
 }
+
+// A rerun the provider answered is finished business. Once its replacement is
+// published, the run must stop treating that check as a rerun awaiting
+// publication, or a later poll that no longer reports the check re-opens the
+// settled rerun, spends its bounded grace, and parks the run on a cancellation
+// the provider already replaced - leaving a head whose every reported check is
+// green stuck in the CI fixing state until the idle timeout.
+func TestCIStep_ResolvedRerunDoesNotParkALaterGreenHead(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	cancelled := `[{"name":"Repo invariants","state":"SUCCESS","bucket":"pass"},` +
+		`{"name":"Behavior portable serial","state":"CANCELLED","bucket":"cancel","completedAt":"2026-08-02T07:54:14Z","link":"https://github.com/test/repo/actions/runs/30738052151/job/91470340751"}]`
+	// The rerun the monitor requested comes back green on the same head.
+	rerunPassed := `[{"name":"Repo invariants","state":"SUCCESS","bucket":"pass"},` +
+		`{"name":"Behavior portable serial","state":"SUCCESS","bucket":"pass","completedAt":"2026-08-02T08:07:02Z"}]`
+	// The head the pipeline watches then advances (its own fix commit), and the
+	// re-run job is path-filtered out of the new head's rollup. Everything the
+	// forge does report for that head is green.
+	greenWithoutRerunCheck := `[{"name":"Repo invariants","state":"SUCCESS","bucket":"pass"}]`
+
+	env, _ := fakeCIGHLoggedSequence(t, "OPEN", []string{
+		cancelled,
+		rerunPassed,
+		greenWithoutRerunCheck,
+		greenWithoutRerunCheck,
+		greenWithoutRerunCheck,
+		greenWithoutRerunCheck,
+	}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/1495"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 4 * time.Hour
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 6 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a green head must keep monitoring, got outcome %+v err %v", outcome, err)
+	}
+	for _, l := range logs {
+		if strings.Contains(l, "cancelled") && strings.Contains(l, "after its rerun") {
+			t.Fatalf("a rerun the provider answered was re-opened; logs: %v", logs)
+		}
+		if strings.Contains(l, "auto-fixing") || strings.Contains(l, "manual intervention") {
+			t.Fatalf("a green head escalated to the CI fixing path; logs: %v", logs)
+		}
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected no fix-agent round on a green head, got %d", len(ag.calls))
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt == nil {
+		t.Fatalf("expected CI readiness to survive on a green head; logs: %v", logs)
+	}
+
+	t.Log("CI step log:")
+	for _, l := range logs {
+		t.Logf("    %s", l)
+	}
+}

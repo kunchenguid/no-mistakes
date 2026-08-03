@@ -543,3 +543,91 @@ func TestOutstandingRerunPublishedInAnotherBucketIsNotTreatedAsMissing(t *testin
 		t.Fatalf("unresolved = %v, awaiting = %v, want both empty for a republished check", unresolved, awaiting)
 	}
 }
+
+// Retiring a rerun record is bounded by positive evidence: only a conclusive
+// bucket for the exact check name retires it, the spent budget survives so a
+// later cancellation cannot earn more reruns than configured, and a rerun the
+// provider has not answered stays tracked so the missing-check grace still
+// covers it.
+func TestRetireResolvedReruns(t *testing.T) {
+	completed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	newBudget := func() *checkRerunBudget {
+		b := &checkRerunBudget{}
+		b.spend(scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, CompletedAt: completed})
+		return b
+	}
+
+	tests := []struct {
+		name        string
+		checks      []scm.Check
+		wantRetired bool
+	}{
+		{
+			name:        "published success retires the record",
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS"}},
+			wantRetired: true,
+		},
+		{
+			name:        "published failure retires the record",
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketFail, State: "FAILURE"}},
+			wantRetired: true,
+		},
+		{
+			name:        "skipped replacement retires the record",
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketSkip, State: "SKIPPED"}},
+			wantRetired: true,
+		},
+		{
+			name:        "the rerun still running stays outstanding",
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketPending, State: "IN_PROGRESS"}},
+			wantRetired: false,
+		},
+		{
+			name:        "still cancelled stays outstanding",
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketCancel, State: "CANCELLED"}},
+			wantRetired: false,
+		},
+		{
+			name:        "an unrecognized bucket is no evidence and stays outstanding",
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucket(""), State: ""}},
+			wantRetired: false,
+		},
+		{
+			name:        "absent from the rollup stays outstanding",
+			checks:      []scm.Check{{Name: "lint", Bucket: scm.CheckBucketPass, State: "SUCCESS"}},
+			wantRetired: false,
+		},
+		{
+			name: "one same-named instance still outstanding blocks retirement",
+			checks: []scm.Check{
+				{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS"},
+				{Name: "build", Bucket: scm.CheckBucketPending, State: "QUEUED"},
+			},
+			wantRetired: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			budget := newBudget()
+			if got := budget.retireResolvedReruns(tt.checks); got != tt.wantRetired {
+				t.Fatalf("retireResolvedReruns = %v, want %v", got, tt.wantRetired)
+			}
+			if budget.used("build") != 1 {
+				t.Fatalf("spent budget = %d, want the rerun to stay spent", budget.used("build"))
+			}
+			// A retired record is no longer an outstanding rerun, so a rollup
+			// that stops reporting the check must not re-open it.
+			unresolved, awaiting := budget.cancelledAfterRerun(nil)
+			if tt.wantRetired {
+				if len(unresolved) != 0 || len(awaiting) != 0 {
+					t.Fatalf("unresolved = %v, awaiting = %v, want both empty for a retired rerun", unresolved, awaiting)
+				}
+				return
+			}
+			if len(awaiting) != 1 || awaiting[0] != "build" {
+				t.Fatalf("awaiting = %v, want [build] while the rerun is unanswered", awaiting)
+			}
+		})
+	}
+}
