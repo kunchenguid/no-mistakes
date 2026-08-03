@@ -12,6 +12,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
@@ -198,14 +199,19 @@ func activeRunInfoForHead(run *ipc.RunInfo, headSHA string) *ipc.RunInfo {
 
 // preflightGuard returns an emitter for the first unmet pre-flight condition
 // when starting a new run, or nil when the branch is ready to validate. It
-// mirrors the wizard's branch/commit hygiene as detect-and-guide: refuse the
-// default branch, and refuse an uncommitted working tree, each with the
-// command the agent should run.
+// applies branch/commit hygiene as detect-and-guide: refuse base branches and
+// an uncommitted working tree, with the command the agent should run.
 func preflightGuard(ctx context.Context, env *axiEnv, branch string) func(*cobra.Command) error {
 	if env.repo.DefaultBranch != "" && branch == env.repo.DefaultBranch {
 		return func(cmd *cobra.Command) error {
 			return emitError(cmd, 1, fmt.Sprintf("refusing to validate %q: it is the default branch", branch),
 				"Put your changes on a feature branch: `git switch -c <branch>`, then re-run")
+		}
+	}
+	if prBase := configuredPRBaseForPreflight(ctx, env); prBase != "" && branch == prBase {
+		return func(cmd *cobra.Command) error {
+			return emitError(cmd, 1, fmt.Sprintf("refusing to validate %q: it is the configured PR base branch", branch),
+				"Put your changes on a feature branch distinct from the default and PR base branches: `git switch -c <branch>`, then re-run")
 		}
 	}
 	dirty, err := git.HasUncommittedChanges(ctx, ".")
@@ -223,6 +229,22 @@ func preflightGuard(ctx context.Context, env *axiEnv, branch string) func(*cobra
 		}
 	}
 	return nil
+}
+
+func configuredPRBaseForPreflight(ctx context.Context, env *axiEnv) string {
+	if env == nil || env.repo == nil || strings.TrimSpace(env.repo.DefaultBranch) == "" {
+		return ""
+	}
+	_ = git.FetchRemoteBranch(ctx, ".", "origin", env.repo.DefaultBranch)
+	content, err := git.ShowFile(ctx, ".", "refs/remotes/origin/"+env.repo.DefaultBranch, ".no-mistakes.yaml")
+	if err != nil {
+		return ""
+	}
+	repoCfg, err := config.LoadRepoFromBytes([]byte(content))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(repoCfg.PR.BaseBranch)
 }
 
 // branchOwnershipError carries the shared branch-sync classification that

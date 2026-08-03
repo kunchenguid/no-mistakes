@@ -459,10 +459,22 @@ type Config struct {
 }
 
 // PR is the resolved pull-request routing config. BaseBranch comes only from
-// the trusted default-branch repo config. Empty means use the repository's
-// discovered default branch, preserving legacy behavior.
+// the trusted default-branch repo config. BaseBranchExplicit preserves whether
+// a durable resolved target originated from an explicit repository setting.
 type PR struct {
-	BaseBranch string
+	BaseBranch         string
+	BaseBranchExplicit *bool
+}
+
+func (p PR) HasExplicitBaseBranch() bool {
+	if p.BaseBranchExplicit != nil {
+		return *p.BaseBranchExplicit
+	}
+	return strings.TrimSpace(p.BaseBranch) != ""
+}
+
+func boolPointer(value bool) *bool {
+	return &value
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -1724,7 +1736,10 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Test:                 test,
 		Document:             Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		Review:               Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
-		PR:                   PR{BaseBranch: repo.PR.BaseBranch},
+		PR:                   PR{
+			BaseBranch:         repo.PR.BaseBranch,
+			BaseBranchExplicit: boolPointer(strings.TrimSpace(repo.PR.BaseBranch) != ""),
+		},
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,

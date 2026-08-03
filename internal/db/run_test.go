@@ -34,7 +34,7 @@ func TestRunInsertAndGet(t *testing.T) {
 	if got.PRBaseBranch != nil {
 		t.Fatalf("new run unexpectedly has PR base %q before resolution", *got.PRBaseBranch)
 	}
-	if err := d.UpdateRunPRBaseBranch(run.ID, "quality-assurance"); err != nil {
+	if err := d.UpdateRunPRBaseBranch(run.ID, "quality-assurance", true); err != nil {
 		t.Fatalf("persist PR base: %v", err)
 	}
 	got, err = d.GetRun(run.ID)
@@ -43,6 +43,9 @@ func TestRunInsertAndGet(t *testing.T) {
 	}
 	if got.PRBaseBranch == nil || *got.PRBaseBranch != "quality-assurance" {
 		t.Fatalf("PR base = %v, want quality-assurance", got.PRBaseBranch)
+	}
+	if !got.PRBaseBranchExplicit {
+		t.Fatal("persisted PR base lost explicit-target state")
 	}
 }
 

@@ -157,7 +157,7 @@ A PR that is merely behind but still clean needs nothing either, since the platf
 The one exception is when that monitor is no longer running - the PR was closed, the run was aborted or superseded, it idle-timed-out, or its auto-fix attempts were exhausted - in which case the agent recovers with `no-mistakes rerun`, which cancels the stale monitor and re-runs the full pipeline including a deterministic rebase step.
 The agent must not use `no-mistakes axi run` to refresh a still-active PR: after `checks-passed` it reattaches to the running monitor with HEAD unchanged and returns the monitor output without rebasing.
 
-In task-first mode, if the repo is on the default branch, the skill tells the agent to create a feature branch before committing because the gate validates committed history on a non-default branch.
+In task-first mode, if the repo is on the repository default branch or a separately configured PR base branch, the skill tells the agent to create a distinct feature branch before committing because the gate validates committed feature history.
 The agent should inspect `git status` before changing or committing anything, preserve unrelated pre-existing uncommitted changes, and commit only the changes that belong to the user's task.
 
 Agents can also call `no-mistakes axi` directly:

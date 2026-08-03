@@ -505,6 +505,35 @@ func TestRerunParamsIncludeSkipSteps(t *testing.T) {
 	}
 }
 
+func TestPreflightGuardRejectsConfiguredPRBaseBranch(t *testing.T) {
+	repoDir := t.TempDir()
+	run(t, repoDir, "git", "init", "--initial-branch=main")
+	run(t, repoDir, "git", "config", "user.email", "test@test.com")
+	run(t, repoDir, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repoDir, ".no-mistakes.yaml"), []byte("pr:\n  base_branch: quality-assurance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, repoDir, "git", "add", ".no-mistakes.yaml")
+	run(t, repoDir, "git", "commit", "-m", "configure PR base")
+	run(t, repoDir, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
+	run(t, repoDir, "git", "checkout", "-b", "quality-assurance")
+	t.Chdir(repoDir)
+
+	guard := preflightGuard(context.Background(), &axiEnv{repo: &db.Repo{DefaultBranch: "main"}}, "quality-assurance")
+	if guard == nil {
+		t.Fatal("expected configured PR base branch guard")
+	}
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if err := guard(cmd); err == nil {
+		t.Fatal("expected structured preflight error")
+	}
+	if !strings.Contains(out.String(), "configured PR base branch") || !strings.Contains(out.String(), "feature branch") {
+		t.Fatalf("expected actionable PR base error, got:\n%s", out.String())
+	}
+}
+
 func TestPreflightGuardReportsWorkingTreeCheckError(t *testing.T) {
 	t.Chdir(t.TempDir())
 

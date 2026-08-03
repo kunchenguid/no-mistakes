@@ -26,7 +26,7 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 	baseBranch := pipelineBaseBranch(sctx)
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
 	rebaseBaseSHA, baseResolved := resolveRunDefaultBranchTip(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
-	if mergeConflict && sctx.Config != nil && strings.TrimSpace(sctx.Config.PR.BaseBranch) != "" && !baseResolved {
+	if mergeConflict && sctx.Config != nil && sctx.Config.PR.HasExplicitBaseBranch() && !baseResolved {
 		return false, fmt.Errorf("resolve configured pr.base_branch %q for merge-conflict repair", baseBranch)
 	}
 	promptBaseSHA := baseSHA

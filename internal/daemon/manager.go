@@ -227,6 +227,8 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	cfg := config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands))
 	if run.PRBaseBranch != nil {
 		cfg.PR.BaseBranch = *run.PRBaseBranch
+		explicit := run.PRBaseBranchExplicit
+		cfg.PR.BaseBranchExplicit = &explicit
 	}
 	if err := ensureConfiguredPRBaseBranch(fetchCtx, workDir, repo, cfg); err != nil {
 		return nil, err
@@ -709,7 +711,7 @@ func ensureConfiguredPRBaseBranch(ctx context.Context, workDir string, repo *db.
 		return nil
 	}
 	branch := cfg.PR.BaseBranch
-	if branch == "" {
+	if !cfg.PR.HasExplicitBaseBranch() {
 		return nil
 	}
 	if branch != strings.TrimSpace(branch) {
@@ -893,16 +895,18 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		trackStartFailure("resolve_pr_base_branch")
 		return "", err
 	}
+	prBaseExplicit := cfg.PR.HasExplicitBaseBranch()
 	prBaseBranch := strings.TrimSpace(cfg.PR.BaseBranch)
 	if prBaseBranch == "" {
 		prBaseBranch = strings.TrimSpace(repo.DefaultBranch)
 	}
-	if err := m.db.UpdateRunPRBaseBranch(run.ID, prBaseBranch); err != nil {
+	if err := m.db.UpdateRunPRBaseBranch(run.ID, prBaseBranch, prBaseExplicit); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("persist_pr_base_branch")
 		return "", err
 	}
 	run.PRBaseBranch = &prBaseBranch
+	run.PRBaseBranchExplicit = prBaseExplicit
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
 	var ag agent.Agent

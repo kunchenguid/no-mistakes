@@ -50,7 +50,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 
 	sctx.Log("fetching latest upstream state...")
 	if err := fetchRunUpstreamBranch(ctx, sctx, baseBranch); err != nil {
-		if sctx.Config != nil && strings.TrimSpace(sctx.Config.PR.BaseBranch) != "" {
+		if sctx.Config != nil && sctx.Config.PR.HasExplicitBaseBranch() {
 			return nil, fmt.Errorf("fetch configured pr.base_branch %q from upstream: %w", baseBranch, err)
 		}
 		sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", baseBranch, err))

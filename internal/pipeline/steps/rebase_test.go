@@ -454,6 +454,11 @@ func TestRebaseStep_LogFileNotVisibleToUser(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, sha, headSHA, config.Commands{})
 	sctx.Run.Branch = "refs/heads/feature"
 	sctx.Repo.UpstreamURL = upstream
+	explicit := false
+	sctx.Config.PR = config.PR{BaseBranch: "main", BaseBranchExplicit: &explicit}
+	if err := os.RemoveAll(upstream); err != nil {
+		t.Fatal(err)
+	}
 
 	var userLogs []string
 	var fileLogs []string

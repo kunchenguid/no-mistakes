@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS runs (
     head_sha                TEXT NOT NULL,
     base_sha                TEXT NOT NULL,
     pr_base_branch          TEXT,
+    pr_base_branch_explicit INTEGER NOT NULL DEFAULT 0,
     submitted_head_sha      TEXT,
     review_approved_head_sha TEXT,
     status                  TEXT NOT NULL DEFAULT 'pending',
@@ -149,6 +150,7 @@ var migrationStatements = []string{
 	// candidate. Only atomic review completion promotes it onto the run.
 	`ALTER TABLE step_rounds ADD COLUMN reviewed_head_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN pr_base_branch TEXT`,
+	`ALTER TABLE runs ADD COLUMN pr_base_branch_explicit INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE runs ADD COLUMN intent TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,

@@ -151,12 +151,27 @@ func TestLoadRecoveredConfig_PRBaseComesFromTrustedDefaultBranch(t *testing.T) {
 	gitCmd(t, seed, "push", "origin", "main", "staging")
 
 	originalBase := "quality-assurance"
-	cfg, err = mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "parked-run", PRBaseBranch: &originalBase}, &db.Repo{UpstreamURL: upstream, DefaultBranch: "main"}, workDir)
+	cfg, err = mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "parked-run", PRBaseBranch: &originalBase, PRBaseBranchExplicit: true}, &db.Repo{UpstreamURL: upstream, DefaultBranch: "main"}, workDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.PR.BaseBranch != originalBase {
 		t.Fatalf("recovered PR base = %q, want persisted %q", cfg.PR.BaseBranch, originalBase)
+	}
+	if !cfg.PR.HasExplicitBaseBranch() {
+		t.Fatal("recovered configured PR base lost explicit-target semantics")
+	}
+
+	legacyBase := "main"
+	cfg, err = mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "legacy-parked-run", PRBaseBranch: &legacyBase}, &db.Repo{UpstreamURL: upstream, DefaultBranch: "main"}, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PR.BaseBranch != legacyBase {
+		t.Fatalf("recovered legacy PR base = %q, want persisted %q", cfg.PR.BaseBranch, legacyBase)
+	}
+	if cfg.PR.HasExplicitBaseBranch() {
+		t.Fatal("recovered unset PR base acquired explicit-target semantics")
 	}
 }
 

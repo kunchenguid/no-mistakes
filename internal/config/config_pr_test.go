@@ -19,6 +19,9 @@ func TestLoadRepoConfig_PRBaseBranch(t *testing.T) {
 	if merged.PR.BaseBranch != "quality-assurance" {
 		t.Fatalf("merged PR base branch = %q, want quality-assurance", merged.PR.BaseBranch)
 	}
+	if !merged.PR.HasExplicitBaseBranch() {
+		t.Fatal("configured PR base was not marked explicit")
+	}
 }
 
 func TestLoadRepoConfig_PRBaseBranchUnsetPreservesDefaultBehavior(t *testing.T) {
@@ -29,8 +32,12 @@ func TestLoadRepoConfig_PRBaseBranchUnsetPreservesDefaultBehavior(t *testing.T) 
 	if cfg.PR.BaseBranch != "" {
 		t.Fatalf("unset PR base branch = %q, want empty fallback", cfg.PR.BaseBranch)
 	}
-	if got := Merge(DefaultGlobalConfig(), cfg).PR.BaseBranch; got != "" {
-		t.Fatalf("merged unset PR base branch = %q, want empty fallback", got)
+	merged := Merge(DefaultGlobalConfig(), cfg)
+	if merged.PR.BaseBranch != "" {
+		t.Fatalf("merged unset PR base branch = %q, want empty fallback", merged.PR.BaseBranch)
+	}
+	if merged.PR.HasExplicitBaseBranch() {
+		t.Fatal("unset PR base was marked explicit")
 	}
 }
 
