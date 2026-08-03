@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.45.3](https://github.com/kunchenguid/no-mistakes/compare/v1.45.2...v1.45.3) (2026-08-03)
+
+
+### Bug Fixes
+
+* **branchsync:** recover custody from contained rebased heads ([#649](https://github.com/kunchenguid/no-mistakes/issues/649)) ([73425eb](https://github.com/kunchenguid/no-mistakes/commit/73425eb4ecc88607a12b444c4dbd245d221cac92))
+* **pipeline:** recognize green CI after successful rerun ([#647](https://github.com/kunchenguid/no-mistakes/issues/647)) ([1c1fe5c](https://github.com/kunchenguid/no-mistakes/commit/1c1fe5cc4ef2ff28367a3d0a2a3fa1e3f0fb0528))
+
 ## [1.45.2](https://github.com/kunchenguid/no-mistakes/compare/v1.45.1...v1.45.2) (2026-08-02)
 
 
