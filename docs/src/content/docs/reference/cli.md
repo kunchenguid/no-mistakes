@@ -210,7 +210,8 @@ For equal or ahead worktrees where the preserved head is already locally reachab
 For behind or diverged worktrees, recovery verifies the preserved head at the local gate branch and fetches it into the anchor before moving or refusing.
 A clean behind worktree fast-forwards.
 A diverged worktree is adopted only when the preserved head provably carries every local change, proven by an executable three-way merge whose result is exactly the preserved head's tree.
-This is the ordinary result of the pipeline rebasing your commits onto a newer base, so a cancelled validation no longer strands the branch.
+This covers a pipeline rebase onto a newer base once a later pipeline commit has also advanced the gate branch to the preserved head.
+A rebase-only cancelled run can still refuse recovery because its detached worktree advances the recorded run head without advancing that gate branch; use `no-mistakes rerun` in that case.
 That adoption anchors the pre-recovery local head under `refs/no-mistakes/recover-local/<run>`, then moves the branch with Git operations that refuse on their own rather than after a preceding check: an atomic compare-and-swap on the branch ref, and a working-tree update that aborts instead of overwriting a modified or untracked file.
 The proof is deliberately narrow and never uses patch identity, which discards hunk locations and whitespace and so cannot tell a genuine replay from a same-shaped edit elsewhere.
 Anything it cannot decide - unlanded local commits, or a rebase whose fix rounds also rewrote your own lines - still refuses with the anchor named, because only escalation can tell a deliberate pipeline fix apart from a dropped change.
