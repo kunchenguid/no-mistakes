@@ -1698,3 +1698,78 @@ func TestRecoverRefusesPreservedHeadTheGateNeverReceived(t *testing.T) {
 		t.Fatal("undelivered-head refusal stamped custody")
 	}
 }
+
+// unverifyTerminalHead drops the run's terminal head verification, the state a
+// run that died mid-step leaves behind: the status is terminal, but nothing
+// proved which head the managed worktree ended on.
+func (f *recoverFixture) unverifyTerminalHead(status types.RunStatus) {
+	f.t.Helper()
+	if err := f.db.UpdateRunStatus(f.run.ID, status); err != nil {
+		f.t.Fatal(err)
+	}
+	run, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	f.run = run
+}
+
+// TestRecoverAnchorsUnverifiedDetachedPreservedHead covers the second half of
+// the same deadlock: a run that failed mid-step has no verified terminal head,
+// so preserved custody is proven from the gate. The gate holding the recorded
+// commit is that proof, and a rebase-only run leaves it detached behind a
+// branch ref still at the submitted head.
+func TestRecoverAnchorsUnverifiedDetachedPreservedHead(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	f.strandDetachedPreserved()
+	f.unverifyTerminalHead(types.RunFailed)
+
+	state := f.service.Recover(f.ctx, false)
+	if !state.Recovered || !state.Changed || state.State != StateCustodyReturned {
+		t.Fatalf("unverified detached-preserved recover = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("HEAD = %s, want preserved %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("anchor ref = %s, want %s", got, f.preserved)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("unverified detached-preserved recovery did not stamp custody")
+	}
+}
+
+// TestRecoverRefusesUnverifiedHeadTheGateNeverReceived keeps that loosening
+// honest: with no terminal verification and no gate copy of the recorded
+// commit, nothing proves the head was ever preserved.
+func TestRecoverRefusesUnverifiedHeadTheGateNeverReceived(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	f.strandDetachedPreserved()
+	unpushed := filepath.Join(t.TempDir(), "unpushed")
+	mustRun(t, filepath.Dir(unpushed), "-c", "core.autocrlf=false", "clone", f.local, unpushed)
+	configureIdentity(t, unpushed)
+	mustRun(t, unpushed, "checkout", "feature/recover")
+	mustWrite(t, filepath.Join(unpushed, "never.txt"), "never delivered\n")
+	mustRun(t, unpushed, "add", "never.txt")
+	mustRun(t, unpushed, "commit", "-m", "never delivered to the gate")
+	never := mustRun(t, unpushed, "rev-parse", "HEAD")
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, never); err != nil {
+		t.Fatal(err)
+	}
+	f.unverifyTerminalHead(types.RunFailed)
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_unverified_head" {
+		t.Fatalf("undelivered unverified head was recovered: %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatal("unverified-head refusal moved HEAD")
+	}
+	if f.custodyReturned() {
+		t.Fatal("unverified-head refusal stamped custody")
+	}
+}

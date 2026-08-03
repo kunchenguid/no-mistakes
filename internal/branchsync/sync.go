@@ -646,15 +646,26 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the preserved gate head could not be read; no files or refs were changed")
 		}
 		if gateHead != run.HeadSHA {
-			if !isAncestor(ctx, s.GateDir, run.HeadSHA, gateHead) {
-				return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the gate head does not descend from the recorded head; no files or refs were changed")
+			// What must be proven here is that the recorded head really is
+			// preserved custody, and the gate holding that exact commit proves
+			// it directly; the branch ref is only the usual route to it. A
+			// rebase-only run commits from a detached worktree, so it leaves
+			// the recorded head in the gate's object store with the branch
+			// still at the submitted head - preserved, but invisible to a
+			// branch-ref comparison. A descendant branch head is the other
+			// proof, and it also catches the record up to what the gate holds.
+			preservedDetached := gateHead == ptr(run.SubmittedHeadSHA) && objectExists(ctx, s.GateDir, run.HeadSHA)
+			if !preservedDetached && !isAncestor(ctx, s.GateDir, run.HeadSHA, gateHead) {
+				return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the gate holds neither the recorded head nor a descendant of it; no files or refs were changed")
 			}
-			if err := s.DB.UpdateRunHeadSHA(run.ID, gateHead); err != nil {
-				return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the verified gate head could not be preserved; no files or refs were changed")
+			if !preservedDetached {
+				if err := s.DB.UpdateRunHeadSHA(run.ID, gateHead); err != nil {
+					return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the verified gate head could not be preserved; no files or refs were changed")
+				}
+				run.HeadSHA = gateHead
+				state.Pipeline.CurrentHead = gateHead
+				state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, gateHead)
 			}
-			run.HeadSHA = gateHead
-			state.Pipeline.CurrentHead = gateHead
-			state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, gateHead)
 		}
 	}
 
