@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -987,11 +988,16 @@ func TestClaudeAgent_ExhaustedStreamStallNamesTheCause(t *testing.T) {
 	}
 }
 
-// A stalled claude that hangs instead of exiting fails while the event stream
-// is still being read, so the failure leaves through the parse-error path
-// rather than claudeExitError. That path has to explain the stop from both
-// channels - the stderr text and the stall diagnostic the CLI put on the stream
-// - because they are the only evidence of why the run stopped making progress.
+// A stalled claude that hangs instead of exiting never reaches wait, so the
+// trigger here is this test's own OnChunk calling cancel() once the stall
+// diagnostic arrives; parseClaudeEvents observes the cancelled context at the
+// top of its next loop iteration and the failure leaves through the
+// parse-error path rather than claudeExitError. That path has to explain the
+// stop from both channels - the stderr text and the stall diagnostic the CLI
+// put on the stream - because they are the only evidence of why the run
+// stopped making progress. Retrying is deliberately NOT asserted: a cancelled
+// parse error is never retried, which is why the sibling case below covers a
+// non-cancellation read failure.
 func TestClaudeAgent_StreamReadFailureCarriesBothChannels(t *testing.T) {
 	t.Setenv("NM_CLAUDE_STDIN_HELPER", "stall-then-hang")
 	a := newClaudeStdinHelperAgent(t)
@@ -1020,6 +1026,26 @@ func TestClaudeAgent_StreamReadFailureCarriesBothChannels(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Stream idle timeout") {
 		t.Errorf("error %q dropped the stream diagnostic", err)
+	}
+}
+
+// The other way the event stream stops being readable is a read failure on the
+// pipe, and that one is retryable: the stall diagnostic the parse-error path
+// attaches is the only text classifyTransient can match, so without it a
+// recoverable stall would fail the run on its first attempt.
+func TestClaudeParseError_ReadFailureWithStreamDetailRetries(t *testing.T) {
+	var stream claudeStream
+	stream.tee(nil)("API Error: Stream idle timeout - no chunks received")
+
+	readErr := io.ErrUnexpectedEOF
+	detail := claudeFailureDetail([]byte("warning: --print is deprecated"), &stream)
+	err := fmt.Errorf("claude parse events: %w: %s", readErr, detail)
+
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error %q is a cancellation, which is never retried", err)
+	}
+	if _, ok := classifyTransient(err); !ok {
+		t.Fatalf("error %q is not classified transient, so the stalled run would not retry", err)
 	}
 }
 
