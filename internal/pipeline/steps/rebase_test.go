@@ -319,6 +319,27 @@ func TestRebaseStep_ConfiguredPRBaseComposesWithForkDelivery(t *testing.T) {
 	}
 }
 
+func TestRebaseStep_RejectsConfiguredBaseThatMovesToOrphanHistory(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main:quality-assurance")
+	forcePushOrphanBranch(t, upstream, "quality-assurance")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.PR.BaseBranch = "quality-assurance"
+
+	outcome, err := (&RebaseStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "pr.base_branch") || !strings.Contains(err.Error(), "shared history") {
+		t.Fatalf("expected configured-base shared-history error, got outcome=%+v err=%v", outcome, err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != headSHA {
+		t.Fatalf("HEAD changed to %s before orphan base was rejected; want %s", got, headSHA)
+	}
+}
+
 func TestRebaseStep_FixModeNonConflictFailureReturnsError(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()

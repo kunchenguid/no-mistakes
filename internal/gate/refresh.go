@@ -9,7 +9,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
-	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
 // RefreshFailureReason is a bounded, URL-free reason safe to emit in logs.
@@ -223,11 +222,27 @@ func inspectRefreshRemote(raw string) (refreshRemote, error) {
 }
 
 func refreshRemoteIdentity(raw, remotePath string) string {
-	host := scm.ExtractHost(raw)
+	authority := ""
+	if strings.Contains(raw, "://") {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			return ""
+		}
+		authority = strings.ToLower(parsed.Hostname())
+		if port := parsed.Port(); port != "" {
+			authority += ":" + port
+		}
+	} else if colon := strings.IndexByte(raw, ':'); colon > 0 {
+		authority = raw[:colon]
+		if at := strings.LastIndexByte(authority, '@'); at >= 0 {
+			authority = authority[at+1:]
+		}
+		authority = strings.ToLower(authority)
+	}
 	path := strings.Trim(strings.TrimSpace(remotePath), "/")
 	path = strings.TrimSuffix(path, ".git")
 	parts := strings.Split(path, "/")
-	if host == "" || len(parts) < 2 {
+	if authority == "" || len(parts) < 2 {
 		return ""
 	}
 	for _, part := range parts {
@@ -235,5 +250,5 @@ func refreshRemoteIdentity(raw, remotePath string) string {
 			return ""
 		}
 	}
-	return strings.ToLower(host) + "/" + strings.ToLower(path)
+	return authority + "/" + path
 }

@@ -49,9 +49,9 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	forcePush := isForcePushAgainstRemote(ctx, sctx.WorkDir, pushRemote, branch, branchTarget, sctx.Run.BaseSHA)
 
 	sctx.Log("fetching latest upstream state...")
-	if err := fetchRunUpstreamBranch(ctx, sctx, baseBranch); err != nil {
+	if _, _, err := refreshRunBaseBranchTip(ctx, sctx, sctx.Run.BaseSHA, baseBranch); err != nil {
 		if sctx.Config != nil && sctx.Config.PR.HasExplicitBaseBranch() {
-			return nil, fmt.Errorf("fetch configured pr.base_branch %q from upstream: %w", baseBranch, err)
+			return nil, err
 		}
 		sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", baseBranch, err))
 	}

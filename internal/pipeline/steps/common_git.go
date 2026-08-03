@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -68,16 +69,44 @@ func resolveDefaultBranchTipSHA(ctx context.Context, workDir, upstreamURL, fallb
 }
 
 func resolveRunDefaultBranchTip(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, baseBranch string) (string, bool) {
-	if strings.TrimSpace(baseBranch) != "" {
-		if err := fetchRunUpstreamBranch(ctx, sctx, baseBranch); err != nil {
-			return unresolvedDefaultBranchTip(ctx, sctx.WorkDir, fallbackBaseSHA, baseBranch), false
+	sha, resolved, _ := refreshRunBaseBranchTip(ctx, sctx, fallbackBaseSHA, baseBranch)
+	return sha, resolved
+}
+
+func refreshRunBaseBranchTip(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, baseBranch string) (string, bool, error) {
+	fallback := unresolvedDefaultBranchTip(ctx, sctx.WorkDir, fallbackBaseSHA, baseBranch)
+	if strings.TrimSpace(baseBranch) == "" {
+		return fallback, false, nil
+	}
+	explicit := sctx.Config != nil && sctx.Config.PR.HasExplicitBaseBranch()
+	if err := fetchRunUpstreamBranch(ctx, sctx, baseBranch); err != nil {
+		if explicit {
+			return fallback, false, fmt.Errorf("configured pr.base_branch %q could not be fetched from the upstream repository after refresh: %w", baseBranch, err)
 		}
-		sha, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "origin/"+baseBranch)
-		if err == nil && strings.TrimSpace(sha) != "" {
-			return strings.TrimSpace(sha), true
+		return fallback, false, fmt.Errorf("fetch upstream branch %q: %w", baseBranch, err)
+	}
+	ref := "refs/remotes/origin/" + baseBranch
+	sha, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", ref+"^{commit}")
+	if err != nil || strings.TrimSpace(sha) == "" {
+		if err == nil {
+			err = fmt.Errorf("empty commit")
+		}
+		if explicit {
+			return fallback, false, fmt.Errorf("configured pr.base_branch %q did not resolve after refresh: %w", baseBranch, err)
+		}
+		return fallback, false, fmt.Errorf("resolve upstream branch %q after fetch: %w", baseBranch, err)
+	}
+	sha = strings.TrimSpace(sha)
+	if explicit {
+		mergeBase, mergeErr := git.Run(ctx, sctx.WorkDir, "merge-base", "HEAD", sha)
+		if mergeErr != nil || strings.TrimSpace(mergeBase) == "" {
+			if mergeErr != nil {
+				return fallback, false, fmt.Errorf("configured pr.base_branch %q has no usable shared history with HEAD after refresh: %w", baseBranch, mergeErr)
+			}
+			return fallback, false, fmt.Errorf("configured pr.base_branch %q has no usable shared history with HEAD after refresh", baseBranch)
 		}
 	}
-	return resolveBaseSHA(ctx, sctx.WorkDir, fallbackBaseSHA, baseBranch), false
+	return sha, true, nil
 }
 
 func resolveDefaultBranchTip(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, baseBranch string) (string, bool) {

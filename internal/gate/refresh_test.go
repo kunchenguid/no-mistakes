@@ -15,8 +15,10 @@ func TestSameRemoteRepository(t *testing.T) {
 		right string
 		want  bool
 	}{
-		{"https://user:token@example.com/Owner/Project.git", "https://example.com/owner/project.git", true},
+		{"https://user:token@example.com/Owner/Project.git", "https://example.com/Owner/Project.git", true},
 		{"git@example.com:owner/project.git", "https://example.com/owner/project", true},
+		{"https://example.com/Owner/Project.git", "https://example.com/owner/project.git", false},
+		{"ssh://example.com:22/owner/project.git", "ssh://example.com:2222/owner/project.git", false},
 		{"https://example.com/owner/project.git", "https://example.com/other/project.git", false},
 		{"/tmp/upstream.git", "/tmp/upstream.git", true},
 		{"/tmp/upstream-a.git", "/tmp/upstream-b.git", false},

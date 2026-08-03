@@ -177,6 +177,12 @@ This means the feature branch was created from a local copy of the intended PR b
 Push the intended base branch upstream if those commits belong in the shared base, or rebase your feature branch onto the corresponding upstream base ref to remove the unrelated work before running the gate again.
 Approve the finding only when you intentionally want that local base-branch work to stay in the feature branch.
 
+### Configured PR base has no usable shared history
+
+An explicit `pr.base_branch` must share a merge base with the feature branch. If the target was created as an orphan or force-pushed to unrelated history, no-mistakes refuses the run with an error naming `pr.base_branch`; Rebase and CI also refuse a target that moves to unrelated history after startup validation.
+
+Restore the intended upstream base branch to related history, or rebase the feature work onto the intended branch in a fresh feature branch, then retry. An explicit target never falls back to the repository default branch.
+
 ## `git push no-mistakes` doesn't start a pipeline
 
 Symptom: push succeeds but `no-mistakes` shows no active run.

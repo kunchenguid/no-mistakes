@@ -188,9 +188,14 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		now = time.Now
 	}
 	baseBranchTip := s.baseBranchTip
+	var baseBranchTipErr error
 	if baseBranchTip == nil {
 		baseBranchTip = func(ctx context.Context) (string, bool) {
-			return resolveRunDefaultBranchTip(ctx, sctx, sctx.Run.BaseSHA, pipelineBaseBranch(sctx))
+			tip, resolved, err := refreshRunBaseBranchTip(ctx, sctx, sctx.Run.BaseSHA, pipelineBaseBranch(sctx))
+			if sctx.Config != nil && sctx.Config.PR.HasExplicitBaseBranch() {
+				baseBranchTipErr = err
+			}
+			return tip, resolved
 		}
 	}
 	started := now()
@@ -235,6 +240,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			tipCtx, cancel := context.WithTimeout(ctx, resolveWindow)
 			tip, resolved := baseBranchTip(tipCtx)
 			cancel()
+			if baseBranchTipErr != nil {
+				return nil, baseBranchTipErr
+			}
 			if resolved && tip != "" {
 				if lastBaseTip == "" {
 					lastBaseTip = tip

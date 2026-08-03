@@ -135,6 +135,21 @@ func setupGitRepo(t *testing.T) (string, string, string) {
 	return dir, gitRepoTemplate.baseSHA, gitRepoTemplate.headSHA
 }
 
+func forcePushOrphanBranch(t *testing.T, upstream, branch string) {
+	t.Helper()
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "--orphan", branch)
+	if err := os.WriteFile(filepath.Join(dir, "orphan.txt"), []byte("orphan\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "orphan.txt")
+	gitCmd(t, dir, "commit", "-m", "orphan base")
+	gitCmd(t, dir, "push", "--force", upstream, "HEAD:refs/heads/"+branch)
+}
+
 // newTestContext creates a StepContext for testing with optional config overrides.
 func newTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA string, cmds config.Commands) *pipeline.StepContext {
 	t.Helper()

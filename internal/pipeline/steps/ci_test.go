@@ -52,6 +52,28 @@ func TestCIStep_MonitorsConfiguredPRBaseTip(t *testing.T) {
 	}
 }
 
+func TestCIStep_RejectsConfiguredBaseThatMovesToOrphanHistory(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main:quality-assurance")
+	forcePushOrphanBranch(t, upstream, "quality-assurance")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeCIGHMergeable(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`, "MERGEABLE")
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.PR.BaseBranch = "quality-assurance"
+	sctx.Config.CITimeout = time.Minute
+
+	outcome, err := (&CIStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "pr.base_branch") || !strings.Contains(err.Error(), "shared history") {
+		t.Fatalf("expected configured-base shared-history error, got outcome=%+v err=%v", outcome, err)
+	}
+}
+
 func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
