@@ -317,14 +317,19 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 
 // getChecksViaJSONFlag uses the preferred gh >= 2.50.0 command. gh returns a
 // non-zero status when checks are pending or failing even though stdout still
-// contains valid JSON, so a parseable payload remains authoritative. The one
-// fallback signal is gh's explicit rejection of the --json flag.
+// contains valid JSON, so a parseable payload remains authoritative, unless the
+// nonzero exit came from ctx cancellation killing gh mid-run, in which case the
+// captured stdout may be stale and the cancellation must win. The one fallback
+// signal is gh's explicit rejection of the --json flag.
 func (h *Host) getChecksViaJSONFlag(ctx context.Context, selector string) (checks []scm.Check, err error, unsupported bool) {
 	args := append([]string{"pr", "checks", selector}, h.repoArgs()...)
 	args = append(args, "--json", "name,state,bucket,completedAt,link")
 	cmd := h.cmd(ctx, "gh", args...)
 	out, cmdErr := cmd.Output()
 	if cmdErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr, false
+		}
 		stderr := exitStderr(cmdErr)
 		detail := string(stderr)
 		if strings.Contains(string(out), "no checks reported") || strings.Contains(detail, "no checks reported") {

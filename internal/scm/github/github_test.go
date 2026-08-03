@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -366,6 +367,29 @@ func TestGetChecksParsesFailingJSONDespiteGhExitStatus(t *testing.T) {
 	}
 	if len(checks) != 1 || checks[0].Bucket != scm.CheckBucketFail {
 		t.Fatalf("checks = %+v, want one failing check", checks)
+	}
+}
+
+func TestGetChecksCancelledContextWinsOverParseableStdout(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+			stdout:     `[{"name":"build","state":"SUCCESS","bucket":"pass"}]` + "\n",
+			code:       1,
+			sleepAfter: 30 * time.Second,
+		},
+	}), nil, "", "test/repo")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	checks, err := host.GetChecks(ctx, &scm.PR{Number: "123"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("GetChecks() error = %v, want context.DeadlineExceeded", err)
+	}
+	if checks != nil {
+		t.Fatalf("checks = %+v, want nil when the context ended the poll", checks)
 	}
 }
 
@@ -930,10 +954,11 @@ func TestAvailableFallsBackToUnscopedAuthWhenHostUnknown(t *testing.T) {
 }
 
 type githubTestResponse struct {
-	stdout    string
-	stderr    string
-	wantStdin string
-	code      int
+	stdout     string
+	stderr     string
+	wantStdin  string
+	code       int
+	sleepAfter time.Duration
 }
 
 func githubTestCmdFactory(responses map[string]githubTestResponse) CmdFactory {
@@ -950,6 +975,7 @@ func githubTestCmdFactory(responses map[string]githubTestResponse) CmdFactory {
 			"GITHUB_TEST_STDERR="+response.stderr,
 			"GITHUB_TEST_WANT_STDIN="+response.wantStdin,
 			fmt.Sprintf("GITHUB_TEST_EXIT_CODE=%d", response.code),
+			"GITHUB_TEST_SLEEP_AFTER="+response.sleepAfter.String(),
 		)
 		return cmd
 	}
@@ -985,6 +1011,9 @@ func TestGitHubHelperProcess(t *testing.T) {
 	}
 	if _, err := fmt.Fprint(os.Stderr, os.Getenv("GITHUB_TEST_STDERR")); err != nil {
 		os.Exit(1)
+	}
+	if d, err := time.ParseDuration(os.Getenv("GITHUB_TEST_SLEEP_AFTER")); err == nil && d > 0 {
+		time.Sleep(d)
 	}
 	if code := os.Getenv("GITHUB_TEST_EXIT_CODE"); code != "" && code != "0" {
 		os.Exit(1)
