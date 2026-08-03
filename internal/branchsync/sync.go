@@ -810,7 +810,9 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	state.Local.Reason = finalReason
 	state.Changed = finalHead == preserved && finalHead != head
 	if resetErr != nil || finalHead != preserved {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_apply_failed", fmt.Sprintf("adopting the preserved pipeline head failed; final HEAD is %s, the pre-recovery head is anchored at %s, and no destructive recovery was attempted", finalHead, localAnchor))
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_apply_failed", fmt.Sprintf("adopting the preserved pipeline head failed after reset was attempted; final HEAD is %s and the pre-recovery head is anchored at %s; inspect the worktree before retrying", finalHead, localAnchor))
+		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+		return blocked
 	}
 	if !finalClean {
 		state.State = StateDirty

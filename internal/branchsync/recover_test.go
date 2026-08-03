@@ -1355,6 +1355,37 @@ func TestRecoverRebaseSupersetRechecksAfterAnchoringLocalHead(t *testing.T) {
 	}
 }
 
+func TestRecoverRebaseSupersetReportsAttemptedResetFailure(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	hook := filepath.Join(f.local, ".git", "hooks", "reference-transaction")
+	mustWrite(t, hook, "#!/bin/sh\nif [ \"$1\" = prepared ]; then\n  while read old new ref; do\n    case \"$ref\" in\n      refs/heads/feature/recover) exit 1 ;;\n    esac\n  done\nfi\n")
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_apply_failed" {
+		t.Fatalf("recover after rejected reset = %#v", state)
+	}
+	if !strings.Contains(state.Error, "reset was attempted") || !strings.Contains(state.Error, f.localAnchorRef()) || !strings.Contains(state.Error, "inspect the worktree") {
+		t.Fatalf("reset failure guidance = %q", state.Error)
+	}
+	if state.NextAction == nil || state.NextAction.Code != "inspect_worktree" || state.NextAction.Command != "git status" {
+		t.Fatalf("reset failure next action = %#v", state.NextAction)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("rejected reset moved HEAD to %s", got)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.localAnchorRef()); got != f.submitted {
+		t.Fatalf("pre-reset local anchor = %s, want %s", got, f.submitted)
+	}
+	if f.custodyReturned() {
+		t.Fatal("reset failure stamped custody")
+	}
+}
+
 // TestRecoverRebaseSupersetRefusesDirtyWorktree keeps the uncommitted-work
 // protection intact: adopting the preserved head is a hard reset, so a dirty
 // worktree must refuse rather than overwrite files the operator has not
