@@ -1113,6 +1113,7 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 	}
 	var run *db.Run
 	var newerPushed *db.Run
+	var newerReturned *db.Run
 	for _, candidate := range runs {
 		if candidate.Branch != branch {
 			continue
@@ -1120,7 +1121,14 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		if candidate.Status == types.RunPending || candidate.Status == types.RunRunning || unpublishedPipelineHead(candidate) {
 			// A terminal unpublished run can be superseded only by a newer
 			// exact binding whose pushed head is proven, in the local gate, to
-			// contain the preserved head. Active ownership remains absolute.
+			// contain the preserved head, or by a newer run on the same branch
+			// whose custody was explicitly returned: custody cannot be handed
+			// back to the operator and then reclaimed by an older run, and the
+			// gate branch has moved past that older head, so its custody could
+			// never be proven again. Active ownership remains absolute.
+			if unpublishedPipelineHead(candidate) && terminalRunStatus(candidate.Status) && newerReturned != nil {
+				continue
+			}
 			if unpublishedPipelineHead(candidate) && s.supersededUnpublishedRun(ctx, candidate, newerPushed, branch) {
 				continue
 			}
@@ -1129,6 +1137,9 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		}
 		if newerPushed == nil && exactPushedBinding(s.Repo, candidate, branch) {
 			newerPushed = candidate
+		}
+		if newerReturned == nil && candidate.CustodyReturnedAt != nil {
+			newerReturned = candidate
 		}
 		// Custody-returned runs stay selectable so a recovered branch reports
 		// custody_returned (or its ordinary post-push classification) instead

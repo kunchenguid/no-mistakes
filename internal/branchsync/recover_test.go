@@ -1773,3 +1773,35 @@ func TestRecoverRefusesUnverifiedHeadTheGateNeverReceived(t *testing.T) {
 		t.Fatal("unverified-head refusal stamped custody")
 	}
 }
+
+// TestNewerCustodyReturnedRunSupersedesOlderUnpublishedRun covers the branch
+// state a second recovery leaves behind: once a later run on the same branch
+// has explicitly returned custody, an older terminal run's claim on that
+// branch is stale, and re-blocking on it strands the branch with no recovery
+// that can succeed - the gate branch has legitimately moved past the older
+// run's head, so its custody can never be proven again.
+func TestNewerCustodyReturnedRunSupersedesOlderUnpublishedRun(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	f.unverifyTerminalHead(types.RunFailed)
+
+	newer, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.preserved, f.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatusWithVerifiedHead(newer.ID, types.RunCancelled, f.preserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.SetRunCustodyReturned(newer.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.InspectCached(f.ctx)
+	if state.Pipeline.RunID != newer.ID {
+		t.Fatalf("selected run = %s, want the newer custody-returned run %s", state.Pipeline.RunID, newer.ID)
+	}
+	if state.State == StatePipelineOwned {
+		t.Fatalf("stale older run re-blocked the branch: %#v", state)
+	}
+}
