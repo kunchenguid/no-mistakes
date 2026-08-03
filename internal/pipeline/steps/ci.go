@@ -320,10 +320,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			// rerun cannot be re-opened by a later poll that no longer reports
 			// the check, which would park a green head on a cancellation the
 			// provider already replaced.
-			if s.transientReruns.retireResolvedReruns(checks) {
-				if err := s.persistRerunBudget(sctx); err != nil {
-					sctx.Log(fmt.Sprintf("warning: could not persist the retired rerun state: %v", err))
-				}
+			if _, err := s.retireResolvedReruns(sctx, checks); err != nil {
+				sctx.Log(fmt.Sprintf("warning: could not persist the retired rerun state: %v", err))
 			}
 
 			// If a terminally failed check completed after our last fix push,

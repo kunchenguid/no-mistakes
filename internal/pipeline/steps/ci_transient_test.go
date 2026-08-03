@@ -1,10 +1,13 @@
 package steps
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
@@ -487,10 +490,18 @@ func TestRerunBudgetSurvivesARestart(t *testing.T) {
 	if !recovered.rollupUnchanged(scm.Check{Name: "build", CompletedAt: completed}) {
 		t.Fatal("recovered budget lost the completion the rerun was requested for")
 	}
-	if recovered.retireResolvedReruns([]scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", Link: check.Link}}) {
+	retired, err := recovered.retireResolvedReruns([]scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", Link: check.Link}}, func(*checkRerunBudget) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retired {
 		t.Fatal("recovered budget lost the provider identity observed before the rerun")
 	}
-	if !recovered.retireResolvedReruns([]scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", Link: "https://github.com/test/repo/actions/runs/1/job/11"}}) {
+	retired, err = recovered.retireResolvedReruns([]scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", Link: "https://github.com/test/repo/actions/runs/1/job/11"}}, func(*checkRerunBudget) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retired {
 		t.Fatal("recovered budget did not recognize a new provider identity")
 	}
 }
@@ -644,7 +655,11 @@ func TestRetireResolvedReruns(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			budget := newBudget()
-			if got := budget.retireResolvedReruns(tt.checks); got != tt.wantRetired {
+			got, err := budget.retireResolvedReruns(tt.checks, func(*checkRerunBudget) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.wantRetired {
 				t.Fatalf("retireResolvedReruns = %v, want %v", got, tt.wantRetired)
 			}
 			if budget.used("build") != 1 {
@@ -663,5 +678,91 @@ func TestRetireResolvedReruns(t *testing.T) {
 				t.Fatalf("awaiting = %v, want [build] while the rerun is unanswered", awaiting)
 			}
 		})
+	}
+}
+
+func TestRetireResolvedRerunsRetriesAfterPersistenceFailure(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := database.InsertRepo(t.TempDir(), "https://github.com/test/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "refs/heads/feature", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx := &pipeline.StepContext{DB: database, Run: run}
+	step := &CIStep{}
+	cancelled := scm.Check{
+		Name:        "build",
+		Bucket:      scm.CheckBucketCancel,
+		State:       "CANCELLED",
+		CompletedAt: time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC),
+		Link:        "https://github.com/test/repo/actions/runs/1/job/10",
+	}
+	step.transientReruns.spend(cancelled, []scm.Check{cancelled})
+	if err := step.persistRerunBudget(sctx); err != nil {
+		t.Fatal(err)
+	}
+	before := step.transientReruns.rollup["build"]
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement := []scm.Check{{
+		Name:   "build",
+		Bucket: scm.CheckBucketPass,
+		State:  "SUCCESS",
+		Link:   "https://github.com/test/repo/actions/runs/1/job/11",
+	}}
+	retired, err := step.retireResolvedReruns(sctx, replacement)
+	if err == nil || retired {
+		t.Fatalf("retirement with a closed database = (%v, %v), want (false, error)", retired, err)
+	}
+	after := step.transientReruns.rollup["build"]
+	if !after.completedAt.Equal(before.completedAt) || after.graceRemaining != before.graceRemaining || !after.observedLinks[cancelled.Link] {
+		t.Fatalf("failed persistence changed the outstanding record: before=%+v after=%+v", before, after)
+	}
+
+	database, err = db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	sctx.DB = database
+	encoded, err := database.GetRunCIRerunState(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered := &checkRerunBudget{}
+	if err := recovered.unmarshal(encoded); err != nil {
+		t.Fatal(err)
+	}
+	recoveredState, ok := recovered.rollup["build"]
+	if !ok || recoveredState.graceRemaining != before.graceRemaining || !recoveredState.observedLinks[cancelled.Link] {
+		t.Fatalf("durable state lost the outstanding record after failed retirement: %+v", recoveredState)
+	}
+
+	retired, err = step.retireResolvedReruns(sctx, replacement)
+	if err != nil || !retired {
+		t.Fatalf("retried retirement = (%v, %v), want (true, nil)", retired, err)
+	}
+	encoded, err = database.GetRunCIRerunState(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered = &checkRerunBudget{}
+	if err := recovered.unmarshal(encoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := recovered.rollup["build"]; ok {
+		t.Fatal("successful retry did not durably retire the outstanding record")
+	}
+	if recovered.used("build") != 1 {
+		t.Fatalf("successful retry changed spent budget to %d", recovered.used("build"))
 	}
 }

@@ -238,9 +238,9 @@ func (b *checkRerunBudget) spend(check scm.Check, checks []scm.Check) int {
 // failing, or pending check can be promoted to green by it. The spent budget is
 // deliberately left intact, so a later cancellation of the same check cannot
 // earn more reruns than ci.rerun_transient authorized.
-func (b *checkRerunBudget) retireResolvedReruns(checks []scm.Check) bool {
+func (b *checkRerunBudget) retireResolvedReruns(checks []scm.Check, persist func(*checkRerunBudget) error) (bool, error) {
 	if len(b.rollup) == 0 {
-		return false
+		return false, nil
 	}
 	resolved := map[string]bool{}
 	outstanding := map[string]bool{}
@@ -262,15 +262,32 @@ func (b *checkRerunBudget) retireResolvedReruns(checks []scm.Check) bool {
 			outstanding[check.Name] = true
 		}
 	}
-	retired := false
+	retirable := map[string]bool{}
 	for name := range resolved {
 		if outstanding[name] {
 			continue
 		}
-		delete(b.rollup, name)
-		retired = true
+		retirable[name] = true
 	}
-	return retired
+	if len(retirable) == 0 {
+		return false, nil
+	}
+	candidate := &checkRerunBudget{
+		spent:  b.spent,
+		rollup: make(map[string]rerunRollupState, len(b.rollup)-len(retirable)),
+	}
+	for name, state := range b.rollup {
+		if !retirable[name] {
+			candidate.rollup[name] = state
+		}
+	}
+	if err := persist(candidate); err != nil {
+		return false, err
+	}
+	for name := range retirable {
+		delete(b.rollup, name)
+	}
+	return true, nil
 }
 
 // cancelledAfterRerun partitions the checks this run already spent a rerun on
@@ -499,14 +516,24 @@ func (s *CIStep) loadRerunBudget(sctx *pipeline.StepContext) {
 // persistRerunBudget writes the rerun budget so a recovered run resumes with
 // what it already spent rather than a fresh allowance.
 func (s *CIStep) persistRerunBudget(sctx *pipeline.StepContext) error {
+	return s.persistRerunBudgetCandidate(sctx, &s.transientReruns)
+}
+
+func (s *CIStep) persistRerunBudgetCandidate(sctx *pipeline.StepContext, candidate *checkRerunBudget) error {
 	if sctx.DB == nil || sctx.Run == nil {
 		return nil
 	}
-	encoded, err := s.transientReruns.marshal()
+	encoded, err := candidate.marshal()
 	if err != nil {
 		return err
 	}
 	return sctx.DB.SetRunCIRerunState(sctx.Run.ID, encoded)
+}
+
+func (s *CIStep) retireResolvedReruns(sctx *pipeline.StepContext, checks []scm.Check) (bool, error) {
+	return s.transientReruns.retireResolvedReruns(checks, func(candidate *checkRerunBudget) error {
+		return s.persistRerunBudgetCandidate(sctx, candidate)
+	})
 }
 
 func (s *CIStep) rerunTransientChecks(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, checks []scm.Check) (bool, *pipeline.StepOutcome) {
