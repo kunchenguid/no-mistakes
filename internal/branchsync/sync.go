@@ -631,7 +631,12 @@ func (s *Service) Apply(ctx context.Context) State {
 //   - Anything unverifiable (missing gate where required, out-of-band gate
 //     branch movement, a recorded head the gate never received,
 //     failed anchor write or fetch, changed assumptions) refuses with a reason
-//     and changes nothing.
+//     and changes no worktree file, branch, or database row. The one thing a
+//     refusal can leave behind is the gate-side pin of a detached preserved
+//     head: a failed anchor deliberately retains refs/no-mistakes/preserved/<runID>
+//     and names it in the refusal, because with the branch ref still at the
+//     submitted head that pin is the only ref keeping the pipeline-authored
+//     commits reachable in the gate.
 //
 // Recovery ends with a persisted custody-return stamp on the run; inspection
 // then reports custody_returned (never-pushed runs) or the ordinary
@@ -752,10 +757,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 	if !anchored {
 		if fetchErr := s.fetchPreservedAnchor(ctx, gateDir, branch, run.ID, anchorRef, preserved, detachedPreserved); fetchErr != nil {
-			if errors.Is(fetchErr, errPreservedAnchorMismatch) {
-				return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the gate branch changed while the preserved pipeline commits were being anchored; no files or refs were changed")
-			}
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; no files or refs were changed")
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", preserveFailedMessage(fetchErr, detachedPreserved, run.ID))
 		}
 	}
 
@@ -1052,6 +1054,7 @@ func (s *Service) finishRecover(ctx context.Context, run *db.Run, changed bool) 
 		state.NextAction = nil
 		return state
 	}
+	releaseGatePreservedPin(ctx, s.GateDir, run.ID)
 	state, _, _ := s.inspect(ctx)
 	state.Recovered = true
 	state.Changed = changed
@@ -1084,9 +1087,27 @@ func gateHoldsDetachedPreservedHead(ctx context.Context, gateDir string, run *db
 	return gateHead == ptr(run.SubmittedHeadSHA) && objectExists(ctx, gateDir, preserved)
 }
 
-// errPreservedAnchorMismatch reports that the anchor ref exists but does not
-// hold the preserved head, which is gate movement rather than a fetch failure.
+// errPreservedAnchorMismatch reports that the anchor ref was read successfully
+// and holds a commit other than the preserved head. A rev-parse that could not
+// run at all proves nothing about what the ref holds and is never reported as a
+// mismatch.
 var errPreservedAnchorMismatch = errors.New("anchored ref is not the preserved pipeline head")
+
+// preserveFailedMessage words the blocked_recover_preserve_failed refusal for
+// the operator. The detached variant must name the retained gate-side pin: the
+// staging ref is written before the fetch and deliberately kept on failure, so
+// it is both a ref this call created and the only thing keeping the preserved
+// commits reachable in the gate.
+func preserveFailedMessage(err error, detached bool, runID string) string {
+	cause := "the preserved pipeline commits could not be fetched from the local gate"
+	if errors.Is(err, errPreservedAnchorMismatch) {
+		cause = "the ref anchoring the preserved pipeline commits does not hold the preserved head"
+	}
+	if !detached {
+		return cause + "; no files or refs were changed"
+	}
+	return fmt.Sprintf("%s; the preserved commits stay pinned in the gate at %s, the only ref keeping them reachable there; no worktree files were changed", cause, gatePreservedRef(runID))
+}
 
 // fetchPreservedAnchor copies the preserved pipeline commits from the local
 // gate into the worktree's private anchor ref and verifies the anchor really
@@ -1096,9 +1117,11 @@ var errPreservedAnchorMismatch = errors.New("anchored ref is not the preserved p
 // the anchor is verified, because the detached case exists precisely when no
 // gate ref reaches the commit: on a failed or cancelled fetch, or an anchor that
 // does not match, the pin is the only thing keeping pipeline-authored work
-// reachable, so it is deliberately retained for the operator. The success-path
-// delete runs detached from the caller's cancellation so a caller that gives up
-// right after a good fetch still cleans up.
+// reachable, so it is deliberately retained for the operator and re-pointed at
+// the preserved head, which the mismatch branch has just proven cannot be taken
+// on trust. Both the retention and the success-path delete run detached from
+// the caller's cancellation, so a caller that gives up mid-fetch still gets a
+// pin that holds the right commit.
 func (s *Service) fetchPreservedAnchor(ctx context.Context, gateDir, branch, runID, anchorRef, preserved string, detached bool) (err error) {
 	if !detached {
 		if err := git.FetchRemoteBranchToPrivateRef(ctx, s.workDir(), gateDir, branch, anchorRef); err != nil {
@@ -1112,13 +1135,10 @@ func (s *Service) fetchPreservedAnchor(ctx context.Context, gateDir, branch, run
 	}
 	defer func() {
 		if err != nil {
+			repinGatePreserved(ctx, gateDir, sourceRef, preserved, runID)
 			return
 		}
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), preservedRefCleanupTimeout)
-		defer cancel()
-		if _, delErr := git.Run(cleanupCtx, gateDir, "update-ref", "-d", sourceRef); delErr != nil {
-			slog.Warn("branchsync: gate preserved staging ref not deleted", "ref", sourceRef, "run", runID, "error", delErr)
-		}
+		releaseGatePreservedPin(ctx, gateDir, runID)
 	}()
 	if s.beforePreservedFetch != nil {
 		s.beforePreservedFetch()
@@ -1133,12 +1153,46 @@ func (s *Service) fetchPreservedAnchor(ctx context.Context, gateDir, branch, run
 func verifyPreservedAnchor(ctx context.Context, wd, anchorRef, preserved string) error {
 	fetched, err := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}")
 	if err != nil {
-		return fmt.Errorf("%w: %v", errPreservedAnchorMismatch, err)
+		return err
 	}
 	if fetched != preserved {
 		return fmt.Errorf("%w: %s", errPreservedAnchorMismatch, fetched)
 	}
 	return nil
+}
+
+// releaseGatePreservedPin drops the gate-side pin of a detached preserved head
+// once the commits are secured in the operator's clone. It is best effort and
+// detached from the caller's cancellation, and it is called from every recovery
+// success as well as from a successful anchor fetch: a pin retained by an
+// earlier failed attempt would otherwise survive forever, because the next
+// recovery finds the anchor already in place and never fetches again.
+func releaseGatePreservedPin(ctx context.Context, gateDir, runID string) {
+	gateDir = strings.TrimSpace(gateDir)
+	if gateDir == "" {
+		return
+	}
+	ref := gatePreservedRef(runID)
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), preservedRefCleanupTimeout)
+	defer cancel()
+	if _, err := git.Run(cleanupCtx, gateDir, "rev-parse", "--verify", "--quiet", ref); err != nil {
+		return
+	}
+	if _, err := git.Run(cleanupCtx, gateDir, "update-ref", "-d", ref); err != nil {
+		slog.Warn("branchsync: gate preserved staging ref not deleted", "ref", ref, "run", runID, "error", err)
+	}
+}
+
+// repinGatePreserved restores the retained pin to the preserved head after a
+// failed anchor. The ref may have been moved out of band, which is exactly what
+// a mismatch reports, so the retained pin is only worth keeping when it is
+// re-pointed at the commit it exists to protect.
+func repinGatePreserved(ctx context.Context, gateDir, ref, preserved, runID string) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), preservedRefCleanupTimeout)
+	defer cancel()
+	if _, err := git.Run(cleanupCtx, gateDir, "update-ref", ref, preserved); err != nil {
+		slog.Warn("branchsync: gate preserved staging ref not restored", "ref", ref, "run", runID, "error", err)
+	}
 }
 
 // recoverLocalAnchorRef keeps the exact pre-recovery local commits reachable

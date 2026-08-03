@@ -1725,6 +1725,12 @@ func TestRecoverKeepsStagingRefWhenTheFetchIsCancelled(t *testing.T) {
 	if state.Safety != "blocked_recover_preserve_failed" {
 		t.Fatalf("safety = %q, want blocked_recover_preserve_failed: %#v", state.Safety, state)
 	}
+	if !strings.Contains(state.Error, "could not be fetched from the local gate") {
+		t.Fatalf("cancelled fetch refusal = %q, want the fetch-failure wording", state.Error)
+	}
+	if !strings.Contains(state.Error, f.gateStagingRef()) {
+		t.Fatalf("refusal %q does not name the retained pin %s", state.Error, f.gateStagingRef())
+	}
 	if f.gateRefMissing(f.gateStagingRef()) {
 		t.Fatalf("gate staging ref %s was deleted after a failed recovery, leaving preserved commit %s unreachable in the gate", f.gateStagingRef(), f.preserved)
 	}
@@ -1735,7 +1741,11 @@ func TestRecoverKeepsStagingRefWhenTheFetchIsCancelled(t *testing.T) {
 
 // TestRecoverKeepsStagingRefWhenTheAnchorDoesNotMatch is the second failure
 // shape: the fetch reports success but the anchor does not hold the preserved
-// head, so recovery refuses and the pin must likewise be retained.
+// head, so recovery refuses and the pin must be retained. Out-of-band movement
+// of the pin itself is what produces the mismatch here, which is the case that
+// makes the retention worth anything only if the retained pin is put back on
+// the preserved commit: keeping whatever the ref happened to hold would pin the
+// submitted head and protect none of the pipeline-authored work.
 func TestRecoverKeepsStagingRefWhenTheAnchorDoesNotMatch(t *testing.T) {
 	t.Parallel()
 
@@ -1753,8 +1763,42 @@ func TestRecoverKeepsStagingRefWhenTheAnchorDoesNotMatch(t *testing.T) {
 	if state.Safety != "blocked_recover_preserve_failed" {
 		t.Fatalf("safety = %q, want blocked_recover_preserve_failed: %#v", state.Safety, state)
 	}
+	if !strings.Contains(state.Error, "does not hold the preserved head") {
+		t.Fatalf("mismatch refusal = %q, want the anchored-ref mismatch wording", state.Error)
+	}
+	if !strings.Contains(state.Error, f.gateStagingRef()) {
+		t.Fatalf("refusal %q does not name the retained pin %s", state.Error, f.gateStagingRef())
+	}
 	if f.gateRefMissing(f.gateStagingRef()) {
 		t.Fatalf("gate staging ref %s was deleted after a rejected anchor instead of being retained for the operator", f.gateStagingRef())
+	}
+	if got := mustRun(t, f.gate, "rev-parse", f.gateStagingRef()+"^{commit}"); got != f.preserved {
+		t.Fatalf("retained pin = %s, want preserved %s: a pin on any other commit protects nothing", got, f.preserved)
+	}
+}
+
+// TestRecoverReleasesAPinRetainedByAnEarlierFailure closes the only route by
+// which the pin can outlive the work it protects: once an earlier attempt has
+// left the anchor at the preserved head, every later recovery takes the
+// anchored fast path and never reaches the fetch that used to own the delete.
+// The successful recovery itself must therefore release the pin.
+func TestRecoverReleasesAPinRetainedByAnEarlierFailure(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	f.strandDetachedPreserved()
+	mustRun(t, f.gate, "update-ref", f.gateStagingRef(), f.preserved)
+	mustRun(t, f.local, "fetch", f.gate, f.gateStagingRef()+":"+f.anchorRef())
+
+	state := f.service.Recover(f.ctx, false)
+	if !state.Recovered || state.State != StateCustodyReturned {
+		t.Fatalf("recovery from an already-anchored preserved head = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("HEAD = %s, want preserved %s", got, f.preserved)
+	}
+	if !f.gateRefMissing(f.gateStagingRef()) {
+		t.Fatalf("gate pin %s survived a successful recovery and keeps pinning the preserved commit against gc", f.gateStagingRef())
 	}
 }
 
