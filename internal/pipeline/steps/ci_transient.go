@@ -222,12 +222,19 @@ func (b *checkRerunBudget) retireResolvedReruns(checks []scm.Check) bool {
 	resolved := map[string]bool{}
 	outstanding := map[string]bool{}
 	for _, check := range checks {
-		if _, tracked := b.rollup[check.Name]; !tracked {
+		state, tracked := b.rollup[check.Name]
+		if !tracked {
+			continue
+		}
+		if checkFailedTerminally(check) && classifyCheckFailure(check) == classTransient {
+			outstanding[check.Name] = true
 			continue
 		}
 		switch check.Bucket {
 		case scm.CheckBucketPass, scm.CheckBucketFail, scm.CheckBucketSkip:
-			resolved[check.Name] = true
+			if !state.completedAt.IsZero() && check.CompletedAt.After(state.completedAt) {
+				resolved[check.Name] = true
+			}
 		default:
 			outstanding[check.Name] = true
 		}

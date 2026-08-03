@@ -551,6 +551,8 @@ func TestOutstandingRerunPublishedInAnotherBucketIsNotTreatedAsMissing(t *testin
 // covers it.
 func TestRetireResolvedReruns(t *testing.T) {
 	completed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	replacementCompleted := completed.Add(time.Minute)
+	siblingCompleted := completed.Add(-time.Minute)
 	newBudget := func() *checkRerunBudget {
 		b := &checkRerunBudget{}
 		b.spend(scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, CompletedAt: completed})
@@ -564,18 +566,28 @@ func TestRetireResolvedReruns(t *testing.T) {
 	}{
 		{
 			name:        "published success retires the record",
-			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS"}},
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", CompletedAt: replacementCompleted}},
 			wantRetired: true,
 		},
 		{
 			name:        "published failure retires the record",
-			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketFail, State: "FAILURE"}},
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketFail, State: "FAILURE", CompletedAt: replacementCompleted}},
 			wantRetired: true,
 		},
 		{
 			name:        "skipped replacement retires the record",
-			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketSkip, State: "SKIPPED"}},
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketSkip, State: "SKIPPED", CompletedAt: replacementCompleted}},
 			wantRetired: true,
+		},
+		{
+			name:        "cancelled replacement in fail bucket stays outstanding",
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketFail, State: "CANCELLED", CompletedAt: replacementCompleted}},
+			wantRetired: false,
+		},
+		{
+			name:        "canceled replacement in fail bucket stays outstanding",
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketFail, State: "CANCELED", CompletedAt: replacementCompleted}},
+			wantRetired: false,
 		},
 		{
 			name:        "the rerun still running stays outstanding",
@@ -600,9 +612,14 @@ func TestRetireResolvedReruns(t *testing.T) {
 		{
 			name: "one same-named instance still outstanding blocks retirement",
 			checks: []scm.Check{
-				{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS"},
+				{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", CompletedAt: replacementCompleted},
 				{Name: "build", Bucket: scm.CheckBucketPending, State: "QUEUED"},
 			},
+			wantRetired: false,
+		},
+		{
+			name:        "same-named passing sibling cannot replace the tracked observation",
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", CompletedAt: siblingCompleted}},
 			wantRetired: false,
 		},
 	}
