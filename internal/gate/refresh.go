@@ -8,6 +8,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
@@ -151,6 +152,20 @@ func RefreshRepoURLs(ctx context.Context, database *db.DB, repo *db.Repo) (*db.R
 type refreshRemote struct {
 	raw      string
 	identity string
+}
+
+func SameRemoteRepository(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return false
+	}
+	if safeurl.Redact(left) == safeurl.Redact(right) {
+		return true
+	}
+	leftRemote, _ := inspectRefreshRemote(left)
+	rightRemote, _ := inspectRefreshRemote(right)
+	return leftRemote.identity != "" && leftRemote.identity == rightRemote.identity
 }
 
 func inspectRefreshRemote(raw string) (refreshRemote, error) {

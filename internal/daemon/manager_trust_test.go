@@ -585,6 +585,39 @@ func TestEnsureConfiguredPRBaseBranch_RejectsMissingAndUnsafeTargets(t *testing.
 	}
 }
 
+func TestEnsureConfiguredPRBaseBranch_RejectsUnrelatedTarget(t *testing.T) {
+	upstream := filepath.Join(t.TempDir(), "upstream.git")
+	gitCmd(t, "", "init", "--bare", upstream)
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "init", "--initial-branch=main")
+	gitCmd(t, workDir, "config", "user.email", "test@test.com")
+	gitCmd(t, workDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(workDir, "main.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "add", ".")
+	gitCmd(t, workDir, "commit", "-m", "main")
+	gitCmd(t, workDir, "remote", "add", "origin", upstream)
+	gitCmd(t, workDir, "push", "origin", "main")
+	gitCmd(t, workDir, "checkout", "--orphan", "quality-assurance")
+	gitCmd(t, workDir, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(workDir, "qa.txt"), []byte("qa\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "add", ".")
+	gitCmd(t, workDir, "commit", "-m", "unrelated qa")
+	gitCmd(t, workDir, "push", "origin", "quality-assurance")
+	gitCmd(t, workDir, "checkout", "main")
+
+	err := ensureConfiguredPRBaseBranch(context.Background(), workDir, &db.Repo{UpstreamURL: upstream}, &config.Config{PR: config.PR{BaseBranch: "quality-assurance"}})
+	if err == nil {
+		t.Fatal("expected unrelated configured PR base to fail")
+	}
+	if !strings.Contains(err.Error(), "pr.base_branch") || !strings.Contains(err.Error(), "shared history") {
+		t.Fatalf("error is not actionable: %v", err)
+	}
+}
+
 func TestLoadRecoveredConfig_PRBaseComesFromTrustedDefaultBranch(t *testing.T) {
 	upstream := filepath.Join(t.TempDir(), "upstream.git")
 	gitCmd(t, "", "init", "--bare", upstream)
@@ -679,14 +712,77 @@ func TestLoadRecoveredConfig_PRBaseComesFromTrustedDefaultBranch(t *testing.T) {
 	}
 }
 
+func TestLoadRecoveredConfig_UsesPersistedUpstreamWhenOriginDiffers(t *testing.T) {
+	upstreamA := filepath.Join(t.TempDir(), "upstream-a.git")
+	upstreamB := filepath.Join(t.TempDir(), "upstream-b.git")
+	gitCmd(t, "", "init", "--bare", upstreamA)
+	gitCmd(t, "", "init", "--bare", upstreamB)
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "--initial-branch=main")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(seed, ".no-mistakes.yaml"), []byte("pr:\n  base_branch: qa-a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".")
+	gitCmd(t, seed, "commit", "-m", "shared root")
+	gitCmd(t, seed, "remote", "add", "a", upstreamA)
+	gitCmd(t, seed, "remote", "add", "b", upstreamB)
+	gitCmd(t, seed, "branch", "qa-a")
+	gitCmd(t, seed, "push", "a", "main", "qa-a")
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(seed, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".")
+	gitCmd(t, seed, "commit", "-m", "feature")
+	gitCmd(t, seed, "push", "a", "feature")
+	gitCmd(t, seed, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(seed, ".no-mistakes.yaml"), []byte("pr:\n  base_branch: qa-b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".no-mistakes.yaml")
+	gitCmd(t, seed, "commit", "-m", "upstream b config")
+	gitCmd(t, seed, "branch", "qa-b")
+	gitCmd(t, seed, "push", "b", "main", "qa-b")
+	wantMain := gitOutput(t, seed, "rev-parse", "main")
+
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "clone", "-b", "feature", upstreamA, ".")
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	repo := &db.Repo{UpstreamURL: upstreamB, DefaultBranch: "main"}
+	persistedBase := "qa-b"
+	mgr := NewRunManager(nil, p, nil)
+	cfg, err := mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "run", Branch: "feature", PRBaseBranch: &persistedBase, PRBaseBranchExplicit: true}, repo, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PR.BaseBranch != "qa-b" {
+		t.Fatalf("recovered PR base = %q, want qa-b", cfg.PR.BaseBranch)
+	}
+	if got := gitOutput(t, workDir, "rev-parse", "refs/remotes/origin/main"); got != wantMain {
+		t.Fatalf("trusted default tip = %s, want persisted-upstream tip %s", got, wantMain)
+	}
+	if got := gitOutput(t, workDir, "remote", "get-url", "origin"); got != upstreamA {
+		t.Fatalf("recovery mutated origin to %q, want %q", got, upstreamA)
+	}
+	if !repo.URLsVerified {
+		t.Fatal("recovered upstream selection was not retained for pipeline routing")
+	}
+}
+
 func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
 	oldTimeout := recoveredConfigFetchTimeout
 	recoveredConfigFetchTimeout = 20 * time.Millisecond
 	t.Cleanup(func() { recoveredConfigFetchTimeout = oldTimeout })
 
 	fetchResult := make(chan error, 1)
-	oldFetch := fetchRecoveredRemoteBranch
-	fetchRecoveredRemoteBranch = func(ctx context.Context, _, _, _ string) error {
+	oldFetch := fetchRecoveredUpstreamBranch
+	fetchRecoveredUpstreamBranch = func(ctx context.Context, _ string, _ *db.Repo, _ string) error {
 		select {
 		case <-ctx.Done():
 			fetchResult <- ctx.Err()
@@ -697,7 +793,7 @@ func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {
 			return err
 		}
 	}
-	t.Cleanup(func() { fetchRecoveredRemoteBranch = oldFetch })
+	t.Cleanup(func() { fetchRecoveredUpstreamBranch = oldFetch })
 
 	p := paths.WithRoot(t.TempDir())
 	if err := p.EnsureDirs(); err != nil {

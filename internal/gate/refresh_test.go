@@ -9,6 +9,25 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 )
 
+func TestSameRemoteRepository(t *testing.T) {
+	tests := []struct {
+		left  string
+		right string
+		want  bool
+	}{
+		{"https://user:token@example.com/Owner/Project.git", "https://example.com/owner/project.git", true},
+		{"git@example.com:owner/project.git", "https://example.com/owner/project", true},
+		{"https://example.com/owner/project.git", "https://example.com/other/project.git", false},
+		{"/tmp/upstream.git", "/tmp/upstream.git", true},
+		{"/tmp/upstream-a.git", "/tmp/upstream-b.git", false},
+	}
+	for _, tt := range tests {
+		if got := SameRemoteRepository(tt.left, tt.right); got != tt.want {
+			t.Errorf("SameRemoteRepository(%q, %q) = %t, want %t", tt.left, tt.right, got, tt.want)
+		}
+	}
+}
+
 func TestRefreshRepoURLsSSHToHTTPS(t *testing.T) {
 	ctx := context.Background()
 	database, workDir := refreshFixture(t, "git@example.com:owner/project.git", "")

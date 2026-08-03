@@ -44,6 +44,7 @@ func TestResolveUpstreamURL_PreservesCredential(t *testing.T) {
 	}
 
 	sctx := minimalStepContext(t, dir, redacted)
+	sctx.Repo.URLsVerified = true
 	got := resolveUpstreamURL(sctx)
 	if got != credURL {
 		t.Errorf("resolveUpstreamURL = %q, want full credentialled URL %q (credential must reach the push argv)", got, credURL)
@@ -56,20 +57,20 @@ func TestResolveUpstreamURL_PreservesCredential(t *testing.T) {
 	}
 }
 
-func TestResolveUpstreamURL_PrefersRefreshedRegistration(t *testing.T) {
+func TestResolveUpstreamURL_RetainsMatchingOriginIdentity(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	if out, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
 	}
-	if out, err := exec.Command("git", "-C", dir, "remote", "add", "origin", "git@example.com:owner/project.git").CombinedOutput(); err != nil {
+	origin := "git@example.com:owner/project.git"
+	if out, err := exec.Command("git", "-C", dir, "remote", "add", "origin", origin).CombinedOutput(); err != nil {
 		t.Fatalf("git remote add: %v: %s", err, out)
 	}
-	refreshed := "https://example.com/owner/project.git"
-	sctx := minimalStepContext(t, dir, refreshed)
+	sctx := minimalStepContext(t, dir, "https://example.com/owner/project.git")
 	sctx.Repo.URLsVerified = true
-	if got := resolveUpstreamURL(sctx); got != refreshed {
-		t.Fatalf("resolveUpstreamURL = %q, want refreshed registration %q", got, refreshed)
+	if got := resolveUpstreamURL(sctx); got != origin {
+		t.Fatalf("resolveUpstreamURL = %q, want matching origin %q", got, origin)
 	}
 }
 

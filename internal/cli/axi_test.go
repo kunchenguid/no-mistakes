@@ -537,6 +537,35 @@ func TestPreflightGuardRejectsConfiguredPRBaseBranch(t *testing.T) {
 	}
 }
 
+func TestConfiguredPRBaseBranchRejectsUnrelatedTarget(t *testing.T) {
+	remoteDir := filepath.Join(t.TempDir(), "remote.git")
+	run(t, "", "git", "init", "--bare", remoteDir)
+	repoDir := t.TempDir()
+	run(t, repoDir, "git", "init", "--initial-branch=main")
+	run(t, repoDir, "git", "config", "user.email", "test@test.com")
+	run(t, repoDir, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repoDir, ".no-mistakes.yaml"), []byte("pr:\n  base_branch: quality-assurance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, repoDir, "git", "add", ".")
+	run(t, repoDir, "git", "commit", "-m", "main")
+	run(t, repoDir, "git", "remote", "add", "origin", remoteDir)
+	run(t, repoDir, "git", "push", "origin", "main")
+	run(t, repoDir, "git", "checkout", "--orphan", "quality-assurance")
+	run(t, repoDir, "git", "rm", "-rf", ".")
+	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "unrelated qa")
+	run(t, repoDir, "git", "push", "origin", "quality-assurance")
+	run(t, repoDir, "git", "checkout", "main")
+
+	_, err := configuredPRBaseBranch(context.Background(), repoDir, &db.Repo{DefaultBranch: "main"})
+	if err == nil {
+		t.Fatal("expected unrelated configured PR base to fail")
+	}
+	if !strings.Contains(err.Error(), "pr.base_branch") || !strings.Contains(err.Error(), "shared history") {
+		t.Fatalf("error is not actionable: %v", err)
+	}
+}
+
 func TestPreflightGuardRejectsTrustedConfigFetchFailure(t *testing.T) {
 	repoDir := t.TempDir()
 	run(t, repoDir, "git", "init", "--initial-branch=main")

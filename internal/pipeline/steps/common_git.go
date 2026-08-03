@@ -5,9 +5,9 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
-	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 )
 
 // reviewWorkload returns the bounded change size (files + net lines) between
@@ -117,7 +117,7 @@ func resolveUpstreamRemoteName(ctx context.Context, workDir, upstreamURL string)
 	}
 	for _, remote := range strings.Fields(remotes) {
 		url, urlErr := git.GetRemoteURL(ctx, workDir, remote)
-		if urlErr == nil && strings.TrimSpace(url) == strings.TrimSpace(upstreamURL) {
+		if urlErr == nil && gate.SameRemoteRepository(url, upstreamURL) {
 			return remote
 		}
 	}
@@ -173,11 +173,11 @@ func normalizedBranchRef(ref string) string {
 // credential still reaches the git push/ls-remote argv that needs it.
 func resolveUpstreamURL(sctx *pipeline.StepContext) string {
 	if url, err := git.GetRemoteURL(sctx.Ctx, sctx.WorkDir, "origin"); err == nil && strings.TrimSpace(url) != "" {
-		// A matching redacted value means origin may carry credentials that the
-		// database intentionally omits. A different registration was refreshed
+		// A matching repository identity means origin may carry credentials that
+		// the database intentionally omits. A different registration was refreshed
 		// from the working clone at run start, so prefer it without rewriting
 		// either clone or gate remote configuration.
-		if sctx.Repo == nil || !sctx.Repo.URLsVerified || safeurl.Redact(url) == sctx.Repo.UpstreamURL {
+		if sctx.Repo == nil || !sctx.Repo.URLsVerified || gate.SameRemoteRepository(url, sctx.Repo.UpstreamURL) {
 			return url
 		}
 	}

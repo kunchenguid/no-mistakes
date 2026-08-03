@@ -21,7 +21,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
-	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -32,7 +31,7 @@ type StepFactory func() []pipeline.Step
 
 var recoveredConfigFetchTimeout = 10 * time.Second
 
-var fetchRecoveredRemoteBranch = git.FetchRemoteBranch
+var fetchRecoveredUpstreamBranch = fetchRunUpstreamBranch
 
 // RunManager tracks active pipeline executors and manages run lifecycle.
 type RunManager struct {
@@ -210,12 +209,15 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	defer cancel()
 	var trustedSHA string
 	if repo.DefaultBranch != "" {
-		if err := fetchRecoveredRemoteBranch(fetchCtx, workDir, "origin", repo.DefaultBranch); err != nil {
+		recoveredRepo := *repo
+		recoveredRepo.URLsVerified = true
+		if err := fetchRecoveredUpstreamBranch(fetchCtx, workDir, &recoveredRepo, repo.DefaultBranch); err != nil {
 			slog.Warn("failed to fetch default branch while recovering run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
 		} else if sha, err := git.ResolveRef(ctx, workDir, "refs/remotes/origin/"+repo.DefaultBranch); err != nil {
 			slog.Warn("failed to resolve default branch while recovering run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
 		} else {
 			trustedSHA = sha
+			repo.URLsVerified = true
 		}
 	}
 	// SECURITY: a trusted-config fetch failure must abort, not silently disable
@@ -696,7 +698,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 // registration when it differs from the gate worktree's inherited origin. It
 // updates only the run worktree's existing origin tracking ref and never
 // rewrites clone or gate remote configuration. When the values agree after
-// redaction, origin remains authoritative so embedded credentials retained in
+// repository identity, origin remains authoritative so credentials retained in
 // the gate can still authenticate without ever entering the database.
 //
 // This always routes through the upstream parent, never Repo.ForkURL: fork
@@ -704,7 +706,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 // where the configured PR base is resolved.
 func fetchRunUpstreamBranch(ctx context.Context, workDir string, repo *db.Repo, branch string) error {
 	originURL, err := git.GetRemoteURL(ctx, workDir, "origin")
-	if !repo.URLsVerified || (err == nil && safeurl.Redact(originURL) == repo.UpstreamURL) {
+	if !repo.URLsVerified || strings.TrimSpace(repo.UpstreamURL) == "" || (err == nil && gate.SameRemoteRepository(originURL, repo.UpstreamURL)) {
 		return git.FetchRemoteBranch(ctx, workDir, "origin", branch)
 	}
 	return git.FetchRemoteBranchToRef(ctx, workDir, repo.UpstreamURL, branch, "refs/remotes/origin/"+branch)
@@ -740,6 +742,13 @@ func ensureConfiguredPRBaseBranch(ctx context.Context, workDir string, repo *db.
 	ref := "refs/remotes/origin/" + branch
 	if _, err := git.ResolveRef(ctx, workDir, ref); err != nil {
 		return fmt.Errorf("configured pr.base_branch %q did not resolve at upstream ref %s after fetch: %w", branch, ref, err)
+	}
+	mergeBase, err := git.Run(ctx, workDir, "merge-base", "HEAD", ref)
+	if err != nil || strings.TrimSpace(mergeBase) == "" {
+		if err != nil {
+			return fmt.Errorf("configured pr.base_branch %q has no usable shared history with HEAD: %w", branch, err)
+		}
+		return fmt.Errorf("configured pr.base_branch %q has no usable shared history with HEAD", branch)
 	}
 	return nil
 }

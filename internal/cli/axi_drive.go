@@ -278,14 +278,24 @@ func configuredPRBaseBranch(ctx context.Context, workDir string, repo *db.Repo) 
 		return "", fmt.Errorf("parse trusted .no-mistakes.yaml from default branch %q: %w", defaultBranch, err)
 	}
 	prBaseBranch := strings.TrimSpace(repoCfg.PR.BaseBranch)
-	if prBaseBranch == "" || prBaseBranch == defaultBranch {
-		return prBaseBranch, nil
+	if prBaseBranch == "" {
+		return "", nil
 	}
-	if err := git.FetchRemoteBranch(ctx, workDir, "origin", prBaseBranch); err != nil {
-		return "", fmt.Errorf("configured pr.base_branch %q could not be fetched from the upstream repository; create or push that branch, then retry: %w", prBaseBranch, err)
+	ref = "refs/remotes/origin/" + prBaseBranch
+	if prBaseBranch != defaultBranch {
+		if err := git.FetchRemoteBranch(ctx, workDir, "origin", prBaseBranch); err != nil {
+			return "", fmt.Errorf("configured pr.base_branch %q could not be fetched from the upstream repository; create or push that branch, then retry: %w", prBaseBranch, err)
+		}
+		if _, err := git.ResolveRef(ctx, workDir, ref); err != nil {
+			return "", fmt.Errorf("configured pr.base_branch %q did not resolve after fetch: %w", prBaseBranch, err)
+		}
 	}
-	if _, err := git.ResolveRef(ctx, workDir, "refs/remotes/origin/"+prBaseBranch); err != nil {
-		return "", fmt.Errorf("configured pr.base_branch %q did not resolve after fetch: %w", prBaseBranch, err)
+	mergeBase, err := git.Run(ctx, workDir, "merge-base", "HEAD", ref)
+	if err != nil || strings.TrimSpace(mergeBase) == "" {
+		if err != nil {
+			return "", fmt.Errorf("configured pr.base_branch %q has no usable shared history with HEAD: %w", prBaseBranch, err)
+		}
+		return "", fmt.Errorf("configured pr.base_branch %q has no usable shared history with HEAD", prBaseBranch)
 	}
 	return prBaseBranch, nil
 }
