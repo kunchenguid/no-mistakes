@@ -1600,3 +1600,101 @@ func TestRecoverSquashedPreservedHeadStillEscalatesForDroppedLocalWork(t *testin
 		t.Fatal("dropped-work escalation stamped custody")
 	}
 }
+
+// strandDetachedPreserved reproduces the reach limit recorded for upstream
+// #551: a run that only rebased advances runs.head_sha while the pipeline
+// worktree is detached, so the preserved head exists in the gate's object
+// store while the gate branch ref never moves off the submitted head.
+func (f *recoverFixture) strandDetachedPreserved() {
+	f.t.Helper()
+	mustRun(f.t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted)
+}
+
+// TestRecoverAnchorsDetachedPreservedHeadBehindGateBranch covers the stranded
+// custody state a mid-run rebase leaves: the run's verified head is preserved
+// in the gate as a detached commit, so recovery must anchor it by SHA and
+// return custody instead of refusing because the branch ref stayed behind.
+func TestRecoverAnchorsDetachedPreservedHeadBehindGateBranch(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	f.strandDetachedPreserved()
+
+	state := f.service.Recover(f.ctx, false)
+	if !state.Recovered || !state.Changed || state.State != StateCustodyReturned {
+		t.Fatalf("detached-preserved recover = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("HEAD = %s, want preserved %s", got, f.preserved)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("anchor ref = %s, want %s", got, f.preserved)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("detached-preserved recovery did not stamp custody")
+	}
+}
+
+// TestRecoverKeepLocalTakesBranchBackFromDetachedPreservedHead is the operator
+// exit from that same state when the local branch has moved on: keep-local
+// must return custody at the kept head, move the gate branch off the submitted
+// head, and keep the preserved commits anchored.
+func TestRecoverKeepLocalTakesBranchBackFromDetachedPreservedHead(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	f.strandDetachedPreserved()
+	mustWrite(t, filepath.Join(f.local, "local.txt"), "local rebase\n")
+	mustRun(t, f.local, "add", "local.txt")
+	mustRun(t, f.local, "commit", "-m", "local work")
+	local := mustRun(t, f.local, "rev-parse", "HEAD")
+
+	state := f.service.Recover(f.ctx, true)
+	if !state.Recovered || state.Changed {
+		t.Fatalf("detached keep-local recover = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != local {
+		t.Fatal("keep-local moved the worktree")
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != local {
+		t.Fatalf("gate branch = %s, want kept head %s", got, local)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
+		t.Fatalf("anchor ref = %s, want preserved %s", got, f.preserved)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("detached keep-local did not stamp custody")
+	}
+}
+
+// TestRecoverRefusesPreservedHeadTheGateNeverReceived keeps the loosened
+// anchor honest: a recorded head whose commit the gate does not hold is not
+// preserved custody at all, so recovery must still fail closed.
+func TestRecoverRefusesPreservedHeadTheGateNeverReceived(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	f.strandDetachedPreserved()
+	unpushed := filepath.Join(t.TempDir(), "unpushed")
+	mustRun(t, filepath.Dir(unpushed), "-c", "core.autocrlf=false", "clone", f.local, unpushed)
+	configureIdentity(t, unpushed)
+	mustRun(t, unpushed, "checkout", "feature/recover")
+	mustWrite(t, filepath.Join(unpushed, "never.txt"), "never delivered\n")
+	mustRun(t, unpushed, "add", "never.txt")
+	mustRun(t, unpushed, "commit", "-m", "never delivered to the gate")
+	never := mustRun(t, unpushed, "rev-parse", "HEAD")
+	if err := f.db.UpdateRunStatusWithVerifiedHead(f.run.ID, types.RunCancelled, never); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_gate_diverged" {
+		t.Fatalf("undelivered preserved head was recovered: %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatal("undelivered-head refusal moved HEAD")
+	}
+	if f.custodyReturned() {
+		t.Fatal("undelivered-head refusal stamped custody")
+	}
+}

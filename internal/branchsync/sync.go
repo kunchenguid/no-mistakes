@@ -546,7 +546,8 @@ func (s *Service) Apply(ctx context.Context) State {
 // Recover treats that user_owned state as an idempotent no-op success.
 //
 // The decision matrix, by worktree relation to the preserved pipeline head P
-// (the gate branch head recorded as the run's head_sha):
+// (the run's recorded head_sha, preserved in the gate as its branch head or
+// as a detached commit a rebase-only run left behind):
 //
 //	relation   worktree  default                        --keep-local
 //	equal      any       anchor locally; return custody same
@@ -583,9 +584,12 @@ func (s *Service) Apply(ctx context.Context) State {
 //   - The preserved commits must be provably safe before custody moves: when
 //     already reachable from the local branch (equal/ahead), recovery pins the
 //     private anchor ref refs/no-mistakes/recover/<runID> locally without gate
-//     access; otherwise the preserved head is verified at the gate branch head
-//     and fetched into that anchor. The anchor keeps them reachable locally no
-//     matter what later happens to the gate.
+//     access; otherwise the preserved head is verified in the gate and fetched
+//     into that anchor - from the gate branch when it holds P, or, when a
+//     rebase-only run left P detached with the branch still exactly at the
+//     submitted head, through a gate-side private ref that publishes P for the
+//     fetch without moving any branch. The anchor keeps them reachable locally
+//     no matter what later happens to the gate.
 //   - The only possible worktree mutation is a guarded move of a clean checked-out
 //     branch: a strict fast-forward, or an anchored move to a proven-containing
 //     head performed by Git operations that refuse on their own rather than by a
@@ -593,7 +597,8 @@ func (s *Service) Apply(ctx context.Context) State {
 //     head instead of taking P, --keep-local never touches the worktree and moves
 //     the gate branch to the kept head with an atomic compare-and-swap, so a
 //     concurrent gate push wins and recovery refuses.
-//   - Anything unverifiable (missing gate where required, moved gate branch,
+//   - Anything unverifiable (missing gate where required, out-of-band gate
+//     branch movement, a recorded head the gate never received,
 //     failed anchor write or fetch, changed assumptions) refuses with a reason
 //     and changes nothing.
 //
@@ -689,11 +694,22 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	// custody resumes here: the gate already equals the kept local head and
 	// the preserved head is already anchored.
 	resumedKeepLocal := keepLocal && anchored && gateHead == local
-	if gateHead != preserved && !resumedKeepLocal {
+	// The gate branch ref is one route to the preserved head, not the head
+	// itself. A run that only rebased advances runs.head_sha while the pipeline
+	// worktree is detached, so the preserved commit lands in the gate's object
+	// store and the branch ref stays at the submitted head - the state that
+	// made recover_custody advertise a recovery it then refused. The commit
+	// itself is the evidence, so anchor it by SHA when the gate holds it and
+	// the branch is still exactly the head this run was handed. Every other
+	// mismatch is out-of-band gate movement and still refuses, because a
+	// keep-local recovery compare-and-swaps that branch away.
+	detachedPreserved := gateHead != preserved && !resumedKeepLocal &&
+		gateHead == ptr(run.SubmittedHeadSHA) && objectExists(ctx, gateDir, preserved)
+	if gateHead != preserved && !resumedKeepLocal && !detachedPreserved {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_diverged", fmt.Sprintf("the gate branch is at %s, not the preserved pipeline head %s recorded for this run; no files or refs were changed", gateHead, preserved))
 	}
 	if !anchored {
-		if fetchErr := git.FetchRemoteBranchToPrivateRef(ctx, wd, gateDir, branch, anchorRef); fetchErr != nil {
+		if fetchErr := s.fetchPreservedAnchor(ctx, gateDir, branch, run.ID, anchorRef, preserved, detachedPreserved); fetchErr != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; no files or refs were changed")
 		}
 		if fetched, fetchErr := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); fetchErr != nil || fetched != preserved {
@@ -1002,6 +1018,28 @@ func (s *Service) finishRecover(ctx context.Context, run *db.Run, changed bool) 
 
 func recoverAnchorRef(runID string) string {
 	return "refs/no-mistakes/recover/" + runID
+}
+
+// gatePreservedRef names the gate-side ref that makes a detached preserved
+// head fetchable. A fetch can only ask for a ref, so a preserved commit no
+// branch points at needs one before it can be anchored in the worktree.
+func gatePreservedRef(runID string) string {
+	return "refs/no-mistakes/preserved/" + runID
+}
+
+// fetchPreservedAnchor copies the preserved pipeline commits from the local
+// gate into the worktree's private anchor ref. The ordinary source is the gate
+// branch; a preserved head the branch never reached is published to a
+// gate-side private ref first, which adds a ref and mutates no branch.
+func (s *Service) fetchPreservedAnchor(ctx context.Context, gateDir, branch, runID, anchorRef, preserved string, detached bool) error {
+	if !detached {
+		return git.FetchRemoteBranchToPrivateRef(ctx, s.workDir(), gateDir, branch, anchorRef)
+	}
+	sourceRef := gatePreservedRef(runID)
+	if _, err := git.Run(ctx, gateDir, "update-ref", sourceRef, preserved); err != nil {
+		return err
+	}
+	return git.FetchRefToPrivateRef(ctx, s.workDir(), gateDir, sourceRef, anchorRef)
 }
 
 // recoverLocalAnchorRef keeps the exact pre-recovery local commits reachable

@@ -209,11 +209,12 @@ Without that positive terminal head evidence, custody stays recoverable rather t
 While a run is still active, it reports `state: pipeline_owned`, the exact submitted/current heads and their relation, and `next_action.code: continue_active_run` with `no-mistakes axi status`, even when its head has not moved yet.
 `--recover` verifies the run is terminal, anchors the preserved head under `refs/no-mistakes/recover/<run>` in the invoking repository, and stamps custody returned so a fresh run can start.
 For equal or ahead worktrees where the preserved head is already locally reachable, recovery writes that anchor locally without gate access.
-For behind or diverged worktrees, recovery verifies the preserved head at the local gate branch and fetches it into the anchor before moving or refusing.
+For behind or diverged worktrees, recovery verifies the preserved head in the local gate and fetches it into the anchor before moving or refusing.
 A clean behind worktree fast-forwards.
 A diverged worktree is adopted only when the preserved head provably carries every local change, proven by an executable three-way merge whose result is exactly the preserved head's tree.
-This covers a pipeline rebase onto a newer base once a later pipeline commit has also advanced the gate branch to the preserved head.
-A rebase-only cancelled run can still refuse recovery because its detached worktree advances the recorded run head without advancing that gate branch; use `no-mistakes rerun` in that case.
+This covers a pipeline rebase onto a newer base.
+A rebase-only cancelled run advances the recorded run head without advancing the gate branch, because its worktree is detached; the preserved head is then anchored by SHA through a gate-side private ref, and recovery proceeds as long as the gate branch is still exactly the submitted head.
+Any other gate branch position is out-of-band movement and still refuses.
 That adoption anchors the pre-recovery local head under `refs/no-mistakes/recover-local/<run>`, then moves the branch with Git operations that refuse on their own rather than after a preceding check: an atomic compare-and-swap on the branch ref, and a working-tree update that aborts instead of overwriting a modified or untracked file.
 The proof is deliberately narrow and never uses patch identity, which discards hunk locations and whitespace and so cannot tell a genuine replay from a same-shaped edit elsewhere.
 Anything it cannot decide - unlanded local commits, or a rebase whose fix rounds also rewrote your own lines - still refuses with the anchor named, because only escalation can tell a deliberate pipeline fix apart from a dropped change.
