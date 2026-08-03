@@ -1358,6 +1358,36 @@ func TestRecoverRebasedPreservedHeadRefusesConcurrentCommitWithoutLosingIt(t *te
 	}
 }
 
+func TestRecoverRebasedPreservedHeadRollsBackAfterConcurrentCheckout(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.local, "branch", "other-clean-branch", f.submitted)
+	f.service.afterRecoverBranchMove = func() {
+		mustRun(t, f.local, "checkout", "other-clean-branch")
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
+		t.Fatalf("recovery raced a concurrent checkout: %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("feature branch = %s, want rollback to %s", got, f.submitted)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "refs/heads/other-clean-branch"); got != f.submitted {
+		t.Fatalf("concurrently checked-out branch = %s, want %s", got, f.submitted)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "feature.txt")); got != "feature one\nfeature two\n" {
+		t.Fatalf("concurrent checkout worktree changed: %q", got)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "upstream.txt")); got != "" {
+		t.Fatalf("preserved tree leaked into concurrent checkout: %q", got)
+	}
+	if f.custodyReturned() {
+		t.Fatal("raced recovery stamped custody")
+	}
+}
+
 // TestRecoverRebasedPreservedHeadRefusesConcurrentWorktreeEditWithoutLosingIt
 // is the other concurrency axis: an uncommitted edit to a file the move would
 // rewrite must abort the move inside Git itself rather than being overwritten,
@@ -1412,6 +1442,35 @@ func TestRecoverRebasedPreservedHeadRefusesDirtyWorktree(t *testing.T) {
 	}
 	if f.custodyReturned() {
 		t.Fatal("dirty refusal stamped custody")
+	}
+}
+
+func TestRecoverIncompleteAdoptionDoesNotStampStaleWorktree(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	mustRun(t, f.local, "fetch", "--no-tags", f.gate, "+refs/heads/feature/recover:"+f.anchorRef())
+	mustRun(t, f.local, "update-ref", f.localAnchorRef(), f.submitted, "")
+	mustRun(t, f.local, "update-ref", "refs/heads/feature/recover", f.preserved, f.submitted)
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_incomplete_adoption" {
+		t.Fatalf("incomplete adoption was stamped: %#v", state)
+	}
+	if !strings.Contains(state.Error, f.localAnchorRef()) {
+		t.Fatalf("incomplete-adoption refusal does not name local anchor: %q", state.Error)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.preserved {
+		t.Fatalf("HEAD = %s, want preserved %s", got, f.preserved)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "feature.txt")); got != "feature one\nfeature two\n" {
+		t.Fatalf("pre-recovery worktree changed: %q", got)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "upstream.txt")); got != "" {
+		t.Fatalf("preserved tree was applied unexpectedly: %q", got)
+	}
+	if f.custodyReturned() {
+		t.Fatal("incomplete adoption stamped custody")
 	}
 }
 

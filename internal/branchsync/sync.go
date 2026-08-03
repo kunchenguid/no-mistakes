@@ -141,6 +141,7 @@ type Service struct {
 	beforeGateReset           func()
 	beforeRecoverWorktreeMove func()
 	beforeRecoverBranchMove   func()
+	afterRecoverBranchMove    func()
 }
 
 // OpenCurrent opens a service for the invoking registered worktree. The caller
@@ -555,6 +556,13 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	local := state.Local.Head
 	preserved := run.HeadSHA
 	anchorRef := recoverAnchorRef(run.ID)
+	localAnchor := recoverLocalAnchorRef(run.ID)
+
+	if anchoredLocal, err := git.Run(ctx, wd, "rev-parse", "--verify", localAnchor+"^{commit}"); err == nil && anchoredLocal != preserved && local == preserved && !state.Local.Clean {
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_incomplete_adoption", fmt.Sprintf("the branch reached the preserved pipeline head, but its worktree still differs from that head; the pre-recovery head remains anchored at %s; reconcile the worktree and re-run recovery; custody was not recorded", localAnchor))
+		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+		return blocked
+	}
 
 	if objectExists(ctx, wd, preserved) && (local == preserved || isAncestor(ctx, wd, preserved, local)) {
 		if blocked, ok := s.anchorReachablePreserved(ctx, state, anchorRef, preserved); !ok {
@@ -801,8 +809,23 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 		s.beforeRecoverBranchMove()
 	}
 	branchRef := "refs/heads/" + state.Local.Branch
+	boundaryBranch, boundaryErr := git.CurrentBranch(ctx, wd)
+	if boundaryErr != nil || boundaryBranch != state.Local.Branch {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the checked-out branch changed while custody was being returned; no branch or worktree changes were made")
+	}
 	if _, err := git.Run(ctx, wd, "update-ref", branchRef, preserved, head); err != nil {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch moved while custody was being returned; no files or refs were changed")
+	}
+	if s.afterRecoverBranchMove != nil {
+		s.afterRecoverBranchMove()
+	}
+	boundaryBranch, boundaryErr = git.CurrentBranch(ctx, wd)
+	if boundaryErr != nil || boundaryBranch != state.Local.Branch {
+		rollbackDetail := ""
+		if _, rollbackErr := git.Run(ctx, wd, "update-ref", branchRef, head, preserved); rollbackErr != nil {
+			rollbackDetail = fmt.Sprintf("; the branch could not be restored to %s and still requires manual reconciliation", head)
+		}
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", fmt.Sprintf("the checked-out branch changed while custody was being returned%s; custody was not recorded", rollbackDetail))
 	}
 	if _, err := git.Run(ctx, wd, "read-tree", "-m", "-u", head, preserved); err != nil {
 		rolledBack := ""
