@@ -900,6 +900,12 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	if prBaseBranch == "" {
 		prBaseBranch = strings.TrimSpace(repo.DefaultBranch)
 	}
+	if prBaseExplicit && branch == prBaseBranch {
+		err := fmt.Errorf("refusing to start a run for %q: it is the configured PR base branch; put changes on a feature branch and retry", branch)
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("configured_pr_base_branch")
+		return "", err
+	}
 	if err := m.db.UpdateRunPRBaseBranch(run.ID, prBaseBranch, prBaseExplicit); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("persist_pr_base_branch")

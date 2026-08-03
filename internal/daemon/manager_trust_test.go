@@ -69,6 +69,33 @@ func TestEnsureConfiguredPRBaseBranch_FetchesUpstreamNotFork(t *testing.T) {
 	}
 }
 
+func TestRunStartRejectsConfiguredPRBaseBranch(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, _ := setupTestGitRepo(t, p, database, "configured-pr-base")
+
+	configPath := filepath.Join(repo.WorkingPath, ".no-mistakes.yaml")
+	contents := "auto_fix:\n  lint: 0\n  test: 0\n  review: 0\npr:\n  base_branch: quality-assurance\n"
+	if err := os.WriteFile(configPath, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", configPath)
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "configure PR base")
+	head := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/quality-assurance")
+
+	manager := NewRunManager(database, p, nil)
+	t.Cleanup(manager.Shutdown)
+	_, err := manager.startRun(context.Background(), repo, "quality-assurance", head, strings.Repeat("0", 40), "test", nil, "reject integration branch")
+	if err == nil {
+		t.Fatal("configured PR base branch was accepted as a run branch")
+	}
+	if !strings.Contains(err.Error(), "configured PR base branch") || !strings.Contains(err.Error(), "feature branch") {
+		t.Fatalf("error is not actionable: %v", err)
+	}
+}
+
 func TestEnsureConfiguredPRBaseBranch_RejectsMissingAndUnsafeTargets(t *testing.T) {
 	upstream := filepath.Join(t.TempDir(), "upstream.git")
 	gitCmd(t, "", "init", "--bare", upstream)
