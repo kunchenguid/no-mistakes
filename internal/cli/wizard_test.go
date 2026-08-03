@@ -89,6 +89,8 @@ func TestNeedsBranch(t *testing.T) {
 }
 
 func TestDetectRepoStateUsesTrustedConfiguredPRBase(t *testing.T) {
+	remoteDir := filepath.Join(t.TempDir(), "remote.git")
+	run(t, "", "git", "init", "--bare", remoteDir)
 	repoDir := t.TempDir()
 	run(t, repoDir, "git", "init", "--initial-branch=main")
 	run(t, repoDir, "git", "config", "user.email", "test@test.com")
@@ -98,7 +100,8 @@ func TestDetectRepoStateUsesTrustedConfiguredPRBase(t *testing.T) {
 	}
 	run(t, repoDir, "git", "add", ".no-mistakes.yaml")
 	run(t, repoDir, "git", "commit", "-m", "configure PR base")
-	run(t, repoDir, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
+	run(t, repoDir, "git", "remote", "add", "origin", remoteDir)
+	run(t, repoDir, "git", "push", "origin", "main", "HEAD:quality-assurance")
 	run(t, repoDir, "git", "checkout", "-b", "quality-assurance")
 	if err := os.WriteFile(filepath.Join(repoDir, ".no-mistakes.yaml"), []byte("pr:\n  base_branch: attacker-target\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -116,6 +119,56 @@ func TestDetectRepoStateUsesTrustedConfiguredPRBase(t *testing.T) {
 	}
 	if !state.needsBranch() {
 		t.Fatal("configured PR base branch should require creating a feature branch")
+	}
+}
+
+func TestDetectRepoStateRejectsMalformedTrustedPRBase(t *testing.T) {
+	remoteDir := filepath.Join(t.TempDir(), "remote.git")
+	run(t, "", "git", "init", "--bare", remoteDir)
+	repoDir := t.TempDir()
+	run(t, repoDir, "git", "init", "--initial-branch=main")
+	run(t, repoDir, "git", "config", "user.email", "test@test.com")
+	run(t, repoDir, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repoDir, ".no-mistakes.yaml"), []byte("pr:\n  base_brnch: quality-assurance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, repoDir, "git", "add", ".no-mistakes.yaml")
+	run(t, repoDir, "git", "commit", "-m", "malformed config")
+	run(t, repoDir, "git", "remote", "add", "origin", remoteDir)
+	run(t, repoDir, "git", "push", "origin", "main")
+	t.Chdir(repoDir)
+
+	_, err := detectRepoState(context.Background(), &db.Repo{WorkingPath: repoDir, DefaultBranch: "main"})
+	if err == nil {
+		t.Fatal("malformed trusted PR config was silently ignored")
+	}
+	if !strings.Contains(err.Error(), "parse trusted .no-mistakes.yaml") || !strings.Contains(err.Error(), "base_brnch") {
+		t.Fatalf("error is not actionable: %v", err)
+	}
+}
+
+func TestDetectRepoStateRejectsMissingConfiguredPRBase(t *testing.T) {
+	remoteDir := filepath.Join(t.TempDir(), "remote.git")
+	run(t, "", "git", "init", "--bare", remoteDir)
+	repoDir := t.TempDir()
+	run(t, repoDir, "git", "init", "--initial-branch=main")
+	run(t, repoDir, "git", "config", "user.email", "test@test.com")
+	run(t, repoDir, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repoDir, ".no-mistakes.yaml"), []byte("pr:\n  base_branch: missing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, repoDir, "git", "add", ".no-mistakes.yaml")
+	run(t, repoDir, "git", "commit", "-m", "configure missing PR base")
+	run(t, repoDir, "git", "remote", "add", "origin", remoteDir)
+	run(t, repoDir, "git", "push", "origin", "main")
+	t.Chdir(repoDir)
+
+	_, err := detectRepoState(context.Background(), &db.Repo{WorkingPath: repoDir, DefaultBranch: "main"})
+	if err == nil {
+		t.Fatal("missing configured PR base was silently ignored")
+	}
+	if !strings.Contains(err.Error(), "configured pr.base_branch \"missing\"") || !strings.Contains(err.Error(), "create or push that branch") {
+		t.Fatalf("error is not actionable: %v", err)
 	}
 }
 

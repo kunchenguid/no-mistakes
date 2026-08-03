@@ -195,11 +195,17 @@ func detectRepoState(ctx context.Context, repo *db.Repo) (*repoState, error) {
 	if defaultBranch == "" {
 		defaultBranch = git.DefaultBranch(ctx, workDir, "origin")
 	}
+	trustedRepo := *repo
+	trustedRepo.DefaultBranch = defaultBranch
+	prBaseBranch, err := configuredPRBaseBranch(ctx, workDir, &trustedRepo)
+	if err != nil {
+		return nil, fmt.Errorf("load trusted PR base configuration: %w", err)
+	}
 	return &repoState{
 		workDir:       workDir,
 		currentBranch: currentBranch,
 		defaultBranch: defaultBranch,
-		prBaseBranch:  configuredPRBaseBranch(ctx, workDir, defaultBranch),
+		prBaseBranch:  prBaseBranch,
 		detached:      detached,
 		dirty:         dirty,
 	}, nil

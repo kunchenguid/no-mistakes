@@ -202,13 +202,20 @@ func activeRunInfoForHead(run *ipc.RunInfo, headSHA string) *ipc.RunInfo {
 // applies branch/commit hygiene as detect-and-guide: refuse base branches and
 // an uncommitted working tree, with the command the agent should run.
 func preflightGuard(ctx context.Context, env *axiEnv, branch string) func(*cobra.Command) error {
-	prBase := configuredPRBaseForPreflight(ctx, env)
-	switch baseBranchRole(branch, env.repo.DefaultBranch, prBase) {
-	case branchRoleDefault:
+	if env != nil && env.repo != nil && baseBranchRole(branch, env.repo.DefaultBranch, "") == branchRoleDefault {
 		return func(cmd *cobra.Command) error {
 			return emitError(cmd, 1, fmt.Sprintf("refusing to validate %q: it is the default branch", branch),
 				"Put your changes on a feature branch: `git switch -c <branch>`, then re-run")
 		}
+	}
+	prBase, err := configuredPRBaseForPreflight(ctx, env)
+	if err != nil {
+		return func(cmd *cobra.Command) error {
+			return emitError(cmd, 1, fmt.Sprintf("load trusted PR base configuration: %v", err),
+				"Restore access to the repository default branch, then re-run")
+		}
+	}
+	switch baseBranchRole(branch, env.repo.DefaultBranch, prBase) {
 	case branchRolePRBase:
 		return func(cmd *cobra.Command) error {
 			return emitError(cmd, 1, fmt.Sprintf("refusing to validate %q: it is the configured PR base branch", branch),
@@ -232,28 +239,55 @@ func preflightGuard(ctx context.Context, env *axiEnv, branch string) func(*cobra
 	return nil
 }
 
-func configuredPRBaseForPreflight(ctx context.Context, env *axiEnv) string {
+func configuredPRBaseForPreflight(ctx context.Context, env *axiEnv) (string, error) {
 	if env == nil || env.repo == nil {
-		return ""
+		return "", nil
 	}
-	return configuredPRBaseBranch(ctx, ".", env.repo.DefaultBranch)
+	return configuredPRBaseBranch(ctx, ".", env.repo)
 }
 
-func configuredPRBaseBranch(ctx context.Context, workDir, defaultBranch string) string {
-	defaultBranch = strings.TrimSpace(defaultBranch)
-	if defaultBranch == "" {
-		return ""
+func configuredPRBaseBranch(ctx context.Context, workDir string, repo *db.Repo) (string, error) {
+	if repo == nil {
+		return "", nil
 	}
-	_ = git.FetchRemoteBranch(ctx, workDir, "origin", defaultBranch)
-	content, err := git.ShowFile(ctx, workDir, "refs/remotes/origin/"+defaultBranch, ".no-mistakes.yaml")
+	defaultBranch := strings.TrimSpace(repo.DefaultBranch)
+	if defaultBranch == "" {
+		return "", nil
+	}
+	if err := git.FetchRemoteBranch(ctx, workDir, "origin", defaultBranch); err != nil {
+		return "", fmt.Errorf("fetch trusted default branch %q: %w", defaultBranch, err)
+	}
+	ref := "refs/remotes/origin/" + defaultBranch
+	trustedSHA, err := git.ResolveRef(ctx, workDir, ref)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("resolve trusted default branch %q after fetch: %w", defaultBranch, err)
+	}
+	entry, err := git.Run(ctx, workDir, "ls-tree", trustedSHA, "--", ".no-mistakes.yaml")
+	if err != nil {
+		return "", fmt.Errorf("inspect trusted default branch %q: %w", defaultBranch, err)
+	}
+	if strings.TrimSpace(entry) == "" {
+		return "", nil
+	}
+	content, err := git.ShowFile(ctx, workDir, trustedSHA, ".no-mistakes.yaml")
+	if err != nil {
+		return "", fmt.Errorf("read trusted .no-mistakes.yaml from default branch %q: %w", defaultBranch, err)
 	}
 	repoCfg, err := config.LoadRepoFromBytes([]byte(content))
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("parse trusted .no-mistakes.yaml from default branch %q: %w", defaultBranch, err)
 	}
-	return strings.TrimSpace(repoCfg.PR.BaseBranch)
+	prBaseBranch := strings.TrimSpace(repoCfg.PR.BaseBranch)
+	if prBaseBranch == "" || prBaseBranch == defaultBranch {
+		return prBaseBranch, nil
+	}
+	if err := git.FetchRemoteBranch(ctx, workDir, "origin", prBaseBranch); err != nil {
+		return "", fmt.Errorf("configured pr.base_branch %q could not be fetched from the upstream repository; create or push that branch, then retry: %w", prBaseBranch, err)
+	}
+	if _, err := git.ResolveRef(ctx, workDir, "refs/remotes/origin/"+prBaseBranch); err != nil {
+		return "", fmt.Errorf("configured pr.base_branch %q did not resolve after fetch: %w", prBaseBranch, err)
+	}
+	return prBaseBranch, nil
 }
 
 // branchOwnershipError carries the shared branch-sync classification that

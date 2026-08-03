@@ -506,6 +506,8 @@ func TestRerunParamsIncludeSkipSteps(t *testing.T) {
 }
 
 func TestPreflightGuardRejectsConfiguredPRBaseBranch(t *testing.T) {
+	remoteDir := filepath.Join(t.TempDir(), "remote.git")
+	run(t, "", "git", "init", "--bare", remoteDir)
 	repoDir := t.TempDir()
 	run(t, repoDir, "git", "init", "--initial-branch=main")
 	run(t, repoDir, "git", "config", "user.email", "test@test.com")
@@ -515,7 +517,8 @@ func TestPreflightGuardRejectsConfiguredPRBaseBranch(t *testing.T) {
 	}
 	run(t, repoDir, "git", "add", ".no-mistakes.yaml")
 	run(t, repoDir, "git", "commit", "-m", "configure PR base")
-	run(t, repoDir, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
+	run(t, repoDir, "git", "remote", "add", "origin", remoteDir)
+	run(t, repoDir, "git", "push", "origin", "main", "HEAD:quality-assurance")
 	run(t, repoDir, "git", "checkout", "-b", "quality-assurance")
 	t.Chdir(repoDir)
 
@@ -534,12 +537,19 @@ func TestPreflightGuardRejectsConfiguredPRBaseBranch(t *testing.T) {
 	}
 }
 
-func TestPreflightGuardReportsWorkingTreeCheckError(t *testing.T) {
-	t.Chdir(t.TempDir())
+func TestPreflightGuardRejectsTrustedConfigFetchFailure(t *testing.T) {
+	repoDir := t.TempDir()
+	run(t, repoDir, "git", "init", "--initial-branch=main")
+	run(t, repoDir, "git", "config", "user.email", "test@test.com")
+	run(t, repoDir, "git", "config", "user.name", "Test")
+	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "initial")
+	run(t, repoDir, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
+	run(t, repoDir, "git", "remote", "add", "origin", filepath.Join(t.TempDir(), "missing.git"))
+	t.Chdir(repoDir)
 
 	guard := preflightGuard(context.Background(), &axiEnv{repo: &db.Repo{DefaultBranch: "main"}}, "feature/x")
 	if guard == nil {
-		t.Fatal("expected guard for failed working tree check")
+		t.Fatal("expected guard for failed trusted-default fetch")
 	}
 
 	var out bytes.Buffer
@@ -548,8 +558,8 @@ func TestPreflightGuardReportsWorkingTreeCheckError(t *testing.T) {
 	if err := guard(cmd); err == nil {
 		t.Fatal("expected structured preflight error")
 	}
-	if !strings.Contains(out.String(), "inspect working tree") {
-		t.Fatalf("expected working tree check error, got:\n%s", out.String())
+	if !strings.Contains(out.String(), "fetch trusted default branch") {
+		t.Fatalf("expected trusted-default fetch error, got:\n%s", out.String())
 	}
 }
 
