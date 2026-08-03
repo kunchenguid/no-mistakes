@@ -91,6 +91,62 @@ func TestRebaseStep_DetectsUnpushedLocalDefaultBranchCommits(t *testing.T) {
 	}
 }
 
+func TestRebaseStep_DetectsUnpushedLocalConfiguredBaseCommits(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	working := t.TempDir()
+	gitCmd(t, working, "init")
+	gitCmd(t, working, "config", "user.name", "test")
+	gitCmd(t, working, "config", "user.email", "test@test.com")
+	gitCmd(t, working, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(working, "base.txt"), []byte("base"), 0o644)
+	gitCmd(t, working, "add", "-A")
+	gitCmd(t, working, "commit", "-m", "base")
+	gitCmd(t, working, "remote", "add", "origin", upstream)
+	gitCmd(t, working, "push", "origin", "main")
+	gitCmd(t, working, "checkout", "-b", "quality-assurance")
+	os.WriteFile(filepath.Join(working, "qa.txt"), []byte("qa"), 0o644)
+	gitCmd(t, working, "add", "-A")
+	gitCmd(t, working, "commit", "-m", "qa base")
+	gitCmd(t, working, "push", "origin", "quality-assurance")
+	remoteQASHA := gitCmd(t, working, "rev-parse", "HEAD")
+
+	os.WriteFile(filepath.Join(working, "unpublished_qa.txt"), []byte("other QA work"), 0o644)
+	gitCmd(t, working, "add", "-A")
+	gitCmd(t, working, "commit", "-m", "unpublished QA work")
+	localQATip := gitCmd(t, working, "rev-parse", "HEAD")
+
+	dir := t.TempDir()
+	gitCmd(t, dir, "clone", upstream, ".")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "fetch", working, "quality-assurance")
+	gitCmd(t, dir, "checkout", "--detach", localQATip)
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, remoteQASHA, headSHA, config.Commands{})
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Repo.WorkingPath = working
+	sctx.Config.PR.BaseBranch = "quality-assurance"
+
+	outcome, err := (&RebaseStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("expected configured local-base bundle finding, got %#v", outcome)
+	}
+	if !strings.Contains(outcome.Findings, "unpublished QA work") || !strings.Contains(outcome.Findings, "quality-assurance") {
+		t.Fatalf("configured local-base finding used the wrong branch: %s", outcome.Findings)
+	}
+}
+
 func TestRebaseStep_DetectsUnpushedLocalDefaultBranchCommitsOnForcePush(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()

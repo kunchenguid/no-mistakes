@@ -174,6 +174,47 @@ type PRRaw struct {
 	BaseBranch string `yaml:"base_branch"`
 }
 
+func (p *PRRaw) UnmarshalYAML(value *yaml.Node) error {
+	if value == nil {
+		return errors.New("pr must be a mapping")
+	}
+	if value.Kind == yaml.AliasNode {
+		value = value.Alias
+	}
+	if value == nil || value.Kind != yaml.MappingNode {
+		return errors.New("pr must be a mapping")
+	}
+	seenBaseBranch := false
+	for i := 0; i < len(value.Content); i += 2 {
+		key, field := value.Content[i], value.Content[i+1]
+		if key.Value != "base_branch" {
+			return fmt.Errorf("pr contains unknown field %q", key.Value)
+		}
+		if seenBaseBranch {
+			return errors.New("pr.base_branch must not be specified more than once")
+		}
+		seenBaseBranch = true
+		if field.Kind == yaml.AliasNode {
+			field = field.Alias
+		}
+		if field == nil || field.Tag == "!!null" {
+			return errors.New("pr.base_branch must not be null")
+		}
+		if field.Kind != yaml.ScalarNode || field.Tag != "!!str" {
+			return errors.New("pr.base_branch must be a string")
+		}
+		var branch string
+		if err := field.Decode(&branch); err != nil {
+			return fmt.Errorf("pr.base_branch must be a string: %w", err)
+		}
+		if branch == "" {
+			return errors.New("pr.base_branch must not be empty")
+		}
+		p.BaseBranch = branch
+	}
+	return nil
+}
+
 // DocumentRaw is the YAML representation of document-step settings.
 type DocumentRaw struct {
 	// Instructions augment (never replace) the built-in documentation

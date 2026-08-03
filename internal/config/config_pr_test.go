@@ -34,6 +34,26 @@ func TestLoadRepoConfig_PRBaseBranchUnsetPreservesDefaultBehavior(t *testing.T) 
 	}
 }
 
+func TestLoadRepoConfig_PRBaseBranchRejectsMalformedExplicitValues(t *testing.T) {
+	for name, input := range map[string]string{
+		"empty":         "pr:\n  base_branch: \"\"\n",
+		"null":          "pr:\n  base_branch: null\n",
+		"implicit_null": "pr:\n  base_branch:\n",
+		"non_string":    "pr:\n  base_branch: 42\n",
+		"unknown_field": "pr:\n  base_brnch: quality-assurance\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadRepoFromBytes([]byte(input))
+			if err == nil {
+				t.Fatal("expected malformed explicit PR target to be rejected")
+			}
+			if !strings.Contains(err.Error(), "pr") {
+				t.Fatalf("error %q does not identify pr configuration", err)
+			}
+		})
+	}
+}
+
 func TestLoadRepoConfig_PRBaseBranchRejectsUnsafeNames(t *testing.T) {
 	for _, branch := range []string{
 		"-quality-assurance",

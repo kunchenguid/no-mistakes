@@ -31,6 +31,19 @@ func TestRunInsertAndGet(t *testing.T) {
 	if got.HeadSHA != "abc123" {
 		t.Errorf("head sha = %q, want %q", got.HeadSHA, "abc123")
 	}
+	if got.PRBaseBranch != nil {
+		t.Fatalf("new run unexpectedly has PR base %q before resolution", *got.PRBaseBranch)
+	}
+	if err := d.UpdateRunPRBaseBranch(run.ID, "quality-assurance"); err != nil {
+		t.Fatalf("persist PR base: %v", err)
+	}
+	got, err = d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run after PR base update: %v", err)
+	}
+	if got.PRBaseBranch == nil || *got.PRBaseBranch != "quality-assurance" {
+		t.Fatalf("PR base = %v, want quality-assurance", got.PRBaseBranch)
+	}
 }
 
 func TestInsertRunWithIntent(t *testing.T) {

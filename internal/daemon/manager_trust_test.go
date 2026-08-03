@@ -140,6 +140,24 @@ func TestLoadRecoveredConfig_PRBaseComesFromTrustedDefaultBranch(t *testing.T) {
 	if _, err := git.ResolveRef(context.Background(), workDir, "refs/remotes/origin/attacker-target"); err == nil {
 		t.Fatal("pushed branch redirected PR base fetch")
 	}
+
+	gitCmd(t, seed, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(seed, ".no-mistakes.yaml"), []byte("pr:\n  base_branch: staging\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".no-mistakes.yaml")
+	gitCmd(t, seed, "commit", "-m", "change future PR target")
+	gitCmd(t, seed, "branch", "staging")
+	gitCmd(t, seed, "push", "origin", "main", "staging")
+
+	originalBase := "quality-assurance"
+	cfg, err = mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "parked-run", PRBaseBranch: &originalBase}, &db.Repo{UpstreamURL: upstream, DefaultBranch: "main"}, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PR.BaseBranch != originalBase {
+		t.Fatalf("recovered PR base = %q, want persisted %q", cfg.PR.BaseBranch, originalBase)
+	}
 }
 
 func TestLoadRecoveredConfig_BoundsFetchAndFailsClosed(t *testing.T) {

@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS runs (
     branch               TEXT NOT NULL,
     head_sha                TEXT NOT NULL,
     base_sha                TEXT NOT NULL,
+    pr_base_branch          TEXT,
     submitted_head_sha      TEXT,
     review_approved_head_sha TEXT,
     status                  TEXT NOT NULL DEFAULT 'pending',
@@ -147,6 +148,7 @@ var migrationStatements = []string{
 	// A parked round may retain the reviewed commit as a non-authoritative
 	// candidate. Only atomic review completion promotes it onto the run.
 	`ALTER TABLE step_rounds ADD COLUMN reviewed_head_sha TEXT`,
+	`ALTER TABLE runs ADD COLUMN pr_base_branch TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,

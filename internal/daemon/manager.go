@@ -225,6 +225,9 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	cfg := config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands))
+	if run.PRBaseBranch != nil {
+		cfg.PR.BaseBranch = *run.PRBaseBranch
+	}
 	if err := ensureConfiguredPRBaseBranch(fetchCtx, workDir, repo, cfg); err != nil {
 		return nil, err
 	}
@@ -890,6 +893,16 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		trackStartFailure("resolve_pr_base_branch")
 		return "", err
 	}
+	prBaseBranch := strings.TrimSpace(cfg.PR.BaseBranch)
+	if prBaseBranch == "" {
+		prBaseBranch = strings.TrimSpace(repo.DefaultBranch)
+	}
+	if err := m.db.UpdateRunPRBaseBranch(run.ID, prBaseBranch); err != nil {
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("persist_pr_base_branch")
+		return "", err
+	}
+	run.PRBaseBranch = &prBaseBranch
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
 	var ag agent.Agent

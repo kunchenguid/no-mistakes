@@ -112,6 +112,39 @@ func TestResolveBranchBaseSHA_UsesConfiguredPRBase(t *testing.T) {
 		})
 	}
 
+	t.Run("intent", func(t *testing.T) {
+		stepCtx := newTestContextWithDBRecords(t, &fakeIntentAgent{}, dir, strings.Repeat("0", 40), qaSHA, config.Commands{})
+		stepCtx.Config.Intent = config.Intent{Enabled: true, Threshold: 0.1, SlackDays: 3}
+		stepCtx.Config.PR.BaseBranch = "quality-assurance"
+		var logs []string
+		stepCtx.Log = func(line string) { logs = append(logs, line) }
+		outcome, err := (&IntentStep{}).Execute(stepCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome == nil || !outcome.Skipped {
+			t.Fatalf("configured-base empty intent delta outcome = %#v, want skipped", outcome)
+		}
+		if !strings.Contains(strings.Join(logs, "\n"), "no diff between base and head") {
+			t.Fatalf("intent step did not scope its delta to configured base: %v", logs)
+		}
+	})
+
+	t.Run("empty diff skips remaining", func(t *testing.T) {
+		gitCmd(t, dir, "checkout", "quality-assurance")
+		t.Cleanup(func() { gitCmd(t, dir, "checkout", "feature") })
+		stepCtx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, mainSHA, qaSHA, config.Commands{})
+		stepCtx.Config.PR.BaseBranch = "quality-assurance"
+		outcome, err := updateHeadSHA(stepCtx.Ctx, stepCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome == nil || !outcome.SkipRemaining {
+			t.Fatalf("configured-base empty diff outcome = %#v, want SkipRemaining", outcome)
+		}
+		gitCmd(t, dir, "checkout", "feature")
+	})
+
 	t.Run("pr summary and routing", func(t *testing.T) {
 		env, logFile := fakeGH(t, "")
 		mock := &mockAgent{
