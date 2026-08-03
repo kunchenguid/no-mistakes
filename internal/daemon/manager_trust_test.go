@@ -283,6 +283,94 @@ func TestRerunContinuityChecksEveryPersistedBaseCandidate(t *testing.T) {
 	}
 }
 
+func TestRerunPersistsInheritedBaseBeforeWorktreeSetup(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "rerun-early-setup-failure")
+	gitCmd(t, repo.WorkingPath, "branch", "feature", head)
+	gitCmd(t, repo.WorkingPath, "push", "gate", "feature")
+
+	selectedRun, err := database.InsertRun(repo.ID, "feature", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(selectedRun.ID, "quality-assurance", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(selectedRun.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(p.WorktreesDir()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.WorktreesDir(), []byte("block worktree creation"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewRunManager(database, p, nil)
+	_, err = manager.HandleRerun(context.Background(), repo.ID, "feature", selectedRun.ID, nil, "")
+	if err == nil || !strings.Contains(err.Error(), "create worktree") {
+		t.Fatalf("rerun setup error = %v, want create worktree failure", err)
+	}
+	runs, err := database.GetRunsByRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) < 2 || runs[0].ID == selectedRun.ID {
+		t.Fatalf("replacement rerun was not persisted: %+v", runs)
+	}
+	if runs[0].PRBaseBranch == nil || *runs[0].PRBaseBranch != "quality-assurance" || !runs[0].PRBaseBranchExplicit {
+		t.Fatalf("failed rerun PR base = %v (explicit %t), want inherited quality-assurance (explicit)", runs[0].PRBaseBranch, runs[0].PRBaseBranchExplicit)
+	}
+}
+
+func TestRerunContinuityRecognizesReopenedPR(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "rerun-reopened-pr")
+	run, err := database.InsertRun(repo.ID, "feature", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(run.ID, "quality-assurance", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRURL(run.ID, "https://github.com/test/repo/pull/42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRState(run.ID, "closed"); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	binDir, ghLog := writeRerunPRBaseMockGH(t, "quality-assurance", "")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	manager := NewRunManager(database, p, nil)
+	candidate := &runPRBaseContinuity{sourceRun: run, branch: "quality-assurance", explicit: true}
+	continuity, err := manager.verifyRerunPRBaseContinuity(context.Background(), repo, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if continuity == nil || continuity.branch != "quality-assurance" || !continuity.explicit {
+		t.Fatalf("reopened PR continuity = %+v, want quality-assurance (explicit)", continuity)
+	}
+	verified, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verified.PRURL == nil || *verified.PRURL != "https://github.com/test/repo/pull/42" || verified.PRState == nil || *verified.PRState != "open" || verified.PRStateObservedAt == nil {
+		t.Fatalf("reopened PR was not persisted authoritatively: url=%v state=%v observed_at=%v", verified.PRURL, verified.PRState, verified.PRStateObservedAt)
+	}
+	logBytes, err := os.ReadFile(ghLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logBytes), "pr list --head feature --base quality-assurance") {
+		t.Fatalf("cached closed PR was not rechecked against its saved tuple:\n%s", logBytes)
+	}
+}
+
 func TestRerunContinuityRejectsStaleCachedOpenPR(t *testing.T) {
 	p, database := newRefreshRunFixture(t)
 	repo, head := setupTestGitRepo(t, p, database, "rerun-stale-open-pr")

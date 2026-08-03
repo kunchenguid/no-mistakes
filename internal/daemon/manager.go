@@ -793,7 +793,7 @@ func (m *RunManager) verifyRerunPRBaseContinuity(ctx context.Context, repo *db.R
 	if run.PRState != nil {
 		state = strings.ToLower(strings.TrimSpace(*run.PRState))
 	}
-	if state == "merged" || state == "closed" {
+	if state == "merged" {
 		return nil, nil
 	}
 	provider := scm.DetectProviderContext(ctx, repo.UpstreamURL)
@@ -818,7 +818,7 @@ func (m *RunManager) verifyRerunPRBaseContinuity(ctx context.Context, repo *db.R
 		return nil, fmt.Errorf("verify open pull request for %s into %s: %w", run.Branch, candidate.branch, err)
 	}
 	if pr != nil && strings.TrimSpace(pr.URL) != "" {
-		if err := m.db.UpdateRunPRURL(run.ID, pr.URL); err != nil {
+		if err := m.db.UpdateRunOpenPR(run.ID, pr.URL); err != nil {
 			return nil, fmt.Errorf("persist verified open pull request: %w", err)
 		}
 		return &runPRBaseContinuity{branch: candidate.branch, explicit: candidate.explicit}, nil
@@ -916,6 +916,15 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
+	}
+	if prBaseContinuity != nil {
+		if err := m.db.UpdateRunPRBaseBranch(run.ID, prBaseContinuity.branch, prBaseContinuity.explicit); err != nil {
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("persist_inherited_pr_base_branch")
+			return "", err
+		}
+		run.PRBaseBranch = &prBaseContinuity.branch
+		run.PRBaseBranchExplicit = prBaseContinuity.explicit
 	}
 
 	// Create worktree from the gate bare repo.

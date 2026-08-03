@@ -11,11 +11,11 @@ import (
 
 // Run represents a pipeline run.
 type Run struct {
-	ID               string
-	RepoID           string
-	Branch           string
-	HeadSHA          string
-	BaseSHA          string
+	ID                   string
+	RepoID               string
+	Branch               string
+	HeadSHA              string
+	BaseSHA              string
 	PRBaseBranch         *string
 	PRBaseBranchExplicit bool
 	SubmittedHeadSHA     *string
@@ -232,6 +232,15 @@ func (d *DB) UpdateRunPRURL(id, prURL string) error {
 	_, err := d.sql.Exec(`UPDATE runs SET pr_url = ?, pr_state = CASE WHEN pr_state IN ('merged', 'closed') THEN pr_state ELSE 'open' END, pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, prURL, ts, ts, id)
 	if err != nil {
 		return fmt.Errorf("update run pr url: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) UpdateRunOpenPR(id, prURL string) error {
+	ts := now()
+	_, err := d.sql.Exec(`UPDATE runs SET pr_url = ?, pr_state = CASE WHEN pr_state = 'merged' THEN pr_state ELSE 'open' END, pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, prURL, ts, ts, id)
+	if err != nil {
+		return fmt.Errorf("update run open pr: %w", err)
 	}
 	return nil
 }
