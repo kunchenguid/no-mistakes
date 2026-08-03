@@ -86,12 +86,23 @@ func TestUnregisteredNextActionCodeBuildsNoAction(t *testing.T) {
 
 // assertRegisteredNextAction is what makes the registry load-bearing rather
 // than decorative: whatever an inspection or recovery decides, the action it
-// hands its caller has to be a registered code carrying that code's command.
-func assertRegisteredNextAction(t *testing.T, context string, state State) {
+// hands its caller has to be the code that outcome owes an agent, carrying that
+// code's registered command. An empty want means the outcome must offer none,
+// so a silently dropped action fails here instead of passing as "no action".
+func assertRegisteredNextAction(t *testing.T, context string, state State, want NextActionCode) {
 	t.Helper()
 	action := state.NextAction
-	if action == nil {
+	if want == "" {
+		if action != nil {
+			t.Fatalf("%s: expected no next action, got %#v", context, action)
+		}
 		return
+	}
+	if action == nil {
+		t.Fatalf("%s: expected next action %q, got none (state %s, safety %s)", context, want, state.State, state.Safety)
+	}
+	if action.Code != want {
+		t.Fatalf("%s: next action code = %q, want %q", context, action.Code, want)
 	}
 	command, ok := nextActionCommands[action.Code]
 	if !ok {
@@ -111,41 +122,57 @@ func TestSyncOutcomesCarryRegisteredNextActionCodes(t *testing.T) {
 	t.Run("behind_pipeline_head", func(t *testing.T) {
 		t.Parallel()
 		f := newSyncFixture(t)
-		assertRegisteredNextAction(t, "behind", f.service.Refresh(f.ctx))
+		assertRegisteredNextAction(t, "behind", f.service.Refresh(f.ctx), NextActionSync)
 	})
 
 	t.Run("dirty_worktree", func(t *testing.T) {
 		t.Parallel()
 		f := newSyncFixture(t)
 		mustWrite(t, filepath.Join(f.local, "file.txt"), "dirty\n")
-		assertRegisteredNextAction(t, "dirty", f.service.Refresh(f.ctx))
+		assertRegisteredNextAction(t, "dirty", f.service.Refresh(f.ctx), NextActionInspectWorktree)
 	})
 
-	t.Run("active_run", func(t *testing.T) {
+	// An active run that already published an exact binding still leaves the
+	// worktree free to take those commits, so the offer is the sync itself.
+	t.Run("active_run_with_published_binding", func(t *testing.T) {
 		t.Parallel()
 		f := newSyncFixture(t)
 		if err := f.db.UpdateRunStatus(f.run.ID, types.RunRunning); err != nil {
 			t.Fatal(err)
 		}
-		assertRegisteredNextAction(t, "active run", f.service.Refresh(f.ctx))
+		assertRegisteredNextAction(t, "active run", f.service.Refresh(f.ctx), NextActionSync)
+	})
+
+	// A run that currently owns a push is the case where the only thing an
+	// agent can do is wait for the run it already has.
+	t.Run("push_in_progress", func(t *testing.T) {
+		t.Parallel()
+		f := newSyncFixture(t)
+		if err := f.db.UpdateRunStatus(f.run.ID, types.RunRunning); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.db.SetRunPushActive(f.run.ID, true); err != nil {
+			t.Fatal(err)
+		}
+		assertRegisteredNextAction(t, "push in progress", f.service.Refresh(f.ctx), NextActionContinueActiveRun)
 	})
 
 	t.Run("terminal_unpublished_custody", func(t *testing.T) {
 		t.Parallel()
 		f := newRecoverFixture(t, types.RunCancelled)
-		assertRegisteredNextAction(t, "custody", f.service.Refresh(f.ctx))
+		assertRegisteredNextAction(t, "custody", f.service.Refresh(f.ctx), NextActionRecoverCustody)
 	})
 
 	t.Run("recover_dirty_refusal", func(t *testing.T) {
 		t.Parallel()
 		f := newRecoverFixture(t, types.RunCancelled)
 		mustWrite(t, filepath.Join(f.local, "feature.txt"), "operator edit\n")
-		assertRegisteredNextAction(t, "recover refusal", f.service.Recover(f.ctx, false))
+		assertRegisteredNextAction(t, "recover refusal", f.service.Recover(f.ctx, false), NextActionInspectWorktree)
 	})
 
 	t.Run("apply", func(t *testing.T) {
 		t.Parallel()
 		f := newSyncFixture(t)
-		assertRegisteredNextAction(t, "apply", f.service.Apply(f.ctx))
+		assertRegisteredNextAction(t, "apply", f.service.Apply(f.ctx), "")
 	})
 }

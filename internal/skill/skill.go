@@ -227,8 +227,8 @@ exhausted - in which case recover with ` + "`no-mistakes rerun`" + `, which canc
 stale monitor and re-runs the full pipeline including a deterministic rebase
 step. If the dead run left auto-fix or CI-rebase commits your clone lacks, take
 them with the offered ` + "`branch_sync`" + ` ` + "`sync`" + ` action **before the rerun,
-not after**: the rerun creates a pending run with no push binding
-(` + "`legacy_unbound`" + `), and ` + "`no-mistakes axi sync`" + ` then refuses.
+not after**: the rerun's own pending run carries no push binding, so it owns
+the branch (` + "`pipeline_owned`" + `) and ` + "`no-mistakes axi sync`" + ` then refuses.
 ` + "`no-mistakes rerun`" + ` only *starts* that run:
 it returns immediately without driving, so something still has to answer the
 recovered run's gates.

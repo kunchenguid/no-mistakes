@@ -118,8 +118,8 @@ func TestAxiStaleMonitorSyncBeforeRerunReattaches(t *testing.T) {
 // TestAxiStaleMonitorRerunBeforeSyncStrandsTheRecovery proves the claim the
 // guidance makes about the WRONG order, which two earlier revisions shipped as
 // the prescribed fallback: once `rerun` has created its pending run, that run
-// is the newest one branchsync selects, it carries no push binding, and the
-// sync the agent was told to reach for is refused.
+// is the newest one branchsync selects, it carries no push binding, so it owns
+// the branch and the sync the agent was told to reach for is refused.
 func TestAxiStaleMonitorRerunBeforeSyncStrandsTheRecovery(t *testing.T) {
 	branch := "feature/stale-rerun-first"
 	h, operator, pushedHead := staleMonitorFixture(t, branch)
@@ -141,8 +141,10 @@ func TestAxiStaleMonitorRerunBeforeSyncStrandsTheRecovery(t *testing.T) {
 	if syncErr == nil {
 		t.Fatalf("sync after rerun should be refused:\n%s", syncOut)
 	}
-	if !strings.Contains(syncOut, "legacy_unbound") {
-		t.Errorf("sync after rerun did not report the unbound pending run:\n%s", syncOut)
+	for _, want := range []string{"state: pipeline_owned", "safety: blocked_pipeline_owned"} {
+		if !strings.Contains(syncOut, want) {
+			t.Fatalf("sync after rerun did not report %q:\n%s", want, syncOut)
+		}
 	}
 	if got := strings.TrimSpace(h.WorktreeRefSHA(branch)); got != behindHead {
 		t.Fatalf("refused sync moved the worktree to %s", got)

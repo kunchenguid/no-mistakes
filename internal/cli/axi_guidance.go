@@ -12,8 +12,8 @@ package cli
 // CI-rebase commits the clone never took, so the recovery needs a
 // synchronization as well as a rerun - and the synchronization has to come
 // first. Once `rerun` has created its pending run, that run is the newest one
-// branchsync inspects; it carries no push binding, so the state degrades to
-// `legacy_unbound` and both `Refresh` and `Apply` refuse. The clone is then
+// branchsync inspects; it carries no push binding, so the state is
+// `pipeline_owned` and both `Refresh` and `Apply` refuse. The clone is then
 // stranded behind the gate head, and a fresh `axi run` is rejected
 // non-fast-forward at its trigger push. Syncing first also establishes exactly
 // the equality the later reattach needs (gate head == local HEAD).
@@ -24,7 +24,7 @@ package cli
 // and the published agents guide (docs/.../guides/agents.md); the repo treats
 // agent-driving guidance as a multi-surface contract, and
 // TestStaleMonitorGuidance_SyncedAcrossSurfaces keeps the three in sync.
-const staleMonitorGuidance = "If this PR later falls behind the default branch or hits a merge conflict, the CI monitor rebases onto the base, resolves it, and re-pushes the branch automatically - run no command and never hand-rebase. Only when that monitor is no longer running (PR closed, run aborted, idle-timeout, or auto-fix exhausted) recover with `no-mistakes rerun`. If the dead run left auto-fix or CI-rebase commits your clone lacks, take them with the offered `branch_sync` `sync` action before the rerun, not after: the rerun creates a pending run with no push binding (`legacy_unbound`), and `no-mistakes axi sync` then refuses. `no-mistakes rerun` re-validates the head already pushed to the gate, so it is only for an unchanged local HEAD; after a local fix commit, start a fresh run with `no-mistakes axi run` instead. `no-mistakes rerun` returns immediately without driving, so something still has to answer the recovered run's gates: follow it with `no-mistakes axi run`, which reattaches and drives that run only while the gate head still equals your local HEAD, which is exactly what syncing first establishes. Then keep answering gates until an outcome."
+const staleMonitorGuidance = "If this PR later falls behind the default branch or hits a merge conflict, the CI monitor rebases onto the base, resolves it, and re-pushes the branch automatically - run no command and never hand-rebase. Only when that monitor is no longer running (PR closed, run aborted, idle-timeout, or auto-fix exhausted) recover with `no-mistakes rerun`. If the dead run left auto-fix or CI-rebase commits your clone lacks, take them with the offered `branch_sync` `sync` action before the rerun, not after: the rerun's own pending run carries no push binding, so it owns the branch (`pipeline_owned`) and `no-mistakes axi sync` then refuses. `no-mistakes rerun` re-validates the head already pushed to the gate, so it is only for an unchanged local HEAD; after a local fix commit, start a fresh run with `no-mistakes axi run` instead. `no-mistakes rerun` returns immediately without driving, so something still has to answer the recovered run's gates: follow it with `no-mistakes axi run`, which reattaches and drives that run only while the gate head still equals your local HEAD, which is exactly what syncing first establishes. Then keep answering gates until an outcome."
 
 // preserveGateFixCommitsGuidance is the canonical, point-of-use guidance an
 // agent reads when it needs to make another fix after a gate round already

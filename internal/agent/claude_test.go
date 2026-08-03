@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestClaudeAgent_BuildArgs(t *testing.T) {
@@ -672,6 +673,26 @@ func TestClaudeAgent_CancellationWithBlockedStdinAndInheritedPipesIsBounded(t *t
 	}
 }
 
+// The review-skill mandate fails open on a nil SkillsUsed, so the adapter seam
+// that fills it has to be exercised end to end rather than assumed: this drives
+// the real subprocess reader against a claude stream that invokes a skill, and
+// fails if the assignment is ever dropped.
+func TestClaudeAgent_RunOnceReportsSkillsUsedFromTheStream(t *testing.T) {
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "skill")
+	a := newClaudeStdinHelperAgent(t)
+
+	res, err := a.runOnce(context.Background(), RunOpts{Prompt: "review the change", CWD: t.TempDir()})
+	if err != nil {
+		t.Fatalf("runOnce: %v", err)
+	}
+	if res.SkillsUsed == nil {
+		t.Fatal("SkillsUsed is nil, so the mandate that fails open on nil can never see a skill")
+	}
+	if !slices.Contains(res.SkillsUsed, "comprehensive-code-review") {
+		t.Fatalf("SkillsUsed = %v, want it to carry the invoked skill", res.SkillsUsed)
+	}
+}
+
 func newClaudeStdinHelperAgent(t *testing.T) *claudeAgent {
 	t.Helper()
 	exe, err := os.Executable()
@@ -737,6 +758,14 @@ func TestClaudeStdinHelper(t *testing.T) {
 		for {
 			time.Sleep(time.Second)
 		}
+	case "skill":
+		// A claude that invokes one skill: the CLI reports it as a tool_use
+		// content block on the assistant event, which is the only wire the
+		// adapter can learn skill usage from.
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		_, _ = io.WriteString(os.Stdout, `{"type":"assistant","session_id":"helper-session","message":{"model":"helper-model","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"tool_use","name":"Skill","input":{"skill":"comprehensive-code-review"}}]}}`+"\n")
+		emitClaudeHelperResult()
+		return
 	case "read":
 		prompt, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -865,6 +894,31 @@ func TestClaudeStream_APIErrorsAreBounded(t *testing.T) {
 	}
 	if got := len(stream.apiErrors()); got > claudeAPIErrorLimit {
 		t.Fatalf("api errors length %d exceeds bound %d", got, claudeAPIErrorLimit)
+	}
+}
+
+// The bound is a byte count over CLI text that can carry multi-byte runes, and
+// the diagnostics it cuts are persisted to runs.error. The payload places a
+// two-byte rune across the limit, so a naive byte slice would store half of one
+// and render as a replacement character.
+func TestClaudeStream_APIErrorsCutOnRuneBoundary(t *testing.T) {
+	diagnostic := "API Error: " + strings.Repeat("\u00e9", claudeAPIErrorLimit)
+	if utf8.RuneStart(diagnostic[claudeAPIErrorLimit]) {
+		t.Fatalf("payload does not exercise a mid-rune cut at byte %d", claudeAPIErrorLimit)
+	}
+
+	var stream claudeStream
+	stream.tee(nil)(diagnostic + "\n")
+
+	got := stream.apiErrors()
+	if len(got) > claudeAPIErrorLimit {
+		t.Fatalf("api errors length %d exceeds bound %d", len(got), claudeAPIErrorLimit)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("bounded api errors are not valid UTF-8: %q", got)
+	}
+	if strings.ContainsRune(got, utf8.RuneError) {
+		t.Fatalf("bounded api errors emitted a replacement character: %q", got)
 	}
 }
 

@@ -40,7 +40,7 @@ import (
 // attempt at this paragraph. Naming the sync as a recovery from a failed
 // reattach was unreachable: the rerun's own pending run is the newest run
 // branchsync.inspect selects, it carries no push binding, so the state is
-// legacy_unbound and `axi sync` refuses. Synchronizing first is what makes the
+// pipeline_owned and `axi sync` refuses. Synchronizing first is what makes the
 // gate head equal local HEAD, which is the reattach condition itself. Proven end
 // to end by e2e TestAxiStaleMonitorSyncBeforeRerunReattaches and its
 // TestAxiStaleMonitorRerunBeforeSyncStrandsTheRecovery counterpart.

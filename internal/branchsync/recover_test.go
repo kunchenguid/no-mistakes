@@ -1687,8 +1687,34 @@ func TestRecoverKeepLocalTakesBranchBackFromDetachedPreservedHead(t *testing.T) 
 	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
 		t.Fatalf("anchor ref = %s, want preserved %s", got, f.preserved)
 	}
+	if !f.gateRefMissing(f.gateStagingRef()) {
+		t.Fatalf("gate staging ref %s survived keep-local recovery and pins the preserved commit against gc", f.gateStagingRef())
+	}
 	if !f.custodyReturned() {
 		t.Fatal("detached keep-local did not stamp custody")
+	}
+}
+
+// TestRecoverCleansStagingRefWhenTheFetchIsCancelled covers the exit path that
+// most needs the cleanup: the caller cancels while the preserved commit is
+// being fetched, so the fetch fails and the staging ref must still be deleted
+// rather than left pinning the commit in the gate forever.
+func TestRecoverCleansStagingRefWhenTheFetchIsCancelled(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	f.strandDetachedPreserved()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.service.beforePreservedFetch = cancel
+
+	state := f.service.Recover(ctx, false)
+	if state.Recovered {
+		t.Fatalf("cancelled recover reported success: %#v", state)
+	}
+	if !f.gateRefMissing(f.gateStagingRef()) {
+		t.Fatalf("gate staging ref %s survived a cancelled recovery and pins the preserved commit against gc", f.gateStagingRef())
 	}
 }
 

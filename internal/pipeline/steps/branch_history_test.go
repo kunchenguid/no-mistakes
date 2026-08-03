@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -341,6 +342,38 @@ func TestBranchHistoryPromptSection_BoundsFindingCount(t *testing.T) {
 	}
 	if !strings.Contains(got, "truncated") {
 		t.Errorf("truncation not disclosed to the reviewer:\n%s", got)
+	}
+	// The bound drops the oldest findings, not the newest: what the reviewer
+	// needs is the most recent state of the branch, so truncating from the
+	// wrong end would keep stale entries and hide the current ones.
+	newest := "f" + strconv.Itoa(branchHistoryMaxFindings+9) + " |"
+	if !strings.Contains(got, newest) {
+		t.Errorf("newest finding %q was truncated away:\n%s", newest, got)
+	}
+	if strings.Contains(got, "f0 |") {
+		t.Errorf("oldest finding survived truncation, so the bound dropped the wrong end:\n%s", got)
+	}
+}
+
+// A description bound expressed in bytes must never cut a multi-byte rune in
+// half: the prompt is UTF-8 and a split rune renders as a replacement
+// character. The payload puts one ASCII byte in front of two-byte runes, so the
+// byte limit lands mid-rune and a naive slice would corrupt the entry.
+func TestAbbreviateFindingDescription_CutsOnRuneBoundary(t *testing.T) {
+	description := "x" + strings.Repeat("é", branchHistoryMaxDescriptionChars)
+	if utf8.RuneStart(description[branchHistoryMaxDescriptionChars]) {
+		t.Fatalf("payload does not exercise a mid-rune cut at byte %d", branchHistoryMaxDescriptionChars)
+	}
+
+	got := abbreviateFindingDescription(description)
+	if !utf8.ValidString(got) {
+		t.Fatalf("abbreviated description is not valid UTF-8: %q", got)
+	}
+	if strings.ContainsRune(got, utf8.RuneError) {
+		t.Fatalf("abbreviated description emitted a replacement character: %q", got)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("over-long description was not truncated: %q", got)
 	}
 }
 

@@ -264,6 +264,7 @@ type Service struct {
 
 	beforeApply               func()
 	beforeGateReset           func()
+	beforePreservedFetch      func()
 	beforeRecoverWorktreeMove func()
 	beforeRecoverBranchMove   func()
 	afterRecoverBranchMove    func()
@@ -1066,6 +1067,10 @@ func gatePreservedRef(runID string) string {
 	return "refs/no-mistakes/preserved/" + runID
 }
 
+// preservedRefCleanupTimeout bounds the detached staging-ref delete so a wedged
+// gate cannot hang a caller that already gave up.
+const preservedRefCleanupTimeout = 10 * time.Second
+
 // gateHoldsDetachedPreservedHead is the single proof that a recorded head no
 // gate branch points at is nonetheless preserved custody. A run that only
 // rebased commits from a detached pipeline worktree, so the preserved commit
@@ -1082,7 +1087,10 @@ func gateHoldsDetachedPreservedHead(ctx context.Context, gateDir string, run *db
 // branch; a preserved head the branch never reached is published to a
 // gate-side private ref first, which adds a ref and mutates no branch. That
 // staging ref is deleted on every exit path, so a recovery never leaves a
-// permanent gate ref pinning the commit against gc.
+// permanent gate ref pinning the commit against gc. The delete runs detached
+// from the caller's cancellation, because the exit path that most needs the
+// cleanup is the fetch failing on a cancelled ctx, under which the cleanup
+// itself would be a no-op.
 func (s *Service) fetchPreservedAnchor(ctx context.Context, gateDir, branch, runID, anchorRef, preserved string, detached bool) error {
 	if !detached {
 		return git.FetchRemoteBranchToPrivateRef(ctx, s.workDir(), gateDir, branch, anchorRef)
@@ -1091,7 +1099,14 @@ func (s *Service) fetchPreservedAnchor(ctx context.Context, gateDir, branch, run
 	if _, err := git.Run(ctx, gateDir, "update-ref", sourceRef, preserved); err != nil {
 		return err
 	}
-	defer func() { _, _ = git.Run(ctx, gateDir, "update-ref", "-d", sourceRef) }()
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), preservedRefCleanupTimeout)
+		defer cancel()
+		_, _ = git.Run(cleanupCtx, gateDir, "update-ref", "-d", sourceRef)
+	}()
+	if s.beforePreservedFetch != nil {
+		s.beforePreservedFetch()
+	}
 	return git.FetchRefToPrivateRef(ctx, s.workDir(), gateDir, sourceRef, anchorRef)
 }
 
