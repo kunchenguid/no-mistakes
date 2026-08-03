@@ -237,9 +237,10 @@ Before any post-pipeline local commit or fresh run, read the structured `branch_
 Only when its `next_action.code` is `sync`, run `no-mistakes axi sync` first.
 That guarded sync may be a strict fast-forward or a content-equivalent diverged advance that anchors the pre-sync head before moving the branch with reset semantics; genuine divergence stays blocked.
 If it reports `next_action.code` is `continue_active_run`, the pipeline still owns the branch: run the reported command, keep driving the active run, and do not make local follow-up commits.
-When `next_action.code` is `recover_custody`, a terminal run left unpublished pipeline commits preserved in the local gate: run `no-mistakes axi sync --recover` to return custody and fast-forward to the preserved head, or `no-mistakes rerun` to resume validating it instead.
+When `next_action.code` is `recover_custody`, a terminal run left unpublished pipeline commits preserved in the local gate: run `no-mistakes axi sync --recover` to return custody and take the preserved head, or `no-mistakes rerun` to resume validating it instead.
+Recovery takes that head by fast-forward, or by adopting a diverged preserved head that provably contains all your local work - the ordinary result of the pipeline rebasing your commits onto a newer base - after anchoring your pre-recovery head under `refs/no-mistakes/recover-local/<run>`.
 A `branch_sync.state` of `user_owned` means the run went terminal before changing the submitted head and cancellation released the branch: the exact branch and head are yours and immediately usable for whichever delivery path is authorized - no sync action is needed, and a repeated `--recover` there is a harmless no-op.
-A dirty or diverged worktree makes the recovery refuse with explicit choices; `--keep-local` keeps your current head while the preserved commits stay anchored under `refs/no-mistakes/recover/<run>`.
+A dirty worktree, or divergence that cannot be proven contained, makes the recovery refuse with explicit choices; `--keep-local` keeps your current head while the preserved commits stay anchored under `refs/no-mistakes/recover/<run>`.
 If synchronization is blocked, process that structured state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
 After synchronization, commit the follow-up on top and re-run `no-mistakes axi run --intent "..."` with the original user intent.
 This preserves every prior gate-fix commit regardless of its configured subject.

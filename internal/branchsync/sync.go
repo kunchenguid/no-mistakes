@@ -137,9 +137,9 @@ type Service struct {
 	GateDir string
 	Paths   *paths.Paths
 
-	beforeApply              func()
-	beforeGateReset          func()
-	beforeRecoverFastForward func()
+	beforeApply               func()
+	beforeGateReset           func()
+	beforeRecoverWorktreeMove func()
 }
 
 // OpenCurrent opens a service for the invoking registered worktree. The caller
@@ -456,9 +456,23 @@ func (s *Service) Apply(ctx context.Context) State {
 //	                     then return custody            gate reset to it (CAS)
 //	behind     dirty     refuse (commit/stash first)    custody at local head;
 //	                                                    gate reset to it (CAS)
+//	diverged,  clean     anchor the pre-recovery local  custody at local head;
+//	P is a               head, then reset to P;         gate reset to it (CAS)
+//	superset             return custody
+//	diverged,  dirty     refuse (commit/stash first)    custody at local head;
+//	P is a                                              gate reset to it (CAS)
+//	superset
 //	diverged   any       refuse (anchor named, manual   custody at local head;
 //	                     reconcile / rerun offered)     gate reset to it (CAS)
 //	P missing  any       refuse                         refuse
+//
+// The rebase-superset row exists because a cancelled validation routinely
+// leaves P as a REBASE of the local branch onto a newer base: the same logical
+// commits with new SHAs, so equality and ancestry alone see only divergence and
+// escalated a case where nothing could be lost. preservedContainsLocalWork
+// must prove containment before that row applies; anything it cannot prove
+// falls through to the plain diverged refusal, so genuinely unlanded local work
+// is never adopted away.
 //
 // Fail-safe rules, in the same spirit as Refresh/Apply:
 //   - An active run always refuses: only terminal runs are recoverable.
@@ -589,6 +603,15 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		if keepLocal {
 			return s.recoverKeepLocal(ctx, run, state, gateHead)
 		}
+		if preservedContainsLocalWork(ctx, wd, local, preserved) {
+			if !state.Local.Clean {
+				state.Relation = RelationDiverged
+				blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_dirty", fmt.Sprintf("the invoking worktree is not clean (%s); commit or stash first and re-run the recovery, or use --keep-local to return custody at the current head without moving the worktree; no files or refs were changed", state.Local.Reason))
+				blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+				return blocked
+			}
+			return s.recoverAdoptPreserved(ctx, run, state, preserved)
+		}
 		state.Relation = RelationDiverged
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_diverged", fmt.Sprintf("the local branch and the preserved pipeline head have diverged; the preserved commits are anchored at %s - reconcile manually and re-run the recovery, run `no-mistakes rerun` to resume validating the preserved head, or use --keep-local to keep the current head; no files or refs were changed", anchorRef))
 		blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "git log --oneline --left-right HEAD..." + anchorRef}
@@ -639,8 +662,8 @@ func (s *Service) recoverKeepLocal(ctx context.Context, run *db.Run, state State
 // recoverFastForward advances the clean checked-out branch to the preserved
 // pipeline head with the same strict fast-forward and honesty rules as Apply.
 func (s *Service) recoverFastForward(ctx context.Context, run *db.Run, state State, preserved string) State {
-	if s.beforeRecoverFastForward != nil {
-		s.beforeRecoverFastForward()
+	if s.beforeRecoverWorktreeMove != nil {
+		s.beforeRecoverWorktreeMove()
 	}
 	branch, branchErr := git.CurrentBranch(ctx, s.workDir())
 	head, headErr := git.HeadSHA(ctx, s.workDir())
@@ -658,6 +681,117 @@ func (s *Service) recoverFastForward(ctx context.Context, run *db.Run, state Sta
 	if mergeErr != nil || finalHead != preserved {
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_apply_failed", fmt.Sprintf("strict fast-forward to the preserved pipeline head failed; final HEAD is %s and no destructive recovery was attempted", finalHead))
 		return blocked
+	}
+	if !finalClean {
+		state.State = StateDirty
+		state.Relation = RelationEqual
+		state.Safety = "blocked_post_recover_" + finalReason
+		state.Error = "HEAD reached the preserved pipeline head, but a Git hook left the worktree non-clean; custody was not recorded"
+		state.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+		return state
+	}
+	return s.finishRecover(ctx, run, true)
+}
+
+// preservedContainsLocalWork proves the preserved pipeline head is a
+// rebase-superset of the local branch: nothing the local branch carries is
+// absent from it, so adopting it discards no work.
+//
+// Two independent proofs answer that, and either one is sufficient because each
+// is separately sound. The predicate is one-directional throughout: it answers
+// only "would adopting the preserved head lose local work", never "are the two
+// heads interchangeable". Every unreadable, conflicting, or unproven case
+// returns false and keeps the escalation that protects unlanded work.
+func preservedContainsLocalWork(ctx context.Context, dir, local, preserved string) bool {
+	if local == "" || preserved == "" || local == preserved {
+		return false
+	}
+	if everyLocalCommitReplayed(ctx, dir, local, preserved) {
+		return true
+	}
+	// Only a commit that is provably an ancestor of BOTH heads makes the diff
+	// base..local mean exactly "the local branch's own work". runs.base_sha
+	// cannot be used here: it is the previous gate head, which for a re-pushed
+	// branch carries pipeline commits the local branch never had.
+	base, err := git.Run(ctx, dir, "merge-base", local, preserved)
+	if err != nil || base == "" {
+		return false
+	}
+	return mergeTreePreservesFinalHead(ctx, dir, base, local, preserved)
+}
+
+// everyLocalCommitReplayed proves each commit the local branch carries beyond
+// the preserved head has a patch-identical counterpart inside it. This is the
+// proof that matches an actual pipeline rebase: Git's patch-id ignores line
+// offsets, so commits replayed cleanly onto a newer base match even though
+// their SHAs changed, and later pipeline commits that edit the operator's lines
+// (the fix rounds this pipeline exists to produce) do not disturb the match.
+// Final-content containment cannot see that case at all, because those fix
+// rounds deliberately supersede the operator's content.
+//
+// The accounting is fail-closed by construction: every commit in
+// preserved..local must appear patch-equivalent. A commit the cherry walk
+// cannot mark - a merge, a conflict-resolved replay, a reworked commit - is
+// simply absent from the equivalent set and escalates.
+func everyLocalCommitReplayed(ctx context.Context, dir, local, preserved string) bool {
+	unreachable, err := revList(ctx, dir, "rev-list", preserved+".."+local)
+	if err != nil || len(unreachable) == 0 {
+		return false
+	}
+	marked, err := git.Run(ctx, dir, "rev-list", "--left-right", "--cherry-mark", "--right-only", preserved+"..."+local)
+	if err != nil {
+		return false
+	}
+	replayed := make(map[string]bool)
+	for _, entry := range strings.Fields(marked) {
+		if sha, ok := strings.CutPrefix(entry, "="); ok {
+			replayed[sha] = true
+		}
+	}
+	for _, sha := range unreachable {
+		if !replayed[sha] {
+			return false
+		}
+	}
+	return true
+}
+
+// recoverAdoptPreserved returns custody for a preserved pipeline head that is a
+// rebase-superset of the local branch. The local commits are represented in the
+// preserved head, but their exact SHAs are not reachable from it, so the
+// pre-recovery local head is anchored first and the branch then moves with a
+// hard reset - the same anchor-then-reset shape Apply uses for an equivalent
+// diverged advance. Every assumption, including the superset proof itself, is
+// re-verified immediately before the worktree is touched.
+func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state State, preserved string) State {
+	if s.beforeRecoverWorktreeMove != nil {
+		s.beforeRecoverWorktreeMove()
+	}
+	branch, branchErr := git.CurrentBranch(ctx, s.workDir())
+	head, headErr := git.HeadSHA(ctx, s.workDir())
+	clean, _ := worktreeClean(ctx, s.workDir())
+	if branchErr != nil || branch != state.Local.Branch || headErr != nil || head != state.Local.Head || !clean {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch or worktree changed while custody was being returned; no files or refs were changed")
+	}
+	if !preservedContainsLocalWork(ctx, s.workDir(), head, preserved) {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the rebase-superset proof changed while custody was being returned; no files or refs were changed")
+	}
+	localAnchor := recoverLocalAnchorRef(run.ID)
+	if _, err := git.Run(ctx, s.workDir(), "update-ref", localAnchor, head); err != nil {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; no files or refs were changed")
+	}
+	if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", localAnchor+"^{commit}"); err != nil || anchored != head {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be verified after anchoring; no files or worktree refs were changed")
+	}
+	_, resetErr := git.Run(ctx, s.workDir(), "reset", "--hard", preserved)
+	finalHead, _ := git.HeadSHA(ctx, s.workDir())
+	finalClean, finalReason := worktreeClean(ctx, s.workDir())
+	state.Local.Head = finalHead
+	state.Local.Clean = finalClean
+	state.Local.Reason = finalReason
+	state.Changed = finalHead == preserved && finalHead != head
+	if resetErr != nil || finalHead != preserved {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_apply_failed", fmt.Sprintf("adopting the preserved pipeline head failed; final HEAD is %s, the pre-recovery head is anchored at %s, and no destructive recovery was attempted", finalHead, localAnchor))
 	}
 	if !finalClean {
 		state.State = StateDirty
@@ -699,6 +833,13 @@ func (s *Service) finishRecover(ctx context.Context, run *db.Run, changed bool) 
 
 func recoverAnchorRef(runID string) string {
 	return "refs/no-mistakes/recover/" + runID
+}
+
+// recoverLocalAnchorRef keeps the exact pre-recovery local commits reachable
+// when custody is returned by adopting an equivalent preserved head, which
+// leaves those SHAs unreferenced by the branch.
+func recoverLocalAnchorRef(runID string) string {
+	return "refs/no-mistakes/recover-local/" + runID
 }
 
 func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {

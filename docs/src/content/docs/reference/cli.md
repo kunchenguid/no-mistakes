@@ -193,7 +193,7 @@ Exit code `0` means an eligible check, applied synchronization or recovery, alre
 The ordinary worktree mutation is either a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA, or an equivalent-diverged advance.
 When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and moves to the pipeline head with reset semantics.
 Genuine divergence still reports `safety: blocked_diverged` and changes nothing.
-Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head after relation-specific preservation checks.
+Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head, or an equivalent adoption of a preserved head that provably contains all the local work, both after relation-specific preservation checks.
 When the local gate branch is exactly at a newer same-branch pushed binding and Git proves that an older terminal run's unpublished preserved head is its ancestor, branch synchronization selects the newer binding; missing gate evidence, non-ancestor heads, or different or ambiguous target provenance remain blocked.
 Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
 Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
@@ -207,8 +207,12 @@ Without that positive terminal head evidence, custody stays recoverable rather t
 While a run is still active, it reports `state: pipeline_owned`, the exact submitted/current heads and their relation, and `next_action.code: continue_active_run` with `no-mistakes axi status`, even when its head has not moved yet.
 `--recover` verifies the run is terminal, anchors the preserved head under `refs/no-mistakes/recover/<run>` in the invoking repository, and stamps custody returned so a fresh run can start.
 For equal or ahead worktrees where the preserved head is already locally reachable, recovery writes that anchor locally without gate access.
-For behind or diverged worktrees, recovery verifies the preserved head at the local gate branch and fetches it into the anchor before fast-forwarding only a clean behind worktree or refusing with the anchor named.
-A dirty or diverged worktree refuses with explicit choices.
+For behind or diverged worktrees, recovery verifies the preserved head at the local gate branch and fetches it into the anchor before moving or refusing.
+A clean behind worktree fast-forwards.
+A diverged worktree is adopted only when the preserved head provably contains all the local work, which is the ordinary result of the pipeline rebasing your commits onto a newer base: every local commit is replayed patch-identically, or the preserved head already carries the local branch's exact content.
+That adoption anchors the pre-recovery local head under `refs/no-mistakes/recover-local/<run>` before moving `HEAD` with reset semantics.
+Divergence that cannot be proven contained - unlanded local commits, a conflict-resolved replay, or a squash that also rewrote your lines - still refuses with the anchor named, because only escalation can tell a deliberate pipeline fix apart from a dropped change.
+A dirty worktree refuses with explicit choices.
 When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
 `no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
