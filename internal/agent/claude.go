@@ -22,7 +22,7 @@ const claudeMaxRetries = 3
 // errNoStructuredOutput is returned when Claude succeeds but omits structured output.
 var errNoStructuredOutput = errors.New("claude returned no structured output")
 
-var claudeScannerMaxTokenSize = 256 * 1024 * 1024
+const claudeScannerMaxTokenSize = 256 * 1024 * 1024
 
 // claudeAPIErrorPrefix is how the claude CLI labels its own transport failures
 // ("API Error: Stream idle timeout - no chunks received"). The CLI writes them
@@ -226,8 +226,11 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	if err := parseClaudeEvents(ctx, started.stdout, stream.tee(opts.OnChunk), &usage, &result); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
-		// A stall can surface as a truncated event stream, so this path needs
-		// the same diagnostic the wait-error and no-result paths carry.
+		// Reading the event stream fails on cancellation, a read error, or an
+		// event past the scanner's token limit - never on a stream that simply
+		// stops, which bufio hands back as a final token. Whatever the cause,
+		// the diagnostics the CLI already put on the stream explain it, so this
+		// path carries them exactly like the wait-error and no-result paths.
 		retErr := fmt.Errorf("claude parse events: %w", err)
 		if detail := claudeFailureDetail(stderrBuf, &stream); detail != "" {
 			retErr = fmt.Errorf("claude parse events: %w: %s", err, detail)

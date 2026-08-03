@@ -725,14 +725,17 @@ func TestClaudeStdinHelper(t *testing.T) {
 		}
 		_, _ = io.WriteString(os.Stdout, `{"type":"assistant","session_id":"helper-session","message":{"model":"helper-model","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"API Error: Stream idle timeout - no chunks received"}]}}`+"\n")
 		os.Exit(1)
-	case "stall-then-truncate":
-		// A stalled stream can also arrive as an unterminated event: the
-		// diagnostic lands as assistant text, then the transport dies mid-line
-		// and the scanner - not wait - is what fails.
+	case "stall-then-hang":
+		// A stalled claude that never exits: it writes a deprecation notice on
+		// stderr, reports the stall as assistant text, emits one more event,
+		// then hangs holding both pipes open so the reader is still parsing
+		// when the caller's context is cancelled.
 		_, _ = io.WriteString(os.Stderr, "warning: --print is deprecated\n")
 		_, _ = io.WriteString(os.Stdout, `{"type":"assistant","session_id":"helper-session","message":{"model":"helper-model","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"API Error: Stream idle timeout - no chunks received"}]}}`+"\n")
-		_, _ = io.WriteString(os.Stdout, `{"type":"assistant","message":{"content":[{"type":"text","text":"`+strings.Repeat("t", 128*1024))
-		return
+		_, _ = io.WriteString(os.Stdout, `{"type":"assistant","message":{"content":[{"type":"text","text":"still waiting"}]}}`+"\n")
+		for {
+			time.Sleep(time.Second)
+		}
 	case "read":
 		prompt, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -984,32 +987,39 @@ func TestClaudeAgent_ExhaustedStreamStallNamesTheCause(t *testing.T) {
 	}
 }
 
-// A stall that truncates the event stream fails in the scanner, not in wait, so
-// it takes the parse-error path rather than claudeExitError. That path decides
-// whether the run retries, so it has to carry both channels: stderr and the
-// stream diagnostic classifyTransient matches on.
-func TestClaudeAgent_TruncatedStreamStallCarriesBothChannelsAndRetries(t *testing.T) {
-	restore := claudeScannerMaxTokenSize
-	claudeScannerMaxTokenSize = 1024
-	t.Cleanup(func() { claudeScannerMaxTokenSize = restore })
-	t.Setenv("NM_CLAUDE_STDIN_HELPER", "stall-then-truncate")
+// A stalled claude that hangs instead of exiting fails while the event stream
+// is still being read, so the failure leaves through the parse-error path
+// rather than claudeExitError. That path has to explain the stop from both
+// channels - the stderr text and the stall diagnostic the CLI put on the stream
+// - because they are the only evidence of why the run stopped making progress.
+func TestClaudeAgent_StreamReadFailureCarriesBothChannels(t *testing.T) {
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "stall-then-hang")
 	a := newClaudeStdinHelperAgent(t)
 
-	_, err := a.runOnce(context.Background(), RunOpts{Prompt: "review", CWD: t.TempDir()})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	opts := RunOpts{Prompt: "review", CWD: t.TempDir()}
+	opts.OnChunk = func(chunk string) {
+		if strings.Contains(chunk, "Stream idle timeout") {
+			cancel()
+		}
+	}
+
+	_, err := a.runOnce(ctx, opts)
 	if err == nil {
-		t.Fatal("expected the truncated event stream to fail")
+		t.Fatal("expected the interrupted event stream to fail")
 	}
 	if !strings.Contains(err.Error(), "parse events") {
 		t.Fatalf("error %q did not take the parse-error path", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error %q lost the cancellation cause", err)
 	}
 	if !strings.Contains(err.Error(), "warning: --print is deprecated") {
 		t.Errorf("error %q dropped the stderr detail", err)
 	}
 	if !strings.Contains(err.Error(), "Stream idle timeout") {
 		t.Errorf("error %q dropped the stream diagnostic", err)
-	}
-	if _, ok := classifyTransient(err); !ok {
-		t.Errorf("error %q is not classified transient, so the stall would not retry", err)
 	}
 }
 
