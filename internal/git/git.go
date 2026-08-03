@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -438,6 +439,16 @@ func FetchRemoteBranchToPrivateRef(ctx context.Context, dir, remote, branch, loc
 	refspec := fmt.Sprintf("+refs/heads/%s:%s", branch, localRef)
 	_, err := Run(ctx, dir, "fetch", "--no-tags", "--no-write-fetch-head", remote, refspec)
 	return err
+}
+
+func RunPRBaseRef(runID string) string {
+	sum := sha256.Sum256([]byte(runID))
+	return fmt.Sprintf("refs/no-mistakes/pr-base/%x", sum[:12])
+}
+
+func RunPRBaseMonitorRef(runID string) string {
+	sum := sha256.Sum256([]byte(runID))
+	return fmt.Sprintf("refs/no-mistakes/pr-base-monitor/%x", sum[:12])
 }
 
 // Push pushes HEAD to a remote ref. If forceWithLease is true, it uses an

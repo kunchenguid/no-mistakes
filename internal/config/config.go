@@ -464,6 +464,7 @@ type Config struct {
 type PR struct {
 	BaseBranch         string
 	BaseBranchExplicit *bool
+	ResolvedBaseSHA    string `yaml:"-" json:"-"`
 }
 
 func (p PR) HasExplicitBaseBranch() bool {

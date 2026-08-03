@@ -300,6 +300,7 @@ func TestRebaseStep_ConfiguredPRBaseComposesWithForkDelivery(t *testing.T) {
 	sctx.Repo.UpstreamURL = parent
 	sctx.Repo.ForkURL = fork
 	sctx.Config.PR.BaseBranch = "quality-assurance"
+	sctx.Config.PR.ResolvedBaseSHA = qaSHA
 
 	outcome, err := (&RebaseStep{}).Execute(sctx)
 	if err != nil {
@@ -316,6 +317,31 @@ func TestRebaseStep_ConfiguredPRBaseComposesWithForkDelivery(t *testing.T) {
 	}
 	if out, err := exec.Command("git", "--git-dir="+fork, "rev-parse", "--verify", "refs/heads/quality-assurance").CombinedOutput(); err == nil {
 		t.Fatalf("test precondition failed: fork unexpectedly has PR base branch: %s", out)
+	}
+}
+
+func TestRebaseStep_UsesPinnedConfiguredBaseWhenRemoteMoves(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main:quality-assurance")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.PR.BaseBranch = "quality-assurance"
+	sctx.Config.PR.ResolvedBaseSHA = baseSHA
+	forcePushOrphanBranch(t, upstream, "quality-assurance")
+
+	outcome, err := (&RebaseStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval {
+		t.Fatalf("unexpected finding while rebasing onto pinned base: %s", outcome.Findings)
+	}
+	if got := gitCmd(t, dir, "merge-base", "HEAD", baseSHA); got != baseSHA {
+		t.Fatalf("rebase did not retain validated base %s: merge-base %s", baseSHA, got)
 	}
 }
 

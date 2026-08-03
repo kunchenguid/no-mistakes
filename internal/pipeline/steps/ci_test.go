@@ -14,6 +14,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -44,7 +45,7 @@ func TestCIStep_MonitorsConfiguredPRBaseTip(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected cancellation after first successful poll, got %v", err)
 	}
-	if got := gitCmd(t, dir, "rev-parse", "refs/remotes/origin/quality-assurance"); got != baseSHA {
+	if got := gitCmd(t, dir, "rev-parse", git.RunPRBaseMonitorRef(sctx.Run.ID)); got != baseSHA {
 		t.Fatalf("CI monitored base tip %s, want configured upstream tip %s", got, baseSHA)
 	}
 	if _, err := exec.Command("git", "--git-dir="+upstream, "rev-parse", "--verify", "refs/heads/main").CombinedOutput(); err == nil {

@@ -39,14 +39,27 @@ func pipelineBaseBranch(sctx *pipeline.StepContext) string {
 	return ""
 }
 
+func pipelineBaseTarget(sctx *pipeline.StepContext) string {
+	if sctx != nil && sctx.Config != nil && sctx.Config.PR.HasExplicitBaseBranch() {
+		if sha := strings.TrimSpace(sctx.Config.PR.ResolvedBaseSHA); sha != "" {
+			return sha
+		}
+	}
+	return pipelineBaseBranch(sctx)
+}
+
+func resolvePipelineBranchBaseSHA(ctx context.Context, sctx *pipeline.StepContext) string {
+	return resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, pipelineBaseTarget(sctx))
+}
+
 // resolveBaseSHA returns a usable base SHA for diff/log operations.
 // When baseSHA is the zero ref (new branch push), it tries git merge-base
 // against the intended PR base branch, falling back to the empty tree SHA.
-func resolveBaseSHA(ctx context.Context, workDir, baseSHA, baseBranch string) string {
+func resolveBaseSHA(ctx context.Context, workDir, baseSHA, baseTarget string) string {
 	if !git.IsZeroSHA(baseSHA) {
 		return baseSHA
 	}
-	if mb := mergeBaseWithBranch(ctx, workDir, baseBranch); mb != "" {
+	if mb := mergeBaseWithTarget(ctx, workDir, baseTarget); mb != "" {
 		return mb
 	}
 	return git.EmptyTreeSHA
@@ -56,11 +69,11 @@ func resolveBaseSHA(ctx context.Context, workDir, baseSHA, baseBranch string) st
 // PR base branch when possible. This keeps pipeline steps scoped to the full
 // branch, not just the last pushed delta. If merge-base cannot be determined, it falls
 // back to resolveBaseSHA.
-func resolveBranchBaseSHA(ctx context.Context, workDir, fallbackBaseSHA, baseBranch string) string {
-	if mb := mergeBaseWithBranch(ctx, workDir, baseBranch); mb != "" {
+func resolveBranchBaseSHA(ctx context.Context, workDir, fallbackBaseSHA, baseTarget string) string {
+	if mb := mergeBaseWithTarget(ctx, workDir, baseTarget); mb != "" {
 		return mb
 	}
-	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, baseBranch)
+	return resolveBaseSHA(ctx, workDir, fallbackBaseSHA, baseTarget)
 }
 
 func resolveDefaultBranchTipSHA(ctx context.Context, workDir, upstreamURL, fallbackBaseSHA, baseBranch string) string {
@@ -79,13 +92,20 @@ func refreshRunBaseBranchTip(ctx context.Context, sctx *pipeline.StepContext, fa
 		return fallback, false, nil
 	}
 	explicit := sctx.Config != nil && sctx.Config.PR.HasExplicitBaseBranch()
-	if err := fetchRunUpstreamBranch(ctx, sctx, baseBranch); err != nil {
-		if explicit {
-			return fallback, false, fmt.Errorf("configured pr.base_branch %q could not be fetched from the upstream repository after refresh: %w", baseBranch, err)
-		}
-		return fallback, false, fmt.Errorf("fetch upstream branch %q: %w", baseBranch, err)
-	}
 	ref := "refs/remotes/origin/" + baseBranch
+	var fetchErr error
+	if explicit {
+		ref = git.RunPRBaseMonitorRef(sctx.Run.ID)
+		fetchErr = fetchRunUpstreamBranchToPrivateRef(ctx, sctx, baseBranch, ref)
+	} else {
+		fetchErr = fetchRunUpstreamBranch(ctx, sctx, baseBranch)
+	}
+	if fetchErr != nil {
+		if explicit {
+			return fallback, false, fmt.Errorf("configured pr.base_branch %q could not be fetched from the upstream repository after refresh: %w", baseBranch, fetchErr)
+		}
+		return fallback, false, fmt.Errorf("fetch upstream branch %q: %w", baseBranch, fetchErr)
+	}
 	sha, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", ref+"^{commit}")
 	if err != nil || strings.TrimSpace(sha) == "" {
 		if err == nil {
@@ -154,10 +174,19 @@ func resolveUpstreamRemoteName(ctx context.Context, workDir, upstreamURL string)
 }
 
 func mergeBaseWithBranch(ctx context.Context, workDir, baseBranch string) string {
-	if strings.TrimSpace(baseBranch) == "" {
+	return mergeBaseWithTarget(ctx, workDir, baseBranch)
+}
+
+func mergeBaseWithTarget(ctx context.Context, workDir, target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
 		return ""
 	}
-	for _, ref := range []string{"origin/" + baseBranch, baseBranch} {
+	refs := []string{target}
+	if !strings.HasPrefix(target, "refs/") && len(target) != 40 {
+		refs = []string{"origin/" + target, target}
+	}
+	for _, ref := range refs {
 		mb, err := git.Run(ctx, workDir, "merge-base", "HEAD", ref)
 		if err == nil && strings.TrimSpace(mb) != "" {
 			return strings.TrimSpace(mb)
@@ -220,6 +249,15 @@ func fetchRunUpstreamBranch(ctx context.Context, sctx *pipeline.StepContext, bra
 		return git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", branch)
 	}
 	return git.FetchRemoteBranchToRef(ctx, sctx.WorkDir, upstreamURL, branch, "refs/remotes/origin/"+branch)
+}
+
+func fetchRunUpstreamBranchToPrivateRef(ctx context.Context, sctx *pipeline.StepContext, branch, localRef string) error {
+	upstreamURL := resolveUpstreamURL(sctx)
+	originURL, err := git.GetRemoteURL(ctx, sctx.WorkDir, "origin")
+	if err == nil && upstreamURL == originURL {
+		return git.FetchRemoteBranchToPrivateRef(ctx, sctx.WorkDir, "origin", branch, localRef)
+	}
+	return git.FetchRemoteBranchToPrivateRef(ctx, sctx.WorkDir, upstreamURL, branch, localRef)
 }
 
 // resolvePushURL returns the URL to push to: the fork when one is configured

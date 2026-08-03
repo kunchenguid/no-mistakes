@@ -20,7 +20,7 @@ func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		return nil, err
 	}
 	ctx := sctx.Ctx
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, pipelineBaseBranch(sctx))
+	baseSHA := resolvePipelineBranchBaseSHA(ctx, sctx)
 	lintCmd := sctx.Config.Commands.Lint
 
 	if lintCmd == "" {

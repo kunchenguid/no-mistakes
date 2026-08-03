@@ -205,14 +205,15 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	if err != nil {
 		return nil, fmt.Errorf("load repo config: %w", err)
 	}
-	fetchCtx, cancel := context.WithTimeout(ctx, recoveredConfigFetchTimeout)
-	defer cancel()
 	var trustedSHA string
 	if repo.DefaultBranch != "" {
+		fetchCtx, cancel := context.WithTimeout(ctx, recoveredConfigFetchTimeout)
 		recoveredRepo := *repo
 		recoveredRepo.URLsVerified = true
-		if err := fetchRecoveredUpstreamBranch(fetchCtx, workDir, &recoveredRepo, repo.DefaultBranch); err != nil {
-			slog.Warn("failed to fetch default branch while recovering run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
+		fetchErr := fetchRecoveredUpstreamBranch(fetchCtx, workDir, &recoveredRepo, repo.DefaultBranch)
+		cancel()
+		if fetchErr != nil {
+			slog.Warn("failed to fetch default branch while recovering run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", fetchErr)
 		} else if sha, err := git.ResolveRef(ctx, workDir, "refs/remotes/origin/"+repo.DefaultBranch); err != nil {
 			slog.Warn("failed to resolve default branch while recovering run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
 		} else {
@@ -228,20 +229,31 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	cfg := config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands))
-	if err := ensureConfiguredPRBaseBranch(fetchCtx, workDir, repo, cfg); err != nil {
+	validateBase := func() error {
+		fetchCtx, cancel := context.WithTimeout(ctx, recoveredConfigFetchTimeout)
+		defer cancel()
+		return ensureConfiguredPRBaseBranch(fetchCtx, workDir, repo, cfg, run.ID)
+	}
+	if err := validateBase(); err != nil {
 		return nil, err
 	}
 	if _, err := configuredPRBaseBranchGuard(run.Branch, repo.DefaultBranch, cfg); err != nil {
 		return nil, err
 	}
+	currentBase := strings.TrimSpace(cfg.PR.BaseBranch)
+	currentExplicit := cfg.PR.HasExplicitBaseBranch()
 	persistedBase := runPRBaseContinuityForRun(run, repo.DefaultBranch)
 	if persistedBase != nil {
 		cfg.PR.BaseBranch = persistedBase.branch
 		explicit := persistedBase.explicit
 		cfg.PR.BaseBranchExplicit = &explicit
-	}
-	if err := ensureConfiguredPRBaseBranch(fetchCtx, workDir, repo, cfg); err != nil {
-		return nil, err
+		if !explicit {
+			cfg.PR.ResolvedBaseSHA = ""
+		} else if persistedBase.branch != currentBase || !currentExplicit {
+			if err := validateBase(); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return cfg, nil
 }
@@ -712,16 +724,25 @@ func fetchRunUpstreamBranch(ctx context.Context, workDir string, repo *db.Repo, 
 	return git.FetchRemoteBranchToRef(ctx, workDir, repo.UpstreamURL, branch, "refs/remotes/origin/"+branch)
 }
 
+func fetchRunUpstreamBranchToPrivateRef(ctx context.Context, workDir string, repo *db.Repo, branch, localRef string) error {
+	originURL, err := git.GetRemoteURL(ctx, workDir, "origin")
+	if !repo.URLsVerified || strings.TrimSpace(repo.UpstreamURL) == "" || (err == nil && gate.SameRemoteRepository(originURL, repo.UpstreamURL)) {
+		return git.FetchRemoteBranchToPrivateRef(ctx, workDir, "origin", branch, localRef)
+	}
+	return git.FetchRemoteBranchToPrivateRef(ctx, workDir, repo.UpstreamURL, branch, localRef)
+}
+
 // ensureConfiguredPRBaseBranch validates and freshly resolves an explicit
 // pr.base_branch on the upstream parent before the pipeline starts. Empty is a
 // deliberate no-op so repositories without the setting retain the exact legacy
 // default-branch behavior (including its existing fallback/error semantics).
 // Syntax was already checked while parsing the trusted config, but Git is the
 // final authority and this second check also protects direct Config callers.
-func ensureConfiguredPRBaseBranch(ctx context.Context, workDir string, repo *db.Repo, cfg *config.Config) error {
+func ensureConfiguredPRBaseBranch(ctx context.Context, workDir string, repo *db.Repo, cfg *config.Config, runID string) error {
 	if cfg == nil {
 		return nil
 	}
+	cfg.PR.ResolvedBaseSHA = ""
 	branch := cfg.PR.BaseBranch
 	if !cfg.PR.HasExplicitBaseBranch() {
 		return nil
@@ -736,20 +757,22 @@ func ensureConfiguredPRBaseBranch(ctx context.Context, workDir string, repo *db.
 		}
 		return fmt.Errorf("configured pr.base_branch %q is not a valid short Git branch name", branch)
 	}
-	if err := fetchRunUpstreamBranch(ctx, workDir, repo, branch); err != nil {
+	ref := git.RunPRBaseRef(runID)
+	if err := fetchRunUpstreamBranchToPrivateRef(ctx, workDir, repo, branch, ref); err != nil {
 		return fmt.Errorf("configured pr.base_branch %q could not be fetched from the upstream repository; create or push that branch, then retry: %w", branch, err)
 	}
-	ref := "refs/remotes/origin/" + branch
-	if _, err := git.ResolveRef(ctx, workDir, ref); err != nil {
-		return fmt.Errorf("configured pr.base_branch %q did not resolve at upstream ref %s after fetch: %w", branch, ref, err)
+	sha, err := git.ResolveRef(ctx, workDir, ref)
+	if err != nil {
+		return fmt.Errorf("configured pr.base_branch %q did not resolve at private run ref %s after fetch: %w", branch, ref, err)
 	}
-	mergeBase, err := git.Run(ctx, workDir, "merge-base", "HEAD", ref)
+	mergeBase, err := git.Run(ctx, workDir, "merge-base", "HEAD", sha)
 	if err != nil || strings.TrimSpace(mergeBase) == "" {
 		if err != nil {
 			return fmt.Errorf("configured pr.base_branch %q has no usable shared history with HEAD: %w", branch, err)
 		}
 		return fmt.Errorf("configured pr.base_branch %q has no usable shared history with HEAD", branch)
 	}
+	cfg.PR.ResolvedBaseSHA = strings.TrimSpace(sha)
 	return nil
 }
 
@@ -895,6 +918,20 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	branchMu.Lock()
 	defer branchMu.Unlock()
 
+	if prBaseContinuity == nil {
+		runs, runsErr := m.db.GetRunsByRepo(repo.ID)
+		if runsErr != nil {
+			trackStartFailure("load_pr_base_continuity")
+			return "", fmt.Errorf("load previous runs: %w", runsErr)
+		}
+		for _, previous := range runs {
+			if previous.Branch == branch {
+				prBaseContinuity = runPRBaseContinuityForRun(previous, repo.DefaultBranch)
+				break
+			}
+		}
+	}
+
 	// Best-effort only: a clone's remotes may change after init. Refresh the
 	// registered URLs before constructing any run-owned Git operation, but keep
 	// the exact prior repo value and continue when discovery, validation, or the
@@ -1026,7 +1063,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
-	if err := ensureConfiguredPRBaseBranch(ctx, wtDir, repo, cfg); err != nil {
+	if err := ensureConfiguredPRBaseBranch(ctx, wtDir, repo, cfg, run.ID); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("resolve_pr_base_branch")
 		return "", err
@@ -1056,7 +1093,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		cfg.PR.BaseBranch = prBaseContinuity.branch
 		explicit := prBaseContinuity.explicit
 		cfg.PR.BaseBranchExplicit = &explicit
-		if err := ensureConfiguredPRBaseBranch(ctx, wtDir, repo, cfg); err != nil {
+		if err := ensureConfiguredPRBaseBranch(ctx, wtDir, repo, cfg, run.ID); err != nil {
 			m.db.UpdateRunError(run.ID, err.Error())
 			trackStartFailure("resolve_continuity_pr_base_branch")
 			return "", err

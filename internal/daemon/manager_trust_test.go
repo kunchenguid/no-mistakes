@@ -23,7 +23,7 @@ func TestEnsureConfiguredPRBaseBranch_DefaultDoesNotAddValidation(t *testing.T) 
 	workDir := t.TempDir()
 	gitCmd(t, workDir, "init")
 
-	err := ensureConfiguredPRBaseBranch(context.Background(), workDir, &db.Repo{DefaultBranch: "main"}, &config.Config{})
+	err := ensureConfiguredPRBaseBranch(context.Background(), workDir, &db.Repo{DefaultBranch: "main"}, &config.Config{}, "test-run")
 	if err != nil {
 		t.Fatalf("unset pr.base_branch changed legacy startup behavior: %v", err)
 	}
@@ -64,12 +64,15 @@ func TestEnsureConfiguredPRBaseBranch_FetchesUpstreamNotFork(t *testing.T) {
 	gitCmd(t, workDir, "update-ref", "-d", "refs/remotes/origin/quality-assurance")
 	repo := &db.Repo{UpstreamURL: upstream, ForkURL: fork, DefaultBranch: "main"}
 	cfg := &config.Config{PR: config.PR{BaseBranch: "quality-assurance"}}
-	if err := ensureConfiguredPRBaseBranch(ctx, workDir, repo, cfg); err != nil {
+	if err := ensureConfiguredPRBaseBranch(ctx, workDir, repo, cfg, "test-run"); err != nil {
 		t.Fatal(err)
 	}
-	got := gitOutput(t, workDir, "rev-parse", "refs/remotes/origin/quality-assurance")
+	got := gitOutput(t, workDir, "rev-parse", git.RunPRBaseRef("test-run"))
 	if got != want {
 		t.Fatalf("configured PR base resolved to %s, want upstream tip %s", got, want)
+	}
+	if cfg.PR.ResolvedBaseSHA != want {
+		t.Fatalf("configured PR base SHA = %s, want immutable tip %s", cfg.PR.ResolvedBaseSHA, want)
 	}
 }
 
@@ -223,6 +226,84 @@ func TestRerunCrashBeforePRPersistencePreservesBaseAcrossTrustedConfigChange(t *
 	}
 	if strings.Contains(logText, "--base staging") || strings.Contains(logText, "pr create ") {
 		t.Fatalf("rerun retargeted discovery or attempted a duplicate PR:\n%s", logText)
+	}
+}
+
+func TestReplacementPushPreservesOpenPRBaseAcrossTrustedConfigChange(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, _ := setupTestGitRepo(t, p, database, "replacement-push-pr-base-continuity")
+
+	configPath := filepath.Join(repo.WorkingPath, ".no-mistakes.yaml")
+	if err := os.WriteFile(configPath, []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\npr:\n  base_branch: quality-assurance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", configPath)
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "target QA")
+	qaSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main")
+	gitCmd(t, repo.WorkingPath, "branch", "quality-assurance")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "quality-assurance")
+
+	gitCmd(t, repo.WorkingPath, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "feature.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "feature.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "feature one")
+	firstHead := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "feature")
+	previous, err := database.InsertRun(repo.ID, "feature", firstHead, qaSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(previous.ID, "quality-assurance", true); err != nil {
+		t.Fatal(err)
+	}
+
+	gitCmd(t, repo.WorkingPath, "checkout", "main")
+	if err := os.WriteFile(configPath, []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\nno_ci: true\npr:\n  base_branch: staging\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", configPath)
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "target staging")
+	gitCmd(t, repo.WorkingPath, "branch", "staging")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "main", "staging")
+	gitCmd(t, repo.WorkingPath, "checkout", "feature")
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "feature.txt"), []byte("two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "feature.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "feature two")
+	head := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "feature")
+
+	binDir, ghLog := writeRerunPRBaseMockGH(t, "quality-assurance", "")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	seen := make(chan capturedRerunPRConfig, 1)
+	manager := NewRunManager(database, p, func() []pipeline.Step {
+		return []pipeline.Step{&captureRerunPRStep{Step: &steps.PRStep{}, seen: seen}}
+	})
+	t.Cleanup(manager.Shutdown)
+
+	runID, err := manager.startRun(context.Background(), repo, "feature", head, firstHead, "push", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := waitForRunTerminalState(t, database, runID)
+	if run.PRBaseBranch == nil || *run.PRBaseBranch != "quality-assurance" {
+		t.Fatalf("replacement push PR base = %v, want quality-assurance", run.PRBaseBranch)
+	}
+	if captured := <-seen; captured.baseBranch != "quality-assurance" || !captured.noCI {
+		t.Fatalf("replacement push config = %+v, want inherited QA routing with current trusted settings", captured)
+	}
+	logBytes, err := os.ReadFile(ghLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logBytes)
+	if !strings.Contains(logText, "pr list --head feature --base quality-assurance") || strings.Contains(logText, "--base staging") || strings.Contains(logText, "pr create ") {
+		t.Fatalf("replacement push retargeted or duplicated PR:\n%s", logText)
 	}
 }
 
@@ -574,7 +655,7 @@ func TestEnsureConfiguredPRBaseBranch_RejectsMissingAndUnsafeTargets(t *testing.
 	for _, branch := range []string{"missing-branch", "refs/heads/main", "-unsafe"} {
 		t.Run(strings.ReplaceAll(branch, "/", "_"), func(t *testing.T) {
 			cfg := &config.Config{PR: config.PR{BaseBranch: branch}}
-			err := ensureConfiguredPRBaseBranch(context.Background(), workDir, repo, cfg)
+			err := ensureConfiguredPRBaseBranch(context.Background(), workDir, repo, cfg, "test-run")
 			if err == nil {
 				t.Fatalf("expected configured PR base %q to fail", branch)
 			}
@@ -609,7 +690,7 @@ func TestEnsureConfiguredPRBaseBranch_RejectsUnrelatedTarget(t *testing.T) {
 	gitCmd(t, workDir, "push", "origin", "quality-assurance")
 	gitCmd(t, workDir, "checkout", "main")
 
-	err := ensureConfiguredPRBaseBranch(context.Background(), workDir, &db.Repo{UpstreamURL: upstream}, &config.Config{PR: config.PR{BaseBranch: "quality-assurance"}})
+	err := ensureConfiguredPRBaseBranch(context.Background(), workDir, &db.Repo{UpstreamURL: upstream}, &config.Config{PR: config.PR{BaseBranch: "quality-assurance"}}, "test-run")
 	if err == nil {
 		t.Fatal("expected unrelated configured PR base to fail")
 	}
@@ -662,7 +743,7 @@ func TestLoadRecoveredConfig_PRBaseComesFromTrustedDefaultBranch(t *testing.T) {
 	if cfg.PR.BaseBranch != "quality-assurance" {
 		t.Fatalf("effective PR base = %q, want trusted quality-assurance", cfg.PR.BaseBranch)
 	}
-	if _, err := git.ResolveRef(context.Background(), workDir, "refs/remotes/origin/quality-assurance"); err != nil {
+	if _, err := git.ResolveRef(context.Background(), workDir, git.RunPRBaseRef("run")); err != nil {
 		t.Fatalf("trusted configured PR base was not resolved: %v", err)
 	}
 	if _, err := git.ResolveRef(context.Background(), workDir, "refs/remotes/origin/attacker-target"); err == nil {
@@ -692,6 +773,9 @@ func TestLoadRecoveredConfig_PRBaseComesFromTrustedDefaultBranch(t *testing.T) {
 	}
 	if !cfg.PR.HasExplicitBaseBranch() {
 		t.Fatal("recovered configured PR base lost explicit-target semantics")
+	}
+	if cfg.PR.ResolvedBaseSHA == "" {
+		t.Fatal("recovered configured PR base was not pinned to an immutable commit")
 	}
 
 	legacyBase := "main"

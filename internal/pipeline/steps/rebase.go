@@ -49,10 +49,19 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	forcePush := isForcePushAgainstRemote(ctx, sctx.WorkDir, pushRemote, branch, branchTarget, sctx.Run.BaseSHA)
 
 	sctx.Log("fetching latest upstream state...")
-	if _, _, err := refreshRunBaseBranchTip(ctx, sctx, sctx.Run.BaseSHA, baseBranch); err != nil {
-		if sctx.Config != nil && sctx.Config.PR.HasExplicitBaseBranch() {
-			return nil, err
+	baseTarget := "origin/" + baseBranch
+	if sctx.Config != nil && sctx.Config.PR.HasExplicitBaseBranch() {
+		baseTarget = pipelineBaseTarget(sctx)
+		if strings.TrimSpace(sctx.Config.PR.ResolvedBaseSHA) == "" {
+			sha, _, err := refreshRunBaseBranchTip(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
+			if err != nil {
+				return nil, err
+			}
+			baseTarget = sha
+		} else if mergeBaseWithTarget(ctx, sctx.WorkDir, baseTarget) == "" {
+			return nil, fmt.Errorf("configured pr.base_branch %q has no usable shared history with HEAD at resolved commit %s", baseBranch, baseTarget)
 		}
+	} else if _, _, err := refreshRunBaseBranchTip(ctx, sctx, sctx.Run.BaseSHA, baseBranch); err != nil {
 		sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", baseBranch, err))
 	}
 	// Sync the push branch's remote-tracking ref only when we are about to rebase
@@ -80,7 +89,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// corresponding upstream ref. Rebasing onto the fresh remote base keeps
 	// those commits in the branch's history, so the PR would silently bundle
 	// another workstream's unpushed work. Surface it for a human decision.
-	if outcome := detectBundledLocalBaseCommits(ctx, sctx, branch, baseBranch); outcome != nil {
+	if outcome := detectBundledLocalBaseCommitsAt(ctx, sctx, branch, baseBranch, baseTarget); outcome != nil {
 		return outcome, nil
 	}
 	if forcePush && branch == baseBranch && remoteBaseBranchAdvanced(ctx, sctx.WorkDir, baseBranch, sctx.Run.BaseSHA) {
@@ -98,10 +107,10 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		}, nil
 	}
 
-	targets := rebaseTargetsForBranch(branch, baseBranch, branchTarget)
+	targets := rebaseTargetsForTarget(branch, baseBranch, baseTarget, branchTarget)
 	if forcePush {
 		sctx.Log("force push detected, skipping " + branchTarget + " sync")
-		targets = forcePushRebaseTargets(branch, baseBranch)
+		targets = forcePushRebaseTargetsAt(branch, baseBranch, baseTarget)
 	}
 
 	if sctx.Fixing {
@@ -152,12 +161,16 @@ func rebaseTargets(branch, baseBranch string) []string {
 }
 
 func rebaseTargetsForBranch(branch, baseBranch, branchTarget string) []string {
+	return rebaseTargetsForTarget(branch, baseBranch, "origin/"+baseBranch, branchTarget)
+}
+
+func rebaseTargetsForTarget(branch, baseBranch, baseTarget, branchTarget string) []string {
 	var targets []string
 	if branch != "" && branch != baseBranch {
 		targets = append(targets, branchTarget)
 	}
 	if branch != baseBranch {
-		targets = append(targets, "origin/"+baseBranch)
+		targets = append(targets, baseTarget)
 	}
 	return targets
 }
@@ -166,10 +179,14 @@ func rebaseTargetsForBranch(branch, baseBranch, branchTarget string) []string {
 // branch target is skipped because it may contain autofix commits from prior
 // pipeline runs that the force push intended to discard.
 func forcePushRebaseTargets(branch, baseBranch string) []string {
+	return forcePushRebaseTargetsAt(branch, baseBranch, "origin/"+baseBranch)
+}
+
+func forcePushRebaseTargetsAt(branch, baseBranch, baseTarget string) []string {
 	if branch == baseBranch {
 		return nil
 	}
-	return []string{"origin/" + baseBranch}
+	return []string{baseTarget}
 }
 
 // detectBundledLocalBaseCommits returns a blocking finding when the gated
@@ -186,6 +203,10 @@ func forcePushRebaseTargets(branch, baseBranch string) []string {
 // Detection is best-effort - if the local base tip advanced past the branch
 // point, or the working repo cannot be read, it returns nil rather than guess.
 func detectBundledLocalBaseCommits(ctx context.Context, sctx *pipeline.StepContext, branch, baseBranch string) *pipeline.StepOutcome {
+	return detectBundledLocalBaseCommitsAt(ctx, sctx, branch, baseBranch, "origin/"+baseBranch)
+}
+
+func detectBundledLocalBaseCommitsAt(ctx context.Context, sctx *pipeline.StepContext, branch, baseBranch, baseTarget string) *pipeline.StepOutcome {
 	if branch == "" || branch == baseBranch {
 		return nil
 	}
@@ -201,7 +222,7 @@ func detectBundledLocalBaseCommits(ctx context.Context, sctx *pipeline.StepConte
 	if localTip == "" {
 		return nil
 	}
-	remoteRef := "origin/" + baseBranch
+	remoteRef := baseTarget
 	if _, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", remoteRef+"^{commit}"); err != nil {
 		return nil
 	}
@@ -521,7 +542,7 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 	if baseBranch == "" {
 		baseBranch = "main"
 	}
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
+	baseSHA := resolvePipelineBranchBaseSHA(ctx, sctx)
 	diff, err := git.Diff(ctx, sctx.WorkDir, baseSHA, "HEAD")
 	if err == nil && strings.TrimSpace(diff) == "" {
 		sctx.Log("empty diff after rebase, skipping remaining steps")

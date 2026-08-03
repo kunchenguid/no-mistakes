@@ -24,7 +24,7 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 	}
 	defer func() { _ = sctx.DB.SetRunPushActive(sctx.Run.ID, false) }()
 	baseBranch := pipelineBaseBranch(sctx)
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, baseBranch)
+	baseSHA := resolvePipelineBranchBaseSHA(ctx, sctx)
 	rebaseBaseSHA, baseResolved, baseErr := refreshRunBaseBranchTip(ctx, sctx, sctx.Run.BaseSHA, baseBranch)
 	if sctx.Config != nil && sctx.Config.PR.HasExplicitBaseBranch() && baseErr != nil {
 		return false, baseErr

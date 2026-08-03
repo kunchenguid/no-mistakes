@@ -62,16 +62,21 @@ func TestResolveBranchBaseSHA_UsesConfiguredPRBase(t *testing.T) {
 	sctx := &pipeline.StepContext{
 		Ctx:     context.Background(),
 		Repo:    &db.Repo{DefaultBranch: "main"},
-		Config:  &config.Config{PR: config.PR{BaseBranch: "quality-assurance"}},
+		Config:  &config.Config{PR: config.PR{BaseBranch: "quality-assurance", ResolvedBaseSHA: qaSHA}},
 		WorkDir: dir,
 	}
-	got := resolveBranchBaseSHA(sctx.Ctx, dir, mainSHA, pipelineBaseBranch(sctx))
+	got := resolveBranchBaseSHA(sctx.Ctx, dir, mainSHA, pipelineBaseTarget(sctx))
 	if got != qaSHA {
 		t.Fatalf("branch delta base = %s, want configured PR base tip %s", got, qaSHA)
 	}
 	if got == mainSHA {
 		t.Fatal("configured branch delta fell back to repository default branch")
 	}
+	gitCmd(t, dir, "branch", "-f", "quality-assurance", "main")
+	if moved := resolveBranchBaseSHA(sctx.Ctx, dir, mainSHA, pipelineBaseTarget(sctx)); moved != qaSHA {
+		t.Fatalf("branch delta followed mutable base ref to %s, want pinned %s", moved, qaSHA)
+	}
+	gitCmd(t, dir, "branch", "-f", "quality-assurance", qaSHA)
 
 	// Every local branch-delta step must receive the same configured base, not
 	// just PR creation. Their prompts are a generated interface that exposes
@@ -96,6 +101,7 @@ func TestResolveBranchBaseSHA_UsesConfiguredPRBase(t *testing.T) {
 			}
 			stepCtx := newTestContextWithDBRecords(t, mock, dir, mainSHA, featureSHA, tc.commands)
 			stepCtx.Config.PR.BaseBranch = "quality-assurance"
+			stepCtx.Config.PR.ResolvedBaseSHA = qaSHA
 			if _, err := tc.step.Execute(stepCtx); err != nil {
 				t.Fatal(err)
 			}
@@ -116,6 +122,7 @@ func TestResolveBranchBaseSHA_UsesConfiguredPRBase(t *testing.T) {
 		stepCtx := newTestContextWithDBRecords(t, &fakeIntentAgent{}, dir, strings.Repeat("0", 40), qaSHA, config.Commands{})
 		stepCtx.Config.Intent = config.Intent{Enabled: true, Threshold: 0.1, SlackDays: 3}
 		stepCtx.Config.PR.BaseBranch = "quality-assurance"
+		stepCtx.Config.PR.ResolvedBaseSHA = qaSHA
 		var logs []string
 		stepCtx.Log = func(line string) { logs = append(logs, line) }
 		outcome, err := (&IntentStep{}).Execute(stepCtx)
@@ -135,6 +142,7 @@ func TestResolveBranchBaseSHA_UsesConfiguredPRBase(t *testing.T) {
 		t.Cleanup(func() { gitCmd(t, dir, "checkout", "feature") })
 		stepCtx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, mainSHA, qaSHA, config.Commands{})
 		stepCtx.Config.PR.BaseBranch = "quality-assurance"
+		stepCtx.Config.PR.ResolvedBaseSHA = qaSHA
 		outcome, err := updateHeadSHA(stepCtx.Ctx, stepCtx)
 		if err != nil {
 			t.Fatal(err)
@@ -155,6 +163,7 @@ func TestResolveBranchBaseSHA_UsesConfiguredPRBase(t *testing.T) {
 		}
 		stepCtx := newTestContextWithDBRecords(t, mock, dir, mainSHA, featureSHA, config.Commands{})
 		stepCtx.Config.PR.BaseBranch = "quality-assurance"
+		stepCtx.Config.PR.ResolvedBaseSHA = qaSHA
 		stepCtx.Env = env
 		if _, err := (&PRStep{}).Execute(stepCtx); err != nil {
 			t.Fatal(err)

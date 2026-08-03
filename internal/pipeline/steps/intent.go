@@ -178,7 +178,7 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 		gitWorkDir = repo.WorkingPath
 	}
 
-	resolvedBaseSHA := resolveIntentBaseSHA(ctx, gitWorkDir, run.BaseSHA, pipelineBaseBranch(sctx), cfg.PR.HasExplicitBaseBranch())
+	resolvedBaseSHA := resolveIntentBaseSHA(ctx, gitWorkDir, run.BaseSHA, pipelineBaseTarget(sctx), cfg.PR.HasExplicitBaseBranch())
 	diffFiles, err := diffFilesForIntentMatching(ctx, gitWorkDir, resolvedBaseSHA, run.HeadSHA)
 	if err != nil {
 		return nil, err
@@ -256,9 +256,9 @@ func splitDiffNameOnly(out string) []string {
 // the full feature branch. Unconfigured repositories retain the prior pushed
 // branch-tip behavior, falling back to the default-branch merge-base when the
 // tip is unavailable. Final fallback is git's empty-tree SHA.
-func resolveIntentBaseSHA(ctx context.Context, workDir, baseSHA, baseBranch string, explicitBase bool) string {
+func resolveIntentBaseSHA(ctx context.Context, workDir, baseSHA, baseTarget string, explicitBase bool) string {
 	if explicitBase {
-		if mb := mergeBaseWithBranch(ctx, workDir, baseBranch); mb != "" {
+		if mb := mergeBaseWithTarget(ctx, workDir, baseTarget); mb != "" {
 			return mb
 		}
 		return git.EmptyTreeSHA
@@ -266,7 +266,7 @@ func resolveIntentBaseSHA(ctx context.Context, workDir, baseSHA, baseBranch stri
 	if !git.IsZeroSHA(baseSHA) && commitReachable(ctx, workDir, baseSHA) {
 		return baseSHA
 	}
-	if mb := mergeBaseWithBranch(ctx, workDir, baseBranch); mb != "" {
+	if mb := mergeBaseWithTarget(ctx, workDir, baseTarget); mb != "" {
 		return mb
 	}
 	return git.EmptyTreeSHA
