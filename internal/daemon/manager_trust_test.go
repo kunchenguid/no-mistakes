@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,9 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestEnsureConfiguredPRBaseBranch_DefaultDoesNotAddValidation(t *testing.T) {
@@ -101,6 +105,141 @@ func TestRunStartRejectsConfiguredBaseBranches(t *testing.T) {
 			}
 		})
 	}
+}
+
+type capturedRerunPRConfig struct {
+	baseBranch string
+	noCI       bool
+}
+
+type captureRerunPRStep struct {
+	pipeline.Step
+	seen chan<- capturedRerunPRConfig
+}
+
+func (s *captureRerunPRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	s.seen <- capturedRerunPRConfig{baseBranch: sctx.Config.PR.BaseBranch, noCI: sctx.Config.NoCI}
+	return s.Step.Execute(sctx)
+}
+
+func TestRerunOpenPRPreservesBaseAcrossTrustedConfigChange(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, _ := setupTestGitRepo(t, p, database, "rerun-pr-base-continuity")
+
+	configPath := filepath.Join(repo.WorkingPath, ".no-mistakes.yaml")
+	initialConfig := "auto_fix:\n  lint: 0\n  test: 0\n  review: 0\npr:\n  base_branch: quality-assurance\n"
+	if err := os.WriteFile(configPath, []byte(initialConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", configPath)
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "target QA")
+	qaSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main")
+	gitCmd(t, repo.WorkingPath, "branch", "quality-assurance")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "quality-assurance")
+
+	gitCmd(t, repo.WorkingPath, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "feature.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "add feature")
+	featureSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "feature")
+
+	selectedRun, err := database.InsertRun(repo.ID, "feature", featureSHA, qaSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(selectedRun.ID, "quality-assurance", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRURL(selectedRun.ID, "https://github.com/test/repo/pull/42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(selectedRun.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	gitCmd(t, repo.WorkingPath, "checkout", "-B", "main", qaSHA)
+	currentConfig := "auto_fix:\n  lint: 0\n  test: 0\n  review: 0\nno_ci: true\npr:\n  base_branch: staging\n"
+	if err := os.WriteFile(configPath, []byte(currentConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", configPath)
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "target staging")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main")
+	gitCmd(t, repo.WorkingPath, "branch", "staging")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "staging")
+
+	binDir, ghLog := writeRerunPRBaseMockGH(t)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	seen := make(chan capturedRerunPRConfig, 1)
+	manager := NewRunManager(database, p, func() []pipeline.Step {
+		return []pipeline.Step{&captureRerunPRStep{Step: &steps.PRStep{}, seen: seen}}
+	})
+	t.Cleanup(manager.Shutdown)
+
+	runID, err := manager.HandleRerun(context.Background(), repo.ID, "feature", selectedRun.ID, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rerun := waitForRunTerminalState(t, database, runID)
+	if rerun.Status != types.RunCompleted {
+		t.Fatalf("rerun status = %s, want completed: %v", rerun.Status, rerun.Error)
+	}
+	if rerun.PRBaseBranch == nil || *rerun.PRBaseBranch != "quality-assurance" || !rerun.PRBaseBranchExplicit {
+		t.Fatalf("persisted rerun PR base = %v (explicit %t), want quality-assurance (explicit)", rerun.PRBaseBranch, rerun.PRBaseBranchExplicit)
+	}
+	captured := <-seen
+	if captured.baseBranch != "quality-assurance" {
+		t.Fatalf("pipeline PR base = %q, want inherited quality-assurance", captured.baseBranch)
+	}
+	if !captured.noCI {
+		t.Fatal("rerun did not reload current trusted no_ci setting")
+	}
+	logBytes, err := os.ReadFile(ghLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logBytes)
+	if !strings.Contains(logText, "pr list --head feature --base quality-assurance") {
+		t.Fatalf("rerun did not discover the existing PR against its original base:\n%s", logText)
+	}
+	if strings.Contains(logText, "--base staging") || strings.Contains(logText, "pr create ") {
+		t.Fatalf("rerun retargeted discovery or attempted a duplicate PR:\n%s", logText)
+	}
+}
+
+func writeRerunPRBaseMockGH(t *testing.T) (string, string) {
+	t.Helper()
+	binDir := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "gh.log")
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(binDir, "gh.bat")
+		script := "@echo off\r\necho %*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status --hostname github.com\" >nul && exit /b 0\r\necho %* | findstr /C:\"pr list --head feature --base quality-assurance\" >nul && (echo [{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\"}]& exit /b 0)\r\necho %* | findstr /C:\"pr list \" >nul && (echo []& exit /b 0)\r\necho %* | findstr /C:\"pr edit 42 \" >nul && exit /b 0\r\necho %* | findstr /C:\"pr create \" >nul && (echo https://github.com/test/repo/pull/99& exit /b 0)\r\nexit /b 1\r\n"
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return binDir, logPath
+	}
+	path := filepath.Join(binDir, "gh")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >>` + shellQuoteForTest(logPath) + `
+case "$*" in
+  "auth status --hostname github.com") exit 0 ;;
+  *"pr list --head feature --base quality-assurance"*) printf '%s\n' '[{"number":42,"url":"https://github.com/test/repo/pull/42"}]'; exit 0 ;;
+  "pr list "*) printf '%s\n' '[]'; exit 0 ;;
+  "pr edit 42 "*) exit 0 ;;
+  "pr create "*) printf '%s\n' 'https://github.com/test/repo/pull/99'; exit 0 ;;
+esac
+exit 1
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return binDir, logPath
 }
 
 func TestEnsureConfiguredPRBaseBranch_RejectsMissingAndUnsafeTargets(t *testing.T) {

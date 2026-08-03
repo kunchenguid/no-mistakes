@@ -679,7 +679,17 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		}
 	}
 
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
+	var prBaseContinuity *runPRBaseContinuity
+	if selectedRun.PRBaseBranch != nil && selectedRun.PRState != nil && *selectedRun.PRState == "open" {
+		if persistedBase := strings.TrimSpace(*selectedRun.PRBaseBranch); persistedBase != "" {
+			prBaseContinuity = &runPRBaseContinuity{
+				branch:   persistedBase,
+				explicit: selectedRun.PRBaseBranchExplicit,
+			}
+		}
+	}
+
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, prBaseContinuity)
 }
 
 // fetchRunUpstreamBranch fetches one branch from the refreshed upstream
@@ -734,17 +744,22 @@ func ensureConfiguredPRBaseBranch(ctx context.Context, workDir string, repo *db.
 	return nil
 }
 
+type runPRBaseContinuity struct {
+	branch   string
+	explicit bool
+}
+
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
 func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, nil)
 }
 
 // startRunWithIntentSource is the common run-creation path. source is empty
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
-func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
+func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string, prBaseContinuity *runPRBaseContinuity) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -890,6 +905,11 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
+	if prBaseContinuity != nil {
+		cfg.PR.BaseBranch = prBaseContinuity.branch
+		explicit := prBaseContinuity.explicit
+		cfg.PR.BaseBranchExplicit = &explicit
+	}
 	if err := ensureConfiguredPRBaseBranch(ctx, wtDir, repo, cfg); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("resolve_pr_base_branch")
