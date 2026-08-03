@@ -457,6 +457,9 @@ func TestUpdateRunPRURL(t *testing.T) {
 	if got.PRURL == nil || *got.PRURL != prURL {
 		t.Errorf("pr url = %v, want %q", got.PRURL, prURL)
 	}
+	if got.PRState == nil || *got.PRState != "open" || got.PRStateObservedAt == nil {
+		t.Fatalf("identified PR state = %v observed_at=%v, want durable open observation", got.PRState, got.PRStateObservedAt)
+	}
 }
 
 func TestUpdateRunPRStateFinalizesActiveTerminalOutcomes(t *testing.T) {

@@ -97,7 +97,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 		if updated != nil && updated.URL != "" {
 			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, updated.URL); err != nil {
-				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", updated.URL, "err", err)
+				return nil, fmt.Errorf("persist open pull request: %w", err)
 			}
 			return &pipeline.StepOutcome{PRURL: updated.URL}, nil
 		}
@@ -114,7 +114,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
 	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {
-		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
+		return nil, fmt.Errorf("persist open pull request: %w", err)
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
 }

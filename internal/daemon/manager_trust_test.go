@@ -158,6 +158,13 @@ func TestRerunOpenPRPreservesBaseAcrossTrustedConfigChange(t *testing.T) {
 	if err := database.UpdateRunPRURL(selectedRun.ID, "https://github.com/test/repo/pull/42"); err != nil {
 		t.Fatal(err)
 	}
+	identifiedRun, err := database.GetRun(selectedRun.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identifiedRun.PRState == nil || *identifiedRun.PRState != "open" || identifiedRun.PRStateObservedAt == nil {
+		t.Fatalf("identified PR was not durably recorded as open: state=%v observed_at=%v", identifiedRun.PRState, identifiedRun.PRStateObservedAt)
+	}
 	if err := database.UpdateRunStatus(selectedRun.ID, types.RunFailed); err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +391,11 @@ func TestLoadRecoveredConfig_PRBaseComesFromTrustedDefaultBranch(t *testing.T) {
 	gitCmd(t, seed, "push", "origin", "main", "staging")
 
 	originalBase := "quality-assurance"
-	cfg, err = mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "parked-run", PRBaseBranch: &originalBase, PRBaseBranchExplicit: true}, &db.Repo{UpstreamURL: upstream, DefaultBranch: "main"}, workDir)
+	_, err = mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "protected-parked-run", Branch: "staging", PRBaseBranch: &originalBase, PRBaseBranchExplicit: true}, &db.Repo{UpstreamURL: upstream, DefaultBranch: "main"}, workDir)
+	if err == nil || !strings.Contains(err.Error(), "configured PR base branch") {
+		t.Fatalf("recovery did not reject the current configured PR base branch: %v", err)
+	}
+	cfg, err = mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "parked-run", Branch: "feature", PRBaseBranch: &originalBase, PRBaseBranchExplicit: true}, &db.Repo{UpstreamURL: upstream, DefaultBranch: "main"}, workDir)
 	if err != nil {
 		t.Fatal(err)
 	}

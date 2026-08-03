@@ -225,6 +225,12 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	cfg := config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands))
+	if err := ensureConfiguredPRBaseBranch(fetchCtx, workDir, repo, cfg); err != nil {
+		return nil, err
+	}
+	if _, err := configuredPRBaseBranchGuard(run.Branch, repo.DefaultBranch, cfg); err != nil {
+		return nil, err
+	}
 	if run.PRBaseBranch != nil {
 		cfg.PR.BaseBranch = *run.PRBaseBranch
 		explicit := run.PRBaseBranchExplicit
@@ -744,6 +750,24 @@ func ensureConfiguredPRBaseBranch(ctx context.Context, workDir string, repo *db.
 	return nil
 }
 
+func configuredPRBaseBranchGuard(branch, defaultBranch string, cfg *config.Config) (string, error) {
+	if cfg == nil || !cfg.PR.HasExplicitBaseBranch() {
+		return "", nil
+	}
+	prBaseBranch := strings.TrimSpace(cfg.PR.BaseBranch)
+	defaultBranch = strings.TrimSpace(defaultBranch)
+	if branch != prBaseBranch && branch != defaultBranch {
+		return "", nil
+	}
+	role := "configured PR base branch"
+	failure := "configured_pr_base_branch"
+	if branch == defaultBranch && branch != prBaseBranch {
+		role = "repository default branch while a distinct PR base is configured"
+		failure = "configured_default_branch"
+	}
+	return failure, fmt.Errorf("refusing to start a run for %q: it is the %s; put changes on a feature branch and retry", branch, role)
+}
+
 type runPRBaseContinuity struct {
 	branch   string
 	explicit bool
@@ -910,20 +934,8 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		trackStartFailure("resolve_pr_base_branch")
 		return "", err
 	}
-	currentPRBaseExplicit := cfg.PR.HasExplicitBaseBranch()
-	currentPRBaseBranch := strings.TrimSpace(cfg.PR.BaseBranch)
-	if currentPRBaseBranch == "" {
-		currentPRBaseBranch = strings.TrimSpace(repo.DefaultBranch)
-	}
 	defaultBranch := strings.TrimSpace(repo.DefaultBranch)
-	if currentPRBaseExplicit && (branch == currentPRBaseBranch || branch == defaultBranch) {
-		role := "configured PR base branch"
-		failure := "configured_pr_base_branch"
-		if branch == defaultBranch && branch != currentPRBaseBranch {
-			role = "repository default branch while a distinct PR base is configured"
-			failure = "configured_default_branch"
-		}
-		err := fmt.Errorf("refusing to start a run for %q: it is the %s; put changes on a feature branch and retry", branch, role)
+	if failure, err := configuredPRBaseBranchGuard(branch, defaultBranch, cfg); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure(failure)
 		return "", err
