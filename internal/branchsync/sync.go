@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -750,10 +752,10 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 	if !anchored {
 		if fetchErr := s.fetchPreservedAnchor(ctx, gateDir, branch, run.ID, anchorRef, preserved, detachedPreserved); fetchErr != nil {
+			if errors.Is(fetchErr, errPreservedAnchorMismatch) {
+				return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the gate branch changed while the preserved pipeline commits were being anchored; no files or refs were changed")
+			}
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; no files or refs were changed")
-		}
-		if fetched, fetchErr := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); fetchErr != nil || fetched != preserved {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the gate branch changed while the preserved pipeline commits were being anchored; no files or refs were changed")
 		}
 	}
 
@@ -1082,32 +1084,61 @@ func gateHoldsDetachedPreservedHead(ctx context.Context, gateDir string, run *db
 	return gateHead == ptr(run.SubmittedHeadSHA) && objectExists(ctx, gateDir, preserved)
 }
 
+// errPreservedAnchorMismatch reports that the anchor ref exists but does not
+// hold the preserved head, which is gate movement rather than a fetch failure.
+var errPreservedAnchorMismatch = errors.New("anchored ref is not the preserved pipeline head")
+
 // fetchPreservedAnchor copies the preserved pipeline commits from the local
-// gate into the worktree's private anchor ref. The ordinary source is the gate
-// branch; a preserved head the branch never reached is published to a
-// gate-side private ref first, which adds a ref and mutates no branch. That
-// staging ref is deleted on every exit path, so a recovery never leaves a
-// permanent gate ref pinning the commit against gc. The delete runs detached
-// from the caller's cancellation, because the exit path that most needs the
-// cleanup is the fetch failing on a cancelled ctx, under which the cleanup
-// itself would be a no-op.
-func (s *Service) fetchPreservedAnchor(ctx context.Context, gateDir, branch, runID, anchorRef, preserved string, detached bool) error {
+// gate into the worktree's private anchor ref and verifies the anchor really
+// holds the preserved head. The ordinary source is the gate branch; a preserved
+// head the branch never reached is published to a gate-side private ref first,
+// which adds a ref and mutates no branch. That staging ref is deleted only once
+// the anchor is verified, because the detached case exists precisely when no
+// gate ref reaches the commit: on a failed or cancelled fetch, or an anchor that
+// does not match, the pin is the only thing keeping pipeline-authored work
+// reachable, so it is deliberately retained for the operator. The success-path
+// delete runs detached from the caller's cancellation so a caller that gives up
+// right after a good fetch still cleans up.
+func (s *Service) fetchPreservedAnchor(ctx context.Context, gateDir, branch, runID, anchorRef, preserved string, detached bool) (err error) {
 	if !detached {
-		return git.FetchRemoteBranchToPrivateRef(ctx, s.workDir(), gateDir, branch, anchorRef)
+		if err := git.FetchRemoteBranchToPrivateRef(ctx, s.workDir(), gateDir, branch, anchorRef); err != nil {
+			return err
+		}
+		return verifyPreservedAnchor(ctx, s.workDir(), anchorRef, preserved)
 	}
 	sourceRef := gatePreservedRef(runID)
-	if _, err := git.Run(ctx, gateDir, "update-ref", sourceRef, preserved); err != nil {
-		return err
+	if _, refErr := git.Run(ctx, gateDir, "update-ref", sourceRef, preserved); refErr != nil {
+		return refErr
 	}
 	defer func() {
+		if err != nil {
+			return
+		}
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), preservedRefCleanupTimeout)
 		defer cancel()
-		_, _ = git.Run(cleanupCtx, gateDir, "update-ref", "-d", sourceRef)
+		if _, delErr := git.Run(cleanupCtx, gateDir, "update-ref", "-d", sourceRef); delErr != nil {
+			slog.Warn("branchsync: gate preserved staging ref not deleted", "ref", sourceRef, "run", runID, "error", delErr)
+		}
 	}()
 	if s.beforePreservedFetch != nil {
 		s.beforePreservedFetch()
 	}
-	return git.FetchRefToPrivateRef(ctx, s.workDir(), gateDir, sourceRef, anchorRef)
+	if err = git.FetchRefToPrivateRef(ctx, s.workDir(), gateDir, sourceRef, anchorRef); err != nil {
+		return err
+	}
+	err = verifyPreservedAnchor(ctx, s.workDir(), anchorRef, preserved)
+	return err
+}
+
+func verifyPreservedAnchor(ctx context.Context, wd, anchorRef, preserved string) error {
+	fetched, err := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("%w: %v", errPreservedAnchorMismatch, err)
+	}
+	if fetched != preserved {
+		return fmt.Errorf("%w: %s", errPreservedAnchorMismatch, fetched)
+	}
+	return nil
 }
 
 // recoverLocalAnchorRef keeps the exact pre-recovery local commits reachable

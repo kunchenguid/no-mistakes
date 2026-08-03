@@ -141,9 +141,12 @@ func TestAxiStaleMonitorRerunBeforeSyncStrandsTheRecovery(t *testing.T) {
 	if syncErr == nil {
 		t.Fatalf("sync after rerun should be refused:\n%s", syncOut)
 	}
+	// Exact lines, because `blocked_pipeline_owned_recoverable` - the terminal
+	// custody classification of a different state - has the refused active
+	// state's safety value as a prefix and would satisfy a substring match.
 	for _, want := range []string{"state: pipeline_owned", "safety: blocked_pipeline_owned"} {
-		if !strings.Contains(syncOut, want) {
-			t.Fatalf("sync after rerun did not report %q:\n%s", want, syncOut)
+		if !containsExactLine(syncOut, want) {
+			t.Fatalf("sync after rerun did not report the exact line %q:\n%s", want, syncOut)
 		}
 	}
 	if got := strings.TrimSpace(h.WorktreeRefSHA(branch)); got != behindHead {
@@ -163,4 +166,15 @@ func TestAxiStaleMonitorRerunBeforeSyncStrandsTheRecovery(t *testing.T) {
 	if run := h.WaitForRun(branch, 30*time.Second); run.Status != types.RunCancelled {
 		t.Fatalf("stranded rerun status after abort = %s", run.Status)
 	}
+}
+
+// containsExactLine matches a whole rendered field line, so a value that is a
+// prefix of a sibling value cannot satisfy an assertion about the other.
+func containsExactLine(out, want string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == want {
+			return true
+		}
+	}
+	return false
 }

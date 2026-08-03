@@ -1695,11 +1695,13 @@ func TestRecoverKeepLocalTakesBranchBackFromDetachedPreservedHead(t *testing.T) 
 	}
 }
 
-// TestRecoverCleansStagingRefWhenTheFetchIsCancelled covers the exit path that
-// most needs the cleanup: the caller cancels while the preserved commit is
-// being fetched, so the fetch fails and the staging ref must still be deleted
-// rather than left pinning the commit in the gate forever.
-func TestRecoverCleansStagingRefWhenTheFetchIsCancelled(t *testing.T) {
+// TestRecoverKeepsStagingRefWhenTheFetchIsCancelled covers the exit path where
+// the pin is the only protection left: the caller cancels while the preserved
+// commit is being fetched, so recovery refuses and nothing in the operator's
+// clone holds the commit. The gate-side staging ref must survive, because no
+// gate branch reaches a detached preserved head and deleting it would leave
+// pipeline-authored work reachable from nothing.
+func TestRecoverKeepsStagingRefWhenTheFetchIsCancelled(t *testing.T) {
 	t.Parallel()
 
 	f := newRecoverFixture(t, types.RunCancelled)
@@ -1707,14 +1709,52 @@ func TestRecoverCleansStagingRefWhenTheFetchIsCancelled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	f.service.beforePreservedFetch = cancel
+	staged := false
+	f.service.beforePreservedFetch = func() {
+		staged = !f.gateRefMissing(f.gateStagingRef())
+		cancel()
+	}
 
 	state := f.service.Recover(ctx, false)
+	if !staged {
+		t.Fatalf("gate staging ref %s was never written, so this run never reached the path under test", f.gateStagingRef())
+	}
 	if state.Recovered {
 		t.Fatalf("cancelled recover reported success: %#v", state)
 	}
-	if !f.gateRefMissing(f.gateStagingRef()) {
-		t.Fatalf("gate staging ref %s survived a cancelled recovery and pins the preserved commit against gc", f.gateStagingRef())
+	if state.Safety != "blocked_recover_preserve_failed" {
+		t.Fatalf("safety = %q, want blocked_recover_preserve_failed: %#v", state.Safety, state)
+	}
+	if f.gateRefMissing(f.gateStagingRef()) {
+		t.Fatalf("gate staging ref %s was deleted after a failed recovery, leaving preserved commit %s unreachable in the gate", f.gateStagingRef(), f.preserved)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", f.gateStagingRef()+"^{commit}"); got != f.preserved {
+		t.Fatalf("retained staging ref = %s, want preserved %s", got, f.preserved)
+	}
+}
+
+// TestRecoverKeepsStagingRefWhenTheAnchorDoesNotMatch is the second failure
+// shape: the fetch reports success but the anchor does not hold the preserved
+// head, so recovery refuses and the pin must likewise be retained.
+func TestRecoverKeepsStagingRefWhenTheAnchorDoesNotMatch(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	f.strandDetachedPreserved()
+
+	f.service.beforePreservedFetch = func() {
+		mustRun(f.t, f.gate, "update-ref", f.gateStagingRef(), f.submitted)
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered {
+		t.Fatalf("mismatched anchor recover reported success: %#v", state)
+	}
+	if state.Safety != "blocked_recover_preserve_failed" {
+		t.Fatalf("safety = %q, want blocked_recover_preserve_failed: %#v", state.Safety, state)
+	}
+	if f.gateRefMissing(f.gateStagingRef()) {
+		t.Fatalf("gate staging ref %s was deleted after a rejected anchor instead of being retained for the operator", f.gateStagingRef())
 	}
 }
 

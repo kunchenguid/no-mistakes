@@ -41,7 +41,10 @@ import (
 // reattach was unreachable: the rerun's own pending run is the newest run
 // branchsync.inspect selects, it carries no push binding, so the state is
 // pipeline_owned and `axi sync` refuses. Synchronizing first is what makes the
-// gate head equal local HEAD, which is the reattach condition itself. Proven end
+// gate head equal local HEAD, which is the reattach condition itself. The state
+// name and the binding fact behind it are pinned too: a surface once shipped
+// `legacy_unbound`, a state the classifier cannot produce for a rerun, and
+// nothing here noticed. Proven end
 // to end by e2e TestAxiStaleMonitorSyncBeforeRerunReattaches and its
 // TestAxiStaleMonitorRerunBeforeSyncStrandsTheRecovery counterpart.
 var canonicalStaleMonitorPhrases = []string{
@@ -56,6 +59,8 @@ var canonicalStaleMonitorPhrases = []string{
 	"branch_sync",
 	"no-mistakes axi run",
 	"before the rerun, not after",
+	"carries no push binding",
+	"pipeline_owned",
 }
 
 // canonicalCustodyRecoveryPhrases pin the corrected `recover_custody` recovery.
