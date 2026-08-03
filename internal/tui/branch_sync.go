@@ -112,11 +112,12 @@ func renderRecoverConfirmation(state branchsync.State, width int) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "The run ended %s without publishing its pipeline commits. Recovery returns\n", state.Pipeline.Status)
-	fmt.Fprintf(&b, "custody of this branch and fast-forwards only a clean behind worktree.\n\n")
+	fmt.Fprintf(&b, "custody by fast-forwarding a clean behind worktree, or by adopting a diverged\n")
+	fmt.Fprintf(&b, "preserved head only when it is proven to carry every local change.\n\n")
 	fmt.Fprintf(&b, "Local branch:   %s\n", state.Local.Branch)
 	fmt.Fprintf(&b, "Local HEAD:     %s\n", state.Local.Head)
 	fmt.Fprintf(&b, "Preserved HEAD: %s\n\n", state.Pipeline.CurrentHead)
-	b.WriteString("Dirty or diverged worktrees refuse without changes; `no-mistakes sync --recover\n--keep-local` keeps the current head instead. `no-mistakes rerun` resumes validation.")
+	b.WriteString("Dirty worktrees and divergence that cannot be proven contained refuse without changes; `no-mistakes sync --recover --keep-local` keeps the current head instead. `no-mistakes rerun` resumes validation.")
 	return renderBoxWithFooter("Confirm custody recovery", b.String(), width, "u/enter recover  ·  esc cancel")
 }
 

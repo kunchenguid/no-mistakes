@@ -819,6 +819,18 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	if s.afterRecoverBranchMove != nil {
 		s.afterRecoverBranchMove()
 	}
+	// KNOWN BOUNDED FUNDAMENTAL-GIT LIMITATION: a concurrent git checkout
+	// landing between this branch-identity verification and the read-tree
+	// working-tree update can apply the preserved tree to another branch's
+	// worktree. This is not data loss: containment is proven before the move,
+	// the pre-recovery head stays anchored at
+	// refs/no-mistakes/recover-local/<run>, custody is never stamped, and the
+	// operation fails closed to a reported failure rather than a false success.
+	// The window is sub-millisecond and inside a worktree the pipeline already
+	// owns. It is irreducible because no single Git operation carries both
+	// guards, and no lock git checkout honors can be held across the two
+	// commands, so a further observation cannot close it. Keep this verification
+	// even though it cannot make the two commands atomic.
 	boundaryBranch, boundaryErr = git.CurrentBranch(ctx, wd)
 	if boundaryErr != nil || boundaryBranch != state.Local.Branch {
 		rollbackDetail := ""
