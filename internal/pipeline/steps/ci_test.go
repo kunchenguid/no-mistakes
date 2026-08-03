@@ -1438,7 +1438,7 @@ func TestCIStep_CancelledCheckIsRerunBeforeEscalating(t *testing.T) {
 		t.Fatalf("rerun requests = %d, want exactly one, gh log:\n%s", got, ghLog(t, logFile))
 	}
 
-	rerunIndex, runningIndex := -1, -1
+	rerunIndex, runningIndex, passedIndex := -1, -1, -1
 	for i, l := range logs {
 		switch {
 		case strings.Contains(l, "re-running CI check test (1/1)"):
@@ -1446,7 +1446,7 @@ func TestCIStep_CancelledCheckIsRerunBeforeEscalating(t *testing.T) {
 		case l == ciChecksRunningMsg:
 			runningIndex = i
 		case l == ciChecksPassedMsg:
-			t.Fatalf("current-head rerun result must await a head advance; logs: %v", logs)
+			passedIndex = i
 		case strings.Contains(l, "auto-fixing"):
 			t.Fatalf("cancelled check escalated to the fix agent; logs: %v", logs)
 		}
@@ -1457,15 +1457,15 @@ func TestCIStep_CancelledCheckIsRerunBeforeEscalating(t *testing.T) {
 	// The TUI and axi read monitoring state back out of these lines, so the poll
 	// that re-runs a check must report checks as running: a cancelled check never
 	// counted as failing, so nothing else clears an earlier passed-checks line.
-	if runningIndex < rerunIndex {
-		t.Fatalf("expected rerun, then checks running, got: %v", logs)
+	if runningIndex < rerunIndex || passedIndex < runningIndex {
+		t.Fatalf("expected rerun, then checks running, then checks passed, got: %v", logs)
 	}
 	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dbRun.CIReadyAt != nil {
-		t.Fatal("current-head rerun result must not set readiness before a head advance")
+	if dbRun.CIReadyAt == nil {
+		t.Fatal("expected CI readiness once the same-head rerun passed")
 	}
 
 	t.Log("CI step log:")
@@ -1495,7 +1495,7 @@ func TestCIStep_LaggingRerunRollupKeepsWaitingForTheRepublishedCheck(t *testing.
 		cancelled,
 		cancelled,
 		`[{"name":"test","state":"IN_PROGRESS","bucket":"pending"}]`,
-		`[{"name":"test","state":"SUCCESS","bucket":"pass","completedAt":"2026-07-26T12:06:00Z"}]`,
+		`[{"name":"test","state":"SUCCESS","bucket":"pass","completedAt":"2026-07-26T12:06:00Z","link":"https://github.com/test/repo/actions/runs/900/job/902"}]`,
 	}, "", "")
 
 	prURL := "https://github.com/test/repo/pull/42"
@@ -1546,8 +1546,8 @@ func TestCIStep_LaggingRerunRollupKeepsWaitingForTheRepublishedCheck(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dbRun.CIReadyAt != nil {
-		t.Fatal("current-head rerun result must not set readiness before a head advance")
+	if dbRun.CIReadyAt == nil {
+		t.Fatal("expected CI readiness once the re-run check reported success")
 	}
 
 	t.Log("CI step log:")
@@ -2412,9 +2412,6 @@ func TestCIStep_ResolvedRerunDoesNotParkALaterGreenHead(t *testing.T) {
 
 	cancelled := `[{"name":"Repo invariants","state":"SUCCESS","bucket":"pass"},` +
 		`{"name":"Behavior portable serial","state":"CANCELLED","bucket":"cancel","completedAt":"2026-08-02T07:54:14Z","link":"https://github.com/test/repo/actions/runs/30738052151/job/91470340751"}]`
-	// The rerun the monitor requested comes back green on the same head.
-	rerunPassed := `[{"name":"Repo invariants","state":"SUCCESS","bucket":"pass"},` +
-		`{"name":"Behavior portable serial","state":"SUCCESS","bucket":"pass","completedAt":"2026-08-02T08:07:02Z","link":"https://github.com/test/repo/actions/runs/30738052151/job/91470340752"}]`
 	// The head the pipeline watches then advances (its own fix commit), and the
 	// re-run job is path-filtered out of the new head's rollup. Everything the
 	// forge does report for that head is green.
@@ -2422,7 +2419,6 @@ func TestCIStep_ResolvedRerunDoesNotParkALaterGreenHead(t *testing.T) {
 
 	env, _ := fakeCIGHLoggedSequence(t, "OPEN", []string{
 		cancelled,
-		rerunPassed,
 		greenWithoutRerunCheck,
 		greenWithoutRerunCheck,
 		greenWithoutRerunCheck,
@@ -2451,7 +2447,7 @@ func TestCIStep_ResolvedRerunDoesNotParkALaterGreenHead(t *testing.T) {
 	step := &CIStep{
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			polls++
-			if polls == 2 {
+			if polls == 1 {
 				if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("pipeline fix"), 0o644); err != nil {
 					t.Fatal(err)
 				}
@@ -2504,7 +2500,69 @@ func TestCIStep_ResolvedRerunDoesNotParkALaterGreenHead(t *testing.T) {
 	}
 }
 
-func TestCIStep_DelayedSameNameCheckCannotRetireCurrentHeadRerun(t *testing.T) {
+func TestCIStep_SameHeadGreenRerunEmitsChecksPassed(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	cancelled := `[{"name":"build","state":"CANCELLED","bucket":"cancel","completedAt":"2026-08-02T07:54:14Z","link":"https://github.com/test/repo/actions/runs/1/job/10"}]`
+	runPassed := `[{"name":"build","state":"SUCCESS","bucket":"pass","completedAt":"2026-08-02T08:07:02Z","link":"https://github.com/test/repo/actions/runs/1/job/11"}]`
+	otherGreen := `[{"name":"repo invariants","state":"SUCCESS","bucket":"pass"}]`
+	env, _ := fakeCIGHLoggedSequence(t, "OPEN", []string{cancelled, runPassed, otherGreen, otherGreen, otherGreen}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/1497"
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 4 * time.Hour
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 5 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("same-head green rerun must keep monitoring, got %v", err)
+	}
+	sawPassed := false
+	for _, log := range logs {
+		if log == ciChecksPassedMsg {
+			sawPassed = true
+		}
+		if strings.Contains(log, "after its rerun") || strings.Contains(log, "manual intervention") {
+			t.Fatalf("same-head green rerun was re-opened: %v", logs)
+		}
+	}
+	if !sawPassed {
+		t.Fatalf("same-head green rerun never emitted checks-passed: %v", logs)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt == nil {
+		t.Fatal("same-head green rerun did not set CI readiness")
+	}
+	if _, ok := step.transientReruns.rollup["build"]; ok {
+		t.Fatal("same-head green rerun record was not retired")
+	}
+}
+
+func TestCIStep_DelayedSameNameCheckRetainsLegacyNameBehavior(t *testing.T) {
 	t.Parallel()
 	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
 
@@ -2539,25 +2597,26 @@ func TestCIStep_DelayedSameNameCheckCannotRetireCurrentHeadRerun(t *testing.T) {
 		},
 	}
 	outcome, err := step.Execute(sctx)
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("delayed sibling outcome = %+v, err = %v, want continued monitoring", outcome, err)
 	}
-	if outcome == nil || !outcome.NeedsApproval {
-		t.Fatalf("delayed sibling outcome = %+v, want approval after bounded grace", outcome)
-	}
+	sawPassed := false
 	for _, log := range logs {
-		if log == ciChecksPassedMsg || log == ciNoChecksPassedMsg {
-			t.Fatalf("delayed same-named sibling emitted checks-passed: %v", logs)
+		if log == ciChecksPassedMsg {
+			sawPassed = true
 		}
+	}
+	if !sawPassed {
+		t.Fatalf("expected legacy name-keyed green behavior, logs: %v", logs)
 	}
 	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dbRun.CIReadyAt != nil {
-		t.Fatal("delayed same-named sibling marked the current head ready")
+	if dbRun.CIReadyAt == nil {
+		t.Fatal("delayed same-named sibling did not retain legacy readiness behavior")
 	}
-	if _, ok := step.transientReruns.rollup["build"]; !ok {
-		t.Fatal("delayed same-named sibling retired the current-head rerun record")
+	if _, ok := step.transientReruns.rollup["build"]; ok {
+		t.Fatal("new conclusive link did not retire the rerun record")
 	}
 }

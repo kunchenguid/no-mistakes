@@ -90,6 +90,7 @@ type rerunRollupState struct {
 	completedAt    time.Time
 	graceRemaining int
 	headSHA        string
+	observedLinks  map[string]bool
 }
 
 // checkRerunBudget records how many reruns each check has consumed during this
@@ -117,6 +118,7 @@ type persistedRollupState struct {
 	CompletedAt    time.Time `json:"completed_at"`
 	GraceRemaining int       `json:"grace_remaining"`
 	HeadSHA        string    `json:"head_sha,omitempty"`
+	ObservedLinks  []string  `json:"observed_links,omitempty"`
 }
 
 // marshal renders the budget for persistence. An empty budget marshals to the
@@ -129,10 +131,16 @@ func (b *checkRerunBudget) marshal() (string, error) {
 	if len(b.rollup) > 0 {
 		payload.Rollup = make(map[string]persistedRollupState, len(b.rollup))
 		for name, state := range b.rollup {
+			observedLinks := make([]string, 0, len(state.observedLinks))
+			for link := range state.observedLinks {
+				observedLinks = append(observedLinks, link)
+			}
+			sort.Strings(observedLinks)
 			payload.Rollup[name] = persistedRollupState{
 				CompletedAt:    state.completedAt,
 				GraceRemaining: state.graceRemaining,
 				HeadSHA:        state.headSHA,
+				ObservedLinks:  observedLinks,
 			}
 		}
 	}
@@ -159,10 +167,17 @@ func (b *checkRerunBudget) unmarshal(encoded string) error {
 	}
 	b.rollup = make(map[string]rerunRollupState, len(payload.Rollup))
 	for name, state := range payload.Rollup {
+		observedLinks := make(map[string]bool, len(state.ObservedLinks))
+		for _, link := range state.ObservedLinks {
+			if link != "" {
+				observedLinks[link] = true
+			}
+		}
 		b.rollup[name] = rerunRollupState{
 			completedAt:    state.CompletedAt,
 			graceRemaining: state.GraceRemaining,
 			headSHA:        state.HeadSHA,
+			observedLinks:  observedLinks,
 		}
 	}
 	return nil
@@ -179,7 +194,7 @@ func (b *checkRerunBudget) used(name string) int { return b.spent[name] }
 
 // spend records one rerun against check's name and the pipeline head it
 // certifies, along with the completion reported at that moment.
-func (b *checkRerunBudget) spend(check scm.Check, headSHA string) int {
+func (b *checkRerunBudget) spend(check scm.Check, checks []scm.Check, headSHA string) int {
 	if b.spent == nil {
 		b.spent = map[string]int{}
 	}
@@ -187,15 +202,22 @@ func (b *checkRerunBudget) spend(check scm.Check, headSHA string) int {
 		b.rollup = map[string]rerunRollupState{}
 	}
 	b.spent[check.Name]++
+	observedLinks := map[string]bool{}
+	for _, observed := range checks {
+		if observed.Name == check.Name && observed.Link != "" {
+			observedLinks[observed.Link] = true
+		}
+	}
 	b.rollup[check.Name] = rerunRollupState{
 		completedAt:    check.CompletedAt,
 		graceRemaining: rerunRollupGracePolls,
 		headSHA:        headSHA,
+		observedLinks:  observedLinks,
 	}
 	return b.spent[check.Name]
 }
 
-func (b *checkRerunBudget) retireResolvedReruns(currentHead string, persist func(*checkRerunBudget) error) (bool, error) {
+func (b *checkRerunBudget) retireResolvedReruns(checks []scm.Check, currentHead string, persist func(*checkRerunBudget) error) (bool, error) {
 	if len(b.rollup) == 0 {
 		return false, nil
 	}
@@ -205,6 +227,35 @@ func (b *checkRerunBudget) retireResolvedReruns(currentHead string, persist func
 			retirable[name] = true
 		}
 	}
+	resolved := map[string]bool{}
+	outstanding := map[string]bool{}
+	for _, check := range checks {
+		state, tracked := b.rollup[check.Name]
+		if !tracked || retirable[check.Name] {
+			continue
+		}
+		if checkFailedTerminally(check) && classifyCheckFailure(check) == classTransient {
+			outstanding[check.Name] = true
+			continue
+		}
+		switch check.Bucket {
+		case scm.CheckBucketPass, scm.CheckBucketFail, scm.CheckBucketSkip:
+			if check.Link != "" && !state.observedLinks[check.Link] {
+				resolved[check.Name] = true
+			}
+		default:
+			outstanding[check.Name] = true
+		}
+	}
+	for name := range resolved {
+		if !outstanding[name] {
+			retirable[name] = true
+		}
+	}
+	// A delayed same-named sibling can look identical to a rerun replacement
+	// here. That name-keyed masking already exists on the default branch in
+	// cancelledAfterRerun; distinguishing it requires provider truth outside
+	// this policy.
 	if len(retirable) == 0 {
 		return false, nil
 	}
@@ -281,30 +332,6 @@ func (b *checkRerunBudget) cancelledAfterRerun(checks []scm.Check) (unresolved, 
 			continue
 		}
 		awaiting = append(awaiting, name)
-	}
-	return unresolved, awaiting
-}
-
-func (b *checkRerunBudget) currentHeadGreenReruns(currentHead string, accounted ...[]string) (unresolved, awaiting []string) {
-	seen := map[string]bool{}
-	for _, names := range accounted {
-		for _, name := range names {
-			seen[name] = true
-		}
-	}
-	var names []string
-	for name, state := range b.rollup {
-		if (state.headSHA == "" || state.headSHA == currentHead) && !seen[name] {
-			names = append(names, name)
-		}
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		if b.consumeRollupGrace(name) {
-			awaiting = append(awaiting, name)
-		} else {
-			unresolved = append(unresolved, name)
-		}
 	}
 	return unresolved, awaiting
 }
@@ -487,8 +514,8 @@ func (s *CIStep) persistRerunBudgetCandidate(sctx *pipeline.StepContext, candida
 	return sctx.DB.SetRunCIRerunState(sctx.Run.ID, encoded)
 }
 
-func (s *CIStep) retireResolvedReruns(sctx *pipeline.StepContext) (bool, error) {
-	return s.transientReruns.retireResolvedReruns(sctx.Run.HeadSHA, func(candidate *checkRerunBudget) error {
+func (s *CIStep) retireResolvedReruns(sctx *pipeline.StepContext, checks []scm.Check) (bool, error) {
+	return s.transientReruns.retireResolvedReruns(checks, sctx.Run.HeadSHA, func(candidate *checkRerunBudget) error {
 		return s.persistRerunBudgetCandidate(sctx, candidate)
 	})
 }
@@ -525,7 +552,7 @@ func (s *CIStep) rerunTransientChecks(sctx *pipeline.StepContext, host scm.Host,
 
 	issued := false
 	for _, check := range candidates {
-		used := s.transientReruns.spend(check, sctx.Run.HeadSHA)
+		used := s.transientReruns.spend(check, checks, sctx.Run.HeadSHA)
 		// Reserve durably before asking the provider. A crash between this
 		// write and the request costs the budget, which is the safe direction:
 		// the alternative is a recovered run believing the rerun never
