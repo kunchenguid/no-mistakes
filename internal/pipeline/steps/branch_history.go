@@ -3,7 +3,9 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -56,7 +58,16 @@ func branchHistoryPromptSection(sctx *pipeline.StepContext) string {
 		return ""
 	}
 	history, err := sctx.DB.PreviousBranchStepHistory(sctx.Run.RepoID, sctx.Run.Branch, types.StepReview, sctx.Run.ID)
-	if err != nil || history == nil {
+	if err != nil {
+		// A query failure and a first-ever push both produce no section, but
+		// only one of them is a defect: without this the reviewer silently
+		// loses cross-run context on every long-lived branch, with nothing
+		// anywhere to say why.
+		slog.Warn("branch history: previous review could not be read; reviewing without cross-run context",
+			"run_id", sctx.Run.ID, "branch", sctx.Run.Branch, "error", err)
+		return ""
+	}
+	if history == nil {
 		return ""
 	}
 
@@ -142,10 +153,14 @@ func groupBranchHistoryByDisposition(history *db.BranchStepHistory) (map[string]
 		}
 	}
 
+	// order is first-appearance order across the replayed rounds, so the tail
+	// holds the newest findings - the ones most likely still open against the
+	// code being reviewed now. Cutting from the front keeps those and drops the
+	// oldest, which earlier rounds have had the most chances to resolve.
 	truncated := 0
 	if len(order) > branchHistoryMaxFindings {
 		truncated = len(order) - branchHistoryMaxFindings
-		order = order[:branchHistoryMaxFindings]
+		order = order[truncated:]
 	}
 
 	grouped := make(map[string][]string)
@@ -205,7 +220,19 @@ func abbreviateFindingDescription(description string) string {
 	if len(clean) <= branchHistoryMaxDescriptionChars {
 		return clean
 	}
-	return strings.TrimSpace(clean[:branchHistoryMaxDescriptionChars]) + "..."
+	return strings.TrimSpace(truncateAtRuneBoundary(clean, branchHistoryMaxDescriptionChars)) + "..."
+}
+
+// truncateAtRuneBoundary cuts s at limit bytes without splitting a rune, so a
+// bound expressed in bytes cannot emit a replacement character into a prompt.
+func truncateAtRuneBoundary(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit]
 }
 
 func selectedFindingIDSet(selectedJSON *string) map[string]bool {

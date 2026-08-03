@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
@@ -108,7 +109,14 @@ func (s *claudeStream) add(line string) {
 func (s *claudeStream) apiErrors() string {
 	joined := strings.Join(s.found, "; ")
 	if len(joined) > claudeAPIErrorLimit {
-		joined = joined[:claudeAPIErrorLimit]
+		// The limit is a byte bound over CLI text that may carry multi-byte
+		// runes, so back off to a rune boundary: a cut mid-rune would put a
+		// replacement character into runs.error.
+		limit := claudeAPIErrorLimit
+		for limit > 0 && !utf8.RuneStart(joined[limit]) {
+			limit--
+		}
+		joined = joined[:limit]
 	}
 	return joined
 }

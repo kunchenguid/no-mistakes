@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -561,6 +563,13 @@ func applyWorkingPathTrustedConfig(ctx context.Context, globalCfg *config.Global
 	}
 	path := filepath.Join(repo.WorkingPath, ".no-mistakes.yaml")
 	if _, err := os.Stat(path); err != nil {
+		// An absent file is the ordinary case and says nothing. Any other stat
+		// error means the opted-in file may well be there and unreadable, which
+		// silently drops the maintainer's own commands, so it gets the same
+		// loud treatment as a parse failure.
+		if !errors.Is(err, fs.ErrNotExist) {
+			slog.Warn("working-path repo config: could not be inspected; falling back to the default-branch copy", "run_id", runID, "path", path, "error", err)
+		}
 		return trusted
 	}
 	workingCfg, err := config.LoadRepo(repo.WorkingPath)

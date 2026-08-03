@@ -1,23 +1,19 @@
 package branchsync
 
 import (
-	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // nextActionCases is the single description of the next-action vocabulary: the
 // exact wire string each code ships as, the command it is paired with, and
 // whether it counts as taking the pipeline's commits. Every property of a code
-// is asserted from this one table, checked for completeness against
-// allNextActionCodes, so a new code cannot land in some of the assertions and
-// miss the others.
+// is asserted from this one table, checked for completeness against the
+// registry, so a new code cannot land in some of the assertions and miss the
+// others.
 var nextActionCases = map[NextActionCode]struct {
 	wire            string
 	action          *NextAction
@@ -40,10 +36,11 @@ var nextActionCases = map[NextActionCode]struct {
 // paired with by its constructor, and the synchronization classification are
 // all pinned here against the complete vocabulary.
 func TestNextActionVocabulary(t *testing.T) {
-	if len(nextActionCases) != len(allNextActionCodes) {
-		t.Fatalf("described %d codes, want all %d", len(nextActionCases), len(allNextActionCodes))
+	codes := allNextActionCodes()
+	if len(nextActionCases) != len(codes) {
+		t.Fatalf("described %d codes, want all %d", len(nextActionCases), len(codes))
 	}
-	for _, code := range allNextActionCodes {
+	for _, code := range codes {
 		want, ok := nextActionCases[code]
 		if !ok {
 			t.Errorf("code %q is undescribed; pin its wire value, command, and whether it takes the pipeline's commits", code)
@@ -52,6 +49,9 @@ func TestNextActionVocabulary(t *testing.T) {
 		t.Run(string(code), func(t *testing.T) {
 			if string(code) != want.wire {
 				t.Errorf("code = %q, want %q", string(code), want.wire)
+			}
+			if want.action == nil {
+				t.Fatalf("code %q built no action", code)
 			}
 			if want.action.Code != code {
 				t.Errorf("constructed Code = %q, want %q", want.action.Code, code)
@@ -69,114 +69,83 @@ func TestNextActionVocabulary(t *testing.T) {
 	}
 }
 
-// allNextActionCodes is what every other assertion derives its exhaustiveness
-// from, so the slice itself has to be tied to the declarations: a ninth code
-// minted in the const block but forgotten here would otherwise reach agents
-// unclassified and undocumented with a green suite.
-func TestAllNextActionCodesCoversEveryDeclaredConstant(t *testing.T) {
-	listed := make(map[string]bool, len(allNextActionCodes))
-	for _, code := range allNextActionCodes {
-		listed[string(code)] = true
+// A code that was never registered has no command to ship, so it must be
+// unable to produce an action at all rather than reaching an agent paired with
+// whatever a call site happened to type next to it.
+func TestUnregisteredNextActionCodeBuildsNoAction(t *testing.T) {
+	if action := actionFor(NextActionCode("not_minted")); action != nil {
+		t.Fatalf("unregistered code built %#v", action)
 	}
-
-	fset := token.NewFileSet()
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read package dir: %v", err)
+	if action := actionFor(""); action != nil {
+		t.Fatalf("empty code built %#v", action)
 	}
-	declared := 0
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(fset, filepath.Join(".", name), nil, 0)
-		if err != nil {
-			t.Fatalf("parse %s: %v", name, err)
-		}
-		for _, decl := range file.Decls {
-			gen, ok := decl.(*ast.GenDecl)
-			if !ok || gen.Tok != token.CONST {
-				continue
-			}
-			if !declaresNextActionCode(gen) {
-				continue
-			}
-			for _, spec := range gen.Specs {
-				value, ok := spec.(*ast.ValueSpec)
-				if !ok {
-					continue
-				}
-				for i, ident := range value.Names {
-					declared++
-					if i >= len(value.Values) {
-						t.Errorf("constant %s has no literal value", ident.Name)
-						continue
-					}
-					wire, err := stringConstValue(value.Values[i])
-					if err != nil {
-						t.Errorf("constant %s: %v", ident.Name, err)
-						continue
-					}
-					if !listed[wire] {
-						t.Errorf("constant %s (%q) is not in allNextActionCodes", ident.Name, wire)
-					}
-				}
-			}
-		}
-	}
-	if declared != len(allNextActionCodes) {
-		t.Errorf("declared %d NextActionCode constants, allNextActionCodes lists %d", declared, len(allNextActionCodes))
+	if action := reconcileManuallyAction("refs/no-mistakes/x"); action == nil || !strings.HasSuffix(action.Command, "refs/no-mistakes/x") {
+		t.Fatalf("parameterized builder did not append its ref: %#v", action)
 	}
 }
 
-// declaresNextActionCode reports whether a const block mints the vocabulary, in
-// any of the forms it can be written: an explicit NextActionCode spec type, or a
-// NextActionCode("...") conversion. Once a block qualifies, every constant in it
-// is checked, because an untyped string sibling is assignable to
-// NextActionCode everywhere the typed ones are and would otherwise slip through.
-func declaresNextActionCode(gen *ast.GenDecl) bool {
-	for _, spec := range gen.Specs {
-		value, ok := spec.(*ast.ValueSpec)
-		if !ok {
-			continue
-		}
-		if ident, ok := value.Type.(*ast.Ident); ok && ident.Name == "NextActionCode" {
-			return true
-		}
-		for _, expr := range value.Values {
-			if isNextActionCodeConversion(expr) {
-				return true
-			}
-		}
+// assertRegisteredNextAction is what makes the registry load-bearing rather
+// than decorative: whatever an inspection or recovery decides, the action it
+// hands its caller has to be a registered code carrying that code's command.
+func assertRegisteredNextAction(t *testing.T, context string, state State) {
+	t.Helper()
+	action := state.NextAction
+	if action == nil {
+		return
 	}
-	return false
-}
-
-func isNextActionCodeConversion(expr ast.Expr) bool {
-	call, ok := expr.(*ast.CallExpr)
+	command, ok := nextActionCommands[action.Code]
 	if !ok {
-		return false
+		t.Fatalf("%s: next action code %q is not in the registered vocabulary", context, action.Code)
 	}
-	ident, ok := call.Fun.(*ast.Ident)
-	return ok && ident.Name == "NextActionCode"
+	if !strings.HasPrefix(action.Command, command) {
+		t.Fatalf("%s: code %q shipped command %q, registry pairs it with %q", context, action.Code, action.Command, command)
+	}
 }
 
-func stringConstValue(expr ast.Expr) (string, error) {
-	if isNextActionCodeConversion(expr) {
-		call := expr.(*ast.CallExpr)
-		if len(call.Args) != 1 {
-			return "", fmt.Errorf("NextActionCode conversion takes %d arguments", len(call.Args))
+// Every reachable outcome of the real inspection and recovery surfaces must
+// carry a registered code. This is the executable half of exhaustiveness: an
+// action hand-written at a call site compiles, but fails here.
+func TestSyncOutcomesCarryRegisteredNextActionCodes(t *testing.T) {
+	t.Parallel()
+
+	t.Run("behind_pipeline_head", func(t *testing.T) {
+		t.Parallel()
+		f := newSyncFixture(t)
+		assertRegisteredNextAction(t, "behind", f.service.Refresh(f.ctx))
+	})
+
+	t.Run("dirty_worktree", func(t *testing.T) {
+		t.Parallel()
+		f := newSyncFixture(t)
+		mustWrite(t, filepath.Join(f.local, "file.txt"), "dirty\n")
+		assertRegisteredNextAction(t, "dirty", f.service.Refresh(f.ctx))
+	})
+
+	t.Run("active_run", func(t *testing.T) {
+		t.Parallel()
+		f := newSyncFixture(t)
+		if err := f.db.UpdateRunStatus(f.run.ID, types.RunRunning); err != nil {
+			t.Fatal(err)
 		}
-		expr = call.Args[0]
-	}
-	lit, ok := expr.(*ast.BasicLit)
-	if !ok || lit.Kind != token.STRING {
-		return "", fmt.Errorf("value is not a string literal")
-	}
-	wire, err := strconv.Unquote(lit.Value)
-	if err != nil {
-		return "", fmt.Errorf("unquote value: %w", err)
-	}
-	return wire, nil
+		assertRegisteredNextAction(t, "active run", f.service.Refresh(f.ctx))
+	})
+
+	t.Run("terminal_unpublished_custody", func(t *testing.T) {
+		t.Parallel()
+		f := newRecoverFixture(t, types.RunCancelled)
+		assertRegisteredNextAction(t, "custody", f.service.Refresh(f.ctx))
+	})
+
+	t.Run("recover_dirty_refusal", func(t *testing.T) {
+		t.Parallel()
+		f := newRecoverFixture(t, types.RunCancelled)
+		mustWrite(t, filepath.Join(f.local, "feature.txt"), "operator edit\n")
+		assertRegisteredNextAction(t, "recover refusal", f.service.Recover(f.ctx, false))
+	})
+
+	t.Run("apply", func(t *testing.T) {
+		t.Parallel()
+		f := newSyncFixture(t)
+		assertRegisteredNextAction(t, "apply", f.service.Apply(f.ctx))
+	})
 }

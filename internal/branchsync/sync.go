@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -119,8 +120,9 @@ type NextAction struct {
 }
 
 // NextActionCode is the machine-readable half of a NextAction. It is a named
-// type so a bare string literal can neither construct nor compare against one,
-// which is what keeps the vocabulary from drifting back out into its consumers.
+// type so the vocabulary reads as one closed set; an untyped constant still
+// converts implicitly, so what actually keeps the codes from drifting is that
+// every NextAction is built from the nextActionCommands registry below.
 type NextActionCode string
 
 // Next-action codes. They travel to agents in the branch_sync document and are
@@ -148,55 +150,81 @@ const (
 	NextActionInspectAndReconcileManually NextActionCode = "inspect_and_reconcile_manually"
 )
 
-// allNextActionCodes is the complete minted vocabulary. Classifying predicates
-// are tested against it, so a newly minted code fails until it is deliberately
-// classified rather than silently defaulting.
-var allNextActionCodes = []NextActionCode{
-	NextActionSync,
-	NextActionCheckSync,
-	NextActionRecoverCustody,
-	NextActionRetry,
-	NextActionRunPipeline,
-	NextActionInspectWorktree,
-	NextActionContinueActiveRun,
-	NextActionInspectAndReconcileManually,
+// nextActionCommands is the complete minted vocabulary paired with the single
+// command each code ships with. It is the only place a NextAction is composed,
+// so a code minted without a registered command cannot reach a consumer at
+// all, and a right-code/stale-command mismatch is invisible at a call site but
+// obvious in one list.
+var nextActionCommands = map[NextActionCode]string{
+	NextActionSync:                        "no-mistakes axi sync",
+	NextActionCheckSync:                   "no-mistakes axi sync --check",
+	NextActionRecoverCustody:              "no-mistakes axi sync --recover",
+	NextActionRetry:                       "no-mistakes axi sync --check",
+	NextActionRunPipeline:                 `no-mistakes axi run --intent "<what the user set out to accomplish>"`,
+	NextActionInspectWorktree:             "git status",
+	NextActionContinueActiveRun:           "no-mistakes axi status",
+	NextActionInspectAndReconcileManually: "git log --oneline --left-right HEAD...",
 }
 
-// Each code has exactly one paired command, so the pairing lives here rather
-// than at the construction sites: a right-code/stale-command mismatch is
-// invisible at a call site but obvious in one list.
+// allNextActionCodes is the registered vocabulary in a stable order.
+// Classifying predicates are tested against it, so a newly minted code fails
+// until it is deliberately classified rather than silently defaulting.
+func allNextActionCodes() []NextActionCode {
+	codes := make([]NextActionCode, 0, len(nextActionCommands))
+	for code := range nextActionCommands {
+		codes = append(codes, code)
+	}
+	sort.Slice(codes, func(i, j int) bool { return codes[i] < codes[j] })
+	return codes
+}
+
+// actionFor builds the action for a registered code. An unregistered code
+// yields no action rather than one carrying a command nothing paired with it.
+func actionFor(code NextActionCode) *NextAction {
+	command, ok := nextActionCommands[code]
+	if !ok {
+		return nil
+	}
+	return &NextAction{Code: code, Command: command}
+}
+
 func syncAction() *NextAction {
-	return &NextAction{Code: NextActionSync, Command: "no-mistakes axi sync"}
+	return actionFor(NextActionSync)
 }
 
 func checkSyncAction() *NextAction {
-	return &NextAction{Code: NextActionCheckSync, Command: "no-mistakes axi sync --check"}
+	return actionFor(NextActionCheckSync)
 }
 
 func recoverCustodyAction() *NextAction {
-	return &NextAction{Code: NextActionRecoverCustody, Command: "no-mistakes axi sync --recover"}
+	return actionFor(NextActionRecoverCustody)
 }
 
 func retryAction() *NextAction {
-	return &NextAction{Code: NextActionRetry, Command: "no-mistakes axi sync --check"}
+	return actionFor(NextActionRetry)
 }
 
 func runPipelineAction() *NextAction {
-	return &NextAction{Code: NextActionRunPipeline, Command: `no-mistakes axi run --intent "<what the user set out to accomplish>"`}
+	return actionFor(NextActionRunPipeline)
 }
 
 func inspectWorktreeAction() *NextAction {
-	return &NextAction{Code: NextActionInspectWorktree, Command: "git status"}
+	return actionFor(NextActionInspectWorktree)
 }
 
 func continueActiveRunAction() *NextAction {
-	return &NextAction{Code: NextActionContinueActiveRun, Command: "no-mistakes axi status"}
+	return actionFor(NextActionContinueActiveRun)
 }
 
 // reconcileManuallyAction is the one parameterized builder: the reconciliation
 // command names the ref the local head has to be compared against.
 func reconcileManuallyAction(ref string) *NextAction {
-	return &NextAction{Code: NextActionInspectAndReconcileManually, Command: "git log --oneline --left-right HEAD..." + ref}
+	action := actionFor(NextActionInspectAndReconcileManually)
+	if action == nil {
+		return nil
+	}
+	action.Command += ref
+	return action
 }
 
 // IsSynchronization reports whether the action actually takes or re-checks the
@@ -654,7 +682,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			// still at the submitted head - preserved, but invisible to a
 			// branch-ref comparison. A descendant branch head is the other
 			// proof, and it also catches the record up to what the gate holds.
-			preservedDetached := gateHead == ptr(run.SubmittedHeadSHA) && objectExists(ctx, s.GateDir, run.HeadSHA)
+			preservedDetached := gateHoldsDetachedPreservedHead(ctx, s.GateDir, run, gateHead, run.HeadSHA)
 			if !preservedDetached && !isAncestor(ctx, s.GateDir, run.HeadSHA, gateHead) {
 				return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the gate holds neither the recorded head nor a descendant of it; no files or refs were changed")
 			}
@@ -678,7 +706,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 
 	if anchoredLocal, err := git.Run(ctx, wd, "rev-parse", "--verify", localAnchor+"^{commit}"); err == nil && anchoredLocal != preserved && local == preserved && !state.Local.Clean {
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_incomplete_adoption", fmt.Sprintf("the branch reached the preserved pipeline head, but its worktree still differs from that head; the pre-recovery head remains anchored at %s; reconcile the worktree and re-run recovery; custody was not recorded", localAnchor))
-		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+		blocked.NextAction = inspectWorktreeAction()
 		return blocked
 	}
 
@@ -715,7 +743,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	// mismatch is out-of-band gate movement and still refuses, because a
 	// keep-local recovery compare-and-swaps that branch away.
 	detachedPreserved := gateHead != preserved && !resumedKeepLocal &&
-		gateHead == ptr(run.SubmittedHeadSHA) && objectExists(ctx, gateDir, preserved)
+		gateHoldsDetachedPreservedHead(ctx, gateDir, run, gateHead, preserved)
 	if gateHead != preserved && !resumedKeepLocal && !detachedPreserved {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_diverged", fmt.Sprintf("the gate branch is at %s, not the preserved pipeline head %s recorded for this run; no files or refs were changed", gateHead, preserved))
 	}
@@ -752,7 +780,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 			if !state.Local.Clean {
 				state.Relation = RelationDiverged
 				blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_dirty", fmt.Sprintf("the invoking worktree is not clean (%s); commit or stash first and re-run the recovery, or use --keep-local to return custody at the current head without moving the worktree; no files or refs were changed", state.Local.Reason))
-				blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+				blocked.NextAction = inspectWorktreeAction()
 				return blocked
 			}
 			return s.recoverAdoptPreserved(ctx, run, state, preserved)
@@ -974,7 +1002,7 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 			rolledBack = fmt.Sprintf("; the branch could not be restored to %s and now points at %s, whose content the pre-recovery head is contained in", head, preserved)
 		}
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_worktree_busy", fmt.Sprintf("the working tree changed while custody was being returned, so no file was overwritten%s; re-run the recovery once the working tree is settled", rolledBack))
-		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+		blocked.NextAction = inspectWorktreeAction()
 		return blocked
 	}
 
@@ -986,7 +1014,7 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	state.Changed = finalHead == preserved && finalHead != head
 	if finalHead != preserved {
 		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_apply_failed", fmt.Sprintf("adopting the preserved pipeline head did not reach it; final HEAD is %s and the pre-recovery head is anchored at %s; inspect the worktree before retrying", finalHead, localAnchor))
-		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+		blocked.NextAction = inspectWorktreeAction()
 		return blocked
 	}
 	if !finalClean {
@@ -994,7 +1022,7 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 		state.Relation = RelationEqual
 		state.Safety = "blocked_post_recover_" + finalReason
 		state.Error = fmt.Sprintf("HEAD reached the preserved pipeline head, but the worktree is not clean; nothing was overwritten and the pre-recovery head is anchored at %s; custody was not recorded", localAnchor)
-		state.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+		state.NextAction = inspectWorktreeAction()
 		return state
 	}
 	return s.finishRecover(ctx, run, true)
@@ -1038,10 +1066,23 @@ func gatePreservedRef(runID string) string {
 	return "refs/no-mistakes/preserved/" + runID
 }
 
+// gateHoldsDetachedPreservedHead is the single proof that a recorded head no
+// gate branch points at is nonetheless preserved custody. A run that only
+// rebased commits from a detached pipeline worktree, so the preserved commit
+// lands in the gate's object store while the branch ref stays at exactly the
+// head the operator submitted; the commit itself is then the evidence. Every
+// other gate-branch position is out-of-band movement and must still refuse,
+// because a keep-local recovery compare-and-swaps that branch away.
+func gateHoldsDetachedPreservedHead(ctx context.Context, gateDir string, run *db.Run, gateHead, preserved string) bool {
+	return gateHead == ptr(run.SubmittedHeadSHA) && objectExists(ctx, gateDir, preserved)
+}
+
 // fetchPreservedAnchor copies the preserved pipeline commits from the local
 // gate into the worktree's private anchor ref. The ordinary source is the gate
 // branch; a preserved head the branch never reached is published to a
-// gate-side private ref first, which adds a ref and mutates no branch.
+// gate-side private ref first, which adds a ref and mutates no branch. That
+// staging ref is deleted on every exit path, so a recovery never leaves a
+// permanent gate ref pinning the commit against gc.
 func (s *Service) fetchPreservedAnchor(ctx context.Context, gateDir, branch, runID, anchorRef, preserved string, detached bool) error {
 	if !detached {
 		return git.FetchRemoteBranchToPrivateRef(ctx, s.workDir(), gateDir, branch, anchorRef)
@@ -1050,6 +1091,7 @@ func (s *Service) fetchPreservedAnchor(ctx context.Context, gateDir, branch, run
 	if _, err := git.Run(ctx, gateDir, "update-ref", sourceRef, preserved); err != nil {
 		return err
 	}
+	defer func() { _, _ = git.Run(ctx, gateDir, "update-ref", "-d", sourceRef) }()
 	return git.FetchRefToPrivateRef(ctx, s.workDir(), gateDir, sourceRef, anchorRef)
 }
 

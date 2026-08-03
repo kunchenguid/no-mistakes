@@ -361,6 +361,40 @@ func TestInstallRestoresStaleAndDeletedReferenceFiles(t *testing.T) {
 	assertInstalledContent(t, root)
 }
 
+// TestInstallSweepsFilesAnOlderVersionShipped is the other half of that
+// upgrade path: a reference file this version renamed or dropped would
+// otherwise sit in every user skill directory forever, and SKILL.md no longer
+// points at it, so an agent that reads the directory follows retired guidance.
+// Entries Install never creates are left alone.
+func TestInstallSweepsFilesAnOlderVersionShipped(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Install(root); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	for _, base := range InstallBases {
+		dir := filepath.Join(root, base, Name)
+		if err := os.WriteFile(filepath.Join(dir, "retired-reference.md"), []byte("guidance from an older version\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mkdirAll(t, filepath.Join(dir, "operator-notes"))
+	}
+
+	if _, err := Install(root); err != nil {
+		t.Fatalf("refresh install: %v", err)
+	}
+
+	for _, base := range InstallBases {
+		dir := filepath.Join(root, base, Name)
+		if _, err := os.Stat(filepath.Join(dir, "retired-reference.md")); !os.IsNotExist(err) {
+			t.Errorf("%s: retired reference file survived the install (stat err = %v)", base, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "operator-notes")); err != nil {
+			t.Errorf("%s: install removed a directory it never created: %v", base, err)
+		}
+	}
+	assertInstalledContent(t, root)
+}
+
 func TestInstallRejectsSymlinkCycle(t *testing.T) {
 	root := t.TempDir()
 	symlink(t, ".agents", filepath.Join(root, ".claude"))

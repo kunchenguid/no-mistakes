@@ -31,8 +31,17 @@ func InstallUser() ([]string, error) {
 // files, see Files) into each agent skills directory under root (normally the
 // user's home directory), creating directories as needed. It returns the
 // root-relative paths written so the caller can report them. Writing is
-// idempotent: re-running overwrites with identical content, which is also how
-// a stale or deleted file from an older version is refreshed.
+// idempotent: re-running overwrites with identical content, and a plain file an
+// older version shipped that this version renamed or dropped is swept, so a
+// re-run leaves the skill directory holding exactly the current file set
+// instead of pointing agents at retired guidance.
+//
+// The sweep is what makes the directory match Files(), and it is safe because
+// the `<base>/no-mistakes` directory is owned by this tool and populated only
+// here: only plain files are removed, and anything else (a directory, a
+// symlink) is a shape Install never creates and is left untouched. A file that
+// cannot be removed does not fail the installation - the current guidance was
+// still written.
 //
 // Users may consolidate the two bases with a symlink - `.claude/skills` ->
 // `.agents/skills`, the whole `.claude` dir -> `.agents`, or the reverse. Install
@@ -59,8 +68,30 @@ func Install(root string) ([]string, error) {
 			}
 			written = append(written, filepath.Join(base, Name, f.Name))
 		}
+		sweepRetired(realDir, files)
 	}
 	return written, nil
+}
+
+// sweepRetired removes the plain files in an installed skill directory that the
+// current version no longer produces. Non-regular entries are never removed:
+// they are shapes Install does not create, so they are not this function's to
+// decide about.
+func sweepRetired(dir string, files []File) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	current := make(map[string]bool, len(files))
+	for _, f := range files {
+		current[f.Name] = true
+	}
+	for _, e := range entries {
+		if current[e.Name()] || !e.Type().IsRegular() {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, e.Name()))
+	}
 }
 
 // Vendored reports the repo-relative paths of legacy vendored skill copies

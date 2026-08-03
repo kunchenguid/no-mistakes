@@ -157,6 +157,24 @@ func newRecoverFixture(t *testing.T, status types.RunStatus) *recoverFixture {
 
 func (f *recoverFixture) anchorRef() string { return "refs/no-mistakes/recover/" + f.run.ID }
 
+// gateStagingRef names the gate-side ref recovery publishes so a detached
+// preserved commit can be fetched. It is staging, not storage, so a finished
+// recovery must leave it gone rather than pinning the commit against gc.
+func (f *recoverFixture) gateStagingRef() string {
+	return "refs/no-mistakes/preserved/" + f.run.ID
+}
+
+func (f *recoverFixture) gateRefMissing(ref string) bool {
+	f.t.Helper()
+	_, err := gitpkg.Run(f.ctx, f.gate, "rev-parse", "--verify", "--quiet", ref)
+	return err != nil
+}
+
+func (f *recoverFixture) gateBranchHead() string {
+	f.t.Helper()
+	return mustRun(f.t, f.gate, "rev-parse", "refs/heads/feature/recover")
+}
+
 func (f *recoverFixture) custodyReturned() bool {
 	f.t.Helper()
 	run, err := f.db.GetRun(f.run.ID)
@@ -1619,6 +1637,7 @@ func TestRecoverAnchorsDetachedPreservedHeadBehindGateBranch(t *testing.T) {
 
 	f := newRecoverFixture(t, types.RunCancelled)
 	f.strandDetachedPreserved()
+	gateBefore := f.gateBranchHead()
 
 	state := f.service.Recover(f.ctx, false)
 	if !state.Recovered || !state.Changed || state.State != StateCustodyReturned {
@@ -1629,6 +1648,12 @@ func TestRecoverAnchorsDetachedPreservedHeadBehindGateBranch(t *testing.T) {
 	}
 	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
 		t.Fatalf("anchor ref = %s, want %s", got, f.preserved)
+	}
+	if got := f.gateBranchHead(); got != gateBefore {
+		t.Fatalf("gate branch = %s, want it left at %s: anchoring by SHA must mutate no branch", got, gateBefore)
+	}
+	if !f.gateRefMissing(f.gateStagingRef()) {
+		t.Fatalf("gate staging ref %s survived recovery and pins the preserved commit against gc", f.gateStagingRef())
 	}
 	if !f.custodyReturned() {
 		t.Fatal("detached-preserved recovery did not stamp custody")
@@ -1725,6 +1750,7 @@ func TestRecoverAnchorsUnverifiedDetachedPreservedHead(t *testing.T) {
 	f := newRecoverFixture(t, types.RunFailed)
 	f.strandDetachedPreserved()
 	f.unverifyTerminalHead(types.RunFailed)
+	gateBefore := f.gateBranchHead()
 
 	state := f.service.Recover(f.ctx, false)
 	if !state.Recovered || !state.Changed || state.State != StateCustodyReturned {
@@ -1735,6 +1761,12 @@ func TestRecoverAnchorsUnverifiedDetachedPreservedHead(t *testing.T) {
 	}
 	if got := mustRun(t, f.local, "rev-parse", f.anchorRef()); got != f.preserved {
 		t.Fatalf("anchor ref = %s, want %s", got, f.preserved)
+	}
+	if got := f.gateBranchHead(); got != gateBefore {
+		t.Fatalf("gate branch = %s, want it left at %s: anchoring by SHA must mutate no branch", got, gateBefore)
+	}
+	if !f.gateRefMissing(f.gateStagingRef()) {
+		t.Fatalf("gate staging ref %s survived recovery and pins the preserved commit against gc", f.gateStagingRef())
 	}
 	if !f.custodyReturned() {
 		t.Fatal("unverified detached-preserved recovery did not stamp custody")

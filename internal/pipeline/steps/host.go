@@ -129,8 +129,11 @@ func scmCLIFactory(sctx *pipeline.StepContext, base github.CmdFactory) github.Cm
 		// The wrapper resolves credentials relative to its working directory,
 		// and gh addresses the repository through --repo rather than the cwd,
 		// so pointing at the user's real checkout is safe and is what makes
-		// directory-scoped credentials resolve correctly.
-		if sctx.Repo != nil && sctx.Repo.WorkingPath != "" {
+		// directory-scoped credentials resolve correctly. It is the wrapper's
+		// requirement alone: gh_config_dir travels in the environment, so
+		// setting only it must leave the working directory exactly as the base
+		// factory chose it.
+		if len(wrapper) > 0 && sctx.Repo != nil && sctx.Repo.WorkingPath != "" {
 			cmd.Dir = sctx.Repo.WorkingPath
 		}
 		if configDir != "" {
