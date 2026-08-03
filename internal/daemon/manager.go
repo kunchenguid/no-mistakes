@@ -232,9 +232,10 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	if _, err := configuredPRBaseBranchGuard(run.Branch, repo.DefaultBranch, cfg); err != nil {
 		return nil, err
 	}
-	if run.PRBaseBranch != nil {
-		cfg.PR.BaseBranch = *run.PRBaseBranch
-		explicit := run.PRBaseBranchExplicit
+	persistedBase := runPRBaseContinuityForRun(run, repo.DefaultBranch)
+	if persistedBase != nil {
+		cfg.PR.BaseBranch = persistedBase.branch
+		explicit := persistedBase.explicit
 		cfg.PR.BaseBranchExplicit = &explicit
 	}
 	if err := ensureConfiguredPRBaseBranch(fetchCtx, workDir, repo, cfg); err != nil {
@@ -686,16 +687,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		}
 	}
 
-	var prBaseContinuity *runPRBaseContinuity
-	if selectedRun.PRBaseBranch != nil {
-		if persistedBase := strings.TrimSpace(*selectedRun.PRBaseBranch); persistedBase != "" {
-			prBaseContinuity = &runPRBaseContinuity{
-				sourceRun: selectedRun,
-				branch:    persistedBase,
-				explicit:  selectedRun.PRBaseBranchExplicit,
-			}
-		}
-	}
+	prBaseContinuity := runPRBaseContinuityForRun(selectedRun, repo.DefaultBranch)
 
 	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, prBaseContinuity)
 }
@@ -776,6 +768,22 @@ type runPRBaseContinuity struct {
 	explicit  bool
 }
 
+func runPRBaseContinuityForRun(run *db.Run, defaultBranch string) *runPRBaseContinuity {
+	if run == nil {
+		return nil
+	}
+	branch := strings.TrimSpace(defaultBranch)
+	explicit := false
+	if run.PRBaseBranch != nil && strings.TrimSpace(*run.PRBaseBranch) != "" {
+		branch = strings.TrimSpace(*run.PRBaseBranch)
+		explicit = run.PRBaseBranchExplicit
+	}
+	if branch == "" {
+		return nil
+	}
+	return &runPRBaseContinuity{sourceRun: run, branch: branch, explicit: explicit}
+}
+
 func (m *RunManager) verifyRerunPRBaseContinuity(ctx context.Context, repo *db.Repo, candidate *runPRBaseContinuity) (*runPRBaseContinuity, error) {
 	if candidate == nil || candidate.sourceRun == nil {
 		return candidate, nil
@@ -788,23 +796,6 @@ func (m *RunManager) verifyRerunPRBaseContinuity(ctx context.Context, repo *db.R
 	if state == "merged" || state == "closed" {
 		return nil, nil
 	}
-	mustVerify := state == "open" || (run.PRURL != nil && strings.TrimSpace(*run.PRURL) != "")
-	if !mustVerify {
-		stepResults, err := m.db.GetStepsByRun(run.ID)
-		if err != nil {
-			return nil, fmt.Errorf("inspect previous PR step: %w", err)
-		}
-		for _, result := range stepResults {
-			if result.StepName == types.StepPR && result.StartedAt != nil && result.Status != types.StepStatusCompleted && result.Status != types.StepStatusSkipped {
-				mustVerify = true
-				break
-			}
-		}
-	}
-	if !mustVerify {
-		return nil, nil
-	}
-
 	provider := scm.DetectProviderContext(ctx, repo.UpstreamURL)
 	if provider == scm.ProviderUnknown && run.PRURL != nil {
 		provider = scm.DetectProviderContext(ctx, *run.PRURL)

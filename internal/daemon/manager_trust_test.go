@@ -226,6 +226,63 @@ func TestRerunCrashBeforePRPersistencePreservesBaseAcrossTrustedConfigChange(t *
 	}
 }
 
+func TestRerunContinuityChecksEveryPersistedBaseCandidate(t *testing.T) {
+	qualityAssurance := "quality-assurance"
+	for _, tc := range []struct {
+		name          string
+		persistedBase *string
+		explicit      bool
+		openBase      string
+	}{
+		{name: "legacy null", openBase: "main"},
+		{name: "interrupted rerun", persistedBase: &qualityAssurance, explicit: true, openBase: "quality-assurance"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, database := newRefreshRunFixture(t)
+			repo, head := setupTestGitRepo(t, p, database, "rerun-candidate-"+strings.ReplaceAll(tc.name, " ", "-"))
+			run, err := database.InsertRun(repo.ID, "feature", head, head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.persistedBase != nil {
+				if err := database.UpdateRunPRBaseBranch(run.ID, *tc.persistedBase, tc.explicit); err != nil {
+					t.Fatal(err)
+				}
+			}
+			run, err = database.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			binDir, ghLog := writeRerunPRBaseMockGH(t, tc.openBase, "")
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			manager := NewRunManager(database, p, nil)
+			candidate := runPRBaseContinuityForRun(run, repo.DefaultBranch)
+			continuity, err := manager.verifyRerunPRBaseContinuity(context.Background(), repo, candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if continuity == nil || continuity.branch != tc.openBase || continuity.explicit != tc.explicit {
+				t.Fatalf("verified continuity = %+v, want %s (explicit %t)", continuity, tc.openBase, tc.explicit)
+			}
+			verified, err := database.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if verified.PRURL == nil || *verified.PRURL != "https://github.com/test/repo/pull/42" || verified.PRState == nil || *verified.PRState != "open" {
+				t.Fatalf("open PR was not persisted: url=%v state=%v", verified.PRURL, verified.PRState)
+			}
+			logBytes, err := os.ReadFile(ghLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(logBytes), "pr list --head feature --base "+tc.openBase) {
+				t.Fatalf("saved head/base tuple was not checked:\n%s", logBytes)
+			}
+		})
+	}
+}
+
 func TestRerunContinuityRejectsStaleCachedOpenPR(t *testing.T) {
 	p, database := newRefreshRunFixture(t)
 	repo, head := setupTestGitRepo(t, p, database, "rerun-stale-open-pr")
@@ -437,7 +494,8 @@ func TestLoadRecoveredConfig_PRBaseComesFromTrustedDefaultBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 	mgr := NewRunManager(nil, p, nil)
-	cfg, err := mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "run"}, &db.Repo{UpstreamURL: upstream, DefaultBranch: "main"}, workDir)
+	initialBase := "quality-assurance"
+	cfg, err := mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "run", PRBaseBranch: &initialBase, PRBaseBranchExplicit: true}, &db.Repo{UpstreamURL: upstream, DefaultBranch: "main"}, workDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,15 +535,20 @@ func TestLoadRecoveredConfig_PRBaseComesFromTrustedDefaultBranch(t *testing.T) {
 	}
 
 	legacyBase := "main"
-	cfg, err = mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "legacy-parked-run", PRBaseBranch: &legacyBase}, &db.Repo{UpstreamURL: upstream, DefaultBranch: "main"}, workDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.PR.BaseBranch != legacyBase {
-		t.Fatalf("recovered legacy PR base = %q, want persisted %q", cfg.PR.BaseBranch, legacyBase)
-	}
-	if cfg.PR.HasExplicitBaseBranch() {
-		t.Fatal("recovered unset PR base acquired explicit-target semantics")
+	for _, run := range []*db.Run{
+		{ID: "persisted-unset-parked-run", PRBaseBranch: &legacyBase},
+		{ID: "legacy-null-parked-run"},
+	} {
+		cfg, err = mgr.loadRecoveredConfig(context.Background(), run, &db.Repo{UpstreamURL: upstream, DefaultBranch: "main"}, workDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.PR.BaseBranch != legacyBase {
+			t.Fatalf("recovered legacy PR base = %q, want persisted %q", cfg.PR.BaseBranch, legacyBase)
+		}
+		if cfg.PR.HasExplicitBaseBranch() {
+			t.Fatal("recovered unset PR base acquired explicit-target semantics")
+		}
 	}
 }
 
