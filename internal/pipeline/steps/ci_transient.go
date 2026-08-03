@@ -89,6 +89,7 @@ const rerunRollupGracePolls = 2
 type rerunRollupState struct {
 	completedAt    time.Time
 	graceRemaining int
+	observedLinks  map[string]bool
 }
 
 // checkRerunBudget records how many reruns each check has consumed during this
@@ -115,6 +116,7 @@ type persistedRerunBudget struct {
 type persistedRollupState struct {
 	CompletedAt    time.Time `json:"completed_at"`
 	GraceRemaining int       `json:"grace_remaining"`
+	ObservedLinks  []string  `json:"observed_links,omitempty"`
 }
 
 // marshal renders the budget for persistence. An empty budget marshals to the
@@ -127,9 +129,15 @@ func (b *checkRerunBudget) marshal() (string, error) {
 	if len(b.rollup) > 0 {
 		payload.Rollup = make(map[string]persistedRollupState, len(b.rollup))
 		for name, state := range b.rollup {
+			observedLinks := make([]string, 0, len(state.observedLinks))
+			for link := range state.observedLinks {
+				observedLinks = append(observedLinks, link)
+			}
+			sort.Strings(observedLinks)
 			payload.Rollup[name] = persistedRollupState{
 				CompletedAt:    state.completedAt,
 				GraceRemaining: state.graceRemaining,
+				ObservedLinks:  observedLinks,
 			}
 		}
 	}
@@ -156,9 +164,16 @@ func (b *checkRerunBudget) unmarshal(encoded string) error {
 	}
 	b.rollup = make(map[string]rerunRollupState, len(payload.Rollup))
 	for name, state := range payload.Rollup {
+		observedLinks := make(map[string]bool, len(state.ObservedLinks))
+		for _, link := range state.ObservedLinks {
+			if link != "" {
+				observedLinks[link] = true
+			}
+		}
 		b.rollup[name] = rerunRollupState{
 			completedAt:    state.CompletedAt,
 			graceRemaining: state.GraceRemaining,
+			observedLinks:  observedLinks,
 		}
 	}
 	return nil
@@ -173,11 +188,9 @@ func (b *checkRerunBudget) remaining(name string, limit int) int {
 
 func (b *checkRerunBudget) used(name string) int { return b.spent[name] }
 
-// spend records one rerun against check's name, along with the completion the
-// check reported at that moment. That timestamp is the only evidence a later
-// poll has that it is reading a refreshed rollup rather than the same outcome
-// the rerun was requested for.
-func (b *checkRerunBudget) spend(check scm.Check) int {
+// spend records one rerun against check's name, along with the completion and
+// same-named provider identities reported at that moment.
+func (b *checkRerunBudget) spend(check scm.Check, checks []scm.Check) int {
 	if b.spent == nil {
 		b.spent = map[string]int{}
 	}
@@ -185,7 +198,17 @@ func (b *checkRerunBudget) spend(check scm.Check) int {
 		b.rollup = map[string]rerunRollupState{}
 	}
 	b.spent[check.Name]++
-	b.rollup[check.Name] = rerunRollupState{completedAt: check.CompletedAt, graceRemaining: rerunRollupGracePolls}
+	observedLinks := map[string]bool{}
+	for _, observed := range checks {
+		if observed.Name == check.Name && observed.Link != "" {
+			observedLinks[observed.Link] = true
+		}
+	}
+	b.rollup[check.Name] = rerunRollupState{
+		completedAt:    check.CompletedAt,
+		graceRemaining: rerunRollupGracePolls,
+		observedLinks:  observedLinks,
+	}
 	return b.spent[check.Name]
 }
 
@@ -232,7 +255,7 @@ func (b *checkRerunBudget) retireResolvedReruns(checks []scm.Check) bool {
 		}
 		switch check.Bucket {
 		case scm.CheckBucketPass, scm.CheckBucketFail, scm.CheckBucketSkip:
-			if !state.completedAt.IsZero() && check.CompletedAt.After(state.completedAt) {
+			if len(state.observedLinks) > 0 && check.Link != "" && !state.observedLinks[check.Link] {
 				resolved[check.Name] = true
 			}
 		default:
@@ -267,10 +290,13 @@ func (b *checkRerunBudget) cancelledAfterRerun(checks []scm.Check) (unresolved, 
 		if b.used(check.Name) == 0 {
 			continue
 		}
-		// A rerun this run issued is outstanding until its replacement is
-		// published, whatever bucket the check currently reports. Recording
-		// presence for every bucket keeps a check that moved from cancelled to
-		// running or success from being read as missing below.
+		state, tracked := b.rollup[check.Name]
+		if !tracked {
+			continue
+		}
+		if check.Bucket != scm.CheckBucketCancel && (check.Link == "" || state.observedLinks[check.Link]) {
+			continue
+		}
 		present[check.Name] = true
 		if check.Bucket != scm.CheckBucketCancel {
 			continue
@@ -515,7 +541,7 @@ func (s *CIStep) rerunTransientChecks(sctx *pipeline.StepContext, host scm.Host,
 
 	issued := false
 	for _, check := range candidates {
-		used := s.transientReruns.spend(check)
+		used := s.transientReruns.spend(check, checks)
 		// Reserve durably before asking the provider. A crash between this
 		// write and the request costs the budget, which is the safe direction:
 		// the alternative is a recovered run believing the rerun never

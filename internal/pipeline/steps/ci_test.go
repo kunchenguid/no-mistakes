@@ -2420,7 +2420,7 @@ func TestCIStep_ResolvedRerunDoesNotParkALaterGreenHead(t *testing.T) {
 		`{"name":"Behavior portable serial","state":"CANCELLED","bucket":"cancel","completedAt":"2026-08-02T07:54:14Z","link":"https://github.com/test/repo/actions/runs/30738052151/job/91470340751"}]`
 	// The rerun the monitor requested comes back green on the same head.
 	rerunPassed := `[{"name":"Repo invariants","state":"SUCCESS","bucket":"pass"},` +
-		`{"name":"Behavior portable serial","state":"SUCCESS","bucket":"pass","completedAt":"2026-08-02T08:07:02Z"}]`
+		`{"name":"Behavior portable serial","state":"SUCCESS","bucket":"pass","completedAt":"2026-08-02T08:07:02Z","link":"https://github.com/test/repo/actions/runs/30738052151/job/91470340752"}]`
 	// The head the pipeline watches then advances (its own fix commit), and the
 	// re-run job is path-filtered out of the new head's rollup. Everything the
 	// forge does report for that head is green.

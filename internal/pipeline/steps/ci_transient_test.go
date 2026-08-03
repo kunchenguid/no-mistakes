@@ -212,7 +212,7 @@ func TestTransientRerunSelectionCannotExceedTheBudget(t *testing.T) {
 	reruns := 0
 	for poll := 0; poll < 5; poll++ {
 		for _, candidate := range transientRerunCandidates(checks, &budget, limit) {
-			if used := budget.spend(candidate); used > limit {
+			if used := budget.spend(candidate, checks); used > limit {
 				t.Fatalf("poll %d spent rerun %d of a %d rerun budget for %q", poll, used, limit, candidate.Name)
 			}
 			reruns++
@@ -240,7 +240,7 @@ func TestTransientRerunSelectionDeclinesWhileTheRollupIsUnrefreshed(t *testing.T
 	if len(first) != 1 {
 		t.Fatalf("first poll candidates = %+v, want the cancelled check", first)
 	}
-	budget.spend(first[0])
+	budget.spend(first[0], []scm.Check{check})
 
 	for poll := 1; poll <= rerunRollupGracePolls; poll++ {
 		if got := transientRerunCandidates([]scm.Check{check}, &budget, limit); len(got) != 0 {
@@ -259,7 +259,7 @@ func TestTransientRerunSelectionDeclinesWhileTheRollupIsUnrefreshed(t *testing.T
 	if len(after) != 1 {
 		t.Fatalf("candidates after the grace ran out = %+v, want the remaining budget to be usable", after)
 	}
-	if used := budget.spend(after[0]); used != limit {
+	if used := budget.spend(after[0], []scm.Check{check}); used != limit {
 		t.Fatalf("spend after the grace ran out = %d, want %d", used, limit)
 	}
 	if got := budget.remaining("build", limit); got != 0 {
@@ -277,7 +277,7 @@ func TestTransientRerunSelectionResumesOnceTheRollupRefreshes(t *testing.T) {
 	check := scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, State: "CANCELLED", CompletedAt: completed}
 
 	budget := checkRerunBudget{}
-	budget.spend(check)
+	budget.spend(check, []scm.Check{check})
 
 	rerun := check
 	rerun.CompletedAt = completed.Add(3 * time.Minute)
@@ -299,7 +299,8 @@ func TestCheckRerunBudgetAccounting(t *testing.T) {
 	if got := budget.used("test"); got != 0 {
 		t.Fatalf("used before any attempt = %d, want 0", got)
 	}
-	if got := budget.spend(scm.Check{Name: "test"}); got != 1 {
+	check := scm.Check{Name: "test"}
+	if got := budget.spend(check, []scm.Check{check}); got != 1 {
 		t.Fatalf("spend = %d, want 1", got)
 	}
 	if got := budget.remaining("test", 1); got != 0 {
@@ -376,7 +377,7 @@ func TestCancelledCheckAwaitsItsRerunBeforeBeingCalledUnresolved(t *testing.T) {
 	check := scm.Check{Name: "test", Bucket: scm.CheckBucketCancel, State: "CANCELLED", CompletedAt: completed}
 
 	budget := checkRerunBudget{}
-	budget.spend(check)
+	budget.spend(check, []scm.Check{check})
 
 	for poll := 1; poll <= rerunRollupGracePolls; poll++ {
 		unresolved, awaiting := budget.cancelledAfterRerun([]scm.Check{check})
@@ -400,7 +401,7 @@ func TestRerunThatEndsCancelledAgainIsUnresolvedImmediately(t *testing.T) {
 	check := scm.Check{Name: "test", Bucket: scm.CheckBucketCancel, State: "CANCELLED", CompletedAt: completed}
 
 	budget := checkRerunBudget{}
-	budget.spend(check)
+	budget.spend(check, []scm.Check{check})
 
 	rerun := check
 	rerun.CompletedAt = completed.Add(4 * time.Minute)
@@ -462,7 +463,8 @@ func TestRerunningCancelledChecksIsOffByDefault(t *testing.T) {
 func TestRerunBudgetSurvivesARestart(t *testing.T) {
 	completed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	original := &checkRerunBudget{}
-	original.spend(scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, CompletedAt: completed})
+	check := scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, CompletedAt: completed, Link: "https://github.com/test/repo/actions/runs/1/job/10"}
+	original.spend(check, []scm.Check{check})
 
 	encoded, err := original.marshal()
 	if err != nil {
@@ -485,6 +487,12 @@ func TestRerunBudgetSurvivesARestart(t *testing.T) {
 	if !recovered.rollupUnchanged(scm.Check{Name: "build", CompletedAt: completed}) {
 		t.Fatal("recovered budget lost the completion the rerun was requested for")
 	}
+	if recovered.retireResolvedReruns([]scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", Link: check.Link}}) {
+		t.Fatal("recovered budget lost the provider identity observed before the rerun")
+	}
+	if !recovered.retireResolvedReruns([]scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", Link: "https://github.com/test/repo/actions/runs/1/job/11"}}) {
+		t.Fatal("recovered budget did not recognize a new provider identity")
+	}
 }
 
 // An empty budget writes nothing, so a run that never spent a rerun does not
@@ -505,7 +513,8 @@ func TestUnspentRerunBudgetMarshalsToNothing(t *testing.T) {
 func TestOutstandingRerunMissingFromTheRollupStaysTracked(t *testing.T) {
 	completed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	budget := &checkRerunBudget{}
-	budget.spend(scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, CompletedAt: completed})
+	check := scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, CompletedAt: completed, Link: "https://github.com/test/repo/actions/runs/1/job/10"}
+	budget.spend(check, []scm.Check{check})
 
 	// The rollup no longer mentions the check at all.
 	for poll := 1; poll <= rerunRollupGracePolls; poll++ {
@@ -534,10 +543,11 @@ func TestOutstandingRerunMissingFromTheRollupStaysTracked(t *testing.T) {
 func TestOutstandingRerunPublishedInAnotherBucketIsNotTreatedAsMissing(t *testing.T) {
 	completed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	budget := &checkRerunBudget{}
-	budget.spend(scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, CompletedAt: completed})
+	check := scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, CompletedAt: completed, Link: "https://github.com/test/repo/actions/runs/1/job/10"}
+	budget.spend(check, []scm.Check{check})
 
 	unresolved, awaiting := budget.cancelledAfterRerun([]scm.Check{
-		{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS"},
+		{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", Link: "https://github.com/test/repo/actions/runs/1/job/11"},
 	})
 	if len(unresolved) != 0 || len(awaiting) != 0 {
 		t.Fatalf("unresolved = %v, awaiting = %v, want both empty for a republished check", unresolved, awaiting)
@@ -551,11 +561,13 @@ func TestOutstandingRerunPublishedInAnotherBucketIsNotTreatedAsMissing(t *testin
 // covers it.
 func TestRetireResolvedReruns(t *testing.T) {
 	completed := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-	replacementCompleted := completed.Add(time.Minute)
-	siblingCompleted := completed.Add(-time.Minute)
+	originalLink := "https://github.com/test/repo/actions/runs/1/job/10"
+	replacementLink := "https://github.com/test/repo/actions/runs/1/job/11"
 	newBudget := func() *checkRerunBudget {
 		b := &checkRerunBudget{}
-		b.spend(scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, CompletedAt: completed})
+		cancelled := scm.Check{Name: "build", Bucket: scm.CheckBucketCancel, CompletedAt: completed, Link: originalLink}
+		sibling := scm.Check{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", Link: "https://github.com/test/repo/actions/runs/2/job/20"}
+		b.spend(cancelled, []scm.Check{cancelled, sibling})
 		return b
 	}
 
@@ -566,27 +578,27 @@ func TestRetireResolvedReruns(t *testing.T) {
 	}{
 		{
 			name:        "published success retires the record",
-			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", CompletedAt: replacementCompleted}},
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", Link: replacementLink}},
 			wantRetired: true,
 		},
 		{
 			name:        "published failure retires the record",
-			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketFail, State: "FAILURE", CompletedAt: replacementCompleted}},
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketFail, State: "FAILURE", Link: replacementLink}},
 			wantRetired: true,
 		},
 		{
 			name:        "skipped replacement retires the record",
-			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketSkip, State: "SKIPPED", CompletedAt: replacementCompleted}},
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketSkip, State: "SKIPPED", Link: replacementLink}},
 			wantRetired: true,
 		},
 		{
 			name:        "cancelled replacement in fail bucket stays outstanding",
-			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketFail, State: "CANCELLED", CompletedAt: replacementCompleted}},
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketFail, State: "CANCELLED", Link: replacementLink}},
 			wantRetired: false,
 		},
 		{
 			name:        "canceled replacement in fail bucket stays outstanding",
-			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketFail, State: "CANCELED", CompletedAt: replacementCompleted}},
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketFail, State: "CANCELED", Link: replacementLink}},
 			wantRetired: false,
 		},
 		{
@@ -612,14 +624,19 @@ func TestRetireResolvedReruns(t *testing.T) {
 		{
 			name: "one same-named instance still outstanding blocks retirement",
 			checks: []scm.Check{
-				{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", CompletedAt: replacementCompleted},
+				{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", Link: replacementLink},
 				{Name: "build", Bucket: scm.CheckBucketPending, State: "QUEUED"},
 			},
 			wantRetired: false,
 		},
 		{
 			name:        "same-named passing sibling cannot replace the tracked observation",
-			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", CompletedAt: siblingCompleted}},
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS", Link: "https://github.com/test/repo/actions/runs/2/job/20"}},
+			wantRetired: false,
+		},
+		{
+			name:        "empty provider identity cannot prove a replacement",
+			checks:      []scm.Check{{Name: "build", Bucket: scm.CheckBucketPass, State: "SUCCESS"}},
 			wantRetired: false,
 		},
 	}
