@@ -1283,6 +1283,78 @@ func TestRecoverRebasedPreservedHeadStillEscalatesForUniqueLocalWork(t *testing.
 	}
 }
 
+func TestRecoverRebasedPreservedHeadRequiresDistinctPatchCounterparts(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	mustWrite(t, filepath.Join(f.local, "repeated.txt"), "repeated work\n")
+	mustRun(t, f.local, "add", "repeated.txt")
+	mustRun(t, f.local, "commit", "-m", "apply repeated work")
+	firstApplication := mustRun(t, f.local, "rev-parse", "HEAD")
+	mustRun(t, f.local, "revert", "--no-edit", firstApplication)
+	mustRun(t, f.local, "cherry-pick", firstApplication)
+	uniqueHead := mustRun(t, f.local, "rev-parse", "HEAD")
+
+	pipeline := filepath.Join(filepath.Dir(f.local), "multiplicity")
+	mustRun(t, filepath.Dir(f.local), "-c", "core.autocrlf=false", "clone", f.gate, pipeline)
+	configureIdentity(t, pipeline)
+	mustRun(t, pipeline, "checkout", "feature/recover")
+	mustWrite(t, filepath.Join(pipeline, "repeated.txt"), "repeated work\n")
+	mustRun(t, pipeline, "add", "repeated.txt")
+	mustRun(t, pipeline, "commit", "-m", "apply repeated work")
+	mustRun(t, pipeline, "revert", "--no-edit", "HEAD")
+	preserved := mustRun(t, pipeline, "rev-parse", "HEAD")
+	mustRun(t, pipeline, "push", "--force", "origin", "HEAD:refs/heads/feature/recover")
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, preserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatusWithVerifiedHead(f.run.ID, types.RunCancelled, preserved); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_diverged" {
+		t.Fatalf("unpaired repeated patch was auto-recovered: %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != uniqueHead {
+		t.Fatalf("HEAD moved to %s despite an unpaired patch occurrence", got)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "repeated.txt")); got != "repeated work\n" {
+		t.Fatalf("repeated local work lost: %q", got)
+	}
+	if f.custodyReturned() {
+		t.Fatal("unpaired-patch escalation stamped custody")
+	}
+}
+
+func TestRecoverRebaseSupersetRechecksAfterAnchoringLocalHead(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	hook := filepath.Join(f.local, ".git", "hooks", "reference-transaction")
+	mustWrite(t, hook, "#!/bin/sh\nif [ \"$1\" = prepared ]; then\n  while read old new ref; do\n    case \"$ref\" in\n      refs/no-mistakes/recover-local/*) printf 'hook work\\n' > hook-created.txt ;;\n    esac\n  done\nfi\n")
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
+		t.Fatalf("recover after anchor hook mutation = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("anchor hook mutation was reset to %s", got)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "hook-created.txt")); got != "hook work\n" {
+		t.Fatalf("anchor hook work was lost: %q", got)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.localAnchorRef()); got != f.submitted {
+		t.Fatalf("atomic local anchor = %s, want %s", got, f.submitted)
+	}
+	if f.custodyReturned() {
+		t.Fatal("anchor-race refusal stamped custody")
+	}
+}
+
 // TestRecoverRebaseSupersetRefusesDirtyWorktree keeps the uncommitted-work
 // protection intact: adopting the preserved head is a hard reset, so a dirty
 // worktree must refuse rather than overwrite files the operator has not

@@ -730,28 +730,32 @@ func preservedContainsLocalWork(ctx context.Context, dir, local, preserved strin
 // rounds deliberately supersede the operator's content.
 //
 // The accounting is fail-closed by construction: every commit in
-// preserved..local must appear patch-equivalent. A commit the cherry walk
-// cannot mark - a merge, a conflict-resolved replay, a reworked commit - is
-// simply absent from the equivalent set and escalates.
+// preserved..local must consume one distinct patch-equivalent commit from the
+// opposite side. A merge, a conflict-resolved replay, a reworked commit, or an
+// extra occurrence of the same patch escalates.
 func everyLocalCommitReplayed(ctx context.Context, dir, local, preserved string) bool {
-	unreachable, err := revList(ctx, dir, "rev-list", preserved+".."+local)
-	if err != nil || len(unreachable) == 0 {
+	localOnly, err := revList(ctx, dir, "rev-list", preserved+".."+local)
+	if err != nil || len(localOnly) == 0 {
 		return false
 	}
-	marked, err := git.Run(ctx, dir, "rev-list", "--left-right", "--cherry-mark", "--right-only", preserved+"..."+local)
-	if err != nil {
+	preservedOnly, err := revList(ctx, dir, "rev-list", local+".."+preserved)
+	if err != nil || len(preservedOnly) == 0 {
 		return false
 	}
-	replayed := make(map[string]bool)
-	for _, entry := range strings.Fields(marked) {
-		if sha, ok := strings.CutPrefix(entry, "="); ok {
-			replayed[sha] = true
-		}
-	}
-	for _, sha := range unreachable {
-		if !replayed[sha] {
+	preservedPatches := make(map[string]int, len(preservedOnly))
+	for _, sha := range preservedOnly {
+		patchID, patchErr := git.PatchID(ctx, dir, sha)
+		if patchErr != nil {
 			return false
 		}
+		preservedPatches[patchID]++
+	}
+	for _, sha := range localOnly {
+		patchID, patchErr := git.PatchID(ctx, dir, sha)
+		if patchErr != nil || preservedPatches[patchID] == 0 {
+			return false
+		}
+		preservedPatches[patchID]--
 	}
 	return true
 }
@@ -777,11 +781,26 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the rebase-superset proof changed while custody was being returned; no files or refs were changed")
 	}
 	localAnchor := recoverLocalAnchorRef(run.ID)
-	if _, err := git.Run(ctx, s.workDir(), "update-ref", localAnchor, head); err != nil {
+	existingAnchor, existingErr := git.Run(ctx, s.workDir(), "rev-parse", "--verify", localAnchor+"^{commit}")
+	if existingErr == nil && existingAnchor != head {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; no files or refs were changed")
+	}
+	if existingErr != nil {
+		if _, err := git.Run(ctx, s.workDir(), "update-ref", localAnchor, head, git.ZeroSHA); err != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be anchored; no files or refs were changed")
+		}
 	}
 	if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", localAnchor+"^{commit}"); err != nil || anchored != head {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be verified after anchoring; no files or worktree refs were changed")
+	}
+	branch, branchErr = git.CurrentBranch(ctx, s.workDir())
+	head, headErr = git.HeadSHA(ctx, s.workDir())
+	clean, _ = worktreeClean(ctx, s.workDir())
+	if branchErr != nil || branch != state.Local.Branch || headErr != nil || head != state.Local.Head || !clean {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch or worktree changed while custody was being returned; no further files or refs were changed")
+	}
+	if !preservedContainsLocalWork(ctx, s.workDir(), head, preserved) {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the rebase-superset proof changed while custody was being returned; no further files or refs were changed")
 	}
 	_, resetErr := git.Run(ctx, s.workDir(), "reset", "--hard", preserved)
 	finalHead, _ := git.HeadSHA(ctx, s.workDir())
