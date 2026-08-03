@@ -48,8 +48,11 @@ func main() {
 }
 
 // writeDir renders every skill file into dir, creating it if needed, and
-// removes anything else: dir is generated output, so a file the generator no
-// longer produces is a retired or renamed reference that must not survive.
+// deletes the retired plain files the generator no longer produces so a renamed
+// reference cannot survive as a stale committed copy. Anything that is not a
+// plain file is a shape the generator never creates, so it is refused rather
+// than deleted: dir is a relative path resolved against the caller's cwd, and
+// nothing here is worth recursively removing an unexpected tree for.
 func writeDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
@@ -60,13 +63,16 @@ func writeDir(dir string) error {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
 	}
-	orphans, err := orphanNames(dir)
+	retired, foreign, err := orphanNames(dir)
 	if err != nil {
 		return err
 	}
-	for _, name := range orphans {
+	if len(foreign) > 0 {
+		return fmt.Errorf("%s holds entries the generator has no shape for (%s); remove them by hand", dir, strings.Join(foreign, ", "))
+	}
+	for _, name := range retired {
 		path := filepath.Join(dir, name)
-		if err := os.RemoveAll(path); err != nil {
+		if err := os.Remove(path); err != nil {
 			return fmt.Errorf("remove %s: %w", path, err)
 		}
 	}
@@ -86,32 +92,39 @@ func checkDir(dir string) error {
 			return fmt.Errorf("%s is stale; run `go run ./cmd/genskill` and commit the result", path)
 		}
 	}
-	orphans, err := orphanNames(dir)
+	retired, foreign, err := orphanNames(dir)
 	if err != nil {
 		return err
 	}
-	if len(orphans) > 0 {
+	if len(foreign) > 0 {
+		return fmt.Errorf("%s holds entries the generator has no shape for (%s); remove them by hand", dir, strings.Join(foreign, ", "))
+	}
+	if len(retired) > 0 {
 		return fmt.Errorf("%s contains files the generator does not produce (%s); run `go run ./cmd/genskill` and commit the result",
-			dir, strings.Join(orphans, ", "))
+			dir, strings.Join(retired, ", "))
 	}
 	return nil
 }
 
-// orphanNames lists the entries of dir that skill.Files() does not produce.
-func orphanNames(dir string) ([]string, error) {
+// orphanNames splits the entries of dir that skill.Files() does not produce
+// into the plain files the generator may delete and everything else.
+func orphanNames(dir string) (retired, foreign []string, err error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("read dir %s: %w", dir, err)
+		return nil, nil, fmt.Errorf("read dir %s: %w", dir, err)
 	}
 	generated := make(map[string]bool, len(skill.Files()))
 	for _, f := range skill.Files() {
 		generated[f.Name] = true
 	}
-	var orphans []string
 	for _, e := range entries {
-		if !generated[e.Name()] {
-			orphans = append(orphans, e.Name())
+		switch {
+		case generated[e.Name()]:
+		case e.Type().IsRegular():
+			retired = append(retired, e.Name())
+		default:
+			foreign = append(foreign, e.Name())
 		}
 	}
-	return orphans, nil
+	return retired, foreign, nil
 }

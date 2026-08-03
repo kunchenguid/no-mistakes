@@ -725,6 +725,14 @@ func TestClaudeStdinHelper(t *testing.T) {
 		}
 		_, _ = io.WriteString(os.Stdout, `{"type":"assistant","session_id":"helper-session","message":{"model":"helper-model","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"API Error: Stream idle timeout - no chunks received"}]}}`+"\n")
 		os.Exit(1)
+	case "stall-then-truncate":
+		// A stalled stream can also arrive as an unterminated event: the
+		// diagnostic lands as assistant text, then the transport dies mid-line
+		// and the scanner - not wait - is what fails.
+		_, _ = io.WriteString(os.Stderr, "warning: --print is deprecated\n")
+		_, _ = io.WriteString(os.Stdout, `{"type":"assistant","session_id":"helper-session","message":{"model":"helper-model","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"API Error: Stream idle timeout - no chunks received"}]}}`+"\n")
+		_, _ = io.WriteString(os.Stdout, `{"type":"assistant","message":{"content":[{"type":"text","text":"`+strings.Repeat("t", 128*1024))
+		return
 	case "read":
 		prompt, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -973,6 +981,35 @@ func TestClaudeAgent_ExhaustedStreamStallNamesTheCause(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Stream idle timeout") {
 		t.Fatalf("error %q does not name the stream failure", err)
+	}
+}
+
+// A stall that truncates the event stream fails in the scanner, not in wait, so
+// it takes the parse-error path rather than claudeExitError. That path decides
+// whether the run retries, so it has to carry both channels: stderr and the
+// stream diagnostic classifyTransient matches on.
+func TestClaudeAgent_TruncatedStreamStallCarriesBothChannelsAndRetries(t *testing.T) {
+	restore := claudeScannerMaxTokenSize
+	claudeScannerMaxTokenSize = 1024
+	t.Cleanup(func() { claudeScannerMaxTokenSize = restore })
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "stall-then-truncate")
+	a := newClaudeStdinHelperAgent(t)
+
+	_, err := a.runOnce(context.Background(), RunOpts{Prompt: "review", CWD: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected the truncated event stream to fail")
+	}
+	if !strings.Contains(err.Error(), "parse events") {
+		t.Fatalf("error %q did not take the parse-error path", err)
+	}
+	if !strings.Contains(err.Error(), "warning: --print is deprecated") {
+		t.Errorf("error %q dropped the stderr detail", err)
+	}
+	if !strings.Contains(err.Error(), "Stream idle timeout") {
+		t.Errorf("error %q dropped the stream diagnostic", err)
+	}
+	if _, ok := classifyTransient(err); !ok {
+		t.Errorf("error %q is not classified transient, so the stall would not retry", err)
 	}
 }
 

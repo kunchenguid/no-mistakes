@@ -22,7 +22,7 @@ const claudeMaxRetries = 3
 // errNoStructuredOutput is returned when Claude succeeds but omits structured output.
 var errNoStructuredOutput = errors.New("claude returned no structured output")
 
-const claudeScannerMaxTokenSize = 256 * 1024 * 1024
+var claudeScannerMaxTokenSize = 256 * 1024 * 1024
 
 // claudeAPIErrorPrefix is how the claude CLI labels its own transport failures
 // ("API Error: Stream idle timeout - no chunks received"). The CLI writes them
