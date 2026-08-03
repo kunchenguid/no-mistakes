@@ -22,6 +22,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -686,11 +687,12 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 	}
 
 	var prBaseContinuity *runPRBaseContinuity
-	if selectedRun.PRBaseBranch != nil && selectedRun.PRState != nil && *selectedRun.PRState == "open" {
+	if selectedRun.PRBaseBranch != nil {
 		if persistedBase := strings.TrimSpace(*selectedRun.PRBaseBranch); persistedBase != "" {
 			prBaseContinuity = &runPRBaseContinuity{
-				branch:   persistedBase,
-				explicit: selectedRun.PRBaseBranchExplicit,
+				sourceRun: selectedRun,
+				branch:    persistedBase,
+				explicit:  selectedRun.PRBaseBranchExplicit,
 			}
 		}
 	}
@@ -769,8 +771,94 @@ func configuredPRBaseBranchGuard(branch, defaultBranch string, cfg *config.Confi
 }
 
 type runPRBaseContinuity struct {
-	branch   string
-	explicit bool
+	sourceRun *db.Run
+	branch    string
+	explicit  bool
+}
+
+func (m *RunManager) verifyRerunPRBaseContinuity(ctx context.Context, repo *db.Repo, candidate *runPRBaseContinuity) (*runPRBaseContinuity, error) {
+	if candidate == nil || candidate.sourceRun == nil {
+		return candidate, nil
+	}
+	run := candidate.sourceRun
+	state := ""
+	if run.PRState != nil {
+		state = strings.ToLower(strings.TrimSpace(*run.PRState))
+	}
+	if state == "merged" || state == "closed" {
+		return nil, nil
+	}
+	mustVerify := state == "open" || (run.PRURL != nil && strings.TrimSpace(*run.PRURL) != "")
+	if !mustVerify {
+		stepResults, err := m.db.GetStepsByRun(run.ID)
+		if err != nil {
+			return nil, fmt.Errorf("inspect previous PR step: %w", err)
+		}
+		for _, result := range stepResults {
+			if result.StepName == types.StepPR && result.StartedAt != nil && result.Status != types.StepStatusCompleted && result.Status != types.StepStatusSkipped {
+				mustVerify = true
+				break
+			}
+		}
+	}
+	if !mustVerify {
+		return nil, nil
+	}
+
+	provider := scm.DetectProviderContext(ctx, repo.UpstreamURL)
+	if provider == scm.ProviderUnknown && run.PRURL != nil {
+		provider = scm.DetectProviderContext(ctx, *run.PRURL)
+	}
+	sctx := &pipeline.StepContext{
+		Ctx:     ctx,
+		Run:     run,
+		Repo:    repo,
+		WorkDir: m.paths.RepoDir(repo.ID),
+	}
+	host, reason := steps.BuildHost(sctx, provider)
+	if host == nil {
+		return nil, fmt.Errorf("cannot verify existing pull request for rerun: %s", reason)
+	}
+	if err := host.Available(ctx); err != nil {
+		return nil, fmt.Errorf("cannot verify existing pull request for rerun: %w", err)
+	}
+	pr, err := host.FindPR(ctx, run.Branch, candidate.branch)
+	if err != nil {
+		return nil, fmt.Errorf("verify open pull request for %s into %s: %w", run.Branch, candidate.branch, err)
+	}
+	if pr != nil && strings.TrimSpace(pr.URL) != "" {
+		if err := m.db.UpdateRunPRURL(run.ID, pr.URL); err != nil {
+			return nil, fmt.Errorf("persist verified open pull request: %w", err)
+		}
+		return &runPRBaseContinuity{branch: candidate.branch, explicit: candidate.explicit}, nil
+	}
+
+	if run.PRURL != nil && strings.TrimSpace(*run.PRURL) != "" {
+		known := &scm.PR{URL: strings.TrimSpace(*run.PRURL)}
+		if number, err := scm.ExtractPRNumber(known.URL); err == nil {
+			known.Number = number
+		}
+		observed, err := host.GetPRState(ctx, known)
+		if err != nil {
+			return nil, fmt.Errorf("verify persisted pull request state: %w", err)
+		}
+		switch observed {
+		case scm.PRStateMerged:
+			state = "merged"
+		case scm.PRStateClosed:
+			state = "closed"
+		case scm.PRStateOpen:
+			return nil, fmt.Errorf("persisted pull request is open but was not found for head %s and base %s", run.Branch, candidate.branch)
+		default:
+			return nil, fmt.Errorf("persisted pull request state is unresolved: %q", observed)
+		}
+	} else {
+		state = "none"
+	}
+	if err := m.db.UpdateRunPRState(run.ID, state); err != nil {
+		return nil, fmt.Errorf("persist verified pull request state: %w", err)
+	}
+	return nil, nil
 }
 
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
@@ -939,6 +1027,15 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure(failure)
 		return "", err
+	}
+	if prBaseContinuity != nil {
+		verifiedContinuity, verifyErr := m.verifyRerunPRBaseContinuity(ctx, repo, prBaseContinuity)
+		if verifyErr != nil {
+			m.db.UpdateRunError(run.ID, verifyErr.Error())
+			trackStartFailure("verify_rerun_pr_base_continuity")
+			return "", verifyErr
+		}
+		prBaseContinuity = verifiedContinuity
 	}
 	if prBaseContinuity != nil {
 		cfg.PR.BaseBranch = prBaseContinuity.branch

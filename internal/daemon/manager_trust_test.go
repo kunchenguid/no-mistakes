@@ -122,7 +122,7 @@ func (s *captureRerunPRStep) Execute(sctx *pipeline.StepContext) (*pipeline.Step
 	return s.Step.Execute(sctx)
 }
 
-func TestRerunOpenPRPreservesBaseAcrossTrustedConfigChange(t *testing.T) {
+func TestRerunCrashBeforePRPersistencePreservesBaseAcrossTrustedConfigChange(t *testing.T) {
 	t.Setenv("NM_DEMO", "1")
 	p, database := newRefreshRunFixture(t)
 	repo, _ := setupTestGitRepo(t, p, database, "rerun-pr-base-continuity")
@@ -155,17 +155,17 @@ func TestRerunOpenPRPreservesBaseAcrossTrustedConfigChange(t *testing.T) {
 	if err := database.UpdateRunPRBaseBranch(selectedRun.ID, "quality-assurance", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.UpdateRunPRURL(selectedRun.ID, "https://github.com/test/repo/pull/42"); err != nil {
-		t.Fatal(err)
-	}
-	identifiedRun, err := database.GetRun(selectedRun.ID)
+	prResult, err := database.InsertStepResult(selectedRun.ID, types.StepPR)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if identifiedRun.PRState == nil || *identifiedRun.PRState != "open" || identifiedRun.PRStateObservedAt == nil {
-		t.Fatalf("identified PR was not durably recorded as open: state=%v observed_at=%v", identifiedRun.PRState, identifiedRun.PRStateObservedAt)
+	if err := database.StartStep(prResult.ID); err != nil {
+		t.Fatal(err)
 	}
-	if err := database.UpdateRunStatus(selectedRun.ID, types.RunFailed); err != nil {
+	if err := database.UpdateRunStatus(selectedRun.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.RecoverStaleRuns("daemon crashed during execution"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -180,7 +180,7 @@ func TestRerunOpenPRPreservesBaseAcrossTrustedConfigChange(t *testing.T) {
 	gitCmd(t, repo.WorkingPath, "branch", "staging")
 	gitCmd(t, repo.WorkingPath, "push", "gate", "staging")
 
-	binDir, ghLog := writeRerunPRBaseMockGH(t)
+	binDir, ghLog := writeRerunPRBaseMockGH(t, "quality-assurance", "")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	seen := make(chan capturedRerunPRConfig, 1)
 	manager := NewRunManager(database, p, func() []pipeline.Step {
@@ -191,6 +191,13 @@ func TestRerunOpenPRPreservesBaseAcrossTrustedConfigChange(t *testing.T) {
 	runID, err := manager.HandleRerun(context.Background(), repo.ID, "feature", selectedRun.ID, nil, "")
 	if err != nil {
 		t.Fatal(err)
+	}
+	identifiedRun, err := database.GetRun(selectedRun.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identifiedRun.PRURL == nil || *identifiedRun.PRURL != "https://github.com/test/repo/pull/42" || identifiedRun.PRState == nil || *identifiedRun.PRState != "open" {
+		t.Fatalf("crash-window PR was not authoritatively persisted: url=%v state=%v", identifiedRun.PRURL, identifiedRun.PRState)
 	}
 	rerun := waitForRunTerminalState(t, database, runID)
 	if rerun.Status != types.RunCompleted {
@@ -216,6 +223,52 @@ func TestRerunOpenPRPreservesBaseAcrossTrustedConfigChange(t *testing.T) {
 	}
 	if strings.Contains(logText, "--base staging") || strings.Contains(logText, "pr create ") {
 		t.Fatalf("rerun retargeted discovery or attempted a duplicate PR:\n%s", logText)
+	}
+}
+
+func TestRerunContinuityRejectsStaleCachedOpenPR(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "rerun-stale-open-pr")
+	run, err := database.InsertRun(repo.ID, "feature", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(run.ID, "quality-assurance", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRURL(run.ID, "https://github.com/test/repo/pull/42"); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	binDir, ghLog := writeRerunPRBaseMockGH(t, "", "CLOSED")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	manager := NewRunManager(database, p, nil)
+	candidate := &runPRBaseContinuity{sourceRun: run, branch: "quality-assurance", explicit: true}
+	continuity, err := manager.verifyRerunPRBaseContinuity(context.Background(), repo, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if continuity != nil {
+		t.Fatalf("stale cached open PR retained continuity: %+v", continuity)
+	}
+	verified, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verified.PRState == nil || *verified.PRState != "closed" || verified.PRStateObservedAt == nil {
+		t.Fatalf("authoritative closed state was not persisted: state=%v observed_at=%v", verified.PRState, verified.PRStateObservedAt)
+	}
+	logBytes, err := os.ReadFile(ghLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logBytes)
+	if !strings.Contains(logText, "pr list --head feature --base quality-assurance") || !strings.Contains(logText, "pr view 42") {
+		t.Fatalf("saved head/base tuple and persisted PR were not authoritatively checked:\n%s", logText)
 	}
 }
 
@@ -279,26 +332,43 @@ func TestRerunOpenPRRejectsCurrentConfiguredBaseBranch(t *testing.T) {
 	}
 }
 
-func writeRerunPRBaseMockGH(t *testing.T) (string, string) {
+func writeRerunPRBaseMockGH(t *testing.T, openBase, persistedState string) (string, string) {
 	t.Helper()
 	binDir := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "gh.log")
 	if runtime.GOOS == "windows" {
 		path := filepath.Join(binDir, "gh.bat")
-		script := "@echo off\r\necho %*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status --hostname github.com\" >nul && exit /b 0\r\necho %* | findstr /C:\"pr list --head feature --base quality-assurance\" >nul && (echo [{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\"}]& exit /b 0)\r\necho %* | findstr /C:\"pr list \" >nul && (echo []& exit /b 0)\r\necho %* | findstr /C:\"pr edit 42 \" >nul && exit /b 0\r\necho %* | findstr /C:\"pr create \" >nul && (echo https://github.com/test/repo/pull/99& exit /b 0)\r\nexit /b 1\r\n"
+		openRule := ""
+		if openBase != "" {
+			openRule = "echo %* | findstr /C:\"pr list --head feature --base " + openBase + "\" >nul && (echo [{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\"}]& exit /b 0)\r\n"
+		}
+		stateRule := ""
+		if persistedState != "" {
+			stateRule = "echo %* | findstr /C:\"pr view 42 \" >nul && (echo " + persistedState + "& exit /b 0)\r\n"
+		}
+		script := "@echo off\r\necho %*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status --hostname github.com\" >nul && exit /b 0\r\n" + openRule + "echo %* | findstr /C:\"pr list \" >nul && (echo []& exit /b 0)\r\n" + stateRule + "echo %* | findstr /C:\"pr edit 42 \" >nul && exit /b 0\r\necho %* | findstr /C:\"pr create \" >nul && (echo https://github.com/test/repo/pull/99& exit /b 0)\r\nexit /b 1\r\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		return binDir, logPath
 	}
 	path := filepath.Join(binDir, "gh")
+	openRule := ""
+	if openBase != "" {
+		openRule = `  *"pr list --head feature --base ` + openBase + `"*) printf '%s\n' '[{"number":42,"url":"https://github.com/test/repo/pull/42"}]'; exit 0 ;;
+`
+	}
+	stateRule := ""
+	if persistedState != "" {
+		stateRule = `  *"pr view 42 "*) printf '%s\n' '` + persistedState + `'; exit 0 ;;
+`
+	}
 	script := `#!/bin/sh
 printf '%s\n' "$*" >>` + shellQuoteForTest(logPath) + `
 case "$*" in
   "auth status --hostname github.com") exit 0 ;;
-  *"pr list --head feature --base quality-assurance"*) printf '%s\n' '[{"number":42,"url":"https://github.com/test/repo/pull/42"}]'; exit 0 ;;
-  "pr list "*) printf '%s\n' '[]'; exit 0 ;;
-  "pr edit 42 "*) exit 0 ;;
+` + openRule + `  "pr list "*) printf '%s\n' '[]'; exit 0 ;;
+` + stateRule + `  "pr edit 42 "*) exit 0 ;;
   "pr create "*) printf '%s\n' 'https://github.com/test/repo/pull/99'; exit 0 ;;
 esac
 exit 1

@@ -13,6 +13,11 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm/gitlab"
 )
 
+// BuildHost returns a provider host wired to the step context.
+func BuildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, string) {
+	return buildHost(sctx, provider)
+}
+
 // buildHost returns a scm.Host for the given provider, wired to sctx's
 // working directory and environment. When the host cannot be constructed
 // (unknown provider, missing Bitbucket config, etc) it returns nil and a
