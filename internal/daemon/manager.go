@@ -905,26 +905,21 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
-	if prBaseContinuity != nil {
-		cfg.PR.BaseBranch = prBaseContinuity.branch
-		explicit := prBaseContinuity.explicit
-		cfg.PR.BaseBranchExplicit = &explicit
-	}
 	if err := ensureConfiguredPRBaseBranch(ctx, wtDir, repo, cfg); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure("resolve_pr_base_branch")
 		return "", err
 	}
-	prBaseExplicit := cfg.PR.HasExplicitBaseBranch()
-	prBaseBranch := strings.TrimSpace(cfg.PR.BaseBranch)
-	if prBaseBranch == "" {
-		prBaseBranch = strings.TrimSpace(repo.DefaultBranch)
+	currentPRBaseExplicit := cfg.PR.HasExplicitBaseBranch()
+	currentPRBaseBranch := strings.TrimSpace(cfg.PR.BaseBranch)
+	if currentPRBaseBranch == "" {
+		currentPRBaseBranch = strings.TrimSpace(repo.DefaultBranch)
 	}
 	defaultBranch := strings.TrimSpace(repo.DefaultBranch)
-	if prBaseExplicit && (branch == prBaseBranch || branch == defaultBranch) {
+	if currentPRBaseExplicit && (branch == currentPRBaseBranch || branch == defaultBranch) {
 		role := "configured PR base branch"
 		failure := "configured_pr_base_branch"
-		if branch == defaultBranch && branch != prBaseBranch {
+		if branch == defaultBranch && branch != currentPRBaseBranch {
 			role = "repository default branch while a distinct PR base is configured"
 			failure = "configured_default_branch"
 		}
@@ -932,6 +927,21 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		m.db.UpdateRunError(run.ID, err.Error())
 		trackStartFailure(failure)
 		return "", err
+	}
+	if prBaseContinuity != nil {
+		cfg.PR.BaseBranch = prBaseContinuity.branch
+		explicit := prBaseContinuity.explicit
+		cfg.PR.BaseBranchExplicit = &explicit
+		if err := ensureConfiguredPRBaseBranch(ctx, wtDir, repo, cfg); err != nil {
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("resolve_continuity_pr_base_branch")
+			return "", err
+		}
+	}
+	prBaseExplicit := cfg.PR.HasExplicitBaseBranch()
+	prBaseBranch := strings.TrimSpace(cfg.PR.BaseBranch)
+	if prBaseBranch == "" {
+		prBaseBranch = defaultBranch
 	}
 	if err := m.db.UpdateRunPRBaseBranch(run.ID, prBaseBranch, prBaseExplicit); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())

@@ -212,6 +212,66 @@ func TestRerunOpenPRPreservesBaseAcrossTrustedConfigChange(t *testing.T) {
 	}
 }
 
+func TestRerunOpenPRRejectsCurrentConfiguredBaseBranch(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, _ := setupTestGitRepo(t, p, database, "rerun-current-pr-base-guard")
+
+	configPath := filepath.Join(repo.WorkingPath, ".no-mistakes.yaml")
+	initialConfig := "auto_fix:\n  lint: 0\n  test: 0\n  review: 0\npr:\n  base_branch: quality-assurance\n"
+	if err := os.WriteFile(configPath, []byte(initialConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", configPath)
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "target QA")
+	qaSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main")
+	gitCmd(t, repo.WorkingPath, "branch", "quality-assurance")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "quality-assurance")
+
+	gitCmd(t, repo.WorkingPath, "checkout", "-b", "staging")
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "staging.txt"), []byte("staging\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "staging.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "add staging change")
+	stagingSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "staging")
+
+	selectedRun, err := database.InsertRun(repo.ID, "staging", stagingSHA, qaSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(selectedRun.ID, "quality-assurance", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRURL(selectedRun.ID, "https://github.com/test/repo/pull/42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(selectedRun.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	gitCmd(t, repo.WorkingPath, "checkout", "-B", "main", qaSHA)
+	currentConfig := "auto_fix:\n  lint: 0\n  test: 0\n  review: 0\npr:\n  base_branch: staging\n"
+	if err := os.WriteFile(configPath, []byte(currentConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", configPath)
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "target staging")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main")
+
+	manager := NewRunManager(database, p, nil)
+	t.Cleanup(manager.Shutdown)
+	_, err = manager.HandleRerun(context.Background(), repo.ID, "staging", selectedRun.ID, nil, "")
+	if err == nil {
+		t.Fatal("rerun on the current configured PR base branch was accepted")
+	}
+	if !strings.Contains(err.Error(), "configured PR base branch") || !strings.Contains(err.Error(), "feature branch") {
+		t.Fatalf("rerun rejection is not actionable: %v", err)
+	}
+}
+
 func writeRerunPRBaseMockGH(t *testing.T) (string, string) {
 	t.Helper()
 	binDir := t.TempDir()
