@@ -52,7 +52,7 @@ While the wizard is running, it also updates your terminal window title with the
 
 ### 1. Branch
 
-Shown when you're on the default branch or a detached `HEAD`. Prompts for a branch name.
+Shown when you're on the repository default branch, the configured `pr.base_branch`, or a detached `HEAD`. Prompts for a feature branch name.
 
 - Type a name to create a new branch.
 - Leave blank and press enter to ask the configured agent for a branch name suggestion based on your local changes.

@@ -202,13 +202,14 @@ func activeRunInfoForHead(run *ipc.RunInfo, headSHA string) *ipc.RunInfo {
 // applies branch/commit hygiene as detect-and-guide: refuse base branches and
 // an uncommitted working tree, with the command the agent should run.
 func preflightGuard(ctx context.Context, env *axiEnv, branch string) func(*cobra.Command) error {
-	if env.repo.DefaultBranch != "" && branch == env.repo.DefaultBranch {
+	prBase := configuredPRBaseForPreflight(ctx, env)
+	switch baseBranchRole(branch, env.repo.DefaultBranch, prBase) {
+	case branchRoleDefault:
 		return func(cmd *cobra.Command) error {
 			return emitError(cmd, 1, fmt.Sprintf("refusing to validate %q: it is the default branch", branch),
 				"Put your changes on a feature branch: `git switch -c <branch>`, then re-run")
 		}
-	}
-	if prBase := configuredPRBaseForPreflight(ctx, env); prBase != "" && branch == prBase {
+	case branchRolePRBase:
 		return func(cmd *cobra.Command) error {
 			return emitError(cmd, 1, fmt.Sprintf("refusing to validate %q: it is the configured PR base branch", branch),
 				"Put your changes on a feature branch distinct from the default and PR base branches: `git switch -c <branch>`, then re-run")
@@ -232,11 +233,19 @@ func preflightGuard(ctx context.Context, env *axiEnv, branch string) func(*cobra
 }
 
 func configuredPRBaseForPreflight(ctx context.Context, env *axiEnv) string {
-	if env == nil || env.repo == nil || strings.TrimSpace(env.repo.DefaultBranch) == "" {
+	if env == nil || env.repo == nil {
 		return ""
 	}
-	_ = git.FetchRemoteBranch(ctx, ".", "origin", env.repo.DefaultBranch)
-	content, err := git.ShowFile(ctx, ".", "refs/remotes/origin/"+env.repo.DefaultBranch, ".no-mistakes.yaml")
+	return configuredPRBaseBranch(ctx, ".", env.repo.DefaultBranch)
+}
+
+func configuredPRBaseBranch(ctx context.Context, workDir, defaultBranch string) string {
+	defaultBranch = strings.TrimSpace(defaultBranch)
+	if defaultBranch == "" {
+		return ""
+	}
+	_ = git.FetchRemoteBranch(ctx, workDir, "origin", defaultBranch)
+	content, err := git.ShowFile(ctx, workDir, "refs/remotes/origin/"+defaultBranch, ".no-mistakes.yaml")
 	if err != nil {
 		return ""
 	}

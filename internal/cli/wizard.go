@@ -134,14 +134,31 @@ type repoState struct {
 	workDir       string
 	currentBranch string
 	defaultBranch string
+	prBaseBranch  string
 	detached      bool
 	dirty         bool
 }
 
+const (
+	branchRoleDefault = "default"
+	branchRolePRBase  = "pr_base"
+	branchRoleFeature = "feature"
+)
+
+func baseBranchRole(branch, defaultBranch, prBaseBranch string) string {
+	if branch != "" && branch == defaultBranch {
+		return branchRoleDefault
+	}
+	if branch != "" && branch == prBaseBranch {
+		return branchRolePRBase
+	}
+	return branchRoleFeature
+}
+
 // needsBranch reports whether the user has no feature branch to work on —
-// either they're on the default branch, or HEAD is detached.
+// either they're on a protected base branch, or HEAD is detached.
 func (s *repoState) needsBranch() bool {
-	return s.detached || s.currentBranch == s.defaultBranch
+	return s.detached || baseBranchRole(s.currentBranch, s.defaultBranch, s.prBaseBranch) != branchRoleFeature
 }
 
 // shouldRouteToWizard reports whether the active-run check should be
@@ -182,6 +199,7 @@ func detectRepoState(ctx context.Context, repo *db.Repo) (*repoState, error) {
 		workDir:       workDir,
 		currentBranch: currentBranch,
 		defaultBranch: defaultBranch,
+		prBaseBranch:  configuredPRBaseBranch(ctx, workDir, defaultBranch),
 		detached:      detached,
 		dirty:         dirty,
 	}, nil
@@ -263,7 +281,7 @@ func runWizardWithMode(ctx context.Context, p *paths.Paths, state *repoState, sk
 		"needs_branch":        state.needsBranch(),
 		"is_dirty":            state.dirty,
 		"detached":            state.detached,
-		"current_branch_role": wizardBranchRole(state.currentBranch, state.defaultBranch, state.detached),
+		"current_branch_role": wizardBranchRole(state.currentBranch, state.defaultBranch, state.prBaseBranch, state.detached),
 	})
 
 	run := wizardRun
@@ -362,14 +380,11 @@ func waitForActiveRun(ctx context.Context, client *ipc.Client, repoID, branch st
 	}
 }
 
-func wizardBranchRole(currentBranch, defaultBranch string, detached bool) string {
+func wizardBranchRole(currentBranch, defaultBranch, prBaseBranch string, detached bool) string {
 	if detached {
 		return "detached"
 	}
-	if currentBranch != "" && currentBranch == defaultBranch {
-		return "default"
-	}
-	return "feature"
+	return baseBranchRole(currentBranch, defaultBranch, prBaseBranch)
 }
 
 func wizardResultStatus(res wizard.Result) string {

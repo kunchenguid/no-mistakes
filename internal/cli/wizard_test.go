@@ -74,8 +74,9 @@ func TestNeedsBranch(t *testing.T) {
 		state repoState
 		want  bool
 	}{
-		{"default branch", repoState{currentBranch: "main", defaultBranch: "main"}, true},
-		{"feature branch", repoState{currentBranch: "feat/x", defaultBranch: "main"}, false},
+		{"default branch", repoState{currentBranch: "main", defaultBranch: "main", prBaseBranch: "quality-assurance"}, true},
+		{"configured PR base branch", repoState{currentBranch: "quality-assurance", defaultBranch: "main", prBaseBranch: "quality-assurance"}, true},
+		{"feature branch", repoState{currentBranch: "feat/x", defaultBranch: "main", prBaseBranch: "quality-assurance"}, false},
 		{"detached HEAD", repoState{currentBranch: "HEAD", defaultBranch: "main", detached: true}, true},
 	}
 	for _, tc := range tests {
@@ -84,6 +85,37 @@ func TestNeedsBranch(t *testing.T) {
 				t.Fatalf("needsBranch() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDetectRepoStateUsesTrustedConfiguredPRBase(t *testing.T) {
+	repoDir := t.TempDir()
+	run(t, repoDir, "git", "init", "--initial-branch=main")
+	run(t, repoDir, "git", "config", "user.email", "test@test.com")
+	run(t, repoDir, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repoDir, ".no-mistakes.yaml"), []byte("pr:\n  base_branch: quality-assurance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, repoDir, "git", "add", ".no-mistakes.yaml")
+	run(t, repoDir, "git", "commit", "-m", "configure PR base")
+	run(t, repoDir, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
+	run(t, repoDir, "git", "checkout", "-b", "quality-assurance")
+	if err := os.WriteFile(filepath.Join(repoDir, ".no-mistakes.yaml"), []byte("pr:\n  base_branch: attacker-target\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, repoDir, "git", "add", ".no-mistakes.yaml")
+	run(t, repoDir, "git", "commit", "-m", "change untrusted PR base")
+	t.Chdir(repoDir)
+
+	state, err := detectRepoState(context.Background(), &db.Repo{WorkingPath: repoDir, DefaultBranch: "main"})
+	if err != nil {
+		t.Fatalf("detectRepoState() error = %v", err)
+	}
+	if state.prBaseBranch != "quality-assurance" {
+		t.Fatalf("PR base branch = %q, want trusted quality-assurance", state.prBaseBranch)
+	}
+	if !state.needsBranch() {
+		t.Fatal("configured PR base branch should require creating a feature branch")
 	}
 }
 
