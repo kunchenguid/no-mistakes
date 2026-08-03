@@ -1030,17 +1030,23 @@ func TestClaudeAgent_StreamReadFailureCarriesBothChannels(t *testing.T) {
 }
 
 // The other way the event stream stops being readable is a read failure on the
-// pipe, and that one is retryable: the stall diagnostic the parse-error path
-// attaches is the only text classifyTransient can match, so without it a
-// recoverable stall would fail the run on its first attempt.
+// pipe, and that one is retryable. The read failure chosen here says nothing a
+// transient needle matches, so the bare wrap must classify non-transient and
+// the only thing that can make the same failure retryable is the stall
+// diagnostic the parse-error path appends: drop that suffix and a recoverable
+// stall fails the run on its first attempt.
 func TestClaudeParseError_ReadFailureWithStreamDetailRetries(t *testing.T) {
 	var stream claudeStream
 	stream.tee(nil)("API Error: Stream idle timeout - no chunks received")
 
-	readErr := io.ErrUnexpectedEOF
+	readErr := errors.New("read |0: file already closed")
+	bare := fmt.Errorf("claude parse events: %w", readErr)
+	if label, ok := classifyTransient(bare); ok {
+		t.Fatalf("error %q classified transient as %q on its own text, so the detail proves nothing", bare, label)
+	}
+
 	detail := claudeFailureDetail([]byte("warning: --print is deprecated"), &stream)
 	err := fmt.Errorf("claude parse events: %w: %s", readErr, detail)
-
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error %q is a cancellation, which is never retried", err)
 	}
