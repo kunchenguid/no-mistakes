@@ -19,12 +19,10 @@ import (
 // Used as a base when there is no prior commit to diff against.
 const EmptyTreeSHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
-const ZeroSHA = "0000000000000000000000000000000000000000"
-
 // IsZeroSHA returns true if the SHA is the null/zero ref that git uses for
 // new or deleted branches (40 zeros).
 func IsZeroSHA(sha string) bool {
-	return sha == ZeroSHA
+	return sha == "0000000000000000000000000000000000000000"
 }
 
 // Run executes a git command in the given directory and returns trimmed stdout.
@@ -40,41 +38,6 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 		return RunBare(ctx, dir, args...)
 	}
 	return runInDir(ctx, dir, args...)
-}
-
-func PatchIdentity(ctx context.Context, dir, commit string) (string, string, error) {
-	patch, err := Run(ctx, dir, "show", "--pretty=format:", "--patch", "--binary", "--no-ext-diff", commit+"^!")
-	if err != nil {
-		return "", "", err
-	}
-	if patch == "" {
-		return "", "", fmt.Errorf("commit %s has no patch", commit)
-	}
-	cmd := exec.CommandContext(ctx, "git", "patch-id", "--stable")
-	cmd.Dir = dir
-	cmd.Env = NonInteractiveEnv(dir)
-	cmd.Stdin = strings.NewReader(patch + "\n")
-	winproc.Harden(cmd)
-	out, err := cmd.Output()
-	if err != nil {
-		stderr := ""
-		if ee, ok := err.(*exec.ExitError); ok {
-			stderr = strings.TrimSpace(string(ee.Stderr))
-		}
-		return "", "", fmt.Errorf("git patch-id --stable: %w: %s", err, safeurl.RedactText(stderr))
-	}
-	fields := strings.Fields(string(out))
-	if len(fields) != 2 {
-		return "", "", fmt.Errorf("git patch-id --stable returned %d fields", len(fields))
-	}
-	lines := strings.Split(patch, "\n")
-	signature := lines[:0]
-	for _, line := range lines {
-		if !strings.HasPrefix(line, "index ") {
-			signature = append(signature, line)
-		}
-	}
-	return fields[0], strings.Join(signature, "\n"), nil
 }
 
 // RunBare executes Git against exactly bareDir. Unlike Run, it never falls

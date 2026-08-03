@@ -193,7 +193,7 @@ Exit code `0` means an eligible check, applied synchronization or recovery, alre
 The ordinary worktree mutation is either a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA, or an equivalent-diverged advance.
 When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and moves to the pipeline head with reset semantics.
 Genuine divergence still reports `safety: blocked_diverged` and changes nothing.
-Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head, or an equivalent adoption of a preserved head that provably contains all the local work, both after relation-specific preservation checks.
+Under `--recover`, the possible worktree mutation is a strict fast-forward to the preserved pipeline head, or an adoption of a preserved head proven to carry every local change, both after relation-specific preservation checks.
 When the local gate branch is exactly at a newer same-branch pushed binding and Git proves that an older terminal run's unpublished preserved head is its ancestor, branch synchronization selects the newer binding; missing gate evidence, non-ancestor heads, or different or ambiguous target provenance remain blocked.
 Fork configurations verify the configured fork URL and exact feature ref rather than assuming `origin`.
 Dirty, in-progress, ahead, genuinely diverged, detached, wrong-branch, offline, changed-target, rewritten, deleted, legacy, or retired states fail closed without destructive recovery.
@@ -209,11 +209,11 @@ While a run is still active, it reports `state: pipeline_owned`, the exact submi
 For equal or ahead worktrees where the preserved head is already locally reachable, recovery writes that anchor locally without gate access.
 For behind or diverged worktrees, recovery verifies the preserved head at the local gate branch and fetches it into the anchor before moving or refusing.
 A clean behind worktree fast-forwards.
-A diverged worktree is adopted only when the preserved head provably contains all the local work, which is the ordinary result of the pipeline rebasing your commits onto a newer base: every local commit has an unambiguous 1:1 patch-identical counterpart, or the preserved head already carries the local branch's exact content.
-Duplicate patch IDs, multiple possible counterparts, or location-sensitive differences make the patch-replay proof refuse rather than guess; the exact-content proof may still authorize adoption independently.
-That adoption anchors the pre-recovery local head under `refs/no-mistakes/recover-local/<run>` before moving `HEAD` with reset semantics.
-A conflict-resolved replay cannot satisfy the patch-replay proof, but recovery can still adopt it when the exact-content proof succeeds.
-Divergence that satisfies neither proof - including unlanded local commits or a conflict resolution or squash that rewrote your lines without preserving exact content - still refuses with the anchor named, because only escalation can tell a deliberate pipeline fix apart from a dropped change.
+A diverged worktree is adopted only when the preserved head provably carries every local change, proven by an executable three-way merge whose result is exactly the preserved head's tree.
+This is the ordinary result of the pipeline rebasing your commits onto a newer base, so a cancelled validation no longer strands the branch.
+That adoption anchors the pre-recovery local head under `refs/no-mistakes/recover-local/<run>`, then moves the branch with Git operations that refuse on their own rather than after a preceding check: an atomic compare-and-swap on the branch ref, and a working-tree update that aborts instead of overwriting a modified or untracked file.
+The proof is deliberately narrow and never uses patch identity, which discards hunk locations and whitespace and so cannot tell a genuine replay from a same-shaped edit elsewhere.
+Anything it cannot decide - unlanded local commits, or a rebase whose fix rounds also rewrote your own lines - still refuses with the anchor named, because only escalation can tell a deliberate pipeline fix apart from a dropped change.
 A dirty worktree refuses with explicit choices.
 When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
 `no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
