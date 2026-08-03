@@ -365,6 +365,7 @@ Check names are not unique on a pull request, so same-named checks share one bud
 A rerun request returns as soon as the provider accepts it, while the new attempt replaces the cancelled check in the status rollup a moment later.
 A poll that still reads the exact completion the rerun was requested for has observed nothing new, so the monitor waits for a bounded couple of polls rather than escalating a check it never actually re-ran.
 A provider that accepts a rerun and never publishes it cannot stall the run past that.
+Once the provider publishes a conclusive replacement, no-mistakes durably stops treating that rerun as outstanding while preserving the spent budget; if the exact watched head is then green, the monitor reports `checks-passed` normally.
 
 A cancelled check that no rerun is going to replace pauses the step for user approval when cancellation is the only remaining issue, so the pull request never looks green.
 That is a check that came back cancelled after its rerun, and - at the default budget of `0`, once the budget is spent, or on a provider with no rerun API - the cancellation itself: the provider has already published its conclusion for that check and will not publish another one on its own, so there is nothing left for the monitor to wait for.
