@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/kunchenguid/no-mistakes/internal/testguidance"
 )
 
@@ -35,6 +37,39 @@ func TestMarkdownFrontmatter(t *testing.T) {
 	// must not come back.
 	if strings.Contains(md, "internal: true") {
 		t.Errorf("Markdown() must not be marked internal")
+	}
+}
+
+// TestMarkdownFrontmatterParsesAsYAML is the guard the substring checks above
+// cannot be: Markdown() builds the frontmatter by concatenation, so a
+// Description containing a colon-space, a leading quote or bracket, or a
+// trailing " #" comment marker emits YAML that no longer means what it reads
+// like. The agent then loads the skill with a missing or truncated trigger
+// description and silently stops firing, and genskill --check still passes
+// because the committed file matches the equally broken generated one. Parse
+// the real thing and require every field to round-trip.
+func TestMarkdownFrontmatterParsesAsYAML(t *testing.T) {
+	md := Markdown()
+	parts := strings.SplitN(md, "---\n", 3)
+	if len(parts) < 3 {
+		t.Fatalf("Markdown() has no closed frontmatter block")
+	}
+	var fm struct {
+		Name          string `yaml:"name"`
+		Description   string `yaml:"description"`
+		UserInvocable bool   `yaml:"user-invocable"`
+	}
+	if err := yaml.Unmarshal([]byte(parts[1]), &fm); err != nil {
+		t.Fatalf("frontmatter is not valid YAML: %v\n%s", err, parts[1])
+	}
+	if fm.Name != Name {
+		t.Errorf("name round-trip: got %q, want %q", fm.Name, Name)
+	}
+	if fm.Description != Description {
+		t.Errorf("description round-trip: got %q, want %q", fm.Description, Description)
+	}
+	if !fm.UserInvocable {
+		t.Errorf("user-invocable must parse as the boolean true")
 	}
 }
 

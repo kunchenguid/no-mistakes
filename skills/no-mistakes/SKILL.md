@@ -1,6 +1,6 @@
 ---
 name: no-mistakes
-description: Validate code changes through the no-mistakes pipeline - code review, tests, lint, docs, push, PR, and CI - before they reach the push target. Use when the user asks to run no-mistakes, gate or validate changes before pushing, asks you to do a task and then validate it, or invokes /no-mistakes.
+description: Run code changes through the no-mistakes pipeline before they reach the remote. Use when the user asks to validate or push existing committed work through no-mistakes, or names no-mistakes on a task to do and then validate.
 user-invocable: true
 ---
 

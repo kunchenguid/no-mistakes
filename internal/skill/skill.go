@@ -25,7 +25,7 @@ const Name = "no-mistakes"
 // agent's decision to load the skill, so it leads with outcomes and keywords.
 // One trigger per distinct branch: validate already-committed work, or do a
 // task and then validate it.
-const Description = "Validate code changes through the no-mistakes pipeline - code review, tests, lint, docs, push, PR, and CI - before they reach the push target. Use when the user asks to run no-mistakes, gate or validate changes before pushing, asks you to do a task and then validate it, or invokes /no-mistakes."
+const Description = "Run code changes through the no-mistakes pipeline before they reach the remote. Use when the user asks to validate or push existing committed work through no-mistakes, or names no-mistakes on a task to do and then validate."
 
 // ReadingOutputFile and SyncRecoveryFile are the disclosed reference files
 // SKILL.md points at by relative path. They are reached only on the branches
