@@ -140,6 +140,7 @@ type Service struct {
 	beforeApply               func()
 	beforeGateReset           func()
 	beforeRecoverWorktreeMove func()
+	beforeRecoverReset        func()
 }
 
 // OpenCurrent opens a service for the invoking registered worktree. The caller
@@ -472,7 +473,9 @@ func (s *Service) Apply(ctx context.Context) State {
 // escalated a case where nothing could be lost. preservedContainsLocalWork
 // must prove containment before that row applies; anything it cannot prove
 // falls through to the plain diverged refusal, so genuinely unlanded local work
-// is never adopted away.
+// is never adopted away. Patch replay proves containment only through an
+// unambiguous 1:1 pairing; duplicate patch IDs or location-sensitive patch
+// differences refuse rather than guessing which work a preserved commit carries.
 //
 // Fail-safe rules, in the same spirit as Refresh/Apply:
 //   - An active run always refuses: only terminal runs are recoverable.
@@ -482,11 +485,13 @@ func (s *Service) Apply(ctx context.Context) State {
 //     access; otherwise the preserved head is verified at the gate branch head
 //     and fetched into that anchor. The anchor keeps them reachable locally no
 //     matter what later happens to the gate.
-//   - The only possible worktree mutation stays a strict fast-forward of a
-//     clean checked-out branch. When the operator explicitly keeps a behind or
-//     diverged local head instead of taking P, --keep-local never touches the
-//     worktree and moves the gate branch to the kept head with an atomic
-//     compare-and-swap, so a concurrent gate push wins and recovery refuses.
+//   - The only possible worktree mutation is a guarded move of a clean checked-out
+//     branch: a strict fast-forward, or an anchored reset after containment is
+//     proven and branch, HEAD, and cleanliness are checked immediately before
+//     the reset. When the operator explicitly keeps a behind or diverged local
+//     head instead of taking P, --keep-local never touches the worktree and moves
+//     the gate branch to the kept head with an atomic compare-and-swap, so a
+//     concurrent gate push wins and recovery refuses.
 //   - Anything unverifiable (missing gate where required, moved gate branch,
 //     failed anchor write or fetch, changed assumptions) refuses with a reason
 //     and changes nothing.
@@ -722,17 +727,18 @@ func preservedContainsLocalWork(ctx context.Context, dir, local, preserved strin
 
 // everyLocalCommitReplayed proves each commit the local branch carries beyond
 // the preserved head has a patch-identical counterpart inside it. This is the
-// proof that matches an actual pipeline rebase: Git's patch-id ignores line
-// offsets, so commits replayed cleanly onto a newer base match even though
-// their SHAs changed, and later pipeline commits that edit the operator's lines
-// (the fix rounds this pipeline exists to produce) do not disturb the match.
-// Final-content containment cannot see that case at all, because those fix
-// rounds deliberately supersede the operator's content.
+// proof that matches an ordinary pipeline rebase: commit SHAs change while the
+// patch identity and location-sensitive signature stay the same, and later
+// pipeline commits that edit the operator's lines do not disturb the match.
+// Final-content containment cannot see that case because those fix rounds
+// deliberately supersede the operator's content.
 //
 // The accounting is fail-closed by construction: every commit in
-// preserved..local must consume one distinct patch-equivalent commit from the
-// opposite side. A merge, a conflict-resolved replay, a reworked commit, or an
-// extra occurrence of the same patch escalates.
+// preserved..local must have an unambiguous 1:1 patch-identical counterpart on
+// the opposite side. Patch IDs discard hunk locations and whitespace, so a
+// duplicated ID or a location-sensitive patch mismatch cannot distinguish a
+// genuine replay from a same-shaped edit to another block and escalates. A
+// merge, a conflict-resolved replay, or a reworked commit escalates too.
 func everyLocalCommitReplayed(ctx context.Context, dir, local, preserved string) bool {
 	localOnly, err := revList(ctx, dir, "rev-list", preserved+".."+local)
 	if err != nil || len(localOnly) == 0 {
@@ -742,20 +748,25 @@ func everyLocalCommitReplayed(ctx context.Context, dir, local, preserved string)
 	if err != nil || len(preservedOnly) == 0 {
 		return false
 	}
-	preservedPatches := make(map[string]int, len(preservedOnly))
+	preservedPatches := make(map[string]string, len(preservedOnly))
 	for _, sha := range preservedOnly {
-		patchID, patchErr := git.PatchID(ctx, dir, sha)
+		patchID, signature, patchErr := git.PatchIdentity(ctx, dir, sha)
 		if patchErr != nil {
 			return false
 		}
-		preservedPatches[patchID]++
-	}
-	for _, sha := range localOnly {
-		patchID, patchErr := git.PatchID(ctx, dir, sha)
-		if patchErr != nil || preservedPatches[patchID] == 0 {
+		if _, duplicate := preservedPatches[patchID]; duplicate {
 			return false
 		}
-		preservedPatches[patchID]--
+		preservedPatches[patchID] = signature
+	}
+	localPatches := make(map[string]bool, len(localOnly))
+	for _, sha := range localOnly {
+		patchID, signature, patchErr := git.PatchIdentity(ctx, dir, sha)
+		preservedSignature, matched := preservedPatches[patchID]
+		if patchErr != nil || localPatches[patchID] || !matched || preservedSignature != signature {
+			return false
+		}
+		localPatches[patchID] = true
 	}
 	return true
 }
@@ -793,14 +804,21 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", localAnchor+"^{commit}"); err != nil || anchored != head {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the pre-recovery local head could not be verified after anchoring; no files or worktree refs were changed")
 	}
+	if !preservedContainsLocalWork(ctx, s.workDir(), head, preserved) {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the rebase-superset proof changed while custody was being returned; no further files or refs were changed")
+	}
+	if s.beforeRecoverReset != nil {
+		s.beforeRecoverReset()
+	}
 	branch, branchErr = git.CurrentBranch(ctx, s.workDir())
 	head, headErr = git.HeadSHA(ctx, s.workDir())
 	clean, _ = worktreeClean(ctx, s.workDir())
 	if branchErr != nil || branch != state.Local.Branch || headErr != nil || head != state.Local.Head || !clean {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch or worktree changed while custody was being returned; no further files or refs were changed")
 	}
-	if !preservedContainsLocalWork(ctx, s.workDir(), head, preserved) {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the rebase-superset proof changed while custody was being returned; no further files or refs were changed")
+	resetBoundaryHead, resetBoundaryErr := git.HeadSHA(ctx, s.workDir())
+	if resetBoundaryErr != nil || resetBoundaryHead != state.Local.Head {
+		return blockedPlan(state, StatePipelineOwned, "blocked_recover_assumptions_changed", "the local branch or worktree changed while custody was being returned; no further files or refs were changed")
 	}
 	_, resetErr := git.Run(ctx, s.workDir(), "reset", "--hard", preserved)
 	finalHead, _ := git.HeadSHA(ctx, s.workDir())

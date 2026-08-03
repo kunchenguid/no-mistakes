@@ -42,13 +42,13 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 	return runInDir(ctx, dir, args...)
 }
 
-func PatchID(ctx context.Context, dir, commit string) (string, error) {
+func PatchIdentity(ctx context.Context, dir, commit string) (string, string, error) {
 	patch, err := Run(ctx, dir, "show", "--pretty=format:", "--patch", "--binary", "--no-ext-diff", commit+"^!")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if patch == "" {
-		return "", fmt.Errorf("commit %s has no patch", commit)
+		return "", "", fmt.Errorf("commit %s has no patch", commit)
 	}
 	cmd := exec.CommandContext(ctx, "git", "patch-id", "--stable")
 	cmd.Dir = dir
@@ -61,13 +61,20 @@ func PatchID(ctx context.Context, dir, commit string) (string, error) {
 		if ee, ok := err.(*exec.ExitError); ok {
 			stderr = strings.TrimSpace(string(ee.Stderr))
 		}
-		return "", fmt.Errorf("git patch-id --stable: %w: %s", err, safeurl.RedactText(stderr))
+		return "", "", fmt.Errorf("git patch-id --stable: %w: %s", err, safeurl.RedactText(stderr))
 	}
 	fields := strings.Fields(string(out))
 	if len(fields) != 2 {
-		return "", fmt.Errorf("git patch-id --stable returned %d fields", len(fields))
+		return "", "", fmt.Errorf("git patch-id --stable returned %d fields", len(fields))
 	}
-	return fields[0], nil
+	lines := strings.Split(patch, "\n")
+	signature := lines[:0]
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "index ") {
+			signature = append(signature, line)
+		}
+	}
+	return fields[0], strings.Join(signature, "\n"), nil
 }
 
 // RunBare executes Git against exactly bareDir. Unlike Run, it never falls

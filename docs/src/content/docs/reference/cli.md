@@ -209,7 +209,8 @@ While a run is still active, it reports `state: pipeline_owned`, the exact submi
 For equal or ahead worktrees where the preserved head is already locally reachable, recovery writes that anchor locally without gate access.
 For behind or diverged worktrees, recovery verifies the preserved head at the local gate branch and fetches it into the anchor before moving or refusing.
 A clean behind worktree fast-forwards.
-A diverged worktree is adopted only when the preserved head provably contains all the local work, which is the ordinary result of the pipeline rebasing your commits onto a newer base: every local commit is replayed patch-identically, or the preserved head already carries the local branch's exact content.
+A diverged worktree is adopted only when the preserved head provably contains all the local work, which is the ordinary result of the pipeline rebasing your commits onto a newer base: every local commit has an unambiguous 1:1 patch-identical counterpart, or the preserved head already carries the local branch's exact content.
+Duplicate patch IDs, multiple possible counterparts, or location-sensitive differences make the patch-replay proof refuse rather than guess; the exact-content proof may still authorize adoption independently.
 That adoption anchors the pre-recovery local head under `refs/no-mistakes/recover-local/<run>` before moving `HEAD` with reset semantics.
 A conflict-resolved replay cannot satisfy the patch-replay proof, but recovery can still adopt it when the exact-content proof succeeds.
 Divergence that satisfies neither proof - including unlanded local commits or a conflict resolution or squash that rewrote your lines without preserving exact content - still refuses with the anchor named, because only escalation can tell a deliberate pipeline fix apart from a dropped change.

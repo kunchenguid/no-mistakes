@@ -1327,6 +1327,66 @@ func TestRecoverRebasedPreservedHeadRequiresDistinctPatchCounterparts(t *testing
 	}
 }
 
+func TestRecoverRebasedPreservedHeadRejectsPatchLocationCollision(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	block := "block start\ncontext a\ncontext b\ncontext c\ntarget\ncontext d\ncontext e\ncontext f\nblock end\n"
+	blocks := block + "separator one\nseparator two\nseparator three\nseparator four\nseparator five\nseparator six\nseparator seven\n" + block
+	mustWrite(t, filepath.Join(f.local, "collision.txt"), blocks)
+	mustRun(t, f.local, "add", "collision.txt")
+	mustRun(t, f.local, "commit", "-m", "add identical blocks")
+	localBlocks := strings.Replace(blocks, "target", "changed", 1)
+	mustWrite(t, filepath.Join(f.local, "collision.txt"), localBlocks)
+	mustRun(t, f.local, "commit", "-am", "change first block")
+	uniqueHead := mustRun(t, f.local, "rev-parse", "HEAD")
+	localPatchID, localSignature, err := gitpkg.PatchIdentity(f.ctx, f.local, uniqueHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pipeline := filepath.Join(filepath.Dir(f.local), "patch-location")
+	mustRun(t, filepath.Dir(f.local), "-c", "core.autocrlf=false", "clone", f.gate, pipeline)
+	configureIdentity(t, pipeline)
+	mustRun(t, pipeline, "checkout", "feature/recover")
+	mustWrite(t, filepath.Join(pipeline, "collision.txt"), blocks)
+	mustRun(t, pipeline, "add", "collision.txt")
+	mustRun(t, pipeline, "commit", "-m", "add identical blocks")
+	secondTarget := strings.LastIndex(blocks, "target")
+	preservedBlocks := blocks[:secondTarget] + "changed" + blocks[secondTarget+len("target"):]
+	mustWrite(t, filepath.Join(pipeline, "collision.txt"), preservedBlocks)
+	mustRun(t, pipeline, "commit", "-am", "change second block")
+	preserved := mustRun(t, pipeline, "rev-parse", "HEAD")
+	preservedPatchID, preservedSignature, err := gitpkg.PatchIdentity(f.ctx, pipeline, preserved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if localPatchID != preservedPatchID || localSignature == preservedSignature {
+		t.Fatalf("fixture is not a location collision: IDs %q/%q signatures equal=%v", localPatchID, preservedPatchID, localSignature == preservedSignature)
+	}
+	mustRun(t, pipeline, "push", "--force", "origin", "HEAD:refs/heads/feature/recover")
+	if err := f.db.UpdateRunHeadSHA(f.run.ID, preserved); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunStatusWithVerifiedHead(f.run.ID, types.RunCancelled, preserved); err != nil {
+		t.Fatal(err)
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_diverged" {
+		t.Fatalf("patch location collision was auto-recovered: %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != uniqueHead {
+		t.Fatalf("HEAD moved to %s despite a patch location collision", got)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "collision.txt")); got != localBlocks {
+		t.Fatalf("local collision edit lost: %q", got)
+	}
+	if f.custodyReturned() {
+		t.Fatal("patch-collision escalation stamped custody")
+	}
+}
+
 func TestRecoverRebaseSupersetRechecksAfterAnchoringLocalHead(t *testing.T) {
 	t.Parallel()
 
@@ -1352,6 +1412,35 @@ func TestRecoverRebaseSupersetRechecksAfterAnchoringLocalHead(t *testing.T) {
 	}
 	if f.custodyReturned() {
 		t.Fatal("anchor-race refusal stamped custody")
+	}
+}
+
+func TestRecoverRebaseSupersetRechecksImmediatelyBeforeReset(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	f.service.beforeRecoverReset = func() {
+		mustWrite(t, filepath.Join(f.local, "last-moment.txt"), "last moment work\n")
+		mustRun(t, f.local, "add", "last-moment.txt")
+		mustRun(t, f.local, "commit", "-m", "last moment local work")
+	}
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
+		t.Fatalf("recover after final-boundary commit = %#v", state)
+	}
+	lastMomentHead := mustRun(t, f.local, "rev-parse", "HEAD")
+	if lastMomentHead == f.submitted || lastMomentHead == f.preserved {
+		t.Fatalf("last-moment commit was not preserved at HEAD: %s", lastMomentHead)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "last-moment.txt")); got != "last moment work\n" {
+		t.Fatalf("last-moment work lost: %q", got)
+	}
+	if got := mustRun(t, f.local, "rev-parse", f.localAnchorRef()); got != f.submitted {
+		t.Fatalf("pre-recovery anchor = %s, want %s", got, f.submitted)
+	}
+	if f.custodyReturned() {
+		t.Fatal("final-boundary refusal stamped custody")
 	}
 }
 
