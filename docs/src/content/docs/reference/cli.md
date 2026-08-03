@@ -211,7 +211,8 @@ For behind or diverged worktrees, recovery verifies the preserved head at the lo
 A clean behind worktree fast-forwards.
 A diverged worktree is adopted only when the preserved head provably contains all the local work, which is the ordinary result of the pipeline rebasing your commits onto a newer base: every local commit is replayed patch-identically, or the preserved head already carries the local branch's exact content.
 That adoption anchors the pre-recovery local head under `refs/no-mistakes/recover-local/<run>` before moving `HEAD` with reset semantics.
-Divergence that cannot be proven contained - unlanded local commits, a conflict-resolved replay, or a squash that also rewrote your lines - still refuses with the anchor named, because only escalation can tell a deliberate pipeline fix apart from a dropped change.
+A conflict-resolved replay cannot satisfy the patch-replay proof, but recovery can still adopt it when the exact-content proof succeeds.
+Divergence that satisfies neither proof - including unlanded local commits or a conflict resolution or squash that rewrote your lines without preserving exact content - still refuses with the anchor named, because only escalation can tell a deliberate pipeline fix apart from a dropped change.
 A dirty worktree refuses with explicit choices.
 When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
 `no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
