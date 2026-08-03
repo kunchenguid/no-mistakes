@@ -238,6 +238,7 @@ Each invocation returns:
 - **Usage** - token counts (input, output, cache read, cache creation)
 - **SessionID** and **Resumed** - the adapter-native session identity and whether this invocation resumed it, when supported
 - **Model** and **Provider** - adapter-reported serving metadata when available
+- **SkillsUsed** - the skills the invocation ran through the Skill tool, in call order, for adapters that report skill use; adapters that do not report it at all leave it unset
 
 One-shot subprocess agents (Claude, Codex, Pi, Copilot CLI, and acpx) are invocation-scoped.
 After no-mistakes starts one, it terminates any remaining child processes when the invocation exits, fails, or is cancelled, so agent-spawned test workers, build watchers, and dev servers do not survive the step.
@@ -270,6 +271,7 @@ Use `intent.disabled_readers` to disable specific transcript sources, or set `in
 
 Spawns a `claude` subprocess for each invocation with `--output-format stream-json`. The print-mode user prompt is sent as text on stdin rather than placed in the process arguments. By default it also adds `--dangerously-skip-permissions`, unless you already set your own Claude permission flag through `agent_args_override`. Reads JSONL events from stdout. Supports native structured output via `--json-schema`.
 For review-fixer reuse, Claude starts a stream-json session and resumes it with `claude -p --resume <id>`.
+The CLI reports transport failures such as a stalled stream as `API Error:` assistant text on that event stream rather than on stderr, so no-mistakes keeps those lines - only those - and uses them as the failure cause when stderr is empty; a stall then classifies as transient and is retried instead of failing the run without a stated cause.
 
 ## Codex
 
