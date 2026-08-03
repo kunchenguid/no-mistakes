@@ -1028,7 +1028,11 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		trackStartFailure(failure)
 		return "", err
 	}
-	if prBaseContinuity != nil {
+	currentPRBaseBranch := strings.TrimSpace(cfg.PR.BaseBranch)
+	if currentPRBaseBranch == "" {
+		currentPRBaseBranch = defaultBranch
+	}
+	if prBaseContinuity != nil && prBaseContinuity.branch != currentPRBaseBranch {
 		verifiedContinuity, verifyErr := m.verifyRerunPRBaseContinuity(ctx, repo, prBaseContinuity)
 		if verifyErr != nil {
 			m.db.UpdateRunError(run.ID, verifyErr.Error())
@@ -1036,6 +1040,8 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			return "", verifyErr
 		}
 		prBaseContinuity = verifiedContinuity
+	} else {
+		prBaseContinuity = nil
 	}
 	if prBaseContinuity != nil {
 		cfg.PR.BaseBranch = prBaseContinuity.branch

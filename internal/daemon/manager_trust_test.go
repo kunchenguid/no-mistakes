@@ -283,6 +283,45 @@ func TestRerunContinuityChecksEveryPersistedBaseCandidate(t *testing.T) {
 	}
 }
 
+func TestRerunUnchangedDefaultBaseDoesNotRequireForge(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, mainHead := setupTestGitRepo(t, p, database, "rerun-unset-base-no-forge")
+	gitCmd(t, repo.WorkingPath, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "feature.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "feature")
+	featureHead := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "feature")
+
+	selectedRun, err := database.InsertRun(repo.ID, "feature", featureHead, mainHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(selectedRun.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ReplaceRepoURLs(repo.ID, "https://unsupported.example/test/repo", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewRunManager(database, p, func() []pipeline.Step { return nil })
+	t.Cleanup(manager.Shutdown)
+	runID, err := manager.HandleRerun(context.Background(), repo.ID, "feature", selectedRun.ID, nil, "")
+	if err != nil {
+		t.Fatalf("unset rerun acquired a forge dependency: %v", err)
+	}
+	rerun := waitForRunTerminalState(t, database, runID)
+	if rerun.Status != types.RunCompleted {
+		t.Fatalf("rerun status = %s, want completed: %v", rerun.Status, rerun.Error)
+	}
+	if rerun.PRBaseBranch == nil || *rerun.PRBaseBranch != "main" || rerun.PRBaseBranchExplicit {
+		t.Fatalf("rerun PR base = %v (explicit %t), want main (unset)", rerun.PRBaseBranch, rerun.PRBaseBranchExplicit)
+	}
+}
+
 func TestRerunPersistsInheritedBaseBeforeWorktreeSetup(t *testing.T) {
 	p, database := newRefreshRunFixture(t)
 	repo, head := setupTestGitRepo(t, p, database, "rerun-early-setup-failure")

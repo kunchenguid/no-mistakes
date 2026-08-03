@@ -396,6 +396,65 @@ func TestIntentStep_Integration_ForcePushedOrphanedBaseSHA(t *testing.T) {
 	}
 }
 
+func TestResolveIntentBaseSHA_ConfiguredTargetUsesFullBranchDelta(t *testing.T) {
+	repoDir := t.TempDir()
+	gitCmd(t, repoDir, "init")
+	gitCmd(t, repoDir, "config", "user.email", "test@example.com")
+	gitCmd(t, repoDir, "config", "user.name", "Tester")
+	if err := os.WriteFile(filepath.Join(repoDir, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repoDir, "add", ".")
+	gitCmd(t, repoDir, "commit", "-m", "base")
+	gitCmd(t, repoDir, "checkout", "-b", "quality-assurance")
+	if err := os.WriteFile(filepath.Join(repoDir, "qa.txt"), []byte("qa\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repoDir, "add", ".")
+	gitCmd(t, repoDir, "commit", "-m", "qa")
+	qaHead := gitCmd(t, repoDir, "rev-parse", "HEAD")
+	gitCmd(t, repoDir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repoDir, "earlier.txt"), []byte("earlier feature work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repoDir, "add", ".")
+	gitCmd(t, repoDir, "commit", "-m", "earlier feature work")
+	previousFeatureHead := gitCmd(t, repoDir, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(repoDir, "latest.txt"), []byte("latest push\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repoDir, "add", ".")
+	gitCmd(t, repoDir, "commit", "-m", "latest push")
+	featureHead := gitCmd(t, repoDir, "rev-parse", "HEAD")
+
+	configuredBase := resolveIntentBaseSHA(context.Background(), repoDir, previousFeatureHead, "quality-assurance", true)
+	if configuredBase != qaHead {
+		t.Fatalf("configured intent base = %s, want QA merge-base %s", configuredBase, qaHead)
+	}
+	configuredFiles := strings.Fields(gitCmd(t, repoDir, "diff", "--name-only", configuredBase+".."+featureHead))
+	if !containsString(configuredFiles, "earlier.txt") || !containsString(configuredFiles, "latest.txt") {
+		t.Fatalf("configured intent delta = %v, want full feature branch", configuredFiles)
+	}
+
+	legacyBase := resolveIntentBaseSHA(context.Background(), repoDir, previousFeatureHead, "quality-assurance", false)
+	if legacyBase != previousFeatureHead {
+		t.Fatalf("unset intent base = %s, want previous pushed head %s", legacyBase, previousFeatureHead)
+	}
+	legacyFiles := strings.Fields(gitCmd(t, repoDir, "diff", "--name-only", legacyBase+".."+featureHead))
+	if len(legacyFiles) != 1 || legacyFiles[0] != "latest.txt" {
+		t.Fatalf("unset intent delta = %v, want latest push only", legacyFiles)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 // Ensure the step honors its internal timeout by not hanging beyond it.
 func TestIntentStep_Integration_RespectsTimeout(t *testing.T) {
 	repoDir, fakeHome, base, head := initIntentRepo(t)

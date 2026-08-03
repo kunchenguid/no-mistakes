@@ -178,7 +178,7 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 		gitWorkDir = repo.WorkingPath
 	}
 
-	resolvedBaseSHA := resolveIntentBaseSHA(ctx, gitWorkDir, run.BaseSHA, pipelineBaseBranch(sctx))
+	resolvedBaseSHA := resolveIntentBaseSHA(ctx, gitWorkDir, run.BaseSHA, pipelineBaseBranch(sctx), cfg.PR.HasExplicitBaseBranch())
 	diffFiles, err := diffFilesForIntentMatching(ctx, gitWorkDir, resolvedBaseSHA, run.HeadSHA)
 	if err != nil {
 		return nil, err
@@ -252,12 +252,17 @@ func splitDiffNameOnly(out string) []string {
 }
 
 // resolveIntentBaseSHA returns a usable base SHA for diff'ing against head.
-// Prefers an explicit run.BaseSHA when reachable in the worktree, but falls
-// back to merge-base against the intended PR base when the SHA is the zero ref
-// (new branch push) or has been orphaned by a force push that rewrote the
-// prior remote tip away. Final fallback is git's empty-tree SHA so the diff
-// always succeeds.
-func resolveIntentBaseSHA(ctx context.Context, workDir, baseSHA, baseBranch string) string {
+// Explicit PR targets always use their merge-base so intent matching covers
+// the full feature branch. Unconfigured repositories retain the prior pushed
+// branch-tip behavior, falling back to the default-branch merge-base when the
+// tip is unavailable. Final fallback is git's empty-tree SHA.
+func resolveIntentBaseSHA(ctx context.Context, workDir, baseSHA, baseBranch string, explicitBase bool) string {
+	if explicitBase {
+		if mb := mergeBaseWithBranch(ctx, workDir, baseBranch); mb != "" {
+			return mb
+		}
+		return git.EmptyTreeSHA
+	}
 	if !git.IsZeroSHA(baseSHA) && commitReachable(ctx, workDir, baseSHA) {
 		return baseSHA
 	}
