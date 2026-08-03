@@ -17,11 +17,16 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/update"
 )
 
+var cleanupOldExecutable = update.CleanupOldExecutable
+var maybeHandleBackgroundCheck = update.MaybeHandleBackgroundCheck
+
 func main() {
 	os.Exit(run())
 }
 
 func run() int {
+	_ = cleanupOldExecutable()
+
 	if root, ok, err := daemonLogSinkRootFromArgs(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -53,7 +58,7 @@ func run() int {
 		return 0
 	}
 
-	if handled, err := update.MaybeHandleBackgroundCheck(os.Args[1:]); handled {
+	if handled, err := maybeHandleBackgroundCheck(os.Args[1:]); handled {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
