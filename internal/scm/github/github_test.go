@@ -254,9 +254,9 @@ func TestGetChecksFallsBackForOldGhWithExactPRAndRepo(t *testing.T) {
 		},
 		"gh pr view 123 --repo test/repo --json statusCheckRollup": {
 			stdout: `{"statusCheckRollup":[` +
-				`{"__typename":"CheckRun","name":"build","conclusion":"SUCCESS","completedAt":"2026-04-24T04:15:00Z"},` +
+				`{"__typename":"CheckRun","name":"build","conclusion":"SUCCESS","completedAt":"2026-04-24T04:15:00Z","detailsUrl":"https://github.com/test/repo/actions/runs/1/job/11"},` +
 				`{"__typename":"CheckRun","name":"deploy","conclusion":"","status":"IN_PROGRESS"},` +
-				`{"__typename":"StatusContext","context":"ci/legacy","state":"FAILURE"}` +
+				`{"__typename":"StatusContext","context":"ci/legacy","state":"FAILURE","targetUrl":"https://ci.example.com/legacy/99"}` +
 				`]}` + "\n",
 		},
 	}), nil, "", "test/repo")
@@ -271,15 +271,57 @@ func TestGetChecksFallsBackForOldGhWithExactPRAndRepo(t *testing.T) {
 	if checks[0].Name != "build" || checks[0].Bucket != scm.CheckBucketPass {
 		t.Fatalf("checks[0] = %+v, want passing build", checks[0])
 	}
+	if checks[0].State != "SUCCESS" || checks[0].Link != "https://github.com/test/repo/actions/runs/1/job/11" {
+		t.Fatalf("checks[0] = %+v, want SUCCESS state with detailsUrl link", checks[0])
+	}
 	if checks[1].Name != "deploy" || checks[1].Bucket != scm.CheckBucketPending {
 		t.Fatalf("checks[1] = %+v, want pending deploy", checks[1])
+	}
+	if checks[1].State != "IN_PROGRESS" || checks[1].Link != "" {
+		t.Fatalf("checks[1] = %+v, want IN_PROGRESS state without link", checks[1])
 	}
 	if checks[2].Name != "ci/legacy" || checks[2].Bucket != scm.CheckBucketFail {
 		t.Fatalf("checks[2] = %+v, want failing legacy status", checks[2])
 	}
+	if checks[2].State != "FAILURE" || checks[2].Link != "https://ci.example.com/legacy/99" {
+		t.Fatalf("checks[2] = %+v, want FAILURE state with targetUrl link", checks[2])
+	}
 	wantCompletedAt := time.Date(2026, 4, 24, 4, 15, 0, 0, time.UTC)
 	if !checks[0].CompletedAt.Equal(wantCompletedAt) {
 		t.Fatalf("checks[0].CompletedAt = %v, want %v", checks[0].CompletedAt, wantCompletedAt)
+	}
+}
+
+func TestGetChecksOldGhCancelledCheckKeepsRerunIdentity(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+			stderr: "unknown flag: --json\n",
+			code:   1,
+		},
+		"gh pr view 123 --repo test/repo --json statusCheckRollup": {
+			stdout: `{"statusCheckRollup":[` +
+				`{"__typename":"CheckRun","name":"flaky","conclusion":"CANCELLED","detailsUrl":"https://github.com/test/repo/actions/runs/7/job/77"}` +
+				`]}` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("checks = %+v, want 1 check", checks)
+	}
+	if checks[0].Bucket != scm.CheckBucketCancel {
+		t.Fatalf("checks[0] = %+v, want cancel bucket", checks[0])
+	}
+	if checks[0].State != "CANCELLED" {
+		t.Fatalf("checks[0].State = %q, want CANCELLED", checks[0].State)
+	}
+	if checks[0].Link != "https://github.com/test/repo/actions/runs/7/job/77" {
+		t.Fatalf("checks[0].Link = %q, want detailsUrl link", checks[0].Link)
 	}
 }
 

@@ -364,6 +364,8 @@ func (h *Host) getChecksViaStatusRollup(ctx context.Context, selector string) ([
 			Status      string `json:"status"`
 			State       string `json:"state"`
 			CompletedAt string `json:"completedAt"`
+			DetailsURL  string `json:"detailsUrl"`
+			TargetURL   string `json:"targetUrl"`
 		} `json:"statusCheckRollup"`
 	}
 	if err := json.Unmarshal(out, &payload); err != nil {
@@ -377,7 +379,13 @@ func (h *Host) getChecksViaStatusRollup(ctx context.Context, selector string) ([
 		} else if state == "" {
 			state = item.Status
 		}
-		checks = append(checks, newCheck(name, state, "", item.CompletedAt))
+		check := newCheck(name, state, "", item.CompletedAt)
+		check.State = strings.ToUpper(strings.TrimSpace(state))
+		check.Link = strings.TrimSpace(item.DetailsURL)
+		if check.Link == "" {
+			check.Link = strings.TrimSpace(item.TargetURL)
+		}
+		checks = append(checks, check)
 	}
 	return checks, nil
 }
