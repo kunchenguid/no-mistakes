@@ -1739,6 +1739,40 @@ func TestRecoverKeepsStagingRefWhenTheFetchIsCancelled(t *testing.T) {
 	}
 }
 
+// TestRecoverDoesNotClaimAPinTheGateRefused covers the failure shape where the
+// gate rejects the pin write itself: a directory/file conflict on the ref path
+// is the same lock refusal a stale .lock or a read-only gate produces. No ref
+// then reaches the preserved commit, so the refusal must not tell the operator
+// the commits stay pinned and reachable - that is the moment gate gc can drop
+// them and the operator most needs to be told to look.
+func TestRecoverDoesNotClaimAPinTheGateRefused(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunCancelled)
+	f.strandDetachedPreserved()
+	mustRun(t, f.gate, "update-ref", f.gateStagingRef()+"/blocked", f.submitted)
+
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered {
+		t.Fatalf("recover reported success despite a refused pin write: %#v", state)
+	}
+	if state.Safety != "blocked_recover_preserve_failed" {
+		t.Fatalf("safety = %q, want blocked_recover_preserve_failed: %#v", state.Safety, state)
+	}
+	if !f.gateRefMissing(f.gateStagingRef()) {
+		t.Fatalf("gate staging ref %s exists, so this run never reached the refused-write path", f.gateStagingRef())
+	}
+	if strings.Contains(state.Error, "stay pinned in the gate") {
+		t.Fatalf("refusal %q claims the preserved commits are pinned, but %s was never written", state.Error, f.gateStagingRef())
+	}
+	if !strings.Contains(state.Error, "could not be pinned in the local gate") {
+		t.Fatalf("refusal = %q, want the pin-write failure wording", state.Error)
+	}
+	if !strings.Contains(state.Error, "reachable from no ref") {
+		t.Fatalf("refusal %q does not warn that the preserved commits are unreferenced in the gate", state.Error)
+	}
+}
+
 // TestRecoverKeepsStagingRefWhenTheAnchorDoesNotMatch is the second failure
 // shape: the fetch reports success but the anchor does not hold the preserved
 // head, so recovery refuses and the pin must be retained. Out-of-band movement
