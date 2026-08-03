@@ -320,7 +320,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			// rerun cannot be re-opened by a later poll that no longer reports
 			// the check, which would park a green head on a cancellation the
 			// provider already replaced.
-			if _, err := s.retireResolvedReruns(sctx, checks); err != nil {
+			if _, err := s.retireResolvedReruns(sctx); err != nil {
 				sctx.Log(fmt.Sprintf("warning: could not persist the retired rerun state: %v", err))
 			}
 
@@ -379,6 +379,11 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 				// escalated as a conclusion the provider never reported.
 				if !checksPending {
 					unresolvedCancelled = mergeCheckNames(unresolvedCancelled, s.transientReruns.cancelledWithoutRerun(checks))
+				}
+				if !readinessPending && len(failing) == 0 {
+					unresolvedCurrentHead, awaitingCurrentHead := s.transientReruns.currentHeadGreenReruns(sctx.Run.HeadSHA, unresolvedCancelled, awaitingRerun)
+					unresolvedCancelled = mergeCheckNames(unresolvedCancelled, unresolvedCurrentHead)
+					awaitingRerun = mergeCheckNames(awaitingRerun, awaitingCurrentHead)
 				}
 			}
 			sort.Strings(failing)

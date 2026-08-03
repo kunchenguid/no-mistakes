@@ -89,7 +89,7 @@ const rerunRollupGracePolls = 2
 type rerunRollupState struct {
 	completedAt    time.Time
 	graceRemaining int
-	observedLinks  map[string]bool
+	headSHA        string
 }
 
 // checkRerunBudget records how many reruns each check has consumed during this
@@ -116,7 +116,7 @@ type persistedRerunBudget struct {
 type persistedRollupState struct {
 	CompletedAt    time.Time `json:"completed_at"`
 	GraceRemaining int       `json:"grace_remaining"`
-	ObservedLinks  []string  `json:"observed_links,omitempty"`
+	HeadSHA        string    `json:"head_sha,omitempty"`
 }
 
 // marshal renders the budget for persistence. An empty budget marshals to the
@@ -129,15 +129,10 @@ func (b *checkRerunBudget) marshal() (string, error) {
 	if len(b.rollup) > 0 {
 		payload.Rollup = make(map[string]persistedRollupState, len(b.rollup))
 		for name, state := range b.rollup {
-			observedLinks := make([]string, 0, len(state.observedLinks))
-			for link := range state.observedLinks {
-				observedLinks = append(observedLinks, link)
-			}
-			sort.Strings(observedLinks)
 			payload.Rollup[name] = persistedRollupState{
 				CompletedAt:    state.completedAt,
 				GraceRemaining: state.graceRemaining,
-				ObservedLinks:  observedLinks,
+				HeadSHA:        state.headSHA,
 			}
 		}
 	}
@@ -164,16 +159,10 @@ func (b *checkRerunBudget) unmarshal(encoded string) error {
 	}
 	b.rollup = make(map[string]rerunRollupState, len(payload.Rollup))
 	for name, state := range payload.Rollup {
-		observedLinks := make(map[string]bool, len(state.ObservedLinks))
-		for _, link := range state.ObservedLinks {
-			if link != "" {
-				observedLinks[link] = true
-			}
-		}
 		b.rollup[name] = rerunRollupState{
 			completedAt:    state.CompletedAt,
 			graceRemaining: state.GraceRemaining,
-			observedLinks:  observedLinks,
+			headSHA:        state.HeadSHA,
 		}
 	}
 	return nil
@@ -188,9 +177,9 @@ func (b *checkRerunBudget) remaining(name string, limit int) int {
 
 func (b *checkRerunBudget) used(name string) int { return b.spent[name] }
 
-// spend records one rerun against check's name, along with the completion and
-// same-named provider identities reported at that moment.
-func (b *checkRerunBudget) spend(check scm.Check, checks []scm.Check) int {
+// spend records one rerun against check's name and the pipeline head it
+// certifies, along with the completion reported at that moment.
+func (b *checkRerunBudget) spend(check scm.Check, headSHA string) int {
 	if b.spent == nil {
 		b.spent = map[string]int{}
 	}
@@ -198,76 +187,23 @@ func (b *checkRerunBudget) spend(check scm.Check, checks []scm.Check) int {
 		b.rollup = map[string]rerunRollupState{}
 	}
 	b.spent[check.Name]++
-	observedLinks := map[string]bool{}
-	for _, observed := range checks {
-		if observed.Name == check.Name && observed.Link != "" {
-			observedLinks[observed.Link] = true
-		}
-	}
 	b.rollup[check.Name] = rerunRollupState{
 		completedAt:    check.CompletedAt,
 		graceRemaining: rerunRollupGracePolls,
-		observedLinks:  observedLinks,
+		headSHA:        headSHA,
 	}
 	return b.spent[check.Name]
 }
 
-// retireResolvedReruns drops the outstanding-rerun record for every check whose
-// replacement the provider has now published, and reports whether it retired
-// any. A rerun is outstanding only until the provider answers it; once it has,
-// the record has done its job and keeping it turns a resolved rerun into a
-// permanent claim on the run.
-//
-// That claim is not harmless. cancelledAfterRerun treats every name still in
-// b.rollup as a rerun awaiting publication, so any later poll where the name is
-// absent from the rollup - a path-filtered job that does not run on the head the
-// pipeline pushed next, a provider that stops reporting a retired check - is
-// attributed to a rerun that was already answered. The bounded grace then runs
-// out and the check latches as "cancelled again after its rerun" for the rest of
-// the run, so a head whose every reported check is green can never reach
-// checks-passed and the run keeps cycling in its fixing state until the CI idle
-// timeout.
-//
-// Only a conclusive bucket retires a record, and only when no same-named check
-// is still outstanding. A pending check is the rerun actually running, a
-// cancelled one is the outcome the rerun was meant to replace, and an
-// unrecognized bucket is no evidence at all - all three stay tracked, so the
-// transitional-gap protection still covers a rerun the provider has not
-// published. Retiring a record never changes a check's own bucket: it removes
-// only this run's claim that a rerun is still outstanding, so no cancelled,
-// failing, or pending check can be promoted to green by it. The spent budget is
-// deliberately left intact, so a later cancellation of the same check cannot
-// earn more reruns than ci.rerun_transient authorized.
-func (b *checkRerunBudget) retireResolvedReruns(checks []scm.Check, persist func(*checkRerunBudget) error) (bool, error) {
+func (b *checkRerunBudget) retireResolvedReruns(currentHead string, persist func(*checkRerunBudget) error) (bool, error) {
 	if len(b.rollup) == 0 {
 		return false, nil
 	}
-	resolved := map[string]bool{}
-	outstanding := map[string]bool{}
-	for _, check := range checks {
-		state, tracked := b.rollup[check.Name]
-		if !tracked {
-			continue
-		}
-		if checkFailedTerminally(check) && classifyCheckFailure(check) == classTransient {
-			outstanding[check.Name] = true
-			continue
-		}
-		switch check.Bucket {
-		case scm.CheckBucketPass, scm.CheckBucketFail, scm.CheckBucketSkip:
-			if len(state.observedLinks) > 0 && check.Link != "" && !state.observedLinks[check.Link] {
-				resolved[check.Name] = true
-			}
-		default:
-			outstanding[check.Name] = true
-		}
-	}
 	retirable := map[string]bool{}
-	for name := range resolved {
-		if outstanding[name] {
-			continue
+	for name, state := range b.rollup {
+		if state.headSHA != "" && state.headSHA != currentHead {
+			retirable[name] = true
 		}
-		retirable[name] = true
 	}
 	if len(retirable) == 0 {
 		return false, nil
@@ -307,13 +243,10 @@ func (b *checkRerunBudget) cancelledAfterRerun(checks []scm.Check) (unresolved, 
 		if b.used(check.Name) == 0 {
 			continue
 		}
-		state, tracked := b.rollup[check.Name]
-		if !tracked {
-			continue
-		}
-		if check.Bucket != scm.CheckBucketCancel && (check.Link == "" || state.observedLinks[check.Link]) {
-			continue
-		}
+		// A rerun this run issued is outstanding until its replacement is
+		// published, whatever bucket the check currently reports. Recording
+		// presence for every bucket keeps a check that moved from cancelled to
+		// running or success from being read as missing below.
 		present[check.Name] = true
 		if check.Bucket != scm.CheckBucketCancel {
 			continue
@@ -348,6 +281,30 @@ func (b *checkRerunBudget) cancelledAfterRerun(checks []scm.Check) (unresolved, 
 			continue
 		}
 		awaiting = append(awaiting, name)
+	}
+	return unresolved, awaiting
+}
+
+func (b *checkRerunBudget) currentHeadGreenReruns(currentHead string, accounted ...[]string) (unresolved, awaiting []string) {
+	seen := map[string]bool{}
+	for _, names := range accounted {
+		for _, name := range names {
+			seen[name] = true
+		}
+	}
+	var names []string
+	for name, state := range b.rollup {
+		if (state.headSHA == "" || state.headSHA == currentHead) && !seen[name] {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if b.consumeRollupGrace(name) {
+			awaiting = append(awaiting, name)
+		} else {
+			unresolved = append(unresolved, name)
+		}
 	}
 	return unresolved, awaiting
 }
@@ -530,8 +487,8 @@ func (s *CIStep) persistRerunBudgetCandidate(sctx *pipeline.StepContext, candida
 	return sctx.DB.SetRunCIRerunState(sctx.Run.ID, encoded)
 }
 
-func (s *CIStep) retireResolvedReruns(sctx *pipeline.StepContext, checks []scm.Check) (bool, error) {
-	return s.transientReruns.retireResolvedReruns(checks, func(candidate *checkRerunBudget) error {
+func (s *CIStep) retireResolvedReruns(sctx *pipeline.StepContext) (bool, error) {
+	return s.transientReruns.retireResolvedReruns(sctx.Run.HeadSHA, func(candidate *checkRerunBudget) error {
 		return s.persistRerunBudgetCandidate(sctx, candidate)
 	})
 }
@@ -568,7 +525,7 @@ func (s *CIStep) rerunTransientChecks(sctx *pipeline.StepContext, host scm.Host,
 
 	issued := false
 	for _, check := range candidates {
-		used := s.transientReruns.spend(check, checks)
+		used := s.transientReruns.spend(check, sctx.Run.HeadSHA)
 		// Reserve durably before asking the provider. A crash between this
 		// write and the request costs the budget, which is the safe direction:
 		// the alternative is a recovered run believing the rerun never
