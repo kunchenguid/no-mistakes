@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -131,6 +132,41 @@ func TestRefreshRunBaseBranchTipRejectsConfiguredBaseMovingToSibling(t *testing.
 	_, resolved, err := refreshRunBaseBranchTip(context.Background(), sctx, baseSHA, "quality-assurance")
 	if err == nil || resolved || !strings.Contains(err.Error(), "immutable run snapshot") {
 		t.Fatalf("expected sibling configured-base rejection, resolved=%t err=%v", resolved, err)
+	}
+}
+
+func TestCIStep_ReconcileRejectsOpenPRBaseMovingBehindSnapshot(t *testing.T) {
+	dir, upstream, baseSHA, headSHA, snapshotSHA := setupConfiguredBaseRewrite(t, "backward")
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeCIGHMergeable(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`, "MERGEABLE")
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.PR.BaseBranch = "quality-assurance"
+	sctx.Config.PR.ResolvedBaseSHA = snapshotSHA
+
+	resolved, err := (&CIStep{}).ReconcileApprovalGate(sctx)
+	if resolved || !errors.Is(err, pipeline.ErrFatalGateReconciliation) || !strings.Contains(err.Error(), "immutable run snapshot") {
+		t.Fatalf("expected fatal parked-CI base rejection, resolved=%t err=%v", resolved, err)
+	}
+}
+
+func TestCIStep_ObservesTerminalPRBeforeRefreshingDeletedConfiguredBase(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeCIGHMergeable(t, "MERGED", `[]`, "MERGEABLE")
+	sctx.Run.PRURL = &prURL
+	sctx.Config.PR.BaseBranch = "deleted-integration-branch"
+	sctx.Config.PR.ResolvedBaseSHA = baseSHA
+	sctx.Config.CITimeout = time.Minute
+
+	outcome, err := (&CIStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatalf("terminal PR was blocked by deleted base validation: %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("terminal PR returned no outcome")
 	}
 }
 

@@ -86,6 +86,20 @@ func resolveRunDefaultBranchTip(ctx context.Context, sctx *pipeline.StepContext,
 	return sha, resolved
 }
 
+func validateExplicitPRBase(ctx context.Context, sctx *pipeline.StepContext) error {
+	if sctx == nil || sctx.Config == nil || !sctx.Config.PR.HasExplicitBaseBranch() {
+		return nil
+	}
+	_, resolved, err := refreshRunBaseBranchTip(ctx, sctx, sctx.Run.BaseSHA, pipelineBaseBranch(sctx))
+	if err != nil {
+		return err
+	}
+	if !resolved {
+		return fmt.Errorf("configured pr.base_branch %q could not be resolved", pipelineBaseBranch(sctx))
+	}
+	return nil
+}
+
 func refreshRunBaseBranchTip(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, baseBranch string) (string, bool, error) {
 	fallback := unresolvedDefaultBranchTip(ctx, sctx.WorkDir, fallbackBaseSHA, baseBranch)
 	if strings.TrimSpace(baseBranch) == "" {

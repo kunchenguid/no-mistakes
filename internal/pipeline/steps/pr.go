@@ -75,6 +75,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		sctx.Log(fmt.Sprintf("skipping PR creation: %v", err))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
+	if err := validateExplicitPRBase(ctx, sctx); err != nil {
+		return nil, err
+	}
 
 	// Resolve the branch base so PR summaries cover the full branch delta.
 	baseSHA := resolvePipelineBranchBaseSHA(ctx, sctx)

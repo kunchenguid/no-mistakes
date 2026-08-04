@@ -109,3 +109,7 @@ type Step interface {
 type ApprovalGateReconciler interface {
 	ReconcileApprovalGate(sctx *StepContext) (resolved bool, err error)
 }
+
+type ApprovalGateValidator interface {
+	ValidateApprovalGate(sctx *StepContext) error
+}

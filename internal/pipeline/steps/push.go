@@ -82,6 +82,9 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err := assertReviewApprovedPushHead(sctx, headBeingPushed); err != nil {
 		return nil, err
 	}
+	if err := validateExplicitPRBase(ctx, sctx); err != nil {
+		return nil, err
+	}
 
 	// Decide whether force-pushing would discard commits the pipeline never saw.
 	// The lease is anchored to the remote-tracking ref the rebase step freshly

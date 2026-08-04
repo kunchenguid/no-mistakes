@@ -1141,6 +1141,11 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 	for {
 		select {
 		case response := <-e.approvalCh:
+			if response.action == types.ActionApprove {
+				if err := e.validateApprovalGate(ctx, step, sctx); err != nil {
+					return approvalResponse{}, false, err
+				}
+			}
 			return response, false, nil
 		case <-ctx.Done():
 			return approvalResponse{}, false, context.Cause(ctx)
@@ -1176,6 +1181,22 @@ func (e *Executor) claimGateReconciliation() bool {
 	e.waiting = false
 	e.waitingStep = ""
 	return true
+}
+
+func (e *Executor) validateApprovalGate(ctx context.Context, step Step, sctx *StepContext) error {
+	validator, ok := step.(ApprovalGateValidator)
+	if !ok {
+		return nil
+	}
+	timeout := e.gateReconcileTimeout
+	if timeout <= 0 {
+		timeout = defaultGateReconcileTimeout
+	}
+	validationCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	copyCtx := *sctx
+	copyCtx.Ctx = validationCtx
+	return validator.ValidateApprovalGate(&copyCtx)
 }
 
 func (e *Executor) reconcileApprovalGate(ctx context.Context, step Step, sctx *StepContext) (bool, error) {

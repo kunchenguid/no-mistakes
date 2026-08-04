@@ -12,15 +12,17 @@ import (
 )
 
 type reconcilingApprovalStep struct {
-	name      types.StepName
-	resolved  atomic.Bool
-	calls     atomic.Int64
-	err       atomic.Pointer[error]
-	block     bool
-	started   chan struct{}
-	callStart chan int64
-	release   chan struct{}
-	startOnce atomic.Bool
+	name            types.StepName
+	resolved        atomic.Bool
+	calls           atomic.Int64
+	err             atomic.Pointer[error]
+	block           bool
+	started         chan struct{}
+	callStart       chan int64
+	release         chan struct{}
+	startOnce       atomic.Bool
+	validationCalls atomic.Int64
+	validationErr   atomic.Pointer[error]
 }
 
 func (s *reconcilingApprovalStep) Name() types.StepName { return s.name }
@@ -30,6 +32,14 @@ func (s *reconcilingApprovalStep) Execute(*StepContext) (*StepOutcome, error) {
 		NeedsApproval: true,
 		Findings:      `{"findings":[{"id":"ci-1","severity":"warning","description":"waiting","action":"ask-user"}],"summary":"waiting"}`,
 	}, nil
+}
+
+func (s *reconcilingApprovalStep) ValidateApprovalGate(*StepContext) error {
+	s.validationCalls.Add(1)
+	if ptr := s.validationErr.Load(); ptr != nil {
+		return *ptr
+	}
+	return nil
 }
 
 func (s *reconcilingApprovalStep) ReconcileApprovalGate(sctx *StepContext) (bool, error) {
@@ -183,6 +193,34 @@ func TestExecutor_ReconcileErrorPreservesGateFailClosed(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("approval did not complete preserved gate")
+	}
+}
+
+func TestExecutor_ValidatesParkedGateBeforeApproval(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	step := &reconcilingApprovalStep{name: types.StepCI}
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	exec.SetGateReconcileTimings(time.Hour, 100*time.Millisecond)
+
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), run, repo, t.TempDir()) }()
+	waitForStepStatus(t, database, run.ID, types.StepCI, types.StepStatusAwaitingApproval)
+
+	validationErr := error(fmt.Errorf("%w: configured base moved", ErrFatalGateReconciliation))
+	step.validationErr.Store(&validationErr)
+	if err := exec.Respond(types.StepCI, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrFatalGateReconciliation) {
+			t.Fatalf("Execute() error = %v, want approval validation failure", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("approval validation did not finish")
+	}
+	if step.validationCalls.Load() != 1 {
+		t.Fatalf("approval validation calls = %d, want 1", step.validationCalls.Load())
 	}
 }
 

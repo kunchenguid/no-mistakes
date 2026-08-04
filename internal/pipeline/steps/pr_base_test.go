@@ -182,3 +182,35 @@ func TestResolveBranchBaseSHA_UsesConfiguredPRBase(t *testing.T) {
 		t.Logf("provider CLI transcript:\n%s", logText)
 	})
 }
+
+func TestDeliveryRejectsConfiguredBaseMovingBehindSnapshot(t *testing.T) {
+	for _, stepName := range []string{"push", "pr"} {
+		t.Run(stepName, func(t *testing.T) {
+			dir, _, baseSHA, headSHA, snapshotSHA := setupConfiguredBaseRewrite(t, "backward")
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Config.PR.BaseBranch = "quality-assurance"
+			sctx.Config.PR.ResolvedBaseSHA = snapshotSHA
+
+			var err error
+			switch stepName {
+			case "push":
+				recordReviewApproval(t, sctx, headSHA)
+				_, err = (&PushStep{}).Execute(sctx)
+			case "pr":
+				env, logFile := fakeGH(t, "")
+				sctx.Env = env
+				_, err = (&PRStep{}).Execute(sctx)
+				logBytes, readErr := os.ReadFile(logFile)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if strings.Contains(string(logBytes), "pr create") {
+					t.Fatalf("PR delivery proceeded after base reset:\n%s", logBytes)
+				}
+			}
+			if err == nil || !strings.Contains(err.Error(), "immutable run snapshot") {
+				t.Fatalf("%s step did not reject reset configured base: %v", stepName, err)
+			}
+		})
+	}
+}

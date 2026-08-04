@@ -113,10 +113,21 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 		if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "open"); err != nil {
 			return false, err
 		}
+		if err := validateExplicitPRBase(sctx.Ctx, sctx); err != nil {
+			return false, fmt.Errorf("%w: %w", pipeline.ErrFatalGateReconciliation, err)
+		}
 		return false, nil
 	default:
 		return false, fmt.Errorf("PR state is unresolved: %q", state)
 	}
+}
+
+func (s *CIStep) ValidateApprovalGate(sctx *pipeline.StepContext) error {
+	if sctx == nil || sctx.Config == nil || !sctx.Config.PR.HasExplicitBaseBranch() {
+		return nil
+	}
+	_, err := s.ReconcileApprovalGate(sctx)
+	return err
 }
 
 func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
@@ -229,6 +240,30 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return timeoutOutcome()
 		}
 
+		// Check PR state (merged/closed -> exit)
+		prStateKnown := true
+		state, err := host.GetPRState(ctx, pr)
+		if err != nil {
+			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
+			prStateKnown = false
+		} else if state == scm.PRStateMerged {
+			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
+				return nil, err
+			}
+			sctx.Log("PR has been merged!")
+			return &pipeline.StepOutcome{}, nil
+		} else if state == scm.PRStateClosed {
+			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "closed"); err != nil {
+				return nil, err
+			}
+			sctx.Log("PR has been closed")
+			return &pipeline.StepOutcome{}, nil
+		} else if state == scm.PRStateOpen {
+			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "open"); err != nil {
+				return nil, err
+			}
+		}
+
 		// Re-arm finite timeouts whenever the base branch advances. Explicit
 		// targets are refreshed on every poll even when monitoring is unlimited.
 		explicitBase := sctx.Config != nil && sctx.Config.PR.HasExplicitBaseBranch()
@@ -260,30 +295,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 		if !unlimited && now().Sub(timeoutAnchor) >= timeout {
 			return timeoutOutcome()
-		}
-
-		// Check PR state (merged/closed -> exit)
-		prStateKnown := true
-		state, err := host.GetPRState(ctx, pr)
-		if err != nil {
-			sctx.Log(fmt.Sprintf("warning: could not check PR state: %v", err))
-			prStateKnown = false
-		} else if state == scm.PRStateMerged {
-			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
-				return nil, err
-			}
-			sctx.Log("PR has been merged!")
-			return &pipeline.StepOutcome{}, nil
-		} else if state == scm.PRStateClosed {
-			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "closed"); err != nil {
-				return nil, err
-			}
-			sctx.Log("PR has been closed")
-			return &pipeline.StepOutcome{}, nil
-		} else if state == scm.PRStateOpen {
-			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "open"); err != nil {
-				return nil, err
-			}
 		}
 
 		// Check mergeable state if the provider supports it
