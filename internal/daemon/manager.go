@@ -1223,8 +1223,11 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	}
 	prBaseContinuity = verifiedContinuity
 	if prBaseContinuity != nil {
-		cfg.PR.BaseBranch = prBaseContinuity.branch
 		explicit := prBaseContinuity.explicit
+		if cfg.PR.HasExplicitBaseBranch() && currentPRBaseBranch == strings.TrimSpace(prBaseContinuity.branch) {
+			explicit = true
+		}
+		cfg.PR.BaseBranch = prBaseContinuity.branch
 		cfg.PR.BaseBranchExplicit = &explicit
 		if err := ensureConfiguredPRBaseBranch(ctx, wtDir, repo, cfg, run.ID); err != nil {
 			m.db.UpdateRunError(run.ID, err.Error())

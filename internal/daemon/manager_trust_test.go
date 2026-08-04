@@ -112,8 +112,10 @@ func TestRunStartRejectsConfiguredBaseBranches(t *testing.T) {
 }
 
 type capturedRerunPRConfig struct {
-	baseBranch string
-	noCI       bool
+	baseBranch      string
+	baseExplicit    bool
+	resolvedBaseSHA string
+	noCI            bool
 }
 
 type captureRerunPRStep struct {
@@ -122,7 +124,12 @@ type captureRerunPRStep struct {
 }
 
 func (s *captureRerunPRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
-	s.seen <- capturedRerunPRConfig{baseBranch: sctx.Config.PR.BaseBranch, noCI: sctx.Config.NoCI}
+	s.seen <- capturedRerunPRConfig{
+		baseBranch:      sctx.Config.PR.BaseBranch,
+		baseExplicit:    sctx.Config.PR.HasExplicitBaseBranch(),
+		resolvedBaseSHA: sctx.Config.PR.ResolvedBaseSHA,
+		noCI:            sctx.Config.NoCI,
+	}
 	return s.Step.Execute(sctx)
 }
 
@@ -354,6 +361,65 @@ func TestReplacementPushPreservesOpenPRBaseAcrossTrustedConfigChange(t *testing.
 	logText := string(logBytes)
 	if !strings.Contains(logText, "pr list --head feature --base quality-assurance") || !strings.Contains(logText, "pr list --head feature --base staging") || strings.Contains(logText, "pr create ") {
 		t.Fatalf("replacement push did not resolve every persisted base before preserving the reopened PR:\n%s", logText)
+	}
+}
+
+func TestReplacementPreservesCurrentExplicitSemanticsForImplicitOpenPR(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, _ := setupTestGitRepo(t, p, database, "replacement-current-explicit-pr-base")
+
+	configPath := filepath.Join(repo.WorkingPath, ".no-mistakes.yaml")
+	if err := os.WriteFile(configPath, []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\npr:\n  base_branch: main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", configPath)
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "explicitly target main")
+	mainSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main")
+
+	gitCmd(t, repo.WorkingPath, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "feature.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "add feature")
+	featureSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "feature")
+
+	previous, err := database.InsertRun(repo.ID, "feature", featureSHA, mainSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(previous.ID, "main", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRURL(previous.ID, "https://github.com/test/repo/pull/42"); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir, _ := writeRerunPRBaseMockGH(t, "main", "")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	seen := make(chan capturedRerunPRConfig, 1)
+	manager := NewRunManager(database, p, func() []pipeline.Step {
+		return []pipeline.Step{&captureRerunPRStep{Step: &steps.PRStep{}, seen: seen}}
+	})
+	t.Cleanup(manager.Shutdown)
+
+	runID, err := manager.startRun(context.Background(), repo, "feature", featureSHA, mainSHA, "push", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := waitForRunTerminalState(t, database, runID)
+	if run.Status != types.RunCompleted {
+		t.Fatalf("replacement status = %s, want completed: %v", run.Status, run.Error)
+	}
+	if run.PRBaseBranch == nil || *run.PRBaseBranch != "main" || !run.PRBaseBranchExplicit {
+		t.Fatalf("replacement PR base = %v (explicit %t), want main (explicit)", run.PRBaseBranch, run.PRBaseBranchExplicit)
+	}
+	captured := <-seen
+	if captured.baseBranch != "main" || !captured.baseExplicit || captured.resolvedBaseSHA != mainSHA {
+		t.Fatalf("replacement pipeline config = %+v, want explicit main at %s", captured, mainSHA)
 	}
 }
 
