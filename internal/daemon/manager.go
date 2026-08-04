@@ -903,9 +903,10 @@ func configuredPRBaseBranchGuard(branch, defaultBranch string, cfg *config.Confi
 }
 
 type runPRBaseContinuity struct {
-	sourceRun *db.Run
-	branch    string
-	explicit  bool
+	sourceRun  *db.Run
+	sourceRuns []*db.Run
+	branch     string
+	explicit   bool
 }
 
 func runPRBaseContinuityForRun(run *db.Run, _ string) *runPRBaseContinuity {
@@ -918,7 +919,34 @@ func runPRBaseContinuityForRun(run *db.Run, _ string) *runPRBaseContinuity {
 		branch = strings.TrimSpace(*run.PRBaseBranch)
 		explicit = run.PRBaseBranchExplicit
 	}
-	return &runPRBaseContinuity{sourceRun: run, branch: branch, explicit: explicit}
+	return &runPRBaseContinuity{sourceRun: run, sourceRuns: []*db.Run{run}, branch: branch, explicit: explicit}
+}
+
+func continuitySourceRuns(candidate *runPRBaseContinuity) []*db.Run {
+	if candidate == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var runs []*db.Run
+	appendRun := func(run *db.Run) {
+		if run == nil {
+			return
+		}
+		key := run.ID
+		if key == "" {
+			key = fmt.Sprintf("%p", run)
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		runs = append(runs, run)
+	}
+	appendRun(candidate.sourceRun)
+	for _, run := range candidate.sourceRuns {
+		appendRun(run)
+	}
+	return runs
 }
 
 func distinctRunPRBaseContinuities(runs []*db.Run, branch, defaultBranch string, preferred *runPRBaseContinuity) []*runPRBaseContinuity {
@@ -930,8 +958,11 @@ func distinctRunPRBaseContinuities(runs []*db.Run, branch, defaultBranch string,
 		}
 		if index, ok := indexes[candidate.branch]; ok {
 			candidates[index].explicit = candidates[index].explicit || candidate.explicit
+			candidates[index].sourceRuns = append(candidates[index].sourceRuns, continuitySourceRuns(candidate)...)
+			candidates[index].sourceRuns = continuitySourceRuns(candidates[index])
 			return
 		}
+		candidate.sourceRuns = continuitySourceRuns(candidate)
 		indexes[candidate.branch] = len(candidates)
 		candidates = append(candidates, candidate)
 	}
@@ -1007,13 +1038,17 @@ func (m *RunManager) verifyRerunPRBaseContinuity(ctx context.Context, repo *db.R
 		return candidate, nil
 	}
 	run := candidate.sourceRun
-	state := ""
-	if run.PRState != nil {
-		state = strings.ToLower(strings.TrimSpace(*run.PRState))
-	}
+	runs := continuitySourceRuns(candidate)
 	provider := scm.DetectProviderContext(ctx, repo.UpstreamURL)
-	if provider == scm.ProviderUnknown && run.PRURL != nil {
-		provider = scm.DetectProviderContext(ctx, *run.PRURL)
+	if provider == scm.ProviderUnknown {
+		for _, sourceRun := range runs {
+			if sourceRun.PRURL != nil {
+				provider = scm.DetectProviderContext(ctx, *sourceRun.PRURL)
+				if provider != scm.ProviderUnknown {
+					break
+				}
+			}
+		}
 	}
 	sctx := &pipeline.StepContext{
 		Ctx:     ctx,
@@ -1032,7 +1067,56 @@ func (m *RunManager) verifyRerunPRBaseContinuity(ctx context.Context, repo *db.R
 	if err != nil {
 		return nil, fmt.Errorf("verify open pull request for %s into %s: %w", run.Branch, candidate.branch, err)
 	}
-	if pr != nil && strings.TrimSpace(pr.URL) != "" {
+
+	foundURL := ""
+	if pr != nil {
+		foundURL = strings.TrimRight(strings.TrimSpace(pr.URL), "/")
+	}
+	observedStates := make(map[string]scm.PRState)
+	for _, sourceRun := range runs {
+		if sourceRun.PRURL == nil {
+			continue
+		}
+		url := strings.TrimRight(strings.TrimSpace(*sourceRun.PRURL), "/")
+		if url == "" {
+			continue
+		}
+		observed, ok := observedStates[url]
+		if !ok {
+			if foundURL != "" && url == foundURL {
+				observed = scm.PRStateOpen
+			} else {
+				known := &scm.PR{URL: url}
+				number, numberErr := scm.ExtractPRNumber(url)
+				if numberErr != nil {
+					return nil, fmt.Errorf("verify persisted pull request identity: %w", numberErr)
+				}
+				known.Number = number
+				observed, err = host.GetPRState(ctx, known)
+				if err != nil {
+					return nil, fmt.Errorf("verify persisted pull request state for %s: %w", url, err)
+				}
+			}
+			observedStates[url] = observed
+		}
+		state := strings.ToLower(strings.TrimSpace(string(observed)))
+		switch observed {
+		case scm.PRStateOpen, scm.PRStateClosed, scm.PRStateMerged:
+			if err := m.db.UpdateRunPRState(sourceRun.ID, state); err != nil {
+				return nil, fmt.Errorf("persist verified pull request state: %w", err)
+			}
+		default:
+			return nil, fmt.Errorf("persisted pull request state is unresolved: %q", observed)
+		}
+	}
+
+	for url, observed := range observedStates {
+		if observed == scm.PRStateOpen && url != foundURL {
+			return nil, fmt.Errorf("persisted pull request %s is open but was not found for head %s and base %s", url, run.Branch, candidate.branch)
+		}
+	}
+
+	if foundURL != "" {
 		resolvedBase := strings.TrimSpace(candidate.branch)
 		reportedBase := strings.TrimSpace(pr.BaseBranch)
 		if resolvedBase == "" {
@@ -1049,33 +1133,15 @@ func (m *RunManager) verifyRerunPRBaseContinuity(ctx context.Context, repo *db.R
 		if err := m.db.UpdateRunOpenPR(run.ID, pr.URL); err != nil {
 			return nil, fmt.Errorf("persist verified open pull request: %w", err)
 		}
-		return &runPRBaseContinuity{sourceRun: run, branch: resolvedBase, explicit: candidate.explicit}, nil
+		return &runPRBaseContinuity{sourceRun: run, sourceRuns: runs, branch: resolvedBase, explicit: candidate.explicit}, nil
 	}
 
-	if run.PRURL != nil && strings.TrimSpace(*run.PRURL) != "" {
-		known := &scm.PR{URL: strings.TrimSpace(*run.PRURL)}
-		if number, err := scm.ExtractPRNumber(known.URL); err == nil {
-			known.Number = number
+	for _, sourceRun := range runs {
+		if sourceRun.PRURL == nil || strings.TrimSpace(*sourceRun.PRURL) == "" {
+			if err := m.db.UpdateRunPRState(sourceRun.ID, "none"); err != nil {
+				return nil, fmt.Errorf("persist verified pull request state: %w", err)
+			}
 		}
-		observed, err := host.GetPRState(ctx, known)
-		if err != nil {
-			return nil, fmt.Errorf("verify persisted pull request state: %w", err)
-		}
-		switch observed {
-		case scm.PRStateMerged:
-			state = "merged"
-		case scm.PRStateClosed:
-			state = "closed"
-		case scm.PRStateOpen:
-			return nil, fmt.Errorf("persisted pull request is open but was not found for head %s and base %s", run.Branch, candidate.branch)
-		default:
-			return nil, fmt.Errorf("persisted pull request state is unresolved: %q", observed)
-		}
-	} else {
-		state = "none"
-	}
-	if err := m.db.UpdateRunPRState(run.ID, state); err != nil {
-		return nil, fmt.Errorf("persist verified pull request state: %w", err)
 	}
 	return nil, nil
 }

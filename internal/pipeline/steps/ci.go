@@ -229,13 +229,17 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			return timeoutOutcome()
 		}
 
-		// Re-arm the timeout whenever the base branch advances.
-		if !unlimited {
+		// Re-arm finite timeouts whenever the base branch advances. Explicit
+		// targets are refreshed on every poll even when monitoring is unlimited.
+		explicitBase := sctx.Config != nil && sctx.Config.PR.HasExplicitBaseBranch()
+		if !unlimited || explicitBase {
 			resolveWindow := defaultBaseBranchTipResolveWindow
-			if remaining := timeout - now().Sub(timeoutAnchor); remaining <= 0 {
-				return timeoutOutcome()
-			} else if remaining < resolveWindow {
-				resolveWindow = remaining
+			if !unlimited {
+				if remaining := timeout - now().Sub(timeoutAnchor); remaining <= 0 {
+					return timeoutOutcome()
+				} else if remaining < resolveWindow {
+					resolveWindow = remaining
+				}
 			}
 			tipCtx, cancel := context.WithTimeout(ctx, resolveWindow)
 			tip, resolved := baseBranchTip(tipCtx)
@@ -243,7 +247,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if baseBranchTipErr != nil {
 				return nil, baseBranchTipErr
 			}
-			if resolved && tip != "" {
+			if !unlimited && resolved && tip != "" {
 				if lastBaseTip == "" {
 					lastBaseTip = tip
 				} else if tip != lastBaseTip {

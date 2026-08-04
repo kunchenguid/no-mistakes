@@ -75,6 +75,65 @@ func TestCIStep_RejectsConfiguredBaseThatMovesToOrphanHistory(t *testing.T) {
 	}
 }
 
+func setupConfiguredBaseRewrite(t *testing.T, replacement string) (string, string, string, string, string) {
+	t.Helper()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "checkout", "-b", "quality-assurance", "main")
+	if err := os.WriteFile(filepath.Join(dir, "qa.txt"), []byte("snapshot\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "qa.txt")
+	gitCmd(t, dir, "commit", "-m", "configured base snapshot")
+	snapshotSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "HEAD:refs/heads/quality-assurance")
+	if replacement == "sibling" {
+		gitCmd(t, dir, "checkout", "-B", "replacement", "main")
+		if err := os.WriteFile(filepath.Join(dir, "replacement.txt"), []byte("replacement\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitCmd(t, dir, "add", "replacement.txt")
+		gitCmd(t, dir, "commit", "-m", "sibling base")
+		gitCmd(t, dir, "push", "--force", "origin", "HEAD:refs/heads/quality-assurance")
+	} else {
+		gitCmd(t, dir, "push", "--force", "origin", baseSHA+":refs/heads/quality-assurance")
+	}
+	gitCmd(t, dir, "checkout", "feature")
+	return dir, upstream, baseSHA, headSHA, snapshotSHA
+}
+
+func TestCIStep_UnlimitedTimeoutRejectsConfiguredBaseMovingBehindSnapshot(t *testing.T) {
+	dir, upstream, baseSHA, headSHA, snapshotSHA := setupConfiguredBaseRewrite(t, "backward")
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeCIGHMergeable(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`, "MERGEABLE")
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.PR.BaseBranch = "quality-assurance"
+	sctx.Config.PR.ResolvedBaseSHA = snapshotSHA
+	sctx.Config.CITimeout = config.CITimeoutUnlimited
+
+	outcome, err := (&CIStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "immutable run snapshot") {
+		t.Fatalf("expected immutable configured-base error, got outcome=%+v err=%v", outcome, err)
+	}
+}
+
+func TestRefreshRunBaseBranchTipRejectsConfiguredBaseMovingToSibling(t *testing.T) {
+	dir, upstream, baseSHA, headSHA, snapshotSHA := setupConfiguredBaseRewrite(t, "sibling")
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.PR.BaseBranch = "quality-assurance"
+	sctx.Config.PR.ResolvedBaseSHA = snapshotSHA
+
+	_, resolved, err := refreshRunBaseBranchTip(context.Background(), sctx, baseSHA, "quality-assurance")
+	if err == nil || resolved || !strings.Contains(err.Error(), "immutable run snapshot") {
+		t.Fatalf("expected sibling configured-base rejection, resolved=%t err=%v", resolved, err)
+	}
+}
+
 func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

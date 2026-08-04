@@ -825,6 +825,55 @@ func TestDistinctPRBaseContinuitiesMergeExplicitMetadata(t *testing.T) {
 	}
 }
 
+func TestDistinctPRBaseContinuitiesVerifyRetargetedPersistedIdentity(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "retargeted-pr-identity")
+	older, err := database.InsertRun(repo.ID, "feature", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(older.ID, "quality-assurance", true); err != nil {
+		t.Fatal(err)
+	}
+	newer, err := database.InsertRun(repo.ID, "feature", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(newer.ID, "quality-assurance", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRURL(newer.ID, "https://github.com/test/repo/pull/42"); err != nil {
+		t.Fatal(err)
+	}
+	older, err = database.GetRun(older.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs, err := database.GetRunsByRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := distinctRunPRBaseContinuities(runs, "feature", repo.DefaultBranch, runPRBaseContinuityForRun(older, repo.DefaultBranch))
+	if len(candidates) != 1 || len(continuitySourceRuns(candidates[0])) != 2 {
+		t.Fatalf("deduplicated candidates lost persisted identities: %+v", candidates)
+	}
+
+	binDir, ghLog := writeRerunPRBaseMockGH(t, "", "OPEN")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	manager := NewRunManager(database, p, nil)
+	continuity, err := manager.verifyDistinctPRBaseContinuities(context.Background(), repo, candidates, repo.DefaultBranch)
+	if err == nil || !strings.Contains(err.Error(), "is open but was not found") {
+		t.Fatalf("expected retargeted persisted PR to fail closed, continuity=%+v err=%v", continuity, err)
+	}
+	logBytes, err := os.ReadFile(ghLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logText := string(logBytes); !strings.Contains(logText, "pr list --head feature --base quality-assurance") || !strings.Contains(logText, "pr view 42") {
+		t.Fatalf("persisted PR identity was not authoritatively verified:\n%s", logText)
+	}
+}
+
 func TestDistinctPRBaseContinuityPreservesExplicitSemanticsWhenBasesConverge(t *testing.T) {
 	p, database := newRefreshRunFixture(t)
 	repo, head := setupTestGitRepo(t, p, database, "converged-pr-base-semantics")

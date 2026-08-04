@@ -125,6 +125,12 @@ func refreshRunBaseBranchTip(ctx context.Context, sctx *pipeline.StepContext, fa
 			}
 			return fallback, false, fmt.Errorf("configured pr.base_branch %q has no usable shared history with HEAD after refresh", baseBranch)
 		}
+		snapshot := strings.TrimSpace(sctx.Config.PR.ResolvedBaseSHA)
+		if snapshot != "" {
+			if _, ancestorErr := git.Run(ctx, sctx.WorkDir, "merge-base", "--is-ancestor", snapshot, sha); ancestorErr != nil {
+				return fallback, false, fmt.Errorf("configured pr.base_branch %q moved behind or away from immutable run snapshot %s (refreshed tip %s): %w", baseBranch, snapshot, sha, ancestorErr)
+			}
+		}
 	}
 	return sha, true, nil
 }
