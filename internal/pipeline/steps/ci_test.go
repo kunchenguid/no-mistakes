@@ -573,6 +573,42 @@ func TestCIStep_CheckReadFailureCounterResetsAfterSuccessfulRead(t *testing.T) {
 	}
 }
 
+// TestCICheckReadFailureOutcome_ProviderNeutral guards the parked finding text:
+// it must give provider-agnostic remediation for every supported SCM, not an
+// unconditional instruction to install or upgrade `gh`, which is GitHub-only.
+func TestCICheckReadFailureOutcome_ProviderNeutral(t *testing.T) {
+	t.Parallel()
+	outcome := ciCheckReadFailureOutcome(errors.New("glab mr checks: failed to read checks"))
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("findings = %+v, want exactly one finding", findings.Items)
+	}
+	if findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("finding action = %q, want ask-user", findings.Items[0].Action)
+	}
+	desc := findings.Items[0].Description
+	if !strings.Contains(desc, "provider CLI or credentials") {
+		t.Fatalf("finding %q must give provider-neutral remediation, not a GitHub-only one", desc)
+	}
+	// The old text instructed verifying gh unconditionally ("verify gh supports
+	// 'pr checks --json'") even for GitLab/Bitbucket/Azure errors. gh may only be
+	// named as the conditional GitHub-specific clause, never the general remedy.
+	if strings.Contains(desc, "verify gh supports") {
+		t.Fatalf("finding %q must not instruct verifying gh for a non-GitHub provider", desc)
+	}
+	// The underlying provider error must survive into the finding.
+	if !strings.Contains(desc, "glab mr checks: failed to read checks") {
+		t.Fatalf("finding %q must include the underlying provider error", desc)
+	}
+	// And the GitHub-specific diagnostic is still present for gh-style errors.
+	if !strings.Contains(desc, "pr checks --json") || !strings.Contains(desc, "2.50") {
+		t.Fatalf("finding %q must keep the GitHub gh version/flag diagnostic", desc)
+	}
+}
+
 func TestCIStep_CIWarningClearsPersistedReadiness(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
