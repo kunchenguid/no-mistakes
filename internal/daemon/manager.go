@@ -852,15 +852,16 @@ func runPRBaseContinuityForRun(run *db.Run, _ string) *runPRBaseContinuity {
 
 func distinctRunPRBaseContinuities(runs []*db.Run, branch, defaultBranch string, preferred *runPRBaseContinuity) []*runPRBaseContinuity {
 	var candidates []*runPRBaseContinuity
-	seen := make(map[string]struct{})
+	indexes := make(map[string]int)
 	appendCandidate := func(candidate *runPRBaseContinuity) {
 		if candidate == nil || candidate.sourceRun == nil || candidate.sourceRun.Branch != branch {
 			return
 		}
-		if _, ok := seen[candidate.branch]; ok {
+		if index, ok := indexes[candidate.branch]; ok {
+			candidates[index].explicit = candidates[index].explicit || candidate.explicit
 			return
 		}
-		seen[candidate.branch] = struct{}{}
+		indexes[candidate.branch] = len(candidates)
 		candidates = append(candidates, candidate)
 	}
 	appendCandidate(preferred)
@@ -1051,6 +1052,11 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	branchMu.Lock()
 	defer branchMu.Unlock()
 
+	if err := m.cancelActiveRuns(repo.ID, branch); err != nil {
+		trackStartFailure("cancel_active_runs")
+		return "", err
+	}
+
 	runs, runsErr := m.db.GetRunsByRepo(repo.ID)
 	if runsErr != nil {
 		trackStartFailure("load_pr_base_continuity")
@@ -1075,9 +1081,6 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	} else {
 		repo = refreshed
 	}
-
-	// Cancel any active run for this repo+branch.
-	m.cancelActiveRuns(repo.ID, branch)
 
 	storedIntent := intent
 	if source != db.RunIntentSourceRerun {
@@ -1521,11 +1524,10 @@ func (m *RunManager) HandleCancel(runID string) error {
 // concurrent pushes to upstream.
 // The cancellation cause is propagated to the executor via context.Cause,
 // which uses it as the run's error message in the DB.
-func (m *RunManager) cancelActiveRuns(repoID, branch string) {
+func (m *RunManager) cancelActiveRuns(repoID, branch string) error {
 	runs, err := m.db.GetRunsByRepo(repoID)
 	if err != nil {
-		slog.Error("failed to query active runs for cancellation", "repo", repoID, "branch", branch, "error", err)
-		return
+		return fmt.Errorf("query active runs for cancellation: %w", err)
 	}
 
 	var toWait []chan struct{}
@@ -1557,8 +1559,8 @@ func (m *RunManager) cancelActiveRuns(repoID, branch string) {
 		select {
 		case <-done:
 		case <-timeout:
-			slog.Warn("timed out waiting for cancelled runs to finish")
-			return
+			return fmt.Errorf("timed out waiting for cancelled runs to finish")
 		}
 	}
+	return nil
 }

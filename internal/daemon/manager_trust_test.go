@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -123,6 +124,35 @@ type captureRerunPRStep struct {
 func (s *captureRerunPRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	s.seen <- capturedRerunPRConfig{baseBranch: sctx.Config.PR.BaseBranch, noCI: sctx.Config.NoCI}
 	return s.Step.Execute(sctx)
+}
+
+type cancellationPRContinuityStep struct {
+	mu          sync.Mutex
+	calls       int
+	started     chan<- struct{}
+	evidenceErr chan<- error
+	seenBase    chan<- string
+}
+
+func (s *cancellationPRContinuityStep) Name() types.StepName { return types.StepReview }
+
+func (s *cancellationPRContinuityStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	if call != 1 {
+		s.seenBase <- sctx.Config.PR.BaseBranch
+		return &pipeline.StepOutcome{ExitCode: 0}, nil
+	}
+	s.started <- struct{}{}
+	<-sctx.Ctx.Done()
+	result, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepPR)
+	if err == nil {
+		err = sctx.DB.StartStep(result.ID)
+	}
+	s.evidenceErr <- err
+	return nil, sctx.Ctx.Err()
 }
 
 func TestRerunCrashBeforePRPersistencePreservesBaseAcrossTrustedConfigChange(t *testing.T) {
@@ -327,6 +357,83 @@ func TestReplacementPushPreservesOpenPRBaseAcrossTrustedConfigChange(t *testing.
 	}
 }
 
+func TestReplacementWaitsForCancelledRunPRContinuityEvidence(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, _ := setupTestGitRepo(t, p, database, "replacement-cancellation-pr-continuity")
+
+	configPath := filepath.Join(repo.WorkingPath, ".no-mistakes.yaml")
+	if err := os.WriteFile(configPath, []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\npr:\n  base_branch: quality-assurance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", configPath)
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "target QA")
+	qaSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main")
+	gitCmd(t, repo.WorkingPath, "branch", "quality-assurance")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "quality-assurance")
+
+	gitCmd(t, repo.WorkingPath, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "feature.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "add feature")
+	featureSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "feature")
+
+	started := make(chan struct{}, 1)
+	evidenceErr := make(chan error, 1)
+	seenBase := make(chan string, 1)
+	step := &cancellationPRContinuityStep{started: started, evidenceErr: evidenceErr, seenBase: seenBase}
+	manager := NewRunManager(database, p, func() []pipeline.Step { return []pipeline.Step{step} })
+	t.Cleanup(manager.Shutdown)
+	if _, err := manager.startRun(context.Background(), repo, "feature", featureSHA, qaSHA, "push", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first run did not start")
+	}
+
+	gitCmd(t, repo.WorkingPath, "checkout", "main")
+	if err := os.WriteFile(configPath, []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\npr:\n  base_branch: staging\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", configPath)
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "target staging")
+	gitCmd(t, repo.WorkingPath, "branch", "staging")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "main", "staging")
+
+	binDir, ghLog := writeRerunPRBaseMockGH(t, "quality-assurance", "")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	replacementID, err := manager.startRun(context.Background(), repo, "feature", featureSHA, qaSHA, "push", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-evidenceErr; err != nil {
+		t.Fatalf("record cancellation PR evidence: %v", err)
+	}
+	replacement := waitForRunTerminalState(t, database, replacementID)
+	if replacement.Status != types.RunCompleted {
+		t.Fatalf("replacement status = %s, want completed: %v", replacement.Status, replacement.Error)
+	}
+	if replacement.PRBaseBranch == nil || *replacement.PRBaseBranch != "quality-assurance" || !replacement.PRBaseBranchExplicit {
+		t.Fatalf("replacement PR base = %v (explicit %t), want quality-assurance (explicit)", replacement.PRBaseBranch, replacement.PRBaseBranchExplicit)
+	}
+	if base := <-seenBase; base != "quality-assurance" {
+		t.Fatalf("replacement pipeline base = %q, want quality-assurance", base)
+	}
+	logBytes, err := os.ReadFile(ghLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logText := string(logBytes); !strings.Contains(logText, "pr list --head feature --base quality-assurance") || strings.Contains(logText, "--base staging") {
+		t.Fatalf("replacement did not load cancellation-time continuity evidence:\n%s", logText)
+	}
+}
+
 func TestDistinctPRBaseContinuityRejectsMultipleOpenBases(t *testing.T) {
 	p, database := newRefreshRunFixture(t)
 	repo, head := setupTestGitRepo(t, p, database, "multiple-open-pr-bases")
@@ -358,6 +465,38 @@ func TestDistinctPRBaseContinuityRejectsMultipleOpenBases(t *testing.T) {
 	}
 	if continuity != nil {
 		t.Fatalf("multiple-open continuity = %+v, want nil", continuity)
+	}
+}
+
+func TestDistinctPRBaseContinuitiesMergeExplicitMetadata(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "duplicate-pr-base-metadata")
+	implicitRun, err := database.InsertRun(repo.ID, "feature", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(implicitRun.ID, "main", false); err != nil {
+		t.Fatal(err)
+	}
+	explicitRun, err := database.InsertRun(repo.ID, "feature", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(explicitRun.ID, "main", true); err != nil {
+		t.Fatal(err)
+	}
+	implicitRun, err = database.GetRun(implicitRun.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs, err := database.GetRunsByRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preferred := runPRBaseContinuityForRun(implicitRun, repo.DefaultBranch)
+	candidates := distinctRunPRBaseContinuities(runs, "feature", repo.DefaultBranch, preferred)
+	if len(candidates) != 1 || candidates[0].branch != "main" || !candidates[0].explicit {
+		t.Fatalf("deduplicated candidates = %+v, want one explicit main candidate", candidates)
 	}
 }
 
