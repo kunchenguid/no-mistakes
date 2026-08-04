@@ -811,8 +811,8 @@ func fetchRunUpstreamBranchToPrivateRef(ctx context.Context, workDir string, rep
 
 // ensureConfiguredPRBaseBranch validates and freshly resolves an explicit
 // pr.base_branch on the upstream parent before the pipeline starts. Empty is a
-// deliberate no-op so repositories without the setting retain the exact legacy
-// default-branch behavior (including its existing fallback/error semantics).
+// deliberate no-op so repositories without the setting stay on the existing
+// default-branch target-resolution path.
 // Syntax was already checked while parsing the trusted config, but Git is the
 // final authority and this second check also protects direct Config callers.
 func ensureConfiguredPRBaseBranch(ctx context.Context, workDir string, repo *db.Repo, cfg *config.Config, runID string) error {

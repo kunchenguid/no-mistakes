@@ -32,8 +32,8 @@ type Config struct {
 	// and tests that drive cancellation through the caller context.
 	DisableInput bool
 	// NeedsBranch is true when the user has no usable feature branch yet -
-	// either they're on the default branch, or HEAD is detached. The branch
-	// step is only active when this is true.
+	// either HEAD is detached or the current branch is a protected repository
+	// default/PR-base branch. The branch step is active only in those cases.
 	NeedsBranch bool
 	IsDirty     bool
 	GateRemote  string

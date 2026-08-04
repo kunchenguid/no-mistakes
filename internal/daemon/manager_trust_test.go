@@ -1109,8 +1109,12 @@ func TestRerunContinuityRecognizesReopenedPR(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(string(logBytes), "pr list --head feature --base quality-assurance") {
+			logText := string(logBytes)
+			if !strings.Contains(logText, "pr list --head feature --base quality-assurance") {
 				t.Fatalf("cached %s PR was not rechecked against its saved tuple:\n%s", cachedState, logBytes)
+			}
+			if cachedState == "merged" && !strings.Contains(logText, "pr view 41") {
+				t.Fatalf("superseded merged PR identity was not authoritatively rechecked:\n%s", logBytes)
 			}
 		})
 	}
@@ -1372,7 +1376,7 @@ func writeRerunPRBaseMockGHForBases(t *testing.T, openBases []string, persistedS
 		if persistedState != "" {
 			stateRule = "echo %* | findstr /C:\"pr view 42 \" >nul && (echo " + persistedState + "& exit /b 0)\r\n"
 		}
-		script := "@echo off\r\necho %*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status --hostname github.com\" >nul && exit /b 0\r\n" + openRule + noBaseRule + "echo %* | findstr /C:\"pr list \" >nul && (echo []& exit /b 0)\r\n" + stateRule + "echo %* | findstr /C:\"pr edit 42 \" >nul && exit /b 0\r\necho %* | findstr /C:\"pr create \" >nul && (echo https://github.com/test/repo/pull/99& exit /b 0)\r\nexit /b 1\r\n"
+		script := "@echo off\r\necho %*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status --hostname github.com\" >nul && exit /b 0\r\n" + openRule + noBaseRule + "echo %* | findstr /C:\"pr list \" >nul && (echo []& exit /b 0)\r\n" + stateRule + "echo %* | findstr /C:\"pr view 41 \" >nul && (echo MERGED& exit /b 0)\r\necho %* | findstr /C:\"pr edit 42 \" >nul && exit /b 0\r\necho %* | findstr /C:\"pr create \" >nul && (echo https://github.com/test/repo/pull/99& exit /b 0)\r\nexit /b 1\r\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -1399,7 +1403,8 @@ printf '%s\n' "$*" >>` + shellQuoteForTest(logPath) + `
 case "$*" in
   "auth status --hostname github.com") exit 0 ;;
 ` + openRule + noBaseRule + `  "pr list "*) printf '%s\n' '[]'; exit 0 ;;
-` + stateRule + `  "pr edit 42 "*) exit 0 ;;
+` + stateRule + `  "pr view 41 "*) printf '%s\n' 'MERGED'; exit 0 ;;
+  "pr edit 42 "*) exit 0 ;;
   "pr create "*) printf '%s\n' 'https://github.com/test/repo/pull/99'; exit 0 ;;
 esac
 exit 1
@@ -1738,7 +1743,8 @@ func TestLoadRecoveredConfig_ResolvesLegacyOpenPRBaseAfterDefaultRename(t *testi
 	mgr := NewRunManager(database, p, nil)
 	cfg, err := mgr.loadRecoveredConfig(context.Background(), run, repo, workDir)
 	if err != nil {
-		t.Fatal(err)
+		logBytes, _ := os.ReadFile(ghLog)
+		t.Fatalf("%v\ngh transcript:\n%s", err, logBytes)
 	}
 	if cfg.PR.BaseBranch != "main" || cfg.PR.HasExplicitBaseBranch() {
 		t.Fatalf("recovered PR base = %q (explicit %t), want main (unset)", cfg.PR.BaseBranch, cfg.PR.HasExplicitBaseBranch())
@@ -1757,7 +1763,11 @@ func TestLoadRecoveredConfig_ResolvesLegacyOpenPRBaseAfterDefaultRename(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(logBytes), "pr list --head feature") || strings.Contains(string(logBytes), "--base trunk") {
+	logText := string(logBytes)
+	if !strings.Contains(logText, "auth status --hostname github.com") || !strings.Contains(logText, "--repo test/repo") {
+		t.Fatalf("legacy recovery did not recover the forge identity from the persisted PR:\n%s", logBytes)
+	}
+	if !strings.Contains(logText, "pr list --head feature") || strings.Contains(logText, "--base trunk") {
 		t.Fatalf("legacy recovery did not resolve the PR target by head:\n%s", logBytes)
 	}
 }

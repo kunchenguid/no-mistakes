@@ -37,9 +37,16 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		// host cannot make this repo look unauthenticated.
 		host := scm.ResolveHost(sctx.Ctx, sctx.Repo.UpstreamURL)
 		repo := github.HostPrefixedSlugForHost(sctx.Repo.UpstreamURL, host)
-		if repo == "" && sctx.Run.PRURL != nil {
+		if (repo == "" || host == "") && sctx.Run.PRURL != nil {
 			prHost := scm.ResolveHost(sctx.Ctx, *sctx.Run.PRURL)
-			repo = github.HostPrefixedSlugForHost(*sctx.Run.PRURL, prHost)
+			prRepo := github.HostPrefixedSlugForHost(*sctx.Run.PRURL, prHost)
+			// A local bare-gate path can look like owner/repo to RepoSlug even
+			// though it has no forge host. In recovery, use the persisted PR
+			// identity for both fields rather than sending an unscoped auth
+			// check and a filesystem-derived --repo value.
+			if repo == "" || host == "" {
+				repo = prRepo
+			}
 			if host == "" {
 				host = prHost
 			}

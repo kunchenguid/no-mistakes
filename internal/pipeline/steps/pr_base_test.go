@@ -59,6 +59,11 @@ func TestResolveBranchBaseSHA_UsesConfiguredPRBase(t *testing.T) {
 	gitCmd(t, dir, "commit", "-m", "feature")
 	featureSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main", "quality-assurance", "feature")
+
 	sctx := &pipeline.StepContext{
 		Ctx:     context.Background(),
 		Repo:    &db.Repo{DefaultBranch: "main"},

@@ -26,7 +26,7 @@ func reviewWorkload(ctx context.Context, workDir, base, head string) *agent.Invo
 }
 
 // pipelineBaseBranch returns the configured PR target, falling back to the
-// repository default branch exactly as before when pr.base_branch is unset.
+// repository default branch when pr.base_branch is unset.
 // Config.PR is trusted-only; the daemon resolved its explicit branch from the
 // upstream parent before constructing the executor.
 func pipelineBaseBranch(sctx *pipeline.StepContext) string {

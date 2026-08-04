@@ -212,6 +212,7 @@ Current managed hooks resolve the gate as an absolute bare-repo path before noti
 If `notify-push.log` mentions `invalid gate path: .`, refresh the managed hook with `no-mistakes init` or `no-mistakes daemon restart`, then push again.
 
 Also check `<gate-path>/notify-push.log`. The hook now appends daemon notification failures there and prints the same error back to the pushing client.
+If it says the pushed branch is the repository default or configured PR base, move the work to a distinct feature branch and push again; [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) owns the branch-protection rules.
 
 ### Check the daemon socket
 
@@ -233,7 +234,6 @@ Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requ
 - Self-hosted GitHub Enterprise on a hostname that is not `github.com` isn't detected because `gh` isn't configured for the host; run `gh auth login --hostname your-ghe.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`gh auth status --hostname your-ghe.example.com`), so a stale token on `github.com` or any other configured gh host can no longer falsely mark the GHE repo as unauthenticated.
 - Self-hosted GitLab on a hostname with no `gitlab` marker isn't detected because `glab` isn't configured for the host; run `glab auth login --hostname your-gitlab.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`glab auth status --hostname your-gitlab.example.com`), so a stale token on `gitlab.com` or any other configured glab host can no longer falsely mark the self-hosted repo as unauthenticated.
 - A GitLab, Bitbucket, or Azure DevOps repo record has a fork URL set; fork MR/PR routing is currently GitHub-only
-- With `pr.base_branch` unset, you pushed the repository default branch, so the gated branch is its own PR target. With an explicit base, new runs on that branch and any distinct repository default branch are refused before the pipeline starts.
 
 ## CI step stuck or timed out
 

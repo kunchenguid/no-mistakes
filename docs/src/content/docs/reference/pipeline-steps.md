@@ -22,7 +22,7 @@ They instead require an executable interface or a typed or normalized semantic m
 Reading a file remains valid when that file is itself an owned output or data contract, and deterministic tests may inspect the final emitted agent prompt as a generated interface; model interpretation is reserved for development-only evaluation.
 Review flags every newly added violation and requires same-pattern tests encountered directly in the accepted change's scope to be removed or made semantic, without expanding the change into a repository-wide test cleanup.
 
-Branch-delta operations use the intended PR base throughout: the repository default branch when [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) is unset, or an immutable, validated snapshot of the configured upstream branch when it is set. Intent matching, Rebase, empty-diff detection, review/test/document/lint scope, and PR drafting share that per-run snapshot, including after daemon recovery. CI separately monitors the moving upstream base tip and uses a newly validated tip for conflict repair. The actual repository default branch remains the separate trusted source for gate-control configuration.
+Base-dependent operations use the intended PR base throughout. With [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) set, Intent matching, Rebase, empty-diff detection, review/test/document/lint scope, and PR drafting derive their base from the run's immutable validated snapshot; normal daemon recovery retains it, while legacy recovery state without a snapshot freshly reconstructs the persisted target. With the setting unset, the repository default remains the base and preserves the legacy per-step behavior: Intent may use the reachable submitted base commit, Rebase refreshes the default branch, and downstream branch scope uses its merge base. CI monitors the moving upstream target and uses a newly validated descendant tip for conflict repair. The actual repository default branch remains the separate trusted source for gate-control configuration.
 
 ## Intent
 
@@ -171,6 +171,7 @@ Pushes the validated branch to the configured push target.
 - Immediately before remote mutation, reloads the durable review-approved commit and refuses to push when that binding is missing, malformed, or unreachable
 - Requires the commit proposed for push to equal or descend from the review-approved commit, allowing commits made by later pipeline steps without authorizing unrelated history
 - Re-reads the push target via `git ls-remote` before pushing
+- With an explicit `pr.base_branch`, refreshes that upstream target before the push safety decision and again immediately before any branch mutation; a missing target or a tip that no longer descends from the immutable run snapshot stops delivery
 - For existing branches, refuses to force-push when the live remote carries commits the pipeline has not incorporated by patch-id
 - Fails closed when the remote safety check cannot verify whether the push would discard existing remote work
 - Uses `--force-with-lease=<ref>:<sha>` with an explicit SHA anchor for allowed existing-branch rewrites
@@ -200,7 +201,8 @@ Creates or updates a pull request.
 
 **Behavior:**
 - Checks for an existing PR with both the branch head and intended base, using the repository default branch when `pr.base_branch` is unset
-- If one exists, updates it. If not, creates a new one targeting that base.
+- If one exists, updates it. If not, creates a new one targeting that base. Ambiguous or malformed discovery results fail closed instead of selecting an arbitrary PR.
+- With an explicit `pr.base_branch`, refreshes and validates the moving target before drafting, after drafting, and immediately before updating or creating the PR; a missing target or a tip that no longer descends from the immutable run snapshot stops the mutation
 - Uses the provider CLI for GitHub/GitLab, the `az` CLI for Azure DevOps, and the Bitbucket API for Bitbucket Cloud
 - For GitHub fork routing, keeps `gh --repo` and `--base` pointed at the parent repository from `origin`, checks existing PRs with the bare branch name plus intended base, filters matching PRs by head owner, and creates PRs with `--head <fork-owner>:<branch>`
 - PR title: agent-generated from the final branch delta with user intent when available, in conventional commit format (`type(scope): description` or `type: description`); user-facing product impact should use `feat` or `fix` so release automation can pick it up; when a scope is used, it should be the primary affected real module/package from the changed paths and kept broad rather than file-level. If drafting fails, the fallback uses the neutral title `chore: update pull request` rather than inferring scope from earlier commits.
@@ -227,8 +229,11 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 **Behavior:**
 - Polls provider CI status at increasing intervals: every 30s for the first 5 minutes, every 60s for 5-15 minutes, every 120s after that
 - Continues its normal monitoring loop until the PR is merged, closed, declined, or the configured `ci_timeout` idle window elapses, then parks at an approval gate instead of ending the run
-- The [`ci_timeout` reference](/no-mistakes/reference/global-config/#ci_timeout) owns idle re-arming, unlimited monitoring, and fail-closed reconciliation while that gate is parked
+- The [`ci_timeout` reference](/no-mistakes/reference/global-config/#ci_timeout) owns idle re-arming, unlimited monitoring, and PR-state reconciliation while that gate is parked
 - On GitHub, GitLab, and Azure DevOps, polls provider mergeability alongside CI checks while the PR remains open
+- Checks for a merged or closed PR before refreshing its base, so a terminal PR can complete even if its former configured base was deleted
+- While an explicit-base PR remains open, refreshes its target on every poll and before each repair push; a missing target stops the active step, while a rewind or divergence from the immutable run snapshot fails closed
+- Before accepting approval at a parked CI gate, rechecks the live PR and explicit base. A transient provider or base-refresh failure keeps the gate parked for retry; a proven base rewind, divergence, or unrelated history fails the run.
 - While the PR stays open, the TUI and terminal title show `Checks passed` once CI readiness is established and known mergeability is clear, and `no-mistakes axi` returns `outcome: checks-passed` with successful-output reporting instructions so agents can summarize the run, ask the user to review and merge, and list any pipeline fixes instead of waiting
 - An empty forge check list is never treated as green unless the trusted default-branch config declares [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci). That declaration is positive durable evidence the repository intentionally has no CI; absence means CI is expected and delayed registration stays not-ready. If checks still appear on a declared no-CI repo, their actual states are honored
 - If the intended PR base moves after `checks-passed`, keeps watching the same PR; a clean behind PR needs no action, while an actual GitHub, GitLab, or Azure DevOps merge conflict is auto-fixed by rebasing onto that base and re-pushing through the force-push safety guard
