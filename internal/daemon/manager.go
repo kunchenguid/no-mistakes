@@ -988,17 +988,18 @@ func (m *RunManager) verifyDistinctPRBaseContinuities(ctx context.Context, repo 
 		return nil, nil
 	}
 	var open []*runPRBaseContinuity
-	seenOpenBases := make(map[string]struct{})
+	openBaseIndexes := make(map[string]int)
 	for _, candidate := range candidates {
 		verified, err := m.verifyRerunPRBaseContinuity(ctx, repo, candidate)
 		if err != nil {
 			return nil, err
 		}
 		if verified != nil {
-			if _, exists := seenOpenBases[verified.branch]; exists {
+			if index, exists := openBaseIndexes[verified.branch]; exists {
+				open[index].explicit = open[index].explicit || verified.explicit
 				continue
 			}
-			seenOpenBases[verified.branch] = struct{}{}
+			openBaseIndexes[verified.branch] = len(open)
 			open = append(open, verified)
 		}
 	}

@@ -361,6 +361,53 @@ func TestDistinctPRBaseContinuityRejectsMultipleOpenBases(t *testing.T) {
 	}
 }
 
+func TestDistinctPRBaseContinuityPreservesExplicitSemanticsWhenBasesConverge(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "converged-pr-base-semantics")
+	legacyRun, err := database.InsertRun(repo.ID, "feature", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicitRun, err := database.InsertRun(repo.ID, "feature", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(explicitRun.ID, "quality-assurance", true); err != nil {
+		t.Fatal(err)
+	}
+	legacyRun, err = database.GetRun(legacyRun.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicitRun, err = database.GetRun(explicitRun.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	binDir, ghLog := writeRerunPRBaseMockGH(t, "quality-assurance", "")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	manager := NewRunManager(database, p, nil)
+	candidates := []*runPRBaseContinuity{
+		{sourceRun: legacyRun},
+		{sourceRun: explicitRun, branch: "quality-assurance", explicit: true},
+	}
+	continuity, err := manager.verifyDistinctPRBaseContinuities(context.Background(), repo, candidates, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if continuity == nil || continuity.branch != "quality-assurance" || !continuity.explicit {
+		t.Fatalf("converged continuity = %+v, want quality-assurance (explicit)", continuity)
+	}
+	logBytes, err := os.ReadFile(ghLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logBytes)
+	if !strings.Contains(logText, "pr list --head feature") || !strings.Contains(logText, "--json number,url,baseRefName") || !strings.Contains(logText, "pr list --head feature --base quality-assurance") {
+		t.Fatalf("converged candidates were not both verified:\n%s", logText)
+	}
+}
+
 func TestRerunContinuityChecksEveryPersistedBaseCandidate(t *testing.T) {
 	qualityAssurance := "quality-assurance"
 	for _, tc := range []struct {
