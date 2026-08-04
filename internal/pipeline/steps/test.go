@@ -214,6 +214,7 @@ Rules:
 			CWD:        sctx.WorkDir,
 			JSONSchema: testFindingsSchema,
 			OnChunk:    sctx.LogChunk,
+			Purpose:    types.AgentPurposeTest,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("agent run tests: %w", err)

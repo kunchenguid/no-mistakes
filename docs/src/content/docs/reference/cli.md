@@ -379,12 +379,14 @@ no-mistakes stats
 
 Displays total changes, rescued changes, rescue rate, reported and fixed mistakes, fixes by pipeline step, and the top repos by rescue activity.
 
-Use `--agents` for local, per-purpose agent performance aggregates: duration and the subprocess-vs-model time split, session mode, errors, the token totals (input, output, cache-read, cache-creation, fresh input, reasoning), and the model round-trip and tool-category activity histogram, with a `METRICS` coverage count that tells a real zero apart from missing instrumentation.
+Use `--agents` for local agent performance aggregates. The first table groups invocations by purpose, actual agent, reported model, and session mode, keeping input, output, cache-read, and cache-creation counters separate. The remaining tables aggregate by purpose: duration and the subprocess-vs-model time split, session modes, errors, token totals, model round-trips, and the tool-category histogram, with a `METRICS` coverage count that tells a real zero apart from missing instrumentation.
+Use `--agents --since <duration>` to limit every aggregate table to completed invocation records whose `started_at` falls within that window, for example `1h` or `24h`. The duration must be positive. `--since` requires `--agents` and cannot be combined with `--run`.
 Use `--run <id>` to inspect the individual agent invocations for one run - including each invocation's per-round token deltas next to the raw (cumulative for resumed sessions) counters, tool-category breakdown, workload size, finding count, and fallback reason - plus the total time parked at approval gates; it implies `--agents`.
 Nullable fields an adapter did not report render as `-` (unknown), which is distinct from a recorded `0`; the legacy raw input, output, and cache-read counters remain numeric.
 
 ```sh
 no-mistakes stats --agents
+no-mistakes stats --agents --since 1h
 no-mistakes stats --run <id>
 ```
 

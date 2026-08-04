@@ -5,6 +5,35 @@ import (
 	"testing"
 )
 
+func TestAllAgentPurposes(t *testing.T) {
+	want := []AgentPurpose{
+		AgentPurposeIntent,
+		AgentPurposeRebase,
+		AgentPurposeReview,
+		AgentPurposeReviewFix,
+		AgentPurposeTest,
+		AgentPurposeTestFix,
+		AgentPurposeDocument,
+		AgentPurposeHousekeeping,
+		AgentPurposeLint,
+		AgentPurposeLintFix,
+		AgentPurposePR,
+		AgentPurposeCI,
+	}
+	got := AllAgentPurposes()
+	if len(got) != len(want) {
+		t.Fatalf("AllAgentPurposes() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] || !IsAgentPurpose(got[i]) {
+			t.Fatalf("AllAgentPurposes() = %v, want %v", got, want)
+		}
+	}
+	if IsAgentPurpose("deploy") {
+		t.Fatal("unknown purpose reported valid")
+	}
+}
+
 func TestAllStepsOrder(t *testing.T) {
 	steps := AllSteps()
 	if len(steps) != 9 {

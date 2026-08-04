@@ -121,6 +121,10 @@ If you install `acpx` separately, you can opt into any ACP target with the `acp:
 
 The [`agent` field reference](/no-mistakes/reference/global-config/#agent) owns the exact resolution order, fallback-list filtering and retry semantics, and the failure behavior when no entry is runnable.
 
+To keep the adapter and fallback order unchanged while selecting a model for a specific pipeline duty, use the global-only [`agent_model_by_purpose`](/no-mistakes/reference/global-config/#agent_model_by_purpose) map.
+It is empty by default. A common staged policy keeps every initial review and full rereview on the strongest model while trying a lighter model first for lower-stakes purposes; review-fix remains a separate purpose and its output is still certified by a fresh full review.
+The reference owns the valid purpose vocabulary, strict validation, argument precedence, and fallback behavior.
+
 ## Where agent choice matters most
 
 Changing agents most directly affects:
@@ -191,10 +195,11 @@ The [CLI reference](/no-mistakes/reference/cli/) documents each `axi` command an
 When the daemon is running through a managed service, its `PATH` comes from your login shell environment on macOS and Linux plus common user, Homebrew, and system binary directories; on Windows it reuses the current process environment.
 If native agent discovery does not resolve the binary you expect, check `~/.no-mistakes/logs/daemon.log` and set an explicit override; [Environment the daemon sees](/no-mistakes/reference/environment/#environment-the-daemon-sees) owns the full resolution story.
 
-Five global config fields tune resolution and invocation, and the [Global Config Reference](/no-mistakes/reference/global-config/) owns each one:
+Six global config fields tune resolution and invocation, and the [Global Config Reference](/no-mistakes/reference/global-config/) owns each one:
 
 - [`agent_path_override`](/no-mistakes/reference/global-config/#agent_path_override) - custom binary paths per native agent, plus the default native binary-name table.
 - [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) - extra CLI flags per native agent for model selection, service tier, reasoning depth, or permission mode, including the reserved-flag rules and smart defaults. Keep it global-only; it reflects your local agent setup rather than repo policy.
+- [`agent_model_by_purpose`](/no-mistakes/reference/global-config/#agent_model_by_purpose) - opt-in Claude/Codex model selection for individual pipeline duties without changing the agent or fallback order.
 - [`acpx_path`](/no-mistakes/reference/global-config/#acpx_path) - the bridge binary path for explicit ACP targets and first-class ACP aliases.
 - [`acp_registry_overrides`](/no-mistakes/reference/global-config/#acp_registry_overrides) - raw ACP target commands, including replacements for alias defaults such as `cursor-agent acp`, plus their availability-probing rules.
 - [`agent`](/no-mistakes/reference/global-config/#agent) - the `auto` resolution order and ordered fallback-list semantics.

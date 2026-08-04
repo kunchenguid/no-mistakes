@@ -36,9 +36,9 @@ type RunOpts struct {
 	// a failed resume. Instrumentation only; adapters ignore it.
 	SessionFallback bool
 	// Purpose labels the pipeline duty this invocation serves (review,
-	// review-fix, test-evidence, ...). Instrumentation only; adapters
-	// ignore it.
-	Purpose string
+	// review-fix, test, ...). Local instrumentation records it, and native
+	// Claude/Codex adapters may use it for an explicit per-purpose model route.
+	Purpose types.AgentPurpose
 	// SessionFallbackReason is the low-cardinality reason a failed resume forced
 	// this fresh-session retry (see db.FallbackReason*). Set only when
 	// SessionFallback is true. Instrumentation only; adapters ignore it.
@@ -247,6 +247,9 @@ type InvocationWorkload struct {
 // targets, to raw ACP agent commands.
 type Options struct {
 	ACPRegistryOverrides map[string]string
+	// ModelByPurpose optionally selects a model for each pipeline duty for this
+	// concrete native adapter. It never changes which adapter is invoked.
+	ModelByPurpose map[types.AgentPurpose]string
 	// DisableProjectSettings, when true, asks a supported adapter (codex,
 	// claude, pi) to launch with the target repo's project-level agent
 	// settings/instructions suppressed. It is the resolved, trusted-only opt-out
@@ -797,9 +800,9 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	}
 	switch name {
 	case types.AgentClaude:
-		return &claudeAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
+		return &claudeAgent{bin: bin, extraArgs: extraArgs, modelByPurpose: copyPurposeModels(opts.ModelByPurpose), disableProjectSettings: opts.DisableProjectSettings}, nil
 	case types.AgentCodex:
-		return &codexAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
+		return &codexAgent{bin: bin, extraArgs: extraArgs, modelByPurpose: copyPurposeModels(opts.ModelByPurpose), disableProjectSettings: opts.DisableProjectSettings}, nil
 	case types.AgentRovoDev:
 		return &rovodevAgent{bin: bin, extraArgs: extraArgs}, nil
 	case types.AgentOpenCode:

@@ -12,6 +12,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	nmgit "github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // Disambiguator chooses among multiple accepted transcript matches when the
@@ -101,6 +102,7 @@ func (d *agentDisambiguator) Disambiguate(ctx context.Context, diffFiles []strin
 		Prompt:     buildDisambiguationPrompt(diffFiles, candidates, packetPaths),
 		CWD:        d.cwd,
 		JSONSchema: disambiguatorSchema,
+		Purpose:    types.AgentPurposeIntent,
 	})
 	if err != nil {
 		return DisambiguationChoice{}, err

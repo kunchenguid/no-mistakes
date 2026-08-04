@@ -26,12 +26,28 @@ const (
 func newStatsCmd() *cobra.Command {
 	var agents bool
 	var runID string
+	var since time.Duration
 	cmd := &cobra.Command{
 		Use:   "stats",
 		Short: "Show historical no-mistakes usage stats",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return trackCommand("stats", func() error {
+				sinceSet := cmd.Flags().Changed("since")
+				if sinceSet && !agents {
+					return fmt.Errorf("--since requires --agents")
+				}
+				if sinceSet && runID != "" {
+					return fmt.Errorf("--since cannot be combined with --run")
+				}
+				if sinceSet && since <= 0 {
+					return fmt.Errorf("--since must be positive")
+				}
+				cutoffUnix := int64(0)
+				if sinceSet {
+					cutoffUnix = time.Now().Add(-since).Unix()
+				}
+
 				_, database, err := openResources()
 				if err != nil {
 					return err
@@ -39,7 +55,7 @@ func newStatsCmd() *cobra.Command {
 				defer database.Close()
 
 				if agents || runID != "" {
-					return renderAgentPerfReport(cmd.OutOrStdout(), database, runID)
+					return renderAgentPerfReport(cmd.OutOrStdout(), database, runID, cutoffUnix)
 				}
 
 				stats, err := database.GetStats()
@@ -54,6 +70,7 @@ func newStatsCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&agents, "agents", false, "show local agent performance telemetry (per-purpose invocation aggregates)")
 	cmd.Flags().StringVar(&runID, "run", "", "show one run's agent invocations and parked time (implies --agents)")
+	cmd.Flags().DurationVar(&since, "since", 0, "limit --agents aggregates to invocations started within this duration")
 	return cmd
 }
 
@@ -61,22 +78,43 @@ func newStatsCmd() *cobra.Command {
 // invocation aggregates, or one run's per-invocation detail with its
 // accumulated parked-at-gate time. This is read-only local evidence; none of
 // it is sent to remote analytics.
-func renderAgentPerfReport(w io.Writer, database *db.DB, runID string) error {
+func renderAgentPerfReport(w io.Writer, database *db.DB, runID string, cutoffUnix int64) error {
 	if runID != "" {
 		return renderRunAgentPerf(w, database, runID)
 	}
 
-	aggregates, err := database.AgentInvocationAggregates()
+	aggregates, err := database.AgentInvocationAggregatesSince(cutoffUnix)
 	if err != nil {
 		return fmt.Errorf("agent invocation aggregates: %w", err)
 	}
 	if len(aggregates) == 0 {
-		fmt.Fprintln(w, "no agent invocations recorded yet")
+		fmt.Fprintln(w, "no agent invocations recorded for the selected window")
 		return nil
 	}
+	routes, err := database.AgentInvocationRouteAggregatesSince(cutoffUnix)
+	if err != nil {
+		return fmt.Errorf("agent invocation route aggregates: %w", err)
+	}
 
-	// Table 1: session modes and token totals.
+	// Table 1: the actionable execution-policy dimensions. Agent and model are
+	// actual serving metadata, so a fallback attempt is attributed to the
+	// adapter that really ran rather than the requested primary.
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "PURPOSE\tAGENT\tMODEL\tSESSION\tCOUNT\tTOTAL\tIN TOK\tOUT TOK\tCACHE READ TOK\tCACHE WRITE TOK")
+	for _, route := range routes {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%d\t%d\t%d\t%s\n",
+			route.Purpose, route.Agent, orUnknown(route.Model), route.SessionMode,
+			route.Count, formatMS(route.TotalDurationMS), route.InputTokens, route.OutputTokens,
+			route.CacheReadTokens, optInt64(route.CacheCreationTokens),
+		)
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+
+	// Table 2: per-purpose session modes and token totals.
+	fmt.Fprintln(w)
+	tw = tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "PURPOSE\tCOUNT\tAVG\tTOTAL\tCOLD\tSTARTED\tRESUMED\tFALLBACK\tERRORS\tIN TOK\tOUT TOK\tCACHE READ TOK\tCACHE WRITE TOK\tFRESH IN TOK\tREASON TOK")
 	for _, a := range aggregates {
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\n",
@@ -91,7 +129,7 @@ func renderAgentPerfReport(w io.Writer, database *db.DB, runID string) error {
 		return err
 	}
 
-	// Table 2: subprocess-vs-model time and the bounded tool-call histogram.
+	// Table 3: subprocess-vs-model time and the bounded tool-call histogram.
 	// METRICS is how many of COUNT rows carried activity metrics, so a zero can
 	// be told apart from missing instrumentation (older rows, other adapters).
 	fmt.Fprintln(w)

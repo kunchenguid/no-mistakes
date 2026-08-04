@@ -3,6 +3,7 @@ package cli
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -131,6 +132,57 @@ func TestStatsRendersPopulatedFidelityMetrics(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stats --run missing %q in:\n%s", want, out)
 		}
+	}
+}
+
+func TestStatsAgentsSinceGroupsPurposeAgentModelAndSession(t *testing.T) {
+	nmHome := t.TempDir()
+	t.Setenv("NM_HOME", nmHome)
+	p := paths.WithRoot(nmHome)
+
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := d.InsertRepoWithID("repo-window", "/tmp/repo-window", "https://github.com/test/repo-window", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature/window", "abc", "def")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	seed := []db.AgentInvocation{
+		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", Model: "old-model", SessionMode: db.InvocationModeCold, StartedAt: now - 7200, CompletedAt: now - 7199, DurationMS: 10, ExitStatus: "ok", CacheReadTokens: 99},
+		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "claude", Model: "opus", SessionMode: db.InvocationModeCold, StartedAt: now - 120, CompletedAt: now - 119, DurationMS: 20, ExitStatus: "ok", InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, CacheCreationTokens: statsIntPtr(4)},
+		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review-fix", Agent: "claude", Model: "sonnet", SessionMode: db.InvocationModeResumed, StartedAt: now - 60, CompletedAt: now - 59, DurationMS: 30, ExitStatus: "ok", InputTokens: 5, OutputTokens: 6, CacheReadTokens: 7, CacheCreationTokens: statsIntPtr(8)},
+	}
+	for _, inv := range seed {
+		if _, err := d.InsertAgentInvocation(inv); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d.Close()
+
+	out, err := executeCmd("stats", "--agents", "--since", "1h")
+	if err != nil {
+		t.Fatalf("stats --agents --since: %v\n%s", err, out)
+	}
+	for _, want := range []string{"PURPOSE", "AGENT", "MODEL", "SESSION", "review", "review-fix", "claude", "opus", "sonnet", "cold", "resumed"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("windowed route report missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "old-model") {
+		t.Fatalf("windowed route report included old invocation:\n%s", out)
+	}
+
+	if _, err := executeCmd("stats", "--since", "1h"); err == nil || !strings.Contains(err.Error(), "requires --agents") {
+		t.Fatalf("stats --since without --agents error = %v, want requires --agents", err)
+	}
+	if _, err := executeCmd("stats", "--agents", "--since", "0s"); err == nil || !strings.Contains(err.Error(), "must be positive") {
+		t.Fatalf("stats --agents --since 0s error = %v, want positive duration", err)
 	}
 }
 

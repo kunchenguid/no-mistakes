@@ -55,6 +55,7 @@ func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 		"daemon_connect_timeout:",
 		"log_level: info",
 		"# agent_path_override:",
+		"# agent_model_by_purpose:",
 		"# commit:",
 		`#   fix_message: "no-mistakes({{.Step}}): {{.Summary}}"`,
 	} {
@@ -430,6 +431,9 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	}
 	if raw.SessionReuse == nil || !*raw.SessionReuse {
 		t.Errorf("YAML session_reuse = %v, Go default = true", raw.SessionReuse)
+	}
+	if len(raw.AgentModelByPurpose) != 0 {
+		t.Errorf("YAML agent_model_by_purpose = %v, Go default = empty", raw.AgentModelByPurpose)
 	}
 	defaults := autoFixDefaults()
 	if raw.AutoFix.Lint == nil || *raw.AutoFix.Lint != defaults.Lint {

@@ -74,7 +74,7 @@ Previous lint findings to address:
 			CWD:        sctx.WorkDir,
 			JSONSchema: findingsSchema,
 			OnChunk:    sctx.LogChunk,
-			Purpose:    "lint",
+			Purpose:    types.AgentPurposeLint,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("agent lint: %w", err)
