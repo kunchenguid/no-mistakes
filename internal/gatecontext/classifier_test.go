@@ -116,8 +116,29 @@ func TestInspectorPreMigrationSchemaDegradesActiveAgentSteps(t *testing.T) {
 			dropRuns: []string{"review_approved_head_sha"},
 		},
 		{
+			name:     "runs missing submitted_head_sha degrades to empty",
+			dropRuns: []string{"submitted_head_sha"},
+		},
+		{
+			name:     "runs missing awaiting_agent_since degrades to empty",
+			dropRuns: []string{"awaiting_agent_since"},
+		},
+		{
+			name:     "runs missing parked_ms degrades to empty",
+			dropRuns: []string{"parked_ms"},
+		},
+		{
+			name:     "runs missing any other migration column degrades to empty",
+			dropRuns: []string{"intent"},
+		},
+		{
 			name:      "step_results missing migration columns degrades to empty",
 			dropSteps: []string{"last_activity_at", "last_activity", "agent_pid", "auto_fix_limit"},
+			withRun:   true,
+		},
+		{
+			name:      "step_results missing single migration column degrades to empty",
+			dropSteps: []string{"auto_fix_limit"},
 			withRun:   true,
 		},
 		{
