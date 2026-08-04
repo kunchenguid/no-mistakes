@@ -44,6 +44,33 @@ func TestClaudeAPIErrorSniffer_ExtractsDiagnostic(t *testing.T) {
 			},
 			want: "API Error: second",
 		},
+		{
+			// A pipeline agent that reads or greps a log holding the marker
+			// echoes it back mid-text. Retaining that plants a stale diagnostic
+			// that makes a later permanent exit look transient.
+			name:   "quoted mid-text in an assistant event is not a diagnostic",
+			writes: []string{`{"type":"assistant","message":{"content":[{"type":"text","text":"the log line reads API Error: Connection closed mid-response."}]}}` + "\n"},
+		},
+		{
+			name:   "escaped quote before the marker is not a value opening",
+			writes: []string{`{"type":"assistant","message":{"content":[{"type":"text","text":"it printed \"API Error: Connection closed mid-response.\""}]}}` + "\n"},
+		},
+		{
+			name:   "tool result echoing a log file is not a diagnostic",
+			writes: []string{`{"type":"user","message":{"content":[{"type":"tool_result","content":"logs/agent.log:42: API Error: Unable to connect to API (ENOTIMP)"}]}}` + "\n"},
+		},
+		{
+			name:   "plain line quoting the marker mid-text is not a diagnostic",
+			writes: []string{"grep found: API Error: Connection closed mid-response.\n"},
+		},
+		{
+			name: "a stale echo does not survive as the retained diagnostic",
+			writes: []string{
+				`{"type":"assistant","message":{"content":[{"type":"text","text":"API Error: real"}]}}` + "\n",
+				"grep found: API Error: echoed\n",
+			},
+			want: "API Error: real",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var s claudeAPIErrorSniffer

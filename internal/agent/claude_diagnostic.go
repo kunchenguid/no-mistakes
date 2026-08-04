@@ -23,6 +23,14 @@ const claudeAPIErrorMaxPending = 64 * 1024
 // evidence of a transient failure discarded. The sniffer matches the raw line,
 // which covers both the stream-json assistant event that normally carries the
 // text and any plain text claude writes directly.
+//
+// The marker only counts when it BEGINS the diagnostic: claude emits its API
+// error as its own assistant content block, so the text opens the JSON string
+// value ("text":"API Error: ...) or, for plain output, the line itself. A line
+// that merely quotes the marker mid-text is not a diagnostic - pipeline agents
+// routinely read and echo log files holding those exact strings, and retaining
+// one would let a later, permanent, non-zero exit be misclassified as transient
+// and burn the full retry budget.
 type claudeAPIErrorSniffer struct {
 	pending string
 	last    string
@@ -59,17 +67,9 @@ func (s *claudeAPIErrorSniffer) LastAPIError() string {
 }
 
 func (s *claudeAPIErrorSniffer) consume(line string) {
-	idx := strings.LastIndex(line, claudeAPIErrorMarker)
-	if idx < 0 {
+	diag, ok := claudeAPIErrorDiagnostic(line)
+	if !ok {
 		return
-	}
-	diag := line[idx:]
-	// A stream-json event carries the text inside a JSON string, so stop at the
-	// closing quote instead of trailing the rest of the envelope into the error.
-	if strings.HasPrefix(strings.TrimSpace(line), "{") {
-		if end := strings.IndexByte(diag, '"'); end >= 0 {
-			diag = diag[:end]
-		}
 	}
 	if len(diag) > claudeAPIErrorMaxLen {
 		diag = diag[:claudeAPIErrorMaxLen]
@@ -77,6 +77,45 @@ func (s *claudeAPIErrorSniffer) consume(line string) {
 	if diag = strings.TrimSpace(diag); diag != "" {
 		s.last = diag
 	}
+}
+
+// claudeAPIErrorDiagnostic reports the diagnostic a raw stdout line carries, if
+// the marker begins it.
+func claudeAPIErrorDiagnostic(line string) (string, bool) {
+	if strings.HasPrefix(strings.TrimSpace(line), "{") {
+		idx := claudeAPIErrorJSONValueStart(line)
+		if idx < 0 {
+			return "", false
+		}
+		diag := line[idx:]
+		// A stream-json event carries the text inside a JSON string, so stop at
+		// the closing quote instead of trailing the rest of the envelope into
+		// the error.
+		if end := strings.IndexByte(diag, '"'); end >= 0 {
+			diag = diag[:end]
+		}
+		return diag, true
+	}
+	trimmed := strings.TrimLeft(line, " \t\r")
+	if !strings.HasPrefix(trimmed, claudeAPIErrorMarker) {
+		return "", false
+	}
+	return trimmed, true
+}
+
+// claudeAPIErrorJSONValueStart returns the index of the last marker that opens a
+// JSON string value, i.e. one immediately preceded by an unescaped quote, or -1.
+func claudeAPIErrorJSONValueStart(line string) int {
+	for i := strings.LastIndex(line, claudeAPIErrorMarker); i > 0; i = strings.LastIndex(line[:i], claudeAPIErrorMarker) {
+		if line[i-1] != '"' {
+			continue
+		}
+		if i >= 2 && line[i-2] == '\\' {
+			continue
+		}
+		return i
+	}
+	return -1
 }
 
 // claudeExitDiagnostic joins the evidence available after a non-zero exit.
