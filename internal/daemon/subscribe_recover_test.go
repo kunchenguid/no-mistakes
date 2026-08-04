@@ -38,7 +38,7 @@ func TestSubscribeReceivesEvents(t *testing.T) {
 	var pushResult ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate: p.RepoDir("testrepo-sub1"),
-		Ref:  "refs/heads/main",
+		Ref:  "refs/heads/feature",
 		Old:  "0000000000000000000000000000000000000000",
 		New:  headSHA,
 	}, &pushResult)
@@ -131,7 +131,7 @@ func TestSubscribeToSlowRunReceivesEvents(t *testing.T) {
 	var pushResult ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate: p.RepoDir("testrepo-sub2"),
-		Ref:  "refs/heads/main",
+		Ref:  "refs/heads/feature",
 		Old:  "0000000000000000000000000000000000000000",
 		New:  headSHA,
 	}, &pushResult)
@@ -160,7 +160,7 @@ func TestSubscribeToSlowRunReceivesEvents(t *testing.T) {
 	var pushResult2 ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate: p.RepoDir("testrepo-sub2"),
-		Ref:  "refs/heads/main",
+		Ref:  "refs/heads/feature",
 		Old:  "0000000000000000000000000000000000000000",
 		New:  headSHA,
 	}, &pushResult2)
@@ -204,7 +204,7 @@ func TestSubscribeToCompletedRunYieldsOneGapThenCloses(t *testing.T) {
 	var pushResult ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate: p.RepoDir("testrepo-sub-done"),
-		Ref:  "refs/heads/main",
+		Ref:  "refs/heads/feature",
 		Old:  "0000000000000000000000000000000000000000",
 		New:  headSHA,
 	}, &pushResult)
@@ -467,7 +467,7 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 	}
 	defer d.Close()
 	repo, headSHA := setupTestGitRepo(t, p, d, "resume-parked-run")
-	run, err := d.InsertRun(repo.ID, "main", headSHA, headSHA)
+	run, err := d.InsertRun(repo.ID, "feature", headSHA, headSHA)
 	if err != nil {
 		t.Fatal(err)
 	}

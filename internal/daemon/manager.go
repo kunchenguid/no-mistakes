@@ -814,21 +814,18 @@ func resolveConfiguredPRBaseBranch(ctx context.Context, workDir string, repo *db
 }
 
 func configuredPRBaseBranchGuard(branch, defaultBranch string, cfg *config.Config) (string, error) {
+	defaultBranch = strings.TrimSpace(defaultBranch)
+	if defaultBranch != "" && branch == defaultBranch {
+		return "default_branch", fmt.Errorf("refusing to start a run for %q: it is the repository default branch; put changes on a feature branch and retry", branch)
+	}
 	if cfg == nil || !cfg.PR.HasExplicitBaseBranch() {
 		return "", nil
 	}
 	prBaseBranch := strings.TrimSpace(cfg.PR.BaseBranch)
-	defaultBranch = strings.TrimSpace(defaultBranch)
-	if branch != prBaseBranch && branch != defaultBranch {
+	if branch != prBaseBranch {
 		return "", nil
 	}
-	role := "configured PR base branch"
-	failure := "configured_pr_base_branch"
-	if branch == defaultBranch && branch != prBaseBranch {
-		role = "repository default branch while a distinct PR base is configured"
-		failure = "configured_default_branch"
-	}
-	return failure, fmt.Errorf("refusing to start a run for %q: it is the %s; put changes on a feature branch and retry", branch, role)
+	return "configured_pr_base_branch", fmt.Errorf("refusing to start a run for %q: it is the configured PR base branch; put changes on a feature branch and retry", branch)
 }
 
 type runPRBaseContinuity struct {
@@ -1042,6 +1039,10 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	if m.shuttingDown.Load() {
 		trackStartFailure("daemon_shutdown")
 		return "", fmt.Errorf("daemon is shutting down")
+	}
+	if failure, err := configuredPRBaseBranchGuard(branch, repo.DefaultBranch, nil); err != nil {
+		trackStartFailure(failure)
+		return "", err
 	}
 
 	// Serialize per repo+branch to prevent two concurrent pushes from both

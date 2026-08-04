@@ -68,7 +68,7 @@ func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	var result ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate: p.RepoDir("telemetry-run-repo"),
-		Ref:  "refs/heads/main",
+		Ref:  "refs/heads/feature",
 		Old:  "0000000000000000000000000000000000000000",
 		New:  headSHA,
 	}, &result)
@@ -91,8 +91,8 @@ func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	if got := started.fields["agent"]; got != string(types.AgentClaude) {
 		t.Fatalf("started agent = %v, want %q", got, types.AgentClaude)
 	}
-	if got := started.fields["branch_role"]; got != "default" {
-		t.Fatalf("started branch_role = %v, want default", got)
+	if got := started.fields["branch_role"]; got != "feature" {
+		t.Fatalf("started branch_role = %v, want feature", got)
 	}
 
 	// The executor persists terminal status before its owner goroutine emits
@@ -129,7 +129,7 @@ func TestPushReceivedSkipStepsConfiguresExecutor(t *testing.T) {
 	var result ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate:      p.RepoDir("skip-run-repo"),
-		Ref:       "refs/heads/main",
+		Ref:       "refs/heads/feature",
 		Old:       "0000000000000000000000000000000000000000",
 		New:       headSHA,
 		SkipSteps: []types.StepName{types.StepReview},
@@ -354,7 +354,7 @@ func TestRerunSkipStepsConfiguresExecutor(t *testing.T) {
 	var first ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate: p.RepoDir("skip-rerun-repo"),
-		Ref:  "refs/heads/main",
+		Ref:  "refs/heads/feature",
 		Old:  "0000000000000000000000000000000000000000",
 		New:  headSHA,
 	}, &first)
@@ -366,7 +366,7 @@ func TestRerunSkipStepsConfiguresExecutor(t *testing.T) {
 	var second ipc.RerunResult
 	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
 		RepoID:    "skip-rerun-repo",
-		Branch:    "main",
+		Branch:    "feature",
 		SkipSteps: []types.StepName{types.StepReview},
 	}, &second)
 	if err != nil {
@@ -407,7 +407,7 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 	var first ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate: p.RepoDir("selected-rerun-repo"),
-		Ref:  "refs/heads/main",
+		Ref:  "refs/heads/feature",
 		Old:  "0000000000000000000000000000000000000000",
 		New:  headSHA,
 	}, &first)
@@ -420,7 +420,7 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	newer, err := d.InsertRunWithIntent("selected-rerun-repo", "main", headSHA, headSHA, &db.RunIntent{
+	newer, err := d.InsertRunWithIntent("selected-rerun-repo", "feature", headSHA, headSHA, &db.RunIntent{
 		Summary: "newer unrelated requirements",
 		Source:  db.RunIntentSourceAgent,
 		Score:   1,
@@ -435,7 +435,7 @@ func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
 	var rerun ipc.RerunResult
 	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
 		RepoID:        "selected-rerun-repo",
-		Branch:        "main",
+		Branch:        "feature",
 		PreviousRunID: first.RunID,
 	}, &rerun)
 	if err != nil {
@@ -480,7 +480,7 @@ func TestPushReceivedReturnsBeforeIntentSummarization(t *testing.T) {
 	var result ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate: p.RepoDir("intent-start-run-repo"),
-		Ref:  "refs/heads/main",
+		Ref:  "refs/heads/feature",
 		Old:  "0000000000000000000000000000000000000000",
 		New:  headSHA,
 	}, &result)
@@ -545,7 +545,7 @@ func TestPushReceivedTracksRunTelemetryAfterPanic(t *testing.T) {
 	var result ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate: p.RepoDir("telemetry-panic-repo"),
-		Ref:  "refs/heads/main",
+		Ref:  "refs/heads/feature",
 		Old:  "0000000000000000000000000000000000000000",
 		New:  headSHA,
 	}, &result)
@@ -605,7 +605,7 @@ func TestPushReceivedDemoModeBypassesAgentResolution(t *testing.T) {
 	var result ipc.PushReceivedResult
 	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
 		Gate: p.RepoDir("testrepo-demo"),
-		Ref:  "refs/heads/main",
+		Ref:  "refs/heads/feature",
 		Old:  "0000000000000000000000000000000000000000",
 		New:  headSHA,
 	}, &result)

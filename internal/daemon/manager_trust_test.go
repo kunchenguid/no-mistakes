@@ -14,6 +14,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
@@ -27,6 +28,47 @@ func TestEnsureConfiguredPRBaseBranch_DefaultDoesNotAddValidation(t *testing.T) 
 	err := ensureConfiguredPRBaseBranch(context.Background(), workDir, &db.Repo{DefaultBranch: "main"}, &config.Config{}, "test-run")
 	if err != nil {
 		t.Fatalf("unset pr.base_branch changed legacy startup behavior: %v", err)
+	}
+}
+
+func TestPushReceivedRejectsDefaultBranchWithoutConfiguredBase(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "unset-pr-base-guard")
+	manager := NewRunManager(database, p, func() []pipeline.Step { return nil })
+	t.Cleanup(manager.Shutdown)
+
+	runID, err := manager.HandlePushReceived(context.Background(), &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID),
+		Ref:  "refs/heads/main",
+		Old:  strings.Repeat("0", 40),
+		New:  head,
+	})
+	if err == nil || runID != "" {
+		t.Fatalf("default-branch push = run %q, error %v; want rejection", runID, err)
+	}
+	if !strings.Contains(err.Error(), "repository default branch") || !strings.Contains(err.Error(), "feature branch") {
+		t.Fatalf("default-branch rejection is not actionable: %v", err)
+	}
+	runs, getErr := database.GetRunsByRepo(repo.ID)
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("default-branch push persisted %d runs before rejection", len(runs))
+	}
+
+	runID, err = manager.HandlePushReceived(context.Background(), &ipc.PushReceivedParams{
+		Gate: p.RepoDir(repo.ID),
+		Ref:  "refs/heads/feature",
+		Old:  strings.Repeat("0", 40),
+		New:  head,
+	})
+	if err != nil {
+		t.Fatalf("ordinary feature push was rejected: %v", err)
+	}
+	if run := waitForRunTerminalState(t, database, runID); run.Status != types.RunCompleted {
+		t.Fatalf("feature run status = %s, want completed: %v", run.Status, run.Error)
 	}
 }
 
