@@ -157,13 +157,13 @@ func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
 	}
 	runs, err := i.DB.GetActiveRuns()
 	if err != nil {
-		// A DB created before the review_approved_head_sha migration (pre-v1.42.0)
-		// makes this read-side query fail with "no such column". This metadata is
-		// advisory (the refusal does not depend on it), and with the daemon down
-		// there is no live agent-step ancestry to detect. Degrade to empty so the
-		// daemon can start and its authoritative open can run the migration; still
+		// A DB created before the migrations that introduced columns read by this
+		// advisory query fails with "no such column". This metadata is advisory
+		// (the refusal does not depend on it), and with the daemon down there is
+		// no live agent-step ancestry to detect. Degrade to empty so the daemon
+		// can start and its authoritative open can run the migration; still
 		// propagate genuine DB errors.
-		if preMigrationSchemaError(err, "review_approved_head_sha") {
+		if preMigrationSchemaError(err, "runs") {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("gate execution context: list active runs: %w", err)
@@ -172,7 +172,7 @@ func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
 	for _, run := range runs {
 		steps, err := i.DB.GetStepsByRun(run.ID)
 		if err != nil {
-			if preMigrationSchemaError(err, "last_activity_at", "last_activity", "agent_pid", "auto_fix_limit") {
+			if preMigrationSchemaError(err, "step_results") {
 				return nil, nil
 			}
 			return nil, fmt.Errorf("gate execution context: list steps for active run: %w", err)
@@ -191,14 +191,16 @@ func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
 	return out, nil
 }
 
-func preMigrationSchemaError(err error, columns ...string) bool {
+func preMigrationSchemaError(err error, tables ...string) bool {
 	msg := err.Error()
 	if !strings.Contains(msg, "no such column: ") {
 		return false
 	}
-	for _, col := range columns {
-		if strings.Contains(msg, "no such column: "+col) {
-			return true
+	for _, table := range tables {
+		for _, col := range db.MigrationColumns(table) {
+			if strings.Contains(msg, "no such column: "+col) {
+				return true
+			}
 		}
 	}
 	return false
