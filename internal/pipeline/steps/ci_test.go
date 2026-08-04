@@ -454,6 +454,70 @@ func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
 	}
 }
 
+func TestCIStep_PersistentCheckReadFailureParksAtAskUser(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	// Every poll fails to read checks (e.g. gh < v2.50 rejects `pr checks --json`).
+	// The first few are tolerated as transient warnings, but a persistent streak
+	// must park at an ask-user gate instead of spinning to ci_timeout.
+	var checksSequence []string
+	for i := 0; i < consecutiveCheckErrorLimit+3; i++ {
+		checksSequence = append(checksSequence, `not-json`)
+	}
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		// No sleep between polls so the consecutive-failure streak accumulates
+		// within the short test timeout instead of wedging on the 30s poll.
+		waitForNextPoll: func(ctx context.Context, _ time.Duration) error { return nil },
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected ask-user approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected persistent check-read failures to park at an approval gate")
+	}
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("findings = %+v, want exactly one ask-user finding", findings.Items)
+	}
+	if findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("finding action = %q, want ask-user", findings.Items[0].Action)
+	}
+	if !strings.Contains(findings.Items[0].Description, "pr checks --json") || !strings.Contains(findings.Items[0].Description, "2.50") {
+		t.Fatalf("finding %q must explain the gh version/flag cause", findings.Items[0].Description)
+	}
+	parked := 0
+	for _, l := range logs {
+		if strings.Contains(l, "parking for a decision") {
+			parked++
+		}
+	}
+	if parked != 1 {
+		t.Fatalf("expected one parking log line, got %d: %v", parked, logs)
+	}
+}
+
 func TestCIStep_CIWarningClearsPersistedReadiness(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
