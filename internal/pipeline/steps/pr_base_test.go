@@ -214,3 +214,56 @@ func TestDeliveryRejectsConfiguredBaseMovingBehindSnapshot(t *testing.T) {
 		})
 	}
 }
+
+func TestPRStep_RevalidatesConfiguredBaseAfterContentGeneration(t *testing.T) {
+	dir, _, baseSHA, headSHA, snapshotSHA := setupConfiguredBaseRewrite(t, "")
+	env, logFile := fakeGH(t, "")
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		gitCmd(t, dir, "push", "--force", "origin", baseSHA+":refs/heads/quality-assurance")
+		return &agent.Result{Output: json.RawMessage(`{"title":"feat: update","body":"## What Changed\n\n- update"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.PR.BaseBranch = "quality-assurance"
+	sctx.Config.PR.ResolvedBaseSHA = snapshotSHA
+	sctx.Env = env
+
+	_, err := (&PRStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "immutable run snapshot") {
+		t.Fatalf("PR step did not reject base reset during content generation: %v", err)
+	}
+	logBytes, readErr := os.ReadFile(logFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.Contains(string(logBytes), "pr list") || strings.Contains(string(logBytes), "pr create") {
+		t.Fatalf("PR provider delivery proceeded after content-generation reset:\n%s", logBytes)
+	}
+}
+
+func TestPRStep_RevalidatesConfiguredBaseImmediatelyBeforeCreate(t *testing.T) {
+	dir, _, baseSHA, headSHA, snapshotSHA := setupConfiguredBaseRewrite(t, "")
+	env, logFile := fakeGH(t, "")
+	env = append(env,
+		"FAKE_CLI_PR_LIST_RESET_SOURCE="+baseSHA,
+		"FAKE_CLI_PR_LIST_RESET_BRANCH=quality-assurance",
+	)
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		return &agent.Result{Output: json.RawMessage(`{"title":"feat: update","body":"## What Changed\n\n- update"}`)}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.PR.BaseBranch = "quality-assurance"
+	sctx.Config.PR.ResolvedBaseSHA = snapshotSHA
+	sctx.Env = env
+
+	_, err := (&PRStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "immutable run snapshot") {
+		t.Fatalf("PR step did not reject base reset during discovery: %v", err)
+	}
+	logBytes, readErr := os.ReadFile(logFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.Contains(string(logBytes), "pr create") {
+		t.Fatalf("PR creation proceeded after discovery-time reset:\n%s", logBytes)
+	}
+}

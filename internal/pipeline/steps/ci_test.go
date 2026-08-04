@@ -90,7 +90,8 @@ func setupConfiguredBaseRewrite(t *testing.T, replacement string) (string, strin
 	gitCmd(t, dir, "commit", "-m", "configured base snapshot")
 	snapshotSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "HEAD:refs/heads/quality-assurance")
-	if replacement == "sibling" {
+	switch replacement {
+	case "sibling":
 		gitCmd(t, dir, "checkout", "-B", "replacement", "main")
 		if err := os.WriteFile(filepath.Join(dir, "replacement.txt"), []byte("replacement\n"), 0o644); err != nil {
 			t.Fatal(err)
@@ -98,7 +99,7 @@ func setupConfiguredBaseRewrite(t *testing.T, replacement string) (string, strin
 		gitCmd(t, dir, "add", "replacement.txt")
 		gitCmd(t, dir, "commit", "-m", "sibling base")
 		gitCmd(t, dir, "push", "--force", "origin", "HEAD:refs/heads/quality-assurance")
-	} else {
+	case "backward":
 		gitCmd(t, dir, "push", "--force", "origin", baseSHA+":refs/heads/quality-assurance")
 	}
 	gitCmd(t, dir, "checkout", "feature")
@@ -132,6 +133,32 @@ func TestRefreshRunBaseBranchTipRejectsConfiguredBaseMovingToSibling(t *testing.
 	_, resolved, err := refreshRunBaseBranchTip(context.Background(), sctx, baseSHA, "quality-assurance")
 	if err == nil || resolved || !strings.Contains(err.Error(), "immutable run snapshot") {
 		t.Fatalf("expected sibling configured-base rejection, resolved=%t err=%v", resolved, err)
+	}
+}
+
+func TestCIStep_RevalidatesConfiguredBaseBeforeRepairPush(t *testing.T) {
+	dir, upstream, baseSHA, headSHA, snapshotSHA := setupConfiguredBaseRewrite(t, "")
+	gitCmd(t, dir, "push", "origin", "feature:refs/heads/feature")
+	if err := os.WriteFile(filepath.Join(dir, "ci-repair.txt"), []byte("repair\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "ci-repair.txt")
+	gitCmd(t, dir, "commit", "-m", "repair CI")
+	newHeadSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "--force", "origin", baseSHA+":refs/heads/quality-assurance")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.PR.BaseBranch = "quality-assurance"
+	sctx.Config.PR.ResolvedBaseSHA = snapshotSHA
+
+	pushed, err := (&CIStep{}).pushUpdatedHeadSHA(sctx, newHeadSHA)
+	if err == nil || pushed || !strings.Contains(err.Error(), "immutable run snapshot") {
+		t.Fatalf("CI repair push did not reject reset configured base: pushed=%t err=%v", pushed, err)
+	}
+	if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != headSHA {
+		t.Fatalf("CI repair updated remote feature to %s after base reset, want %s", got, headSHA)
 	}
 }
 

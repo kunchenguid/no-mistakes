@@ -196,6 +196,65 @@ func TestExecutor_ReconcileErrorPreservesGateFailClosed(t *testing.T) {
 	}
 }
 
+func TestExecutor_TransientApprovalValidationPreservesGate(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	step := &reconcilingApprovalStep{name: types.StepCI}
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	exec.SetGateReconcileTimings(time.Hour, 100*time.Millisecond)
+
+	done := make(chan error, 1)
+	go func() { done <- exec.Execute(context.Background(), run, repo, t.TempDir()) }()
+	waitForStepStatus(t, database, run.ID, types.StepCI, types.StepStatusAwaitingApproval)
+
+	validationErr := error(errors.New("provider unavailable"))
+	step.validationErr.Store(&validationErr)
+	if err := exec.Respond(types.StepCI, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for step.validationCalls.Load() != 1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if step.validationCalls.Load() != 1 {
+		t.Fatal("approval validation did not run")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("transient approval validation ended the run: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	got, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != types.RunRunning || got.AwaitingAgentSince == nil {
+		t.Fatalf("transient validation changed parked run: status %s awaiting %v", got.Status, got.AwaitingAgentSince)
+	}
+
+	step.validationErr.Store(nil)
+	for {
+		err = exec.Respond(types.StepCI, types.ActionApprove, nil)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("parked gate was not restored after transient validation: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Execute() after retry error = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("retried approval did not complete")
+	}
+	if step.validationCalls.Load() != 2 {
+		t.Fatalf("approval validation calls = %d, want 2", step.validationCalls.Load())
+	}
+}
+
 func TestExecutor_ValidatesParkedGateBeforeApproval(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	step := &reconcilingApprovalStep{name: types.StepCI}

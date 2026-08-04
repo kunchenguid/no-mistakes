@@ -1143,7 +1143,22 @@ func (e *Executor) waitForApprovalOrReconcile(ctx context.Context, step Step, sc
 		case response := <-e.approvalCh:
 			if response.action == types.ActionApprove {
 				if err := e.validateApprovalGate(ctx, step, sctx); err != nil {
-					return approvalResponse{}, false, err
+					if errors.Is(err, ErrFatalGateReconciliation) {
+						return approvalResponse{}, false, err
+					}
+					if ctx.Err() != nil {
+						return approvalResponse{}, false, context.Cause(ctx)
+					}
+					e.mu.Lock()
+					e.waiting = true
+					e.waitingStep = step.Name()
+					e.mu.Unlock()
+					if sctx != nil && sctx.Log != nil {
+						sctx.Log(fmt.Sprintf("warning: could not validate parked %s gate; preserving it: %v", step.Name(), err))
+					} else {
+						slog.Warn("could not validate parked approval gate; preserving it", "step", step.Name(), "error", err)
+					}
+					continue
 				}
 			}
 			return response, false, nil

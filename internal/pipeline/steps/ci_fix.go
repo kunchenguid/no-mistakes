@@ -156,6 +156,9 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 }
 
 func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA string) (bool, error) {
+	if err := validateExplicitPRBase(sctx.Ctx, sctx); err != nil {
+		return false, err
+	}
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	pushURL := resolvePushURL(sctx)
 
@@ -168,6 +171,9 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 	gitRun := func(args ...string) (string, error) { return stepGitRun(sctx, args...) }
 	decision, err := resolveForcePushDecision(gitRun, pushURL, ref, newHeadSHA, sctx.Run.HeadSHA, sctx.Run.BaseSHA)
 	if err != nil {
+		return false, err
+	}
+	if err := validateExplicitPRBase(sctx.Ctx, sctx); err != nil {
 		return false, err
 	}
 	targetKind := "upstream"
@@ -206,6 +212,9 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 			return false, err
 		}
 		return false, nil
+	}
+	if err := validateExplicitPRBase(sctx.Ctx, sctx); err != nil {
+		return false, err
 	}
 	if err := stepGitPush(sctx, pushURL, ref, decision.remoteSHA, !decision.newBranch); err != nil {
 		return false, fmt.Errorf("push: %w", err)

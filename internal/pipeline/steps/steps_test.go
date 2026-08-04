@@ -117,6 +117,14 @@ func fakeGHHandler(args []string) {
 		os.Exit(0)
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "list" {
+		if resetSource := os.Getenv("FAKE_CLI_PR_LIST_RESET_SOURCE"); resetSource != "" {
+			resetBranch := os.Getenv("FAKE_CLI_PR_LIST_RESET_BRANCH")
+			cmd := exec.Command("git", "push", "--force", "origin", resetSource+":refs/heads/"+resetBranch)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				fmt.Fprintf(os.Stderr, "reset PR base: %v: %s", err, out)
+				os.Exit(1)
+			}
+		}
 		if prURL == "" {
 			fmt.Println("[]")
 			os.Exit(0)
