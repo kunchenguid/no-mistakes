@@ -237,6 +237,18 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	currentBase := strings.TrimSpace(cfg.PR.BaseBranch)
 	currentExplicit := cfg.PR.HasExplicitBaseBranch()
 	persistedBase := runPRBaseContinuityForRun(run, repo.DefaultBranch)
+	if persistedBase != nil && persistedBase.branch == "" {
+		hasPREvidence, err := m.runHasPRContinuityEvidence(run)
+		if err != nil {
+			return nil, fmt.Errorf("inspect recovered run pull request evidence: %w", err)
+		}
+		if hasPREvidence {
+			persistedBase, err = m.verifyRerunPRBaseContinuity(ctx, repo, persistedBase)
+			if err != nil {
+				return nil, fmt.Errorf("resolve recovered run pull request base: %w", err)
+			}
+		}
+	}
 	if persistedBase != nil {
 		if persistedBase.branch == "" {
 			persistedBase.branch = strings.TrimSpace(repo.DefaultBranch)
@@ -872,23 +884,48 @@ func distinctRunPRBaseContinuities(runs []*db.Run, branch, defaultBranch string,
 	return candidates
 }
 
+func hasPersistedPRContinuityEvidence(run *db.Run) bool {
+	if run == nil {
+		return false
+	}
+	if run.PRURL != nil && strings.TrimSpace(*run.PRURL) != "" {
+		return true
+	}
+	if run.PRState != nil {
+		switch strings.ToLower(strings.TrimSpace(*run.PRState)) {
+		case "open", "closed", "merged":
+			return true
+		}
+	}
+	return false
+}
+
+func (m *RunManager) runHasPRContinuityEvidence(run *db.Run) (bool, error) {
+	if hasPersistedPRContinuityEvidence(run) {
+		return true, nil
+	}
+	if m.db == nil || run == nil {
+		return false, nil
+	}
+	startedPRRuns, err := m.db.GetRunIDsWithStartedStep(run.RepoID, types.StepPR)
+	if err != nil {
+		return false, err
+	}
+	_, ok := startedPRRuns[run.ID]
+	return ok, nil
+}
+
 func (m *RunManager) persistedPRBaseContinuities(runs []*db.Run, branch, defaultBranch string, preferred *runPRBaseContinuity, repoID string) ([]*runPRBaseContinuity, error) {
 	startedPRRuns, err := m.db.GetRunIDsWithStartedStep(repoID, types.StepPR)
 	if err != nil {
 		return nil, err
 	}
 	hasEvidence := func(run *db.Run) bool {
-		if run == nil {
-			return false
-		}
-		if run.PRURL != nil && strings.TrimSpace(*run.PRURL) != "" {
+		if hasPersistedPRContinuityEvidence(run) {
 			return true
 		}
-		if run.PRState != nil {
-			switch strings.ToLower(strings.TrimSpace(*run.PRState)) {
-			case "open", "closed", "merged":
-				return true
-			}
+		if run == nil {
+			return false
 		}
 		_, ok := startedPRRuns[run.ID]
 		return ok

@@ -1229,6 +1229,82 @@ func TestLoadRecoveredConfig_PRBaseComesFromTrustedDefaultBranch(t *testing.T) {
 	}
 }
 
+func TestLoadRecoveredConfig_ResolvesLegacyOpenPRBaseAfterDefaultRename(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	upstream := p.RepoDir("legacy-recovery")
+	gitCmd(t, "", "init", "--bare", upstream)
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "--initial-branch=main")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(seed, ".no-mistakes.yaml"), []byte("auto_fix:\n  review: 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".no-mistakes.yaml")
+	gitCmd(t, seed, "commit", "-m", "initial")
+	gitCmd(t, seed, "branch", "trunk")
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(seed, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "feature.txt")
+	gitCmd(t, seed, "commit", "-m", "feature")
+	gitCmd(t, seed, "remote", "add", "origin", upstream)
+	gitCmd(t, seed, "push", "origin", "main", "trunk", "feature")
+
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "clone", upstream, ".")
+	gitCmd(t, workDir, "checkout", "feature")
+	repo, err := database.InsertRepoWithID("legacy-recovery", seed, upstream, "trunk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := gitOutput(t, workDir, "rev-parse", "HEAD")
+	run, err := database.InsertRun(repo.ID, "feature", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRURL(run.ID, "https://github.com/test/repo/pull/42"); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	binDir, ghLog := writeRerunPRBaseMockGH(t, "main", "")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	mgr := NewRunManager(database, p, nil)
+	cfg, err := mgr.loadRecoveredConfig(context.Background(), run, repo, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PR.BaseBranch != "main" || cfg.PR.HasExplicitBaseBranch() {
+		t.Fatalf("recovered PR base = %q (explicit %t), want main (unset)", cfg.PR.BaseBranch, cfg.PR.HasExplicitBaseBranch())
+	}
+	persisted, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.PRBaseBranch == nil || *persisted.PRBaseBranch != "main" || persisted.PRBaseBranchExplicit {
+		t.Fatalf("persisted recovered PR base = %v (explicit %t), want main (unset)", persisted.PRBaseBranch, persisted.PRBaseBranchExplicit)
+	}
+	logBytes, err := os.ReadFile(ghLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logBytes), "pr list --head feature") || strings.Contains(string(logBytes), "--base trunk") {
+		t.Fatalf("legacy recovery did not resolve the PR target by head:\n%s", logBytes)
+	}
+}
+
 func TestLoadRecoveredConfig_PreservesImmutablePRBaseSnapshot(t *testing.T) {
 	upstream := filepath.Join(t.TempDir(), "upstream.git")
 	gitCmd(t, "", "init", "--bare", upstream)
