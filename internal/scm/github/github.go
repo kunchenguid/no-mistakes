@@ -398,8 +398,9 @@ func (h *Host) getPRChecks(ctx context.Context, selector string) ([]scm.Check, e
 		if strings.Contains(string(out), "no checks reported") {
 			out = []byte("[]")
 		} else {
-			return nil, fmt.Errorf("gh pr checks: %w", err)
+			return nil, fmt.Errorf("gh pr checks: %s: %w", strings.TrimSpace(string(out)), err)
 		}
+	}
 	}
 	var raw []struct {
 		Name        string `json:"name"`

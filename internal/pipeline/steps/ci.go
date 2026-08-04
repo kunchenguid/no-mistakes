@@ -244,6 +244,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	timeoutFailingChecks := []string{}
 	timeoutMergeConflict := false
 	lastMonitorLog := ""
+	consecutiveCheckErrs := 0
 	timeoutOutcome := func() (*pipeline.StepOutcome, error) {
 		sctx.Log("CI timeout reached")
 		if len(timeoutFailingChecks) > 0 || timeoutMergeConflict {
@@ -348,7 +349,17 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			clearCIMonitorReady(sctx)
 			lastMonitorLog = ""
 			sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
+			consecutiveCheckErrs++
+			// A provider read that keeps failing (e.g. gh < v2.50 rejecting
+			// `gh pr checks --json`) must become an actionable stop, not an
+			// invisible spin to ci_timeout. The PR state check above returned
+			// already for merged/closed, so reaching here means the PR is open.
+			if consecutiveCheckErrs >= consecutiveCheckErrorLimit {
+				sctx.Log(fmt.Sprintf("CI checks could not be read %d consecutive times, parking for a decision", consecutiveCheckErrs))
+				return ciCheckReadFailureOutcome(err), nil
+			}
 		} else {
+			consecutiveCheckErrs = 0
 			// checksPending is the narrow execution state: only checks that are
 			// actively running or queued block a rerun or issue escalation. A
 			// provider-cancelled check is terminal enough to enter the transient
