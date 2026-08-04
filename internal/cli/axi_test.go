@@ -535,6 +535,7 @@ func TestPreflightGuardRejectsConfiguredPRBaseBranch(t *testing.T) {
 	if !strings.Contains(out.String(), "configured PR base branch") || !strings.Contains(out.String(), "feature branch") {
 		t.Fatalf("expected actionable PR base error, got:\n%s", out.String())
 	}
+	t.Logf("structured CLI preflight response:\n%s", out.String())
 }
 
 func TestConfiguredPRBaseBranchRejectsUnrelatedTarget(t *testing.T) {

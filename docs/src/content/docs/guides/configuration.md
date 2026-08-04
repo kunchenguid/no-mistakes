@@ -62,14 +62,7 @@ The rest of this page covers only the cross-cutting rules that involve both file
 
 ## Pull requests that target an integration branch
 
-Most repositories need no routing configuration: pull requests and pipeline deltas use the repository default branch. If ordinary feature PRs land in a separate integration branch, commit `pr.base_branch` to `.no-mistakes.yaml` on the repository default branch:
-
-```yaml
-pr:
-  base_branch: quality-assurance
-```
-
-The configured branch must already exist in the upstream parent. Fork routing still pushes the feature branch to the fork while targeting the configured base in the parent. The [Repo Config Reference](/no-mistakes/reference/repo-config/#prbase_branch) owns validation, trust, fallback, and exact pipeline semantics.
+Most repositories need no routing configuration: pull requests and pipeline deltas use the repository default branch. Repositories where ordinary feature PRs land in a separate integration branch can configure `pr.base_branch`. The [Repo Config Reference](/no-mistakes/reference/repo-config/#prbase_branch) owns its syntax, example, validation, trust, fork routing, fallback, and exact pipeline semantics.
 
 ## House rules for part of the tree
 

@@ -120,7 +120,7 @@ See [Driving no-mistakes as an agent](/no-mistakes/guides/agents/#driving-no-mis
 The pipeline runs these steps in order:
 
 1. **Intent** - use agent-supplied intent when present, otherwise infer author intent from recent local agent transcripts
-2. **Rebase** - onto the latest upstream and pushed-branch target
+2. **Rebase** - onto the validated PR base and pushed-branch target
 3. **Review** - AI code review of your diff
 4. **Test** - baseline tests plus evidence checks when intent is known
 5. **Document** - updates docs and reports unresolved gaps

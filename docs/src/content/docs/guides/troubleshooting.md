@@ -179,9 +179,7 @@ Approve the finding only when you intentionally want that local base-branch work
 
 ### Configured PR base has no usable shared history
 
-An explicit `pr.base_branch` must share a merge base with the feature branch. If the target was created as an orphan or force-pushed to unrelated history, no-mistakes refuses the run with an error naming `pr.base_branch`; Rebase and CI also refuse a target that moves to unrelated history after startup validation.
-
-Restore the intended upstream base branch to related history, or rebase the feature work onto the intended branch in a fresh feature branch, then retry. An explicit target never falls back to the repository default branch.
+This error means the configured integration target and feature branch do not have ancestry that no-mistakes can safely use. Restore the intended upstream base to related history, or move the feature work onto a fresh branch based on that target, then retry. See [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) for the authoritative validation and fail-closed behavior.
 
 ## `git push no-mistakes` doesn't start a pipeline
 
@@ -235,7 +233,7 @@ Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requ
 - Self-hosted GitHub Enterprise on a hostname that is not `github.com` isn't detected because `gh` isn't configured for the host; run `gh auth login --hostname your-ghe.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`gh auth status --hostname your-ghe.example.com`), so a stale token on `github.com` or any other configured gh host can no longer falsely mark the GHE repo as unauthenticated.
 - Self-hosted GitLab on a hostname with no `gitlab` marker isn't detected because `glab` isn't configured for the host; run `glab auth login --hostname your-gitlab.example.com` so detection finds it. Once detection succeeds, the availability check is host-scoped (`glab auth status --hostname your-gitlab.example.com`), so a stale token on `gitlab.com` or any other configured glab host can no longer falsely mark the self-hosted repo as unauthenticated.
 - A GitLab, Bitbucket, or Azure DevOps repo record has a fork URL set; fork MR/PR routing is currently GitHub-only
-- You pushed the intended PR base branch; the PR step skips when the gated branch is its own target (the configured `pr.base_branch`, or the repository default when unset)
+- With `pr.base_branch` unset, you pushed the repository default branch, so the gated branch is its own PR target. With an explicit base, new runs on that branch and any distinct repository default branch are refused before the pipeline starts.
 
 ## CI step stuck or timed out
 

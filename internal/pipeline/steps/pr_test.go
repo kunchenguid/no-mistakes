@@ -356,6 +356,7 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	if strings.Contains(ghLog, "pr create --head feature --") {
 		t.Fatalf("expected PR create to avoid bare fork head, got:\n%s", ghLog)
 	}
+	t.Logf("fork delivery provider CLI transcript:\n%s", ghLog)
 }
 
 func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {

@@ -175,8 +175,10 @@ func TestResolveBranchBaseSHA_UsesConfiguredPRBase(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if logText := string(logBytes); !strings.Contains(logText, "--base quality-assurance") {
+		logText := string(logBytes)
+		if !strings.Contains(logText, "--base quality-assurance") {
 			t.Fatalf("PR discovery/creation did not use configured base:\n%s", logText)
 		}
+		t.Logf("provider CLI transcript:\n%s", logText)
 	})
 }

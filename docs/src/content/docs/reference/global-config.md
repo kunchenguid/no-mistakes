@@ -226,7 +226,7 @@ How long the CI step monitors an open PR, including provider CI status and on Gi
 
 Accepts any Go `time.ParseDuration` string: `30m`, `2h`, `4h30m`, etc.
 
-This is an idle timeout, not an absolute deadline: every time the base branch advances, the monitor re-arms it.
+This is an idle timeout, not an absolute deadline: every time the intended PR base advances ([`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch), or the repository default branch when unset), the monitor re-arms it.
 So an actively-updated green PR keeps its monitor no matter how long it stays open.
 If it later develops an actual GitHub, GitLab, or Azure DevOps merge conflict, the CI auto-fix path rebases and re-pushes it, while a clean behind PR needs no command.
 A genuinely idle/abandoned PR still parks at an approval gate after the timeout elapses.
