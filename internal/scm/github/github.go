@@ -401,7 +401,6 @@ func (h *Host) getPRChecks(ctx context.Context, selector string) ([]scm.Check, e
 			return nil, fmt.Errorf("gh pr checks: %s: %w", strings.TrimSpace(string(out)), err)
 		}
 	}
-	}
 	var raw []struct {
 		Name        string `json:"name"`
 		State       string `json:"state"`
