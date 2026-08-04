@@ -74,38 +74,6 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 	return b.String(), riskLine
 }
 
-func BuildPipelineStatusSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound) string {
-	var statusLines []string
-	for _, sr := range steps {
-		if shouldOmitPipelineStep(sr) {
-			continue
-		}
-		var line string
-		if sr.StepName == types.StepReview && sr.Status == types.StepStatusCompleted {
-			line = "✅ **Review** - completed"
-		} else {
-			line, _ = buildStepEntry(sr, rounds[sr.ID])
-		}
-		if line != "" {
-			statusLines = append(statusLines, line)
-		}
-	}
-	if len(statusLines) == 0 {
-		return ""
-	}
-
-	var b strings.Builder
-	b.WriteString("## Pipeline\n\n")
-	b.WriteString(noMistakesPRSignature)
-	b.WriteString("\n\n")
-	for _, line := range statusLines {
-		b.WriteString("<details>\n<summary>")
-		b.WriteString(line)
-		b.WriteString("</summary>\n</details>\n")
-	}
-	return b.String()
-}
-
 // BuildTestingSummary extracts a deterministic Testing section from the test step.
 func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound) string {
 	return buildTestingSummary(steps, rounds, testingSummaryOptions{includeTestedDetails: true})

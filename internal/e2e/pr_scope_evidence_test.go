@@ -68,32 +68,22 @@ func writeFinalPRScopeScenario(t *testing.T) string {
 	return path
 }
 
-// TestPRFinalScopeExcludesEarlierStepEvidence reproduces the PR 1272 failure
-// at the closest supported user-visible boundary: a real gate push executes
-// the full pipeline and a GitHub PR creation receives the final body on stdin.
+// TestPRWhatChangedScopesToFinalDiffWhileEvidenceStaysStepScoped verifies the
+// final-diff scoping boundary at the closest supported user-visible boundary:
+// a real gate push executes the full pipeline and a GitHub PR creation
+// receives the final body on stdin.
 //
-// Reproduction record, before source-level cause assignment:
-//   - Expected behavior: the final PR describes the actual four-file branch
-//     delta; earlier Test evidence is step-scoped, never final PR scope.
-//   - Observed pre-fix: the PR body preserved two-file Test evidence as though
-//     it described the shipped branch after Document added two files.
-//   - Initiating trigger: a legitimate Document stage commit after Test.
-//   - Masking condition: no later local mutation, or an evidence claim that
-//     happens to match the final diff, leaves no visible contradiction.
-//   - Visible symptom: a reviewer sees an "only final files" two-file claim
-//     in the PR while its branch and PR prompt cover four files.
-//   - Earliest divergence from the proven accurate path: the pre-Document Test
-//     target is presented in the later PR body instead of remaining evidence
-//     for that completed step.
-//   - Relevant history: the merged Firstmate PR #1272 supplied the concrete
-//     two-file final-scope wording that motivated this regression shape.
-//   - Smallest causal counterfactual: if Document made no downstream files,
-//     the same two-file evidence would coincide with the final diff and not
-//     misstate its scope.
-//   - Disconfirming evidence: this test proves the final pushed head, final
-//     diff, and PR drafting prompt all contain the two documentation files, so
-//     it is not a dropped mutation, stale push, or branch-sync failure.
-func TestPRFinalScopeExcludesEarlierStepEvidence(t *testing.T) {
+// PR #605 originally made the whole PR body (including the deterministic
+// Risk Assessment, Testing, and Pipeline sections) final-diff scoped, but
+// that silently dropped those three sections everywhere (no-mistakes #605
+// regression, firstmate PR #1577/#1609). The corrected, intentional scope is
+// narrower: only the agent-authored `## What Changed` narrative is bound to
+// the actual final branch delta. The deterministic Risk Assessment, Testing,
+// and Pipeline sections legitimately describe the commit each step itself
+// inspected - that is what "evidence" means - and are restored in their full
+// pre-#605 form under their own clearly labeled headings, so a reviewer is
+// never told the Test step's own target commit is the shipped branch.
+func TestPRWhatChangedScopesToFinalDiffWhileEvidenceStaysStepScoped(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: writeFinalPRScopeScenario(t)})
 	ctx := context.Background()
 
@@ -170,27 +160,44 @@ func TestPRFinalScopeExcludesEarlierStepEvidence(t *testing.T) {
 	}
 
 	body := createdPRBody(t, readGHStubInvocations(t, ghLog))
-	if strings.Contains(body, "## Testing") {
-		t.Fatalf("final PR body must not present earlier Test evidence as final-scope testing:\n%s", body)
-	}
-	if !strings.Contains(body, "<summary>✅ **Test** - passed</summary>") {
-		t.Fatalf("final PR body must retain the Test step status without its stale evidence:\n%s", body)
-	}
-	if !strings.Contains(body, "<summary>✅ **Review** - completed</summary>") {
-		t.Fatalf("final PR body must retain Review completion without stale risk:\n%s", body)
-	}
 	for _, want := range wantFiles {
 		if !strings.Contains(body, want) {
 			t.Fatalf("final PR body missing final-diff file %q:\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, staleTwoFileEvidence) {
-		t.Fatalf("earlier two-file Test evidence leaked into final PR scope after Document changed the diff:\n%s", body)
+
+	// The `## What Changed` narrative is final-diff scoped: it must never
+	// present the Test step's own pre-Document evidence as though it
+	// described the shipped four-file branch.
+	whatChangedIdx := strings.Index(body, "## What Changed")
+	if whatChangedIdx < 0 {
+		t.Fatalf("final PR body missing What Changed section:\n%s", body)
 	}
-	for _, stale := range []string{"medium risk because only two source files changed", "**Review** - medium risk"} {
-		if strings.Contains(body, stale) {
-			t.Fatalf("earlier Review risk leaked into final PR scope as %q:\n%s", stale, body)
-		}
+	whatChangedSection := body[whatChangedIdx:]
+	if next := strings.Index(whatChangedSection[len("## What Changed"):], "\n## "); next >= 0 {
+		whatChangedSection = whatChangedSection[:len("## What Changed")+next]
+	}
+	if strings.Contains(whatChangedSection, staleTwoFileEvidence) {
+		t.Fatalf("stale pre-Document Test evidence leaked into the final-diff-scoped What Changed narrative:\n%s", whatChangedSection)
+	}
+
+	// The deterministic Risk Assessment, Testing, and Pipeline sections stay
+	// step-scoped evidence in their full pre-#605 form: each legitimately
+	// describes the commit its own step inspected, under its own heading.
+	if !strings.Contains(body, "## Risk Assessment") {
+		t.Fatalf("final PR body must restore the deterministic Risk Assessment section:\n%s", body)
+	}
+	if !strings.Contains(body, "medium risk because only two source files changed") {
+		t.Fatalf("Risk Assessment section must retain the Review step's own recorded rationale:\n%s", body)
+	}
+	if !strings.Contains(body, "## Testing") {
+		t.Fatalf("final PR body must restore the deterministic Testing section:\n%s", body)
+	}
+	if !strings.Contains(body, "Focused validation passed at the test step target commit.") {
+		t.Fatalf("Testing section must retain the Test step's own recorded evidence:\n%s", body)
+	}
+	if !strings.Contains(body, "## Pipeline") {
+		t.Fatalf("final PR body must restore the rich Pipeline section:\n%s", body)
 	}
 }
 

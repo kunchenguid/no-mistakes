@@ -138,7 +138,7 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseSHA stri
 	if err != nil {
 		return prContent{}, fmt.Errorf("read final branch diff: %w", err)
 	}
-	pipelineMD := s.buildPipelineSection(sctx)
+	pipelineMD, riskLine, testingMD := s.buildPipelineSection(sctx)
 
 	prompt := fmt.Sprintf(`Draft a pull request title and summary for the full branch delta.
 
@@ -174,7 +174,7 @@ Final diff paths and statuses:
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)
-		return fallbackPRContent(sctx, finalDiff, pipelineMD, bodyLimit), nil
+		return fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit), nil
 	}
 
 	var content prContent
@@ -191,23 +191,27 @@ Final diff paths and statuses:
 					slog.Warn("tightened agent PR title type", "from", originalTitle, "to", content.Title)
 				}
 				if bodyLimit > 0 {
-					content.Body = assemblePRBody(sctx, content.Body, "", "", pipelineMD, bodyLimit)
+					content.Body = assemblePRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, bodyLimit)
 				} else {
-					content.Body = buildPRBody(content.Body, "", "", pipelineMD, sctx)
+					content.Body = buildPRBody(content.Body, riskLine, testingMD, pipelineMD, sctx)
 				}
 				return content, nil
 			}
 		}
 	}
 
-	return fallbackPRContent(sctx, finalDiff, pipelineMD, bodyLimit), nil
+	return fallbackPRContent(sctx, finalDiff, riskLine, testingMD, pipelineMD, bodyLimit), nil
 }
 
-func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) string {
+// buildPipelineSection queries step results and rounds from the DB and
+// produces the deterministic pipeline, risk, and testing sections. These are
+// scoped to this run's own steps and rounds, so they already describe only
+// the final terminal state each step reached in this run.
+func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (pipelineMD, riskLine, testingMD string) {
 	steps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
 		slog.Warn("failed to query step results for pipeline summary", "error", err)
-		return ""
+		return "", "", ""
 	}
 
 	rounds := make(map[string][]*db.StepRound, len(steps))
@@ -220,7 +224,9 @@ func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) string {
 		rounds[sr.ID] = r
 	}
 
-	return BuildPipelineStatusSummary(steps, rounds)
+	pipelineMD, riskLine = BuildPipelineSummary(steps, rounds)
+	testingMD = BuildTestingSummaryForPR(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir)
+	return pipelineMD, riskLine, testingMD
 }
 
 // unwrapNestedPRBody detects when the agent returned the body as a
@@ -243,23 +249,24 @@ func unwrapNestedPRBody(body string) string {
 // appendGeneratedSections appends deterministic sections after the agent's body
 // and applies the PR body length guard.
 // prBodyBudgetPromptSection tells the drafting agent about a host's PR-body
-// character cap so it keeps its "## What Changed" section short. The Intent
-// and Pipeline sections are appended deterministically, so the agent only
-// controls a slice of the budget; this nudge keeps that slice small.
+// character cap so it keeps its "## What Changed" section short. The Intent,
+// Risk, Testing, and Pipeline sections are appended deterministically, so the
+// agent only controls a slice of the budget; this nudge keeps that slice small.
 // Returns "" when the provider has no practical limit (bodyLimit <= 0).
 func prBodyBudgetPromptSection(bodyLimit int) string {
 	if bodyLimit <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("\n\n- This repository's host caps the entire PR description at %d characters. The Intent and Pipeline sections are appended automatically. Keep the \"## What Changed\" section to a few short bullet points.", bodyLimit)
+	return fmt.Sprintf("\n\n- This repository's host caps the entire PR description at %d characters. The Intent, Risk Assessment, and Pipeline sections are appended automatically; a Testing section is included when budget allows. Keep the \"## What Changed\" section to a few short bullet points.", bodyLimit)
 }
 
 // assemblePRBody composes the final PR body from its sections and keeps it
-// within bodyLimit (0 = unlimited). Optional Testing content supplied by
-// legacy or helper callers is dropped first. Production PR drafting supplies
-// the final-diff What Changed section and compact Pipeline status, then fits
-// Intent into the remaining budget so earlier step evidence cannot displace
-// the final-scope description.
+// within bodyLimit (0 = unlimited). When the full body overruns the cap it
+// first drops the Testing section - the only one that embeds artifact and log
+// file contents and is therefore effectively unbounded - so the body sheds
+// log dumps while keeping its Intent, What Changed, Risk, and Pipeline
+// narrative intact. prependIntentSectionWithinLimit is the final backstop
+// when even that core overruns.
 func assemblePRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD, pipelineMD string, bodyLimit int) string {
 	sections := appendGeneratedSections(whatChanged, riskLine, testingMD, pipelineMD)
 	full := prependIntentSection(sections, sctx)
@@ -995,7 +1002,7 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	return section + "\n\n" + body
 }
 
-func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, pipelineMD string, bodyLimit int) prContent {
+func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD string, bodyLimit int) prContent {
 	title := "chore: update pull request"
 	diffSummary := strings.TrimSpace(finalDiff)
 	body := "## What Changed\n\nFinal changed paths and statuses:\n\n```text\n" + escapeMarkdownFence(diffSummary) + "\n```"
@@ -1003,9 +1010,9 @@ func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, pipelineMD string,
 		body = "## What Changed\n\nFinal diff unavailable; no complete scope summary was generated."
 	}
 	if bodyLimit > 0 {
-		body = assemblePRBody(sctx, body, "", "", pipelineMD, bodyLimit)
+		body = assemblePRBody(sctx, body, riskLine, testingMD, pipelineMD, bodyLimit)
 	} else {
-		body = buildPRBody(body, "", "", pipelineMD, sctx)
+		body = buildPRBody(body, riskLine, testingMD, pipelineMD, sctx)
 	}
 	return prContent{
 		Title: title,

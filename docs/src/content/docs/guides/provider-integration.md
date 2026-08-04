@@ -171,9 +171,10 @@ well as their SSH forms (`git@ssh.dev.azure.com:v3/...`).
 
 - PR creation and update (`az repos pr create` / `update`); Azure DevOps caps
   PR descriptions at 4000 characters, so the pipeline builds the body within
-  that budget and applies a final truncation backstop with a visible marker.
-  See the [PR step reference](/no-mistakes/reference/pipeline-steps/#pr) for
-  section ownership and truncation behavior.
+  that budget - shedding the Testing section first when needed, then applying
+  a final truncation backstop with a visible marker. See the
+  [PR step reference](/no-mistakes/reference/pipeline-steps/#pr) for section
+  ownership and truncation behavior.
 - CI status polling - Azure branch policy evaluations (build validation and
   status checks) are read via `az repos pr policy list` until the PR is
   completed, abandoned, or the configured `ci_timeout` idle window elapses
