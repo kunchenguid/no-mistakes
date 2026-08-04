@@ -532,5 +532,21 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 		}
 	}
 
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	// Cancellation kills the CLI, which closes stdout, so a cancelled stream
+	// can also end as a clean EOF rather than a read error - whether the
+	// in-loop check above sees it depends on whether another line happened to
+	// be buffered. Without a result event that EOF is the cancellation, not a
+	// finished run, so report it here; otherwise the failure escapes as the
+	// kill signal from wait and loses both the cause and the parse-error path
+	// that carries the stream diagnostics. A complete result is still honored:
+	// the stream was not truncated.
+	if result == nil || *result == nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
 }

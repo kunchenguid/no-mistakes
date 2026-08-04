@@ -1083,6 +1083,59 @@ func TestClaudeAgent_StreamReadFailureCarriesBothChannels(t *testing.T) {
 	}
 }
 
+// The cancelled-stream case above is racy at the pipe: cancellation kills the
+// CLI, so whether the reader observes another buffered line or a clean EOF
+// depends on scheduling. This pins the EOF ordering deterministically - a
+// truncated stream with no result event must report the cancellation rather
+// than a successful parse, which would surface the failure as the kill signal
+// from wait instead of the parse-error path that carries the diagnostics.
+func TestParseClaudeEvents_CancelledStreamEndingInEOFReportsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var usage TokenUsage
+	var result *claudeResult
+	events := `{"type":"assistant","session_id":"helper-session","message":{"content":[{"type":"text","text":"API Error: Stream idle timeout - no chunks received"}]}}` + "\n"
+	err := parseClaudeEvents(ctx, strings.NewReader(events), func(string) { cancel() }, &usage, &result)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("parse events = %v, want the cancellation that truncated the stream", err)
+	}
+}
+
+// The mirror of the case above: a stream that delivered its result event is
+// complete, so a context cancelled on the way out must not turn a finished run
+// into a failure.
+func TestParseClaudeEvents_CompleteStreamSurvivesLateCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var usage TokenUsage
+	var result *claudeResult
+	events := `{"type":"result","subtype":"success","session_id":"helper-session"}` + "\n"
+	r := &cancelAtEOFReader{r: strings.NewReader(events), cancel: cancel}
+	if err := parseClaudeEvents(ctx, r, nil, &usage, &result); err != nil {
+		t.Fatalf("parse events: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result event was dropped")
+	}
+}
+
+// cancelAtEOFReader cancels the run exactly when the event stream ends, which
+// is the ordering where every event was already delivered.
+type cancelAtEOFReader struct {
+	r      io.Reader
+	cancel context.CancelFunc
+}
+
+func (c *cancelAtEOFReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if errors.Is(err, io.EOF) {
+		c.cancel()
+	}
+	return n, err
+}
+
 // The other way the event stream stops being readable is a read failure on the
 // pipe, and that one is retryable. The read failure chosen here says nothing a
 // transient needle matches, so the bare wrap must classify non-transient and
