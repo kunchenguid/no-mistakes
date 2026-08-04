@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,10 +28,11 @@ type RepoRef struct {
 }
 
 type PullRequest struct {
-	ID               int
-	URL              string
-	State            string
-	SourceCommitHash string
+	ID                int
+	URL               string
+	State             string
+	SourceCommitHash  string
+	DestinationBranch string
 }
 
 type CommitStatus struct {
@@ -133,6 +135,9 @@ func (c *Client) FindOpenPRBySourceBranch(ctx context.Context, repo RepoRef, bra
 	}
 	if len(response.Values) == 0 {
 		return nil, nil
+	}
+	if strings.TrimSpace(destBranch) == "" && len(response.Values) > 1 {
+		return nil, errors.New("multiple open pull requests found for source branch")
 	}
 	return response.Values[0].toPullRequest(), nil
 }
@@ -320,6 +325,11 @@ type bitbucketPullRequest struct {
 			Hash string `json:"hash"`
 		} `json:"commit"`
 	} `json:"source"`
+	Destination struct {
+		Branch struct {
+			Name string `json:"name"`
+		} `json:"branch"`
+	} `json:"destination"`
 	Links struct {
 		HTML struct {
 			Href string `json:"href"`
@@ -329,10 +339,11 @@ type bitbucketPullRequest struct {
 
 func (pr bitbucketPullRequest) toPullRequest() *PullRequest {
 	return &PullRequest{
-		ID:               pr.ID,
-		URL:              strings.TrimSpace(pr.Links.HTML.Href),
-		State:            strings.TrimSpace(pr.State),
-		SourceCommitHash: strings.TrimSpace(pr.Source.Commit.Hash),
+		ID:                pr.ID,
+		URL:               strings.TrimSpace(pr.Links.HTML.Href),
+		State:             strings.TrimSpace(pr.State),
+		SourceCommitHash:  strings.TrimSpace(pr.Source.Commit.Hash),
+		DestinationBranch: strings.TrimSpace(pr.Destination.Branch.Name),
 	}
 }
 

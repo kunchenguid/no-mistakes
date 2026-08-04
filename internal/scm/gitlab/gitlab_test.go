@@ -278,6 +278,24 @@ func TestFindPRFiltersByBaseBranch(t *testing.T) {
 	}
 }
 
+func TestFindPRWithoutBaseReturnsProviderTarget(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr list --source-branch feature --output json": {
+			stdout: `[{"iid":42,"web_url":"https://gitlab.example.com/group/project/-/merge_requests/42","target_branch":"main"}]` + "\n",
+		},
+	}), nil, "", "")
+
+	pr, err := host.FindPR(context.Background(), "feature", "")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr == nil || pr.BaseBranch != "main" {
+		t.Fatalf("FindPR() = %+v, want provider target main", pr)
+	}
+}
+
 func TestFindPRNoMatch(t *testing.T) {
 	t.Parallel()
 

@@ -290,6 +290,13 @@ func TestReplacementPushPreservesOpenPRBaseAcrossTrustedConfigChange(t *testing.
 	if err := database.UpdateRunPRBaseBranch(intervening.ID, "staging", true); err != nil {
 		t.Fatal(err)
 	}
+	interveningPR, err := database.InsertStepResult(intervening.ID, types.StepPR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(interveningPR.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	binDir, ghLog := writeRerunPRBaseMockGH(t, "quality-assurance", "")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -360,14 +367,16 @@ func TestRerunContinuityChecksEveryPersistedBaseCandidate(t *testing.T) {
 		name          string
 		persistedBase *string
 		explicit      bool
+		defaultBranch string
 		openBase      string
 	}{
-		{name: "legacy null", openBase: "main"},
-		{name: "interrupted rerun", persistedBase: &qualityAssurance, explicit: true, openBase: "quality-assurance"},
+		{name: "legacy null after default rename", defaultBranch: "trunk", openBase: "main"},
+		{name: "interrupted rerun", persistedBase: &qualityAssurance, explicit: true, defaultBranch: "main", openBase: "quality-assurance"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p, database := newRefreshRunFixture(t)
 			repo, head := setupTestGitRepo(t, p, database, "rerun-candidate-"+strings.ReplaceAll(tc.name, " ", "-"))
+			repo.DefaultBranch = tc.defaultBranch
 			run, err := database.InsertRun(repo.ID, "feature", head, head)
 			if err != nil {
 				t.Fatal(err)
@@ -400,18 +409,26 @@ func TestRerunContinuityChecksEveryPersistedBaseCandidate(t *testing.T) {
 			if verified.PRURL == nil || *verified.PRURL != "https://github.com/test/repo/pull/42" || verified.PRState == nil || *verified.PRState != "open" {
 				t.Fatalf("open PR was not persisted: url=%v state=%v", verified.PRURL, verified.PRState)
 			}
+			if verified.PRBaseBranch == nil || *verified.PRBaseBranch != tc.openBase || verified.PRBaseBranchExplicit != tc.explicit {
+				t.Fatalf("verified PR base was not persisted: base=%v explicit=%t", verified.PRBaseBranch, verified.PRBaseBranchExplicit)
+			}
 			logBytes, err := os.ReadFile(ghLog)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(string(logBytes), "pr list --head feature --base "+tc.openBase) {
+			logText := string(logBytes)
+			if tc.persistedBase == nil {
+				if !strings.Contains(logText, "pr list --head feature") || !strings.Contains(logText, "--json number,url,baseRefName") || strings.Contains(logText, "--base "+tc.defaultBranch) {
+					t.Fatalf("legacy PR target was not resolved authoritatively by head:\n%s", logBytes)
+				}
+			} else if !strings.Contains(logText, "pr list --head feature --base "+tc.openBase) {
 				t.Fatalf("saved head/base tuple was not checked:\n%s", logBytes)
 			}
 		})
 	}
 }
 
-func TestRerunUnchangedDefaultBaseDoesNotRequireForge(t *testing.T) {
+func TestFreshRunWithoutContinuityDoesNotRequireForge(t *testing.T) {
 	t.Setenv("NM_DEMO", "1")
 	p, database := newRefreshRunFixture(t)
 	repo, mainHead := setupTestGitRepo(t, p, database, "rerun-unset-base-no-forge")
@@ -424,22 +441,15 @@ func TestRerunUnchangedDefaultBaseDoesNotRequireForge(t *testing.T) {
 	featureHead := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
 	gitCmd(t, repo.WorkingPath, "push", "gate", "feature")
 
-	selectedRun, err := database.InsertRun(repo.ID, "feature", featureHead, mainHead)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := database.UpdateRunStatus(selectedRun.ID, types.RunFailed); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := database.ReplaceRepoURLs(repo.ID, "https://unsupported.example/test/repo", ""); err != nil {
 		t.Fatal(err)
 	}
 
 	manager := NewRunManager(database, p, func() []pipeline.Step { return nil })
 	t.Cleanup(manager.Shutdown)
-	runID, err := manager.HandleRerun(context.Background(), repo.ID, "feature", selectedRun.ID, nil, "")
+	runID, err := manager.startRun(context.Background(), repo, "feature", featureHead, mainHead, "push", nil, "")
 	if err != nil {
-		t.Fatalf("unset rerun acquired a forge dependency: %v", err)
+		t.Fatalf("fresh run acquired a forge continuity dependency: %v", err)
 	}
 	rerun := waitForRunTerminalState(t, database, runID)
 	if rerun.Status != types.RunCompleted {
@@ -491,50 +501,58 @@ func TestRerunPersistsInheritedBaseBeforeWorktreeSetup(t *testing.T) {
 }
 
 func TestRerunContinuityRecognizesReopenedPR(t *testing.T) {
-	p, database := newRefreshRunFixture(t)
-	repo, head := setupTestGitRepo(t, p, database, "rerun-reopened-pr")
-	run, err := database.InsertRun(repo.ID, "feature", head, head)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := database.UpdateRunPRBaseBranch(run.ID, "quality-assurance", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.UpdateRunPRURL(run.ID, "https://github.com/test/repo/pull/42"); err != nil {
-		t.Fatal(err)
-	}
-	if err := database.UpdateRunPRState(run.ID, "closed"); err != nil {
-		t.Fatal(err)
-	}
-	run, err = database.GetRun(run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	for _, cachedState := range []string{"closed", "merged"} {
+		t.Run(cachedState, func(t *testing.T) {
+			p, database := newRefreshRunFixture(t)
+			repo, head := setupTestGitRepo(t, p, database, "rerun-reopened-pr-"+cachedState)
+			run, err := database.InsertRun(repo.ID, "feature", head, head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.UpdateRunPRBaseBranch(run.ID, "quality-assurance", true); err != nil {
+				t.Fatal(err)
+			}
+			cachedURL := "https://github.com/test/repo/pull/42"
+			if cachedState == "merged" {
+				cachedURL = "https://github.com/test/repo/pull/41"
+			}
+			if err := database.UpdateRunPRURL(run.ID, cachedURL); err != nil {
+				t.Fatal(err)
+			}
+			if err := database.UpdateRunPRState(run.ID, cachedState); err != nil {
+				t.Fatal(err)
+			}
+			run, err = database.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	binDir, ghLog := writeRerunPRBaseMockGH(t, "quality-assurance", "")
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	manager := NewRunManager(database, p, nil)
-	candidate := &runPRBaseContinuity{sourceRun: run, branch: "quality-assurance", explicit: true}
-	continuity, err := manager.verifyRerunPRBaseContinuity(context.Background(), repo, candidate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if continuity == nil || continuity.branch != "quality-assurance" || !continuity.explicit {
-		t.Fatalf("reopened PR continuity = %+v, want quality-assurance (explicit)", continuity)
-	}
-	verified, err := database.GetRun(run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if verified.PRURL == nil || *verified.PRURL != "https://github.com/test/repo/pull/42" || verified.PRState == nil || *verified.PRState != "open" || verified.PRStateObservedAt == nil {
-		t.Fatalf("reopened PR was not persisted authoritatively: url=%v state=%v observed_at=%v", verified.PRURL, verified.PRState, verified.PRStateObservedAt)
-	}
-	logBytes, err := os.ReadFile(ghLog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(logBytes), "pr list --head feature --base quality-assurance") {
-		t.Fatalf("cached closed PR was not rechecked against its saved tuple:\n%s", logBytes)
+			binDir, ghLog := writeRerunPRBaseMockGH(t, "quality-assurance", "")
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			manager := NewRunManager(database, p, nil)
+			candidate := &runPRBaseContinuity{sourceRun: run, branch: "quality-assurance", explicit: true}
+			continuity, err := manager.verifyRerunPRBaseContinuity(context.Background(), repo, candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if continuity == nil || continuity.branch != "quality-assurance" || !continuity.explicit {
+				t.Fatalf("reopened PR continuity = %+v, want quality-assurance (explicit)", continuity)
+			}
+			verified, err := database.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if verified.PRURL == nil || *verified.PRURL != "https://github.com/test/repo/pull/42" || verified.PRState == nil || *verified.PRState != "open" || verified.PRStateObservedAt == nil {
+				t.Fatalf("reopened PR was not persisted authoritatively: url=%v state=%v observed_at=%v", verified.PRURL, verified.PRState, verified.PRStateObservedAt)
+			}
+			logBytes, err := os.ReadFile(ghLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(logBytes), "pr list --head feature --base quality-assurance") {
+				t.Fatalf("cached %s PR was not rechecked against its saved tuple:\n%s", cachedState, logBytes)
+			}
+		})
 	}
 }
 
@@ -663,11 +681,15 @@ func writeRerunPRBaseMockGHForBases(t *testing.T, openBases []string, persistedS
 		for _, openBase := range openBases {
 			openRule += "echo %* | findstr /C:\"pr list --head feature --base " + openBase + "\" >nul && (echo [{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\"}]& exit /b 0)\r\n"
 		}
+		noBaseRule := ""
+		if len(openBases) > 0 {
+			noBaseRule = "echo %* | findstr /C:\"pr list --head feature\" >nul && echo %* | findstr /C:\"--json number,url,baseRefName\" >nul && (echo [{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"" + openBases[0] + "\"}]& exit /b 0)\r\n"
+		}
 		stateRule := ""
 		if persistedState != "" {
 			stateRule = "echo %* | findstr /C:\"pr view 42 \" >nul && (echo " + persistedState + "& exit /b 0)\r\n"
 		}
-		script := "@echo off\r\necho %*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status --hostname github.com\" >nul && exit /b 0\r\n" + openRule + "echo %* | findstr /C:\"pr list \" >nul && (echo []& exit /b 0)\r\n" + stateRule + "echo %* | findstr /C:\"pr edit 42 \" >nul && exit /b 0\r\necho %* | findstr /C:\"pr create \" >nul && (echo https://github.com/test/repo/pull/99& exit /b 0)\r\nexit /b 1\r\n"
+		script := "@echo off\r\necho %*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status --hostname github.com\" >nul && exit /b 0\r\n" + openRule + noBaseRule + "echo %* | findstr /C:\"pr list \" >nul && (echo []& exit /b 0)\r\n" + stateRule + "echo %* | findstr /C:\"pr edit 42 \" >nul && exit /b 0\r\necho %* | findstr /C:\"pr create \" >nul && (echo https://github.com/test/repo/pull/99& exit /b 0)\r\nexit /b 1\r\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -679,6 +701,11 @@ func writeRerunPRBaseMockGHForBases(t *testing.T, openBases []string, persistedS
 		openRule += `  *"pr list --head feature --base ` + openBase + `"*) printf '%s\n' '[{"number":42,"url":"https://github.com/test/repo/pull/42"}]'; exit 0 ;;
 `
 	}
+	noBaseRule := ""
+	if len(openBases) > 0 {
+		noBaseRule = `  *"pr list --head feature "*"--json number,url,baseRefName"*) printf '%s\n' '[{"number":42,"url":"https://github.com/test/repo/pull/42","baseRefName":"` + openBases[0] + `"}]'; exit 0 ;;
+`
+	}
 	stateRule := ""
 	if persistedState != "" {
 		stateRule = `  *"pr view 42 "*) printf '%s\n' '` + persistedState + `'; exit 0 ;;
@@ -688,7 +715,7 @@ func writeRerunPRBaseMockGHForBases(t *testing.T, openBases []string, persistedS
 printf '%s\n' "$*" >>` + shellQuoteForTest(logPath) + `
 case "$*" in
   "auth status --hostname github.com") exit 0 ;;
-` + openRule + `  "pr list "*) printf '%s\n' '[]'; exit 0 ;;
+` + openRule + noBaseRule + `  "pr list "*) printf '%s\n' '[]'; exit 0 ;;
 ` + stateRule + `  "pr edit 42 "*) exit 0 ;;
   "pr create "*) printf '%s\n' 'https://github.com/test/repo/pull/99'; exit 0 ;;
 esac

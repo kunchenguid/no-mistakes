@@ -86,6 +86,24 @@ func TestFindPRReturnsBrowsableURL(t *testing.T) {
 	}
 }
 
+func TestFindPRWithoutBaseReturnsProviderTarget(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHost(map[string]azdoTestResponse{
+		"az repos pr list --source-branch feature --status active --organization " + testOrg + " --project " + testProject + " --repository " + testRepo + " --output json": {
+			stdout: `[{"pullRequestId":42,"targetRefName":"refs/heads/main","repository":{"webUrl":"https://dev.azure.com/myorg/myproject/_git/myrepo"}}]` + "\n",
+		},
+	})
+
+	pr, err := h.FindPR(context.Background(), "feature", "")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr == nil || pr.BaseBranch != "main" {
+		t.Fatalf("FindPR() = %+v, want provider target main", pr)
+	}
+}
+
 func TestFindPRNoMatch(t *testing.T) {
 	t.Parallel()
 

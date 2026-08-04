@@ -188,11 +188,14 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		args = append(args, "--base", base)
 	}
 	args = append(args, h.repoArgs()...)
-	jsonFields := "number,url"
-	if h.forkOwner != "" {
-		jsonFields = "number,url,headRefName,headRepositoryOwner"
+	jsonFields := []string{"number", "url"}
+	if strings.TrimSpace(base) == "" {
+		jsonFields = append(jsonFields, "baseRefName")
 	}
-	args = append(args, "--state", "open", "--json", jsonFields)
+	if h.forkOwner != "" {
+		jsonFields = append(jsonFields, "headRefName", "headRepositoryOwner")
+	}
+	args = append(args, "--state", "open", "--json", strings.Join(jsonFields, ","))
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -204,6 +207,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	var prs []struct {
 		Number              int    `json:"number"`
 		URL                 string `json:"url"`
+		BaseRefName         string `json:"baseRefName"`
 		HeadRefName         string `json:"headRefName"`
 		HeadRepositoryOwner *struct {
 			Login string `json:"login"`
@@ -215,22 +219,32 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if prs == nil {
 		return nil, errors.New("parse gh pr list response: expected a JSON array")
 	}
+	var matched *scm.PR
 	for _, candidate := range prs {
-		pr := &scm.PR{URL: strings.TrimSpace(candidate.URL)}
+		pr := &scm.PR{URL: strings.TrimSpace(candidate.URL), BaseBranch: strings.TrimSpace(candidate.BaseRefName)}
 		number, numberErr := scm.ExtractPRNumber(pr.URL)
 		if pr.URL == "" || numberErr != nil || candidate.Number <= 0 || number != fmt.Sprintf("%d", candidate.Number) {
 			return nil, errors.New("parse gh pr list response: invalid pull request")
 		}
 		pr.Number = number
+		if strings.TrimSpace(base) == "" && pr.BaseBranch == "" {
+			return nil, errors.New("parse gh pr list response: missing pull request base")
+		}
+		if pr.BaseBranch == "" {
+			pr.BaseBranch = strings.TrimSpace(base)
+		}
 		if h.forkOwner != "" && (strings.TrimSpace(candidate.HeadRefName) == "" || candidate.HeadRepositoryOwner == nil || strings.TrimSpace(candidate.HeadRepositoryOwner.Login) == "") {
 			return nil, errors.New("parse gh pr list response: invalid pull request head")
 		}
 		if !h.matchesHead(candidate.HeadRefName, candidate.HeadRepositoryOwner, branch) {
 			continue
 		}
-		return pr, nil
+		if matched != nil {
+			return nil, errors.New("multiple open pull requests found for source branch")
+		}
+		matched = pr
 	}
-	return nil, nil
+	return matched, nil
 }
 
 func (h *Host) matchesHead(headRefName string, owner *struct {

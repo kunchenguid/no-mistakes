@@ -45,7 +45,14 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if pr == nil {
 		return nil, nil
 	}
-	return h.toPR(pr), nil
+	if strings.TrimSpace(base) == "" && strings.TrimSpace(pr.DestinationBranch) == "" {
+		return nil, errors.New("Bitbucket pull request response is missing destination branch")
+	}
+	result := h.toPR(pr)
+	if result.BaseBranch == "" {
+		result.BaseBranch = strings.TrimSpace(base)
+	}
+	return result, nil
 }
 
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {
@@ -159,8 +166,9 @@ func (h *Host) toPR(pr *PullRequest) *scm.PR {
 		return nil
 	}
 	return &scm.PR{
-		Number: strconv.Itoa(pr.ID),
-		URL:    prURL(h.repo, pr.ID, pr.URL),
+		Number:     strconv.Itoa(pr.ID),
+		URL:        prURL(h.repo, pr.ID, pr.URL),
+		BaseBranch: strings.TrimSpace(pr.DestinationBranch),
 	}
 }
 

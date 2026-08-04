@@ -87,8 +87,9 @@ func ExtractPRNumber(prURL string) (string, error) {
 
 // PR identifies a pull/merge request on a provider.
 type PR struct {
-	Number string
-	URL    string
+	Number     string
+	URL        string
+	BaseBranch string
 }
 
 // PRContent is the title + body for creating or updating a PR.
@@ -181,6 +182,7 @@ type Host interface {
 	Available(ctx context.Context) error
 
 	// FindPR returns the open PR for the source branch, or nil if none exists.
+	// When base is empty, the returned PR includes its provider-reported base.
 	FindPR(ctx context.Context, branch, base string) (*PR, error)
 	CreatePR(ctx context.Context, branch, base string, content PRContent) (*PR, error)
 	UpdatePR(ctx context.Context, pr *PR, content PRContent) (*PR, error)

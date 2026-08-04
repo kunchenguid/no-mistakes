@@ -140,7 +140,7 @@ func TestFindOpenPRBySourceAndDestinationBranchFiltersSourceRepo(t *testing.T) {
 		}
 		gotQ = r.URL.Query().Get("q")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"values":[{"id":42,"links":{"html":{"href":"https://bitbucket.org/test/repo/pull-requests/42"}}}]}`))
+		_, _ = w.Write([]byte(`{"values":[{"id":42,"destination":{"branch":{"name":"main"}},"links":{"html":{"href":"https://bitbucket.org/test/repo/pull-requests/42"}}}]}`))
 	}))
 	defer server.Close()
 
@@ -157,8 +157,8 @@ func TestFindOpenPRBySourceAndDestinationBranchFiltersSourceRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pr == nil || pr.ID != 42 {
-		t.Fatalf("pr = %#v, want id 42", pr)
+	if pr == nil || pr.ID != 42 || pr.DestinationBranch != "main" {
+		t.Fatalf("pr = %#v, want id 42 targeting main", pr)
 	}
 	if gotQ != `source.branch.name="feature" AND source.repository.full_name="test/repo" AND destination.branch.name="main" AND state="OPEN"` {
 		t.Fatalf("q = %q, want source repo and destination branch filters", gotQ)

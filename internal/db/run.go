@@ -238,7 +238,7 @@ func (d *DB) UpdateRunPRURL(id, prURL string) error {
 
 func (d *DB) UpdateRunOpenPR(id, prURL string) error {
 	ts := now()
-	_, err := d.sql.Exec(`UPDATE runs SET pr_url = ?, pr_state = CASE WHEN pr_state = 'merged' THEN pr_state ELSE 'open' END, pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, prURL, ts, ts, id)
+	_, err := d.sql.Exec(`UPDATE runs SET pr_url = ?, pr_state = CASE WHEN pr_state = 'merged' AND pr_url = ? THEN pr_state ELSE 'open' END, pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, prURL, prURL, ts, ts, id)
 	if err != nil {
 		return fmt.Errorf("update run open pr: %w", err)
 	}
@@ -459,6 +459,26 @@ func (d *DB) UpdateRunPRBaseBranch(id, branch string, explicit bool) error {
 		return fmt.Errorf("update run PR base branch: %w", err)
 	}
 	return nil
+}
+
+func (d *DB) GetRunIDsWithStartedStep(repoID string, stepName types.StepName) (map[string]struct{}, error) {
+	rows, err := d.sql.Query(`SELECT DISTINCT sr.run_id FROM step_results sr JOIN runs r ON r.id = sr.run_id WHERE r.repo_id = ? AND sr.step_name = ? AND sr.started_at IS NOT NULL`, repoID, stepName)
+	if err != nil {
+		return nil, fmt.Errorf("get runs with started step: %w", err)
+	}
+	defer rows.Close()
+	ids := make(map[string]struct{})
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan run with started step: %w", err)
+		}
+		ids[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate runs with started step: %w", err)
+	}
+	return ids, nil
 }
 
 // UpdateRunHeadSHA updates the run head SHA and timestamp.

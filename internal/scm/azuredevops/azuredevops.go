@@ -141,7 +141,19 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if len(prs) == 0 {
 		return nil, nil
 	}
-	return h.toPR(&prs[0]), nil
+	if strings.TrimSpace(base) == "" {
+		if len(prs) > 1 {
+			return nil, errors.New("multiple active pull requests found for source branch")
+		}
+		if normalizeAzureBranch(prs[0].TargetRefName) == "" {
+			return nil, errors.New("az repos pr list: missing pull request target branch")
+		}
+	}
+	pr := h.toPR(&prs[0])
+	if pr.BaseBranch == "" {
+		pr.BaseBranch = strings.TrimSpace(base)
+	}
+	return pr, nil
 }
 
 // runWithDescription runs an az PR command whose description is supplied
@@ -315,7 +327,12 @@ func (h *Host) toPR(raw *azPR) *scm.PR {
 		id = strconv.Itoa(raw.PullRequestID)
 	}
 	return &scm.PR{
-		Number: id,
-		URL:    webPRURL(h.org, h.project, h.repo, raw.Repository.WebURL, id),
+		Number:     id,
+		URL:        webPRURL(h.org, h.project, h.repo, raw.Repository.WebURL, id),
+		BaseBranch: normalizeAzureBranch(raw.TargetRefName),
 	}
+}
+
+func normalizeAzureBranch(ref string) string {
+	return strings.TrimPrefix(strings.TrimSpace(ref), "refs/heads/")
 }

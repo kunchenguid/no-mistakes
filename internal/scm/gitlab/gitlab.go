@@ -142,6 +142,7 @@ type mrPayload struct {
 	IID                 int    `json:"iid"`
 	WebURL              string `json:"web_url"`
 	URL                 string `json:"url"`
+	TargetBranch        string `json:"target_branch"`
 	State               string `json:"state"`
 	HasConflicts        bool   `json:"has_conflicts"`
 	DetailedMergeStatus string `json:"detailed_merge_status"`
@@ -153,7 +154,7 @@ func (p mrPayload) toPR() *scm.PR {
 	if url == "" {
 		url = strings.TrimSpace(p.URL)
 	}
-	pr := &scm.PR{URL: url}
+	pr := &scm.PR{URL: url, BaseBranch: strings.TrimSpace(p.TargetBranch)}
 	if p.IID > 0 {
 		pr.Number = fmt.Sprintf("%d", p.IID)
 	}
@@ -189,17 +190,25 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if mrs == nil {
 		return nil, errors.New("parse glab mr list response: expected a JSON array")
 	}
+	var matched *scm.PR
 	for _, candidate := range mrs {
 		pr := candidate.toPR()
 		number, numberErr := scm.ExtractPRNumber(pr.URL)
 		if pr.URL == "" || numberErr != nil || (candidate.IID > 0 && number != fmt.Sprintf("%d", candidate.IID)) {
 			return nil, errors.New("parse glab mr list response: invalid merge request")
 		}
+		if strings.TrimSpace(base) == "" && pr.BaseBranch == "" {
+			return nil, errors.New("parse glab mr list response: missing merge request target branch")
+		}
+		if pr.BaseBranch == "" {
+			pr.BaseBranch = strings.TrimSpace(base)
+		}
+		if matched != nil {
+			return nil, errors.New("multiple open merge requests found for source branch")
+		}
+		matched = pr
 	}
-	if len(mrs) == 0 {
-		return nil, nil
-	}
-	return mrs[0].toPR(), nil
+	return matched, nil
 }
 
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {

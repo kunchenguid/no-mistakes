@@ -608,6 +608,24 @@ func TestFindPRFiltersByBaseBranch(t *testing.T) {
 	}
 }
 
+func TestFindPRWithoutBaseReturnsProviderTarget(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr list --head feature --state open --json number,url,baseRefName": {
+			stdout: `[{"number":42,"url":"https://github.com/org/repo/pull/42","baseRefName":"main"}]` + "\n",
+		},
+	}), nil, "", "")
+
+	pr, err := host.FindPR(context.Background(), "feature", "")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr == nil || pr.BaseBranch != "main" {
+		t.Fatalf("FindPR() = %+v, want provider target main", pr)
+	}
+}
+
 func TestFindPRForkUsesBareHeadAndFiltersOwner(t *testing.T) {
 	t.Parallel()
 

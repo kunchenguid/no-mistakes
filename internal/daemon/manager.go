@@ -246,6 +246,9 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	currentExplicit := cfg.PR.HasExplicitBaseBranch()
 	persistedBase := runPRBaseContinuityForRun(run, repo.DefaultBranch)
 	if persistedBase != nil {
+		if persistedBase.branch == "" {
+			persistedBase.branch = strings.TrimSpace(repo.DefaultBranch)
+		}
 		cfg.PR.BaseBranch = persistedBase.branch
 		explicit := persistedBase.explicit
 		cfg.PR.BaseBranchExplicit = &explicit
@@ -834,18 +837,15 @@ type runPRBaseContinuity struct {
 	explicit  bool
 }
 
-func runPRBaseContinuityForRun(run *db.Run, defaultBranch string) *runPRBaseContinuity {
+func runPRBaseContinuityForRun(run *db.Run, _ string) *runPRBaseContinuity {
 	if run == nil {
 		return nil
 	}
-	branch := strings.TrimSpace(defaultBranch)
+	branch := ""
 	explicit := false
 	if run.PRBaseBranch != nil && strings.TrimSpace(*run.PRBaseBranch) != "" {
 		branch = strings.TrimSpace(*run.PRBaseBranch)
 		explicit = run.PRBaseBranchExplicit
-	}
-	if branch == "" {
-		return nil
 	}
 	return &runPRBaseContinuity{sourceRun: run, branch: branch, explicit: explicit}
 }
@@ -872,6 +872,39 @@ func distinctRunPRBaseContinuities(runs []*db.Run, branch, defaultBranch string,
 	return candidates
 }
 
+func (m *RunManager) persistedPRBaseContinuities(runs []*db.Run, branch, defaultBranch string, preferred *runPRBaseContinuity, repoID string) ([]*runPRBaseContinuity, error) {
+	startedPRRuns, err := m.db.GetRunIDsWithStartedStep(repoID, types.StepPR)
+	if err != nil {
+		return nil, err
+	}
+	hasEvidence := func(run *db.Run) bool {
+		if run == nil {
+			return false
+		}
+		if run.PRURL != nil && strings.TrimSpace(*run.PRURL) != "" {
+			return true
+		}
+		if run.PRState != nil {
+			switch strings.ToLower(strings.TrimSpace(*run.PRState)) {
+			case "open", "closed", "merged":
+				return true
+			}
+		}
+		_, ok := startedPRRuns[run.ID]
+		return ok
+	}
+	eligible := make([]*db.Run, 0, len(runs))
+	for _, run := range runs {
+		if hasEvidence(run) {
+			eligible = append(eligible, run)
+		}
+	}
+	if preferred != nil && !hasEvidence(preferred.sourceRun) {
+		preferred = nil
+	}
+	return distinctRunPRBaseContinuities(eligible, branch, defaultBranch, preferred), nil
+}
+
 func (m *RunManager) verifyRerunPRBaseContinuity(ctx context.Context, repo *db.Repo, candidate *runPRBaseContinuity) (*runPRBaseContinuity, error) {
 	if candidate == nil || candidate.sourceRun == nil {
 		return candidate, nil
@@ -880,9 +913,6 @@ func (m *RunManager) verifyRerunPRBaseContinuity(ctx context.Context, repo *db.R
 	state := ""
 	if run.PRState != nil {
 		state = strings.ToLower(strings.TrimSpace(*run.PRState))
-	}
-	if state == "merged" {
-		return nil, nil
 	}
 	provider := scm.DetectProviderContext(ctx, repo.UpstreamURL)
 	if provider == scm.ProviderUnknown && run.PRURL != nil {
@@ -906,10 +936,23 @@ func (m *RunManager) verifyRerunPRBaseContinuity(ctx context.Context, repo *db.R
 		return nil, fmt.Errorf("verify open pull request for %s into %s: %w", run.Branch, candidate.branch, err)
 	}
 	if pr != nil && strings.TrimSpace(pr.URL) != "" {
+		resolvedBase := strings.TrimSpace(candidate.branch)
+		reportedBase := strings.TrimSpace(pr.BaseBranch)
+		if resolvedBase == "" {
+			if reportedBase == "" {
+				return nil, fmt.Errorf("verify open pull request for %s: provider did not report its base branch", run.Branch)
+			}
+			resolvedBase = reportedBase
+			if err := m.db.UpdateRunPRBaseBranch(run.ID, resolvedBase, false); err != nil {
+				return nil, fmt.Errorf("persist verified pull request base branch: %w", err)
+			}
+		} else if reportedBase != "" && reportedBase != resolvedBase {
+			return nil, fmt.Errorf("verified pull request base %s does not match persisted base %s", reportedBase, resolvedBase)
+		}
 		if err := m.db.UpdateRunOpenPR(run.ID, pr.URL); err != nil {
 			return nil, fmt.Errorf("persist verified open pull request: %w", err)
 		}
-		return &runPRBaseContinuity{branch: candidate.branch, explicit: candidate.explicit}, nil
+		return &runPRBaseContinuity{sourceRun: run, branch: resolvedBase, explicit: candidate.explicit}, nil
 	}
 
 	if run.PRURL != nil && strings.TrimSpace(*run.PRURL) != "" {
@@ -940,17 +983,22 @@ func (m *RunManager) verifyRerunPRBaseContinuity(ctx context.Context, repo *db.R
 	return nil, nil
 }
 
-func (m *RunManager) verifyDistinctPRBaseContinuities(ctx context.Context, repo *db.Repo, candidates []*runPRBaseContinuity, currentBase string) (*runPRBaseContinuity, error) {
-	if len(candidates) == 0 || (len(candidates) == 1 && candidates[0].branch == currentBase) {
+func (m *RunManager) verifyDistinctPRBaseContinuities(ctx context.Context, repo *db.Repo, candidates []*runPRBaseContinuity, _ string) (*runPRBaseContinuity, error) {
+	if len(candidates) == 0 {
 		return nil, nil
 	}
 	var open []*runPRBaseContinuity
+	seenOpenBases := make(map[string]struct{})
 	for _, candidate := range candidates {
 		verified, err := m.verifyRerunPRBaseContinuity(ctx, repo, candidate)
 		if err != nil {
 			return nil, err
 		}
 		if verified != nil {
+			if _, exists := seenOpenBases[verified.branch]; exists {
+				continue
+			}
+			seenOpenBases[verified.branch] = struct{}{}
 			open = append(open, verified)
 		}
 	}
@@ -1007,7 +1055,11 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		trackStartFailure("load_pr_base_continuity")
 		return "", fmt.Errorf("load previous runs: %w", runsErr)
 	}
-	prBaseCandidates := distinctRunPRBaseContinuities(runs, branch, repo.DefaultBranch, prBaseContinuity)
+	prBaseCandidates, candidatesErr := m.persistedPRBaseContinuities(runs, branch, repo.DefaultBranch, prBaseContinuity, repo.ID)
+	if candidatesErr != nil {
+		trackStartFailure("load_pr_base_continuity")
+		return "", fmt.Errorf("load PR base continuity: %w", candidatesErr)
+	}
 	if len(prBaseCandidates) > 0 {
 		prBaseContinuity = prBaseCandidates[0]
 	}
@@ -1043,7 +1095,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
 	}
-	if prBaseContinuity != nil {
+	if prBaseContinuity != nil && prBaseContinuity.branch != "" {
 		if err := m.db.UpdateRunPRBaseBranch(run.ID, prBaseContinuity.branch, prBaseContinuity.explicit); err != nil {
 			m.db.UpdateRunError(run.ID, err.Error())
 			trackStartFailure("persist_inherited_pr_base_branch")
