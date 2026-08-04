@@ -48,7 +48,7 @@ The pipeline is opinionated so that "passed the gate" has a stable meaning:
 ## Why these steps, in this order
 
 - **Intent first** so downstream agent prompts and generated PR descriptions can include author intent supplied by the agent or inferred from transcripts.
-- **Rebase next** so everything else runs against the latest intended PR base and pushed-branch target.
+- **Rebase next** so everything else runs against the run's validated intended-PR-base snapshot and pushed-branch target.
   The PR base defaults to the repository default branch and can be set with trusted [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch).
   Rebase also stops when the branch would silently bundle commits from the corresponding local base branch that were never pushed upstream.
   If there's no diff left after the rebase, the pipeline skips the rest.

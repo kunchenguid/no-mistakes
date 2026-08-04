@@ -796,6 +796,69 @@ func TestLoadRecoveredConfig_PRBaseComesFromTrustedDefaultBranch(t *testing.T) {
 	}
 }
 
+func TestLoadRecoveredConfig_PreservesImmutablePRBaseSnapshot(t *testing.T) {
+	upstream := filepath.Join(t.TempDir(), "upstream.git")
+	gitCmd(t, "", "init", "--bare", upstream)
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "--initial-branch=main")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(seed, ".no-mistakes.yaml"), []byte("pr:\n  base_branch: quality-assurance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".")
+	gitCmd(t, seed, "commit", "-m", "trusted config")
+	gitCmd(t, seed, "remote", "add", "origin", upstream)
+	gitCmd(t, seed, "push", "origin", "main")
+	gitCmd(t, seed, "branch", "quality-assurance")
+	gitCmd(t, seed, "push", "origin", "quality-assurance")
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(seed, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "feature.txt")
+	gitCmd(t, seed, "commit", "-m", "feature")
+	gitCmd(t, seed, "push", "origin", "feature")
+
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "clone", "-b", "feature", upstream, ".")
+	repo := &db.Repo{UpstreamURL: upstream, DefaultBranch: "main"}
+	initial := &config.Config{PR: config.PR{BaseBranch: "quality-assurance"}}
+	if err := ensureConfiguredPRBaseBranch(context.Background(), workDir, repo, initial, "parked-run"); err != nil {
+		t.Fatal(err)
+	}
+	originalSHA := initial.PR.ResolvedBaseSHA
+
+	gitCmd(t, seed, "checkout", "quality-assurance")
+	if err := os.WriteFile(filepath.Join(seed, "qa.txt"), []byte("advanced\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "qa.txt")
+	gitCmd(t, seed, "commit", "-m", "advance QA")
+	gitCmd(t, seed, "push", "origin", "quality-assurance")
+	advancedSHA := gitOutput(t, seed, "rev-parse", "HEAD")
+
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	persistedBase := "quality-assurance"
+	mgr := NewRunManager(nil, p, nil)
+	cfg, err := mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "parked-run", Branch: "feature", PRBaseBranch: &persistedBase, PRBaseBranchExplicit: true}, repo, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PR.ResolvedBaseSHA != originalSHA {
+		t.Fatalf("recovered snapshot = %s, want original %s", cfg.PR.ResolvedBaseSHA, originalSHA)
+	}
+	if got := gitOutput(t, workDir, "rev-parse", git.RunPRBaseRef("parked-run")); got != originalSHA {
+		t.Fatalf("private base ref = %s, want original %s", got, originalSHA)
+	}
+	if got := gitOutput(t, workDir, "rev-parse", git.RunPRBaseMonitorRef("parked-run")); got != advancedSHA {
+		t.Fatalf("current-base guard ref = %s, want advanced %s", got, advancedSHA)
+	}
+}
+
 func TestLoadRecoveredConfig_UsesPersistedUpstreamWhenOriginDiffers(t *testing.T) {
 	upstreamA := filepath.Join(t.TempDir(), "upstream-a.git")
 	upstreamB := filepath.Join(t.TempDir(), "upstream-b.git")

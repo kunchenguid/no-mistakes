@@ -229,12 +229,13 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	cfg := config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands))
-	validateBase := func() error {
+	currentRef := git.RunPRBaseMonitorRef(run.ID)
+	validateCurrentBase := func() error {
 		fetchCtx, cancel := context.WithTimeout(ctx, recoveredConfigFetchTimeout)
 		defer cancel()
-		return ensureConfiguredPRBaseBranch(fetchCtx, workDir, repo, cfg, run.ID)
+		return resolveConfiguredPRBaseBranch(fetchCtx, workDir, repo, cfg, currentRef, true)
 	}
-	if err := validateBase(); err != nil {
+	if err := validateCurrentBase(); err != nil {
 		return nil, err
 	}
 	if _, err := configuredPRBaseBranchGuard(run.Branch, repo.DefaultBranch, cfg); err != nil {
@@ -249,10 +250,36 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 		cfg.PR.BaseBranchExplicit = &explicit
 		if !explicit {
 			cfg.PR.ResolvedBaseSHA = ""
-		} else if persistedBase.branch != currentBase || !currentExplicit {
-			if err := validateBase(); err != nil {
+			return cfg, nil
+		}
+
+		snapshotRef := git.RunPRBaseRef(run.ID)
+		snapshotExists, err := git.RefExists(ctx, workDir, snapshotRef)
+		if err != nil {
+			return nil, fmt.Errorf("inspect configured pr.base_branch snapshot: %w", err)
+		}
+		if !snapshotExists && persistedBase.branch == currentBase && currentExplicit {
+			sha, err := git.ResolveRef(ctx, workDir, currentRef)
+			if err != nil {
+				return nil, fmt.Errorf("resolve current configured pr.base_branch snapshot: %w", err)
+			}
+			if _, err := git.Run(ctx, workDir, "update-ref", snapshotRef, sha); err != nil {
+				return nil, fmt.Errorf("preserve configured pr.base_branch snapshot: %w", err)
+			}
+			snapshotExists = true
+		}
+		if snapshotExists {
+			if err := resolveConfiguredPRBaseBranch(ctx, workDir, repo, cfg, snapshotRef, false); err != nil {
 				return nil, err
 			}
+			return cfg, nil
+		}
+
+		fetchCtx, cancel := context.WithTimeout(ctx, recoveredConfigFetchTimeout)
+		err = resolveConfiguredPRBaseBranch(fetchCtx, workDir, repo, cfg, snapshotRef, true)
+		cancel()
+		if err != nil {
+			return nil, err
 		}
 	}
 	return cfg, nil
@@ -353,6 +380,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			cancel(nil)
 			_ = plan.agent.Close()
 			m.closeSubscribers(plan.run.ID)
+			cleanupTerminalRunPRBaseRefs(m.db, plan.gateDir, plan.run.ID)
 			if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
 				slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
 			}
@@ -739,6 +767,10 @@ func fetchRunUpstreamBranchToPrivateRef(ctx context.Context, workDir string, rep
 // Syntax was already checked while parsing the trusted config, but Git is the
 // final authority and this second check also protects direct Config callers.
 func ensureConfiguredPRBaseBranch(ctx context.Context, workDir string, repo *db.Repo, cfg *config.Config, runID string) error {
+	return resolveConfiguredPRBaseBranch(ctx, workDir, repo, cfg, git.RunPRBaseRef(runID), true)
+}
+
+func resolveConfiguredPRBaseBranch(ctx context.Context, workDir string, repo *db.Repo, cfg *config.Config, ref string, fetch bool) error {
 	if cfg == nil {
 		return nil
 	}
@@ -757,13 +789,14 @@ func ensureConfiguredPRBaseBranch(ctx context.Context, workDir string, repo *db.
 		}
 		return fmt.Errorf("configured pr.base_branch %q is not a valid short Git branch name", branch)
 	}
-	ref := git.RunPRBaseRef(runID)
-	if err := fetchRunUpstreamBranchToPrivateRef(ctx, workDir, repo, branch, ref); err != nil {
-		return fmt.Errorf("configured pr.base_branch %q could not be fetched from the upstream repository; create or push that branch, then retry: %w", branch, err)
+	if fetch {
+		if err := fetchRunUpstreamBranchToPrivateRef(ctx, workDir, repo, branch, ref); err != nil {
+			return fmt.Errorf("configured pr.base_branch %q could not be fetched from the upstream repository; create or push that branch, then retry: %w", branch, err)
+		}
 	}
 	sha, err := git.ResolveRef(ctx, workDir, ref)
 	if err != nil {
-		return fmt.Errorf("configured pr.base_branch %q did not resolve at private run ref %s after fetch: %w", branch, ref, err)
+		return fmt.Errorf("configured pr.base_branch %q did not resolve at private run ref %s: %w", branch, ref, err)
 	}
 	mergeBase, err := git.Run(ctx, workDir, "merge-base", "HEAD", sha)
 	if err != nil || strings.TrimSpace(mergeBase) == "" {
@@ -1012,6 +1045,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	bgOwnsWorktree := false
 	defer func() {
 		if !bgOwnsWorktree {
+			cleanupTerminalRunPRBaseRefs(m.db, gateDir, run.ID)
 			if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
 				slog.Warn("failed to remove worktree during setup cleanup", "path", wtDir, "error", rmErr)
 			}
@@ -1218,6 +1252,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			ag.Close()
 			// Close subscriber channels for this run.
 			m.closeSubscribers(run.ID)
+			cleanupTerminalRunPRBaseRefs(m.db, gateDir, run.ID)
 			// Clean up worktree.
 			if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
 				slog.Warn("failed to remove worktree", "path", wtDir, "error", rmErr)
@@ -1279,6 +1314,25 @@ func addRunPerformanceSummary(database *db.DB, runID string, fields telemetry.Fi
 	fields["agent_invocations"] = summary.Count
 	fields["resumed_invocations"] = summary.Resumed
 	fields["fallback_invocations"] = summary.Fallback
+}
+
+func cleanupTerminalRunPRBaseRefs(database *db.DB, gateDir, runID string) {
+	if database == nil {
+		return
+	}
+	run, err := database.GetRun(runID)
+	if err != nil || run == nil {
+		if err != nil {
+			slog.Warn("failed to inspect run before private ref cleanup", "run_id", runID, "error", err)
+		}
+		return
+	}
+	if run.Status == types.RunPending || run.Status == types.RunRunning {
+		return
+	}
+	if err := git.DeleteRunPRBaseRefs(context.Background(), gateDir, runID); err != nil {
+		slog.Warn("failed to remove run-private PR base refs", "run_id", runID, "error", err)
+	}
 }
 
 func telemetryBranchRole(branch, defaultBranch string) string {

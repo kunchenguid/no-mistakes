@@ -22,7 +22,7 @@ They instead require an executable interface or a typed or normalized semantic m
 Reading a file remains valid when that file is itself an owned output or data contract, and deterministic tests may inspect the final emitted agent prompt as a generated interface; model interpretation is reserved for development-only evaluation.
 Review flags every newly added violation and requires same-pattern tests encountered directly in the accepted change's scope to be removed or made semantic, without expanding the change into a repository-wide test cleanup.
 
-Branch-delta operations use the intended PR base throughout: the repository default branch when [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) is unset, or the freshly resolved configured upstream branch when it is set. This includes intent matching fallbacks, rebase and empty-diff detection, review/test/document/lint scope, PR drafting, and CI base-tip monitoring and conflict repair. The actual repository default branch remains the separate trusted source for gate-control configuration.
+Branch-delta operations use the intended PR base throughout: the repository default branch when [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) is unset, or an immutable, validated snapshot of the configured upstream branch when it is set. Intent matching, Rebase, empty-diff detection, review/test/document/lint scope, and PR drafting share that per-run snapshot, including after daemon recovery. CI separately monitors the moving upstream base tip and uses a newly validated tip for conflict repair. The actual repository default branch remains the separate trusted source for gate-control configuration.
 
 ## Intent
 
@@ -43,13 +43,14 @@ It can fail the run only if cleanup fails after the disambiguation agent leaves 
 
 ## Rebase
 
-Fetches the latest authoritative remote state, fetches the configured pushed-branch target, and rebases your branch onto those refs.
+Synchronizes the pushed-branch target and rebases your branch onto the intended PR-base state selected when the run started.
 
 **Behavior:**
-- Fetches `origin/<pr_base_branch>` from upstream (the repository default branch when [`pr.base_branch`](/no-mistakes/reference/repo-config/#prbase_branch) is unset), and also fetches the pushed branch when it differs from that base unless the push rewrote branch history
+- When `pr.base_branch` is configured, uses the run's immutable, validated upstream-base snapshot; when it is unset, fetches `origin/<default_branch>` with the legacy behavior
+- Fetches the pushed branch when it differs from the PR base unless the push rewrote branch history
 - Without fork routing, the pushed-branch target is `origin/<branch>`
 - With GitHub fork routing, the pushed-branch target is the fork branch fetched into `refs/remotes/no-mistakes-push/<branch>`
-- If the branch is not the PR base branch, tries rebasing onto the pushed-branch target first, then `origin/<pr_base_branch>`
+- If the branch is not the PR base branch, tries rebasing onto the pushed-branch target first, then the immutable configured-base snapshot (or `origin/<default_branch>` when unset)
 - If the push rewrote branch history, skips the pushed-branch rebase target so prior remote autofix commits do not get reintroduced
 - If the push rewrote the PR base branch and its upstream ref advanced after that rewrite, pauses for manual approval before updating the branch
 - If the branch carries commits from the contributor's corresponding local PR base branch that are not on its upstream ref, pauses with an `ask-user` finding instead of silently bundling that local work into the PR

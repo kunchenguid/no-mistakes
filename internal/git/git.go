@@ -451,6 +451,16 @@ func RunPRBaseMonitorRef(runID string) string {
 	return fmt.Sprintf("refs/no-mistakes/pr-base-monitor/%x", sum[:12])
 }
 
+func DeleteRunPRBaseRefs(ctx context.Context, dir, runID string) error {
+	var errs []error
+	for _, ref := range []string{RunPRBaseRef(runID), RunPRBaseMonitorRef(runID)} {
+		if _, err := Run(ctx, dir, "update-ref", "-d", ref); err != nil {
+			errs = append(errs, fmt.Errorf("delete %s: %w", ref, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // Push pushes HEAD to a remote ref. If forceWithLease is true, it uses an
 // explicit expected remote SHA for safe force-push.
 func Push(ctx context.Context, dir, remote, ref, expectedSHA string, forceWithLease bool) error {

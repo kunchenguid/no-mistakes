@@ -444,6 +444,9 @@ func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths) {
 				slog.Info("skipping worktree cleanup", "path", wtPath, "reason", reason)
 				continue
 			}
+			if err := git.DeleteRunPRBaseRefs(ctx, gateDir, runID); err != nil {
+				slog.Warn("failed to remove orphaned run-private PR base refs", "run_id", runID, "error", err)
+			}
 			if err := git.WorktreeRemove(ctx, gateDir, wtPath); err != nil {
 				slog.Warn("git worktree remove failed, falling back to os.RemoveAll", "path", wtPath, "error", err)
 				if err := os.RemoveAll(wtPath); err != nil {

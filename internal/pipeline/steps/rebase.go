@@ -18,7 +18,7 @@ import (
 )
 
 // RebaseStep syncs the pushed branch with the configured push target and the
-// latest intended PR base branch from upstream.
+// intended PR base snapshot selected for the run.
 type RebaseStep struct{}
 
 func (s *RebaseStep) Name() types.StepName { return types.StepRebase }

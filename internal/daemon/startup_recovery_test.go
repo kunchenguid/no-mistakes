@@ -1,11 +1,14 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -84,6 +87,66 @@ func TestRecoverOnStartup_DoesNotDeleteActiveRunWorktree(t *testing.T) {
 	}
 	if got.Status != types.RunPending {
 		t.Fatalf("expected active run to remain pending, got %s", got.Status)
+	}
+}
+
+func TestCleanupTerminalRunPRBaseRefs_RetainsRecoverableRefs(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	source := t.TempDir()
+	gitCmd(t, source, "init", "--initial-branch=main")
+	gitCmd(t, source, "config", "user.email", "test@test.com")
+	gitCmd(t, source, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, source, "add", "README.md")
+	gitCmd(t, source, "commit", "-m", "initial")
+
+	repo, err := database.InsertRepoWithID("private-ref-cleanup", source, "https://example.com/owner/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateDir := p.RepoDir(repo.ID)
+	gitCmd(t, "", "clone", "--bare", source, gateDir)
+	head := gitOutput(t, source, "rev-parse", "HEAD")
+	active, err := database.InsertRun(repo.ID, "active", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := database.InsertRun(repo.ID, "terminal", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(terminal.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	for _, runID := range []string{active.ID, terminal.ID} {
+		for _, ref := range []string{git.RunPRBaseRef(runID), git.RunPRBaseMonitorRef(runID)} {
+			gitCmd(t, gateDir, "update-ref", ref, head)
+		}
+	}
+
+	cleanupTerminalRunPRBaseRefs(database, gateDir, active.ID)
+	cleanupTerminalRunPRBaseRefs(database, gateDir, terminal.ID)
+
+	for _, ref := range []string{git.RunPRBaseRef(active.ID), git.RunPRBaseMonitorRef(active.ID)} {
+		if exists, err := git.RefExists(context.Background(), gateDir, ref); err != nil || !exists {
+			t.Fatalf("recoverable ref %s was removed: exists=%t err=%v", ref, exists, err)
+		}
+	}
+	for _, ref := range []string{git.RunPRBaseRef(terminal.ID), git.RunPRBaseMonitorRef(terminal.ID)} {
+		if exists, err := git.RefExists(context.Background(), gateDir, ref); err != nil || exists {
+			t.Fatalf("terminal ref %s remains: exists=%t err=%v", ref, exists, err)
+		}
 	}
 }
 
