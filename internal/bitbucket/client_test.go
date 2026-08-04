@@ -165,6 +165,42 @@ func TestFindOpenPRBySourceAndDestinationBranchFiltersSourceRepo(t *testing.T) {
 	}
 }
 
+func TestFindOpenPRBySourceBranchRejectsInvalidSuccessfulResponses(t *testing.T) {
+	repo := RepoRef{Workspace: "test", RepoSlug: "repo"}
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "missing values", body: `{}`},
+		{name: "null response", body: `null`},
+		{name: "null values", body: `{"values":null}`},
+		{name: "missing identity", body: `{"values":[{}]}`},
+		{name: "mismatched identity", body: `{"values":[{"id":42,"links":{"html":{"href":"https://bitbucket.org/test/repo/pull-requests/41"}}}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			client := &Client{
+				baseURL:    server.URL,
+				email:      "test@example.com",
+				token:      "token",
+				httpClient: &http.Client{Timeout: time.Second},
+			}
+
+			pr, err := client.FindOpenPRBySourceBranch(context.Background(), repo, "feature", "main")
+			if err == nil {
+				t.Fatal("FindOpenPRBySourceBranch() error = nil, want malformed-response error")
+			}
+			if pr != nil {
+				t.Fatalf("FindOpenPRBySourceBranch() = %#v, want nil", pr)
+			}
+		})
+	}
+}
+
 func TestListPipelinesByCommitFollowsPagination(t *testing.T) {
 	repo := RepoRef{Workspace: "test", RepoSlug: "repo"}
 	var pageCalls int

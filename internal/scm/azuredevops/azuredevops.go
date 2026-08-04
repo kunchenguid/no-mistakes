@@ -138,16 +138,24 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if err := json.Unmarshal(out, &prs); err != nil {
 		return nil, fmt.Errorf("az repos pr list: parse response: %w", err)
 	}
+	if prs == nil {
+		return nil, errors.New("az repos pr list: parse response: expected a JSON array")
+	}
 	if len(prs) == 0 {
 		return nil, nil
 	}
-	if strings.TrimSpace(base) == "" {
-		if len(prs) > 1 {
-			return nil, errors.New("multiple active pull requests found for source branch")
+	for i := range prs {
+		pr := h.toPR(&prs[i])
+		number, numberErr := scm.ExtractPRNumber(pr.URL)
+		if prs[i].PullRequestID <= 0 || pr.URL == "" || numberErr != nil || number != pr.Number {
+			return nil, errors.New("az repos pr list: parse response: invalid pull request")
 		}
-		if normalizeAzureBranch(prs[0].TargetRefName) == "" {
+		if strings.TrimSpace(base) == "" && pr.BaseBranch == "" {
 			return nil, errors.New("az repos pr list: missing pull request target branch")
 		}
+	}
+	if strings.TrimSpace(base) == "" && len(prs) > 1 {
+		return nil, errors.New("multiple active pull requests found for source branch")
 	}
 	pr := h.toPR(&prs[0])
 	if pr.BaseBranch == "" {

@@ -542,6 +542,62 @@ func TestReplacementWaitsForCancelledRunPRContinuityEvidence(t *testing.T) {
 	}
 }
 
+func TestPersistedPRBaseContinuitiesExcludeCompletedSkippedPRSteps(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "skipped-pr-continuity")
+	addRun := func(base string, status types.StepStatus, prURL string) {
+		run, err := database.InsertRun(repo.ID, "feature", head, head)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := database.UpdateRunPRBaseBranch(run.ID, base, true); err != nil {
+			t.Fatal(err)
+		}
+		result, err := database.InsertStepResult(run.ID, types.StepPR)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := database.StartStep(result.ID); err != nil {
+			t.Fatal(err)
+		}
+		switch status {
+		case types.StepStatusSkipped:
+			if err := database.CompleteStepWithStatus(result.ID, status, 0, 1, ""); err != nil {
+				t.Fatal(err)
+			}
+		case types.StepStatusFailed:
+			if err := database.FailStep(result.ID, "ambiguous provider failure", 1); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if prURL != "" {
+			if err := database.UpdateRunPRURL(run.ID, prURL); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	addRun("quality-assurance", types.StepStatusSkipped, "")
+	addRun("staging", types.StepStatusFailed, "")
+	addRun("release", types.StepStatusSkipped, "https://github.com/example/repo/pull/42")
+
+	runs, err := database.GetRunsByRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewRunManager(database, p, nil)
+	candidates, err := manager.persistedPRBaseContinuities(runs, "feature", repo.DefaultBranch, nil, repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]bool, len(candidates))
+	for _, candidate := range candidates {
+		got[candidate.branch] = true
+	}
+	if len(candidates) != 2 || !got["release"] || !got["staging"] {
+		t.Fatalf("continuity candidates = %+v, want persisted release and ambiguous staging only", candidates)
+	}
+}
+
 func TestDistinctPRBaseContinuityRejectsMultipleOpenBases(t *testing.T) {
 	p, database := newRefreshRunFixture(t)
 	repo, head := setupTestGitRepo(t, p, database, "multiple-open-pr-bases")
@@ -1213,7 +1269,6 @@ func TestLoadRecoveredConfig_PreservesImmutablePRBaseSnapshot(t *testing.T) {
 	gitCmd(t, seed, "add", "qa.txt")
 	gitCmd(t, seed, "commit", "-m", "advance QA")
 	gitCmd(t, seed, "push", "origin", "quality-assurance")
-	advancedSHA := gitOutput(t, seed, "rev-parse", "HEAD")
 
 	p := paths.WithRoot(t.TempDir())
 	if err := p.EnsureDirs(); err != nil {
@@ -1231,8 +1286,69 @@ func TestLoadRecoveredConfig_PreservesImmutablePRBaseSnapshot(t *testing.T) {
 	if got := gitOutput(t, workDir, "rev-parse", git.RunPRBaseRef("parked-run")); got != originalSHA {
 		t.Fatalf("private base ref = %s, want original %s", got, originalSHA)
 	}
-	if got := gitOutput(t, workDir, "rev-parse", git.RunPRBaseMonitorRef("parked-run")); got != advancedSHA {
-		t.Fatalf("current-base guard ref = %s, want advanced %s", got, advancedSHA)
+}
+
+func TestLoadRecoveredConfig_PrefersSavedSnapshotOverChangedUnrelatedTarget(t *testing.T) {
+	upstream := filepath.Join(t.TempDir(), "upstream.git")
+	gitCmd(t, "", "init", "--bare", upstream)
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "--initial-branch=main")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(seed, ".no-mistakes.yaml"), []byte("pr:\n  base_branch: quality-assurance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".")
+	gitCmd(t, seed, "commit", "-m", "trusted QA config")
+	gitCmd(t, seed, "remote", "add", "origin", upstream)
+	gitCmd(t, seed, "push", "origin", "main")
+	gitCmd(t, seed, "branch", "quality-assurance")
+	gitCmd(t, seed, "push", "origin", "quality-assurance")
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(seed, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "feature.txt")
+	gitCmd(t, seed, "commit", "-m", "feature")
+	gitCmd(t, seed, "push", "origin", "feature")
+
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "clone", "-b", "feature", upstream, ".")
+	repo := &db.Repo{UpstreamURL: upstream, DefaultBranch: "main"}
+	initial := &config.Config{PR: config.PR{BaseBranch: "quality-assurance"}}
+	if err := ensureConfiguredPRBaseBranch(context.Background(), workDir, repo, initial, "parked-run"); err != nil {
+		t.Fatal(err)
+	}
+	originalSHA := initial.PR.ResolvedBaseSHA
+
+	gitCmd(t, seed, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(seed, ".no-mistakes.yaml"), []byte("pr:\n  base_branch: staging\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".no-mistakes.yaml")
+	gitCmd(t, seed, "commit", "-m", "target unrelated staging")
+	gitCmd(t, seed, "push", "origin", "main")
+	gitCmd(t, seed, "checkout", "--orphan", "staging")
+	gitCmd(t, seed, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(seed, "staging.txt"), []byte("unrelated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "staging.txt")
+	gitCmd(t, seed, "commit", "-m", "unrelated staging")
+	gitCmd(t, seed, "push", "origin", "staging")
+
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	persistedBase := "quality-assurance"
+	mgr := NewRunManager(nil, p, nil)
+	cfg, err := mgr.loadRecoveredConfig(context.Background(), &db.Run{ID: "parked-run", Branch: "feature", PRBaseBranch: &persistedBase, PRBaseBranchExplicit: true}, repo, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PR.BaseBranch != persistedBase || cfg.PR.ResolvedBaseSHA != originalSHA {
+		t.Fatalf("recovered base = %q at %q, want saved %q at %q", cfg.PR.BaseBranch, cfg.PR.ResolvedBaseSHA, persistedBase, originalSHA)
 	}
 }
 

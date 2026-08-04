@@ -159,6 +159,33 @@ func TestFindPRReportsParseError(t *testing.T) {
 	}
 }
 
+func TestFindPRRejectsInvalidSuccessfulResponses(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		output string
+	}{
+		{name: "null response", output: "null\n"},
+		{name: "missing identity", output: "[{}]\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHost(map[string]azdoTestResponse{
+				"az repos pr list --source-branch feature --status active --target-branch main --organization " + testOrg + " --project " + testProject + " --repository " + testRepo + " --output json": {
+					stdout: tc.output,
+				},
+			})
+			pr, err := h.FindPR(context.Background(), "feature", "main")
+			if err == nil {
+				t.Fatal("FindPR() error = nil, want malformed-response error")
+			}
+			if pr != nil {
+				t.Fatalf("FindPR() = %+v, want nil", pr)
+			}
+		})
+	}
+}
+
 func TestCreatePRConstructsURL(t *testing.T) {
 	t.Parallel()
 

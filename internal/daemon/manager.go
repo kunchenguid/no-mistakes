@@ -231,14 +231,6 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	cfg := config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands))
 	currentRef := git.RunPRBaseMonitorRef(run.ID)
-	validateCurrentBase := func() error {
-		fetchCtx, cancel := context.WithTimeout(ctx, recoveredConfigFetchTimeout)
-		defer cancel()
-		return resolveConfiguredPRBaseBranch(fetchCtx, workDir, repo, cfg, currentRef, true)
-	}
-	if err := validateCurrentBase(); err != nil {
-		return nil, err
-	}
 	if _, err := configuredPRBaseBranchGuard(run.Branch, repo.DefaultBranch, cfg); err != nil {
 		return nil, err
 	}
@@ -262,19 +254,22 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 		if err != nil {
 			return nil, fmt.Errorf("inspect configured pr.base_branch snapshot: %w", err)
 		}
-		if !snapshotExists && persistedBase.branch == currentBase && currentExplicit {
-			sha, err := git.ResolveRef(ctx, workDir, currentRef)
-			if err != nil {
-				return nil, fmt.Errorf("resolve current configured pr.base_branch snapshot: %w", err)
-			}
-			if _, err := git.Run(ctx, workDir, "update-ref", snapshotRef, sha); err != nil {
-				return nil, fmt.Errorf("preserve configured pr.base_branch snapshot: %w", err)
-			}
-			snapshotExists = true
-		}
 		if snapshotExists {
 			if err := resolveConfiguredPRBaseBranch(ctx, workDir, repo, cfg, snapshotRef, false); err != nil {
 				return nil, err
+			}
+			return cfg, nil
+		}
+		if persistedBase.branch == currentBase && currentExplicit {
+			fetchCtx, cancel := context.WithTimeout(ctx, recoveredConfigFetchTimeout)
+			err = resolveConfiguredPRBaseBranch(fetchCtx, workDir, repo, cfg, currentRef, true)
+			cancel()
+			if err != nil {
+				return nil, err
+			}
+			sha := cfg.PR.ResolvedBaseSHA
+			if _, err := git.Run(ctx, workDir, "update-ref", snapshotRef, sha); err != nil {
+				return nil, fmt.Errorf("preserve configured pr.base_branch snapshot: %w", err)
 			}
 			return cfg, nil
 		}
@@ -285,6 +280,13 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 		if err != nil {
 			return nil, err
 		}
+		return cfg, nil
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, recoveredConfigFetchTimeout)
+	err = resolveConfiguredPRBaseBranch(fetchCtx, workDir, repo, cfg, currentRef, true)
+	cancel()
+	if err != nil {
+		return nil, err
 	}
 	return cfg, nil
 }

@@ -462,7 +462,7 @@ func (d *DB) UpdateRunPRBaseBranch(id, branch string, explicit bool) error {
 }
 
 func (d *DB) GetRunIDsWithStartedStep(repoID string, stepName types.StepName) (map[string]struct{}, error) {
-	rows, err := d.sql.Query(`SELECT DISTINCT sr.run_id FROM step_results sr JOIN runs r ON r.id = sr.run_id WHERE r.repo_id = ? AND sr.step_name = ? AND sr.started_at IS NOT NULL`, repoID, stepName)
+	rows, err := d.sql.Query(`SELECT DISTINCT sr.run_id FROM step_results sr JOIN runs r ON r.id = sr.run_id WHERE r.repo_id = ? AND sr.step_name = ? AND sr.started_at IS NOT NULL AND sr.status != ?`, repoID, stepName, types.StepStatusSkipped)
 	if err != nil {
 		return nil, fmt.Errorf("get runs with started step: %w", err)
 	}

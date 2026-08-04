@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -128,18 +129,33 @@ func (c *Client) FindOpenPRBySourceBranch(ctx context.Context, repo RepoRef, bra
 	query.Set("q", strings.Join(clauses, " AND "))
 
 	var response struct {
-		Values []bitbucketPullRequest `json:"values"`
+		Values json.RawMessage `json:"values"`
 	}
 	if err := c.doJSON(ctx, http.MethodGet, repoPRPath(repo), query, nil, &response); err != nil {
 		return nil, err
 	}
-	if len(response.Values) == 0 {
+	if len(response.Values) == 0 || bytes.Equal(bytes.TrimSpace(response.Values), []byte("null")) {
+		return nil, errors.New("decode Bitbucket pull request response: expected values array")
+	}
+	var values []bitbucketPullRequest
+	if err := json.Unmarshal(response.Values, &values); err != nil || values == nil {
+		if err != nil {
+			return nil, fmt.Errorf("decode Bitbucket pull request values: %w", err)
+		}
+		return nil, errors.New("decode Bitbucket pull request response: expected values array")
+	}
+	if len(values) == 0 {
 		return nil, nil
 	}
-	if strings.TrimSpace(destBranch) == "" && len(response.Values) > 1 {
+	for i := range values {
+		if err := validateOpenPRCandidate(values[i].toPullRequest()); err != nil {
+			return nil, err
+		}
+	}
+	if strings.TrimSpace(destBranch) == "" && len(values) > 1 {
 		return nil, errors.New("multiple open pull requests found for source branch")
 	}
-	return response.Values[0].toPullRequest(), nil
+	return values[0].toPullRequest(), nil
 }
 
 func (c *Client) CreatePR(ctx context.Context, repo RepoRef, sourceBranch, destBranch, title, body string) (*PullRequest, error) {
@@ -345,6 +361,21 @@ func (pr bitbucketPullRequest) toPullRequest() *PullRequest {
 		SourceCommitHash:  strings.TrimSpace(pr.Source.Commit.Hash),
 		DestinationBranch: strings.TrimSpace(pr.Destination.Branch.Name),
 	}
+}
+
+func validateOpenPRCandidate(pr *PullRequest) error {
+	if pr == nil || pr.ID <= 0 || pr.URL == "" {
+		return errors.New("decode Bitbucket pull request response: invalid pull request identity")
+	}
+	parsed, err := url.Parse(pr.URL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return errors.New("decode Bitbucket pull request response: invalid pull request URL")
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(segments) == 0 || segments[len(segments)-1] != strconv.Itoa(pr.ID) {
+		return errors.New("decode Bitbucket pull request response: pull request URL does not match its ID")
+	}
+	return nil
 }
 
 func (c *Client) validatePaginationURL(rawURL string) (string, error) {
