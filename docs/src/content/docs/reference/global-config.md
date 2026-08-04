@@ -32,6 +32,8 @@ agent_args_override:
     - -c
     - model_reasoning_effort="low"
 
+agent_model_by_purpose: {}
+
 ci_timeout: "168h"
 
 step_quiet_warning: "10m"
@@ -214,6 +216,44 @@ agent_args_override:
 ```
 
 For Codex, `service_tier` and `model_reasoning_effort` tune different things: `service_tier` selects the speed or priority lane, while `model_reasoning_effort` selects reasoning depth. no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
+
+### agent_model_by_purpose
+
+Optional global-only model selection for individual pipeline agent duties.
+It changes only the model passed to the native adapter that actually handles an invocation; it never changes the configured `agent`, fallback order, pipeline scope, or approval behavior.
+
+|         |                                   |
+| ------- | --------------------------------- |
+| Type    | `map[purpose]map[agent]string`    |
+| Agents  | `claude`, `codex`                 |
+| Default | Empty (no per-purpose overrides)  |
+
+```yaml
+agent: [codex, claude]
+agent_model_by_purpose:
+  review:
+    claude: claude-opus-5
+    codex: gpt-5.4
+  review-fix:
+    claude: claude-sonnet-4-5
+  pr:
+    claude: claude-sonnet-4-5
+```
+
+Valid purposes are `intent`, `rebase`, `review`, `review-fix`, `test`, `test-fix`, `document`, `housekeeping`, `lint`, `lint-fix`, `pr`, and `ci`.
+Unknown purposes, unsupported adapters, empty routes, blank or whitespace-bearing model names, control characters, and model names over 256 bytes make global config loading fail before a run starts.
+The key is not accepted in `.no-mistakes.yaml`; a repository or contributor branch cannot choose the operator's per-purpose models.
+
+An omitted purpose or adapter keeps the adapter's existing model selection byte-for-byte.
+When the same adapter also has a model flag in `agent_args_override`, the per-purpose value replaces that model flag for matching invocations while preserving every unrelated argument.
+This precedence is deterministic for both split and `--flag=value` model forms, and config loading logs the resolved collision by purpose and agent without logging either model value.
+With an ordered fallback list, each concrete adapter applies its own model entry only when it actually runs, so a Claude fallback never inherits a Codex model or vice versa.
+The reported model in local invocation telemetry remains the adapter's actual serving result, not the configured request.
+
+Every initial review and full rereview uses purpose `review`; review-fix turns use `review-fix` and retain their separate fixer-session policy.
+Model routing does not resume reviewer sessions or narrow rereview scope.
+The default empty map performs no automatic opt-in.
+Use [`no-mistakes stats --agents --since`](/no-mistakes/reference/cli/#no-mistakes-stats) to compare purpose/agent/model/session usage without treating provider cache counters as billing weights.
 
 ### ci_timeout
 

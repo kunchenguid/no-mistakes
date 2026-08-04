@@ -27,7 +27,7 @@ type fixExecutionOptions struct {
 	// leave it empty and stay session-isolated.
 	SessionRole pipeline.SessionRole
 	// Purpose labels the invocation for local performance telemetry.
-	Purpose string
+	Purpose types.AgentPurpose
 	// Workload records the bounded size of the change under fix for local
 	// telemetry. Optional; nil leaves the invocation's workload unknown.
 	Workload *agent.InvocationWorkload
@@ -195,7 +195,14 @@ func executeFixMode(sctx *pipeline.StepContext, stepName types.StepName, opts fi
 	}
 	purpose := opts.Purpose
 	if purpose == "" {
-		purpose = string(stepName) + "-fix"
+		switch stepName {
+		case types.StepReview:
+			purpose = types.AgentPurposeReviewFix
+		case types.StepTest:
+			purpose = types.AgentPurposeTestFix
+		case types.StepLint:
+			purpose = types.AgentPurposeLintFix
+		}
 	}
 	runOpts := agent.RunOpts{
 		Prompt:     opts.Prompt,

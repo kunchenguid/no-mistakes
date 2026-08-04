@@ -15,12 +15,14 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // codexAgent spawns the codex CLI for each invocation.
 type codexAgent struct {
-	bin       string
-	extraArgs []string
+	bin            string
+	extraArgs      []string
+	modelByPurpose map[types.AgentPurpose]string
 	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
 	// buildArgs suppresses codex's project-level settings/instructions surface.
 	disableProjectSettings bool
@@ -89,7 +91,7 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	if opts.Session != nil {
 		resumeID = opts.Session.ID
 	}
-	args := a.buildArgs(opts.Prompt, schemaPath, resumeID)
+	args := a.buildArgs(opts.Prompt, schemaPath, resumeID, opts.Purpose)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	cmd.Stdin = nil
@@ -166,13 +168,18 @@ func (a *codexAgent) Close() error { return nil }
 // which exposes a narrower flag surface than `codex exec` (no --color, no
 // -s/--sandbox as of codex 0.144): unsupported user extraArgs make the
 // invocation fail fast and the caller's cold fallback preserves correctness.
-func (a *codexAgent) buildArgs(prompt, schemaPath, resumeID string) []string {
-	args := make([]string, 0, len(a.extraArgs)+11)
+func (a *codexAgent) buildArgs(prompt, schemaPath, resumeID string, purposes ...types.AgentPurpose) []string {
+	var purpose types.AgentPurpose
+	if len(purposes) > 0 {
+		purpose = purposes[0]
+	}
+	extraArgs := argsWithPurposeModel(a.extraArgs, a.modelByPurpose[purpose], "--model", "-m")
+	args := make([]string, 0, len(extraArgs)+11)
 	args = append(args, "exec")
 	if resumeID != "" {
 		args = append(args, "resume")
 	}
-	args = append(args, a.extraArgs...)
+	args = append(args, extraArgs...)
 	if resumeID != "" {
 		args = append(args, resumeID)
 	}
@@ -180,7 +187,7 @@ func (a *codexAgent) buildArgs(prompt, schemaPath, resumeID string) []string {
 	if schemaPath != "" {
 		args = append(args, "--output-schema", schemaPath)
 	}
-	if !codexUserSetExecutionMode(a.extraArgs) {
+	if !codexUserSetExecutionMode(extraArgs) {
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
 	if resumeID == "" {

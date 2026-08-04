@@ -102,7 +102,7 @@ Previous review findings to address:
 			ErrorPrefix:             "agent fix",
 			FallbackSummary:         "address review findings",
 			SessionRole:             pipeline.SessionRoleFixer,
-			Purpose:                 "review-fix",
+			Purpose:                 types.AgentPurposeReviewFix,
 			Workload:                workload,
 		})
 		if err != nil {
@@ -249,7 +249,7 @@ Risk assessment (after listing all findings):
 		CWD:        sctx.WorkDir,
 		JSONSchema: reviewFindingsSchema,
 		OnChunk:    sctx.LogChunk,
-		Purpose:    "review",
+		Purpose:    types.AgentPurposeReview,
 		Workload:   workload,
 	})
 	if err != nil {

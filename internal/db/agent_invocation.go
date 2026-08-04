@@ -259,6 +259,13 @@ type AgentInvocationAggregate struct {
 // AgentInvocationAggregates returns per-purpose aggregates across all runs,
 // largest total duration first.
 func (d *DB) AgentInvocationAggregates() ([]AgentInvocationAggregate, error) {
+	return d.AgentInvocationAggregatesSince(0)
+}
+
+// AgentInvocationAggregatesSince returns per-purpose aggregates for
+// invocations started at or after cutoffUnix. A non-positive cutoff preserves
+// the historical all-time report.
+func (d *DB) AgentInvocationAggregatesSince(cutoffUnix int64) ([]AgentInvocationAggregate, error) {
 	rows, err := d.sql.Query(`
 		SELECT purpose,
 		       COUNT(*),
@@ -285,8 +292,9 @@ func (d *DB) AgentInvocationAggregates() ([]AgentInvocationAggregate, error) {
 		       CASE WHEN COUNT(tool_other_calls) = COUNT(*) THEN SUM(tool_other_calls) END,
 		       COALESCE(SUM(CASE WHEN model_roundtrips IS NOT NULL THEN 1 ELSE 0 END), 0)
 		FROM agent_invocations
+		WHERE (? <= 0 OR started_at >= ?)
 		GROUP BY purpose
-		ORDER BY SUM(duration_ms) DESC`)
+		ORDER BY SUM(duration_ms) DESC`, cutoffUnix, cutoffUnix)
 	if err != nil {
 		return nil, fmt.Errorf("agent invocation aggregates: %w", err)
 	}
@@ -309,6 +317,60 @@ func (d *DB) AgentInvocationAggregates() ([]AgentInvocationAggregate, error) {
 			a.AvgDurationMS = a.TotalDurationMS / int64(a.Count)
 		}
 		aggregates = append(aggregates, a)
+	}
+	return aggregates, rows.Err()
+}
+
+// AgentInvocationRouteAggregate groups local usage by the execution policy
+// dimensions an operator can act on: purpose, actual adapter, reported model,
+// and session mode. It preserves provider-reported token categories separately
+// rather than inventing a billing or allowance weight.
+type AgentInvocationRouteAggregate struct {
+	Purpose             string
+	Agent               string
+	Model               string
+	SessionMode         string
+	Count               int
+	TotalDurationMS     int64
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     int64
+	CacheCreationTokens *int64
+}
+
+// AgentInvocationRouteAggregatesSince returns route-level aggregates for
+// invocations started at or after cutoffUnix. A non-positive cutoff selects all
+// history. The stored agent/model are the actual attempt result, including a
+// fallback adapter, rather than the requested primary route.
+func (d *DB) AgentInvocationRouteAggregatesSince(cutoffUnix int64) ([]AgentInvocationRouteAggregate, error) {
+	rows, err := d.sql.Query(`
+		SELECT purpose, agent, COALESCE(model, ''), session_mode,
+		       COUNT(*), COALESCE(SUM(duration_ms), 0),
+		       COALESCE(SUM(input_tokens), 0),
+		       COALESCE(SUM(output_tokens), 0),
+		       COALESCE(SUM(cache_read_tokens), 0),
+		       CASE WHEN COUNT(cache_creation_tokens) = COUNT(*) THEN SUM(cache_creation_tokens) END
+		FROM agent_invocations
+		WHERE (? <= 0 OR started_at >= ?)
+		GROUP BY purpose, agent, COALESCE(model, ''), session_mode
+		ORDER BY SUM(duration_ms) DESC, purpose, agent, model, session_mode`, cutoffUnix, cutoffUnix)
+	if err != nil {
+		return nil, fmt.Errorf("agent invocation route aggregates: %w", err)
+	}
+	defer rows.Close()
+
+	var aggregates []AgentInvocationRouteAggregate
+	for rows.Next() {
+		var aggregate AgentInvocationRouteAggregate
+		if err := rows.Scan(
+			&aggregate.Purpose, &aggregate.Agent, &aggregate.Model, &aggregate.SessionMode,
+			&aggregate.Count, &aggregate.TotalDurationMS,
+			&aggregate.InputTokens, &aggregate.OutputTokens, &aggregate.CacheReadTokens,
+			&aggregate.CacheCreationTokens,
+		); err != nil {
+			return nil, fmt.Errorf("scan agent invocation route aggregate: %w", err)
+		}
+		aggregates = append(aggregates, aggregate)
 	}
 	return aggregates, rows.Err()
 }

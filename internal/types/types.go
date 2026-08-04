@@ -105,6 +105,54 @@ func AllSteps() []StepName {
 	return []StepName{StepIntent, StepRebase, StepReview, StepTest, StepDocument, StepLint, StepPush, StepPR, StepCI}
 }
 
+// AgentPurpose identifies the pipeline duty served by one agent invocation.
+// It is deliberately finer-grained than StepName because a single review,
+// test, or lint round can contain both an assessment and a fix invocation.
+type AgentPurpose string
+
+const (
+	AgentPurposeIntent       AgentPurpose = "intent"
+	AgentPurposeRebase       AgentPurpose = "rebase"
+	AgentPurposeReview       AgentPurpose = "review"
+	AgentPurposeReviewFix    AgentPurpose = "review-fix"
+	AgentPurposeTest         AgentPurpose = "test"
+	AgentPurposeTestFix      AgentPurpose = "test-fix"
+	AgentPurposeDocument     AgentPurpose = "document"
+	AgentPurposeHousekeeping AgentPurpose = "housekeeping"
+	AgentPurposeLint         AgentPurpose = "lint"
+	AgentPurposeLintFix      AgentPurpose = "lint-fix"
+	AgentPurposePR           AgentPurpose = "pr"
+	AgentPurposeCI           AgentPurpose = "ci"
+)
+
+// AllAgentPurposes returns the fixed, configurable agent-purpose vocabulary.
+func AllAgentPurposes() []AgentPurpose {
+	return []AgentPurpose{
+		AgentPurposeIntent,
+		AgentPurposeRebase,
+		AgentPurposeReview,
+		AgentPurposeReviewFix,
+		AgentPurposeTest,
+		AgentPurposeTestFix,
+		AgentPurposeDocument,
+		AgentPurposeHousekeeping,
+		AgentPurposeLint,
+		AgentPurposeLintFix,
+		AgentPurposePR,
+		AgentPurposeCI,
+	}
+}
+
+// IsAgentPurpose reports whether purpose is in the configurable vocabulary.
+func IsAgentPurpose(purpose AgentPurpose) bool {
+	for _, candidate := range AllAgentPurposes() {
+		if purpose == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 // StepStatus represents the lifecycle state of a pipeline step.
 type StepStatus string
 

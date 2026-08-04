@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // claudeMaxRetries is the number of additional attempts past the initial
@@ -26,8 +27,9 @@ const claudeScannerMaxTokenSize = 256 * 1024 * 1024
 
 // claudeAgent spawns the claude CLI for each invocation.
 type claudeAgent struct {
-	bin       string
-	extraArgs []string
+	bin            string
+	extraArgs      []string
+	modelByPurpose map[types.AgentPurpose]string
 	// disableProjectSettings is the resolved, trusted-only opt-out. When true,
 	// buildArgs suppresses claude's project-level settings/memory surface.
 	disableProjectSettings bool
@@ -69,7 +71,7 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	if opts.Session != nil {
 		resumeID = opts.Session.ID
 	}
-	args := a.buildArgs(opts.JSONSchema, resumeID)
+	args := a.buildArgs(opts.JSONSchema, resumeID, opts.Purpose)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
 	// Claude Code print mode documents text stdin as its non-interactive
@@ -170,9 +172,14 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 // is not added. A non-empty resumeID continues that session via --resume
 // (never --fork-session: the session identity must stay stable so later
 // turns keep resuming the same conversation).
-func (a *claudeAgent) buildArgs(schema json.RawMessage, resumeID string) []string {
-	args := make([]string, 0, len(a.extraArgs)+11)
-	args = append(args, a.extraArgs...)
+func (a *claudeAgent) buildArgs(schema json.RawMessage, resumeID string, purposes ...types.AgentPurpose) []string {
+	var purpose types.AgentPurpose
+	if len(purposes) > 0 {
+		purpose = purposes[0]
+	}
+	extraArgs := argsWithPurposeModel(a.extraArgs, a.modelByPurpose[purpose], "--model", "")
+	args := make([]string, 0, len(extraArgs)+11)
+	args = append(args, extraArgs...)
 	args = append(args,
 		"-p",
 		"--verbose",
@@ -188,7 +195,7 @@ func (a *claudeAgent) buildArgs(schema json.RawMessage, resumeID string) []strin
 	// and auth. Suppressed only when the operator did not pin their own
 	// --setting-sources. When the repo did not opt out, nothing is added and
 	// claude loads its project memory exactly as before (backward-compat).
-	if a.disableProjectSettings && !claudeUserSetSettingSources(a.extraArgs) {
+	if a.disableProjectSettings && !claudeUserSetSettingSources(extraArgs) {
 		args = append(args, "--setting-sources", "user")
 	}
 	if resumeID != "" {
@@ -197,7 +204,7 @@ func (a *claudeAgent) buildArgs(schema json.RawMessage, resumeID string) []strin
 	if len(schema) > 0 {
 		args = append(args, "--json-schema", string(schema))
 	}
-	if !claudeUserSetPermissionMode(a.extraArgs) {
+	if !claudeUserSetPermissionMode(extraArgs) {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	return args

@@ -217,6 +217,57 @@ func TestAgentInvocationAggregatesAndRunSummary(t *testing.T) {
 	}
 }
 
+func TestAgentInvocationRouteAggregatesSince(t *testing.T) {
+	d, _, run := openSessionTestDB(t)
+	seed := []AgentInvocation{
+		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", Model: "old-model", SessionMode: InvocationModeCold, StartedAt: 149, CompletedAt: 150, DurationMS: 10, ExitStatus: "ok", CacheReadTokens: 99},
+		{RunID: run.ID, StepName: "intent", Round: 1, Purpose: "intent", Agent: "codex", Model: "boundary-model", SessionMode: InvocationModeCold, StartedAt: 150, CompletedAt: 151, DurationMS: 15, ExitStatus: "ok", CacheReadTokens: 2},
+		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "claude", Model: "opus", SessionMode: InvocationModeCold, StartedAt: 200, CompletedAt: 201, DurationMS: 20, ExitStatus: "ok", InputTokens: 3, OutputTokens: 4, CacheReadTokens: 5, CacheCreationTokens: intPtr(6)},
+		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review", Agent: "claude", Model: "opus", SessionMode: InvocationModeResumed, StartedAt: 210, CompletedAt: 211, DurationMS: 30, ExitStatus: "ok", InputTokens: 7, OutputTokens: 8, CacheReadTokens: 9, CacheCreationTokens: intPtr(10)},
+		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review-fix", Agent: "claude", Model: "sonnet", SessionMode: InvocationModeStarted, StartedAt: 220, CompletedAt: 221, DurationMS: 40, ExitStatus: "ok", CacheReadTokens: 11},
+	}
+	for _, inv := range seed {
+		if _, err := d.InsertAgentInvocation(inv); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	routes, err := d.AgentInvocationRouteAggregatesSince(150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 4 {
+		t.Fatalf("route aggregates = %+v, want 4 groups", routes)
+	}
+	byKey := make(map[string]AgentInvocationRouteAggregate)
+	for _, route := range routes {
+		byKey[route.Purpose+"/"+route.Agent+"/"+route.Model+"/"+route.SessionMode] = route
+	}
+	cold := byKey["review/claude/opus/cold"]
+	if cold.Count != 1 || cold.TotalDurationMS != 20 || cold.CacheReadTokens != 5 || cold.CacheCreationTokens == nil || *cold.CacheCreationTokens != 6 {
+		t.Fatalf("cold route aggregate = %+v", cold)
+	}
+	if _, exists := byKey["review/codex/old-model/cold"]; exists {
+		t.Fatal("route aggregate included invocation before cutoff")
+	}
+	if boundary := byKey["intent/codex/boundary-model/cold"]; boundary.Count != 1 || boundary.CacheReadTokens != 2 {
+		t.Fatalf("route aggregate excluded exact cutoff boundary: %+v", boundary)
+	}
+
+	purposes, err := d.AgentInvocationAggregatesSince(150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(purposes) != 3 {
+		t.Fatalf("purpose aggregates = %+v, want intent, review, and review-fix", purposes)
+	}
+	for _, aggregate := range purposes {
+		if aggregate.CacheReadTokens == 99 {
+			t.Fatal("purpose aggregate included invocation before cutoff")
+		}
+	}
+}
+
 func TestAgentInvocationAggregatesPreserveUnknownMetrics(t *testing.T) {
 	d, _, run := openSessionTestDB(t)
 	inv := AgentInvocation{

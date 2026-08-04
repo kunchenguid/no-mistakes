@@ -171,6 +171,7 @@ Final diff paths and statuses:
 		CWD:        sctx.WorkDir,
 		JSONSchema: prContentSchema,
 		OnChunk:    sctx.LogChunk,
+		Purpose:    types.AgentPurposePR,
 	})
 	if err != nil {
 		slog.Warn("agent failed for PR content, using fallback", "error", err)

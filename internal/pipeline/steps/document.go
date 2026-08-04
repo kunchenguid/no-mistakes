@@ -125,10 +125,10 @@ func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcom
 
 	prompt := s.buildPrompt(sctx, baseSHA, ignorePatterns, combinedLint)
 	schema := findingsSchema
-	purpose := "document"
+	purpose := types.AgentPurposeDocument
 	if combinedLint {
 		schema = housekeepingFindingsSchema
-		purpose = "housekeeping"
+		purpose = types.AgentPurposeHousekeeping
 	}
 
 	result, err := sctx.Agent.Run(ctx, agent.RunOpts{

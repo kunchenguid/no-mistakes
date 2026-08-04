@@ -11,6 +11,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/testguidance"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // autoFixCI runs the agent to fix CI failures and/or merge conflicts, then
@@ -108,6 +109,7 @@ CI logs:
 		Prompt:  prompt,
 		CWD:     sctx.WorkDir,
 		OnChunk: sctx.LogChunk,
+		Purpose: types.AgentPurposeCI,
 	})
 	if err != nil {
 		return false, fmt.Errorf("agent CI fix: %w", err)

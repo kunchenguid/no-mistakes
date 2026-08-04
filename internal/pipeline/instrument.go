@@ -70,7 +70,7 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 
 	purpose := opts.Purpose
 	if purpose == "" {
-		purpose = string(a.stepName)
+		purpose = types.AgentPurpose(a.stepName)
 	}
 
 	sessionKey := invocationSessionKey(opts, result)
@@ -78,7 +78,7 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 		RunID:       a.runID,
 		StepName:    string(a.stepName),
 		Round:       a.round(),
-		Purpose:     purpose,
+		Purpose:     string(purpose),
 		Agent:       agentName,
 		SessionMode: invocationSessionMode(opts),
 		SessionKey:  sessionKey,

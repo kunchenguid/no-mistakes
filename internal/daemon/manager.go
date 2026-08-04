@@ -242,6 +242,7 @@ func newPipelineAgent(ctx context.Context, cfg *config.Config, lookPath func(str
 	for _, name := range agents {
 		next, err := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
 			ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
+			ModelByPurpose:         cfg.AgentModelsFor(name),
 			DisableProjectSettings: cfg.DisableProjectSettings,
 		})
 		if err != nil {
@@ -862,6 +863,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		for _, name := range agents {
 			next, agErr := agent.NewWithOptions(name, cfg.AgentPathFor(name), cfg.AgentArgsFor(name), agent.Options{
 				ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
+				ModelByPurpose:         cfg.AgentModelsFor(name),
 				DisableProjectSettings: cfg.DisableProjectSettings,
 			})
 			if agErr != nil {

@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
@@ -67,10 +68,13 @@ type GlobalConfig struct {
 	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
 	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
-	CITimeout            time.Duration       `yaml:"-"`
-	StepQuietWarning     time.Duration       `yaml:"-"`
-	DaemonConnectTimeout time.Duration       `yaml:"-"`
-	LogLevel             string              `yaml:"log_level"`
+	// AgentModelByPurpose is a global-only, opt-in model override keyed by
+	// pipeline duty and native adapter. It never changes which adapter runs.
+	AgentModelByPurpose  map[types.AgentPurpose]map[string]string `yaml:"agent_model_by_purpose"`
+	CITimeout            time.Duration                            `yaml:"-"`
+	StepQuietWarning     time.Duration                            `yaml:"-"`
+	DaemonConnectTimeout time.Duration                            `yaml:"-"`
+	LogLevel             string                                   `yaml:"log_level"`
 	// SessionReuse controls per-run agent session reuse in the review loop:
 	// one durable fixer session across review-fix turns. Review turns always
 	// run session-free so the rereview never resumes the session whose
@@ -90,22 +94,23 @@ type GlobalConfig struct {
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
-	Agent                agentList           `yaml:"agent"`
-	ACPXPath             string              `yaml:"acpx_path"`
-	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
-	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
-	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
-	CITimeout            string              `yaml:"ci_timeout"`
-	DaemonConnectTimeout string              `yaml:"daemon_connect_timeout"`
-	BabysitTimeout       string              `yaml:"babysit_timeout"`
-	StepQuietWarning     string              `yaml:"step_quiet_warning"`
-	LogLevel             string              `yaml:"log_level"`
-	SessionReuse         *bool               `yaml:"session_reuse"`
-	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
-	CI                   CIRaw               `yaml:"ci"`
-	Commit               CommitRaw           `yaml:"commit"`
-	Intent               IntentRaw           `yaml:"intent"`
-	Test                 TestRaw             `yaml:"test"`
+	Agent                agentList                                `yaml:"agent"`
+	ACPXPath             string                                   `yaml:"acpx_path"`
+	ACPRegistryOverrides map[string]string                        `yaml:"acp_registry_overrides"`
+	AgentPathOverride    map[string]string                        `yaml:"agent_path_override"`
+	AgentArgsOverride    map[string][]string                      `yaml:"agent_args_override"`
+	AgentModelByPurpose  map[types.AgentPurpose]map[string]string `yaml:"agent_model_by_purpose"`
+	CITimeout            string                                   `yaml:"ci_timeout"`
+	DaemonConnectTimeout string                                   `yaml:"daemon_connect_timeout"`
+	BabysitTimeout       string                                   `yaml:"babysit_timeout"`
+	StepQuietWarning     string                                   `yaml:"step_quiet_warning"`
+	LogLevel             string                                   `yaml:"log_level"`
+	SessionReuse         *bool                                    `yaml:"session_reuse"`
+	AutoFix              AutoFixRaw                               `yaml:"auto_fix"`
+	CI                   CIRaw                                    `yaml:"ci"`
+	Commit               CommitRaw                                `yaml:"commit"`
+	Intent               IntentRaw                                `yaml:"intent"`
+	Test                 TestRaw                                  `yaml:"test"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -303,10 +308,14 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Review                 ReviewRaw   `yaml:"review"`
 		DisableProjectSettings bool        `yaml:"disable_project_settings"`
 		NoCI                   bool        `yaml:"no_ci"`
+		AgentModelByPurpose    yaml.Node   `yaml:"agent_model_by_purpose"`
 	}
 	var raw repoConfigRaw
 	if err := value.Decode(&raw); err != nil {
 		return err
+	}
+	if raw.AgentModelByPurpose.Kind != 0 {
+		return errors.New("agent_model_by_purpose is global-only and cannot be set in repo config")
 	}
 	c.Agent = firstAgent(raw.Agent)
 	c.Agents = copyAgents(raw.Agent)
@@ -379,6 +388,7 @@ type Config struct {
 	ACPRegistryOverrides map[string]string
 	AgentPathOverride    map[string]string
 	AgentArgsOverride    map[string][]string
+	AgentModelByPurpose  map[types.AgentPurpose]map[string]string
 	CITimeout            time.Duration
 	StepQuietWarning     time.Duration
 	LogLevel             string
@@ -507,6 +517,21 @@ func copyAgents(names []types.AgentName) []types.AgentName {
 	return out
 }
 
+func copyAgentModelByPurpose(routes map[types.AgentPurpose]map[string]string) map[types.AgentPurpose]map[string]string {
+	if routes == nil {
+		return nil
+	}
+	copied := make(map[types.AgentPurpose]map[string]string, len(routes))
+	for purpose, byAgent := range routes {
+		models := make(map[string]string, len(byAgent))
+		for name, model := range byAgent {
+			models[name] = model
+		}
+		copied[purpose] = models
+	}
+	return copied
+}
+
 // resolvePathInstructions trims every entry and drops the ones left without a
 // path or without instruction text that survives prompt rendering, so the
 // resolved config never carries an entry the review step would have to skip.
@@ -594,6 +619,17 @@ log_level: info
 #     - service_tier="priority"
 #     - -c
 #     - model_reasoning_effort="low"
+#
+# Optional global-only model selection by pipeline purpose. Omitted by default,
+# so every invocation keeps the adapter's normal model selection. A purpose
+# route overrides only the model flags for that invocation, not the agent or
+# fallback order. Supported route agents: claude and codex.
+# agent_model_by_purpose:
+#   review:
+#     claude: claude-opus-5
+#     codex: gpt-5.4
+#   review-fix:
+#     claude: claude-sonnet-4-5
 #
 # Maximum follow-up auto-fix attempts per step (0 = disabled after the initial pass)
 # Document fixes are attempted during the initial document pass.
@@ -998,6 +1034,18 @@ func (c *Config) AgentArgsFor(name types.AgentName) []string {
 	return c.AgentArgsOverride[string(name)]
 }
 
+// AgentModelsFor returns a detached purpose-to-model map for one native
+// adapter. Callers may retain or modify it without mutating the resolved config.
+func (c *Config) AgentModelsFor(name types.AgentName) map[types.AgentPurpose]string {
+	models := make(map[types.AgentPurpose]string)
+	for purpose, byAgent := range c.AgentModelByPurpose {
+		if model := byAgent[string(name)]; model != "" {
+			models[purpose] = model
+		}
+	}
+	return models
+}
+
 // agentArgsOverrideAgents lists native agent names accepted as keys in
 // agent_args_override.
 var agentArgsOverrideAgents = map[string]bool{
@@ -1086,6 +1134,71 @@ func validateAgentArgsOverride(override map[string][]string) error {
 	return nil
 }
 
+const maxAgentModelNameBytes = 256
+
+var purposeModelAgents = map[string]bool{
+	string(types.AgentClaude): true,
+	string(types.AgentCodex):  true,
+}
+
+// validateAgentModelByPurpose fails closed before a run starts. Model routing
+// is intentionally global-only and initially supported only by native Claude
+// and Codex adapters whose model flags are covered by argument-level tests.
+func validateAgentModelByPurpose(routes map[types.AgentPurpose]map[string]string) error {
+	for purpose, byAgent := range routes {
+		if !types.IsAgentPurpose(purpose) {
+			return fmt.Errorf("invalid purpose in agent_model_by_purpose: %q", purpose)
+		}
+		if len(byAgent) == 0 {
+			return fmt.Errorf("agent_model_by_purpose.%s must configure at least one agent", purpose)
+		}
+		for name, model := range byAgent {
+			if !purposeModelAgents[name] {
+				return fmt.Errorf("invalid agent in agent_model_by_purpose.%s: %q (valid: claude, codex)", purpose, name)
+			}
+			if strings.TrimSpace(model) == "" {
+				return fmt.Errorf("agent_model_by_purpose.%s.%s must not be empty", purpose, name)
+			}
+			if model != strings.TrimSpace(model) || strings.ContainsFunc(model, unicode.IsSpace) {
+				return fmt.Errorf("agent_model_by_purpose.%s.%s must not contain whitespace", purpose, name)
+			}
+			if strings.ContainsFunc(model, unicode.IsControl) {
+				return fmt.Errorf("agent_model_by_purpose.%s.%s must not contain control characters", purpose, name)
+			}
+			if len(model) > maxAgentModelNameBytes {
+				return fmt.Errorf("agent_model_by_purpose.%s.%s must not exceed %d bytes", purpose, name, maxAgentModelNameBytes)
+			}
+		}
+	}
+	return nil
+}
+
+// logAgentModelPrecedence makes an intentional model-flag collision visible
+// without recording either model value. Purpose routing wins deterministically
+// at argv construction time; all unrelated agent_args_override entries remain.
+func logAgentModelPrecedence(routes map[types.AgentPurpose]map[string]string, argsByAgent map[string][]string) {
+	for _, purpose := range types.AllAgentPurposes() {
+		for _, name := range []types.AgentName{types.AgentClaude, types.AgentCodex} {
+			if routes[purpose][string(name)] == "" || !agentArgsSelectModel(name, argsByAgent[string(name)]) {
+				continue
+			}
+			slog.Info("agent_model_by_purpose overrides agent_args_override model selection", "purpose", purpose, "agent", name)
+		}
+	}
+}
+
+func agentArgsSelectModel(name types.AgentName, args []string) bool {
+	for _, arg := range args {
+		if arg == "--model" || strings.HasPrefix(arg, "--model=") {
+			return true
+		}
+		if name == types.AgentCodex && (arg == "-m" || strings.HasPrefix(arg, "-m=")) {
+			return true
+		}
+	}
+	return false
+}
+
 // EnsureDefaultGlobalConfig writes the default config file at path if it does
 // not already exist. Failures are logged at debug level and silently ignored.
 func EnsureDefaultGlobalConfig(path string) {
@@ -1157,6 +1270,13 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 			return nil, err
 		}
 		cfg.AgentArgsOverride = raw.AgentArgsOverride
+	}
+	if raw.AgentModelByPurpose != nil {
+		if err := validateAgentModelByPurpose(raw.AgentModelByPurpose); err != nil {
+			return nil, err
+		}
+		cfg.AgentModelByPurpose = copyAgentModelByPurpose(raw.AgentModelByPurpose)
+		logAgentModelPrecedence(cfg.AgentModelByPurpose, cfg.AgentArgsOverride)
 	}
 	timeoutValue := raw.CITimeout
 	if timeoutValue == "" {
@@ -1602,6 +1722,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		ACPRegistryOverrides: global.ACPRegistryOverrides,
 		AgentPathOverride:    global.AgentPathOverride,
 		AgentArgsOverride:    global.AgentArgsOverride,
+		AgentModelByPurpose:  copyAgentModelByPurpose(global.AgentModelByPurpose),
 		CITimeout:            global.CITimeout,
 		StepQuietWarning:     global.StepQuietWarning,
 		LogLevel:             global.LogLevel,
