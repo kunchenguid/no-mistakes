@@ -260,6 +260,12 @@ func TestReplacementPushPreservesOpenPRBaseAcrossTrustedConfigChange(t *testing.
 	if err := database.UpdateRunPRBaseBranch(previous.ID, "quality-assurance", true); err != nil {
 		t.Fatal(err)
 	}
+	if err := database.UpdateRunPRURL(previous.ID, "https://github.com/test/repo/pull/42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRState(previous.ID, "closed"); err != nil {
+		t.Fatal(err)
+	}
 
 	gitCmd(t, repo.WorkingPath, "checkout", "main")
 	if err := os.WriteFile(configPath, []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\nno_ci: true\npr:\n  base_branch: staging\n"), 0o644); err != nil {
@@ -277,6 +283,13 @@ func TestReplacementPushPreservesOpenPRBaseAcrossTrustedConfigChange(t *testing.
 	gitCmd(t, repo.WorkingPath, "commit", "-m", "feature two")
 	head := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
 	gitCmd(t, repo.WorkingPath, "push", "gate", "feature")
+	intervening, err := database.InsertRun(repo.ID, "feature", head, firstHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(intervening.ID, "staging", true); err != nil {
+		t.Fatal(err)
+	}
 
 	binDir, ghLog := writeRerunPRBaseMockGH(t, "quality-assurance", "")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -302,8 +315,42 @@ func TestReplacementPushPreservesOpenPRBaseAcrossTrustedConfigChange(t *testing.
 		t.Fatal(err)
 	}
 	logText := string(logBytes)
-	if !strings.Contains(logText, "pr list --head feature --base quality-assurance") || strings.Contains(logText, "--base staging") || strings.Contains(logText, "pr create ") {
-		t.Fatalf("replacement push retargeted or duplicated PR:\n%s", logText)
+	if !strings.Contains(logText, "pr list --head feature --base quality-assurance") || !strings.Contains(logText, "pr list --head feature --base staging") || strings.Contains(logText, "pr create ") {
+		t.Fatalf("replacement push did not resolve every persisted base before preserving the reopened PR:\n%s", logText)
+	}
+}
+
+func TestDistinctPRBaseContinuityRejectsMultipleOpenBases(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "multiple-open-pr-bases")
+	qaRun, err := database.InsertRun(repo.ID, "feature", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(qaRun.ID, "quality-assurance", true); err != nil {
+		t.Fatal(err)
+	}
+	stagingRun, err := database.InsertRun(repo.ID, "feature", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(stagingRun.ID, "staging", true); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := database.GetRunsByRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := distinctRunPRBaseContinuities(runs, "feature", repo.DefaultBranch, nil)
+	binDir, _ := writeRerunPRBaseMockGHForBases(t, []string{"quality-assurance", "staging"}, "")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	manager := NewRunManager(database, p, nil)
+	continuity, err := manager.verifyDistinctPRBaseContinuities(context.Background(), repo, candidates, "main")
+	if err == nil || !strings.Contains(err.Error(), "multiple open pull requests") || !strings.Contains(err.Error(), "quality-assurance") || !strings.Contains(err.Error(), "staging") {
+		t.Fatalf("multiple-open continuity error = %v", err)
+	}
+	if continuity != nil {
+		t.Fatalf("multiple-open continuity = %+v, want nil", continuity)
 	}
 }
 
@@ -599,13 +646,22 @@ func TestRerunOpenPRRejectsCurrentConfiguredBaseBranch(t *testing.T) {
 
 func writeRerunPRBaseMockGH(t *testing.T, openBase, persistedState string) (string, string) {
 	t.Helper()
+	var openBases []string
+	if openBase != "" {
+		openBases = append(openBases, openBase)
+	}
+	return writeRerunPRBaseMockGHForBases(t, openBases, persistedState)
+}
+
+func writeRerunPRBaseMockGHForBases(t *testing.T, openBases []string, persistedState string) (string, string) {
+	t.Helper()
 	binDir := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "gh.log")
 	if runtime.GOOS == "windows" {
 		path := filepath.Join(binDir, "gh.bat")
 		openRule := ""
-		if openBase != "" {
-			openRule = "echo %* | findstr /C:\"pr list --head feature --base " + openBase + "\" >nul && (echo [{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\"}]& exit /b 0)\r\n"
+		for _, openBase := range openBases {
+			openRule += "echo %* | findstr /C:\"pr list --head feature --base " + openBase + "\" >nul && (echo [{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\"}]& exit /b 0)\r\n"
 		}
 		stateRule := ""
 		if persistedState != "" {
@@ -619,8 +675,8 @@ func writeRerunPRBaseMockGH(t *testing.T, openBase, persistedState string) (stri
 	}
 	path := filepath.Join(binDir, "gh")
 	openRule := ""
-	if openBase != "" {
-		openRule = `  *"pr list --head feature --base ` + openBase + `"*) printf '%s\n' '[{"number":42,"url":"https://github.com/test/repo/pull/42"}]'; exit 0 ;;
+	for _, openBase := range openBases {
+		openRule += `  *"pr list --head feature --base ` + openBase + `"*) printf '%s\n' '[{"number":42,"url":"https://github.com/test/repo/pull/42"}]'; exit 0 ;;
 `
 	}
 	stateRule := ""

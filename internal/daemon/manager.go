@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -849,6 +850,28 @@ func runPRBaseContinuityForRun(run *db.Run, defaultBranch string) *runPRBaseCont
 	return &runPRBaseContinuity{sourceRun: run, branch: branch, explicit: explicit}
 }
 
+func distinctRunPRBaseContinuities(runs []*db.Run, branch, defaultBranch string, preferred *runPRBaseContinuity) []*runPRBaseContinuity {
+	var candidates []*runPRBaseContinuity
+	seen := make(map[string]struct{})
+	appendCandidate := func(candidate *runPRBaseContinuity) {
+		if candidate == nil || candidate.sourceRun == nil || candidate.sourceRun.Branch != branch {
+			return
+		}
+		if _, ok := seen[candidate.branch]; ok {
+			return
+		}
+		seen[candidate.branch] = struct{}{}
+		candidates = append(candidates, candidate)
+	}
+	appendCandidate(preferred)
+	for _, run := range runs {
+		if run.Branch == branch {
+			appendCandidate(runPRBaseContinuityForRun(run, defaultBranch))
+		}
+	}
+	return candidates
+}
+
 func (m *RunManager) verifyRerunPRBaseContinuity(ctx context.Context, repo *db.Repo, candidate *runPRBaseContinuity) (*runPRBaseContinuity, error) {
 	if candidate == nil || candidate.sourceRun == nil {
 		return candidate, nil
@@ -917,6 +940,34 @@ func (m *RunManager) verifyRerunPRBaseContinuity(ctx context.Context, repo *db.R
 	return nil, nil
 }
 
+func (m *RunManager) verifyDistinctPRBaseContinuities(ctx context.Context, repo *db.Repo, candidates []*runPRBaseContinuity, currentBase string) (*runPRBaseContinuity, error) {
+	if len(candidates) == 0 || (len(candidates) == 1 && candidates[0].branch == currentBase) {
+		return nil, nil
+	}
+	var open []*runPRBaseContinuity
+	for _, candidate := range candidates {
+		verified, err := m.verifyRerunPRBaseContinuity(ctx, repo, candidate)
+		if err != nil {
+			return nil, err
+		}
+		if verified != nil {
+			open = append(open, verified)
+		}
+	}
+	if len(open) == 0 {
+		return nil, nil
+	}
+	if len(open) == 1 {
+		return open[0], nil
+	}
+	bases := make([]string, 0, len(open))
+	for _, candidate := range open {
+		bases = append(bases, candidate.branch)
+	}
+	sort.Strings(bases)
+	return nil, fmt.Errorf("multiple open pull requests found for head %s across persisted bases %s", candidates[0].sourceRun.Branch, strings.Join(bases, ", "))
+}
+
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
@@ -951,18 +1002,14 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	branchMu.Lock()
 	defer branchMu.Unlock()
 
-	if prBaseContinuity == nil {
-		runs, runsErr := m.db.GetRunsByRepo(repo.ID)
-		if runsErr != nil {
-			trackStartFailure("load_pr_base_continuity")
-			return "", fmt.Errorf("load previous runs: %w", runsErr)
-		}
-		for _, previous := range runs {
-			if previous.Branch == branch {
-				prBaseContinuity = runPRBaseContinuityForRun(previous, repo.DefaultBranch)
-				break
-			}
-		}
+	runs, runsErr := m.db.GetRunsByRepo(repo.ID)
+	if runsErr != nil {
+		trackStartFailure("load_pr_base_continuity")
+		return "", fmt.Errorf("load previous runs: %w", runsErr)
+	}
+	prBaseCandidates := distinctRunPRBaseContinuities(runs, branch, repo.DefaultBranch, prBaseContinuity)
+	if len(prBaseCandidates) > 0 {
+		prBaseContinuity = prBaseCandidates[0]
 	}
 
 	// Best-effort only: a clone's remotes may change after init. Refresh the
@@ -1112,17 +1159,13 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	if currentPRBaseBranch == "" {
 		currentPRBaseBranch = defaultBranch
 	}
-	if prBaseContinuity != nil && prBaseContinuity.branch != currentPRBaseBranch {
-		verifiedContinuity, verifyErr := m.verifyRerunPRBaseContinuity(ctx, repo, prBaseContinuity)
-		if verifyErr != nil {
-			m.db.UpdateRunError(run.ID, verifyErr.Error())
-			trackStartFailure("verify_rerun_pr_base_continuity")
-			return "", verifyErr
-		}
-		prBaseContinuity = verifiedContinuity
-	} else {
-		prBaseContinuity = nil
+	verifiedContinuity, verifyErr := m.verifyDistinctPRBaseContinuities(ctx, repo, prBaseCandidates, currentPRBaseBranch)
+	if verifyErr != nil {
+		m.db.UpdateRunError(run.ID, verifyErr.Error())
+		trackStartFailure("verify_rerun_pr_base_continuity")
+		return "", verifyErr
 	}
+	prBaseContinuity = verifiedContinuity
 	if prBaseContinuity != nil {
 		cfg.PR.BaseBranch = prBaseContinuity.branch
 		explicit := prBaseContinuity.explicit

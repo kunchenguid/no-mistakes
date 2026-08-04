@@ -278,6 +278,50 @@ func TestFindPRFiltersByBaseBranch(t *testing.T) {
 	}
 }
 
+func TestFindPRNoMatch(t *testing.T) {
+	t.Parallel()
+
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr list --source-branch feature --target-branch main --output json": {stdout: "[]\n"},
+	}), nil, "", "")
+	pr, err := host.FindPR(context.Background(), "feature", "main")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr != nil {
+		t.Fatalf("FindPR() PR = %+v, want nil", pr)
+	}
+}
+
+func TestFindPRRejectsMalformedSuccessfulResponses(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		stdout string
+	}{
+		{name: "chatter", stdout: "warning: incomplete response\n"},
+		{name: "null", stdout: "null\n"},
+		{name: "missing URL", stdout: `[{"iid":42}]` + "\n"},
+		{name: "mismatched IID", stdout: `[{"iid":41,"web_url":"https://gitlab.example.com/group/project/-/merge_requests/42"}]` + "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+				"glab mr list --source-branch feature --target-branch main --output json": {stdout: tc.stdout},
+			}), nil, "", "")
+
+			pr, err := host.FindPR(context.Background(), "feature", "main")
+			if err == nil || !strings.Contains(err.Error(), "parse glab mr list response") {
+				t.Fatalf("FindPR() error = %v, want parse error", err)
+			}
+			if pr != nil {
+				t.Fatalf("FindPR() PR = %+v, want nil", pr)
+			}
+		})
+	}
+}
+
 func TestFindPRReturnsCLIError(t *testing.T) {
 	t.Parallel()
 

@@ -198,6 +198,9 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	if err != nil {
 		return nil, fmt.Errorf("gh pr list: %s: %w", strings.TrimSpace(string(out)), err)
 	}
+	if strings.TrimSpace(string(out)) == "" {
+		return nil, nil
+	}
 	var prs []struct {
 		Number              int    `json:"number"`
 		URL                 string `json:"url"`
@@ -206,21 +209,24 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 			Login string `json:"login"`
 		} `json:"headRepositoryOwner"`
 	}
-	if err := json.Unmarshal(out, &prs); err != nil || len(prs) == 0 {
-		return nil, nil
+	if err := json.Unmarshal(out, &prs); err != nil {
+		return nil, fmt.Errorf("parse gh pr list response: %w", err)
+	}
+	if prs == nil {
+		return nil, errors.New("parse gh pr list response: expected a JSON array")
 	}
 	for _, candidate := range prs {
+		pr := &scm.PR{URL: strings.TrimSpace(candidate.URL)}
+		number, numberErr := scm.ExtractPRNumber(pr.URL)
+		if pr.URL == "" || numberErr != nil || candidate.Number <= 0 || number != fmt.Sprintf("%d", candidate.Number) {
+			return nil, errors.New("parse gh pr list response: invalid pull request")
+		}
+		pr.Number = number
+		if h.forkOwner != "" && (strings.TrimSpace(candidate.HeadRefName) == "" || candidate.HeadRepositoryOwner == nil || strings.TrimSpace(candidate.HeadRepositoryOwner.Login) == "") {
+			return nil, errors.New("parse gh pr list response: invalid pull request head")
+		}
 		if !h.matchesHead(candidate.HeadRefName, candidate.HeadRepositoryOwner, branch) {
 			continue
-		}
-		pr := &scm.PR{URL: strings.TrimSpace(candidate.URL)}
-		if candidate.Number > 0 {
-			pr.Number = fmt.Sprintf("%d", candidate.Number)
-		} else if num, nerr := scm.ExtractPRNumber(pr.URL); nerr == nil {
-			pr.Number = num
-		}
-		if pr.URL == "" {
-			return nil, nil
 		}
 		return pr, nil
 	}

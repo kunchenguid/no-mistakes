@@ -177,17 +177,29 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	}
 	trimmed := bytesTrimToJSON(out)
 	if len(trimmed) == 0 {
-		return nil, nil
+		if strings.TrimSpace(string(out)) == "" {
+			return nil, nil
+		}
+		return nil, errors.New("parse glab mr list response: expected a JSON array")
 	}
 	var mrs []mrPayload
-	if err := json.Unmarshal(trimmed, &mrs); err != nil || len(mrs) == 0 {
+	if err := json.Unmarshal(trimmed, &mrs); err != nil {
+		return nil, fmt.Errorf("parse glab mr list response: %w", err)
+	}
+	if mrs == nil {
+		return nil, errors.New("parse glab mr list response: expected a JSON array")
+	}
+	for _, candidate := range mrs {
+		pr := candidate.toPR()
+		number, numberErr := scm.ExtractPRNumber(pr.URL)
+		if pr.URL == "" || numberErr != nil || (candidate.IID > 0 && number != fmt.Sprintf("%d", candidate.IID)) {
+			return nil, errors.New("parse glab mr list response: invalid merge request")
+		}
+	}
+	if len(mrs) == 0 {
 		return nil, nil
 	}
-	pr := mrs[0].toPR()
-	if pr.URL == "" {
-		return nil, nil
-	}
-	return pr, nil
+	return mrs[0].toPR(), nil
 }
 
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {

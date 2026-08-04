@@ -640,6 +640,50 @@ func TestFindPRForkUsesBareHeadAndFiltersOwner(t *testing.T) {
 	}
 }
 
+func TestFindPRNoMatch(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr list --head feature --base main --state open --json number,url": {stdout: "[]\n"},
+	}), nil, "", "")
+	pr, err := host.FindPR(context.Background(), "feature", "main")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr != nil {
+		t.Fatalf("FindPR() PR = %+v, want nil", pr)
+	}
+}
+
+func TestFindPRRejectsMalformedSuccessfulResponses(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		stdout string
+	}{
+		{name: "chatter", stdout: "warning: incomplete response\n"},
+		{name: "null", stdout: "null\n"},
+		{name: "missing URL", stdout: `[{"number":42}]` + "\n"},
+		{name: "mismatched number", stdout: `[{"number":41,"url":"https://github.com/org/repo/pull/42"}]` + "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			host := New(githubTestCmdFactory(map[string]githubTestResponse{
+				"gh pr list --head feature --base main --state open --json number,url": {stdout: tc.stdout},
+			}), nil, "", "")
+
+			pr, err := host.FindPR(context.Background(), "feature", "main")
+			if err == nil || !strings.Contains(err.Error(), "parse gh pr list response") {
+				t.Fatalf("FindPR() error = %v, want parse error", err)
+			}
+			if pr != nil {
+				t.Fatalf("FindPR() PR = %+v, want nil", pr)
+			}
+		})
+	}
+}
+
 func TestFindPRReturnsCLIError(t *testing.T) {
 	t.Parallel()
 
