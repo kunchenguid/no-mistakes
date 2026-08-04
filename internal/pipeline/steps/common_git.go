@@ -2,7 +2,9 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -86,6 +88,8 @@ func resolveRunDefaultBranchTip(ctx context.Context, sctx *pipeline.StepContext,
 	return sha, resolved
 }
 
+var errExplicitPRBaseInvariant = errors.New("explicit PR base invariant violated")
+
 func validateExplicitPRBase(ctx context.Context, sctx *pipeline.StepContext) error {
 	if sctx == nil || sctx.Config == nil || !sctx.Config.PR.HasExplicitBaseBranch() {
 		return nil
@@ -98,6 +102,15 @@ func validateExplicitPRBase(ctx context.Context, sctx *pipeline.StepContext) err
 		return fmt.Errorf("configured pr.base_branch %q could not be resolved", pipelineBaseBranch(sctx))
 	}
 	return nil
+}
+
+func explicitPRBaseInvariantFailed(err error) bool {
+	return errors.Is(err, errExplicitPRBaseInvariant)
+}
+
+func gitExitedWithCode(err error, code int) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == code
 }
 
 func refreshRunBaseBranchTip(ctx context.Context, sctx *pipeline.StepContext, fallbackBaseSHA, baseBranch string) (string, bool, error) {
@@ -133,16 +146,22 @@ func refreshRunBaseBranchTip(ctx context.Context, sctx *pipeline.StepContext, fa
 	sha = strings.TrimSpace(sha)
 	if explicit {
 		mergeBase, mergeErr := git.Run(ctx, sctx.WorkDir, "merge-base", "HEAD", sha)
-		if mergeErr != nil || strings.TrimSpace(mergeBase) == "" {
-			if mergeErr != nil {
-				return fallback, false, fmt.Errorf("configured pr.base_branch %q has no usable shared history with HEAD after refresh: %w", baseBranch, mergeErr)
+		if mergeErr != nil {
+			if gitExitedWithCode(mergeErr, 1) {
+				return fallback, false, fmt.Errorf("%w: configured pr.base_branch %q has no usable shared history with HEAD after refresh: %v", errExplicitPRBaseInvariant, baseBranch, mergeErr)
 			}
-			return fallback, false, fmt.Errorf("configured pr.base_branch %q has no usable shared history with HEAD after refresh", baseBranch)
+			return fallback, false, fmt.Errorf("check configured pr.base_branch %q shared history with HEAD after refresh: %w", baseBranch, mergeErr)
+		}
+		if strings.TrimSpace(mergeBase) == "" {
+			return fallback, false, fmt.Errorf("configured pr.base_branch %q shared history with HEAD could not be verified after refresh", baseBranch)
 		}
 		snapshot := strings.TrimSpace(sctx.Config.PR.ResolvedBaseSHA)
 		if snapshot != "" {
 			if _, ancestorErr := git.Run(ctx, sctx.WorkDir, "merge-base", "--is-ancestor", snapshot, sha); ancestorErr != nil {
-				return fallback, false, fmt.Errorf("configured pr.base_branch %q moved behind or away from immutable run snapshot %s (refreshed tip %s): %w", baseBranch, snapshot, sha, ancestorErr)
+				if gitExitedWithCode(ancestorErr, 1) {
+					return fallback, false, fmt.Errorf("%w: configured pr.base_branch %q moved behind or away from immutable run snapshot %s (refreshed tip %s): %v", errExplicitPRBaseInvariant, baseBranch, snapshot, sha, ancestorErr)
+				}
+				return fallback, false, fmt.Errorf("verify configured pr.base_branch %q against immutable run snapshot %s (refreshed tip %s): %w", baseBranch, snapshot, sha, ancestorErr)
 			}
 		}
 	}

@@ -101,6 +101,9 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	switch {
 	case decision.newBranch:
 		// New branch: regular push (no force needed).
+		if err := validateExplicitPRBase(ctx, sctx); err != nil {
+			return nil, err
+		}
 		if err := git.PushCommit(ctx, sctx.WorkDir, pushURL, headBeingPushed, ref, "", false); err != nil {
 			return nil, fmt.Errorf("push to %s: %w", pushTarget, err)
 		}
@@ -109,6 +112,9 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		// successful binding even though no objects needed to move.
 	default:
 		// Existing branch: force-with-lease anchored to the verified remote head.
+		if err := validateExplicitPRBase(ctx, sctx); err != nil {
+			return nil, err
+		}
 		if err := git.PushCommit(ctx, sctx.WorkDir, pushURL, headBeingPushed, ref, decision.remoteSHA, true); err != nil {
 			return nil, fmt.Errorf("push to %s: %w", pushTarget, err)
 		}

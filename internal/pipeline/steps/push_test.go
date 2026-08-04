@@ -166,6 +166,36 @@ func TestAssertReviewApprovedPushHead_RefusesMissingLegacyState(t *testing.T) {
 	}
 }
 
+func TestPushStep_RevalidatesConfiguredBaseAfterForcePushDecision(t *testing.T) {
+	dir, upstream, baseSHA, headSHA, snapshotSHA := setupConfiguredBaseRewrite(t, "")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "git")
+	t.Setenv("FAKE_CLI_MODE", "git-reset-base-on-ls-remote-passthrough")
+	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
+	t.Setenv("FAKE_CLI_RESET_BASE_SOURCE", baseSHA)
+	t.Setenv("FAKE_CLI_RESET_BASE_BRANCH", "quality-assurance")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.Config.PR.BaseBranch = "quality-assurance"
+	sctx.Config.PR.ResolvedBaseSHA = snapshotSHA
+	recordReviewApproval(t, sctx, headSHA)
+
+	_, err = (&PushStep{}).Execute(sctx)
+	if err == nil || !strings.Contains(err.Error(), "immutable run snapshot") {
+		t.Fatalf("push did not reject configured-base reset during force-push decision: %v", err)
+	}
+	if _, err := exec.Command(realGit, "--git-dir="+upstream, "rev-parse", "--verify", "refs/heads/feature").CombinedOutput(); err == nil {
+		t.Fatal("push mutated the feature branch after configured-base reset")
+	}
+}
+
 func TestPushStep_BindsRemoteAndDatabaseToVerifiedCommitWhenHEADMovesDuringPush(t *testing.T) {
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")

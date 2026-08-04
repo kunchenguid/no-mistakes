@@ -178,6 +178,27 @@ func TestCIStep_ReconcileRejectsOpenPRBaseMovingBehindSnapshot(t *testing.T) {
 	}
 }
 
+func TestCIStep_ReconcileKeepsTransientConfiguredBaseFetchFailureRetryable(t *testing.T) {
+	dir, _, baseSHA, headSHA, snapshotSHA := setupConfiguredBaseRewrite(t, "")
+	missingUpstream := filepath.Join(t.TempDir(), "unavailable.git")
+	gitCmd(t, dir, "remote", "set-url", "origin", missingUpstream)
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeCIGHMergeable(t, "OPEN", `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`, "MERGEABLE")
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = missingUpstream
+	sctx.Config.PR.BaseBranch = "quality-assurance"
+	sctx.Config.PR.ResolvedBaseSHA = snapshotSHA
+
+	resolved, err := (&CIStep{}).ReconcileApprovalGate(sctx)
+	if resolved || err == nil || errors.Is(err, pipeline.ErrFatalGateReconciliation) {
+		t.Fatalf("transient configured-base fetch failure classification: resolved=%t err=%v", resolved, err)
+	}
+	if !strings.Contains(err.Error(), "could not be fetched") {
+		t.Fatalf("expected configured-base fetch error, got %v", err)
+	}
+}
+
 func TestCIStep_ObservesTerminalPRBeforeRefreshingDeletedConfiguredBase(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	prURL := "https://github.com/test/repo/pull/42"

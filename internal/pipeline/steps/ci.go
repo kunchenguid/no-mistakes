@@ -114,7 +114,10 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 			return false, err
 		}
 		if err := validateExplicitPRBase(sctx.Ctx, sctx); err != nil {
-			return false, fmt.Errorf("%w: %w", pipeline.ErrFatalGateReconciliation, err)
+			if explicitPRBaseInvariantFailed(err) {
+				return false, fmt.Errorf("%w: %w", pipeline.ErrFatalGateReconciliation, err)
+			}
+			return false, err
 		}
 		return false, nil
 	default:
