@@ -524,6 +524,55 @@ func TestCIStep_PersistentCheckReadFailureParksAtAskUser(t *testing.T) {
 	}
 }
 
+func TestCIStep_CheckReadFailureCounterResetsAfterSuccessfulRead(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	// Five read failures, a green read, then one more failure: the success must
+	// reset the consecutive counter, or the sixth cumulative error would wrongly
+	// park a run whose failures were only transient blips.
+	checksSequence := []string{
+		`not-json`, `not-json`, `not-json`, `not-json`, `not-json`,
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
+		`not-json`,
+	}
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 60 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	waits := 0
+	step := &CIStep{
+		baseBranchTip: func(context.Context) (string, bool) { return baseSHA, true },
+		waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
+			waits++
+			if waits == 8 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err == nil && outcome != nil && outcome.NeedsApproval {
+		t.Fatalf("a successful read must reset the consecutive failure counter; parked after transient failures: %s", outcome.Findings)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected monitoring to continue past the reset, got outcome=%v err=%v", outcome, err)
+	}
+}
+
 func TestCIStep_CIWarningClearsPersistedReadiness(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
