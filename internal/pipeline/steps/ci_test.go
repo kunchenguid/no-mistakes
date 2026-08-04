@@ -472,7 +472,11 @@ func TestCIStep_PersistentCheckReadFailureParksAtAskUser(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Config.CITimeout = 10 * time.Second
+	// Six consecutive failed polls must park before the timeout. Each poll
+	// spawns three fake-gh subprocesses (~0.8s each under -race), so reaching
+	// consecutiveCheckErrorLimit takes ~14s on a fast machine; give the loop
+	// ample headroom so the timeout never races the streak.
+	sctx.Config.CITimeout = 60 * time.Second
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -483,7 +487,9 @@ func TestCIStep_PersistentCheckReadFailureParksAtAskUser(t *testing.T) {
 
 	step := &CIStep{
 		// No sleep between polls so the consecutive-failure streak accumulates
-		// within the short test timeout instead of wedging on the 30s poll.
+		// quickly instead of wedging on the 30s poll, and a stable base tip so
+		// each poll does not pay a real git fetch (slow under -race on loaded CI).
+		baseBranchTip:   func(context.Context) (string, bool) { return baseSHA, true },
 		waitForNextPoll: func(ctx context.Context, _ time.Duration) error { return nil },
 	}
 	outcome, err := step.Execute(sctx)
