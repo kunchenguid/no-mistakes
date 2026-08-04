@@ -176,6 +176,24 @@ func (s *captureRerunPRStep) Execute(sctx *pipeline.StepContext) (*pipeline.Step
 	return s.Step.Execute(sctx)
 }
 
+type capturedBaseRef struct {
+	sha string
+	err error
+}
+
+type captureBaseRefStep struct {
+	branch string
+	seen   chan<- capturedBaseRef
+}
+
+func (s *captureBaseRefStep) Name() types.StepName { return types.StepIntent }
+
+func (s *captureBaseRefStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	sha, err := git.ResolveRef(sctx.Ctx, sctx.WorkDir, "refs/remotes/origin/"+s.branch)
+	s.seen <- capturedBaseRef{sha: sha, err: err}
+	return &pipeline.StepOutcome{ExitCode: 0}, nil
+}
+
 type cancellationPRContinuityStep struct {
 	mu          sync.Mutex
 	calls       int
@@ -463,6 +481,148 @@ func TestReplacementPreservesCurrentExplicitSemanticsForImplicitOpenPR(t *testin
 	captured := <-seen
 	if captured.baseBranch != "main" || !captured.baseExplicit || captured.resolvedBaseSHA != mainSHA {
 		t.Fatalf("replacement pipeline config = %+v, want explicit main at %s", captured, mainSHA)
+	}
+}
+
+func TestReplacementPreservesOpenPRBeforeValidatingNewTarget(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, _ := setupTestGitRepo(t, p, database, "replacement-invalid-new-pr-base")
+
+	configPath := filepath.Join(repo.WorkingPath, ".no-mistakes.yaml")
+	if err := os.WriteFile(configPath, []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\npr:\n  base_branch: quality-assurance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", configPath)
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "target QA")
+	baseSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "branch", "quality-assurance")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main", "quality-assurance")
+
+	gitCmd(t, repo.WorkingPath, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "feature.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "feature")
+	headSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "feature")
+	previous, err := database.InsertRun(repo.ID, "feature", headSHA, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(previous.ID, "quality-assurance", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRURL(previous.ID, "https://github.com/test/repo/pull/42"); err != nil {
+		t.Fatal(err)
+	}
+
+	gitCmd(t, repo.WorkingPath, "checkout", "-B", "main", baseSHA)
+	if err := os.WriteFile(configPath, []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\npr:\n  base_branch: missing-staging\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", configPath)
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "target missing staging")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "HEAD:refs/heads/main")
+
+	binDir, ghLog := writeRerunPRBaseMockGH(t, "quality-assurance", "")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	seen := make(chan capturedRerunPRConfig, 1)
+	manager := NewRunManager(database, p, func() []pipeline.Step {
+		return []pipeline.Step{&captureRerunPRStep{Step: &steps.PRStep{}, seen: seen}}
+	})
+	t.Cleanup(manager.Shutdown)
+
+	runID, err := manager.startRun(context.Background(), repo, "feature", headSHA, baseSHA, "push", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := waitForRunTerminalState(t, database, runID)
+	if run.Status != types.RunCompleted || run.PRBaseBranch == nil || *run.PRBaseBranch != "quality-assurance" {
+		t.Fatalf("replacement run = status %s, base %v, error %v; want completed on quality-assurance", run.Status, run.PRBaseBranch, run.Error)
+	}
+	if captured := <-seen; captured.baseBranch != "quality-assurance" {
+		t.Fatalf("pipeline PR base = %q, want quality-assurance", captured.baseBranch)
+	}
+	logBytes, err := os.ReadFile(ghLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logText := string(logBytes); !strings.Contains(logText, "--base quality-assurance") || strings.Contains(logText, "--base missing-staging") {
+		t.Fatalf("replacement continuity lookup = %s", logText)
+	}
+}
+
+func TestReplacementRefreshesInheritedImplicitBaseBeforeSkippedRebase(t *testing.T) {
+	t.Setenv("NM_DEMO", "1")
+	p, database := newRefreshRunFixture(t)
+	repo, initialSHA := setupTestGitRepo(t, p, database, "replacement-inherited-implicit-base")
+
+	gitCmd(t, repo.WorkingPath, "checkout", "-b", "quality-assurance", initialSHA)
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "qa.txt"), []byte("old QA\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "qa.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "old QA")
+	oldQASHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "quality-assurance")
+	gitCmd(t, repo.WorkingPath, "reset", "--hard", initialSHA)
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "qa.txt"), []byte("rewritten QA\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "qa.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "rewrite QA")
+	qaSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "--force", "gate", "quality-assurance")
+	gitCmd(t, p.RepoDir(repo.ID), "update-ref", "refs/remotes/origin/quality-assurance", oldQASHA)
+
+	gitCmd(t, repo.WorkingPath, "checkout", "-B", "main", initialSHA)
+	configPath := filepath.Join(repo.WorkingPath, ".no-mistakes.yaml")
+	if err := os.WriteFile(configPath, []byte("auto_fix:\n  lint: 0\n  test: 0\n  review: 0\npr:\n  base_branch: staging\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", configPath)
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "target staging")
+	gitCmd(t, repo.WorkingPath, "branch", "staging")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "main", "staging")
+	gitCmd(t, repo.WorkingPath, "checkout", "-B", "feature")
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo.WorkingPath, "add", "feature.txt")
+	gitCmd(t, repo.WorkingPath, "commit", "-m", "feature")
+	headSHA := gitOutput(t, repo.WorkingPath, "rev-parse", "HEAD")
+	gitCmd(t, repo.WorkingPath, "push", "gate", "feature")
+	previous, err := database.InsertRun(repo.ID, "feature", headSHA, initialSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(previous.ID, "quality-assurance", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRURL(previous.ID, "https://github.com/test/repo/pull/42"); err != nil {
+		t.Fatal(err)
+	}
+
+	binDir, _ := writeRerunPRBaseMockGH(t, "quality-assurance", "")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	seen := make(chan capturedBaseRef, 1)
+	manager := NewRunManager(database, p, func() []pipeline.Step {
+		return []pipeline.Step{&captureBaseRefStep{branch: "quality-assurance", seen: seen}}
+	})
+	t.Cleanup(manager.Shutdown)
+
+	runID, err := manager.startRun(context.Background(), repo, "feature", headSHA, initialSHA, "push", []types.StepName{types.StepRebase}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run := waitForRunTerminalState(t, database, runID); run.Status != types.RunCompleted || run.PRBaseBranch == nil || *run.PRBaseBranch != "quality-assurance" || run.PRBaseBranchExplicit {
+		t.Fatalf("replacement run = %+v, want completed implicit quality-assurance", run)
+	}
+	captured := <-seen
+	if captured.err != nil || captured.sha != qaSHA {
+		t.Fatalf("inherited base before Intent = %q, %v; want %s", captured.sha, captured.err, qaSHA)
 	}
 }
 
@@ -1380,6 +1540,14 @@ func TestLoadRecoveredConfig_ResolvesLegacyOpenPRBaseAfterDefaultRename(t *testi
 	workDir := t.TempDir()
 	gitCmd(t, workDir, "clone", upstream, ".")
 	gitCmd(t, workDir, "checkout", "feature")
+	gitCmd(t, seed, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(seed, "main.txt"), []byte("rewritten main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "main.txt")
+	gitCmd(t, seed, "commit", "-m", "rewrite main")
+	mainSHA := gitOutput(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", "origin", "main")
 	repo, err := database.InsertRepoWithID("legacy-recovery", seed, upstream, "trunk")
 	if err != nil {
 		t.Fatal(err)
@@ -1419,6 +1587,9 @@ func TestLoadRecoveredConfig_ResolvesLegacyOpenPRBaseAfterDefaultRename(t *testi
 	}
 	if persisted.PRBaseBranch == nil || *persisted.PRBaseBranch != "main" || persisted.PRBaseBranchExplicit {
 		t.Fatalf("persisted recovered PR base = %v (explicit %t), want main (unset)", persisted.PRBaseBranch, persisted.PRBaseBranchExplicit)
+	}
+	if got := gitOutput(t, workDir, "rev-parse", "refs/remotes/origin/main"); got != mainSHA {
+		t.Fatalf("recovered implicit base ref = %s, want refreshed %s", got, mainSHA)
 	}
 	logBytes, err := os.ReadFile(ghLog)
 	if err != nil {

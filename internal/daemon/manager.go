@@ -258,6 +258,18 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 		cfg.PR.BaseBranchExplicit = &explicit
 		if !explicit {
 			cfg.PR.ResolvedBaseSHA = ""
+			currentTarget := currentBase
+			if currentTarget == "" {
+				currentTarget = strings.TrimSpace(repo.DefaultBranch)
+			}
+			if persistedBase.branch != currentTarget {
+				fetchCtx, cancel := context.WithTimeout(ctx, recoveredConfigFetchTimeout)
+				err = resolveInheritedImplicitPRBaseBranch(fetchCtx, workDir, repo, persistedBase.branch)
+				cancel()
+				if err != nil {
+					return nil, err
+				}
+			}
 			return cfg, nil
 		}
 
@@ -788,6 +800,27 @@ func ensureConfiguredPRBaseBranch(ctx context.Context, workDir string, repo *db.
 	return resolveConfiguredPRBaseBranch(ctx, workDir, repo, cfg, git.RunPRBaseRef(runID), true)
 }
 
+func resolveInheritedImplicitPRBaseBranch(ctx context.Context, workDir string, repo *db.Repo, branch string) error {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return fmt.Errorf("inherited pull request base branch is empty")
+	}
+	validated, err := git.Run(ctx, workDir, "check-ref-format", "--branch", branch)
+	if err != nil || strings.TrimSpace(validated) != branch || strings.HasPrefix(branch, "refs/") {
+		if err != nil {
+			return fmt.Errorf("inherited pull request base branch %q is not a valid short Git branch name: %w", branch, err)
+		}
+		return fmt.Errorf("inherited pull request base branch %q is not a valid short Git branch name", branch)
+	}
+	if err := fetchRunUpstreamBranch(ctx, workDir, repo, branch); err != nil {
+		return fmt.Errorf("inherited pull request base branch %q could not be fetched from the upstream repository: %w", branch, err)
+	}
+	if _, err := git.ResolveRef(ctx, workDir, "refs/remotes/origin/"+branch); err != nil {
+		return fmt.Errorf("inherited pull request base branch %q did not resolve after fetch: %w", branch, err)
+	}
+	return nil
+}
+
 func resolveConfiguredPRBaseBranch(ctx context.Context, workDir string, repo *db.Repo, cfg *config.Config, ref string, fetch bool) error {
 	if cfg == nil {
 		return nil
@@ -1240,11 +1273,6 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
-	if err := ensureConfiguredPRBaseBranch(ctx, wtDir, repo, cfg, run.ID); err != nil {
-		m.db.UpdateRunError(run.ID, err.Error())
-		trackStartFailure("resolve_pr_base_branch")
-		return "", err
-	}
 	defaultBranch := strings.TrimSpace(repo.DefaultBranch)
 	if failure, err := configuredPRBaseBranchGuard(branch, defaultBranch, cfg); err != nil {
 		m.db.UpdateRunError(run.ID, err.Error())
@@ -1269,7 +1297,15 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		}
 		cfg.PR.BaseBranch = prBaseContinuity.branch
 		cfg.PR.BaseBranchExplicit = &explicit
+	}
+	if cfg.PR.HasExplicitBaseBranch() {
 		if err := ensureConfiguredPRBaseBranch(ctx, wtDir, repo, cfg, run.ID); err != nil {
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("resolve_pr_base_branch")
+			return "", err
+		}
+	} else if prBaseContinuity != nil && strings.TrimSpace(prBaseContinuity.branch) != currentPRBaseBranch {
+		if err := resolveInheritedImplicitPRBaseBranch(ctx, wtDir, repo, prBaseContinuity.branch); err != nil {
 			m.db.UpdateRunError(run.ID, err.Error())
 			trackStartFailure("resolve_continuity_pr_base_branch")
 			return "", err
