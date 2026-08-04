@@ -1,10 +1,34 @@
 package git
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
+
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 )
+
+type environmentContextKey struct{}
+
+// WithEnvironment freezes an environment overlay into ctx for Git commands
+// and any hooks or credential helpers they spawn.
+func WithEnvironment(ctx context.Context, overlay runenv.Overlay) context.Context {
+	if overlay.Empty() {
+		return ctx
+	}
+	return context.WithValue(ctx, environmentContextKey{}, overlay.Clone())
+}
+
+func nonInteractiveEnvForContext(ctx context.Context, dir string) []string {
+	base := os.Environ()
+	if ctx != nil {
+		if overlay, ok := ctx.Value(environmentContextKey{}).(runenv.Overlay); ok {
+			base = overlay.Apply(base)
+		}
+	}
+	return NonInteractiveEnvFrom(base, dir)
+}
 
 // NonInteractiveEnv returns the environment for a subprocess that may invoke
 // git, with git forced into a fully non-interactive mode. It is intended for

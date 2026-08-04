@@ -12,8 +12,10 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/forgecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/runenv"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -575,6 +577,67 @@ func TestStepCmd_OverridesPathWithoutDuplicateEntries(t *testing.T) {
 	}
 	if pathCount != 1 {
 		t.Fatalf("expected exactly one PATH entry, got %d in %v", pathCount, cmd.Env)
+	}
+}
+
+func TestStepCmd_AppliesRunForgeEnvironmentAfterInjectedEnvironment(t *testing.T) {
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Env: []string{
+			"GH_TOKEN=injected",
+			"GH_CONFIG_DIR=/injected",
+			"KEEP=value",
+		},
+		ForgeContext: &forgecontext.Context{Environment: runenv.Overlay{
+			Set:   map[string]string{"GH_CONFIG_DIR": "/profiles/personal"},
+			Unset: []string{"GH_TOKEN"},
+		}},
+	}
+
+	cmd := stepCmd(sctx, filepath.Join(string(filepath.Separator), "usr", "bin", "env"))
+	values := make(map[string]string)
+	for _, entry := range cmd.Env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	if _, exists := values["GH_TOKEN"]; exists {
+		t.Fatal("injected GH_TOKEN survived run forge environment")
+	}
+	if values["GH_CONFIG_DIR"] != "/profiles/personal" {
+		t.Fatalf("GH_CONFIG_DIR = %q, want /profiles/personal", values["GH_CONFIG_DIR"])
+	}
+	if values["KEEP"] != "value" {
+		t.Fatalf("unrelated value = %q, want value", values["KEEP"])
+	}
+}
+
+func TestStepCmdPreservesAmbientMultiAccountSelectionWithoutProfiles(t *testing.T) {
+	profileDir := t.TempDir()
+	hosts := "github.com:\n    users:\n        personal:\n        work:\n    user: work\n"
+	if err := os.WriteFile(filepath.Join(profileDir, "hosts.yml"), []byte(hosts), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sctx := &pipeline.StepContext{
+		Ctx:     context.Background(),
+		WorkDir: t.TempDir(),
+		Env: []string{
+			"GH_CONFIG_DIR=" + profileDir,
+			"GH_TOKEN=ambient-active-account-token",
+		},
+	}
+
+	values := make(map[string]string)
+	for _, entry := range stepCmd(sctx, filepath.Join(string(filepath.Separator), "usr", "bin", "env")).Env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	if values["GH_CONFIG_DIR"] != profileDir || values["GH_TOKEN"] != "ambient-active-account-token" {
+		t.Fatalf("profile-free run changed ambient GitHub account selection: %#v", values)
 	}
 }
 

@@ -37,6 +37,20 @@ func DetectProviderContext(ctx context.Context, url string) Provider {
 	return detectProvider(ctx, url, lookupSSHHostname)
 }
 
+// DetectProviderStaticContext identifies providers from the remote URL and
+// SSH HostName resolution without consulting ambient gh or glab configuration.
+// It is used when a caller already selected an explicit provider profile.
+func DetectProviderStaticContext(ctx context.Context, url string) Provider {
+	if provider := detectKnownProvider(url); provider != ProviderUnknown {
+		return provider
+	}
+	host := resolveHost(ctx, url, lookupSSHHostname)
+	if host == "" || strings.EqualFold(host, ExtractHost(url)) {
+		return ProviderUnknown
+	}
+	return detectKnownProvider(host)
+}
+
 func detectProvider(ctx context.Context, url string, lookup sshHostnameLookup) Provider {
 	if provider := detectProviderWithoutSSH(url); provider != ProviderUnknown {
 		return provider
@@ -50,18 +64,8 @@ func detectProvider(ctx context.Context, url string, lookup sshHostnameLookup) P
 }
 
 func detectProviderWithoutSSH(url string) Provider {
-	lower := strings.ToLower(url)
-	switch {
-	case strings.Contains(lower, "github.com"):
-		return ProviderGitHub
-	case strings.Contains(lower, "gitlab.com") || strings.Contains(lower, "gitlab."):
-		return ProviderGitLab
-	case strings.Contains(lower, "bitbucket.org"):
-		return ProviderBitbucket
-	case strings.Contains(lower, "dev.azure.com") || strings.Contains(lower, "visualstudio.com"):
-		// Covers dev.azure.com, ssh.dev.azure.com, {org}.visualstudio.com, and
-		// the legacy vs-ssh.visualstudio.com SSH host.
-		return ProviderAzureDevOps
+	if provider := detectKnownProvider(url); provider != ProviderUnknown {
+		return provider
 	}
 
 	// Fallback for self-hosted GitLab instances whose hostname carries no
@@ -82,6 +86,23 @@ func detectProviderWithoutSSH(url string) Provider {
 		}
 	}
 
+	return ProviderUnknown
+}
+
+func detectKnownProvider(url string) Provider {
+	lower := strings.ToLower(url)
+	switch {
+	case strings.Contains(lower, "github.com"):
+		return ProviderGitHub
+	case strings.Contains(lower, "gitlab.com") || strings.Contains(lower, "gitlab."):
+		return ProviderGitLab
+	case strings.Contains(lower, "bitbucket.org"):
+		return ProviderBitbucket
+	case strings.Contains(lower, "dev.azure.com") || strings.Contains(lower, "visualstudio.com"):
+		// Covers dev.azure.com, ssh.dev.azure.com, {org}.visualstudio.com, and
+		// the legacy vs-ssh.visualstudio.com SSH host.
+		return ProviderAzureDevOps
+	}
 	return ProviderUnknown
 }
 

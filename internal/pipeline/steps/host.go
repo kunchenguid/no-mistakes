@@ -13,6 +13,27 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm/gitlab"
 )
 
+// resolvedProvider returns the run-scoped provider selected by forge profile
+// routing. Runs without a selected profile retain the legacy URL-based
+// detection, including the PR URL fallback used during recovery.
+func resolvedProvider(sctx *pipeline.StepContext) scm.Provider {
+	if sctx.ForgeContext != nil {
+		return sctx.ForgeContext.Provider
+	}
+	provider := scm.DetectProviderContext(sctx.Ctx, sctx.Repo.UpstreamURL)
+	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
+		provider = scm.DetectProviderContext(sctx.Ctx, *sctx.Run.PRURL)
+	}
+	return provider
+}
+
+func resolvedHost(sctx *pipeline.StepContext, remote string) string {
+	if sctx.ForgeContext != nil && sctx.ForgeContext.Host != "" {
+		return sctx.ForgeContext.Host
+	}
+	return scm.ResolveHost(sctx.Ctx, remote)
+}
+
 // buildHost returns a scm.Host for the given provider, wired to sctx's
 // working directory and environment. When the host cannot be constructed
 // (unknown provider, missing Bitbucket config, etc) it returns nil and a
@@ -30,10 +51,10 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		// the upstream remote URL is unavailable. The hostname also scopes
 		// the auth-status check so a stale token on any other configured gh
 		// host cannot make this repo look unauthenticated.
-		host := scm.ResolveHost(sctx.Ctx, sctx.Repo.UpstreamURL)
+		host := resolvedHost(sctx, sctx.Repo.UpstreamURL)
 		repo := github.HostPrefixedSlugForHost(sctx.Repo.UpstreamURL, host)
 		if repo == "" && sctx.Run.PRURL != nil {
-			prHost := scm.ResolveHost(sctx.Ctx, *sctx.Run.PRURL)
+			prHost := resolvedHost(sctx, *sctx.Run.PRURL)
 			repo = github.HostPrefixedSlugForHost(*sctx.Run.PRURL, prHost)
 			if host == "" {
 				host = prHost
@@ -56,7 +77,7 @@ func buildHost(sctx *pipeline.StepContext, provider scm.Provider) (scm.Host, str
 		return gitlab.New(
 			cmdFactory,
 			func() bool { return stepCLIAvailable(sctx, provider) },
-			scm.ResolveHost(sctx.Ctx, sctx.Repo.UpstreamURL),
+			resolvedHost(sctx, sctx.Repo.UpstreamURL),
 			gitlab.ProjectPath(sctx.Repo.UpstreamURL),
 		), ""
 	case scm.ProviderBitbucket:

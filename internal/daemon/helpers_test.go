@@ -357,7 +357,7 @@ func writeMockGHState(t *testing.T, dir, state string) (string, string) {
 	logPath := filepath.Join(dir, "gh.log")
 	if runtime.GOOS == "windows" {
 		path := filepath.Join(dir, "gh.bat")
-		script := "@echo off\r\necho %*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status\" >nul && exit /b 0\r\necho %* | findstr /C:\"pr view 42\" >nul && (echo " + state + "& exit /b 0)\r\nexit /b 1\r\n"
+		script := "@echo off\r\necho env:%GH_CONFIG_DIR% token:%GH_TOKEN%>>\"" + logPath + "\"\r\necho %*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status\" >nul && exit /b 0\r\necho %* | findstr /C:\"pr view 42\" >nul && (echo " + state + "& exit /b 0)\r\nexit /b 1\r\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -365,6 +365,7 @@ func writeMockGHState(t *testing.T, dir, state string) (string, string) {
 	}
 	path := filepath.Join(dir, "gh")
 	script := `#!/bin/sh
+printf 'env:%s token:%s\n' "$GH_CONFIG_DIR" "${GH_TOKEN:+set}" >>` + shellQuoteForTest(logPath) + `
 printf '%s\n' "$*" >>` + shellQuoteForTest(logPath) + `
 case "$*" in
   "auth status"*|"auth status --hostname "*) exit 0 ;;
@@ -419,4 +420,33 @@ func waitForRunTerminalState(t *testing.T, d *db.DB, runID string) *db.Run {
 	}
 	t.Fatalf("run %s did not reach terminal state", runID)
 	return nil
+}
+
+// shutdownTestDaemonAndWaitForCleanup turns daemon shutdown into a lifecycle
+// barrier for tests that inspect its filesystem. A run's terminal DB status is
+// persisted before its owner goroutine removes the worktree, while shutdown
+// waits for every run goroutine before removing the socket.
+func shutdownTestDaemonAndWaitForCleanup(t *testing.T, p *paths.Paths) {
+	t.Helper()
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatalf("dial daemon for shutdown: %v", err)
+	}
+	if err := client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil); err != nil {
+		client.Close()
+		t.Fatalf("shut down daemon: %v", err)
+	}
+	client.Close()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(p.Socket()); os.IsNotExist(err) {
+			return
+		} else if err != nil {
+			t.Fatalf("stat daemon socket during shutdown: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("daemon did not finish cleanup within 3s")
 }
