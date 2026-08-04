@@ -266,7 +266,7 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 
 **Active for GitHub, GitLab, Forgejo, Bitbucket Cloud (`bitbucket.org`), and Azure DevOps (`dev.azure.com` / `*.visualstudio.com`)**.
 
-- GitHub requires `gh` CLI, installed and authenticated.
+- GitHub requires `gh` CLI, installed and authenticated, version >= 2.50 (older versions reject the `gh pr checks --json` call the monitor reads checks with).
 - GitLab requires `glab` CLI, installed and authenticated.
 - Forgejo requires `forgejo-axi`, installed and authenticated.
 - Bitbucket Cloud requires `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`.
@@ -276,6 +276,7 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 
 - Polls provider CI status at increasing intervals: every 30s for the first 5 minutes, every 60s for 5-15 minutes, every 120s after that
 - Continues its normal monitoring loop until the PR is merged, closed, declined, or the configured `ci_timeout` idle window elapses, then parks at an approval gate instead of ending the run
+- If the provider check read keeps failing (6 consecutive polls while the PR is still open), parks at an ask-user approval gate instead of spinning invisibly to `ci_timeout`; the finding names the cause (e.g. `gh` < 2.50 rejecting `gh pr checks --json`), and the streak resets as soon as one read succeeds
 - The [`ci_timeout` reference](/no-mistakes/reference/global-config/#ci_timeout) owns idle re-arming, unlimited monitoring, and fail-closed reconciliation while that gate is parked
 - On GitHub, GitLab, Forgejo, and Azure DevOps, polls provider mergeability alongside CI checks while the PR remains open
 - On GitHub, combines the exact current PR head commit's check rollup with Actions workflow runs for that same commit, so a workflow rejected during validation before it creates a job or check-run still blocks readiness
