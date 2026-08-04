@@ -157,6 +157,15 @@ func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
 	}
 	runs, err := i.DB.GetActiveRuns()
 	if err != nil {
+		// A DB created before the review_approved_head_sha migration (pre-v1.42.0)
+		// makes this read-side query fail with "no such column". This metadata is
+		// advisory (the refusal does not depend on it), and with the daemon down
+		// there is no live agent-step ancestry to detect. Degrade to empty so the
+		// daemon can start and its authoritative open can run the migration; still
+		// propagate genuine DB errors.
+		if strings.Contains(err.Error(), "no such column") {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("gate execution context: list active runs: %w", err)
 	}
 	var out []activeAgentStep
