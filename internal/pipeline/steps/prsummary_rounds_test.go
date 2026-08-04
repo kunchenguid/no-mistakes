@@ -195,7 +195,7 @@ func TestBuildPipelineSummary_UsesFinalFindingsWithoutInitialRoundData(t *testin
 	}
 }
 
-func TestBuildPipelineSummary_FailedTestRoundOmitsStepScopedTestedDetails(t *testing.T) {
+func TestBuildPipelineSummary_FailedTestRoundIncludesTestedDetails(t *testing.T) {
 	t.Parallel()
 	findings := `{"findings":[{"id":"test-1","severity":"error","description":"expected 429 got 200"}],"tested":["go test ./internal/cli -run '^TestDoctorBasic$' -count=1"],"summary":"1 failure"}`
 	steps := []*db.StepResult{
@@ -209,7 +209,7 @@ func TestBuildPipelineSummary_FailedTestRoundOmitsStepScopedTestedDetails(t *tes
 
 	md, _ := BuildPipelineSummary(steps, rounds)
 
-	if strings.Contains(md, "go test ./internal/cli") {
-		t.Fatalf("pipeline summary must omit step-scoped tested details from the final PR, got:\n%s", md)
+	if !strings.Contains(md, "- `go test ./internal/cli -run '^TestDoctorBasic$' -count=1`") {
+		t.Fatalf("expected failed test round to include tested command details, got:\n%s", md)
 	}
 }

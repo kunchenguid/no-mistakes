@@ -1080,6 +1080,7 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 			} else {
 				b.WriteString("✅ No issues found.\n")
 			}
+			writeTestedDetails(&b, sr, &findings)
 			b.WriteString("\n")
 			continue
 		}
@@ -1110,7 +1111,8 @@ func fixRoundLine(r *db.StepRound) string {
 	return fmt.Sprintf("🔧 Fix: %s", html.EscapeString(summary))
 }
 
-// writeFindingItems renders each finding as a `file:line - description` bullet.
+// writeFindingItems renders each finding as a `file:line - description` bullet,
+// followed by any test command details for the test step.
 func writeFindingItems(b *strings.Builder, sr *db.StepResult, findings *types.Findings) {
 	for _, f := range findings.Items {
 		emoji := severityEmoji(f.Severity)
@@ -1123,6 +1125,22 @@ func writeFindingItems(b *strings.Builder, sr *db.StepResult, findings *types.Fi
 			loc += "` - "
 		}
 		b.WriteString(fmt.Sprintf("- %s %s%s\n", emoji, loc, html.EscapeString(f.Description)))
+	}
+	writeTestedDetails(b, sr, findings)
+}
+
+// writeTestedDetails lists the commands the test step exercised. It is a no-op
+// for non-test steps.
+func writeTestedDetails(b *strings.Builder, sr *db.StepResult, findings *types.Findings) {
+	if sr.StepName != types.StepTest {
+		return
+	}
+	for _, detail := range findings.Tested {
+		rendered := renderTestedDetail(detail)
+		if rendered == "" {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("- %s\n", rendered))
 	}
 }
 
