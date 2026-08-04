@@ -88,17 +88,23 @@ An active run on another branch does not block starting validation for the curre
 no-mistakes axi run --intent "the user's goal"
 no-mistakes axi run --intent "the user's goal" --skip test,lint
 no-mistakes axi run --intent "the user's goal" --yes
+no-mistakes axi run --intent "the user's goal" --base dev
 ```
 
-| Flag          | Type     | Default | Description                                                      |
-| ------------- | -------- | ------- | ---------------------------------------------------------------- |
-| `--intent`    | `string` | (none)  | What the user set out to accomplish; required to start a new run |
-| `-y`, `--yes` | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome        |
-| `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip                           |
+| Flag          | Type     | Default | Description                                                                                  |
+| ------------- | -------- | ------- | ------------------------------------------------------------------------------------------- |
+| `--intent`    | `string` | (none)  | What the user set out to accomplish; required to start a new run                             |
+| `-y`, `--yes` | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome                                    |
+| `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip                                                       |
+| `--base`      | `string` | (none)  | Base branch to rebase onto, diff against, and target the PR at, for this run only            |
 
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
+`--base` overrides the repository's git-detected default branch for a single run: the pipeline rebases the branch onto it, computes branch diffs against it, and targets any pull request it opens at it.
+Use it when the branch you are shipping onto is not the repository's configured default branch — for example a long-lived integration branch that is ahead of the default.
+It applies to that run only: it never changes the persisted default branch, and it never moves the trusted-config anchor (`commands.*` and `agent` are still read from the persisted default branch).
+The value must name a branch that exists locally or on `origin`; a branch `axi run` cannot resolve fails with a clear error instead of silently falling back to the default.
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Reattaching to an in-flight run does not require `--intent`.
 Reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.
