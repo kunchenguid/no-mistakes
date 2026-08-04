@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.45.4](https://github.com/kunchenguid/no-mistakes/compare/v1.45.3...v1.45.4) (2026-08-04)
+
+
+### Bug Fixes
+
+* **pipeline:** restore deterministic PR body sections ([#663](https://github.com/kunchenguid/no-mistakes/issues/663)) ([eda3d33](https://github.com/kunchenguid/no-mistakes/commit/eda3d335edd92922d30abf056a6a1b02315c5599))
+
 ## [1.45.3](https://github.com/kunchenguid/no-mistakes/compare/v1.45.2...v1.45.3) (2026-08-03)
 
 
