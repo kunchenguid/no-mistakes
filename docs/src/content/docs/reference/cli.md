@@ -47,7 +47,7 @@ The push, rebase branch-sync, and CI auto-fix pushes use the fork, while GitHub 
 Fork routing currently requires both `origin` and `--fork-url` to be GitHub remotes with owner/repo paths.
 
 Re-running `init` on an already-initialized repo succeeds and reports `Gate already initialized (refreshed)`.
-It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and the installed agent skill, overwriting any stale `SKILL.md` or reference-file content from an older binary.
+It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and the installed agent skill, overwriting any stale `SKILL.md` or reference-file content from an older binary and removing plain files in the skill directory that an older binary shipped and this one renamed or dropped, so agents never read retired guidance; anything there that is not a plain file is left untouched.
 When a fork URL is already recorded, re-running `init` without `--fork-url` preserves it.
 Passing `--fork-url` again replaces the stored fork URL after validation.
 If you rename or move an initialized working directory and the old path no longer exists, re-running `init` from the new path reattaches the existing gate, preserves the repo ID and run history, and updates the stored working path.
@@ -217,6 +217,8 @@ A diverged worktree is adopted only when the preserved head provably carries eve
 This covers a pipeline rebase onto a newer base.
 A rebase-only cancelled run advances the recorded run head without advancing the gate branch, because its worktree is detached; the preserved head is then anchored by SHA through a gate-side private ref, and recovery proceeds as long as the gate branch is still exactly the submitted head.
 Any other gate branch position is out-of-band movement and still refuses.
+That gate-side ref is the one thing a refusal can leave behind: when anchoring the detached preserved head fails, the ref is deliberately kept - it is then the only ref keeping those commits reachable in the gate - and the refusal names it; if the gate refused to write it at all, the refusal says instead that no ref there reaches the commits, so gate garbage collection can drop them.
+A successful recovery, and a later anchor that succeeds, delete it again.
 That adoption anchors the pre-recovery local head under `refs/no-mistakes/recover-local/<run>`, then moves the branch with Git operations that refuse on their own rather than after a preceding check: an atomic compare-and-swap on the branch ref, and a working-tree update that aborts instead of overwriting a modified or untracked file.
 The proof is deliberately narrow and never uses patch identity, which discards hunk locations and whitespace and so cannot tell a genuine replay from a same-shaped edit elsewhere.
 Anything it cannot decide - unlanded local commits, or a rebase whose fix rounds also rewrote your own lines - still refuses with the anchor named, because only escalation can tell a deliberate pipeline fix apart from a dropped change.
