@@ -442,8 +442,16 @@ func (c *Client) doJSONPathOrURL(ctx context.Context, method, pathOrURL string, 
 	if responseBody == nil {
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(responseBody); err != nil {
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(responseBody); err != nil {
 		return fmt.Errorf("decode Bitbucket response: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err != nil {
+			return fmt.Errorf("decode Bitbucket response trailing data: %w", err)
+		}
+		return errors.New("decode Bitbucket response: multiple JSON values")
 	}
 	return nil
 }

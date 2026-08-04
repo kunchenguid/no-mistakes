@@ -1416,6 +1416,44 @@ func TestEnsureConfiguredPRBaseBranch_RejectsUnrelatedTarget(t *testing.T) {
 	}
 }
 
+func TestResolveInheritedImplicitPRBaseBranch_RejectsUnrelatedTarget(t *testing.T) {
+	upstream := filepath.Join(t.TempDir(), "upstream.git")
+	gitCmd(t, "", "init", "--bare", upstream)
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "--initial-branch=main")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(seed, "main.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".")
+	gitCmd(t, seed, "commit", "-m", "main")
+	gitCmd(t, seed, "remote", "add", "origin", upstream)
+	gitCmd(t, seed, "push", "origin", "main")
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(seed, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".")
+	gitCmd(t, seed, "commit", "-m", "feature")
+	gitCmd(t, seed, "push", "origin", "feature")
+	gitCmd(t, seed, "checkout", "--orphan", "quality-assurance")
+	gitCmd(t, seed, "rm", "-rf", ".")
+	if err := os.WriteFile(filepath.Join(seed, "qa.txt"), []byte("qa\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".")
+	gitCmd(t, seed, "commit", "-m", "unrelated qa")
+	gitCmd(t, seed, "push", "origin", "quality-assurance")
+
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "clone", "-b", "feature", upstream, ".")
+	err := resolveInheritedImplicitPRBaseBranch(context.Background(), workDir, &db.Repo{UpstreamURL: upstream}, "quality-assurance")
+	if err == nil || !strings.Contains(err.Error(), "shared history") {
+		t.Fatalf("unrelated inherited PR base error = %v, want shared-history failure", err)
+	}
+}
+
 func TestLoadRecoveredConfig_PRBaseComesFromTrustedDefaultBranch(t *testing.T) {
 	upstream := filepath.Join(t.TempDir(), "upstream.git")
 	gitCmd(t, "", "init", "--bare", upstream)
@@ -1510,6 +1548,81 @@ func TestLoadRecoveredConfig_PRBaseComesFromTrustedDefaultBranch(t *testing.T) {
 		if cfg.PR.HasExplicitBaseBranch() {
 			t.Fatal("recovered unset PR base acquired explicit-target semantics")
 		}
+	}
+}
+
+func TestLoadRecoveredConfig_PromotesCurrentExplicitPersistedImplicitBase(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	upstream := filepath.Join(t.TempDir(), "upstream.git")
+	gitCmd(t, "", "init", "--bare", upstream)
+	seed := t.TempDir()
+	gitCmd(t, seed, "init", "--initial-branch=main")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(seed, ".no-mistakes.yaml"), []byte("pr:\n  base_branch: quality-assurance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".")
+	gitCmd(t, seed, "commit", "-m", "configure QA")
+	gitCmd(t, seed, "remote", "add", "origin", upstream)
+	gitCmd(t, seed, "push", "origin", "main")
+	gitCmd(t, seed, "branch", "quality-assurance")
+	gitCmd(t, seed, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(seed, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".")
+	gitCmd(t, seed, "commit", "-m", "feature")
+	gitCmd(t, seed, "push", "origin", "quality-assurance", "feature")
+
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "clone", "-b", "feature", upstream, ".")
+	gitCmd(t, seed, "checkout", "quality-assurance")
+	if err := os.WriteFile(filepath.Join(seed, "qa.txt"), []byte("advanced QA\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", ".")
+	gitCmd(t, seed, "commit", "-m", "advance QA")
+	qaSHA := gitOutput(t, seed, "rev-parse", "HEAD")
+	gitCmd(t, seed, "push", "origin", "quality-assurance")
+
+	repo, err := database.InsertRepoWithID("promote-recovered-base", seed, upstream, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := gitOutput(t, workDir, "rev-parse", "HEAD")
+	run, err := database.InsertRun(repo.ID, "feature", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedBase := "quality-assurance"
+	if err := database.UpdateRunPRBaseBranch(run.ID, persistedBase, false); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewRunManager(database, p, nil)
+	cfg, err := mgr.loadRecoveredConfig(context.Background(), run, repo, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.PR.HasExplicitBaseBranch() {
+		t.Fatal("recovered PR base did not preserve current explicit semantics")
+	}
+	if cfg.PR.ResolvedBaseSHA != qaSHA {
+		t.Fatalf("recovered PR base SHA = %s, want refreshed %s", cfg.PR.ResolvedBaseSHA, qaSHA)
+	}
+	if got := gitOutput(t, workDir, "rev-parse", git.RunPRBaseRef(run.ID)); got != qaSHA {
+		t.Fatalf("recovered snapshot = %s, want refreshed %s", got, qaSHA)
+	}
+	persisted, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !persisted.PRBaseBranchExplicit {
+		t.Fatal("recovered PR base did not persist current explicit semantics")
 	}
 }
 

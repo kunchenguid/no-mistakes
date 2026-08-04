@@ -176,6 +176,8 @@ func TestFindOpenPRBySourceBranchRejectsInvalidSuccessfulResponses(t *testing.T)
 		{name: "null values", body: `{"values":null}`},
 		{name: "missing identity", body: `{"values":[{}]}`},
 		{name: "mismatched identity", body: `{"values":[{"id":42,"links":{"html":{"href":"https://bitbucket.org/test/repo/pull-requests/41"}}}]}`},
+		{name: "trailing JSON", body: `{"values":[]} {"values":[{"id":42}]}`},
+		{name: "trailing garbage", body: `{"values":[]} garbage`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -254,7 +254,8 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 			persistedBase.branch = strings.TrimSpace(repo.DefaultBranch)
 		}
 		cfg.PR.BaseBranch = persistedBase.branch
-		explicit := persistedBase.explicit
+		promotedExplicit := !persistedBase.explicit && currentExplicit && persistedBase.branch == currentBase
+		explicit := persistedBase.explicit || promotedExplicit
 		cfg.PR.BaseBranchExplicit = &explicit
 		if !explicit {
 			cfg.PR.ResolvedBaseSHA = ""
@@ -274,6 +275,24 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 		}
 
 		snapshotRef := git.RunPRBaseRef(run.ID)
+		if promotedExplicit {
+			fetchCtx, cancel := context.WithTimeout(ctx, recoveredConfigFetchTimeout)
+			err = resolveConfiguredPRBaseBranch(fetchCtx, workDir, repo, cfg, currentRef, true)
+			cancel()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := git.Run(ctx, workDir, "update-ref", snapshotRef, cfg.PR.ResolvedBaseSHA); err != nil {
+				return nil, fmt.Errorf("preserve configured pr.base_branch snapshot: %w", err)
+			}
+			if m.db != nil {
+				if err := m.db.UpdateRunPRBaseBranch(run.ID, persistedBase.branch, true); err != nil {
+					return nil, fmt.Errorf("persist recovered configured pull request base: %w", err)
+				}
+			}
+			run.PRBaseBranchExplicit = true
+			return cfg, nil
+		}
 		snapshotExists, err := git.RefExists(ctx, workDir, snapshotRef)
 		if err != nil {
 			return nil, fmt.Errorf("inspect configured pr.base_branch snapshot: %w", err)
@@ -815,8 +834,16 @@ func resolveInheritedImplicitPRBaseBranch(ctx context.Context, workDir string, r
 	if err := fetchRunUpstreamBranch(ctx, workDir, repo, branch); err != nil {
 		return fmt.Errorf("inherited pull request base branch %q could not be fetched from the upstream repository: %w", branch, err)
 	}
-	if _, err := git.ResolveRef(ctx, workDir, "refs/remotes/origin/"+branch); err != nil {
+	sha, err := git.ResolveRef(ctx, workDir, "refs/remotes/origin/"+branch)
+	if err != nil {
 		return fmt.Errorf("inherited pull request base branch %q did not resolve after fetch: %w", branch, err)
+	}
+	mergeBase, err := git.Run(ctx, workDir, "merge-base", "HEAD", sha)
+	if err != nil || strings.TrimSpace(mergeBase) == "" {
+		if err != nil {
+			return fmt.Errorf("inherited pull request base branch %q has no usable shared history with HEAD: %w", branch, err)
+		}
+		return fmt.Errorf("inherited pull request base branch %q has no usable shared history with HEAD", branch)
 	}
 	return nil
 }
