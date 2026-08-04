@@ -340,6 +340,35 @@ func TestFindPRRejectsMalformedSuccessfulResponses(t *testing.T) {
 	}
 }
 
+func TestPRContinuityCommandsScopeRepository(t *testing.T) {
+	t.Parallel()
+
+	const repo = "https://gitlab.example.com/group/project"
+	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+		"glab mr list --source-branch feature --target-branch main --repo " + repo + " --output json": {
+			stdout: "[]\n",
+		},
+		"glab mr view 42 --repo " + repo + " --output json": {
+			stdout: `{"iid":42,"state":"closed"}` + "\n",
+		},
+	}), nil, "gitlab.example.com", "group/project")
+
+	pr, err := host.FindPR(context.Background(), "feature", "main")
+	if err != nil {
+		t.Fatalf("FindPR() error = %v", err)
+	}
+	if pr != nil {
+		t.Fatalf("FindPR() = %+v, want nil", pr)
+	}
+	state, err := host.GetPRState(context.Background(), &scm.PR{Number: "42"})
+	if err != nil {
+		t.Fatalf("GetPRState() error = %v", err)
+	}
+	if state != scm.PRStateClosed {
+		t.Fatalf("GetPRState() = %q, want %q", state, scm.PRStateClosed)
+	}
+}
+
 func TestFindPRReturnsCLIError(t *testing.T) {
 	t.Parallel()
 

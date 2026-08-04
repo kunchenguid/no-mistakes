@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1010,6 +1011,129 @@ func TestRerunOpenPRRejectsCurrentConfiguredBaseBranch(t *testing.T) {
 	if !strings.Contains(err.Error(), "configured PR base branch") || !strings.Contains(err.Error(), "feature branch") {
 		t.Fatalf("rerun rejection is not actionable: %v", err)
 	}
+}
+
+func TestGitLabRerunContinuityScopesRepositoryFromBareGate(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "gitlab-rerun-continuity")
+	repo.UpstreamURL = "https://gitlab.example.com/group/project.git"
+	run, err := database.InsertRun(repo.ID, "feature", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRBaseBranch(run.ID, "quality-assurance", true); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	binDir, logPath := writePRContinuityMockGLab(t, "quality-assurance")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "safe.bareRepository")
+	t.Setenv("GIT_CONFIG_VALUE_0", "explicit")
+	manager := NewRunManager(database, p, nil)
+	continuity, err := manager.verifyRerunPRBaseContinuity(context.Background(), repo, &runPRBaseContinuity{
+		sourceRun: run,
+		branch:    "quality-assurance",
+		explicit:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if continuity == nil || continuity.branch != "quality-assurance" || !continuity.explicit {
+		t.Fatalf("GitLab continuity = %+v, want explicit quality-assurance", continuity)
+	}
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := p.RepoDir(repo.ID) + "|mr list --source-branch feature --target-branch quality-assurance --repo https://gitlab.example.com/group/project --output json"
+	if !strings.Contains(string(logBytes), want) {
+		t.Fatalf("GitLab rerun continuity was not scoped from the bare gate:\n%s", logBytes)
+	}
+}
+
+func TestLoadRecoveredConfig_GitLabLegacyPRScopesRepositoryFromBareGate(t *testing.T) {
+	p, database := newRefreshRunFixture(t)
+	repo, head := setupTestGitRepo(t, p, database, "gitlab-legacy-recovery")
+	repo.UpstreamURL = "https://gitlab.example.com/group/project.git"
+	workDir := t.TempDir()
+	gitCmd(t, "", "clone", "-b", "feature", p.RepoDir(repo.ID), workDir)
+	run, err := database.InsertRun(repo.ID, "feature", head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPRURL(run.ID, "https://gitlab.example.com/group/project/-/merge_requests/42"); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oldFetch := fetchRecoveredUpstreamBranch
+	fetchRecoveredUpstreamBranch = func(ctx context.Context, dir string, _ *db.Repo, branch string) error {
+		return git.FetchRemoteBranch(ctx, dir, "origin", branch)
+	}
+	t.Cleanup(func() { fetchRecoveredUpstreamBranch = oldFetch })
+	binDir, logPath := writePRContinuityMockGLab(t, "main")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "safe.bareRepository")
+	t.Setenv("GIT_CONFIG_VALUE_0", "explicit")
+	manager := NewRunManager(database, p, nil)
+	cfg, err := manager.loadRecoveredConfig(context.Background(), run, repo, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PR.BaseBranch != "main" || cfg.PR.HasExplicitBaseBranch() {
+		t.Fatalf("recovered GitLab base = %q (explicit %t), want main (unset)", cfg.PR.BaseBranch, cfg.PR.HasExplicitBaseBranch())
+	}
+	persisted, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.PRBaseBranch == nil || *persisted.PRBaseBranch != "main" {
+		t.Fatalf("persisted recovered GitLab base = %v, want main", persisted.PRBaseBranch)
+	}
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := p.RepoDir(repo.ID) + "|mr list --source-branch feature --repo https://gitlab.example.com/group/project --output json"
+	if !strings.Contains(string(logBytes), want) {
+		t.Fatalf("GitLab legacy recovery was not scoped from the bare gate:\n%s", logBytes)
+	}
+}
+
+func writePRContinuityMockGLab(t *testing.T, openBase string) (string, string) {
+	t.Helper()
+	binDir := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "glab.log")
+	payload := fmt.Sprintf(`[{"iid":42,"web_url":"https://gitlab.example.com/group/project/-/merge_requests/42","target_branch":%q}]`, openBase)
+	if runtime.GOOS == "windows" {
+		script := "@echo off\r\necho %CD%^|%*>>\"" + logPath + "\"\r\necho %* | findstr /C:\"auth status\" >nul && exit /b 0\r\necho %* | findstr /C:\"mr list \" >nul && (echo " + payload + "& exit /b 0)\r\necho %* | findstr /C:\"mr view \" >nul && (echo {\"iid\":42,\"state\":\"closed\"}& exit /b 0)\r\nexit /b 1\r\n"
+		if err := os.WriteFile(filepath.Join(binDir, "glab.bat"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return binDir, logPath
+	}
+	script := `#!/bin/sh
+printf '%s|%s\n' "$PWD" "$*" >>` + shellQuoteForTest(logPath) + `
+case "$*" in
+  "auth status"*) exit 0 ;;
+  "mr list "*) printf '%s\n' ` + shellQuoteForTest(payload) + `; exit 0 ;;
+  "mr view "*) printf '%s\n' '{"iid":42,"state":"closed"}'; exit 0 ;;
+esac
+exit 1
+`
+	if err := os.WriteFile(filepath.Join(binDir, "glab"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return binDir, logPath
 }
 
 func writeRerunPRBaseMockGH(t *testing.T, openBase, persistedState string) (string, string) {

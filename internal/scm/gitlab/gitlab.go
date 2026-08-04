@@ -112,6 +112,17 @@ func (h *Host) pipelineJobsArgs(pipelineID int) []string {
 	return []string{"ci", "get", "--pipeline-id", fmt.Sprintf("%d", pipelineID), "--output", "json", "--with-job-details"}
 }
 
+func (h *Host) repoArgs() []string {
+	if h.projectPath == "" {
+		return nil
+	}
+	repo := h.projectPath
+	if h.host != "" {
+		repo = "https://" + h.host + "/" + repo
+	}
+	return []string{"--repo", repo}
+}
+
 func (h *Host) Provider() scm.Provider { return scm.ProviderGitLab }
 
 func (h *Host) Capabilities() scm.Capabilities {
@@ -170,6 +181,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	// `--state opened`, but glab v1.5x removed it (it now exposes
 	// -c/--closed, -M/--merged, -A/--all); passing the unknown flag fails the
 	// whole command. Rely on the open-by-default behavior.
+	args = append(args, h.repoArgs()...)
 	args = append(args, "--output", "json")
 	cmd := h.cmd(ctx, "glab", args...)
 	out, err := cmd.CombinedOutput()
@@ -286,7 +298,10 @@ func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.Mergeable
 }
 
 func (h *Host) viewMR(ctx context.Context, id string) (mrPayload, error) {
-	cmd := h.cmd(ctx, "glab", "mr", "view", id, "--output", "json")
+	args := []string{"mr", "view", id}
+	args = append(args, h.repoArgs()...)
+	args = append(args, "--output", "json")
+	cmd := h.cmd(ctx, "glab", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return mrPayload{}, fmt.Errorf("glab mr view: %s: %w", strings.TrimSpace(string(out)), err)
