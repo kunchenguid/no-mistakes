@@ -16,8 +16,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 )
 
-// trustLogCapture keeps the captured log safe from any background goroutine
-// that logs through the default logger while it is swapped out.
+// trustLogCapture makes concurrent writes to the captured buffer safe. It does
+// NOT isolate the capture: any goroutine logging through the swapped-in default
+// logger lands here too, so assertions must name the message they expect or
+// forbid rather than treat the buffer as this call's log alone.
 type trustLogCapture struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -124,8 +126,8 @@ func TestApplyWorkingPathTrustedConfig_AbsentFileIsSilent(t *testing.T) {
 	if got != trusted {
 		t.Fatalf("expected the trusted copy back unchanged, got %+v", got)
 	}
-	if out := logged.String(); out != "" {
-		t.Fatalf("an absent working-path config must not warn, got: %q", out)
+	if out := logged.String(); strings.Contains(out, "working-path repo config") {
+		t.Fatalf("an absent working-path config must not warn about itself, got: %q", out)
 	}
 }
 
