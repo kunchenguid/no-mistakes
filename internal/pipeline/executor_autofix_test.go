@@ -487,3 +487,79 @@ func TestExecutor_AutoFixMixedFindings(t *testing.T) {
 		t.Fatal("executor timed out")
 	}
 }
+
+// TestExecutor_DefaultMinSeverityKeepsInfoFindingsOutOfAutoFix proves the
+// auto_fix.min_severity floor actually reaches the executor's auto-fix gate.
+// With the default floor (warning) an info-only auto-fix finding must not cost
+// a fix round; drop the wiring and the executor fixes it again.
+func TestExecutor_DefaultMinSeverityKeepsInfoFindingsOutOfAutoFix(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	cfg := config.Merge(config.DefaultGlobalConfig(), &config.RepoConfig{})
+	if cfg.AutoFix.MinSeverity != types.SeverityWarning {
+		t.Fatalf("default auto_fix.min_severity = %q, want %q", cfg.AutoFix.MinSeverity, types.SeverityWarning)
+	}
+	cfg.AutoFix.Review = 3
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			return &StepOutcome{
+				AutoFixable: true,
+				Findings:    `{"findings":[{"severity":"info","description":"advisory nit","action":"auto-fix"}],"summary":"1 info"}`,
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if callCount != 1 {
+		t.Fatalf("step called %d times, want 1 (no auto-fix round for an info finding)", callCount)
+	}
+	updated, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != types.RunCompleted {
+		t.Fatalf("run status = %q, want %q", updated.Status, types.RunCompleted)
+	}
+}
+
+// TestExecutor_MinSeverityFloorStillAutoFixesQualifyingFindings is the other
+// half: the same wiring must not become a blanket "never auto-fix".
+func TestExecutor_MinSeverityFloorStillAutoFixesQualifyingFindings(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	cfg := config.Merge(config.DefaultGlobalConfig(), &config.RepoConfig{})
+	cfg.AutoFix.Review = 3
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			if callCount == 1 {
+				return &StepOutcome{
+					AutoFixable: true,
+					Findings:    `{"findings":[{"severity":"warning","description":"real bug","action":"auto-fix"}],"summary":"1 warning"}`,
+				}, nil
+			}
+			return &StepOutcome{}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("step called %d times, want 2 (initial + auto-fix)", callCount)
+	}
+}

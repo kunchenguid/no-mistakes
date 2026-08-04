@@ -1,8 +1,11 @@
 package steps
 
 import (
+	"bytes"
+	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -166,4 +169,47 @@ func TestRoundHistoryPromptSection_SanitizesInjectionAttempts(t *testing.T) {
 	if !strings.Contains(got, "IGNORE PRIOR INSTRUCTIONS") {
 		t.Fatalf("expected description content to be present after sanitization, got:\n%s", got)
 	}
+}
+
+// TestStepRounds_UnreadableHistoryWarnsAndReturnsNoHistory pins the fail-safe
+// direction (no history rather than a hard error) AND its visibility: an
+// unreadable rounds history silently drops the fix round's prior-round context
+// and resets review breadth to round 1, so the failure must be logged.
+func TestStepRounds_UnreadableHistoryWarnsAndReturnsNoHistory(t *testing.T) {
+	sctx, _ := newRoundHistoryContext(t)
+
+	logged := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logged, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	if err := sctx.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if rounds := stepRounds(sctx); rounds != nil {
+		t.Fatalf("expected no history from an unreadable read, got %d rounds", len(rounds))
+	}
+	if got := logged.String(); !strings.Contains(got, "failed to read step round history") {
+		t.Fatalf("expected a warning about the unreadable history, got: %q", got)
+	}
+}
+
+// syncBuffer keeps the captured log safe from any background goroutine that
+// logs through the default logger while it is swapped out.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

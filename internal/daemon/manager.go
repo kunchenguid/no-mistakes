@@ -574,10 +574,10 @@ func applyWorkingPathTrustedConfig(ctx context.Context, globalCfg *config.Global
 	}
 	workingCfg, err := config.LoadRepo(repo.WorkingPath)
 	if err != nil {
-		// Do NOT fall through to the default-branch copy on a parse error: the
-		// maintainer asked for this file to steer the gate, so silently running
-		// different commands than the ones they edited is the wrong failure.
-		// Warn loudly and keep the trusted copy, which is still a safe config.
+		// Keep the default-branch copy, which is still a safe config, but never
+		// fall back to it SILENTLY: the maintainer asked for this file to steer
+		// the gate, so running different commands than the ones they edited
+		// must be visible in the log rather than a quiet substitution.
 		slog.Warn("working-path repo config: parse failed; falling back to the default-branch copy", "run_id", runID, "path", path, "error", err)
 		return trusted
 	}

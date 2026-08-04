@@ -3,6 +3,7 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -30,6 +31,7 @@ func stepRounds(sctx *pipeline.StepContext) []*db.StepRound {
 	}
 	rounds, err := sctx.DB.GetRoundsByStep(sctx.StepResultID)
 	if err != nil {
+		slog.Warn("failed to read step round history", "step_result_id", sctx.StepResultID, "error", err)
 		return nil
 	}
 	return rounds
