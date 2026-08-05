@@ -14,6 +14,17 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
 
+// frozenClock returns a CIStep clock stuck at a fixed instant so the idle
+// timeout can never fire from real wall-clock delays (slow CI runners made
+// the loop hit the timeout before the fake waitForNextPoll could cancel).
+func frozenClock() func() time.Time {
+	return func() time.Time { return time.Unix(1700000000, 0) }
+}
+
+// staticBaseBranchTip stands in for the default base-branch tip resolver,
+// which would otherwise git-fetch the fake upstream URL over the network.
+func staticBaseBranchTip(context.Context) (string, bool) { return "", false }
+
 func TestCIStep_TimeoutWithOpenPRNeedsApprovalAndDoesNotSleepPastDeadline(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -85,6 +96,8 @@ func TestCIStep_UnknownMergeableStateDoesNotExitCleanly(t *testing.T) {
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	step := &CIStep{
+		now:           frozenClock(),
+		baseBranchTip: staticBaseBranchTip,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -125,6 +138,8 @@ func TestCIStep_MergeableLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.
 	sctx.Ctx = ctx
 
 	step := &CIStep{
+		now:           frozenClock(),
+		baseBranchTip: staticBaseBranchTip,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -172,6 +187,8 @@ func TestCIStep_PRStateLookupErrorDoesNotReportReadyWhenChecksPass(t *testing.T)
 	sctx.Ctx = ctx
 
 	step := &CIStep{
+		now:           frozenClock(),
+		baseBranchTip: staticBaseBranchTip,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
@@ -414,6 +431,8 @@ func TestCIStep_WaitsForPendingChecksBeforeFixing(t *testing.T) {
 
 	pollCount := 0
 	step := &CIStep{
+		now:           frozenClock(),
+		baseBranchTip: staticBaseBranchTip,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			if pollCount >= 3 {

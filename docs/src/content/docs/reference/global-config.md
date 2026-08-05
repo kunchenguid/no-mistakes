@@ -66,6 +66,9 @@ test:
   evidence:
     store_in_repo: false
     dir: .no-mistakes/evidence
+
+pr:
+  pipeline_summary: true
 ```
 
 ## Fields
@@ -407,6 +410,19 @@ Branch slashes become nested directories, unsafe branch characters are replaced,
 If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
 
 These are global defaults. Per-repo config can override either field.
+
+### pr.pipeline_summary
+
+Whether the PR step appends the generated `## Pipeline` section (the no-mistakes signature plus per-step status details) to the PR description.
+
+|         |        |
+| ------- | ------ |
+| Type    | `bool` |
+| Default | `true` |
+
+Set `false` for a clean PR description.
+The rest of the PR description (the Intent, What Changed, Risk Assessment, and Testing sections) is unaffected, and the section disappears from an existing PR the next time a run updates it.
+A per-repo [`pr.pipeline_summary`](/no-mistakes/reference/repo-config/#prpipeline_summary) value overrides this global setting.
 
 ## Environment variables
 

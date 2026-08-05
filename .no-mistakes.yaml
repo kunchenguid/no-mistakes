@@ -11,6 +11,12 @@ commands:
   lint: "make lint"
   format: "gofmt -w ."
 
+# The `Require no-mistakes` required check verifies the generated PR signature,
+# so this repo pins the Pipeline section on regardless of a contributor's
+# global `pr.pipeline_summary` setting.
+pr:
+  pipeline_summary: true
+
 # Documentation ownership map for the document step's placement policy.
 document:
   instructions: |
