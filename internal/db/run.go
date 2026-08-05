@@ -299,56 +299,6 @@ func (d *DB) SetRunCustodyReturned(id string) error {
 	return nil
 }
 
-// ReleaseUnavailableRunCustody atomically stamps the exceptional release only
-// while every ownership-relevant durable fact still equals the caller's exact
-// snapshot and no active run has taken over the same repository branch. The
-// single guarded UPDATE is the transaction boundary: a concurrent daemon run
-// insertion or run mutation wins and this method returns ErrRunCustodyChanged.
-// A retry of this exact completed release is an idempotent no-op.
-func (d *DB) ReleaseUnavailableRunCustody(expected *Run) (bool, error) {
-	if expected == nil {
-		return false, ErrRunCustodyChanged
-	}
-	ts := now()
-	result, err := d.sql.Exec(`UPDATE runs SET custody_returned_at = ?, custody_return_reason = ?, updated_at = ?
-		WHERE id = ? AND repo_id = ? AND branch = ? AND head_sha = ?
-		  AND submitted_head_sha IS ? AND status = ? AND status IN ('completed', 'failed', 'cancelled')
-		  AND last_pushed_sha IS ? AND push_target_kind IS ? AND push_target_fingerprint IS ?
-		  AND push_ref IS ? AND push_generation IS ? AND push_active = 0
-		  AND terminal_head_verified_at IS ? AND custody_returned_at IS NULL
-		  AND NOT EXISTS (
-		      SELECT 1 FROM runs AS active
-		       WHERE active.repo_id = ? AND active.branch = ? AND active.id != ?
-		         AND active.status IN ('pending', 'running')
-		  )`,
-		ts, CustodyReturnReasonPreservedHeadUnavailable, ts,
-		expected.ID, expected.RepoID, expected.Branch, expected.HeadSHA,
-		expected.SubmittedHeadSHA, expected.Status, expected.LastPushedSHA,
-		expected.PushTargetKind, expected.PushTargetFingerprint, expected.PushRef,
-		expected.PushGeneration, expected.TerminalHeadVerifiedAt,
-		expected.RepoID, expected.Branch, expected.ID,
-	)
-	if err != nil {
-		return false, fmt.Errorf("release unavailable run custody: %w", err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("release unavailable run custody: rows affected: %w", err)
-	}
-	if affected == 1 {
-		return true, nil
-	}
-	current, err := d.GetRun(expected.ID)
-	if err != nil {
-		return false, err
-	}
-	if current != nil && current.RepoID == expected.RepoID && current.Branch == expected.Branch && current.HeadSHA == expected.HeadSHA &&
-		current.CustodyReturnedAt != nil && current.CustodyReturnReason != nil && *current.CustodyReturnReason == CustodyReturnReasonPreservedHeadUnavailable {
-		return false, nil
-	}
-	return false, ErrRunCustodyChanged
-}
-
 // SetRunPushActive marks whether a pipeline phase currently owns a possible
 // branch-head update. Sync refuses while this marker is set.
 func (d *DB) SetRunPushActive(id string, active bool) error {

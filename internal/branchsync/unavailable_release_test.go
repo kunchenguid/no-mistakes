@@ -583,7 +583,7 @@ func TestReleaseUnavailableFinalBoundaryBindsRepositoryAndNewestOwner(t *testing
 	t.Run("configured target changes", func(t *testing.T) {
 		f := newRecoverFixture(t, types.RunFailed)
 		makePreservedHeadUnavailable(t, f)
-		f.service.beforeUnavailableReleaseStamp = func() {
+		f.service.beforeUnavailableReleaseCommit = func() {
 			if _, err := f.db.UpdateRepoMetadata(f.repo.ID, filepath.Join(t.TempDir(), "replacement.git"), f.repo.DefaultBranch); err != nil {
 				t.Fatal(err)
 			}
@@ -598,7 +598,7 @@ func TestReleaseUnavailableFinalBoundaryBindsRepositoryAndNewestOwner(t *testing
 	t.Run("newer terminal owner appears", func(t *testing.T) {
 		f := newRecoverFixture(t, types.RunFailed)
 		makePreservedHeadUnavailable(t, f)
-		f.service.beforeUnavailableReleaseStamp = func() {
+		f.service.beforeUnavailableReleaseCommit = func() {
 			newer, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.submitted, f.base)
 			if err != nil {
 				t.Fatal(err)
