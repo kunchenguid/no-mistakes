@@ -13,6 +13,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+const testPipelineHeadSHA = "0123456789abcdef0123456789abcdef01234567"
+
 func TestNoMistakesRequiredWorkflowChecksPipelineSignature(t *testing.T) {
 	t.Parallel()
 
@@ -37,7 +39,7 @@ func TestBuildPipelineSummary_AllClean(t *testing.T) {
 		"s2": {{Round: 1, Trigger: "initial", DurationMS: 300}},
 		"s3": {{Round: 1, Trigger: "initial", DurationMS: 200}},
 	}
-	md, risk := BuildPipelineSummary(steps, rounds)
+	md, risk := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	if !strings.Contains(md, "## Pipeline") {
 		t.Error("missing Pipeline heading")
@@ -78,8 +80,8 @@ func TestBuildPipelineSummary_EmitsStructuredStepAttestation(t *testing.T) {
 		{ID: "intent", StepName: types.StepIntent, Status: types.StepStatusSkipped},
 	}
 
-	got, _ := BuildPipelineSummary(steps, nil)
-	repeated, _ := BuildPipelineSummary(steps, nil)
+	got, _ := BuildPipelineSummary(steps, nil, testPipelineHeadSHA)
+	repeated, _ := BuildPipelineSummary(steps, nil, testPipelineHeadSHA)
 	if got != repeated {
 		t.Fatalf("attestation must be deterministic:\nfirst:\n%s\nsecond:\n%s", got, repeated)
 	}
@@ -94,7 +96,8 @@ func TestBuildPipelineSummary_EmitsStructuredStepAttestation(t *testing.T) {
 		t.Fatalf("attestation comment is not closed:\n%s", got)
 	}
 	var attestation struct {
-		Steps []struct {
+		HeadSHA string `json:"head_sha"`
+		Steps   []struct {
 			Step   types.StepName   `json:"step"`
 			Status types.StepStatus `json:"status"`
 		} `json:"steps"`
@@ -102,6 +105,9 @@ func TestBuildPipelineSummary_EmitsStructuredStepAttestation(t *testing.T) {
 	payload := got[start+len(prefix) : start+end]
 	if err := json.Unmarshal([]byte(payload), &attestation); err != nil {
 		t.Fatalf("attestation payload must be JSON: %v\n%s", err, payload)
+	}
+	if attestation.HeadSHA != testPipelineHeadSHA {
+		t.Fatalf("attested head = %q, want %q", attestation.HeadSHA, testPipelineHeadSHA)
 	}
 
 	want := []struct {
@@ -152,7 +158,7 @@ func TestBuildPipelineSummary_IncludesAllPipelineSteps(t *testing.T) {
 		"s6": {{Round: 1, Trigger: "initial", DurationMS: 700}},
 	}
 
-	md, _ := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	for _, want := range []string{
 		"<summary>✅ **Rebase** - passed</summary>",
@@ -186,7 +192,7 @@ func TestBuildPipelineSummary_SkippedStep(t *testing.T) {
 		"s1": {},
 		"s2": {{Round: 1, Trigger: "initial", DurationMS: 300}},
 	}
-	md, _ := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	if !strings.Contains(md, "⏭️") {
 		t.Errorf("expected skip emoji for skipped step, got:\n%s", md)
@@ -210,7 +216,7 @@ func TestBuildPipelineSummary_ExcludesPushPRCI(t *testing.T) {
 		"s3": {{Round: 1, Trigger: "initial", DurationMS: 200}},
 		"s4": {{Round: 1, Trigger: "initial", DurationMS: 300}},
 	}
-	md, _ := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	for _, want := range []string{"**Push**"} {
 		if !strings.Contains(md, want) {
@@ -226,7 +232,7 @@ func TestBuildPipelineSummary_ExcludesPushPRCI(t *testing.T) {
 
 func TestBuildPipelineSummary_EmptySteps(t *testing.T) {
 	t.Parallel()
-	md, risk := BuildPipelineSummary(nil, nil)
+	md, risk := BuildPipelineSummary(nil, nil, testPipelineHeadSHA)
 	if md != "" {
 		t.Errorf("expected empty string for nil steps, got: %q", md)
 	}
@@ -244,7 +250,7 @@ func TestBuildPipelineSummary_RebaseWithConflicts(t *testing.T) {
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 2000}},
 	}
-	md, _ := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	if !strings.Contains(md, "**Rebase**") {
 		t.Errorf("expected Rebase in output, got:\n%s", md)

@@ -27,7 +27,8 @@ const (
 )
 
 type pipelineAttestation struct {
-	Steps []pipelineAttestationStep `json:"steps"`
+	HeadSHA string                    `json:"head_sha"`
+	Steps   []pipelineAttestationStep `json:"steps"`
 }
 
 type pipelineAttestationStep struct {
@@ -50,7 +51,7 @@ type testingSummaryOptions struct {
 }
 
 // BuildPipelineSummary produces a deterministic markdown section from step results and rounds.
-func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound) (string, string) {
+func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound, headSHA string) (string, string) {
 	if len(steps) == 0 {
 		return "", ""
 	}
@@ -76,7 +77,7 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 	b.WriteString("## Pipeline\n\n")
 	b.WriteString(noMistakesPRSignature)
 	b.WriteString("\n\n")
-	b.WriteString(buildPipelineAttestation(steps))
+	b.WriteString(buildPipelineAttestation(steps, headSHA))
 	b.WriteString("\n\n")
 	for i, detail := range detailBlocks {
 		if i > 0 {
@@ -92,8 +93,11 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 // buildPipelineAttestation records the exact step lifecycle snapshot available
 // when no-mistakes writes the PR body. Its compact JSON is deliberately data
 // only: consumers decide their own policy from the step names and statuses.
-func buildPipelineAttestation(steps []*db.StepResult) string {
-	attestation := pipelineAttestation{Steps: make([]pipelineAttestationStep, 0, len(steps))}
+func buildPipelineAttestation(steps []*db.StepResult, headSHA string) string {
+	attestation := pipelineAttestation{
+		HeadSHA: headSHA,
+		Steps:   make([]pipelineAttestationStep, 0, len(steps)),
+	}
 	for _, sr := range steps {
 		if sr == nil {
 			continue

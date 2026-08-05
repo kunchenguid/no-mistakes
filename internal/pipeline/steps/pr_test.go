@@ -809,7 +809,7 @@ func TestAssemblePRBody_RetainsAttestationWhenCoreExceedsAzureCap(t *testing.T) 
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{StepName: types.StepTest, Status: types.StepStatusFailed},
 	}
-	attestation := buildPipelineAttestation(steps)
+	attestation := buildPipelineAttestation(steps, testPipelineHeadSHA)
 	pipelineMD := pipelineMarkdownForTest(strings.Repeat("review detail 😀 ", 1000))
 	pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature+"\n\n", noMistakesPRSignature+"\n\n"+attestation+"\n\n", 1)
 
@@ -916,7 +916,7 @@ func TestAppendGeneratedSections_RetainsPipelineAttestationWhenTruncated(t *test
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{StepName: types.StepTest, Status: types.StepStatusSkipped},
 	}
-	attestation := buildPipelineAttestation(steps)
+	attestation := buildPipelineAttestation(steps, testPipelineHeadSHA)
 	pipelineMD := pipelineMarkdownForTest(strings.Repeat("review round - "+strings.Repeat("x", 1000), 100))
 	pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature+"\n\n", noMistakesPRSignature+"\n\n"+attestation+"\n\n", 1)
 
@@ -933,7 +933,7 @@ func TestAppendGeneratedSections_RetainsAttestationWhenEssentialSectionsOverflow
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
 		{StepName: types.StepTest, Status: types.StepStatusFailed},
 	}
-	attestation := buildPipelineAttestation(steps)
+	attestation := buildPipelineAttestation(steps, testPipelineHeadSHA)
 	pipelineMD := pipelineMarkdownForTest("review round 001")
 	pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature+"\n\n", noMistakesPRSignature+"\n\n"+attestation+"\n\n", 1)
 
@@ -1275,6 +1275,10 @@ func TestPRStep_CreateKeepsGeneratedSectionsAfterOversizedIntent(t *testing.T) {
 
 	body := readFakeGHBodyArg(t, logFile)
 	assertGitHubBodyLimitForTest(t, body)
+	attestation := parsePipelineAttestationForTest(t, body)
+	if attestation.HeadSHA != headSHA {
+		t.Fatalf("attested head = %q, want created PR head %q", attestation.HeadSHA, headSHA)
+	}
 	for _, want := range []string{
 		"## Intent",
 		"Keep generated sections visible.",
@@ -1464,6 +1468,24 @@ func pipelineMarkdownForTest(rounds ...string) string {
 	}
 	b.WriteString("</details>\n")
 	return b.String()
+}
+
+func parsePipelineAttestationForTest(t *testing.T, body string) pipelineAttestation {
+	t.Helper()
+	start := strings.Index(body, pipelineAttestationCommentPrefix)
+	if start < 0 {
+		t.Fatalf("PR body missing pipeline attestation:\n%s", body)
+	}
+	start += len(pipelineAttestationCommentPrefix)
+	end := strings.Index(body[start:], pipelineAttestationCommentClosingToken)
+	if end < 0 {
+		t.Fatalf("PR body contains unclosed pipeline attestation:\n%s", body)
+	}
+	var attestation pipelineAttestation
+	if err := json.Unmarshal([]byte(body[start:start+end]), &attestation); err != nil {
+		t.Fatalf("parse pipeline attestation: %v", err)
+	}
+	return attestation
 }
 
 func readFakeGHBodyArg(t *testing.T, logFile string) string {
