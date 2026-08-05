@@ -150,6 +150,16 @@ func TestAgentModelByPurposeIsGlobalOnly(t *testing.T) {
 	}
 }
 
+func TestMaxConcurrentAgentInvocationsIsGlobalOnly(t *testing.T) {
+	_, err := LoadRepoFromBytes([]byte("max_concurrent_agent_invocations: 2\n"))
+	if err == nil {
+		t.Fatal("repo config accepted global-only max_concurrent_agent_invocations")
+	}
+	if !strings.Contains(err.Error(), "max_concurrent_agent_invocations") {
+		t.Fatalf("repo config error = %v, want field name", err)
+	}
+}
+
 func TestAgentModelByPurposeDefaultsOff(t *testing.T) {
 	global := DefaultGlobalConfig()
 	if len(global.AgentModelByPurpose) != 0 {

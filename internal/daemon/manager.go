@@ -35,15 +35,16 @@ var fetchRecoveredRemoteBranch = git.FetchRemoteBranch
 
 // RunManager tracks active pipeline executors and manages run lifecycle.
 type RunManager struct {
-	mu           sync.Mutex
-	executors    map[string]*pipeline.Executor      // runID → executor
-	cancels      map[string]context.CancelCauseFunc // runID → cancel function with cause
-	dones        map[string]chan struct{}           // runID → closed when goroutine exits
-	wg           sync.WaitGroup                     // tracks background run goroutines
-	shuttingDown atomic.Bool                        // prevents new runs during shutdown
-	db           *db.DB
-	paths        *paths.Paths
-	steps        StepFactory
+	mu                sync.Mutex
+	executors         map[string]*pipeline.Executor      // runID → executor
+	cancels           map[string]context.CancelCauseFunc // runID → cancel function with cause
+	dones             map[string]chan struct{}           // runID → closed when goroutine exits
+	wg                sync.WaitGroup                     // tracks background run goroutines
+	shuttingDown      atomic.Bool                        // prevents new runs during shutdown
+	db                *db.DB
+	paths             *paths.Paths
+	steps             StepFactory
+	invocationLimiter *agent.InvocationLimiter // daemon-owned; shared by every run
 
 	branchLocks sync.Map // repoID+"/"+branch → *sync.Mutex
 
@@ -66,21 +67,29 @@ type RunManager struct {
 // past the cap is an ordinary error, never unbounded growth.
 const maxSubscribersPerRun = 32
 
-// NewRunManager creates a RunManager. Pass nil for stepFactory to use default steps.
+// NewRunManager creates a RunManager with the production invocation ceiling.
+// Pass nil for stepFactory to use default steps.
 func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *RunManager {
+	return NewRunManagerWithInvocationLimit(database, p, stepFactory, agent.DefaultMaxConcurrentInvocations)
+}
+
+// NewRunManagerWithInvocationLimit is the startup seam for the global-only
+// operator setting. The limiter is deliberately manager-owned, never per run.
+func NewRunManagerWithInvocationLimit(database *db.DB, p *paths.Paths, stepFactory StepFactory, limit int) *RunManager {
 	if stepFactory == nil {
 		stepFactory = func() []pipeline.Step { return steps.AllSteps() }
 	}
 	return &RunManager{
-		executors:     make(map[string]*pipeline.Executor),
-		cancels:       make(map[string]context.CancelCauseFunc),
-		dones:         make(map[string]chan struct{}),
-		db:            database,
-		paths:         p,
-		steps:         stepFactory,
-		subscribers:   make(map[string][]*eventMailbox),
-		stateRevs:     make(map[string]int64),
-		completedRuns: make(map[string]bool),
+		executors:         make(map[string]*pipeline.Executor),
+		cancels:           make(map[string]context.CancelCauseFunc),
+		dones:             make(map[string]chan struct{}),
+		db:                database,
+		paths:             p,
+		steps:             stepFactory,
+		invocationLimiter: agent.NewInvocationLimiter(limit),
+		subscribers:       make(map[string][]*eventMailbox),
+		stateRevs:         make(map[string]int64),
+		completedRuns:     make(map[string]bool),
 	}
 }
 
@@ -166,6 +175,9 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 			return nil, err
 		}
 	}
+	// Recovery always receives this new daemon's limiter. Slots are process
+	// memory only, so a crashed daemon cannot leak capacity into recovery.
+	ag = agent.WithInvocationLimiter(ag, m.invocationLimiter)
 	return &recoveredRunPlan{
 		run:     run,
 		repo:    repo,
@@ -877,6 +889,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			created = append(created, agent.WithSteering(next))
 		}
 		ag = agent.NewFallback(created)
+		ag = agent.WithInvocationLimiter(ag, m.invocationLimiter)
 		// Fail closed ONLY under the trusted opt-out: when the repo asked to
 		// disable project settings, refuse any resolved harness that lacks a
 		// verified suppression knob rather than launch it with the target repo's

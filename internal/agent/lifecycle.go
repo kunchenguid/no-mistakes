@@ -9,6 +9,10 @@ const (
 	LifecyclePhaseExit = "exit"
 	// LifecyclePhaseRetry marks a transient retry before the next subprocess attempt.
 	LifecyclePhaseRetry = "retry"
+	// LifecyclePhaseQueue marks an invocation waiting for a daemon-wide model slot.
+	LifecyclePhaseQueue = "queue"
+	// LifecyclePhaseAdmitted marks an invocation receiving a daemon-wide model slot.
+	LifecyclePhaseAdmitted = "admitted"
 )
 
 func emitAgentStarted(opts RunOpts, name string, pid int) {

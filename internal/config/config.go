@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
 	"gopkg.in/yaml.v3"
@@ -74,7 +75,10 @@ type GlobalConfig struct {
 	CITimeout            time.Duration                            `yaml:"-"`
 	StepQuietWarning     time.Duration                            `yaml:"-"`
 	DaemonConnectTimeout time.Duration                            `yaml:"-"`
-	LogLevel             string                                   `yaml:"log_level"`
+	// MaxConcurrentAgentInvocations is the operator-owned daemon-wide ceiling
+	// for active provider/model calls. Repository config cannot set it.
+	MaxConcurrentAgentInvocations int    `yaml:"-"`
+	LogLevel                      string `yaml:"log_level"`
 	// SessionReuse controls per-run agent session reuse in the review loop:
 	// one durable fixer session across review-fix turns. Review turns always
 	// run session-free so the rereview never resumes the session whose
@@ -94,23 +98,24 @@ type GlobalConfig struct {
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
-	Agent                agentList                                `yaml:"agent"`
-	ACPXPath             string                                   `yaml:"acpx_path"`
-	ACPRegistryOverrides map[string]string                        `yaml:"acp_registry_overrides"`
-	AgentPathOverride    map[string]string                        `yaml:"agent_path_override"`
-	AgentArgsOverride    map[string][]string                      `yaml:"agent_args_override"`
-	AgentModelByPurpose  map[types.AgentPurpose]map[string]string `yaml:"agent_model_by_purpose"`
-	CITimeout            string                                   `yaml:"ci_timeout"`
-	DaemonConnectTimeout string                                   `yaml:"daemon_connect_timeout"`
-	BabysitTimeout       string                                   `yaml:"babysit_timeout"`
-	StepQuietWarning     string                                   `yaml:"step_quiet_warning"`
-	LogLevel             string                                   `yaml:"log_level"`
-	SessionReuse         *bool                                    `yaml:"session_reuse"`
-	AutoFix              AutoFixRaw                               `yaml:"auto_fix"`
-	CI                   CIRaw                                    `yaml:"ci"`
-	Commit               CommitRaw                                `yaml:"commit"`
-	Intent               IntentRaw                                `yaml:"intent"`
-	Test                 TestRaw                                  `yaml:"test"`
+	Agent                         agentList                                `yaml:"agent"`
+	ACPXPath                      string                                   `yaml:"acpx_path"`
+	ACPRegistryOverrides          map[string]string                        `yaml:"acp_registry_overrides"`
+	AgentPathOverride             map[string]string                        `yaml:"agent_path_override"`
+	AgentArgsOverride             map[string][]string                      `yaml:"agent_args_override"`
+	AgentModelByPurpose           map[types.AgentPurpose]map[string]string `yaml:"agent_model_by_purpose"`
+	CITimeout                     string                                   `yaml:"ci_timeout"`
+	DaemonConnectTimeout          string                                   `yaml:"daemon_connect_timeout"`
+	MaxConcurrentAgentInvocations *int                                     `yaml:"max_concurrent_agent_invocations"`
+	BabysitTimeout                string                                   `yaml:"babysit_timeout"`
+	StepQuietWarning              string                                   `yaml:"step_quiet_warning"`
+	LogLevel                      string                                   `yaml:"log_level"`
+	SessionReuse                  *bool                                    `yaml:"session_reuse"`
+	AutoFix                       AutoFixRaw                               `yaml:"auto_fix"`
+	CI                            CIRaw                                    `yaml:"ci"`
+	Commit                        CommitRaw                                `yaml:"commit"`
+	Intent                        IntentRaw                                `yaml:"intent"`
+	Test                          TestRaw                                  `yaml:"test"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -295,20 +300,21 @@ func RenderedInstructions(instructions string) string {
 
 func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	type repoConfigRaw struct {
-		Agent                  agentList   `yaml:"agent"`
-		Commands               Commands    `yaml:"commands"`
-		IgnorePatterns         []string    `yaml:"ignore_patterns"`
-		AllowRepoCommands      bool        `yaml:"allow_repo_commands"`
-		AutoFix                AutoFixRaw  `yaml:"auto_fix"`
-		CI                     CIRaw       `yaml:"ci"`
-		Commit                 CommitRaw   `yaml:"commit"`
-		Intent                 IntentRaw   `yaml:"intent"`
-		Test                   TestRaw     `yaml:"test"`
-		Document               DocumentRaw `yaml:"document"`
-		Review                 ReviewRaw   `yaml:"review"`
-		DisableProjectSettings bool        `yaml:"disable_project_settings"`
-		NoCI                   bool        `yaml:"no_ci"`
-		AgentModelByPurpose    yaml.Node   `yaml:"agent_model_by_purpose"`
+		Agent                         agentList   `yaml:"agent"`
+		Commands                      Commands    `yaml:"commands"`
+		IgnorePatterns                []string    `yaml:"ignore_patterns"`
+		AllowRepoCommands             bool        `yaml:"allow_repo_commands"`
+		AutoFix                       AutoFixRaw  `yaml:"auto_fix"`
+		CI                            CIRaw       `yaml:"ci"`
+		Commit                        CommitRaw   `yaml:"commit"`
+		Intent                        IntentRaw   `yaml:"intent"`
+		Test                          TestRaw     `yaml:"test"`
+		Document                      DocumentRaw `yaml:"document"`
+		Review                        ReviewRaw   `yaml:"review"`
+		DisableProjectSettings        bool        `yaml:"disable_project_settings"`
+		NoCI                          bool        `yaml:"no_ci"`
+		AgentModelByPurpose           yaml.Node   `yaml:"agent_model_by_purpose"`
+		MaxConcurrentAgentInvocations yaml.Node   `yaml:"max_concurrent_agent_invocations"`
 	}
 	var raw repoConfigRaw
 	if err := value.Decode(&raw); err != nil {
@@ -316,6 +322,9 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	}
 	if raw.AgentModelByPurpose.Kind != 0 {
 		return errors.New("agent_model_by_purpose is global-only and cannot be set in repo config")
+	}
+	if raw.MaxConcurrentAgentInvocations.Kind != 0 {
+		return errors.New("max_concurrent_agent_invocations is global-only and cannot be set in repo config")
 	}
 	c.Agent = firstAgent(raw.Agent)
 	c.Agents = copyAgents(raw.Agent)
@@ -382,26 +391,27 @@ type AutoFix struct {
 
 // Config is the merged result of global + per-repo configuration.
 type Config struct {
-	Agent                types.AgentName
-	Agents               []types.AgentName
-	ACPXPath             string
-	ACPRegistryOverrides map[string]string
-	AgentPathOverride    map[string]string
-	AgentArgsOverride    map[string][]string
-	AgentModelByPurpose  map[types.AgentPurpose]map[string]string
-	CITimeout            time.Duration
-	StepQuietWarning     time.Duration
-	LogLevel             string
-	SessionReuse         bool
-	Commands             Commands
-	IgnorePatterns       []string
-	AutoFix              AutoFix
-	CI                   CI
-	Commit               Commit
-	Intent               Intent
-	Test                 Test
-	Document             Document
-	Review               Review
+	Agent                         types.AgentName
+	Agents                        []types.AgentName
+	ACPXPath                      string
+	ACPRegistryOverrides          map[string]string
+	AgentPathOverride             map[string]string
+	AgentArgsOverride             map[string][]string
+	AgentModelByPurpose           map[types.AgentPurpose]map[string]string
+	CITimeout                     time.Duration
+	StepQuietWarning              time.Duration
+	MaxConcurrentAgentInvocations int
+	LogLevel                      string
+	SessionReuse                  bool
+	Commands                      Commands
+	IgnorePatterns                []string
+	AutoFix                       AutoFix
+	CI                            CI
+	Commit                        Commit
+	Intent                        Intent
+	Test                          Test
+	Document                      Document
+	Review                        Review
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -593,6 +603,10 @@ step_quiet_warning: "10m"
 # Maximum time a CLI client waits for an existing daemon socket to accept a
 # connection before failing instead of hanging.
 daemon_connect_timeout: "3s"
+
+# Daemon-wide maximum number of active provider/model invocations. This global
+# operator safety limit may be lowered to 1, never raised above 2.
+max_concurrent_agent_invocations: 2
 
 # Reuse one durable fixer session per run across review-fix turns. Review turns
 # always run session-free so a rereview never resumes the session that prescribed
@@ -1220,13 +1234,14 @@ func EnsureDefaultGlobalConfig(path string) {
 // DefaultGlobalConfig returns the built-in global defaults.
 func DefaultGlobalConfig() *GlobalConfig {
 	return &GlobalConfig{
-		Agent:                types.AgentAuto,
-		Agents:               []types.AgentName{types.AgentAuto},
-		CITimeout:            DefaultCITimeout,
-		StepQuietWarning:     DefaultStepQuietWarning,
-		DaemonConnectTimeout: DefaultDaemonConnectTimeout,
-		LogLevel:             "info",
-		SessionReuse:         true,
+		Agent:                         types.AgentAuto,
+		Agents:                        []types.AgentName{types.AgentAuto},
+		CITimeout:                     DefaultCITimeout,
+		StepQuietWarning:              DefaultStepQuietWarning,
+		DaemonConnectTimeout:          DefaultDaemonConnectTimeout,
+		MaxConcurrentAgentInvocations: agent.DefaultMaxConcurrentInvocations,
+		LogLevel:                      "info",
+		SessionReuse:                  true,
 	}
 }
 
@@ -1304,6 +1319,13 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 			return nil, err
 		}
 		cfg.DaemonConnectTimeout = d
+	}
+	if raw.MaxConcurrentAgentInvocations != nil {
+		limit := *raw.MaxConcurrentAgentInvocations
+		if limit < 1 || limit > agent.DefaultMaxConcurrentInvocations {
+			return nil, fmt.Errorf("max_concurrent_agent_invocations must be between 1 and %d", agent.DefaultMaxConcurrentInvocations)
+		}
+		cfg.MaxConcurrentAgentInvocations = limit
 	}
 	if raw.LogLevel != "" {
 		cfg.LogLevel = raw.LogLevel
@@ -1716,26 +1738,27 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	}
 
 	cfg := &Config{
-		Agent:                global.Agent,
-		Agents:               copyAgents(global.Agents),
-		ACPXPath:             global.ACPXPath,
-		ACPRegistryOverrides: global.ACPRegistryOverrides,
-		AgentPathOverride:    global.AgentPathOverride,
-		AgentArgsOverride:    global.AgentArgsOverride,
-		AgentModelByPurpose:  copyAgentModelByPurpose(global.AgentModelByPurpose),
-		CITimeout:            global.CITimeout,
-		StepQuietWarning:     global.StepQuietWarning,
-		LogLevel:             global.LogLevel,
-		SessionReuse:         global.SessionReuse,
-		Commands:             repo.Commands,
-		IgnorePatterns:       repo.IgnorePatterns,
-		AutoFix:              af,
-		CI:                   ci,
-		Commit:               commit,
-		Intent:               intent,
-		Test:                 test,
-		Document:             Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
-		Review:               Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
+		Agent:                         global.Agent,
+		Agents:                        copyAgents(global.Agents),
+		ACPXPath:                      global.ACPXPath,
+		ACPRegistryOverrides:          global.ACPRegistryOverrides,
+		AgentPathOverride:             global.AgentPathOverride,
+		AgentArgsOverride:             global.AgentArgsOverride,
+		AgentModelByPurpose:           copyAgentModelByPurpose(global.AgentModelByPurpose),
+		CITimeout:                     global.CITimeout,
+		StepQuietWarning:              global.StepQuietWarning,
+		MaxConcurrentAgentInvocations: global.MaxConcurrentAgentInvocations,
+		LogLevel:                      global.LogLevel,
+		SessionReuse:                  global.SessionReuse,
+		Commands:                      repo.Commands,
+		IgnorePatterns:                repo.IgnorePatterns,
+		AutoFix:                       af,
+		CI:                            ci,
+		Commit:                        commit,
+		Intent:                        intent,
+		Test:                          test,
+		Document:                      Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
+		Review:                        Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,

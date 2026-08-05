@@ -40,6 +40,8 @@ step_quiet_warning: "10m"
 
 daemon_connect_timeout: "3s"
 
+max_concurrent_agent_invocations: 2
+
 log_level: info
 
 session_reuse: true
@@ -304,6 +306,18 @@ Maximum time a CLI client waits for an existing daemon socket to accept a connec
 | Default | `3s`                   |
 
 Accepts any positive Go `time.ParseDuration` string. Overridable per-invocation with the `NM_DAEMON_CONNECT_TIMEOUT` environment variable; see [Environment Variables](/no-mistakes/reference/environment/#nm_daemon_connect_timeout).
+
+### max_concurrent_agent_invocations
+
+Daemon-wide ceiling for simultaneous active provider/model invocations across every run. Excess attempts wait in FIFO order; a retry or provider fallback re-enters the same queue as a new attempt. It does not cap calls, review rounds, tokens, or session reuse, and waiting neither completes a step nor changes review/rereview requirements.
+
+|         |                      |
+| ------- | -------------------- |
+| Type    | integer              |
+| Values  | `1`, `2`             |
+| Default | `2`                  |
+
+This is global-only operator configuration. Repository `.no-mistakes.yaml` rejects the field, including its trusted default-branch copy, so a contributor or repository maintainer cannot raise a machine safety limit. It is sampled when the daemon starts; restart the daemon through the normal guarded lifecycle only after changing it. Queue position, wait duration, and active-slot counts appear only in local step activity/logs; [Environment Variables](/no-mistakes/reference/environment/#what-stays-local-and-what-leaves-the-machine) owns the privacy boundary.
 
 ### log_level
 

@@ -52,6 +52,10 @@ type RunOpts struct {
 	// fallback-provider attempts, after it completes. It is instrumentation
 	// only and must not change invocation behavior.
 	OnAttempt func(Attempt)
+
+	// invocationLimiter is daemon-owned and injected by WithInvocationLimiter.
+	// Native adapters acquire it around each concrete provider/model attempt.
+	invocationLimiter *InvocationLimiter
 }
 
 // Attempt describes one completed concrete adapter attempt for an agent

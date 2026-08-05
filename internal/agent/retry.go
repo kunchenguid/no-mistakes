@@ -72,8 +72,15 @@ func runWithRetry(
 				return nil, err
 			}
 		}
+		release, err := opts.invocationLimiter.acquire(ctx, name, opts.OnLifecycle)
+		if err != nil {
+			return nil, err
+		}
 		startedAt := time.Now()
-		result, err := runOnce()
+		result, err := func() (*Result, error) {
+			defer release()
+			return runOnce()
+		}()
 		emitAgentAttempt(opts, name, result, err, startedAt, time.Now())
 		if err == nil {
 			return result, nil

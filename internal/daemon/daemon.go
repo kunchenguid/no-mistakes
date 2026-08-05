@@ -192,7 +192,14 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, sta
 	agent.SetServerPIDsDir(p.ServerPIDsDir())
 	defer agent.SetServerPIDsDir("")
 
-	mgr := NewRunManager(d, p, stepFactory)
+	globalCfg, err := config.LoadGlobal(p.ConfigFile())
+	if err != nil {
+		return fmt.Errorf("load global config: %w", err)
+	}
+	// This is sampled once for the daemon lifetime. The global-only limit is a
+	// process-wide safety boundary, so a config edit takes effect on next daemon
+	// start rather than letting concurrent runs observe different ceilings.
+	mgr := NewRunManagerWithInvocationLimit(d, p, stepFactory, globalCfg.MaxConcurrentAgentInvocations)
 
 	// Publish process identity as soon as the singleton lock is held. Startup
 	// callers can now distinguish a launched child from IPC readiness and detect

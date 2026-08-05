@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"gopkg.in/yaml.v3"
 )
@@ -426,6 +427,9 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	if d != DefaultDaemonConnectTimeout {
 		t.Errorf("YAML daemon_connect_timeout = %v, Go default = %v", d, DefaultDaemonConnectTimeout)
 	}
+	if raw.MaxConcurrentAgentInvocations == nil || *raw.MaxConcurrentAgentInvocations != agent.DefaultMaxConcurrentInvocations {
+		t.Errorf("YAML max_concurrent_agent_invocations = %v, Go default = %d", raw.MaxConcurrentAgentInvocations, agent.DefaultMaxConcurrentInvocations)
+	}
 	if raw.LogLevel != "info" {
 		t.Errorf("YAML log_level = %q, Go default = %q", raw.LogLevel, "info")
 	}
@@ -456,6 +460,28 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	}
 	if raw.CI.RerunTransient == nil || *raw.CI.RerunTransient != ciDefaults().RerunTransient {
 		t.Errorf("YAML ci.rerun_transient = %v, Go default = %d", raw.CI.RerunTransient, ciDefaults().RerunTransient)
+	}
+}
+
+func TestLoadGlobal_MaxConcurrentAgentInvocationsIsBounded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	for _, input := range []string{"0", "3"} {
+		if err := os.WriteFile(path, []byte("max_concurrent_agent_invocations: "+input+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadGlobal(path); err == nil {
+			t.Errorf("limit %s unexpectedly loaded", input)
+		}
+	}
+	if err := os.WriteFile(path, []byte("max_concurrent_agent_invocations: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxConcurrentAgentInvocations != 1 {
+		t.Fatalf("limit = %d, want 1", cfg.MaxConcurrentAgentInvocations)
 	}
 }
 
