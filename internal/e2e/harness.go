@@ -672,8 +672,15 @@ type Invocation struct {
 	CWD    string   `json:"cwd,omitempty"`
 }
 
+// runGit runs one fixture Git command. Identity and commit signing are both
+// neutralized here rather than per repository: fixtures create repos beyond
+// h.WorkDir (clones, bare remotes, seed repos), and an inherited signing
+// config - a system gitconfig, GIT_CONFIG_GLOBAL, or GIT_CONFIG_* injection
+// from an agent harness - would otherwise fail their commits on an operator's
+// machine while CI stays green. Command-line config also outranks GIT_CONFIG_*
+// env injection, which repo-local config does not.
 func (h *Harness) runGit(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "commit.gpgsign=false"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"GIT_AUTHOR_NAME=E2E Test",
