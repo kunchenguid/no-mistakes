@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -327,6 +328,291 @@ func TestReleaseUnavailableStampFailureIsCrashSafeAndRetryable(t *testing.T) {
 			t.Fatalf("stamp-race transition missing anchor: %#v", state.CustodyTransition)
 		}
 	}
+}
+
+func TestReleaseUnavailableRefusesRemoteDescendantThatRetainsPreservedHead(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	writer := filepath.Join(t.TempDir(), "descendant-writer")
+	mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
+	configureIdentity(t, writer)
+	mustRun(t, writer, "checkout", "feature/recover")
+	mustWrite(t, filepath.Join(writer, "descendant.txt"), "descendant retains preserved head\n")
+	mustRun(t, writer, "add", "descendant.txt")
+	mustRun(t, writer, "commit", "-m", "remote descendant")
+	descendant := mustRun(t, writer, "rev-parse", "HEAD")
+	mustRun(t, writer, "push", f.remote, "HEAD:refs/heads/safety-descendant")
+	makePreservedHeadUnavailable(t, f)
+
+	probe := filepath.Join(t.TempDir(), "probe")
+	mustRun(t, filepath.Dir(probe), "-c", "core.autocrlf=false", "clone", "--no-checkout", f.remote, probe)
+	if !objectExists(f.ctx, probe, f.preserved) {
+		t.Fatalf("fetching advertised descendant %s did not retain preserved head %s", descendant, f.preserved)
+	}
+
+	state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+	if state.Released || state.Safety != "blocked_release_preserved_recoverable" {
+		t.Fatalf("remote descendant release = %#v", state)
+	}
+	assertUnavailableReleaseUnchanged(t, f, f.submitted, f.submitted)
+}
+
+func makeDistinctGateHead(t *testing.T, f *recoverFixture) string {
+	t.Helper()
+	writer := filepath.Join(t.TempDir(), "gate-head-writer")
+	mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.local, writer)
+	configureIdentity(t, writer)
+	mustRun(t, writer, "checkout", "feature/recover")
+	mustWrite(t, filepath.Join(writer, "gate-only.txt"), "gate-only work\n")
+	mustRun(t, writer, "add", "gate-only.txt")
+	mustRun(t, writer, "commit", "-m", "gate-only head")
+	gateHead := mustRun(t, writer, "rev-parse", "HEAD")
+	staging := "refs/no-mistakes/test-gate-head"
+	mustRun(t, f.gate, "fetch", writer, "+refs/heads/feature/recover:"+staging)
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", gateHead, f.submitted)
+	mustRun(t, f.gate, "update-ref", "-d", staging)
+	return gateHead
+}
+
+func TestReleaseUnavailableRejectsSymbolicSafetyAnchor(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	makePreservedHeadUnavailable(t, f)
+	gateHead := makeDistinctGateHead(t, f)
+	gateAnchor := unavailableReleaseRef(f.run.ID) + "/gate"
+	mustRun(t, f.gate, "symbolic-ref", gateAnchor, "refs/heads/feature/recover")
+
+	state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+	if state.Released || state.Safety != "blocked_release_preserve_failed" {
+		t.Fatalf("symbolic-anchor release = %#v", state)
+	}
+	assertUnavailableReleaseUnchanged(t, f, f.submitted, gateHead)
+	if got := mustRun(t, f.gate, "symbolic-ref", gateAnchor); got != "refs/heads/feature/recover" {
+		t.Fatalf("symbolic anchor changed to %q", got)
+	}
+}
+
+func TestReleaseUnavailableAcceptsCanonicalPackedSafetyAnchorAndRetainsHead(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	makePreservedHeadUnavailable(t, f)
+	gateHead := makeDistinctGateHead(t, f)
+	gateAnchor := unavailableReleaseRef(f.run.ID) + "/gate"
+	mustRun(t, f.gate, "update-ref", gateAnchor, gateHead, "")
+	mustRun(t, f.gate, "pack-refs", "--all", "--prune")
+
+	state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+	if !state.Released {
+		t.Fatalf("canonical packed-anchor release = %#v", state)
+	}
+	if _, err := git.Run(f.ctx, f.gate, "symbolic-ref", "-q", gateAnchor); err == nil {
+		t.Fatalf("gate anchor %s remained symbolic", gateAnchor)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", gateAnchor+"^{commit}"); got != gateHead {
+		t.Fatalf("gate anchor = %s, want original gate head %s", got, gateHead)
+	}
+	mustRun(t, f.gate, "reflog", "expire", "--expire=now", "--all")
+	mustRun(t, f.gate, "gc", "--prune=now")
+	if !objectExists(f.ctx, f.gate, gateHead) {
+		t.Fatalf("canonical gate anchor did not retain %s through prune", gateHead)
+	}
+}
+
+func TestReleaseUnavailableRetryAfterCrashFollowingDistinctGateCAS(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	makePreservedHeadUnavailable(t, f)
+	gateHead := makeDistinctGateHead(t, f)
+	f.service.beforeUnavailableReleaseStamp = func() { panic("simulated crash after gate CAS") }
+	func() {
+		defer func() { _ = recover() }()
+		_ = f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+	}()
+	f.service.beforeUnavailableReleaseStamp = nil
+	if f.custodyReturned() {
+		t.Fatal("simulated pre-stamp crash recorded custody")
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
+		t.Fatalf("post-CAS gate = %s, want %s", got, f.submitted)
+	}
+	gateAnchor := unavailableReleaseRef(f.run.ID) + "/gate"
+	if got := mustRun(t, f.gate, "rev-parse", gateAnchor+"^{commit}"); got != gateHead {
+		t.Fatalf("post-crash gate anchor = %s, want %s", got, gateHead)
+	}
+
+	retry := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+	if !retry.Released || retry.CustodyTransition == nil || retry.CustodyTransition.GateHead != gateHead {
+		t.Fatalf("post-crash retry = %#v", retry)
+	}
+}
+
+func retainPreservedHeadOutsideOwnedStores(t *testing.T, f *recoverFixture) string {
+	t.Helper()
+	holder := filepath.Join(t.TempDir(), "preserved-holder")
+	mustRun(t, filepath.Dir(holder), "-c", "core.autocrlf=false", "clone", f.gate, holder)
+	return holder
+}
+
+func assertUnavailableReleaseNotStamped(t *testing.T, f *recoverFixture, state State) {
+	t.Helper()
+	if state.Released {
+		t.Fatalf("release unexpectedly succeeded: %#v", state)
+	}
+	if f.custodyReturned() {
+		t.Fatal("refused release stamped custody")
+	}
+}
+
+func TestReleaseUnavailableFinalBoundaryRevalidatesGitFacts(t *testing.T) {
+	t.Parallel()
+
+	t.Run("preserved object appears locally", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		holder := retainPreservedHeadOutsideOwnedStores(t, f)
+		makePreservedHeadUnavailable(t, f)
+		f.service.beforeUnavailableReleaseStamp = func() {
+			mustRun(t, f.local, "fetch", holder, f.preserved+":"+unavailableReleaseRef(f.run.ID)+"/restored-local")
+		}
+		state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+		assertUnavailableReleaseNotStamped(t, f, state)
+		if state.Safety != "blocked_release_preserved_recoverable" {
+			t.Fatalf("restored-local release = %#v", state)
+		}
+	})
+
+	t.Run("preserved object appears in gate", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		holder := retainPreservedHeadOutsideOwnedStores(t, f)
+		makePreservedHeadUnavailable(t, f)
+		f.service.beforeUnavailableReleaseStamp = func() {
+			mustRun(t, f.gate, "fetch", holder, f.preserved+":"+unavailableReleaseRef(f.run.ID)+"/restored-gate")
+		}
+		state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+		assertUnavailableReleaseNotStamped(t, f, state)
+		if state.Safety != "blocked_release_preserved_recoverable" {
+			t.Fatalf("restored-gate release = %#v", state)
+		}
+	})
+
+	t.Run("worktree becomes dirty", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		makePreservedHeadUnavailable(t, f)
+		f.service.beforeUnavailableReleaseStamp = func() {
+			mustWrite(t, filepath.Join(f.local, "late-dirty.txt"), "late dirty work\n")
+		}
+		state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+		assertUnavailableReleaseNotStamped(t, f, state)
+		if state.Safety != "blocked_release_assumptions_changed" {
+			t.Fatalf("late-dirty release = %#v", state)
+		}
+	})
+
+	t.Run("branch changes", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		makePreservedHeadUnavailable(t, f)
+		f.service.beforeUnavailableReleaseStamp = func() {
+			mustRun(t, f.local, "checkout", "-b", "feature/late-other")
+		}
+		state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+		assertUnavailableReleaseNotStamped(t, f, state)
+		if state.Safety != "blocked_release_assumptions_changed" {
+			t.Fatalf("late-branch release = %#v", state)
+		}
+	})
+
+	t.Run("head changes", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		makePreservedHeadUnavailable(t, f)
+		f.service.beforeUnavailableReleaseStamp = func() {
+			mustWrite(t, filepath.Join(f.local, "late-head.txt"), "late head work\n")
+			mustRun(t, f.local, "add", "late-head.txt")
+			mustRun(t, f.local, "commit", "-m", "late local head")
+		}
+		state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+		assertUnavailableReleaseNotStamped(t, f, state)
+		if state.Safety != "blocked_release_assumptions_changed" {
+			t.Fatalf("late-head release = %#v", state)
+		}
+	})
+
+	t.Run("remote changes", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		makePreservedHeadUnavailable(t, f)
+		writer := filepath.Join(t.TempDir(), "late-remote-writer")
+		mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.remote, writer)
+		configureIdentity(t, writer)
+		mustRun(t, writer, "checkout", "feature/recover")
+		mustWrite(t, filepath.Join(writer, "late-remote.txt"), "late remote work\n")
+		mustRun(t, writer, "add", "late-remote.txt")
+		mustRun(t, writer, "commit", "-m", "late remote head")
+		f.service.beforeUnavailableReleaseStamp = func() {
+			mustRun(t, writer, "push", "origin", "HEAD:refs/heads/feature/recover")
+		}
+		state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+		assertUnavailableReleaseNotStamped(t, f, state)
+		if state.Safety != "blocked_release_remote_changed" {
+			t.Fatalf("late-remote release = %#v", state)
+		}
+	})
+
+	t.Run("gate changes before run registration", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		makePreservedHeadUnavailable(t, f)
+		var racingHead string
+		f.service.beforeUnavailableReleaseStamp = func() {
+			racingHead = makeDistinctGateHead(t, f)
+		}
+		state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+		assertUnavailableReleaseNotStamped(t, f, state)
+		if state.Safety != "blocked_release_gate_race" {
+			t.Fatalf("late-gate release = %#v", state)
+		}
+		if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != racingHead {
+			t.Fatalf("late gate head = %s, want racing %s", got, racingHead)
+		}
+	})
+}
+
+func TestReleaseUnavailableFinalBoundaryBindsRepositoryAndNewestOwner(t *testing.T) {
+	t.Parallel()
+
+	t.Run("configured target changes", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		makePreservedHeadUnavailable(t, f)
+		f.service.beforeUnavailableReleaseStamp = func() {
+			if _, err := f.db.UpdateRepoMetadata(f.repo.ID, filepath.Join(t.TempDir(), "replacement.git"), f.repo.DefaultBranch); err != nil {
+				t.Fatal(err)
+			}
+		}
+		state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+		assertUnavailableReleaseNotStamped(t, f, state)
+		if state.Safety != "blocked_release_assumptions_changed" {
+			t.Fatalf("changed-target release = %#v", state)
+		}
+	})
+
+	t.Run("newer terminal owner appears", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		makePreservedHeadUnavailable(t, f)
+		f.service.beforeUnavailableReleaseStamp = func() {
+			newer, err := f.db.InsertRun(f.repo.ID, "feature/recover", f.submitted, f.base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.db.UpdateRunStatusWithVerifiedHead(newer.ID, types.RunFailed, f.preserved); err != nil {
+				t.Fatal(err)
+			}
+		}
+		state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+		assertUnavailableReleaseNotStamped(t, f, state)
+		if state.Safety != "blocked_release_assumptions_changed" {
+			t.Fatalf("newer-terminal release = %#v", state)
+		}
+	})
 }
 
 func TestReleaseUnavailableGateContextRefusalRemainsCentralized(t *testing.T) {
