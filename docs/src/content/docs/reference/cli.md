@@ -192,7 +192,7 @@ no-mistakes axi sync --release-unavailable --run <id>
 
 The default command is an explicit non-interactive apply request and never prompts.
 All modes return the complete `branch_sync` object as TOON.
-Exit code `0` means an eligible check, applied synchronization or recovery, already-synchronized, custody-returned, or user-owned no-op, or expected merged-and-removed no-op; blocked operational states return `1`.
+Exit code `0` means an eligible check, applied synchronization, recovery, or unavailable-head custody release, already-synchronized, custody-returned, or user-owned no-op, or expected merged-and-removed no-op; blocked operational states return `1`.
 The ordinary worktree mutation is either a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA, or an equivalent-diverged advance.
 When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and moves to the pipeline head with reset semantics.
 Genuine divergence still reports `safety: blocked_diverged` and changes nothing.
@@ -253,7 +253,7 @@ A crash before that transaction leaves only the durable journal, safety anchors,
 A crash after it is a completed, idempotent release recorded with reason `preserved_head_unavailable`.
 
 Successful and refused attempts return a structured `branch_sync.custody_transition` object with the action, durable reason, exact run and heads, every created anchor, and whether the result was an idempotent retry.
-Success additionally returns `released: true`, `state: custody_returned`, and `changed: false`, because ownership changed without moving the operator worktree.
+Success additionally returns `released: true` and `changed: false`, because ownership changed without moving the operator worktree; a released never-pushed run reports `state: custody_returned`, and a released pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
 An immediate repeated invocation returns the same successful audit with `idempotent: true`.
 Ordinary `axi run`, `axi sync --recover`, and `axi abort` behavior is unchanged outside this unavailable-head release.
 
