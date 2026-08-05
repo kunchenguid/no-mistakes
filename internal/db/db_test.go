@@ -73,8 +73,15 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if err := d.sql.QueryRow("SELECT count(*) FROM step_results").Scan(&count); err != nil {
 		t.Fatalf("step_results table missing: %v", err)
 	}
-	if !hasColumn(t, d, "repos", "fork_url") {
-		t.Fatal("repos.fork_url column missing from fresh schema")
+	for _, column := range []string{"fork_url", "metadata_generation"} {
+		if !hasColumn(t, d, "repos", column) {
+			t.Fatalf("repos.%s column missing from fresh schema", column)
+		}
+	}
+	for _, table := range []string{"branch_ownership_generations", "unavailable_custody_releases"} {
+		if err := d.sql.QueryRow("SELECT count(*) FROM " + table).Scan(&count); err != nil {
+			t.Fatalf("%s table missing: %v", table, err)
+		}
 	}
 	for _, column := range []string{"submitted_head_sha", "review_approved_head_sha", "last_pushed_sha", "push_target_fingerprint", "push_ref", "last_pushed_at", "push_generation", "push_active", "terminal_head_verified_at", "pr_state", "pr_state_observed_at", "ci_ready_at", "ci_ready_no_ci", "custody_returned_at", "custody_return_reason"} {
 		if !hasColumn(t, d, "runs", column) {
@@ -127,6 +134,13 @@ func TestOpenMigratesRunSyncProvenanceWithoutBackfillingMutableHead(t *testing.T
 	}
 	if run.CustodyReturnedAt != nil || run.CustodyReturnReason != nil {
 		t.Fatalf("legacy run gained custody-return provenance: %#v", run)
+	}
+	repo, err := d.GetRepo("repo-1")
+	if err != nil || repo == nil || repo.MetadataGeneration != 0 {
+		t.Fatalf("migrated repository generation = %#v, %v", repo, err)
+	}
+	if authority, err := d.SnapshotCustodyReleaseAuthority("repo-1", "feature"); err != nil || authority.OwnershipGeneration != 0 || authority.RepoGeneration != 0 {
+		t.Fatalf("migrated release authority = %#v, %v", authority, err)
 	}
 }
 

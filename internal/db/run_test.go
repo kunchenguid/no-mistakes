@@ -856,7 +856,37 @@ func TestSetRunCustodyReturnedStampsOnceAndSurvivesStatusUpdates(t *testing.T) {
 	}
 }
 
-func TestReleaseUnavailableRunCustodyIsAtomicAuditableAndIdempotent(t *testing.T) {
+func prepareUnavailableCustodyReleaseForDBTest(t *testing.T, d *DB, repo *Repo, expected *Run) *UnavailableCustodyRelease {
+	t.Helper()
+	authority, err := d.SnapshotCustodyReleaseAuthority(expected.RepoID, expected.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := d.PrepareUnavailableCustodyRelease(expected, repo, UnavailableCustodyRelease{
+		RunID:               expected.ID,
+		RepoID:              expected.RepoID,
+		Branch:              expected.Branch,
+		PreservedHead:       expected.HeadSHA,
+		LocalHead:           "submitted",
+		RemoteHead:          "submitted",
+		GateHead:            "gate-before-release",
+		TargetKind:          "upstream",
+		TargetFingerprint:   "target-fingerprint",
+		TargetRef:           "refs/heads/" + expected.Branch,
+		OwnershipGeneration: authority.OwnershipGeneration,
+		RepoGeneration:      authority.RepoGeneration,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.MarkUnavailableCustodyReleaseGateMoved(expected.ID); err != nil {
+		t.Fatal(err)
+	}
+	attempt.Phase = UnavailableCustodyReleaseGateMoved
+	return attempt
+}
+
+func TestCommitUnavailableRunCustodyIsAtomicAuditableAndIdempotent(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/unavailable-custody", "git@github.com:user/unavailable-custody.git", "main")
 	run, _ := d.InsertRun(repo.ID, "feat", "submitted", "base")
@@ -867,8 +897,9 @@ func TestReleaseUnavailableRunCustodyIsAtomicAuditableAndIdempotent(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	attempt := prepareUnavailableCustodyReleaseForDBTest(t, d, repo, expected)
 
-	applied, err := d.ReleaseUnavailableRunCustody(expected)
+	applied, err := d.CommitUnavailableRunCustody(expected, repo, attempt)
 	if err != nil || !applied {
 		t.Fatalf("release = applied %t, err %v", applied, err)
 	}
@@ -881,7 +912,7 @@ func TestReleaseUnavailableRunCustodyIsAtomicAuditableAndIdempotent(t *testing.T
 	}
 	first := *stored.CustodyReturnedAt
 
-	applied, err = d.ReleaseUnavailableRunCustody(expected)
+	applied, err = d.CommitUnavailableRunCustody(expected, repo, attempt)
 	if err != nil || applied {
 		t.Fatalf("release retry = applied %t, err %v", applied, err)
 	}
@@ -891,7 +922,7 @@ func TestReleaseUnavailableRunCustodyIsAtomicAuditableAndIdempotent(t *testing.T
 	}
 }
 
-func TestReleaseUnavailableRunCustodyRefusesChangedOrActiveOwnership(t *testing.T) {
+func TestCommitUnavailableRunCustodyRefusesChangedAuthorityGeneration(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(t *testing.T, d *DB, repo *Repo, expected *Run)
@@ -920,6 +951,26 @@ func TestReleaseUnavailableRunCustodyRefusesChangedOrActiveOwnership(t *testing.
 				}
 			},
 		},
+		{
+			name: "another terminal run took branch ownership",
+			mutate: func(t *testing.T, d *DB, repo *Repo, _ *Run) {
+				newer, err := d.InsertRun(repo.ID, "feat", "submitted", "base")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := d.UpdateRunStatusWithVerifiedHead(newer.ID, types.RunFailed, "new-missing-head"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "repository target changed",
+			mutate: func(t *testing.T, d *DB, repo *Repo, _ *Run) {
+				if _, err := d.UpdateRepoMetadata(repo.ID, "git@github.com:user/replacement.git", repo.DefaultBranch); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := openTestDB(t)
@@ -932,8 +983,9 @@ func TestReleaseUnavailableRunCustodyRefusesChangedOrActiveOwnership(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
+			attempt := prepareUnavailableCustodyReleaseForDBTest(t, d, repo, expected)
 			tc.mutate(t, d, repo, expected)
-			if applied, err := d.ReleaseUnavailableRunCustody(expected); applied || !errors.Is(err, ErrRunCustodyChanged) {
+			if applied, err := d.CommitUnavailableRunCustody(expected, repo, attempt); applied || !errors.Is(err, ErrRunCustodyChanged) {
 				t.Fatalf("guarded release = applied %t, err %v", applied, err)
 			}
 			stored, err := d.GetRun(run.ID)

@@ -167,6 +167,7 @@ type Service struct {
 	beforeUnavailableReleaseGateMove func()
 	beforeUnavailableReleaseGateCAS  func()
 	beforeUnavailableReleaseStamp    func()
+	beforeUnavailableReleaseCommit   func()
 }
 
 // OpenCurrent opens a service for the invoking registered worktree. The caller
@@ -677,15 +678,21 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 // Release is allowed only when the exact selected run belongs to this
 // repository and checked-out branch, is terminal and still owns an unpublished
 // head, and that head is absent from the operator repo, the gate object store,
-// and every advertised configured-target ref. The invoking branch must be
-// unique, clean, and exactly equal to a freshly fetched configured-target ref.
-// Every reachable local, remote, and gate head is anchored before the gate
-// branch can move. The gate move is an atomic compare-and-swap, and the final
-// database write is one guarded transaction that refuses if the run facts or
-// active branch ownership changed. A crash before that write leaves only
-// preservation anchors and, at most, the already-preserved gate branch at the
-// verified local/remote head; retry is safe. A crash after it is an idempotent
-// completed release, durably distinguished from ordinary recovery by reason.
+// and the history reachable from every advertised configured-target ref. The
+// invoking branch must be unique, clean, and exactly equal to a freshly fetched
+// configured-target ref. Every reachable local, remote, and gate head is held
+// by a canonical direct anchor before the gate branch can move.
+//
+// A durable journal binds the original gate head, repository metadata
+// generation, and complete branch-ownership generation before the gate CAS.
+// It makes a crash after a distinct gate move retryable without interpreting a
+// pre-existing ref collision as prior progress. The final recheck runs after
+// all integration seams, and a no-op gate CAS is the Git branch linearization
+// point: an earlier receive is detected, while a later receive is new ownership
+// after this release. The final database write accepts only the journaled
+// gate-moved phase and unchanged generations. A crash after that write is an
+// idempotent completed release, durably distinguished from ordinary recovery
+// by reason.
 func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
 		return refusal
@@ -694,6 +701,10 @@ func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 	run, err := s.DB.GetRun(strings.TrimSpace(runID))
 	if err != nil || run == nil {
 		return blockedPlan(state, state.State, "blocked_release_run_identity", "the exact run id could not be resolved in this repository; no files or refs were changed")
+	}
+	repoSnapshot, repoErr := s.DB.GetRepo(s.Repo.ID)
+	if repoErr != nil || !sameRepoRegistration(s.Repo, repoSnapshot) {
+		return blockedPlan(state, state.State, "blocked_release_run_identity", "the registered repository identity changed before custody release; no files or refs were changed")
 	}
 	base := unavailableReleaseRef(run.ID)
 	transition := &CustodyTransition{
@@ -726,7 +737,7 @@ func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 	if state.State != StatePipelineOwned || !unpublishedPipelineHead(run) {
 		return blockedRelease(state, transition, "blocked_release_not_applicable", "the requested terminal run does not own an unpublished pipeline head; no files or refs were changed")
 	}
-	if run.LastPushedSHA != nil && (ptr(run.PushRef) != "refs/heads/"+state.Local.Branch || ptr(run.PushTargetFingerprint) != TargetFingerprint(s.Repo.PushURL()) || ptr(run.PushTargetKind) != targetKind(s.Repo)) {
+	if run.LastPushedSHA != nil && (ptr(run.PushRef) != "refs/heads/"+state.Local.Branch || ptr(run.PushTargetFingerprint) != TargetFingerprint(repoSnapshot.PushURL()) || ptr(run.PushTargetKind) != targetKind(repoSnapshot)) {
 		return blockedRelease(state, transition, "blocked_release_run_identity", "the requested run's recorded push target no longer matches this repository branch and configured target; no files or refs were changed")
 	}
 	if !state.Local.Clean {
@@ -749,7 +760,7 @@ func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 	local := state.Local.Head
 	branch := state.Local.Branch
 	targetRef := "refs/heads/" + branch
-	targetURL, err := s.verifiedConfiguredPushURL(ctx)
+	targetURL, err := s.verifiedConfiguredPushURL(ctx, repoSnapshot)
 	if err != nil {
 		return blockedRelease(state, transition, "blocked_release_target_ambiguous", "the invoking worktree does not have exactly one configured remote matching this repository's push target; no files or refs were changed")
 	}
@@ -763,7 +774,7 @@ func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 	if remoteHead == "" || remoteHead != local {
 		return blockedRelease(state, transition, "blocked_release_remote_mismatch", "the clean local branch does not exactly equal its configured remote branch; no files or refs were changed")
 	}
-	advertised, err := remoteAdvertisesCommit(releaseCtx, wd, targetURL, run.HeadSHA)
+	advertised, err := remoteRetainsCommit(releaseCtx, wd, targetURL, run.HeadSHA)
 	if err != nil {
 		return blockedRelease(state, transition, "blocked_release_remote_unavailable", "the configured push target refs could not be inspected; no files or refs were changed")
 	}
@@ -789,9 +800,31 @@ func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 	}
 	_, _ = git.Run(ctx, wd, "update-ref", "-d", remoteStagingRef)
 
-	gateHead := ""
+	attempt, attemptErr := s.DB.GetUnavailableCustodyRelease(run.ID)
+	if attemptErr != nil {
+		return blockedRelease(state, transition, "blocked_release_assumptions_changed", "the durable custody release journal could not be read; safety anchors remain intact")
+	}
+	observedGate := ""
 	if observed, gateErr := git.Run(ctx, gateDir, "rev-parse", "--verify", targetRef+"^{commit}"); gateErr == nil {
-		gateHead = observed
+		observedGate = observed
+	}
+	gateHead := observedGate
+	if attempt != nil {
+		if !sameUnavailableReleaseAttempt(attempt, run, repoSnapshot, local, remoteHead, targetRef) {
+			return blockedRelease(state, transition, "blocked_release_assumptions_changed", "the durable custody release journal identifies different repository, run, or Git facts; no ownership state was changed")
+		}
+		gateHead = attempt.GateHead
+		if attempt.Phase == db.UnavailableCustodyReleaseGateMoved && observedGate != local {
+			return blockedRelease(state, transition, "blocked_release_gate_race", "the gate branch changed after the journaled custody-release move; safety anchors remain intact and custody was not released")
+		}
+		if attempt.Phase == db.UnavailableCustodyReleasePrepared && observedGate != gateHead && observedGate != local {
+			return blockedRelease(state, transition, "blocked_release_gate_race", "the gate branch no longer matches either side of the journaled custody-release move; safety anchors remain intact and custody was not released")
+		}
+		if attempt.Phase != db.UnavailableCustodyReleasePrepared && attempt.Phase != db.UnavailableCustodyReleaseGateMoved {
+			return blockedRelease(state, transition, "blocked_release_assumptions_changed", "the durable custody release journal has an unsupported phase; no ownership state was changed")
+		}
+	}
+	if gateHead != "" {
 		transition.GateHead = gateHead
 		transition.GateAnchor = base + "/gate"
 		if blocked, ok := anchorExactCommit(ctx, state, transition, gateDir, transition.GateAnchor, gateHead); !ok {
@@ -805,13 +838,44 @@ func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 	if s.beforeUnavailableReleaseGateMove != nil {
 		s.beforeUnavailableReleaseGateMove()
 	}
-	if refusal := s.recheckUnavailableRelease(ctx, run, state, gateHead, targetURL, targetRef); refusal != nil {
+	authority := db.CustodyReleaseAuthority{}
+	if attempt == nil {
+		authority, err = s.DB.SnapshotCustodyReleaseAuthority(run.RepoID, run.Branch)
+		if err != nil {
+			return blockedRelease(state, transition, "blocked_release_assumptions_changed", "the branch ownership generation could not be read; safety anchors remain intact")
+		}
+	} else {
+		authority.OwnershipGeneration = attempt.OwnershipGeneration
+		authority.RepoGeneration = attempt.RepoGeneration
+	}
+	if refusal := s.recheckUnavailableRelease(ctx, run, repoSnapshot, authority, state, observedGate, targetURL, targetRef); refusal != nil {
 		refusal.CustodyTransition = transition
 		return *refusal
 	}
+	if attempt == nil {
+		attempt, err = s.DB.PrepareUnavailableCustodyRelease(run, repoSnapshot, db.UnavailableCustodyRelease{
+			RunID:               run.ID,
+			RepoID:              run.RepoID,
+			Branch:              run.Branch,
+			PreservedHead:       run.HeadSHA,
+			LocalHead:           local,
+			RemoteHead:          remoteHead,
+			GateHead:            gateHead,
+			TargetKind:          targetKind(repoSnapshot),
+			TargetFingerprint:   TargetFingerprint(repoSnapshot.PushURL()),
+			TargetRef:           targetRef,
+			OwnershipGeneration: authority.OwnershipGeneration,
+			RepoGeneration:      authority.RepoGeneration,
+		})
+		if err != nil {
+			return blockedRelease(state, transition, "blocked_release_assumptions_changed", "the exact repository or branch ownership generation changed before custody release was journaled; safety anchors remain intact")
+		}
+	}
 
 	// Stage the verified local head into the gate without firing receive hooks.
-	// The final branch move uses update-ref CAS, so a racing push wins cleanly.
+	// The branch move uses update-ref CAS against the journaled current side, so
+	// a racing push wins cleanly. On a retry after the original CAS, this is an
+	// intentional no-op CAS from local to local.
 	source, err := filepath.Abs(wd)
 	if err != nil {
 		return blockedRelease(state, transition, "blocked_release_assumptions_changed", "the invoking worktree path could not be resolved; safety anchors remain intact")
@@ -828,7 +892,7 @@ func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 	if s.beforeUnavailableReleaseGateCAS != nil {
 		s.beforeUnavailableReleaseGateCAS()
 	}
-	oldGate := gateHead
+	oldGate := observedGate
 	if oldGate == "" {
 		oldGate = strings.Repeat("0", 40)
 	}
@@ -837,15 +901,28 @@ func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 	if casErr != nil {
 		return blockedRelease(state, transition, "blocked_release_gate_race", "the gate branch changed while custody release was being prepared; every pre-existing head remains anchored and custody was not released")
 	}
-
-	if refusal := s.recheckUnavailableRelease(ctx, run, state, local, targetURL, targetRef); refusal != nil {
-		refusal.CustodyTransition = transition
-		return *refusal
+	if err := s.DB.MarkUnavailableCustodyReleaseGateMoved(run.ID); err != nil {
+		return blockedRelease(state, transition, "blocked_release_assumptions_changed", "the branch ownership generation changed after the gate move; every pre-existing head remains anchored and custody was not released")
 	}
+
+	// Test and integration seams run before the authoritative final recheck.
+	// The subsequent no-op gate CAS is the Git branch linearization point; any
+	// receive before it is refused here, while a later receive is new ownership
+	// after this release and its run insertion advances the guarded generation.
 	if s.beforeUnavailableReleaseStamp != nil {
 		s.beforeUnavailableReleaseStamp()
 	}
-	applied, err := s.DB.ReleaseUnavailableRunCustody(run)
+	if refusal := s.recheckUnavailableRelease(ctx, run, repoSnapshot, authority, state, local, targetURL, targetRef); refusal != nil {
+		refusal.CustodyTransition = transition
+		return *refusal
+	}
+	if _, err := git.Run(ctx, gateDir, "update-ref", targetRef, local, local); err != nil {
+		return blockedRelease(state, transition, "blocked_release_gate_race", "the gate branch changed at the final custody-release boundary; safety anchors remain intact and custody was not released")
+	}
+	if s.beforeUnavailableReleaseCommit != nil {
+		s.beforeUnavailableReleaseCommit()
+	}
+	applied, err := s.DB.CommitUnavailableRunCustody(run, repoSnapshot, attempt)
 	if err != nil {
 		message := "the exact run ownership facts changed before the transactional release stamp; safety anchors remain intact and custody was not released"
 		if !errors.Is(err, db.ErrRunCustodyChanged) {
@@ -861,7 +938,7 @@ func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 	return final
 }
 
-func (s *Service) recheckUnavailableRelease(ctx context.Context, expected *db.Run, original State, expectedGate, targetURL, targetRef string) *State {
+func (s *Service) recheckUnavailableRelease(ctx context.Context, expected *db.Run, expectedRepo *db.Repo, authority db.CustodyReleaseAuthority, original State, expectedGate, targetURL, targetRef string) *State {
 	branch, branchErr := git.CurrentBranch(ctx, s.workDir())
 	head, headErr := git.HeadSHA(ctx, s.workDir())
 	clean, _ := worktreeClean(ctx, s.workDir())
@@ -869,9 +946,20 @@ func (s *Service) recheckUnavailableRelease(ctx context.Context, expected *db.Ru
 		blocked := blockedPlan(original, StateAmbiguousContext, "blocked_release_assumptions_changed", "the local branch, HEAD, or worktree changed while custody release was being prepared; safety anchors remain intact")
 		return &blocked
 	}
+	freshRepo, repoErr := s.DB.GetRepo(expected.RepoID)
+	freshAuthority, authorityErr := s.DB.SnapshotCustodyReleaseAuthority(expected.RepoID, expected.Branch)
+	if repoErr != nil || !sameRepoRegistration(expectedRepo, freshRepo) || authorityErr != nil || freshAuthority != authority {
+		blocked := blockedPlan(original, StatePipelineOwned, "blocked_release_assumptions_changed", "the exact repository or branch ownership generation changed while custody release was being prepared; safety anchors remain intact")
+		return &blocked
+	}
 	fresh, err := s.DB.GetRun(expected.ID)
 	if err != nil || !sameUnavailableReleaseRun(expected, fresh) {
 		blocked := blockedPlan(original, StatePipelineOwned, "blocked_release_assumptions_changed", "the exact durable run facts changed while custody release was being prepared; safety anchors remain intact")
+		return &blocked
+	}
+	_, selected, _ := s.inspect(ctx)
+	if selected == nil || selected.ID != expected.ID {
+		blocked := blockedPlan(original, StatePipelineOwned, "blocked_release_assumptions_changed", "a different run became the authoritative branch owner while custody release was being prepared; safety anchors remain intact")
 		return &blocked
 	}
 	liveCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
@@ -881,7 +969,7 @@ func (s *Service) recheckUnavailableRelease(ctx context.Context, expected *db.Ru
 		blocked := blockedPlan(original, StateRemoteRewritten, "blocked_release_remote_changed", "the configured remote branch changed while custody release was being prepared; safety anchors remain intact")
 		return &blocked
 	}
-	advertised, err := remoteAdvertisesCommit(liveCtx, s.workDir(), targetURL, expected.HeadSHA)
+	advertised, err := remoteRetainsCommit(liveCtx, s.workDir(), targetURL, expected.HeadSHA)
 	if err != nil {
 		blocked := blockedPlan(original, StateOffline, "blocked_release_remote_unavailable", "the configured push target refs could not be rechecked; safety anchors remain intact")
 		return &blocked
@@ -918,23 +1006,44 @@ func sameInt64Pointer(a, b *int64) bool {
 	return (a == nil && b == nil) || (a != nil && b != nil && *a == *b)
 }
 
+func sameRepoRegistration(expected, current *db.Repo) bool {
+	return expected != nil && current != nil && expected.ID == current.ID &&
+		expected.WorkingPath == current.WorkingPath && expected.UpstreamURL == current.UpstreamURL &&
+		expected.ForkURL == current.ForkURL && expected.DefaultBranch == current.DefaultBranch &&
+		expected.MetadataGeneration == current.MetadataGeneration && expected.CreatedAt == current.CreatedAt
+}
+
+func sameUnavailableReleaseAttempt(attempt *db.UnavailableCustodyRelease, run *db.Run, repo *db.Repo, local, remote, targetRef string) bool {
+	return attempt != nil && run != nil && repo != nil &&
+		attempt.RunID == run.ID && attempt.RepoID == run.RepoID && attempt.Branch == run.Branch &&
+		attempt.PreservedHead == run.HeadSHA && attempt.LocalHead == local && attempt.RemoteHead == remote &&
+		attempt.TargetKind == targetKind(repo) && attempt.TargetFingerprint == TargetFingerprint(repo.PushURL()) &&
+		attempt.TargetRef == targetRef && attempt.RepoGeneration == repo.MetadataGeneration
+}
+
 func anchorExactCommit(ctx context.Context, state State, transition *CustodyTransition, dir, ref, head string) (State, bool) {
-	if existing, err := git.Run(ctx, dir, "rev-parse", "--verify", ref+"^{commit}"); err == nil {
+	if symbolic, err := git.Run(ctx, dir, "symbolic-ref", "-q", ref); err == nil && strings.TrimSpace(symbolic) != "" {
+		return blockedRelease(state, transition, "blocked_release_preserve_failed", fmt.Sprintf("the safety anchor %s is symbolic and cannot durably preserve one commit; no ownership state was changed", ref)), false
+	}
+	if existing, err := git.Run(ctx, dir, "show-ref", "--verify", "--hash", ref); err == nil {
 		if existing == head {
 			return State{}, true
 		}
-		return blockedRelease(state, transition, "blocked_release_preserve_failed", fmt.Sprintf("the safety anchor %s already identifies a different commit; no ownership state was changed", ref)), false
+		return blockedRelease(state, transition, "blocked_release_preserve_failed", fmt.Sprintf("the safety anchor %s already identifies a different object; no ownership state was changed", ref)), false
 	}
 	if _, err := git.Run(ctx, dir, "update-ref", ref, head, ""); err != nil {
 		return blockedRelease(state, transition, "blocked_release_preserve_failed", fmt.Sprintf("the safety anchor %s could not be created; no ownership state was changed", ref)), false
 	}
-	if anchored, err := git.Run(ctx, dir, "rev-parse", "--verify", ref+"^{commit}"); err != nil || anchored != head {
-		return blockedRelease(state, transition, "blocked_release_preserve_failed", fmt.Sprintf("the safety anchor %s could not be verified; no ownership state was changed", ref)), false
+	if symbolic, err := git.Run(ctx, dir, "symbolic-ref", "-q", ref); err == nil && strings.TrimSpace(symbolic) != "" {
+		return blockedRelease(state, transition, "blocked_release_preserve_failed", fmt.Sprintf("the safety anchor %s became symbolic; no ownership state was changed", ref)), false
+	}
+	if anchored, err := git.Run(ctx, dir, "show-ref", "--verify", "--hash", ref); err != nil || anchored != head {
+		return blockedRelease(state, transition, "blocked_release_preserve_failed", fmt.Sprintf("the safety anchor %s could not be verified as a direct commit ref; no ownership state was changed", ref)), false
 	}
 	return State{}, true
 }
 
-func (s *Service) verifiedConfiguredPushURL(ctx context.Context) (string, error) {
+func (s *Service) verifiedConfiguredPushURL(ctx context.Context, repo *db.Repo) (string, error) {
 	remoteNames, err := git.Run(ctx, s.workDir(), "remote")
 	if err != nil {
 		return "", err
@@ -946,7 +1055,7 @@ func (s *Service) verifiedConfiguredPushURL(ctx context.Context) (string, error)
 			continue
 		}
 		urls := strings.Fields(out)
-		if len(urls) != 1 || TargetFingerprint(urls[0]) != TargetFingerprint(s.Repo.PushURL()) {
+		if len(urls) != 1 || TargetFingerprint(urls[0]) != TargetFingerprint(repo.PushURL()) {
 			continue
 		}
 		matches = append(matches, urls[0])
@@ -961,33 +1070,51 @@ func populateUnavailableReleaseAudit(ctx context.Context, workDir, gateDir, base
 	if transition == nil {
 		return
 	}
-	if head, err := git.Run(ctx, workDir, "rev-parse", "--verify", transition.LocalAnchor+"^{commit}"); err == nil {
+	if head, ok := directAnchorHead(ctx, workDir, transition.LocalAnchor); ok {
 		transition.LocalHead = head
 	}
-	if head, err := git.Run(ctx, workDir, "rev-parse", "--verify", transition.RemoteAnchor+"^{commit}"); err == nil {
+	if head, ok := directAnchorHead(ctx, workDir, transition.RemoteAnchor); ok {
 		transition.RemoteHead = head
 	}
 	gateAnchor := base + "/gate"
 	if strings.TrimSpace(gateDir) != "" && git.ValidateBareRepository(ctx, gateDir) == nil {
-		if head, err := git.Run(ctx, gateDir, "rev-parse", "--verify", gateAnchor+"^{commit}"); err == nil {
+		if head, ok := directAnchorHead(ctx, gateDir, gateAnchor); ok {
 			transition.GateAnchor = gateAnchor
 			transition.GateHead = head
 		}
 	}
 }
 
-func remoteAdvertisesCommit(ctx context.Context, dir, remote, sha string) (bool, error) {
-	out, err := git.Run(ctx, dir, "ls-remote", remote)
+func directAnchorHead(ctx context.Context, dir, ref string) (string, bool) {
+	if symbolic, err := git.Run(ctx, dir, "symbolic-ref", "-q", ref); err == nil && strings.TrimSpace(symbolic) != "" {
+		return "", false
+	}
+	head, err := git.Run(ctx, dir, "show-ref", "--verify", "--hash", ref)
+	if err != nil || !objectExists(ctx, dir, head) {
+		return "", false
+	}
+	return head, true
+}
+
+// remoteRetainsCommit proves whether fetching all refs advertised by the
+// configured target makes sha reachable. Exact tip comparison is insufficient:
+// a descendant ref also retains every ancestor commit.
+func remoteRetainsCommit(ctx context.Context, dir, remote, sha string) (bool, error) {
+	if _, err := git.Run(ctx, dir, "ls-remote", remote); err != nil {
+		return false, err
+	}
+	probe, err := os.MkdirTemp("", "no-mistakes-custody-remote-*")
 	if err != nil {
 		return false, err
 	}
-	for _, line := range strings.Split(out, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 2 && fields[0] == sha {
-			return true, nil
-		}
+	defer os.RemoveAll(probe)
+	if _, err := git.Run(ctx, probe, "init", "--bare"); err != nil {
+		return false, err
 	}
-	return false, nil
+	if _, err := git.Run(ctx, probe, "fetch", "--no-tags", "--no-write-fetch-head", remote, "+refs/*:refs/no-mistakes/remote-probe/*"); err != nil {
+		return false, err
+	}
+	return objectExists(ctx, probe, sha), nil
 }
 
 func unavailableReleaseRef(runID string) string {

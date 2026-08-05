@@ -6,8 +6,9 @@ CREATE TABLE IF NOT EXISTS repos (
     working_path   TEXT NOT NULL UNIQUE,
     upstream_url   TEXT NOT NULL,
     fork_url       TEXT,
-    default_branch TEXT NOT NULL DEFAULT 'main',
-    created_at     INTEGER NOT NULL
+    default_branch     TEXT NOT NULL DEFAULT 'main',
+    metadata_generation INTEGER NOT NULL DEFAULT 0,
+    created_at         INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -39,6 +40,74 @@ CREATE TABLE IF NOT EXISTS runs (
     parked_ms            INTEGER,
     created_at           INTEGER NOT NULL,
     updated_at           INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS branch_ownership_generations (
+    repo_id    TEXT NOT NULL,
+    branch     TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (repo_id, branch)
+);
+
+INSERT OR IGNORE INTO branch_ownership_generations (repo_id, branch, generation)
+SELECT DISTINCT repo_id, branch, 0 FROM runs;
+
+CREATE TRIGGER IF NOT EXISTS runs_branch_ownership_insert
+AFTER INSERT ON runs
+BEGIN
+    INSERT INTO branch_ownership_generations (repo_id, branch, generation)
+    VALUES (NEW.repo_id, NEW.branch, 1)
+    ON CONFLICT(repo_id, branch) DO UPDATE SET generation = generation + 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS runs_branch_ownership_update
+AFTER UPDATE OF repo_id, branch, head_sha, submitted_head_sha, status,
+    last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref,
+    push_generation, push_active, terminal_head_verified_at, custody_returned_at
+ON runs
+WHEN OLD.repo_id IS NOT NEW.repo_id OR OLD.branch IS NOT NEW.branch
+  OR OLD.head_sha IS NOT NEW.head_sha OR OLD.submitted_head_sha IS NOT NEW.submitted_head_sha
+  OR OLD.status IS NOT NEW.status OR OLD.last_pushed_sha IS NOT NEW.last_pushed_sha
+  OR OLD.push_target_kind IS NOT NEW.push_target_kind
+  OR OLD.push_target_fingerprint IS NOT NEW.push_target_fingerprint
+  OR OLD.push_ref IS NOT NEW.push_ref OR OLD.push_generation IS NOT NEW.push_generation
+  OR OLD.push_active IS NOT NEW.push_active
+  OR OLD.terminal_head_verified_at IS NOT NEW.terminal_head_verified_at
+  OR OLD.custody_returned_at IS NOT NEW.custody_returned_at
+BEGIN
+    INSERT INTO branch_ownership_generations (repo_id, branch, generation)
+    VALUES (OLD.repo_id, OLD.branch, 1)
+    ON CONFLICT(repo_id, branch) DO UPDATE SET generation = generation + 1;
+    INSERT INTO branch_ownership_generations (repo_id, branch, generation)
+    SELECT NEW.repo_id, NEW.branch, 1
+    WHERE NEW.repo_id != OLD.repo_id OR NEW.branch != OLD.branch
+    ON CONFLICT(repo_id, branch) DO UPDATE SET generation = generation + 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS runs_branch_ownership_delete
+AFTER DELETE ON runs
+BEGIN
+    INSERT INTO branch_ownership_generations (repo_id, branch, generation)
+    VALUES (OLD.repo_id, OLD.branch, 1)
+    ON CONFLICT(repo_id, branch) DO UPDATE SET generation = generation + 1;
+END;
+
+CREATE TABLE IF NOT EXISTS unavailable_custody_releases (
+    run_id                TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    repo_id               TEXT NOT NULL,
+    branch                TEXT NOT NULL,
+    preserved_head        TEXT NOT NULL,
+    local_head            TEXT NOT NULL,
+    remote_head           TEXT NOT NULL,
+    gate_head             TEXT NOT NULL,
+    target_kind           TEXT NOT NULL,
+    target_fingerprint    TEXT NOT NULL,
+    target_ref            TEXT NOT NULL,
+    ownership_generation  INTEGER NOT NULL,
+    repo_generation       INTEGER NOT NULL,
+    phase                  TEXT NOT NULL,
+    created_at             INTEGER NOT NULL,
+    updated_at             INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS step_results (
@@ -142,6 +211,10 @@ CREATE TABLE IF NOT EXISTS intent_cache (
 // idempotent via its error being tolerated when the column already exists.
 var migrationStatements = []string{
 	`ALTER TABLE repos ADD COLUMN fork_url TEXT`,
+	// Mutable repository identity participates in the exceptional custody
+	// release transaction. Every supported metadata update increments this
+	// generation so a target change cannot pass a stale final stamp.
+	`ALTER TABLE repos ADD COLUMN metadata_generation INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE step_rounds ADD COLUMN selected_finding_ids TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,
