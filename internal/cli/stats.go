@@ -134,13 +134,16 @@ func renderAgentPerfReport(w io.Writer, database *db.DB, runID string, cutoffUni
 	// be told apart from missing instrumentation (older rows, other adapters).
 	fmt.Fprintln(w)
 	tw = tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "PURPOSE\tMETRICS\tSUBPROC\tROUNDTRIPS\tTOOLS\tWAIT\tTEST/LINT\tEDIT\tREAD\tGIT\tOTHER")
+	fmt.Fprintln(tw, "PURPOSE\tMETRICS\tSUBPROC\tROUNDTRIPS\tTOOLS\tWAIT\tTEST/LINT\tEDIT\tREAD\tGIT\tOTHER\tPACKET\tPACKET B\tHISTORY B\tOMIT PARTS\tOVERSIZE\tOMIT ROUNDS\tOMIT FINDINGS")
 	for _, a := range aggregates {
 		metricsCov := fmt.Sprintf("%d/%d", a.MetricsRows, a.Count)
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		packetCov := fmt.Sprintf("%d/%d", a.ReviewPacketRows, a.Count)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
 			a.Purpose, metricsCov, optMS(a.SubprocessWaitMS),
 			optInt64(a.ModelRoundtrips), optInt64(a.ToolCalls),
 			optInt64(a.ToolWaitCalls), optInt64(a.ToolTestLintCalls), optInt64(a.ToolEditCalls), optInt64(a.ToolReadCalls), optInt64(a.ToolGitCalls), optInt64(a.ToolOtherCalls),
+			packetCov, optInt64(a.ReviewPacketBytes), optInt64(a.ReviewHistoryBytes), optInt64(a.ReviewPacketOmittedParts), a.ReviewPacketOversize,
+			optInt64(a.ReviewHistoryOmittedRounds), optInt64(a.ReviewHistoryOmittedFindings),
 		)
 	}
 	return tw.Flush()
@@ -169,18 +172,19 @@ func renderRunAgentPerf(w io.Writer, database *db.DB, runID string) error {
 	// Table 1: session, timing split, activity, workload, and findings.
 	fmt.Fprintln(w)
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "STEP\tROUND\tPURPOSE\tAGENT\tMODEL\tSESSION\tKEY\tDURATION\tMODEL\tSUBPROC\tRT\tTOOLS (w/t/e/r/g/o)\tFIND\tWORK (f/l)\tFALLBACK\tEXIT")
+	fmt.Fprintln(tw, "STEP\tROUND\tPURPOSE\tAGENT\tMODEL\tSESSION\tKEY\tDURATION\tMODEL\tSUBPROC\tRT\tTOOLS (w/t/e/r/g/o)\tFIND\tWORK (f/l)\tPACKET B\tHISTORY B\tOMIT (p/r/f)\tOVERSIZE\tFALLBACK\tEXIT")
 	for _, inv := range invocations {
 		exit := inv.ExitStatus
 		if inv.FailureCategory != "" && inv.FailureCategory != inv.ExitStatus {
 			exit += "/" + inv.FailureCategory
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			inv.StepName, inv.Round, inv.Purpose, inv.Agent, orUnknown(inv.Model),
 			inv.SessionMode, inv.SessionKey,
 			formatMS(inv.DurationMS), formatModelTime(inv), optMS(inv.SubprocessWaitMS),
 			optInt(inv.ModelRoundtrips), formatToolHistogram(inv), optInt(inv.FindingCount),
-			formatWorkload(inv), orUnknown(deref(inv.FallbackReason)), exit,
+			formatWorkload(inv), optInt(inv.ReviewPacketBytes), optInt(inv.ReviewHistoryBytes), formatReviewPacketOmissions(inv), optBool(inv.ReviewPacketOversize),
+			orUnknown(deref(inv.FallbackReason)), exit,
 		)
 	}
 	if err := tw.Flush(); err != nil {
@@ -270,6 +274,23 @@ func formatWorkload(inv db.AgentInvocation) string {
 		return "-"
 	}
 	return fmt.Sprintf("%s/%s", optInt(inv.WorkloadFiles), optInt(inv.WorkloadLines))
+}
+
+func optBool(p *bool) string {
+	if p == nil {
+		return "-"
+	}
+	return strconv.FormatBool(*p)
+}
+
+// formatReviewPacketOmissions renders packet parts, history rounds, and
+// history findings. A fully unknown packet stays "-" rather than impersonating
+// a measured zero from an older invocation.
+func formatReviewPacketOmissions(inv db.AgentInvocation) string {
+	if inv.ReviewPacketOmittedParts == nil && inv.ReviewHistoryOmittedRounds == nil && inv.ReviewHistoryOmittedFindings == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%s/%s/%s", optInt(inv.ReviewPacketOmittedParts), optInt(inv.ReviewHistoryOmittedRounds), optInt(inv.ReviewHistoryOmittedFindings))
 }
 
 func renderStatsDashboard(stats *db.Stats) string {

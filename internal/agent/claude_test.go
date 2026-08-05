@@ -171,6 +171,26 @@ func TestParseClaudeEvents_ResultEvent(t *testing.T) {
 	}
 }
 
+func TestParseClaudeEvents_RecordsModelAndToolRoundtrips(t *testing.T) {
+	events := strings.Join([]string{
+		`{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":2},"content":[{"type":"tool_use"}]}}`,
+		`{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":2},"content":[{"type":"text","text":"done"}]}}`,
+		`{"type":"result","subtype":"success","structured_output":{}}`,
+		"",
+	}, "\n")
+	var usage TokenUsage
+	var result *claudeResult
+	if err := parseClaudeEvents(context.Background(), strings.NewReader(events), nil, &usage, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result == nil {
+		t.Fatal("expected result")
+	}
+	if result.metrics.ModelRoundtrips != 2 || result.metrics.ToolCalls != 1 {
+		t.Fatalf("metrics = %+v, want 2 model roundtrips and 1 tool call", result.metrics)
+	}
+}
+
 func TestParseClaudeEvents_LargeAssistantEvent(t *testing.T) {
 	largeText := strings.Repeat("x", 128*1024)
 	line, err := json.Marshal(map[string]any{

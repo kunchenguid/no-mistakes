@@ -73,6 +73,7 @@ func TestStatsAgentsReportsLocalPerformanceTelemetry(t *testing.T) {
 
 func statsIntPtr(v int) *int       { return &v }
 func statsInt64Ptr(v int64) *int64 { return &v }
+func statsBoolPtr(v bool) *bool    { return &v }
 
 // TestStatsRendersPopulatedFidelityMetrics proves the report surfaces the new
 // activity histogram, subprocess/model time split, and per-round token deltas
@@ -105,6 +106,8 @@ func TestStatsRendersPopulatedFidelityMetrics(t *testing.T) {
 		ModelRoundtrips: statsIntPtr(24), ToolCalls: statsIntPtr(7),
 		ToolWaitCalls: statsIntPtr(0), ToolTestLintCalls: statsIntPtr(2), ToolEditCalls: statsIntPtr(3),
 		ToolReadCalls: statsIntPtr(1), ToolGitCalls: statsIntPtr(1), ToolOtherCalls: statsIntPtr(0),
+		ReviewPacketBytes: statsIntPtr(2048), ReviewHistoryBytes: statsIntPtr(512), ReviewPacketOmittedParts: statsIntPtr(1), ReviewPacketOversize: statsBoolPtr(true),
+		ReviewHistoryOmittedRounds: statsIntPtr(2), ReviewHistoryOmittedFindings: statsIntPtr(5),
 		WorkloadFiles: statsIntPtr(12), WorkloadLines: statsIntPtr(1060), FindingCount: statsIntPtr(3),
 	}
 	if _, err := d.InsertAgentInvocation(inv); err != nil {
@@ -116,7 +119,7 @@ func TestStatsRendersPopulatedFidelityMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stats --agents: %v\n%s", err, out)
 	}
-	for _, want := range []string{"ROUNDTRIPS", "TEST/LINT", "SUBPROC", "24", "METRICS", "1/1"} {
+	for _, want := range []string{"ROUNDTRIPS", "TEST/LINT", "SUBPROC", "24", "METRICS", "1/1", "PACKET", "2048", "OVERSIZE"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stats --agents missing %q in:\n%s", want, out)
 		}
@@ -128,7 +131,7 @@ func TestStatsRendersPopulatedFidelityMetrics(t *testing.T) {
 	}
 	// Per-round delta (1500) is shown distinctly from the raw cumulative (2500),
 	// the tool histogram and the workload render, and the model-time split appears.
-	for _, want := range []string{"Δ IN (round)", "1500", "2500", "7 0/2/3/1/1/0", "12/1060", "MODEL"} {
+	for _, want := range []string{"Δ IN (round)", "1500", "2500", "7 0/2/3/1/1/0", "12/1060", "MODEL", "PACKET B", "2048", "1/2/5", "true"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stats --run missing %q in:\n%s", want, out)
 		}

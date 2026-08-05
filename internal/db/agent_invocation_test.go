@@ -48,7 +48,8 @@ func TestAgentInvocations_InsertAndReadBack(t *testing.T) {
 	}
 }
 
-func intPtr(v int) *int { return &v }
+func intPtr(v int) *int    { return &v }
+func boolPtr(v bool) *bool { return &v }
 
 // TestAgentInvocations_NullableFidelityFieldsRoundTrip proves the session-
 // fidelity columns survive an insert/read cycle both when populated and when
@@ -68,6 +69,8 @@ func TestAgentInvocations_NullableFidelityFieldsRoundTrip(t *testing.T) {
 		ModelRoundtrips: intPtr(4), ToolCalls: intPtr(3),
 		ToolWaitCalls: intPtr(0), ToolTestLintCalls: intPtr(1), ToolEditCalls: intPtr(1),
 		ToolReadCalls: intPtr(1), ToolGitCalls: intPtr(0), ToolOtherCalls: intPtr(0),
+		ReviewPacketBytes: intPtr(2048), ReviewHistoryBytes: intPtr(512), ReviewPacketOmittedParts: intPtr(1), ReviewPacketOversize: boolPtr(true),
+		ReviewHistoryOmittedRounds: intPtr(2), ReviewHistoryOmittedFindings: intPtr(5),
 		WorkloadFiles: intPtr(4), WorkloadLines: intPtr(120), FindingCount: intPtr(2),
 	}
 	if _, err := d.InsertAgentInvocation(full); err != nil {
@@ -96,6 +99,9 @@ func TestAgentInvocations_NullableFidelityFieldsRoundTrip(t *testing.T) {
 		f.CacheCreationTokens == nil || *f.CacheCreationTokens != 0 ||
 		f.DeltaInputTokens == nil || *f.DeltaInputTokens != 1500 ||
 		f.ToolTestLintCalls == nil || *f.ToolTestLintCalls != 1 ||
+		f.ReviewPacketBytes == nil || *f.ReviewPacketBytes != 2048 ||
+		f.ReviewPacketOversize == nil || !*f.ReviewPacketOversize ||
+		f.ReviewHistoryOmittedFindings == nil || *f.ReviewHistoryOmittedFindings != 5 ||
 		f.FindingCount == nil || *f.FindingCount != 2 {
 		t.Fatalf("full row lost a fidelity field: %+v", f)
 	}
@@ -111,6 +117,7 @@ func TestAgentInvocations_NullableFidelityFieldsRoundTrip(t *testing.T) {
 		"ToolCalls":        m.ToolCalls == nil,
 		"WorkloadFiles":    m.WorkloadFiles == nil,
 		"FindingCount":     m.FindingCount == nil,
+		"ReviewPacket":     m.ReviewPacketBytes == nil,
 	} {
 		if !isNil {
 			t.Fatalf("minimal row %s should read back as unknown (nil)", name)
@@ -180,8 +187,8 @@ func TestAgentInvocationAggregatesAndRunSummary(t *testing.T) {
 	d, _, run := openSessionTestDB(t)
 
 	seed := []AgentInvocation{
-		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", SessionMode: InvocationModeStarted, StartedAt: 1, CompletedAt: 2, DurationMS: 100, ExitStatus: "ok", InputTokens: 10, OutputTokens: 5},
-		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review", Agent: "codex", SessionMode: InvocationModeResumed, StartedAt: 3, CompletedAt: 4, DurationMS: 50, ExitStatus: "ok", InputTokens: 10, OutputTokens: 5},
+		{RunID: run.ID, StepName: "review", Round: 1, Purpose: "review", Agent: "codex", SessionMode: InvocationModeStarted, StartedAt: 1, CompletedAt: 2, DurationMS: 100, ExitStatus: "ok", InputTokens: 10, OutputTokens: 5, ReviewPacketBytes: intPtr(100), ReviewHistoryBytes: intPtr(10), ReviewPacketOmittedParts: intPtr(0), ReviewPacketOversize: boolPtr(false), ReviewHistoryOmittedRounds: intPtr(0), ReviewHistoryOmittedFindings: intPtr(0)},
+		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review", Agent: "codex", SessionMode: InvocationModeResumed, StartedAt: 3, CompletedAt: 4, DurationMS: 50, ExitStatus: "ok", InputTokens: 10, OutputTokens: 5, ReviewPacketBytes: intPtr(200), ReviewHistoryBytes: intPtr(30), ReviewPacketOmittedParts: intPtr(1), ReviewPacketOversize: boolPtr(true), ReviewHistoryOmittedRounds: intPtr(2), ReviewHistoryOmittedFindings: intPtr(3)},
 		{RunID: run.ID, StepName: "review", Round: 2, Purpose: "review-fix", Agent: "codex", SessionMode: InvocationModeFallback, StartedAt: 5, CompletedAt: 6, DurationMS: 70, ExitStatus: "error", FailureCategory: "exit"},
 	}
 	for _, inv := range seed {
@@ -204,6 +211,12 @@ func TestAgentInvocationAggregatesAndRunSummary(t *testing.T) {
 		t.Fatalf("review aggregate = %+v", review)
 	}
 	fix := byPurpose["review-fix"]
+	if review.ReviewPacketRows != 2 || review.ReviewPacketBytes == nil || *review.ReviewPacketBytes != 300 ||
+		review.ReviewHistoryBytes == nil || *review.ReviewHistoryBytes != 40 || review.ReviewPacketOversize != 1 ||
+		review.ReviewHistoryOmittedRounds == nil || *review.ReviewHistoryOmittedRounds != 2 ||
+		review.ReviewHistoryOmittedFindings == nil || *review.ReviewHistoryOmittedFindings != 3 {
+		t.Fatalf("review packet aggregate = %+v", review)
+	}
 	if fix.Count != 1 || fix.Fallback != 1 || fix.Errors != 1 {
 		t.Fatalf("review-fix aggregate = %+v", fix)
 	}

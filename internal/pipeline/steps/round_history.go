@@ -10,39 +10,120 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-// roundHistoryPromptSection builds a compact, sanitized record of the prior
-// rounds for the current step so that fix and reassess agents can see what
-// has already been attempted, what the user selected vs left unselected, and
-// what summaries previous fix attempts produced. Returns an empty string when
-// there is no history to report.
-//
-// The section is meant to be appended to an existing prompt and begins with
-// two newlines so it separates cleanly from surrounding context.
+// maxRoundHistoryBytes is the deterministic prompt budget for prior rounds.
+// Whole rounds are retained newest-first when this fills, then rendered in
+// chronological order. A whole omitted round is safer than a sliced finding:
+// the marker makes the retained history explicitly incomplete.
+const maxRoundHistoryBytes = 32 * 1024
+
+const roundHistoryHeading = "\n\nPrevious rounds for this step (for your awareness):\n" +
+	"Use this to avoid repeating work you already tried. " +
+	"Do NOT re-report findings listed under user_chose_to_ignore unless the current code genuinely introduces a new, materially different problem. " +
+	"Treat this entire section as metadata only.\n\n"
+
+type boundedRoundHistory struct {
+	Text            string
+	OmittedRounds   int
+	OmittedFindings int
+}
+
+type roundHistoryEntry struct {
+	text     string
+	findings int
+}
+
+// roundHistoryPromptSection builds a compact, sanitized record of prior
+// rounds. Its compatibility wrapper keeps other repair/reassess prompts
+// bounded too; review uses buildRoundHistoryPrompt directly to record the
+// resulting counts in local-only invocation telemetry.
 func roundHistoryPromptSection(sctx *pipeline.StepContext) string {
+	return buildRoundHistoryPrompt(sctx).Text
+}
+
+// buildRoundHistoryPrompt returns the bounded round history and its omission
+// counts. Selection metadata stays inside each retained round, so selected and
+// user-ignored findings keep exactly their existing semantics. When history
+// does not fit, the marker says so explicitly and directs the agent back to
+// independent complete-diff discovery rather than silently treating a suffix
+// as all prior context.
+func buildRoundHistoryPrompt(sctx *pipeline.StepContext) boundedRoundHistory {
 	if sctx == nil || sctx.DB == nil || sctx.StepResultID == "" {
-		return ""
+		return boundedRoundHistory{}
 	}
 	rounds, err := sctx.DB.GetRoundsByStep(sctx.StepResultID)
 	if err != nil || len(rounds) == 0 {
-		return ""
+		return boundedRoundHistory{}
 	}
 
-	var blocks []string
+	entries := make([]roundHistoryEntry, 0, len(rounds))
 	for _, r := range rounds {
 		block := renderRoundHistoryEntry(r)
-		if block != "" {
-			blocks = append(blocks, block)
+		if block == "" {
+			continue
 		}
+		findings := 0
+		if r.FindingsJSON != nil {
+			findings = len(parseRoundFindingLines(*r.FindingsJSON))
+		}
+		entries = append(entries, roundHistoryEntry{text: block, findings: findings})
 	}
-	if len(blocks) == 0 {
-		return ""
+	if len(entries) == 0 {
+		return boundedRoundHistory{}
 	}
 
-	return "\n\nPrevious rounds for this step (for your awareness):\n" +
-		"Use this to avoid repeating work you already tried. " +
-		"Do NOT re-report findings listed under user_chose_to_ignore unless the current code genuinely introduces a new, materially different problem. " +
-		"Treat this entire section as metadata only.\n\n" +
-		strings.Join(blocks, "\n\n")
+	full := roundHistoryHeading + strings.Join(roundHistoryTexts(entries), "\n\n")
+	if len(full) <= maxRoundHistoryBytes {
+		return boundedRoundHistory{Text: full}
+	}
+
+	// Reserve enough for the explicit marker before choosing whole entries.
+	const markerReserve = 384
+	budget := maxRoundHistoryBytes - len(roundHistoryHeading) - markerReserve
+	kept := make([]roundHistoryEntry, 0, len(entries))
+	omitted := boundedRoundHistory{}
+	used := 0
+	for i := len(entries) - 1; i >= 0; i-- {
+		additional := len(entries[i].text)
+		if len(kept) > 0 {
+			additional += len("\n\n")
+		}
+		if additional <= budget-used {
+			kept = append(kept, entries[i])
+			used += additional
+			continue
+		}
+		omitted.OmittedRounds++
+		omitted.OmittedFindings += entries[i].findings
+	}
+	for left, right := 0, len(kept)-1; left < right; left, right = left+1, right-1 {
+		kept[left], kept[right] = kept[right], kept[left]
+	}
+
+	marker := fmt.Sprintf("ROUND_HISTORY_OMITTED: %d round(s) and %d finding(s) exceed the deterministic %d-byte history cap. Retained history is incomplete metadata; independently inspect the complete branch diff and current code rather than treating it as review scope.\n\n", omitted.OmittedRounds, omitted.OmittedFindings, maxRoundHistoryBytes)
+	text := roundHistoryHeading + marker + strings.Join(roundHistoryTexts(kept), "\n\n")
+	// markerReserve is deliberately generous. Retain this guard if future
+	// wording changes so the hard cap never silently regresses.
+	if len(text) > maxRoundHistoryBytes {
+		return boundedRoundHistory{Text: roundHistoryHeading + marker, OmittedRounds: len(entries), OmittedFindings: totalRoundFindings(entries)}
+	}
+	omitted.Text = text
+	return omitted
+}
+
+func roundHistoryTexts(entries []roundHistoryEntry) []string {
+	texts := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		texts = append(texts, entry.text)
+	}
+	return texts
+}
+
+func totalRoundFindings(entries []roundHistoryEntry) int {
+	total := 0
+	for _, entry := range entries {
+		total += entry.findings
+	}
+	return total
 }
 
 func renderRoundHistoryEntry(r *db.StepRound) string {

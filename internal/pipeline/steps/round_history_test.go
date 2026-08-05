@@ -150,6 +150,43 @@ func TestRoundHistoryPromptSection_IncludesSourceAndUserInstructions(t *testing.
 	}
 }
 
+func TestRoundHistoryPromptSection_BoundsHistoryAndKeepsRecentSelectionSemantics(t *testing.T) {
+	sctx, stepID := newRoundHistoryContext(t)
+
+	oversized := `{"findings":[{"id":"old","severity":"warning","description":"` + strings.Repeat("old finding detail ", maxRoundHistoryBytes) + `","action":"auto-fix"}]}`
+	if _, err := sctx.DB.InsertStepRound(stepID, 1, "initial", &oversized, nil, 1); err != nil {
+		t.Fatal(err)
+	}
+	selectedRound := `{"findings":[{"id":"selected","severity":"error","description":"must preserve selected finding","action":"auto-fix"},{"id":"ignored","severity":"warning","description":"must preserve ignored finding","action":"ask-user"}]}`
+	r2, err := sctx.DB.InsertStepRound(stepID, 2, "user_fix", &selectedRound, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := `["selected"]`
+	if err := sctx.DB.SetStepRoundSelection(r2.ID, &selected, db.RoundSelectionSourceUser); err != nil {
+		t.Fatal(err)
+	}
+
+	history := buildRoundHistoryPrompt(sctx)
+	if len(history.Text) > maxRoundHistoryBytes {
+		t.Fatalf("history has %d bytes, cap is %d", len(history.Text), maxRoundHistoryBytes)
+	}
+	for _, want := range []string{
+		"ROUND_HISTORY_OMITTED",
+		"user_chose_to_fix:",
+		"must preserve selected finding",
+		"user_chose_to_ignore:",
+		"must preserve ignored finding",
+	} {
+		if !strings.Contains(history.Text, want) {
+			t.Errorf("bounded history missing %q:\n%s", want, history.Text)
+		}
+	}
+	if history.OmittedRounds != 1 || history.OmittedFindings != 1 {
+		t.Fatalf("omissions = %+v, want one old round/finding", history)
+	}
+}
+
 func TestRoundHistoryPromptSection_SanitizesInjectionAttempts(t *testing.T) {
 	sctx, stepID := newRoundHistoryContext(t)
 

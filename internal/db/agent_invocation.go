@@ -100,6 +100,15 @@ type AgentInvocation struct {
 	ToolReadCalls     *int
 	ToolGitCalls      *int
 	ToolOtherCalls    *int
+	// ReviewPacket* are bounded local-only observability counts for the
+	// deterministic review packet. Nil means this invocation had no packet;
+	// the fields never retain paths, prompts, diffs, findings, or other content.
+	ReviewPacketBytes            *int
+	ReviewHistoryBytes           *int
+	ReviewPacketOmittedParts     *int
+	ReviewPacketOversize         *bool
+	ReviewHistoryOmittedRounds   *int
+	ReviewHistoryOmittedFindings *int
 	// WorkloadFiles and WorkloadLines record the bounded size of the change this
 	// invocation worked over. Nil for invocations with no meaningful workload
 	// (or steps that do not supply it).
@@ -120,6 +129,8 @@ const agentInvocationColumns = `id, run_id, step_name, round, purpose, agent, mo
 	delta_input_tokens, delta_output_tokens, delta_cache_read_tokens,
 	model_roundtrips, tool_calls,
 	tool_wait_calls, tool_test_lint_calls, tool_edit_calls, tool_read_calls, tool_git_calls, tool_other_calls,
+	review_packet_bytes, review_history_bytes, review_packet_omitted_parts, review_packet_oversize,
+	review_history_omitted_rounds, review_history_omitted_findings,
 	workload_files, workload_lines, finding_count`
 
 // agentInvocationInsertPlaceholders has one '?' per agentInvocationColumns entry.
@@ -130,6 +141,7 @@ const agentInvocationInsertPlaceholders = `?, ?, ?, ?, ?, ?, ?, ?,
 	?, ?,
 	?, ?, ?,
 	?, ?,
+	?, ?, ?, ?, ?, ?,
 	?, ?, ?, ?, ?, ?,
 	?, ?, ?`
 
@@ -148,6 +160,8 @@ func (d *DB) InsertAgentInvocation(inv AgentInvocation) (*AgentInvocation, error
 		inv.DeltaInputTokens, inv.DeltaOutputTokens, inv.DeltaCacheReadTokens,
 		inv.ModelRoundtrips, inv.ToolCalls,
 		inv.ToolWaitCalls, inv.ToolTestLintCalls, inv.ToolEditCalls, inv.ToolReadCalls, inv.ToolGitCalls, inv.ToolOtherCalls,
+		inv.ReviewPacketBytes, inv.ReviewHistoryBytes, inv.ReviewPacketOmittedParts, inv.ReviewPacketOversize,
+		inv.ReviewHistoryOmittedRounds, inv.ReviewHistoryOmittedFindings,
 		inv.WorkloadFiles, inv.WorkloadLines, inv.FindingCount,
 	)
 	if err != nil {
@@ -193,6 +207,8 @@ func scanAgentInvocation(row scanner) (AgentInvocation, error) {
 		&inv.DeltaInputTokens, &inv.DeltaOutputTokens, &inv.DeltaCacheReadTokens,
 		&inv.ModelRoundtrips, &inv.ToolCalls,
 		&inv.ToolWaitCalls, &inv.ToolTestLintCalls, &inv.ToolEditCalls, &inv.ToolReadCalls, &inv.ToolGitCalls, &inv.ToolOtherCalls,
+		&inv.ReviewPacketBytes, &inv.ReviewHistoryBytes, &inv.ReviewPacketOmittedParts, &inv.ReviewPacketOversize,
+		&inv.ReviewHistoryOmittedRounds, &inv.ReviewHistoryOmittedFindings,
 		&inv.WorkloadFiles, &inv.WorkloadLines, &inv.FindingCount,
 	); err != nil {
 		return AgentInvocation{}, fmt.Errorf("scan agent invocation: %w", err)
@@ -254,6 +270,15 @@ type AgentInvocationAggregate struct {
 	// MetricsRows counts invocations in the group whose adapter reported
 	// activity metrics (model_roundtrips is non-NULL).
 	MetricsRows int
+	// ReviewPacketRows reports review-packet instrumentation coverage. The
+	// remaining fields are numeric-only local packet/history shape totals.
+	ReviewPacketRows             int
+	ReviewPacketBytes            *int64
+	ReviewHistoryBytes           *int64
+	ReviewPacketOmittedParts     *int64
+	ReviewPacketOversize         int
+	ReviewHistoryOmittedRounds   *int64
+	ReviewHistoryOmittedFindings *int64
 }
 
 // AgentInvocationAggregates returns per-purpose aggregates across all runs,
@@ -290,7 +315,14 @@ func (d *DB) AgentInvocationAggregatesSince(cutoffUnix int64) ([]AgentInvocation
 		       CASE WHEN COUNT(tool_read_calls) = COUNT(*) THEN SUM(tool_read_calls) END,
 		       CASE WHEN COUNT(tool_git_calls) = COUNT(*) THEN SUM(tool_git_calls) END,
 		       CASE WHEN COUNT(tool_other_calls) = COUNT(*) THEN SUM(tool_other_calls) END,
-		       COALESCE(SUM(CASE WHEN model_roundtrips IS NOT NULL THEN 1 ELSE 0 END), 0)
+		       COALESCE(SUM(CASE WHEN model_roundtrips IS NOT NULL THEN 1 ELSE 0 END), 0),
+		       CASE WHEN COUNT(review_packet_bytes) = COUNT(*) THEN SUM(review_packet_bytes) END,
+		       CASE WHEN COUNT(review_history_bytes) = COUNT(*) THEN SUM(review_history_bytes) END,
+		       CASE WHEN COUNT(review_packet_omitted_parts) = COUNT(*) THEN SUM(review_packet_omitted_parts) END,
+		       COALESCE(SUM(CASE WHEN review_packet_oversize = 1 THEN 1 ELSE 0 END), 0),
+		       CASE WHEN COUNT(review_history_omitted_rounds) = COUNT(*) THEN SUM(review_history_omitted_rounds) END,
+		       CASE WHEN COUNT(review_history_omitted_findings) = COUNT(*) THEN SUM(review_history_omitted_findings) END,
+		       COALESCE(SUM(CASE WHEN review_packet_bytes IS NOT NULL THEN 1 ELSE 0 END), 0)
 		FROM agent_invocations
 		WHERE (? <= 0 OR started_at >= ?)
 		GROUP BY purpose
@@ -310,6 +342,8 @@ func (d *DB) AgentInvocationAggregatesSince(cutoffUnix int64) ([]AgentInvocation
 			&a.FreshInputTokens, &a.ReasoningTokens, &a.ModelRoundtrips, &a.ToolCalls,
 			&a.ToolWaitCalls, &a.ToolTestLintCalls, &a.ToolEditCalls, &a.ToolReadCalls, &a.ToolGitCalls, &a.ToolOtherCalls,
 			&a.MetricsRows,
+			&a.ReviewPacketBytes, &a.ReviewHistoryBytes, &a.ReviewPacketOmittedParts, &a.ReviewPacketOversize,
+			&a.ReviewHistoryOmittedRounds, &a.ReviewHistoryOmittedFindings, &a.ReviewPacketRows,
 		); err != nil {
 			return nil, fmt.Errorf("scan agent invocation aggregate: %w", err)
 		}

@@ -48,10 +48,26 @@ type RunOpts struct {
 	// can be normalized without external git archaeology. Instrumentation only;
 	// adapters ignore it.
 	Workload *InvocationWorkload
+	// ReviewPacket holds bounded, local-only evidence about the deterministic
+	// review context embedded in this invocation. It carries counts only, never
+	// prompt, path, diff, or finding text. Nil means no review packet applied.
+	ReviewPacket *ReviewPacketMetrics
 	// OnAttempt receives each concrete adapter attempt, including retries and
 	// fallback-provider attempts, after it completes. It is instrumentation
 	// only and must not change invocation behavior.
 	OnAttempt func(Attempt)
+}
+
+// ReviewPacketMetrics records only the bounded shape of a review packet and
+// its history. These are local observability counts for comparing repeated
+// model/tool work; they are not provider allowance or billing estimates.
+type ReviewPacketMetrics struct {
+	PacketBytes            int
+	HistoryBytes           int
+	PacketOmittedParts     int
+	OversizeFallback       bool
+	HistoryOmittedRounds   int
+	HistoryOmittedFindings int
 }
 
 // Attempt describes one completed concrete adapter attempt for an agent

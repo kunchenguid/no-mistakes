@@ -36,6 +36,14 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// Best-effort: a diff-stat failure leaves the workload unknown.
 	workload := reviewWorkload(ctx, sctx.WorkDir, baseSHA, sctx.Run.HeadSHA)
 
+	// A fix delta is supplementary orientation for the independent rereview;
+	// the packet builder still binds and embeds (or explicitly omits) the full
+	// base..head branch diff after the fixer commits.
+	fixStartHead := ""
+	if sctx.Fixing {
+		fixStartHead = sctx.Run.HeadSHA
+	}
+
 	// In fix mode, ask the agent to fix issues first.
 	//
 	// The verification-discipline rules below (apply all fixes first, then one
@@ -144,6 +152,19 @@ Previous review findings to address:
 	// Ask agent to review
 	sctx.Log("reviewing changes...")
 
+	packet, err := buildReviewPacket(ctx, sctx.WorkDir, baseSHA, sctx.Run.HeadSHA, fixStartHead)
+	if err != nil {
+		return nil, err
+	}
+	history := buildRoundHistoryPrompt(sctx)
+	if packet.Metrics.OversizeFallback {
+		sctx.Log(fmt.Sprintf("review packet omitted %d oversized section(s); reviewer must self-discover the complete diff", packet.Metrics.PacketOmittedParts))
+	}
+	if history.OmittedRounds > 0 {
+		sctx.Log(fmt.Sprintf("review history omitted %d round(s) and %d finding(s) at its byte cap", history.OmittedRounds, history.OmittedFindings))
+	}
+	reviewWorkload := reviewWorkload(ctx, sctx.WorkDir, baseSHA, sctx.Run.HeadSHA)
+
 	// The review turn (initial and every post-fix rereview) carries the intent
 	// conformance obligation: when the intent is authoritative acceptance
 	// criteria (explicit --intent), a change that contradicts it must park via
@@ -161,7 +182,7 @@ Previous review findings to address:
 	// net-deleted-author-lines git-diff backstop for the removal-of-required
 	// class - a fixer round that net-deletes author-added lines parks
 	// regardless of intent source. Held pending a scope decision.
-	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
+	historySection := executionContextPromptSection() + history.Text + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
 
 	// Path-scoped repository review guidance, taken from the trusted
 	// default-branch config copy (regardless of allow_repo_commands) so a pushed
@@ -185,7 +206,7 @@ Context:
 - review scope: %s
 - default branch: %s
 - ignore patterns: %s
-
+%s
 Task:
 - Read the relevant history and diff yourself.
 - Focus findings on risks introduced by changed code, but inspect surrounding code, call sites, shared helpers, tests, and invariants when needed to understand root cause.
@@ -229,6 +250,7 @@ Risk assessment (after listing all findings):
 		reviewScope,
 		sctx.Repo.DefaultBranch,
 		ignorePatterns,
+		packet.Text,
 		historySection,
 		pathInstructions,
 	)
@@ -244,13 +266,18 @@ Risk assessment (after listing all findings):
 	// cross-round context a rereview legitimately needs travels in the
 	// explicit sanitized round-history section above; only the fixer keeps a
 	// durable session (executeFixMode), because it certifies nothing.
+	packetMetrics := packet.Metrics
+	packetMetrics.HistoryBytes = len(history.Text)
+	packetMetrics.HistoryOmittedRounds = history.OmittedRounds
+	packetMetrics.HistoryOmittedFindings = history.OmittedFindings
 	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
-		Prompt:     prompt,
-		CWD:        sctx.WorkDir,
-		JSONSchema: reviewFindingsSchema,
-		OnChunk:    sctx.LogChunk,
-		Purpose:    types.AgentPurposeReview,
-		Workload:   workload,
+		Prompt:       prompt,
+		CWD:          sctx.WorkDir,
+		JSONSchema:   reviewFindingsSchema,
+		OnChunk:      sctx.LogChunk,
+		Purpose:      types.AgentPurposeReview,
+		Workload:     reviewWorkload,
+		ReviewPacket: &packetMetrics,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent review: %w", err)

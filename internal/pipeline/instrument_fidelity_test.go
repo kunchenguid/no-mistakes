@@ -63,6 +63,49 @@ func (a *cumulativeSessionAgent) Run(_ context.Context, opts agent.RunOpts) (*ag
 // session's cumulative token counters are stored per round as correct deltas,
 // with fresh input, reasoning, model identity, activity metrics, workload, and
 // finding counts all populated, and cache creation left unknown.
+type reviewPacketMetricsAgent struct{}
+
+func (reviewPacketMetricsAgent) Name() string { return "review" }
+func (reviewPacketMetricsAgent) Close() error { return nil }
+func (reviewPacketMetricsAgent) Run(context.Context, agent.RunOpts) (*agent.Result, error) {
+	return &agent.Result{}, nil
+}
+
+func TestPerfRecording_StoresBoundedReviewPacketMetrics(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	wrapped := &perfRecordingAgent{
+		inner:    reviewPacketMetricsAgent{},
+		db:       database,
+		runID:    run.ID,
+		stepName: types.StepReview,
+		round:    func() int { return 1 },
+	}
+	metrics := &agent.ReviewPacketMetrics{
+		PacketBytes: 2048, HistoryBytes: 512, PacketOmittedParts: 1, OversizeFallback: true,
+		HistoryOmittedRounds: 2, HistoryOmittedFindings: 5,
+	}
+	if _, err := wrapped.Run(context.Background(), agent.RunOpts{Purpose: types.AgentPurposeReview, ReviewPacket: metrics}); err != nil {
+		t.Fatal(err)
+	}
+
+	invs, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invs) != 1 {
+		t.Fatalf("got %d rows, want 1", len(invs))
+	}
+	got := invs[0]
+	assertPtr(t, "packet bytes", got.ReviewPacketBytes, 2048)
+	assertPtr(t, "history bytes", got.ReviewHistoryBytes, 512)
+	assertPtr(t, "omitted packet parts", got.ReviewPacketOmittedParts, 1)
+	if got.ReviewPacketOversize == nil || !*got.ReviewPacketOversize {
+		t.Fatalf("oversize fallback = %v, want true", got.ReviewPacketOversize)
+	}
+	assertPtr(t, "omitted history rounds", got.ReviewHistoryOmittedRounds, 2)
+	assertPtr(t, "omitted history findings", got.ReviewHistoryOmittedFindings, 5)
+}
+
 func TestPerfRecording_ResumedSessionRecordsPerRoundDeltas(t *testing.T) {
 	database, _, run, _ := setupTest(t)
 

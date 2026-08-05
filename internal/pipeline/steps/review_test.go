@@ -89,8 +89,11 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if len(ag.calls[0].JSONSchema) == 0 {
 		t.Error("expected fix call to request structured JSON output")
 	}
-	if strings.Contains(ag.calls[1].Prompt, "feature code") {
-		t.Error("expected review prompt to avoid embedding diff contents in fix mode")
+	if !strings.Contains(ag.calls[1].Prompt, "Deterministic review packet") || !strings.Contains(ag.calls[1].Prompt, "feature code") {
+		t.Error("expected rereview prompt to include its deterministic full-diff packet")
+	}
+	if !strings.Contains(ag.calls[1].Prompt, "never a review scope limit") {
+		t.Error("expected rereview packet to label the fix delta as orientation only")
 	}
 	if strings.Contains(ag.calls[1].Prompt, "<<<<<<< HEAD") {
 		t.Error("expected review prompt to exclude merge markers")

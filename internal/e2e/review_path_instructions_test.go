@@ -121,6 +121,7 @@ func TestReviewPathInstructionsJourney(t *testing.T) {
 		}
 
 		prompt := reviewPrompt(t, h)
+		instructions := promptTail(prompt)
 
 		if !strings.Contains(prompt, config.ReviewPathInstructionsHeading) {
 			t.Fatalf("review prompt is missing the path-instructions heading:\n%s", prompt)
@@ -130,20 +131,22 @@ func TestReviewPathInstructionsJourney(t *testing.T) {
 		wantBlock := config.ReviewPathInstructionsPathLabel + "internal/scm/**\n" +
 			config.ReviewPathInstructionsFilesLabel + "internal/scm/github/github.go\n" +
 			config.ReviewPathInstructionsRulesLabel + "\n" + scmPathRule
-		if !strings.Contains(prompt, wantBlock) {
-			t.Errorf("review prompt is missing the scoped block\n%q\ngot:\n%s", wantBlock, promptTail(prompt))
+		if !strings.Contains(instructions, wantBlock) {
+			t.Errorf("review prompt is missing the scoped block\n%q\ngot:\n%s", wantBlock, instructions)
 		}
-		// A rule whose glob matched nothing in this diff is not appended.
-		if strings.Contains(prompt, docsPathRule) {
-			t.Errorf("docs/** rule was appended although the diff touches no docs:\n%s", promptTail(prompt))
+		// A rule whose glob matched nothing in this diff is not appended. The
+		// complete review packet can legitimately contain these words as changed
+		// source/config data, so inspect the trusted instruction section only.
+		if strings.Contains(instructions, docsPathRule) {
+			t.Errorf("docs/** rule was appended although the diff touches no docs:\n%s", instructions)
 		}
 		// Trust boundary: the pushed branch cannot steer the reviewer that gates it.
-		if strings.Contains(prompt, injectedPathRule) {
-			t.Errorf("SECURITY REGRESSION: a review rule from the pushed branch reached the reviewer:\n%s", promptTail(prompt))
+		if strings.Contains(instructions, injectedPathRule) {
+			t.Errorf("SECURITY REGRESSION: a review rule from the pushed branch reached the reviewer:\n%s", instructions)
 		}
 		// Trust boundary: a pushed ignore_patterns entry covering the maintainer's
 		// glob must not delete the maintainer's rule from the review.
-		if !strings.Contains(prompt, scmPathRule) {
+		if !strings.Contains(instructions, scmPathRule) {
 			t.Error("SECURITY REGRESSION: pushed ignore_patterns suppressed the trusted rule for internal/scm/**")
 		}
 

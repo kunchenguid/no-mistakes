@@ -96,6 +96,20 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 		inv.WorkloadFiles = &files
 		inv.WorkloadLines = &lines
 	}
+	if metrics := opts.ReviewPacket; metrics != nil {
+		packetBytes := metrics.PacketBytes
+		historyBytes := metrics.HistoryBytes
+		omittedParts := metrics.PacketOmittedParts
+		oversize := metrics.OversizeFallback
+		omittedRounds := metrics.HistoryOmittedRounds
+		omittedFindings := metrics.HistoryOmittedFindings
+		inv.ReviewPacketBytes = &packetBytes
+		inv.ReviewHistoryBytes = &historyBytes
+		inv.ReviewPacketOmittedParts = &omittedParts
+		inv.ReviewPacketOversize = &oversize
+		inv.ReviewHistoryOmittedRounds = &omittedRounds
+		inv.ReviewHistoryOmittedFindings = &omittedFindings
+	}
 	a.recordResult(&inv, sessionKey, result)
 	if runErr != nil {
 		if ctx.Err() != nil || errors.Is(runErr, context.Canceled) {

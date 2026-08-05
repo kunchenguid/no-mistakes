@@ -108,6 +108,12 @@ CREATE TABLE IF NOT EXISTS agent_invocations (
     tool_read_calls       INTEGER,
     tool_git_calls        INTEGER,
     tool_other_calls      INTEGER,
+    review_packet_bytes   INTEGER,
+    review_history_bytes  INTEGER,
+    review_packet_omitted_parts INTEGER,
+    review_packet_oversize INTEGER,
+    review_history_omitted_rounds INTEGER,
+    review_history_omitted_findings INTEGER,
     workload_files        INTEGER,
     workload_lines        INTEGER,
     finding_count         INTEGER
@@ -206,4 +212,12 @@ var migrationStatements = []string{
 	`ALTER TABLE agent_invocations ADD COLUMN workload_files INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN workload_lines INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN finding_count INTEGER`,
+	// Deterministic review-packet observability. These remain numeric/boolean
+	// only: local telemetry never retains review paths, prompts, or diffs.
+	`ALTER TABLE agent_invocations ADD COLUMN review_packet_bytes INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN review_history_bytes INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN review_packet_omitted_parts INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN review_packet_oversize INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN review_history_omitted_rounds INTEGER`,
+	`ALTER TABLE agent_invocations ADD COLUMN review_history_omitted_findings INTEGER`,
 }

@@ -162,6 +162,12 @@ func finalizeClaudeResult(result *claudeResult, schema json.RawMessage, usage To
 		Usage:                 usage,
 		UsageReported:         usage.Reported,
 		CacheCreationReported: usage.CacheCreationReported,
+		// Claude's stream reports each assistant item and its tool-use content,
+		// which gives local review-packet experiments a model/tool round-trip
+		// count without retaining command text. Claude does not expose command
+		// detail, so each tool is honestly retained only in the bounded other
+		// bucket rather than misclassified as read, edit, git, or test/lint.
+		Metrics: &result.metrics,
 	}, nil
 }
 
@@ -289,6 +295,7 @@ type claudeResult struct {
 	rawEvent         json.RawMessage
 	sessionID        string // durable session identity from the event stream
 	model            string // model reported by assistant events
+	metrics          InvocationMetrics
 }
 
 type claudeUsage struct {
@@ -317,6 +324,7 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 	var textBuf string
 	var lastSessionID string
 	var lastModel string
+	var metrics InvocationMetrics
 
 	for scanner.Scan() {
 		select {
@@ -347,6 +355,7 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 			if msg.Model != "" {
 				lastModel = msg.Model
 			}
+			metrics.ModelRoundtrips++
 			usage.Add(TokenUsage{
 				InputTokens:           msg.Usage.InputTokens,
 				OutputTokens:          msg.Usage.OutputTokens,
@@ -356,6 +365,10 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 				CacheCreationReported: true,
 			})
 			for _, c := range msg.Content {
+				if c.Type == "tool_use" {
+					metrics.ToolCalls++
+					metrics.ToolCategories.Other++
+				}
 				if c.Type == "text" && c.Text != "" {
 					textBuf += c.Text
 					if onChunk != nil {
@@ -376,6 +389,7 @@ func parseClaudeEvents(ctx context.Context, r io.Reader, onChunk func(string), u
 					rawEvent:         raw,
 					sessionID:        lastSessionID,
 					model:            lastModel,
+					metrics:          metrics,
 				}
 			}
 		}
