@@ -20,6 +20,9 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+// refreshTimeout bounds one network step: a single ref read, or a single
+// branch fetch. Every step takes its own budget, because slower work can run
+// between two of them and a shared deadline would already be spent.
 const refreshTimeout = 15 * time.Second
 
 // remoteProbeTimeout bounds the reachability probe, which transfers objects and
@@ -172,6 +175,16 @@ type Service struct {
 	beforeUnavailableReleaseGateCAS  func()
 	beforeUnavailableReleaseStamp    func()
 	beforeUnavailableReleaseCommit   func()
+	afterUnavailableReleaseProbe     func()
+	refreshBudget                    time.Duration
+}
+
+// networkBudget is the per-step deadline for one ref read or one branch fetch.
+func (s *Service) networkBudget() time.Duration {
+	if s.refreshBudget > 0 {
+		return s.refreshBudget
+	}
+	return refreshTimeout
 }
 
 // OpenCurrent opens a service for the invoking registered worktree. The caller
@@ -707,13 +720,16 @@ func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 		return blockedPlan(state, state.State, "blocked_release_run_identity", "the registered repository identity changed before custody release; no files or refs were changed")
 	}
 	base := unavailableReleaseRef(run.ID)
+	// Every anchor field is reported only once anchorExactCommit has created and
+	// verified that ref, so a refused attempt never names a ref an operator
+	// cannot resolve.
+	localAnchorRef := unavailableReleaseAnchorRef(base, "local", state.Local.Head)
 	transition := &CustodyTransition{
 		Action:        "release_unavailable",
 		Reason:        db.CustodyReturnReasonPreservedHeadUnavailable,
 		RunID:         run.ID,
 		PreservedHead: run.HeadSHA,
 		LocalHead:     state.Local.Head,
-		LocalAnchor:   unavailableReleaseAnchorRef(base, "local", state.Local.Head),
 	}
 	state.CustodyTransition = transition
 
@@ -764,9 +780,9 @@ func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 	if err != nil {
 		return blockedRelease(state, transition, "blocked_release_target_ambiguous", "the invoking worktree does not have exactly one configured remote matching this repository's push target; no files or refs were changed")
 	}
-	releaseCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
-	defer cancel()
-	remoteHead, err := git.LsRemote(releaseCtx, wd, targetURL, targetRef)
+	refCtx, cancelRef := context.WithTimeout(ctx, s.networkBudget())
+	remoteHead, err := git.LsRemote(refCtx, wd, targetURL, targetRef)
+	cancelRef()
 	if err != nil {
 		return blockedRelease(state, transition, "blocked_release_remote_unavailable", "the configured push target could not be read; no files or refs were changed")
 	}
@@ -774,7 +790,7 @@ func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 	if remoteHead == "" || remoteHead != local {
 		return blockedRelease(state, transition, "blocked_release_remote_mismatch", "the clean local branch does not exactly equal its configured remote branch; no files or refs were changed")
 	}
-	transition.RemoteAnchor = unavailableReleaseAnchorRef(base, "remote", remoteHead)
+	remoteAnchorRef := unavailableReleaseAnchorRef(base, "remote", remoteHead)
 	probe, closeProbe, err := newRemoteReachabilityProbe(ctx, wd)
 	if err != nil {
 		return blockedRelease(state, transition, "blocked_release_remote_unavailable", "the configured push target refs could not be inspected; no files or refs were changed")
@@ -788,11 +804,17 @@ func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 		return blockedRelease(state, transition, "blocked_release_preserved_recoverable", "the recorded preserved pipeline head is still advertised by the configured push target; recover or anchor it instead of releasing unavailable custody; no files or refs were changed")
 	}
 
-	if blocked, ok := anchorExactCommit(ctx, state, transition, wd, transition.LocalAnchor, local); !ok {
+	if s.afterUnavailableReleaseProbe != nil {
+		s.afterUnavailableReleaseProbe()
+	}
+	if blocked, ok := anchorExactCommit(ctx, state, transition, wd, localAnchorRef, local, &transition.LocalAnchor); !ok {
 		return blocked
 	}
 	remoteStagingRef := base + "/remote-staging"
-	if err := git.FetchRemoteBranchToPrivateRef(releaseCtx, wd, targetURL, branch, remoteStagingRef); err != nil {
+	stagingCtx, cancelStaging := context.WithTimeout(ctx, s.networkBudget())
+	stagingErr := git.FetchRemoteBranchToPrivateRef(stagingCtx, wd, targetURL, branch, remoteStagingRef)
+	cancelStaging()
+	if stagingErr != nil {
 		return blockedRelease(state, transition, "blocked_release_preserve_failed", "the configured remote head could not be fetched before creating its private safety anchor; the local anchor remains intact")
 	}
 	fetched, fetchErr := git.Run(ctx, wd, "rev-parse", remoteStagingRef+"^{commit}")
@@ -800,7 +822,7 @@ func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 		_, _ = git.Run(ctx, wd, "update-ref", "-d", remoteStagingRef)
 		return blockedRelease(state, transition, "blocked_release_remote_changed", "the configured remote branch changed while its safety anchor was being prepared; the local safety anchor remains intact")
 	}
-	if blocked, ok := anchorExactCommit(ctx, state, transition, wd, transition.RemoteAnchor, fetched); !ok {
+	if blocked, ok := anchorExactCommit(ctx, state, transition, wd, remoteAnchorRef, fetched, &transition.RemoteAnchor); !ok {
 		_, _ = git.Run(ctx, wd, "update-ref", "-d", remoteStagingRef)
 		return blocked
 	}
@@ -849,12 +871,15 @@ func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
 			continue
 		}
 		ref := unavailableReleaseAnchorRef(base, "gate", anchored)
-		if blocked, ok := anchorExactCommit(ctx, state, transition, gateDir, ref, anchored); !ok {
+		var reported *string
+		if anchored == gateHead {
+			reported = &transition.GateAnchor
+		}
+		if blocked, ok := anchorExactCommit(ctx, state, transition, gateDir, ref, anchored, reported); !ok {
 			return blocked
 		}
 		if anchored == gateHead {
 			transition.GateHead = gateHead
-			transition.GateAnchor = ref
 		}
 	}
 	if objectExists(ctx, gateDir, run.HeadSHA) || objectExists(ctx, wd, run.HeadSHA) {
@@ -997,7 +1022,7 @@ func (s *Service) recheckUnavailableRelease(ctx context.Context, expected *db.Ru
 		blocked := blockedPlan(original, StatePipelineOwned, "blocked_release_assumptions_changed", "a different run became the authoritative branch owner while custody release was being prepared; safety anchors remain intact")
 		return &blocked
 	}
-	liveCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
+	liveCtx, cancel := context.WithTimeout(ctx, s.networkBudget())
 	defer cancel()
 	live, err := git.LsRemote(liveCtx, s.workDir(), targetURL, targetRef)
 	if err != nil || live != original.Local.Head {
@@ -1060,12 +1085,19 @@ func sameUnavailableReleaseAttempt(attempt *db.UnavailableCustodyRelease, run *d
 		attempt.TargetRef == targetRef
 }
 
-func anchorExactCommit(ctx context.Context, state State, transition *CustodyTransition, dir, ref, head string) (State, bool) {
+// anchorExactCommit creates, or accepts as already identical, one direct
+// safety-anchor ref. It is the single owner of anchor reporting: reported is
+// set only on the success paths, so the audit can never name a ref that this
+// attempt did not leave resolvable at head.
+func anchorExactCommit(ctx context.Context, state State, transition *CustodyTransition, dir, ref, head string, reported *string) (State, bool) {
 	if symbolic, err := git.Run(ctx, dir, "symbolic-ref", "-q", ref); err == nil && strings.TrimSpace(symbolic) != "" {
 		return blockedRelease(state, transition, "blocked_release_preserve_failed", fmt.Sprintf("the safety anchor %s is symbolic and cannot durably preserve one commit; no ownership state was changed", ref)), false
 	}
 	if existing, err := git.Run(ctx, dir, "show-ref", "--verify", "--hash", ref); err == nil {
 		if existing == head {
+			if reported != nil {
+				*reported = ref
+			}
 			return State{}, true
 		}
 		return blockedRelease(state, transition, "blocked_release_preserve_failed", fmt.Sprintf("the safety anchor %s already identifies a different object; no ownership state was changed", ref)), false
@@ -1078,6 +1110,9 @@ func anchorExactCommit(ctx context.Context, state State, transition *CustodyTran
 	}
 	if anchored, err := git.Run(ctx, dir, "show-ref", "--verify", "--hash", ref); err != nil || anchored != head {
 		return blockedRelease(state, transition, "blocked_release_preserve_failed", fmt.Sprintf("the safety anchor %s could not be verified as a direct commit ref; no ownership state was changed", ref)), false
+	}
+	if reported != nil {
+		*reported = ref
 	}
 	return State{}, true
 }

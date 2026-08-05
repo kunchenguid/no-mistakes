@@ -5,7 +5,9 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -94,6 +96,73 @@ func TestCommitChangeCreatesMissingBranchFromMain(t *testing.T) {
 	show := mustGit("show", "feature/new:hello.txt")
 	if show != "hello" {
 		t.Fatalf("hello.txt contents = %q, want %q", show, "hello")
+	}
+}
+
+// TestHarnessGitNeutralizesInheritedCommitSigning pins the harness as the single
+// owner of fixture commit signing. Journeys create repositories beyond
+// h.WorkDir - clones, bare remotes, seed repos - and every commit into any of
+// them must survive an operator's inherited signing config, which reaches the
+// isolated HOME through a system gitconfig, GIT_CONFIG_GLOBAL, or GIT_CONFIG_*
+// injection from an agent harness.
+func TestHarnessGitNeutralizesInheritedCommitSigning(t *testing.T) {
+	hostile := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(hostile, []byte("[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = no-mistakes-missing-gpg-program\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", hostile)
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "commit.gpgsign")
+	t.Setenv("GIT_CONFIG_VALUE_0", "true")
+
+	ctx := context.Background()
+	h := &Harness{t: t}
+	identity := []string{
+		"GIT_AUTHOR_NAME=E2E Test",
+		"GIT_AUTHOR_EMAIL=e2e@example.com",
+		"GIT_COMMITTER_NAME=E2E Test",
+		"GIT_COMMITTER_EMAIL=e2e@example.com",
+	}
+	rawGit := func(dir string, args ...string) error {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), identity...)
+		return cmd.Run()
+	}
+	seed := func(dir string, git func(dir string, args ...string) error) error {
+		if err := os.WriteFile(filepath.Join(dir, "seed.txt"), []byte("seed\n"), 0o644); err != nil {
+			return err
+		}
+		if err := git(dir, "add", "seed.txt"); err != nil {
+			return err
+		}
+		return git(dir, "commit", "-m", "seed")
+	}
+
+	control := t.TempDir()
+	if err := rawGit(control, "init", "--initial-branch=main"); err != nil {
+		t.Fatalf("init control repo: %v", err)
+	}
+	if err := seed(control, rawGit); err == nil {
+		t.Fatal("hostile inherited commit signing unexpectedly allowed an unguarded commit")
+	}
+
+	harnessGit := func(dir string, args ...string) error {
+		out, err := h.runGit(ctx, dir, args...)
+		if err != nil {
+			return fmt.Errorf("git %v: %v\n%s", args, err, out)
+		}
+		return nil
+	}
+	// A clone, not an init: git clone never copies the source repo's local
+	// config, which is how a fixture repository outside h.WorkDir loses every
+	// repo-local guard.
+	fixture := filepath.Join(t.TempDir(), "fixture-clone")
+	if err := harnessGit(filepath.Dir(fixture), "clone", control, fixture); err != nil {
+		t.Fatalf("clone fixture repo: %v", err)
+	}
+	if err := seed(fixture, harnessGit); err != nil {
+		t.Fatalf("harness fixture repo inherited hostile commit signing: %v", err)
 	}
 }
 
