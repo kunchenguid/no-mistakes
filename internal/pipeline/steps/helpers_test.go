@@ -54,12 +54,91 @@ func gitCmd(t *testing.T, dir string, args ...string) string {
 	if err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
 	}
+	if repoDir, ok := createdTestRepoDir(dir, args); ok {
+		configureUnsignedTestCommits(t, repoDir)
+	}
 	return strings.TrimSpace(string(out))
+}
+
+func createdTestRepoDir(dir string, args []string) (string, bool) {
+	if len(args) == 0 {
+		return "", false
+	}
+	switch args[0] {
+	case "init":
+		return dir, true
+	case "clone":
+		target := args[len(args)-1]
+		if target == "." {
+			return dir, true
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(dir, target)
+		}
+		return target, true
+	default:
+		return "", false
+	}
+}
+
+func configureUnsignedTestCommits(t *testing.T, dir string) {
+	t.Helper()
+	cmd := exec.Command("git", "config", "--local", "commit.gpgsign", "false")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("neutralize inherited commit signing in %s: %v: %s", dir, err, out)
+	}
 }
 
 func gitStatusPorcelain(t *testing.T, dir string) string {
 	t.Helper()
 	return gitCmd(t, dir, "status", "--porcelain")
+}
+
+func TestGitFixtureNeutralizesHostileGlobalCommitSigning(t *testing.T) {
+	hostileConfig := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(hostileConfig, []byte("[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = no-mistakes-missing-gpg-program\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", hostileConfig)
+
+	rawGit := func(dir string, args ...string) error {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		return cmd.Run()
+	}
+	seedCommit := func(dir string) error {
+		if err := os.WriteFile(filepath.Join(dir, "seed.txt"), []byte("seed\n"), 0o644); err != nil {
+			return err
+		}
+		if err := rawGit(dir, "add", "seed.txt"); err != nil {
+			return err
+		}
+		return rawGit(dir, "commit", "-m", "seed")
+	}
+
+	control := t.TempDir()
+	if err := rawGit(control, "init"); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedCommit(control); err == nil {
+		t.Fatal("hostile global commit.gpgsign=true unexpectedly allowed an unguarded test commit")
+	}
+
+	fixture := t.TempDir()
+	gitCmd(t, fixture, "init")
+	if err := seedCommit(fixture); err != nil {
+		t.Fatalf("shared Git fixture inherited hostile global commit signing: %v", err)
+	}
+	if got := gitCmd(t, fixture, "config", "--local", "--get", "commit.gpgsign"); got != "false" {
+		t.Fatalf("fixture commit.gpgsign = %q, want false", got)
+	}
 }
 
 func lastCommitMessage(t *testing.T, dir string) string {
@@ -103,6 +182,7 @@ func ensureGitRepoTemplate(t *testing.T) {
 		run("init")
 		run("config", "user.name", "test")
 		run("config", "user.email", "test@test.com")
+		run("config", "commit.gpgsign", "false")
 		run("checkout", "-b", "main")
 
 		os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base content"), 0o644)
