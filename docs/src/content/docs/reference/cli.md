@@ -182,13 +182,13 @@ no-mistakes axi sync --recover --keep-local
 no-mistakes axi sync --release-unavailable --run <id>
 ```
 
-| Flag           | Type   | Default | Description                                                                  |
-| -------------- | ------ | ------- | ---------------------------------------------------------------------------- |
-| `--check`      | `bool` | `false` | Verify the live target and exact plan without changing `HEAD`                |
-| `--recover` | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
-| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree |
-| `--release-unavailable` | `bool` | `false` | Release exact terminal-run custody only after ordinary recovery proves its recorded preserved head unavailable |
-| `--run` | `string` | (none) | Exact run ID required by `--release-unavailable`; invalid in every other sync mode |
+| Flag                    | Type     | Default | Description                                                                                                                                    |
+| ----------------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--check`               | `bool`   | `false` | Verify the live target and exact plan without changing `HEAD`                                                                                  |
+| `--recover`             | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
+| `--keep-local`          | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree                                                                      |
+| `--release-unavailable` | `bool`   | `false` | Release exact terminal-run custody only after ordinary recovery proves its recorded preserved head unavailable                                  |
+| `--run`                 | `string` | (none)  | Exact run ID required by `--release-unavailable`; invalid in every other sync mode                                                              |
 
 The default command is an explicit non-interactive apply request and never prompts.
 All modes return the complete `branch_sync` object as TOON.
@@ -375,6 +375,7 @@ no-mistakes sync --recover --keep-local
 Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` prompts the same way before returning custody.
 A non-TTY apply or recovery refuses with a direct `--yes` hint.
 The command uses the same service and safety contract as `no-mistakes axi sync`, including the guarded equivalent advance and custody recovery documented there; it never stashes, rebases, creates a merge commit, switches branches, deletes a branch, or updates an external remote.
+The unavailable preserved-head release is deliberately not exposed here: it is only reachable through the identity-bound `no-mistakes axi sync --release-unavailable --run <id>` command that ordinary recovery returns.
 
 ## no-mistakes status
 
