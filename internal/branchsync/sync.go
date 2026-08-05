@@ -74,12 +74,20 @@ type State struct {
 	PRState  string
 	// Recovered is set only by Recover and reports that the operator owns the
 	// branch when the call returns: custody of a stranded terminal run was
-	// returned (by this call or an earlier, idempotent one), or the terminal
-	// outcome had already released the branch (user_owned), making recovery an
-	// idempotent no-op.
+	// returned (by this call or an earlier, idempotent one), a later exact push
+	// durably superseded an older unverified run, or the terminal outcome had
+	// already released the branch (user_owned), making recovery an idempotent
+	// no-op.
 	Recovered  bool
 	NextAction *NextAction
 	Error      string
+
+	// supersededUnverifiedCustody records that inspection skipped an older,
+	// unverified terminal run only because a later run durably took its exact
+	// recorded head as input and established the authoritative push binding.
+	// It is intentionally internal: Recover uses it to make that already-safe
+	// custody return a no-op success after repeating all final checks.
+	supersededUnverifiedCustody bool
 }
 
 type LocalState struct {
@@ -140,6 +148,7 @@ type Service struct {
 	beforeApply               func()
 	beforeGateReset           func()
 	beforeRecoverWorktreeMove func()
+	beforeRecoverFinalCheck   func()
 	beforeRecoverBranchMove   func()
 	afterRecoverBranchMove    func()
 }
@@ -522,6 +531,28 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		state.Recovered = true
 		state.Changed = false
 		return state
+	}
+	// A later exact push can durably supersede an older unverified terminal
+	// run even when that later run rebased its submitted head. When the local
+	// branch is already equal to or ahead of that authoritative push, returning
+	// custody needs no mutation. Repeat inspection immediately before reporting
+	// success so a new run, local edit, branch move, gate move, or binding change
+	// wins and recovery refuses.
+	if state.supersededUnverifiedCustody && run != nil && state.Local.Clean &&
+		(state.State == StateSynchronized || state.State == StateLocalAhead) {
+		if s.beforeRecoverFinalCheck != nil {
+			s.beforeRecoverFinalCheck()
+		}
+		final, finalRun, finalOK := s.inspect(ctx)
+		if finalOK && finalRun != nil && final.supersededUnverifiedCustody && final.Local.Clean &&
+			final.Pipeline.RunID == state.Pipeline.RunID && final.Local.Branch == state.Local.Branch &&
+			final.Local.Head == state.Local.Head && final.Pipeline.PushedHead == state.Pipeline.PushedHead &&
+			(final.State == StateSynchronized || final.State == StateLocalAhead) {
+			final.Recovered = true
+			final.Changed = false
+			return final
+		}
+		return blockedPlan(final, StateAmbiguousContext, "blocked_recover_assumptions_changed", "the branch, worktree, gate, or authoritative push binding changed while custody was being returned; no files, refs, or run records were changed")
 	}
 	if state.State != StatePipelineOwned || run == nil {
 		return blockedPlan(state, state.State, "blocked_recover_not_applicable", "nothing to recover: the branch is not held by a terminal run with unpublished pipeline commits; no files or refs were changed")
@@ -948,16 +979,22 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 	}
 	var run *db.Run
 	var newerPushed *db.Run
+	var supersededUnverifiedCustody bool
 	for _, candidate := range runs {
 		if candidate.Branch != branch {
 			continue
 		}
 		if candidate.Status == types.RunPending || candidate.Status == types.RunRunning || unpublishedPipelineHead(candidate) {
 			// A terminal unpublished run can be superseded only by a newer
-			// exact binding whose pushed head is proven, in the local gate, to
-			// contain the preserved head. Active ownership remains absolute.
-			if unpublishedPipelineHead(candidate) && s.supersededUnpublishedRun(ctx, candidate, newerPushed, branch) {
-				continue
+			// exact binding whose gate head either contains the older verified
+			// head or came from a rerun that durably submitted the exact older
+			// unverified head. Active ownership remains absolute.
+			if unpublishedPipelineHead(candidate) {
+				superseded, unverifiedTakeover := s.supersededUnpublishedRun(ctx, candidate, newerPushed, branch)
+				if superseded {
+					supersededUnverifiedCustody = supersededUnverifiedCustody || unverifiedTakeover
+					continue
+				}
 			}
 			run = candidate
 			break
@@ -989,6 +1026,7 @@ func (s *Service) inspect(ctx context.Context) (State, *db.Run, bool) {
 		return state, nil, false
 	}
 
+	state.supersededUnverifiedCustody = supersededUnverifiedCustody
 	state.Pipeline = PipelineState{
 		RunID: run.ID, Status: string(run.Status), SubmittedHead: ptr(run.SubmittedHeadSHA), CurrentHead: run.HeadSHA,
 		PushedHead: ptr(run.LastPushedSHA), PushedAt: value(run.LastPushedAt), PushGeneration: value(run.PushGeneration),
@@ -1288,20 +1326,37 @@ func exactPushedBinding(repo *db.Repo, run *db.Run, branch string) bool {
 
 // supersededUnpublishedRun proves the narrow rerun relationship needed to
 // ignore an older terminal unpublished head during branch selection. The gate
-// is read-only evidence: its exact branch head must equal the newer push
-// binding, and Git must prove the older preserved head is its ancestor. Any
-// missing or conflicting evidence leaves the older run authoritative.
-func (s *Service) supersededUnpublishedRun(ctx context.Context, older, newer *db.Run, branch string) bool {
-	if older == nil || newer == nil || !terminalRunStatus(older.Status) || !unpublishedPipelineHead(older) ||
-		!samePushTargetBinding(older, newer) || strings.TrimSpace(s.GateDir) == "" || older.HeadSHA == "" || newer.LastPushedSHA == nil {
-		return false
+// is read-only evidence: its exact branch head must equal the newer exact push
+// binding. A verified older head must be its ancestor, preserving the existing
+// strict behavior. In the otherwise-refused non-descendant case, an unverified,
+// never-pushed older head may instead be superseded when the newer run's durable
+// submitted-head provenance equals it:
+// that proves the later run took custody of that exact recorded head before it
+// produced and pushed its potentially rebased result. Branch names or commit
+// content alone are never sufficient. Any missing or conflicting evidence
+// leaves the older run authoritative.
+//
+// The second result identifies the unverified-takeover case so Recover can
+// report no-op success only after its ordinary local and binding checks pass.
+func (s *Service) supersededUnpublishedRun(ctx context.Context, older, newer *db.Run, branch string) (bool, bool) {
+	if older == nil || newer == nil || s.Repo == nil || !terminalRunStatus(older.Status) || !unpublishedPipelineHead(older) ||
+		older.RepoID != s.Repo.ID || newer.RepoID != s.Repo.ID || older.RepoID != newer.RepoID ||
+		older.Branch != branch || newer.Branch != branch || !exactPushedBinding(s.Repo, newer, branch) ||
+		strings.TrimSpace(s.GateDir) == "" || older.HeadSHA == "" {
+		return false, false
 	}
 	pushed := ptr(newer.LastPushedSHA)
 	gateHead, err := git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
 	if err != nil || gateHead != pushed {
-		return false
+		return false, false
 	}
-	return isAncestor(ctx, s.GateDir, older.HeadSHA, pushed)
+	if samePushTargetBinding(older, newer) && isAncestor(ctx, s.GateDir, older.HeadSHA, pushed) {
+		return true, false
+	}
+	unverifiedTakeover := older.TerminalHeadVerifiedAt == nil && older.LastPushedSHA == nil &&
+		newer.SubmittedHeadSHA != nil && ptr(newer.SubmittedHeadSHA) == older.HeadSHA &&
+		!isAncestor(ctx, s.GateDir, older.HeadSHA, pushed)
+	return unverifiedTakeover, unverifiedTakeover
 }
 
 func samePushTargetBinding(older, newer *db.Run) bool {
