@@ -240,11 +240,13 @@ The release refuses without changing ownership when any of these conditions is t
 - The clean local branch is missing from or does not exactly equal the freshly read configured push target branch.
 - The registered gate is missing or invalid, a safety anchor is symbolic or conflicts, or the local branch, remote branch, gate branch, repository registration, run record, or authoritative ownership generation changes during the operation.
 
-Before ownership changes, the command anchors the exact local head and freshly fetched remote head under canonical direct refs at `refs/no-mistakes/custody-release/<run>/local` and `/remote`.
-When the gate branch exists, it anchors that head under the canonical direct ref `refs/no-mistakes/custody-release/<run>/gate` before atomically moving the gate branch to the verified local and remote head with compare-and-swap.
+Before ownership changes, the command anchors the exact local head and freshly fetched remote head under canonical direct refs at `refs/no-mistakes/custody-release/<run>/local/<head>` and `/remote/<head>`.
+When the gate branch exists, it anchors that head under the canonical direct ref `refs/no-mistakes/custody-release/<run>/gate/<head>` before atomically moving the gate branch to the verified local and remote head with compare-and-swap.
+Anchors are named by the commit they preserve, so a later attempt at a different head adds its own anchor instead of contending with an earlier one.
 It never changes the invoking worktree, any external remote, any unrelated ref, or any independently preserved repository.
 Before the gate move, a durable journal binds the original gate head, repository metadata generation, and complete branch-ownership generation.
-That journal makes a crash after a distinct gate move retryable while still refusing a pre-existing anchor collision.
+That journal makes a crash after a distinct gate move exactly retryable.
+A retry whose revalidated facts no longer match the journaled attempt supersedes it, and a retry always rebinds the journal to freshly read generations, so an attempt that stopped before its stamp never permanently strands the run.
 After the final repeated checks, a no-op gate compare-and-swap is the Git branch linearization point, so a receive before it is detected and a later receive is new ownership after this release.
 The final database update is one guarded transaction that requires the journaled gate-moved phase, the same exact terminal run facts, the same repository registration, and unchanged ownership generations.
 A crash before that transaction leaves only the durable journal, safety anchors, and possibly the gate branch at the already verified local and remote head, so retry is safe.

@@ -351,11 +351,22 @@ func TestReleaseUnavailableRefusesRemoteDescendantThatRetainsPreservedHead(t *te
 		t.Fatalf("fetching advertised descendant %s did not retain preserved head %s", descendant, f.preserved)
 	}
 
+	refsBefore := mustRun(t, f.local, "for-each-ref", "--format=%(refname) %(objectname)")
 	state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
 	if state.Released || state.Safety != "blocked_release_preserved_recoverable" {
 		t.Fatalf("remote descendant release = %#v", state)
 	}
 	assertUnavailableReleaseUnchanged(t, f, f.submitted, f.submitted)
+	// The reachability probe is the only step that fetches every advertised
+	// ref, and it must do so in its own throwaway repository: the invoking
+	// repository keeps its exact refs and never gains remote objects it did
+	// not ask for.
+	if got := mustRun(t, f.local, "for-each-ref", "--format=%(refname) %(objectname)"); got != refsBefore {
+		t.Fatalf("reachability probe changed invoking refs:\nbefore:\n%s\nafter:\n%s", refsBefore, got)
+	}
+	if objectExists(f.ctx, f.local, f.preserved) {
+		t.Fatalf("reachability probe imported remote object %s into the invoking repository", f.preserved)
+	}
 }
 
 func makeDistinctGateHead(t *testing.T, f *recoverFixture) string {
@@ -381,7 +392,7 @@ func TestReleaseUnavailableRejectsSymbolicSafetyAnchor(t *testing.T) {
 	f := newRecoverFixture(t, types.RunFailed)
 	makePreservedHeadUnavailable(t, f)
 	gateHead := makeDistinctGateHead(t, f)
-	gateAnchor := unavailableReleaseRef(f.run.ID) + "/gate"
+	gateAnchor := unavailableReleaseAnchorRef(unavailableReleaseRef(f.run.ID), "gate", gateHead)
 	mustRun(t, f.gate, "symbolic-ref", gateAnchor, "refs/heads/feature/recover")
 
 	state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
@@ -400,7 +411,7 @@ func TestReleaseUnavailableAcceptsCanonicalPackedSafetyAnchorAndRetainsHead(t *t
 	f := newRecoverFixture(t, types.RunFailed)
 	makePreservedHeadUnavailable(t, f)
 	gateHead := makeDistinctGateHead(t, f)
-	gateAnchor := unavailableReleaseRef(f.run.ID) + "/gate"
+	gateAnchor := unavailableReleaseAnchorRef(unavailableReleaseRef(f.run.ID), "gate", gateHead)
 	mustRun(t, f.gate, "update-ref", gateAnchor, gateHead, "")
 	mustRun(t, f.gate, "pack-refs", "--all", "--prune")
 
@@ -427,19 +438,14 @@ func TestReleaseUnavailableRetryAfterCrashFollowingDistinctGateCAS(t *testing.T)
 	f := newRecoverFixture(t, types.RunFailed)
 	makePreservedHeadUnavailable(t, f)
 	gateHead := makeDistinctGateHead(t, f)
-	f.service.beforeUnavailableReleaseStamp = func() { panic("simulated crash after gate CAS") }
-	func() {
-		defer func() { _ = recover() }()
-		_ = f.service.ReleaseUnavailable(f.ctx, f.run.ID)
-	}()
-	f.service.beforeUnavailableReleaseStamp = nil
+	crashAfterGateMove(t, f)
 	if f.custodyReturned() {
 		t.Fatal("simulated pre-stamp crash recorded custody")
 	}
 	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.submitted {
 		t.Fatalf("post-CAS gate = %s, want %s", got, f.submitted)
 	}
-	gateAnchor := unavailableReleaseRef(f.run.ID) + "/gate"
+	gateAnchor := unavailableReleaseAnchorRef(unavailableReleaseRef(f.run.ID), "gate", gateHead)
 	if got := mustRun(t, f.gate, "rev-parse", gateAnchor+"^{commit}"); got != gateHead {
 		t.Fatalf("post-crash gate anchor = %s, want %s", got, gateHead)
 	}
@@ -447,6 +453,143 @@ func TestReleaseUnavailableRetryAfterCrashFollowingDistinctGateCAS(t *testing.T)
 	retry := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
 	if !retry.Released || retry.CustodyTransition == nil || retry.CustodyTransition.GateHead != gateHead {
 		t.Fatalf("post-crash retry = %#v", retry)
+	}
+}
+
+// crashAfterGateMove drives one release attempt that durably journals and moves
+// the gate branch and then dies before its custody stamp, exactly as a killed
+// process leaves the world.
+func crashAfterGateMove(t *testing.T, f *recoverFixture) {
+	t.Helper()
+	f.service.beforeUnavailableReleaseStamp = func() { panic("simulated crash after gate CAS") }
+	defer func() { f.service.beforeUnavailableReleaseStamp = nil }()
+	defer func() { _ = recover() }()
+	_ = f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+}
+
+// TestReleaseUnavailableRetryAfterAdvancedBranchIsNotADeadEnd pins the exit
+// this command exists to provide: an attempt that stopped before its stamp must
+// never permanently strand the run. The operator's branch then legitimately
+// fast-forwards, so both the safety anchors and the durable journal now describe
+// a head that is no longer current, and only a retry that supersedes them can
+// still release custody.
+func TestReleaseUnavailableRetryAfterAdvancedBranchIsNotADeadEnd(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	makePreservedHeadUnavailable(t, f)
+	crashAfterGateMove(t, f)
+	if f.custodyReturned() {
+		t.Fatal("simulated pre-stamp crash recorded custody")
+	}
+
+	mustWrite(t, filepath.Join(f.local, "operator-advance.txt"), "operator work after the refused attempt\n")
+	mustRun(t, f.local, "add", "operator-advance.txt")
+	mustRun(t, f.local, "commit", "-m", "operator advance after refused release")
+	advanced := mustRun(t, f.local, "rev-parse", "HEAD")
+	mustRun(t, f.local, "push", "origin", "refs/heads/feature/recover:refs/heads/feature/recover")
+
+	retry := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+	if !retry.Released || retry.CustodyTransition == nil || retry.CustodyTransition.Idempotent {
+		t.Fatalf("retry after advanced branch = %#v", retry)
+	}
+	if retry.CustodyTransition.LocalHead != advanced || retry.CustodyTransition.RemoteHead != advanced {
+		t.Fatalf("retry transition heads = %#v, want %s", retry.CustodyTransition, advanced)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("retry after advanced branch did not stamp custody")
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != advanced {
+		t.Fatalf("gate = %s, want the retried head %s", got, advanced)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != advanced {
+		t.Fatalf("retry moved the operator worktree to %s", got)
+	}
+	base := unavailableReleaseRef(f.run.ID)
+	for _, anchor := range []struct {
+		ref, want string
+	}{
+		{unavailableReleaseAnchorRef(base, "local", f.submitted), f.submitted},
+		{retry.CustodyTransition.LocalAnchor, advanced},
+		{retry.CustodyTransition.RemoteAnchor, advanced},
+	} {
+		if got := mustRun(t, f.local, "rev-parse", anchor.ref+"^{commit}"); got != anchor.want {
+			t.Fatalf("anchor %s = %s, want %s", anchor.ref, got, anchor.want)
+		}
+	}
+}
+
+// TestReleaseUnavailableRetryAfterRegistrationGenerationChangeIsNotADeadEnd
+// covers the same closed loop reached through the journal's generations: the
+// operator moves their clone between attempts, which advances the repository
+// metadata generation the first attempt journaled. Generations bind one
+// attempt's own window, so the retry must rebind them rather than refuse
+// forever against a value no live row can satisfy again.
+func TestReleaseUnavailableRetryAfterRegistrationGenerationChangeIsNotADeadEnd(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	makePreservedHeadUnavailable(t, f)
+	crashAfterGateMove(t, f)
+
+	if _, err := f.db.UpdateRepoWorkingPath(f.repo.ID, filepath.Join(t.TempDir(), "moved-clone")); err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := f.db.UpdateRepoWorkingPath(f.repo.ID, f.local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.MetadataGeneration == f.repo.MetadataGeneration {
+		t.Fatalf("fixture did not advance the repository metadata generation past %d", f.repo.MetadataGeneration)
+	}
+	// A later invocation loads the current registration, exactly as the CLI does.
+	f.service.Repo = refreshed
+
+	retry := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+	if !retry.Released {
+		t.Fatalf("retry after registration generation change = %#v", retry)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("retry after registration generation change did not stamp custody")
+	}
+	attempt, err := f.db.GetUnavailableCustodyRelease(f.run.ID)
+	if err != nil || attempt == nil || attempt.RepoGeneration != refreshed.MetadataGeneration {
+		t.Fatalf("journal was not rebound to the live registration generation: %#v, %v", attempt, err)
+	}
+}
+
+// TestRecoverUnverifiedHeadRefusalOffersReachableUnavailableRelease covers the
+// refusals that run before the gate comparison: a crash-recovered terminal run
+// carries no verified head, so recovery stops earlier, and that refusal must
+// still name the exceptional release rather than end the guided path.
+func TestRecoverUnverifiedHeadRefusalOffersReachableUnavailableRelease(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunRunning)
+	if err := f.db.UpdateRunStatus(f.run.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := f.db.GetRun(f.run.ID)
+	if err != nil || reloaded == nil || reloaded.TerminalHeadVerifiedAt != nil {
+		t.Fatalf("crash-recovered fixture run = %#v, %v", reloaded, err)
+	}
+	f.run = reloaded
+	makePreservedHeadUnavailable(t, f)
+
+	blocked := f.service.Recover(f.ctx, false)
+	if blocked.Recovered || blocked.Safety != "blocked_recover_unverified_head" {
+		t.Fatalf("unverified-head recovery = %#v", blocked)
+	}
+	if blocked.NextAction == nil || blocked.NextAction.Code != "release_unavailable_custody" || !strings.Contains(blocked.NextAction.Command, f.run.ID) {
+		t.Fatalf("unverified-head refusal did not offer the exact release: %#v", blocked)
+	}
+
+	released := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+	if !released.Released {
+		t.Fatalf("the offered release refused: %#v", released)
+	}
+	if !f.custodyReturned() {
+		t.Fatal("the offered release did not stamp custody")
 	}
 }
 
