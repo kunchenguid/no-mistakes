@@ -139,3 +139,91 @@ func TestNonInteractiveEnv_EmptyDirLeavesAmbientPWD(t *testing.T) {
 		t.Errorf("PWD = %q, want ambient \"/ambient/pwd\" when dir is empty", got["PWD"])
 	}
 }
+
+// TestGitSpawnEnv_DisablesCygwinGlobbing locks in the issue #427 fix: the env
+// for a git process we spawn ourselves must set CYGWIN/MSYS to "noglob" on
+// Windows so a Cygwin or MSYS2 git does not strip the braces from an argument
+// like `refs/heads/main^{commit}` (or expand a bare `*`/`?`/`[`). Off Windows
+// the variables are meaningless and must not be injected.
+func TestGitSpawnEnv_DisablesCygwinGlobbing(t *testing.T) {
+	t.Setenv("CYGWIN", "")
+	t.Setenv("MSYS", "")
+
+	got := resolveEnv(gitSpawnEnv(""))
+
+	if runtime.GOOS != "windows" {
+		if _, ok := got["CYGWIN"]; ok && got["CYGWIN"] != "" {
+			t.Errorf("CYGWIN = %q, want unset off Windows", got["CYGWIN"])
+		}
+		return
+	}
+	if !containsWord(got["CYGWIN"], "noglob") {
+		t.Errorf("CYGWIN = %q, want to contain \"noglob\"", got["CYGWIN"])
+	}
+	if !containsWord(got["MSYS"], "noglob") {
+		t.Errorf("MSYS = %q, want to contain \"noglob\"", got["MSYS"])
+	}
+}
+
+// TestNonInteractiveEnv_KeepsGlobbing is the scoping guarantee. NonInteractiveEnv
+// is the base for the coding-agent env (agent.gitSafeEnv), so it must NOT carry
+// noglob: disabling globbing there would suppress it for every Cygwin/MSYS2 tool
+// the agents exec. noglob belongs only on our own git subprocesses (gitSpawnEnv).
+func TestNonInteractiveEnv_KeepsGlobbing(t *testing.T) {
+	t.Setenv("CYGWIN", "")
+	t.Setenv("MSYS", "")
+
+	got := resolveEnv(NonInteractiveEnv(""))
+
+	if containsWord(got["CYGWIN"], "noglob") {
+		t.Errorf("CYGWIN = %q, want no \"noglob\" in the agent-shared env", got["CYGWIN"])
+	}
+	if containsWord(got["MSYS"], "noglob") {
+		t.Errorf("MSYS = %q, want no \"noglob\" in the agent-shared env", got["MSYS"])
+	}
+}
+
+// TestGitSpawnEnv_PreservesCygwinOptions ensures the noglob injection is
+// additive: any options the user already set in CYGWIN survive, and noglob is
+// not duplicated when already present.
+func TestGitSpawnEnv_PreservesCygwinOptions(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("CYGWIN/MSYS handling only applies on Windows")
+	}
+	t.Setenv("CYGWIN", "winsymlinks:native")
+	t.Setenv("MSYS", "noglob")
+
+	got := resolveEnv(gitSpawnEnv(""))
+
+	if got["CYGWIN"] != "winsymlinks:native noglob" {
+		t.Errorf("CYGWIN = %q, want \"winsymlinks:native noglob\"", got["CYGWIN"])
+	}
+	if fields := strings.Fields(got["MSYS"]); len(fields) != 1 || fields[0] != "noglob" {
+		t.Errorf("MSYS = %q, want a single \"noglob\" (no duplicate)", got["MSYS"])
+	}
+}
+
+// TestLastEnvValue_CaseInsensitiveKey locks in that a mixed-case env entry is
+// matched. Windows env var names are case-insensitive, so an ambient
+// "Cygwin=winsymlinks:native" must be found under the "CYGWIN" key.
+func TestLastEnvValue_CaseInsensitiveKey(t *testing.T) {
+	env := []string{"PATH=/usr/bin", "Cygwin=winsymlinks:native"}
+	if got := lastEnvValue(env, "CYGWIN"); got != "winsymlinks:native" {
+		t.Errorf("lastEnvValue mixed-case key = %q, want \"winsymlinks:native\"", got)
+	}
+}
+
+// TestDisableChildArgGlobbing_PreservesMixedCaseCygwin guards the case-folding
+// fix: with a lowercase-keyed "Cygwin=winsymlinks:native" present, the appended
+// noglob entry must carry the preserved option. Otherwise os/exec's
+// case-insensitive last-wins dedup would let a bare "CYGWIN=noglob" shadow the
+// original and silently drop the user's winsymlinks:native.
+func TestDisableChildArgGlobbing_PreservesMixedCaseCygwin(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("CYGWIN/MSYS handling only applies on Windows")
+	}
+	env := disableChildArgGlobbing([]string{"Cygwin=winsymlinks:native"})
+	if got := lastEnvValue(env, "CYGWIN"); got != "winsymlinks:native noglob" {
+		t.Errorf("effective CYGWIN = %q, want \"winsymlinks:native noglob\"", got)
+	}
+}

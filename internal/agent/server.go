@@ -74,6 +74,7 @@ func getAvailablePort() (int, error) {
 // ctx is only used for the health check timeout.
 // agentName tags the PID tracking file so crash-recovery can identify orphans.
 func startServerWithPort(ctx context.Context, agentName, bin string, args []string, cwd string, healthPath string, port int) (*managedServer, error) {
+	bin = resolveAgentBinary(bin)
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = cwd
 	cmd.Stdin = nil
