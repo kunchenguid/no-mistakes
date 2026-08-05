@@ -20,10 +20,13 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 	} else {
 		switch state.State {
 		case branchsync.StatePipelineOwned:
-			if recoverableBranchSync(state) {
+			switch {
+			case state.NextAction != nil && state.NextAction.Code == "release_unavailable_custody":
+				message = "Ordinary recovery proved the recorded pipeline head unavailable. Run the exact identity-bound command `" + state.NextAction.Command + "`; it will still refuse unless the clean local branch equals its fresh remote."
+			case recoverableBranchSync(state):
 				message = "Run ended without publishing its pipeline commits; they are preserved in the local gate. Recover custody to take the branch back, or rerun to resume validation."
 				footer = "u recover custody"
-			} else {
+			default:
 				message = "Local branch unchanged; the pipeline fix is not pushed yet. Do not make follow-up commits."
 			}
 		case branchsync.StatePushInProgress:

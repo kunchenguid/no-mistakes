@@ -228,6 +228,30 @@ func TestRecoverableCustodyActionFlowsThroughConfirmationAndRecoverService(t *te
 	}
 }
 
+func TestUnavailablePreservedHeadPointsToIdentityBoundAXIRelease(t *testing.T) {
+	state := &branchsync.State{
+		State:  branchsync.StatePipelineOwned,
+		Safety: "blocked_recover_gate_diverged",
+		Local:  branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
+		Pipeline: branchsync.PipelineState{
+			RunID: "run-1", Status: "failed", CurrentHead: strings.Repeat("c", 40),
+		},
+		NextAction: &branchsync.NextAction{
+			Code:    "release_unavailable_custody",
+			Command: "no-mistakes axi sync --release-unavailable --run run-1",
+		},
+	}
+	view := stripANSI(renderLocalBranchStatus(state, false, 80))
+	for _, want := range []string{"recorded pipeline head unavailable", "no-mistakes axi sync --release-unavailable --run run-1", "clean local branch equals its fresh remote"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("unavailable-head TUI status missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "u recover custody") {
+		t.Fatalf("unavailable-head state still offers ordinary TUI recovery:\n%s", view)
+	}
+}
+
 // TestActivePipelineOwnedStateOffersNoRecoveryAction pins that the recovery
 // affordance never appears while the owning run is still active.
 func TestActivePipelineOwnedStateOffersNoRecoveryAction(t *testing.T) {
