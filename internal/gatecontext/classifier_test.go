@@ -235,6 +235,7 @@ func initOrdinaryRepo(t *testing.T, dir, origin string) {
 	run(t, dir, "git", "init", "--initial-branch=main")
 	run(t, dir, "git", "config", "user.email", "test@example.com")
 	run(t, dir, "git", "config", "user.name", "Test")
+	run(t, dir, "git", "config", "commit.gpgsign", "false")
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("test\n"), 0o644); err != nil {
 		t.Fatalf("write readme: %v", err)
 	}

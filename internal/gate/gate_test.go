@@ -103,12 +103,7 @@ func setupTestRepo(t *testing.T) string {
 	if out, err := exec.Command("git", "init", work).CombinedOutput(); err != nil {
 		t.Fatalf("init work: %v: %s", err, out)
 	}
-	if out, err := exec.Command("git", "-C", work, "config", "user.email", "test@test.com").CombinedOutput(); err != nil {
-		t.Fatalf("config email: %v: %s", err, out)
-	}
-	if out, err := exec.Command("git", "-C", work, "config", "user.name", "Test").CombinedOutput(); err != nil {
-		t.Fatalf("config name: %v: %s", err, out)
-	}
+	configureTestRepoIdentity(t, work)
 	if out, err := exec.Command("git", "-C", work, "remote", "add", "origin", upstream).CombinedOutput(); err != nil {
 		t.Fatalf("add origin: %v: %s", err, out)
 	}
@@ -119,6 +114,19 @@ func setupTestRepo(t *testing.T) string {
 	}
 
 	return work
+}
+
+func configureTestRepoIdentity(t *testing.T, dir string) {
+	t.Helper()
+	for _, setting := range [][2]string{
+		{"user.email", "test@test.com"},
+		{"user.name", "Test"},
+		{"commit.gpgsign", "false"},
+	} {
+		if out, err := exec.Command("git", "-C", dir, "config", setting[0], setting[1]).CombinedOutput(); err != nil {
+			t.Fatalf("config %s: %v: %s", setting[0], err, out)
+		}
+	}
 }
 
 func openTestDB(t *testing.T, p *paths.Paths) *db.DB {
@@ -891,12 +899,7 @@ func TestInitDetectsDefaultBranchFromRemote(t *testing.T) {
 	if out, err := exec.Command("git", "init", "-b", "develop", work).CombinedOutput(); err != nil {
 		t.Fatalf("init work: %v: %s", err, out)
 	}
-	if out, err := exec.Command("git", "-C", work, "config", "user.email", "test@test.com").CombinedOutput(); err != nil {
-		t.Fatalf("config email: %v: %s", err, out)
-	}
-	if out, err := exec.Command("git", "-C", work, "config", "user.name", "Test").CombinedOutput(); err != nil {
-		t.Fatalf("config name: %v: %s", err, out)
-	}
+	configureTestRepoIdentity(t, work)
 	if out, err := exec.Command("git", "-C", work, "remote", "add", "origin", upstream).CombinedOutput(); err != nil {
 		t.Fatalf("add origin: %v: %s", err, out)
 	}
