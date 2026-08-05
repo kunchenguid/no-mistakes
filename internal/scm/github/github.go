@@ -383,12 +383,12 @@ func boundedCommandOutput(out []byte) string {
 
 // RerunCheck re-runs the Actions job behind check for the same commit, so a
 // check the provider cancelled rather than failed can be retried without a new
-// push. The job is identified from the check's details link, which is the only
-// run/job identity `gh pr checks` reports: a link naming a job re-runs just that
-// job (and its dependencies), and a link naming only a run re-runs that run's
-// failed jobs. Anything else - a third-party status pointing at an external
-// dashboard, or a run path this backend cannot read - names no re-runnable job,
-// and the error says so rather than falling back to a wider rerun.
+// push. The job is identified from the CheckRun details URL in the PR status
+// rollup: a link naming a job re-runs just that job (and its dependencies), and
+// a link naming only a run re-runs that run's failed jobs. Anything else - a
+// third-party status pointing at an external dashboard, or a run path this
+// backend cannot read - names no re-runnable job, and the error says so rather
+// than falling back to a wider rerun.
 func (h *Host) RerunCheck(ctx context.Context, _ *scm.PR, check scm.Check) error {
 	rerunArgs, ok := rerunTargetArgs(check.Link)
 	if !ok {

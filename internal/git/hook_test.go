@@ -833,9 +833,10 @@ func TestIsolateHooksPath_SkipsIsolationWhenWorktreeConfigUnsupported(t *testing
 // from this directory, and gh resolves the repository by running git there.
 // This guards the invariant that such a worktree is a real work tree with no
 // leaked core.bare and a resolvable origin - i.e. gh can determine the repo
-// from cwd alone. See issue #255: when this breaks, `gh pr checks` fails every
-// poll and the CI step hangs until ci_timeout. No real gh or network is
-// needed; the failure is purely in git's repo resolution, which gh depends on.
+// from cwd alone. See issue #255: when this breaks, the `gh pr view` status
+// rollup query fails every poll and the CI step hangs until ci_timeout. No real
+// gh or network is needed; the failure is purely in git's repo resolution,
+// which gh depends on.
 func TestIsolateHooksPath_LinkedWorktreeResolvesRepoForCLI(t *testing.T) {
 	ctx := context.Background()
 	base := t.TempDir()
