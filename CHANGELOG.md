@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.46.0](https://github.com/kunchenguid/no-mistakes/compare/v1.45.4...v1.46.0) (2026-08-05)
+
+
+### Features
+
+* **pipeline:** add structured step attestations to PR bodies ([#670](https://github.com/kunchenguid/no-mistakes/issues/670)) ([aead596](https://github.com/kunchenguid/no-mistakes/commit/aead596d693ff116b9b1f1d72f810826911967e8))
+
 ## [1.45.4](https://github.com/kunchenguid/no-mistakes/compare/v1.45.3...v1.45.4) (2026-08-04)
 
 
