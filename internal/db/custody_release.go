@@ -148,6 +148,81 @@ func sameUnavailableCustodyRelease(a, b *UnavailableCustodyRelease) bool {
 		a.RepoGeneration == b.RepoGeneration
 }
 
+// SupersedeUnavailableCustodyRelease removes a journaled attempt that no longer
+// describes its caller's revalidated facts, so the run can be journaled again
+// from scratch. It deletes only the exact row the caller observed and only
+// while custody is still held, so a concurrent writer's newer attempt and an
+// already committed release are both untouchable.
+func (d *DB) SupersedeUnavailableCustodyRelease(runID string, observed *UnavailableCustodyRelease) error {
+	if observed == nil || observed.RunID != runID {
+		return ErrRunCustodyChanged
+	}
+	result, err := d.sql.Exec(`DELETE FROM unavailable_custody_releases
+		WHERE run_id = ? AND repo_id = ? AND branch = ? AND preserved_head = ? AND local_head = ?
+		  AND remote_head = ? AND gate_head = ? AND target_kind = ? AND target_fingerprint = ?
+		  AND target_ref = ? AND ownership_generation = ? AND repo_generation = ? AND phase = ?
+		  AND EXISTS (
+		      SELECT 1 FROM runs
+		       WHERE runs.id = unavailable_custody_releases.run_id AND runs.custody_returned_at IS NULL
+		  )`,
+		observed.RunID, observed.RepoID, observed.Branch, observed.PreservedHead, observed.LocalHead,
+		observed.RemoteHead, observed.GateHead, observed.TargetKind, observed.TargetFingerprint,
+		observed.TargetRef, observed.OwnershipGeneration, observed.RepoGeneration, observed.Phase)
+	if err != nil {
+		return fmt.Errorf("supersede unavailable custody release: %w", err)
+	}
+	affected, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return fmt.Errorf("supersede unavailable custody release: rows affected: %w", rowsErr)
+	}
+	if affected != 1 {
+		return ErrRunCustodyChanged
+	}
+	return nil
+}
+
+// RebindUnavailableCustodyReleaseAuthority moves a journaled attempt onto the
+// generations a retry just snapshotted. Generations bind one attempt's recheck,
+// gate move, and stamp into a single atomic window; they are not attempt
+// identity, so a retry must be able to adopt current values instead of being
+// pinned to a superseded generation no live row can satisfy. The rebind still
+// requires the exact observed row, the requested generations to be the live
+// ones, and custody to still be held.
+func (d *DB) RebindUnavailableCustodyReleaseAuthority(runID string, observed *UnavailableCustodyRelease, authority CustodyReleaseAuthority) (*UnavailableCustodyRelease, error) {
+	if observed == nil || observed.RunID != runID {
+		return nil, ErrRunCustodyChanged
+	}
+	ts := now()
+	result, err := d.sql.Exec(`UPDATE unavailable_custody_releases AS release
+		SET ownership_generation = ?, repo_generation = ?, updated_at = ?
+		WHERE run_id = ? AND ownership_generation = ? AND repo_generation = ? AND phase = ?
+		  AND EXISTS (
+		      SELECT 1 FROM branch_ownership_generations AS ownership
+		       WHERE ownership.repo_id = release.repo_id AND ownership.branch = release.branch
+		         AND ownership.generation = ?
+		  )
+		  AND EXISTS (
+		      SELECT 1 FROM repos
+		       WHERE repos.id = release.repo_id AND repos.metadata_generation = ?
+		  )
+		  AND EXISTS (
+		      SELECT 1 FROM runs
+		       WHERE runs.id = release.run_id AND runs.custody_returned_at IS NULL
+		  )`,
+		authority.OwnershipGeneration, authority.RepoGeneration, ts,
+		observed.RunID, observed.OwnershipGeneration, observed.RepoGeneration, observed.Phase,
+		authority.OwnershipGeneration, authority.RepoGeneration)
+	if err != nil {
+		return nil, fmt.Errorf("rebind unavailable custody release authority: %w", err)
+	}
+	if affected, rowsErr := result.RowsAffected(); rowsErr != nil {
+		return nil, fmt.Errorf("rebind unavailable custody release authority: rows affected: %w", rowsErr)
+	} else if affected != 1 {
+		return nil, ErrRunCustodyChanged
+	}
+	return d.GetUnavailableCustodyRelease(runID)
+}
+
 // MarkUnavailableCustodyReleaseGateMoved durably records that the journaled
 // gate compare-and-swap completed. Authority changes make the transition fail
 // closed; an already-marked exact attempt is idempotent.
