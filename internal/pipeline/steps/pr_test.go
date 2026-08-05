@@ -15,6 +15,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -883,6 +884,23 @@ func TestAppendGeneratedSections_TruncatesPipelineUpdatesBeforeGitHubLimit(t *te
 	assertNoPartialRoundLinesForTest(t, got, rounds)
 	if strings.Count(got, "<details>") != strings.Count(got, "</details>") {
 		t.Fatalf("expected details tags to remain balanced, got:\n%s", got)
+	}
+}
+
+func TestAppendGeneratedSections_RetainsPipelineAttestationWhenTruncated(t *testing.T) {
+	steps := []*db.StepResult{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusSkipped},
+	}
+	attestation := buildPipelineAttestation(steps)
+	pipelineMD := pipelineMarkdownForTest(strings.Repeat("review round - "+strings.Repeat("x", 1000), 100))
+	pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature+"\n\n", noMistakesPRSignature+"\n\n"+attestation+"\n\n", 1)
+
+	got := appendGeneratedSections("## What Changed\n\n- summary", "", "", pipelineMD)
+
+	assertGitHubBodyLimitForTest(t, got)
+	if !strings.Contains(got, attestation) {
+		t.Fatalf("expected truncated PR body to retain the pipeline attestation, got:\n%s", got)
 	}
 }
 

@@ -538,6 +538,18 @@ func splitPipelineSectionHeader(pipelineMD string) (string, string) {
 	}
 
 	headerEnd := len(heading) + introEnd + len("\n\n")
+	// The generated attestation is data, not an update detail. Keep it in the
+	// fixed header so PR-body truncation never drops the machine-readable
+	// snapshot while omitting older human-readable update rounds.
+	rest = pipelineMD[headerEnd:]
+	if strings.HasPrefix(rest, pipelineAttestationCommentPrefix) {
+		if end := strings.Index(rest, pipelineAttestationCommentClosingToken); end >= 0 {
+			headerEnd += end + len(pipelineAttestationCommentClosingToken)
+			if strings.HasPrefix(pipelineMD[headerEnd:], "\n\n") {
+				headerEnd += len("\n\n")
+			}
+		}
+	}
 	return pipelineMD[:headerEnd], pipelineMD[headerEnd:]
 }
 

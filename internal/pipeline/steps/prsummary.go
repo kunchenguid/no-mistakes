@@ -2,12 +2,14 @@ package steps
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"html"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -17,10 +19,21 @@ import (
 )
 
 const (
-	maxEmbeddedArtifactBytes       = 16 * 1024
-	maxEmbeddedArtifactsTotalBytes = 32 * 1024
-	noMistakesPRSignature          = "Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)"
+	maxEmbeddedArtifactBytes               = 16 * 1024
+	maxEmbeddedArtifactsTotalBytes         = 32 * 1024
+	noMistakesPRSignature                  = "Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)"
+	pipelineAttestationCommentPrefix       = "<!-- no-mistakes-pipeline-attestation:v1 "
+	pipelineAttestationCommentClosingToken = " -->"
 )
+
+type pipelineAttestation struct {
+	Steps []pipelineAttestationStep `json:"steps"`
+}
+
+type pipelineAttestationStep struct {
+	Step   types.StepName   `json:"step"`
+	Status types.StepStatus `json:"status"`
+}
 
 type testingArtifactRenderState struct {
 	remainingEmbeddedBytes int
@@ -63,6 +76,8 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 	b.WriteString("## Pipeline\n\n")
 	b.WriteString(noMistakesPRSignature)
 	b.WriteString("\n\n")
+	b.WriteString(buildPipelineAttestation(steps))
+	b.WriteString("\n\n")
 	for i, detail := range detailBlocks {
 		if i > 0 {
 			b.WriteString("\n")
@@ -72,6 +87,34 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 
 	riskLine := extractRiskLine(steps, rounds)
 	return b.String(), riskLine
+}
+
+// buildPipelineAttestation records the exact step lifecycle snapshot available
+// when no-mistakes writes the PR body. Its compact JSON is deliberately data
+// only: consumers decide their own policy from the step names and statuses.
+func buildPipelineAttestation(steps []*db.StepResult) string {
+	attestation := pipelineAttestation{Steps: make([]pipelineAttestationStep, 0, len(steps))}
+	for _, sr := range steps {
+		if sr == nil {
+			continue
+		}
+		attestation.Steps = append(attestation.Steps, pipelineAttestationStep{
+			Step:   sr.StepName,
+			Status: sr.Status,
+		})
+	}
+	sort.SliceStable(attestation.Steps, func(i, j int) bool {
+		left, right := attestation.Steps[i].Step, attestation.Steps[j].Step
+		if left.Order() != right.Order() {
+			return left.Order() < right.Order()
+		}
+		return left < right
+	})
+	payload, err := json.Marshal(attestation)
+	if err != nil {
+		return ""
+	}
+	return pipelineAttestationCommentPrefix + string(payload) + pipelineAttestationCommentClosingToken
 }
 
 // BuildTestingSummary extracts a deterministic Testing section from the test step.

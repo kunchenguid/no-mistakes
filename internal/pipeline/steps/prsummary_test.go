@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"encoding/json"
 	"fmt"
 	"html"
 	"os"
@@ -59,6 +60,75 @@ func TestBuildPipelineSummary_AllClean(t *testing.T) {
 	}
 	if risk != "" {
 		t.Errorf("expected empty risk for clean run, got: %q", risk)
+	}
+}
+
+func TestBuildPipelineSummary_EmitsStructuredStepAttestation(t *testing.T) {
+	t.Parallel()
+
+	steps := []*db.StepResult{
+		{ID: "ci", StepName: types.StepCI, Status: types.StepStatusPending},
+		{ID: "document", StepName: types.StepDocument, Status: types.StepStatusSkipped},
+		{ID: "review", StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{ID: "test", StepName: types.StepTest, Status: types.StepStatusFailed},
+		{ID: "rebase", StepName: types.StepRebase, Status: types.StepStatusCompleted},
+		{ID: "lint", StepName: types.StepLint, Status: types.StepStatusAwaitingApproval},
+		{ID: "push", StepName: types.StepPush, Status: types.StepStatusCompleted},
+		{ID: "pr", StepName: types.StepPR, Status: types.StepStatusRunning},
+		{ID: "intent", StepName: types.StepIntent, Status: types.StepStatusSkipped},
+	}
+
+	got, _ := BuildPipelineSummary(steps, nil)
+	repeated, _ := BuildPipelineSummary(steps, nil)
+	if got != repeated {
+		t.Fatalf("attestation must be deterministic:\nfirst:\n%s\nsecond:\n%s", got, repeated)
+	}
+
+	const prefix = "<!-- no-mistakes-pipeline-attestation:v1 "
+	start := strings.Index(got, prefix)
+	if start < 0 {
+		t.Fatalf("pipeline summary missing attestation comment:\n%s", got)
+	}
+	end := strings.Index(got[start:], " -->")
+	if end < 0 {
+		t.Fatalf("attestation comment is not closed:\n%s", got)
+	}
+	var attestation struct {
+		Steps []struct {
+			Step   types.StepName   `json:"step"`
+			Status types.StepStatus `json:"status"`
+		} `json:"steps"`
+	}
+	payload := got[start+len(prefix) : start+end]
+	if err := json.Unmarshal([]byte(payload), &attestation); err != nil {
+		t.Fatalf("attestation payload must be JSON: %v\n%s", err, payload)
+	}
+
+	want := []struct {
+		step   types.StepName
+		status types.StepStatus
+	}{
+		{types.StepIntent, types.StepStatusSkipped},
+		{types.StepRebase, types.StepStatusCompleted},
+		{types.StepReview, types.StepStatusCompleted},
+		{types.StepTest, types.StepStatusFailed},
+		{types.StepDocument, types.StepStatusSkipped},
+		{types.StepLint, types.StepStatusAwaitingApproval},
+		{types.StepPush, types.StepStatusCompleted},
+		{types.StepPR, types.StepStatusRunning},
+		{types.StepCI, types.StepStatusPending},
+	}
+	if len(attestation.Steps) != len(want) {
+		t.Fatalf("attested %d steps, want %d: %+v", len(attestation.Steps), len(want), attestation.Steps)
+	}
+	for i, wantStep := range want {
+		if gotStep := attestation.Steps[i]; gotStep.Step != wantStep.step || gotStep.Status != wantStep.status {
+			t.Errorf("attested step %d = (%q, %q), want (%q, %q)", i, gotStep.Step, gotStep.Status, wantStep.step, wantStep.status)
+		}
+	}
+
+	if signatureAt, attestationAt := strings.Index(got, noMistakesPRSignature), strings.Index(got, prefix); signatureAt < 0 || attestationAt < signatureAt {
+		t.Fatalf("attestation must follow the existing signature:\n%s", got)
 	}
 }
 
