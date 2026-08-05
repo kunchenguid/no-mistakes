@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -237,6 +238,85 @@ func TestReleaseUnavailablePreservedHeadRefusalMatrix(t *testing.T) {
 		}
 		assertUnavailableReleaseUnchanged(t, f, f.submitted, f.submitted)
 	})
+}
+
+// TestReleaseUnavailableStagingFetchDoesNotShareTheRefReadBudget pins that each
+// network step of a release owns its own deadline. The reachability probe runs
+// between the target ref read and the remote safety anchor's staging fetch under
+// a far larger budget, so a shared deadline is already spent by the time the
+// fetch starts - deterministically, on exactly the hosted repositories that made
+// the probe expensive enough to need its own budget.
+func TestReleaseUnavailableStagingFetchDoesNotShareTheRefReadBudget(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	makePreservedHeadUnavailable(t, f)
+	budget := 2 * time.Second
+	f.service.refreshBudget = budget
+	f.service.afterUnavailableReleaseProbe = func() { time.Sleep(budget + budget/4) }
+
+	state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+	if !state.Released || state.Safety != "custody_returned" {
+		t.Fatalf("release after a probe outliving one ref-read budget = %#v", state)
+	}
+	transition := state.CustodyTransition
+	if transition == nil || transition.RemoteAnchor == "" {
+		t.Fatalf("custody transition = %#v", transition)
+	}
+	if got := mustRun(t, f.local, "rev-parse", transition.RemoteAnchor+"^{commit}"); got != f.submitted {
+		t.Fatalf("remote safety anchor = %s, want %s", got, f.submitted)
+	}
+}
+
+// TestReleaseUnavailableReportsOnlyAnchorsItCreated pins the audit contract of
+// the one command whose whole safety story is anchor provenance: a refused
+// attempt must never name a ref an operator cannot resolve.
+func TestReleaseUnavailableReportsOnlyAnchorsItCreated(t *testing.T) {
+	t.Parallel()
+
+	t.Run("refusal before any anchor", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		makePreservedHeadUnavailable(t, f)
+		mustWrite(t, filepath.Join(f.local, "dirty.txt"), "dirty\n")
+
+		state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+		if state.Released || state.Safety != "blocked_release_dirty" {
+			t.Fatalf("dirty release = %#v", state)
+		}
+		assertNoReportedAnchors(t, state.CustodyTransition)
+		for _, dir := range []string{f.local, f.gate} {
+			if refs := mustRun(t, dir, "for-each-ref", "--format=%(refname)", unavailableReleaseRef(f.run.ID)+"/"); refs != "" {
+				t.Fatalf("refused release left custody-release refs in %s: %q", dir, refs)
+			}
+		}
+	})
+
+	t.Run("refusal after the local anchor is refused", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		makePreservedHeadUnavailable(t, f)
+		localAnchor := unavailableReleaseAnchorRef(unavailableReleaseRef(f.run.ID), "local", f.submitted)
+		mustRun(t, f.local, "symbolic-ref", localAnchor, "refs/heads/feature/recover")
+
+		state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+		if state.Released || state.Safety != "blocked_release_preserve_failed" {
+			t.Fatalf("symbolic local-anchor release = %#v", state)
+		}
+		assertNoReportedAnchors(t, state.CustodyTransition)
+		if state.CustodyTransition.RemoteHead != f.submitted {
+			t.Fatalf("observed remote head = %q, want the head the attempt read", state.CustodyTransition.RemoteHead)
+		}
+		assertUnavailableReleaseUnchanged(t, f, f.submitted, f.submitted)
+	})
+}
+
+func assertNoReportedAnchors(t *testing.T, transition *CustodyTransition) {
+	t.Helper()
+	if transition == nil {
+		t.Fatal("refused release reported no custody transition")
+	}
+	if transition.LocalAnchor != "" || transition.RemoteAnchor != "" || transition.GateAnchor != "" {
+		t.Fatalf("refused release reported anchors it never created: %#v", transition)
+	}
 }
 
 func TestReleaseUnavailableRechecksRemoteBeforeOwnershipTransition(t *testing.T) {
