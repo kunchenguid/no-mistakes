@@ -235,16 +235,19 @@ The release refuses without changing ownership when any of these conditions is t
 
 - The run ID is missing, unknown, belongs to another repository or branch, is not the currently authoritative branch owner, or is ambiguous because another run owns the branch.
 - The exact run is still pending or running, no longer owns an unpublished head, or already returned custody through another path.
-- The recorded preserved commit still exists in the invoking repository or gate object store, or is advertised by any configured-target ref.
+- The recorded preserved commit still exists in the invoking repository or gate object store, or remains reachable from the history of any advertised configured-target ref.
 - The invoking worktree is dirty, detached, on another branch, or has the same branch checked out in another worktree.
 - The clean local branch is missing from or does not exactly equal the freshly read configured push target branch.
-- The registered gate is missing or invalid, a safety anchor conflicts, or the local branch, remote branch, gate branch, run record, or active ownership changes during the operation.
+- The registered gate is missing or invalid, a safety anchor is symbolic or conflicts, or the local branch, remote branch, gate branch, repository registration, run record, or authoritative ownership generation changes during the operation.
 
-Before ownership changes, the command anchors the exact local head and freshly fetched remote head under `refs/no-mistakes/custody-release/<run>/local` and `/remote`.
-When the gate branch exists, it anchors that head under `refs/no-mistakes/custody-release/<run>/gate` before atomically moving the gate branch to the verified local and remote head with compare-and-swap.
+Before ownership changes, the command anchors the exact local head and freshly fetched remote head under canonical direct refs at `refs/no-mistakes/custody-release/<run>/local` and `/remote`.
+When the gate branch exists, it anchors that head under the canonical direct ref `refs/no-mistakes/custody-release/<run>/gate` before atomically moving the gate branch to the verified local and remote head with compare-and-swap.
 It never changes the invoking worktree, any external remote, any unrelated ref, or any independently preserved repository.
-The final database update is one guarded transaction that requires the same exact terminal run facts and no active replacement owner.
-A crash before that transaction leaves only the safety anchors and possibly the gate branch at the already verified local and remote head, so retry is safe.
+Before the gate move, a durable journal binds the original gate head, repository metadata generation, and complete branch-ownership generation.
+That journal makes a crash after a distinct gate move retryable while still refusing a pre-existing anchor collision.
+After the final repeated checks, a no-op gate compare-and-swap is the Git branch linearization point, so a receive before it is detected and a later receive is new ownership after this release.
+The final database update is one guarded transaction that requires the journaled gate-moved phase, the same exact terminal run facts, the same repository registration, and unchanged ownership generations.
+A crash before that transaction leaves only the durable journal, safety anchors, and possibly the gate branch at the already verified local and remote head, so retry is safe.
 A crash after it is a completed, idempotent release recorded with reason `preserved_head_unavailable`.
 
 Successful and refused attempts return a structured `branch_sync.custody_transition` object with the action, durable reason, exact run and heads, every created anchor, and whether the result was an idempotent retry.

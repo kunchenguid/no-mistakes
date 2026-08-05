@@ -8,12 +8,13 @@ import (
 
 // Repo represents a registered repository.
 type Repo struct {
-	ID            string
-	WorkingPath   string
-	UpstreamURL   string
-	ForkURL       string
-	DefaultBranch string
-	CreatedAt     int64
+	ID                 string
+	WorkingPath        string
+	UpstreamURL        string
+	ForkURL            string
+	DefaultBranch      string
+	MetadataGeneration int64
+	CreatedAt          int64
 
 	// URLsVerified is run-scoped, in-memory evidence that the URL fields were
 	// just validated against the working clone. It is never persisted.
@@ -84,7 +85,7 @@ func (d *DB) InsertRepoWithFork(workingPath, upstreamURL, forkURL, defaultBranch
 // GetRepos returns every authoritative repository record ordered by ID.
 func (d *DB) GetRepos() ([]*Repo, error) {
 	rows, err := d.sql.Query(
-		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos ORDER BY id`,
+		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, metadata_generation, created_at FROM repos ORDER BY id`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get repos: %w", err)
@@ -94,7 +95,7 @@ func (d *DB) GetRepos() ([]*Repo, error) {
 	var repos []*Repo
 	for rows.Next() {
 		r := &Repo{}
-		if err := rows.Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.MetadataGeneration, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan repo: %w", err)
 		}
 		repos = append(repos, r)
@@ -109,8 +110,8 @@ func (d *DB) GetRepos() ([]*Repo, error) {
 func (d *DB) GetRepo(id string) (*Repo, error) {
 	r := &Repo{}
 	err := d.sql.QueryRow(
-		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos WHERE id = ?`, id,
-	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.CreatedAt)
+		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, metadata_generation, created_at FROM repos WHERE id = ?`, id,
+	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.MetadataGeneration, &r.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -124,8 +125,8 @@ func (d *DB) GetRepo(id string) (*Repo, error) {
 func (d *DB) GetRepoByPath(workingPath string) (*Repo, error) {
 	r := &Repo{}
 	err := d.sql.QueryRow(
-		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos WHERE working_path = ?`, workingPath,
-	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.CreatedAt)
+		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, metadata_generation, created_at FROM repos WHERE working_path = ?`, workingPath,
+	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.MetadataGeneration, &r.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -146,8 +147,10 @@ func (d *DB) ReplaceRepoURLs(id, upstreamURL, forkURL string) (*Repo, error) {
 	defer tx.Rollback()
 
 	result, err := tx.Exec(
-		`UPDATE repos SET upstream_url = ?, fork_url = ? WHERE id = ?`,
-		upstreamURL, nullableString(forkURL), id,
+		`UPDATE repos SET upstream_url = ?, fork_url = ?,
+		 metadata_generation = metadata_generation + CASE WHEN upstream_url != ? OR COALESCE(fork_url, '') != ? THEN 1 ELSE 0 END
+		 WHERE id = ?`,
+		upstreamURL, nullableString(forkURL), upstreamURL, strings.TrimSpace(forkURL), id,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("replace repo URLs: %w", err)
@@ -160,8 +163,8 @@ func (d *DB) ReplaceRepoURLs(id, upstreamURL, forkURL string) (*Repo, error) {
 
 	r := &Repo{}
 	if err := tx.QueryRow(
-		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos WHERE id = ?`, id,
-	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.CreatedAt); err != nil {
+		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, metadata_generation, created_at FROM repos WHERE id = ?`, id,
+	).Scan(&r.ID, &r.WorkingPath, &r.UpstreamURL, &r.ForkURL, &r.DefaultBranch, &r.MetadataGeneration, &r.CreatedAt); err != nil {
 		return nil, fmt.Errorf("read replaced repo URLs: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -174,8 +177,10 @@ func (d *DB) ReplaceRepoURLs(id, upstreamURL, forkURL string) (*Repo, error) {
 // stable repo ID, created_at timestamp, and any existing fork push URL.
 func (d *DB) UpdateRepoMetadata(id, upstreamURL, defaultBranch string) (*Repo, error) {
 	_, err := d.sql.Exec(
-		`UPDATE repos SET upstream_url = ?, default_branch = ? WHERE id = ?`,
-		upstreamURL, defaultBranch, id,
+		`UPDATE repos SET upstream_url = ?, default_branch = ?,
+		 metadata_generation = metadata_generation + CASE WHEN upstream_url != ? OR default_branch != ? THEN 1 ELSE 0 END
+		 WHERE id = ?`,
+		upstreamURL, defaultBranch, upstreamURL, defaultBranch, id,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update repo metadata: %w", err)
@@ -187,8 +192,10 @@ func (d *DB) UpdateRepoMetadata(id, upstreamURL, defaultBranch string) (*Repo, e
 // optional fork push URL.
 func (d *DB) UpdateRepoMetadataWithFork(id, upstreamURL, forkURL, defaultBranch string) (*Repo, error) {
 	_, err := d.sql.Exec(
-		`UPDATE repos SET upstream_url = ?, fork_url = ?, default_branch = ? WHERE id = ?`,
-		upstreamURL, nullableString(forkURL), defaultBranch, id,
+		`UPDATE repos SET upstream_url = ?, fork_url = ?, default_branch = ?,
+		 metadata_generation = metadata_generation + CASE WHEN upstream_url != ? OR COALESCE(fork_url, '') != ? OR default_branch != ? THEN 1 ELSE 0 END
+		 WHERE id = ?`,
+		upstreamURL, nullableString(forkURL), defaultBranch, upstreamURL, strings.TrimSpace(forkURL), defaultBranch, id,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update repo metadata: %w", err)
@@ -199,8 +206,10 @@ func (d *DB) UpdateRepoMetadataWithFork(id, upstreamURL, forkURL, defaultBranch 
 // UpdateRepoForkURL sets or clears the optional fork push URL.
 func (d *DB) UpdateRepoForkURL(id, forkURL string) (*Repo, error) {
 	_, err := d.sql.Exec(
-		`UPDATE repos SET fork_url = ? WHERE id = ?`,
-		nullableString(forkURL), id,
+		`UPDATE repos SET fork_url = ?,
+		 metadata_generation = metadata_generation + CASE WHEN COALESCE(fork_url, '') != ? THEN 1 ELSE 0 END
+		 WHERE id = ?`,
+		nullableString(forkURL), strings.TrimSpace(forkURL), id,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update repo fork URL: %w", err)
@@ -213,8 +222,10 @@ func (d *DB) UpdateRepoForkURL(id, forkURL string) (*Repo, error) {
 // directory is renamed or moved on disk.
 func (d *DB) UpdateRepoWorkingPath(id, workingPath string) (*Repo, error) {
 	_, err := d.sql.Exec(
-		`UPDATE repos SET working_path = ? WHERE id = ?`,
-		workingPath, id,
+		`UPDATE repos SET working_path = ?,
+		 metadata_generation = metadata_generation + CASE WHEN working_path != ? THEN 1 ELSE 0 END
+		 WHERE id = ?`,
+		workingPath, workingPath, id,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update repo working path: %w", err)
