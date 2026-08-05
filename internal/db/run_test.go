@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
@@ -861,6 +862,9 @@ func TestSetRunCustodyReturnedStampsOnceAndSurvivesStatusUpdates(t *testing.T) {
 	if got.CustodyReturnedAt == nil {
 		t.Fatal("custody stamp missing after set")
 	}
+	if got.CustodyReturnReason == nil || *got.CustodyReturnReason != CustodyReturnReasonPreservedHeadRecovered {
+		t.Fatalf("custody reason = %#v, want %q", got.CustodyReturnReason, CustodyReturnReasonPreservedHeadRecovered)
+	}
 	first := *got.CustodyReturnedAt
 
 	// Re-stamping is idempotent: the original recovery moment is preserved.
@@ -873,5 +877,96 @@ func TestSetRunCustodyReturnedStampsOnceAndSurvivesStatusUpdates(t *testing.T) {
 	got, _ = d.GetRun(run.ID)
 	if got.CustodyReturnedAt == nil || *got.CustodyReturnedAt != first {
 		t.Fatalf("custody stamp changed: %#v, want %d", got.CustodyReturnedAt, first)
+	}
+	if got.CustodyReturnReason == nil || *got.CustodyReturnReason != CustodyReturnReasonPreservedHeadRecovered {
+		t.Fatalf("custody reason changed: %#v", got.CustodyReturnReason)
+	}
+}
+
+func TestReleaseUnavailableRunCustodyIsAtomicAuditableAndIdempotent(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/unavailable-custody", "git@github.com:user/unavailable-custody.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feat", "submitted", "base")
+	if err := d.UpdateRunStatusWithVerifiedHead(run.ID, types.RunFailed, "missing-pipeline-head"); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	applied, err := d.ReleaseUnavailableRunCustody(expected)
+	if err != nil || !applied {
+		t.Fatalf("release = applied %t, err %v", applied, err)
+	}
+	stored, err := d.GetRun(run.ID)
+	if err != nil || stored.CustodyReturnedAt == nil || stored.CustodyReturnReason == nil {
+		t.Fatalf("stored release = %#v, %v", stored, err)
+	}
+	if *stored.CustodyReturnReason != CustodyReturnReasonPreservedHeadUnavailable {
+		t.Fatalf("release reason = %q", *stored.CustodyReturnReason)
+	}
+	first := *stored.CustodyReturnedAt
+
+	applied, err = d.ReleaseUnavailableRunCustody(expected)
+	if err != nil || applied {
+		t.Fatalf("release retry = applied %t, err %v", applied, err)
+	}
+	stored, _ = d.GetRun(run.ID)
+	if stored.CustodyReturnedAt == nil || *stored.CustodyReturnedAt != first || stored.CustodyReturnReason == nil || *stored.CustodyReturnReason != CustodyReturnReasonPreservedHeadUnavailable {
+		t.Fatalf("idempotent release changed audit = %#v", stored)
+	}
+}
+
+func TestReleaseUnavailableRunCustodyRefusesChangedOrActiveOwnership(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(t *testing.T, d *DB, repo *Repo, expected *Run)
+	}{
+		{
+			name: "exact run became active",
+			mutate: func(t *testing.T, d *DB, _ *Repo, expected *Run) {
+				if err := d.UpdateRunStatus(expected.ID, types.RunRunning); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "recorded head changed",
+			mutate: func(t *testing.T, d *DB, _ *Repo, expected *Run) {
+				if err := d.UpdateRunHeadSHA(expected.ID, "new-pipeline-head"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "another active run took branch ownership",
+			mutate: func(t *testing.T, d *DB, repo *Repo, _ *Run) {
+				if _, err := d.InsertRun(repo.ID, "feat", "submitted", "base"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openTestDB(t)
+			repo, _ := d.InsertRepo("/home/user/release-"+tc.name, "git@github.com:user/release.git", "main")
+			run, _ := d.InsertRun(repo.ID, "feat", "submitted", "base")
+			if err := d.UpdateRunStatusWithVerifiedHead(run.ID, types.RunFailed, "missing-pipeline-head"); err != nil {
+				t.Fatal(err)
+			}
+			expected, err := d.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(t, d, repo, expected)
+			if applied, err := d.ReleaseUnavailableRunCustody(expected); applied || !errors.Is(err, ErrRunCustodyChanged) {
+				t.Fatalf("guarded release = applied %t, err %v", applied, err)
+			}
+			stored, err := d.GetRun(run.ID)
+			if err != nil || stored.CustodyReturnedAt != nil || stored.CustodyReturnReason != nil {
+				t.Fatalf("refused release mutated audit = %#v, %v", stored, err)
+			}
+		})
 	}
 }

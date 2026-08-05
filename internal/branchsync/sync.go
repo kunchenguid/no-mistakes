@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -77,9 +78,13 @@ type State struct {
 	// returned (by this call or an earlier, idempotent one), or the terminal
 	// outcome had already released the branch (user_owned), making recovery an
 	// idempotent no-op.
-	Recovered  bool
-	NextAction *NextAction
-	Error      string
+	Recovered bool
+	// Released is set only by ReleaseUnavailable after the exact exceptional
+	// transition succeeds or an idempotent retry proves it already succeeded.
+	Released          bool
+	CustodyTransition *CustodyTransition
+	NextAction        *NextAction
+	Error             string
 }
 
 type LocalState struct {
@@ -118,6 +123,23 @@ type NextAction struct {
 	Command string
 }
 
+// CustodyTransition is the structured audit record returned by an explicit
+// unavailable-head release attempt. It names every identity and safety anchor
+// without copying file content or external credentials into output.
+type CustodyTransition struct {
+	Action        string
+	Reason        string
+	RunID         string
+	Idempotent    bool
+	PreservedHead string
+	LocalHead     string
+	RemoteHead    string
+	GateHead      string
+	LocalAnchor   string
+	RemoteAnchor  string
+	GateAnchor    string
+}
+
 // CanApply reports whether Apply may advance the clean checked-out branch for
 // a freshly verified plan. It includes strict fast-forwards and the narrower
 // equivalent-diverged advance that first anchors the pre-sync head.
@@ -137,11 +159,14 @@ type Service struct {
 	GateDir string
 	Paths   *paths.Paths
 
-	beforeApply               func()
-	beforeGateReset           func()
-	beforeRecoverWorktreeMove func()
-	beforeRecoverBranchMove   func()
-	afterRecoverBranchMove    func()
+	beforeApply                      func()
+	beforeGateReset                  func()
+	beforeRecoverWorktreeMove        func()
+	beforeRecoverBranchMove          func()
+	afterRecoverBranchMove           func()
+	beforeUnavailableReleaseGateMove func()
+	beforeUnavailableReleaseGateCAS  func()
+	beforeUnavailableReleaseStamp    func()
 }
 
 // OpenCurrent opens a service for the invoking registered worktree. The caller
@@ -577,7 +602,11 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 	gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
 	if err != nil {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so the preserved pipeline head %s cannot be verified; no files or refs were changed", branch, preserved))
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so the preserved pipeline head %s cannot be verified; no files or refs were changed", branch, preserved))
+		if git.ValidateBareRepository(ctx, gateDir) == nil && !objectExists(ctx, wd, preserved) && !objectExists(ctx, gateDir, preserved) {
+			return offerUnavailableRelease(blocked, run)
+		}
+		return blocked
 	}
 	anchored := false
 	if existing, anchorErr := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); anchorErr == nil && existing == preserved {
@@ -588,7 +617,11 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	// the preserved head is already anchored.
 	resumedKeepLocal := keepLocal && anchored && gateHead == local
 	if gateHead != preserved && !resumedKeepLocal {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_diverged", fmt.Sprintf("the gate branch is at %s, not the preserved pipeline head %s recorded for this run; no files or refs were changed", gateHead, preserved))
+		blocked := blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_diverged", fmt.Sprintf("the gate branch is at %s, not the preserved pipeline head %s recorded for this run; no files or refs were changed", gateHead, preserved))
+		if git.ValidateBareRepository(ctx, gateDir) == nil && !objectExists(ctx, wd, preserved) && !objectExists(ctx, gateDir, preserved) {
+			return offerUnavailableRelease(blocked, run)
+		}
+		return blocked
 	}
 	if !anchored {
 		if fetchErr := git.FetchRemoteBranchToPrivateRef(ctx, wd, gateDir, branch, anchorRef); fetchErr != nil {
@@ -633,6 +666,350 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "git log --oneline --left-right HEAD..." + anchorRef}
 		return blocked
 	}
+}
+
+// ReleaseUnavailable is the single owner of the exceptional custody release
+// for a terminal run whose recorded preserved pipeline head no longer exists.
+// It is deliberately separate from Recover: ordinary recovery keeps refusing
+// when preservation evidence is missing, while this explicit path requires the
+// exact run ID and proves a much narrower replacement source of truth.
+//
+// Release is allowed only when the exact selected run belongs to this
+// repository and checked-out branch, is terminal and still owns an unpublished
+// head, and that head is absent from the operator repo, the gate object store,
+// and every advertised configured-target ref. The invoking branch must be
+// unique, clean, and exactly equal to a freshly fetched configured-target ref.
+// Every reachable local, remote, and gate head is anchored before the gate
+// branch can move. The gate move is an atomic compare-and-swap, and the final
+// database write is one guarded transaction that refuses if the run facts or
+// active branch ownership changed. A crash before that write leaves only
+// preservation anchors and, at most, the already-preserved gate branch at the
+// verified local/remote head; retry is safe. A crash after it is an idempotent
+// completed release, durably distinguished from ordinary recovery by reason.
+func (s *Service) ReleaseUnavailable(ctx context.Context, runID string) State {
+	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
+		return refusal
+	}
+	state, selected, _ := s.inspect(ctx)
+	run, err := s.DB.GetRun(strings.TrimSpace(runID))
+	if err != nil || run == nil {
+		return blockedPlan(state, state.State, "blocked_release_run_identity", "the exact run id could not be resolved in this repository; no files or refs were changed")
+	}
+	base := unavailableReleaseRef(run.ID)
+	transition := &CustodyTransition{
+		Action:        "release_unavailable",
+		Reason:        db.CustodyReturnReasonPreservedHeadUnavailable,
+		RunID:         run.ID,
+		PreservedHead: run.HeadSHA,
+		LocalHead:     state.Local.Head,
+		LocalAnchor:   base + "/local",
+		RemoteAnchor:  base + "/remote",
+	}
+	state.CustodyTransition = transition
+
+	if selected == nil || selected.ID != run.ID || run.RepoID != s.Repo.ID || run.Branch != state.Local.Branch || state.Pipeline.RunID != run.ID {
+		return blockedRelease(state, transition, "blocked_release_run_identity", "the requested run is not the exact authoritative owner of this repository and checked-out branch; no files or refs were changed")
+	}
+	if run.CustodyReturnedAt != nil {
+		if run.CustodyReturnReason != nil && *run.CustodyReturnReason == db.CustodyReturnReasonPreservedHeadUnavailable {
+			populateUnavailableReleaseAudit(ctx, s.workDir(), s.GateDir, base, transition)
+			transition.Idempotent = true
+			state.Released = true
+			state.Changed = false
+			return state
+		}
+		return blockedRelease(state, transition, "blocked_release_not_applicable", "custody was already returned through a different supported path; no files or refs were changed")
+	}
+	if !terminalRunStatus(run.Status) {
+		return blockedRelease(state, transition, "blocked_release_run_active", "the requested run is still active; drive it to completion or abort it before considering custody release; no files or refs were changed")
+	}
+	if state.State != StatePipelineOwned || !unpublishedPipelineHead(run) {
+		return blockedRelease(state, transition, "blocked_release_not_applicable", "the requested terminal run does not own an unpublished pipeline head; no files or refs were changed")
+	}
+	if run.LastPushedSHA != nil && (ptr(run.PushRef) != "refs/heads/"+state.Local.Branch || ptr(run.PushTargetFingerprint) != TargetFingerprint(s.Repo.PushURL()) || ptr(run.PushTargetKind) != targetKind(s.Repo)) {
+		return blockedRelease(state, transition, "blocked_release_run_identity", "the requested run's recorded push target no longer matches this repository branch and configured target; no files or refs were changed")
+	}
+	if !state.Local.Clean {
+		blocked := blockedRelease(state, transition, "blocked_release_dirty", fmt.Sprintf("the invoking worktree is not clean (%s); commit or stash before retrying; no files or refs were changed", state.Local.Reason))
+		blocked.NextAction = &NextAction{Code: "inspect_worktree", Command: "git status"}
+		return blocked
+	}
+	if duplicateBranchCheckout(ctx, s.workDir(), state.Local.Branch) {
+		return blockedRelease(state, transition, "blocked_release_branch_ambiguous", "the checked-out branch is attached to more than one worktree; no files or refs were changed")
+	}
+	gateDir := strings.TrimSpace(s.GateDir)
+	if gateDir == "" || git.ValidateBareRepository(ctx, gateDir) != nil {
+		return blockedRelease(state, transition, "blocked_release_gate_unavailable", "the registered local gate could not be verified as the exact bare repository; no files or refs were changed")
+	}
+	if objectExists(ctx, s.workDir(), run.HeadSHA) || objectExists(ctx, gateDir, run.HeadSHA) {
+		return blockedRelease(state, transition, "blocked_release_preserved_recoverable", "the recorded preserved pipeline head is still recoverable in a no-mistakes-owned Git object store; use ordinary custody recovery instead; no files or refs were changed")
+	}
+
+	wd := s.workDir()
+	local := state.Local.Head
+	branch := state.Local.Branch
+	targetRef := "refs/heads/" + branch
+	targetURL, err := s.verifiedConfiguredPushURL(ctx)
+	if err != nil {
+		return blockedRelease(state, transition, "blocked_release_target_ambiguous", "the invoking worktree does not have exactly one configured remote matching this repository's push target; no files or refs were changed")
+	}
+	releaseCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
+	defer cancel()
+	remoteHead, err := git.LsRemote(releaseCtx, wd, targetURL, targetRef)
+	if err != nil {
+		return blockedRelease(state, transition, "blocked_release_remote_unavailable", "the configured push target could not be read; no files or refs were changed")
+	}
+	transition.RemoteHead = remoteHead
+	if remoteHead == "" || remoteHead != local {
+		return blockedRelease(state, transition, "blocked_release_remote_mismatch", "the clean local branch does not exactly equal its configured remote branch; no files or refs were changed")
+	}
+	advertised, err := remoteAdvertisesCommit(releaseCtx, wd, targetURL, run.HeadSHA)
+	if err != nil {
+		return blockedRelease(state, transition, "blocked_release_remote_unavailable", "the configured push target refs could not be inspected; no files or refs were changed")
+	}
+	if advertised {
+		return blockedRelease(state, transition, "blocked_release_preserved_recoverable", "the recorded preserved pipeline head is still advertised by the configured push target; recover or anchor it instead of releasing unavailable custody; no files or refs were changed")
+	}
+
+	if blocked, ok := anchorExactCommit(ctx, state, transition, wd, transition.LocalAnchor, local); !ok {
+		return blocked
+	}
+	remoteStagingRef := base + "/remote-staging"
+	if err := git.FetchRemoteBranchToPrivateRef(releaseCtx, wd, targetURL, branch, remoteStagingRef); err != nil {
+		return blockedRelease(state, transition, "blocked_release_preserve_failed", "the configured remote head could not be fetched before creating its private safety anchor; the local anchor remains intact")
+	}
+	fetched, fetchErr := git.Run(ctx, wd, "rev-parse", remoteStagingRef+"^{commit}")
+	if fetchErr != nil || fetched != local {
+		_, _ = git.Run(ctx, wd, "update-ref", "-d", remoteStagingRef)
+		return blockedRelease(state, transition, "blocked_release_remote_changed", "the configured remote branch changed while its safety anchor was being prepared; the local safety anchor remains intact")
+	}
+	if blocked, ok := anchorExactCommit(ctx, state, transition, wd, transition.RemoteAnchor, fetched); !ok {
+		_, _ = git.Run(ctx, wd, "update-ref", "-d", remoteStagingRef)
+		return blocked
+	}
+	_, _ = git.Run(ctx, wd, "update-ref", "-d", remoteStagingRef)
+
+	gateHead := ""
+	if observed, gateErr := git.Run(ctx, gateDir, "rev-parse", "--verify", targetRef+"^{commit}"); gateErr == nil {
+		gateHead = observed
+		transition.GateHead = gateHead
+		transition.GateAnchor = base + "/gate"
+		if blocked, ok := anchorExactCommit(ctx, state, transition, gateDir, transition.GateAnchor, gateHead); !ok {
+			return blocked
+		}
+	}
+	if objectExists(ctx, gateDir, run.HeadSHA) || objectExists(ctx, wd, run.HeadSHA) {
+		return blockedRelease(state, transition, "blocked_release_preserved_recoverable", "the recorded preserved pipeline head became recoverable while safety anchors were being created; release was not attempted")
+	}
+
+	if s.beforeUnavailableReleaseGateMove != nil {
+		s.beforeUnavailableReleaseGateMove()
+	}
+	if refusal := s.recheckUnavailableRelease(ctx, run, state, gateHead, targetURL, targetRef); refusal != nil {
+		refusal.CustodyTransition = transition
+		return *refusal
+	}
+
+	// Stage the verified local head into the gate without firing receive hooks.
+	// The final branch move uses update-ref CAS, so a racing push wins cleanly.
+	source, err := filepath.Abs(wd)
+	if err != nil {
+		return blockedRelease(state, transition, "blocked_release_assumptions_changed", "the invoking worktree path could not be resolved; safety anchors remain intact")
+	}
+	stagingRef := base + "/staging"
+	if _, err := git.Run(ctx, gateDir, "fetch", "--no-tags", "--no-write-fetch-head", source, "+refs/heads/"+branch+":"+stagingRef); err != nil {
+		return blockedRelease(state, transition, "blocked_release_preserve_failed", "the verified local head could not be staged into the gate; safety anchors remain intact")
+	}
+	staged, err := git.Run(ctx, gateDir, "rev-parse", stagingRef+"^{commit}")
+	if err != nil || staged != local {
+		_, _ = git.Run(ctx, gateDir, "update-ref", "-d", stagingRef)
+		return blockedRelease(state, transition, "blocked_release_assumptions_changed", "the local branch changed while its head was being staged; safety anchors remain intact")
+	}
+	if s.beforeUnavailableReleaseGateCAS != nil {
+		s.beforeUnavailableReleaseGateCAS()
+	}
+	oldGate := gateHead
+	if oldGate == "" {
+		oldGate = strings.Repeat("0", 40)
+	}
+	_, casErr := git.Run(ctx, gateDir, "update-ref", targetRef, local, oldGate)
+	_, _ = git.Run(ctx, gateDir, "update-ref", "-d", stagingRef)
+	if casErr != nil {
+		return blockedRelease(state, transition, "blocked_release_gate_race", "the gate branch changed while custody release was being prepared; every pre-existing head remains anchored and custody was not released")
+	}
+
+	if refusal := s.recheckUnavailableRelease(ctx, run, state, local, targetURL, targetRef); refusal != nil {
+		refusal.CustodyTransition = transition
+		return *refusal
+	}
+	if s.beforeUnavailableReleaseStamp != nil {
+		s.beforeUnavailableReleaseStamp()
+	}
+	applied, err := s.DB.ReleaseUnavailableRunCustody(run)
+	if err != nil {
+		message := "the exact run ownership facts changed before the transactional release stamp; safety anchors remain intact and custody was not released"
+		if !errors.Is(err, db.ErrRunCustodyChanged) {
+			message = "the transactional custody release could not be recorded; safety anchors remain intact and the operation is safe to retry"
+		}
+		return blockedRelease(state, transition, "blocked_release_assumptions_changed", message)
+	}
+	transition.Idempotent = !applied
+	final, _, _ := s.inspect(ctx)
+	final.Released = true
+	final.Changed = false
+	final.CustodyTransition = transition
+	return final
+}
+
+func (s *Service) recheckUnavailableRelease(ctx context.Context, expected *db.Run, original State, expectedGate, targetURL, targetRef string) *State {
+	branch, branchErr := git.CurrentBranch(ctx, s.workDir())
+	head, headErr := git.HeadSHA(ctx, s.workDir())
+	clean, _ := worktreeClean(ctx, s.workDir())
+	if branchErr != nil || branch != original.Local.Branch || headErr != nil || head != original.Local.Head || !clean || duplicateBranchCheckout(ctx, s.workDir(), branch) {
+		blocked := blockedPlan(original, StateAmbiguousContext, "blocked_release_assumptions_changed", "the local branch, HEAD, or worktree changed while custody release was being prepared; safety anchors remain intact")
+		return &blocked
+	}
+	fresh, err := s.DB.GetRun(expected.ID)
+	if err != nil || !sameUnavailableReleaseRun(expected, fresh) {
+		blocked := blockedPlan(original, StatePipelineOwned, "blocked_release_assumptions_changed", "the exact durable run facts changed while custody release was being prepared; safety anchors remain intact")
+		return &blocked
+	}
+	liveCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
+	defer cancel()
+	live, err := git.LsRemote(liveCtx, s.workDir(), targetURL, targetRef)
+	if err != nil || live != original.Local.Head {
+		blocked := blockedPlan(original, StateRemoteRewritten, "blocked_release_remote_changed", "the configured remote branch changed while custody release was being prepared; safety anchors remain intact")
+		return &blocked
+	}
+	advertised, err := remoteAdvertisesCommit(liveCtx, s.workDir(), targetURL, expected.HeadSHA)
+	if err != nil {
+		blocked := blockedPlan(original, StateOffline, "blocked_release_remote_unavailable", "the configured push target refs could not be rechecked; safety anchors remain intact")
+		return &blocked
+	}
+	if advertised || objectExists(ctx, s.workDir(), expected.HeadSHA) || objectExists(ctx, s.GateDir, expected.HeadSHA) {
+		blocked := blockedPlan(original, StatePipelineOwned, "blocked_release_preserved_recoverable", "the recorded preserved pipeline head became recoverable before release; safety anchors remain intact and custody was not released")
+		return &blocked
+	}
+	gateHead := ""
+	if observed, gateErr := git.Run(ctx, s.GateDir, "rev-parse", "--verify", targetRef+"^{commit}"); gateErr == nil {
+		gateHead = observed
+	}
+	if gateHead != expectedGate {
+		blocked := blockedPlan(original, StatePipelineOwned, "blocked_release_gate_race", "the gate branch changed while custody release was being prepared; safety anchors remain intact")
+		return &blocked
+	}
+	return nil
+}
+
+func sameUnavailableReleaseRun(expected, current *db.Run) bool {
+	return expected != nil && current != nil && current.ID == expected.ID && current.RepoID == expected.RepoID && current.Branch == expected.Branch &&
+		current.HeadSHA == expected.HeadSHA && sameStringPointer(current.SubmittedHeadSHA, expected.SubmittedHeadSHA) && current.Status == expected.Status &&
+		sameStringPointer(current.LastPushedSHA, expected.LastPushedSHA) && sameStringPointer(current.PushTargetKind, expected.PushTargetKind) &&
+		sameStringPointer(current.PushTargetFingerprint, expected.PushTargetFingerprint) && sameStringPointer(current.PushRef, expected.PushRef) &&
+		sameInt64Pointer(current.PushGeneration, expected.PushGeneration) && current.PushActive == expected.PushActive &&
+		sameInt64Pointer(current.TerminalHeadVerifiedAt, expected.TerminalHeadVerifiedAt) && current.CustodyReturnedAt == nil
+}
+
+func sameStringPointer(a, b *string) bool {
+	return (a == nil && b == nil) || (a != nil && b != nil && *a == *b)
+}
+
+func sameInt64Pointer(a, b *int64) bool {
+	return (a == nil && b == nil) || (a != nil && b != nil && *a == *b)
+}
+
+func anchorExactCommit(ctx context.Context, state State, transition *CustodyTransition, dir, ref, head string) (State, bool) {
+	if existing, err := git.Run(ctx, dir, "rev-parse", "--verify", ref+"^{commit}"); err == nil {
+		if existing == head {
+			return State{}, true
+		}
+		return blockedRelease(state, transition, "blocked_release_preserve_failed", fmt.Sprintf("the safety anchor %s already identifies a different commit; no ownership state was changed", ref)), false
+	}
+	if _, err := git.Run(ctx, dir, "update-ref", ref, head, ""); err != nil {
+		return blockedRelease(state, transition, "blocked_release_preserve_failed", fmt.Sprintf("the safety anchor %s could not be created; no ownership state was changed", ref)), false
+	}
+	if anchored, err := git.Run(ctx, dir, "rev-parse", "--verify", ref+"^{commit}"); err != nil || anchored != head {
+		return blockedRelease(state, transition, "blocked_release_preserve_failed", fmt.Sprintf("the safety anchor %s could not be verified; no ownership state was changed", ref)), false
+	}
+	return State{}, true
+}
+
+func (s *Service) verifiedConfiguredPushURL(ctx context.Context) (string, error) {
+	remoteNames, err := git.Run(ctx, s.workDir(), "remote")
+	if err != nil {
+		return "", err
+	}
+	var matches []string
+	for _, name := range strings.Fields(remoteNames) {
+		out, err := git.Run(ctx, s.workDir(), "remote", "get-url", "--push", "--all", name)
+		if err != nil {
+			continue
+		}
+		urls := strings.Fields(out)
+		if len(urls) != 1 || TargetFingerprint(urls[0]) != TargetFingerprint(s.Repo.PushURL()) {
+			continue
+		}
+		matches = append(matches, urls[0])
+	}
+	if len(matches) != 1 {
+		return "", fmt.Errorf("configured push target matches %d worktree remotes", len(matches))
+	}
+	return matches[0], nil
+}
+
+func populateUnavailableReleaseAudit(ctx context.Context, workDir, gateDir, base string, transition *CustodyTransition) {
+	if transition == nil {
+		return
+	}
+	if head, err := git.Run(ctx, workDir, "rev-parse", "--verify", transition.LocalAnchor+"^{commit}"); err == nil {
+		transition.LocalHead = head
+	}
+	if head, err := git.Run(ctx, workDir, "rev-parse", "--verify", transition.RemoteAnchor+"^{commit}"); err == nil {
+		transition.RemoteHead = head
+	}
+	gateAnchor := base + "/gate"
+	if strings.TrimSpace(gateDir) != "" && git.ValidateBareRepository(ctx, gateDir) == nil {
+		if head, err := git.Run(ctx, gateDir, "rev-parse", "--verify", gateAnchor+"^{commit}"); err == nil {
+			transition.GateAnchor = gateAnchor
+			transition.GateHead = head
+		}
+	}
+}
+
+func remoteAdvertisesCommit(ctx context.Context, dir, remote, sha string) (bool, error) {
+	out, err := git.Run(ctx, dir, "ls-remote", remote)
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == sha {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func unavailableReleaseRef(runID string) string {
+	return "refs/no-mistakes/custody-release/" + runID
+}
+
+func offerUnavailableRelease(state State, run *db.Run) State {
+	if run == nil {
+		return state
+	}
+	state.Error += "; the recorded head is absent from both no-mistakes-owned object stores, so use the explicit identity-bound unavailable-head release only if the clean local branch exactly equals its configured remote"
+	state.NextAction = &NextAction{
+		Code:    "release_unavailable_custody",
+		Command: "no-mistakes axi sync --release-unavailable --run " + run.ID,
+	}
+	return state
+}
+
+func blockedRelease(state State, transition *CustodyTransition, safety, message string) State {
+	blocked := blockedPlan(state, state.State, safety, message)
+	blocked.CustodyTransition = transition
+	return blocked
 }
 
 // recoverKeepLocal performs the explicit keep-local custody return: the

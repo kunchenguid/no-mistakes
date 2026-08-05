@@ -46,7 +46,12 @@ type Run struct {
 	// the last push). It never changes push provenance; it only records that
 	// the operator worktree took the branch back.
 	CustodyReturnedAt *int64
-	Error             *string
+	// CustodyReturnReason records exceptional release provenance. Ordinary
+	// preserved-head recovery uses CustodyReturnReasonPreservedHeadRecovered;
+	// an unavailable-head release uses its distinct durable reason so retries
+	// and status output never fabricate which transition occurred.
+	CustodyReturnReason *string
+	Error               *string
 	// AwaitingAgentSince is the unix-seconds timestamp at which the run parked
 	// at a gate awaiting the driving agent's response (an awaiting_approval or
 	// fix_review step). It is nil whenever the run is not parked: the executor
@@ -66,7 +71,7 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, custody_return_reason, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
@@ -76,7 +81,7 @@ func scanRun(row interface {
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
-		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
+		&r.CustodyReturnedAt, &r.CustodyReturnReason, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -268,17 +273,80 @@ func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
 	return nil
 }
 
+const (
+	CustodyReturnReasonPreservedHeadRecovered   = "preserved_head_recovered"
+	CustodyReturnReasonPreservedHeadUnavailable = "preserved_head_unavailable"
+)
+
+// ErrRunCustodyChanged reports that the exact durable run facts changed before
+// an exceptional custody release could commit. Callers must re-inspect rather
+// than weakening the safety predicate.
+var ErrRunCustodyChanged = errors.New("run custody assumptions changed")
+
 // SetRunCustodyReturned stamps the moment a guarded recovery explicitly
 // returned custody of this run's branch to the operator worktree. Stamping is
-// idempotent: the first timestamp wins so the record keeps the original
-// recovery moment.
+// idempotent: the first timestamp and reason win so the record keeps the
+// original recovery provenance.
 func (d *DB) SetRunCustodyReturned(id string) error {
 	ts := now()
-	_, err := d.sql.Exec(`UPDATE runs SET custody_returned_at = COALESCE(custody_returned_at, ?), updated_at = ? WHERE id = ?`, ts, ts, id)
+	_, err := d.sql.Exec(`UPDATE runs SET
+		custody_return_reason = CASE WHEN custody_returned_at IS NULL THEN ? ELSE COALESCE(custody_return_reason, ?) END,
+		custody_returned_at = COALESCE(custody_returned_at, ?), updated_at = ? WHERE id = ?`,
+		CustodyReturnReasonPreservedHeadRecovered, CustodyReturnReasonPreservedHeadRecovered, ts, ts, id)
 	if err != nil {
 		return fmt.Errorf("set run custody returned: %w", err)
 	}
 	return nil
+}
+
+// ReleaseUnavailableRunCustody atomically stamps the exceptional release only
+// while every ownership-relevant durable fact still equals the caller's exact
+// snapshot and no active run has taken over the same repository branch. The
+// single guarded UPDATE is the transaction boundary: a concurrent daemon run
+// insertion or run mutation wins and this method returns ErrRunCustodyChanged.
+// A retry of this exact completed release is an idempotent no-op.
+func (d *DB) ReleaseUnavailableRunCustody(expected *Run) (bool, error) {
+	if expected == nil {
+		return false, ErrRunCustodyChanged
+	}
+	ts := now()
+	result, err := d.sql.Exec(`UPDATE runs SET custody_returned_at = ?, custody_return_reason = ?, updated_at = ?
+		WHERE id = ? AND repo_id = ? AND branch = ? AND head_sha = ?
+		  AND submitted_head_sha IS ? AND status = ? AND status IN ('completed', 'failed', 'cancelled')
+		  AND last_pushed_sha IS ? AND push_target_kind IS ? AND push_target_fingerprint IS ?
+		  AND push_ref IS ? AND push_generation IS ? AND push_active = 0
+		  AND terminal_head_verified_at IS ? AND custody_returned_at IS NULL
+		  AND NOT EXISTS (
+		      SELECT 1 FROM runs AS active
+		       WHERE active.repo_id = ? AND active.branch = ? AND active.id != ?
+		         AND active.status IN ('pending', 'running')
+		  )`,
+		ts, CustodyReturnReasonPreservedHeadUnavailable, ts,
+		expected.ID, expected.RepoID, expected.Branch, expected.HeadSHA,
+		expected.SubmittedHeadSHA, expected.Status, expected.LastPushedSHA,
+		expected.PushTargetKind, expected.PushTargetFingerprint, expected.PushRef,
+		expected.PushGeneration, expected.TerminalHeadVerifiedAt,
+		expected.RepoID, expected.Branch, expected.ID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("release unavailable run custody: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("release unavailable run custody: rows affected: %w", err)
+	}
+	if affected == 1 {
+		return true, nil
+	}
+	current, err := d.GetRun(expected.ID)
+	if err != nil {
+		return false, err
+	}
+	if current != nil && current.RepoID == expected.RepoID && current.Branch == expected.Branch && current.HeadSHA == expected.HeadSHA &&
+		current.CustodyReturnedAt != nil && current.CustodyReturnReason != nil && *current.CustodyReturnReason == CustodyReturnReasonPreservedHeadUnavailable {
+		return false, nil
+	}
+	return false, ErrRunCustodyChanged
 }
 
 // SetRunPushActive marks whether a pipeline phase currently owns a possible
