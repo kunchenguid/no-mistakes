@@ -842,6 +842,7 @@ func configureIdentity(t *testing.T, dir string) {
 	mustRun(t, dir, "config", "core.autocrlf", "false")
 	mustRun(t, dir, "config", "user.email", "test@example.com")
 	mustRun(t, dir, "config", "user.name", "Test User")
+	mustRun(t, dir, "config", "commit.gpgsign", "false")
 }
 
 func mustRun(t *testing.T, dir string, args ...string) string {

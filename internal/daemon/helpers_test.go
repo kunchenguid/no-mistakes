@@ -301,6 +301,22 @@ func gitCmd(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %v failed: %v\n%s", args, err, out)
 	}
+	if len(args) > 0 && args[0] == "init" {
+		repoDir := dir
+		if repoDir == "" {
+			repoDir = args[len(args)-1]
+		}
+		configureUnsignedTestCommits(t, repoDir)
+	}
+}
+
+func configureUnsignedTestCommits(t *testing.T, dir string) {
+	t.Helper()
+	cmd := exec.Command("git", "config", "--local", "commit.gpgsign", "false")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("neutralize inherited commit signing in %s: %v: %s", dir, err, out)
+	}
 }
 
 func gitOutput(t *testing.T, dir string, args ...string) string {

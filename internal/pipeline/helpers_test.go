@@ -239,6 +239,7 @@ func initGitRepo(t *testing.T, dir string) {
 	execGit(t, dir, "init")
 	execGit(t, dir, "config", "user.email", "test@test.com")
 	execGit(t, dir, "config", "user.name", "Test")
+	execGit(t, dir, "config", "commit.gpgsign", "false")
 	writeTestFile(t, dir, "README.md", "# test\n")
 	execGit(t, dir, "add", ".")
 	execGit(t, dir, "commit", "-m", "initial")
