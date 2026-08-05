@@ -280,38 +280,53 @@ func assemblePRBody(sctx *pipeline.StepContext, whatChanged, riskLine, testingMD
 			return core
 		}
 	}
-	return prependIntentSectionWithinLimit(sections, sctx, bodyLimit, false)
+	return assemblePRBodyCoreWithinLimit(sctx, whatChanged, riskLine, pipelineMD, bodyLimit)
 }
 
-func prependIntentSectionWithinLimit(body string, sctx *pipeline.StepContext, bodyLimit int, byteLimit bool) string {
-	if bodyLimit <= 0 {
-		return prependIntentSection(body, sctx)
+func assemblePRBodyCoreWithinLimit(sctx *pipeline.StepContext, whatChanged, riskLine, pipelineMD string, bodyLimit int) string {
+	prefix := prependIntentSection(appendGeneratedSections(whatChanged, riskLine, "", ""), sctx)
+	if pipelineMD == "" {
+		return scm.ClampPRBody(prefix, bodyLimit)
 	}
-	bodyLen := scm.PRBodyLen(body)
-	separatorLen := scm.PRBodyLen("\n\n")
-	if byteLimit {
-		bodyLen = len(body)
-		separatorLen = len("\n\n")
+
+	header, _ := splitPipelineSectionHeader(pipelineMD)
+	headerLen := scm.PRBodyLen(header)
+	if header == "" || headerLen > bodyLimit {
+		return scm.ClampPRBody(prefix+"\n\n"+pipelineMD, bodyLimit)
 	}
-	if bodyLen >= bodyLimit {
-		if byteLimit {
-			return truncateTextAtLineBoundary(body, bodyLimit, essentialPRBodyTruncationMarker())
-		}
-		return scm.ClampPRBody(body, bodyLimit)
+
+	separator := "\n\n"
+	prefixBudget := bodyLimit - headerLen - scm.PRBodyLen(separator)
+	if prefixBudget <= 0 {
+		return header
 	}
-	cleaned := cleanedUserIntent(sctx)
-	if cleaned == "" {
-		return body
+	prefix = scm.ClampPRBody(prefix, prefixBudget)
+	if scm.PRBodyLen(prefix) > prefixBudget {
+		prefix = ""
+		separator = ""
 	}
-	intent := "## Intent\n\n" + cleaned
-	intentBudget := bodyLimit - bodyLen - separatorLen
-	if intentBudget <= 0 {
-		return body
+	pipelineBudget := bodyLimit - scm.PRBodyLen(prefix) - scm.PRBodyLen(separator)
+	pipeline := clampPipelineSectionWithinLimit(pipelineMD, pipelineBudget)
+	return prefix + separator + pipeline
+}
+
+func clampPipelineSectionWithinLimit(pipelineMD string, bodyLimit int) string {
+	if scm.PRBodyLen(pipelineMD) <= bodyLimit {
+		return pipelineMD
 	}
-	if byteLimit {
-		return truncateTextAtLineBoundary(intent, intentBudget, essentialPRBodyTruncationMarker()) + "\n\n" + body
+	header, updates := splitPipelineSectionHeader(pipelineMD)
+	if header == "" || scm.PRBodyLen(header) > bodyLimit {
+		return scm.ClampPRBody(pipelineMD, bodyLimit)
 	}
-	return scm.ClampPRBody(intent, intentBudget) + "\n\n" + body
+	updateBudget := bodyLimit - scm.PRBodyLen(header)
+	if updateBudget <= 0 {
+		return header
+	}
+	updates = scm.ClampPRBody(updates, updateBudget)
+	if scm.PRBodyLen(updates) > updateBudget {
+		return header
+	}
+	return header + updates
 }
 
 func appendGeneratedSections(body, riskLine, testingMD, pipelineMD string) string {
@@ -333,7 +348,8 @@ func buildPRBody(body, riskLine, testingMD, pipelineMD string, sctx *pipeline.St
 		return intent + separator + sections
 	}
 	sectionsBudget := maxPullRequestBodyBytes - len(separator) - len(intent)
-	if sectionsBudget > 0 {
+	minimumSectionsBytes := len(pipelineSectionHeader(pipelineMD))
+	if sectionsBudget > 0 && (minimumSectionsBytes == 0 || sectionsBudget >= minimumSectionsBytes) {
 		sections = appendGeneratedSectionsToCleanBodyWithinLimit(body, riskLine, testingMD, pipelineMD, sectionsBudget)
 		return intent + separator + sections
 	}
@@ -387,19 +403,22 @@ func essentialPRBodyWithinLimit(body, generatedSections string) string {
 
 func essentialPRBodyWithinPipelineBudget(body, generatedSections, pipelineMD string, maxBytes int) string {
 	minPipeline := minimumPipelineRetainingLatestUpdate(pipelineMD)
-	if minPipeline == "" {
+	if minPipeline == "" || len(minPipeline) > maxBytes {
 		minPipeline = minimumPipelineOmissionSection(pipelineMD)
-		if minPipeline == "" {
-			return essentialPRBodyWithinBudget(body, generatedSections, maxBytes)
-		}
+	}
+	if minPipeline == "" || len(minPipeline) > maxBytes {
+		minPipeline = pipelineSectionHeader(pipelineMD)
+	}
+	if minPipeline == "" || len(minPipeline) > maxBytes {
+		return essentialPRBodyWithinBudget(body, generatedSections, maxBytes)
 	}
 
 	prefixBudget := maxBytes - len(minPipeline)
 	if body != "" || generatedSections != "" {
 		prefixBudget -= len("\n\n")
 	}
-	if prefixBudget <= 0 || len(generatedSections) > prefixBudget {
-		return essentialPRBodyWithinBudget(body, generatedSections, maxBytes)
+	if prefixBudget <= 0 {
+		return ""
 	}
 	return essentialPRBodyWithinBudget(body, generatedSections, prefixBudget)
 }
@@ -522,7 +541,15 @@ func pipelineOmissionSectionWithinLimit(header string, omitted, maxBytes int) st
 	if len(markerOnly) <= maxBytes {
 		return markerOnly
 	}
+	if len(header) <= maxBytes {
+		return header
+	}
 	return ""
+}
+
+func pipelineSectionHeader(pipelineMD string) string {
+	header, _ := splitPipelineSectionHeader(pipelineMD)
+	return header
 }
 
 func splitPipelineSectionHeader(pipelineMD string) (string, string) {

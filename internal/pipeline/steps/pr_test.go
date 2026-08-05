@@ -801,6 +801,30 @@ func TestAssemblePRBody_ClampsWhenCoreAloneExceedsCap(t *testing.T) {
 	}
 }
 
+func TestAssemblePRBody_RetainsAttestationWhenCoreExceedsAzureCap(t *testing.T) {
+	t.Parallel()
+	sctx := &pipeline.StepContext{UserIntent: strings.Repeat("intent 😀 ", 1000)}
+	limit := scm.MaxPRBodyChars(scm.ProviderAzureDevOps)
+	steps := []*db.StepResult{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusFailed},
+	}
+	attestation := buildPipelineAttestation(steps)
+	pipelineMD := pipelineMarkdownForTest(strings.Repeat("review detail 😀 ", 1000))
+	pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature+"\n\n", noMistakesPRSignature+"\n\n"+attestation+"\n\n", 1)
+
+	got := assemblePRBody(sctx, "## What Changed\n\n"+strings.Repeat("change 😀 ", 1000), strings.Repeat("risk 😀 ", 1000), "", pipelineMD, limit)
+
+	if scm.PRBodyLen(got) > limit {
+		t.Fatalf("assembled body = %d units, want <= %d", scm.PRBodyLen(got), limit)
+	}
+	for _, want := range []string{"## Pipeline", noMistakesPRSignature, attestation} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("budgeted body dropped required pipeline content %q:\n%s", want, got)
+		}
+	}
+}
+
 func prTruncationTail() string {
 	// Mirror of scm's truncation marker for assertions; kept here so the test
 	// reads naturally without exporting the constant.
@@ -901,6 +925,30 @@ func TestAppendGeneratedSections_RetainsPipelineAttestationWhenTruncated(t *test
 	assertGitHubBodyLimitForTest(t, got)
 	if !strings.Contains(got, attestation) {
 		t.Fatalf("expected truncated PR body to retain the pipeline attestation, got:\n%s", got)
+	}
+}
+
+func TestAppendGeneratedSections_RetainsAttestationWhenEssentialSectionsOverflow(t *testing.T) {
+	steps := []*db.StepResult{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusFailed},
+	}
+	attestation := buildPipelineAttestation(steps)
+	pipelineMD := pipelineMarkdownForTest("review round 001")
+	pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature+"\n\n", noMistakesPRSignature+"\n\n"+attestation+"\n\n", 1)
+
+	got := appendGeneratedSections(
+		"## What Changed\n\n"+strings.Repeat("change detail\n", 5000),
+		strings.Repeat("risk detail ", 5000),
+		"## Testing\n\n"+strings.Repeat("test detail\n", 5000),
+		pipelineMD,
+	)
+
+	assertGitHubBodyLimitForTest(t, got)
+	for _, want := range []string{"## Pipeline", noMistakesPRSignature, attestation} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("budgeted body dropped required pipeline content %q:\n%s", want, got)
+		}
 	}
 }
 
