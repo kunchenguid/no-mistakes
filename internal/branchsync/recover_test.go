@@ -166,6 +166,256 @@ func (f *recoverFixture) custodyReturned() bool {
 	return run.CustodyReturnedAt != nil
 }
 
+type staleMultiRunFixture struct {
+	*recoverFixture
+	newer     *db.Run
+	pushed    string
+	amendment string
+}
+
+type staleMultiRunOptions struct {
+	unrelatedSubmitted  bool
+	differentBranch     bool
+	differentRepo       bool
+	missingBinding      bool
+	contradictoryTarget bool
+	contradictoryGate   bool
+	pushActive          bool
+}
+
+// newStaleMultiRunFixture models a failed run whose recorded, unverified head
+// was taken as the submitted head of a later run. The later run rebased that
+// input into a non-descendant commit, pushed it with an exact durable binding,
+// and then ended. The operator subsequently committed one local amendment on
+// top of that pushed head.
+func newStaleMultiRunFixture(t *testing.T) *staleMultiRunFixture {
+	t.Helper()
+	return newStaleMultiRunFixtureWithOptions(t, staleMultiRunOptions{})
+}
+
+func newStaleMultiRunFixtureWithOptions(t *testing.T, opts staleMultiRunOptions) *staleMultiRunFixture {
+	t.Helper()
+	f := newRecoverFixture(t, types.RunFailed)
+	if err := f.db.UpdateRunStatus(f.run.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	f.run, _ = f.db.GetRun(f.run.ID)
+
+	writer := filepath.Join(t.TempDir(), "later-run")
+	mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
+	configureIdentity(t, writer)
+	mustRun(t, writer, "checkout", "-B", "feature/recover", f.submitted)
+	mustWrite(t, filepath.Join(writer, "later.txt"), "later pushed work\n")
+	mustRun(t, writer, "add", "later.txt")
+	mustRun(t, writer, "commit", "-m", "later run rebased result")
+	pushed := mustRun(t, writer, "rev-parse", "HEAD")
+	mustRun(t, writer, "push", "--force", "origin", "HEAD:refs/heads/feature/recover")
+	mustRun(t, writer, "push", f.remote, "HEAD:refs/heads/feature/recover")
+
+	newerRepo := f.repo
+	newerRepoID := f.repo.ID
+	newerTarget := f.remote
+	if opts.differentRepo {
+		otherRemote := filepath.Join(t.TempDir(), "other-upstream.git")
+		mustRun(t, filepath.Dir(otherRemote), "init", "--bare", otherRemote)
+		var err error
+		newerRepo, err = f.db.InsertRepo(filepath.Join(t.TempDir(), "other-operator"), otherRemote, "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		newerRepoID = newerRepo.ID
+		newerTarget = newerRepo.PushURL()
+	}
+	newerBranch := "feature/recover"
+	if opts.differentBranch {
+		newerBranch = "feature/other"
+	}
+	newerSubmitted := f.preserved
+	if opts.unrelatedSubmitted {
+		newerSubmitted = f.submitted
+	}
+	newer, err := f.db.InsertRun(newerRepoID, newerBranch, newerSubmitted, f.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.UpdateRunHeadSHA(newer.ID, pushed); err != nil {
+		t.Fatal(err)
+	}
+	if !opts.missingBinding {
+		fingerprint := TargetFingerprint(newerTarget)
+		if opts.contradictoryTarget {
+			fingerprint = TargetFingerprint(newerTarget + ".different")
+		}
+		if err := f.db.UpdateRunPushBinding(newer.ID, db.PushBinding{
+			HeadSHA: pushed, TargetKind: "upstream", TargetFingerprint: fingerprint, Ref: "refs/heads/" + newerBranch,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.db.UpdateRunStatusWithVerifiedHead(newer.ID, types.RunCancelled, pushed); err != nil {
+		t.Fatal(err)
+	}
+	if opts.pushActive {
+		if err := f.db.SetRunPushActive(newer.ID, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	newer, _ = f.db.GetRun(newer.ID)
+	if opts.contradictoryGate {
+		mustWrite(t, filepath.Join(writer, "gate-race.txt"), "contradictory gate work\n")
+		mustRun(t, writer, "add", "gate-race.txt")
+		mustRun(t, writer, "commit", "-m", "contradict later push binding")
+		mustRun(t, writer, "push", "--force", "origin", "HEAD:refs/heads/feature/recover")
+	}
+
+	mustRun(t, f.local, "fetch", "--no-tags", f.remote, "+refs/heads/feature/recover:refs/no-mistakes/test/later-pushed")
+	mustRun(t, f.local, "reset", "--hard", pushed)
+	mustWrite(t, filepath.Join(f.local, "amendment.txt"), "local amendment\n")
+	mustRun(t, f.local, "add", "amendment.txt")
+	mustRun(t, f.local, "commit", "-m", "local amendment after later push")
+	amendment := mustRun(t, f.local, "rev-parse", "HEAD")
+
+	if isAncestor(f.ctx, f.gate, f.preserved, pushed) {
+		t.Fatal("fixture requires the later pushed head not to descend from the older unverified head")
+	}
+	return &staleMultiRunFixture{recoverFixture: f, newer: newer, pushed: pushed, amendment: amendment}
+}
+
+func TestRecoverSupersededUnverifiedRunReturnsCustodyAtLocalAmendment(t *testing.T) {
+	t.Parallel()
+
+	f := newStaleMultiRunFixture(t)
+	state := f.service.Recover(f.ctx, false)
+	if !state.Recovered || state.Changed {
+		t.Fatalf("multi-run recovery = %#v", state)
+	}
+	if state.State != StateLocalAhead || state.Relation != RelationAhead || state.Pipeline.RunID != f.newer.ID {
+		t.Fatalf("multi-run recovery selected unsafe state = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.amendment {
+		t.Fatalf("local amendment moved from %s to %s", f.amendment, got)
+	}
+	if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != f.pushed {
+		t.Fatalf("later pushed gate head moved from %s to %s", f.pushed, got)
+	}
+	older, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if older.TerminalHeadVerifiedAt != nil || older.CustodyReturnedAt != nil || older.HeadSHA != f.preserved {
+		t.Fatalf("older audit record was rewritten: %#v", older)
+	}
+}
+
+func TestRecoverSupersededUnverifiedRunRequiresExactDurableTakeover(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name string
+		opts staleMultiRunOptions
+	}{
+		{name: "unrelated later submission", opts: staleMultiRunOptions{unrelatedSubmitted: true}},
+		{name: "different branch", opts: staleMultiRunOptions{differentBranch: true}},
+		{name: "different repository", opts: staleMultiRunOptions{differentRepo: true}},
+		{name: "missing completed push provenance", opts: staleMultiRunOptions{missingBinding: true, pushActive: true}},
+		{name: "contradictory push target", opts: staleMultiRunOptions{contradictoryTarget: true}},
+		{name: "gate contradicts push binding", opts: staleMultiRunOptions{contradictoryGate: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newStaleMultiRunFixtureWithOptions(t, tt.opts)
+			beforeHead := mustRun(t, f.local, "rev-parse", "HEAD")
+			beforeGate := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover")
+			state := f.service.Recover(f.ctx, false)
+			if state.Recovered || state.Changed {
+				t.Fatalf("unproven multi-run recovery = %#v", state)
+			}
+			if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != beforeHead {
+				t.Fatalf("refusal moved local HEAD from %s to %s", beforeHead, got)
+			}
+			if got := mustRun(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != beforeGate {
+				t.Fatalf("refusal moved gate head from %s to %s", beforeGate, got)
+			}
+			for _, runID := range []string{f.run.ID, f.newer.ID} {
+				run, err := f.db.GetRun(runID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if run.CustodyReturnedAt != nil {
+					t.Fatalf("unproven recovery stamped custody on run %s", runID)
+				}
+			}
+		})
+	}
+}
+
+func TestRecoverSupersededUnverifiedRunRechecksBeforeReturningCustody(t *testing.T) {
+	t.Parallel()
+
+	f := newStaleMultiRunFixture(t)
+	var concurrent string
+	f.service.beforeRecoverFinalCheck = func() {
+		mustWrite(t, filepath.Join(f.local, "concurrent.txt"), "concurrent local work\n")
+		mustRun(t, f.local, "add", "concurrent.txt")
+		mustRun(t, f.local, "commit", "-m", "concurrent amendment")
+		concurrent = mustRun(t, f.local, "rev-parse", "HEAD")
+	}
+	state := f.service.Recover(f.ctx, false)
+	if state.Recovered || state.Changed || state.Safety != "blocked_recover_assumptions_changed" {
+		t.Fatalf("racing multi-run recovery = %#v", state)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != concurrent {
+		t.Fatalf("concurrent amendment moved from %s to %s", concurrent, got)
+	}
+	if got := readOptional(t, filepath.Join(f.local, "concurrent.txt")); got != "concurrent local work\n" {
+		t.Fatalf("concurrent work was overwritten: %q", got)
+	}
+	if f.custodyReturned() {
+		t.Fatal("racing recovery stamped older custody")
+	}
+}
+
+func TestRecoverSupersededUnverifiedRunRefusesUnsafeLocalState(t *testing.T) {
+	t.Parallel()
+
+	t.Run("dirty amendment", func(t *testing.T) {
+		f := newStaleMultiRunFixture(t)
+		mustWrite(t, filepath.Join(f.local, "amendment.txt"), "dirty amendment\n")
+		state := f.service.Recover(f.ctx, false)
+		if state.Recovered || state.Changed || state.State != StateDirty {
+			t.Fatalf("dirty multi-run recovery = %#v", state)
+		}
+		if got := readOptional(t, filepath.Join(f.local, "amendment.txt")); got != "dirty amendment\n" {
+			t.Fatalf("dirty amendment was overwritten: %q", got)
+		}
+		if f.custodyReturned() {
+			t.Fatal("dirty recovery stamped older custody")
+		}
+	})
+
+	t.Run("truly divergent local work", func(t *testing.T) {
+		f := newStaleMultiRunFixture(t)
+		mustRun(t, f.local, "reset", "--hard", f.submitted)
+		mustWrite(t, filepath.Join(f.local, "divergent.txt"), "unique divergent work\n")
+		mustRun(t, f.local, "add", "divergent.txt")
+		mustRun(t, f.local, "commit", "-m", "truly divergent local work")
+		diverged := mustRun(t, f.local, "rev-parse", "HEAD")
+
+		state := f.service.Recover(f.ctx, false)
+		if state.Recovered || state.Changed || state.State != StateDiverged || state.Relation != RelationDiverged {
+			t.Fatalf("divergent multi-run recovery = %#v", state)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != diverged {
+			t.Fatalf("divergent HEAD moved from %s to %s", diverged, got)
+		}
+		if got := readOptional(t, filepath.Join(f.local, "divergent.txt")); got != "unique divergent work\n" {
+			t.Fatalf("divergent work was overwritten: %q", got)
+		}
+		if f.custodyReturned() {
+			t.Fatal("divergent recovery stamped older custody")
+		}
+	})
+}
+
 // TestTerminalPrePushRunSurfacesGuardedCustodyRecovery is the regression test
 // for the stranded state itself (dogfood run 01KXN8YJ6DWF8XPP582DWQC3HV): a
 // terminal run at the pre_push phase must not be a dead end. The state stays

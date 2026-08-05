@@ -619,6 +619,7 @@ func TestAxiSurfacesReportUserOwnedReleaseAfterUnmovedPrePushAbort(t *testing.T)
 
 type cliStaleUnpublishedFixture struct {
 	local, gate, base, localHead, unpublished, pushed string
+	olderRunID, newerRunID                            string
 }
 
 type olderTargetProvenance int
@@ -644,6 +645,11 @@ func newCLIStaleUnpublishedFixtureWithRelation(t *testing.T, pushedDescendant bo
 }
 
 func newCLIStaleUnpublishedFixtureWithOptions(t *testing.T, pushedDescendant bool, provenance olderTargetProvenance) cliStaleUnpublishedFixture {
+	t.Helper()
+	return newCLIStaleUnpublishedFixtureWithTakeover(t, pushedDescendant, provenance, false)
+}
+
+func newCLIStaleUnpublishedFixtureWithTakeover(t *testing.T, pushedDescendant bool, provenance olderTargetProvenance, newerTakesOlderHead bool) cliStaleUnpublishedFixture {
 	t.Helper()
 	nmHome := filepath.Join(t.TempDir(), "nm-home")
 	t.Setenv("NM_HOME", nmHome)
@@ -748,7 +754,7 @@ func newCLIStaleUnpublishedFixtureWithOptions(t *testing.T, pushedDescendant boo
 	cliGit(t, newer, gatePushArgs...)
 
 	latestSubmitted := unpublished
-	if !pushedDescendant {
+	if !pushedDescendant && !newerTakesOlderHead {
 		latestSubmitted = localHead
 	}
 	latest, err := database.InsertRun(repo.ID, "feature/sync", latestSubmitted, base)
@@ -768,7 +774,10 @@ func newCLIStaleUnpublishedFixtureWithOptions(t *testing.T, pushedDescendant boo
 		t.Fatal(err)
 	}
 	chdir(t, local)
-	return cliStaleUnpublishedFixture{local: local, gate: gate, base: base, localHead: localHead, unpublished: unpublished, pushed: pushed}
+	return cliStaleUnpublishedFixture{
+		local: local, gate: gate, base: base, localHead: localHead, unpublished: unpublished, pushed: pushed,
+		olderRunID: older.ID, newerRunID: latest.ID,
+	}
 }
 
 func TestAxiSyncOlderUnpublishedRunSelectsNewerPushedDescendant(t *testing.T) {
@@ -787,6 +796,51 @@ func TestAxiSyncOlderUnpublishedRunSelectsNewerPushedDescendant(t *testing.T) {
 	}
 	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/sync"); got != f.pushed {
 		t.Fatalf("sync moved gate to %s, want unchanged pushed head %s", got, f.pushed)
+	}
+}
+
+func TestAxiSyncRecoverReturnsCustodyAfterAuthoritativeRebasedRerun(t *testing.T) {
+	f := newCLIStaleUnpublishedFixtureWithTakeover(t, false, olderTargetMissing, true)
+	cliGit(t, f.local, "fetch", f.gate, "feature/sync")
+	cliGit(t, f.local, "reset", "--hard", f.pushed)
+	if err := os.WriteFile(filepath.Join(f.local, "amendment.txt"), []byte("local amendment\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, f.local, "add", "amendment.txt")
+	cliGit(t, f.local, "commit", "-m", "local amendment after pushed rerun")
+	amendment := cliGit(t, f.local, "rev-parse", "HEAD")
+
+	out, err := executeCmd("axi", "sync", "--recover")
+	if err != nil {
+		t.Fatalf("multi-run recover: %v\n%s", err, out)
+	}
+	for _, want := range []string{"recovered: true", "state: local_ahead", "relation: ahead", "changed: false", f.pushed} {
+		if !strings.Contains(out, want) {
+			t.Errorf("multi-run recover missing %q:\n%s", want, out)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != amendment {
+		t.Fatalf("recover moved local amendment from %s to %s", amendment, got)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/sync"); got != f.pushed {
+		t.Fatalf("recover moved authoritative gate head from %s to %s", f.pushed, got)
+	}
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	older, err := database.GetRun(f.olderRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if older.TerminalHeadVerifiedAt != nil || older.CustodyReturnedAt != nil || older.HeadSHA != f.unpublished {
+		t.Fatalf("older run audit record changed: %#v", older)
 	}
 }
 
