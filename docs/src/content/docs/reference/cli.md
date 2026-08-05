@@ -179,13 +179,16 @@ no-mistakes axi sync --check
 no-mistakes axi sync
 no-mistakes axi sync --recover
 no-mistakes axi sync --recover --keep-local
+no-mistakes axi sync --release-unavailable --run <id>
 ```
 
 | Flag           | Type   | Default | Description                                                                  |
 | -------------- | ------ | ------- | ---------------------------------------------------------------------------- |
 | `--check`      | `bool` | `false` | Verify the live target and exact plan without changing `HEAD`                |
-| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
-| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree   |
+| `--recover` | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
+| `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree |
+| `--release-unavailable` | `bool` | `false` | Release exact terminal-run custody only after ordinary recovery proves its recorded preserved head unavailable |
+| `--run` | `string` | (none) | Exact run ID required by `--release-unavailable`; invalid in every other sync mode |
 
 The default command is an explicit non-interactive apply request and never prompts.
 All modes return the complete `branch_sync` object as TOON.
@@ -220,6 +223,34 @@ When you explicitly keep a behind or diverged local head instead of taking the p
 `no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
 On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pipeline-created exists to recover, and no file, ref, or database row changes.
+
+### Unavailable preserved-head release
+
+Ordinary `--recover` remains fail-closed when the recorded preserved pipeline head cannot be found.
+When both the invoking repository and the verified local gate object store lack that commit, its refusal returns `next_action.code: release_unavailable_custody` with the exact `no-mistakes axi sync --release-unavailable --run <id>` command.
+This is an emergency ownership release, not an alternate way to choose local work over a recoverable pipeline head.
+Use it only for the exact command and run identity returned by ordinary recovery.
+
+The release refuses without changing ownership when any of these conditions is true:
+
+- The run ID is missing, unknown, belongs to another repository or branch, is not the currently authoritative branch owner, or is ambiguous because another run owns the branch.
+- The exact run is still pending or running, no longer owns an unpublished head, or already returned custody through another path.
+- The recorded preserved commit still exists in the invoking repository or gate object store, or is advertised by any configured-target ref.
+- The invoking worktree is dirty, detached, on another branch, or has the same branch checked out in another worktree.
+- The clean local branch is missing from or does not exactly equal the freshly read configured push target branch.
+- The registered gate is missing or invalid, a safety anchor conflicts, or the local branch, remote branch, gate branch, run record, or active ownership changes during the operation.
+
+Before ownership changes, the command anchors the exact local head and freshly fetched remote head under `refs/no-mistakes/custody-release/<run>/local` and `/remote`.
+When the gate branch exists, it anchors that head under `refs/no-mistakes/custody-release/<run>/gate` before atomically moving the gate branch to the verified local and remote head with compare-and-swap.
+It never changes the invoking worktree, any external remote, any unrelated ref, or any independently preserved repository.
+The final database update is one guarded transaction that requires the same exact terminal run facts and no active replacement owner.
+A crash before that transaction leaves only the safety anchors and possibly the gate branch at the already verified local and remote head, so retry is safe.
+A crash after it is a completed, idempotent release recorded with reason `preserved_head_unavailable`.
+
+Successful and refused attempts return a structured `branch_sync.custody_transition` object with the action, durable reason, exact run and heads, every created anchor, and whether the result was an idempotent retry.
+Success additionally returns `released: true`, `state: custody_returned`, and `changed: false`, because ownership changed without moving the operator worktree.
+An immediate repeated invocation returns the same successful audit with `idempotent: true`.
+Ordinary `axi run`, `axi sync --recover`, and `axi abort` behavior is unchanged outside this unavailable-head release.
 
 ## no-mistakes axi logs
 

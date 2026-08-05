@@ -59,7 +59,8 @@ func newSyncCmd() *cobra.Command {
 }
 
 func newAxiSyncCmd() *cobra.Command {
-	var check, recover, keepLocal bool
+	var check, recover, keepLocal, releaseUnavailable bool
+	var runID string
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Check or apply guarded current-branch synchronization",
@@ -71,7 +72,15 @@ func newAxiSyncCmd() *cobra.Command {
 			"verified pipeline head with reset semantics.\n" +
 			"--check performs the same fresh read-only plan. Blocked states change nothing.\n" +
 			"--recover performs the guarded custody return offered by\n" +
-			"next_action.code: recover_custody; --keep-local keeps the current local head.",
+			"next_action.code: recover_custody; --keep-local keeps the current local head.\n" +
+			"--release-unavailable --run <id> is the narrower emergency exit offered only\n" +
+			"after ordinary recovery proves that exact terminal run's recorded head no longer\n" +
+			"exists. It requires a clean local branch exactly equal to its fresh remote and\n" +
+			"anchors every reachable local, remote, and gate head before releasing custody.\n" +
+			"It refuses an active, unknown, ambiguous, other-branch, or other-repository run;\n" +
+			"a recoverable preserved head; dirty, detached, duplicate, or remote-diverged\n" +
+			"local state; an invalid gate or safety anchor; and any run, local, remote, or\n" +
+			"gate fact that changes before the guarded transactional ownership stamp.",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -79,15 +88,26 @@ func newAxiSyncCmd() *cobra.Command {
 			if check && recover {
 				return emitError(cmd, 2, "--check and --recover cannot be used together")
 			}
+			if releaseUnavailable && (check || recover || keepLocal) {
+				return emitError(cmd, 2, "--release-unavailable cannot be combined with --check, --recover, or --keep-local")
+			}
 			if keepLocal && !recover {
 				return emitError(cmd, 2, "--keep-local requires --recover")
 			}
-			return runAxiSync(cmd, check, recover, keepLocal)
+			if releaseUnavailable && strings.TrimSpace(runID) == "" {
+				return emitError(cmd, 2, "--release-unavailable requires --run <id>")
+			}
+			if !releaseUnavailable && strings.TrimSpace(runID) != "" {
+				return emitError(cmd, 2, "--run requires --release-unavailable")
+			}
+			return runAxiSync(cmd, check, recover, keepLocal, releaseUnavailable, strings.TrimSpace(runID))
 		},
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and return the plan without changing HEAD")
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch)")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
+	cmd.Flags().BoolVar(&releaseUnavailable, "release-unavailable", false, "release exact terminal-run custody only when its recorded preserved head is unavailable and local equals the fresh remote")
+	cmd.Flags().StringVar(&runID, "run", "", "exact run id required by --release-unavailable")
 	return cmd
 }
 
@@ -304,7 +324,7 @@ func humanSyncSummary(state branchsync.State) string {
 	}
 }
 
-func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
+func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, releaseUnavailable bool, runID string) error {
 	started := time.Now()
 	mode := "apply"
 	switch {
@@ -314,6 +334,8 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
 		mode = "recover_keep_local"
 	case recover:
 		mode = "recover"
+	case releaseUnavailable:
+		mode = "release_unavailable"
 	}
 	var state branchsync.State
 	result := "error"
@@ -330,6 +352,8 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
 		state = service.Refresh(cmd.Context())
 	case recover:
 		state = service.Recover(cmd.Context(), keepLocal)
+	case releaseUnavailable:
+		state = service.ReleaseUnavailable(cmd.Context(), runID)
 	default:
 		state = service.Apply(cmd.Context())
 	}
@@ -344,6 +368,9 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
 	if state.Safety == "blocked_pipeline_owned_recoverable" {
 		help = append(help, "Run `no-mistakes rerun` instead to resume validating the preserved pipeline head")
 	}
+	if state.Safety == "blocked_release_preserved_recoverable" {
+		help = append(help, "Run `no-mistakes axi sync --recover` to recover the preserved head instead of releasing it")
+	}
 	if len(help) > 0 {
 		fields = append(fields, toON.Field{Key: "help", Value: help})
 	}
@@ -351,6 +378,9 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
 	successful := syncStateSuccessful(state, check)
 	if recover {
 		successful = state.Recovered
+	}
+	if releaseUnavailable {
+		successful = state.Released
 	}
 	if successful {
 		if state.Changed {
@@ -451,6 +481,9 @@ func branchSyncField(state branchsync.State) toON.Field {
 	if state.Recovered {
 		fields = append(fields, toON.Field{Key: "recovered", Value: true})
 	}
+	if state.Released {
+		fields = append(fields, toON.Field{Key: "released", Value: true})
+	}
 	fields = append(fields,
 		toON.Field{Key: "local", Value: toON.NewObject(local...)},
 		toON.Field{Key: "pipeline", Value: toON.NewObject(pipeline...)},
@@ -468,6 +501,22 @@ func branchSyncField(state branchsync.State) toON.Field {
 			toON.Field{Key: "code", Value: state.NextAction.Code},
 			toON.Field{Key: "command", Value: state.NextAction.Command},
 		)})
+	}
+	if transition := state.CustodyTransition; transition != nil {
+		transitionFields := []toON.Field{
+			{Key: "action", Value: transition.Action},
+			{Key: "reason", Value: transition.Reason},
+			{Key: "run", Value: transition.RunID},
+			{Key: "idempotent", Value: transition.Idempotent},
+			{Key: "preserved_head", Value: transition.PreservedHead},
+			{Key: "local_head", Value: transition.LocalHead},
+			{Key: "remote_head", Value: transition.RemoteHead},
+			{Key: "gate_head", Value: transition.GateHead},
+			{Key: "local_anchor", Value: transition.LocalAnchor},
+			{Key: "remote_anchor", Value: transition.RemoteAnchor},
+			{Key: "gate_anchor", Value: transition.GateAnchor},
+		}
+		fields = append(fields, toON.Field{Key: "custody_transition", Value: toON.NewObject(transitionFields...)})
 	}
 	return toON.Field{Key: "branch_sync", Value: toON.NewObject(fields...)}
 }
