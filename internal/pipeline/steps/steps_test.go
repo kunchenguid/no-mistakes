@@ -318,7 +318,7 @@ func fakeCIGHReconcileHandler(args []string) {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "api") && strings.Contains(joined, "graphql") {
-		printFakeCommitChecks(`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
+		printFakeCommitChecks(`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`, args)
 		os.Exit(0)
 	}
 	fmt.Fprintln(os.Stderr, "unsupported reconcile gh argv:", joined)
@@ -373,7 +373,7 @@ func fakeCIGHHandler(args []string) {
 			fmt.Fprintln(os.Stderr, checksErr)
 			os.Exit(1)
 		}
-		printFakeCommitChecks(checksJSON)
+		printFakeCommitChecks(checksJSON, args)
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "api") && strings.Contains(joined, "actions/runs") {
@@ -466,7 +466,7 @@ func fakeCIGHSequenceHandler(args []string) {
 		}
 		entries := strings.Split(strings.TrimSpace(string(data)), "\n")
 		if len(entries) == 0 || entries[0] == "" {
-			printFakeCommitChecks("[]")
+			printFakeCommitChecks("[]", args)
 			os.Exit(0)
 		}
 		index := 0
@@ -482,7 +482,7 @@ func fakeCIGHSequenceHandler(args []string) {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		printFakeCommitChecks(entries[index])
+		printFakeCommitChecks(entries[index], args)
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "api") && strings.Contains(joined, "actions/runs") {
@@ -628,7 +628,7 @@ func fakeCIGHNoChecksHandler(args []string) {
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "api") && strings.Contains(joined, "graphql") {
-		printFakeCommitChecks("[]")
+		printFakeCommitChecks("[]", args)
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
@@ -667,10 +667,12 @@ func printFakeWorkflowRuns() {
 	fmt.Println(string(encoded))
 }
 
-func printFakeCommitChecks(raw string) {
+func printFakeCommitChecks(raw string, args []string) {
 	var checks []struct {
 		Name        string `json:"name"`
 		State       string `json:"state"`
+		Status      string `json:"status"`
+		Conclusion  string `json:"conclusion"`
 		Bucket      string `json:"bucket"`
 		CompletedAt string `json:"completedAt"`
 		Link        string `json:"link"`
@@ -681,15 +683,37 @@ func printFakeCommitChecks(raw string) {
 	}
 	nodes := make([]map[string]string, 0, len(checks))
 	for _, check := range checks {
-		status := "COMPLETED"
+		status := check.Status
+		if status == "" {
+			status = "COMPLETED"
+		}
 		conclusion := check.State
+		if conclusion == "" {
+			conclusion = check.Conclusion
+		}
+		if conclusion == "" {
+			switch check.Bucket {
+			case "pass":
+				conclusion = "SUCCESS"
+			case "fail":
+				conclusion = "FAILURE"
+			case "cancel":
+				conclusion = "CANCELLED"
+			case "skip":
+				conclusion = "SKIPPED"
+			}
+		}
 		if check.Bucket == "pending" {
 			status = "IN_PROGRESS"
 			conclusion = ""
 		}
+		link := check.Link
+		if repo := fakeGraphQLRepo(args); repo != "" {
+			link = strings.Replace(link, "github.com/test/repo/", "github.com/"+repo+"/", 1)
+		}
 		nodes = append(nodes, map[string]string{
 			"__typename": "CheckRun", "name": check.Name, "status": status,
-			"conclusion": conclusion, "completedAt": check.CompletedAt, "detailsUrl": check.Link,
+			"conclusion": conclusion, "completedAt": check.CompletedAt, "detailsUrl": link,
 		})
 	}
 	response := map[string]any{
@@ -712,4 +736,20 @@ func printFakeCommitChecks(raw string) {
 		os.Exit(1)
 	}
 	fmt.Println(string(encoded))
+}
+
+func fakeGraphQLRepo(args []string) string {
+	var owner, name string
+	for _, arg := range args {
+		switch {
+		case strings.HasPrefix(arg, "owner="):
+			owner = strings.TrimPrefix(arg, "owner=")
+		case strings.HasPrefix(arg, "name="):
+			name = strings.TrimPrefix(arg, "name=")
+		}
+	}
+	if owner == "" || name == "" {
+		return ""
+	}
+	return owner + "/" + name
 }
