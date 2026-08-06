@@ -885,6 +885,58 @@ func TestFetchFailedCheckLogsSelectsMatchingRunForHeadSHA(t *testing.T) {
 	}
 }
 
+// A GitHub Actions action-download outage fails a job inside "Set up job",
+// before any repository step runs. PreRunFailures must flag exactly that job -
+// read structurally from the setup step's conclusion, never from log text - and
+// must never flag a job that cleared setup and failed a later (repository) step.
+// The two directions together are the masking-safety contract.
+func TestPreRunFailures_FlagsSetupFailureNotGenuine(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh run view 1 --repo test/repo --json jobs": {
+			stdout: `{"jobs":[` +
+				`{"databaseId":2,"name":"build","conclusion":"failure","steps":[{"name":"Set up job","number":1,"conclusion":"failure"}]},` +
+				`{"databaseId":3,"name":"unit","conclusion":"failure","steps":[{"name":"Set up job","number":1,"conclusion":"success"},{"name":"Run tests","number":2,"conclusion":"failure"}]}` +
+				`]}` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	infra, err := host.PreRunFailures(context.Background(), []scm.Check{
+		{Name: "build", Bucket: scm.CheckBucketFail, State: "FAILURE", Link: "https://github.com/test/repo/actions/runs/1/job/2"},
+		{Name: "unit", Bucket: scm.CheckBucketFail, State: "FAILURE", Link: "https://github.com/test/repo/actions/runs/1/job/3"},
+	})
+	if err != nil {
+		t.Fatalf("PreRunFailures() error = %v", err)
+	}
+	if !infra["build"] {
+		t.Error("PreRunFailures did not flag the setup/action-download failure")
+	}
+	if infra["unit"] {
+		t.Error("PreRunFailures flagged a genuine test failure that cleared setup (masking)")
+	}
+}
+
+// A run the provider cannot report on must leave every check unflagged, so an
+// unreadable job stays a genuine failure rather than being masked.
+func TestPreRunFailures_FailsClosedOnUnreadableRun(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh run view 9 --repo test/repo --json jobs": {stderr: "HTTP 404\n", code: 1},
+	}), nil, "", "test/repo")
+
+	infra, err := host.PreRunFailures(context.Background(), []scm.Check{
+		{Name: "build", Bucket: scm.CheckBucketFail, State: "FAILURE", Link: "https://github.com/test/repo/actions/runs/9/job/2"},
+	})
+	if err != nil {
+		t.Fatalf("PreRunFailures() error = %v", err)
+	}
+	if len(infra) != 0 {
+		t.Fatalf("PreRunFailures = %v, want nothing flagged when the run is unreadable", infra)
+	}
+}
+
 func TestFindPRFiltersByBaseBranch(t *testing.T) {
 	t.Parallel()
 

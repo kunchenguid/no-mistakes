@@ -360,6 +360,13 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			}
 		} else {
 			consecutiveCheckErrs = 0
+			// A failure the provider produced before the repository's own steps
+			// ran (a setup/action-resolution outage) is infrastructure, not a
+			// verdict on the code. Re-bucket those into the transient path before
+			// anything reads the failing set, so they are re-run rather than sent
+			// to the fix agent. Gated on the transient budget, so an opted-out
+			// repo pays no extra provider calls and keeps the prior behavior.
+			markPreRunInfraFailures(sctx, host, checks)
 			// checksPending is the narrow execution state: only checks that are
 			// actively running or queued block a rerun or issue escalation. A
 			// provider-cancelled check is terminal enough to enter the transient

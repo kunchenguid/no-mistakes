@@ -159,6 +159,14 @@ type Check struct {
 	// individual job or a provider-side workflow run for targeted reruns. Empty
 	// when the provider reported no link.
 	Link string
+	// PreRunFailure marks a check the provider failed before the repository's own
+	// steps ran - its setup/action-resolution phase failed (e.g. a GitHub Actions
+	// action-download outage), so no repository step executed. It is an
+	// infrastructure outcome, not a verdict on the code, and the CI step treats it
+	// as re-runnable rather than a code failure. A PreRunFailureDetector sets it;
+	// it can never be true for a genuine test or lint failure, whose job cleared
+	// setup and failed a later step.
+	PreRunFailure bool
 }
 
 // Failing reports whether the check is in a failed bucket.
@@ -240,6 +248,26 @@ type Host interface {
 // resumed after repository configuration changes.
 type PRBaseBranchReader interface {
 	GetPRBaseBranch(ctx context.Context, pr *PR) (string, error)
+}
+
+// PreRunFailureDetector reports which failed checks the provider failed before
+// the repository's own steps ran - a setup/action-resolution outcome (for GitHub
+// Actions, an action-download outage) rather than a verdict on the code. It
+// reads the provider's own step-level conclusions, never log text, so a flagged
+// check is one whose job never executed a repository step. A genuine test or
+// lint failure can never be flagged, because that job cleared setup and failed a
+// later step: this is what keeps the transient-rerun path from masking real
+// failures.
+//
+// Like CheckRerunner it is optional: a backend whose provider exposes no
+// step-level phase simply does not implement it, and the CI step consults it
+// only when transient reruns are enabled.
+type PreRunFailureDetector interface {
+	// PreRunFailures returns, keyed by check name, which of the given checks
+	// failed before any repository step ran. It must fail closed - omitting any
+	// check whose phase it cannot determine - so an unreadable job stays a
+	// genuine failure rather than being masked as infrastructure.
+	PreRunFailures(ctx context.Context, checks []Check) (map[string]bool, error)
 }
 
 // CheckRerunner re-runs the provider-side work behind a failed check without
