@@ -261,6 +261,37 @@ func TestGetChecksDoesNotDuplicateWorkflowRunsRepresentedByRollup(t *testing.T) 
 	}
 }
 
+func TestGetChecksDoesNotTrustUnrelatedWorkflowRunLinks(t *testing.T) {
+	t.Parallel()
+
+	for name, link := range map[string]string{
+		"third-party host": "https://ci.example.com/test/repo/actions/runs/101/job/201",
+		"wrong repository": "https://github.com/other/repo/actions/runs/101/job/201",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			host := New(githubTestCmdFactory(map[string]githubTestResponse{
+				"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
+				"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+					stdout: `[{"name":"external","state":"SUCCESS","bucket":"pass","link":"` + link + `"}]` + "\n",
+				},
+				"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
+					stdout: `[{"total_count":1,"workflow_runs":[{"id":101,"name":"failed-workflow","status":"completed","conclusion":"failure"}]}]` + "\n",
+				},
+			}), nil, "", "test/repo")
+
+			checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: "deadbeef"})
+			if err != nil {
+				t.Fatalf("GetChecks() error = %v", err)
+			}
+			if len(checks) != 2 || checks[1].Name != "failed-workflow" || checks[1].Bucket != scm.CheckBucketFail {
+				t.Fatalf("checks = %+v, want unrelated rollup plus failed workflow", checks)
+			}
+		})
+	}
+}
+
 func TestGetChecksIncludesWorkflowRunsFromEveryPage(t *testing.T) {
 	t.Parallel()
 
@@ -732,6 +763,8 @@ func TestRerunCheckFailsClosedWithoutAnActionsJob(t *testing.T) {
 
 	for name, link := range map[string]string{
 		"external dashboard":       "https://ci.example.com/builds/17",
+		"third-party Actions path": "https://ci.example.com/test/repo/actions/runs/900/job/901",
+		"wrong Actions repository": "https://github.com/other/repo/actions/runs/900/job/901",
 		"no link":                  "",
 		"non-numeric run":          "https://github.com/test/repo/actions/runs/latest",
 		"browser display number":   "https://github.com/test/repo/actions/runs/900/jobs/3",

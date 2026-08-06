@@ -347,7 +347,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		if err != nil {
 			return nil, err
 		}
-		checks = appendUnrepresentedWorkflowRuns(checks, runs)
+		checks = h.appendUnrepresentedWorkflowRuns(checks, runs)
 		currentHeadSHA, err := h.getPRHeadSHA(ctx, selector)
 		if err != nil {
 			return nil, err
@@ -359,15 +359,15 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	return checks, nil
 }
 
-func appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.Check {
+func (h *Host) appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.Check {
 	represented := make(map[string]struct{}, len(checks))
 	for _, check := range checks {
-		if runID := actionsRunID(check.Link); runID != "" {
+		if runID := h.actionsRunID(check.Link); runID != "" {
 			represented[runID] = struct{}{}
 		}
 	}
 	for _, run := range runs {
-		runID := actionsRunID(run.Link)
+		runID := h.actionsRunID(run.Link)
 		if _, exists := represented[runID]; runID != "" && exists {
 			continue
 		}
@@ -511,7 +511,7 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 // dashboard, or a run path this backend cannot read - names no re-runnable job,
 // and the error says so rather than falling back to a wider rerun.
 func (h *Host) RerunCheck(ctx context.Context, _ *scm.PR, check scm.Check) error {
-	rerunArgs, ok := rerunTargetArgs(check)
+	rerunArgs, ok := h.rerunTargetArgs(check)
 	if !ok {
 		return fmt.Errorf("check %q has no GitHub Actions job to re-run", check.Name)
 	}
@@ -527,8 +527,8 @@ func (h *Host) RerunCheck(ctx context.Context, _ *scm.PR, check scm.Check) error
 // rerunTargetArgs turns a check into the `gh run rerun` arguments that re-run
 // exactly that work, or reports that the link names nothing this backend can
 // re-run.
-func rerunTargetArgs(check scm.Check) ([]string, bool) {
-	runID, jobID, ok := actionsRerunTarget(check.Link)
+func (h *Host) rerunTargetArgs(check scm.Check) ([]string, bool) {
+	runID, jobID, ok := h.actionsRerunTarget(check.Link)
 	switch {
 	case !ok:
 		return nil, false
@@ -541,21 +541,42 @@ func rerunTargetArgs(check scm.Check) ([]string, bool) {
 	}
 }
 
-func actionsRunID(link string) string {
-	parsed, err := url.Parse(strings.TrimSpace(link))
-	if err != nil {
-		return ""
-	}
-	const runsSegment = "/actions/runs/"
-	idx := strings.Index(parsed.Path, runsSegment)
-	if idx < 0 {
-		return ""
-	}
-	segments := strings.Split(strings.Trim(parsed.Path[idx+len(runsSegment):], "/"), "/")
-	if len(segments) == 0 || !isNumericID(segments[0]) {
+func (h *Host) actionsRunID(link string) string {
+	segments, ok := h.actionsRunSegments(link)
+	if !ok {
 		return ""
 	}
 	return segments[0]
+}
+
+func (h *Host) actionsRunSegments(link string) ([]string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(link))
+	if err != nil {
+		return nil, false
+	}
+	host := strings.TrimSpace(h.host)
+	if host == "" {
+		host = "github.com"
+	}
+	if !strings.EqualFold(parsed.Hostname(), host) {
+		return nil, false
+	}
+	repo := strings.TrimSpace(h.repo)
+	if prefix := strings.TrimSpace(h.host) + "/"; h.host != "" && len(repo) > len(prefix) && strings.EqualFold(repo[:len(prefix)], prefix) {
+		repo = repo[len(prefix):]
+	}
+	if repo == "" {
+		return nil, false
+	}
+	runsPrefix := "/" + strings.Trim(repo, "/") + "/actions/runs/"
+	if len(parsed.Path) <= len(runsPrefix) || !strings.EqualFold(parsed.Path[:len(runsPrefix)], runsPrefix) {
+		return nil, false
+	}
+	segments := strings.Split(strings.Trim(parsed.Path[len(runsPrefix):], "/"), "/")
+	if len(segments) == 0 || !isNumericID(segments[0]) {
+		return nil, false
+	}
+	return segments, true
 }
 
 // actionsRerunTarget resolves the Actions run, and where possible the exact job,
@@ -571,18 +592,9 @@ func actionsRunID(link string) string {
 // a run. Re-running a run re-runs every failed job in it, so widening one
 // check's rerun into all of them on an unparsable link is a blast radius this
 // policy must not take.
-func actionsRerunTarget(link string) (runID, jobID string, ok bool) {
-	parsed, err := url.Parse(strings.TrimSpace(link))
-	if err != nil {
-		return "", "", false
-	}
-	const runsSegment = "/actions/runs/"
-	idx := strings.Index(parsed.Path, runsSegment)
-	if idx < 0 {
-		return "", "", false
-	}
-	segments := strings.Split(strings.Trim(parsed.Path[idx+len(runsSegment):], "/"), "/")
-	if len(segments) == 0 || !isNumericID(segments[0]) {
+func (h *Host) actionsRerunTarget(link string) (runID, jobID string, ok bool) {
+	segments, ok := h.actionsRunSegments(link)
+	if !ok {
 		return "", "", false
 	}
 	runID = segments[0]
