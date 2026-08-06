@@ -466,7 +466,10 @@ func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Config.CITimeout = 10 * time.Second
+	// This test owns termination through the cancelled context. Check discovery
+	// shells out several times per poll, so a short wall-clock timeout makes the
+	// assertion depend on runner speed (especially under -race and on Windows).
+	sctx.Config.CITimeout = config.CITimeoutUnlimited
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
