@@ -1395,12 +1395,13 @@ func TestCIStep_UnlimitedTimeoutNeverExpires(t *testing.T) {
 }
 
 // setupCIRerunRepo builds a worktree whose feature branch is published on a
-// local bare upstream, so the CI step can verify the published head with
-// ls-remote exactly as it does in production.
-func setupCIRerunRepo(t *testing.T) (dir, upstream, baseSHA, headSHA string) {
+// local bare origin, so the CI step can verify the published head with
+// ls-remote exactly as it does in production. The returned upstream URL remains
+// a GitHub URL because it is also the SCM provider's repository identity.
+func setupCIRerunRepo(t *testing.T) (dir, upstreamURL, baseSHA, headSHA string) {
 	t.Helper()
 
-	upstream = t.TempDir()
+	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
 
 	dir = t.TempDir()
@@ -1422,7 +1423,7 @@ func setupCIRerunRepo(t *testing.T) (dir, upstream, baseSHA, headSHA string) {
 	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "feature")
 
-	return dir, upstream, baseSHA, headSHA
+	return dir, "https://github.com/test/repo", baseSHA, headSHA
 }
 
 func ghLog(t *testing.T, logFile string) string {
