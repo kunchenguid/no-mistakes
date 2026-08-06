@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -78,10 +79,10 @@ func TestAntigravityAgent_BracketMatchingExtraction(t *testing.T) {
 			found:    true,
 		},
 		{
-			name:     "invalid JSON fallback search",
+			name:     "trailing garbage",
 			input:    `{"a": "b"}{"result": {"nested": true}} some garbage`,
-			expected: ``,
-			found:    false, // Bracket matching requires the braces to enclose valid JSON, since we unmarshal to test it
+			expected: `{"result": {"nested": true}}`,
+			found:    true,
 		},
 	}
 
