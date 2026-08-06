@@ -520,3 +520,24 @@ func TestLoadGlobal_AutoFixPartial(t *testing.T) {
 		t.Errorf("test = %v, want nil", cfg.AutoFix.Test)
 	}
 }
+
+// pr.draft is global-only, defaults false, and survives Merge.
+func TestLoadGlobal_PRDraft(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("pr:\n  draft: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("LoadGlobal: %v", err)
+	}
+	if !cfg.PR.Draft {
+		t.Fatal("pr.draft = false, want true")
+	}
+	if !Merge(cfg, &RepoConfig{}).PR.Draft {
+		t.Fatal("Merge dropped pr.draft")
+	}
+	if DefaultGlobalConfig().PR.Draft {
+		t.Fatal("default pr.draft = true, want false (preserve ready-for-review default)")
+	}
+}

@@ -2028,3 +2028,20 @@ func TestPRStep_PromptGuidesScopeToRealModule(t *testing.T) {
 		t.Errorf("expected PR prompt to convey typical module count heuristic, got:\n%s", capturedPrompt)
 	}
 }
+
+// The PR step reads pr.draft from the merged config; a nil config or unset
+// value keeps PRs ready-for-review.
+func TestDraftPRsReadsConfig(t *testing.T) {
+	if draftPRs(nil) {
+		t.Error("nil sctx should not request a draft PR")
+	}
+	if draftPRs(&pipeline.StepContext{}) {
+		t.Error("nil config should not request a draft PR")
+	}
+	if draftPRs(&pipeline.StepContext{Config: &config.Config{}}) {
+		t.Error("unset pr.draft should not request a draft PR")
+	}
+	if !draftPRs(&pipeline.StepContext{Config: &config.Config{PR: config.PR{Draft: true}}}) {
+		t.Error("pr.draft: true should request a draft PR")
+	}
+}

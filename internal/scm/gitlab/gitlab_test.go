@@ -635,3 +635,37 @@ func TestGitlabHelperProcess(t *testing.T) {
 	}
 	os.Exit(0)
 }
+
+// pr.draft appends --draft to glab mr create; unset keeps the previous argv.
+func TestCreateMRAppendsDraftFlagOnlyWhenRequested(t *testing.T) {
+	t.Parallel()
+
+	base := "glab mr create --source-branch feature --target-branch main --title t --description b --yes"
+	for _, tc := range []struct {
+		name  string
+		draft bool
+		key   string
+	}{
+		{"draft", true, base + " --draft"},
+		{"ready", false, base},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
+				tc.key: {stdout: "https://gitlab.com/group/project/-/merge_requests/7\n"},
+			}), nil, "", "group/project")
+
+			pr, err := host.CreatePR(context.Background(), "feature", "main", scm.PRContent{
+				Title: "t",
+				Body:  "b",
+				Draft: tc.draft,
+			})
+			if err != nil {
+				t.Fatalf("CreatePR() error = %v", err)
+			}
+			if pr.Number != "7" {
+				t.Fatalf("CreatePR() = %+v, want #7", pr)
+			}
+		})
+	}
+}

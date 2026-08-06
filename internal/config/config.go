@@ -87,6 +87,16 @@ type GlobalConfig struct {
 	Commit CommitRaw
 	Intent IntentRaw
 	Test   TestRaw
+	// PR carries pull/merge-request creation preferences (currently pr.draft).
+	PR PR
+}
+
+// PR is the pull/merge-request creation config. Draft opens every PR the
+// pipeline creates as a draft; it is global-only because it is the operator's
+// own workflow preference, not a property of the repository being contributed
+// to. Default false preserves the previous ready-for-review behavior.
+type PR struct {
+	Draft bool `yaml:"draft"`
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -107,6 +117,7 @@ type globalConfigRaw struct {
 	Commit               CommitRaw           `yaml:"commit"`
 	Intent               IntentRaw           `yaml:"intent"`
 	Test                 TestRaw             `yaml:"test"`
+	PR                   PR                  `yaml:"pr"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -393,6 +404,8 @@ type Config struct {
 	Test                 Test
 	Document             Document
 	Review               Review
+	// PR is the resolved pull/merge-request creation config (global-only).
+	PR PR
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -641,6 +654,10 @@ intent:
   threshold: 0.2
   slack_days: 3
   # disabled_readers: [codex]
+
+# Open every pull/merge request the pipeline creates as a draft. Default false.
+# pr:
+#   draft: true
 
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
 # gathers to demonstrate the change works). By default they are kept in a
@@ -1214,6 +1231,7 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg.Commit = raw.Commit
 	cfg.Intent = raw.Intent
 	cfg.Test = raw.Test
+	cfg.PR = raw.PR
 
 	return cfg, nil
 }
@@ -1667,6 +1685,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Commit:               commit,
 		Intent:               intent,
 		Test:                 test,
+		PR:                   global.PR,
 		Document:             Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		Review:               Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
 		// repo is the EffectiveRepoConfig result, so this value is already

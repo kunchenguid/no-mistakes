@@ -89,7 +89,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	if existing != nil {
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
-		updated, err := host.UpdatePR(ctx, existing, scm.PRContent(content))
+		// No Draft on update: the pipeline must never flip a PR a human
+		// already marked ready-for-review back to draft.
+		updated, err := host.UpdatePR(ctx, existing, scm.PRContent{Title: content.Title, Body: content.Body})
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: failed to update PR: %v", err))
 			updated = existing
@@ -104,7 +106,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 
 	sctx.Log("creating pull request...")
-	created, err := host.CreatePR(ctx, branch, sctx.Repo.DefaultBranch, scm.PRContent(content))
+	created, err := host.CreatePR(ctx, branch, sctx.Repo.DefaultBranch, scm.PRContent{
+		Title: content.Title,
+		Body:  content.Body,
+		Draft: draftPRs(sctx),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -116,6 +122,11 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
+}
+
+// draftPRs reports whether new PRs open as drafts (global config pr.draft).
+func draftPRs(sctx *pipeline.StepContext) bool {
+	return sctx != nil && sctx.Config != nil && sctx.Config.PR.Draft
 }
 
 func describePR(pr *scm.PR) string {

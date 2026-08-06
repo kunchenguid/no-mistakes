@@ -746,3 +746,37 @@ func TestGitHubHelperProcess(t *testing.T) {
 	}
 	os.Exit(0)
 }
+
+// pr.draft appends --draft to gh pr create; unset keeps the previous
+// ready-for-review argv. The exact-command test factory fails any other argv.
+func TestCreatePRAppendsDraftFlagOnlyWhenRequested(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		draft bool
+		key   string
+	}{
+		{"draft", true, "gh pr create --head feature --base main --repo test/repo --title t --body-file - --draft"},
+		{"ready", false, "gh pr create --head feature --base main --repo test/repo --title t --body-file -"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			host := New(githubTestCmdFactory(map[string]githubTestResponse{
+				tc.key: {stdout: "https://github.com/test/repo/pull/42\n"},
+			}), nil, "", "test/repo")
+
+			pr, err := host.CreatePR(context.Background(), "feature", "main", scm.PRContent{
+				Title: "t",
+				Body:  "b",
+				Draft: tc.draft,
+			})
+			if err != nil {
+				t.Fatalf("CreatePR() error = %v", err)
+			}
+			if pr.Number != "42" {
+				t.Fatalf("CreatePR() = %+v, want #42", pr)
+			}
+		})
+	}
+}

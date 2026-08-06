@@ -189,6 +189,9 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 			"--title", content.Title,
 			"--description", descArg,
 		}
+		if content.Draft {
+			args = append(args, "--draft", "true")
+		}
 		args = append(args, h.scopeArgs()...)
 		return append(args, "--output", "json")
 	})

@@ -95,6 +95,10 @@ type PR struct {
 type PRContent struct {
 	Title string
 	Body  string
+	// Draft opens the PR/MR as a draft (config pr.draft). Providers that have
+	// no draft concept ignore it, and it is ignored when updating an existing
+	// PR so the pipeline never flips a ready PR back to draft.
+	Draft bool
 }
 
 // PRState is the normalized lifecycle state of a PR.
