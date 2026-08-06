@@ -305,6 +305,10 @@ func fakeCIGHReconcileHandler(args []string) {
 			os.Exit(0)
 		}
 	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid") {
+		fmt.Println(os.Getenv("FAKE_CLI_PR_HEAD_SHA"))
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
 		fmt.Println("MERGEABLE")
 		os.Exit(0)
@@ -327,6 +331,10 @@ func fakeCIGHHandler(args []string) {
 	joined := strings.Join(args, " ")
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid") {
+		fmt.Println(os.Getenv("FAKE_CLI_PR_HEAD_SHA"))
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
@@ -404,6 +412,10 @@ func fakeCIGHSequenceHandler(args []string) {
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
 		fmt.Println(state)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid") {
+		fmt.Println(os.Getenv("FAKE_CLI_PR_HEAD_SHA"))
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr checks") {
@@ -578,6 +590,10 @@ func fakeCIGHNoChecksHandler(args []string) {
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
 		fmt.Println("OPEN")
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid") {
+		fmt.Println(os.Getenv("FAKE_CLI_PR_HEAD_SHA"))
 		os.Exit(0)
 	}
 	os.Exit(1)

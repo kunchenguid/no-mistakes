@@ -297,6 +297,14 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	if err != nil {
 		return nil, err
 	}
+	headSHA := ""
+	if strings.TrimSpace(pr.HeadSHA) != "" {
+		headSHA, err = h.getPRHeadSHA(ctx, selector)
+		if err != nil {
+			return nil, err
+		}
+		pr.HeadSHA = headSHA
+	}
 	args := append([]string{"pr", "checks", selector}, h.repoArgs()...)
 	args = append(args, "--json", "name,state,bucket,completedAt,link")
 	cmd := h.cmd(ctx, "gh", args...)
@@ -334,14 +342,35 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 			Link:        strings.TrimSpace(r.Link),
 		})
 	}
-	if pr != nil && strings.TrimSpace(pr.HeadSHA) != "" {
-		runs, err := h.getWorkflowRunChecks(ctx, pr.HeadSHA)
+	if headSHA != "" {
+		runs, err := h.getWorkflowRunChecks(ctx, headSHA)
 		if err != nil {
 			return nil, err
 		}
 		checks = append(checks, runs...)
+		currentHeadSHA, err := h.getPRHeadSHA(ctx, selector)
+		if err != nil {
+			return nil, err
+		}
+		if currentHeadSHA != headSHA {
+			return nil, fmt.Errorf("PR head changed during check discovery from %s to %s", headSHA, currentHeadSHA)
+		}
 	}
 	return checks, nil
+}
+
+func (h *Host) getPRHeadSHA(ctx context.Context, selector string) (string, error) {
+	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
+	args = append(args, "--json", "headRefOid", "--jq", ".headRefOid")
+	out, err := h.cmd(ctx, "gh", args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("gh pr view head commit: %w", err)
+	}
+	headSHA := strings.TrimSpace(string(out))
+	if headSHA == "" {
+		return "", errors.New("gh pr view returned an empty head commit")
+	}
+	return headSHA, nil
 }
 
 func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.Check, error) {
@@ -373,6 +402,7 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 		Status      string `json:"status"`
 		Conclusion  string `json:"conclusion"`
 		UpdatedAt   string `json:"updated_at"`
+		HTMLURL     string `json:"html_url"`
 	}
 	var pages []struct {
 		TotalCount   *int          `json:"total_count"`
@@ -435,7 +465,19 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 			// state that can be classified.
 			bucket = scm.CheckBucketPending
 		}
-		checks = append(checks, scm.Check{Name: name, Bucket: bucket, CompletedAt: completedAt})
+		state := strings.ToUpper(strings.TrimSpace(run.Conclusion))
+		if state == "" {
+			state = strings.ToUpper(strings.TrimSpace(run.Status))
+		}
+		link := strings.TrimSpace(run.HTMLURL)
+		if link == "" {
+			host := strings.TrimSpace(h.host)
+			if host == "" {
+				host = "github.com"
+			}
+			link = fmt.Sprintf("https://%s/%s/actions/runs/%d", host, repo, run.ID)
+		}
+		checks = append(checks, scm.Check{Name: name, Bucket: bucket, State: state, CompletedAt: completedAt, Link: link})
 	}
 	return checks, nil
 }

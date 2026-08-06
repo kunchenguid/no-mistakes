@@ -98,6 +98,7 @@ func TestGetChecksPassesRepoFlag(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
 		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
 			stdout: `[{"name":"build","state":"SUCCESS","bucket":"pass"}]` + "\n",
 		},
@@ -116,6 +117,7 @@ func TestGetChecksIncludesFailedWorkflowRunMissingFromPRRollup(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
 		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
 			stdout: `[
 				{"name":"clippy","state":"SUCCESS","bucket":"pass"},
@@ -150,6 +152,7 @@ func TestGetChecksIncludesFailedWorkflowRunWhenPRHasNoChecks(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
 		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
 			stderr: "no checks reported on the 'feature' branch\n",
 			code:   1,
@@ -173,10 +176,68 @@ func TestGetChecksIncludesFailedWorkflowRunWhenPRHasNoChecks(t *testing.T) {
 	}
 }
 
+func TestGetChecksUsesLivePRHeadForWorkflowDiscovery(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "live-head\n"},
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+			stdout: `[{"name":"build","state":"SUCCESS","bucket":"pass"}]` + "\n",
+		},
+		"gh api --method GET repos/test/repo/actions/runs -f head_sha=live-head -f per_page=100 --paginate --slurp": {
+			stdout: `[{"total_count":0,"workflow_runs":[]}]` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	pr := &scm.PR{Number: "123", HeadSHA: "stale-head"}
+	checks, err := host.GetChecks(context.Background(), pr)
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 || checks[0].Name != "build" {
+		t.Fatalf("checks = %+v, want live-head build rollup", checks)
+	}
+	if pr.HeadSHA != "live-head" {
+		t.Fatalf("PR HeadSHA = %q, want live-head", pr.HeadSHA)
+	}
+}
+
+func TestGetChecksWorkflowCancellationKeepsRerunIdentity(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+			stdout: "[]\n",
+		},
+		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
+			stdout: `[{"total_count":1,"workflow_runs":[{"id":101,"name":"build","status":"completed","conclusion":"cancelled"}]}]` + "\n",
+		},
+		"gh run rerun 101 --failed --repo test/repo": {},
+	}), nil, "", "test/repo")
+
+	pr := &scm.PR{Number: "123", HeadSHA: "deadbeef"}
+	checks, err := host.GetChecks(context.Background(), pr)
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("checks = %+v, want one cancelled workflow", checks)
+	}
+	check := checks[0]
+	if check.Bucket != scm.CheckBucketCancel || check.State != "CANCELLED" || check.Link != "https://github.com/test/repo/actions/runs/101" {
+		t.Fatalf("workflow check = %+v, want rerunnable cancelled run", check)
+	}
+	if err := host.RerunCheck(context.Background(), pr, check); err != nil {
+		t.Fatalf("RerunCheck() error = %v", err)
+	}
+}
+
 func TestGetChecksIncludesWorkflowRunsFromEveryPage(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo ghe.example.com/test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
 		"gh pr checks 123 --repo ghe.example.com/test/repo --json name,state,bucket,completedAt,link": {
 			stdout: `[{"name":"clippy","state":"SUCCESS","bucket":"pass"}]` + "\n",
 		},
@@ -228,6 +289,7 @@ func TestGetChecksRejectsIncompleteWorkflowPagination(t *testing.T) {
 			t.Parallel()
 
 			host := New(githubTestCmdFactory(map[string]githubTestResponse{
+				"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
 				"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
 					stdout: `[{"name":"clippy","state":"SUCCESS","bucket":"pass"}]` + "\n",
 				},
