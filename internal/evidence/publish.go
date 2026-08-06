@@ -214,8 +214,9 @@ func remoteTip(ctx context.Context, repoDir, pushURL, branch string) (string, er
 // evidence branch. This is the guard that makes a wrong configured name
 // harmless: "main" has no marker file, so evidence is never appended to it.
 func assertEvidenceBranch(ctx context.Context, repoDir, tip, branch string) error {
-	if _, err := git.Run(ctx, repoDir, "cat-file", "-e", tip+":"+MarkerPath); err != nil {
-		return fmt.Errorf("refusing to publish evidence: branch %q already exists and is not a no-mistakes evidence branch (no %s marker at its tip)", branch, MarkerPath)
+	content, err := git.RunRaw(ctx, repoDir, "cat-file", "blob", tip+":"+MarkerPath)
+	if err != nil || string(content) != MarkerContent {
+		return fmt.Errorf("refusing to publish evidence: branch %q already exists and is not a no-mistakes evidence branch (invalid %s marker at its tip)", branch, MarkerPath)
 	}
 	return nil
 }

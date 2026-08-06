@@ -108,8 +108,13 @@ func (e *evidenceLinks) target(artifactPath string, raw bool) string {
 }
 
 func joinURLPath(dir, rel string) string {
-	if dir == "" {
-		return rel
+	joined := strings.TrimPrefix(rel, "/")
+	if dir != "" {
+		joined = strings.TrimSuffix(dir, "/") + "/" + joined
 	}
-	return strings.TrimSuffix(dir, "/") + "/" + rel
+	segments := strings.Split(joined, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+	return strings.Join(segments, "/")
 }

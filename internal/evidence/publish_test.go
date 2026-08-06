@@ -240,6 +240,27 @@ func TestPublish_RefusesExistingBranchThatIsNotAnEvidenceBranch(t *testing.T) {
 	}
 }
 
+func TestPublish_RefusesExistingBranchWithWrongMarkerContent(t *testing.T) {
+	remote, work := newRepoWithRemote(t)
+	source := writeEvidence(t, t.TempDir(), map[string]string{"proof.txt": "ok\n"})
+	if err := os.WriteFile(filepath.Join(work, MarkerPath), []byte("not a no-mistakes evidence branch\n"), 0o644); err != nil {
+		t.Fatalf("write false marker: %v", err)
+	}
+	runGit(t, work, "add", MarkerPath)
+	runGit(t, work, "commit", "-m", "add unrelated marker")
+	runGit(t, work, "push", "origin", "HEAD:refs/heads/"+DefaultBranch)
+	before := runGit(t, remote, "rev-parse", "refs/heads/"+DefaultBranch)
+
+	if _, err := Publish(context.Background(), baseRequest(remote, work, source)); err == nil {
+		t.Fatal("Publish appended to a branch with the wrong marker content")
+	} else if !strings.Contains(err.Error(), "invalid "+MarkerPath+" marker") {
+		t.Errorf("error %q does not explain the invalid marker", err)
+	}
+	if after := runGit(t, remote, "rev-parse", "refs/heads/"+DefaultBranch); after != before {
+		t.Errorf("pre-existing branch moved from %s to %s", before, after)
+	}
+}
+
 func TestPublish_RefusesABranchThatIsAlsoACodeBranch(t *testing.T) {
 	remote, work := newRepoWithRemote(t)
 	source := writeEvidence(t, t.TempDir(), map[string]string{"proof.txt": "ok\n"})

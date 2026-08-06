@@ -34,10 +34,16 @@ func IsZeroSHA(sha string) bool {
 // and hardened CI inject that setting, so gate operations must never depend
 // on discovering a bare repo from the working directory (issue #362).
 func Run(ctx context.Context, dir string, args ...string) (string, error) {
+	out, err := RunRaw(ctx, dir, args...)
+	return strings.TrimSpace(string(out)), err
+}
+
+// RunRaw executes a git command and returns stdout without modifying its bytes.
+func RunRaw(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	if isBareGitDir(dir) {
-		return RunBare(ctx, dir, args...)
+		return runInDirWithEnvRaw(ctx, dir, nil, append([]string{"--git-dir=" + dir}, args...)...)
 	}
-	return runInDir(ctx, dir, args...)
+	return runInDirWithEnvRaw(ctx, dir, nil, args...)
 }
 
 // RunBare executes Git against exactly bareDir. Unlike Run, it never falls
@@ -69,6 +75,11 @@ func runInDir(ctx context.Context, dir string, args ...string) (string, error) {
 }
 
 func runInDirWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) (string, error) {
+	out, err := runInDirWithEnvRaw(ctx, dir, extraEnv, args...)
+	return strings.TrimSpace(string(out)), err
+}
+
+func runInDirWithEnvRaw(ctx context.Context, dir string, extraEnv []string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(NonInteractiveEnv(dir), extraEnv...)
@@ -79,9 +90,9 @@ func runInDirWithEnv(ctx context.Context, dir string, extraEnv []string, args ..
 		if ee, ok := err.(*exec.ExitError); ok {
 			stderr = strings.TrimSpace(string(ee.Stderr))
 		}
-		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
+		return nil, fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
 	}
-	return strings.TrimSpace(string(out)), nil
+	return out, nil
 }
 
 // ValidateBareRepository verifies both the filesystem shape and Git's own bare
