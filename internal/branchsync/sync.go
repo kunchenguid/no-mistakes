@@ -131,20 +131,26 @@ type NextAction struct {
 }
 
 // CustodyTransition is the structured audit record returned by an explicit
-// unavailable-head release attempt. It names every identity and safety anchor
+// exceptional custody transition. It names every identity and safety anchor
 // without copying file content or external credentials into output.
 type CustodyTransition struct {
-	Action        string
-	Reason        string
-	RunID         string
-	Idempotent    bool
-	PreservedHead string
-	LocalHead     string
-	RemoteHead    string
-	GateHead      string
-	LocalAnchor   string
-	RemoteAnchor  string
-	GateAnchor    string
+	Action               string
+	Reason               string
+	RunID                string
+	SupersedingRunID     string
+	LineageRunID         string
+	Idempotent           bool
+	PreservedHead        string
+	SubmittedHead        string
+	PushedHead           string
+	LocalHead            string
+	RemoteHead           string
+	GateHead             string
+	PreservedLocalAnchor string
+	PreservedGateAnchor  string
+	LocalAnchor          string
+	RemoteAnchor         string
+	GateAnchor           string
 }
 
 // CanApply reports whether Apply may advance the clean checked-out branch for
@@ -176,6 +182,9 @@ type Service struct {
 	beforeUnavailableReleaseStamp    func()
 	beforeUnavailableReleaseCommit   func()
 	afterUnavailableReleaseProbe     func()
+	beforeStaleSupersessionLocalCAS  func()
+	afterStaleSupersessionLocalCAS   func()
+	beforeStaleSupersessionCommit    func()
 	refreshBudget                    time.Duration
 }
 

@@ -59,8 +59,8 @@ func newSyncCmd() *cobra.Command {
 }
 
 func newAxiSyncCmd() *cobra.Command {
-	var check, recover, keepLocal, releaseUnavailable bool
-	var runID string
+	var check, recover, keepLocal, releaseUnavailable, supersedeStale bool
+	var runID, laterRunID string
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Check or apply guarded current-branch synchronization",
@@ -80,7 +80,13 @@ func newAxiSyncCmd() *cobra.Command {
 			"It refuses an active, unknown, ambiguous, other-branch, or other-repository run;\n" +
 			"a recoverable preserved head; dirty, detached, duplicate, or remote-diverged\n" +
 			"local state; an invalid gate or safety anchor; and any run, local, remote, or\n" +
-			"gate fact that changes before the guarded transactional ownership stamp.",
+			"gate fact that changes before the guarded transactional ownership stamp.\n" +
+			"When --check returns next_action.code: supersede_stale_custody, run only its\n" +
+			"exact --supersede-stale --run <old-id> --later-run <later-id> command. That\n" +
+			"separate transition requires a recoverable stale terminal head, one unique\n" +
+			"later exact run lineage, and a clean local head at its exact adoption source.\n" +
+			"It anchors the stale, local, gate, and remote heads before compare-and-swap\n" +
+			"adoption from the later submission to its exact pushed head.",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -88,8 +94,11 @@ func newAxiSyncCmd() *cobra.Command {
 			if check && recover {
 				return emitError(cmd, 2, "--check and --recover cannot be used together")
 			}
-			if releaseUnavailable && (check || recover || keepLocal) {
-				return emitError(cmd, 2, "--release-unavailable cannot be combined with --check, --recover, or --keep-local")
+			if releaseUnavailable && (check || recover || keepLocal || supersedeStale) {
+				return emitError(cmd, 2, "--release-unavailable cannot be combined with --check, --recover, --keep-local, or --supersede-stale")
+			}
+			if supersedeStale && (check || recover || keepLocal) {
+				return emitError(cmd, 2, "--supersede-stale cannot be combined with --check, --recover, or --keep-local")
 			}
 			if keepLocal && !recover {
 				return emitError(cmd, 2, "--keep-local requires --recover")
@@ -97,17 +106,25 @@ func newAxiSyncCmd() *cobra.Command {
 			if releaseUnavailable && strings.TrimSpace(runID) == "" {
 				return emitError(cmd, 2, "--release-unavailable requires --run <id>")
 			}
-			if !releaseUnavailable && strings.TrimSpace(runID) != "" {
-				return emitError(cmd, 2, "--run requires --release-unavailable")
+			if supersedeStale && (strings.TrimSpace(runID) == "" || strings.TrimSpace(laterRunID) == "") {
+				return emitError(cmd, 2, "--supersede-stale requires --run <old-id> and --later-run <later-id>")
 			}
-			return runAxiSync(cmd, check, recover, keepLocal, releaseUnavailable, strings.TrimSpace(runID))
+			if !releaseUnavailable && !supersedeStale && strings.TrimSpace(runID) != "" {
+				return emitError(cmd, 2, "--run requires --release-unavailable or --supersede-stale")
+			}
+			if !supersedeStale && strings.TrimSpace(laterRunID) != "" {
+				return emitError(cmd, 2, "--later-run requires --supersede-stale")
+			}
+			return runAxiSync(cmd, check, recover, keepLocal, releaseUnavailable, supersedeStale, strings.TrimSpace(runID), strings.TrimSpace(laterRunID))
 		},
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and return the plan without changing HEAD")
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch)")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
 	cmd.Flags().BoolVar(&releaseUnavailable, "release-unavailable", false, "release exact terminal-run custody only when its recorded preserved head is unavailable and local equals the fresh remote")
-	cmd.Flags().StringVar(&runID, "run", "", "exact run id required by --release-unavailable")
+	cmd.Flags().BoolVar(&supersedeStale, "supersede-stale", false, "replace exact stale terminal custody with a later identity-bound pushed run and adopt its pushed head")
+	cmd.Flags().StringVar(&runID, "run", "", "exact old run id required by an exceptional custody transition")
+	cmd.Flags().StringVar(&laterRunID, "later-run", "", "exact later run id required by --supersede-stale")
 	return cmd
 }
 
@@ -324,7 +341,7 @@ func humanSyncSummary(state branchsync.State) string {
 	}
 }
 
-func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, releaseUnavailable bool, runID string) error {
+func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, releaseUnavailable, supersedeStale bool, runID, laterRunID string) error {
 	started := time.Now()
 	mode := "apply"
 	switch {
@@ -336,6 +353,8 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, releaseUnavailabl
 		mode = "recover"
 	case releaseUnavailable:
 		mode = "release_unavailable"
+	case supersedeStale:
+		mode = "supersede_stale"
 	}
 	var state branchsync.State
 	result := "error"
@@ -350,10 +369,15 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, releaseUnavailabl
 	switch {
 	case check:
 		state = service.Refresh(cmd.Context())
+		if state.State == branchsync.StatePipelineOwned && state.Safety == "blocked_pipeline_owned_recoverable" {
+			state = service.PlanStaleCustody(cmd.Context())
+		}
 	case recover:
 		state = service.Recover(cmd.Context(), keepLocal)
 	case releaseUnavailable:
 		state = service.ReleaseUnavailable(cmd.Context(), runID)
+	case supersedeStale:
+		state = service.SupersedeStaleCustody(cmd.Context(), runID, laterRunID)
 	default:
 		state = service.Apply(cmd.Context())
 	}
@@ -379,7 +403,7 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal, releaseUnavailabl
 	if recover {
 		successful = state.Recovered
 	}
-	if releaseUnavailable {
+	if releaseUnavailable || supersedeStale {
 		successful = state.Released
 	}
 	if successful {
@@ -429,6 +453,11 @@ func boundedSyncValue(value string) string {
 
 func syncStateSuccessful(state branchsync.State, check bool) bool {
 	if state.State == branchsync.StateSynchronized || state.State == branchsync.StateMergedRemoteRemoved {
+		return true
+	}
+	// A read-only stale-custody plan succeeded when it proved and returned the
+	// exact supported transition. It has not mutated anything.
+	if check && state.Safety == "safe_stale_custody_supersession" && state.NextAction != nil && state.NextAction.Code == "supersede_stale_custody" {
 		return true
 	}
 	// A recovered branch has no pending synchronization: custody is with the
@@ -507,15 +536,39 @@ func branchSyncField(state branchsync.State) toON.Field {
 			{Key: "action", Value: transition.Action},
 			{Key: "reason", Value: transition.Reason},
 			{Key: "run", Value: transition.RunID},
-			{Key: "idempotent", Value: transition.Idempotent},
-			{Key: "preserved_head", Value: transition.PreservedHead},
-			{Key: "local_head", Value: transition.LocalHead},
-			{Key: "remote_head", Value: transition.RemoteHead},
-			{Key: "gate_head", Value: transition.GateHead},
-			{Key: "local_anchor", Value: transition.LocalAnchor},
-			{Key: "remote_anchor", Value: transition.RemoteAnchor},
-			{Key: "gate_anchor", Value: transition.GateAnchor},
 		}
+		if transition.SupersedingRunID != "" {
+			transitionFields = append(transitionFields, toON.Field{Key: "superseding_run", Value: transition.SupersedingRunID})
+		}
+		if transition.LineageRunID != "" {
+			transitionFields = append(transitionFields, toON.Field{Key: "lineage_run", Value: transition.LineageRunID})
+		}
+		transitionFields = append(transitionFields,
+			toON.Field{Key: "idempotent", Value: transition.Idempotent},
+			toON.Field{Key: "preserved_head", Value: transition.PreservedHead},
+		)
+		if transition.SubmittedHead != "" {
+			transitionFields = append(transitionFields, toON.Field{Key: "submitted_head", Value: transition.SubmittedHead})
+		}
+		if transition.PushedHead != "" {
+			transitionFields = append(transitionFields, toON.Field{Key: "pushed_head", Value: transition.PushedHead})
+		}
+		transitionFields = append(transitionFields,
+			toON.Field{Key: "local_head", Value: transition.LocalHead},
+			toON.Field{Key: "remote_head", Value: transition.RemoteHead},
+			toON.Field{Key: "gate_head", Value: transition.GateHead},
+		)
+		if transition.PreservedLocalAnchor != "" {
+			transitionFields = append(transitionFields, toON.Field{Key: "preserved_local_anchor", Value: transition.PreservedLocalAnchor})
+		}
+		if transition.PreservedGateAnchor != "" {
+			transitionFields = append(transitionFields, toON.Field{Key: "preserved_gate_anchor", Value: transition.PreservedGateAnchor})
+		}
+		transitionFields = append(transitionFields,
+			toON.Field{Key: "local_anchor", Value: transition.LocalAnchor},
+			toON.Field{Key: "remote_anchor", Value: transition.RemoteAnchor},
+			toON.Field{Key: "gate_anchor", Value: transition.GateAnchor},
+		)
 		fields = append(fields, toON.Field{Key: "custody_transition", Value: toON.NewObject(transitionFields...)})
 	}
 	return toON.Field{Key: "branch_sync", Value: toON.NewObject(fields...)}

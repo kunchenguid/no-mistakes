@@ -50,6 +50,12 @@ var canonicalBranchSyncPhrases = []string{
 	"no-mistakes axi sync --release-unavailable --run <id>",
 	"clean local branch exactly matches its fresh",
 	"anchors every reachable",
+	// A recoverable stale owner may be replaced only by the exact later run
+	// lineage returned by the read-only plan.
+	"supersede_stale_custody",
+	"--supersede-stale --run <old-id> --later-run <later-id>",
+	"exact submitted-head-to-pushed-head adoption",
+	"every old, local, gate, and remote head",
 	// Cancellation releases a run that never changed the submitted head
 	// (v1.44.2 dogfood catch): every surface must name the released state and
 	// that it needs no recovery.
