@@ -213,7 +213,7 @@ func TestGetChecksWorkflowCancellationKeepsRerunIdentity(t *testing.T) {
 		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
 			stdout: `[{"total_count":1,"workflow_runs":[{"id":101,"name":"build","status":"completed","conclusion":"cancelled"}]}]` + "\n",
 		},
-		"gh run rerun 101 --failed --repo test/repo": {},
+		"gh run rerun 101 --repo test/repo": {},
 	}), nil, "", "test/repo")
 
 	pr := &scm.PR{Number: "123", HeadSHA: "deadbeef"}
@@ -230,6 +230,34 @@ func TestGetChecksWorkflowCancellationKeepsRerunIdentity(t *testing.T) {
 	}
 	if err := host.RerunCheck(context.Background(), pr, check); err != nil {
 		t.Fatalf("RerunCheck() error = %v", err)
+	}
+}
+
+func TestGetChecksDoesNotDuplicateWorkflowRunsRepresentedByRollup(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "deadbeef\n"},
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+			stdout: `[{"name":"build","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/101/job/201"}]` + "\n",
+		},
+		"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
+			stdout: `[{"total_count":2,"workflow_runs":[
+				{"id":101,"name":"represented-workflow","status":"completed","conclusion":"cancelled"},
+				{"id":102,"name":"workflow-only","status":"completed","conclusion":"failure"}
+			]}]` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: "deadbeef"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 2 {
+		t.Fatalf("checks = %+v, want rollup job plus unrepresented workflow", checks)
+	}
+	if checks[0].Name != "build" || checks[1].Name != "workflow-only" {
+		t.Fatalf("checks = %+v, want build and workflow-only", checks)
 	}
 }
 
@@ -659,9 +687,7 @@ func TestRerunCheckTargetsJobFromCheckLink(t *testing.T) {
 	}
 }
 
-// A link that names only the workflow run has exactly one thing to re-run: that
-// run's failed jobs. This is the ONLY shape allowed to widen past a single job.
-func TestRerunCheckFallsBackToFailedJobsOfRun(t *testing.T) {
+func TestRerunCheckTargetsWholeCancelledRun(t *testing.T) {
 	t.Parallel()
 
 	for name, link := range map[string]string{
@@ -685,7 +711,7 @@ func TestRerunCheckFallsBackToFailedJobsOfRun(t *testing.T) {
 			if len(recorded) != 1 {
 				t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
 			}
-			want := []string{"gh", "run", "rerun", "900", "--failed", "--repo", "test/repo"}
+			want := []string{"gh", "run", "rerun", "900", "--repo", "test/repo"}
 			if strings.Join(recorded[0], " ") != strings.Join(want, " ") {
 				t.Fatalf("rerun argv = %v, want %v", recorded[0], want)
 			}

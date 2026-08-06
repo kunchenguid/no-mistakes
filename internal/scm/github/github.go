@@ -347,7 +347,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		if err != nil {
 			return nil, err
 		}
-		checks = append(checks, runs...)
+		checks = appendUnrepresentedWorkflowRuns(checks, runs)
 		currentHeadSHA, err := h.getPRHeadSHA(ctx, selector)
 		if err != nil {
 			return nil, err
@@ -357,6 +357,26 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		}
 	}
 	return checks, nil
+}
+
+func appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.Check {
+	represented := make(map[string]struct{}, len(checks))
+	for _, check := range checks {
+		if runID := actionsRunID(check.Link); runID != "" {
+			represented[runID] = struct{}{}
+		}
+	}
+	for _, run := range runs {
+		runID := actionsRunID(run.Link)
+		if _, exists := represented[runID]; runID != "" && exists {
+			continue
+		}
+		checks = append(checks, run)
+		if runID != "" {
+			represented[runID] = struct{}{}
+		}
+	}
+	return checks
 }
 
 func (h *Host) getPRHeadSHA(ctx context.Context, selector string) (string, error) {
@@ -482,16 +502,16 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 	return checks, nil
 }
 
-// RerunCheck re-runs the Actions job behind check for the same commit, so a
+// RerunCheck re-runs the Actions work behind check for the same commit, so a
 // check the provider cancelled rather than failed can be retried without a new
 // push. The job is identified from the check's details link, which is the only
 // run/job identity `gh pr checks` reports: a link naming a job re-runs just that
-// job (and its dependencies), and a link naming only a run re-runs that run's
-// failed jobs. Anything else - a third-party status pointing at an external
+// job (and its dependencies), and a cancelled check naming only a run re-runs
+// the whole run. Anything else - a third-party status pointing at an external
 // dashboard, or a run path this backend cannot read - names no re-runnable job,
 // and the error says so rather than falling back to a wider rerun.
 func (h *Host) RerunCheck(ctx context.Context, _ *scm.PR, check scm.Check) error {
-	rerunArgs, ok := rerunTargetArgs(check.Link)
+	rerunArgs, ok := rerunTargetArgs(check)
 	if !ok {
 		return fmt.Errorf("check %q has no GitHub Actions job to re-run", check.Name)
 	}
@@ -504,19 +524,38 @@ func (h *Host) RerunCheck(ctx context.Context, _ *scm.PR, check scm.Check) error
 	return nil
 }
 
-// rerunTargetArgs turns a check's details link into the `gh run rerun`
-// arguments that re-run exactly that work, or reports that the link names
-// nothing this backend can re-run.
-func rerunTargetArgs(link string) ([]string, bool) {
-	runID, jobID, ok := actionsRerunTarget(link)
+// rerunTargetArgs turns a check into the `gh run rerun` arguments that re-run
+// exactly that work, or reports that the link names nothing this backend can
+// re-run.
+func rerunTargetArgs(check scm.Check) ([]string, bool) {
+	runID, jobID, ok := actionsRerunTarget(check.Link)
 	switch {
 	case !ok:
 		return nil, false
 	case jobID != "":
 		return []string{"--job", jobID}, true
+	case strings.EqualFold(strings.TrimSpace(check.State), "CANCELLED"):
+		return []string{runID}, true
 	default:
 		return []string{runID, "--failed"}, true
 	}
+}
+
+func actionsRunID(link string) string {
+	parsed, err := url.Parse(strings.TrimSpace(link))
+	if err != nil {
+		return ""
+	}
+	const runsSegment = "/actions/runs/"
+	idx := strings.Index(parsed.Path, runsSegment)
+	if idx < 0 {
+		return ""
+	}
+	segments := strings.Split(strings.Trim(parsed.Path[idx+len(runsSegment):], "/"), "/")
+	if len(segments) == 0 || !isNumericID(segments[0]) {
+		return ""
+	}
+	return segments[0]
 }
 
 // actionsRerunTarget resolves the Actions run, and where possible the exact job,
@@ -531,8 +570,7 @@ func rerunTargetArgs(link string) ([]string, bool) {
 // display index the API answers with 404, and any other unrecognized path under
 // a run. Re-running a run re-runs every failed job in it, so widening one
 // check's rerun into all of them on an unparsable link is a blast radius this
-// policy must not take; a link that names only the run itself is the one case
-// where that is exactly what it points at.
+// policy must not take.
 func actionsRerunTarget(link string) (runID, jobID string, ok bool) {
 	parsed, err := url.Parse(strings.TrimSpace(link))
 	if err != nil {
