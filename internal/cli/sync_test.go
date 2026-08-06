@@ -152,16 +152,16 @@ func TestSyncHelpAndReferenceExposeGuardedModes(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"--release-unavailable --run <id>", "clean local branch exactly equal", "anchors every reachable"} {
+	for _, want := range []string{"--release-unavailable --run <id>", "clean local branch exactly equal", "anchors every reachable", "--supersede-stale --run <old-id> --later-run <later-id>", "exact adoption source"} {
 		if !strings.Contains(agent.Long, want) {
-			t.Errorf("axi help missing unavailable-head release contract %q: %s", want, agent.Long)
+			t.Errorf("axi help missing exceptional-custody contract %q: %s", want, agent.Long)
 		}
 	}
 	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "src", "content", "docs", "reference", "cli.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"## no-mistakes sync", "## no-mistakes axi sync", "no-mistakes axi sync --check", "no-mistakes axi sync --release-unavailable --run <id>"} {
+	for _, want := range []string{"## no-mistakes sync", "## no-mistakes axi sync", "no-mistakes axi sync --check", "no-mistakes axi sync --release-unavailable --run <id>", "no-mistakes axi sync --supersede-stale --run <old-id> --later-run <later-id>"} {
 		if !strings.Contains(string(doc), want) {
 			t.Errorf("CLI reference missing %q", want)
 		}
@@ -970,6 +970,12 @@ func TestSyncRecoverFlagValidation(t *testing.T) {
 		{"axi", "sync", "--release-unavailable", "--run", "run-1", "--recover"},
 		{"axi", "sync", "--release-unavailable", "--run", "run-1", "--check"},
 		{"axi", "sync", "--release-unavailable", "--run", "run-1", "--keep-local"},
+		{"axi", "sync", "--supersede-stale"},
+		{"axi", "sync", "--supersede-stale", "--run", "old"},
+		{"axi", "sync", "--supersede-stale", "--later-run", "later"},
+		{"axi", "sync", "--supersede-stale", "--run", "old", "--later-run", "later", "--check"},
+		{"axi", "sync", "--supersede-stale", "--run", "old", "--later-run", "later", "--recover"},
+		{"axi", "sync", "--later-run", "later"},
 	} {
 		out, err := executeCmd(args...)
 		var ee *exitError

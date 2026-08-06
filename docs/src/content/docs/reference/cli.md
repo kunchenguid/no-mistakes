@@ -180,6 +180,7 @@ no-mistakes axi sync
 no-mistakes axi sync --recover
 no-mistakes axi sync --recover --keep-local
 no-mistakes axi sync --release-unavailable --run <id>
+no-mistakes axi sync --supersede-stale --run <old-id> --later-run <later-id>
 ```
 
 | Flag                    | Type     | Default | Description                                                                                                                                    |
@@ -188,11 +189,13 @@ no-mistakes axi sync --release-unavailable --run <id>
 | `--recover`             | `bool`   | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
 | `--keep-local`          | `bool`   | `false` | With `--recover`: keep the current local head; never touches the worktree                                                                      |
 | `--release-unavailable` | `bool`   | `false` | Release exact terminal-run custody only after ordinary recovery proves its recorded preserved head unavailable                                  |
-| `--run`                 | `string` | (none)  | Exact run ID required by `--release-unavailable`; invalid in every other sync mode                                                              |
+| `--supersede-stale`     | `bool`   | `false` | Replace one exact stale terminal owner with the later exact run returned by `--check`                                                           |
+| `--run`                 | `string` | (none)  | Exact old run ID required by either exceptional custody transition                                                                             |
+| `--later-run`           | `string` | (none)  | Exact later run ID required by `--supersede-stale`                                                                                             |
 
 The default command is an explicit non-interactive apply request and never prompts.
 All modes return the complete `branch_sync` object as TOON.
-Exit code `0` means an eligible check, applied synchronization, recovery, or unavailable-head custody release, already-synchronized, custody-returned, or user-owned no-op, or expected merged-and-removed no-op; blocked operational states return `1`.
+Exit code `0` means an eligible check, applied synchronization, recovery, exceptional custody transition, already-synchronized, custody-returned, or user-owned no-op, or expected merged-and-removed no-op; blocked operational states return `1`.
 The ordinary worktree mutation is either a strict fast-forward of the invoking clean checked-out branch to the freshly verified pipeline-owned pushed SHA, or an equivalent-diverged advance.
 When a clean local branch and the pipeline-pushed head are diverged but the local unique work is content-equivalent to work already represented in the live pipeline head, `sync` reports `safety: safe_equivalent_advance`, anchors the pre-sync head under `refs/no-mistakes/sync-anchor/<run>`, and moves to the pipeline head with reset semantics.
 Genuine divergence still reports `safety: blocked_diverged` and changes nothing.
@@ -256,6 +259,37 @@ Successful and refused attempts return a structured `branch_sync.custody_transit
 Success additionally returns `released: true` and `changed: false`, because ownership changed without moving the operator worktree; a released never-pushed run reports `state: custody_returned`, and a released pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
 An immediate repeated invocation returns the same successful audit with `idempotent: true`.
 Ordinary `axi run`, `axi sync --recover`, and `axi abort` behavior is unchanged outside this unavailable-head release.
+
+### Stale terminal-owner supersession
+
+A different closed loop can occur when an older recoverable terminal run resurfaces after a later exact pipeline lineage already pushed the branch.
+Ordinary recovery must keep refusing if the gate no longer equals the old preserved head, because moving it backward would discard the newer validated state.
+Run the read-only `no-mistakes axi sync --check` first.
+Only when it returns `next_action.code: supersede_stale_custody` may you run the exact `no-mistakes axi sync --supersede-stale --run <old-id> --later-run <later-id>` command it provides.
+
+The plan and transition require all of these exact facts:
+
+- The old run is the authoritative inactive terminal owner, has an unpublished head, and that head remains recoverable in both the invoking repository and gate object store.
+- One unique later terminal run belongs to the same repository and branch, has an exact successful push binding to the currently configured target and branch ref, and records the exact submitted and pushed heads used for adoption.
+- One unique exact run lineage submitted the old preserved head and pushed either the later run itself or a commit that is an ancestor of the later submission.
+- The clean uniquely checked-out local branch is the later run's exact submitted head.
+  The same guarded transition also accepts the exact two-run chain where local is the old submission, the old output is the later submission, and the later run pushed the target.
+- The freshly read configured remote and verified gate branch both equal the later run's exact pushed head.
+- No active, ambiguous, other-repository, other-branch, changed-generation, changed-ref, dirty-worktree, or duplicate-worktree fact exists.
+
+The lineage proof uses persisted exact run edges and Git ancestry only.
+It never uses patch identity or generic tree equivalence to infer that rewritten commits are interchangeable.
+Before moving anything, the transition creates head-scoped direct refs under `refs/no-mistakes/custody-supersede/<old-run>/` for the old preserved head in both object stores, the pre-adoption local head, and the exact remote and gate heads.
+It journals the old, later, and lineage run IDs; every exact head; target kind, fingerprint, and ref; repository metadata generation; and branch-ownership generation.
+The local branch then moves with an atomic `update-ref` compare-and-swap followed by `read-tree -m -u`, so a concurrent commit or worktree edit refuses instead of being overwritten.
+A no-op gate compare-and-swap and a final fresh remote read close the mutable Git boundary before one guarded database update stamps only the old run with reason `stale_owner_superseded`.
+
+A crash after the local compare-and-swap leaves every head anchored and the journal in a retryable phase.
+The exact command resumes the worktree update or final stamp without guessing from current refs.
+A completed retry reports `released: true`, `idempotent: true`, and the same structured `custody_transition` identities and anchors.
+Success adopts the later pushed head and then reports its ordinary synchronized state.
+Refusal never stamps the old run, never mutates the later run, never updates an external remote, and never touches another validation.
+Ordinary `axi sync`, `axi sync --recover`, `axi run`, and `axi abort` behavior is unchanged when the read-only plan cannot prove this exact stale-owner shape.
 
 ## no-mistakes axi logs
 

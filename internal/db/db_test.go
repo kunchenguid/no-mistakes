@@ -78,7 +78,7 @@ func TestOpenCreatesSchema(t *testing.T) {
 			t.Fatalf("repos.%s column missing from fresh schema", column)
 		}
 	}
-	for _, table := range []string{"branch_ownership_generations", "unavailable_custody_releases"} {
+	for _, table := range []string{"branch_ownership_generations", "unavailable_custody_releases", "stale_custody_supersessions"} {
 		if err := d.sql.QueryRow("SELECT count(*) FROM " + table).Scan(&count); err != nil {
 			t.Fatalf("%s table missing: %v", table, err)
 		}
@@ -141,6 +141,10 @@ func TestOpenMigratesRunSyncProvenanceWithoutBackfillingMutableHead(t *testing.T
 	}
 	if authority, err := d.SnapshotCustodyReleaseAuthority("repo-1", "feature"); err != nil || authority.OwnershipGeneration != 0 || authority.RepoGeneration != 0 {
 		t.Fatalf("migrated release authority = %#v, %v", authority, err)
+	}
+	var supersessions int
+	if err := d.sql.QueryRow("SELECT count(*) FROM stale_custody_supersessions").Scan(&supersessions); err != nil || supersessions != 0 {
+		t.Fatalf("migrated stale custody journal = %d, %v", supersessions, err)
 	}
 }
 
