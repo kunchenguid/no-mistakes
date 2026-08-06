@@ -267,6 +267,7 @@ func (d *DB) UpdateRunPushBinding(id string, binding PushBinding) error {
 const (
 	CustodyReturnReasonPreservedHeadRecovered   = "preserved_head_recovered"
 	CustodyReturnReasonPreservedHeadUnavailable = "preserved_head_unavailable"
+	CustodyReturnReasonStaleOwnerSuperseded     = "stale_owner_superseded"
 )
 
 // ErrRunCustodyChanged reports that the exact durable run facts changed before

@@ -240,6 +240,8 @@ If it reports `next_action.code` is `continue_active_run`, the pipeline still ow
 When `next_action.code` is `recover_custody`, a terminal run left unpublished pipeline commits preserved in the local gate: run `no-mistakes axi sync --recover` to return custody and take the preserved head, or `no-mistakes rerun` to resume validating it instead.
 If ordinary recovery returns `next_action.code: release_unavailable_custody`, the recorded preserved head is absent from both no-mistakes-owned object stores.
 Run only its exact identity-bound `no-mistakes axi sync --release-unavailable --run <id>` command: it refuses unless the recorded head remains absent from owned object stores and unreachable from every advertised configured-target ref while the clean local branch exactly matches its fresh configured remote, then anchors every reachable local, remote, and gate head with canonical direct refs before releasing custody.
+If the read-only `no-mistakes axi sync --check` returns `next_action.code: supersede_stale_custody`, run only its exact `--supersede-stale --run <old-id> --later-run <later-id>` command.
+That identity-bound transition requires one later exact run lineage and exact submitted-head-to-pushed-head adoption, anchors every old, local, gate, and remote head, and refuses changed or ambiguous ownership.
 Recovery takes that head by fast-forward, or by adopting a diverged preserved head proven to carry every local change - the ordinary result of the pipeline rebasing your commits onto a newer base - after anchoring your pre-recovery head under `refs/no-mistakes/recover-local/<run>`.
 That proof is deliberately narrow, so a rebase whose fix rounds also rewrote your own lines refuses instead of being adopted: when nothing can tell a deliberate pipeline fix from a dropped change, the decision is yours.
 A `branch_sync.state` of `user_owned` means the run went terminal before changing the submitted head and cancellation released the branch: the exact branch and head are yours and immediately usable for whichever delivery path is authorized - no sync action is needed, and a repeated `--recover` there is a harmless no-op.
@@ -312,6 +314,7 @@ no-mistakes axi sync --check  # freshly verify an offered synchronization plan
 no-mistakes axi sync          # apply only an offered guarded synchronization
 no-mistakes axi sync --recover  # return custody after a terminal run left unpublished pipeline commits
 no-mistakes axi sync --release-unavailable --run <id>  # run only when ordinary recovery offers this exact unavailable-head release
+no-mistakes axi sync --supersede-stale --run <old-id> --later-run <later-id>  # run only when --check returns this exact command
 no-mistakes axi logs --step <name> --full   # full log output of one step
 no-mistakes axi abort         # cancel the current-branch active run
 no-mistakes axi abort --run <id>   # cancel a specific run by id (works outside its worktree)

@@ -169,6 +169,7 @@ no-mistakes axi sync --check
 no-mistakes axi sync
 no-mistakes axi sync --recover
 no-mistakes axi sync --release-unavailable --run <id>
+no-mistakes axi sync --supersede-stale --run <old-id> --later-run <later-id>
 no-mistakes axi respond --action approve
 no-mistakes axi logs --step review --full
 no-mistakes axi abort
@@ -180,6 +181,8 @@ Only when its structured `next_action.code` is `sync`, run `no-mistakes axi sync
 When `next_action.code` is `recover_custody` - a terminal run left unpublished pipeline commits preserved in the local gate - run `no-mistakes axi sync --recover` to return custody, or `no-mistakes rerun` to resume validating the preserved head.
 If ordinary recovery returns `next_action.code: release_unavailable_custody`, run only its exact identity-bound `no-mistakes axi sync --release-unavailable --run <id>` command.
 It refuses unless the recorded head remains unavailable and the clean local branch exactly matches its fresh configured remote, then anchors every reachable local, remote, and gate head before releasing custody.
+If the read-only `no-mistakes axi sync --check` returns `next_action.code: supersede_stale_custody`, run only its exact `--supersede-stale --run <old-id> --later-run <later-id>` command.
+That identity-bound transition requires one later exact run lineage and exact submitted-head-to-pushed-head adoption, anchors every old, local, gate, and remote head, and refuses changed or ambiguous ownership.
 A `branch_sync.state` of `user_owned` means the run went terminal before changing the submitted head and cancellation released the branch: it is immediately usable and needs no sync action.
 When `next_action.code` is `continue_active_run`, run the reported command and keep driving the active run.
 If synchronization is blocked, process that state instead of improvising reset, stash, merge, rebase, force, or branch replacement.

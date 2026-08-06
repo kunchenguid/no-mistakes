@@ -110,6 +110,29 @@ CREATE TABLE IF NOT EXISTS unavailable_custody_releases (
     updated_at             INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS stale_custody_supersessions (
+    old_run_id             TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    later_run_id           TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    lineage_run_id         TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    repo_id                TEXT NOT NULL,
+    branch                 TEXT NOT NULL,
+    old_head               TEXT NOT NULL,
+    local_head             TEXT NOT NULL,
+    later_submitted_head   TEXT NOT NULL,
+    later_pushed_head      TEXT NOT NULL,
+    lineage_pushed_head    TEXT NOT NULL,
+    remote_head            TEXT NOT NULL,
+    gate_head              TEXT NOT NULL,
+    target_kind            TEXT NOT NULL,
+    target_fingerprint     TEXT NOT NULL,
+    target_ref             TEXT NOT NULL,
+    ownership_generation   INTEGER NOT NULL,
+    repo_generation        INTEGER NOT NULL,
+    phase                  TEXT NOT NULL,
+    created_at             INTEGER NOT NULL,
+    updated_at             INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS step_results (
     id               TEXT PRIMARY KEY,
     run_id           TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
