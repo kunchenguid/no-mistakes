@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -199,6 +200,31 @@ func TestGetChecksUsesLivePRHeadForWorkflowDiscovery(t *testing.T) {
 	}
 	if pr.HeadSHA != "live-head" {
 		t.Fatalf("PR HeadSHA = %q, want live-head", pr.HeadSHA)
+	}
+}
+
+func TestGetChecksBindsRollupAcrossABAHeadMovement(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json headRefOid --jq .headRefOid": {stdout: "h1\n"},
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+			stdout: `[{"name":"h2-build","state":"SUCCESS","bucket":"pass"}]` + "\n",
+		},
+		githubCommitChecksCommand("", "test/repo", "h1"): {
+			stdout: githubCommitChecksResponse(`[{"__typename":"CheckRun","name":"h1-build","status":"COMPLETED","conclusion":"FAILURE"}]`),
+		},
+		"gh api --method GET repos/test/repo/actions/runs -f head_sha=h1 -f per_page=100 --paginate --slurp": {
+			stdout: `[{"total_count":0,"workflow_runs":[]}]` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123", HeadSHA: "stale"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 || checks[0].Name != "h1-build" || checks[0].Bucket != scm.CheckBucketFail {
+		t.Fatalf("checks = %+v, want exact-H1 failed rollup", checks)
 	}
 }
 
@@ -957,6 +983,15 @@ func githubTestCmdFactory(responses map[string]githubTestResponse) CmdFactory {
 	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		key := strings.TrimSpace(name + " " + strings.Join(args, " "))
 		response, ok := responses[key]
+		if !ok && strings.HasPrefix(key, "gh api ") && strings.Contains(key, " graphql ") {
+			for candidate, prResponse := range responses {
+				if strings.Contains(candidate, "gh pr checks ") {
+					response = normalizedChecksResponse(prResponse)
+					ok = true
+					break
+				}
+			}
+		}
 		if !ok {
 			response = githubTestResponse{stderr: "unexpected command: " + key, code: 1}
 		}
@@ -970,6 +1005,76 @@ func githubTestCmdFactory(responses map[string]githubTestResponse) CmdFactory {
 		)
 		return cmd
 	}
+}
+
+func githubCommitChecksCommand(host, repo, headSHA string) string {
+	parts := strings.Split(repo, "/")
+	args := []string{"gh", "api"}
+	if host != "" {
+		args = append(args, "--hostname", host)
+	}
+	args = append(args, "graphql", "-f", "query="+commitChecksQuery,
+		"-F", "owner="+parts[0], "-F", "name="+parts[1], "-F", "oid="+headSHA)
+	return strings.Join(args, " ")
+}
+
+func githubCommitChecksResponse(nodes string) string {
+	response := map[string]any{
+		"data": map[string]any{
+			"repository": map[string]any{
+				"object": map[string]any{
+					"statusCheckRollup": map[string]any{
+						"contexts": map[string]any{
+							"nodes":    json.RawMessage(nodes),
+							"pageInfo": map[string]any{"hasNextPage": false, "endCursor": ""},
+						},
+					},
+				},
+			},
+		},
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return nodes
+	}
+	return string(encoded) + "\n"
+}
+
+func normalizedChecksResponse(response githubTestResponse) githubTestResponse {
+	if response.code != 0 && strings.Contains(response.stderr, "no checks reported") {
+		return githubTestResponse{stdout: githubCommitChecksResponse("[]")}
+	}
+	if response.code != 0 {
+		return response
+	}
+	var raw []struct {
+		Name        string `json:"name"`
+		State       string `json:"state"`
+		Bucket      string `json:"bucket"`
+		CompletedAt string `json:"completedAt"`
+		Link        string `json:"link"`
+	}
+	if err := json.Unmarshal([]byte(response.stdout), &raw); err != nil {
+		return githubTestResponse{stdout: response.stdout}
+	}
+	nodes := make([]map[string]string, 0, len(raw))
+	for _, check := range raw {
+		status := "COMPLETED"
+		conclusion := check.State
+		if check.Bucket == "pending" {
+			status = "IN_PROGRESS"
+			conclusion = ""
+		}
+		nodes = append(nodes, map[string]string{
+			"__typename": "CheckRun", "name": check.Name, "status": status,
+			"conclusion": conclusion, "completedAt": check.CompletedAt, "detailsUrl": check.Link,
+		})
+	}
+	encoded, err := json.Marshal(nodes)
+	if err != nil {
+		return githubTestResponse{stdout: response.stdout}
+	}
+	return githubTestResponse{stdout: githubCommitChecksResponse(string(encoded))}
 }
 
 func TestGitHubHelperProcess(t *testing.T) {

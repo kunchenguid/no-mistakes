@@ -317,6 +317,10 @@ func fakeCIGHReconcileHandler(args []string) {
 		fmt.Println(`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
 		os.Exit(0)
 	}
+	if strings.Contains(joined, "api") && strings.Contains(joined, "graphql") {
+		printFakeCommitChecks(`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
+		os.Exit(0)
+	}
 	fmt.Fprintln(os.Stderr, "unsupported reconcile gh argv:", joined)
 	os.Exit(1)
 }
@@ -362,6 +366,14 @@ func fakeCIGHHandler(args []string) {
 			os.Exit(1)
 		}
 		fmt.Println(checksJSON)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "api") && strings.Contains(joined, "graphql") {
+		if checksErr != "" {
+			fmt.Fprintln(os.Stderr, checksErr)
+			os.Exit(1)
+		}
+		printFakeCommitChecks(checksJSON)
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "api") && strings.Contains(joined, "actions/runs") {
@@ -444,6 +456,33 @@ func fakeCIGHSequenceHandler(args []string) {
 			os.Exit(1)
 		}
 		fmt.Println(entries[index])
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "api") && strings.Contains(joined, "graphql") {
+		data, err := os.ReadFile(checksPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		entries := strings.Split(strings.TrimSpace(string(data)), "\n")
+		if len(entries) == 0 || entries[0] == "" {
+			printFakeCommitChecks("[]")
+			os.Exit(0)
+		}
+		index := 0
+		if rawIndex, err := os.ReadFile(indexPath); err == nil {
+			if parsed, err := strconv.Atoi(strings.TrimSpace(string(rawIndex))); err == nil {
+				index = parsed
+			}
+		}
+		if index >= len(entries) {
+			index = len(entries) - 1
+		}
+		if err := os.WriteFile(indexPath, []byte(strconv.Itoa(index+1)), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		printFakeCommitChecks(entries[index])
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "api") && strings.Contains(joined, "actions/runs") {
@@ -588,6 +627,10 @@ func fakeCIGHNoChecksHandler(args []string) {
 		printFakeWorkflowRuns()
 		os.Exit(0)
 	}
+	if strings.Contains(joined, "api") && strings.Contains(joined, "graphql") {
+		printFakeCommitChecks("[]")
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
 		fmt.Println("OPEN")
 		os.Exit(0)
@@ -617,6 +660,53 @@ func printFakeWorkflowRuns() {
 		WorkflowRuns: runs,
 	}
 	encoded, err := json.Marshal([]any{page})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(string(encoded))
+}
+
+func printFakeCommitChecks(raw string) {
+	var checks []struct {
+		Name        string `json:"name"`
+		State       string `json:"state"`
+		Bucket      string `json:"bucket"`
+		CompletedAt string `json:"completedAt"`
+		Link        string `json:"link"`
+	}
+	if err := json.Unmarshal([]byte(raw), &checks); err != nil {
+		fmt.Println(raw)
+		return
+	}
+	nodes := make([]map[string]string, 0, len(checks))
+	for _, check := range checks {
+		status := "COMPLETED"
+		conclusion := check.State
+		if check.Bucket == "pending" {
+			status = "IN_PROGRESS"
+			conclusion = ""
+		}
+		nodes = append(nodes, map[string]string{
+			"__typename": "CheckRun", "name": check.Name, "status": status,
+			"conclusion": conclusion, "completedAt": check.CompletedAt, "detailsUrl": check.Link,
+		})
+	}
+	response := map[string]any{
+		"data": map[string]any{
+			"repository": map[string]any{
+				"object": map[string]any{
+					"statusCheckRollup": map[string]any{
+						"contexts": map[string]any{
+							"nodes":    nodes,
+							"pageInfo": map[string]any{"hasNextPage": false, "endCursor": ""},
+						},
+					},
+				},
+			},
+		},
+	}
+	encoded, err := json.Marshal(response)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

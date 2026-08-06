@@ -305,6 +305,33 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		}
 		pr.HeadSHA = headSHA
 	}
+	var checks []scm.Check
+	if headSHA != "" {
+		checks, err = h.getCommitChecks(ctx, headSHA)
+	} else {
+		checks, err = h.getPRChecks(ctx, selector)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if headSHA != "" {
+		runs, err := h.getWorkflowRunChecks(ctx, headSHA)
+		if err != nil {
+			return nil, err
+		}
+		checks = h.appendUnrepresentedWorkflowRuns(checks, runs)
+		currentHeadSHA, err := h.getPRHeadSHA(ctx, selector)
+		if err != nil {
+			return nil, err
+		}
+		if currentHeadSHA != headSHA {
+			return nil, fmt.Errorf("PR head changed during check discovery from %s to %s", headSHA, currentHeadSHA)
+		}
+	}
+	return checks, nil
+}
+
+func (h *Host) getPRChecks(ctx context.Context, selector string) ([]scm.Check, error) {
 	args := append([]string{"pr", "checks", selector}, h.repoArgs()...)
 	args = append(args, "--json", "name,state,bucket,completedAt,link")
 	cmd := h.cmd(ctx, "gh", args...)
@@ -342,21 +369,116 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 			Link:        strings.TrimSpace(r.Link),
 		})
 	}
-	if headSHA != "" {
-		runs, err := h.getWorkflowRunChecks(ctx, headSHA)
-		if err != nil {
-			return nil, err
-		}
-		checks = h.appendUnrepresentedWorkflowRuns(checks, runs)
-		currentHeadSHA, err := h.getPRHeadSHA(ctx, selector)
-		if err != nil {
-			return nil, err
-		}
-		if currentHeadSHA != headSHA {
-			return nil, fmt.Errorf("PR head changed during check discovery from %s to %s", headSHA, currentHeadSHA)
-		}
-	}
 	return checks, nil
+}
+
+const commitChecksQuery = `query($owner:String!,$name:String!,$oid:String!,$cursor:String){repository(owner:$owner,name:$name){object(expression:$oid){... on Commit{statusCheckRollup{contexts(first:100,after:$cursor){nodes{__typename ... on CheckRun{name status conclusion completedAt detailsUrl} ... on StatusContext{context state targetUrl}} pageInfo{hasNextPage endCursor}}}}}}}`
+
+func (h *Host) getCommitChecks(ctx context.Context, headSHA string) ([]scm.Check, error) {
+	repo := h.repoSlug()
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil, fmt.Errorf("resolve GitHub repository for commit checks: invalid repository %q", repo)
+	}
+	var checks []scm.Check
+	cursor := ""
+	for {
+		args := []string{"api"}
+		if h.host != "" {
+			args = append(args, "--hostname", h.host)
+		}
+		args = append(args, "graphql", "-f", "query="+commitChecksQuery,
+			"-F", "owner="+parts[0], "-F", "name="+parts[1], "-F", "oid="+strings.TrimSpace(headSHA))
+		if cursor != "" {
+			args = append(args, "-F", "cursor="+cursor)
+		}
+		out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("gh api checks for head commit: %s: %w", strings.TrimSpace(string(out)), err)
+		}
+		var response struct {
+			Data struct {
+				Repository *struct {
+					Object *struct {
+						Rollup *struct {
+							Contexts struct {
+								Nodes []struct {
+									Type        string `json:"__typename"`
+									Name        string `json:"name"`
+									Status      string `json:"status"`
+									Conclusion  string `json:"conclusion"`
+									CompletedAt string `json:"completedAt"`
+									DetailsURL  string `json:"detailsUrl"`
+									Context     string `json:"context"`
+									State       string `json:"state"`
+									TargetURL   string `json:"targetUrl"`
+								} `json:"nodes"`
+								PageInfo struct {
+									HasNextPage bool   `json:"hasNextPage"`
+									EndCursor   string `json:"endCursor"`
+								} `json:"pageInfo"`
+							} `json:"contexts"`
+						} `json:"statusCheckRollup"`
+					} `json:"object"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(out, &response); err != nil {
+			return nil, fmt.Errorf("parse checks for head commit: %w", err)
+		}
+		if response.Data.Repository == nil || response.Data.Repository.Object == nil {
+			return nil, errors.New("head commit check discovery returned no commit")
+		}
+		if response.Data.Repository.Object.Rollup == nil {
+			return checks, nil
+		}
+		contexts := response.Data.Repository.Object.Rollup.Contexts
+		for _, node := range contexts.Nodes {
+			check := scm.Check{}
+			switch node.Type {
+			case "CheckRun":
+				check.Name = strings.TrimSpace(node.Name)
+				check.State = strings.ToUpper(strings.TrimSpace(node.Conclusion))
+				if check.State == "" {
+					check.State = strings.ToUpper(strings.TrimSpace(node.Status))
+				}
+				check.Bucket = normalizeCheckBucket("", node.Conclusion)
+				if check.Bucket == "" {
+					check.Bucket = normalizeCheckBucket("", node.Status)
+				}
+				check.Link = strings.TrimSpace(node.DetailsURL)
+				if parsed, parseErr := time.Parse(time.RFC3339, node.CompletedAt); parseErr == nil {
+					check.CompletedAt = parsed
+				}
+			case "StatusContext":
+				check.Name = strings.TrimSpace(node.Context)
+				check.State = strings.ToUpper(strings.TrimSpace(node.State))
+				check.Bucket = normalizeCheckBucket("", node.State)
+				check.Link = strings.TrimSpace(node.TargetURL)
+			default:
+				return nil, fmt.Errorf("head commit check discovery returned unsupported context type %q", node.Type)
+			}
+			if check.Name == "" || check.Bucket == "" {
+				return nil, errors.New("head commit check discovery returned an incomplete context")
+			}
+			checks = append(checks, check)
+		}
+		if !contexts.PageInfo.HasNextPage {
+			return checks, nil
+		}
+		if contexts.PageInfo.EndCursor == "" || contexts.PageInfo.EndCursor == cursor {
+			return nil, errors.New("head commit check discovery returned an invalid page cursor")
+		}
+		cursor = contexts.PageInfo.EndCursor
+	}
+}
+
+func (h *Host) repoSlug() string {
+	repo := strings.TrimSpace(h.repo)
+	if prefix := strings.TrimSpace(h.host) + "/"; h.host != "" && len(repo) > len(prefix) && strings.EqualFold(repo[:len(prefix)], prefix) {
+		repo = repo[len(prefix):]
+	}
+	return repo
 }
 
 func (h *Host) appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.Check {
@@ -394,10 +516,7 @@ func (h *Host) getPRHeadSHA(ctx context.Context, selector string) (string, error
 }
 
 func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.Check, error) {
-	repo := strings.TrimSpace(h.repo)
-	if prefix := strings.TrimSpace(h.host) + "/"; h.host != "" && len(repo) > len(prefix) && strings.EqualFold(repo[:len(prefix)], prefix) {
-		repo = repo[len(prefix):]
-	}
+	repo := h.repoSlug()
 	endpoint := "repos/{owner}/{repo}/actions/runs"
 	if repo != "" {
 		endpoint = "repos/" + repo + "/actions/runs"
@@ -561,10 +680,7 @@ func (h *Host) actionsRunSegments(link string) ([]string, bool) {
 	if !strings.EqualFold(parsed.Hostname(), host) {
 		return nil, false
 	}
-	repo := strings.TrimSpace(h.repo)
-	if prefix := strings.TrimSpace(h.host) + "/"; h.host != "" && len(repo) > len(prefix) && strings.EqualFold(repo[:len(prefix)], prefix) {
-		repo = repo[len(prefix):]
-	}
+	repo := h.repoSlug()
 	if repo == "" {
 		return nil, false
 	}
