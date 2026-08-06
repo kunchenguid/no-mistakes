@@ -420,6 +420,6 @@ Fields not set here inherit from global config and then the built-in defaults.
 | `test.evidence.branch` | `string` | Inherits from global (default `no-mistakes/evidence`) |
 
 By default, test evidence stays in a temporary directory keyed by run ID and is referenced by local path.
-Set `store_in_repo: true` to publish it to an orphan evidence branch in this repository and link the artifacts from the PR body; evidence is never committed to the pushed branch, so it never reaches the default branch.
+For GitHub repositories, set `store_in_repo: true` to publish it to an orphan evidence branch in the code branch's push-target repository and link the artifacts from the PR body; evidence is never committed to the pushed branch, so it never reaches the default branch.
 `test.evidence.branch` is read ONLY from the trusted default-branch copy of this file, because it names a git ref the daemon pushes to; a pushed branch cannot redirect evidence commits.
-See [global config](/reference/global-config/#testevidence) for the full semantics, validation, and fail-closed behavior.
+See [global config](/no-mistakes/reference/global-config/#testevidence) for provider support, limits, validation, and fail-closed behavior.

@@ -35,7 +35,7 @@ That last point matters: the agent helps fill in gaps, but explicit repo
 commands are still the strongest way to make the baseline gate predictable.
 When user intent is available, the test step may still invoke the configured agent after `commands.test` succeeds to gather evidence that demonstrates the change.
 That testing invocation is expected to leave only intentional source or test-file changes in the worktree, while preserving requested evidence files under the dedicated evidence directory.
-That directory is always temporary and outside the worktree; repos can opt into publishing it to an orphan evidence branch with `test.evidence.store_in_repo`.
+That directory is always temporary and outside the worktree; GitHub repos can opt into publishing it to an orphan evidence branch with `test.evidence.store_in_repo`.
 
 ## Supported agents
 
