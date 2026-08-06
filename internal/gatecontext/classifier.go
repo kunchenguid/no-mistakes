@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -191,19 +192,61 @@ func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
 	return out, nil
 }
 
+const noSuchColumnPrefix = "no such column: "
+
+// preMigrationSchemaError reports whether err is a driver "no such column"
+// error naming a column that migrationStatements add to one of the given
+// tables. The name is compared as a whole identifier, never as a substring of
+// the message: this predicate fails an advisory read of the recursive-gate
+// guard open, so an allowlist entry that merely prefixes the genuinely missing
+// column (`intent` against `intent_source`) must not authorize the degrade.
+// Anything it cannot attribute to a migration stays an error.
 func preMigrationSchemaError(err error, tables ...string) bool {
-	msg := err.Error()
-	if !strings.Contains(msg, "no such column: ") {
+	missing, ok := missingColumnName(err)
+	if !ok {
 		return false
 	}
 	for _, table := range tables {
-		for _, col := range db.MigrationColumns(table) {
-			if strings.Contains(msg, "no such column: "+col) {
-				return true
-			}
+		if slices.Contains(db.MigrationColumns(table), missing) {
+			return true
 		}
 	}
 	return false
+}
+
+// missingColumnName extracts the bare column identifier from a "no such
+// column" driver error, dropping any table qualifier SQLite may include.
+func missingColumnName(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	msg := err.Error()
+	idx := strings.Index(msg, noSuchColumnPrefix)
+	if idx < 0 {
+		return "", false
+	}
+	name := msg[idx+len(noSuchColumnPrefix):]
+	if end := strings.IndexFunc(name, func(r rune) bool { return !isSQLIdentifierRune(r) }); end >= 0 {
+		name = name[:end]
+	}
+	if qualifier := strings.LastIndex(name, "."); qualifier >= 0 {
+		name = name[qualifier+1:]
+	}
+	if name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+func isSQLIdentifierRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	case r == '_', r == '.':
+		return true
+	default:
+		return false
+	}
 }
 
 func activeStepStatus(status types.StepStatus) bool {
