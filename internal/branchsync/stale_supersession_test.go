@@ -15,6 +15,11 @@ import (
 // run submits that exact head and publishes its rebased replacement, and a later
 // run submits the operator's exact local head and publishes the exact gate and
 // remote head. The old and later heads deliberately have no ancestry relation.
+// Git-backed supersession fixtures are process-heavy under -race. Bound this
+// file to one fixture at a time so it does not amplify the package-wide Git
+// process fan-out and starve unrelated safety tests.
+var staleSupersessionFixtureSlot = make(chan struct{}, 1)
+
 type staleSupersessionFixture struct {
 	t              *testing.T
 	ctx            context.Context
@@ -37,6 +42,8 @@ type staleSupersessionFixture struct {
 
 func newStaleSupersessionFixture(t *testing.T) *staleSupersessionFixture {
 	t.Helper()
+	staleSupersessionFixtureSlot <- struct{}{}
+	t.Cleanup(func() { <-staleSupersessionFixtureSlot })
 	ctx := context.Background()
 	root := t.TempDir()
 	branch := "feature/recover"
