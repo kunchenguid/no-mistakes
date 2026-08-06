@@ -337,8 +337,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 			// Before any failure reaches the fix agent, re-run the checks the
 			// provider itself reported as cancelled rather than as a job
-			// failure. A rerun costs another CI run of that job; escalating one
-			// costs an agent round that can edit code which was never broken.
+			// failure. A rerun costs another provider-side workflow run;
+			// escalating one costs an agent round that can edit code which was
+			// never broken.
 			// Genuine failures never take this path, and a merge conflict is
 			// excluded outright: no rerun can ever clear one, so it must reach
 			// the fix agent on its first observation.

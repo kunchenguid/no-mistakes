@@ -627,7 +627,7 @@ func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.
 // run/job identity `gh pr checks` reports: a link naming a job re-runs just that
 // job (and its dependencies), and a cancelled check naming only a run re-runs
 // the whole run. Anything else - a third-party status pointing at an external
-// dashboard, or a run path this backend cannot read - names no re-runnable job,
+// dashboard, or a run path this backend cannot read - names no re-runnable work,
 // and the error says so rather than falling back to a wider rerun.
 func (h *Host) RerunCheck(ctx context.Context, _ *scm.PR, check scm.Check) error {
 	rerunArgs, ok := h.rerunTargetArgs(check)
@@ -705,9 +705,9 @@ func (h *Host) actionsRunSegments(link string) ([]string, bool) {
 // shapes are deliberately rejected rather than downgraded to the whole run:
 // the browser's ".../runs/<run-id>/jobs/<n>" form, whose number is a per-run
 // display index the API answers with 404, and any other unrecognized path under
-// a run. Re-running a run re-runs every failed job in it, so widening one
-// check's rerun into all of them on an unparsable link is a blast radius this
-// policy must not take.
+// a run. Re-running a run can restart more than one job, so widening one
+// check's rerun on an unparsable link is a blast radius this policy must not
+// take.
 func (h *Host) actionsRerunTarget(link string) (runID, jobID string, ok bool) {
 	segments, ok := h.actionsRunSegments(link)
 	if !ok {
