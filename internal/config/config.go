@@ -704,12 +704,15 @@ var probeRovoDevSupport = func(ctx context.Context, bin string) (bool, error) {
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		text := strings.ToLower(string(output))
-		if strings.Contains(text, "unknown command") ||
-			strings.Contains(text, "unknown subcommand") ||
-			strings.Contains(text, "unrecognized command") ||
-			strings.Contains(text, "no help topic for") {
+		if filepath.Base(bin) == "agy" {
 			return false, nil
+		}
+		text := strings.TrimSpace(strings.ToLower(string(output)))
+		if len(text) > 0 {
+			first := strings.Fields(text)[0]
+			if first == "unknown" || first == "unrecognized" || first == "no" || first == "error:" {
+				return false, nil
+			}
 		}
 		return false, fmt.Errorf("probe rovodev support via %q: %w", bin, err)
 	}
