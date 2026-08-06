@@ -14,7 +14,8 @@ import (
 //
 // The framing depends on provenance (sctx.IntentSource):
 //
-//   - An EXPLICIT intent (Source=="agent", supplied via `axi run --intent`) is
+//   - An EXPLICIT intent (Source=="agent", supplied via `axi run --intent`) or
+//     an inherited explicit intent (Source=="rerun") is
 //     the driving agent's own statement of the goal, in the same trust domain
 //     as the operator running the gate. It is framed as AUTHORITATIVE
 //     acceptance criteria: the change must satisfy the required constraints and
@@ -52,14 +53,16 @@ func userIntentPromptSection(sctx *pipeline.StepContext) string {
 
 // intentSourceIsAuthoritative reports whether the user intent was supplied
 // explicitly by the driving agent (`axi run --intent`, persisted with
-// Source==db.RunIntentSourceAgent) rather than inferred from a transcript. An
+// Source==db.RunIntentSourceAgent) or inherited from an explicit prior run
+// (Source==db.RunIntentSourceRerun), rather than inferred from a transcript. An
 // explicit intent is the author's own statement of the goal, in the operator's
 // trust domain, so it is framed as authoritative acceptance criteria; an
 // inferred summary stays a low-confidence hint. See internal/daemon/manager.go
-// (Source: db.RunIntentSourceAgent) and internal/pipeline/steps/intent.go
-// (Source: result.AgentName) for the two provenance paths.
+// (Source: db.RunIntentSourceAgent or db.RunIntentSourceRerun) and
+// internal/pipeline/steps/intent.go (Source: result.AgentName) for the
+// explicit, inherited, and inferred provenance paths.
 func intentSourceIsAuthoritative(sctx *pipeline.StepContext) bool {
-	return sctx != nil && sctx.IntentSource == db.RunIntentSourceAgent
+	return sctx != nil && db.IsAuthoritativeRunIntentSource(sctx.IntentSource)
 }
 
 // intentConformanceReviewClause returns a review-prompt directive that turns
@@ -69,7 +72,8 @@ func intentSourceIsAuthoritative(sctx *pipeline.StepContext) bool {
 // required behavior still present?" question - a risk-only rereview scores a
 // removed feature as clean because a deleted behavior has no risk.
 //
-// It is emitted only for an explicit, authoritative intent (Source=="agent");
+// It is emitted only for an explicit or inherited authoritative intent
+// (Source=="agent" or Source=="rerun");
 // an inferred hint carries no such obligation, so the clause is empty and the
 // review prompt is unchanged for inferred runs. The obligation narrows the
 // agent's task to a closed classification of the diff against the criteria

@@ -13,7 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-func TestExecutor_FixEmitsDiffAndFixReviewStatus(t *testing.T) {
+func TestExecutor_FixEmitsFixReviewStatusWithoutStreamingTheDiff(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 
 	// Create a real git repo as workDir so DiffHead works
@@ -52,21 +52,22 @@ func TestExecutor_FixEmitsDiffAndFixReviewStatus(t *testing.T) {
 	if initialEvent.Status == nil || *initialEvent.Status != string(types.StepStatusAwaitingApproval) {
 		t.Errorf("expected awaiting_approval status, got %v", initialEvent.Status)
 	}
-	if initialEvent.Diff != nil {
-		t.Error("expected no diff on initial approval")
-	}
 
 	// Send fix action
 	exec.Respond(types.StepReview, types.ActionFix, nil)
 
-	// Find the fix_review event
+	// The gate is announced by status alone. The working-tree diff is
+	// derived state served on demand (ipc.MethodGetStepDiff); it is
+	// deliberately not attached here, because it is unbounded and a single
+	// oversized frame would break the whole subscription.
 	fixEvent := waitForEvent(t, events, ipc.EventStepCompleted, string(types.StepStatusFixReview))
-
-	// Verify diff is included in the event
-	if fixEvent.Diff == nil || *fixEvent.Diff == "" {
-		t.Error("expected diff in fix_review event")
-	} else if !strings.Contains(*fixEvent.Diff, "fix.txt") {
-		t.Errorf("expected diff to mention fix.txt, got: %s", *fixEvent.Diff)
+	if fixEvent.StepName == nil || *fixEvent.StepName != types.StepReview {
+		t.Errorf("fix_review event step = %v, want review", fixEvent.StepName)
+	}
+	if encoded, err := json.Marshal(fixEvent); err != nil {
+		t.Fatal(err)
+	} else if len(encoded) > 4096 {
+		t.Errorf("fix_review frame is %d bytes; the gate event must stay small enough that no worktree change can overflow it", len(encoded))
 	}
 
 	// Approve to end
@@ -223,10 +224,9 @@ func TestExecutor_FixReviewNoChanges(t *testing.T) {
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
 	exec.Respond(types.StepReview, types.ActionFix, nil)
 
-	// No changes made — diff should not be in event
 	fixEvent := waitForEvent(t, events, ipc.EventStepCompleted, string(types.StepStatusFixReview))
-	if fixEvent.Diff != nil {
-		t.Error("expected no diff when agent made no changes")
+	if fixEvent.Status == nil || *fixEvent.Status != string(types.StepStatusFixReview) {
+		t.Errorf("expected fix_review status, got %v", fixEvent.Status)
 	}
 
 	exec.Respond(types.StepReview, types.ActionApprove, nil)

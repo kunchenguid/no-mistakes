@@ -47,11 +47,24 @@ type RunManager struct {
 
 	branchLocks sync.Map // repoID+"/"+branch → *sync.Mutex
 
-	subMu          sync.RWMutex
-	subscribers    map[string][]chan<- ipc.Event // runID → subscriber channels
-	completedRuns  map[string]bool               // runIDs whose goroutines have finished
-	completedOrder []string                      // insertion order for FIFO eviction
+	// subMu guards the subscriber set and the per-run state revisions. It is
+	// a plain Mutex, not an RWMutex, because revision assignment and fan-out
+	// must be one atomic step: if two concurrent state events could be
+	// enqueued out of revision order, a consumer's monotonic guard would
+	// permanently discard the older one's payload. The critical section
+	// contains no blocking operation and no I/O, so hold time is
+	// O(subscribers) memory writes.
+	subMu          sync.Mutex
+	subscribers    map[string][]*eventMailbox // runID → subscriber mailboxes
+	stateRevs      map[string]int64           // runID → monotonic state revision
+	completedRuns  map[string]bool            // runIDs whose goroutines have finished
+	completedOrder []string                   // insertion order for FIFO eviction
 }
+
+// maxSubscribersPerRun bounds the global mailbox footprint: queued bytes can
+// never exceed activeRuns × maxSubscribersPerRun × mailboxMaxBytes. Refusing
+// past the cap is an ordinary error, never unbounded growth.
+const maxSubscribersPerRun = 32
 
 // NewRunManager creates a RunManager. Pass nil for stepFactory to use default steps.
 func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *RunManager {
@@ -65,7 +78,8 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 		db:            database,
 		paths:         p,
 		steps:         stepFactory,
-		subscribers:   make(map[string][]chan<- ipc.Event),
+		subscribers:   make(map[string][]*eventMailbox),
+		stateRevs:     make(map[string]int64),
 		completedRuns: make(map[string]bool),
 	}
 }
@@ -175,7 +189,7 @@ func validateRecoveredSessionProviders(database *db.DB, runID string, ag agent.A
 		if session.Agent == "" || session.SessionID == "" {
 			return fmt.Errorf("recovered run has incomplete session metadata")
 		}
-		if !agent.SupportsSessionProvider(ag, session.Agent) {
+		if session.Role == string(pipeline.SessionRoleFixer) && !agent.SupportsSessionProvider(ag, session.Agent) {
 			return fmt.Errorf("session provider %q is no longer configured", session.Agent)
 		}
 	}
@@ -359,54 +373,99 @@ func agentListsEqual(a, b []types.AgentName) bool {
 	return true
 }
 
-// Subscribe registers a channel to receive events for a run.
-// Returns the channel and an unsubscribe function.
-// If the run has already completed, the returned channel is immediately closed.
-func (m *RunManager) Subscribe(runID string) (<-chan ipc.Event, func()) {
-	ch := make(chan ipc.Event, 64)
+// Subscribe registers a subscriber mailbox for a run.
+//
+// The returned subscription always opens with a stream-gap frame, so a
+// subscriber's first action is always one authoritative read. That makes
+// attach and reconnect converge without each consumer needing its own
+// subscribe-then-reconcile ordering rule. A run that has already completed
+// yields that one gap and then finishes.
+func (m *RunManager) Subscribe(runID string) (*Subscription, error) {
 	m.subMu.Lock()
+	defer m.subMu.Unlock()
+
+	mb := newEventMailbox(runID, m.stateRevs[runID])
 	if m.completedRuns[runID] {
-		m.subMu.Unlock()
-		close(ch)
-		return ch, func() {}
+		mb.close()
+		return &Subscription{mb: mb, unsub: func() {}}, nil
 	}
-	m.subscribers[runID] = append(m.subscribers[runID], ch)
-	m.subMu.Unlock()
+	if len(m.subscribers[runID]) >= maxSubscribersPerRun {
+		return nil, fmt.Errorf("run %s already has the maximum of %d event subscribers", runID, maxSubscribersPerRun)
+	}
+	m.subscribers[runID] = append(m.subscribers[runID], mb)
 
+	var once sync.Once
 	unsub := func() {
-		m.subMu.Lock()
-		defer m.subMu.Unlock()
-		subs := m.subscribers[runID]
-		for i, s := range subs {
-			if s == ch {
-				m.subscribers[runID] = append(subs[:i], subs[i+1:]...)
-				break
+		once.Do(func() {
+			m.subMu.Lock()
+			subs := m.subscribers[runID]
+			for i, s := range subs {
+				if s == mb {
+					m.subscribers[runID] = append(subs[:i], subs[i+1:]...)
+					break
+				}
 			}
-		}
+			if len(m.subscribers[runID]) == 0 {
+				delete(m.subscribers, runID)
+			}
+			m.subMu.Unlock()
+			mb.release()
+		})
 	}
-	return ch, unsub
+	return &Subscription{mb: mb, unsub: unsub}, nil
 }
 
-// broadcast sends an event to all subscribers of the event's run.
+// Subscription is one subscriber's view of a run's event stream. It owns no
+// goroutine: the caller drives it with Next.
+type Subscription struct {
+	mb    *eventMailbox
+	unsub func()
+}
+
+// Next blocks until the next frame is available and returns it. ok is false
+// once the stream is finished or ctx is done.
+func (s *Subscription) Next(ctx context.Context) (ipc.Event, bool) { return s.mb.next(ctx) }
+
+// Close unsubscribes and releases every retained payload. It is idempotent.
+func (s *Subscription) Close() { s.unsub() }
+
+// StateRev returns the current monotonic state revision for a run.
+//
+// A caller serving an authoritative snapshot must sample this BEFORE reading
+// the database. Every producer writes state and only then broadcasts, so a
+// revision sampled first is never newer than the snapshot that follows it:
+// every event at or below it is already reflected in that read, and every
+// event above it still reaches the subscriber and still applies on top.
+func (m *RunManager) StateRev(runID string) int64 {
+	m.subMu.Lock()
+	defer m.subMu.Unlock()
+	return m.stateRevs[runID]
+}
+
+// broadcast stamps a state revision and publishes an event to every subscriber
+// of the event's run. It performs no blocking channel operation and no I/O, so
+// the executor can never be stalled by a slow or dead subscriber.
 func (m *RunManager) broadcast(event ipc.Event) {
-	m.subMu.RLock()
-	defer m.subMu.RUnlock()
-	for _, ch := range m.subscribers[event.RunID] {
-		select {
-		case ch <- event:
-		default:
-			slog.Debug("dropped event for slow subscriber", "run_id", event.RunID, "type", event.Type)
-		}
+	m.subMu.Lock()
+	defer m.subMu.Unlock()
+	if ipc.ClassOf(event.Type) == ipc.ClassState {
+		m.stateRevs[event.RunID]++
+		event.StateRev = m.stateRevs[event.RunID]
+	}
+	for _, mb := range m.subscribers[event.RunID] {
+		mb.publish(event)
 	}
 }
 
-// closeSubscribers closes all subscriber channels for a run and marks it
-// as completed so future Subscribe calls return an immediately-closed channel.
+// closeSubscribers soft-closes every subscriber for a run and marks the run
+// completed so future Subscribe calls return a gapped, immediately-finished
+// subscription. Soft close still drains queued frames and any pending gap, so
+// a coalesced terminal transition cannot be discarded by completion.
 func (m *RunManager) closeSubscribers(runID string) {
 	m.subMu.Lock()
 	defer m.subMu.Unlock()
-	for _, ch := range m.subscribers[runID] {
-		close(ch)
+	for _, mb := range m.subscribers[runID] {
+		mb.close()
 	}
 	delete(m.subscribers, runID)
 	m.completedRuns[runID] = true
@@ -415,6 +474,7 @@ func (m *RunManager) closeSubscribers(runID string) {
 		half := len(m.completedOrder) / 2
 		for _, id := range m.completedOrder[:half] {
 			delete(m.completedRuns, id)
+			delete(m.stateRevs, id)
 		}
 		m.completedOrder = m.completedOrder[half:]
 	}
@@ -542,8 +602,9 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 }
 
 // HandleRerun creates a new run for the latest gate head on a branch. An
-// optional intent is stamped onto the new run.
-func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, skipSteps []types.StepName, intent string) (string, error) {
+// explicit intent overrides the selected run. Otherwise an authoritative
+// intent is inherited byte-for-byte; runs without one infer intent afresh.
+func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -580,13 +641,36 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch string, ski
 	if latestForBranch == nil {
 		return "", fmt.Errorf("no previous run for branch %s", branch)
 	}
+	selectedRun := latestForBranch
+	if previousRunID != "" {
+		selectedRun, err = m.db.GetRun(previousRunID)
+		if err != nil {
+			return "", fmt.Errorf("get selected run: %w", err)
+		}
+		if selectedRun == nil || selectedRun.RepoID != repoID || selectedRun.Branch != branch {
+			return "", fmt.Errorf("selected run %s does not belong to repo %s branch %s", previousRunID, repoID, branch)
+		}
+	}
 
 	baseSHA := latestForBranch.BaseSHA
 	if matchingHead != nil {
 		baseSHA = matchingHead.BaseSHA
 	}
 
-	return m.startRun(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent)
+	intentSource := db.RunIntentSourceAgent
+	if strings.TrimSpace(intent) == "" {
+		intentSource = ""
+		if selectedRun.Intent != nil && selectedRun.IntentSource != nil &&
+			db.IsAuthoritativeRunIntentSource(*selectedRun.IntentSource) {
+			// Do not normalize or regenerate this value. The selected run's
+			// persisted bytes are the canonical acceptance criteria for the
+			// replacement run.
+			intent = *selectedRun.Intent
+			intentSource = db.RunIntentSourceRerun
+		}
+	}
+
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
 }
 
 // fetchRunDefaultBranch fetches the trusted branch from the refreshed
@@ -607,6 +691,13 @@ func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) e
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
 func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent)
+}
+
+// startRunWithIntentSource is the common run-creation path. source is empty
+// when no intent is supplied, RunIntentSourceAgent for a new explicit
+// override, and RunIntentSourceRerun for inherited explicit intent.
+func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -644,27 +735,22 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 	// Cancel any active run for this repo+branch.
 	m.cancelActiveRuns(repo.ID, branch)
 
-	// Create run record.
-	run, err := m.db.InsertRun(repo.ID, branch, headSHA, baseSHA)
+	storedIntent := intent
+	if source != db.RunIntentSourceRerun {
+		storedIntent = strings.TrimSpace(storedIntent)
+	}
+	var runIntent *db.RunIntent
+	if strings.TrimSpace(storedIntent) != "" {
+		if source == "" {
+			source = db.RunIntentSourceAgent
+		}
+		runIntent = &db.RunIntent{Summary: storedIntent, Source: source, Score: 1}
+	}
+
+	run, err := m.db.InsertRunWithIntent(repo.ID, branch, headSHA, baseSHA, runIntent)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
-	}
-
-	// Stamp an agent-supplied intent onto the run before the pipeline starts,
-	// so the intent step finds it already present and skips transcript-based
-	// inference. A persist failure is non-fatal: the intent step would simply
-	// fall back to inference.
-	if trimmed := strings.TrimSpace(intent); trimmed != "" {
-		if err := m.db.UpdateRunIntent(run.ID, db.RunIntent{Summary: trimmed, Source: db.RunIntentSourceAgent, Score: 1}); err != nil {
-			slog.Warn("failed to persist agent-supplied intent", "run_id", run.ID, "error", err)
-		} else {
-			run.Intent = &trimmed
-			source := db.RunIntentSourceAgent
-			run.IntentSource = &source
-			score := 1.0
-			run.IntentScore = &score
-		}
 	}
 
 	// Create worktree from the gate bare repo.

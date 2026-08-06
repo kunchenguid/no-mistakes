@@ -236,7 +236,7 @@ Check the [Provider Integration](/no-mistakes/guides/provider-integration/) requ
 Symptom: CI step keeps monitoring an open PR longer than expected, or pauses after the idle timeout.
 
 Monitoring while the PR remains open - even after checks are currently healthy - is intended behavior, because a later default-branch update can make the PR conflict or rerun CI.
-Once the provider reports the PR ready, the CI panel shows `✓ Checks passed` and the terminal title switches to `Checks passed`, so you can tell when to go merge the PR. The [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) owns the exact readiness and signal-clearing rules, including GitHub Actions runs that do not appear in the PR check rollup.
+Once the CI monitor reports readiness and the PR is mergeable, the CI panel shows `✓ Checks passed` and the terminal title switches to `Checks passed`, so you can tell when to go merge the PR; the signal clears automatically if checks start re-running or a new failure appears. A trusted [`no_ci: true` declaration](/no-mistakes/reference/repo-config/#no_ci) can establish readiness for a zero-check repository; an empty forge response without that declaration is not ready. The [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) owns the exact readiness and signal-clearing rules, including GitHub Actions runs that do not appear in the PR check rollup.
 
 How long the monitor runs is controlled by `ci_timeout` in `~/.no-mistakes/config.yaml`, an idle timeout that re-arms whenever the upstream default branch advances; the [`ci_timeout` field reference](/no-mistakes/reference/global-config/#ci_timeout) owns the default, the `unlimited` keyword and its aliases, and the exact re-arm semantics.
 Older config files may still contain an explicit `ci_timeout: "4h"` value; update it if you want the newer default behavior.
@@ -263,7 +263,8 @@ no-mistakes axi logs --step <step> --full
 The `active_steps` table shows how long the step has been active, the latest activity, the native subprocess PID when one is running, and the current round such as `round 1`, `auto-fix 1/3`, or `fix 2`.
 The step log records native subprocess start, exit, and retry lines plus markers for automatic and user-triggered fix rounds.
 If the step is parked at a gate, use `no-mistakes axi respond` instead of waiting.
-If the run is genuinely stuck and you want to discard it, use `no-mistakes axi abort` and then start a new run.
+If the run is genuinely stuck and you want to discard it, use `no-mistakes axi abort`.
+Start a new run only after abort confirms the terminal state; see the [abort command contract](/no-mistakes/reference/cli/#no-mistakes-axi-abort).
 
 ## Worktree won't clean up
 

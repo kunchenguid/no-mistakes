@@ -169,7 +169,9 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 			if _, err := sctx.RunAgentSession(SessionRoleFixer, agent.RunOpts{Prompt: "fix"}); err != nil {
 				return nil, err
 			}
-			if _, err := sctx.RunAgentSession(SessionRoleReviewer, agent.RunOpts{Prompt: "rereview"}); err != nil {
+			// The rereview is deliberately session-free (see ReviewStep): it
+			// must never resume the session that prescribed the fixes.
+			if _, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "rereview"}); err != nil {
 				return nil, err
 			}
 			return &StepOutcome{ReviewApprovedHeadSHA: "2222222222222222222222222222222222222222"}, nil
@@ -207,8 +209,10 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	if fake.calls[0].session == nil || fake.calls[0].session.ID != "fixer-session" {
 		t.Fatalf("fixer session = %+v, want fixer-session", fake.calls[0].session)
 	}
-	if fake.calls[1].session == nil || fake.calls[1].session.ID != "reviewer-session" {
-		t.Fatalf("reviewer session = %+v, want reviewer-session", fake.calls[1].session)
+	// The legacy persisted reviewer row must not break recovery, and the
+	// rereview must not resume it.
+	if fake.calls[1].session != nil {
+		t.Fatalf("rereview session = %+v, want session-free", fake.calls[1].session)
 	}
 	resumed, err := database.GetRun(run.ID)
 	if err != nil {

@@ -95,11 +95,13 @@ type stepView struct {
 
 // runView is a render-ready view of a pipeline run.
 type runView struct {
-	ID      string
-	Branch  string
-	Status  string
-	HeadSHA string
-	PRURL   string
+	ID          string
+	Branch      string
+	Status      string
+	HeadSHA     string
+	PRURL       string
+	CIReady     bool
+	CIReadyNoCI bool
 	// AwaitingAgentSince is the unix-seconds time the run parked at a gate
 	// awaiting the driving agent, or nil when the run is not parked. It powers
 	// the top-level parked signal in the run object.
@@ -113,6 +115,8 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 		Branch:             r.Branch,
 		Status:             string(r.Status),
 		HeadSHA:            r.HeadSHA,
+		CIReady:            r.CIReady,
+		CIReadyNoCI:        r.CIReadyNoCI,
 		AwaitingAgentSince: r.AwaitingAgentSince,
 	}
 	if r.PRURL != nil {

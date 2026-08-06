@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	toon "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -344,7 +347,7 @@ func TestAxiStatusCachedBranchSyncDoesNotFetch(t *testing.T) {
 }
 
 type cliRecoverFixture struct {
-	local, gate, submitted, preserved string
+	local, gate, submitted, preserved, runID string
 }
 
 // newCLIRecoverFixture reproduces the stranded custody state end to end for
@@ -426,6 +429,445 @@ func newCLIRecoverFixture(t *testing.T) cliRecoverFixture {
 	}
 	chdir(t, local)
 	return cliRecoverFixture{local: local, gate: gate, submitted: submitted, preserved: preserved}
+}
+
+// newCLIUnmovedAbortFixture reproduces the pre-push abort taken when delivery
+// switches away from the pipeline: the gate holds the submitted branch, the
+// run is terminal with head_sha still equal to submitted_head_sha, and no push
+// provenance or custody stamp exists.
+func newCLIUnmovedAbortFixture(t *testing.T) cliRecoverFixture {
+	t.Helper()
+	nmHome := filepath.Join(t.TempDir(), "nm-home")
+	t.Setenv("NM_HOME", nmHome)
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	cliGit(t, root, "init", "--bare", remote)
+	local := filepath.Join(root, "operator")
+	cliGit(t, root, "init", "-b", "main", local)
+	cliGit(t, local, "config", "user.name", "Test")
+	cliGit(t, local, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(local, "file.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "add", "file.txt")
+	cliGit(t, local, "commit", "-m", "base")
+	base := cliGit(t, local, "rev-parse", "HEAD")
+	cliGit(t, local, "checkout", "-b", "feature/recover")
+	if err := os.WriteFile(filepath.Join(local, "file.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "commit", "-am", "feature")
+	submitted := cliGit(t, local, "rev-parse", "HEAD")
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registeredRoot, err := git.FindGitRoot(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := database.InsertRepo(registeredRoot, remote, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gate := p.RepoDir(repo.ID)
+	cliGit(t, filepath.Dir(gate), "init", "--bare", gate)
+	cliGit(t, local, "push", gate, "refs/heads/feature/recover:refs/heads/feature/recover")
+
+	run, err := database.InsertRun(repo.ID, "feature/recover", submitted, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatusWithVerifiedHead(run.ID, types.RunCancelled, submitted); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, local)
+	return cliRecoverFixture{local: local, gate: gate, submitted: submitted, preserved: submitted, runID: run.ID}
+}
+
+// TestAxiSurfacesReportUserOwnedReleaseAfterUnmovedPrePushAbort walks the
+// public CLI surfaces through the pre-push-abort-with-unmoved-head shape:
+// cancellation releases ownership, so status must identify the terminal run
+// and report the exact branch and head as user-owned and immediately usable
+// with no sync action, the check must be a non-blocking no-op instead of
+// wrong-branch ambiguity, and a recovery request must be an idempotent no-op
+// that mutates nothing.
+func TestAxiSurfacesReportUserOwnedReleaseAfterUnmovedPrePushAbort(t *testing.T) {
+	f := newCLIUnmovedAbortFixture(t)
+
+	status, err := executeCmd("axi", "status")
+	if err != nil {
+		t.Fatalf("status: %v\n%s", err, status)
+	}
+	var document struct {
+		Run struct {
+			Status string `toon:"status"`
+		} `toon:"run"`
+		BranchSync struct {
+			State string `toon:"state"`
+			Local struct {
+				Branch string `toon:"branch"`
+				Head   string `toon:"head"`
+			} `toon:"local"`
+			Pipeline struct {
+				SubmittedHead string `toon:"submitted_head"`
+				CurrentHead   string `toon:"current_head"`
+			} `toon:"pipeline"`
+			Relation string `toon:"relation"`
+			Safety   string `toon:"safety"`
+		} `toon:"branch_sync"`
+	}
+	if err := toon.UnmarshalString(status, &document); err != nil {
+		t.Fatalf("decode status: %v\n%s", err, status)
+	}
+	if got, want := document.Run.Status, string(types.RunCancelled); got != want {
+		t.Errorf("run status = %q, want %q", got, want)
+	}
+	if got, want := document.BranchSync.State, "user_owned"; got != want {
+		t.Errorf("branch sync state = %q, want %q", got, want)
+	}
+	if got, want := document.BranchSync.Local.Branch, "feature/recover"; got != want {
+		t.Errorf("local branch = %q, want %q", got, want)
+	}
+	if got, want := document.BranchSync.Local.Head, f.submitted; got != want {
+		t.Errorf("local head = %q, want %q", got, want)
+	}
+	if got, want := document.BranchSync.Pipeline.SubmittedHead, f.submitted; got != want {
+		t.Errorf("submitted head = %q, want %q", got, want)
+	}
+	if got, want := document.BranchSync.Pipeline.CurrentHead, f.submitted; got != want {
+		t.Errorf("current head = %q, want %q", got, want)
+	}
+	if got, want := document.BranchSync.Relation, "equal"; got != want {
+		t.Errorf("relation = %q, want %q", got, want)
+	}
+	if got, want := document.BranchSync.Safety, "user_owned"; got != want {
+		t.Errorf("safety = %q, want %q", got, want)
+	}
+	for _, forbidden := range []string{"recover_custody", "next_action", "blocked_wrong_branch", "pipeline_owned"} {
+		if strings.Contains(status, forbidden) {
+			t.Errorf("released status must not contain %q:\n%s", forbidden, status)
+		}
+	}
+
+	check, err := executeCmd("axi", "sync", "--check")
+	if err != nil {
+		t.Fatalf("released check must be a non-blocking no-op: %v\n%s", err, check)
+	}
+	if !strings.Contains(check, "state: user_owned") {
+		t.Errorf("check missing user_owned state:\n%s", check)
+	}
+	if strings.Contains(check, "blocked_wrong_branch") || strings.Contains(check, "recover_custody") {
+		t.Errorf("released check reports stale custody semantics:\n%s", check)
+	}
+
+	apply, err := executeCmd("axi", "sync")
+	if err != nil {
+		t.Fatalf("released sync must be a non-blocking no-op: %v\n%s", err, apply)
+	}
+	if !strings.Contains(apply, "state: user_owned") || !strings.Contains(apply, "changed: false") {
+		t.Errorf("released sync output unexpected:\n%s", apply)
+	}
+
+	for round := 0; round < 2; round++ {
+		recover, err := executeCmd("axi", "sync", "--recover")
+		if err != nil {
+			t.Fatalf("released recover round %d: %v\n%s", round, err, recover)
+		}
+		for _, want := range []string{"recovered: true", "state: user_owned", "changed: false"} {
+			if !strings.Contains(recover, want) {
+				t.Errorf("released recover round %d missing %q:\n%s", round, want, recover)
+			}
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.submitted {
+		t.Fatalf("HEAD after released recover = %s, want %s", got, f.submitted)
+	}
+	if got := cliGit(t, f.local, "branch", "--show-current"); got != "feature/recover" {
+		t.Fatalf("branch after released recover = %q", got)
+	}
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	run, err := database.GetRun(f.runID)
+	if err != nil || run == nil {
+		t.Fatalf("reload run: %#v, %v", run, err)
+	}
+	if run.CustodyReturnedAt != nil {
+		t.Fatal("released recover stamped custody on the run row")
+	}
+}
+
+type cliStaleUnpublishedFixture struct {
+	local, gate, base, localHead, unpublished, pushed string
+}
+
+type olderTargetProvenance int
+
+const (
+	olderTargetMatching olderTargetProvenance = iota
+	olderTargetConflicting
+	olderTargetMissing
+)
+
+// newCLIStaleUnpublishedFixture builds the exact same-branch provenance race:
+// an older terminal run owns U, while a newer run has an exact pushed
+// descendant P. The gate and remote are both at P, and the clean worktree is
+// still at L, the ancestor before U.
+func newCLIStaleUnpublishedFixture(t *testing.T) cliStaleUnpublishedFixture {
+	t.Helper()
+	return newCLIStaleUnpublishedFixtureWithOptions(t, true, olderTargetMatching)
+}
+
+func newCLIStaleUnpublishedFixtureWithRelation(t *testing.T, pushedDescendant bool) cliStaleUnpublishedFixture {
+	t.Helper()
+	return newCLIStaleUnpublishedFixtureWithOptions(t, pushedDescendant, olderTargetMatching)
+}
+
+func newCLIStaleUnpublishedFixtureWithOptions(t *testing.T, pushedDescendant bool, provenance olderTargetProvenance) cliStaleUnpublishedFixture {
+	t.Helper()
+	nmHome := filepath.Join(t.TempDir(), "nm-home")
+	t.Setenv("NM_HOME", nmHome)
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	cliGit(t, root, "init", "--bare", remote)
+	local := filepath.Join(root, "operator")
+	cliGit(t, root, "init", "-b", "main", local)
+	cliGit(t, local, "config", "user.name", "Test")
+	cliGit(t, local, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(local, "file.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "add", "file.txt")
+	cliGit(t, local, "commit", "-m", "base")
+	base := cliGit(t, local, "rev-parse", "HEAD")
+	cliGit(t, local, "checkout", "-b", "feature/sync")
+	if err := os.WriteFile(filepath.Join(local, "file.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, local, "commit", "-am", "feature")
+	localHead := cliGit(t, local, "rev-parse", "HEAD")
+
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registeredRoot, err := git.FindGitRoot(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := database.InsertRepo(registeredRoot, remote, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := p.RepoDir(repo.ID)
+	cliGit(t, filepath.Dir(gate), "init", "--bare", gate)
+
+	pipeline := filepath.Join(root, "pipeline-old")
+	cliGit(t, root, "-c", "core.autocrlf=false", "clone", local, pipeline)
+	cliGit(t, pipeline, "config", "user.name", "Pipeline")
+	cliGit(t, pipeline, "config", "user.email", "pipeline@example.com")
+	cliGit(t, pipeline, "checkout", "feature/sync")
+	if err := os.WriteFile(filepath.Join(pipeline, "older-fix.txt"), []byte("older\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, pipeline, "add", "older-fix.txt")
+	cliGit(t, pipeline, "commit", "-m", "older pipeline fix")
+	unpublished := cliGit(t, pipeline, "rev-parse", "HEAD")
+	cliGit(t, pipeline, "push", gate, "HEAD:refs/heads/feature/sync")
+
+	older, err := database.InsertRun(repo.ID, "feature/sync", localHead, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provenance != olderTargetMissing {
+		fingerprint := branchsync.TargetFingerprint(remote)
+		if provenance == olderTargetConflicting {
+			fingerprint = branchsync.TargetFingerprint(remote + "-previous")
+		}
+		if err := database.UpdateRunPushBinding(older.ID, db.PushBinding{HeadSHA: localHead, TargetKind: "upstream", TargetFingerprint: fingerprint, Ref: "refs/heads/feature/sync"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := database.UpdateRunHeadSHA(older.ID, unpublished); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(older.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ensure the database's created_at ordering cannot depend on ULID tie
+	// breaking: the pushed rerun is definitively newer than the failed run.
+	time.Sleep(1100 * time.Millisecond)
+	newer := filepath.Join(root, "pipeline-new")
+	pipelineSource := gate
+	if !pushedDescendant {
+		pipelineSource = local
+	}
+	cliGit(t, root, "-c", "core.autocrlf=false", "clone", pipelineSource, newer)
+	cliGit(t, newer, "config", "user.name", "Pipeline")
+	cliGit(t, newer, "config", "user.email", "pipeline@example.com")
+	cliGit(t, newer, "checkout", "feature/sync")
+	if err := os.WriteFile(filepath.Join(newer, "newer-fix.txt"), []byte("newer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cliGit(t, newer, "add", "newer-fix.txt")
+	cliGit(t, newer, "commit", "-m", "newer pipeline fix")
+	pushed := cliGit(t, newer, "rev-parse", "HEAD")
+	cliGit(t, newer, "push", remote, "HEAD:refs/heads/feature/sync")
+	gatePushArgs := []string{"push", gate, "HEAD:refs/heads/feature/sync"}
+	if !pushedDescendant {
+		gatePushArgs = []string{"push", "--force", gate, "HEAD:refs/heads/feature/sync"}
+	}
+	cliGit(t, newer, gatePushArgs...)
+
+	latestSubmitted := unpublished
+	if !pushedDescendant {
+		latestSubmitted = localHead
+	}
+	latest, err := database.InsertRun(repo.ID, "feature/sync", latestSubmitted, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunHeadSHA(latest.ID, pushed); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunPushBinding(latest.ID, db.PushBinding{HeadSHA: pushed, TargetKind: "upstream", TargetFingerprint: branchsync.TargetFingerprint(remote), Ref: "refs/heads/feature/sync"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(latest.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, local)
+	return cliStaleUnpublishedFixture{local: local, gate: gate, base: base, localHead: localHead, unpublished: unpublished, pushed: pushed}
+}
+
+func TestAxiSyncOlderUnpublishedRunSelectsNewerPushedDescendant(t *testing.T) {
+	f := newCLIStaleUnpublishedFixture(t)
+	out, err := executeCmd("axi", "sync")
+	if err != nil {
+		t.Fatalf("descendant sync: %v\n%s", err, out)
+	}
+	for _, want := range []string{"state: synchronized", "status: completed", f.pushed, "changed: true"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("descendant sync missing %q:\n%s", want, out)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.pushed {
+		t.Fatalf("sync HEAD = %s, want pushed descendant %s", got, f.pushed)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/sync"); got != f.pushed {
+		t.Fatalf("sync moved gate to %s, want unchanged pushed head %s", got, f.pushed)
+	}
+}
+
+func TestAxiSyncOlderUnpublishedNonAncestorStillRefuses(t *testing.T) {
+	f := newCLIStaleUnpublishedFixtureWithRelation(t, false)
+	out, err := executeCmd("axi", "sync")
+	var ee *exitError
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("non-ancestor sync should refuse, got %#v\n%s", err, out)
+	}
+	for _, want := range []string{"state: pipeline_owned", "status: failed", f.unpublished} {
+		if !strings.Contains(out, want) {
+			t.Errorf("non-ancestor sync missing refusal evidence %q:\n%s", want, out)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.localHead {
+		t.Fatalf("refused non-ancestor sync moved HEAD to %s", got)
+	}
+
+	out, err = executeCmd("axi", "sync", "--recover")
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("non-ancestor recovery should refuse, got %#v\n%s", err, out)
+	}
+	if !strings.Contains(out, "safety: blocked_recover_unverified_head") {
+		t.Fatalf("non-ancestor recovery did not remain fail-closed:\n%s", out)
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.localHead {
+		t.Fatalf("refused non-ancestor recovery moved HEAD to %s", got)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/sync"); got != f.pushed {
+		t.Fatalf("refused non-ancestor recovery moved gate to %s", got)
+	}
+}
+
+func TestAxiSyncOlderUnpublishedMissingGateDoesNotSupersede(t *testing.T) {
+	f := newCLIStaleUnpublishedFixture(t)
+	cliGit(t, f.gate, "update-ref", "-d", "refs/heads/feature/sync")
+
+	out, err := executeCmd("axi", "sync")
+	var ee *exitError
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("missing-gate sync should refuse, got %#v\n%s", err, out)
+	}
+	for _, want := range []string{"state: pipeline_owned", "status: failed", f.unpublished} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing-gate sync missing refusal evidence %q:\n%s", want, out)
+		}
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.localHead {
+		t.Fatalf("missing-gate refusal moved HEAD to %s", got)
+	}
+}
+
+func TestAxiSyncOlderUnpublishedTargetProvenanceRefusesTakeover(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		provenance olderTargetProvenance
+	}{
+		{name: "conflicting", provenance: olderTargetConflicting},
+		{name: "missing", provenance: olderTargetMissing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCLIStaleUnpublishedFixtureWithOptions(t, true, tc.provenance)
+			out, err := executeCmd("axi", "sync")
+			var ee *exitError
+			if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+				t.Fatalf("%s target provenance should refuse, got %#v\n%s", tc.name, err, out)
+			}
+			for _, want := range []string{"state: pipeline_owned", "status: failed", f.unpublished} {
+				if !strings.Contains(out, want) {
+					t.Errorf("%s target provenance missing refusal evidence %q:\n%s", tc.name, want, out)
+				}
+			}
+			if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != f.localHead {
+				t.Fatalf("refused %s target provenance moved HEAD to %s", tc.name, got)
+			}
+			if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/sync"); got != f.pushed {
+				t.Fatalf("refused %s target provenance moved gate to %s", tc.name, got)
+			}
+		})
+	}
 }
 
 func TestAxiSyncCheckSurfacesRecoveryForTerminalPrePushRun(t *testing.T) {

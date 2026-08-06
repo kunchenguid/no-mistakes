@@ -214,6 +214,7 @@ func TestSuccessfulReadRequestsDoNotLogAtInfo(t *testing.T) {
 	readMethods := []string{
 		ipc.MethodHealth,
 		ipc.MethodGetRun,
+		ipc.MethodGetStepDiff,
 		ipc.MethodGetRuns,
 		ipc.MethodGetRunsForHead,
 		ipc.MethodGetActiveRun,

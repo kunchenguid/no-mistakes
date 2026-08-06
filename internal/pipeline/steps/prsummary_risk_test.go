@@ -17,7 +17,7 @@ func TestBuildPipelineSummary_ReviewWithRisk(t *testing.T) {
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 1000}},
 	}
-	md, risk := BuildPipelineSummary(steps, rounds)
+	md, risk := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	if !strings.Contains(md, "⚠️ **Review** - 1 warning") {
 		t.Errorf("expected findings count in review line, got:\n%s", md)
@@ -44,7 +44,7 @@ func TestBuildPipelineSummary_EscapesFindingDescriptionsInDetails(t *testing.T) 
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 1000}},
 	}
 
-	md, _ := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	if !strings.Contains(md, "break &lt;/details&gt;&lt;summary&gt;oops&lt;/summary&gt; after") {
 		t.Errorf("expected finding description to be HTML-escaped, got:\n%s", md)
@@ -67,7 +67,7 @@ func TestBuildPipelineSummary_ReviewUsesFinalCleanState(t *testing.T) {
 			{Round: 2, Trigger: "auto_fix", FindingsJSON: &finalFindings, DurationMS: 700},
 		},
 	}
-	md, risk := BuildPipelineSummary(steps, rounds)
+	md, risk := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	if !strings.Contains(md, "🔧 **Review**") {
 		t.Errorf("expected fixed review status, got:\n%s", md)
@@ -104,7 +104,7 @@ func TestBuildPipelineSummary_ReviewShowsWarningForUnresolvedRiskWithoutFindings
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 1000}},
 	}
-	md, risk := BuildPipelineSummary(steps, rounds)
+	md, risk := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	if !strings.Contains(md, "⚠️ **Review** - medium risk") {
 		t.Errorf("expected medium-risk review status when no findings, got:\n%s", md)
@@ -129,7 +129,7 @@ func TestBuildPipelineSummary_ShowsParseFailureForInvalidRoundFindings(t *testin
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &invalidFindings, DurationMS: 1000}},
 	}
-	md, _ := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	if !strings.Contains(md, "failed to parse findings") {
 		t.Errorf("expected parse failure message for invalid round findings, got:\n%s", md)
@@ -158,7 +158,7 @@ func TestBuildPipelineSummary_DoesNotClaimFixedWhenFinalFindingsUnreadable(t *te
 			{Round: 2, Trigger: "auto_fix", FindingsJSON: &invalidFinalFindings, DurationMS: 600},
 		},
 	}
-	md, _ := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	if strings.Contains(md, "🔧 **Lint**") {
 		t.Errorf("did not expect fixed status when final findings are unreadable, got:\n%s", md)
@@ -184,7 +184,7 @@ func TestBuildPipelineSummary_ReviewDoesNotReuseInitialRiskWhenFinalUnreadable(t
 			{Round: 2, Trigger: "auto_fix", FindingsJSON: &invalidFinalFindings, DurationMS: 700},
 		},
 	}
-	md, risk := BuildPipelineSummary(steps, rounds)
+	md, risk := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	if !strings.Contains(md, "⚠️ **Review** - findings unavailable") {
 		t.Errorf("expected unavailable review status when final findings are unreadable, got:\n%s", md)
@@ -206,7 +206,7 @@ func TestBuildPipelineSummary_FindingSeverityEmoji(t *testing.T) {
 	rounds := map[string][]*db.StepRound{
 		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 1000}},
 	}
-	md, risk := BuildPipelineSummary(steps, rounds)
+	md, risk := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	if !strings.Contains(md, "🚨") {
 		t.Errorf("expected error emoji in details, got:\n%s", md)
@@ -237,7 +237,7 @@ func TestBuildPipelineSummary_ReviewUsesLatestRoundNotFirst(t *testing.T) {
 			{Round: 2, Trigger: "auto_fix", FindingsJSON: &latestFindings, DurationMS: 700},
 		},
 	}
-	_, risk := BuildPipelineSummary(steps, rounds)
+	_, risk := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	if strings.Contains(risk, "initial concern") {
 		t.Errorf("expected latest round risk, not stale first round, got: %q", risk)

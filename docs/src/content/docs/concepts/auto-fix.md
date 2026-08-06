@@ -35,6 +35,23 @@ When `commands.lint` is empty, that same invocation is a combined documentation-
 The lint step consumes a usable lint result from that pass instead of starting a second cold agent invocation; when the combined pass is skipped, cannot produce trustworthy structured output, or loses its in-memory result across a daemon restart, lint falls back to its own agent pass.
 Unresolved documentation findings and unresolved blocking lint findings pause for approval instead of entering another automatic fix loop.
 
+## Before the agent: deterministic CI reruns
+
+The CI step has one cheaper option than a fix round, and it tries it first.
+
+A check the provider reports as `cancelled` is the provider telling you about itself, not about your commit. Handing that to the fix agent spends an agent round reading a run that never tested anything, and the fix it invents edits code that was never broken. So when every terminally failed check on the pull request is cancelled and the configured budget authorizes a rerun, the CI step asks the provider to run those checks again for the same commit and keeps polling.
+
+That deterministic rerun sits strictly before the agent rounds described above:
+
+1. Every check finishes and at least one has failed.
+2. If all of those failures are cancelled checks, the pull request has no merge conflict, and the configured budget authorizes it, each one is re-run and the monitor keeps polling. No `auto_fix.ci` attempt is consumed.
+3. When cancellation is the only remaining issue, a check with no authorized or outstanding rerun pauses for a decision without consuming an `auto_fix.ci` attempt.
+4. Every other failure escalates into the `auto_fix.ci` loop on its first observation.
+
+[`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_transient) owns the budget, the exact classification, and every case that skips the rerun.
+
+Nothing that survives a rerun falls into the agent loop either. A check the provider cancels again is still not a verdict on the code, so it pauses for a decision instead of spending a fix round on a run that never tested anything. A cancellation no rerun is going to replace - the default budget is `0` - reaches that same decision directly: the provider has published its conclusion and will not replace it, so waiting on it would never end. A rerun costs another CI run of that job, so the budget is deliberately small and is spent when the rerun is requested, which bounds the loop by construction. Each rerun is announced in the step log, so a run that is waiting on one says so instead of looking stalled. Reruns never cross a head change: if the published branch head no longer matches the commit the run delivered, the step pauses with the expected and observed commits rather than re-running checks against a revision it never produced.
+
 ## Configuration
 
 Per-step attempt limits come from the `auto_fix` config object; the [`auto_fix` field reference](/no-mistakes/reference/global-config/#auto_fix) owns the defaults, per-step meanings, and the legacy alias.
@@ -97,7 +114,8 @@ A round stores its findings, duration, any selected finding IDs and whether that
 That merged payload can include per-finding user notes and user-authored findings added from the TUI or AXI interface.
 AXI status uses the same round history and the persisted auto-fix limit to show the active fix attempt, for example `auto-fix 1/3` or `fix 2`.
 The step log records a marker when each automatic or user-triggered fix round starts.
-The full round history remains available in the run log. The generated PR keeps earlier evidence step-scoped and shows only compact step status in its Pipeline section; the [pipeline steps reference](/no-mistakes/reference/pipeline-steps/#pr) owns the PR body and size-limit contract.
+The generated PR surfaces this recorded evidence in deterministic Risk Assessment, Testing, and Pipeline sections. The [pipeline steps reference](/no-mistakes/reference/pipeline-steps/#pr) owns the PR body composition and size-limit contract.
+The full round history remains available in the run log.
 
 Round trigger types:
 - `initial` - first execution

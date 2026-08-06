@@ -14,6 +14,31 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/config"
 )
 
+// pinCIMonitorClock takes a CI-monitor test off the wall clock and off the
+// network.
+//
+// The idle timeout is measured with step.now, and every poll re-arms it by
+// resolving the upstream default-branch tip - which, for a repo whose upstream
+// is gitlab.com, is a real fetch over the network. Leaving both live makes the
+// test assert that that round trip plus several fake-CLI subprocess spawns all
+// finish inside CITimeout; a loaded runner does not guarantee that, and when it
+// does not, the monitor times out before it has ever read a check and reports
+// "PR was still open when CI monitoring timed out" instead of the outcome under
+// test. None of these tests exercise timeout re-arming, so both inputs are
+// pinned to fixed values.
+func pinCIMonitorClock(step *CIStep) {
+	frozen := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	step.now = func() time.Time { return frozen }
+	step.baseBranchTip = func(context.Context) (string, bool) { return "base-tip-sha", true }
+}
+
+// failOnExtraPoll is the waitForNextPoll for a test whose step must resolve on
+// its first poll. Under a frozen clock nothing else would stop the loop, so a
+// regression has to surface as this error rather than as a hang.
+func failOnExtraPoll(context.Context, time.Duration) error {
+	return errors.New("CI monitor polled again instead of resolving on its first poll")
+}
+
 func TestCIStep_GitLabPassesWhenJobsPass(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -42,6 +67,7 @@ func TestCIStep_GitLabPassesWhenJobsPass(t *testing.T) {
 			return ctx.Err()
 		},
 	}
+	pinCIMonitorClock(step)
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected passing GitLab CI to keep monitoring while MR is open, got %v", err)
@@ -75,7 +101,8 @@ func TestCIStep_GitLabMergedMRExitsEarly(t *testing.T) {
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
-	step := &CIStep{}
+	step := &CIStep{waitForNextPoll: failOnExtraPoll}
+	pinCIMonitorClock(step)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +138,8 @@ func TestCIStep_GitLabFailureNeedsApproval(t *testing.T) {
 	sctx.Config.CITimeout = 5 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 
-	step := &CIStep{}
+	step := &CIStep{waitForNextPoll: failOnExtraPoll}
+	pinCIMonitorClock(step)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +173,8 @@ func TestCIStep_GitLabMergeConflictDetected(t *testing.T) {
 	sctx.Config.CITimeout = 5 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 0}
 
-	step := &CIStep{}
+	step := &CIStep{waitForNextPoll: failOnExtraPoll}
+	pinCIMonitorClock(step)
 	outcome, err := step.Execute(sctx)
 	if err != nil {
 		t.Fatal(err)
@@ -274,6 +303,7 @@ func TestCIStep_GitLabPendingChecksKeepMonitoringWhenDone(t *testing.T) {
 			return ctx.Err()
 		},
 	}
+	pinCIMonitorClock(step)
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected passing GitLab CI to keep monitoring while MR is open, got %v", err)

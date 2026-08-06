@@ -1,5 +1,86 @@
 # Changelog
 
+## [1.45.4](https://github.com/kunchenguid/no-mistakes/compare/v1.45.3...v1.45.4) (2026-08-04)
+
+
+### Bug Fixes
+
+* **pipeline:** restore deterministic PR body sections ([#663](https://github.com/kunchenguid/no-mistakes/issues/663)) ([eda3d33](https://github.com/kunchenguid/no-mistakes/commit/eda3d335edd92922d30abf056a6a1b02315c5599))
+
+## [1.45.3](https://github.com/kunchenguid/no-mistakes/compare/v1.45.2...v1.45.3) (2026-08-03)
+
+
+### Bug Fixes
+
+* **branchsync:** recover custody from contained rebased heads ([#649](https://github.com/kunchenguid/no-mistakes/issues/649)) ([73425eb](https://github.com/kunchenguid/no-mistakes/commit/73425eb4ecc88607a12b444c4dbd245d221cac92))
+* **pipeline:** recognize green CI after successful rerun ([#647](https://github.com/kunchenguid/no-mistakes/issues/647)) ([1c1fe5c](https://github.com/kunchenguid/no-mistakes/commit/1c1fe5cc4ef2ff28367a3d0a2a3fa1e3f0fb0528))
+
+## [1.45.2](https://github.com/kunchenguid/no-mistakes/compare/v1.45.1...v1.45.2) (2026-08-02)
+
+
+### Bug Fixes
+
+* **pipeline:** stop polling terminal cancelled CI checks ([#637](https://github.com/kunchenguid/no-mistakes/issues/637)) ([eb826b4](https://github.com/kunchenguid/no-mistakes/commit/eb826b4c5ff5d06b619f3344ecf014c7e7d31001))
+* **update:** authenticate GitHub release requests ([#636](https://github.com/kunchenguid/no-mistakes/issues/636)) ([c0920cd](https://github.com/kunchenguid/no-mistakes/commit/c0920cd1675d562ee7d5e97a6b45d0cba82edde6))
+
+## [1.45.1](https://github.com/kunchenguid/no-mistakes/compare/v1.45.0...v1.45.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* **pipeline:** independently review automatic fixes ([#634](https://github.com/kunchenguid/no-mistakes/issues/634)) ([f2538db](https://github.com/kunchenguid/no-mistakes/commit/f2538db8c81127cffbd0da58574ee6275aa5a11a))
+
+## [1.45.0](https://github.com/kunchenguid/no-mistakes/compare/v1.44.2...v1.45.0) (2026-08-02)
+
+
+### Features
+
+* **pipeline:** re-run provider-cancelled CI checks before escalating ([#595](https://github.com/kunchenguid/no-mistakes/issues/595)) ([1753783](https://github.com/kunchenguid/no-mistakes/commit/17537830a92de42e0b8c3848bfab8e2301be8923))
+
+
+### Bug Fixes
+
+* **cli:** confirm abort truth before releasing branch custody ([#631](https://github.com/kunchenguid/no-mistakes/issues/631)) ([a93dc8f](https://github.com/kunchenguid/no-mistakes/commit/a93dc8ff6a942d8d69fce97c3afc1bb11bf3fdc6))
+
+## [1.44.2](https://github.com/kunchenguid/no-mistakes/compare/v1.44.1...v1.44.2) (2026-08-01)
+
+
+### Bug Fixes
+
+* **cimonitor:** require trusted no-CI evidence for readiness ([#628](https://github.com/kunchenguid/no-mistakes/issues/628)) ([90885ee](https://github.com/kunchenguid/no-mistakes/commit/90885ee7c8f60b5558a5896414d3f50e759ca5da))
+* **daemon:** preserve run state under event stream pressure ([#626](https://github.com/kunchenguid/no-mistakes/issues/626)) ([58b52ee](https://github.com/kunchenguid/no-mistakes/commit/58b52eeec186466891e902590ee91f56c9b76508))
+
+## [1.44.1](https://github.com/kunchenguid/no-mistakes/compare/v1.44.0...v1.44.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* **daemon:** preserve intent provenance across reruns ([#624](https://github.com/kunchenguid/no-mistakes/issues/624)) ([7e336cb](https://github.com/kunchenguid/no-mistakes/commit/7e336cb8d748d796562ac73786e4708582622872))
+
+## [1.44.0](https://github.com/kunchenguid/no-mistakes/compare/v1.43.0...v1.44.0) (2026-08-01)
+
+
+### Features
+
+* **pipeline:** scope review guidance to the paths a change touches ([#594](https://github.com/kunchenguid/no-mistakes/issues/594)) ([5f89e1f](https://github.com/kunchenguid/no-mistakes/commit/5f89e1f9233c20b28ac59bc689fa5a3df58cf027))
+
+
+### Bug Fixes
+
+* **branchsync:** prefer newer pushed descendants over stale custody ([#622](https://github.com/kunchenguid/no-mistakes/issues/622)) ([2d0fa98](https://github.com/kunchenguid/no-mistakes/commit/2d0fa98f9207451f739b046211ec1a32db4cb76d))
+
+## [1.43.0](https://github.com/kunchenguid/no-mistakes/compare/v1.42.0...v1.43.0) (2026-07-30)
+
+
+### Features
+
+* **pipeline:** enforce behavior-based test guidance ([#607](https://github.com/kunchenguid/no-mistakes/issues/607)) ([df10389](https://github.com/kunchenguid/no-mistakes/commit/df1038941a4121fb5bfc3d2b3e99f2d8eab13586))
+
+
+### Bug Fixes
+
+* **daemon:** wait for process exit before restart ([#609](https://github.com/kunchenguid/no-mistakes/issues/609)) ([a7f32ee](https://github.com/kunchenguid/no-mistakes/commit/a7f32ee0f74a6bf329b7a54ab2f6764272f5a9ea))
+
 ## [1.42.0](https://github.com/kunchenguid/no-mistakes/compare/v1.41.2...v1.42.0) (2026-07-30)
 
 

@@ -32,6 +32,7 @@ What you do not get is PR automation and CI monitoring.
 | **Merge conflict auto-fix** | `gh` CLI | `glab` CLI | not supported | `az` CLI |
 | **Mergeability polling** | `gh` CLI | `glab` CLI | not supported | `az` CLI |
 | **Failed check log fetching** | `gh` CLI | `glab` CLI | supported | not yet |
+| **[Cancelled-check rerun](/no-mistakes/reference/repo-config/#cirerun_transient)** | `gh` CLI | not supported | not supported | not supported |
 
 ## What changes when provider wiring is present
 
@@ -172,7 +173,7 @@ well as their SSH forms (`git@ssh.dev.azure.com:v3/...`).
   PR descriptions at 4000 characters, so the pipeline builds the body within
   that budget and applies a final truncation backstop with a visible marker.
   See the [PR step reference](/no-mistakes/reference/pipeline-steps/#pr) for
-  section ownership and truncation behavior.
+  section composition and truncation behavior.
 - CI status polling - Azure branch policy evaluations (build validation and
   status checks) are read via `az repos pr policy list` until the PR is
   completed, abandoned, or the configured `ci_timeout` idle window elapses

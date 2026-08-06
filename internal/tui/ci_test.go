@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -184,12 +185,21 @@ func TestParseCIActivity(t *testing.T) {
 		}
 	})
 
-	t.Run("checks passed when no checks configured", func(t *testing.T) {
+	t.Run("checks passed when trusted no_ci declares no CI", func(t *testing.T) {
+		a := parseCIActivity([]string{
+			"repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed",
+		})
+		if !a.Ready {
+			t.Error("expected Ready to be true when trusted no_ci declares no CI")
+		}
+	})
+
+	t.Run("generic empty checks never ready", func(t *testing.T) {
 		a := parseCIActivity([]string{
 			"no CI checks reported - still monitoring until merged or closed",
 		})
-		if !a.Ready {
-			t.Error("expected Ready to be true when no checks are configured")
+		if a.Ready {
+			t.Error("expected Ready false for unproven empty forge results")
 		}
 	})
 
@@ -321,6 +331,7 @@ func TestRenderCIView_AutoFixing(t *testing.T) {
 func TestRenderCIView_ChecksPassed(t *testing.T) {
 	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
+	run.CIReady = true
 	logs := []string{
 		"monitoring CI for PR #42 (timeout: 4h)...",
 		"all CI checks passed - still monitoring until merged or closed",
@@ -333,6 +344,48 @@ func TestRenderCIView_ChecksPassed(t *testing.T) {
 	}
 	if strings.Contains(out, "Monitoring CI checks...") {
 		t.Errorf("expected ready state to replace the monitoring indicator, got: %s", out)
+	}
+}
+
+func TestRenderCIView_DoesNotTrustReadyLog(t *testing.T) {
+	run := testRunWithCI()
+	run.Steps[5].Status = types.StepStatusRunning
+	logs := []string{cimonitor.NoChecksPassedMsg}
+
+	out := stripANSI(renderCIView(run, run.Steps, "", logs, 80))
+	if !strings.Contains(out, "Monitoring CI checks...") || strings.Contains(out, "Checks passed") {
+		t.Fatalf("rendered readiness from untrusted log text:\n%s", out)
+	}
+}
+
+func TestCIReadinessEventClearsViewAndTitle(t *testing.T) {
+	run := testRunWithCI()
+	run.Steps[5].Status = types.StepStatusRunning
+	run.CIReady = true
+	run.CIReadyNoCI = true
+	m := NewModel("/tmp/sock", nil, run)
+	m.steps = run.Steps
+	m.logs = []string{cimonitor.NoChecksPassedMsg}
+
+	if !strings.Contains(m.terminalTitle(), "Checks passed") {
+		t.Fatalf("expected ready title before readiness event, got %q", m.terminalTitle())
+	}
+
+	ready := false
+	declaredNoCI := false
+	m.applyEvent(ipc.Event{
+		Type:        ipc.EventCIReadinessChanged,
+		RunID:       run.ID,
+		CIReady:     &ready,
+		CIReadyNoCI: &declaredNoCI,
+	})
+
+	view := stripANSI(renderCIView(m.run, m.steps, "", m.logs, 80))
+	if strings.Contains(m.terminalTitle(), "Checks passed") {
+		t.Fatalf("readiness event left stale title: %q", m.terminalTitle())
+	}
+	if strings.Contains(view, "Checks passed") {
+		t.Fatalf("readiness event left stale CI view:\n%s", view)
 	}
 }
 

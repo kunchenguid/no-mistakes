@@ -141,9 +141,19 @@ const (
 
 // Check is a single CI check result on a PR.
 type Check struct {
-	Name        string
-	Bucket      CheckBucket
+	Name   string
+	Bucket CheckBucket
+	// State is the provider's own outcome string for the check (GitHub
+	// conclusions such as FAILURE, TIMED_OUT, CANCELLED). Buckets collapse
+	// several outcomes into one value, so callers that must tell an
+	// infrastructure outcome from a real job failure read this. Empty when the
+	// provider reported no state.
+	State       string
 	CompletedAt time.Time // zero when unknown; used to detect CI re-runs between polls
+	// Link is the provider's details URL for this check. It identifies the job
+	// behind the check, so a rerun can target that job instead of the whole PR.
+	// Empty when the provider reported no link.
+	Link string
 }
 
 // Failing reports whether the check is in a failed bucket.
@@ -189,4 +199,17 @@ type Host interface {
 	// FetchFailedCheckLogs is optional; returns "" when no logs can be retrieved
 	// and ErrUnsupported when the provider has no log-fetching support at all.
 	FetchFailedCheckLogs(ctx context.Context, pr *PR, branch, headSHA string, failingNames []string) (string, error)
+}
+
+// CheckRerunner re-runs the provider-side job behind a failed check without
+// changing the commit under test. It is deliberately a separate interface
+// rather than a Host method: a backend whose provider exposes no rerun
+// primitive simply does not implement it, and callers type-assert
+// (host.(CheckRerunner)) before use, so those backends keep compiling and keep
+// their existing behavior.
+type CheckRerunner interface {
+	// RerunCheck asks the provider to run check again for the same commit. It
+	// returns an error when the request could not be made, including when the
+	// check names no job the provider can re-run.
+	RerunCheck(ctx context.Context, pr *PR, check Check) error
 }

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -17,6 +19,33 @@ import (
 )
 
 // --- RunManager integration tests ---
+
+func TestValidateRecoveredSessionProviders_RejectsUnavailableFixerProvider(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repo, err := database.InsertRepo("/tmp/repo", "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpsertRunAgentSession(run.ID, string(pipeline.SessionRoleFixer), "codex", "fixer-session"); err != nil {
+		t.Fatal(err)
+	}
+	claude, err := agent.New(types.AgentClaude, "claude", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer claude.Close()
+	if err := validateRecoveredSessionProviders(database, run.ID, claude); err == nil || !strings.Contains(err.Error(), `session provider "codex" is no longer configured`) {
+		t.Fatalf("validate recovered fixer provider error = %v", err)
+	}
+}
 
 func TestPushReceivedTracksRunTelemetry(t *testing.T) {
 	recorder := &telemetryRecorder{}
@@ -359,6 +388,65 @@ func TestRerunSkipStepsConfiguresExecutor(t *testing.T) {
 		if step.StepName == types.StepReview && step.Status != types.StepStatusSkipped {
 			t.Fatalf("review status = %s, want %s", step.Status, types.StepStatusSkipped)
 		}
+	}
+}
+
+func TestRerunInheritsIntentFromSelectedRun(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+
+	_, headSHA := setupTestGitRepo(t, p, d, "selected-rerun-repo")
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	var first ipc.PushReceivedResult
+	err = client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("selected-rerun-repo"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRunTerminalState(t, d, first.RunID)
+	selectedIntent := "  selected exact requirements\n"
+	if err := d.UpdateRunIntent(first.RunID, db.RunIntent{Summary: selectedIntent, Source: db.RunIntentSourceAgent, Score: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	newer, err := d.InsertRunWithIntent("selected-rerun-repo", "main", headSHA, headSHA, &db.RunIntent{
+		Summary: "newer unrelated requirements",
+		Source:  db.RunIntentSourceAgent,
+		Score:   1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(newer.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	var rerun ipc.RerunResult
+	err = client.Call(ipc.MethodRerun, &ipc.RerunParams{
+		RepoID:        "selected-rerun-repo",
+		Branch:        "main",
+		PreviousRunID: first.RunID,
+	}, &rerun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitForRunTerminalState(t, d, rerun.RunID)
+	if got.Intent == nil || *got.Intent != selectedIntent {
+		t.Fatalf("intent = %v, want %q", got.Intent, selectedIntent)
+	}
+	if got.IntentSource == nil || *got.IntentSource != db.RunIntentSourceRerun {
+		t.Fatalf("intent source = %v, want %q", got.IntentSource, db.RunIntentSourceRerun)
 	}
 }
 

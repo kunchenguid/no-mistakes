@@ -228,6 +228,7 @@ func TestModel_Yolo_ApprovesFixReviewAfterFixingOnce(t *testing.T) {
 	// The fix re-runs the step, which re-enters the gate as a fix_review. Yolo
 	// must not fix again (that risks an unbounded loop); it accepts the result.
 	m.steps[0].Status = types.StepStatusFixReview
+	m.stepDiffLoaded[types.StepReview] = true
 	if cmd := m.maybeAutoApproveCmd(); cmd != nil {
 		cmd()
 	} else {
@@ -256,6 +257,7 @@ func TestModel_Yolo_ApprovesExistingFixReviewWithoutPriorFix(t *testing.T) {
 	run.Steps[0].FindingsJSON = &fj
 	m := NewModel(sock, client, run)
 	m.yoloMode = true
+	m.stepDiffLoaded[types.StepReview] = true
 
 	cmd := m.maybeAutoApproveCmd()
 	if cmd == nil {

@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -117,8 +118,16 @@ func (c *Client) Call(method string, params interface{}, result interface{}) err
 
 // CallWithTimeout is Call with a caller-selected read deadline.
 func (c *Client) CallWithTimeout(method string, params interface{}, result interface{}, timeout time.Duration) error {
+	return c.CallWithContext(context.Background(), method, params, result, timeout)
+}
+
+// CallWithContext is CallWithTimeout with cancellation support.
+func (c *Client) CallWithContext(ctx context.Context, method string, params interface{}, result interface{}, timeout time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	req, err := NewRequest(method, params)
 	if err != nil {
@@ -133,9 +142,22 @@ func (c *Client) CallWithTimeout(method string, params interface{}, result inter
 		timeout = defaultCallTimeout
 	}
 	c.conn.SetReadDeadline(time.Now().Add(timeout))
-	defer c.conn.SetReadDeadline(time.Time{})
+	interruptDone := make(chan struct{})
+	stopInterrupt := context.AfterFunc(ctx, func() {
+		c.conn.SetReadDeadline(time.Now())
+		close(interruptDone)
+	})
+	defer func() {
+		if !stopInterrupt() {
+			<-interruptDone
+		}
+		c.conn.SetReadDeadline(time.Time{})
+	}()
 
 	if !c.scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := c.scanner.Err(); err != nil {
 			return fmt.Errorf("read response: %w", err)
 		}

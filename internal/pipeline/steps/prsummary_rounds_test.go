@@ -20,7 +20,7 @@ func TestBuildPipelineSummary_AutoFix(t *testing.T) {
 			{Round: 2, Trigger: "auto_fix", DurationMS: 600},
 		},
 	}
-	md, _ := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	// Should show wrench emoji for auto-fixed
 	if !strings.Contains(md, "🔧") {
@@ -59,7 +59,7 @@ func TestBuildPipelineSummary_AutoFixShowsFixSummary(t *testing.T) {
 			{Round: 2, Trigger: "auto_fix", FixSummary: &fixSummary, DurationMS: 600},
 		},
 	}
-	md, _ := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	// The fix the agent actually applied must be surfaced - this is the data
 	// the old round-by-round layout dropped on the floor.
@@ -94,7 +94,7 @@ func TestBuildPipelineSummary_MultiRoundWithFollowUpFix(t *testing.T) {
 			{Round: 3, Trigger: "auto_fix", DurationMS: 700},
 		},
 	}
-	md, _ := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	// Two fix attempts, the first leaving one issue open before the second
 	// cleared it - the narrative should show that chain.
@@ -127,7 +127,7 @@ func TestBuildPipelineSummary_LegacyUserFixRoundsRenderAsAutoFix(t *testing.T) {
 			{Round: 2, Trigger: "user_fix", DurationMS: 700},
 		},
 	}
-	md, _ := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	if !strings.Contains(md, "auto-fixed") {
 		t.Errorf("expected legacy user_fix round to render as auto-fixed, got:\n%s", md)
@@ -155,7 +155,7 @@ func TestBuildPipelineSummary_MultiRoundStillFailing(t *testing.T) {
 			{Round: 2, Trigger: "auto_fix", FindingsJSON: &findings2, DurationMS: 600},
 		},
 	}
-	md, _ := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	if strings.Contains(md, "auto-fixed") {
 		t.Errorf("did not expect fixed status when final round still has findings, got:\n%s", md)
@@ -179,7 +179,7 @@ func TestBuildPipelineSummary_UsesFinalFindingsWithoutInitialRoundData(t *testin
 			{Round: 1, Trigger: "initial", DurationMS: 1000},
 		},
 	}
-	md, _ := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
 	if strings.Contains(md, "passed") {
 		t.Errorf("did not expect passed status when step result still has findings, got:\n%s", md)
@@ -195,7 +195,7 @@ func TestBuildPipelineSummary_UsesFinalFindingsWithoutInitialRoundData(t *testin
 	}
 }
 
-func TestBuildPipelineSummary_FailedTestRoundOmitsStepScopedTestedDetails(t *testing.T) {
+func TestBuildPipelineSummary_FailedTestRoundIncludesTestedDetails(t *testing.T) {
 	t.Parallel()
 	findings := `{"findings":[{"id":"test-1","severity":"error","description":"expected 429 got 200"}],"tested":["go test ./internal/cli -run '^TestDoctorBasic$' -count=1"],"summary":"1 failure"}`
 	steps := []*db.StepResult{
@@ -207,9 +207,9 @@ func TestBuildPipelineSummary_FailedTestRoundOmitsStepScopedTestedDetails(t *tes
 		},
 	}
 
-	md, _ := BuildPipelineSummary(steps, rounds)
+	md, _ := BuildPipelineSummary(steps, rounds, testPipelineHeadSHA)
 
-	if strings.Contains(md, "go test ./internal/cli") {
-		t.Fatalf("pipeline summary must omit step-scoped tested details from the final PR, got:\n%s", md)
+	if !strings.Contains(md, "- `go test ./internal/cli -run '^TestDoctorBasic$' -count=1`") {
+		t.Fatalf("expected failed test round to include tested command details, got:\n%s", md)
 	}
 }

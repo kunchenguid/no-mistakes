@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
+	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -22,10 +23,35 @@ type Model struct {
 	subscriptionID uint64
 
 	// State.
-	run                 *ipc.RunInfo
+	run *ipc.RunInfo
+	// stateRev is the highest run-state revision this model has applied. It
+	// is scoped to the current subscription generation: a fresh subscription
+	// resets it to zero and reconciles, adopting the daemon's numbering.
+	stateRev int64
+	// reconcile reads authoritative run state. Nil in production, where the
+	// IPC client is used; injectable so the contract is testable without a
+	// daemon.
+	reconcile            func(ctx context.Context) (*ipc.RunInfo, error)
+	reconcilePending     bool
+	reconcileAgain       bool
+	streamClosed         bool
+	reviewRetryReconcile bool
+	reviewRetryDiff      bool
+	reviewReconcileErr   error
+	reviewDiffErr        error
+	// resubscribeTries bounds reconnect attempts for a dropped event stream.
+	resubscribeTries int
+	// fetchStepDiff reads a fix-review gate's working-tree diff. Nil in
+	// production, where the IPC client is used; injectable for tests.
+	fetchStepDiff       func(types.StepName) (string, error)
 	steps               []ipc.StepResultInfo
 	stepFindings        map[types.StepName]string            // step name → raw findings JSON
-	stepDiffs           map[types.StepName]string            // step name → raw unified diff
+	stepDiffs           map[types.StepName]string            // step name → raw unified diff (fetched on demand)
+	stepDiffTruncated   map[types.StepName]bool              // steps whose fetched diff was capped
+	stepDiffFetching    map[types.StepName]bool              // steps with an in-flight diff read
+	stepDiffLoaded      map[types.StepName]bool              // steps whose current diff request completed
+	stepDiffRequestID   map[types.StepName]uint64            // latest request generation per step
+	pendingDiffFetch    []stepDiffRequest                    // diff reads to issue on the next update
 	findingSelections   map[types.StepName]map[string]bool   // step name → finding ID → selected
 	findingCursor       map[types.StepName]int               // step name → current finding cursor
 	findingInstructions map[types.StepName]map[string]string // step name → finding ID → user note
@@ -85,6 +111,10 @@ func NewModel(socketPath string, client *ipc.Client, run *ipc.RunInfo) Model {
 		steps:               steps,
 		stepFindings:        make(map[types.StepName]string),
 		stepDiffs:           make(map[types.StepName]string),
+		stepDiffTruncated:   make(map[types.StepName]bool),
+		stepDiffFetching:    make(map[types.StepName]bool),
+		stepDiffLoaded:      make(map[types.StepName]bool),
+		stepDiffRequestID:   make(map[types.StepName]uint64),
 		findingSelections:   make(map[types.StepName]map[string]bool),
 		findingCursor:       make(map[types.StepName]int),
 		findingInstructions: make(map[types.StepName]map[string]string),
@@ -192,6 +222,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.events = msg.events
 		m.cancelSub = msg.cancelSub
+		m.streamClosed = false
 		if m.done {
 			if m.cancelSub != nil {
 				m.cancelSub()
@@ -226,19 +257,117 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.subscriptionID != m.subscriptionID {
 			return m, nil
 		}
-		m.applyEvent(msg.event)
+		gapped := m.applyEvent(msg.event)
 		m.refreshCachedSync()
+		cmds := m.drainDiffFetches()
+		if gapped {
+			// The daemon coalesced at least one state transition away.
+			// Read authoritative state once instead of guessing.
+			cmds = append(cmds, m.reconcileCmd())
+		}
 		if m.done {
+			return m, tea.Batch(cmds...)
+		}
+		cmds = append(cmds, m.waitForEvent(), m.startSpinnerIfNeeded(), m.maybeAutoApproveCmd())
+		return m, tea.Batch(cmds...)
+
+	case runReconciledMsg:
+		if msg.subscriptionID != m.subscriptionID {
 			return m, nil
 		}
-		return m, tea.Batch(m.waitForEvent(), m.startSpinnerIfNeeded(), m.maybeAutoApproveCmd())
+		m.reconcilePending = false
+		if msg.err != nil {
+			m.reconcileAgain = false
+			m.reviewRetryReconcile = true
+			m.reviewReconcileErr = fmt.Errorf("refresh authoritative run state: %w", msg.err)
+			m.err = m.reviewRetryError()
+		} else {
+			m.reviewRetryReconcile = false
+			m.reviewReconcileErr = nil
+			if msg.run != nil && !m.applySnapshot(msg.run) {
+				m.reconcileAgain = true
+			}
+			m.err = m.reviewRetryError()
+			m.resubscribeTries = 0
+		}
+		cmds := m.drainDiffFetches()
+		if m.reconcileAgain {
+			m.reconcileAgain = false
+			cmds = append(cmds, m.reconcileCmd())
+		} else if m.streamClosed && !m.done {
+			cmds = append(cmds, m.startResubscribe())
+		}
+		return m, tea.Batch(cmds...)
 
 	case subscriptionErrMsg:
 		if msg.subscriptionID != m.subscriptionID {
 			return m, nil
 		}
 		m.err = msg.err
+		if m.done {
+			return m, nil
+		}
+		if m.cancelSub != nil {
+			m.cancelSub()
+			m.cancelSub = nil
+		}
+		m.events = nil
+		m.streamClosed = true
+		if m.reconcilePending {
+			return m, nil
+		}
+		return m, m.startResubscribe()
+
+	case resubscribeMsg:
+		if msg.subscriptionID != m.subscriptionID {
+			return m, nil
+		}
+		return m, m.subscribeCmd()
+
+	case stepDiffMsg:
+		if msg.subscriptionID != m.subscriptionID {
+			return m, nil
+		}
+		if msg.requestID != m.stepDiffRequestID[msg.step] {
+			return m, nil
+		}
+		if !m.stepInFixReview(msg.step) {
+			m.invalidateStepDiff(msg.step)
+			return m, nil
+		}
+		delete(m.stepDiffFetching, msg.step)
+		if msg.err == nil {
+			m.reviewRetryDiff = false
+			m.reviewDiffErr = nil
+			m.err = m.reviewRetryError()
+			m.stepDiffLoaded[msg.step] = true
+			m.stepDiffTruncated[msg.step] = msg.truncated
+			if msg.diff != "" {
+				m.stepDiffs[msg.step] = msg.diff
+			} else {
+				delete(m.stepDiffs, msg.step)
+			}
+			return m, func() tea.Msg {
+				return stepDiffReadyMsg{
+					step:           msg.step,
+					requestID:      msg.requestID,
+					subscriptionID: msg.subscriptionID,
+				}
+			}
+		}
+		delete(m.stepDiffLoaded, msg.step)
+		delete(m.stepDiffs, msg.step)
+		delete(m.stepDiffTruncated, msg.step)
+		m.reviewRetryDiff = true
+		m.reviewDiffErr = fmt.Errorf("load fix-review diff: %w", msg.err)
+		m.err = m.reviewRetryError()
 		return m, nil
+
+	case stepDiffReadyMsg:
+		if msg.subscriptionID != m.subscriptionID || msg.requestID != m.stepDiffRequestID[msg.step] {
+			return m, nil
+		}
+		return m, m.maybeAutoApproveCmd()
 
 	case syncRefreshedMsg:
 		m.syncRefreshing = false
@@ -311,7 +440,8 @@ func (m Model) terminalTitle() string {
 		icon := stepStatusIndicator(s.Status, m.spinnerFrame)
 		switch s.Status {
 		case types.StepStatusRunning, types.StepStatusFixing:
-			if s.StepName == types.StepCI && ((m.run != nil && m.run.CIReady) || parseCIActivity(m.logs).Ready) {
+			activity := cimonitor.FromAuthoritative(m.run != nil && m.run.CIReady, m.run != nil && m.run.CIReadyNoCI, m.logs)
+			if s.StepName == types.StepCI && activity.Ready {
 				return "✓ Checks passed" + suffix
 			}
 			return icon + " " + stepLabel(s.StepName) + suffix
@@ -378,7 +508,8 @@ func tuiRelevantSyncState(state branchsync.State) bool {
 	case branchsync.StatePipelineOwned, branchsync.StatePushInProgress, branchsync.StateBehind,
 		branchsync.StateLocalAhead, branchsync.StateDiverged, branchsync.StateDirty,
 		branchsync.StateMergedRemoteRetained, branchsync.StateMergedRemoteRemoved,
-		branchsync.StateClosed, branchsync.StateTargetChanged, branchsync.StateCustodyReturned:
+		branchsync.StateClosed, branchsync.StateTargetChanged, branchsync.StateCustodyReturned,
+		branchsync.StateUserOwned:
 		return true
 	default:
 		return false

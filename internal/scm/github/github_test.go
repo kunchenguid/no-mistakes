@@ -98,7 +98,7 @@ func TestGetChecksPassesRepoFlag(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt": {
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
 			stdout: `[{"name":"build","state":"SUCCESS","bucket":"pass"}]` + "\n",
 		},
 	}), nil, "", "test/repo")
@@ -116,7 +116,7 @@ func TestGetChecksIncludesFailedWorkflowRunMissingFromPRRollup(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt": {
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
 			stdout: `[
 				{"name":"clippy","state":"SUCCESS","bucket":"pass"},
 				{"name":"request-owner-review","state":"SUCCESS","bucket":"pass"}
@@ -150,7 +150,7 @@ func TestGetChecksIncludesFailedWorkflowRunWhenPRHasNoChecks(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt": {
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
 			stderr: "no checks reported on the 'feature' branch\n",
 			code:   1,
 		},
@@ -177,7 +177,7 @@ func TestGetChecksIncludesWorkflowRunsFromEveryPage(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr checks 123 --repo ghe.example.com/test/repo --json name,state,bucket,completedAt": {
+		"gh pr checks 123 --repo ghe.example.com/test/repo --json name,state,bucket,completedAt,link": {
 			stdout: `[{"name":"clippy","state":"SUCCESS","bucket":"pass"}]` + "\n",
 		},
 		"gh api --hostname ghe.example.com --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
@@ -228,7 +228,7 @@ func TestGetChecksRejectsIncompleteWorkflowPagination(t *testing.T) {
 			t.Parallel()
 
 			host := New(githubTestCmdFactory(map[string]githubTestResponse{
-				"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt": {
+				"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
 					stdout: `[{"name":"clippy","state":"SUCCESS","bucket":"pass"}]` + "\n",
 				},
 				"gh api --method GET repos/test/repo/actions/runs -f head_sha=deadbeef -f per_page=100 --paginate --slurp": {
@@ -355,7 +355,7 @@ func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr checks 123 --json name,state,bucket,completedAt": {
+		"gh pr checks 123 --json name,state,bucket,completedAt,link": {
 			stdout: `[{"name":"build","state":"FAILURE","bucket":""},{"name":"tests","state":"PENDING","bucket":""}]` + "\n",
 		},
 	}), nil, "", "")
@@ -508,7 +508,7 @@ func TestGetChecksParsesCompletedAt(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr checks 123 --json name,state,bucket,completedAt": {
+		"gh pr checks 123 --json name,state,bucket,completedAt,link": {
 			stdout: `[{"name":"build","state":"FAILURE","bucket":"fail","completedAt":"2026-04-24T04:15:00Z"},{"name":"tests","state":"SUCCESS","bucket":"pass","completedAt":"not-a-time"}]` + "\n",
 		},
 	}), nil, "", "")
@@ -527,6 +527,165 @@ func TestGetChecksParsesCompletedAt(t *testing.T) {
 	}
 	if !checks[1].CompletedAt.IsZero() {
 		t.Fatalf("checks[1].CompletedAt = %v, want zero time for invalid timestamp", checks[1].CompletedAt)
+	}
+}
+
+func TestGetChecksParsesStateAndLink(t *testing.T) {
+	t.Parallel()
+
+	const link = "https://github.com/test/repo/actions/runs/900/job/901"
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --json name,state,bucket,completedAt,link": {
+			stdout: `[{"name":"build","state":"cancelled","bucket":"cancel","link":"` + link + `"}]` + "\n",
+		},
+	}), nil, "", "")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("len(checks) = %d, want 1", len(checks))
+	}
+	// The state is what tells a cancelled check apart from a failed one, and the
+	// link is what identifies the job to re-run. Both are normalized: the state
+	// upper-cased so callers can compare it, the link trimmed.
+	if checks[0].State != "CANCELLED" {
+		t.Fatalf("checks[0].State = %q, want CANCELLED", checks[0].State)
+	}
+	if checks[0].Link != link {
+		t.Fatalf("checks[0].Link = %q, want %q", checks[0].Link, link)
+	}
+}
+
+// A rerun must target the exact job behind the check so a genuinely failing job
+// in the same workflow run is not re-run along with it. Real details URLs carry
+// a query (?check_suite_focus=true) or a step fragment (#step:4:12), and neither
+// is part of the job identity, so every one of these shapes must reach the same
+// single job.
+func TestRerunCheckTargetsJobFromCheckLink(t *testing.T) {
+	t.Parallel()
+
+	for name, link := range map[string]string{
+		"plain":              "https://github.com/test/repo/actions/runs/900/job/901",
+		"query string":       "https://github.com/test/repo/actions/runs/900/job/901?check_suite_focus=true",
+		"step fragment":      "https://github.com/test/repo/actions/runs/900/job/901#step:4:12",
+		"query and fragment": "https://github.com/test/repo/actions/runs/900/job/901?check_suite_focus=true#step:4:12",
+		"trailing slash":     "https://github.com/test/repo/actions/runs/900/job/901/",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var recorded [][]string
+			host := New(recordingCmdFactory("", &recorded), nil, "", "test/repo")
+
+			check := scm.Check{
+				Name:   "build (ubuntu-latest)",
+				Bucket: scm.CheckBucketCancel,
+				State:  "CANCELLED",
+				Link:   link,
+			}
+			if err := host.RerunCheck(context.Background(), &scm.PR{Number: "123"}, check); err != nil {
+				t.Fatalf("RerunCheck() error = %v", err)
+			}
+			if len(recorded) != 1 {
+				t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
+			}
+			want := []string{"gh", "run", "rerun", "--job", "901", "--repo", "test/repo"}
+			if strings.Join(recorded[0], " ") != strings.Join(want, " ") {
+				t.Fatalf("rerun argv = %v, want %v", recorded[0], want)
+			}
+		})
+	}
+}
+
+// A link that names only the workflow run has exactly one thing to re-run: that
+// run's failed jobs. This is the ONLY shape allowed to widen past a single job.
+func TestRerunCheckFallsBackToFailedJobsOfRun(t *testing.T) {
+	t.Parallel()
+
+	for name, link := range map[string]string{
+		"run only":       "https://github.com/test/repo/actions/runs/900",
+		"trailing slash": "https://github.com/test/repo/actions/runs/900/",
+		"with a query":   "https://github.com/test/repo/actions/runs/900?check_suite_focus=true",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var recorded [][]string
+			host := New(recordingCmdFactory("", &recorded), nil, "", "test/repo")
+
+			check := scm.Check{
+				Name:   "build",
+				Bucket: scm.CheckBucketCancel,
+				State:  "CANCELLED",
+				Link:   link,
+			}
+			if err := host.RerunCheck(context.Background(), &scm.PR{Number: "123"}, check); err != nil {
+				t.Fatalf("RerunCheck() error = %v", err)
+			}
+			if len(recorded) != 1 {
+				t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
+			}
+			want := []string{"gh", "run", "rerun", "900", "--failed", "--repo", "test/repo"}
+			if strings.Join(recorded[0], " ") != strings.Join(want, " ") {
+				t.Fatalf("rerun argv = %v, want %v", recorded[0], want)
+			}
+		})
+	}
+}
+
+// A link this backend cannot resolve to one job must not be downgraded into a
+// whole-run rerun: that would re-run every failed job in the run, including
+// genuinely failing ones, on the strength of a link it could not read. It fails
+// closed instead, so the check escalates exactly as it would without the policy.
+//
+// The browser's plural ".../jobs/<n>" form is one of these: that number is a
+// per-run display index the API answers with 404, not the job databaseId
+// `gh run rerun --job` needs.
+func TestRerunCheckFailsClosedWithoutAnActionsJob(t *testing.T) {
+	t.Parallel()
+
+	for name, link := range map[string]string{
+		"external dashboard":       "https://ci.example.com/builds/17",
+		"no link":                  "",
+		"non-numeric run":          "https://github.com/test/repo/actions/runs/latest",
+		"browser display number":   "https://github.com/test/repo/actions/runs/900/jobs/3",
+		"display number with args": "https://github.com/test/repo/actions/runs/900/jobs/3?pr=1",
+		"non-numeric job segment":  "https://github.com/test/repo/actions/runs/900/job/latest",
+		"job segment with a step":  "https://github.com/test/repo/actions/runs/900/job/latest#step:1:1",
+		"unknown run subpath":      "https://github.com/test/repo/actions/runs/900/attempts/2",
+	} {
+		t.Run(name, func(t *testing.T) {
+			host := New(failIfInvokedCmdFactory(t), nil, "", "test/repo")
+			err := host.RerunCheck(context.Background(), &scm.PR{Number: "123"}, scm.Check{Name: "build", Bucket: scm.CheckBucketFail, State: "TIMED_OUT", Link: link})
+			if err == nil {
+				t.Fatal("RerunCheck() expected an error for a check with no Actions job")
+			}
+		})
+	}
+}
+
+// The provider refusing the rerun must reach the caller: the CI step decides
+// what to do with a failed request, and silently reporting success would make it
+// wait for a re-run that never happens.
+func TestRerunCheckPropagatesProviderError(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh run rerun --job 901 --repo test/repo": {
+			stderr: "HTTP 403: Unable to retry this workflow run",
+			code:   1,
+		},
+	}), nil, "", "test/repo")
+
+	err := host.RerunCheck(context.Background(), &scm.PR{Number: "123"}, scm.Check{
+		Name:   "build",
+		Bucket: scm.CheckBucketFail,
+		State:  "TIMED_OUT",
+		Link:   "https://github.com/test/repo/actions/runs/900/job/901",
+	})
+	if err == nil {
+		t.Fatal("RerunCheck() expected the provider error to propagate")
+	}
+	if !strings.Contains(err.Error(), "Unable to retry this workflow run") {
+		t.Fatalf("RerunCheck() error = %v, want the provider message", err)
 	}
 }
 

@@ -5,6 +5,12 @@ on:
     types: [opened, synchronize, reopened]
     branches:
       - main
+    # Never create a run for a release-please PR. The job-level author exemption
+    # below cannot do this: it is evaluated inside a run, and a GITHUB_TOKEN PR's
+    # run is created in action_required and never starts.
+    paths-ignore:
+      - .release-please-manifest.json
+      - CHANGELOG.md
 
 permissions:
   contents: read
