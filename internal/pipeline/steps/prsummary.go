@@ -48,6 +48,10 @@ type testingSummaryOptions struct {
 	summaryParagraph     bool
 	omitOutcome          bool
 	repoRoot             string
+	// evidence links artifacts published to the repository's orphan evidence
+	// branch. It is nil when nothing was published, and the artifacts then
+	// render as local paths rather than as links that would not resolve.
+	evidence *evidenceLinks
 }
 
 // BuildPipelineSummary produces a deterministic markdown section from step results and rounds.
@@ -126,12 +130,13 @@ func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 	return buildTestingSummary(steps, rounds, testingSummaryOptions{includeTestedDetails: true})
 }
 
-func BuildTestingSummaryForPR(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot string) string {
+func BuildTestingSummaryForPR(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot string, links *evidenceLinks) string {
 	opts := testingSummaryOptionsForGitHub(upstreamURL, ref)
 	opts.compactArtifacts = true
 	opts.summaryParagraph = true
 	opts.omitOutcome = true
 	opts.repoRoot = repoRoot
+	opts.evidence = links
 	return buildTestingSummary(steps, rounds, opts)
 }
 
@@ -611,6 +616,10 @@ func trimUTF8Start(data []byte) []byte {
 }
 
 func artifactTargetForPath(artifact types.TestArtifact, opts testingSummaryOptions) string {
+	raw := isImageArtifact(artifact.Kind, artifact.Path) || isVideoArtifact(artifact.Kind, artifact.Path)
+	if target := opts.evidence.target(artifact.Path, raw); target != "" {
+		return target
+	}
 	repoPath := repoRelativeArtifactPath(artifact.Path, opts)
 	if repoPath == "" {
 		return ""
@@ -625,6 +634,9 @@ func artifactTargetForPath(artifact types.TestArtifact, opts testingSummaryOptio
 }
 
 func artifactLinkTargetForPath(artifact types.TestArtifact, opts testingSummaryOptions) string {
+	if target := opts.evidence.target(artifact.Path, false); target != "" {
+		return target
+	}
 	repoPath := repoRelativeArtifactPath(artifact.Path, opts)
 	if repoPath == "" {
 		return ""

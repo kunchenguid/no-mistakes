@@ -293,7 +293,7 @@ func TestPushStep_ReconcilesStaleDatabaseHeadSHA(t *testing.T) {
 	}
 }
 
-func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
+func TestPushStep_DoesNotPublishTestEvidenceIntoThePushedBranch(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -303,9 +303,6 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 	gitCmd(t, dir, "config", "user.name", "test")
 	gitCmd(t, dir, "config", "user.email", "test@test.com")
 	gitCmd(t, dir, "checkout", "-b", "main")
-	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.png\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -317,20 +314,23 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 	gitCmd(t, dir, "checkout", "-b", "feature")
 	baseSHA := gitCmd(t, dir, "rev-parse", "main")
 	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-	evidenceDir := filepath.Join(dir, "evidence", "feature")
-	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(evidenceDir, "checkout.png"), []byte("png"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "feature"
-	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence", Branch: "no-mistakes/evidence"}
 	recordReviewApproval(t, sctx, headSHA)
+
+	// Evidence for this run exists, collected outside the worktree.
+	evidenceDir := testEvidenceDir(sctx.Run.ID)
+	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(evidenceDir) })
+	if err := os.WriteFile(filepath.Join(evidenceDir, "checkout.png"), []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	step := &PushStep{}
 	if _, err := step.Execute(sctx); err != nil {
@@ -339,8 +339,9 @@ func TestPushStep_ForceAddsInRepoEvidenceArtifacts(t *testing.T) {
 
 	clone := t.TempDir()
 	gitCmd(t, clone, "clone", "--branch", "feature", upstream, ".")
-	if _, err := os.Stat(filepath.Join(clone, "evidence", "feature", "checkout.png")); err != nil {
-		t.Fatalf("expected ignored evidence artifact to be pushed: %v", err)
+	tracked := gitCmd(t, clone, "ls-files")
+	if strings.Contains(tracked, "evidence") || strings.Contains(tracked, ".png") {
+		t.Fatalf("pushed branch carries evidence files:\n%s", tracked)
 	}
 }
 
@@ -435,36 +436,5 @@ func TestPushStep_RedactsForkURLInGitErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "https://redacted@example.com/fork/project.git") {
 		t.Fatalf("expected redacted fork URL in error, got %v", err)
-	}
-}
-
-func TestPushStep_DoesNotForceAddIgnoredEvidenceDirectory(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("evidence/\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitCmd(t, dir, "add", ".gitignore")
-	gitCmd(t, dir, "commit", "-m", "ignore evidence")
-	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
-	evidenceDir := filepath.Join(dir, "evidence", "feature")
-	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(evidenceDir, "stale.png"), []byte("png"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Run.Branch = "feature"
-	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
-
-	step := &PushStep{}
-	if err := step.stageInRepoEvidence(sctx); err != nil {
-		t.Fatal(err)
-	}
-	if status := gitStatusPorcelain(t, dir); status != "" {
-		t.Fatalf("ignored evidence directory was staged: %q", status)
 	}
 }

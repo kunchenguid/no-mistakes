@@ -69,7 +69,7 @@ These blocks steer a gate agent, so they are read from your default branch rathe
 
 Explicit `commands.test` and `commands.lint` give you deterministic local baseline behavior, while leaving either empty asks the configured agent to fill the gap: empty `commands.test` has the agent select the smallest relevant tests under the targeted-validation contract (broad regression stays in remote CI), and empty `commands.lint` folds lint into the document step's combined housekeeping pass.
 An empty `commands.format` runs no separate formatter, so configure it explicitly when the push step must format agent changes.
-Either way, available user intent can trigger an evidence-oriented agent follow-up after a successful test baseline, and evidence stays in a temporary local directory unless the repo opts into `test.evidence.store_in_repo`.
+Either way, available user intent can trigger an evidence-oriented agent follow-up after a successful test baseline, and evidence stays in a temporary local directory unless the repo opts into publishing it to an orphan evidence branch with `test.evidence.store_in_repo`.
 The [Repo Config Reference](/no-mistakes/reference/repo-config/) owns the exact per-command semantics (including that `commands.test` is targeted, not CI-parity), command process lifetime, and the `ignore_patterns` match rules.
 
 Before a new validation gate starts, its effective agent configuration must resolve to a runnable native agent or ACP runner; otherwise the gate fails before its first pipeline step, even when explicit commands are configured.

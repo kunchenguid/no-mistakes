@@ -66,6 +66,7 @@ test:
   evidence:
     store_in_repo: false
     dir: .no-mistakes/evidence
+    branch: no-mistakes/evidence
 ```
 
 ## Fields
@@ -397,16 +398,21 @@ By default, evidence artifacts stay in a temporary directory keyed by run ID and
 | ---- | -------- |
 | Type | `object` |
 
-| Field                         | Type     | Default                 | Description                                                           |
-| ----------------------------- | -------- | ----------------------- | --------------------------------------------------------------------- |
-| `test.evidence.store_in_repo` | `bool`   | `false`                 | Commit and push test evidence artifacts from inside the repo worktree |
-| `test.evidence.dir`           | `string` | `.no-mistakes/evidence` | Repo-relative parent directory used when `store_in_repo` is true      |
+| Field                         | Type     | Default                 | Description                                                                 |
+| ----------------------------- | -------- | ----------------------- | --------------------------------------------------------------------------- |
+| `test.evidence.store_in_repo` | `bool`   | `false`                 | Publish test evidence artifacts to the repository's orphan evidence branch  |
+| `test.evidence.dir`           | `string` | `.no-mistakes/evidence` | Directory prefix inside the evidence branch                                 |
+| `test.evidence.branch`        | `string` | `no-mistakes/evidence`  | Name of the orphan evidence branch                                          |
 
-When `store_in_repo` is true, the test step writes evidence under `<dir>/<branch-slug>` and the push step stages files from that directory before committing agent changes.
+The test step always collects evidence in a temporary directory outside the worktree, so artifacts never enter the branch under validation.
+When `store_in_repo` is true, the PR step copies that directory onto `branch` under `<dir>/<branch-slug>` in the same repository, pushes it, and links the artifacts from the pull request body.
+The branch is an orphan: it shares no history with your code branches, so evidence never reaches the default branch. Links use the evidence commit rather than the branch, so they keep resolving after later runs.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
-If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
+`branch` must be a valid Git branch name; an invalid value fails the config with the offending key and value.
+Publication fails closed - artifacts stay local paths in the PR body - when the remote refuses the push, or when a branch of that name already exists without the `.no-mistakes-evidence` marker at its tip.
+Enabling this pushes a branch to your remote, so pick a `branch` name your CI workflows do not build.
 
-These are global defaults. Per-repo config can override either field.
+These are global defaults. Per-repo config can override each field, except `branch`, which is read only from the trusted default branch.
 
 ## Environment variables
 

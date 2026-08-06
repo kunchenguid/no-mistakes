@@ -51,10 +51,27 @@ func RunBare(ctx context.Context, bareDir string, args ...string) (string, error
 	return runInDir(ctx, bareDir, append([]string{"--git-dir=" + bareDir}, args...)...)
 }
 
+// RunWithEnv is Run with extra KEY=VALUE entries appended to the git
+// environment. Later entries win, so a caller can override anything
+// NonInteractiveEnv sets. It exists for plumbing that is configured only
+// through the environment - GIT_INDEX_FILE for a scratch index, the
+// GIT_AUTHOR_*/GIT_COMMITTER_* identity for commit-tree - and carries the same
+// bare-repository handling as Run.
+func RunWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) (string, error) {
+	if isBareGitDir(dir) {
+		return runInDirWithEnv(ctx, dir, extraEnv, append([]string{"--git-dir=" + dir}, args...)...)
+	}
+	return runInDirWithEnv(ctx, dir, extraEnv, args...)
+}
+
 func runInDir(ctx context.Context, dir string, args ...string) (string, error) {
+	return runInDirWithEnv(ctx, dir, nil, args...)
+}
+
+func runInDirWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = NonInteractiveEnv(dir)
+	cmd.Env = append(NonInteractiveEnv(dir), extraEnv...)
 	winproc.Harden(cmd)
 	out, err := cmd.Output()
 	if err != nil {
