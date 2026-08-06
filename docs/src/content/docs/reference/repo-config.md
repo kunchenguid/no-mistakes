@@ -334,7 +334,7 @@ Legacy alias: `auto_fix.babysit`.
 
 ### ci.rerun_transient
 
-How many times the CI step may re-run a single check the provider reported as cancelled before that check reaches an approval gate.
+How many times the CI step may re-run a single check whose failure the provider attributes to itself rather than to the code - a cancellation, or a job that failed before any repository step ran - before that check reaches an approval gate.
 
 | | |
 |---|---|
@@ -351,9 +351,14 @@ Rerunning on that ambiguity can restart work someone deliberately stopped, so ra
 With no trusted copy of this file, the operator's own [`ci.rerun_transient`](/no-mistakes/reference/global-config/#cirerun_transient) applies, then the built-in default.
 A value set here always wins over the global one, so the maintainer of the repository has the last word on how many workflow runs their project is billed for.
 
-A rerun is requested only when the provider itself reported the outcome as `cancelled`, which is the one terminal outcome it attributes to itself rather than to the job:
+A rerun is requested when the provider attributes the outcome to itself rather than to the job, which is true in two cases:
 
-- `failure`, `error`, `action_required`, and `startup_failure` are the job's own verdict on the commit, so they escalate on the first failure with no added latency.
+- The provider reported the outcome as `cancelled`, the one terminal conclusion it attributes to itself rather than to the job.
+- The job failed before any repository step ran - its setup/action-resolution phase failed, for GitHub Actions a "Failed to resolve action download info" / HTTP 503 outage while it was downloading the actions the job uses. This is read structurally from the job's own setup-step conclusion, never from log text, so it can never mask a real failure: a genuine test or lint failure cleared setup and failed a later step. When it persists past the budget it reaches the same approval gate as an unresolved cancellation rather than the fix agent.
+
+The remaining outcomes are the job's own verdict on the commit and are never re-run:
+
+- `failure`, `error`, `action_required`, and `startup_failure` (after any repository step ran) are the job's verdict, so they escalate on the first failure with no added latency.
 - `timed_out` means the job exceeded its own `timeout-minutes`, which is usually the branch's own code hanging. Re-running it burns another full timeout window reproducing the same failure, so it is treated as a genuine failure and is not opt-in.
 - `stale` is already treated as skipped rather than failed, so it never reaches this decision.
 - An outcome no-mistakes recognizes as none of the above never earns a rerun either.

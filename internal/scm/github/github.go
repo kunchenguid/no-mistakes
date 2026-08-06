@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -412,6 +413,88 @@ func actionsRerunTarget(link string) (runID, jobID string, ok bool) {
 	}
 }
 
+// PreRunFailures reports which of the given failed checks GitHub Actions failed
+// during the job's setup phase - before any repository step ran. Actions
+// resolves and downloads every action a job uses inside "Set up job", so an
+// action-download outage ("Failed to resolve action download info", HTTP 503)
+// fails that step and the job never executes a repository step. It reads the
+// job's own step-level conclusions, never log text, and fails closed: a check
+// whose job it cannot resolve or read is simply not flagged, so it stays a
+// genuine failure.
+func (h *Host) PreRunFailures(ctx context.Context, checks []scm.Check) (map[string]bool, error) {
+	result := map[string]bool{}
+	// Cache each run's jobs so several checks from one run cost one API call.
+	runJobs := map[string][]githubRunJob{}
+	for _, check := range checks {
+		runID, jobID, ok := actionsRerunTarget(check.Link)
+		if !ok {
+			continue
+		}
+		jobs, seen := runJobs[runID]
+		if !seen {
+			jobs = h.fetchRunJobs(ctx, runID)
+			runJobs[runID] = jobs
+		}
+		job, found := matchRunJob(jobs, jobID, check.Name)
+		if found && jobFailedAtSetup(job) {
+			result[check.Name] = true
+		}
+	}
+	return result, nil
+}
+
+// fetchRunJobs reads a run's jobs (with their steps) from Actions. A run it
+// cannot read yields no jobs, so every check on it fails closed to a genuine
+// failure rather than being guessed as infrastructure.
+func (h *Host) fetchRunJobs(ctx context.Context, runID string) []githubRunJob {
+	viewArgs := append([]string{"run", "view", runID}, h.repoArgs()...)
+	viewArgs = append(viewArgs, "--json", "jobs")
+	out, err := h.cmd(ctx, "gh", viewArgs...).Output()
+	if err != nil {
+		return nil
+	}
+	var payload githubRunView
+	if err := json.Unmarshal(out, &payload); err != nil {
+		return nil
+	}
+	return payload.Jobs
+}
+
+// matchRunJob finds the job a check names: by databaseId when the check's link
+// carried one, otherwise by job name. A re-run can renumber jobs, so the name
+// fallback keeps a check matchable when its link named only the run.
+func matchRunJob(jobs []githubRunJob, jobID, checkName string) (githubRunJob, bool) {
+	if jobID != "" {
+		for _, job := range jobs {
+			if strconv.Itoa(job.DatabaseID) == jobID {
+				return job, true
+			}
+		}
+	}
+	for _, job := range jobs {
+		if normalizeRunName(job.Name) == normalizeRunName(checkName) {
+			return job, true
+		}
+	}
+	return githubRunJob{}, false
+}
+
+// jobFailedAtSetup reports whether a failed job failed in its setup step, before
+// any repository step ran. It requires the job itself to be failed and its setup
+// step ("Set up job", always step 1) to carry a failure conclusion; a job whose
+// setup succeeded and failed a later step is a real failure and is never matched.
+func jobFailedAtSetup(job githubRunJob) bool {
+	if !isFailedJob(job) {
+		return false
+	}
+	for _, step := range job.Steps {
+		if step.Number == 1 || strings.EqualFold(strings.TrimSpace(step.Name), "Set up job") {
+			return strings.EqualFold(strings.TrimSpace(step.Conclusion), "failure")
+		}
+	}
+	return false
+}
+
 func isNumericID(value string) bool {
 	if value == "" {
 		return false
@@ -504,9 +587,18 @@ type githubRunView struct {
 }
 
 type githubRunJob struct {
+	DatabaseID int             `json:"databaseId"`
+	Name       string          `json:"name"`
+	Conclusion string          `json:"conclusion"`
+	Status     string          `json:"status"`
+	Steps      []githubJobStep `json:"steps"`
+}
+
+type githubJobStep struct {
 	Name       string `json:"name"`
-	Conclusion string `json:"conclusion"`
+	Number     int    `json:"number"`
 	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
 }
 
 func runMatchesTargets(ctx context.Context, h *Host, run githubRun, targets map[string]struct{}) bool {
