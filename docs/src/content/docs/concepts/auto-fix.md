@@ -39,13 +39,13 @@ Unresolved documentation findings and unresolved blocking lint findings pause fo
 
 The CI step has one cheaper option than a fix round, and it tries it first.
 
-A check the provider reports as `cancelled` is the provider telling you about itself, not about your commit. Handing that to the fix agent spends an agent round reading a run that never tested anything, and the fix it invents edits code that was never broken. So when every terminally failed check on the pull request is cancelled and the configured budget authorizes a rerun, the CI step asks the provider to run those checks again for the same commit and keeps polling.
+A check whose failure the provider attributes to itself rather than to your commit - a cancellation, or on GitHub a job that failed before any repository step ran - is the provider telling you about itself. Handing that to the fix agent spends an agent round reading a run that never tested anything, and the fix it invents edits code that was never broken. So when every terminally failed check on the pull request is one of those and the configured budget authorizes a rerun, the CI step asks the provider to run those checks again for the same commit and keeps polling.
 
 That deterministic rerun sits strictly before the agent rounds described above:
 
 1. Every check finishes and at least one has failed.
-2. If all of those failures are cancelled checks, the pull request has no merge conflict, and the configured budget authorizes it, each one is re-run and the monitor keeps polling. No `auto_fix.ci` attempt is consumed.
-3. When cancellation is the only remaining issue, a check with no authorized or outstanding rerun pauses for a decision without consuming an `auto_fix.ci` attempt.
+2. If all of those failures are provider-attributed checks, the pull request has no merge conflict, and the configured budget authorizes it, each one is re-run and the monitor keeps polling. No `auto_fix.ci` attempt is consumed.
+3. When such a provider-attributed outcome is the only remaining issue, a check with no authorized or outstanding rerun pauses for a decision without consuming an `auto_fix.ci` attempt.
 4. Every other failure escalates into the `auto_fix.ci` loop on its first observation.
 
 [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_transient) owns the budget, the exact classification, and every case that skips the rerun.
