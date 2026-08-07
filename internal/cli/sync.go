@@ -104,7 +104,8 @@ func openSyncService() (*branchsync.Service, func(), error) {
 	}
 	globalCfg, cfgErr := config.LoadGlobal(p.ConfigFile())
 	if cfgErr != nil {
-		globalCfg = config.DefaultGlobalConfig()
+		d.Close()
+		return nil, nil, cfgErr
 	}
 	return &branchsync.Service{DB: d, Repo: repo, WorkDir: ".", GateDir: p.RepoDir(repo.ID), Paths: p, RemoteTimeout: globalCfg.BranchSyncRemoteTimeout}, func() { _ = d.Close() }, nil
 }

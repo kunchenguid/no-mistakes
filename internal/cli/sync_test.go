@@ -969,6 +969,41 @@ func TestSyncRecoverFlagValidation(t *testing.T) {
 	}
 }
 
+func TestSyncServicesRejectInvalidGlobalRemoteTimeout(t *testing.T) {
+	newCLISyncFixture(t)
+	p, err := paths.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.ConfigFile(), []byte("branch_sync_remote_timeout: \"0s\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	service, closeFn, err := openSyncService()
+	if err == nil {
+		closeFn()
+		t.Fatal("openSyncService accepted an invalid branch sync timeout")
+	}
+	if service != nil || closeFn != nil {
+		t.Fatal("openSyncService returned resources with its configuration error")
+	}
+	if !strings.Contains(err.Error(), "branch_sync_remote_timeout") || !strings.Contains(err.Error(), "duration must be positive") {
+		t.Fatalf("openSyncService error = %v", err)
+	}
+
+	service, closeFn, err = branchsync.OpenCurrent()
+	if err == nil {
+		closeFn()
+		t.Fatal("branchsync.OpenCurrent accepted an invalid branch sync timeout")
+	}
+	if service != nil || closeFn != nil {
+		t.Fatal("branchsync.OpenCurrent returned resources with its configuration error")
+	}
+	if !strings.Contains(err.Error(), "branch_sync_remote_timeout") || !strings.Contains(err.Error(), "duration must be positive") {
+		t.Fatalf("branchsync.OpenCurrent error = %v", err)
+	}
+}
+
 func TestHumanSyncRecoverRequiresConfirmationOutsideTTY(t *testing.T) {
 	f := newCLIRecoverFixture(t)
 	previous := syncInteractive
