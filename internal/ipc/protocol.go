@@ -65,14 +65,20 @@ func (e *RPCError) Error() string { return e.Message }
 // Intent, when set, is an agent-supplied description of the change. It is
 // stamped onto the run so the intent step uses it verbatim instead of inferring
 // intent from local transcripts.
+//
+// TaskID, when set, is an agent-supplied task-tracking id that the PR step
+// bakes into the pull request title, and TaskIDFormat selects its placement
+// (see internal/conventional). TaskIDFormat is inert without TaskID.
 type PushReceivedParams struct {
 	// Gate is the absolute path to the gate bare repo.
-	Gate      string           `json:"gate"`
-	Ref       string           `json:"ref"`
-	Old       string           `json:"old"`
-	New       string           `json:"new"`
-	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
-	Intent    string           `json:"intent,omitempty"`
+	Gate         string           `json:"gate"`
+	Ref          string           `json:"ref"`
+	Old          string           `json:"old"`
+	New          string           `json:"new"`
+	SkipSteps    []types.StepName `json:"skip_steps,omitempty"`
+	Intent       string           `json:"intent,omitempty"`
+	TaskID       string           `json:"task_id,omitempty"`
+	TaskIDFormat string           `json:"task_id_format,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -121,13 +127,16 @@ type GetActiveRunParams struct {
 // RerunParams requests a new run for the latest gate head on a branch.
 // Intent, when set, overrides inherited intent and fresh inference. When empty,
 // the daemon inherits authoritative intent from the selected prior run or
-// leaves the new run to perform fresh inference.
+// leaves the new run to perform fresh inference. TaskID and TaskIDFormat are
+// stamped onto the new run like PushReceivedParams.TaskID.
 type RerunParams struct {
 	RepoID        string           `json:"repo_id"`
 	Branch        string           `json:"branch"`
 	PreviousRunID string           `json:"previous_run_id,omitempty"`
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
+	TaskID        string           `json:"task_id,omitempty"`
+	TaskIDFormat  string           `json:"task_id_format,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.

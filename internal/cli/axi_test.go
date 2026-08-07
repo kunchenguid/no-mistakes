@@ -15,6 +15,7 @@ import (
 	toon "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/conventional"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -496,7 +497,7 @@ func TestConfigErrorForFreshAxiRunAllowsReattach(t *testing.T) {
 }
 
 func TestRerunParamsIncludeSkipSteps(t *testing.T) {
-	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal")
+	params := rerunParams("repo-1", "feature/x", []types.StepName{types.StepReview}, "user goal", conventional.TaskID{})
 	if params.RepoID != "repo-1" || params.Branch != "feature/x" || params.Intent != "user goal" {
 		t.Fatalf("unexpected rerun params: %#v", params)
 	}
@@ -826,7 +827,7 @@ func TestAxiRunReportsInvalidGlobalConfig(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(&out)
-	if err := runAxiRun(cmd, false, nil, "user goal"); err == nil {
+	if err := runAxiRun(cmd, false, nil, "user goal", conventional.TaskID{}); err == nil {
 		t.Fatalf("axi run should fail on invalid global config:\n%s", out.String())
 	}
 	got := out.String()

@@ -88,17 +88,46 @@ An active run on another branch does not block starting validation for the curre
 no-mistakes axi run --intent "the user's goal"
 no-mistakes axi run --intent "the user's goal" --skip test,lint
 no-mistakes axi run --intent "the user's goal" --yes
+no-mistakes axi run --intent "the user's goal" --task-id WA-3093
 ```
 
-| Flag          | Type     | Default | Description                                                      |
-| ------------- | -------- | ------- | ---------------------------------------------------------------- |
-| `--intent`    | `string` | (none)  | What the user set out to accomplish; required to start a new run |
-| `-y`, `--yes` | `bool`   | `false` | Auto-resolve every gate until a decision point or outcome        |
-| `--skip`      | `string` | (none)  | Comma-separated pipeline steps to skip                           |
+| Flag                | Type     | Default          | Description                                                      |
+| ------------------- | -------- | ---------------- | ---------------------------------------------------------------- |
+| `--intent`          | `string` | (none)           | What the user set out to accomplish; required to start a new run |
+| `-y`, `--yes`       | `bool`   | `false`          | Auto-resolve every gate until a decision point or outcome        |
+| `--skip`            | `string` | (none)           | Comma-separated pipeline steps to skip                           |
+| `--task-id`         | `string` | (none)           | Task-tracking id baked into the generated PR title               |
+| `--task-id-format`  | `string` | `release-please` | Where `--task-id` goes in the title                              |
 
 `--intent` is not a description of the diff.
 It is the user's goal or request, and no-mistakes uses it verbatim instead of transcript inference.
 Err on the side of completeness: include the goal, important decisions and tradeoffs, constraints or approaches ruled in or out, and explicit requests that might otherwise look surprising in the diff.
+`--task-id` is a provider-neutral tracking reference: a Jira key (`WA-3093`), a GitHub issue (`#412`), an Asana or ClickUp id, or anything else that identifies the task.
+It is a single line of at most 64 characters and is stamped on the run, so the [PR step](/no-mistakes/reference/pipeline-steps/#pr) bakes it into the pull request title.
+Baking is idempotent: a title that already carries the id is left alone, so re-running on the same branch never accretes copies of it.
+Without `--task-id`, a valid `--task-id-format` does nothing; on a branch that has never carried an id, no title is changed.
+An id that cannot become part of a title (a control character, or more than 64 characters) and an unknown format name are both rejected as argument errors before any run starts, so a bad value never reaches a pull request title.
+
+The id is sticky per branch, because a ticket belongs to one branch rather than to a single run.
+A later run that omits `--task-id` keeps the id and format already recorded for that branch, so a rerun, a fix round, or a follow-up `axi run` never strips the reference back off an open pull request title.
+Passing `--task-id` explicitly overrides the recorded one for that run and every later run that omits the flag.
+The two flags resolve together, so `--task-id-format` on its own never re-places an inherited id: the recorded format wins, and changing the placement means passing `--task-id` again alongside the new format.
+A branch that never carried an id stays unstamped.
+
+`--task-id-format` accepts three placements, all applied after the conventional-commit title has been generated:
+
+| Value            | Result for `WA-3093`                            | Notes                                                                              |
+| ---------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `release-please` | `fix(carousel): tighten slide spacing (WA-3093)` | Default. `type(scope):` stays at the front, so release automation is unaffected     |
+| `prefix`         | `[WA-3093] fix(carousel): tighten slide spacing` | Reads best in a PR list, but the title is no longer conventional                    |
+| `suffix`         | `fix(carousel): tighten slide spacing [WA-3093]` | Keeps the type at the front, but the id is not part of the conventional description |
+
+`prefix` produces a title that a strict release-please setup will not parse as a conventional commit, which can leave the change out of the generated changelog.
+That is the caller's opt-in tradeoff; `release-please` is the default precisely because it never has that effect.
+
+`--task-id` is only available on `axi run`.
+A branch validated by pushing to the gate directly (`git push no-mistakes`) has no flag surface, so it cannot set an id; it still inherits the one the branch already carries.
+
 When starting a new run, `axi run` refuses the default branch and uncommitted working trees with actionable errors instead of auto-branching or auto-committing.
 Reattaching to an in-flight run does not require `--intent`.
 Reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.
