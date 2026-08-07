@@ -100,6 +100,39 @@ func TestFormatIntentPushOptionEmpty(t *testing.T) {
 	}
 }
 
+func TestBasePushOptionRoundTrip(t *testing.T) {
+	// A branch name with characters that could disturb the line-oriented
+	// push-option transport must survive intact, and coexist with other options.
+	base := "release/v2.0"
+	opt := formatBasePushOption(base)
+	if opt == "" {
+		t.Fatal("formatBasePushOption returned empty for a non-empty base")
+	}
+	got, err := parseBasePushOptions([]string{"no-mistakes.skip=test", opt})
+	if err != nil {
+		t.Fatalf("parseBasePushOptions() error = %v", err)
+	}
+	if got != base {
+		t.Fatalf("round-trip mismatch:\n got %q\nwant %q", got, base)
+	}
+}
+
+func TestFormatBasePushOptionEmpty(t *testing.T) {
+	if got := formatBasePushOption("   "); got != "" {
+		t.Fatalf("formatBasePushOption(blank) = %q, want empty", got)
+	}
+}
+
+func TestParseBasePushOptionsNone(t *testing.T) {
+	got, err := parseBasePushOptions([]string{"no-mistakes.skip=test", "no-mistakes.intent=abc"})
+	if err != nil {
+		t.Fatalf("parseBasePushOptions() error = %v", err)
+	}
+	if got != "" {
+		t.Fatalf("parseBasePushOptions(no base) = %q, want empty", got)
+	}
+}
+
 func TestParseIntentPushOptionsNone(t *testing.T) {
 	got, err := parseIntentPushOptions([]string{"no-mistakes.skip=test", "ci.skip"})
 	if err != nil {

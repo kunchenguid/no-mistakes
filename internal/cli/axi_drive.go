@@ -61,6 +61,7 @@ func newAxiRunCmd() *cobra.Command {
 	var autoYes bool
 	var skipValue string
 	var intent string
+	var base string
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -77,6 +78,11 @@ func newAxiRunCmd() *cobra.Command {
 			"agent. The daemon requires a supported native agent binary, the `agent: cursor`\n" +
 			"ACP alias, or an explicit `acp:<target>` through `acpx`, and fails before the\n" +
 			"first step when none can run.\n\n" +
+			"--base overrides the repository's git-detected default branch for this\n" +
+			"run only: the pipeline rebases onto it, diffs against it, and targets any\n" +
+			"PR it opens at it. Use it when the branch you are shipping onto is not the\n" +
+			"repository's configured default branch. It never changes the persisted\n" +
+			"default branch, and it must name a branch that exists locally or on origin.\n\n" +
 			preserveGateFixCommitsGuidance,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
@@ -86,29 +92,39 @@ func newAxiRunCmd() *cobra.Command {
 				"auto_yes":   autoYes,
 				"has_intent": strings.TrimSpace(intent) != "",
 				"has_skip":   strings.TrimSpace(skipValue) != "",
+				"has_base":   strings.TrimSpace(base) != "",
 			}, func() error {
 				skipSteps, err := parseSkipSteps(skipValue)
 				if err != nil {
 					return emitError(cmd, 2, err.Error(),
 						"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
 				}
-				return runAxiRun(cmd, autoYes, skipSteps, intent)
+				return runAxiRun(cmd, autoYes, skipSteps, intent, base)
 			})
 		},
 	}
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every gate (fix findings, then accept) until a decision point or outcome")
 	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip")
 	cmd.Flags().StringVar(&intent, "intent", "", "what the user set out to accomplish (not a description of the diff); used instead of inferring from transcripts (required to start a run)")
+	cmd.Flags().StringVar(&base, "base", "", "base branch to rebase onto, diff against, and target the PR at, overriding the repo's default branch for this run only (must exist locally or on origin)")
 	return cmd
 }
 
-func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent string) error {
+func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, base string) error {
 	ctx := cmd.Context()
 	env, err := openAxiRunEnv()
 	if err != nil {
 		return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 	}
 	defer env.close()
+
+	base = strings.TrimSpace(base)
+	if base != "" {
+		if err := validateBaseBranch(ctx, base); err != nil {
+			return emitError(cmd, 2, err.Error(),
+				"Pass a branch that exists locally or on origin, or drop --base to use the repository default branch")
+		}
+	}
 
 	branch, err := git.CurrentBranch(ctx, ".")
 	if err != nil {
@@ -145,7 +161,7 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 			return guard(cmd)
 		}
 		var err error
-		runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent)
+		runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent, base)
 		if err != nil {
 			if ownershipErr, ok := err.(*branchOwnershipError); ok {
 				return emitBranchOwnershipError(cmd, ownershipErr)
@@ -225,6 +241,26 @@ func preflightGuard(ctx context.Context, env *axiEnv, branch string) func(*cobra
 	return nil
 }
 
+// validateBaseBranch fails when the --base override does not name a branch the
+// pipeline can rebase onto: it must resolve either as a local branch, as the
+// worktree's origin remote-tracking ref, or as a live branch on origin. The
+// last check catches a branch that exists on the remote but has not been
+// fetched into this clone. Failing here keeps a typo'd or nonexistent base from
+// silently falling back to the repository default or leaving the pipeline to
+// rebase onto a ref that does not exist.
+func validateBaseBranch(ctx context.Context, base string) error {
+	if local, err := git.RefExists(ctx, ".", "refs/heads/"+base); err == nil && local {
+		return nil
+	}
+	if tracking, err := git.RefExists(ctx, ".", "refs/remotes/origin/"+base); err == nil && tracking {
+		return nil
+	}
+	if sha, err := git.LsRemote(ctx, ".", "origin", "refs/heads/"+base); err == nil && strings.TrimSpace(sha) != "" {
+		return nil
+	}
+	return fmt.Errorf("base branch %q not found locally or on origin", base)
+}
+
 // branchOwnershipError carries the shared branch-sync classification that
 // blocked a fresh trigger. Keeping the state intact lets AXI render the exact
 // structured next action instead of reducing the refusal to a Git push error.
@@ -291,9 +327,12 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 // the gate to trigger a pipeline, and falls back to a rerun when the push was a
 // no-op (the gate already had this commit). Callers must check for an existing
 // active run first (see activeRunID) and apply pre-flight guards.
-func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent string) (string, error) {
+func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, base string) (string, error) {
 	pushOptions := formatSkipPushOptions(skipSteps)
 	if opt := formatIntentPushOption(intent); opt != "" {
+		pushOptions = append(pushOptions, opt)
+	}
+	if opt := formatBasePushOption(base); opt != "" {
 		pushOptions = append(pushOptions, opt)
 	}
 	priorRunIDs, err := runIDsForHead(env.client, env.repo.ID, branch, headSHA)
@@ -325,7 +364,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	// No run appeared: the push was likely up-to-date. Rerun the latest gate
 	// head so `axi run` is still useful when there are no new commits.
 	var rr ipc.RerunResult
-	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent), &rr); err != nil {
+	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent, base), &rr); err != nil {
 		return "", fmt.Errorf("no run started for %q: %v", branch, err)
 	}
 	return rr.RunID, nil
@@ -409,8 +448,8 @@ func activeRunLookupParams(repoID, branch string) *ipc.GetActiveRunParams {
 	return &ipc.GetActiveRunParams{RepoID: repoID, Branch: branch}
 }
 
-func rerunParams(repoID, branch string, skipSteps []types.StepName, intent string) *ipc.RerunParams {
-	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent}
+func rerunParams(repoID, branch string, skipSteps []types.StepName, intent, base string) *ipc.RerunParams {
+	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent, Base: base}
 }
 
 // driveRun subscribes to a run and reconciles authoritative state on transition
