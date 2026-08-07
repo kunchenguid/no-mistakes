@@ -29,9 +29,9 @@ func TestPRStep_GhNotAvailable(t *testing.T) {
 		t.Skip("gh is available, skipping unavailable test")
 	}
 
-	dir := t.TempDir()
+	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, "abc", "def", config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
