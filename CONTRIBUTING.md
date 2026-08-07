@@ -31,7 +31,7 @@ Every `opened` or `edited` event gets an independent run, including first-time-f
 
 See the [quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
 
-## Repo conventions
+## Repo Conventions
 
 - Go 1.25+, standard toolchain. See `AGENTS.md` for agent instructions.
 - Run `make fmt`, `make lint`, and `make test` before pushing. Run `make e2e` too when you touch agent integrations, the e2e harness, or recorded fixtures. The pipeline will run them again, but a fast local pass saves rounds.
