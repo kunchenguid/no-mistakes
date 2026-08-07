@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCodexAgent_BuildArgs(t *testing.T) {
@@ -214,6 +215,35 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	}
 	if _, err := os.Stat(schemaPath); !os.IsNotExist(err) {
 		t.Fatalf("expected temporary schema file to be removed, stat err = %v", err)
+	}
+}
+
+func TestCodexAgent_RunAcceptsCodexStdinStatusAfterEOF(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+cat >/dev/null
+echo 'Reading additional input from stdin...' >&2
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"ok\":true}"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}'
+`, strings.Join([]string{
+		"@echo off",
+		"set /p ignored=",
+		"echo Reading additional input from stdin... 1>&2",
+		"echo {\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"ok\\\":true}\"}}",
+		"echo {\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}",
+	}, "\r\n"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	result, err := (&codexAgent{bin: bin}).Run(ctx, RunOpts{
+		Prompt: "review",
+		CWD:    t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Text != `{"ok":true}` {
+		t.Fatalf("unexpected text: %s", result.Text)
 	}
 }
 

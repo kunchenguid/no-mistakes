@@ -92,6 +92,9 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 	args := a.buildArgs(opts.Prompt, schemaPath, resumeID)
 	cmd := exec.CommandContext(ctx, a.bin, args...)
 	cmd.Dir = opts.CWD
+	// `codex exec <prompt>` treats non-terminal stdin as optional context and
+	// reads it to EOF. Keep stdin at the null device so it receives EOF instead
+	// of inheriting an open pipe; its accompanying stderr status is informational.
 	cmd.Stdin = nil
 	cmd.Env = gitSafeEnv(opts.CWD)
 	shellenv.ConfigureShellCommand(cmd)
