@@ -396,6 +396,61 @@ func TestFinalizeTextResult_WithSchemaParsesFencedJSON(t *testing.T) {
 	}
 }
 
+func TestFinalizeTextResult_WithSchemaRecoversJSONFromUnclosedFence(t *testing.T) {
+	// Pi sometimes emits prose and an opening JSON fence but omits the closing
+	// fence. The final balanced object is still a valid schema-compliant result.
+	text := "The fix is verified. Let me now return the structured result.\n\n```json\n{\"summary\":\"Add missing State import\"}"
+	schema := json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`)
+	result, err := finalizeTextResult("pi", text, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["summary"] != "Add missing State import" {
+		t.Errorf("summary = %v, want recovered JSON value", output["summary"])
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaIgnoresProseBackticksBeforeJSON(t *testing.T) {
+	// A prose mention of backticks is not a fence. It must not prevent the
+	// fallback from reaching the final schema-valid object.
+	text := "An unclosed ``` code fence is the bug being fixed.\n\n{\"summary\":\"recover the final result\"}"
+	schema := json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`)
+	result, err := finalizeTextResult("pi", text, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["summary"] != "recover the final result" {
+		t.Errorf("summary = %v, want recovered JSON value", output["summary"])
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaIgnoresMalformedFourBacktickProse(t *testing.T) {
+	// Pi can discuss a literal ```json fence inside malformed inline-code markup
+	// before producing its normal final fenced result. The prose must not consume
+	// that later result as part of an unterminated fence.
+	text := "The missing closer was an unclosed ````json` fence.\n\n```json\n{\"summary\":\"recover the final result\"}\n```"
+	schema := json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`)
+	result, err := finalizeTextResult("pi", text, schema, TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output["summary"] != "recover the final result" {
+		t.Errorf("summary = %v, want recovered JSON value", output["summary"])
+	}
+}
+
 func TestFinalizeTextResult_WithSchemaParsesInlineOpenFence(t *testing.T) {
 	// Codex/GPT-5 sometimes glues the opening ```json fence to the end of
 	// the prior reasoning line, with no newline between text and backticks.

@@ -374,6 +374,13 @@ func indexJSONFenceOpen(text string) int {
 		}
 		i += searchStart
 		contentStart, info := fenceContentStart(text, i)
+		if !isFenceInfo(info) {
+			// This can be a prose mention such as "an unclosed ``` code fence"
+			// or a malformed four-backtick inline-code delimiter. Advance only one
+			// byte so overlapping backtick runs are examined correctly.
+			searchStart = i + 1
+			continue
+		}
 		if strings.EqualFold(strings.TrimSpace(info), "json") {
 			return contentStart
 		}
@@ -384,6 +391,14 @@ func indexJSONFenceOpen(text string) int {
 		searchStart = contentStart + next
 	}
 	return -1
+}
+
+// isFenceInfo reports whether text after three backticks can be a fence info
+// string. Backticks or whitespace within a nonempty info string indicate prose
+// (or malformed inline-code markup), not a fenced block.
+func isFenceInfo(info string) bool {
+	info = strings.TrimSpace(info)
+	return !strings.ContainsAny(info, " \t`")
 }
 
 func fenceContentStart(text string, fenceStart int) (int, string) {
@@ -458,9 +473,22 @@ func lastBareJSONObject(text string, schema json.RawMessage) (json.RawMessage, e
 	var lastErr error
 	for i := 0; i < len(text); i++ {
 		if strings.HasPrefix(text[i:], "```") {
-			contentStart, _ := fenceContentStart(text, i)
+			contentStart, info := fenceContentStart(text, i)
+			// A prose mention such as "an unclosed ``` code fence" is not an
+			// opening fence. Treating it as one would hide a later final JSON
+			// object when there is no matching closing marker.
+			if !isFenceInfo(info) {
+				continue
+			}
 			next := skipFenceBlock(text[contentStart:])
 			if next < 0 {
+				// A Pi response can prefix its final JSON with ```json but omit
+				// the closing fence. Do not discard a schema-valid final object
+				// in that malformed fence; continue scanning its body.
+				if strings.EqualFold(strings.TrimSpace(info), "json") {
+					i = contentStart - 1
+					continue
+				}
 				break
 			}
 			i = contentStart + next - 1
