@@ -35,6 +35,66 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+func TestRunAttemptsOldExecutableCleanupBeforeEarlyRoutes(t *testing.T) {
+	originalArgs := os.Args
+	originalCleanup := cleanupOldExecutable
+	originalBackground := maybeHandleBackgroundCheck
+	t.Cleanup(func() {
+		os.Args = originalArgs
+		cleanupOldExecutable = originalCleanup
+		maybeHandleBackgroundCheck = originalBackground
+	})
+
+	t.Run("daemon", func(t *testing.T) {
+		called := false
+		cleanupOldExecutable = func() error {
+			called = true
+			return nil
+		}
+		os.Args = []string{"no-mistakes", "daemon", "log-sink", "--root", ""}
+		if code := run(); code != 1 {
+			t.Fatalf("run code = %d, want 1", code)
+		}
+		if !called {
+			t.Fatal("cleanup was not attempted before daemon routing")
+		}
+	})
+
+	t.Run("background update", func(t *testing.T) {
+		cleanupFinished := false
+		cleanupOldExecutable = func() error {
+			cleanupFinished = true
+			return fmt.Errorf("executable is still locked")
+		}
+		maybeHandleBackgroundCheck = func([]string) (bool, error) {
+			if !cleanupFinished {
+				t.Fatal("background routing ran before cleanup")
+			}
+			return true, nil
+		}
+		os.Args = []string{"no-mistakes", "--update-check", "v1.2.3"}
+		if code := run(); code != 0 {
+			t.Fatalf("run code = %d, want 0", code)
+		}
+	})
+
+	t.Run("interactive", func(t *testing.T) {
+		called := false
+		cleanupOldExecutable = func() error {
+			called = true
+			return nil
+		}
+		maybeHandleBackgroundCheck = originalBackground
+		os.Args = []string{"no-mistakes", "--version"}
+		if code := run(); code != 0 {
+			t.Fatalf("run code = %d, want 0", code)
+		}
+		if !called {
+			t.Fatal("cleanup was not attempted before interactive routing")
+		}
+	})
+}
+
 func TestCLILogWriterReturnsDiscardWhenLogsDirMissing(t *testing.T) {
 	nmHome := t.TempDir()
 	t.Setenv("NM_HOME", nmHome)
