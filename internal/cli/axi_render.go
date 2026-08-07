@@ -18,13 +18,20 @@ import (
 // can pin the clock when asserting how long a run has been parked.
 var nowUnix = func() int64 { return time.Now().Unix() }
 
-// maxFindingDesc caps a finding description rendered inline. Findings are the
-// decision content at a gate, so the limit is generous; only pathological
-// descriptions get truncated, with the full length disclosed.
-const (
-	maxFindingDesc = 600
-	maxGateSummary = 1200
-)
+// maxGateSummary caps the gate's synopsis line, which is meant to be a short
+// human-scannable summary, not the decision content itself.
+//
+// Finding descriptions are intentionally NOT capped here (issue #600): they
+// are the decision content a gate parks on, and the skill's documented
+// contract requires relaying an ask-user finding "as the pipeline wrote it -
+// its id, file, and full description verbatim." A silent cut only shows up
+// once a human is already mid-decision on incomplete information. Findings
+// are already bounded structured data - stored as-is in the local run
+// database and already carried in full over IPC via
+// ipc.StepResultInfo.FindingsJSON - so rendering them uncapped here adds no
+// new unbounded transport path; it only stops re-truncating data that already
+// arrived complete.
+const maxGateSummary = 1200
 
 // Row types carry `toon` tags so the encoder renders a []row slice as a
 // tabular array (name[N]{cols}:) with one comma-delimited line per element.
@@ -464,7 +471,7 @@ func gateFields(gate stepView) []toon.Field {
 			Severity:    f.Severity,
 			File:        f.File,
 			Action:      f.Action,
-			Description: truncate(f.Description, maxFindingDesc),
+			Description: f.Description,
 		})
 	}
 	gfields = append(gfields, toon.Field{Key: "findings", Value: rows})
