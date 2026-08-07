@@ -98,7 +98,10 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 
 	var usage TokenUsage
 	var result *claudeResult
-	if err := parseClaudeEvents(ctx, started.stdout, opts.OnChunk, &usage, &result); err != nil {
+	// Claude Code writes its API-error diagnostics to stdout as assistant text
+	// and leaves stderr empty, so keep a copy for the exit path below.
+	var apiErrors claudeAPIErrorSniffer
+	if err := parseClaudeEvents(ctx, io.TeeReader(started.stdout, &apiErrors), opts.OnChunk, &usage, &result); err != nil {
 		err = started.waitAfterParseError(err)
 		stderrWG.Wait()
 		retErr := fmt.Errorf("claude parse events: %w", err)
@@ -109,7 +112,7 @@ func (a *claudeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error
 	waitErr := started.wait()
 	stderrWG.Wait()
 	if waitErr != nil {
-		retErr := fmt.Errorf("claude exited: %w: %s", waitErr, string(stderrBuf))
+		retErr := fmt.Errorf("claude exited: %w: %s", waitErr, claudeExitDiagnostic(stderrBuf, apiErrors.LastAPIError()))
 		emitAgentExited(opts, "claude", pid, retErr)
 		return nil, retErr
 	}

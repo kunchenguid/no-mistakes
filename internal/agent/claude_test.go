@@ -629,6 +629,76 @@ func TestClaudeAgent_CancellationWithBlockedStdinAndInheritedPipesIsBounded(t *t
 	}
 }
 
+// TestClaudeAgent_StdoutAPIErrorIsRetriedWithEmptyStderr pins the transport that
+// carries claude's API-error diagnostic. Claude Code reports a dropped API
+// response stream as assistant text on stdout and writes nothing to stderr, so
+// an exit error composed from stderr alone reached the classifier as a bare
+// "claude exited: exit status 1: " and the transient failure was never retried.
+func TestClaudeAgent_StdoutAPIErrorIsRetriedWithEmptyStderr(t *testing.T) {
+	defer withFastBackoff(t)()
+
+	t.Setenv("NM_CLAUDE_STDIN_HELPER", "api-error-stdout")
+	a := newClaudeStdinHelperAgent(t)
+	var attempts []Attempt
+	opts := RunOpts{
+		Prompt:    "run the tests",
+		CWD:       t.TempDir(),
+		OnAttempt: func(attempt Attempt) { attempts = append(attempts, attempt) },
+	}
+
+	_, err := a.Run(context.Background(), opts)
+	if err == nil {
+		t.Fatal("expected an error after the transient API failure exhausts retries")
+	}
+	if !strings.Contains(err.Error(), "Connection closed mid-response") {
+		t.Fatalf("error %q must carry the stdout API-error diagnostic", err)
+	}
+	if label, retry := claudeRetryClassifier(err); !retry {
+		t.Fatalf("error %q classified as permanent (label %q), want transient", err, label)
+	}
+	if len(attempts) != claudeMaxRetries+1 {
+		t.Fatalf("attempts = %d, want %d (initial + %d retries)", len(attempts), claudeMaxRetries+1, claudeMaxRetries)
+	}
+}
+
+// TestClaudeAgent_ExitDiagnosticPrefersStderrAndAppendsStdout documents the
+// composed diagnostic: stderr keeps its leading position, and the stdout
+// API-error text is appended rather than replacing it.
+func TestClaudeAgent_ExitDiagnosticPrefersStderrAndAppendsStdout(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stderr string
+		apiErr string
+		want   string
+	}{
+		{name: "stderr only", stderr: "boom\n", want: "boom"},
+		{
+			name:   "stdout only",
+			apiErr: "API Error: Connection closed mid-response.",
+			want:   "API Error: Connection closed mid-response.",
+		},
+		{
+			name:   "both",
+			stderr: "boom",
+			apiErr: "API Error: Unable to connect to API (ENOTIMP)",
+			want:   "boom; API Error: Unable to connect to API (ENOTIMP)",
+		},
+		{
+			name:   "no duplication when stderr already carries it",
+			stderr: "API Error: Connection closed mid-response.",
+			apiErr: "API Error: Connection closed mid-response.",
+			want:   "API Error: Connection closed mid-response.",
+		},
+		{name: "neither"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := claudeExitDiagnostic([]byte(tc.stderr), tc.apiErr); got != tc.want {
+				t.Errorf("claudeExitDiagnostic = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func newClaudeStdinHelperAgent(t *testing.T) *claudeAgent {
 	t.Helper()
 	exe, err := os.Executable()
@@ -651,6 +721,11 @@ func TestClaudeStdinHelper(t *testing.T) {
 	switch mode {
 	case "exit-early":
 		os.Exit(0)
+	case "api-error-stdout":
+		// Claude Code reports a dropped API response stream as assistant text
+		// on stdout, writes nothing to stderr, and exits non-zero.
+		_, _ = io.WriteString(os.Stdout, `{"type":"assistant","session_id":"helper-session","message":{"model":"helper-model","usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"text","text":"API Error: Connection closed mid-response. The response above may be incomplete."}]}}`+"\n")
+		os.Exit(1)
 	case "block":
 		_ = os.WriteFile(os.Getenv("NM_CLAUDE_STDIN_READY"), []byte("ready"), 0o644)
 		for {

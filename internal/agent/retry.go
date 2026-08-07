@@ -139,9 +139,18 @@ var transientNeedles = []struct {
 	{"service_unavailable", "service_unavailable"},
 	{"connection refused", "connection refused"},
 	{"connection reset", "connection reset"},
+	// Claude Code's own text when the API response stream ends early: "API
+	// Error: Connection closed mid-response. The response above may be
+	// incomplete." The second needle also covers phrasings that drop the
+	// "connection closed" prefix.
+	{"connection closed", "connection closed"},
+	{"mid-response", "connection closed mid-response"},
 	{"i/o timeout", "i/o timeout"},
 	{"no such host", "dns lookup failed"},
 	{"temporary failure in name resolution", "dns temporary failure"},
+	// A resolver that refuses the query surfaces as ENOTIMP, which Claude Code
+	// reports as "API Error: Unable to connect to API (ENOTIMP)".
+	{"enotimp", "enotimp"},
 	{"tls handshake", "tls handshake failure"},
 	{"unexpected eof", "unexpected eof"},
 }
