@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.47.0](https://github.com/kunchenguid/no-mistakes/compare/v1.46.0...v1.47.0) (2026-08-07)
+
+
+### Features
+
+* **evidence:** publish artifacts to an orphan branch ([#679](https://github.com/kunchenguid/no-mistakes/issues/679)) ([d37d9cc](https://github.com/kunchenguid/no-mistakes/commit/d37d9cc440d382542cc225c8dc2f290643d6e5e6))
+
+
+### Bug Fixes
+
+* **daemon:** reap lingering run-worktree processes that escape their process group ([#685](https://github.com/kunchenguid/no-mistakes/issues/685)) ([a385367](https://github.com/kunchenguid/no-mistakes/commit/a3853679302f2a953640de3ca07e70ebc7c0b77b))
+
 ## [1.46.0](https://github.com/kunchenguid/no-mistakes/compare/v1.45.4...v1.46.0) (2026-08-05)
 
 
