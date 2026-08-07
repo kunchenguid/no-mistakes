@@ -521,7 +521,7 @@ func TestLoadGlobal_AutoFixPartial(t *testing.T) {
 	}
 }
 
-// pr.draft is global-only, defaults false, and survives Merge.
+// pr.draft parses globally, defaults false, and survives Merge.
 func TestLoadGlobal_PRDraft(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("pr:\n  draft: true\n"), 0o644); err != nil {
@@ -531,13 +531,74 @@ func TestLoadGlobal_PRDraft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadGlobal: %v", err)
 	}
-	if !cfg.PR.Draft {
-		t.Fatal("pr.draft = false, want true")
+	if cfg.PR.Draft == nil || !*cfg.PR.Draft {
+		t.Fatalf("pr.draft = %v, want true", cfg.PR.Draft)
 	}
 	if !Merge(cfg, &RepoConfig{}).PR.Draft {
 		t.Fatal("Merge dropped pr.draft")
 	}
-	if DefaultGlobalConfig().PR.Draft {
-		t.Fatal("default pr.draft = true, want false (preserve ready-for-review default)")
+	if DefaultGlobalConfig().PR.Draft != nil {
+		t.Fatal("default pr.draft is set, want unset (ready-for-review default)")
+	}
+	if Merge(DefaultGlobalConfig(), &RepoConfig{}).PR.Draft {
+		t.Fatal("resolved default pr.draft = true, want false")
 	}
 }
+
+// A repo's pr.draft overrides the global default in either direction; unset in
+// the repo inherits global. The pointer is what makes "explicitly false" and
+// "unset" distinguishable.
+func TestMerge_PRDraftRepoOverridesGlobal(t *testing.T) {
+	yes, no := true, false
+	for _, tc := range []struct {
+		name   string
+		global *bool
+		repo   *bool
+		want   bool
+	}{
+		{"repo true over global false", &no, &yes, true},
+		{"repo false over global true", &yes, &no, false},
+		{"repo unset inherits global true", &yes, nil, true},
+		{"repo unset inherits global false", &no, nil, false},
+		{"both unset defaults false", nil, nil, false},
+		{"repo true with global unset", nil, &yes, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			global := DefaultGlobalConfig()
+			global.PR = PRRaw{Draft: tc.global}
+			got := Merge(global, &RepoConfig{PR: PRRaw{Draft: tc.repo}}).PR.Draft
+			if got != tc.want {
+				t.Fatalf("PR.Draft = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A repo's .no-mistakes.yaml parses pr.draft, including an explicit false.
+func TestLoadRepo_PRDraft(t *testing.T) {
+	for _, tc := range []struct {
+		yaml string
+		want *bool
+	}{
+		{"pr:\n  draft: true\n", ptrBool(true)},
+		{"pr:\n  draft: false\n", ptrBool(false)},
+		{"agent: codex\n", nil},
+	} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, ".no-mistakes.yaml"), []byte(tc.yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadRepo(dir)
+		if err != nil {
+			t.Fatalf("LoadRepo(%q): %v", tc.yaml, err)
+		}
+		switch {
+		case tc.want == nil && cfg.PR.Draft != nil:
+			t.Errorf("%q: pr.draft = %v, want unset", tc.yaml, *cfg.PR.Draft)
+		case tc.want != nil && (cfg.PR.Draft == nil || *cfg.PR.Draft != *tc.want):
+			t.Errorf("%q: pr.draft = %v, want %v", tc.yaml, cfg.PR.Draft, *tc.want)
+		}
+	}
+}
+
+func ptrBool(b bool) *bool { return &b }

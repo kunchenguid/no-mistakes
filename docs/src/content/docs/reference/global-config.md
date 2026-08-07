@@ -425,7 +425,7 @@ Open every pull/merge request the pipeline creates as a draft.
 | Type    | `bool`  |
 | Default | `false` |
 
-Global-only: draft-vs-ready is the operator's own workflow preference, not a property of the repository being contributed to.
+This is the machine-wide default. A repository's own `.no-mistakes.yaml` [`pr.draft`](/reference/repo-config/#prdraft) overrides it, so a shared work repo can open PRs draft-first while a solo repo goes straight to ready-for-review.
 It applies to PR creation only, so no-mistakes never flips a PR you already marked ready-for-review back to draft.
 Supported on GitHub (`gh pr create --draft`), GitLab (`glab mr create --draft`), and Azure DevOps (`az repos pr create --draft true`); Bitbucket has no draft concept and ignores it.
 
