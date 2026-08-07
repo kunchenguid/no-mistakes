@@ -418,7 +418,11 @@ func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
 	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Config.CITimeout = 10 * time.Second
+	// The idle timeout is real wall-clock while waitForNextPoll returns instantly, so a short timeout
+	// races the fake-CLI round trips and ends the run before the cancel this test asserts on. This test
+	// is about re-announcing checks-passed, not about timing out: keep the timeout far out of reach so
+	// the outcome is deterministic under load.
+	sctx.Config.CITimeout = time.Hour
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
