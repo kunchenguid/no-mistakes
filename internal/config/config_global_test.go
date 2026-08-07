@@ -29,6 +29,9 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	if cfg.DaemonConnectTimeout != DefaultDaemonConnectTimeout {
 		t.Errorf("daemon_connect_timeout = %v, want %v", cfg.DaemonConnectTimeout, DefaultDaemonConnectTimeout)
 	}
+	if cfg.BranchSyncRemoteTimeout != DefaultBranchSyncRemoteTimeout {
+		t.Errorf("branch_sync_remote_timeout = %v, want %v", cfg.BranchSyncRemoteTimeout, DefaultBranchSyncRemoteTimeout)
+	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "info")
 	}
@@ -53,6 +56,7 @@ func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 		"ci_timeout:",
 		"step_quiet_warning:",
 		"daemon_connect_timeout:",
+		"branch_sync_remote_timeout:",
 		"log_level: info",
 		"# agent_path_override:",
 		"# commit:",
@@ -183,6 +187,7 @@ agent_path_override:
   codex: /opt/codex
 ci_timeout: "2h30m"
 daemon_connect_timeout: "4s"
+branch_sync_remote_timeout: "90s"
 log_level: "debug"
 `
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
@@ -201,6 +206,9 @@ log_level: "debug"
 	}
 	if cfg.DaemonConnectTimeout != 4*time.Second {
 		t.Errorf("daemon_connect_timeout = %v, want 4s", cfg.DaemonConnectTimeout)
+	}
+	if cfg.BranchSyncRemoteTimeout != 90*time.Second {
+		t.Errorf("branch_sync_remote_timeout = %v, want 90s", cfg.BranchSyncRemoteTimeout)
 	}
 	if cfg.LogLevel != "debug" {
 		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "debug")
@@ -337,6 +345,28 @@ func TestLoadGlobal_InvalidDaemonConnectTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadGlobal_InvalidBranchSyncRemoteTimeout(t *testing.T) {
+	cases := []string{
+		`branch_sync_remote_timeout: "not-a-duration"`,
+		`branch_sync_remote_timeout: "0s"`,
+		`branch_sync_remote_timeout: "-1s"`,
+	}
+	for _, data := range cases {
+		t.Run(data, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := LoadGlobal(path)
+			if err == nil {
+				t.Fatal("expected error for invalid branch_sync_remote_timeout")
+			}
+		})
+	}
+}
+
 func TestLoadGlobal_CITimeoutUnlimited(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -424,6 +454,13 @@ func TestDefaultConfigYAML_MatchesGoDefaults(t *testing.T) {
 	}
 	if d != DefaultDaemonConnectTimeout {
 		t.Errorf("YAML daemon_connect_timeout = %v, Go default = %v", d, DefaultDaemonConnectTimeout)
+	}
+	d, err = time.ParseDuration(raw.BranchSyncRemoteTimeout)
+	if err != nil {
+		t.Fatalf("YAML branch_sync_remote_timeout %q is not a valid duration: %v", raw.BranchSyncRemoteTimeout, err)
+	}
+	if d != DefaultBranchSyncRemoteTimeout {
+		t.Errorf("YAML branch_sync_remote_timeout = %v, Go default = %v", d, DefaultBranchSyncRemoteTimeout)
 	}
 	if raw.LogLevel != "info" {
 		t.Errorf("YAML log_level = %q, Go default = %q", raw.LogLevel, "info")

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	gitpkg "github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -837,7 +838,7 @@ func TestForkTargetNeverReadsParentOrigin(t *testing.T) {
 // t.Parallel(): it mutates the package-level lsRemoteFn/fetchRemoteFn seams,
 // which would race against other tests if they ran concurrently with it.
 //
-// remoteOpTimeout (300ms) is set shorter than the simulated ls-remote delay
+// RemoteTimeout (300ms) is set shorter than the simulated ls-remote delay
 // (400ms) on purpose: had the old code's single context.WithTimeout call
 // still been shared with the fetch, that context's fixed 300ms deadline
 // would already be unconditionally expired - a guaranteed property of
@@ -856,7 +857,7 @@ func TestRefreshSlowSuccessfulLsRemoteDoesNotStealFetchBudget(t *testing.T) {
 		fetchRemoteFn = origFetchRemote
 	}()
 
-	f.service.remoteOpTimeout = 300 * time.Millisecond
+	f.service.RemoteTimeout = 300 * time.Millisecond
 
 	var lsRemoteDeadline, fetchDeadline time.Time
 	lsRemoteFn = func(ctx context.Context, dir, remote, ref string) (string, error) {
@@ -892,7 +893,7 @@ func TestRefreshGenuineRemoteTimeoutStillReportsOffline(t *testing.T) {
 		fetchRemoteFn = origFetchRemote
 	}()
 
-	f.service.remoteOpTimeout = 80 * time.Millisecond
+	f.service.RemoteTimeout = 80 * time.Millisecond
 	fetchCalled := false
 	lsRemoteFn = func(ctx context.Context, dir, remote, ref string) (string, error) {
 		<-ctx.Done()
@@ -912,6 +913,92 @@ func TestRefreshGenuineRemoteTimeoutStillReportsOffline(t *testing.T) {
 	}
 	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.old {
 		t.Fatal("HEAD changed on a genuine remote timeout")
+	}
+}
+
+// TestServiceRemoteTimeoutDefaultsToConfigDefault proves the link between the
+// operator-configurable global default (config.DefaultBranchSyncRemoteTimeout,
+// 60s - the captain-approved replacement for the old hardcoded 15s constant)
+// and what a Service actually uses when a caller does not explicitly set
+// RemoteTimeout, which is the case for every production construction site
+// that fails to load global config and falls back to
+// config.DefaultGlobalConfig().
+func TestServiceRemoteTimeoutDefaultsToConfigDefault(t *testing.T) {
+	var s Service
+	if got := s.remoteTimeout(); got != config.DefaultBranchSyncRemoteTimeout {
+		t.Fatalf("remoteTimeout() = %v, want config.DefaultBranchSyncRemoteTimeout (%v)", got, config.DefaultBranchSyncRemoteTimeout)
+	}
+}
+
+// TestRefreshSlowButSuccessfulLsRemoteAloneExceedsItsOwnBudgetReportsOffline
+// reproduces the ACTUAL JVPT production failure mode (see
+// data/no-mistakes-jvpt-refresh-root-cause/report.md): ls-remote itself -
+// never a starved fetch - takes longer than its own fresh per-operation
+// budget, because a real private-repo credential helper (git spawning `gh
+// auth git-credential` as a child process) legitimately takes ~19-22s in
+// that environment. This must stay indistinguishable from a genuine
+// unreachable-remote timeout at the State/Safety/Error level (fail-closed
+// either way, and fetch is never invoked), while remaining triggerable
+// purely by ls-remote's own latency against too small a budget.
+func TestRefreshSlowButSuccessfulLsRemoteAloneExceedsItsOwnBudgetReportsOffline(t *testing.T) {
+	f := newSyncFixture(t)
+
+	origFetchRemote := fetchRemoteFn
+	origLsRemote := lsRemoteFn
+	defer func() {
+		lsRemoteFn = origLsRemote
+		fetchRemoteFn = origFetchRemote
+	}()
+
+	f.service.RemoteTimeout = 100 * time.Millisecond
+	fetchCalled := false
+	lsRemoteFn = func(ctx context.Context, dir, remote, ref string) (string, error) {
+		select {
+		case <-time.After(200 * time.Millisecond): // legitimate but slow - would succeed given more budget
+			return f.pushed, nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	fetchRemoteFn = func(ctx context.Context, dir, remote, branch, localRef string) error {
+		fetchCalled = true
+		return origFetchRemote(ctx, dir, remote, branch, localRef)
+	}
+
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateOffline || state.Error != "could not refresh the configured push target; no files or refs were changed" {
+		t.Fatalf("state = %#v, want the ls-remote-specific offline error", state)
+	}
+	if fetchCalled {
+		t.Fatal("fetch ran even though ls-remote itself never returned before its own budget expired")
+	}
+}
+
+// TestRefreshRaisedRemoteTimeoutAcceptsTheSameLegitimateSlowLsRemote is the
+// companion to the test above: the identical legitimate-but-slow ls-remote
+// latency now succeeds once the configured budget is raised past it,
+// proving the fix actually widens the working envelope (what an operator
+// gets by raising branch_sync_remote_timeout) rather than just relabeling
+// the timeout.
+func TestRefreshRaisedRemoteTimeoutAcceptsTheSameLegitimateSlowLsRemote(t *testing.T) {
+	f := newSyncFixture(t)
+
+	origLsRemote := lsRemoteFn
+	defer func() { lsRemoteFn = origLsRemote }()
+
+	f.service.RemoteTimeout = 500 * time.Millisecond
+	lsRemoteFn = func(ctx context.Context, dir, remote, ref string) (string, error) {
+		select {
+		case <-time.After(200 * time.Millisecond):
+			return f.pushed, nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateBehind || state.Remote.ObservedHead != f.pushed {
+		t.Fatalf("state = %#v, want the raised budget to accept the same 200ms latency that failed with a 100ms budget", state)
 	}
 }
 
