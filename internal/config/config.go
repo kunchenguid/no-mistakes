@@ -40,6 +40,18 @@ const (
 	// DefaultDaemonConnectTimeout bounds client IPC connection attempts to a
 	// daemon socket that exists but is not accepting connections.
 	DefaultDaemonConnectTimeout = 3 * time.Second
+	// DefaultBranchSyncRemoteTimeout bounds each individual remote Git
+	// operation (ls-remote, fetch) that internal/branchsync's guarded sync
+	// performs. It is intentionally generous: a legitimate private-repo
+	// credential-helper round trip (git spawning `gh auth git-credential` as
+	// a child process) has been measured taking ~19-22s in a real
+	// environment, well past a naive few-second budget, while still being a
+	// genuine success rather than a hang. This is an operator machine
+	// characteristic, not a per-repository trust boundary, so it is
+	// global-config-only and never read from a repo's .no-mistakes.yaml -
+	// RepoConfig has no matching field, so a pushed branch cannot widen or
+	// narrow how long this service waits before failing closed.
+	DefaultBranchSyncRemoteTimeout = 60 * time.Second
 	// CITimeoutUnlimited is the sentinel meaning "monitor until the PR is
 	// merged, closed, or the run is aborted - never self-terminate".
 	// Any non-positive ci_timeout, or the keywords "unlimited", "none",
@@ -62,16 +74,17 @@ const (
 
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
 type GlobalConfig struct {
-	Agent                types.AgentName     `yaml:"agent"`
-	Agents               []types.AgentName   `yaml:"-"`
-	ACPXPath             string              `yaml:"acpx_path"`
-	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
-	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
-	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
-	CITimeout            time.Duration       `yaml:"-"`
-	StepQuietWarning     time.Duration       `yaml:"-"`
-	DaemonConnectTimeout time.Duration       `yaml:"-"`
-	LogLevel             string              `yaml:"log_level"`
+	Agent                   types.AgentName     `yaml:"agent"`
+	Agents                  []types.AgentName   `yaml:"-"`
+	ACPXPath                string              `yaml:"acpx_path"`
+	ACPRegistryOverrides    map[string]string   `yaml:"acp_registry_overrides"`
+	AgentPathOverride       map[string]string   `yaml:"agent_path_override"`
+	AgentArgsOverride       map[string][]string `yaml:"agent_args_override"`
+	CITimeout               time.Duration       `yaml:"-"`
+	StepQuietWarning        time.Duration       `yaml:"-"`
+	DaemonConnectTimeout    time.Duration       `yaml:"-"`
+	BranchSyncRemoteTimeout time.Duration       `yaml:"-"`
+	LogLevel                string              `yaml:"log_level"`
 	// SessionReuse controls per-run agent session reuse in the review loop:
 	// one durable fixer session across review-fix turns. Review turns always
 	// run session-free so the rereview never resumes the session whose
@@ -91,22 +104,23 @@ type GlobalConfig struct {
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
-	Agent                agentList           `yaml:"agent"`
-	ACPXPath             string              `yaml:"acpx_path"`
-	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
-	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
-	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
-	CITimeout            string              `yaml:"ci_timeout"`
-	DaemonConnectTimeout string              `yaml:"daemon_connect_timeout"`
-	BabysitTimeout       string              `yaml:"babysit_timeout"`
-	StepQuietWarning     string              `yaml:"step_quiet_warning"`
-	LogLevel             string              `yaml:"log_level"`
-	SessionReuse         *bool               `yaml:"session_reuse"`
-	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
-	CI                   CIRaw               `yaml:"ci"`
-	Commit               CommitRaw           `yaml:"commit"`
-	Intent               IntentRaw           `yaml:"intent"`
-	Test                 TestRaw             `yaml:"test"`
+	Agent                   agentList           `yaml:"agent"`
+	ACPXPath                string              `yaml:"acpx_path"`
+	ACPRegistryOverrides    map[string]string   `yaml:"acp_registry_overrides"`
+	AgentPathOverride       map[string]string   `yaml:"agent_path_override"`
+	AgentArgsOverride       map[string][]string `yaml:"agent_args_override"`
+	CITimeout               string              `yaml:"ci_timeout"`
+	DaemonConnectTimeout    string              `yaml:"daemon_connect_timeout"`
+	BranchSyncRemoteTimeout string              `yaml:"branch_sync_remote_timeout"`
+	BabysitTimeout          string              `yaml:"babysit_timeout"`
+	StepQuietWarning        string              `yaml:"step_quiet_warning"`
+	LogLevel                string              `yaml:"log_level"`
+	SessionReuse            *bool               `yaml:"session_reuse"`
+	AutoFix                 AutoFixRaw          `yaml:"auto_fix"`
+	CI                      CIRaw               `yaml:"ci"`
+	Commit                  CommitRaw           `yaml:"commit"`
+	Intent                  IntentRaw           `yaml:"intent"`
+	Test                    TestRaw             `yaml:"test"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -578,6 +592,15 @@ step_quiet_warning: "10m"
 # Maximum time a CLI client waits for an existing daemon socket to accept a
 # connection before failing instead of hanging.
 daemon_connect_timeout: "3s"
+
+# Maximum time guarded branch synchronization (sync, axi sync, the TUI's sync
+# action) waits for a single remote Git operation (ls-remote or fetch) before
+# treating the target as offline. Raise this if your private-repo credential
+# helper (e.g. gh auth git-credential, invoked by git as a child process)
+# legitimately takes longer than the default - this is a machine/environment
+# characteristic, not a per-repository setting, and is never read from a
+# repository's own .no-mistakes.yaml.
+branch_sync_remote_timeout: "60s"
 
 # Reuse one durable fixer session per run across review-fix turns. Review turns
 # always run session-free so a rereview never resumes the session that prescribed
@@ -1119,13 +1142,14 @@ func EnsureDefaultGlobalConfig(path string) {
 // DefaultGlobalConfig returns the built-in global defaults.
 func DefaultGlobalConfig() *GlobalConfig {
 	return &GlobalConfig{
-		Agent:                types.AgentAuto,
-		Agents:               []types.AgentName{types.AgentAuto},
-		CITimeout:            DefaultCITimeout,
-		StepQuietWarning:     DefaultStepQuietWarning,
-		DaemonConnectTimeout: DefaultDaemonConnectTimeout,
-		LogLevel:             "info",
-		SessionReuse:         true,
+		Agent:                   types.AgentAuto,
+		Agents:                  []types.AgentName{types.AgentAuto},
+		CITimeout:               DefaultCITimeout,
+		StepQuietWarning:        DefaultStepQuietWarning,
+		DaemonConnectTimeout:    DefaultDaemonConnectTimeout,
+		BranchSyncRemoteTimeout: DefaultBranchSyncRemoteTimeout,
+		LogLevel:                "info",
+		SessionReuse:            true,
 	}
 }
 
@@ -1199,6 +1223,13 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 			return nil, err
 		}
 		cfg.DaemonConnectTimeout = d
+	}
+	if raw.BranchSyncRemoteTimeout != "" {
+		d, err := parsePositiveDuration("branch_sync_remote_timeout", raw.BranchSyncRemoteTimeout)
+		if err != nil {
+			return nil, err
+		}
+		cfg.BranchSyncRemoteTimeout = d
 	}
 	if raw.LogLevel != "" {
 		cfg.LogLevel = raw.LogLevel

@@ -257,11 +257,12 @@ func emitBranchOwnershipError(cmd *cobra.Command, ownershipErr *branchOwnershipE
 
 func inspectAxiBranchSync(ctx context.Context, env *axiEnv) branchsync.State {
 	service := &branchsync.Service{
-		DB:      env.d,
-		Repo:    env.repo,
-		WorkDir: ".",
-		GateDir: env.p.RepoDir(env.repo.ID),
-		Paths:   env.p,
+		DB:            env.d,
+		Repo:          env.repo,
+		WorkDir:       ".",
+		GateDir:       env.p.RepoDir(env.repo.ID),
+		Paths:         env.p,
+		RemoteTimeout: env.cfg.BranchSyncRemoteTimeout,
 	}
 	return service.InspectCached(ctx)
 }

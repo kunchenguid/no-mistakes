@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -18,8 +19,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
-
-const refreshTimeout = 15 * time.Second
 
 // lsRemoteFn and fetchRemoteFn indirect the package-level git helpers so
 // tests can substitute controlled fakes to prove remote-operation deadline
@@ -145,24 +144,32 @@ type Service struct {
 	GateDir string
 	Paths   *paths.Paths
 
+	// RemoteTimeout bounds each individual remote Git operation (ls-remote,
+	// fetch) performed by Refresh/Apply. Production callers set it from the
+	// operator's global config (config.GlobalConfig.BranchSyncRemoteTimeout,
+	// key branch_sync_remote_timeout); it is never sourced from a repo's
+	// .no-mistakes.yaml - RepoConfig has no matching field, so a pushed
+	// branch cannot widen or narrow how long this service waits before
+	// failing closed. Zero (the common case for a Service built without
+	// explicitly setting it, including every test) falls back to
+	// config.DefaultBranchSyncRemoteTimeout.
+	RemoteTimeout time.Duration
+
 	beforeApply               func()
 	beforeGateReset           func()
 	beforeRecoverWorktreeMove func()
 	beforeRecoverBranchMove   func()
 	afterRecoverBranchMove    func()
-
-	// remoteOpTimeout overrides refreshTimeout for tests that need a short,
-	// deterministic budget; zero means "use refreshTimeout".
-	remoteOpTimeout time.Duration
 }
 
 // remoteTimeout returns the bounded deadline budget for one remote
-// operation: the test override when set, otherwise the production default.
+// operation: the configured RemoteTimeout when set, otherwise the package
+// default.
 func (s *Service) remoteTimeout() time.Duration {
-	if s.remoteOpTimeout > 0 {
-		return s.remoteOpTimeout
+	if s.RemoteTimeout > 0 {
+		return s.RemoteTimeout
 	}
-	return refreshTimeout
+	return config.DefaultBranchSyncRemoteTimeout
 }
 
 // OpenCurrent opens a service for the invoking registered worktree. The caller
@@ -196,7 +203,11 @@ func OpenCurrent() (*Service, func(), error) {
 		database.Close()
 		return nil, nil, fmt.Errorf("repo not initialized")
 	}
-	return &Service{DB: database, Repo: repo, WorkDir: root, GateDir: p.RepoDir(repo.ID), Paths: p}, func() { _ = database.Close() }, nil
+	globalCfg, cfgErr := config.LoadGlobal(p.ConfigFile())
+	if cfgErr != nil {
+		globalCfg = config.DefaultGlobalConfig()
+	}
+	return &Service{DB: database, Repo: repo, WorkDir: root, GateDir: p.RepoDir(repo.ID), Paths: p, RemoteTimeout: globalCfg.BranchSyncRemoteTimeout}, func() { _ = database.Close() }, nil
 }
 
 // TargetFingerprint returns a stable one-way identity for a credential-free,
