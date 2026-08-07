@@ -23,10 +23,18 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/logstore"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/procreap"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+// orphanProcessMinAge is the age floor for the startup orphan-process sweep.
+// Startup is the one moment where the daemon has no way to tell a leaked
+// process from one belonging to a run that is starting concurrently, so
+// anything young is left alone; run cleanup sweeps its own worktree with no
+// age floor because it owns that run.
+var orphanProcessMinAge = procreap.DefaultMinAge
 
 var applyShellEnvToProcess = shellenv.ApplyToProcess
 var createDaemonPIDTempFile = os.CreateTemp
@@ -401,10 +409,32 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	}
 	logStartupPhase("stale_runs", staleStarted, "recovered", count)
 
+	orphanProcStarted := time.Now()
+	sweepOrphanRunProcesses(d, p)
+	logStartupPhase("orphan_processes", orphanProcStarted)
+
 	worktreeStarted := time.Now()
 	cleanupOrphanWorktrees(d, p)
 	logStartupPhase("worktree_cleanup", worktreeStarted)
 	mgr.resumeRecoveredRuns(plans)
+}
+
+// sweepOrphanRunProcesses terminates processes still standing in a run
+// worktree that no run owns any more. A predecessor daemon's group teardown
+// cannot reach a child that left its process group (see internal/procreap),
+// and once that child reparents to init nothing lineage-based can name it
+// again - it just keeps burning CPU and holding a deleted worktree open. This
+// runs after stale-run recovery so every run's status is settled, and before
+// worktree cleanup so the directories are freed of their holders first.
+func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths) {
+	procreap.SweepAndLog(procreap.Options{
+		WorktreesRoot: p.WorktreesDir(),
+		MinAge:        orphanProcessMinAge,
+		RunActive: func(_, runID string) bool {
+			skip, _ := skipWorktreeCleanup(d, runID)
+			return skip
+		},
+	}, "daemon_startup")
 }
 
 // cleanupOrphanWorktrees removes worktree directories left behind by runs

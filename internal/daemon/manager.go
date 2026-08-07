@@ -21,6 +21,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps"
+	"github.com/kunchenguid/no-mistakes/internal/procreap"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -455,6 +456,24 @@ func (m *RunManager) broadcast(event ipc.Event) {
 	for _, mb := range m.subscribers[event.RunID] {
 		mb.publish(event)
 	}
+}
+
+// sweepRunWorktreeProcesses terminates whatever is still standing in a
+// finished run's worktree. Cancelling the run context tears down each step's
+// process group, but a descendant that called setsid(2) is no longer in any
+// group the pipeline can name - only the worktree it is standing in still
+// identifies it (see internal/procreap).
+//
+// It runs before the worktree directory is removed, because a process that
+// outlives its worktree holds the deleted directory open through its cwd and
+// can no longer be attributed to any run. No age floor applies: the caller
+// owns this run and has already observed its execution return, so nothing
+// standing in it can still be legitimate work.
+func (m *RunManager) sweepRunWorktreeProcesses(wtDir string) {
+	procreap.SweepAndLog(procreap.Options{
+		WorktreesRoot: m.paths.WorktreesDir(),
+		Scope:         wtDir,
+	}, "run_cleanup")
 }
 
 // closeSubscribers soft-closes every subscriber for a run and marks the run
@@ -950,6 +969,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			ag.Close()
 			// Close subscriber channels for this run.
 			m.closeSubscribers(run.ID)
+			m.sweepRunWorktreeProcesses(wtDir)
 			// Clean up worktree.
 			if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
 				slog.Warn("failed to remove worktree", "path", wtDir, "error", rmErr)

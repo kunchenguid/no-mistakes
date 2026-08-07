@@ -48,6 +48,85 @@ func TestTerminateShellCommandGroup_ReapsGrandchildAfterCleanExit(t *testing.T) 
 	}
 }
 
+// TestTerminateShellCommandGroup_AsksBeforeKilling pins that a surviving
+// group member is given the chance to shut down: it receives SIGTERM and its
+// handler runs to completion. SIGKILL would deny a test runner or worker
+// script the chance to flush output and clean up its own temporary state.
+func TestTerminateShellCommandGroup_AsksBeforeKilling(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "grandchild.pid")
+	termFile := filepath.Join(dir, "grandchild.term")
+
+	script := "( trap 'echo terminated > " + termFile + "; exit 0' TERM; while :; do sleep 0.1; done ) >/dev/null 2>&1 & " +
+		"echo $! > " + pidFile + "; exit 0"
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", script)
+	ConfigureShellCommand(cmd)
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("leader Run: %v", err)
+	}
+	grandchild := readPID(t, pidFile, 5*time.Second)
+
+	TerminateShellCommandGroup(cmd)
+
+	if !pidGoneWithin(grandchild, 5*time.Second) {
+		_ = syscall.Kill(grandchild, syscall.SIGKILL)
+		t.Fatalf("grandchild %d still alive after TerminateShellCommandGroup", grandchild)
+	}
+	if _, err := os.Stat(termFile); err != nil {
+		t.Fatalf("grandchild never ran its SIGTERM handler: %v", err)
+	}
+}
+
+// TestTerminateShellCommandGroup_EscalatesWhenSIGTERMIsIgnored is the other
+// half of the contract: politeness must not become a new way to leak. A group
+// member that ignores SIGTERM is SIGKILLed once the grace period is up.
+func TestTerminateShellCommandGroup_EscalatesWhenSIGTERMIsIgnored(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
+
+	script := "( trap '' TERM; while :; do sleep 0.1; done ) >/dev/null 2>&1 & echo $! > " + pidFile + "; exit 0"
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", script)
+	ConfigureShellCommand(cmd)
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("leader Run: %v", err)
+	}
+	grandchild := readPID(t, pidFile, 5*time.Second)
+
+	TerminateShellCommandGroup(cmd)
+
+	if !pidGoneWithin(grandchild, 5*time.Second) {
+		_ = syscall.Kill(grandchild, syscall.SIGKILL)
+		t.Fatalf("grandchild %d ignored SIGTERM and was never escalated to SIGKILL", grandchild)
+	}
+}
+
+// TestConfigureShellCommand_CancelEscalatesWithoutBlockingWait pins the
+// cancellation path: cmd.Cancel runs on the goroutine that owns cmd.Wait, so
+// it must return promptly rather than sit through the grace period, and the
+// SIGKILL escalation still has to land on a group member that ignores
+// SIGTERM.
+func TestConfigureShellCommand_CancelEscalatesWithoutBlockingWait(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	script := "( trap '' TERM; while :; do sleep 0.1; done ) >/dev/null 2>&1 & echo $! > " + pidFile + "; " +
+		"trap '' TERM; while :; do sleep 0.1; done"
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script)
+	ConfigureShellCommand(cmd)
+	if err := StartShellCommand(cmd); err != nil {
+		t.Fatalf("StartShellCommand: %v", err)
+	}
+	grandchild := readPID(t, pidFile, 5*time.Second)
+	t.Cleanup(func() { _ = syscall.Kill(grandchild, syscall.SIGKILL) })
+
+	cancel()
+	_ = cmd.Wait()
+
+	if !pidGoneWithin(grandchild, 10*time.Second) {
+		t.Fatalf("grandchild %d survived cancellation", grandchild)
+	}
+}
+
 // TestTerminateShellCommandGroup_NoopOnNilOrUnstarted guards the cheap safety
 // contract: a nil command, or one that was never started (no Process), must be
 // a no-op rather than panic or signal an arbitrary pid.
