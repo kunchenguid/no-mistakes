@@ -54,7 +54,7 @@ func newInitCmd() *cobra.Command {
 				// Install the agent skill at user level so agents can drive
 				// no-mistakes via `/no-mistakes` in any repo. Best-effort: a
 				// skill write failure must not undo a successful gate setup.
-				_, skillErr := skill.InstallUser()
+				skillResult, skillErr := skill.InstallUser()
 
 				w := cmd.OutOrStdout()
 				fmt.Fprintln(w, sCyan.Render(banner))
@@ -79,6 +79,9 @@ func newInitCmd() *cobra.Command {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render(" skill"), sYellow.Render("skipped: "+skillErr.Error()))
 				} else {
 					fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render(" skill"), sGreen.Render("/no-mistakes"), sDim.Render("installed for agents at user level"))
+					if len(skillResult.Managed) > 0 {
+						fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  note"), sDim.Render("externally managed skill path left unchanged ("+strings.Join(skillResult.Managed, ", ")+")"))
+					}
 				}
 				if legacy := skill.Vendored(repo.WorkingPath); len(legacy) > 0 {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  note"), sDim.Render("vendored skill copy ("+strings.Join(legacy, ", ")+") is no longer needed and can be removed"))
