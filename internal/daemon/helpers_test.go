@@ -109,14 +109,7 @@ func startTestDaemon(t *testing.T) (*paths.Paths, *db.DB) {
 		errCh <- RunWithResources(p, d)
 	}()
 
-	// Wait for socket to appear.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(p.Socket()); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitForTestDaemonReady(t, p)
 
 	t.Cleanup(func() {
 		// Ensure daemon stops.
@@ -216,13 +209,7 @@ func startTestDaemonWithSteps(t *testing.T, sf StepFactory) (*paths.Paths, *db.D
 		errCh <- RunWithOptions(p, d, sf)
 	}()
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(p.Socket()); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitForTestDaemonReady(t, p)
 
 	t.Cleanup(func() {
 		client, err := ipc.Dial(p.Socket())
@@ -238,6 +225,25 @@ func startTestDaemonWithSteps(t *testing.T, sf StepFactory) (*paths.Paths, *db.D
 	})
 
 	return p, d
+}
+
+func waitForTestDaemonReady(t *testing.T, p *paths.Paths) {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		alive, err := daemonHealthCheck(p)
+		if err == nil && alive {
+			return
+		}
+		lastErr = err
+		time.Sleep(20 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("daemon did not become ready: %v", lastErr)
+	}
+	t.Fatal("daemon did not become ready")
 }
 
 // setupTestGitRepo creates a git repo with one commit, pushes to a bare repo

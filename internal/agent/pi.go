@@ -119,9 +119,9 @@ func (a *piAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error) {
 
 // buildArgs returns the Pi argv for one invocation. Under the project-settings
 // opt-out, the context-file suppression flag comes first. User extras otherwise
-// precede the managed flags that no-mistakes requires for JSONL parsing.
+// precede the managed flags that no-mistakes requires for isolated JSONL parsing.
 func (a *piAgent) buildArgs() []string {
-	args := make([]string, 0, len(a.extraArgs)+5)
+	args := make([]string, 0, len(a.extraArgs)+6)
 	// Project-settings opt-out (trusted-only; see config.DisableProjectSettings):
 	// disable AGENTS.md/CLAUDE.md discovery so an agent-orchestration target
 	// (firstmate) cannot install a fleet-captain identity on the gate agent.
@@ -142,7 +142,7 @@ func (a *piAgent) buildArgs() []string {
 			args = append(args, arg)
 		}
 	}
-	args = append(args, "--mode", "json", "--no-session")
+	args = append(args, "--mode", "json", "--no-session", "--no-extensions")
 	return args
 }
 
