@@ -43,13 +43,13 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 	// Start server on first invocation (synchronized)
 	baseURL, err := a.ensureServer(ctx, opts.CWD)
 	if err != nil {
-		return nil, err
+		return nil, ClassifyProviderError(err, err.Error())
 	}
 
 	// Create session with blanket permissions
 	sessionID, err := a.createSession(ctx, baseURL, opts.CWD)
 	if err != nil {
-		return nil, err
+		return nil, ClassifyProviderError(err, err.Error())
 	}
 	defer a.deleteSession(baseURL, sessionID)
 
@@ -65,7 +65,7 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 
 	eventBody, err := a.connectEventStream(streamCtx, baseURL)
 	if err != nil {
-		return nil, err
+		return nil, ClassifyProviderError(err, err.Error())
 	}
 	defer eventBody.Close()
 
@@ -97,18 +97,29 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 		select {
 		case mr := <-msgCh:
 			if mr.err != nil {
-				return nil, fmt.Errorf("opencode message: %w", mr.err)
+				err := fmt.Errorf("opencode message: %w", mr.err)
+				return nil, ClassifyProviderError(err, mr.err.Error())
 			}
 		default:
 		}
 		a.abortSession(baseURL, sessionID)
-		return nil, fmt.Errorf("opencode events: %w", err)
+		streamErr := fmt.Errorf("opencode events: %w", err)
+		return nil, ClassifyProviderError(streamErr, err.Error())
 	}
 
 	// Wait for message response
 	mr := <-msgCh
 	if mr.err != nil {
-		return nil, fmt.Errorf("opencode message: %w", mr.err)
+		err := fmt.Errorf("opencode message: %w", mr.err)
+		return nil, ClassifyProviderError(err, mr.err.Error())
+	}
+	if mr.resp != nil && mr.resp.Info != nil && mr.resp.Info.Error != nil &&
+		!mr.resp.Info.Error.IsStructuredOutput() && mr.resp.Info.Error.Message != "" {
+		responseErr := fmt.Errorf("opencode response %s: %s", mr.resp.Info.Error.Name, mr.resp.Info.Error.Message)
+		classified := ClassifyProviderError(responseErr, mr.resp.Info.Error.Message)
+		if _, isQuota := quotaErrorReason(classified); isQuota {
+			return nil, classified
+		}
 	}
 
 	// Update usage and text from message response

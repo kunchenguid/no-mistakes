@@ -48,13 +48,13 @@ func (a *rovodevAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 	// Start server on first invocation (synchronized)
 	baseURL, err := a.ensureServer(ctx, opts.CWD)
 	if err != nil {
-		return nil, err
+		return nil, ClassifyProviderError(err, err.Error())
 	}
 
 	// Create session
 	sessionID, err := a.createSession(ctx, baseURL)
 	if err != nil {
-		return nil, err
+		return nil, ClassifyProviderError(err, err.Error())
 	}
 	defer a.deleteSession(baseURL, sessionID)
 
@@ -62,13 +62,13 @@ func (a *rovodevAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 	if len(opts.JSONSchema) > 0 {
 		prompt := buildRovodevSystemPrompt(opts.JSONSchema)
 		if err := a.setSystemPrompt(ctx, baseURL, sessionID, prompt); err != nil {
-			return nil, err
+			return nil, ClassifyProviderError(err, err.Error())
 		}
 	}
 
 	// Send chat message
 	if err := a.setChatMessage(ctx, baseURL, sessionID, opts.Prompt); err != nil {
-		return nil, err
+		return nil, ClassifyProviderError(err, err.Error())
 	}
 
 	// Stream chat response
@@ -77,7 +77,7 @@ func (a *rovodevAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, erro
 	if err != nil {
 		// Best-effort cancel on error
 		a.cancelSession(baseURL, sessionID)
-		return nil, err
+		return nil, ClassifyProviderError(err, err.Error())
 	}
 
 	return finalizeTextResult("rovodev", text, opts.JSONSchema, usage)

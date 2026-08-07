@@ -3,9 +3,37 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestAcpxAgent_ZeroExitJSONRPCQuotaIsClassified(t *testing.T) {
+	dir := t.TempDir()
+	name := "acpx"
+	script := "#!/bin/sh\nprintf '%s\\n' '{\"error\":{\"message\":\"session limit reached provider-secret\"}}'\n"
+	if runtime.GOOS == "windows" {
+		name = "acpx.cmd"
+		script = "@echo off\r\necho {\"error\":{\"message\":\"session limit reached provider-secret\"}}\r\n"
+	}
+	bin := filepath.Join(dir, name)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake acpx: %v", err)
+	}
+
+	_, err := (&acpxAgent{bin: bin, target: "gemini"}).Run(context.Background(), RunOpts{Prompt: "review", CWD: dir})
+	if err == nil {
+		t.Fatal("quota response unexpectedly succeeded")
+	}
+	if _, ok := quotaErrorReason(err); !ok {
+		t.Fatalf("error = %v, want provider quota classification", err)
+	}
+	if strings.Contains(err.Error(), "provider-secret") {
+		t.Fatalf("classified error leaked provider diagnostic: %v", err)
+	}
+}
 
 func TestAcpxFirstPositive(t *testing.T) {
 	cases := []struct {

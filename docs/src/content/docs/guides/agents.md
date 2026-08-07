@@ -28,7 +28,7 @@ Testing prompts also ask agents to remove transient working-tree artifacts they 
 
 - Leave `agent: auto` if one good agent is already installed and you do not need repo-specific behavior.
 - Set a repo-level `agent` override when one codebase clearly works better with a different tool.
-- Use an ordered fallback list when you prefer one agent but want no-mistakes to try another if the first process is unavailable.
+- Use an ordered fallback list when you prefer one agent but want no-mistakes to try another if the first process is unavailable or reports quota exhaustion.
 - Set explicit `commands.lint` and a **targeted** `commands.test` if you want deterministic local baseline command execution regardless of agent choice; leave `commands.test` empty for agent-selected smallest relevant checks. Do not configure a complete-suite walk as local Test - remote CI owns broad regression.
 
 That last point matters: the agent helps fill in gaps, but explicit repo

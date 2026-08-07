@@ -135,7 +135,11 @@ func (a *codexAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, error)
 		} else if detail == "" {
 			detail = stderr
 		}
-		retErr := fmt.Errorf("codex exited: %w: %s", waitErr, detail)
+		retErr := ClassifyProviderError(fmt.Errorf("codex exited: %w: %s", waitErr, detail), codexErr, string(stderrBuf))
+		emitAgentExited(opts, "codex", pid, retErr)
+		return nil, retErr
+	}
+	if retErr := completedProviderQuotaError("codex", codexErr); retErr != nil {
 		emitAgentExited(opts, "codex", pid, retErr)
 		return nil, retErr
 	}

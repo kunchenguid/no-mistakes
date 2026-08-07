@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -11,19 +13,91 @@ type fallbackAgent struct {
 	agents []Agent
 }
 
-// NewFallback returns an Agent that tries each agent in order when an
-// invocation fails because the current agent process is unavailable.
-func NewFallback(agents []Agent) Agent {
-	switch len(agents) {
-	case 0:
-		return nil
-	case 1:
-		return agents[0]
-	default:
-		copied := make([]Agent, len(agents))
-		copy(copied, agents)
-		return &fallbackAgent{agents: copied}
+const (
+	maxQuotaFallbackAttempts           = 8
+	maxQuotaFallbackAgentNameRunes     = 64
+	quotaFallbackTruncationMarker      = "..."
+	quotaFallbackAttemptsOmittedMarker = "additional attempts omitted"
+)
+
+type quotaFallbackAttempt struct {
+	agent  string
+	reason string
+}
+
+type quotaFallbackError struct {
+	attempts []quotaFallbackAttempt
+	omitted  bool
+}
+
+type providerQuotaError struct {
+	err    error
+	reason string
+}
+
+type quotaFallbackTransitionError struct {
+	err error
+}
+
+func (e *providerQuotaError) Error() string {
+	return fmt.Sprintf("provider quota unavailable: %s", e.reason)
+}
+func (e *providerQuotaError) Unwrap() error { return e.err }
+
+func (e *quotaFallbackTransitionError) Error() string { return e.err.Error() }
+func (e *quotaFallbackTransitionError) Unwrap() error { return e.err }
+
+func (e *quotaFallbackError) Error() string {
+	parts := make([]string, 0, len(e.attempts)+1)
+	for _, attempt := range e.attempts {
+		parts = append(parts, fmt.Sprintf("%s (%s)", attempt.agent, attempt.reason))
 	}
+	if e.omitted {
+		parts = append(parts, quotaFallbackAttemptsOmittedMarker)
+	}
+	return fmt.Sprintf("configured agent fallback exhausted: %s", strings.Join(parts, "; "))
+}
+
+func appendQuotaFallbackAttempt(attempts []quotaFallbackAttempt, omitted bool, agent, reason string) ([]quotaFallbackAttempt, bool) {
+	if len(attempts) >= maxQuotaFallbackAttempts {
+		return attempts, true
+	}
+	name := []rune(agent)
+	if len(name) > maxQuotaFallbackAgentNameRunes {
+		agent = string(name[:maxQuotaFallbackAgentNameRunes]) + quotaFallbackTruncationMarker
+	}
+	return append(attempts, quotaFallbackAttempt{agent: agent, reason: reason}), omitted
+}
+
+// IsQuotaFallbackError reports whether an ordered fallback stopped after an
+// explicit quota, session-limit, or rate-limit signal. The error deliberately
+// contains only configured agent names and bounded classifications.
+func IsQuotaFallbackError(err error) bool {
+	var quotaErr *quotaFallbackError
+	return errors.As(err, &quotaErr)
+}
+
+// HadQuotaFallback reports whether an invocation moved past a provider after
+// positive quota evidence, including when a later generic failure is returned.
+func HadQuotaFallback(err error) bool {
+	if IsQuotaFallbackError(err) {
+		return true
+	}
+	var transitionErr *quotaFallbackTransitionError
+	return errors.As(err, &transitionErr)
+}
+
+// NewFallback returns an Agent that tries each agent in order when an
+// invocation fails because the current agent process is unavailable or returns
+// explicit quota, session-limit, or rate-limit evidence. Quota replacement is
+// synchronous and starts the next provider with no provider-native session.
+func NewFallback(agents []Agent) Agent {
+	if len(agents) == 0 {
+		return nil
+	}
+	copied := make([]Agent, len(agents))
+	copy(copied, agents)
+	return &fallbackAgent{agents: copied}
 }
 
 func (a *fallbackAgent) Name() string {
@@ -71,22 +145,57 @@ func (a *fallbackAgent) NeutralizesGateInstructions() bool {
 }
 
 func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) {
-	candidates := a.agents
+	// A resumed session is owned by exactly one provider. Try that provider
+	// first, preserving the existing resume-failure contract. A quota signal is
+	// the only result that opens the ordered list after that provider; the next
+	// provider always starts a fresh session.
+	candidateIndexes := make([]int, 0, len(a.agents))
 	if opts.Session != nil && opts.Session.ID != "" && opts.Session.Agent != "" {
-		candidates = nil
-		for _, current := range a.agents {
+		providerIndex := -1
+		for i, current := range a.agents {
 			if SupportsSessionProvider(current, opts.Session.Agent) {
-				candidates = append(candidates, current)
+				providerIndex = i
 				break
 			}
 		}
-		if len(candidates) == 0 {
+		if providerIndex < 0 {
 			return nil, fmt.Errorf("session provider %q is not configured", opts.Session.Agent)
 		}
+		candidateIndexes = append(candidateIndexes, providerIndex)
+	} else {
+		for i := range a.agents {
+			candidateIndexes = append(candidateIndexes, i)
+		}
 	}
+
+	scheduled := make(map[int]bool, len(candidateIndexes))
+	for _, index := range candidateIndexes {
+		scheduled[index] = true
+	}
+	attempted := make(map[int]bool, len(candidateIndexes))
+	path := make([]quotaFallbackAttempt, 0, min(len(a.agents), maxQuotaFallbackAttempts))
+	pathOmitted := false
+	quotaSeen := false
+	freshProvider := false
 	var lastErr error
-	for i, current := range candidates {
+	for position := 0; position < len(candidateIndexes); position++ {
+		index := candidateIndexes[position]
+		if attempted[index] {
+			continue
+		}
+		attempted[index] = true
+		current := a.agents[index]
 		currentOpts := opts
+		if freshProvider {
+			// Never hand a provider-native session id to a different configured
+			// agent. An empty ref asks a capable replacement to start cold; an
+			// incapable replacement below clears it entirely.
+			if opts.Session != nil {
+				currentOpts.Session = &SessionRef{}
+			}
+			currentOpts.SessionFallback = false
+			currentOpts.SessionFallbackReason = ""
+		}
 		if currentOpts.Session != nil && currentOpts.Session.ID == "" && !SupportsSessionResume(current) {
 			currentOpts.Session = nil
 			currentOpts.SessionFallback = false
@@ -103,18 +212,65 @@ func (a *fallbackAgent) Run(ctx context.Context, opts RunOpts) (*Result, error) 
 			return result, nil
 		}
 		lastErr = err
-		if i == len(candidates)-1 || !isAgentUnavailableError(err) {
+		if ctx.Err() != nil {
 			return nil, err
 		}
-		next := candidates[i+1]
-		if opts.OnChunk != nil {
-			opts.OnChunk(fmt.Sprintf("\nagent %s failed (%s); falling back to %s\n", current.Name(), fallbackReason(err), next.Name()))
+
+		reason, isQuota := quotaErrorReason(err)
+		if isQuota {
+			quotaSeen = true
+			path, pathOmitted = appendQuotaFallbackAttempt(path, pathOmitted, current.Name(), reason)
+			freshProvider = true
+			// A quota signal from a resumed provider unlocks only the remaining
+			// configured order. This is still synchronous and only happens after
+			// the current adapter returned.
+			for next := index + 1; next < len(a.agents); next++ {
+				if !scheduled[next] {
+					candidateIndexes = append(candidateIndexes, next)
+					scheduled[next] = true
+				}
+			}
+		} else {
+			path, pathOmitted = appendQuotaFallbackAttempt(path, pathOmitted, current.Name(), fallbackFailureReason(err))
 		}
+
+		if quotaSeen {
+			if !isQuota && !isAgentUnavailableError(err) {
+				return nil, &quotaFallbackTransitionError{err: err}
+			}
+			if position == len(candidateIndexes)-1 {
+				return nil, &quotaFallbackError{attempts: path, omitted: pathOmitted}
+			}
+		} else if position == len(candidateIndexes)-1 || !isAgentUnavailableError(err) {
+			return nil, err
+		}
+
+		nextPosition := position + 1
+		if nextPosition >= len(candidateIndexes) {
+			if quotaSeen {
+				return nil, &quotaFallbackError{attempts: path, omitted: pathOmitted}
+			}
+			return nil, err
+		}
+		next := a.agents[candidateIndexes[nextPosition]]
+		if opts.OnChunk != nil {
+			if isQuota {
+				opts.OnChunk(fmt.Sprintf("\nagent %s exhausted (%s); falling back to %s\n", current.Name(), reason, next.Name()))
+			} else {
+				opts.OnChunk(fmt.Sprintf("\nagent %s failed (%s); falling back to %s\n", current.Name(), fallbackReason(err), next.Name()))
+			}
+		}
+	}
+	if quotaSeen {
+		return nil, &quotaFallbackError{attempts: path, omitted: pathOmitted}
 	}
 	return nil, lastErr
 }
 
 func (a *fallbackAgent) Close() error {
+	if len(a.agents) == 1 {
+		return a.agents[0].Close()
+	}
 	var errs []string
 	for _, ag := range a.agents {
 		if err := ag.Close(); err != nil {
@@ -125,6 +281,87 @@ func (a *fallbackAgent) Close() error {
 		return fmt.Errorf("close fallback agents: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// ClassifyProviderError marks an invocation error using only provider or
+// process diagnostics captured separately from assistant output.
+func ClassifyProviderError(err error, diagnostics ...string) error {
+	if err == nil {
+		return nil
+	}
+	for _, diagnostic := range diagnostics {
+		if reason, ok := quotaDiagnosticReason(diagnostic); ok {
+			return &providerQuotaError{err: err, reason: reason}
+		}
+	}
+	return err
+}
+
+func completedProviderQuotaError(provider, diagnostic string) error {
+	base := fmt.Errorf("%s provider error", provider)
+	classified := ClassifyProviderError(base, diagnostic)
+	if _, ok := quotaErrorReason(classified); ok {
+		return classified
+	}
+	return nil
+}
+
+func quotaErrorReason(err error) (string, bool) {
+	var quotaErr *providerQuotaError
+	if !errors.As(err, &quotaErr) {
+		return "", false
+	}
+	return quotaErr.reason, true
+}
+
+var providerStatus429RE = regexp.MustCompile(`\b(?:http|status(?: code)?|failed with)\s*[:=]?\s*429\b`)
+
+func quotaDiagnosticReason(diagnostic string) (string, bool) {
+	msg := strings.ToLower(diagnostic)
+	if strings.Contains(msg, "quota exceeded") ||
+		strings.Contains(msg, "quota exhausted") ||
+		strings.Contains(msg, "quota_exceeded") ||
+		strings.Contains(msg, "quota_exhausted") ||
+		strings.Contains(msg, "session_limit_error") ||
+		strings.Contains(msg, "usage_limit_error") ||
+		limitStatus(msg, "session limit") ||
+		limitStatus(msg, "session_limit") ||
+		limitStatus(msg, "usage limit") ||
+		limitStatus(msg, "weekly limit") ||
+		limitStatus(msg, "monthly limit") ||
+		limitStatus(msg, "daily limit") ||
+		limitStatus(msg, "quota limit") {
+		return "session/quota limit", true
+	}
+	if strings.Contains(msg, "rate_limit_error") ||
+		strings.Contains(msg, "rate_limit_exceeded") ||
+		strings.Contains(msg, "rate-limited") ||
+		strings.Contains(msg, "rate limited") ||
+		limitStatus(msg, "rate limit") ||
+		strings.Contains(msg, "too many requests") ||
+		providerStatus429RE.MatchString(msg) {
+		return "rate limit", true
+	}
+	return "", false
+}
+
+func limitStatus(msg, limit string) bool {
+	for _, status := range []string{"exceeded", "exhausted", "reached", "hit"} {
+		if strings.Contains(msg, limit+" "+status) ||
+			strings.Contains(msg, status+" "+limit) ||
+			strings.Contains(msg, status+" the "+limit) ||
+			strings.Contains(msg, status+" your "+limit) {
+			return true
+		}
+	}
+	return false
+}
+
+func fallbackFailureReason(err error) string {
+	if isAgentUnavailableError(err) {
+		return "agent unavailable"
+	}
+	return "invocation failed"
 }
 
 func isAgentUnavailableError(err error) bool {

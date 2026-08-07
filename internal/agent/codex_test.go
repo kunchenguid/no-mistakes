@@ -244,6 +244,27 @@ exit 1
 	}
 }
 
+func TestCodexAgent_ZeroExitQuotaEventIsClassified(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeFakeCodex(t, dir, `#!/bin/sh
+printf '%s\n' '{"type":"error","message":"rate limit exceeded provider-secret"}'
+`, strings.Join([]string{
+		"@echo off",
+		"echo {\"type\":\"error\",\"message\":\"rate limit exceeded provider-secret\"}",
+	}, "\r\n"))
+
+	_, err := (&codexAgent{bin: bin}).Run(context.Background(), RunOpts{Prompt: "review", CWD: dir})
+	if err == nil {
+		t.Fatal("quota event unexpectedly succeeded")
+	}
+	if _, ok := quotaErrorReason(err); !ok {
+		t.Fatalf("error = %v, want provider quota classification", err)
+	}
+	if strings.Contains(err.Error(), "provider-secret") {
+		t.Fatalf("classified error leaked provider diagnostic: %v", err)
+	}
+}
+
 func TestCodexAgent_RunAcceptsNormalizedNullableFields(t *testing.T) {
 	dir := t.TempDir()
 	bin := writeFakeCodex(t, dir, `#!/bin/sh

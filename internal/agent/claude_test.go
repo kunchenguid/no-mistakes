@@ -572,6 +572,26 @@ func TestClaudeAgent_LargePromptUsesExactStdinForColdAndResumedRuns(t *testing.T
 	}
 }
 
+func TestClaudeAgent_QuotaResultIsClassifiedWithoutAssistantText(t *testing.T) {
+	for _, mode := range []string{"quota-result", "quota-result-nonzero"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("NM_CLAUDE_STDIN_HELPER", mode)
+			a := newClaudeStdinHelperAgent(t)
+
+			_, err := a.runOnce(context.Background(), RunOpts{Prompt: "review", CWD: t.TempDir()})
+			if err == nil {
+				t.Fatal("quota result unexpectedly succeeded")
+			}
+			if _, ok := quotaErrorReason(err); !ok {
+				t.Fatalf("error = %v, want provider quota classification", err)
+			}
+			if strings.Contains(err.Error(), "provider-secret") {
+				t.Fatalf("classified error leaked provider diagnostic: %v", err)
+			}
+		})
+	}
+}
+
 func TestClaudeAgent_EarlyExitWithoutReadingLargeStdinDoesNotLeakGoroutines(t *testing.T) {
 	t.Setenv("NM_CLAUDE_STDIN_HELPER", "exit-early")
 	a := newClaudeStdinHelperAgent(t)
@@ -672,6 +692,13 @@ func TestClaudeStdinHelper(t *testing.T) {
 		for {
 			time.Sleep(time.Second)
 		}
+	case "quota-result", "quota-result-nonzero":
+		_, _ = io.WriteString(os.Stdout, `{"type":"assistant","message":{"content":[{"type":"text","text":"ordinary assistant output"}]}}`+"\n")
+		_, _ = io.WriteString(os.Stdout, `{"type":"result","subtype":"error","is_error":true,"result":"usage limit reached provider-secret"}`+"\n")
+		if mode == "quota-result-nonzero" {
+			os.Exit(9)
+		}
+		return
 	case "read":
 		prompt, err := io.ReadAll(os.Stdin)
 		if err != nil {

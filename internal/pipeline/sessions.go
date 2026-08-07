@@ -88,10 +88,21 @@ func (rs *RunSessions) Run(ctx context.Context, a agent.Agent, role SessionRole,
 	opts.Session = &stored
 	result, err := a.Run(ctx, opts)
 	if err == nil {
-		rs.remember(role, result.SessionID, sessionProvider(a, result))
+		provider := sessionProvider(a, result)
+		// An ordered quota fallback may have moved this role to a different
+		// provider. The old provider-native identity is no longer safe to
+		// resume, even when the replacement did not mint a durable session.
+		if storedID != "" && stored.Agent != "" && provider != "" && provider != stored.Agent {
+			rs.forget(role)
+		}
+		rs.remember(role, result.SessionID, provider)
 		return result, nil
 	}
-	if storedID == "" || ctx.Err() != nil {
+	if ctx.Err() != nil || storedID == "" {
+		return nil, err
+	}
+	if agent.HadQuotaFallback(err) {
+		rs.forget(role)
 		return nil, err
 	}
 
