@@ -19,16 +19,15 @@ import (
 type fakePreRunHost struct {
 	scm.Host
 	flagged map[string]bool
+	byLink  map[string]bool
 	calls   int
 }
 
-func (h *fakePreRunHost) PreRunFailures(_ context.Context, checks []scm.Check) (map[string]bool, error) {
+func (h *fakePreRunHost) PreRunFailures(_ context.Context, checks []scm.Check) ([]bool, error) {
 	h.calls++
-	out := map[string]bool{}
-	for _, c := range checks {
-		if h.flagged[c.Name] {
-			out[c.Name] = true
-		}
+	out := make([]bool, len(checks))
+	for i, c := range checks {
+		out[i] = h.flagged[c.Name] || h.byLink[c.Link]
 	}
 	return out, nil
 }
@@ -93,6 +92,28 @@ func TestMarkPreRunInfraFailures_OptInGated(t *testing.T) {
 	}
 	if checks[0].PreRunFailure || checks[0].Bucket != scm.CheckBucketFail {
 		t.Fatalf("check = %+v, want untouched when opted out", checks[0])
+	}
+}
+
+// Check names are not unique on a PR: two workflows can both name a job
+// "build". If one fails at setup (infra) and the other fails a real repository
+// step, only the infra one may be re-bucketed. A positional detector result
+// keeps them apart; a name-keyed one would flag both and mask the real failure.
+func TestMarkPreRunInfraFailures_SameNameGenuineNotMasked(t *testing.T) {
+	t.Parallel()
+
+	infra := scm.Check{Name: "build", Bucket: scm.CheckBucketFail, State: "FAILURE", Link: "https://github.com/o/r/actions/runs/1/job/2"}
+	genuine := scm.Check{Name: "build", Bucket: scm.CheckBucketFail, State: "FAILURE", Link: "https://github.com/o/r/actions/runs/9/job/3"}
+	checks := []scm.Check{infra, genuine}
+
+	host := &fakePreRunHost{flagged: map[string]bool{}, byLink: map[string]bool{infra.Link: true}}
+	markPreRunInfraFailures(markContext(t, 1), host, checks)
+
+	if !checks[0].PreRunFailure || checks[0].Bucket != scm.CheckBucketCancel {
+		t.Fatalf("infra check = %+v, want re-bucketed transient", checks[0])
+	}
+	if checks[1].PreRunFailure || checks[1].Bucket != scm.CheckBucketFail {
+		t.Fatalf("same-named genuine check = %+v, want untouched fail bucket (no masking)", checks[1])
 	}
 }
 

@@ -646,24 +646,32 @@ func markPreRunInfraFailures(sctx *pipeline.StepContext, host scm.Host, checks [
 	if !ok {
 		return
 	}
-	var failed []scm.Check
-	for _, c := range checks {
-		if c.Failing() {
-			failed = append(failed, c)
+	var failedIdx []int
+	for i := range checks {
+		if checks[i].Failing() {
+			failedIdx = append(failedIdx, i)
 		}
 	}
-	if len(failed) == 0 {
+	if len(failedIdx) == 0 {
 		return
+	}
+	failed := make([]scm.Check, len(failedIdx))
+	for j, idx := range failedIdx {
+		failed[j] = checks[idx]
 	}
 	infra, err := detector.PreRunFailures(sctx.Ctx, failed)
 	if err != nil {
 		sctx.Log(fmt.Sprintf("warning: could not classify pre-run CI failures: %v", err))
 		return
 	}
-	for i := range checks {
-		if checks[i].Failing() && infra[checks[i].Name] {
-			checks[i].PreRunFailure = true
-			checks[i].Bucket = scm.CheckBucketCancel
+	if len(infra) != len(failed) {
+		sctx.Log(fmt.Sprintf("warning: pre-run CI classifier returned %d results for %d checks; ignoring", len(infra), len(failed)))
+		return
+	}
+	for j, idx := range failedIdx {
+		if infra[j] {
+			checks[idx].PreRunFailure = true
+			checks[idx].Bucket = scm.CheckBucketCancel
 		}
 	}
 }

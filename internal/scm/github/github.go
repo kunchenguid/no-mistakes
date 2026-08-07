@@ -789,12 +789,13 @@ func (h *Host) actionsRerunTarget(link string) (runID, jobID string, ok bool) {
 // fails that step and the job never executes a repository step. It reads the
 // job's own step-level conclusions, never log text, and fails closed: a check
 // whose job it cannot resolve or read is simply not flagged, so it stays a
-// genuine failure.
-func (h *Host) PreRunFailures(ctx context.Context, checks []scm.Check) (map[string]bool, error) {
-	result := map[string]bool{}
+// genuine failure. The result is positional (parallel to checks), so a
+// same-named genuine failure never inherits another check's infrastructure flag.
+func (h *Host) PreRunFailures(ctx context.Context, checks []scm.Check) ([]bool, error) {
+	result := make([]bool, len(checks))
 	// Cache each run's jobs so several checks from one run cost one API call.
 	runJobs := map[string][]githubRunJob{}
-	for _, check := range checks {
+	for i, check := range checks {
 		runID, jobID, ok := h.actionsRerunTarget(check.Link)
 		if !ok {
 			continue
@@ -806,7 +807,7 @@ func (h *Host) PreRunFailures(ctx context.Context, checks []scm.Check) (map[stri
 		}
 		job, found := matchRunJob(jobs, jobID, check.Name)
 		if found && jobFailedAtSetup(job) {
-			result[check.Name] = true
+			result[i] = true
 		}
 	}
 	return result, nil

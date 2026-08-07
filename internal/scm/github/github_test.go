@@ -909,10 +909,13 @@ func TestPreRunFailures_FlagsSetupFailureNotGenuine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PreRunFailures() error = %v", err)
 	}
-	if !infra["build"] {
+	if len(infra) != 2 {
+		t.Fatalf("PreRunFailures returned %d results, want 2 parallel to the checks", len(infra))
+	}
+	if !infra[0] {
 		t.Error("PreRunFailures did not flag the setup/action-download failure")
 	}
-	if infra["unit"] {
+	if infra[1] {
 		t.Error("PreRunFailures flagged a genuine test failure that cleared setup (masking)")
 	}
 }
@@ -932,7 +935,7 @@ func TestPreRunFailures_FailsClosedOnUnreadableRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PreRunFailures() error = %v", err)
 	}
-	if len(infra) != 0 {
+	if len(infra) != 1 || infra[0] {
 		t.Fatalf("PreRunFailures = %v, want nothing flagged when the run is unreadable", infra)
 	}
 }

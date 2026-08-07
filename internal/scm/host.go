@@ -263,11 +263,14 @@ type PRBaseBranchReader interface {
 // step-level phase simply does not implement it, and the CI step consults it
 // only when transient reruns are enabled.
 type PreRunFailureDetector interface {
-	// PreRunFailures returns, keyed by check name, which of the given checks
-	// failed before any repository step ran. It must fail closed - omitting any
-	// check whose phase it cannot determine - so an unreadable job stays a
-	// genuine failure rather than being masked as infrastructure.
-	PreRunFailures(ctx context.Context, checks []Check) (map[string]bool, error)
+	// PreRunFailures returns a slice parallel to checks: entry i is true when
+	// checks[i] failed before any repository step ran. Check names are not unique
+	// on a PR, so the result is positional rather than name-keyed - a same-named
+	// genuine failure must never inherit another check's infrastructure flag. It
+	// must fail closed - leaving false any check whose phase it cannot determine -
+	// so an unreadable job stays a genuine failure rather than being masked as
+	// infrastructure.
+	PreRunFailures(ctx context.Context, checks []Check) ([]bool, error)
 }
 
 // CheckRerunner re-runs the provider-side work behind a failed check without
