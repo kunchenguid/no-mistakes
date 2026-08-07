@@ -125,11 +125,14 @@ func (c *Client) FindOpenPRBySourceBranch(ctx context.Context, repo RepoRef, bra
 	clauses = append(clauses, fmt.Sprintf(`state=%q`, "OPEN"))
 	query.Set("q", strings.Join(clauses, " AND "))
 
-	var response struct {
+	var response *struct {
 		Values []bitbucketPullRequest `json:"values"`
 	}
 	if err := c.doJSON(ctx, http.MethodGet, repoPRPath(repo), query, nil, &response); err != nil {
 		return nil, err
+	}
+	if response == nil || response.Values == nil {
+		return nil, fmt.Errorf("decode Bitbucket PR list: expected values array")
 	}
 	if len(response.Values) == 0 {
 		return nil, nil
@@ -400,8 +403,12 @@ func (c *Client) doJSONPathOrURL(ctx context.Context, method, pathOrURL string, 
 	if responseBody == nil {
 		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(responseBody); err != nil {
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(responseBody); err != nil {
 		return fmt.Errorf("decode Bitbucket response: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("decode Bitbucket response: expected a single JSON value")
 	}
 	return nil
 }
