@@ -239,6 +239,8 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 **Active for GitHub, GitLab, Bitbucket Cloud (`bitbucket.org`), and Azure DevOps (`dev.azure.com` / `*.visualstudio.com`)**.
 
 - GitHub requires `gh` CLI, installed and authenticated.
+- GitHub prefers `gh pr checks --json` on gh 2.50.0 and newer. Older gh releases use the structured `gh pr view --json statusCheckRollup` fallback, with the exact PR and repository passed explicitly on both paths.
+- GitHub check states that are empty or unknown remain pending instead of being counted as successful. Poll errors preserve the first non-empty gh stderr line so authentication and API failures remain diagnosable in the CI step log.
 - GitLab requires `glab` CLI, installed and authenticated.
 - Bitbucket Cloud requires `NO_MISTAKES_BITBUCKET_EMAIL` and `NO_MISTAKES_BITBUCKET_API_TOKEN`.
 - Azure DevOps requires the `az` CLI with the `azure-devops` extension, authenticated with a PAT.

@@ -64,7 +64,7 @@ Verify:
 gh auth status
 ```
 
-`no-mistakes doctor` also checks for `gh` availability.
+`no-mistakes doctor` also checks `gh` availability and reports when the supported compatibility path will be used; the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) owns the polling details.
 For PR and workflow-run commands, no-mistakes passes the repository slug from the recorded upstream remote or PR URL to `gh`, so daemon-run commands do not depend on the daemon's current working directory.
 
 **What you get:**

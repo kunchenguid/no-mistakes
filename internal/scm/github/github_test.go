@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -240,6 +242,264 @@ func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	}
 	if checks[1].Name != "tests" || checks[1].Bucket != scm.CheckBucketPending {
 		t.Fatalf("checks[1] = %+v, want pending tests check", checks[1])
+	}
+}
+
+func TestGetChecksFallsBackForOldGhWithExactPRAndRepo(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+			stderr: "unknown flag: --json\n",
+			code:   1,
+		},
+		"gh pr view 123 --repo test/repo --json statusCheckRollup": {
+			stdout: `{"statusCheckRollup":[` +
+				`{"__typename":"CheckRun","name":"build","conclusion":"SUCCESS","completedAt":"2026-04-24T04:15:00Z","detailsUrl":"https://github.com/test/repo/actions/runs/1/job/11"},` +
+				`{"__typename":"CheckRun","name":"deploy","conclusion":"","status":"IN_PROGRESS"},` +
+				`{"__typename":"StatusContext","context":"ci/legacy","state":"FAILURE","targetUrl":"https://ci.example.com/legacy/99"}` +
+				`]}` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 3 {
+		t.Fatalf("checks = %+v, want 3 checks", checks)
+	}
+	if checks[0].Name != "build" || checks[0].Bucket != scm.CheckBucketPass {
+		t.Fatalf("checks[0] = %+v, want passing build", checks[0])
+	}
+	if checks[0].State != "SUCCESS" || checks[0].Link != "https://github.com/test/repo/actions/runs/1/job/11" {
+		t.Fatalf("checks[0] = %+v, want SUCCESS state with detailsUrl link", checks[0])
+	}
+	if checks[1].Name != "deploy" || checks[1].Bucket != scm.CheckBucketPending {
+		t.Fatalf("checks[1] = %+v, want pending deploy", checks[1])
+	}
+	if checks[1].State != "IN_PROGRESS" || checks[1].Link != "" {
+		t.Fatalf("checks[1] = %+v, want IN_PROGRESS state without link", checks[1])
+	}
+	if checks[2].Name != "ci/legacy" || checks[2].Bucket != scm.CheckBucketFail {
+		t.Fatalf("checks[2] = %+v, want failing legacy status", checks[2])
+	}
+	if checks[2].State != "FAILURE" || checks[2].Link != "https://ci.example.com/legacy/99" {
+		t.Fatalf("checks[2] = %+v, want FAILURE state with targetUrl link", checks[2])
+	}
+	wantCompletedAt := time.Date(2026, 4, 24, 4, 15, 0, 0, time.UTC)
+	if !checks[0].CompletedAt.Equal(wantCompletedAt) {
+		t.Fatalf("checks[0].CompletedAt = %v, want %v", checks[0].CompletedAt, wantCompletedAt)
+	}
+}
+
+func TestGetChecksOldGhCancelledCheckKeepsRerunIdentity(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+			stderr: "unknown flag: --json\n",
+			code:   1,
+		},
+		"gh pr view 123 --repo test/repo --json statusCheckRollup": {
+			stdout: `{"statusCheckRollup":[` +
+				`{"__typename":"CheckRun","name":"flaky","conclusion":"CANCELLED","detailsUrl":"https://github.com/test/repo/actions/runs/7/job/77"}` +
+				`]}` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 {
+		t.Fatalf("checks = %+v, want 1 check", checks)
+	}
+	if checks[0].Bucket != scm.CheckBucketCancel {
+		t.Fatalf("checks[0] = %+v, want cancel bucket", checks[0])
+	}
+	if checks[0].State != "CANCELLED" {
+		t.Fatalf("checks[0].State = %q, want CANCELLED", checks[0].State)
+	}
+	if checks[0].Link != "https://github.com/test/repo/actions/runs/7/job/77" {
+		t.Fatalf("checks[0].Link = %q, want detailsUrl link", checks[0].Link)
+	}
+}
+
+func TestGetChecksOldGhGreenWithSkippedJob(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 42 --repo test/repo --json name,state,bucket,completedAt,link": {
+			stderr: "unknown flag: --json\n",
+			code:   1,
+		},
+		"gh pr view 42 --repo test/repo --json statusCheckRollup": {
+			stdout: `{"statusCheckRollup":[` +
+				`{"__typename":"CheckRun","name":"test","conclusion":"SUCCESS"},` +
+				`{"__typename":"CheckRun","name":"optional","conclusion":"SKIPPED"}` +
+				`]}` + "\n",
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "42"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 2 || checks[0].Bucket != scm.CheckBucketPass || checks[1].Bucket != scm.CheckBucketSkip {
+		t.Fatalf("checks = %+v, want pass plus skipped", checks)
+	}
+}
+
+func TestGetChecksParsesFailingJSONDespiteGhExitStatus(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+			stdout: `[{"name":"build","state":"FAILURE","bucket":"fail"}]` + "\n",
+			code:   1,
+		},
+	}), nil, "", "test/repo")
+
+	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(checks) != 1 || checks[0].Bucket != scm.CheckBucketFail {
+		t.Fatalf("checks = %+v, want one failing check", checks)
+	}
+}
+
+func TestGetChecksCancelledContextWinsOverParseableStdout(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+			stdout:     `[{"name":"build","state":"SUCCESS","bucket":"pass"}]` + "\n",
+			code:       1,
+			sleepAfter: 30 * time.Second,
+		},
+	}), nil, "", "test/repo")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	checks, err := host.GetChecks(ctx, &scm.PR{Number: "123"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("GetChecks() error = %v, want context.DeadlineExceeded", err)
+	}
+	if checks != nil {
+		t.Fatalf("checks = %+v, want nil when the context ended the poll", checks)
+	}
+}
+
+func TestGetChecksSurfacesFirstNonEmptyStderrLine(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+			stderr: "\n  authentication required; run gh auth login  \nsecond diagnostic\n",
+			code:   1,
+		},
+	}), nil, "", "test/repo")
+
+	_, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+	if err == nil {
+		t.Fatal("GetChecks() error = nil, want CLI failure")
+	}
+	if !strings.Contains(err.Error(), "authentication required; run gh auth login") {
+		t.Fatalf("GetChecks() error = %q, want first non-empty stderr line", err)
+	}
+	if strings.Contains(err.Error(), "second diagnostic") {
+		t.Fatalf("GetChecks() error = %q, want only first non-empty stderr line", err)
+	}
+}
+
+func TestGetChecksUnknownAndEmptyStatesStayPending(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		responses map[string]githubTestResponse
+	}{
+		{
+			name: "preferred JSON path",
+			responses: map[string]githubTestResponse{
+				"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+					stdout: `[{"name":"future","state":"NEW_STATE","bucket":"exotic"},{"name":"empty","state":"","bucket":""}]` + "\n",
+				},
+			},
+		},
+		{
+			name: "old gh rollup path",
+			responses: map[string]githubTestResponse{
+				"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+					stderr: "unknown flag: --json\n",
+					code:   1,
+				},
+				"gh pr view 123 --repo test/repo --json statusCheckRollup": {
+					stdout: `{"statusCheckRollup":[{"__typename":"CheckRun","name":"future","conclusion":"NEW_STATE"},{"__typename":"CheckRun","name":"empty"}]}` + "\n",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			host := New(githubTestCmdFactory(tt.responses), nil, "", "test/repo")
+			checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
+			if err != nil {
+				t.Fatalf("GetChecks() error = %v", err)
+			}
+			if len(checks) != 2 {
+				t.Fatalf("checks = %+v, want 2 checks", checks)
+			}
+			for _, check := range checks {
+				if check.Bucket != scm.CheckBucketPending {
+					t.Errorf("check %q bucket = %q, want pending", check.Name, check.Bucket)
+				}
+			}
+		})
+	}
+}
+
+func TestGetChecksMemoizesOldGhFallback(t *testing.T) {
+	t.Parallel()
+
+	counts := map[string]int{}
+	host := New(countingGithubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
+			stderr: "unknown flag: --json\n",
+			code:   1,
+		},
+		"gh pr view 123 --repo test/repo --json statusCheckRollup": {
+			stdout: `{"statusCheckRollup":[]}` + "\n",
+		},
+	}, counts), nil, "", "test/repo")
+
+	for i := 0; i < 2; i++ {
+		if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"}); err != nil {
+			t.Fatalf("GetChecks() call %d error = %v", i+1, err)
+		}
+	}
+	if got := counts["gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link"]; got != 1 {
+		t.Fatalf("preferred command called %d times, want 1", got)
+	}
+	if got := counts["gh pr view 123 --repo test/repo --json statusCheckRollup"]; got != 2 {
+		t.Fatalf("fallback command called %d times, want 2", got)
+	}
+}
+
+func TestCompactCLIErrorBoundsUTF8(t *testing.T) {
+	t.Parallel()
+
+	got := compactCLIError([]byte("\n" + strings.Repeat("a", 199) + "é" + strings.Repeat("b", 20) + "\nignored"))
+	if got != strings.Repeat("a", 199) {
+		t.Fatalf("compactCLIError() = %q, want 199 ASCII bytes before split rune", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("compactCLIError() = %q, want valid UTF-8", got)
 	}
 }
 
@@ -694,10 +954,11 @@ func TestAvailableFallsBackToUnscopedAuthWhenHostUnknown(t *testing.T) {
 }
 
 type githubTestResponse struct {
-	stdout    string
-	stderr    string
-	wantStdin string
-	code      int
+	stdout     string
+	stderr     string
+	wantStdin  string
+	code       int
+	sleepAfter time.Duration
 }
 
 func githubTestCmdFactory(responses map[string]githubTestResponse) CmdFactory {
@@ -714,8 +975,18 @@ func githubTestCmdFactory(responses map[string]githubTestResponse) CmdFactory {
 			"GITHUB_TEST_STDERR="+response.stderr,
 			"GITHUB_TEST_WANT_STDIN="+response.wantStdin,
 			fmt.Sprintf("GITHUB_TEST_EXIT_CODE=%d", response.code),
+			"GITHUB_TEST_SLEEP_AFTER="+response.sleepAfter.String(),
 		)
 		return cmd
+	}
+}
+
+func countingGithubTestCmdFactory(responses map[string]githubTestResponse, counts map[string]int) CmdFactory {
+	inner := githubTestCmdFactory(responses)
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		key := strings.TrimSpace(name + " " + strings.Join(args, " "))
+		counts[key]++
+		return inner(ctx, name, args...)
 	}
 }
 
@@ -740,6 +1011,9 @@ func TestGitHubHelperProcess(t *testing.T) {
 	}
 	if _, err := fmt.Fprint(os.Stderr, os.Getenv("GITHUB_TEST_STDERR")); err != nil {
 		os.Exit(1)
+	}
+	if d, err := time.ParseDuration(os.Getenv("GITHUB_TEST_SLEEP_AFTER")); err == nil && d > 0 {
+		time.Sleep(d)
 	}
 	if code := os.Getenv("GITHUB_TEST_EXIT_CODE"); code != "" && code != "0" {
 		os.Exit(1)
