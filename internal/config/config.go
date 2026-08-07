@@ -657,15 +657,15 @@ intent:
 
 // defaultBinary maps agent names to their default binary names.
 var defaultBinary = map[types.AgentName]string{
-	types.AgentClaude:   "claude",
-	types.AgentCodex:    "codex",
-	types.AgentRovoDev:  "acli",
-	types.AgentOpenCode: "opencode",
-	types.AgentPi:       "pi",
-	types.AgentCopilot:  "copilot",
+	types.AgentClaude:      "claude",
+	types.AgentCodex:       "codex",
+	types.AgentRovoDev:     "acli",
+	types.AgentOpenCode:    "opencode",
+	types.AgentPi:          "pi",
+	types.AgentCopilot:     "copilot",
+	types.AgentAntigravity: "agy",
 }
 
-// nativeAgentProbeOrder is the priority order for auto-detecting native agents.
 var nativeAgentProbeOrder = []types.AgentName{
 	types.AgentClaude,
 	types.AgentCodex,
@@ -673,6 +673,7 @@ var nativeAgentProbeOrder = []types.AgentName{
 	types.AgentRovoDev,
 	types.AgentPi,
 	types.AgentCopilot,
+	types.AgentAntigravity,
 }
 
 func isACPAgent(name types.AgentName) bool {
@@ -698,12 +699,15 @@ var probeRovoDevSupport = func(ctx context.Context, bin string) (bool, error) {
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		text := strings.ToLower(string(output))
-		if strings.Contains(text, "unknown command") ||
-			strings.Contains(text, "unknown subcommand") ||
-			strings.Contains(text, "unrecognized command") ||
-			strings.Contains(text, "no help topic for") {
+		if filepath.Base(bin) == "agy" {
 			return false, nil
+		}
+		text := strings.TrimSpace(strings.ToLower(string(output)))
+		if len(text) > 0 {
+			first := strings.Fields(text)[0]
+			if first == "unknown" || first == "unrecognized" || first == "no" || first == "error:" {
+				return false, nil
+			}
 		}
 		return false, fmt.Errorf("probe rovodev support via %q: %w", bin, err)
 	}
@@ -858,7 +862,7 @@ func (c *Config) resolveConfiguredAgent(ctx context.Context, name types.AgentNam
 		return resolved, err == nil, "auto", err
 	}
 	if _, ok := defaultBinary[name]; !ok && !isACPAgent(name) {
-		return "", false, string(name), fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode, pi, copilot, cursor, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
+		return "", false, string(name), fmt.Errorf("unknown agent %q; valid options: auto, claude, codex, rovodev, opencode, pi, copilot, cursor, antigravity, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)", name)
 	}
 	if isACPAgent(name) {
 		available, bins, err := c.acpAvailable(name, lookPath)
