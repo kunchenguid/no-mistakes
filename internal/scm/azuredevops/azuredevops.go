@@ -73,7 +73,10 @@ func (h *Host) Provider() scm.Provider { return scm.ProviderAzureDevOps }
 // Capabilities reports the Azure DevOps feature matrix. Merge status is
 // reliably available from `az repos pr show`. Failed-check log fetching is not
 // yet wired up - the az CLI has no first-class build-log command, so callers
-// gate on FailedCheckLogs and skip it.
+// gate on FailedCheckLogs and skip it. Draft is false: `az repos pr create`
+// does expose a draft flag, but this backend's az surface is not verified
+// against the pinned CLI version, so the capability stays off rather than
+// shipping an unverified flag (see MarkPRReady).
 func (h *Host) Capabilities() scm.Capabilities {
 	return scm.Capabilities{MergeableState: true, FailedCheckLogs: false}
 }
@@ -273,6 +276,13 @@ func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.Mergeable
 // Capabilities().FailedCheckLogs (false) and skip it.
 func (h *Host) FetchFailedCheckLogs(_ context.Context, _ *scm.PR, _ string, _ string, _ []string) (string, error) {
 	return "", scm.ErrUnsupported
+}
+
+// MarkPRReady is not implemented for Azure DevOps; callers gate on
+// Capabilities().Draft (false) and skip it. Wiring it up means verifying the
+// draft flags of the pinned az CLI end to end, not guessing them.
+func (h *Host) MarkPRReady(_ context.Context, _ *scm.PR) error {
+	return scm.ErrUnsupported
 }
 
 func (h *Host) showPR(ctx context.Context, pr *scm.PR) (*azPR, error) {

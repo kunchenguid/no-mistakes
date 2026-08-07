@@ -32,7 +32,8 @@ return control to the outer executor. Safe inspection remains available through
 
 When the user invokes `/no-mistakes`, report the outcome at the end. If the user
 asks for something specific, translate that request into the matching `axi run`
-flags yourself - for example, "skip the lint step" becomes `--skip=lint`. Run
+flags yourself - for example, "skip the lint step" becomes `--skip=lint`, and
+"don't tag reviewers until CI passes" becomes `--draft-until-ready`. Run
 `no-mistakes axi run --help` to see the available flags.
 
 ## Two ways to invoke
@@ -251,6 +252,14 @@ The CI step deliberately keeps watching the PR after checks pass, so
 `no_ci: true` declaration covers a zero-check repository) rather than
 blocking on the human merge. Never poll or re-run waiting for the merge yourself.
 Never treat "no CI checks reported" alone as green.
+
+If the run was started with `--draft-until-ready`, its PR opens as a **draft** and
+the CI step marks it ready for review at that same green edge - so a draft PR in
+`axi status` before `checks-passed` is the flag working, not a problem to fix.
+Never flip the PR yourself. The transition is one-way and only GitHub supports
+it; on other providers the PR simply opens normally and the step says so. The
+flag only needs passing once per branch: later runs on the same branch inherit
+it, so a rerun cannot strand the draft unpublished.
 
 Because that monitor stays live, a PR that falls behind the default branch or
 hits a merge conflict after checks pass - commonly because another PR merged

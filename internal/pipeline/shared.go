@@ -21,6 +21,34 @@ type HousekeepingLintResult struct {
 type RunShared struct {
 	mu               sync.Mutex
 	housekeepingLint *HousekeepingLintResult
+	prIsDraft        *bool
+}
+
+// SetPRDraftState records whether the run's pull request is a draft, as the PR
+// step observed it when it created or adopted the PR.
+func (s *RunShared) SetPRDraftState(isDraft bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prIsDraft = &isDraft
+}
+
+// PRDraftState reports the recorded draft state of the run's pull request.
+// known is false when no PR step in this process recorded one, in which case
+// callers must fail safe toward acting: leaving a draft unpublished is worse
+// than a redundant publish.
+func (s *RunShared) PRDraftState() (isDraft bool, known bool) {
+	if s == nil {
+		return false, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.prIsDraft == nil {
+		return false, false
+	}
+	return *s.prIsDraft, true
 }
 
 // SetHousekeepingLint records the combined pass's lint assessment for the

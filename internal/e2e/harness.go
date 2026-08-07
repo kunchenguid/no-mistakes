@@ -376,11 +376,24 @@ func (h *Harness) CommitChange(branch, path, content, message string) string {
 // run. Returns the IPC client connected to the daemon's socket.
 func (h *Harness) PushToGate(branch string) {
 	h.t.Helper()
+	h.PushToGateWithOptions(branch)
+}
+
+// PushToGateWithOptions pushes the branch through the no-mistakes remote with
+// git push options attached, which is how per-run flags reach the daemon: a
+// gate push is the pipeline's primary trigger and has no CLI flag surface.
+func (h *Harness) PushToGateWithOptions(branch string, pushOptions ...string) {
+	h.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	out, err := h.runGit(ctx, h.WorkDir, "push", "no-mistakes", branch)
+	args := []string{"push"}
+	for _, option := range pushOptions {
+		args = append(args, "--push-option="+option)
+	}
+	args = append(args, "no-mistakes", branch)
+	out, err := h.runGit(ctx, h.WorkDir, args...)
 	if err != nil {
-		h.t.Fatalf("git push no-mistakes %s: %v\n%s", branch, err, out)
+		h.t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
 

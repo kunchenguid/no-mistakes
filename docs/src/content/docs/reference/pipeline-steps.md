@@ -232,6 +232,17 @@ Items are ordered by the fixed pipeline order and represent the exact database s
 
 The comment is intentionally data only. It does not declare any step required, passed for a policy, compliant, or mergeable. Consumers can parse the versioned JSON without scraping prose and apply their own policy. The comment stays with the Pipeline header when no-mistakes truncates older human-readable update details to fit a PR-body limit.
 
+### Draft until ready
+
+A run started with [`axi run --draft-until-ready`](/no-mistakes/reference/cli/#no-mistakes-axi-run) opens its pull request as a draft; the CI step marks it ready for review once checks are green.
+This exists for repositories whose automation tags human reviewers the moment a PR opens: the tagging is deferred until the PR is actually reviewable.
+
+- The draft applies to **PR creation only**. When the PR already exists the PR step updates its title and body and never touches its draft state, so a second run cannot re-draft a published PR.
+- The policy **carries forward to later runs on the same branch**. Because the PR step never touches an adopted PR's draft state, a rerun, the TUI's rerun action, or a plain gate push carrying no push option would otherwise adopt the draft the first run opened and leave it unpublished forever. A new run inherits the flag from the branch's most recent run, so you only pass `--draft-until-ready` once per branch. Carry-forward can only turn the policy on, and a branch that never asked for it never acquires it.
+- **Known limitation: once a branch is draft-until-ready there is currently no way to turn it back off.** The option is a plain boolean, so "not requested" and "explicitly requested off" are indistinguishable by the time a run is created: an explicit `no-mistakes.draft-until-ready=false` push option is overridden by the branch's inherited policy, and reusing a branch name after its pull request merged opens the next pull request as a draft too. The consequence is bounded - the pull request is still published at the CI-green edge - but whoever adds a negative flag must first make the option tri-state (distinguishing "not requested" from "explicitly requested off") so an explicit off wins over inheritance.
+- Draft pull requests are a declared provider capability, not an assumption. Only GitHub supports them today; on GitLab, Azure DevOps, and Bitbucket Cloud the step logs `draft requested but provider <name> has no draft pull requests - opening normally` and opens the PR normally rather than failing the run.
+- Bitbucket Cloud has no draft pull requests at all. GitLab and Azure DevOps do, but their CLI draft surfaces are not yet verified against the versions this project pins, so the capability stays off there until they are.
+
 ## CI
 
 Monitors PR health after creation and auto-fixes CI failures. Mergeability polling and merge-conflict handling now apply to GitHub, GitLab, and Azure DevOps.
@@ -273,6 +284,18 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 **Default auto-fix limit:** `3` total CI auto-fix attempts.
 
 **Default transient rerun budget:** `0` reruns per cancelled check per run, before that check reaches an approval gate.
+
+### Publishing a draft-until-ready PR
+
+When the run was started with `--draft-until-ready` and the provider supports drafts, the CI step marks the pull request ready for review at the moment CI first goes green.
+
+- The trigger is the green edge inside the monitoring loop, not the end of the step. The CI step keeps watching the PR until it is merged or closed, so publishing at step completion would flip a PR that is already merged.
+- An empty check list counts as green only when the trusted default-branch config declares [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci): a repository that positively declares it has no CI has still reached the point where everything the pipeline can verify passes. Without that declaration an empty check list is unproven, so the PR stays a draft while the step waits for checks to register. This also closes the edge where a repository gating its workflows on `if: github.event.pull_request.draft == false` reports zero checks *precisely because* the pull request is still a draft.
+- Publishing happens before the green edge is announced, so by the time `axi status` reports `checks-passed` and `axi run` returns, the pull request is already published rather than racing the signal.
+- The transition is one-way. If checks go red again afterwards the PR stays published - a draft that reviewers have already started reading is never yanked back - and the ready signal clearing does not re-draft it.
+- A run publishes at most once, and skips the transition entirely when the PR step reported the pull request it adopted as already published - so a rerun of an already-green branch does not touch it again.
+- A failure to publish is logged as a warning and never fails the run: a cosmetic review-timing transition must not compromise a pipeline whose code is green. A transient failure is retried at a later green poll rather than stranding the pull request as a draft, but a run asks the provider to publish at most three times, so a persistent failure stops retrying instead of calling the provider on every poll.
+- **If CI never goes green, the PR stays a draft** until the `ci_timeout` idle window elapses and the run parks at its approval gate. That is the intended outcome - reviewers are never tagged on a red PR - not a stuck PR. Fix the failures (or let CI auto-fix do it) and the next green edge publishes it; a run that fails before the PR step opens no PR at all.
 
 ## Step statuses
 

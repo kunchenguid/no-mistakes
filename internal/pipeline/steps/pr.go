@@ -89,7 +89,12 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 	if existing != nil {
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
-		updated, err := host.UpdatePR(ctx, existing, scm.PRContent(content))
+		// The update path deliberately carries no draft decision. Once a PR
+		// exists, its draft state belongs to the PR and its reviewers: a later
+		// run must never re-draft a published PR, nor publish one ahead of the
+		// CI-green edge the CI step owns.
+		sctx.Shared.SetPRDraftState(existing.IsDraft)
+		updated, err := host.UpdatePR(ctx, existing, scm.PRContent{Title: content.Title, Body: content.Body})
 		if err != nil {
 			sctx.Log(fmt.Sprintf("warning: failed to update PR: %v", err))
 			updated = existing
@@ -103,11 +108,21 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return &pipeline.StepOutcome{}, nil
 	}
 
-	sctx.Log("creating pull request...")
-	created, err := host.CreatePR(ctx, branch, sctx.Repo.DefaultBranch, scm.PRContent(content))
+	draft := resolveDraftOnCreate(sctx, host, provider)
+	if draft {
+		sctx.Log("creating pull request as a draft; it is marked ready for review once CI is green...")
+	} else {
+		sctx.Log("creating pull request...")
+	}
+	created, err := host.CreatePR(ctx, branch, sctx.Repo.DefaultBranch, scm.PRContent{
+		Title: content.Title,
+		Body:  content.Body,
+		Draft: draft,
+	})
 	if err != nil {
 		return nil, err
 	}
+	sctx.Shared.SetPRDraftState(draft)
 	if created == nil || strings.TrimSpace(created.URL) == "" {
 		return &pipeline.StepOutcome{}, nil
 	}
@@ -116,6 +131,22 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
+}
+
+// resolveDraftOnCreate reports whether this run should open its pull request as
+// a draft. It applies to creation only. When the run asked for a draft but the
+// provider has no draft pull requests, it says so and opens the PR normally
+// rather than failing: a cosmetic review-timing preference must never cost the
+// run its PR. Provider support is declared, never sniffed (scm.Capabilities).
+func resolveDraftOnCreate(sctx *pipeline.StepContext, host scm.Host, provider scm.Provider) bool {
+	if sctx.Run == nil || !sctx.Run.DraftUntilReady {
+		return false
+	}
+	if host.Capabilities().Draft {
+		return true
+	}
+	sctx.Log(fmt.Sprintf("draft requested but provider %s has no draft pull requests - opening normally", provider))
+	return false
 }
 
 func describePR(pr *scm.PR) string {

@@ -114,8 +114,21 @@ func (h *Host) pipelineJobsArgs(pipelineID int) []string {
 
 func (h *Host) Provider() scm.Provider { return scm.ProviderGitLab }
 
+// Capabilities reports the GitLab feature matrix. Draft is deliberately false:
+// a GitLab draft is not a flag but a literal "Draft: " title prefix, so
+// supporting it means owning that title rewrite on both the create and the
+// publish side, and this backend is pinned against a glab version whose flag
+// surface drifts between releases (see the traps documented throughout this
+// file). Until both sides are verified end to end against the pinned CLI, the
+// capability stays off and callers open the MR normally.
 func (h *Host) Capabilities() scm.Capabilities {
 	return scm.Capabilities{MergeableState: true, FailedCheckLogs: true}
+}
+
+// MarkPRReady is not implemented for GitLab; callers gate on
+// Capabilities().Draft (false) and skip it.
+func (h *Host) MarkPRReady(_ context.Context, _ *scm.PR) error {
+	return scm.ErrUnsupported
 }
 
 func (h *Host) Available(ctx context.Context) error {

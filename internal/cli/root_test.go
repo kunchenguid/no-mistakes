@@ -287,19 +287,28 @@ func TestRootYesStopsWaitingForRunWhenContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// The clock starts at cancellation, not at command entry: everything
+	// before the wizard (repo-state git subprocesses, daemon IPC) is
+	// unrelated setup whose cost is platform-bound - on Windows it alone
+	// exceeds a second - while the property under test is only that the
+	// post-wizard wait abandons its 5s poll as soon as the context is done.
+	var cancelledAt time.Time
 	prevAuto := runWizardAuto
 	runWizardAuto = func(got context.Context, p *paths.Paths, state *repoState, _ []types.StepName, _ waitForRunFunc) (wizard.Result, error) {
 		cancel()
+		cancelledAt = time.Now()
 		return wizard.Result{Success: true, Pushed: true, TargetBranch: "feat/missing"}, nil
 	}
 	defer func() { runWizardAuto = prevAuto }()
 
-	start := time.Now()
 	_, err = executeCmdWithContext(ctx, "-y")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("executeCmdWithContext(-y) error = %v, want %v", err, context.Canceled)
 	}
-	if elapsed := time.Since(start); elapsed >= time.Second {
+	if cancelledAt.IsZero() {
+		t.Fatal("wizard was never invoked, so the wait after cancellation was never exercised")
+	}
+	if elapsed := time.Since(cancelledAt); elapsed >= time.Second {
 		t.Fatalf("executeCmdWithContext(-y) took %v after cancellation, want under %v", elapsed, time.Second)
 	}
 }
