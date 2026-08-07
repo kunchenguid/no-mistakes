@@ -306,7 +306,7 @@ func initDisambiguatorTestRepo(t *testing.T) string {
 
 func gitTestOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", append([]string{"-c", "commit.gpgsign=false"}, args...)...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {

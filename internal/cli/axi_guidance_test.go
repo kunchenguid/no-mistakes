@@ -44,6 +44,12 @@ var canonicalBranchSyncPhrases = []string{
 	"recover_custody",
 	"no-mistakes axi sync --recover",
 	"preserved in the local gate",
+	// A terminal run whose preserved object is genuinely unavailable has one
+	// narrower identity-bound release after ordinary recovery proves the case.
+	"release_unavailable_custody",
+	"no-mistakes axi sync --release-unavailable --run <id>",
+	"clean local branch exactly matches its fresh",
+	"anchors every reachable",
 	// Cancellation releases a run that never changed the submitted head
 	// (v1.44.2 dogfood catch): every surface must name the released state and
 	// that it needs no recovery.

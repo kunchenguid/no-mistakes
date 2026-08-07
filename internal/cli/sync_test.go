@@ -152,11 +152,16 @@ func TestSyncHelpAndReferenceExposeGuardedModes(t *testing.T) {
 			}
 		}
 	}
+	for _, want := range []string{"--release-unavailable --run <id>", "clean local branch exactly equal", "anchors every reachable"} {
+		if !strings.Contains(agent.Long, want) {
+			t.Errorf("axi help missing unavailable-head release contract %q: %s", want, agent.Long)
+		}
+	}
 	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "src", "content", "docs", "reference", "cli.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"## no-mistakes sync", "## no-mistakes axi sync", "no-mistakes axi sync --check"} {
+	for _, want := range []string{"## no-mistakes sync", "## no-mistakes axi sync", "no-mistakes axi sync --check", "no-mistakes axi sync --release-unavailable --run <id>"} {
 		if !strings.Contains(string(doc), want) {
 			t.Errorf("CLI reference missing %q", want)
 		}
@@ -960,6 +965,11 @@ func TestSyncRecoverFlagValidation(t *testing.T) {
 		{"sync", "--keep-local"},
 		{"axi", "sync", "--check", "--recover"},
 		{"axi", "sync", "--keep-local"},
+		{"axi", "sync", "--release-unavailable"},
+		{"axi", "sync", "--run", "run-1"},
+		{"axi", "sync", "--release-unavailable", "--run", "run-1", "--recover"},
+		{"axi", "sync", "--release-unavailable", "--run", "run-1", "--check"},
+		{"axi", "sync", "--release-unavailable", "--run", "run-1", "--keep-local"},
 	} {
 		out, err := executeCmd(args...)
 		var ee *exitError
