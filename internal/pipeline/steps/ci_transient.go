@@ -52,6 +52,15 @@ func classifyCheckFailure(check scm.Check) failureClass {
 	if !checkFailedTerminally(check) {
 		return classUnknown
 	}
+	// A failure the provider produced before the repository's own steps ran is an
+	// infrastructure outcome, not a verdict on the code: the job's setup phase
+	// failed (e.g. a GitHub Actions action-download outage) so no repository step
+	// executed. It is as re-runnable as a cancellation, and it can never mask a
+	// real failure - a genuine test or lint failure cleared setup and failed a
+	// later step, so it is never marked PreRunFailure.
+	if check.PreRunFailure {
+		return classTransient
+	}
 	switch strings.ToUpper(strings.TrimSpace(check.State)) {
 	case "CANCELLED", "CANCELED":
 		return classTransient
@@ -568,7 +577,7 @@ func (s *CIStep) rerunTransientChecks(sctx *pipeline.StepContext, host scm.Host,
 		issued = true
 		// used can never exceed limit: selection reserved this rerun against
 		// the same shared budget key before it was spent.
-		sctx.Log(fmt.Sprintf("re-running CI check %s (%d/%d): provider reported %s, not a job failure", check.Name, used, limit, transientStateLabel(check)))
+		sctx.Log(fmt.Sprintf("re-running CI check %s (%d/%d): %s, not a job failure", check.Name, used, limit, transientReason(check)))
 	}
 	return issued, nil
 }
@@ -605,6 +614,66 @@ func transientStateLabel(check scm.Check) string {
 		return state
 	}
 	return string(check.Bucket)
+}
+
+// transientReason describes why a check is being re-run rather than escalated,
+// so a pre-run infrastructure failure is not logged as the "failure" its
+// provider state still reports.
+func transientReason(check scm.Check) string {
+	if check.PreRunFailure {
+		return "it failed before the repository's own steps ran (setup/action resolution)"
+	}
+	return fmt.Sprintf("provider reported %s", transientStateLabel(check))
+}
+
+// markPreRunInfraFailures asks the provider which failed checks it failed before
+// any repository step ran and re-buckets those into the transient path: a
+// setup/action-resolution outage is not a verdict on the code, so it earns the
+// same rerun-then-park treatment as a provider cancellation rather than a fix
+// round. It is gated on the transient rerun budget being enabled, so a repo that
+// has not opted in pays no extra provider calls and keeps the prior behavior.
+//
+// It re-buckets a flagged check to the cancel bucket (leaving its provider State
+// untouched) so the entire cancel-shaped monitor path - kept out of the fix
+// agent, re-run within budget, parked for a decision if it never clears - is
+// reused unchanged. classifyCheckFailure reads PreRunFailure, not the bucket, so
+// the check still classifies transient despite its FAILURE state.
+func markPreRunInfraFailures(sctx *pipeline.StepContext, host scm.Host, checks []scm.Check) {
+	if sctx.Config.CI.RerunTransient <= 0 {
+		return
+	}
+	detector, ok := host.(scm.PreRunFailureDetector)
+	if !ok {
+		return
+	}
+	var failedIdx []int
+	for i := range checks {
+		if checks[i].Failing() {
+			failedIdx = append(failedIdx, i)
+		}
+	}
+	if len(failedIdx) == 0 {
+		return
+	}
+	failed := make([]scm.Check, len(failedIdx))
+	for j, idx := range failedIdx {
+		failed[j] = checks[idx]
+	}
+	infra, err := detector.PreRunFailures(sctx.Ctx, failed)
+	if err != nil {
+		sctx.Log(fmt.Sprintf("warning: could not classify pre-run CI failures: %v", err))
+		return
+	}
+	if len(infra) != len(failed) {
+		sctx.Log(fmt.Sprintf("warning: pre-run CI classifier returned %d results for %d checks; ignoring", len(infra), len(failed)))
+		return
+	}
+	for j, idx := range failedIdx {
+		if infra[j] {
+			checks[idx].PreRunFailure = true
+			checks[idx].Bucket = scm.CheckBucketCancel
+		}
+	}
 }
 
 // ciUnresolvedCancelledOutcome parks the run for checks the provider cancelled
