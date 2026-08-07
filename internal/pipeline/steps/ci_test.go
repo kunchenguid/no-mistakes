@@ -454,6 +454,161 @@ func TestCIStep_CIWarningAllowsChecksPassedToBeReannounced(t *testing.T) {
 	}
 }
 
+func TestCIStep_PersistentCheckReadFailureParksAtAskUser(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	// Every poll fails to read checks (e.g. gh < v2.50 rejects `pr checks --json`).
+	// The first few are tolerated as transient warnings, but a persistent streak
+	// must park at an ask-user gate instead of spinning to ci_timeout.
+	var checksSequence []string
+	for i := 0; i < consecutiveCheckErrorLimit+3; i++ {
+		checksSequence = append(checksSequence, `not-json`)
+	}
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	// Six consecutive failed polls must park before the timeout. Each poll
+	// spawns three fake-gh subprocesses (~0.8s each under -race), so reaching
+	// consecutiveCheckErrorLimit takes ~14s on a fast machine; give the loop
+	// ample headroom so the timeout never races the streak.
+	sctx.Config.CITimeout = 60 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		// No sleep between polls so the consecutive-failure streak accumulates
+		// quickly instead of wedging on the 30s poll, and a stable base tip so
+		// each poll does not pay a real git fetch (slow under -race on loaded CI).
+		baseBranchTip:   func(context.Context) (string, bool) { return baseSHA, true },
+		waitForNextPoll: func(ctx context.Context, _ time.Duration) error { return nil },
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected ask-user approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected persistent check-read failures to park at an approval gate")
+	}
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("findings = %+v, want exactly one ask-user finding", findings.Items)
+	}
+	if findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("finding action = %q, want ask-user", findings.Items[0].Action)
+	}
+	if !strings.Contains(findings.Items[0].Description, "pr checks --json") || !strings.Contains(findings.Items[0].Description, "2.50") {
+		t.Fatalf("finding %q must explain the gh version/flag cause", findings.Items[0].Description)
+	}
+	parked := 0
+	for _, l := range logs {
+		if strings.Contains(l, "parking for a decision") {
+			parked++
+		}
+	}
+	if parked != 1 {
+		t.Fatalf("expected one parking log line, got %d: %v", parked, logs)
+	}
+}
+
+func TestCIStep_CheckReadFailureCounterResetsAfterSuccessfulRead(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	// Five read failures, a green read, then one more failure: the success must
+	// reset the consecutive counter, or the sixth cumulative error would wrongly
+	// park a run whose failures were only transient blips.
+	checksSequence := []string{
+		`not-json`, `not-json`, `not-json`, `not-json`, `not-json`,
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
+		`not-json`,
+	}
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 60 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	waits := 0
+	step := &CIStep{
+		baseBranchTip: func(context.Context) (string, bool) { return baseSHA, true },
+		waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
+			waits++
+			if waits == 8 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err == nil && outcome != nil && outcome.NeedsApproval {
+		t.Fatalf("a successful read must reset the consecutive failure counter; parked after transient failures: %s", outcome.Findings)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected monitoring to continue past the reset, got outcome=%v err=%v", outcome, err)
+	}
+}
+
+// TestCICheckReadFailureOutcome_ProviderNeutral guards the parked finding text:
+// it must give provider-agnostic remediation for every supported SCM, not an
+// unconditional instruction to install or upgrade `gh`, which is GitHub-only.
+func TestCICheckReadFailureOutcome_ProviderNeutral(t *testing.T) {
+	t.Parallel()
+	outcome := ciCheckReadFailureOutcome(errors.New("glab mr checks: failed to read checks"))
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("findings = %+v, want exactly one finding", findings.Items)
+	}
+	if findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("finding action = %q, want ask-user", findings.Items[0].Action)
+	}
+	desc := findings.Items[0].Description
+	if !strings.Contains(desc, "provider CLI or credentials") {
+		t.Fatalf("finding %q must give provider-neutral remediation, not a GitHub-only one", desc)
+	}
+	// The old text instructed verifying gh unconditionally ("verify gh supports
+	// 'pr checks --json'") even for GitLab/Bitbucket/Azure errors. gh may only be
+	// named as the conditional GitHub-specific clause, never the general remedy.
+	if strings.Contains(desc, "verify gh supports") {
+		t.Fatalf("finding %q must not instruct verifying gh for a non-GitHub provider", desc)
+	}
+	// The underlying provider error must survive into the finding.
+	if !strings.Contains(desc, "glab mr checks: failed to read checks") {
+		t.Fatalf("finding %q must include the underlying provider error", desc)
+	}
+	// And the GitHub-specific diagnostic is still present for gh-style errors.
+	if !strings.Contains(desc, "pr checks --json") || !strings.Contains(desc, "2.50") {
+		t.Fatalf("finding %q must keep the GitHub gh version/flag diagnostic", desc)
+	}
+}
+
 func TestCIStep_CIWarningClearsPersistedReadiness(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

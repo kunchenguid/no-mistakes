@@ -305,7 +305,7 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 		if strings.Contains(string(out), "no checks reported") {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("gh pr checks: %w", err)
+		return nil, fmt.Errorf("gh pr checks: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	var raw []struct {
 		Name        string `json:"name"`
