@@ -21,6 +21,14 @@ import (
 
 const refreshTimeout = 15 * time.Second
 
+// lsRemoteFn and fetchRemoteFn indirect the package-level git helpers so
+// tests can substitute controlled fakes to prove remote-operation deadline
+// behavior deterministically, without racing real subprocess timing.
+var (
+	lsRemoteFn    = git.LsRemote
+	fetchRemoteFn = git.FetchRemoteBranchToPrivateRef
+)
+
 const (
 	StatePipelineOwned        = "pipeline_owned"
 	StatePushInProgress       = "push_in_progress"
@@ -142,6 +150,19 @@ type Service struct {
 	beforeRecoverWorktreeMove func()
 	beforeRecoverBranchMove   func()
 	afterRecoverBranchMove    func()
+
+	// remoteOpTimeout overrides refreshTimeout for tests that need a short,
+	// deterministic budget; zero means "use refreshTimeout".
+	remoteOpTimeout time.Duration
+}
+
+// remoteTimeout returns the bounded deadline budget for one remote
+// operation: the test override when set, otherwise the production default.
+func (s *Service) remoteTimeout() time.Duration {
+	if s.remoteOpTimeout > 0 {
+		return s.remoteOpTimeout
+	}
+	return refreshTimeout
 }
 
 // OpenCurrent opens a service for the invoking registered worktree. The caller
@@ -236,9 +257,15 @@ func (s *Service) Refresh(ctx context.Context) State {
 	}
 	pushURL := freshRepo.PushURL()
 
-	refreshCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
-	defer cancel()
-	live, err := git.LsRemote(refreshCtx, s.workDir(), pushURL, state.Target.Ref)
+	// Each remote operation below gets its own bounded deadline derived from
+	// ctx, rather than sharing one context across both calls: a slow-but-
+	// successful ls-remote must not consume the fetch's budget, since that
+	// would falsely classify a reachable target as offline (see the doc
+	// comment on remoteTimeout). Parent cancellation still short-circuits
+	// both, because context.WithTimeout always derives from its parent.
+	lsRemoteCtx, lsRemoteCancel := context.WithTimeout(ctx, s.remoteTimeout())
+	defer lsRemoteCancel()
+	live, err := lsRemoteFn(lsRemoteCtx, s.workDir(), pushURL, state.Target.Ref)
 	if err != nil {
 		state.State = StateOffline
 		state.Safety = "blocked_offline"
@@ -272,7 +299,9 @@ func (s *Service) Refresh(ctx context.Context) State {
 
 	privateRef := "refs/no-mistakes/sync/" + run.ID
 	branch := strings.TrimPrefix(state.Target.Ref, "refs/heads/")
-	if err := git.FetchRemoteBranchToPrivateRef(refreshCtx, s.workDir(), pushURL, branch, privateRef); err != nil {
+	fetchCtx, fetchCancel := context.WithTimeout(ctx, s.remoteTimeout())
+	defer fetchCancel()
+	if err := fetchRemoteFn(fetchCtx, s.workDir(), pushURL, branch, privateRef); err != nil {
 		state.State = StateOffline
 		state.Safety = "blocked_offline"
 		state.Error = "could not fetch the configured push target; no files or worktree refs were changed"
@@ -377,9 +406,9 @@ func (s *Service) Apply(ctx context.Context) State {
 		return recheck
 	}
 
-	checkCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
+	checkCtx, cancel := context.WithTimeout(ctx, s.remoteTimeout())
 	defer cancel()
-	live, err := git.LsRemote(checkCtx, s.workDir(), s.Repo.PushURL(), plan.Target.Ref)
+	live, err := lsRemoteFn(checkCtx, s.workDir(), s.Repo.PushURL(), plan.Target.Ref)
 	if err != nil || live != plan.Pipeline.PushedHead {
 		return blockedPlan(plan, StateRemoteRewritten, "blocked_remote_changed_before_apply", "the live remote changed before synchronization; no files or refs were changed")
 	}
