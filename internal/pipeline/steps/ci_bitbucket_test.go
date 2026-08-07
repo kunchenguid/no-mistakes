@@ -14,6 +14,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/bitbucket"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestCIStep_BitbucketPassesWhenStatusesPass(t *testing.T) {
@@ -134,7 +135,12 @@ func TestCIStep_BitbucketFailureNeedsApproval(t *testing.T) {
 	}
 }
 
-func TestCIStep_BitbucketStoppedDoesNotNeedApproval(t *testing.T) {
+// A stopped Bitbucket pipeline is terminal in the same way a cancelled GitHub
+// check is: Bitbucket will not move it to SUCCESSFUL or FAILED on its own. It
+// is not a job failure either, so it parks for a decision rather than entering
+// the fix loop - and never by continuing to poll a result that has stopped
+// changing.
+func TestCIStep_BitbucketStoppedCheckParksForADecision(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	api := newFakeBitbucketCIAPI(t, "OPEN", `{"values":[{"name":"build","state":"STOPPED"}]}`)
@@ -151,15 +157,36 @@ func TestCIStep_BitbucketStoppedDoesNotNeedApproval(t *testing.T) {
 	defer cancel()
 	sctx.Ctx = ctx
 
+	polls := 0
 	step := &CIStep{
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
-			cancel()
-			return ctx.Err()
+			polls++
+			if polls >= 5 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
 		},
 	}
-	_, err := step.Execute(sctx)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected stopped Bitbucket CI to keep monitoring without failure handling, got %v", err)
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected an approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected a stopped Bitbucket pipeline to park for a decision")
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 1 || !strings.Contains(findings.Items[0].Description, "build") {
+		t.Fatalf("findings = %+v, want the stopped check named", findings.Items)
+	}
+	if findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("finding action = %q, want ask-user", findings.Items[0].Action)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected no fix-agent round for a stopped pipeline, got %d", len(ag.calls))
 	}
 }
 
@@ -270,7 +297,9 @@ func TestCIStep_BitbucketAutoFixUsesLivePRHeadSHAForLogs(t *testing.T) {
 	api.stepLog = "error log output"
 	api.prSourceSHA = headSHA
 
-	staleHeadSHA := strings.Repeat("a", 40)
+	// Keep the recorded head stale enough to prove CI uses the live PR source,
+	// but on the valid pipeline lineage so the post-review entry guard permits it.
+	staleHeadSHA := baseSHA
 	var capturedPrompt string
 	ag := &mockAgent{
 		name: "test",

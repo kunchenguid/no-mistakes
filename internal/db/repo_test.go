@@ -137,6 +137,28 @@ func TestInsertRepoWithIDDuplicate(t *testing.T) {
 	}
 }
 
+func TestReplaceRepoURLsIsAtomicOnDatabaseFailure(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepoWithFork("/home/user/project", "git@example.com:parent/project.git", "git@example.com:fork/project.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.sql.Exec(`CREATE TRIGGER reject_repo_url_update BEFORE UPDATE OF upstream_url, fork_url ON repos BEGIN SELECT RAISE(FAIL, 'injected repo URL write failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := d.ReplaceRepoURLs(repo.ID, "https://example.com/parent/project.git", "https://example.com/fork/project.git"); err == nil {
+		t.Fatal("expected replacement failure")
+	}
+	got, err := d.GetRepo(repo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UpstreamURL != repo.UpstreamURL || got.ForkURL != repo.ForkURL {
+		t.Fatalf("partial replacement persisted: got upstream=%q fork=%q, want upstream=%q fork=%q", got.UpstreamURL, got.ForkURL, repo.UpstreamURL, repo.ForkURL)
+	}
+}
+
 func TestRepoGetByPath(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

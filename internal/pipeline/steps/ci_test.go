@@ -2,16 +2,20 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/cimonitor"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
@@ -79,7 +83,14 @@ func TestCIStep_PendingChecksUseAdaptivePollIntervals(t *testing.T) {
 func TestCIStep_UsesStepEnvForCLIStartupChecks(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	hiddenPath := t.TempDir()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hiddenPath := fakeCLIBinDir(t)
+	linkTestBinary(t, hiddenPath, "git")
+	t.Setenv("FAKE_CLI_MODE", "git-passthrough")
+	t.Setenv("FAKE_CLI_REAL_GIT", realGit)
 	t.Setenv("PATH", hiddenPath)
 
 	env := fakeCIGH(t, "MERGED", "[]")
@@ -559,6 +570,28 @@ func TestCIStep_UncertainProviderStateClearsPersistedReadiness(t *testing.T) {
 	}
 }
 
+func TestCIMonitorReadinessChangeNotifiesConsumers(t *testing.T) {
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	var changes [][2]bool
+	sctx.CIReadinessChanged = func(ready, declaredNoCI bool) {
+		changes = append(changes, [2]bool{ready, declaredNoCI})
+	}
+
+	logCIMonitorStatus(sctx, ciNoChecksPassedMsg, "")
+	clearCIMonitorReady(sctx)
+
+	want := [][2]bool{{true, true}, {false, false}}
+	if len(changes) != len(want) {
+		t.Fatalf("readiness changes = %v, want %v", changes, want)
+	}
+	for i := range want {
+		if changes[i] != want[i] {
+			t.Errorf("readiness change %d = %v, want %v", i, changes[i], want[i])
+		}
+	}
+}
+
 func TestCIStep_OpenPRKeepsMonitoringAfterChecksPass(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -594,78 +627,89 @@ func TestCIStep_OpenPRKeepsMonitoringAfterChecksPass(t *testing.T) {
 	}
 }
 
-func TestCIStep_EmptyChecksWaitsDuringGracePeriod(t *testing.T) {
+// TestCIStep_EmptyChecksWithoutNoCIStaysNotReadyPastOldGracePeriod proves the
+// PR 607 failure mode is closed: a generic empty forge response never becomes
+// ready, even after the historical 60s grace period and longer timing windows.
+func TestCIStep_EmptyChecksWithoutNoCIStaysNotReadyPastOldGracePeriod(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
-	// Fake gh returns OPEN state, empty checks, no comments
 	env := fakeCIGH(t, "OPEN", "[]")
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Config.CITimeout = 5 * time.Second
+	sctx.Config.CITimeout = 10 * time.Minute
+	sctx.Config.NoCI = false
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
 
 	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	current := started
-	var waits []time.Duration
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sctx.Ctx = ctx
 
+	const oldGrace = 60 * time.Second
 	step := &CIStep{
-		checksGracePeriod:    200 * time.Millisecond,
-		pollIntervalOverride: 75 * time.Millisecond,
+		pollIntervalOverride: 30 * time.Second,
 		now:                  func() time.Time { return current },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
-			waits = append(waits, interval)
-			if current.Sub(started) >= 200*time.Millisecond {
+			current = current.Add(interval)
+			// Past the old 60s grace and well into multi-minute delayed registration.
+			if current.Sub(started) > 3*time.Minute {
 				cancel()
 				return ctx.Err()
 			}
-			current = current.Add(interval)
 			return nil
 		},
 	}
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected cancellation after grace-period monitoring continued, got %v", err)
+		t.Fatalf("expected continued waiting after empty checks, got %v", err)
 	}
-	if elapsed := current.Sub(started); elapsed < 200*time.Millisecond {
-		t.Errorf("CI exited in %v, expected to wait at least 200ms grace period", elapsed)
-	}
-	if len(waits) != 4 {
-		t.Fatalf("expected 3 grace-period waits plus one continued-monitoring wait, got %v", waits)
-	}
-	for _, interval := range waits[:3] {
-		if interval != 75*time.Millisecond {
-			t.Fatalf("expected 75ms waits during grace period, got %v", waits)
-		}
+	if current.Sub(started) <= oldGrace {
+		t.Fatalf("test did not advance past old grace period: elapsed %v", current.Sub(started))
 	}
 	for _, l := range logs {
-		if strings.Contains(l, "CI timeout reached") {
-			t.Fatal("expected cancellation before CI timeout")
+		if l == cimonitor.NoChecksPassedMsg || l == cimonitor.ChecksPassedMsg {
+			t.Fatalf("empty checks without no_ci must not emit ready marker, got logs: %v", logs)
+		}
+		if l == "no CI checks reported - still monitoring until merged or closed" {
+			t.Fatalf("legacy empty-as-green marker must not be emitted, got logs: %v", logs)
 		}
 	}
-	found := false
+	foundWaiting := false
 	for _, l := range logs {
-		if strings.Contains(l, "no CI checks reported - still monitoring until merged or closed") {
-			found = true
+		if strings.Contains(l, "waiting for checks to register") {
+			foundWaiting = true
 			break
 		}
 	}
-	if !found {
-		t.Fatalf("expected continued-monitoring log after grace period, got: %v", logs)
+	if !foundWaiting {
+		t.Fatalf("expected waiting-for-registration log, got: %v", logs)
+	}
+	if cimonitor.ChecksPassed(logs) {
+		t.Fatalf("cimonitor must report not-ready for empty checks without no_ci, logs: %v", logs)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt != nil {
+		t.Fatalf("expected CI readiness unset without no_ci, got %v", *dbRun.CIReadyAt)
 	}
 }
 
-func TestCIStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
+// TestCIStep_EmptyChecksWithTrustedNoCIBecomesReady proves a positively
+// declared no-CI repository with zero checks returns the selected
+// all-checks-passed agent-facing result, with the declaration inspectable in
+// the log line.
+func TestCIStep_EmptyChecksWithTrustedNoCIBecomesReady(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -673,10 +717,11 @@ func TestCIStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
 
 	prURL := "https://github.com/test/repo/pull/42"
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Config.CITimeout = 5 * time.Second
+	sctx.Config.CITimeout = 10 * time.Second
+	sctx.Config.NoCI = true
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -685,33 +730,216 @@ func TestCIStep_LogsWaitingForChecksDuringGracePeriod(t *testing.T) {
 	defer cancel()
 	sctx.Ctx = ctx
 
-	current := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	step := &CIStep{
-		checksGracePeriod:    50 * time.Millisecond,
-		pollIntervalOverride: 10 * time.Millisecond,
-		now:                  func() time.Time { return current },
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			cancel()
 			return ctx.Err()
 		},
 	}
-	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected cancellation after first grace-period wait, got %v", err)
+	_, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected continued monitoring after declared no-CI ready, got %v", err)
 	}
-
 	found := false
 	for _, l := range logs {
-		if strings.Contains(l, "waiting for checks to register") {
+		if l == cimonitor.NoChecksPassedMsg {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected grace-period waiting log, got: %v", logs)
+		t.Fatalf("expected declared no_ci ready marker, got: %v", logs)
+	}
+	if !cimonitor.ChecksPassed(logs) {
+		t.Fatal("declared no_ci with zero checks must be agent-facing ready")
+	}
+	if !cimonitor.DeclaredNoCI(logs) {
+		t.Fatal("declared no_ci ready path must expose DeclaredNoCI evidence")
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt == nil {
+		t.Fatal("expected CI readiness persisted for declared no_ci")
 	}
 }
 
-func TestCIStep_NonEmptyPassingChecksSkipGracePeriodAndContinueMonitoring(t *testing.T) {
+// TestCIStep_DelayedCheckRegistrationStaysNotReadyUntilGreen replays the
+// delayed-registration path: empty forge results stay not-ready, pending
+// checks stay not-ready, failures stay failures, and only all-green becomes
+// ready.
+func TestCIStep_DelayedCheckRegistrationStaysNotReadyUntilGreen(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksSequence := []string{
+		`[]`,
+		`[]`,
+		`[{"name":"e2e","state":"PENDING","bucket":"pending"}]`,
+		`[{"name":"e2e","state":"FAILURE","bucket":"fail","completedAt":"2026-07-30T08:06:01Z"}]`,
+		`[{"name":"e2e","state":"SUCCESS","bucket":"pass","completedAt":"2026-07-30T08:10:00Z"}]`,
+	}
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
+
+	prURL := "https://github.com/test/repo/pull/607"
+	ag := &mockAgent{name: "test"}
+	// auto_fix.ci = 0 so the failure parks rather than auto-fixing; we only
+	// care about readiness transitions across the delayed-registration path.
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Minute
+	sctx.Config.NoCI = false
+	zero := 0
+	sctx.Config.AutoFix.CI = zero
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	phase := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			phase++
+			switch phase {
+			case 1, 2:
+				if cimonitor.ChecksPassed(logs) {
+					t.Fatalf("phase %d empty checks must not be ready; logs=%v", phase, logs)
+				}
+				dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if dbRun.CIReadyAt != nil {
+					t.Fatalf("phase %d must not persist readiness", phase)
+				}
+				return nil
+			case 3:
+				if cimonitor.ChecksPassed(logs) {
+					t.Fatalf("pending checks must not be ready; logs=%v", logs)
+				}
+				foundRunning := false
+				for _, l := range logs {
+					if l == cimonitor.ChecksRunningMsg {
+						foundRunning = true
+						break
+					}
+				}
+				if !foundRunning {
+					t.Fatalf("expected running marker after delayed registration, logs=%v", logs)
+				}
+				return nil
+			case 4:
+				// Failure should park the step; Execute returns before another wait.
+				return nil
+			default:
+				cancel()
+				return ctx.Err()
+			}
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected failure outcome without error, got err=%v outcome=%v", err, outcome)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("expected failure to park for approval, got %#v", outcome)
+	}
+	if cimonitor.ChecksPassed(logs) {
+		t.Fatalf("failed checks must not be ready; logs=%v", logs)
+	}
+
+	// Resume with green checks on a fresh step instance (same empty→pending→green
+	// contract after a fix round). Prove green becomes ready.
+	logs = nil
+	env = fakeCIGH(t, "OPEN", `[{"name":"e2e","state":"SUCCESS","bucket":"pass"}]`)
+	sctx.Env = env
+	sctx.Ctx = context.Background()
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+	greenStep := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+	_, err = greenStep.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected continued monitoring after green, got %v", err)
+	}
+	if !cimonitor.ChecksPassed(logs) {
+		t.Fatalf("all-green must be ready; logs=%v", logs)
+	}
+	if cimonitor.DeclaredNoCI(logs) {
+		t.Fatal("all-green path must not report DeclaredNoCI")
+	}
+}
+
+// TestCIStep_DeclaredNoCIWithUnexpectedChecksHonorsThem proves no_ci never
+// waives registered pending or failing checks.
+func TestCIStep_DeclaredNoCIWithUnexpectedChecksHonorsThem(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	checksSequence := []string{
+		`[{"name":"surprise","state":"PENDING","bucket":"pending"}]`,
+		`[{"name":"surprise","state":"FAILURE","bucket":"fail","completedAt":"2026-07-30T08:06:01Z"}]`,
+	}
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
+
+	prURL := "https://github.com/test/repo/pull/99"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 10 * time.Minute
+	sctx.Config.NoCI = true
+	zero := 0
+	sctx.Config.AutoFix.CI = zero
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	phase := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			phase++
+			if phase == 1 {
+				if cimonitor.ChecksPassed(logs) {
+					t.Fatalf("pending unexpected checks must not be ready under no_ci; logs=%v", logs)
+				}
+				return nil
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected failure outcome, got err=%v", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("expected failing unexpected checks to park, got %#v", outcome)
+	}
+	for _, l := range logs {
+		if l == cimonitor.NoChecksPassedMsg {
+			t.Fatalf("no_ci ready marker must not fire while checks are registered; logs=%v", logs)
+		}
+	}
+	if cimonitor.ChecksPassed(logs) {
+		t.Fatalf("failing checks under no_ci must not be ready; logs=%v", logs)
+	}
+}
+
+func TestCIStep_NonEmptyPassingChecksContinueMonitoring(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -734,7 +962,6 @@ func TestCIStep_NonEmptyPassingChecksSkipGracePeriodAndContinueMonitoring(t *tes
 
 	pollCount := 0
 	step := &CIStep{
-		checksGracePeriod: 10 * time.Second,
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
 			pollCount++
 			cancel()
@@ -1113,5 +1340,1283 @@ func TestCIStep_UnlimitedTimeoutNeverExpires(t *testing.T) {
 	}
 	if !noTimeoutLog {
 		t.Fatalf("expected the no-timeout monitoring log, got: %v", logs)
+	}
+}
+
+// setupCIRerunRepo builds a worktree whose feature branch is published on a
+// local bare upstream, so the CI step can verify the published head with
+// ls-remote exactly as it does in production.
+func setupCIRerunRepo(t *testing.T) (dir, upstream, baseSHA, headSHA string) {
+	t.Helper()
+
+	upstream = t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir = t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "initial")
+	baseSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	return dir, upstream, baseSHA, headSHA
+}
+
+func ghLog(t *testing.T, logFile string) string {
+	t.Helper()
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("read gh log: %v", err)
+	}
+	return string(data)
+}
+
+// A check the provider cancelled is not a verdict on the code: it is re-run for
+// the same commit, the fix agent is never involved, and the monitor reports
+// checks as running again rather than leaving an earlier state to look current.
+func TestCIStep_CancelledCheckIsRerunBeforeEscalating(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	env, logFile := fakeCIGHLoggedSequence(t, "OPEN", []string{
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`,
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"IN_PROGRESS","bucket":"pending"}]`,
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"SUCCESS","bucket":"pass"}]`,
+	}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 30 * time.Minute
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 3 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected monitoring to continue after the rerun, got %v", err)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected no fix-agent round for a cancelled check, got %d", len(ag.calls))
+	}
+	if !strings.Contains(ghLog(t, logFile), "run rerun --job 901") {
+		t.Fatalf("expected the rerun to target the check's job, gh log:\n%s", ghLog(t, logFile))
+	}
+	if got := strings.Count(ghLog(t, logFile), "run rerun"); got != 1 {
+		t.Fatalf("rerun requests = %d, want exactly one, gh log:\n%s", got, ghLog(t, logFile))
+	}
+
+	rerunIndex, runningIndex, passedIndex := -1, -1, -1
+	for i, l := range logs {
+		switch {
+		case strings.Contains(l, "re-running CI check test (1/1)"):
+			rerunIndex = i
+		case l == ciChecksRunningMsg:
+			runningIndex = i
+		case l == ciChecksPassedMsg:
+			passedIndex = i
+		case strings.Contains(l, "auto-fixing"):
+			t.Fatalf("cancelled check escalated to the fix agent; logs: %v", logs)
+		}
+	}
+	if rerunIndex < 0 {
+		t.Fatalf("expected the rerun to be reported as its own event, got: %v", logs)
+	}
+	// The TUI and axi read monitoring state back out of these lines, so the poll
+	// that re-runs a check must report checks as running: a cancelled check never
+	// counted as failing, so nothing else clears an earlier passed-checks line.
+	if runningIndex < rerunIndex || passedIndex < runningIndex {
+		t.Fatalf("expected rerun, then checks running, then checks passed, got: %v", logs)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt == nil {
+		t.Fatal("expected CI readiness once the same-head rerun passed")
+	}
+
+	t.Log("CI step log:")
+	for _, l := range logs {
+		t.Logf("    %s", l)
+	}
+	t.Log("gh commands the monitor issued:")
+	for _, l := range strings.Split(strings.TrimSpace(ghLog(t, logFile)), "\n") {
+		t.Logf("    gh %s", l)
+	}
+	t.Logf("fix-agent rounds consumed: %d", len(ag.calls))
+}
+
+// `gh run rerun` returns as soon as the provider accepts the request, while the
+// new attempt replaces the cancelled check in the status rollup asynchronously.
+// A poll that still reads the pre-rerun outcome must keep waiting: parking there
+// would escalate the very check this run just re-ran, and asking again would
+// bill the repository a duplicate workflow run.
+func TestCIStep_LaggingRerunRollupKeepsWaitingForTheRepublishedCheck(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	// The identical completedAt is what makes the second poll a stale read of
+	// the same cancellation rather than the re-run job ending cancelled again.
+	cancelled := `[{"name":"test","state":"CANCELLED","bucket":"cancel","completedAt":"2026-07-26T12:00:00Z","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`
+	env, logFile := fakeCIGHLoggedSequence(t, "OPEN", []string{
+		cancelled,
+		cancelled,
+		`[{"name":"test","state":"IN_PROGRESS","bucket":"pending"}]`,
+		`[{"name":"test","state":"SUCCESS","bucket":"pass","completedAt":"2026-07-26T12:06:00Z","link":"https://github.com/test/repo/actions/runs/900/job/902"}]`,
+	}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 30 * time.Minute
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 4 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected monitoring to continue while the rollup caught up, got outcome %+v err %v", outcome, err)
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected no fix-agent round while the rerun was still publishing, got %d", len(ag.calls))
+	}
+	if got := strings.Count(ghLog(t, logFile), "run rerun"); got != 1 {
+		t.Fatalf("rerun requests = %d, want exactly one across the unrefreshed polls, gh log:\n%s", got, ghLog(t, logFile))
+	}
+	for _, l := range logs {
+		if strings.Contains(l, "auto-fixing") || strings.Contains(l, "manual intervention") {
+			t.Fatalf("a check whose rerun had not published yet escalated; logs: %v", logs)
+		}
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt == nil {
+		t.Fatal("expected CI readiness once the re-run check reported success")
+	}
+
+	t.Log("CI step log:")
+	for _, l := range logs {
+		t.Logf("    %s", l)
+	}
+	t.Log("gh commands the monitor issued:")
+	for _, l := range strings.Split(strings.TrimSpace(ghLog(t, logFile)), "\n") {
+		t.Logf("    gh %s", l)
+	}
+	t.Logf("fix-agent rounds consumed: %d", len(ag.calls))
+}
+
+// A check that comes back cancelled after its rerun is unresolved, not green: it
+// must reach the same gate a failing check does, and it must never produce a
+// ready-to-merge signal.
+func TestCIStep_CancelledCheckStaysUnresolvedAfterItsBudget(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	cancelled := `[{"name":"test","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`
+	env, logFile := fakeCIGHLoggedSequence(t, "OPEN", []string{cancelled, cancelled, cancelled}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 30 * time.Minute
+	sctx.Config.AutoFix = config.AutoFix{CI: 0}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		// Bounded: a regression that never escalates must fail the test rather
+		// than keep monitoring until the CI timeout.
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 5 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected an approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected a check that stayed cancelled to escalate")
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 1 || !strings.Contains(findings.Items[0].Description, "test") {
+		t.Fatalf("findings = %+v, want the cancelled check named", findings.Items)
+	}
+	if got := strings.Count(ghLog(t, logFile), "run rerun"); got != 1 {
+		t.Fatalf("rerun requests = %d, want exactly one, gh log:\n%s", got, ghLog(t, logFile))
+	}
+	for _, l := range logs {
+		if l == ciChecksPassedMsg {
+			t.Fatalf("a cancelled check must never report checks passed; logs: %v", logs)
+		}
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt != nil {
+		t.Fatal("a PR whose only check is cancelled must not be marked ready to merge")
+	}
+
+	t.Log("CI step log:")
+	for _, l := range logs {
+		t.Logf("    %s", l)
+	}
+	t.Logf("outcome: needs_approval=%v summary=%q finding=%q", outcome.NeedsApproval, findings.Summary, findings.Items[0].Description)
+	t.Logf("rerun requests: %d", strings.Count(ghLog(t, logFile), "run rerun"))
+	t.Log("ci ready: not set")
+}
+
+// A cancellation is never a verdict on the code, so a check that stayed
+// cancelled after its rerun must not be handed to the fix agent even with
+// auto_fix.ci at its default: there is nothing to repair, and the round would
+// let an agent edit code the provider never tested.
+func TestCIStep_UnresolvedCancelledCheckNeverEntersTheAutoFixLoop(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	cancelled := `[{"name":"test","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`
+	env, logFile := fakeCIGHLoggedSequence(t, "OPEN", []string{cancelled, cancelled, cancelled}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 30 * time.Minute
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		// Bounded: a regression that never escalates must fail the test rather
+		// than keep monitoring until the CI timeout.
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 5 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected an approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected a check that stayed cancelled to park for a decision")
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("cancelled check consumed %d fix-agent rounds, want 0; logs: %v", len(ag.calls), logs)
+	}
+	for _, l := range logs {
+		if strings.Contains(l, "auto-fixing") {
+			t.Fatalf("cancelled check entered the auto-fix loop; logs: %v", logs)
+		}
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 1 || !strings.Contains(findings.Items[0].Description, "test") {
+		t.Fatalf("findings = %+v, want the cancelled check named", findings.Items)
+	}
+	// ask-user keeps a later fix loop from picking the finding up either.
+	if findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("finding action = %q, want %q", findings.Items[0].Action, types.ActionAskUser)
+	}
+	if got := strings.Count(ghLog(t, logFile), "run rerun"); got != 1 {
+		t.Fatalf("rerun requests = %d, want exactly one, gh log:\n%s", got, ghLog(t, logFile))
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt != nil {
+		t.Fatal("a PR whose only check is cancelled must not be marked ready to merge")
+	}
+}
+
+// A rerun cannot certify a commit this run never delivered, and the run must not
+// leave an earlier ready-to-merge signal behind when it parks for that reason.
+func TestCIStep_MovedPublishedHeadClearsCIReadiness(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	os.WriteFile(filepath.Join(dir, "out-of-band.txt"), []byte("out of band"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "out of band commit")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	// The first poll is green, so the run records CI readiness before the
+	// cancelled check on the second poll reaches the head check.
+	env, _ := fakeCIGHLoggedSequence(t, "OPEN", []string{
+		`[{"name":"test","state":"SUCCESS","bucket":"pass"}]`,
+		`[{"name":"test","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`,
+	}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 30 * time.Minute
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 5 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected an approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected a moved published head to terminate the step")
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt != nil {
+		t.Fatal("a run parked because the published head moved must not report ci_ready")
+	}
+}
+
+// Check names are not unique on a PR, and same-named checks share one budget
+// key, so one poll must not spend that budget once per check.
+func TestCIStep_SameNamedCancelledChecksShareOneRerunBudget(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	env, logFile := fakeCIGHLoggedSequence(t, "OPEN", []string{
+		`[{"name":"build","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/901"},{"name":"build","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/901/job/902"}]`,
+		`[{"name":"build","state":"IN_PROGRESS","bucket":"pending"},{"name":"build","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/901/job/902"}]`,
+	}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 30 * time.Minute
+	sctx.Config.AutoFix = config.AutoFix{CI: 0}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 2 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	step.Execute(sctx)
+
+	if got := strings.Count(ghLog(t, logFile), "run rerun"); got != 1 {
+		t.Fatalf("rerun requests = %d, want exactly one for a budget of one, gh log:\n%s", got, ghLog(t, logFile))
+	}
+	for _, l := range logs {
+		if strings.Contains(l, "re-running CI check build") && !strings.Contains(l, "(1/1)") {
+			t.Fatalf("rerun reported outside its budget: %q", l)
+		}
+	}
+}
+
+// A genuine failure must reach the fix agent on its first failure. A cancelled
+// sibling in the same poll must not buy it another CI cycle, because no rerun
+// can clear the genuine failure.
+func TestCIStep_GenuineCheckFailureEscalatesOnFirstFailure(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	env, logFile := fakeCIGHLoggedSequence(t, "OPEN", []string{
+		`[{"name":"lint","state":"FAILURE","bucket":"fail","link":"https://github.com/test/repo/actions/runs/900/job/901"},{"name":"test","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/902"}]`,
+	}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 30 * time.Minute
+	sctx.Config.AutoFix = config.AutoFix{CI: 0}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	pollCalls := 0
+	step := &CIStep{
+		// Bounded: a regression that defers this escalation must fail the test
+		// rather than keep monitoring until the CI timeout.
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCalls++
+			if pollCalls >= 3 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected an approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected a genuine failure to escalate immediately")
+	}
+	if pollCalls != 0 {
+		t.Fatalf("genuine failure waited %d extra polls before escalating, want 0", pollCalls)
+	}
+	if strings.Contains(ghLog(t, logFile), "run rerun") {
+		t.Fatalf("a genuine failure must never be re-run, gh log:\n%s", ghLog(t, logFile))
+	}
+
+	t.Log("CI step log:")
+	for _, l := range logs {
+		t.Logf("    %s", l)
+	}
+	t.Log("gh commands the monitor issued:")
+	for _, l := range strings.Split(strings.TrimSpace(ghLog(t, logFile)), "\n") {
+		t.Logf("    gh %s", l)
+	}
+	t.Logf("extra polls waited before escalating: %d", pollCalls)
+	t.Logf("outcome: needs_approval=%v findings=%s", outcome.NeedsApproval, outcome.Findings)
+}
+
+// A merge conflict is the one CI-step issue no rerun can ever clear, so a
+// cancelled check must not defer it by a whole CI cycle.
+func TestCIStep_MergeConflictEscalatesWithoutRerunningChecks(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	env, logFile := fakeCIGHLoggedSequence(t, "OPEN", []string{
+		`[{"name":"test","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`,
+	}, "CONFLICTING", "")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 30 * time.Minute
+	sctx.Config.AutoFix = config.AutoFix{CI: 0}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	pollCalls := 0
+	step := &CIStep{
+		// Bounded: a regression that defers this escalation must fail the test
+		// rather than keep monitoring until the CI timeout.
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCalls++
+			if pollCalls >= 3 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected an approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected the merge conflict to escalate immediately")
+	}
+	if pollCalls != 0 {
+		t.Fatalf("merge conflict waited %d extra polls before escalating, want 0", pollCalls)
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	foundConflict := false
+	for _, item := range findings.Items {
+		if strings.Contains(item.Description, "merge conflict") {
+			foundConflict = true
+		}
+	}
+	if !foundConflict {
+		t.Fatalf("findings = %+v, want the merge conflict reported", findings.Items)
+	}
+	if strings.Contains(ghLog(t, logFile), "run rerun") {
+		t.Fatalf("no rerun can clear a merge conflict, gh log:\n%s", ghLog(t, logFile))
+	}
+}
+
+// A job that exceeded its own timeout is the provider reporting the job, not
+// itself: it escalates on the first failure like any other genuine failure.
+func TestCIStep_TimedOutCheckEscalatesWithoutRerunning(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	env, logFile := fakeCIGHLoggedSequence(t, "OPEN", []string{
+		`[{"name":"test","state":"TIMED_OUT","bucket":"fail","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`,
+	}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 30 * time.Minute
+	sctx.Config.AutoFix = config.AutoFix{CI: 0}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	pollCalls := 0
+	step := &CIStep{
+		// Bounded: a regression that defers this escalation must fail the test
+		// rather than keep monitoring until the CI timeout.
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCalls++
+			if pollCalls >= 3 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected an approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected a timed-out check to escalate")
+	}
+	if pollCalls != 0 {
+		t.Fatalf("timed-out check waited %d extra polls before escalating, want 0", pollCalls)
+	}
+	if strings.Contains(ghLog(t, logFile), "run rerun") {
+		t.Fatalf("a timed-out job must not be re-run by default, gh log:\n%s", ghLog(t, logFile))
+	}
+}
+
+// Reruns are opt-out: with the budget at 0 nothing is re-run. The cancelled
+// check cannot make the PR look ready, and because no rerun is coming it is
+// also the run's final word on that check, so it escalates rather than being
+// waited on.
+func TestCIStep_ZeroRerunBudgetEscalatesCancelledCheckWithoutMakingItReady(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	cancelled := `[{"name":"test","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`
+	env, logFile := fakeCIGHLoggedSequence(t, "OPEN", []string{cancelled, cancelled, cancelled}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 30 * time.Minute
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{RerunTransient: 0}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		// Bounded: a regression that never escalates must fail the test rather
+		// than keep monitoring until the CI timeout.
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 5 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected an approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected a cancelled check with no rerun budget to escalate")
+	}
+	if strings.Contains(ghLog(t, logFile), "run rerun") {
+		t.Fatalf("reruns are disabled, gh log:\n%s", ghLog(t, logFile))
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected no fix-agent round, got %d", len(ag.calls))
+	}
+	for _, l := range logs {
+		if l == ciChecksPassedMsg {
+			t.Fatalf("a cancelled check must not report checks passed; logs: %v", logs)
+		}
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt != nil {
+		t.Fatal("a PR whose only check is cancelled must not be marked ready to merge")
+	}
+}
+
+// Incident replay (firstmate PR 1495, 2026-08-02): the pipeline pushed its fix
+// commits, GitHub ran the resulting workflow, every job finished, and one of
+// them ended CANCELLED (GitHub reports a job that exceeds its timeout-minutes
+// that way) while the rest passed. The CI monitor logged "CI checks running,
+// waiting for results..." and kept polling that already-final rollup for the
+// rest of the run's idle timeout - about 30 minutes before a manual abort.
+//
+// A cancelled check is terminal: the provider published a conclusion and will
+// not publish another one on its own. With no rerun authorized there is
+// nothing left for this run to wait for, so the poll must produce a decision.
+// The regression arrived in #628, which started counting every non
+// pass/fail/skip bucket as "pending" to stop empty and unknown check states
+// from reading green, and thereby routed a terminal cancellation into the
+// wait-for-more-results branch it can never leave.
+func TestCIStep_CancelledCheckAmongPassingChecksEscalatesInsteadOfPollingForever(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	// The long-running job is still in progress on the first poll, exactly as
+	// it was in the incident, so the monitor is right to wait there. It then
+	// completes as CANCELLED and the rollup stops changing.
+	running := `[{"name":"Repo invariants","state":"SUCCESS","bucket":"pass"},` +
+		`{"name":"Lint shell scripts","state":"SUCCESS","bucket":"pass"},` +
+		`{"name":"Behavior portable serial","state":"IN_PROGRESS","bucket":"pending"}]`
+	settled := `[{"name":"Repo invariants","state":"SUCCESS","bucket":"pass"},` +
+		`{"name":"Lint shell scripts","state":"SUCCESS","bucket":"pass"},` +
+		`{"name":"Behavior portable serial","state":"CANCELLED","bucket":"cancel","completedAt":"2026-08-02T07:54:14Z","link":"https://github.com/test/repo/actions/runs/30738052151/job/91470340751"}]`
+	env, logFile := fakeCIGHLoggedSequence(t, "OPEN", []string{running, settled, settled, settled}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/1495"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 4 * time.Hour
+	// The shipped defaults, which is what the incident ran with.
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{RerunTransient: config.DefaultCIRerunTransient}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		// Bounded: the incident's signature is a monitor that never leaves the
+		// polling loop, so exhausting the polls must fail the test rather than
+		// reproduce the 4-hour wait.
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 6 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected a terminal approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected the settled cancelled check to reach an approval gate")
+	}
+
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("findings = %+v, want exactly the cancelled check", findings.Items)
+	}
+	if !strings.Contains(findings.Items[0].Description, "Behavior portable serial") {
+		t.Fatalf("finding %q must name the cancelled check", findings.Items[0].Description)
+	}
+	if findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("finding action = %q, want ask-user: a cancellation is not a code defect", findings.Items[0].Action)
+	}
+	for _, l := range logs {
+		if l == ciChecksPassedMsg || l == ciNoChecksPassedMsg {
+			t.Fatalf("a cancelled check must never report checks passed; logs: %v", logs)
+		}
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected no fix-agent round for a cancellation, got %d", len(ag.calls))
+	}
+	if strings.Contains(ghLog(t, logFile), "run rerun") {
+		t.Fatalf("the default rerun budget authorizes no rerun, gh log:\n%s", ghLog(t, logFile))
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt != nil {
+		t.Fatal("a PR with a cancelled check must not be marked ready to merge")
+	}
+}
+
+// Readiness is read from the PR's live check rollup on every poll, so it always
+// describes the commit the forge currently has for that PR. No recorded head
+// SHA gates it: a run whose own record still names the pre-advance commit must
+// still recognize the green terminal state the forge published for the head the
+// pipeline last pushed.
+func TestCIStep_GreenChecksAtAdvancedHeadAreRecognizedWhileRunTracksOlderHead(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	// The branch advances past the commit the run still records, the way a
+	// pipeline fix commit does mid-run.
+	os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("pipeline fix"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "no-mistakes(document): align docs")
+	gitCmd(t, dir, "push", "origin", "feature")
+	advanced := gitCmd(t, dir, "rev-parse", "HEAD")
+	if advanced == headSHA {
+		t.Fatal("expected the published head to advance past the recorded head")
+	}
+
+	env := fakeCIGHSequence(t, "OPEN", []string{
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"test","state":"SUCCESS","bucket":"pass"}]`,
+	})
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 30 * time.Minute
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{RerunTransient: config.DefaultCIRerunTransient}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected monitoring to continue after green checks, got %v", err)
+	}
+	sawPassed := false
+	for _, l := range logs {
+		if l == ciChecksPassedMsg {
+			sawPassed = true
+		}
+	}
+	if !sawPassed {
+		t.Fatalf("expected the green rollup to be recognized, got: %v", logs)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt == nil {
+		t.Fatal("green checks on the PR's current head must record CI readiness")
+	}
+}
+
+// A rerun re-runs whatever commit the branch now points at, so it is only
+// meaningful while that is still the commit this run delivered. When the
+// published head has moved, the step terminates with the expected and observed
+// commits instead of certifying a revision it never produced.
+func TestCIStep_MovedPublishedHeadTerminatesInsteadOfRerunning(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	// Someone else advances the published branch out of band.
+	os.WriteFile(filepath.Join(dir, "out-of-band.txt"), []byte("out of band"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "out of band commit")
+	movedSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	env, logFile := fakeCIGHLoggedSequence(t, "OPEN", []string{
+		`[{"name":"test","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`,
+	}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 30 * time.Minute
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		// Bounded: a regression that never escalates must fail the test rather
+		// than keep monitoring until the CI timeout.
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 5 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected an approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected a moved published head to terminate the step")
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatalf("unmarshal findings: %v", err)
+	}
+	if len(findings.Items) != 1 {
+		t.Fatalf("findings = %+v, want one head-mismatch finding", findings.Items)
+	}
+	if !strings.Contains(findings.Items[0].Description, headSHA) || !strings.Contains(findings.Items[0].Description, movedSHA) {
+		t.Fatalf("finding %q must name both the expected head %s and the observed head %s", findings.Items[0].Description, headSHA, movedSHA)
+	}
+	if strings.Contains(ghLog(t, logFile), "run rerun") {
+		t.Fatalf("a rerun against a different head is meaningless and must not be requested, gh log:\n%s", ghLog(t, logFile))
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected no fix-agent round, got %d", len(ag.calls))
+	}
+	mismatchLogged := false
+	for _, l := range logs {
+		if strings.Contains(l, "published branch head moved") {
+			mismatchLogged = true
+		}
+	}
+	if !mismatchLogged {
+		t.Fatalf("expected the head mismatch to be reported, got: %v", logs)
+	}
+
+	t.Log("CI step log:")
+	for _, l := range logs {
+		t.Logf("    %s", l)
+	}
+	t.Log("gh commands the monitor issued:")
+	for _, l := range strings.Split(strings.TrimSpace(ghLog(t, logFile)), "\n") {
+		t.Logf("    gh %s", l)
+	}
+	t.Logf("outcome: needs_approval=%v finding=%q", outcome.NeedsApproval, findings.Items[0].Description)
+	t.Logf("rerun requests: %d", strings.Count(ghLog(t, logFile), "run rerun"))
+}
+
+// A provider that refuses the rerun must not stall the run: the budget is spent
+// on the attempt, so the check escalates on the next poll instead of asking for
+// the same rerun forever.
+func TestCIStep_RefusedRerunSpendsBudgetAndEscalates(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	cancelled := `[{"name":"test","state":"CANCELLED","bucket":"cancel","link":"https://github.com/test/repo/actions/runs/900/job/901"}]`
+	env, logFile := fakeCIGHLoggedSequence(t, "OPEN", []string{cancelled, cancelled}, "", "HTTP 403: Unable to retry this workflow run")
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 30 * time.Minute
+	sctx.Config.AutoFix = config.AutoFix{CI: 0}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		// Bounded: a regression that never escalates must fail the test rather
+		// than keep monitoring until the CI timeout.
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 5 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected an approval outcome, got error: %v", err)
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected the check to escalate after the refused rerun")
+	}
+	if got := strings.Count(ghLog(t, logFile), "run rerun"); got != 1 {
+		t.Fatalf("rerun requests = %d, want exactly one even though it failed, gh log:\n%s", got, ghLog(t, logFile))
+	}
+	warned := false
+	for _, l := range logs {
+		if strings.Contains(l, "could not re-run transient CI check test") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("expected the refused rerun to be surfaced, got: %v", logs)
+	}
+}
+
+func TestCIStep_ResolvedRerunDoesNotParkALaterGreenHead(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	cancelled := `[{"name":"Repo invariants","state":"SUCCESS","bucket":"pass"},` +
+		`{"name":"Behavior portable serial","state":"CANCELLED","bucket":"cancel","completedAt":"2026-08-02T07:54:14Z","link":"https://github.com/test/repo/actions/runs/30738052151/job/91470340751"}]`
+	// The head the pipeline watches then advances (its own fix commit), and the
+	// re-run job is path-filtered out of the new head's rollup. Everything the
+	// forge does report for that head is green.
+	greenWithoutRerunCheck := `[{"name":"Repo invariants","state":"SUCCESS","bucket":"pass"}]`
+
+	env, _ := fakeCIGHLoggedSequence(t, "OPEN", []string{
+		cancelled,
+		greenWithoutRerunCheck,
+		greenWithoutRerunCheck,
+		greenWithoutRerunCheck,
+		greenWithoutRerunCheck,
+	}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/1495"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 4 * time.Hour
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	advancedHeadSHA := ""
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls == 1 {
+				if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("pipeline fix"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				gitCmd(t, dir, "add", "-A")
+				gitCmd(t, dir, "commit", "-m", "no-mistakes(ci): apply fixes")
+				gitCmd(t, dir, "push", "origin", "feature")
+				advancedHeadSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+				sctx.Run.HeadSHA = advancedHeadSHA
+				if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, advancedHeadSHA); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if polls >= 6 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a green head must keep monitoring, got outcome %+v err %v", outcome, err)
+	}
+	for _, l := range logs {
+		if strings.Contains(l, "cancelled") && strings.Contains(l, "after its rerun") {
+			t.Fatalf("a rerun the provider answered was re-opened; logs: %v", logs)
+		}
+		if strings.Contains(l, "auto-fixing") || strings.Contains(l, "manual intervention") {
+			t.Fatalf("a green head escalated to the CI fixing path; logs: %v", logs)
+		}
+	}
+	if len(ag.calls) != 0 {
+		t.Fatalf("expected no fix-agent round on a green head, got %d", len(ag.calls))
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt == nil {
+		t.Fatalf("expected CI readiness to survive on a green head; logs: %v", logs)
+	}
+	if advancedHeadSHA == "" || dbRun.HeadSHA != advancedHeadSHA {
+		t.Fatalf("run head = %q, want advanced head %q", dbRun.HeadSHA, advancedHeadSHA)
+	}
+
+	t.Log("CI step log:")
+	for _, l := range logs {
+		t.Logf("    %s", l)
+	}
+}
+
+func TestCIStep_SameHeadGreenRerunEmitsChecksPassed(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	cancelled := `[{"name":"build","state":"CANCELLED","bucket":"cancel","completedAt":"2026-08-02T07:54:14Z","link":"https://github.com/test/repo/actions/runs/1/job/10"}]`
+	runPassed := `[{"name":"build","state":"SUCCESS","bucket":"pass","completedAt":"2026-08-02T08:07:02Z","link":"https://github.com/test/repo/actions/runs/1/job/11"}]`
+	otherGreen := `[{"name":"repo invariants","state":"SUCCESS","bucket":"pass"}]`
+	env, _ := fakeCIGHLoggedSequence(t, "OPEN", []string{cancelled, runPassed, otherGreen, otherGreen, otherGreen}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/1497"
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 4 * time.Hour
+	sctx.Config.AutoFix = config.AutoFix{CI: 3}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 5 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	if _, err := step.Execute(sctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("same-head green rerun must keep monitoring, got %v", err)
+	}
+	sawPassed := false
+	for _, log := range logs {
+		if log == ciChecksPassedMsg {
+			sawPassed = true
+		}
+		if strings.Contains(log, "after its rerun") || strings.Contains(log, "manual intervention") {
+			t.Fatalf("same-head green rerun was re-opened: %v", logs)
+		}
+	}
+	if !sawPassed {
+		t.Fatalf("same-head green rerun never emitted checks-passed: %v", logs)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt == nil {
+		t.Fatal("same-head green rerun did not set CI readiness")
+	}
+	if _, ok := step.transientReruns.rollup["build"]; ok {
+		t.Fatal("same-head green rerun record was not retired")
+	}
+}
+
+func TestCIStep_DelayedSameNameCheckRetainsLegacyNameBehavior(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+
+	cancelled := `[{"name":"build","state":"CANCELLED","bucket":"cancel","completedAt":"2026-08-02T07:54:14Z","link":"https://github.com/test/repo/actions/runs/1/job/10"}]`
+	delayedSibling := `[{"name":"build","state":"SUCCESS","bucket":"pass","completedAt":"2026-08-02T08:07:02Z","link":"https://github.com/test/repo/actions/runs/2/job/20"}]`
+	env, _ := fakeCIGHLoggedSequence(t, "OPEN", []string{cancelled, delayedSibling, delayedSibling, delayedSibling}, "", "")
+
+	prURL := "https://github.com/test/repo/pull/1496"
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = 4 * time.Hour
+	sctx.Config.AutoFix = config.AutoFix{CI: 0}
+	sctx.Config.CI = config.CI{RerunTransient: 1}
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	polls := 0
+	step := &CIStep{
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls >= 6 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	outcome, err := step.Execute(sctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("delayed sibling outcome = %+v, err = %v, want continued monitoring", outcome, err)
+	}
+	sawPassed := false
+	for _, log := range logs {
+		if log == ciChecksPassedMsg {
+			sawPassed = true
+		}
+	}
+	if !sawPassed {
+		t.Fatalf("expected legacy name-keyed green behavior, logs: %v", logs)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt == nil {
+		t.Fatal("delayed same-named sibling did not retain legacy readiness behavior")
+	}
+	if _, ok := step.transientReruns.rollup["build"]; ok {
+		t.Fatal("new conclusive link did not retire the rerun record")
 	}
 }

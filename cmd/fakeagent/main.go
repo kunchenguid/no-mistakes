@@ -14,6 +14,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,6 +74,7 @@ type ghStubInvocation struct {
 	Repo string   `json:"repo,omitempty"`
 	Head string   `json:"head,omitempty"`
 	Base string   `json:"base,omitempty"`
+	Body string   `json:"body,omitempty"`
 }
 
 func runGhForkPRStub(args []string) int {
@@ -137,6 +139,10 @@ func recordGhStubInvocation(args []string) {
 		Repo: argAfter(args, "--repo"),
 		Head: argAfter(args, "--head"),
 		Base: argAfter(args, "--base"),
+	}
+	if hasArgValue(args, "--body-file", "-") {
+		body, _ := io.ReadAll(os.Stdin)
+		inv.Body = string(body)
 	}
 	_ = json.NewEncoder(f).Encode(inv)
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/logstore"
@@ -365,6 +366,18 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 		"failed", gateStats.Failed,
 	)
 
+	terminalPRStarted := time.Now()
+	terminalPRCount, err := d.ReconcileTerminalPRRuns()
+	if err != nil {
+		slog.Error("failed to reconcile terminal PR runs", "error", err)
+		logStartupPhase("terminal_pr_runs", terminalPRStarted, "failed", true)
+	} else {
+		if terminalPRCount > 0 {
+			slog.Info("reconciled terminal PR runs", "count", terminalPRCount)
+		}
+		logStartupPhase("terminal_pr_runs", terminalPRStarted, "reconciled", terminalPRCount)
+	}
+
 	parkedStarted := time.Now()
 	plans := mgr.recoverableParkedRuns(context.Background())
 	preserved := make(map[string]struct{}, len(plans))
@@ -553,8 +566,8 @@ func migrateGateConfigs(ctx context.Context, d *db.DB, p *paths.Paths) gateMigra
 }
 
 func migrateGateConfig(ctx context.Context, bareDir string) error {
-	if _, err := git.RefreshManagedPostReceiveHook(bareDir); err != nil {
-		return fmt.Errorf("refresh managed post-receive hook: %w", err)
+	if err := git.RefreshManagedGateHooks(bareDir); err != nil {
+		return fmt.Errorf("refresh managed receive hooks: %w", err)
 	}
 	if _, err := git.RunBare(ctx, bareDir, "config", "receive.advertisePushOptions", "true"); err != nil {
 		return fmt.Errorf("enable push options: %w", err)
@@ -573,11 +586,34 @@ func migrateGateConfig(ctx context.Context, bareDir string) error {
 }
 
 func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func()) {
+	classify := func(ctx context.Context, cwd string, markerPresent, skipManagedGit bool) (gatecontext.Result, error) {
+		return (gatecontext.Inspector{DB: d, Paths: mgr.paths}).Inspect(ctx, gatecontext.Request{
+			CWD:            cwd,
+			PeerPID:        ipc.PeerPID(ctx),
+			DaemonPID:      os.Getpid(),
+			MarkerPresent:  markerPresent,
+			SkipManagedGit: skipManagedGit,
+		})
+	}
+	refuseNested := func(ctx context.Context, skipManagedGit bool) error {
+		result, err := classify(ctx, "", false, skipManagedGit)
+		if err != nil {
+			return err
+		}
+		if result.Nested {
+			return fmt.Errorf("%s", gatecontext.RefusalMessage(result))
+		}
+		return nil
+	}
+
 	srv.Handle(ipc.MethodHealth, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
 		return &ipc.HealthResult{Status: "ok"}, nil
 	})
 
-	srv.Handle(ipc.MethodShutdown, func(_ context.Context, _ json.RawMessage) (interface{}, error) {
+	srv.Handle(ipc.MethodShutdown, func(ctx context.Context, _ json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
 		go shutdown()
 		return &ipc.ShutdownResult{OK: true}, nil
 	})
@@ -587,18 +623,39 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		run, err := d.GetRun(p.RunID)
+		info, err := runSnapshot(mgr, p.RunID, func(runID string) (*ipc.RunInfo, error) {
+			run, err := d.GetRun(runID)
+			if err != nil {
+				return nil, fmt.Errorf("get run: %w", err)
+			}
+			if run == nil {
+				return nil, fmt.Errorf("run not found: %s", runID)
+			}
+			steps, err := d.GetStepsByRun(runID)
+			if err != nil {
+				return nil, fmt.Errorf("get steps: %w", err)
+			}
+			return runToInfo(d, run, steps), nil
+		})
 		if err != nil {
-			return nil, fmt.Errorf("get run: %w", err)
+			return nil, err
 		}
-		if run == nil {
-			return nil, fmt.Errorf("run not found: %s", p.RunID)
+		return &ipc.GetRunResult{Run: info}, nil
+	})
+
+	// The fix-review diff is derived on demand instead of riding the event
+	// stream, so a very large change can no longer produce an oversized frame
+	// that takes the whole subscription down with it.
+	srv.Handle(ipc.MethodGetStepDiff, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.GetStepDiffParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		steps, err := d.GetStepsByRun(p.RunID)
+		diff, truncated, err := mgr.StepDiff(ctx, p.RunID)
 		if err != nil {
-			return nil, fmt.Errorf("get steps: %w", err)
+			return nil, err
 		}
-		return &ipc.GetRunResult{Run: runToInfo(d, run, steps)}, nil
+		return &ipc.GetStepDiffResult{Diff: diff, Truncated: truncated}, nil
 	})
 
 	srv.Handle(ipc.MethodGetRuns, func(_ context.Context, params json.RawMessage) (interface{}, error) {
@@ -660,12 +717,42 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.GetActiveRunResult{Run: runToInfo(d, run, steps)}, nil
 	})
 
+	srv.Handle(ipc.MethodGateContext, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.GateContextParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		result, err := classify(ctx, p.CWD, p.MarkerPresent, false)
+		if err != nil {
+			return nil, err
+		}
+		return gateContextResult(result), nil
+	})
+
+	srv.Handle(ipc.MethodAdmitPush, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var p ipc.AdmitPushParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("invalid params: %w", err)
+		}
+		if strings.TrimSpace(p.Gate) == "" {
+			return nil, fmt.Errorf("gate path is required")
+		}
+		result, err := classify(ctx, "", false, true)
+		if err != nil {
+			return nil, err
+		}
+		return &ipc.AdmitPushResult{Context: gateContextResult(result)}, nil
+	})
+
 	srv.Handle(ipc.MethodRerun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
 		var p ipc.RerunParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.SkipSteps, p.Intent)
+		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent)
 		if err != nil {
 			return nil, err
 		}
@@ -673,6 +760,11 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 	})
 
 	srv.Handle(ipc.MethodPushReceived, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		// Hooks execute in a managed bare gate by definition, so only the
+		// authenticated peer ancestry is meaningful at this ingress.
+		if err := refuseNested(ctx, true); err != nil {
+			return nil, err
+		}
 		var p ipc.PushReceivedParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
@@ -685,7 +777,10 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.PushReceivedResult{RunID: runID}, nil
 	})
 
-	srv.Handle(ipc.MethodRespond, func(_ context.Context, params json.RawMessage) (interface{}, error) {
+	srv.Handle(ipc.MethodRespond, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
 		var p ipc.RespondParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
@@ -696,7 +791,10 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return &ipc.RespondResult{OK: true}, nil
 	})
 
-	srv.Handle(ipc.MethodCancelRun, func(_ context.Context, params json.RawMessage) (interface{}, error) {
+	srv.Handle(ipc.MethodCancelRun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		if err := refuseNested(ctx, false); err != nil {
+			return nil, err
+		}
 		var p ipc.CancelRunParams
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
@@ -716,9 +814,12 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		// Register before returning the prepared stream. The IPC server sends
 		// its acknowledgement only after this point, so a client's immediate
 		// full reconciliation cannot race an unregistered subscription.
-		ch, unsub := mgr.Subscribe(p.RunID)
+		sub, err := mgr.Subscribe(p.RunID)
+		if err != nil {
+			return nil, err
+		}
 		var unsubscribeOnce sync.Once
-		cleanup := func() { unsubscribeOnce.Do(unsub) }
+		cleanup := func() { unsubscribeOnce.Do(sub.Close) }
 		go func() {
 			<-ctx.Done()
 			cleanup()
@@ -726,20 +827,52 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		return func(send func(interface{}) error) error {
 			defer cleanup()
 			for {
-				select {
-				case event, ok := <-ch:
-					if !ok {
-						return nil // channel closed (run completed)
-					}
-					if err := send(event); err != nil {
-						return err // client disconnected
-					}
-				case <-ctx.Done():
-					return nil
+				event, ok := sub.Next(ctx)
+				if !ok {
+					return nil // stream finished (run completed or cancelled)
+				}
+				if err := send(event); err != nil {
+					return err // client disconnected
 				}
 			}
 		}, nil
 	})
+}
+
+// runSnapshot reads an authoritative run snapshot and stamps it with the state
+// revision sampled BEFORE the read.
+//
+// The ordering is the whole point and must not be reversed. Every producer
+// writes state and only then broadcasts (see the executor's emitters), so a
+// revision sampled first is never newer than the snapshot that follows it:
+//
+//   - every event at or below the sampled revision already has its write
+//     reflected in the read, so nothing is lost by the consumer skipping it;
+//   - every event above it is still delivered and still exceeds the snapshot's
+//     revision, so the consumer still applies it on top.
+//
+// Sampling after the read would let a transition that landed in between be
+// skipped by the consumer's monotonic guard and never repaired.
+func runSnapshot(mgr *RunManager, runID string, read func(string) (*ipc.RunInfo, error)) (*ipc.RunInfo, error) {
+	stateRev := mgr.StateRev(runID)
+	info, err := read(runID)
+	if err != nil {
+		return nil, err
+	}
+	info.StateRev = stateRev
+	return info, nil
+}
+
+func gateContextResult(result gatecontext.Result) ipc.GateContextResult {
+	return ipc.GateContextResult{
+		Nested:           result.Nested,
+		ManagedGit:       result.ManagedGit,
+		AgentDescendant:  result.AgentDescendant,
+		DaemonDescendant: result.DaemonDescendant,
+		MarkerPresent:    result.MarkerPresent,
+		RunID:            result.RunID,
+		Phase:            result.Phase,
+	}
 }
 
 func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
@@ -754,6 +887,7 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		PRURL:              r.PRURL,
 		Error:              r.Error,
 		CIReady:            r.CIReadyAt != nil,
+		CIReadyNoCI:        r.CIReadyNoCI,
 		AwaitingAgent:      r.AwaitingAgentSince != nil,
 		AwaitingAgentSince: r.AwaitingAgentSince,
 		CreatedAt:          r.CreatedAt,

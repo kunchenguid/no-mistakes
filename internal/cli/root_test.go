@@ -27,7 +27,7 @@ func TestRootYesRunsWizardNonInteractively(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	if _, _, err := gate.Init(context.Background(), d, p, "."); err != nil {
 		t.Fatal(err)
@@ -82,7 +82,7 @@ func TestRootSkipPassesStepsToWizard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	if _, _, err := gate.Init(context.Background(), d, p, "."); err != nil {
 		t.Fatal(err)
@@ -133,7 +133,7 @@ func TestRootYesUsesVisibleWizardWhenInteractive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	if _, _, err := gate.Init(context.Background(), d, p, "."); err != nil {
 		t.Fatal(err)
@@ -204,7 +204,7 @@ func TestRootYesFailsWhenWizardPushProducesNoRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	if _, _, err := gate.Init(context.Background(), d, p, "."); err != nil {
 		t.Fatal(err)
@@ -237,7 +237,7 @@ func TestRootYesPassesCommandContextToWizard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	if _, _, err := gate.Init(context.Background(), d, p, "."); err != nil {
 		t.Fatal(err)
@@ -276,7 +276,7 @@ func TestRootYesStopsWaitingForRunWhenContextCanceled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	if _, _, err := gate.Init(context.Background(), d, p, "."); err != nil {
 		t.Fatal(err)

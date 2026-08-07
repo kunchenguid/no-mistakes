@@ -187,7 +187,7 @@ done:
 	// The exact count depends on timing, but the channel MUST close.
 }
 
-func TestSubscribeToCompletedRunReturnsClosedChannel(t *testing.T) {
+func TestSubscribeToCompletedRunYieldsOneGapThenCloses(t *testing.T) {
 	// Use a fast step so the run completes quickly.
 	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
 		return []pipeline.Step{&mockPassStep{name: types.StepTest}}
@@ -229,7 +229,9 @@ func TestSubscribeToCompletedRunReturnsClosedChannel(t *testing.T) {
 		}
 	}
 
-	// Subscribe to the already-completed run. The channel should be immediately closed.
+	// Subscribe to the already-completed run. Every subscription opens with
+	// one stream-gap frame so the subscriber gets exactly one chance to
+	// reconcile the terminal state, and then the stream closes.
 	ch, cancelSub, err := ipc.Subscribe(p.Socket(), &ipc.SubscribeParams{RunID: pushResult.RunID})
 	if err != nil {
 		t.Fatal(err)
@@ -237,11 +239,22 @@ func TestSubscribeToCompletedRunReturnsClosedChannel(t *testing.T) {
 	defer cancelSub()
 
 	select {
+	case first, ok := <-ch:
+		if !ok {
+			t.Fatal("expected one stream-gap frame before the stream closes")
+		}
+		if first.Type != ipc.EventStreamGap {
+			t.Fatalf("first frame = %s, want %s", first.Type, ipc.EventStreamGap)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no frame for completed run")
+	}
+
+	select {
 	case _, ok := <-ch:
 		if ok {
-			t.Fatal("expected channel to be closed for completed run, but received an event")
+			t.Fatal("expected the stream to close after the single gap frame")
 		}
-		// Channel closed - expected
 	case <-time.After(5 * time.Second):
 		t.Fatal("channel was not closed for completed run")
 	}
@@ -340,6 +353,100 @@ func TestRecoverStaleRunsOnStartup(t *testing.T) {
 	}
 }
 
+func TestRecoverOnStartup_FinalizesLegacyTerminalPRRun(t *testing.T) {
+	for _, state := range []string{"merged", "closed"} {
+		t.Run(state, func(t *testing.T) {
+			root, err := os.MkdirTemp("", "dtest")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(root) })
+			p := paths.WithRoot(root)
+			if err := p.EnsureDirs(); err != nil {
+				t.Fatal(err)
+			}
+			database, err := db.Open(p.DB())
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo, err := database.InsertRepoWithID("terminal-pr-"+state, t.TempDir(), "https://github.com/test/repo", "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := database.InsertRun(repo.ID, "feature", "abc123", "def456")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.UpdateRunPRState(run.ID, state); err != nil {
+				t.Fatal(err)
+			}
+			// Recreate a legacy interrupted row after the current writer has run:
+			// terminal PR truth was durable, but status was still running.
+			if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+			ci, err := database.InsertStepResult(run.ID, types.StepCI)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := database.StartStep(ci.ID); err != nil {
+				t.Fatal(err)
+			}
+
+			errCh := make(chan error, 1)
+			go func() {
+				errCh <- RunWithOptions(p, database, func() []pipeline.Step { return []pipeline.Step{&mockPassStep{name: types.StepCI}} })
+			}()
+			defer func() {
+				client, dialErr := ipc.Dial(p.Socket())
+				if dialErr == nil {
+					_ = client.Call(ipc.MethodShutdown, &ipc.ShutdownParams{}, nil)
+					_ = client.Close()
+				}
+				select {
+				case <-errCh:
+				case <-time.After(3 * time.Second):
+					t.Error("isolated daemon did not stop")
+				}
+				_ = database.Close()
+			}()
+
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				if _, statErr := os.Stat(p.Socket()); statErr == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("isolated daemon did not become ready")
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+
+			got, err := database.GetRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != types.RunCompleted || got.PRState == nil || *got.PRState != state {
+				t.Fatalf("startup reconciliation = status %s pr_state %v, want completed/%s", got.Status, got.PRState, state)
+			}
+			gotCI, err := database.GetStepResult(ci.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotCI.Status != types.StepStatusCompleted {
+				t.Fatalf("startup reconciliation CI status = %s, want completed", gotCI.Status)
+			}
+			active, err := lifecycle.ActiveRuns(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(active) != 0 {
+				t.Fatalf("startup reconciliation retained active runs: %+v", active)
+			}
+		})
+	}
+}
+
 func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
 	if err != nil {
@@ -382,13 +489,16 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 	if err := d.SetStepFindings(step.ID, findings); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.InsertStepRound(step.ID, 1, "initial", &findings, nil, 1); err != nil {
+	if _, err := d.InsertReviewStepRound(step.ID, 1, "initial", &findings, nil, headSHA, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.UpdateStepStatusWithDuration(step.ID, types.StepStatusAwaitingApproval, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpsertRunAgentSession(run.ID, string(pipeline.SessionRoleReviewer), "codex", "legacy-reviewer-session"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -443,6 +553,9 @@ func TestRecoverOnStartup_ResumesParkedRun(t *testing.T) {
 	}
 	if completed.AwaitingAgentSince != nil {
 		t.Fatal("recovered run remained parked after approval")
+	}
+	if completed.ReviewApprovedHeadSHA == nil || *completed.ReviewApprovedHeadSHA != headSHA {
+		t.Fatalf("recovered review approval = %#v, want %s", completed.ReviewApprovedHeadSHA, headSHA)
 	}
 	// The executor marks the run terminal before its owner goroutine performs
 	// worktree cleanup. Wait for that cleanup rather than assuming it completed

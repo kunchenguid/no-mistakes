@@ -86,6 +86,9 @@ var housekeepingFindingsSchema = json.RawMessage(`{
 }`)
 
 func (s *DocumentStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
+		return nil, err
+	}
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 

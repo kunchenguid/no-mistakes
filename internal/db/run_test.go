@@ -33,6 +33,69 @@ func TestRunInsertAndGet(t *testing.T) {
 	}
 }
 
+func TestInsertRunWithIntent(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	intent := RunIntent{Summary: "  exact requirements\n", Source: RunIntentSourceRerun, Score: 1}
+
+	run, err := d.InsertRunWithIntent(repo.ID, "feature", "abc123", "def456", &intent)
+	if err != nil {
+		t.Fatalf("insert run with intent: %v", err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.Intent == nil || *got.Intent != intent.Summary {
+		t.Fatalf("intent = %v, want %q", got.Intent, intent.Summary)
+	}
+	if got.IntentSource == nil || *got.IntentSource != intent.Source {
+		t.Fatalf("intent source = %v, want %q", got.IntentSource, intent.Source)
+	}
+}
+
+func TestRunCIReadinessStoresNoCIDeclaration(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+
+	if err := d.SetRunCIReadyWithReason(run.ID, true, true); err != nil {
+		t.Fatalf("set declared no-CI readiness: %v", err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.CIReadyAt == nil || !got.CIReadyNoCI {
+		t.Fatalf("declared no-CI readiness = at %v, no_ci %v", got.CIReadyAt, got.CIReadyNoCI)
+	}
+
+	if err := d.SetRunCIReadyWithReason(run.ID, true, false); err != nil {
+		t.Fatalf("set all-green readiness: %v", err)
+	}
+	got, err = d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run after all-green readiness: %v", err)
+	}
+	if got.CIReadyAt == nil || got.CIReadyNoCI {
+		t.Fatalf("all-green readiness = at %v, no_ci %v", got.CIReadyAt, got.CIReadyNoCI)
+	}
+
+	if err := d.SetRunCIReady(run.ID, false); err != nil {
+		t.Fatalf("clear readiness: %v", err)
+	}
+	got, err = d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run after clear: %v", err)
+	}
+	if got.CIReadyAt != nil || got.CIReadyNoCI {
+		t.Fatalf("cleared readiness = at %v, no_ci %v", got.CIReadyAt, got.CIReadyNoCI)
+	}
+}
+
 func TestRunAwaitingAgentSetAndClear(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
@@ -303,6 +366,39 @@ func TestUpdateRunStatus(t *testing.T) {
 	}
 }
 
+func TestVerifiedHeadAndTerminalStatusPersistAtomically(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepo("/tmp/atomic-head", "https://github.com/test/atomic-head", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "submitted", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.sql.Exec(`CREATE TRIGGER reject_verified_terminal
+		BEFORE UPDATE OF terminal_head_verified_at ON runs
+		WHEN NEW.terminal_head_verified_at IS NOT NULL
+		BEGIN
+			SELECT RAISE(FAIL, 'injected verified terminal failure');
+		END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunErrorStatusWithVerifiedHead(run.ID, "cancelled", types.RunCancelled, "pipeline-head"); err == nil {
+		t.Fatal("verified terminal update unexpectedly succeeded")
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != types.RunRunning || got.HeadSHA != "submitted" || got.TerminalHeadVerifiedAt != nil {
+		t.Fatalf("failed atomic update changed run = status %s head %s verified %#v", got.Status, got.HeadSHA, got.TerminalHeadVerifiedAt)
+	}
+}
+
 func TestRunPushBindingIsForwardOnlyAndLegacyRowsStayNullable(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/tmp/repo-sync-binding", "https://example.com/repo.git", "main")
@@ -344,6 +440,194 @@ func TestUpdateRunPRURL(t *testing.T) {
 	got, _ := d.GetRun(run.ID)
 	if got.PRURL == nil || *got.PRURL != prURL {
 		t.Errorf("pr url = %v, want %q", got.PRURL, prURL)
+	}
+}
+
+func TestUpdateRunPRStateFinalizesActiveTerminalOutcomes(t *testing.T) {
+	for _, state := range []string{"merged", "closed"} {
+		t.Run(state, func(t *testing.T) {
+			d := openTestDB(t)
+			repo, _ := d.InsertRepo("/home/user/pr-terminal-"+state, "git@github.com:user/project.git", "main")
+			run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+			if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.SetRunAwaitingAgent(run.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.SetRunPushActive(run.ID, true); err != nil {
+				t.Fatal(err)
+			}
+			ci, _ := d.InsertStepResult(run.ID, types.StepCI)
+			if err := d.StartStep(ci.ID); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := d.UpdateRunPRState(run.ID, state); err != nil {
+				t.Fatal(err)
+			}
+
+			got, _ := d.GetRun(run.ID)
+			if got.Status != types.RunCompleted || got.PRState == nil || *got.PRState != state {
+				t.Fatalf("terminal PR run = status %s pr_state %v, want completed/%s", got.Status, got.PRState, state)
+			}
+			if got.AwaitingAgentSince != nil || got.PushActive {
+				t.Fatalf("terminal PR run retained active markers: awaiting=%v push_active=%t", got.AwaitingAgentSince, got.PushActive)
+			}
+			parkedMS := got.ParkedMS
+			if err := d.CompleteRunAwaitingAgent(run.ID, 1234); err != nil {
+				t.Fatal(err)
+			}
+			got, _ = d.GetRun(run.ID)
+			if got.ParkedMS != parkedMS {
+				t.Fatalf("duplicate gate completion changed parked_ms from %d to %d", parkedMS, got.ParkedMS)
+			}
+			gotCI, _ := d.GetStepResult(ci.ID)
+			if gotCI.Status != types.StepStatusCompleted {
+				t.Fatalf("CI status = %s, want completed", gotCI.Status)
+			}
+			active, err := d.GetActiveRuns()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(active) != 0 {
+				t.Fatalf("terminal PR remains active: %+v", active)
+			}
+		})
+	}
+}
+
+func TestUpdateRunPRStateKeepsOpenRunActive(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/pr-open", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunPRState(run.ID, "open"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := d.GetRun(run.ID)
+	if got.Status != types.RunRunning || got.PRState == nil || *got.PRState != "open" {
+		t.Fatalf("open PR run = status %s pr_state %v, want running/open", got.Status, got.PRState)
+	}
+}
+
+func TestUpdateRunPRStateIgnoresDuplicateAndDelayedRegressions(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/pr-notifications", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []string{"merged", "merged", "open", "closed"} {
+		if err := d.UpdateRunPRState(run.ID, state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.UpdateRunPRURL(run.ID, "https://github.com/user/project/pull/1"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := d.GetRun(run.ID)
+	if got.Status != types.RunCompleted || got.PRState == nil || *got.PRState != "merged" {
+		t.Fatalf("duplicate/delayed PR observations regressed run: status=%s pr_state=%v", got.Status, got.PRState)
+	}
+	active, _ := d.GetActiveRuns()
+	if len(active) != 0 {
+		t.Fatalf("duplicate/delayed PR observations reactivated run: %+v", active)
+	}
+}
+
+func TestUpdateRunPRStateDoesNotRewriteAlreadyTerminalStatus(t *testing.T) {
+	for _, status := range []types.RunStatus{types.RunCompleted, types.RunFailed, types.RunCancelled} {
+		t.Run(string(status), func(t *testing.T) {
+			d := openTestDB(t)
+			repo, _ := d.InsertRepo("/home/user/pr-idempotent-"+string(status), "git@github.com:user/project.git", "main")
+			run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+			if err := d.UpdateRunErrorStatus(run.ID, "original terminal outcome", status); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.UpdateRunPRState(run.ID, "closed"); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := d.GetRun(run.ID)
+			if got.Status != status {
+				t.Fatalf("status = %s, want preserved %s", got.Status, status)
+			}
+			if got.Error == nil || *got.Error != "original terminal outcome" {
+				t.Fatalf("terminal error changed: %v", got.Error)
+			}
+		})
+	}
+}
+
+func TestReconcileTerminalPRRunsFinalizesLegacyActiveRows(t *testing.T) {
+	for _, state := range []string{"merged", "closed"} {
+		t.Run(state, func(t *testing.T) {
+			d := openTestDB(t)
+			repo, _ := d.InsertRepo("/home/user/pr-recovery-"+state, "git@github.com:user/project.git", "main")
+			run, _ := d.InsertRun(repo.ID, "feature", "abc", "def")
+			if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+				t.Fatal(err)
+			}
+			ci, _ := d.InsertStepResult(run.ID, types.StepCI)
+			if err := d.StartStep(ci.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.SetRunAwaitingAgent(run.ID); err != nil {
+				t.Fatal(err)
+			}
+			// Simulate a row written by an older daemon after it observed a terminal
+			// PR but before its separate run-status finalization write.
+			if _, err := d.sql.Exec(`UPDATE runs SET pr_state = ? WHERE id = ?`, state, run.ID); err != nil {
+				t.Fatal(err)
+			}
+
+			count, err := d.ReconcileTerminalPRRuns()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if count != 1 {
+				t.Fatalf("reconciled count = %d, want 1", count)
+			}
+			got, _ := d.GetRun(run.ID)
+			if got.Status != types.RunCompleted || got.AwaitingAgentSince != nil {
+				t.Fatalf("reconciled run = status %s awaiting %v", got.Status, got.AwaitingAgentSince)
+			}
+			gotCI, _ := d.GetStepResult(ci.ID)
+			if gotCI.Status != types.StepStatusCompleted {
+				t.Fatalf("reconciled CI status = %s, want completed", gotCI.Status)
+			}
+			count, err = d.ReconcileTerminalPRRuns()
+			if err != nil || count != 0 {
+				t.Fatalf("idempotent reconciliation = count %d err %v, want 0/nil", count, err)
+			}
+		})
+	}
+}
+
+func TestUpdateRunReviewApprovedHeadSHAReplacesAuthority(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "mutable", "base")
+	if run.ReviewApprovedHeadSHA != nil {
+		t.Fatalf("new run inferred review authority: %#v", run.ReviewApprovedHeadSHA)
+	}
+	if err := d.UpdateRunReviewApprovedHeadSHA(run.ID, "reviewed-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunReviewApprovedHeadSHA(run.ID, "reviewed-2"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReviewApprovedHeadSHA == nil || *got.ReviewApprovedHeadSHA != "reviewed-2" {
+		t.Fatalf("review-approved head = %#v, want reviewed-2", got.ReviewApprovedHeadSHA)
+	}
+	if got.HeadSHA != "mutable" {
+		t.Fatalf("review authority update mutated run head to %s", got.HeadSHA)
 	}
 }
 

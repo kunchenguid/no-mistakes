@@ -28,9 +28,12 @@ func newSyncCmd() *cobra.Command {
 			"merges genuine divergence, rebases, switches branches, or updates a remote.\n" +
 			"--check performs the fresh proof without applying it.\n" +
 			"--recover returns custody of a branch whose run went terminal with unpublished\n" +
-			"pipeline commits: it anchors the preserved head, fast-forwards a clean behind\n" +
-			"worktree to it, and frees the branch for a fresh run. --recover --keep-local keeps\n" +
-			"the current local head instead and never touches the worktree.",
+			"pipeline commits: it anchors the preserved head, then either fast-forwards a\n" +
+			"clean behind worktree or adopts a diverged preserved head only when proven to\n" +
+			"carry every local change. Unproven divergence refuses. A run cancelled before\n" +
+			"the pipeline changed anything releases the branch by itself (user_owned) and\n" +
+			"makes --recover a no-op. --recover --keep-local keeps the current local head\n" +
+			"instead and never touches the worktree.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if check && yes {
@@ -50,7 +53,7 @@ func newSyncCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and show the synchronization plan without changing HEAD")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "apply an eligible guarded synchronization without prompting")
-	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits")
+	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch)")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
 	return cmd
 }
@@ -83,7 +86,7 @@ func newAxiSyncCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and return the plan without changing HEAD")
-	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits")
+	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch)")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
 	return cmd
 }
@@ -98,7 +101,7 @@ func openSyncService() (*branchsync.Service, func(), error) {
 		d.Close()
 		return nil, nil, err
 	}
-	return &branchsync.Service{DB: d, Repo: repo, WorkDir: ".", GateDir: p.RepoDir(repo.ID)}, func() { _ = d.Close() }, nil
+	return &branchsync.Service{DB: d, Repo: repo, WorkDir: ".", GateDir: p.RepoDir(repo.ID), Paths: p}, func() { _ = d.Close() }, nil
 }
 
 func runHumanSync(cmd *cobra.Command, check, yes bool) error {
@@ -128,7 +131,7 @@ func runHumanSync(cmd *cobra.Command, check, yes bool) error {
 		result = "refused"
 		return &exitError{code: 1}
 	}
-	if state.State == branchsync.StateSynchronized || state.State == branchsync.StateMergedRemoteRemoved {
+	if state.State == branchsync.StateSynchronized || state.State == branchsync.StateMergedRemoteRemoved || state.State == branchsync.StateUserOwned {
 		result = "noop"
 		return nil
 	}
@@ -192,7 +195,9 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 
 	state := service.InspectCached(cmd.Context())
 	observed = state
-	if !yes {
+	// A branch released by cancellation needs no confirmation: the recovery is
+	// an idempotent no-op that cannot mutate anything.
+	if !yes && state.State != branchsync.StateUserOwned {
 		printHumanSyncState(cmd, state)
 		if !syncInteractive() {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Non-interactive input cannot confirm this recovery. Re-run with `no-mistakes sync --recover --yes`.")
@@ -204,8 +209,9 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 			fmt.Fprintln(cmd.OutOrStdout(), "  possible changes are anchoring the preserved pipeline commits and moving the")
 			fmt.Fprintln(cmd.OutOrStdout(), "  local gate branch to your current head; the worktree is never touched.")
 		} else {
-			fmt.Fprintln(cmd.OutOrStdout(), "  possible worktree change is a strict fast-forward of this clean branch to the")
-			fmt.Fprintln(cmd.OutOrStdout(), "  preserved pipeline head; anything else refuses without changes.")
+			fmt.Fprintln(cmd.OutOrStdout(), "  possible worktree change is a fast-forward of this clean behind branch, or")
+			fmt.Fprintln(cmd.OutOrStdout(), "  adoption of a diverged preserved head proven to carry every local change;")
+			fmt.Fprintln(cmd.OutOrStdout(), "  unproven divergence refuses, and --keep-local keeps the current head.")
 		}
 		fmt.Fprint(cmd.OutOrStdout(), "  Return custody of this branch? [y/N] ")
 		line, readErr := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
@@ -224,7 +230,11 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 	observed = recovered
 	printHumanSyncState(cmd, recovered)
 	if recovered.Recovered {
-		fmt.Fprintln(cmd.OutOrStdout(), "  Custody returned; start a fresh run when ready.")
+		if recovered.State == branchsync.StateUserOwned {
+			fmt.Fprintln(cmd.OutOrStdout(), "  Nothing to recover; cancellation already released this branch to you.")
+		} else {
+			fmt.Fprintln(cmd.OutOrStdout(), "  Custody returned; start a fresh run when ready.")
+		}
 		if recovered.Changed {
 			result = "applied"
 		} else {
@@ -264,6 +274,8 @@ func humanSyncSummary(state branchsync.State) string {
 		return "pipeline fix is not pushed yet; do not make local follow-up commits"
 	case branchsync.StateCustodyReturned:
 		return "custody returned; the branch is yours - start a fresh run when ready"
+	case branchsync.StateUserOwned:
+		return "run ended before the pipeline changed anything; the branch and head are yours and immediately usable"
 	case branchsync.StatePushInProgress:
 		return "pipeline branch update is in progress; synchronization is unavailable"
 	case branchsync.StateBehind:
@@ -394,6 +406,11 @@ func syncStateSuccessful(state branchsync.State, check bool) bool {
 	if state.State == branchsync.StateCustodyReturned {
 		return true
 	}
+	// A branch released by cancellation is the operator's with nothing to
+	// synchronize or recover; it must never surface as a blocked exit.
+	if state.State == branchsync.StateUserOwned {
+		return true
+	}
 	return check && branchsync.CanApply(state)
 }
 
@@ -478,7 +495,7 @@ func relevantCachedSyncState(state branchsync.State) bool {
 		branchsync.StateLocalAhead, branchsync.StateDiverged, branchsync.StateDirty,
 		branchsync.StateRemoteAdvanced, branchsync.StateRemoteRewritten, branchsync.StateRemoteMissing,
 		branchsync.StateMergedRemoteRetained, branchsync.StateMergedRemoteRemoved, branchsync.StateClosed,
-		branchsync.StateTargetChanged, branchsync.StateCustodyReturned:
+		branchsync.StateTargetChanged, branchsync.StateCustodyReturned, branchsync.StateUserOwned:
 		return true
 	default:
 		return false

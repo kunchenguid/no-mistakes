@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/testguidance"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -32,7 +33,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		defaultBranch = "main"
 	}
 	branchTarget := ""
-	pushRemote := "origin"
+	pushRemote := resolveUpstreamURL(sctx)
 	if branch != "" {
 		branchTarget = "origin/" + branch
 		if strings.TrimSpace(sctx.Repo.ForkURL) != "" {
@@ -48,7 +49,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	forcePush := isForcePushAgainstRemote(ctx, sctx.WorkDir, pushRemote, branch, branchTarget, sctx.Run.BaseSHA)
 
 	sctx.Log("fetching latest upstream state...")
-	if err := git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", defaultBranch); err != nil {
+	if err := fetchRunUpstreamBranch(ctx, sctx, defaultBranch); err != nil {
 		sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", defaultBranch, err))
 	}
 	// Sync the push branch's remote-tracking ref only when we are about to rebase
@@ -62,8 +63,8 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// (the original #281/#305 hazard, in the force-push path). Leaving it stale is
 	// what lets the push step's content check catch that case.
 	if !forcePush && branch != "" && branch != defaultBranch {
-		if pushRemote == "origin" {
-			if err := git.FetchRemoteBranch(ctx, sctx.WorkDir, "origin", branch); err != nil {
+		if strings.TrimSpace(sctx.Repo.ForkURL) == "" {
+			if err := fetchRunUpstreamBranch(ctx, sctx, branch); err != nil {
 				sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", branch, err))
 			}
 		} else if err := git.FetchRemoteBranchToRef(ctx, sctx.WorkDir, pushRemote, branch, branchTarget); err != nil {
@@ -391,6 +392,7 @@ Instructions:
 		prompt += "\n\nPrevious findings:\n" + sctx.PreviousFindings
 	}
 	prompt += userIntentPromptSection(sctx)
+	prompt = testguidance.LateRepairPrompt(string(types.StepRebase), prompt)
 
 	_, err = sctx.Agent.Run(ctx, agent.RunOpts{
 		Prompt:     prompt,

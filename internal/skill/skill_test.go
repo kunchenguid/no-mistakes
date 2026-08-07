@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/testguidance"
 )
 
 func TestMarkdownFrontmatter(t *testing.T) {
@@ -36,6 +38,21 @@ func TestMarkdownFrontmatter(t *testing.T) {
 	}
 }
 
+func TestBodyIncludesGeneratedGateStepGuard(t *testing.T) {
+	md := Markdown()
+	for _, want := range []string{
+		"## Active validation-step boundary",
+		"must inspect, fix, and return only its assigned phase",
+		"`error.code: nested_gate_context`",
+		"return control to the outer executor",
+		"`no-mistakes axi status`",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("installed skill guard snapshot missing %q", want)
+		}
+	}
+}
+
 func TestBodyDocumentsTaskFirstFlow(t *testing.T) {
 	md := Markdown()
 	for _, want := range []string{
@@ -48,6 +65,9 @@ func TestBodyDocumentsTaskFirstFlow(t *testing.T) {
 		if !strings.Contains(md, want) {
 			t.Errorf("body should document the task-first flow: missing %q", want)
 		}
+	}
+	if !strings.Contains(md, testguidance.Rule) {
+		t.Errorf("task-first skill missing shared test-quality guidance:\n%s", md)
 	}
 }
 

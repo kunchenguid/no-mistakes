@@ -48,6 +48,29 @@ func hasPendingChecks(checks []scm.Check) bool {
 	return false
 }
 
+func hasUnresolvedChecks(checks []scm.Check) bool {
+	for _, c := range checks {
+		switch c.Bucket {
+		case scm.CheckBucketPass, scm.CheckBucketFail, scm.CheckBucketSkip:
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+func allChecksPassed(checks []scm.Check) bool {
+	if len(checks) == 0 {
+		return false
+	}
+	for _, c := range checks {
+		if c.Bucket != scm.CheckBucketPass && c.Bucket != scm.CheckBucketSkip {
+			return false
+		}
+	}
+	return true
+}
+
 // failingCheckNames returns the names of failing checks.
 func failingCheckNames(checks []scm.Check) []string {
 	var names []string
@@ -59,10 +82,18 @@ func failingCheckNames(checks []scm.Check) []string {
 	return names
 }
 
-func failingCheckCompletionTimes(checks []scm.Check) map[string]time.Time {
+// terminalFailureCompletionTimes snapshots when each terminally failed check
+// finished, so a later poll can tell that CI has re-run since the fix push.
+//
+// It covers the whole terminal-failure set rather than just the fail bucket
+// because a cancelled check can be a fix target too (see the CI step's
+// fixTargets). Keying the snapshot on the fail bucket alone would leave a
+// cancelled-only fix round with no completion evidence at all, and the step
+// would then have no way to notice its own re-run.
+func terminalFailureCompletionTimes(checks []scm.Check) map[string]time.Time {
 	completedAt := make(map[string]time.Time)
 	for _, c := range checks {
-		if !c.Failing() {
+		if !checkFailedTerminally(c) {
 			continue
 		}
 		if c.CompletedAt.IsZero() {
@@ -79,12 +110,12 @@ func failingCheckCompletionTimes(checks []scm.Check) map[string]time.Time {
 	return completedAt
 }
 
-func failingCheckCompletedAfter(checks []scm.Check, after map[string]time.Time) bool {
+func terminalFailureCompletedAfter(checks []scm.Check, after map[string]time.Time) bool {
 	if len(after) == 0 {
 		return false
 	}
 	for _, c := range checks {
-		if !c.Failing() || c.CompletedAt.IsZero() {
+		if !checkFailedTerminally(c) || c.CompletedAt.IsZero() {
 			continue
 		}
 		previous, ok := after[c.Name]

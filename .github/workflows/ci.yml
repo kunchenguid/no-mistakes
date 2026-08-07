@@ -4,6 +4,12 @@ on:
   pull_request:
     branches:
       - main
+    # Never create a run for a release-please PR. GITHUB_TOKEN-opened PRs land in
+    # action_required and never start; excluding the exact release-output set means
+    # no run is created at all. push/tag/release triggers are unaffected.
+    paths-ignore:
+      - .release-please-manifest.json
+      - CHANGELOG.md
 
 jobs:
   check:
@@ -40,6 +46,35 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+
+      # The Windows suite is process-spawn bound, not compute bound: the
+      # git-backed packages run thousands of git.exe invocations, and Defender
+      # real-time scanning taxes every spawn and every file the temp repos
+      # create. That tax is why the same packages cost ~10x their Linux time
+      # (internal/git 5.7s -> 53s, internal/branchsync 31s -> 415s) and why the
+      # job repeatedly overran timeout-minutes and was cancelled. Excluding the
+      # ephemeral trees this job creates itself is the cheapest structural fix;
+      # the runner is disposable and no other workload shares it. Best effort on
+      # purpose - a runner image without the Defender cmdlets must not fail CI.
+      - name: Exclude CI build and test trees from Defender scanning
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          try {
+            $paths = @(
+              $env:GITHUB_WORKSPACE,
+              $env:RUNNER_TEMP,
+              $env:TEMP,
+              (go env GOCACHE),
+              (go env GOMODCACHE),
+              (go env GOROOT)
+            ) | Where-Object { $_ } | Sort-Object -Unique
+            Add-MpPreference -ExclusionPath $paths -ErrorAction Stop
+            Add-MpPreference -ExclusionProcess 'go.exe', 'git.exe' -ErrorAction Stop
+            Write-Host "Defender exclusions added for: $($paths -join ', ')"
+          } catch {
+            Write-Host "::warning::Defender exclusions unavailable, Windows tests run untuned: $_"
+          }
 
       - name: Test on Unix
         if: runner.os != 'Windows'

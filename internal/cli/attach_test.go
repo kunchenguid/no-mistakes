@@ -28,7 +28,7 @@ func TestRootInteractiveWizardFailsLoudlyWhenRunRegistrationIsSlow(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	if _, _, err := gate.Init(context.Background(), d, p, "."); err != nil {
 		t.Fatal(err)

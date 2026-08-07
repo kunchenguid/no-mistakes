@@ -393,6 +393,15 @@ func fakeGlab(t *testing.T, mrViewJSON string) (env []string, logFile string) {
 
 // newTestContextWithDBRecords is like newTestContext but also inserts
 // repo and run records into the database so GetRun works after updates.
+func recordReviewApproval(t *testing.T, sctx *pipeline.StepContext, headSHA string) {
+	t.Helper()
+	if err := sctx.DB.UpdateRunReviewApprovedHeadSHA(sctx.Run.ID, headSHA); err != nil {
+		t.Fatal(err)
+	}
+	approved := headSHA
+	sctx.Run.ReviewApprovedHeadSHA = &approved
+}
+
 func newTestContextWithDBRecords(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA string, cmds config.Commands) *pipeline.StepContext {
 	t.Helper()
 	sctx := newTestContext(t, ag, workDir, baseSHA, headSHA, cmds)
@@ -516,6 +525,38 @@ func fakeCIGHSequence(t *testing.T, state string, checks []string) []string {
 		"FAKE_CLI_CHECKS_PATH":       checksPath,
 		"FAKE_CLI_CHECKS_INDEX_PATH": indexPath,
 	})
+}
+
+// fakeCIGHLoggedSequence is fakeCIGHSequence with a recorded argv log, so tests
+// can assert which gh commands the CI monitor issued (for example whether it
+// asked for a check rerun). mergeable overrides the reported mergeable state
+// ("" reports MERGEABLE); rerunErr, when set, makes `gh run rerun` fail.
+func fakeCIGHLoggedSequence(t *testing.T, state string, checks []string, mergeable, rerunErr string) (env []string, logFile string) {
+	t.Helper()
+	binDir := fakeCLIBinDir(t)
+	linkTestBinary(t, binDir, "gh")
+
+	tempDir := t.TempDir()
+	checksPath := filepath.Join(tempDir, "checks.txt")
+	indexPath := filepath.Join(tempDir, "checks-index.txt")
+	logFile = filepath.Join(tempDir, "gh.log")
+
+	if err := os.WriteFile(checksPath, []byte(strings.Join(checks, "\n")), 0o644); err != nil {
+		t.Fatalf("write checks sequence: %v", err)
+	}
+	if err := os.WriteFile(indexPath, []byte("0"), 0o644); err != nil {
+		t.Fatalf("write checks index: %v", err)
+	}
+
+	return fakeCLIEnv(binDir, map[string]string{
+		"FAKE_CLI_MODE":              "ci-gh-seq",
+		"FAKE_CLI_STATE":             state,
+		"FAKE_CLI_CHECKS_PATH":       checksPath,
+		"FAKE_CLI_CHECKS_INDEX_PATH": indexPath,
+		"FAKE_CLI_MERGEABLE":         mergeable,
+		"FAKE_CLI_LOG":               logFile,
+		"FAKE_CLI_RERUN_ERR":         rerunErr,
+	}), logFile
 }
 
 func fakeCIGHNoChecks(t *testing.T) []string {

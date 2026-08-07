@@ -10,6 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
+	"github.com/kunchenguid/no-mistakes/internal/gateguidance"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/skill"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -42,6 +44,11 @@ var canonicalBranchSyncPhrases = []string{
 	"recover_custody",
 	"no-mistakes axi sync --recover",
 	"preserved in the local gate",
+	// Cancellation releases a run that never changed the submitted head
+	// (v1.44.2 dogfood catch): every surface must name the released state and
+	// that it needs no recovery.
+	"user_owned",
+	"before changing the submitted head",
 }
 
 const canonicalPipelineAgentPrerequisite = "a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`"
@@ -145,6 +152,32 @@ func TestPipelineAgentPrerequisiteGuidance_SyncedAcrossSurfaces(t *testing.T) {
 		normalized := strings.Join(strings.Fields(content), " ")
 		if !strings.Contains(normalized, canonicalPipelineAgentPrerequisite) {
 			t.Errorf("%s is missing the canonical pipeline-agent prerequisite %q", name, canonicalPipelineAgentPrerequisite)
+		}
+	}
+}
+
+func TestGateStepBoundaryGuidance_SyncedAcrossSurfaces(t *testing.T) {
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	_ = emitGateContextRefusal(cmd, gatecontext.Result{Nested: true, RunID: "run-1", Phase: types.StepDocument})
+	surfaces := map[string]string{
+		"prompt boundary": gateguidance.PromptBoundary("document"),
+		"skill body":      skill.Markdown(),
+		"agents guide":    readAgentsGuide(t),
+		"live refusal":    out.String(),
+	}
+	phrases := []string{"assigned phase", "outer executor", "push", "PR", "CI"}
+	for name, content := range surfaces {
+		for _, phrase := range phrases {
+			if !strings.Contains(content, phrase) {
+				t.Errorf("%s is missing gate-step boundary phrase %q", name, phrase)
+			}
+		}
+	}
+	for _, name := range []string{"skill body", "agents guide", "live refusal"} {
+		if !strings.Contains(surfaces[name], "nested_gate_context") {
+			t.Errorf("%s is missing structured nested-context error code", name)
 		}
 	}
 }

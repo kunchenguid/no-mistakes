@@ -19,17 +19,17 @@ func optOutAgent(t *testing.T, name types.AgentName, extraArgs []string) Agent {
 }
 
 // TestNeutralizesGateInstructions_OnlyVerifiedHarnessesUnderOptOut is the core
-// fail-closed contract: under the opt-out, only codex and claude (whose
+// fail-closed contract: under the opt-out, only codex, claude, and pi (whose
 // suppression knobs are empirically verified) neutralize the target repo's
 // project agent settings/instructions; every other harness reports false and is
 // refused rather than launched with project instructions loaded.
 func TestNeutralizesGateInstructions_OnlyVerifiedHarnessesUnderOptOut(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude} {
+	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi} {
 		if !NeutralizesGateInstructions(optOutAgent(t, name, nil)) {
 			t.Errorf("%s must neutralize under the opt-out with its default knob", name)
 		}
 	}
-	unverified := []types.AgentName{types.AgentOpenCode, types.AgentPi, types.AgentCopilot, types.AgentRovoDev}
+	unverified := []types.AgentName{types.AgentOpenCode, types.AgentCopilot, types.AgentRovoDev}
 	for _, name := range unverified {
 		if NeutralizesGateInstructions(optOutAgent(t, name, nil)) {
 			t.Errorf("%s has no verified knob; must NOT report neutralized", name)
@@ -50,11 +50,11 @@ func TestNeutralizesGateInstructions_OnlyVerifiedHarnessesUnderOptOut(t *testing
 	}
 }
 
-// TestNeutralizesGateInstructions_FalseWithoutOptOut proves codex/claude do NOT
-// claim neutralization when the repo did not opt out - the gate only consults
+// TestNeutralizesGateInstructions_FalseWithoutOptOut proves codex, claude, and pi
+// do NOT claim neutralization when the repo did not opt out - the gate only consults
 // this under the opt-out, but the value must be honest.
 func TestNeutralizesGateInstructions_FalseWithoutOptOut(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude} {
+	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi} {
 		a, err := NewWithOptions(name, string(name), nil, Options{}) // no opt-out
 		if err != nil {
 			t.Fatalf("NewWithOptions(%s): %v", name, err)
@@ -66,13 +66,16 @@ func TestNeutralizesGateInstructions_FalseWithoutOptOut(t *testing.T) {
 }
 
 // TestEnsureGateNeutralized_RefusesUnsupportedUnderOptOut proves the gate fails
-// closed for an unsupported harness with a clear error, and admits codex/claude.
+// closed for an unsupported harness and admits codex, claude, and pi.
 func TestEnsureGateNeutralized_RefusesUnsupportedUnderOptOut(t *testing.T) {
 	if err := EnsureGateNeutralized(optOutAgent(t, types.AgentCodex, nil)); err != nil {
 		t.Errorf("codex must pass the gate under opt-out: %v", err)
 	}
 	if err := EnsureGateNeutralized(optOutAgent(t, types.AgentClaude, nil)); err != nil {
 		t.Errorf("claude must pass the gate under opt-out: %v", err)
+	}
+	if err := EnsureGateNeutralized(optOutAgent(t, types.AgentPi, nil)); err != nil {
+		t.Errorf("pi must pass the gate under opt-out: %v", err)
 	}
 	err := EnsureGateNeutralized(optOutAgent(t, types.AgentOpenCode, nil))
 	if err == nil {
@@ -114,8 +117,8 @@ func TestNeutralizesGateInstructions_ThroughProductionWrapping(t *testing.T) {
 }
 
 // TestNeutralizesGateInstructions_HonestOnEffectiveOverride proves the capability
-// is honest about the EFFECTIVE knob value: a preserving operator override is
-// admitted; a defeating one fails closed - even for codex/claude.
+// is honest about the EFFECTIVE knob value: preserving operator overrides are
+// admitted, while available defeating overrides fail closed.
 func TestNeutralizesGateInstructions_HonestOnEffectiveOverride(t *testing.T) {
 	// codex: project_doc_max_bytes=0 preserves suppression -> admitted.
 	if !NeutralizesGateInstructions(optOutAgent(t, types.AgentCodex, []string{"-c", "project_doc_max_bytes=0"})) {
@@ -138,5 +141,12 @@ func TestNeutralizesGateInstructions_HonestOnEffectiveOverride(t *testing.T) {
 	}
 	if err := EnsureGateNeutralized(optOutAgent(t, types.AgentClaude, []string{"--setting-sources", "user,local"})); err == nil {
 		t.Error("claude re-adding local must be refused by the gate")
+	}
+	// pi: explicit -nc/--no-context-files preserves suppression -> admitted.
+	if !NeutralizesGateInstructions(optOutAgent(t, types.AgentPi, []string{"--no-context-files"})) {
+		t.Error("pi with an explicit --no-context-files must stay neutralized")
+	}
+	if !NeutralizesGateInstructions(optOutAgent(t, types.AgentPi, []string{"-nc"})) {
+		t.Error("pi with an explicit -nc must stay neutralized")
 	}
 }

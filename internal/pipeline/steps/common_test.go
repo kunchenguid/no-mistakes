@@ -754,6 +754,17 @@ func TestMatchIgnorePattern(t *testing.T) {
 		{"docs/README.md", "docs/*.md", true},
 		{"README.md", "docs/*.md", false},
 
+		// "*" never crosses a "/", on every host. This is the rule the
+		// ignore_patterns and review.path_instructions docs state, and it is why
+		// the matcher uses the slash-based path.Match: filepath.Match splits on
+		// os.PathSeparator, so on Windows these would all match and a rule
+		// scoped to one directory level would silently cover a whole subtree.
+		{"docs/guides/deep/notes.md", "docs/*.md", false},
+		{"internal/main.go", "**/*.go", true},
+		{"internal/scm/github/github.go", "**/*.go", false},
+		{"internal/scm/github/github.go", "internal/*", false},
+		{"internal/root.go", "internal/*", true},
+
 		// No match
 		{"main.go", "*.generated.go", false},
 		{"internal/app.go", "vendor/**", false},

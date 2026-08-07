@@ -156,7 +156,7 @@ func NeutralizesGateInstructions(a Agent) bool {
 // the target checkout does not neutralize that checkout's project
 // agent-instruction files. Callers must invoke it before launching any gate
 // agent so an unverified harness is refused with a clear error rather than run
-// unneutralized in the target checkout. Only codex and claude have a verified
+// unneutralized in the target checkout. Only codex, claude, and pi have a verified
 // neutralization knob today.
 func EnsureGateNeutralized(a Agent) error {
 	if a == nil {
@@ -167,8 +167,8 @@ func EnsureGateNeutralized(a Agent) error {
 	}
 	return fmt.Errorf("gate agent %q does not neutralize the target repository's project "+
 		"agent-instruction files (AGENTS.md/CLAUDE.md); refusing to launch it in the target "+
-		"checkout. Only codex and claude have a verified neutralization knob (and only when it "+
-		"is not overridden by agent_args_override); set 'agent' to codex or claude in "+
+		"checkout. Only codex, claude, and pi have a verified neutralization knob (and only when it "+
+		"is not overridden by agent_args_override); set 'agent' to codex, claude, or pi in "+
 		"~/.no-mistakes/config.yaml", a.Name())
 }
 
@@ -248,7 +248,7 @@ type InvocationWorkload struct {
 type Options struct {
 	ACPRegistryOverrides map[string]string
 	// DisableProjectSettings, when true, asks a supported adapter (codex,
-	// claude) to launch with the target repo's project-level agent
+	// claude, pi) to launch with the target repo's project-level agent
 	// settings/instructions suppressed. It is the resolved, trusted-only opt-out
 	// from config.Config; adapters without a verified suppression knob ignore it
 	// and are refused separately by EnsureGateNeutralized when the opt-out is on.
@@ -807,7 +807,7 @@ func NewWithOptions(name types.AgentName, bin string, extraArgs []string, opts O
 	case types.AgentOpenCode:
 		return &opencodeAgent{bin: bin, extraArgs: extraArgs}, nil
 	case types.AgentPi:
-		return &piAgent{bin: bin, extraArgs: extraArgs}, nil
+		return &piAgent{bin: bin, extraArgs: extraArgs, disableProjectSettings: opts.DisableProjectSettings}, nil
 	case types.AgentCopilot:
 		return &copilotAgent{bin: bin, extraArgs: extraArgs}, nil
 	default:

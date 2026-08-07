@@ -10,6 +10,8 @@ The default `agent: auto` setting picks the first supported native agent or ACP 
 
 The coding agent that calls `no-mistakes axi` drives approval gates, but it does not automatically become the pipeline agent that performs review, evidence testing, documentation, combined documentation-and-lint housekeeping, or fixes.
 Those jobs run in the daemon's disposable worktree through the configured pipeline agent.
+A validation-step agent inspects, fixes, and returns only its assigned phase; delivery requirements in user intent remain acceptance context, but the outer executor alone performs the other validation, push, PR, and CI phases.
+If that step attempts pipeline control, no-mistakes returns `error.code: nested_gate_context`; the agent must return control to the outer executor, while read-only `no-mistakes axi status`, `no-mistakes axi logs`, help, and `no-mistakes doctor` remain available.
 
 The agent is responsible for the parts of the gate that benefit from judgment:
 code review, evidence-oriented test validation, test or lint detection when you
@@ -18,7 +20,7 @@ when you leave prompts blank.
 
 Pipeline agent prompts also include a workspace-boundary preamble.
 It tells agents to keep intentional source, project, user-data, and system file writes inside the disposable worktree, avoid mutating system state such as Homebrew packages, `/Applications`, or global tool config, and treat that boundary as prompt steering rather than true enforcement.
-The only intentional out-of-worktree write it allows is test evidence under the managed temporary `no-mistakes-evidence` directory when a testing prompt asks for it; when in-repo evidence is enabled, test evidence stays inside the configured evidence directory instead.
+The only intentional out-of-worktree write it allows is test evidence under the managed temporary `no-mistakes-evidence` directory when a testing prompt asks for it.
 Incidental temp or cache writes from normal development tools are still allowed.
 Testing prompts also ask agents to remove transient working-tree artifacts they created, such as downloaded models, caches, build outputs, large binaries, or generated data directories, before reporting completion.
 
@@ -33,12 +35,12 @@ That last point matters: the agent helps fill in gaps, but explicit repo
 commands are still the strongest way to make the baseline gate predictable.
 When user intent is available, the test step may still invoke the configured agent after `commands.test` succeeds to gather evidence that demonstrates the change.
 That testing invocation is expected to leave only intentional source or test-file changes in the worktree, while preserving requested evidence files under the dedicated evidence directory.
-By default that directory is temporary and local to the machine; repos can opt into committed evidence with `test.evidence.store_in_repo`.
+That directory is always temporary and outside the worktree; GitHub repos can opt into publishing it to an orphan evidence branch with `test.evidence.store_in_repo`.
 
 ## Supported agents
 
 | Agent | Binary | Protocol |
-|---|---|---|
+| --- | --- | --- |
 | Claude | `claude` | Subprocess per invocation, JSONL streaming |
 | Gemini | `gemini` | Subprocess per invocation, JSONL streaming |
 | Codex | `codex` | Subprocess per invocation, JSONL events |
@@ -56,7 +58,7 @@ The daemon resolves the effective agent before creating pipeline step records, a
 This refusal also applies when deterministic test or lint commands are configured because review and documentation always require agent judgment, while rebase, PR, and CI paths may need an agent to resolve conflicts, generate content, or fix failures.
 
 | Surface or capability | Works without a runnable pipeline agent? | Behavior |
-|---|---:|---|
+| --- | ---: | --- |
 | Install, `init`, daemon lifecycle, `status`, `runs`, and `doctor` | Yes | Local setup and diagnostics remain available. `doctor` reports that gate validation is unavailable. |
 | Start or rerun a validation gate | No | The run fails before any pipeline step starts. |
 | Review | No | Requires agent judgment and structured findings. |
@@ -145,7 +147,7 @@ If your home directory consolidates `.claude` and `.agents` with symlinks, `init
 Re-run `no-mistakes init` after an upgrade to refresh that skill, including overwriting stale `SKILL.md` content from an older binary.
 Older versions vendored the skill into each initialized repo's `.claude/skills` and `.agents/skills`; those copies are no longer needed, and `init` prints a notice when it finds one so you can remove it.
 The skill drives `no-mistakes axi`, a non-interactive command surface that prints TOON to stdout and progress to stderr.
-When CI is green but the PR is still open, `axi run` and `axi respond` return `outcome: checks-passed` with a help line pointing at the PR instead of waiting for a human merge.
+When CI is ready - either its registered checks are green or the trusted default-branch config declares [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci) with no registered checks - but the PR is still open, `axi run` and `axi respond` return `outcome: checks-passed` with a help line pointing at the PR instead of waiting for a human merge. An empty check result without that declaration is not ready; see the [CI step reference](/no-mistakes/reference/pipeline-steps/#ci) for the readiness rules.
 That is a successful agent stopping point: report that the PR is ready and ask the user to review and merge it.
 Successful outcomes also instruct the agent to summarize the run for the user.
 When the pipeline applied fixes, successful outcomes include a `fixes` table listing each fix so the agent can acknowledge what it missed and the user can review them.
@@ -176,6 +178,7 @@ no-mistakes axi abort --run <id>
 Before any post-pipeline local commit or fresh run, read `branch_sync`.
 Only when its structured `next_action.code` is `sync`, run `no-mistakes axi sync` first.
 When `next_action.code` is `recover_custody` - a terminal run left unpublished pipeline commits preserved in the local gate - run `no-mistakes axi sync --recover` to return custody, or `no-mistakes rerun` to resume validating the preserved head.
+A `branch_sync.state` of `user_owned` means the run went terminal before changing the submitted head and cancellation released the branch: it is immediately usable and needs no sync action.
 When `next_action.code` is `continue_active_run`, run the reported command and keep driving the active run.
 If synchronization is blocked, process that state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
 Then commit follow-up work on top so every pipeline fix commit remains in the branch.
@@ -199,7 +202,8 @@ Five global config fields tune resolution and invocation, and the [Global Config
 
 ## Review session reuse
 
-With the default `session_reuse: true`, Claude and Codex keep one durable reviewer session and a separate review-fixer session per run, every rereview still evaluates the entire branch diff, and resume failures fall back to fresh same-role sessions instead of skipping review.
+With the default `session_reuse: true`, Claude and Codex keep one durable review-fixer session per run, and resume failures fall back to a fresh fixer session instead of skipping the fix turn.
+Review turns always run in fresh, session-free invocations: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them.
 The [`session_reuse` field reference](/no-mistakes/reference/global-config/#session_reuse) owns the exact reuse, fallback, privacy, and restart-recovery semantics.
 
 ## Agent interface
@@ -212,7 +216,7 @@ All agents implement the same interface. Each invocation receives:
 - **JSONSchema** - optional structured output schema for typed responses
 - **OnChunk** - callback for streaming text output to the TUI
 - **OnLifecycle** - callback for native subprocess start, exit, and retry activity that is recorded in step logs and AXI active-step status
-- **Session** - optional no-mistakes-owned native session identity for review-loop reuse
+- **Session** - optional no-mistakes-owned native session identity for review-fixer reuse
 - **Purpose** - local performance label for the pipeline duty served
 
 Each invocation returns:
@@ -253,7 +257,7 @@ Use `intent.disabled_readers` to disable specific transcript sources, or set `in
 ## Claude
 
 Spawns a `claude` subprocess for each invocation with `--output-format stream-json`. The print-mode user prompt is sent as text on stdin rather than placed in the process arguments. By default it also adds `--dangerously-skip-permissions`, unless you already set your own Claude permission flag through `agent_args_override`. Reads JSONL events from stdout. Supports native structured output via `--json-schema`.
-For review-loop reuse, Claude starts a stream-json session and resumes it with `claude -p --resume <id>`.
+For review-fixer reuse, Claude starts a stream-json session and resumes it with `claude -p --resume <id>`.
 
 ## Gemini
 
@@ -263,8 +267,8 @@ Spawns a `gemini` subprocess for each invocation with `--output-format stream-js
 
 Spawns a `codex` subprocess for each invocation with `exec --json`. When structured output is requested, no-mistakes also writes a normalized schema file and passes it with `--output-schema`. By default it also adds `--dangerously-bypass-approvals-and-sandbox`, unless you already set your own Codex approval or sandbox flag through `agent_args_override`. Reads JSONL events. Structured output is returned from the final `agent_message` text, with fallback parsing that accepts JSON fences, inline fence markers, or a final bare JSON object after prose, then validates the result against the normalized schema.
 Codex model and config overrides, such as `-m gpt-5.4`, `-c service_tier="priority"`, or `-c model_reasoning_effort="low"`, belong in global `agent_args_override.codex`.
-For review-loop reuse, Codex resumes the reported thread with `codex exec resume <id> <prompt>`.
-That resume command has a narrower flag surface than `codex exec`, so a resume that rejects an override falls back to a fresh same-role session rather than skipping the review turn.
+For review-fixer reuse, Codex resumes the reported thread with `codex exec resume <id> <prompt>`.
+That resume command has a narrower flag surface than `codex exec`, so a resume that rejects an override falls back to a fresh fixer session rather than skipping the fix turn.
 
 ## Rovo Dev
 
@@ -277,7 +281,7 @@ Starts a persistent HTTP server (`opencode serve`) on first use and reuses it ac
 ## Pi
 
 Spawns a `pi` subprocess for each invocation with `--mode json --no-session`.
-Any `agent_args_override.pi` flags are inserted before no-mistakes' managed flags.
+See [`agent_args_override`](/no-mistakes/reference/global-config/#agent_args_override) for Pi override precedence.
 Reads JSONL events from stdout and streams incremental text deltas to the TUI.
 When structured output is requested, no-mistakes injects the JSON schema into the prompt and validates the final text response.
 

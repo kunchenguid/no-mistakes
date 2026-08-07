@@ -15,6 +15,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -54,6 +55,13 @@ func TestPRStep_UpdatesExistingPR(t *testing.T) {
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
 
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
@@ -75,6 +83,9 @@ func TestPRStep_UpdatesExistingPR(t *testing.T) {
 	}
 	if !strings.Contains(ghLog, "--body") {
 		t.Errorf("expected --body flag in gh pr edit, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, noMistakesPRSignature) {
+		t.Errorf("expected updated PR body to include no-mistakes signature, got:\n%s", ghLog)
 	}
 
 	// Verify PR URL was stored
@@ -279,14 +290,17 @@ func TestPRStep_CreatesNewPR(t *testing.T) {
 	if !strings.Contains(ghLog, "pr create") {
 		t.Errorf("expected gh pr create to be called, got:\n%s", ghLog)
 	}
-	if strings.Contains(ghLog, "--title add feature --") {
-		t.Fatalf("expected fallback PR title to reject raw non-conventional commit summary, got:\n%s", ghLog)
+	if !strings.Contains(ghLog, "--title chore: update pull request --body") {
+		t.Fatalf("expected fallback PR title to make no scope claim, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "--title feat: add feature --body") {
-		t.Fatalf("expected fallback PR title to use release-triggering conventional commit format, got:\n%s", ghLog)
+	if strings.Contains(ghLog, "--title feat: add feature") {
+		t.Fatalf("expected fallback PR title to exclude commit-history scope, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "add feature\n\n## Risk Assessment\n\n⚠️ Medium: touches critical error handling") {
+	if !strings.Contains(ghLog, "## Risk Assessment\n\n⚠️ Medium: touches critical error handling") {
 		t.Fatalf("expected fallback PR body to append risk note under Risk Assessment heading, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "A\tfeature.txt") {
+		t.Fatalf("expected fallback PR body to derive scope from the final diff, got:\n%s", ghLog)
 	}
 
 	// Verify PR URL was stored
@@ -631,6 +645,13 @@ func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
 	if !strings.Contains(ghLog, wantOrder) {
 		t.Fatalf("expected testing section between risk assessment and pipeline, got:\n%s", ghLog)
 	}
+	// Regression guard (#605/firstmate #1577, #1609): the Pipeline section
+	// must carry the rich per-step fix detail (BuildPipelineSummary), not the
+	// compact status-only variant (BuildPipelineStatusSummary) whose
+	// <details> body is always empty and would never show this finding line.
+	if !strings.Contains(ghLog, "expected 429 got 200") {
+		t.Fatalf("expected rich per-step Pipeline detail with the Test step's finding, got:\n%s", ghLog)
+	}
 }
 
 func TestPRStep_UnwrapsNestedJSONBody(t *testing.T) {
@@ -780,6 +801,30 @@ func TestAssemblePRBody_ClampsWhenCoreAloneExceedsCap(t *testing.T) {
 	}
 }
 
+func TestAssemblePRBody_RetainsAttestationWhenCoreExceedsAzureCap(t *testing.T) {
+	t.Parallel()
+	sctx := &pipeline.StepContext{UserIntent: strings.Repeat("intent 😀 ", 1000)}
+	limit := scm.MaxPRBodyChars(scm.ProviderAzureDevOps)
+	steps := []*db.StepResult{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusFailed},
+	}
+	attestation := buildPipelineAttestation(steps, testPipelineHeadSHA)
+	pipelineMD := pipelineMarkdownForTest(strings.Repeat("review detail 😀 ", 1000))
+	pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature+"\n\n", noMistakesPRSignature+"\n\n"+attestation+"\n\n", 1)
+
+	got := assemblePRBody(sctx, "## What Changed\n\n"+strings.Repeat("change 😀 ", 1000), strings.Repeat("risk 😀 ", 1000), "", pipelineMD, limit)
+
+	if scm.PRBodyLen(got) > limit {
+		t.Fatalf("assembled body = %d units, want <= %d", scm.PRBodyLen(got), limit)
+	}
+	for _, want := range []string{"## Pipeline", noMistakesPRSignature, attestation} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("budgeted body dropped required pipeline content %q:\n%s", want, got)
+		}
+	}
+}
+
 func prTruncationTail() string {
 	// Mirror of scm's truncation marker for assertions; kept here so the test
 	// reads naturally without exporting the constant.
@@ -863,6 +908,47 @@ func TestAppendGeneratedSections_TruncatesPipelineUpdatesBeforeGitHubLimit(t *te
 	assertNoPartialRoundLinesForTest(t, got, rounds)
 	if strings.Count(got, "<details>") != strings.Count(got, "</details>") {
 		t.Fatalf("expected details tags to remain balanced, got:\n%s", got)
+	}
+}
+
+func TestAppendGeneratedSections_RetainsPipelineAttestationWhenTruncated(t *testing.T) {
+	steps := []*db.StepResult{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusSkipped},
+	}
+	attestation := buildPipelineAttestation(steps, testPipelineHeadSHA)
+	pipelineMD := pipelineMarkdownForTest(strings.Repeat("review round - "+strings.Repeat("x", 1000), 100))
+	pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature+"\n\n", noMistakesPRSignature+"\n\n"+attestation+"\n\n", 1)
+
+	got := appendGeneratedSections("## What Changed\n\n- summary", "", "", pipelineMD)
+
+	assertGitHubBodyLimitForTest(t, got)
+	if !strings.Contains(got, attestation) {
+		t.Fatalf("expected truncated PR body to retain the pipeline attestation, got:\n%s", got)
+	}
+}
+
+func TestAppendGeneratedSections_RetainsAttestationWhenEssentialSectionsOverflow(t *testing.T) {
+	steps := []*db.StepResult{
+		{StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{StepName: types.StepTest, Status: types.StepStatusFailed},
+	}
+	attestation := buildPipelineAttestation(steps, testPipelineHeadSHA)
+	pipelineMD := pipelineMarkdownForTest("review round 001")
+	pipelineMD = strings.Replace(pipelineMD, noMistakesPRSignature+"\n\n", noMistakesPRSignature+"\n\n"+attestation+"\n\n", 1)
+
+	got := appendGeneratedSections(
+		"## What Changed\n\n"+strings.Repeat("change detail\n", 5000),
+		strings.Repeat("risk detail ", 5000),
+		"## Testing\n\n"+strings.Repeat("test detail\n", 5000),
+		pipelineMD,
+	)
+
+	assertGitHubBodyLimitForTest(t, got)
+	for _, want := range []string{"## Pipeline", noMistakesPRSignature, attestation} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("budgeted body dropped required pipeline content %q:\n%s", want, got)
+		}
 	}
 }
 
@@ -1189,6 +1275,10 @@ func TestPRStep_CreateKeepsGeneratedSectionsAfterOversizedIntent(t *testing.T) {
 
 	body := readFakeGHBodyArg(t, logFile)
 	assertGitHubBodyLimitForTest(t, body)
+	attestation := parsePipelineAttestationForTest(t, body)
+	if attestation.HeadSHA != headSHA {
+		t.Fatalf("attested head = %q, want created PR head %q", attestation.HeadSHA, headSHA)
+	}
 	for _, want := range []string{
 		"## Intent",
 		"Keep generated sections visible.",
@@ -1334,8 +1424,7 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 
 	content := fallbackPRContent(
 		sctx,
-		"feature",
-		"abc123 add feature",
+		"A\tinternal/pipeline/steps/pr.go",
 		"✅ Low: generated PR body length guard only",
 		"## Testing\n\n- go test ./internal/pipeline/steps",
 		pipelineMarkdownForTest(rounds...),
@@ -1347,7 +1436,7 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 		"## Intent",
 		"Fallback intent survives.",
 		"## What Changed",
-		"add feature",
+		"internal/pipeline/steps/pr.go",
 		"## Risk Assessment",
 		"## Testing",
 		"earlier update rounds omitted",
@@ -1359,6 +1448,12 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 	}
 	if strings.Contains(content.Body, "review round 001") {
 		t.Fatal("expected oldest pipeline update to be omitted")
+	}
+	if strings.Contains(content.Body, "add feature") {
+		t.Fatalf("expected fallback body to exclude commit-history scope, got:\n%s", content.Body)
+	}
+	if content.Title != "chore: update pull request" {
+		t.Fatalf("fallback title = %q, want neutral title", content.Title)
 	}
 }
 
@@ -1373,6 +1468,24 @@ func pipelineMarkdownForTest(rounds ...string) string {
 	}
 	b.WriteString("</details>\n")
 	return b.String()
+}
+
+func parsePipelineAttestationForTest(t *testing.T, body string) pipelineAttestation {
+	t.Helper()
+	start := strings.Index(body, pipelineAttestationCommentPrefix)
+	if start < 0 {
+		t.Fatalf("PR body missing pipeline attestation:\n%s", body)
+	}
+	start += len(pipelineAttestationCommentPrefix)
+	end := strings.Index(body[start:], pipelineAttestationCommentClosingToken)
+	if end < 0 {
+		t.Fatalf("PR body contains unclosed pipeline attestation:\n%s", body)
+	}
+	var attestation pipelineAttestation
+	if err := json.Unmarshal([]byte(body[start:start+end]), &attestation); err != nil {
+		t.Fatalf("parse pipeline attestation: %v", err)
+	}
+	return attestation
 }
 
 func readFakeGHBodyArg(t *testing.T, logFile string) string {
@@ -1693,7 +1806,7 @@ func TestPRStep_SkipsBeforeBuildingContentWhenProviderCLIUnavailable(t *testing.
 	}
 }
 
-func TestPRStep_ExistingBranchUsesMergeBaseCommitLog(t *testing.T) {
+func TestPRStep_ExistingBranchFallbackUsesMergeBaseFinalDiff(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	gitCmd(t, dir, "init")
@@ -1731,11 +1844,14 @@ func TestPRStep_ExistingBranchUsesMergeBaseCommitLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	ghLog := string(logData)
-	if !strings.Contains(ghLog, "first feature commit") {
-		t.Errorf("expected PR body to include first feature commit, got:\n%s", ghLog)
+	if !strings.Contains(ghLog, "A\tfirst.txt") {
+		t.Errorf("expected PR body to include first final-diff path, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "second feature commit") {
-		t.Errorf("expected PR body to include second feature commit, got:\n%s", ghLog)
+	if !strings.Contains(ghLog, "A\tsecond.txt") {
+		t.Errorf("expected PR body to include second final-diff path, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "first feature commit") || strings.Contains(ghLog, "second feature commit") {
+		t.Errorf("expected PR body to derive scope from the final diff instead of commit history, got:\n%s", ghLog)
 	}
 }
 

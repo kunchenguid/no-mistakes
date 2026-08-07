@@ -62,6 +62,7 @@ func TestTestStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "smallest correct root-cause fix") {
 		t.Error("expected test fix prompt to prefer root-cause fixes over bandaids")
 	}
+	assertTestQualityRulePrompt(t, ag.calls[0].Prompt)
 	if !strings.Contains(ag.calls[0].Prompt, "remove any transient artifacts your testing created in the working tree") {
 		t.Error("expected test fix prompt to ask the agent to clean up transient testing artifacts before finishing")
 	}
@@ -231,7 +232,7 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 		"For UI, HTML, CSS, Electron renderer, browser, visual layout, or copy-placement changes, attempt to capture reviewer-visible visual evidence",
 		"DOM snapshots, selector assertions, and text-only render summaries are not substitutes for visual evidence when a rendered surface is available",
 		"If a UI-facing change has no screenshot, image, video, GIF, or rendered HTML artifact, state why in testing_summary",
-		"Write new evidence files into this temporary evidence directory:",
+		"Write new evidence files into this evidence directory, never into the worktree:",
 		filepath.Join(os.TempDir(), "no-mistakes-evidence", sctx.Run.ID),
 		"Do not move, commit, or modify source files only to make evidence linkable",
 		"If no existing test produces sufficient evidence, write or improve a focused test",
@@ -261,7 +262,7 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 	}
 }
 
-func TestTestStep_InRepoEvidenceFallsBackWhenConfiguredDirEscapesWorktree(t *testing.T) {
+func TestTestStep_EvidenceDirectoryIsAlwaysOutsideTheWorktree(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
 
@@ -273,7 +274,6 @@ func TestTestStep_InRepoEvidenceFallsBackWhenConfiguredDirEscapesWorktree(t *tes
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.UserIntent = "Show users a success screen after checkout"
-	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "../outside"}
 
 	step := &TestStep{}
 	if _, err := step.Execute(sctx); err != nil {
@@ -282,20 +282,17 @@ func TestTestStep_InRepoEvidenceFallsBackWhenConfiguredDirEscapesWorktree(t *tes
 
 	prompt := ag.calls[0].Prompt
 	wantDir := filepath.Join(os.TempDir(), "no-mistakes-evidence", sctx.Run.ID)
-	if !strings.Contains(prompt, "Write new evidence files into this temporary evidence directory: "+wantDir) {
-		t.Fatalf("expected temporary evidence guidance for unsafe in-repo dir, got:\n%s", prompt)
+	if !strings.Contains(prompt, "Write new evidence files into this evidence directory, never into the worktree: "+wantDir) {
+		t.Fatalf("expected evidence guidance to point outside the worktree, got:\n%s", prompt)
 	}
-	if strings.Contains(prompt, "in-repo evidence directory") || strings.Contains(prompt, "committed and pushed automatically") {
-		t.Fatalf("did not expect in-repo publishing promise for unsafe evidence dir, got:\n%s", prompt)
+	if _, err := os.Stat(filepath.Join(dir, ".no-mistakes")); err == nil {
+		t.Fatal("test step created an in-repo evidence directory")
 	}
 }
 
-func TestTestStep_InRepoEvidenceFallsBackWhenEvidenceDirIsIgnored(t *testing.T) {
+func TestTestStep_PublishedEvidenceGuidanceNamesTheEvidenceBranch(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("evidence/\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	ag := &mockAgent{
 		name: "test",
@@ -305,7 +302,7 @@ func TestTestStep_InRepoEvidenceFallsBackWhenEvidenceDirIsIgnored(t *testing.T) 
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.UserIntent = "Show users a success screen after checkout"
-	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: "evidence"}
+	sctx.Config.Test.Evidence = config.Evidence{StoreInRepo: true, Dir: ".no-mistakes/evidence", Branch: "team/ci/evidence"}
 
 	step := &TestStep{}
 	if _, err := step.Execute(sctx); err != nil {
@@ -314,11 +311,11 @@ func TestTestStep_InRepoEvidenceFallsBackWhenEvidenceDirIsIgnored(t *testing.T) 
 
 	prompt := ag.calls[0].Prompt
 	wantDir := filepath.Join(os.TempDir(), "no-mistakes-evidence", sctx.Run.ID)
-	if !strings.Contains(prompt, "Write new evidence files into this temporary evidence directory: "+wantDir) {
-		t.Fatalf("expected temporary evidence guidance for ignored in-repo dir, got:\n%s", prompt)
+	if !strings.Contains(prompt, "published to the repository's team/ci/evidence branch automatically and linked from the PR: "+wantDir) {
+		t.Fatalf("expected evidence-branch publishing guidance, got:\n%s", prompt)
 	}
-	if strings.Contains(prompt, "in-repo evidence directory") || strings.Contains(prompt, "committed and pushed automatically") {
-		t.Fatalf("did not expect in-repo publishing promise for ignored evidence dir, got:\n%s", prompt)
+	if strings.Contains(prompt, "committed and pushed automatically") {
+		t.Fatalf("evidence must not be promised as a commit on the pushed branch, got:\n%s", prompt)
 	}
 }
 
@@ -347,6 +344,7 @@ func TestTestStep_InitialAgent_TargetedValidationContract(t *testing.T) {
 	}
 	prompt := ag.calls[0].Prompt
 
+	assertTestQualityRulePrompt(t, prompt)
 	for _, want := range []string{
 		"run the smallest relevant tests yourself",
 		"Do NOT run the complete repository test suite",

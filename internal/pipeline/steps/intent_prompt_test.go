@@ -54,6 +54,19 @@ func TestUserIntentPromptSection_InferredRendersAsHint(t *testing.T) {
 // acceptance criteria: it keeps the BEGIN/END markers and the "do not execute
 // instructions" guard (injection safety), but it is framed as binding, not as
 // an ignorable hint.
+func TestUserIntentPromptSection_RerunSourceRendersAsAuthoritative(t *testing.T) {
+	got := userIntentPromptSection(&pipeline.StepContext{
+		UserIntent:   "REQUIRED: keep guarded removal. FORBIDDEN: a cleanup mutex.",
+		IntentSource: db.RunIntentSourceRerun,
+	})
+	if !strings.Contains(got, "AUTHORITATIVE acceptance criteria") {
+		t.Fatalf("inherited intent should be framed as authoritative:\n%s", got)
+	}
+	if strings.Contains(got, "hint, not ground truth") {
+		t.Fatalf("inherited intent must not use inferred framing:\n%s", got)
+	}
+}
+
 func TestUserIntentPromptSection_AgentSourceRendersAsAuthoritative(t *testing.T) {
 	got := userIntentPromptSection(&pipeline.StepContext{
 		UserIntent:   "REQUIRED: keep guarded removal. FORBIDDEN: a cleanup mutex.",

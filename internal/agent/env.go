@@ -3,9 +3,11 @@ package agent
 import "github.com/kunchenguid/no-mistakes/internal/git"
 
 // GateRoleEnvVar is exported into every spawned gate agent's environment as an
-// unspoofable-from-outside marker that the process is a no-mistakes gate agent
-// (a review/fix/document/test/lint/rebase/pr/ci invocation), NOT a fleet
-// operator. Its purpose is containment: when the target repository is itself an
+// coarse diagnostic marker that the process is a no-mistakes gate agent (a
+// review/fix/document/test/lint/rebase/pr/ci invocation), NOT a fleet operator.
+// It is defense in depth only: it can be removed, forged, or inherited, so
+// runtime authorization uses canonical managed Git identity plus authenticated
+// daemon peer process ancestry. Its purpose is containment: when the target repository is itself an
 // agent-orchestration harness (for example firstmate), the target's project
 // agent-instruction file can otherwise convince the gate agent it is the fleet
 // captain and drive it to spawn a crew and reset the shared branch it is

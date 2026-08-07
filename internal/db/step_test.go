@@ -234,6 +234,72 @@ func TestUpdateStepStatusWithDuration(t *testing.T) {
 	}
 }
 
+func TestParkStepForApproval_FindingsFailureRollsBackGate(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/findings-atomic", "https://example.com/repo.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "head", "base")
+	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	if _, err := d.sql.Exec(`
+		CREATE TRIGGER fail_findings_update
+		BEFORE UPDATE OF findings_json ON step_results
+		BEGIN
+			SELECT RAISE(FAIL, 'findings write failed');
+		END
+	`); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"items":[{"id":"review-1"}]}`
+
+	if err := d.ParkStepForApproval(run.ID, step.ID, types.StepStatusAwaitingApproval, 100, &findings); err == nil {
+		t.Fatal("expected findings persistence failure")
+	}
+	gotStep, err := d.GetStepResult(step.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotRun, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotStep.Status != types.StepStatusPending || gotStep.FindingsJSON != nil {
+		t.Fatalf("step was partially parked: %#v", gotStep)
+	}
+	if gotRun.AwaitingAgentSince != nil {
+		t.Fatal("run was marked awaiting agent after findings persistence failed")
+	}
+}
+
+func TestCompleteReviewStepIsAtomic(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/review-atomic", "https://example.com/repo.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "head", "base")
+	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	if err := d.StartStep(step.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.CompleteReviewStep(step.ID, "missing-run", "approved", 0, 10, "review.log"); err == nil {
+		t.Fatal("expected missing run to roll back review completion")
+	}
+	gotStep, _ := d.GetStepResult(step.ID)
+	if gotStep.Status != types.StepStatusRunning || gotStep.CompletedAt != nil {
+		t.Fatalf("failed transaction partially completed review: %#v", gotStep)
+	}
+	gotRun, _ := d.GetRun(run.ID)
+	if gotRun.ReviewApprovedHeadSHA != nil {
+		t.Fatalf("failed transaction created review authority: %#v", gotRun.ReviewApprovedHeadSHA)
+	}
+
+	if err := d.CompleteReviewStep(step.ID, run.ID, "approved", 0, 10, "review.log"); err != nil {
+		t.Fatal(err)
+	}
+	gotStep, _ = d.GetStepResult(step.ID)
+	gotRun, _ = d.GetRun(run.ID)
+	if gotStep.Status != types.StepStatusCompleted || gotRun.ReviewApprovedHeadSHA == nil || *gotRun.ReviewApprovedHeadSHA != "approved" {
+		t.Fatalf("atomic review completion = step %#v run %#v", gotStep, gotRun)
+	}
+}
+
 func TestFailStep(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

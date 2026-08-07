@@ -206,9 +206,13 @@ func stateReconcileEvent(event ipc.Event, runID string) bool {
 	if event.RunID != "" && event.RunID != runID {
 		return false
 	}
-	switch event.Type {
-	case ipc.EventRunCreated, ipc.EventRunUpdated, ipc.EventRunCompleted,
-		ipc.EventStepStarted, ipc.EventStepCompleted:
+	// The event taxonomy has one owner (ipc.ClassOf), so the daemon's overflow
+	// policy and this reconciliation policy cannot drift apart. Anything
+	// classified as a state transition, plus the daemon's own stream-gap
+	// signal, forces one authoritative read; an unrecognised type fails safe
+	// to state there and reconciles here rather than being ignored.
+	switch ipc.ClassOf(event.Type) {
+	case ipc.ClassState, ipc.ClassControl:
 		return true
 	default:
 		return false

@@ -17,11 +17,13 @@ CREATE TABLE IF NOT EXISTS runs (
     head_sha                TEXT NOT NULL,
     base_sha                TEXT NOT NULL,
     submitted_head_sha      TEXT,
+    review_approved_head_sha TEXT,
     status                  TEXT NOT NULL DEFAULT 'pending',
     pr_url                  TEXT,
     pr_state                TEXT,
     pr_state_observed_at    INTEGER,
     ci_ready_at             INTEGER,
+    ci_ready_no_ci          INTEGER NOT NULL DEFAULT 0,
     last_pushed_sha         TEXT,
     push_target_kind        TEXT,
     push_target_fingerprint TEXT,
@@ -29,6 +31,7 @@ CREATE TABLE IF NOT EXISTS runs (
     last_pushed_at          INTEGER,
     push_generation         INTEGER,
     push_active             INTEGER NOT NULL DEFAULT 0,
+    terminal_head_verified_at INTEGER,
     error                   TEXT,
     awaiting_agent_since INTEGER,
     parked_ms            INTEGER,
@@ -61,6 +64,7 @@ CREATE TABLE IF NOT EXISTS step_rounds (
     round                INTEGER NOT NULL,
     trigger_type         TEXT NOT NULL,
     findings_json        TEXT,
+    reviewed_head_sha    TEXT,
     user_findings_json   TEXT,
     selected_finding_ids TEXT,
     selection_source     TEXT,
@@ -140,15 +144,27 @@ var migrationStatements = []string{
 	`ALTER TABLE step_rounds ADD COLUMN selection_source TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN fix_summary TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN user_findings_json TEXT`,
+	// A parked round may retain the reviewed commit as a non-authoritative
+	// candidate. Only atomic review completion promotes it onto the run.
+	`ALTER TABLE step_rounds ADD COLUMN reviewed_head_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_score REAL`,
 	`ALTER TABLE runs ADD COLUMN awaiting_agent_since INTEGER`,
 	`ALTER TABLE runs ADD COLUMN parked_ms INTEGER`,
+	// The CI step's per-check rerun budget. It is durable because a run
+	// recovered after a daemon restart would otherwise get a fresh budget and
+	// could issue reruns beyond the documented limit; the reservation is
+	// written before the provider call, so a crash mid-request spends the
+	// budget rather than silently granting a free retry.
+	`ALTER TABLE runs ADD COLUMN ci_rerun_state TEXT`,
 	// Branch synchronization provenance is intentionally nullable. Historical
 	// rows stay unbound because mutable head_sha cannot prove a successful push.
 	`ALTER TABLE runs ADD COLUMN submitted_head_sha TEXT`,
+	// Review authority is nullable and never backfilled. A historical mutable
+	// head_sha cannot prove which exact commit a completed review approved.
+	`ALTER TABLE runs ADD COLUMN review_approved_head_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN last_pushed_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN push_target_kind TEXT`,
 	`ALTER TABLE runs ADD COLUMN push_target_fingerprint TEXT`,
@@ -156,9 +172,11 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN last_pushed_at INTEGER`,
 	`ALTER TABLE runs ADD COLUMN push_generation INTEGER`,
 	`ALTER TABLE runs ADD COLUMN push_active INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE runs ADD COLUMN terminal_head_verified_at INTEGER`,
 	`ALTER TABLE runs ADD COLUMN pr_state TEXT`,
 	`ALTER TABLE runs ADD COLUMN pr_state_observed_at INTEGER`,
 	`ALTER TABLE runs ADD COLUMN ci_ready_at INTEGER`,
+	`ALTER TABLE runs ADD COLUMN ci_ready_no_ci INTEGER NOT NULL DEFAULT 0`,
 	// Custody return is nullable: NULL means the pipeline still owns any
 	// unpublished head this run produced; a timestamp means an explicit
 	// guarded recovery ended that ownership (internal/branchsync).

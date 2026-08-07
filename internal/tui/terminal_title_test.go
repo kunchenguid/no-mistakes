@@ -124,6 +124,7 @@ func TestTerminalTitle_RunningStep(t *testing.T) {
 func TestTerminalTitle_CIChecksPassed(t *testing.T) {
 	run := testRunWithCI()
 	run.Steps[5].Status = types.StepStatusRunning
+	run.CIReady = true
 	m := NewModel("/tmp/sock", nil, run)
 	m.steps = run.Steps
 	m.logs = []string{

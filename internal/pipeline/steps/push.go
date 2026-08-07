@@ -2,8 +2,6 @@ package steps
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
@@ -20,6 +18,9 @@ type PushStep struct{}
 func (s *PushStep) Name() types.StepName { return types.StepPush }
 
 func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
+		return nil, err
+	}
 	ctx := sctx.Ctx
 	newHeadSHA := ""
 	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
@@ -38,10 +39,10 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		}
 	}
 
-	// Commit any uncommitted changes from agent fixes
-	if err := s.stageInRepoEvidence(sctx); err != nil {
-		return nil, err
-	}
+	// Commit any uncommitted changes from agent fixes. Test evidence is
+	// deliberately not among them: it is collected outside the worktree and
+	// published to the orphan evidence branch (internal/evidence), so no
+	// artifact ever enters the pushed branch or the default branch's history.
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if strings.TrimSpace(status) != "" {
 		sctx.Log("committing agent changes...")
@@ -76,6 +77,9 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err != nil {
 		return nil, fmt.Errorf("resolve head before push: %w", err)
 	}
+	if err := assertReviewApprovedPushHead(sctx, headBeingPushed); err != nil {
+		return nil, err
+	}
 
 	// Decide whether force-pushing would discard commits the pipeline never saw.
 	// The lease is anchored to the remote-tracking ref the rebase step freshly
@@ -92,7 +96,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	switch {
 	case decision.newBranch:
 		// New branch: regular push (no force needed).
-		if err := git.Push(ctx, sctx.WorkDir, pushURL, ref, "", false); err != nil {
+		if err := git.PushCommit(ctx, sctx.WorkDir, pushURL, headBeingPushed, ref, "", false); err != nil {
 			return nil, fmt.Errorf("push to %s: %w", pushTarget, err)
 		}
 	case decision.upToDate:
@@ -100,7 +104,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		// successful binding even though no objects needed to move.
 	default:
 		// Existing branch: force-with-lease anchored to the verified remote head.
-		if err := git.Push(ctx, sctx.WorkDir, pushURL, ref, decision.remoteSHA, true); err != nil {
+		if err := git.PushCommit(ctx, sctx.WorkDir, pushURL, headBeingPushed, ref, decision.remoteSHA, true); err != nil {
 			return nil, fmt.Errorf("push to %s: %w", pushTarget, err)
 		}
 	}
@@ -126,13 +130,11 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		}
 	}
 
-	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
-	if err != nil {
-		return nil, fmt.Errorf("resolve HEAD after push: %w", err)
-	}
-	if headSHA != sctx.Run.HeadSHA {
-		sctx.Run.HeadSHA = headSHA
-		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
+	// Persist the immutable source that was verified and delivered, never a
+	// fresh read of mutable worktree HEAD after the push.
+	if headBeingPushed != sctx.Run.HeadSHA {
+		sctx.Run.HeadSHA = headBeingPushed
+		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headBeingPushed); err != nil {
 			return nil, err
 		}
 	}
@@ -141,38 +143,45 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	return &pipeline.StepOutcome{}, nil
 }
 
-func (s *PushStep) stageInRepoEvidence(sctx *pipeline.StepContext) error {
-	ctx := sctx.Ctx
-	location := resolveTestEvidenceLocation(sctx.WorkDir, sctx.Run.Branch, sctx.Run.ID, sctx.Config.Test.Evidence)
-	if !location.StoreInRepo {
-		return nil
+func assertReviewApprovedPushHead(sctx *pipeline.StepContext, proposedHead string) error {
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		return fmt.Errorf("load durable review approval before push: %w", err)
 	}
-	if gitIgnoresPath(ctx, sctx.WorkDir, location.Dir) {
-		return nil
+	if run == nil || run.ReviewApprovedHeadSHA == nil || strings.TrimSpace(*run.ReviewApprovedHeadSHA) == "" {
+		return fmt.Errorf("refusing to push: run has no durably recorded review-approved head")
 	}
-	if !dirHasFiles(location.Dir) {
-		return nil
+	approvedHead := strings.TrimSpace(*run.ReviewApprovedHeadSHA)
+	if !isFullGitObjectID(approvedHead) {
+		return fmt.Errorf("refusing to push: durable review-approved head is malformed")
 	}
-	rel, err := filepath.Rel(sctx.WorkDir, location.Dir)
-	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return nil
+	resolved, err := git.Run(sctx.Ctx, sctx.WorkDir, "rev-parse", "--verify", approvedHead+"^{commit}")
+	if err != nil || !strings.EqualFold(strings.TrimSpace(resolved), approvedHead) {
+		return fmt.Errorf("refusing to push: durable review-approved head is unreachable")
 	}
-	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-f", "--", filepath.ToSlash(rel)); err != nil {
-		return fmt.Errorf("stage test evidence: %w", err)
+	if proposedHead != approvedHead {
+		if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", approvedHead, proposedHead); err != nil {
+			return fmt.Errorf("refusing to push: proposed head %s violates continuity with review-approved head %s (it is not an equal or descendant commit)", shortObjectID(proposedHead), shortObjectID(approvedHead))
+		}
 	}
 	return nil
 }
 
-func dirHasFiles(dir string) bool {
-	found := false
-	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || found {
-			return nil
+func isFullGitObjectID(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
 		}
-		if !d.IsDir() {
-			found = true
-		}
-		return nil
-	})
-	return found
+	}
+	return true
+}
+
+func shortObjectID(value string) string {
+	if len(value) > 12 {
+		return value[:12]
+	}
+	return value
 }

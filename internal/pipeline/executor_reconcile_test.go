@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -182,6 +183,85 @@ func TestExecutor_ReconcileErrorPreservesGateFailClosed(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("approval did not complete preserved gate")
+	}
+}
+
+func TestExecutor_FatalReconcileErrorFailsRun(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	step := &reconcilingApprovalStep{name: types.StepCI}
+	reconcileErr := error(fmt.Errorf("%w: head continuity lost", ErrFatalGateReconciliation))
+	step.err.Store(&reconcileErr)
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	exec.SetGateReconcileTimings(time.Millisecond, 50*time.Millisecond)
+
+	err := exec.Execute(context.Background(), run, repo, t.TempDir())
+	if !errors.Is(err, ErrFatalGateReconciliation) {
+		t.Fatalf("Execute() error = %v, want fatal reconciliation error", err)
+	}
+	got, dbErr := database.GetRun(run.ID)
+	if dbErr != nil {
+		t.Fatal(dbErr)
+	}
+	if got.Status != types.RunFailed || got.AwaitingAgentSince != nil {
+		t.Fatalf("run after fatal reconciliation = status %s awaiting %v", got.Status, got.AwaitingAgentSince)
+	}
+	if err := exec.Respond(types.StepCI, types.ActionApprove, nil); err == nil {
+		t.Fatal("fatal reconciliation left the gate approvable")
+	}
+}
+
+func TestExecutor_ResumeFatalReconcileErrorFailsRun(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	stepResult, err := database.InsertStepResult(run.ID, types.StepCI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(stepResult.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[{"id":"ci-1","severity":"warning","description":"waiting","action":"ask-user"}],"summary":"waiting"}`
+	if err := database.SetStepFindings(stepResult.ID, findings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertStepRound(stepResult.ID, 1, "initial", &findings, nil, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	step := &reconcilingApprovalStep{name: types.StepCI}
+	reconcileErr := error(fmt.Errorf("%w: head continuity lost", ErrFatalGateReconciliation))
+	step.err.Store(&reconcileErr)
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+
+	err = exec.Resume(context.Background(), run, repo, t.TempDir())
+	if !errors.Is(err, ErrFatalGateReconciliation) {
+		t.Fatalf("Resume() error = %v, want fatal reconciliation error", err)
+	}
+	got, dbErr := database.GetRun(run.ID)
+	if dbErr != nil {
+		t.Fatal(dbErr)
+	}
+	if got.Status != types.RunFailed || got.AwaitingAgentSince != nil || got.ParkedMS <= 0 {
+		t.Fatalf("recovered run after fatal reconciliation = status %s awaiting %v parked_ms %d", got.Status, got.AwaitingAgentSince, got.ParkedMS)
+	}
+	steps, dbErr := database.GetStepsByRun(run.ID)
+	if dbErr != nil {
+		t.Fatal(dbErr)
+	}
+	if len(steps) != 1 || steps[0].Status != types.StepStatusFailed {
+		t.Fatalf("recovered steps after fatal reconciliation = %+v", steps)
 	}
 }
 

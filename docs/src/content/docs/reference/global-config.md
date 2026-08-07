@@ -50,6 +50,9 @@ auto_fix:
   lint: 3
   ci: 3
 
+ci:
+  rerun_transient: 0
+
 commit:
   fix_message: "chore(no-mistakes-{{.Step}}): {{.Summary}}"
 
@@ -63,6 +66,7 @@ test:
   evidence:
     store_in_repo: false
     dir: .no-mistakes/evidence
+    branch: no-mistakes/evidence
 ```
 
 ## Fields
@@ -162,7 +166,7 @@ Use this to set model selection, service tier, reasoning effort, permission mode
 | Keys    | `claude`, `gemini`, `codex`, `rovodev`, `opencode`, `pi`, `copilot` |
 | Default | Empty (no extra flags)                                    |
 
-User-supplied flags are inserted ahead of no-mistakes' managed flags, so your choices usually take precedence. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
+User-supplied flags are normally inserted ahead of no-mistakes' managed flags, so your choices usually take precedence. Security suppression selected by trusted [`disable_project_settings`](/no-mistakes/reference/repo-config/#disable_project_settings) may be placed first while preserving a compatible operator pin. A few flags are reserved because no-mistakes depends on them to communicate with the agent - setting any of these returns a config error on load:
 
 | Agent name | Reserved flags                                                                                              |
 | ---------- | ----------------------------------------------------------------------------------------------------------- |
@@ -175,7 +179,7 @@ User-supplied flags are inserted ahead of no-mistakes' managed flags, so your ch
 | `copilot`  | `-p`, `--prompt`, `--output-format`, `--no-color`                                                          |
 
 For structured `codex` runs, no-mistakes also appends its own `--output-schema <tempfile>` after your overrides. Treat that flag as managed even though config validation does not currently reject it.
-The Claude and Codex session-control forms are reserved so no-mistakes can keep reviewer and fixer conversations role-isolated.
+The Claude and Codex session-control forms are reserved so no-mistakes can keep review-loop conversations deterministic: review turns stay session-free while the fixer keeps its own isolated durable session.
 
 Smart defaults:
 
@@ -276,17 +280,17 @@ Daemon log verbosity.
 
 ### session_reuse
 
-Per-run, per-role agent session reuse for the review loop.
+Per-run agent session reuse for the review loop's fixer role.
 
 |         |        |
 | ------- | ------ |
 | Type    | `bool` |
 | Default | `true` |
 
-When enabled and the pipeline agent supports native session resume (claude via `--resume`, codex via `exec resume`), each run keeps one durable reviewer session across the initial full review and every full rereview, and a separate durable fixer session across review-fix turns.
-The roles never share a session, other pipeline steps stay session-isolated in their own cold invocations, and different runs never reuse identities.
-Every review turn still performs a full review of the complete branch diff; only the reviewer's own prior context is carried.
-When resume is unavailable or fails, the invocation falls back to a cold run or a fresh same-role session and the fallback is recorded in the local `agent_invocations` performance record.
+When enabled and the pipeline agent supports native session resume (claude via `--resume`, codex via `exec resume`), each run keeps one durable fixer session across its review-fix turns.
+Review turns - the initial full review and every full rereview - always run as fresh, session-free invocations regardless of this setting: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them; cross-round review context travels only in the explicit sanitized round history.
+The fixer session is never lent to review turns, other pipeline steps stay session-isolated in their own cold invocations, and different runs never reuse identities.
+When resume is unavailable or fails, the fix turn falls back to a cold run or a fresh fixer session and the fallback is recorded in the local `agent_invocations` performance record.
 Session identities are persisted only as minimum local resume metadata, never as prompts or transcripts.
 The [daemon crash-recovery reference](/no-mistakes/concepts/daemon/#crash-recovery) owns which parked gates can resume or reconcile after a restart.
 Set `false` to force every agent invocation cold.
@@ -314,19 +318,39 @@ Legacy alias: `auto_fix.babysit`.
 
 These are global defaults. Per-repo config can override individual steps.
 
+### ci.rerun_transient
+
+How many times the CI step may re-run a single check the provider reported as cancelled before that check reaches an approval gate.
+
+| | |
+|---|---|
+| Type | `int` |
+| Default | `0` |
+| Range | `0` to `5`; values outside it are clamped |
+
+```yaml
+ci:
+  rerun_transient: 0
+```
+
+Each rerun is another provider-side workflow run billed to the repository being contributed to.
+Set `0` here to never spend someone else's CI minutes; this is the only place to make that choice for a repository whose default branch you do not control.
+
+The per-repo [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_transient) overrides this value and owns the classification, the trust boundary, and every case that skips the rerun.
+
 ### commit.fix_message
 
 Template for the subject of commits created by the shared Review, Test, Document, and Lint fix path.
 
 | | |
-|---|---|
+| --- | --- |
 | Type | `string` |
 | Default | `no-mistakes({{.Step}}): {{.Summary}}` |
 
 The template supports literal text and two Go-style placeholders:
 
 | Variable | Value |
-|---|---|
+| --- | --- |
 | `{{.Step}}` | Pipeline step name, such as `review`, `test`, `document`, or `lint` |
 | `{{.Summary}}` | Sanitized one-line summary returned by the fix agent, or the step's deterministic fallback summary |
 
@@ -376,16 +400,23 @@ By default, evidence artifacts stay in a temporary directory keyed by run ID and
 | ---- | -------- |
 | Type | `object` |
 
-| Field                         | Type     | Default                 | Description                                                           |
-| ----------------------------- | -------- | ----------------------- | --------------------------------------------------------------------- |
-| `test.evidence.store_in_repo` | `bool`   | `false`                 | Commit and push test evidence artifacts from inside the repo worktree |
-| `test.evidence.dir`           | `string` | `.no-mistakes/evidence` | Repo-relative parent directory used when `store_in_repo` is true      |
+| Field                         | Type     | Default                 | Description                                                                 |
+| ----------------------------- | -------- | ----------------------- | --------------------------------------------------------------------------- |
+| `test.evidence.store_in_repo` | `bool`   | `false`                 | Publish test evidence artifacts to the repository's orphan evidence branch  |
+| `test.evidence.dir`           | `string` | `.no-mistakes/evidence` | Directory prefix inside the evidence branch                                 |
+| `test.evidence.branch`        | `string` | `no-mistakes/evidence`  | Name of the orphan evidence branch                                          |
 
-When `store_in_repo` is true, the test step writes evidence under `<dir>/<branch-slug>` and the push step stages files from that directory before committing agent changes.
+The test step always collects evidence in a temporary directory outside the worktree, so artifacts never enter the branch under validation.
+When `store_in_repo` is true for a GitHub repository, the PR step copies that directory onto `branch` under `<dir>/<branch-slug>` in the code branch's push-target repository (the fork when fork routing is configured), pushes it, and links the artifacts from the pull request body.
+The branch is an orphan: it shares no history with your code branches, so evidence never reaches the default branch. Links use the evidence commit rather than the branch, so they keep resolving after later runs.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
-If `dir` is absolute, escapes the worktree, points into `.git`, crosses a symlink, or is ignored by Git, no-mistakes falls back to temporary evidence storage for that run.
+`branch` must be a valid Git branch name; an invalid value fails the config with the offending key and value.
+The publisher never force-pushes. It appends to the fetched evidence-branch tip with a fast-forward push, retries one lost race, and refuses to use the run branch, default branch, or an existing branch whose tip lacks the `.no-mistakes-evidence` marker.
+Publication is also refused when the remote cannot be read or pushed, an artifact exceeds 64 MiB, a run exceeds 500 files or 256 MiB, or another writer wins the retry. The PR body then keeps its local rendering instead of adding links that would not resolve.
+Evidence-branch publication currently supports GitHub links only. On other providers, no evidence branch is pushed and the PR body keeps its local rendering.
+Enabling this pushes a branch to your remote, so pick a `branch` name your CI workflows do not build.
 
-These are global defaults. Per-repo config can override either field.
+These are global defaults. Per-repo config can override each field, except `branch`, which is read only from the trusted default branch.
 
 ## Environment variables
 

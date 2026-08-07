@@ -16,6 +16,9 @@ type LintStep struct{}
 func (s *LintStep) Name() types.StepName { return types.StepLint }
 
 func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
+		return nil, err
+	}
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
 	lintCmd := sctx.Config.Commands.Lint

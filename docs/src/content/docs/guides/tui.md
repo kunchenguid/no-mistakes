@@ -117,6 +117,8 @@ After a fix cycle, press `d` to toggle the diff view:
 - Finding context line showing which finding you're viewing
 - Scroll position in the box title: `Diff (45/312)`
 
+The TUI loads this working-tree diff on demand when the fix-review gate opens. If loading either the authoritative run state or the diff fails, approval actions stay disabled and the action bar offers `r retry`. Diff previews are capped at 512 KiB; when a preview is truncated, the TUI shows a warning because approval still applies to the complete working-tree diff.
+
 ### Log tail
 
 During running steps, shows streaming agent output. Lines starting with `PASS` are green, `FAIL` are red, everything else is dim.
@@ -128,7 +130,7 @@ On narrow terminals, the log panel expands to fill the remaining vertical space 
 While the CI step is active, the TUI shows a dedicated CI panel instead of the generic findings view.
 It shows the PR label, the latest CI activity, and a log tail.
 When a real CI auto-fix attempt starts, the panel increments `CI auto-fixes: N`.
-Once checks are green and known mergeability is clear, the panel shows `✓ Checks passed` with `still monitoring until merged or closed`, and the terminal title switches to `Checks passed`.
+Once the CI monitor reports readiness and known mergeability is clear, the panel shows `✓ Checks passed` with `still monitoring until merged or closed`, and the terminal title switches to `Checks passed`. Readiness includes the trusted [`no_ci: true` declaration](/no-mistakes/reference/repo-config/#no_ci) when no checks are registered; an empty forge response alone is not ready.
 That text means the CI monitor is still active; it can still pause later if the configured idle timeout elapses with no base-branch movement.
 That ready signal clears if checks start running again, new failures appear, provider state becomes uncertain, or the PR is merged or closed.
 The ready signal is persisted, so a fresh attach shows `Checks passed` without depending on delivery of an earlier log line.
@@ -190,7 +192,7 @@ When the instruction editor is open, press `Ctrl+s` or `Ctrl+enter` to save, or 
 | `esc` | Exit diff view back to findings |
 | `?` | Toggle help overlay |
 | `y` | Toggle yolo mode, which auto-resolves paused steps |
-| `r` | Start a rerun after a failed or cancelled run |
+| `r` | Retry a failed fix-review state or diff load; otherwise start a rerun after a failed or cancelled run |
 | `u` | Refresh and confirm local branch synchronization, or confirm custody recovery, when offered |
 | `q` | Detach from TUI (or quit if run is done) |
 

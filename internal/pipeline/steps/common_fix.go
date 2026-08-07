@@ -58,14 +58,16 @@ func hasBlockingFindings(items []Finding) bool {
 }
 
 // assertPipelineHeadContinuity fails closed when the worktree HEAD is no longer
-// a descendant of the head the pipeline itself last recorded (sctx.Run.HeadSHA).
+// equal to or a descendant of the head the pipeline itself last recorded
+// (sctx.Run.HeadSHA). Every post-review step calls this guard at entry, and
+// commitAgentFixes calls it around commits that advance the recorded head.
 //
 // The pipeline advances HEAD only through its own commits, each of which updates
 // sctx.Run.HeadSHA in lockstep. If HEAD has diverged from that recorded head -
 // e.g. a concurrent process reset the shared worktree to a different commit -
 // then the reviewed change the pipeline approved is no longer in HEAD's history,
-// and committing on top of it would ship an unreviewed tree. The whole job of
-// this tool is to not lose people's code, so we refuse rather than proceed.
+// and continuing would ship an unreviewed tree. The whole job of this tool is
+// to not lose people's code, so we refuse rather than proceed.
 //
 // Anchor integrity: sctx.Run.HeadSHA is the correct, un-clobberable anchor. It
 // is the *recorded* head the pipeline itself produced at its last commit - held
@@ -76,11 +78,11 @@ func hasBlockingFindings(items []Finding) bool {
 // point the anchor still holds the reviewed head even after a clobber. The guard
 // deliberately compares the *recorded* head against the *live* worktree HEAD
 // (git.HeadSHA); it never derives the anchor from the mutable worktree, which
-// would be circular and defeatable. Because the guard sits at the very top of
-// commitAgentFixes - before any commit that would advance sctx.Run.HeadSHA - the
-// first pipeline commit after a clobber is caught while the anchor is still the
-// pre-clobber reviewed head; the anchor can never be advanced into a clobbered
-// lineage without first passing this check.
+// would be circular and defeatable. Because the guard runs at every post-review
+// step entry and at the very top of commitAgentFixes - before any commit that
+// would advance sctx.Run.HeadSHA - the next pipeline boundary after a clobber is
+// caught while the anchor is still the pre-clobber reviewed head; the anchor can
+// never be advanced into a clobbered lineage without first passing this check.
 //
 // This is what happened in run 01KXC3SD5NZYMERGDS68Z1C8ER: the review step
 // committed a correct fix, a sibling worktree sharing the bare repo reset HEAD
@@ -88,8 +90,8 @@ func hasBlockingFindings(items []Finding) bool {
 // clobber and shipped it. A forward-only agent commit (git rebase --continue,
 // etc.) keeps the recorded head as an ancestor and is allowed; a divergent
 // (sibling) reset or a backward reset both trip this guard. On any failure the
-// error propagates out of commitAgentFixes, so the step and the whole run abort
-// (executor.failRun) before push - nothing is committed or shipped.
+// step and the whole run abort (executor.failRun) before doing more work -
+// nothing is committed or shipped.
 func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.StepName) error {
 	recorded := strings.TrimSpace(sctx.Run.HeadSHA)
 	if recorded == "" {
@@ -97,7 +99,7 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 	}
 	currentHead, err := git.HeadSHA(sctx.Ctx, sctx.WorkDir)
 	if err != nil {
-		return fmt.Errorf("resolve head before %s commit: %w", stepName, err)
+		return fmt.Errorf("resolve head before %s step: %w", stepName, err)
 	}
 	if currentHead == recorded {
 		return nil
@@ -106,7 +108,7 @@ func assertPipelineHeadContinuity(sctx *pipeline.StepContext, stepName types.Ste
 	// live HEAD (a legitimate forward move). A non-ancestor result OR any git error
 	// (e.g. an unknown recorded object) aborts rather than proceeds.
 	if _, err := git.Run(sctx.Ctx, sctx.WorkDir, "merge-base", "--is-ancestor", recorded, currentHead); err != nil {
-		return fmt.Errorf("refusing to commit %s changes: worktree HEAD %s is not a descendant of the pipeline's recorded head %s; "+
+		return fmt.Errorf("refusing to run %s step: worktree HEAD %s is not a descendant of the pipeline's recorded head %s; "+
 			"the reviewed change was rewritten out-of-band and would be lost - aborting to protect it",
 			stepName, currentHead, recorded)
 	}

@@ -570,7 +570,7 @@ func TestAwaitDaemonRunRegistration_ErrorsWhenNoRunAppears(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	startTestDaemon(t, p, d)
 
@@ -604,7 +604,7 @@ func TestAwaitDaemonRunRegistration_UsesNMHomeInTimeoutError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	startTestDaemon(t, p, d)
 

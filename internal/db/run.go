@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -10,24 +11,30 @@ import (
 
 // Run represents a pipeline run.
 type Run struct {
-	ID                    string
-	RepoID                string
-	Branch                string
-	HeadSHA               string
-	BaseSHA               string
-	SubmittedHeadSHA      *string
-	Status                types.RunStatus
-	PRURL                 *string
-	PRState               *string
-	PRStateObservedAt     *int64
-	CIReadyAt             *int64
-	LastPushedSHA         *string
-	PushTargetKind        *string
-	PushTargetFingerprint *string
-	PushRef               *string
-	LastPushedAt          *int64
-	PushGeneration        *int64
-	PushActive            bool
+	ID               string
+	RepoID           string
+	Branch           string
+	HeadSHA          string
+	BaseSHA          string
+	SubmittedHeadSHA *string
+	// ReviewApprovedHeadSHA is the exact commit approved by the last
+	// successfully completed full review. It is nil for legacy runs and until
+	// review completes; mutable run/worktree heads never infer this authority.
+	ReviewApprovedHeadSHA  *string
+	Status                 types.RunStatus
+	PRURL                  *string
+	PRState                *string
+	PRStateObservedAt      *int64
+	CIReadyAt              *int64
+	CIReadyNoCI            bool
+	LastPushedSHA          *string
+	PushTargetKind         *string
+	PushTargetFingerprint  *string
+	PushRef                *string
+	LastPushedAt           *int64
+	PushGeneration         *int64
+	PushActive             bool
+	TerminalHeadVerifiedAt *int64
 	// CustodyReturnedAt is non-nil once a guarded branch-sync recovery
 	// explicitly ended this run's ownership of an unpublished pipeline head
 	// (terminal run whose head was never successfully pushed, or moved after
@@ -54,16 +61,16 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
 	return row.Scan(
-		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.SubmittedHeadSHA, &r.Status,
-		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt,
+		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.SubmittedHeadSHA, &r.ReviewApprovedHeadSHA, &r.Status,
+		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
-		&r.LastPushedAt, &r.PushGeneration, &r.PushActive,
+		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
 		&r.CustodyReturnedAt, &r.Error, &r.AwaitingAgentSince, &r.ParkedMS,
 		&r.Intent, &r.IntentSource, &r.IntentSessionID, &r.IntentScore,
 		&r.CreatedAt, &r.UpdatedAt,
@@ -72,6 +79,10 @@ func scanRun(row interface {
 
 // InsertRun creates a new run record.
 func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
+	return d.InsertRunWithIntent(repoID, branch, headSHA, baseSHA, nil)
+}
+
+func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent *RunIntent) (*Run, error) {
 	ts := now()
 	r := &Run{
 		ID:               newID(),
@@ -84,9 +95,15 @@ func (d *DB) InsertRun(repoID, branch, headSHA, baseSHA string) (*Run, error) {
 		CreatedAt:        ts,
 		UpdatedAt:        ts,
 	}
+	if intent != nil {
+		r.Intent = &intent.Summary
+		r.IntentSource = &intent.Source
+		r.IntentSessionID = &intent.SessionID
+		r.IntentScore = &intent.Score
+	}
 	_, err := d.sql.Exec(
-		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'none', ?, ?)`,
-		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.Status, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, submitted_head_sha, status, pr_state, intent, intent_source, intent_session_id, intent_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'none', ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.RepoID, r.Branch, r.HeadSHA, r.BaseSHA, headSHA, r.Status, r.Intent, r.IntentSource, r.IntentSessionID, r.IntentScore, r.CreatedAt, r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert run: %w", err)
@@ -199,16 +216,18 @@ func (d *DB) GetActiveRuns() ([]*Run, error) {
 
 // UpdateRunStatus updates a run's status and updated_at timestamp.
 func (d *DB) UpdateRunStatus(id string, status types.RunStatus) error {
-	_, err := d.sql.Exec(`UPDATE runs SET status = ?, push_active = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN 0 ELSE push_active END, updated_at = ? WHERE id = ?`, status, status, now(), id)
+	_, err := d.sql.Exec(`UPDATE runs SET status = ?, push_active = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN 0 ELSE push_active END, terminal_head_verified_at = NULL, updated_at = ? WHERE id = ?`, status, status, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run status: %w", err)
 	}
 	return nil
 }
 
-// UpdateRunPRURL sets the PR URL on a run.
+// UpdateRunPRURL sets the PR URL on a run. A delayed PR-step write must not
+// regress terminal lifecycle truth already observed by the CI monitor.
 func (d *DB) UpdateRunPRURL(id, prURL string) error {
-	_, err := d.sql.Exec(`UPDATE runs SET pr_url = ?, pr_state = 'open', pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, prURL, now(), now(), id)
+	ts := now()
+	_, err := d.sql.Exec(`UPDATE runs SET pr_url = ?, pr_state = CASE WHEN pr_state IN ('merged', 'closed') THEN pr_state ELSE 'open' END, pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, prURL, ts, ts, id)
 	if err != nil {
 		return fmt.Errorf("update run pr url: %w", err)
 	}
@@ -264,11 +283,127 @@ func (d *DB) SetRunPushActive(id string, active bool) error {
 }
 
 // UpdateRunPRState persists normalized lifecycle truth independently of logs.
+// A merged or closed PR is also the terminal outcome of the final CI monitor
+// step, so the PR observation and active-run finalization are committed in one
+// transaction. This makes the database authoritative even if execution stops
+// before the executor's ordinary follow-up completion write.
 func (d *DB) UpdateRunPRState(id, state string) error {
+	state = strings.ToLower(strings.TrimSpace(state))
 	ts := now()
-	_, err := d.sql.Exec(`UPDATE runs SET pr_state = ?, pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, state, ts, ts, id)
+	tx, err := d.sql.Begin()
 	if err != nil {
+		return fmt.Errorf("update run PR state: begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var current sql.NullString
+	if err := tx.QueryRow(`SELECT pr_state FROM runs WHERE id = ?`, id).Scan(&current); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return fmt.Errorf("update run PR state: read current state: %w", err)
+	}
+	state = monotonicPRState(current.String, state)
+	if _, err := tx.Exec(`UPDATE runs SET pr_state = ?, pr_state_observed_at = ?, updated_at = ? WHERE id = ?`, state, ts, ts, id); err != nil {
 		return fmt.Errorf("update run PR state: %w", err)
+	}
+	if terminalPRState(state) {
+		if err := finalizeTerminalPRRun(tx, id, ts); err != nil {
+			return fmt.Errorf("update run PR state: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("update run PR state: commit: %w", err)
+	}
+	return nil
+}
+
+// ReconcileTerminalPRRuns repairs active rows written by an older or
+// interrupted daemon after terminal PR truth became durable but before the
+// separate run completion write. It is called during exclusive daemon startup
+// before parked-run planning and generic crash recovery.
+func (d *DB) ReconcileTerminalPRRuns() (int, error) {
+	ts := now()
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("reconcile terminal PR runs: begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT id FROM runs WHERE status IN (?, ?) AND pr_state IN ('merged', 'closed')`, types.RunPending, types.RunRunning)
+	if err != nil {
+		return 0, fmt.Errorf("reconcile terminal PR runs: list runs: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("reconcile terminal PR runs: scan run: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("reconcile terminal PR runs: close rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("reconcile terminal PR runs: list runs: %w", err)
+	}
+
+	for _, id := range ids {
+		if err := finalizeTerminalPRRun(tx, id, ts); err != nil {
+			return 0, fmt.Errorf("reconcile terminal PR runs: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("reconcile terminal PR runs: commit: %w", err)
+	}
+	return len(ids), nil
+}
+
+func monotonicPRState(current, observed string) string {
+	current = strings.ToLower(strings.TrimSpace(current))
+	observed = strings.ToLower(strings.TrimSpace(observed))
+	switch {
+	case current == "merged":
+		return current
+	case observed == "merged":
+		return observed
+	case current == "closed":
+		return current
+	default:
+		return observed
+	}
+}
+
+func terminalPRState(state string) bool {
+	return state == "merged" || state == "closed"
+}
+
+func finalizeTerminalPRRun(tx *sql.Tx, id string, ts int64) error {
+	if _, err := tx.Exec(
+		`UPDATE step_results SET status = ?, exit_code = COALESCE(exit_code, 0), completed_at = COALESCE(completed_at, ?),
+			last_activity_at = ?, last_activity = ?, agent_pid = NULL
+		 WHERE run_id = ? AND step_name = ? AND status IN (?, ?, ?, ?)
+		   AND EXISTS (SELECT 1 FROM runs WHERE id = ? AND status IN (?, ?))`,
+		types.StepStatusCompleted, ts, ts, "status: completed", id, types.StepCI,
+		types.StepStatusRunning, types.StepStatusAwaitingApproval, types.StepStatusFixing, types.StepStatusFixReview,
+		id, types.RunPending, types.RunRunning,
+	); err != nil {
+		return fmt.Errorf("complete terminal CI step: %w", err)
+	}
+	if _, err := tx.Exec(
+		`UPDATE runs SET
+			status = CASE WHEN status IN (?, ?) THEN ? ELSE status END,
+			push_active = 0,
+			parked_ms = COALESCE(parked_ms, 0) + CASE
+				WHEN awaiting_agent_since IS NOT NULL AND ? > awaiting_agent_since
+				THEN (? - awaiting_agent_since) * 1000 ELSE 0 END,
+			awaiting_agent_since = NULL, updated_at = ?
+		 WHERE id = ?`,
+		types.RunPending, types.RunRunning, types.RunCompleted, ts, ts, ts, id,
+	); err != nil {
+		return fmt.Errorf("finalize terminal PR run: %w", err)
 	}
 	return nil
 }
@@ -276,13 +411,33 @@ func (d *DB) UpdateRunPRState(id, state string) error {
 // SetRunCIReady persists checks-passed readiness so fresh TUI and AXI attaches
 // do not depend on receiving a historical log line.
 func (d *DB) SetRunCIReady(id string, ready bool) error {
+	return d.SetRunCIReadyWithReason(id, ready, false)
+}
+
+func (d *DB) SetRunCIReadyWithReason(id string, ready, declaredNoCI bool) error {
+	readyValue := 0
+	declaredValue := 0
 	var readyAt any
 	if ready {
+		readyValue = 1
 		readyAt = now()
+		if declaredNoCI {
+			declaredValue = 1
+		}
 	}
-	_, err := d.sql.Exec(`UPDATE runs SET ci_ready_at = ?, updated_at = ? WHERE id = ? AND ((ci_ready_at IS NULL AND ? = 1) OR (ci_ready_at IS NOT NULL AND ? = 0))`, readyAt, now(), id, ready, ready)
+	_, err := d.sql.Exec(`UPDATE runs SET ci_ready_at = ?, ci_ready_no_ci = ?, updated_at = ? WHERE id = ? AND ((ci_ready_at IS NULL AND ? = 1) OR (ci_ready_at IS NOT NULL AND ? = 0) OR (COALESCE(ci_ready_no_ci, 0) != ?))`, readyAt, declaredValue, now(), id, readyValue, readyValue, declaredValue)
 	if err != nil {
 		return fmt.Errorf("set run CI ready: %w", err)
+	}
+	return nil
+}
+
+// UpdateRunReviewApprovedHeadSHA replaces the run's review authority with the
+// exact commit approved by the latest successfully completed full review.
+func (d *DB) UpdateRunReviewApprovedHeadSHA(id, headSHA string) error {
+	_, err := d.sql.Exec(`UPDATE runs SET review_approved_head_sha = ?, updated_at = ? WHERE id = ?`, headSHA, now(), id)
+	if err != nil {
+		return fmt.Errorf("update run review-approved head sha: %w", err)
 	}
 	return nil
 }
@@ -303,9 +458,27 @@ func (d *DB) UpdateRunError(id, errMsg string) error {
 
 // UpdateRunErrorStatus sets the error message and terminal status on a run.
 func (d *DB) UpdateRunErrorStatus(id, errMsg string, status types.RunStatus) error {
-	_, err := d.sql.Exec(`UPDATE runs SET error = ?, status = ?, push_active = 0, updated_at = ? WHERE id = ?`, errMsg, status, now(), id)
+	_, err := d.sql.Exec(`UPDATE runs SET error = ?, status = ?, push_active = 0, terminal_head_verified_at = NULL, updated_at = ? WHERE id = ?`, errMsg, status, now(), id)
 	if err != nil {
 		return fmt.Errorf("update run error: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) UpdateRunErrorStatusWithVerifiedHead(id, errMsg string, status types.RunStatus, headSHA string) error {
+	ts := now()
+	_, err := d.sql.Exec(`UPDATE runs SET error = ?, status = ?, head_sha = ?, push_active = 0, terminal_head_verified_at = ?, updated_at = ? WHERE id = ?`, errMsg, status, headSHA, ts, ts, id)
+	if err != nil {
+		return fmt.Errorf("update run error with verified head: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) UpdateRunStatusWithVerifiedHead(id string, status types.RunStatus, headSHA string) error {
+	ts := now()
+	_, err := d.sql.Exec(`UPDATE runs SET status = ?, head_sha = ?, push_active = 0, terminal_head_verified_at = ?, updated_at = ? WHERE id = ?`, status, headSHA, ts, ts, id)
+	if err != nil {
+		return fmt.Errorf("update run status with verified head: %w", err)
 	}
 	return nil
 }
@@ -317,6 +490,18 @@ func (d *DB) UpdateRunErrorStatus(id, errMsg string, status types.RunStatus) err
 // Prompt-construction code branches on this to frame an explicit intent as
 // authoritative acceptance criteria rather than a low-confidence hint.
 const RunIntentSourceAgent = "agent"
+
+// RunIntentSourceRerun marks an authoritative intent inherited from the run
+// selected for a rerun. It remains authoritative, but the distinct value keeps
+// inherited intent inspectable instead of confusing it with a new override.
+const RunIntentSourceRerun = "rerun"
+
+// IsAuthoritativeRunIntentSource reports whether a run's intent came from an
+// explicit operator/agent contract, either directly or through rerun
+// inheritance.
+func IsAuthoritativeRunIntentSource(source string) bool {
+	return source == RunIntentSourceAgent || source == RunIntentSourceRerun
+}
 
 // RunIntent carries the four intent-related columns persisted on a run.
 type RunIntent struct {
@@ -381,7 +566,9 @@ func (d *DB) CompleteRunAwaitingAgent(id string, ms int64) error {
 		ms = 0
 	}
 	_, err := d.sql.Exec(
-		`UPDATE runs SET awaiting_agent_since = NULL, parked_ms = COALESCE(parked_ms, 0) + ?, updated_at = ? WHERE id = ?`,
+		`UPDATE runs SET awaiting_agent_since = NULL,
+			parked_ms = COALESCE(parked_ms, 0) + CASE WHEN awaiting_agent_since IS NOT NULL THEN ? ELSE 0 END,
+			updated_at = ? WHERE id = ?`,
 		ms, now(), id,
 	)
 	if err != nil {
@@ -467,4 +654,32 @@ func recoveryExclusionClause(preserved map[string]struct{}) (string, []any) {
 		args = append(args, id)
 	}
 	return " AND id NOT IN (" + strings.Join(placeholders, ", ") + ")", args
+}
+
+// GetRunCIRerunState returns the CI step's persisted rerun budget for a run, or
+// the empty string when the run has never spent one. The payload is opaque
+// here: the CI step owns its shape, and the database only guarantees that what
+// was written survives a restart.
+func (d *DB) GetRunCIRerunState(id string) (string, error) {
+	var state sql.NullString
+	err := d.sql.QueryRow(`SELECT ci_rerun_state FROM runs WHERE id = ?`, id).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get run ci rerun state: %w", err)
+	}
+	return state.String, nil
+}
+
+// SetRunCIRerunState persists the CI step's rerun budget. The CI step calls
+// this before asking the provider to re-run a check, so a crash between the
+// reservation and the request costs the budget instead of handing the recovered
+// run a rerun the limit already accounted for.
+func (d *DB) SetRunCIRerunState(id, state string) error {
+	_, err := d.sql.Exec(`UPDATE runs SET ci_rerun_state = ?, updated_at = ? WHERE id = ?`, state, now(), id)
+	if err != nil {
+		return fmt.Errorf("set run ci rerun state: %w", err)
+	}
+	return nil
 }

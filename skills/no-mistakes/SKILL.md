@@ -11,6 +11,25 @@ user-invocable: true
 the configured push target. You drive it through the `no-mistakes axi` command family, which prints
 machine-readable [TOON](https://toonformat.dev) to stdout and progress to stderr.
 
+
+## Active validation-step boundary
+
+A no-mistakes validation-step agent is already inside an active outer run. It
+must inspect, fix, and return only its assigned phase. It must never initialize,
+start, reattach, rerun, respond to, synchronize, abort, eject, or directly push
+a no-mistakes pipeline. Delivery requirements in user intent remain
+acceptance context, but the outer executor alone performs the other validation,
+push, PR, and CI phases.
+
+`NO_MISTAKES_GATE` is fast diagnostic evidence, not authorization by
+itself. The runtime combines managed Git identity with authenticated process
+ancestry. If a pipeline-control command returns
+`error.code: nested_gate_context`, stop immediately and
+return control to the outer executor. Safe inspection remains available through
+`no-mistakes axi status`, `no-mistakes axi logs`, help, and
+`no-mistakes doctor`.
+
+
 When the user invokes `/no-mistakes`, report the outcome at the end. If the user
 asks for something specific, translate that request into the matching `axi run`
 flags yourself - for example, "skip the lint step" becomes `--skip=lint`. Run
@@ -36,9 +55,41 @@ task along with the command:
      non-default branch, so the work must land there before you run.
   3. **Then validate**, passing the user's task as your `--intent`. The task
      text is exactly what the user set out to accomplish, in their own words, so
-     it *is* the intent - pass it through, enriched with the decisions and
-     tradeoffs you made while doing the work (see
+     it *is* the intent - preserve requirements stated directly by the user,
+     including constraints, exclusions, acceptance criteria, and later decisions;
+     do not condense them into a diff summary or drop them while adding
+     implementation context. Enrich it with the decisions and tradeoffs you
+     made while doing the work (see
      [Intent is required](#intent-is-required)).
+
+
+## Test-quality rule
+
+Never add a test whose only evidence is that it opens, reads, greps, parses, or
+snapshots implementation source code and finds or omits particular strings,
+tokens, lines, commands, function names, prompt phrases, regex matches, AST
+shapes, or incidental snapshots. That does not prove behavior: matching text
+can be dead or commented out, and a behavior-preserving refactor can change it.
+
+Instead execute a public or executable interface and assert observable behavior,
+state, output, side effects, and failure modes. For machine-consumed declarative
+artifacts such as workflow YAML, JSON, policy, .gitignore, or generated
+configuration, invoke the real consumer when feasible or parse into a typed or
+normalized semantic model and assert meaning. A raw substring or regex over the
+file is still the anti-pattern.
+
+Reading a file is legitimate when the file is itself generated public output, a
+serialized protocol, persisted state, an intentional snapshot, or another
+explicitly owned text or byte contract. Name that contract, and do not use its
+contents as a proxy that unrelated code works. A natural-language prompt or
+instruction is not proven effective because its source contains a sentence.
+Deterministic CI may test the final emitted prompt delivered to an agent as an
+intentional generated interface; model interpretation belongs in
+development-only evaluation, not live-LLM CI.
+
+For a regression, reproduce the reported failure when feasible: the test should
+fail before the fix and pass after it.
+
 
 Everything below - preconditions, intent, the validate-and-decide loop - applies
 the same way once the work is committed on a feature branch.
@@ -162,12 +213,15 @@ Run the pipeline and decide on its findings as they come up:
       awaiting approval. You rarely need this; omit it to answer the active gate.
 3. Repeat step 2 until the output has an `outcome:` instead of a `gate:`. The
    outcomes are:
-   - `checks-passed` - the change is validated and CI is green, but the PR is
-     not merged yet. **You are done driving the pipeline.** Do not wait for the
-     merge: tell the user the PR is ready and ask them to review and merge it
-     (the PR link is in the `help` line). no-mistakes keeps monitoring the PR
-     in the background until it is merged, closed, or its configured idle
-     timeout elapses, so a human can watch it in the TUI.
+   - `checks-passed` - the change is validated and CI is green (or the
+     trusted default-branch config declares `no_ci: true` and no checks are
+     registered - the help line names that declaration when it applies), but
+     the PR is not merged yet. **You are done driving the pipeline.** Do not
+     wait for the merge: tell the user the PR is ready and ask them to review
+     and merge it (the PR link is in the `help` line). A generic empty forge
+     check list without that declaration is not ready. no-mistakes keeps
+     monitoring the PR in the background until it is merged, closed, or its
+     configured idle timeout elapses, so a human can watch it in the TUI.
    - `passed` - the changes cleared the gate and the PR was merged or closed.
    - `failed` or `cancelled` - they did not; read the output and address it.
      Fix whatever the output points at (a failing test, a lint error, a finding
@@ -183,15 +237,20 @@ Before any post-pipeline local commit or fresh run, read the structured `branch_
 Only when its `next_action.code` is `sync`, run `no-mistakes axi sync` first.
 That guarded sync may be a strict fast-forward or a content-equivalent diverged advance that anchors the pre-sync head before moving the branch with reset semantics; genuine divergence stays blocked.
 If it reports `next_action.code` is `continue_active_run`, the pipeline still owns the branch: run the reported command, keep driving the active run, and do not make local follow-up commits.
-When `next_action.code` is `recover_custody`, a terminal run left unpublished pipeline commits preserved in the local gate: run `no-mistakes axi sync --recover` to return custody and fast-forward to the preserved head, or `no-mistakes rerun` to resume validating it instead.
-A dirty or diverged worktree makes the recovery refuse with explicit choices; `--keep-local` keeps your current head while the preserved commits stay anchored under `refs/no-mistakes/recover/<run>`.
+When `next_action.code` is `recover_custody`, a terminal run left unpublished pipeline commits preserved in the local gate: run `no-mistakes axi sync --recover` to return custody and take the preserved head, or `no-mistakes rerun` to resume validating it instead.
+Recovery takes that head by fast-forward, or by adopting a diverged preserved head proven to carry every local change - the ordinary result of the pipeline rebasing your commits onto a newer base - after anchoring your pre-recovery head under `refs/no-mistakes/recover-local/<run>`.
+That proof is deliberately narrow, so a rebase whose fix rounds also rewrote your own lines refuses instead of being adopted: when nothing can tell a deliberate pipeline fix from a dropped change, the decision is yours.
+A `branch_sync.state` of `user_owned` means the run went terminal before changing the submitted head and cancellation released the branch: the exact branch and head are yours and immediately usable for whichever delivery path is authorized - no sync action is needed, and a repeated `--recover` there is a harmless no-op.
+A dirty worktree, or divergence that cannot be proven contained, makes the recovery refuse with explicit choices; `--keep-local` keeps your current head while the preserved commits stay anchored under `refs/no-mistakes/recover/<run>`.
 If synchronization is blocked, process that structured state instead of improvising reset, stash, merge, rebase, force, or branch replacement.
 After synchronization, commit the follow-up on top and re-run `no-mistakes axi run --intent "..."` with the original user intent.
 This preserves every prior gate-fix commit regardless of its configured subject.
 
 The CI step deliberately keeps watching the PR after checks pass, so
-`axi run` returns `checks-passed` the moment checks are green rather than
+`axi run` returns `checks-passed` the moment checks are green (or a trusted
+`no_ci: true` declaration covers a zero-check repository) rather than
 blocking on the human merge. Never poll or re-run waiting for the merge yourself.
+Never treat "no CI checks reported" alone as green.
 
 Because that monitor stays live, a PR that falls behind the default branch or
 hits a merge conflict after checks pass - commonly because another PR merged

@@ -1994,7 +1994,10 @@ func waitForStepStatus(t *testing.T, h *Harness, branch string, stepName types.S
 func assertSupersededRunCancellation(t *testing.T, h *Harness) {
 	t.Helper()
 	slowCommand := filepath.Join(h.BinDir, "nm-superseded-test-e2e")
-	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 10\n"), 0o755); err != nil {
+	// Keep the first run deterministically active even when the full e2e suite
+	// is CPU-saturated. Cancellation reaps the process group, so this does not
+	// add wall time on the passing path.
+	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 120\n"), 0o755); err != nil {
 		t.Fatalf("write superseded slow test command: %v", err)
 	}
 	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-superseded-test-e2e\n  lint: true\n"

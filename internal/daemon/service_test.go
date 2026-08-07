@@ -44,11 +44,19 @@ func TestStart_ReinstallsManagedServiceWhenPlistChanged(t *testing.T) {
 	}
 
 	var commands []string
+	running := true
 	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
-		commands = append(commands, name+" "+strings.Join(args, " "))
+		command := name + " " + strings.Join(args, " ")
+		commands = append(commands, command)
+		if strings.Contains(command, "launchctl bootout ") {
+			running = false
+		}
+		if strings.Contains(command, "launchctl kickstart ") {
+			running = true
+		}
 		return nil, nil
 	}
-	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return running, nil }
 
 	if err := Start(p); err != nil {
 		t.Fatalf("Start should reload and succeed when plist changed, got %v", err)
@@ -192,10 +200,18 @@ func TestStartPreservesInstalledExecutableWhenRefreshingLaunchAgent(t *testing.T
 		t.Fatal(err)
 	}
 
+	running := true
 	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
+		command := name + " " + strings.Join(args, " ")
+		if strings.Contains(command, "launchctl bootout ") {
+			running = false
+		}
+		if strings.Contains(command, "launchctl kickstart ") {
+			running = true
+		}
 		return nil, nil
 	}
-	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return running, nil }
 
 	if err := Start(p); err != nil {
 		t.Fatalf("Start should refresh stale plist: %v", err)
@@ -239,11 +255,19 @@ func TestStartRestartsSystemdUnitWhenDefinitionChanged(t *testing.T) {
 	}
 
 	var commands []string
+	running := true
 	serviceCommandRunner = func(name string, args ...string) ([]byte, error) {
-		commands = append(commands, name+" "+strings.Join(args, " "))
+		command := name + " " + strings.Join(args, " ")
+		commands = append(commands, command)
+		switch command {
+		case "systemctl --user stop " + systemdServiceName(p):
+			running = false
+		case "systemctl --user restart " + systemdServiceName(p):
+			running = true
+		}
 		return nil, nil
 	}
-	daemonHealthCheck = func(*paths.Paths) (bool, error) { return true, nil }
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return running, nil }
 
 	if err := Start(p); err != nil {
 		t.Fatalf("Start should restart stale systemd unit, got %v", err)
@@ -1091,6 +1115,71 @@ func TestStopFallsBackToDetachedDaemonWhenManagedStopFails(t *testing.T) {
 	_ = os.Remove(filepath.Dir(unitPath))
 	_ = os.Remove(filepath.Dir(filepath.Dir(unitPath)))
 	_ = os.Remove(filepath.Dir(filepath.Dir(filepath.Dir(unitPath))))
+}
+
+func TestManagedStopErrorsStillWaitForCapturedDaemonExit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		stop func(*paths.Paths) error
+	}{
+		{name: "stop", stop: Stop},
+		{name: "managed restart handoff", stop: stopCurrentDaemonBeforeManagedRestart},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := paths.WithRoot(filepath.Join(t.TempDir(), "nm-home"))
+			if err := p.EnsureDirs(); err != nil {
+				t.Fatal(err)
+			}
+			home := t.TempDir()
+			startedAt := time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC)
+			writeDaemonPIDRecord(t, p.PIDFile(), daemonPIDFile{PID: 4242, StartedAt: startedAt})
+
+			cleanup := stubServiceRuntime(t)
+			defer cleanup()
+			runtimeGOOS = "linux"
+			serviceUserHomeDir = func() (string, error) { return home, nil }
+			daemonHealthCheck = func(*paths.Paths) (bool, error) { return false, nil }
+
+			unitPath := filepath.Join(home, ".config", "systemd", "user", systemdServiceName(p))
+			if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(unitPath, []byte("WorkingDirectory="+p.Root()+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			serviceCommandRunner = func(string, ...string) ([]byte, error) {
+				return nil, fmt.Errorf("user manager unavailable")
+			}
+			oldStartTime := daemonProcessStartTime
+			oldProcessRunning := daemonProcessRunning
+			daemonProcessStartTime = func(pid int) (time.Time, error) {
+				if pid != 4242 {
+					t.Fatalf("daemonProcessStartTime pid = %d, want 4242", pid)
+				}
+				return startedAt, nil
+			}
+			probes := 0
+			daemonProcessRunning = func(pid int) (bool, error) {
+				if pid != 4242 {
+					t.Fatalf("daemonProcessRunning pid = %d, want 4242", pid)
+				}
+				probes++
+				return false, nil
+			}
+			t.Cleanup(func() {
+				daemonProcessStartTime = oldStartTime
+				daemonProcessRunning = oldProcessRunning
+			})
+
+			if err := tc.stop(p); err != nil {
+				t.Fatalf("stop should succeed after confirming daemon exit: %v", err)
+			}
+			if probes == 0 {
+				t.Fatal("stop returned without probing the captured daemon process")
+			}
+		})
+	}
 }
 
 func TestStopFallsBackToDetachedDaemonOnWindowsWithoutManagedService(t *testing.T) {

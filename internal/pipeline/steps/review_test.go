@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,6 +85,7 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "leave the same class of bug likely elsewhere") {
 		t.Error("expected review fix prompt to avoid narrow fixes that leave systemic bugs")
 	}
+	assertTestQualityRulePrompt(t, ag.calls[0].Prompt)
 	if len(ag.calls[0].JSONSchema) == 0 {
 		t.Error("expected fix call to request structured JSON output")
 	}
@@ -102,6 +104,8 @@ func TestReviewStep_FixMode(t *testing.T) {
 	if !strings.Contains(ag.calls[1].Prompt, "inspect surrounding code, call sites, shared helpers, tests, and invariants") {
 		t.Error("expected review prompt to allow surrounding-code inspection for root cause")
 	}
+	assertTestQualityRulePrompt(t, ag.calls[1].Prompt)
+	assertTestQualityReviewerAction(t, ag.calls[1].Prompt)
 	if status := gitStatusPorcelain(t, dir); status != "" {
 		t.Fatalf("expected clean worktree after fix commit, got %q", status)
 	}
@@ -110,6 +114,102 @@ func TestReviewStep_FixMode(t *testing.T) {
 	}
 	if branchSHA := gitCmd(t, dir, "rev-parse", "refs/heads/feature"); branchSHA != sctx.Run.HeadSHA {
 		t.Fatalf("branch SHA = %s, want %s", branchSHA, sctx.Run.HeadSHA)
+	}
+	if outcome.ReviewApprovedHeadSHA != sctx.Run.HeadSHA {
+		t.Fatalf("rereview captured approved head %s, want %s", outcome.ReviewApprovedHeadSHA, sctx.Run.HeadSHA)
+	}
+}
+
+// A deterministic fake finding exercises the ordinary review gate, repair,
+// and rereview flow without claiming that the fake agent can judge tests.
+func TestReviewStep_SourceContentFindingFollowsNormalFixFlow(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	calls := 0
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(_ context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			calls++
+			switch calls {
+			case 1:
+				assertTestQualityRulePrompt(t, opts.Prompt)
+				assertTestQualityReviewerAction(t, opts.Prompt)
+				output, _ := json.Marshal(Findings{Items: []Finding{{
+					ID:          "source-content-only-test",
+					Severity:    "warning",
+					Action:      types.ActionAutoFix,
+					File:        "app_test.go",
+					Description: "new test only greps implementation source for a required token",
+				}}})
+				return &agent.Result{Output: output}, nil
+			case 2:
+				assertTestQualityRulePrompt(t, opts.Prompt)
+				if err := os.WriteFile(filepath.Join(dir, "semantic_test.go"), []byte("package app\n"), 0o644); err != nil {
+					return nil, err
+				}
+				return &agent.Result{Output: json.RawMessage(`{"summary":"replace source test"}`)}, nil
+			case 3:
+				assertTestQualityRulePrompt(t, opts.Prompt)
+				assertTestQualityReviewerAction(t, opts.Prompt)
+				output, _ := json.Marshal(Findings{Summary: "clean"})
+				return &agent.Result{Output: output}, nil
+			default:
+				return nil, fmt.Errorf("unexpected agent call %d", calls)
+			}
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	step := &ReviewStep{}
+
+	initial, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !initial.NeedsApproval || !initial.AutoFixable {
+		t.Fatalf("initial source-content finding should use the normal repair gate, got %+v", initial)
+	}
+
+	sctx.Fixing = true
+	sctx.PreviousFindings = initial.Findings
+	fixed, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixed.NeedsApproval {
+		t.Fatalf("clean rereview after repair should not remain gated, got %+v", fixed)
+	}
+	if calls != 3 {
+		t.Fatalf("agent calls = %d, want review, fix, rereview", calls)
+	}
+}
+
+func TestReviewStep_ConcurrentHeadResetCannotGainApproval(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, reviewedHead := setupGitRepo(t)
+	tree := gitCmd(t, dir, "rev-parse", baseSHA+"^{tree}")
+	divergentHead := gitCmd(t, dir, "commit-tree", tree, "-p", baseSHA, "-m", "divergent replacement")
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+			gitCmd(t, dir, "reset", "--hard", divergentHead)
+			findings, _ := json.Marshal(Findings{Summary: "all clear"})
+			return &agent.Result{Output: findings}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, reviewedHead, config.Commands{})
+
+	outcome, err := (&ReviewStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gitCmd(t, dir, "rev-parse", "HEAD"); got != divergentHead {
+		t.Fatalf("HEAD = %s, want concurrent replacement %s", got, divergentHead)
+	}
+	if outcome.ReviewApprovedHeadSHA != reviewedHead {
+		t.Fatalf("approved head = %s, want review target %s", outcome.ReviewApprovedHeadSHA, reviewedHead)
 	}
 }
 
@@ -216,6 +316,92 @@ func TestReviewStep_DurableFixAdequacyContract(t *testing.T) {
 	}
 }
 
+// The rereview that certifies a fix round examines code the pipeline itself
+// authored, moments earlier, to the previous review turn's prescription. The
+// prompt must reframe that code as unreviewed new work under the same
+// adversarial standard as the author's changes - prior findings and fix
+// summaries are claims, and a same-round test is part of the claim, not
+// independent proof. This pins the contract wording; the initial review must
+// stay unchanged. Class regression for a pipeline-authored defect (code plus
+// blessing test written by one fix round) certified with zero findings.
+func TestReviewStep_RereviewTreatsFixRoundsAsPipelineAuthoredCode(t *testing.T) {
+	t.Parallel()
+	provenanceContract := []string{
+		"Fix-round provenance:",
+		"was authored by the pipeline's own fixer agent, not by the change author",
+		"same adversarial standard as the author's original changes",
+		"unreviewed new code, not a settled resolution of the findings that prompted it",
+		"Prior findings and fix summaries are claims, not evidence",
+		"not merely whether it implements what was prescribed",
+		"part of that round's claim, not independent proof",
+		"whether it could still pass with the code wrong",
+	}
+
+	t.Run("rereview_carries_the_provenance_contract", func(t *testing.T) {
+		t.Parallel()
+		dir, baseSHA, headSHA := setupGitRepo(t)
+		gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+		callCount := 0
+		ag := &mockAgent{
+			name: "test",
+			runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				callCount++
+				if callCount == 1 {
+					os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644)
+					return &agent.Result{Output: json.RawMessage(`{"summary":"address findings"}`)}, nil
+				}
+				j, _ := json.Marshal(Findings{Summary: "clean"})
+				return &agent.Result{Output: j}, nil
+			},
+		}
+
+		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		sctx.Fixing = true
+		sctx.PreviousFindings = `{"findings":[{"id":"review-1","severity":"warning","file":"main.go","description":"possible nil deref"}],"summary":"1 issue"}`
+
+		if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+			t.Fatal(err)
+		}
+		if len(ag.calls) != 2 {
+			t.Fatalf("expected fix + rereview calls, got %d", len(ag.calls))
+		}
+		rereviewPrompt := ag.calls[1].Prompt
+		for _, want := range provenanceContract {
+			if !strings.Contains(rereviewPrompt, want) {
+				t.Errorf("rereview prompt missing provenance contract %q:\n%s", want, rereviewPrompt)
+			}
+		}
+		if strings.Contains(ag.calls[0].Prompt, "Fix-round provenance:") {
+			t.Error("fixer prompt must not carry the reviewer's provenance contract")
+		}
+	})
+
+	t.Run("initial_review_stays_unchanged", func(t *testing.T) {
+		t.Parallel()
+		dir, baseSHA, headSHA := setupGitRepo(t)
+
+		findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+		ag := &mockAgent{
+			name: "test",
+			runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: findingsJSON}, nil
+			},
+		}
+
+		sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+		if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+			t.Fatal(err)
+		}
+		if len(ag.calls) != 1 {
+			t.Fatalf("expected 1 review call, got %d", len(ag.calls))
+		}
+		if strings.Contains(ag.calls[0].Prompt, "Fix-round provenance:") {
+			t.Errorf("initial review prompt must not carry the fix-round provenance contract:\n%s", ag.calls[0].Prompt)
+		}
+	})
+}
+
 func TestReviewStep_FixMode_RequiresPreviousFindings(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -309,6 +495,7 @@ func TestReviewStep_ConformanceObligationTracksIntentProvenance(t *testing.T) {
 		wantAuthority   bool
 	}{
 		{"agent source is authoritative", db.RunIntentSourceAgent, true, true},
+		{"inherited source is authoritative", db.RunIntentSourceRerun, true, true},
 		{"inferred source stays a hint", "claude", false, false},
 	}
 	for _, tc := range cases {
@@ -413,6 +600,130 @@ func TestReviewStep_RereviewFlagsIntentContradictionAsAskUser(t *testing.T) {
 	}
 	if !hasAskUserFindings(t, outcome.Findings) {
 		t.Errorf("expected an ask-user finding in outcome, got %s", outcome.Findings)
+	}
+}
+
+// reviewPromptFor runs one clean review turn against a fresh copy of the
+// template repo with the given path instructions and returns the review prompt
+// the agent received.
+func reviewPromptFor(t *testing.T, rules []config.PathInstruction) string {
+	t.Helper()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			j, _ := json.Marshal(Findings{Summary: "clean"})
+			return &agent.Result{Output: j}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Review = config.Review{PathInstructions: rules}
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 review call, got %d", len(ag.calls))
+	}
+	return ag.calls[0].Prompt
+}
+
+// A repository with no review.path_instructions must get the review prompt it
+// got before the setting existed. The matched-rule prompt is asserted to be the
+// unconfigured prompt plus the appended section and nothing else, which proves
+// the feature only ever appends.
+func TestReviewStep_PathInstructionsLeaveUnconfiguredPromptUnchanged(t *testing.T) {
+	t.Parallel()
+
+	unconfigured := reviewPromptFor(t, nil)
+	if strings.Contains(unconfigured, config.ReviewPathInstructionsHeading) {
+		t.Fatalf("unconfigured review prompt carries the path-instructions heading:\n%s", unconfigured)
+	}
+
+	// Configured but matching nothing in this diff: still unchanged.
+	unmatched := reviewPromptFor(t, []config.PathInstruction{
+		{Path: "internal/scm/**", Instructions: "Credential-carrying URLs must go through internal/safeurl."},
+	})
+	if unmatched != unconfigured {
+		t.Fatalf("a non-matching rule changed the review prompt:\n%q", unmatched)
+	}
+
+	matched := reviewPromptFor(t, []config.PathInstruction{
+		{Path: "*.txt", Instructions: "Fixture files carry no product behavior."},
+	})
+	want := unconfigured + wantSection(wantBlock("*.txt", "feature.txt", "Fixture files carry no product behavior."))
+	if matched != want {
+		t.Fatalf("matched review prompt = %q, want the unconfigured prompt plus the appended section", matched)
+	}
+}
+
+// Only the blocks whose glob matches a changed path reach the reviewer, in
+// config order, each labelled with the scope it was selected for.
+func TestReviewStep_AppendsMatchedPathInstructionsOnly(t *testing.T) {
+	t.Parallel()
+
+	unconfigured := reviewPromptFor(t, nil)
+	prompt := reviewPromptFor(t, []config.PathInstruction{
+		{Path: "docs/**", Instructions: "Prose changes only. Do not request test coverage."},
+		{Path: "feature.txt", Instructions: "Fixture files carry no product behavior."},
+		{Path: "feature.txt", Instructions: "Fixture files carry no product behavior."},
+		{Path: "*.txt", Instructions: "Every fixture edit needs a reason."},
+		{Path: "base.txt", Instructions: "Base fixtures are shared; flag every edit."},
+	})
+
+	want := unconfigured + wantSection(
+		wantBlock("feature.txt", "feature.txt", "Fixture files carry no product behavior."),
+		wantBlock("*.txt", "feature.txt", "Every fixture edit needs a reason."),
+	)
+	if prompt != want {
+		t.Fatalf("review prompt =\n%q\nwant\n%q", prompt, want)
+	}
+	if strings.Contains(prompt, "Prose changes only.") {
+		t.Errorf("docs/** block was appended for a diff that touches no docs")
+	}
+	if strings.Contains(prompt, "Base fixtures are shared") {
+		t.Errorf("base.txt block was appended although the diff does not change it")
+	}
+	if got := strings.Count(prompt, "Fixture files carry no product behavior."); got != 1 {
+		t.Errorf("the exact duplicate entry was appended %d times, want 1", got)
+	}
+}
+
+// ignore_patterns comes from the pushed branch, so it must not decide which
+// trusted rules steer the review. A contributor who ignores the very path a
+// maintainer's rule covers still gets that rule.
+func TestReviewStep_PushedIgnorePatternsCannotSuppressPathInstructions(t *testing.T) {
+	t.Parallel()
+
+	rules := []config.PathInstruction{{Path: "*.txt", Instructions: "Fixture files carry no product behavior."}}
+
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			j, _ := json.Marshal(Findings{Summary: "clean"})
+			return &agent.Result{Output: j}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Config.Review = config.Review{PathInstructions: rules}
+	// The branch adds a source file so the run still has something to review,
+	// and ignores the fixture the trusted rule is scoped to.
+	os.WriteFile(filepath.Join(dir, "app.go"), []byte("package main\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "add source file")
+	sctx.Run.HeadSHA = gitCmd(t, dir, "rev-parse", "HEAD")
+	sctx.Config.IgnorePatterns = []string{"*.txt"}
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 review call, got %d", len(ag.calls))
+	}
+	if !strings.Contains(ag.calls[0].Prompt, "Fixture files carry no product behavior.") {
+		t.Fatalf("a pushed ignore_patterns entry suppressed the trusted rule:\n%s", ag.calls[0].Prompt)
 	}
 }
 

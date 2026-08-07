@@ -180,6 +180,7 @@ func TestRebaseStep_FixModeCallsAgent(t *testing.T) {
 	if !strings.Contains(ag.calls[0].Prompt, "user wanted conflict resolution to preserve the extracted intent") {
 		t.Fatalf("expected agent prompt to include extracted user intent, got: %s", ag.calls[0].Prompt)
 	}
+	assertTestQualityRulePrompt(t, ag.calls[0].Prompt)
 	// Verify rebase completed - feature is now ahead of origin/main
 	mergeBase := gitCmd(t, dir, "merge-base", "HEAD", "origin/main")
 	originMain := gitCmd(t, dir, "rev-parse", "origin/main")

@@ -150,6 +150,8 @@ func completeSyncRun(t *testing.T, f *syncFixture) {
 }
 
 func TestTargetIdentityNeverPersistsOrDisplaysHTTPUserinfo(t *testing.T) {
+	t.Parallel()
+
 	credentialed := "https://token:secret@example.com/owner/repo.git"
 	plain := "https://example.com/owner/repo.git"
 	if TargetFingerprint(credentialed) != TargetFingerprint(plain) {
@@ -161,6 +163,8 @@ func TestTargetIdentityNeverPersistsOrDisplaysHTTPUserinfo(t *testing.T) {
 }
 
 func TestInspectCachedPrePushAndPushInProgressAreNonSyncable(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	active, err := f.db.InsertRun(f.repo.ID, "feature/sync", f.old, f.base)
 	if err != nil {
@@ -207,6 +211,8 @@ func TestInspectCachedPrePushAndPushInProgressAreNonSyncable(t *testing.T) {
 }
 
 func TestInspectCachedBehindPerformsNoFetchOrMutation(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	beforeFetchHead := readOptional(t, filepath.Join(f.local, ".git", "FETCH_HEAD"))
 	state := f.service.InspectCached(f.ctx)
@@ -225,6 +231,8 @@ func TestInspectCachedBehindPerformsNoFetchOrMutation(t *testing.T) {
 }
 
 func TestApplyCleanStrictBehindFastForwardsExactBoundHead(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	state := f.service.Apply(f.ctx)
 	if state.State != StateSynchronized || !state.Changed || state.Local.Head != f.pushed {
@@ -239,6 +247,8 @@ func TestApplyCleanStrictBehindFastForwardsExactBoundHead(t *testing.T) {
 }
 
 func TestApplyEquivalentButDivergedRebaseWithPipelineCommitsAnchorsAndAdvances(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	rebuildPipelineHead(t, f, []pipelineCommit{
 		{message: "feature rebased", files: map[string]string{"file.txt": "feature\n"}},
@@ -261,6 +271,8 @@ func TestApplyEquivalentButDivergedRebaseWithPipelineCommitsAnchorsAndAdvances(t
 }
 
 func TestEquivalentButDivergedClassification(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		commits   []pipelineCommit
@@ -329,6 +341,8 @@ func TestEquivalentButDivergedClassification(t *testing.T) {
 }
 
 func TestEquivalentDivergenceAcceptsSamePathPipelineFix(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "base\nstable\n")
 	mustRun(t, f.local, "commit", "-am", "expand base file")
@@ -350,6 +364,8 @@ func TestEquivalentDivergenceAcceptsSamePathPipelineFix(t *testing.T) {
 }
 
 func TestEquivalentDivergenceRefusesRenameSourceOmission(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	mustRun(t, f.local, "config", "diff.renames", "true")
 	mustRun(t, f.local, "mv", "file.txt", "renamed.txt")
@@ -366,6 +382,8 @@ func TestEquivalentDivergenceRefusesRenameSourceOmission(t *testing.T) {
 }
 
 func TestEquivalentDivergenceRefusesDifferentBinaryContent(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	mustWrite(t, filepath.Join(f.local, "blob.bin"), string([]byte{0x00, 0x01, 0x02, 0x03}))
 	mustRun(t, f.local, "add", "blob.bin")
@@ -383,6 +401,8 @@ func TestEquivalentDivergenceRefusesDifferentBinaryContent(t *testing.T) {
 }
 
 func TestEquivalentDivergenceRefusesIntermediatePatchReverted(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	rebuildPipelineHead(t, f, []pipelineCommit{
 		{message: "feature rebased", files: map[string]string{"file.txt": "feature\n"}},
@@ -397,6 +417,8 @@ func TestEquivalentDivergenceRefusesIntermediatePatchReverted(t *testing.T) {
 }
 
 func TestEquivalentDivergenceRefusesWrongRepeatedLineOccurrence(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	mustWrite(t, filepath.Join(f.local, "repeated.txt"), "foo\nfoo\n")
 	mustRun(t, f.local, "add", "repeated.txt")
@@ -416,6 +438,8 @@ func TestEquivalentDivergenceRefusesWrongRepeatedLineOccurrence(t *testing.T) {
 }
 
 func TestEquivalentDivergenceAcceptsShiftedPreservedHunk(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "alpha\nbase\nomega\n")
 	mustRun(t, f.local, "commit", "-am", "expand base file")
@@ -437,6 +461,8 @@ func TestEquivalentDivergenceAcceptsShiftedPreservedHunk(t *testing.T) {
 }
 
 func TestEquivalentDivergenceRefusesAmbiguousRepeatedContext(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	mustWrite(t, filepath.Join(f.local, "file.txt"), "ctx\nfeature\nend\n")
 	mustRun(t, f.local, "commit", "-am", "contextual feature")
@@ -452,6 +478,8 @@ func TestEquivalentDivergenceRefusesAmbiguousRepeatedContext(t *testing.T) {
 }
 
 func TestEquivalentDivergenceRefusesUnrepresentedEdgeDeletion(t *testing.T) {
+	t.Parallel()
+
 	cases := map[string]struct {
 		base     string
 		local    string
@@ -487,6 +515,8 @@ func TestEquivalentDivergenceRefusesUnrepresentedEdgeDeletion(t *testing.T) {
 }
 
 func TestApplyEmptyLocalUniquenessStillUsesStrictBehindFastForward(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	state := f.service.Apply(f.ctx)
 	if state.State != StateSynchronized || !state.Changed {
@@ -498,6 +528,8 @@ func TestApplyEmptyLocalUniquenessStillUsesStrictBehindFastForward(t *testing.T)
 }
 
 func TestApplyReportsHonestFinalStateWhenPostMergeHookMutatesWorktree(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	hooks := filepath.Join(f.local, ".git", "hooks")
 	hook := filepath.Join(hooks, "post-merge")
@@ -515,6 +547,8 @@ func TestApplyReportsHonestFinalStateWhenPostMergeHookMutatesWorktree(t *testing
 }
 
 func TestApplyAlreadyEqualIsExitZeroNoopState(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	if first := f.service.Apply(f.ctx); !first.Changed {
 		t.Fatalf("first apply = %#v", first)
@@ -526,6 +560,8 @@ func TestApplyAlreadyEqualIsExitZeroNoopState(t *testing.T) {
 }
 
 func TestDirtyClassesRefuseBeforeNetworkAndLeaveHeadIndexWorktree(t *testing.T) {
+	t.Parallel()
+
 	cases := map[string]func(*syncFixture){
 		"unstaged": func(f *syncFixture) { mustWrite(t, filepath.Join(f.local, "file.txt"), "dirty\n") },
 		"staged": func(f *syncFixture) {
@@ -561,6 +597,8 @@ func TestDirtyClassesRefuseBeforeNetworkAndLeaveHeadIndexWorktree(t *testing.T) 
 }
 
 func TestOperationInProgressClassesRefuse(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct{ marker, safety string }{
 		{"MERGE_HEAD", "blocked_merge_in_progress"},
 		{"CHERRY_PICK_HEAD", "blocked_cherry_pick_in_progress"},
@@ -585,6 +623,8 @@ func TestOperationInProgressClassesRefuse(t *testing.T) {
 }
 
 func TestLocalAheadAndDivergedRefuse(t *testing.T) {
+	t.Parallel()
+
 	t.Run("ahead", func(t *testing.T) {
 		f := newSyncFixture(t)
 		if state := f.service.Apply(f.ctx); !state.Changed {
@@ -611,6 +651,8 @@ func TestLocalAheadAndDivergedRefuse(t *testing.T) {
 }
 
 func TestRemoteDeviationMissingAndOfflineFailClosed(t *testing.T) {
+	t.Parallel()
+
 	t.Run("advanced", func(t *testing.T) {
 		f := newSyncFixture(t)
 		writer := cloneRemoteBranch(t, f.remote)
@@ -674,6 +716,8 @@ func TestRemoteDeviationMissingAndOfflineFailClosed(t *testing.T) {
 }
 
 func TestTargetChangeLegacyDetachedAndGenerationRaceRefuse(t *testing.T) {
+	t.Parallel()
+
 	t.Run("target changed", func(t *testing.T) {
 		f := newSyncFixture(t)
 		other := filepath.Join(t.TempDir(), "other.git")
@@ -687,17 +731,24 @@ func TestTargetChangeLegacyDetachedAndGenerationRaceRefuse(t *testing.T) {
 			t.Fatalf("state = %#v", state)
 		}
 	})
-	t.Run("legacy", func(t *testing.T) {
+	t.Run("active run without push provenance", func(t *testing.T) {
+		// A newer active run with no push binding owns the branch: the refusal
+		// names pipeline custody (not a legacy-unbound misclassification) and
+		// points at the active run.
 		f := newSyncFixture(t)
-		legacy, err := f.db.InsertRun(f.repo.ID, "feature/sync", f.old, f.base)
+		active, err := f.db.InsertRun(f.repo.ID, "feature/sync", f.old, f.base)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.db.UpdateRunStatus(legacy.ID, types.RunRunning); err != nil {
+		if err := f.db.UpdateRunStatus(active.ID, types.RunRunning); err != nil {
 			t.Fatal(err)
 		}
-		if state := f.service.Refresh(f.ctx); state.State != StateLegacyUnbound {
+		state := f.service.Refresh(f.ctx)
+		if state.State != StatePipelineOwned || state.Safety != "blocked_pipeline_owned" {
 			t.Fatalf("state = %#v", state)
+		}
+		if state.Pipeline.RunID != active.ID || state.NextAction == nil || state.NextAction.Code != "continue_active_run" {
+			t.Fatalf("pipeline = %#v next = %#v", state.Pipeline, state.NextAction)
 		}
 	})
 	t.Run("detached", func(t *testing.T) {
@@ -725,6 +776,8 @@ func TestTargetChangeLegacyDetachedAndGenerationRaceRefuse(t *testing.T) {
 }
 
 func TestLinkedWorktreeMutatesOnlyInvokingWorktree(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	mustRun(t, f.local, "checkout", "main")
 	mainHead := mustRun(t, f.local, "rev-parse", "HEAD")
@@ -744,6 +797,8 @@ func TestLinkedWorktreeMutatesOnlyInvokingWorktree(t *testing.T) {
 }
 
 func TestWrongBranchRefusesAsAmbiguousContext(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	mustRun(t, f.local, "checkout", "main")
 	state := f.service.Apply(f.ctx)
@@ -753,6 +808,8 @@ func TestWrongBranchRefusesAsAmbiguousContext(t *testing.T) {
 }
 
 func TestForkTargetNeverReadsParentOrigin(t *testing.T) {
+	t.Parallel()
+
 	f := newSyncFixture(t)
 	parent := filepath.Join(t.TempDir(), "parent.git")
 	mustRun(t, filepath.Dir(parent), "init", "--bare", parent)

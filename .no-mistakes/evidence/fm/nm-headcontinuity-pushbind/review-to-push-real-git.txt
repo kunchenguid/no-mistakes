@@ -1,0 +1,8 @@
+=== RUN   TestPushStep_RefusesPostReviewClobberWithoutLaterPipelineCommit
+    push_test.go:67: review-approved=130c0bf016e3d72522cc0b4982340636a81a94a9 clobbered-HEAD=94c5ba36861e0597874d8e5f42710857c2bb34fa push-refused="refusing to push: proposed head 94c5ba36861e violates continuity with review-approved head 130c0bf016e3 (it is not an equal or descendant commit)" remote-still=6bb42d4319449af8815b10ef44e9edca1e6848d4 unreviewed-file-shipped=false
+--- PASS: TestPushStep_RefusesPostReviewClobberWithoutLaterPipelineCommit (0.54s)
+=== RUN   TestPushStep_BindsRemoteAndDatabaseToVerifiedCommitWhenHEADMovesDuringPush
+    push_test.go:233: review-approved=0882e38b189c5a36775d3cc8c1201c951499f3e6 concurrent-HEAD=e80706f499d0164797189774fbc410cfb002cf10 remote-delivered=0882e38b189c5a36775d3cc8c1201c951499f3e6 durable-head=0882e38b189c5a36775d3cc8c1201c951499f3e6 durable-last-pushed=0882e38b189c5a36775d3cc8c1201c951499f3e6
+--- PASS: TestPushStep_BindsRemoteAndDatabaseToVerifiedCommitWhenHEADMovesDuringPush (0.70s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/pipeline/steps	1.580s

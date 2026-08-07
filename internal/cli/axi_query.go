@@ -48,7 +48,7 @@ func newAxiStatusCmd() *cobra.Command {
 // fingerprint (run id, run status, per-step statuses) used to dedupe the
 // command's telemetry across repeated polls.
 func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
-	env, err := openAxiEnv(false)
+	env, err := openAxiQueryEnv(runID)
 	if err != nil {
 		return "", emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 	}
@@ -67,7 +67,11 @@ func runAxiStatus(cmd *cobra.Command, runID string) (string, error) {
 			toon.Field{Key: "runs", Value: "0 runs yet in this repository"},
 			toon.Field{Key: "help", Value: []string{startRunHelp()}},
 		)
-		return env.repo.ID + "|no-runs", nil
+		fingerprint := "explicit|no-runs"
+		if env.repo != nil {
+			fingerprint = env.repo.ID + "|no-runs"
+		}
+		return fingerprint, nil
 	}
 
 	steps, err := env.d.GetStepsByRun(run.ID)
@@ -195,7 +199,7 @@ func runAxiLogs(cmd *cobra.Command, step, runID string, full bool) (string, erro
 			"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
 	}
 
-	env, err := openAxiEnv(false)
+	env, err := openAxiQueryEnv(runID)
 	if err != nil {
 		return "", emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
 	}

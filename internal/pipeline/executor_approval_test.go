@@ -139,7 +139,7 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	if err := database.SetStepFindings(stepResult.ID, findings); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.InsertStepRound(stepResult.ID, 1, "initial", &findings, nil, 25); err != nil {
+	if _, err := database.InsertReviewStepRound(stepResult.ID, 1, "initial", &findings, nil, "1111111111111111111111111111111111111111", 25); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 25); err != nil {
@@ -169,10 +169,12 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 			if _, err := sctx.RunAgentSession(SessionRoleFixer, agent.RunOpts{Prompt: "fix"}); err != nil {
 				return nil, err
 			}
-			if _, err := sctx.RunAgentSession(SessionRoleReviewer, agent.RunOpts{Prompt: "rereview"}); err != nil {
+			// The rereview is deliberately session-free (see ReviewStep): it
+			// must never resume the session that prescribed the fixes.
+			if _, err := sctx.Agent.Run(sctx.Ctx, agent.RunOpts{Prompt: "rereview"}); err != nil {
 				return nil, err
 			}
-			return &StepOutcome{}, nil
+			return &StepOutcome{ReviewApprovedHeadSHA: "2222222222222222222222222222222222222222"}, nil
 		},
 	}
 	exec := NewExecutor(database, p, &config.Config{SessionReuse: true}, fake, []Step{step}, nil)
@@ -207,8 +209,10 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	if fake.calls[0].session == nil || fake.calls[0].session.ID != "fixer-session" {
 		t.Fatalf("fixer session = %+v, want fixer-session", fake.calls[0].session)
 	}
-	if fake.calls[1].session == nil || fake.calls[1].session.ID != "reviewer-session" {
-		t.Fatalf("reviewer session = %+v, want reviewer-session", fake.calls[1].session)
+	// The legacy persisted reviewer row must not break recovery, and the
+	// rereview must not resume it.
+	if fake.calls[1].session != nil {
+		t.Fatalf("rereview session = %+v, want session-free", fake.calls[1].session)
 	}
 	resumed, err := database.GetRun(run.ID)
 	if err != nil {
@@ -216,6 +220,66 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	}
 	if resumed.Status != types.RunCompleted || resumed.AwaitingAgentSince != nil {
 		t.Fatalf("recovered run = status %s awaiting %v, want completed and unparked", resumed.Status, resumed.AwaitingAgentSince)
+	}
+	if resumed.ReviewApprovedHeadSHA == nil || *resumed.ReviewApprovedHeadSHA != "2222222222222222222222222222222222222222" {
+		t.Fatalf("recovered rereview approval = %#v", resumed.ReviewApprovedHeadSHA)
+	}
+}
+
+func TestExecutor_ResumePromotesDurableReviewedCandidateOnApproval(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	stepResult, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(stepResult.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[{"id":"review-1","severity":"warning","description":"decision","action":"ask-user"}]}`
+	const reviewedHead = "3333333333333333333333333333333333333333"
+	if err := database.SetStepFindings(stepResult.ID, findings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertReviewStepRound(stepResult.ID, 1, "initial", &findings, nil, reviewedHead, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewExecutor(database, p, &config.Config{}, nil, []Step{newApprovalStep(types.StepReview, findings)}, nil)
+	workDir := t.TempDir()
+	done := make(chan error, 1)
+	go func() { done <- exec.Resume(context.Background(), run, repo, workDir) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("recovered review never accepted approval")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	got, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReviewApprovedHeadSHA == nil || *got.ReviewApprovedHeadSHA != reviewedHead {
+		t.Fatalf("recovered approval = %#v, want %s", got.ReviewApprovedHeadSHA, reviewedHead)
 	}
 }
 

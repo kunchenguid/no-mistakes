@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
@@ -49,6 +50,11 @@ func Init(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Re
 // remains the parent repository used for PRs. When forkURL is empty, an
 // existing fork setting is preserved across idempotent refreshes.
 func InitWithFork(ctx context.Context, d *db.DB, p *paths.Paths, workDir, forkURL string) (*db.Repo, bool, error) {
+	if classified, err := (gatecontext.Inspector{DB: d, Paths: p}).Inspect(ctx, gatecontext.Request{CWD: workDir, MarkerPresent: gatecontext.MarkerPresent()}); err != nil {
+		return nil, false, err
+	} else if classified.Nested {
+		return nil, false, fmt.Errorf("%s", gatecontext.RefusalMessage(classified))
+	}
 	forkURL = strings.TrimSpace(forkURL)
 
 	// Normalize worktrees back to the main repo root so one repo record works
@@ -185,8 +191,8 @@ func provisionGate(ctx context.Context, bareDir, absRoot, upstreamURL, reposDir 
 		return fmt.Errorf("enable push options: %w", err)
 	}
 
-	if _, err := git.RefreshManagedPostReceiveHook(bareDir); err != nil {
-		return fmt.Errorf("install hook: %w", err)
+	if err := git.RefreshManagedGateHooks(bareDir); err != nil {
+		return fmt.Errorf("install hooks: %w", err)
 	}
 
 	// Pin core.hookspath in the bare's per-worktree config so subprocess
@@ -276,6 +282,11 @@ func reattachRelocatedRepo(ctx context.Context, d *db.DB, p *paths.Paths, absRoo
 // It removes the remote, deletes the bare repo and worktrees,
 // and deletes the repo record from the database.
 func Eject(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.Repo, error) {
+	if classified, err := (gatecontext.Inspector{DB: d, Paths: p}).Inspect(ctx, gatecontext.Request{CWD: workDir, MarkerPresent: gatecontext.MarkerPresent()}); err != nil {
+		return nil, err
+	} else if classified.Nested {
+		return nil, fmt.Errorf("%s", gatecontext.RefusalMessage(classified))
+	}
 	// Normalize worktrees back to the main repo root so eject works no matter
 	// which checkout the user runs it from.
 	gitRoot, err := git.FindMainRepoRoot(workDir)

@@ -8,6 +8,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/testguidance"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -55,7 +56,7 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	var fixSummary string
 	if sctx.Fixing {
 		previousFindings := sanitizedPreviousFindingsForPrompt(sctx.PreviousFindings)
-		historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx)
+		historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + testguidance.Rule
 		fixPrompt := fmt.Sprintf(
 			`Investigate previous review findings and address legitimate ones.
 
@@ -109,49 +110,35 @@ Previous review findings to address:
 		}
 		fixSummary = summary
 	}
+	reviewTargetSHA := sctx.Run.HeadSHA
 
-	// Check whether there are any reviewable changed files after applying ignore patterns.
+	// The changed-file set is read once and viewed two ways on purpose: the
+	// ignore-filtered subset decides whether there is anything to review, while
+	// trusted path instructions are selected against the complete set (see
+	// matchPathInstructions).
 	var args []string
 	if sctx.Fixing {
-		args = []string{"diff", "--name-only", baseSHA}
+		args = []string{"diff", "--name-only", "-z", "--no-renames", baseSHA}
 	} else {
-		args = []string{"diff", "--name-only", baseSHA + ".." + sctx.Run.HeadSHA}
+		args = []string{"diff", "--name-only", "-z", "--no-renames", baseSHA + ".." + sctx.Run.HeadSHA}
 	}
 	changedFiles, err := git.Run(ctx, sctx.WorkDir, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get changed files: %w", err)
 	}
+	changed := changedPathList(changedFiles)
 
-	hasReviewableChanges := false
-	for _, path := range strings.Split(changedFiles, "\n") {
-		path = strings.TrimSpace(path)
-		if path == "" {
-			continue
-		}
-		ignored := false
-		for _, pattern := range sctx.Config.IgnorePatterns {
-			if matchIgnorePattern(path, pattern) {
-				ignored = true
-				break
-			}
-		}
-		if !ignored {
-			hasReviewableChanges = true
-			break
-		}
-	}
-
-	if !hasReviewableChanges {
+	if len(reviewablePaths(changed, sctx.Config.IgnorePatterns)) == 0 {
 		sctx.Log("no changes to review")
 		noChangeFindings := Findings{
 			RiskLevel:     "low",
 			RiskRationale: "no reviewable changes",
 		}
 		findingsJSON, _ := json.Marshal(noChangeFindings)
-		return &pipeline.StepOutcome{
+		return approvedReviewOutcome(reviewTargetSHA, &pipeline.StepOutcome{
 			Findings:   string(findingsJSON),
 			FixSummary: fixSummary,
-		}, nil
+		})
 	}
 
 	// Ask agent to review
@@ -174,7 +161,19 @@ Previous review findings to address:
 	// net-deleted-author-lines git-diff backstop for the removal-of-required
 	// class - a fixer round that net-deletes author-added lines parks
 	// regardless of intent source. Held pending a scope decision.
-	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause()
+	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
+
+	// Path-scoped repository review guidance, taken from the trusted
+	// default-branch config copy (regardless of allow_repo_commands) so a pushed
+	// branch cannot steer the reviewer that gates it. Selection runs against the
+	// complete changed-file set, never the ignore-filtered one, so a pushed
+	// ignore_patterns entry cannot suppress a trusted rule. Only blocks whose
+	// glob matches a changed path are appended, so a repository with none
+	// configured - or none relevant to this diff - gets the prompt above
+	// unchanged.
+	pathInstructionMatches := matchPathInstructions(changed, sctx.Config.Review.PathInstructions)
+	logPathInstructions(sctx.Log, pathInstructionMatches)
+	pathInstructions := reviewPathInstructionsSection(pathInstructionMatches)
 
 	prompt := fmt.Sprintf(
 		`Review the code changes and return structured findings with a risk assessment.
@@ -223,7 +222,7 @@ Risk assessment (after listing all findings):
 - Set risk_level to "medium" if the change has room to improve but is safe to merge first with concerns addressed as follow-ups.
 - Set risk_level to "high" if the change should not be merged without explicit human approval - it is fundamental, risky, ambiguous, or has strong negative signals.
 - Provide a one-sentence risk_rationale explaining why you chose that risk level.
-- Set risk_scope to "source-or-external" when the assessment reflects source risk or enforceable external state, and to "pipeline-owned-delivery" only when it is based solely on a deferred outcome this run owns.%s`,
+- Set risk_scope to "source-or-external" when the assessment reflects source risk or enforceable external state, and to "pipeline-owned-delivery" only when it is based solely on a deferred outcome this run owns.%s%s`,
 		branch,
 		baseSHA,
 		sctx.Run.HeadSHA,
@@ -231,14 +230,21 @@ Risk assessment (after listing all findings):
 		sctx.Repo.DefaultBranch,
 		ignorePatterns,
 		historySection,
+		pathInstructions,
 	)
 
 	// Every review turn - the initial review and every post-fix rereview -
-	// resumes the run's single durable reviewer session. The prompt above
-	// still demands a full review of the complete branch diff each turn; the
-	// session only carries the reviewer's own prior context, never the
-	// fixer's (that role has its own isolated session in executeFixMode).
-	result, err := sctx.RunAgentSession(pipeline.SessionRoleReviewer, agent.RunOpts{
+	// deliberately runs session-free. Round N's fixes implement round N-1's
+	// review findings, so resuming any prior review turn's session would seat
+	// the prescriber of those fixes as their certifier: the rereview then
+	// verifies that its own prescription was implemented instead of judging
+	// whether the pipeline-authored code is correct (the mechanism behind a
+	// real shipped defect where one fix round wrote both wrong code and the
+	// test blessing it, and the resumed reviewer session passed them). The
+	// cross-round context a rereview legitimately needs travels in the
+	// explicit sanitized round-history section above; only the fixer keeps a
+	// durable session (executeFixMode), because it certifies nothing.
+	result, err := sctx.Agent.Run(ctx, agent.RunOpts{
 		Prompt:     prompt,
 		CWD:        sctx.WorkDir,
 		JSONSchema: reviewFindingsSchema,
@@ -271,12 +277,42 @@ Risk assessment (after listing all findings):
 	needsApproval := hasBlockingFindings(findings.Items)
 	findingsJSON, _ := json.Marshal(findings)
 
-	return &pipeline.StepOutcome{
+	return approvedReviewOutcome(reviewTargetSHA, &pipeline.StepOutcome{
 		NeedsApproval: needsApproval,
 		AutoFixable:   len(findings.Items) > 0,
 		Findings:      string(findingsJSON),
 		FixSummary:    fixSummary,
-	}, nil
+	})
+}
+
+// fixRoundProvenanceClause reframes a rereview's fix-round changes as
+// pipeline-authored code under the author-grade adversarial standard. Without
+// it, the round-history section reads as "found and fixed" and invites less
+// scrutiny of exactly the code the pipeline itself just wrote: the fixer
+// authors both code and tests in one round, so the only independent check
+// that code ever gets is this rereview. Empty outside fix mode, leaving the
+// initial review prompt unchanged.
+func fixRoundProvenanceClause(sctx *pipeline.StepContext) string {
+	if !sctx.Fixing {
+		return ""
+	}
+	return `
+
+Fix-round provenance:
+- This is a re-review after this run's automated fix round(s): every commit after the starting head, plus any uncommitted worktree changes, was authored by the pipeline's own fixer agent, not by the change author.
+- Review that pipeline-authored code with exactly the same adversarial standard as the author's original changes. It is unreviewed new code, not a settled resolution of the findings that prompted it.
+- Prior findings and fix summaries are claims, not evidence. Verify each claimed fix against the current code, and independently judge whether behavior the fix rounds introduced is correct, not merely whether it implements what was prescribed.
+- A test added or changed in the same fix round as the code it exercises is part of that round's claim, not independent proof: judge whether its asserted outcome is the right outcome and whether it could still pass with the code wrong.
+`
+}
+
+// approvedReviewOutcome captures the immutable commit examined by this full
+// review round. The executor persists it only if this outcome ultimately
+// completes the review step, so parked, failed, skipped, and superseded rounds
+// cannot gain or advance approval authority.
+func approvedReviewOutcome(reviewTargetSHA string, outcome *pipeline.StepOutcome) (*pipeline.StepOutcome, error) {
+	outcome.ReviewApprovedHeadSHA = reviewTargetSHA
+	return outcome, nil
 }
 
 func sanitizedPreviousFindingsForPrompt(raw string) string {

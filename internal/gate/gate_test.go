@@ -264,6 +264,57 @@ func TestInitRepoID(t *testing.T) {
 // repo succeeds, reports that it was not newly created, and leaves a single
 // repo record and an intact gate. This is what lets existing users re-run init
 // to adopt new capabilities (e.g. the agent skill) without hitting an error.
+func TestInitRefusesManagedValidationWorktreeBeforePartialMutation(t *testing.T) {
+	workDir := setupTestRepo(t)
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	database := openTestDB(t, p)
+	ctx := context.Background()
+	repo, _, err := Init(ctx, database, p, workDir)
+	if err != nil {
+		t.Fatalf("init outer gate: %v", err)
+	}
+	gateDir := p.RepoDir(repo.ID)
+	if out, err := gitpkg.Run(ctx, gateDir, "fetch", workDir, "HEAD:refs/heads/feature"); err != nil {
+		t.Fatalf("seed gate: %v\n%s", err, out)
+	}
+	managed := p.WorktreeDir(repo.ID, "outer-run")
+	if err := gitpkg.WorktreeAdd(ctx, gateDir, managed, "refs/heads/feature"); err != nil {
+		t.Fatalf("add managed worktree: %v", err)
+	}
+	beforeRemotes, err := gitpkg.Run(ctx, managed, "remote")
+	if err != nil {
+		t.Fatalf("list remotes before refusal: %v", err)
+	}
+	_, _, err = Init(ctx, database, p, managed)
+	if err == nil || !strings.Contains(err.Error(), "nested_gate_context") {
+		t.Fatalf("managed init error = %v, want nested_gate_context", err)
+	}
+	afterRemotes, err := gitpkg.Run(ctx, managed, "remote")
+	if err != nil {
+		t.Fatalf("list remotes after refusal: %v", err)
+	}
+	if afterRemotes != beforeRemotes {
+		t.Fatalf("refusal changed remotes: before=%q after=%q", beforeRemotes, afterRemotes)
+	}
+	repos, err := database.GetRepos()
+	if err != nil {
+		t.Fatalf("list repos: %v", err)
+	}
+	if len(repos) != 1 || repos[0].ID != repo.ID {
+		t.Fatalf("refusal changed repo registry: %+v", repos)
+	}
+	entries, err := os.ReadDir(p.ReposDir())
+	if err != nil {
+		t.Fatalf("list gates: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != repo.ID+".git" {
+		t.Fatalf("refusal created a gate: %+v", entries)
+	}
+}
+
 func TestInitIsIdempotent(t *testing.T) {
 	workDir := setupTestRepo(t)
 	nmRoot := t.TempDir()
@@ -1007,6 +1058,13 @@ func TestInit_PostReceiveSurvivesHooksPathPoisoning(t *testing.T) {
 	hook := "#!/bin/sh\ntouch '" + marker + "'\nexit 0\n"
 	if err := os.WriteFile(hookPath, []byte(hook), 0o755); err != nil {
 		t.Fatalf("write marker hook: %v", err)
+	}
+	// This unit test has no isolated daemon. Stub only pre-receive admission;
+	// the behavior under test is hookspath isolation for post-receive. Full
+	// fail-closed admission is covered by the isolated-daemon e2e regression.
+	preHookPath := filepath.Join(bareDir, "hooks", "pre-receive")
+	if err := os.WriteFile(preHookPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write admission stub: %v", err)
 	}
 
 	// Simulate husky: pnpm install in a pipeline worktree runs

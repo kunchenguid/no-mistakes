@@ -48,8 +48,10 @@ is trying to make one deliberate path mean something consistent.
 ```mermaid
 flowchart LR
   repo["Your repo"] -->|"git push no-mistakes"| gate["Local gate repo"]
-  gate --> hook["post-receive hook"]
-  hook --> daemon["Daemon"]
+  gate --> admission["pre-receive admission"]
+  admission --> hook["post-receive notification"]
+  admission --> daemon["Daemon"]
+  hook --> daemon
   daemon --> worktree["Disposable worktree"]
   worktree --> pipeline["intent -> rebase -> review -> test -> document -> lint -> push -> pr -> ci"]
   pipeline --> target["Push target"]

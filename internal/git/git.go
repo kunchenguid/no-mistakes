@@ -34,10 +34,16 @@ func IsZeroSHA(sha string) bool {
 // and hardened CI inject that setting, so gate operations must never depend
 // on discovering a bare repo from the working directory (issue #362).
 func Run(ctx context.Context, dir string, args ...string) (string, error) {
+	out, err := RunRaw(ctx, dir, args...)
+	return strings.TrimSpace(string(out)), err
+}
+
+// RunRaw executes a git command and returns stdout without modifying its bytes.
+func RunRaw(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	if isBareGitDir(dir) {
-		return RunBare(ctx, dir, args...)
+		return runInDirWithEnvRaw(ctx, dir, nil, append([]string{"--git-dir=" + dir}, args...)...)
 	}
-	return runInDir(ctx, dir, args...)
+	return runInDirWithEnvRaw(ctx, dir, nil, args...)
 }
 
 // RunBare executes Git against exactly bareDir. Unlike Run, it never falls
@@ -51,10 +57,32 @@ func RunBare(ctx context.Context, bareDir string, args ...string) (string, error
 	return runInDir(ctx, bareDir, append([]string{"--git-dir=" + bareDir}, args...)...)
 }
 
+// RunWithEnv is Run with extra KEY=VALUE entries appended to the git
+// environment. Later entries win, so a caller can override anything
+// NonInteractiveEnv sets. It exists for plumbing that is configured only
+// through the environment - GIT_INDEX_FILE for a scratch index, the
+// GIT_AUTHOR_*/GIT_COMMITTER_* identity for commit-tree - and carries the same
+// bare-repository handling as Run.
+func RunWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) (string, error) {
+	if isBareGitDir(dir) {
+		return runInDirWithEnv(ctx, dir, extraEnv, append([]string{"--git-dir=" + dir}, args...)...)
+	}
+	return runInDirWithEnv(ctx, dir, extraEnv, args...)
+}
+
 func runInDir(ctx context.Context, dir string, args ...string) (string, error) {
+	return runInDirWithEnv(ctx, dir, nil, args...)
+}
+
+func runInDirWithEnv(ctx context.Context, dir string, extraEnv []string, args ...string) (string, error) {
+	out, err := runInDirWithEnvRaw(ctx, dir, extraEnv, args...)
+	return strings.TrimSpace(string(out)), err
+}
+
+func runInDirWithEnvRaw(ctx context.Context, dir string, extraEnv []string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = NonInteractiveEnv(dir)
+	cmd.Env = append(NonInteractiveEnv(dir), extraEnv...)
 	winproc.Harden(cmd)
 	out, err := cmd.Output()
 	if err != nil {
@@ -62,9 +90,9 @@ func runInDir(ctx context.Context, dir string, args ...string) (string, error) {
 		if ee, ok := err.(*exec.ExitError); ok {
 			stderr = strings.TrimSpace(string(ee.Stderr))
 		}
-		return "", fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
+		return nil, fmt.Errorf("git %s: %w: %s", safeurl.RedactText(strings.Join(args, " ")), err, safeurl.RedactText(stderr))
 	}
-	return strings.TrimSpace(string(out)), nil
+	return out, nil
 }
 
 // ValidateBareRepository verifies both the filesystem shape and Git's own bare
@@ -156,6 +184,17 @@ func GetRemoteURL(ctx context.Context, dir, name string) (string, error) {
 // without applying url.*.insteadOf rewrites.
 func GetConfiguredRemoteURL(ctx context.Context, dir, name string) (string, error) {
 	return Run(ctx, dir, "config", "--get", "remote."+name+".url")
+}
+
+// GetConfiguredRemoteURLs returns every literal URL configured for a remote.
+// Callers that require an authoritative source can reject zero or multiple
+// values rather than letting git silently select one.
+func GetConfiguredRemoteURLs(ctx context.Context, dir, name string) ([]string, error) {
+	out, err := Run(ctx, dir, "config", "--null", "--get-all", "remote."+name+".url")
+	if err != nil {
+		return nil, err
+	}
+	return strings.Split(strings.TrimSuffix(out, "\x00"), "\x00"), nil
 }
 
 // HasRemote reports whether a remote named name is configured in the repo at
@@ -429,14 +468,24 @@ func FetchRemoteBranchToPrivateRef(ctx context.Context, dir, remote, branch, loc
 	return err
 }
 
-// Push pushes a ref to a remote. If forceWithLease is true, uses
-// --force-with-lease with the expectedSHA for safe force-push.
+// Push pushes HEAD to a remote ref. If forceWithLease is true, it uses an
+// explicit expected remote SHA for safe force-push.
 func Push(ctx context.Context, dir, remote, ref, expectedSHA string, forceWithLease bool) error {
 	return PushWithOptions(ctx, dir, remote, ref, expectedSHA, forceWithLease, nil)
 }
 
-// PushWithOptions pushes a ref to a remote with per-push options.
+// PushCommit pushes one immutable commit object to a remote ref. Unlike Push,
+// a concurrent worktree HEAD move cannot change the source selected by git.
+func PushCommit(ctx context.Context, dir, remote, commitSHA, ref, expectedSHA string, forceWithLease bool) error {
+	return pushSourceWithOptions(ctx, dir, remote, commitSHA, ref, expectedSHA, forceWithLease, nil)
+}
+
+// PushWithOptions pushes HEAD to a remote with per-push options.
 func PushWithOptions(ctx context.Context, dir, remote, ref, expectedSHA string, forceWithLease bool, pushOptions []string) error {
+	return pushSourceWithOptions(ctx, dir, remote, "HEAD", ref, expectedSHA, forceWithLease, pushOptions)
+}
+
+func pushSourceWithOptions(ctx context.Context, dir, remote, source, ref, expectedSHA string, forceWithLease bool, pushOptions []string) error {
 	args := []string{"push"}
 	for _, option := range pushOptions {
 		args = append(args, "-o", option)
@@ -449,7 +498,7 @@ func PushWithOptions(ctx context.Context, dir, remote, ref, expectedSHA string, 
 			args = append(args, "--force-with-lease")
 		}
 	}
-	args = append(args, "HEAD:"+ref)
+	args = append(args, source+":"+ref)
 	_, err := Run(ctx, dir, args...)
 	return err
 }

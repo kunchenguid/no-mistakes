@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,25 @@ func Open(path string) (*DB, error) {
 			sqlDB.Close()
 			return nil, fmt.Errorf("migrate db: %w", err)
 		}
+	}
+	return &DB{sql: sqlDB}, nil
+}
+
+// OpenReadOnly opens an existing database without creating or migrating it.
+// It is used by pre-mutation authorization, where even schema repair would be
+// an unacceptable side effect before the caller is classified.
+func OpenReadOnly(path string) (*DB, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	sqlDB, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, fmt.Errorf("open db read-only: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	if err := sqlDB.Ping(); err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("open db read-only: %w", err)
 	}
 	return &DB{sql: sqlDB}, nil
 }

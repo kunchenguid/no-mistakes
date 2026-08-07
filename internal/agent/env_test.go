@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -71,6 +72,30 @@ func TestGitSafeEnv_StampsGateRoleMarker(t *testing.T) {
 // confused parent) cannot pre-empt the marker with its own ambient value: the
 // stamp is appended last, and exec resolves duplicate keys to the last
 // occurrence.
+func TestEverySupportedAdapterPropagatesGateMarkerThroughCanonicalEnv(t *testing.T) {
+	// Native one-shot adapters own their command in the named file. OpenCode
+	// and Rovo Dev use the shared managed-server launcher, while Cursor and
+	// arbitrary ACP targets use acpx. Every route must stay on gitSafeEnv so
+	// marker propagation cannot drift adapter by adapter.
+	owners := map[string]string{
+		"claude":                          "claude.go",
+		"codex":                           "codex.go",
+		"copilot":                         "copilot.go",
+		"pi":                              "pi.go",
+		"cursor/acp":                      "acpx.go",
+		"opencode/rovodev managed server": "server.go",
+	}
+	for adapter, path := range owners {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s owner %s: %v", adapter, path, err)
+		}
+		if !strings.Contains(string(data), ".Env = gitSafeEnv(") {
+			t.Errorf("%s no longer propagates the gate marker through gitSafeEnv (%s)", adapter, path)
+		}
+	}
+}
+
 func TestGitSafeEnv_GateMarkerWinsOverAmbient(t *testing.T) {
 	t.Setenv(GateRoleEnvVar, "0")
 	resolved := resolveAgentEnv(gitSafeEnv("/work/dir"))

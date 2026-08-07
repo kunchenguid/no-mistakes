@@ -2,7 +2,9 @@ package steps
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -48,6 +50,81 @@ func TestResolveUpstreamURL_PreservesCredential(t *testing.T) {
 	}
 	if !strings.Contains(got, token) {
 		t.Errorf("resolveUpstreamURL stripped the credential: got %q", got)
+	}
+	if pushURL := resolvePushURL(sctx); pushURL != credURL {
+		t.Errorf("resolvePushURL = %q, want credential-preserving upstream route %q", pushURL, credURL)
+	}
+}
+
+func TestResolveUpstreamURL_PrefersRefreshedRegistration(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", dir, "remote", "add", "origin", "git@example.com:owner/project.git").CombinedOutput(); err != nil {
+		t.Fatalf("git remote add: %v: %s", err, out)
+	}
+	refreshed := "https://example.com/owner/project.git"
+	sctx := minimalStepContext(t, dir, refreshed)
+	sctx.Repo.URLsVerified = true
+	if got := resolveUpstreamURL(sctx); got != refreshed {
+		t.Fatalf("resolveUpstreamURL = %q, want refreshed registration %q", got, refreshed)
+	}
+}
+
+func TestRunUpstreamFetchUsesRefreshedRegistration(t *testing.T) {
+	t.Parallel()
+
+	staleUpstream := t.TempDir()
+	gitCmd(t, staleUpstream, "init", "--bare")
+
+	seed := t.TempDir()
+	gitCmd(t, seed, "init")
+	gitCmd(t, seed, "config", "user.name", "test")
+	gitCmd(t, seed, "config", "user.email", "test@test.com")
+	gitCmd(t, seed, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(seed, "base.txt"), []byte("stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, seed, "add", "base.txt")
+	gitCmd(t, seed, "commit", "-m", "stale base")
+	gitCmd(t, seed, "remote", "add", "origin", staleUpstream)
+	gitCmd(t, seed, "push", "origin", "main")
+
+	refreshedUpstream := t.TempDir()
+	gitCmd(t, refreshedUpstream, "clone", "--bare", staleUpstream, ".")
+
+	updater := t.TempDir()
+	gitCmd(t, updater, "clone", refreshedUpstream, ".")
+	gitCmd(t, updater, "config", "user.name", "test")
+	gitCmd(t, updater, "config", "user.email", "test@test.com")
+	gitCmd(t, updater, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(updater, "base.txt"), []byte("refreshed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, updater, "add", "base.txt")
+	gitCmd(t, updater, "commit", "-m", "refreshed base")
+	refreshedTip := gitCmd(t, updater, "rev-parse", "HEAD")
+	gitCmd(t, updater, "push", "origin", "main")
+
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "clone", staleUpstream, ".")
+	sctx := minimalStepContext(t, workDir, refreshedUpstream)
+	sctx.Repo.URLsVerified = true
+
+	tip, resolved := resolveRunDefaultBranchTip(context.Background(), sctx, "", "main")
+	if !resolved {
+		t.Fatal("resolveRunDefaultBranchTip reported unresolved")
+	}
+	if tip != refreshedTip {
+		t.Fatalf("resolveRunDefaultBranchTip = %q, want %q", tip, refreshedTip)
+	}
+	if got := gitCmd(t, workDir, "rev-parse", "origin/main"); got != refreshedTip {
+		t.Fatalf("origin/main = %q, want refreshed tip %q", got, refreshedTip)
+	}
+	if got := gitCmd(t, workDir, "remote", "get-url", "origin"); got != staleUpstream {
+		t.Fatalf("origin URL changed to %q, want %q", got, staleUpstream)
 	}
 }
 

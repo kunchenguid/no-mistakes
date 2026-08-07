@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	toon "github.com/toon-format/toon-go"
+
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -464,6 +466,372 @@ func TestAxiCustodyRecoveryJourney(t *testing.T) {
 	}
 	if !strings.Contains(freshOut, "gate:") {
 		t.Fatalf("fresh pipeline did not start cleanly after recovery:\n%s", freshOut)
+	}
+}
+
+// rebaseCustodyScenario differs from branchSyncScenario in exactly one way that
+// matters here: its fix round ADDS a file instead of rewriting the operator's
+// own line. Both shapes advance the gate branch, but only this one leaves the
+// operator's content intact in the preserved head, which is the case custody
+// recovery is allowed to adopt.
+func rebaseCustodyScenario(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "rebase-custody-scenario.yaml")
+	content := `actions:
+  - match: "Investigate previous review findings"
+    text: "added a guard helper"
+    edits:
+      - path: "guard.txt"
+        new: "guard helper\n"
+    structured:
+      summary: "add a guard helper alongside the feature"
+  - match: "Review the code changes and return structured findings"
+    text: "review found a warning"
+    structured:
+      findings:
+        - id: "rebase-1"
+          severity: warning
+          file: "feature.txt"
+          line: 1
+          description: "the feature needs a guard helper"
+          action: auto-fix
+      summary: "found one issue"
+      risk_level: medium
+      risk_rationale: "the feature needs a guard"
+  - text: "no issues found"
+    structured:
+      findings: []
+      summary: "no issues found"
+      risk_level: low
+      risk_rationale: "no remaining risk"
+      tested: ["fakeagent: focused verification"]
+      testing_summary: "simulated tests passed"
+      title: "feat: rebase custody"
+      body: "rebase custody journey"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write rebase custody scenario: %v", err)
+	}
+	return path
+}
+
+// TestAxiCustodyRecoveryAfterRebaseJourney is the same cancelled-validation
+// custody return, in the shape that used to over-escalate: the default branch
+// advanced before the run, so the pipeline's own rebase step replayed the
+// operator's commits onto the newer base. The preserved gate head then carries
+// the same logical work under different SHAs, which equality and ancestry alone
+// read as plain divergence - and recovery refused, stranding a branch that
+// could lose nothing by adopting the preserved head. The journey proves the
+// real binary now auto-recovers, keeps the operator's file content, brings the
+// advanced base into the worktree, and anchors the exact pre-recovery commits.
+func TestAxiCustodyRecoveryAfterRebaseJourney(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: rebaseCustodyScenario(t)})
+	h.CommitChange("init-rebase-recover", "seed.txt", "seed\n", "seed rebase recover init")
+	initWorktree := h.AddWorktree("init-rebase-recover")
+	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+
+	submitted := h.CommitChange("feature/rebase-recover", "feature.txt", "unsafe\n", "add unsafe feature")
+
+	// The default branch advances before the run, which is what makes the
+	// pipeline's rebase step produce new SHAs for the operator's commits.
+	h.CommitChange("main", "upstream-advance.txt", "advance\n", "upstream advance")
+	if out, err := h.runGit(context.Background(), h.WorkDir, "push", "origin", "main"); err != nil {
+		t.Fatalf("advance upstream main: %v\n%s", err, out)
+	}
+
+	operator := h.AddWorktree("feature/rebase-recover")
+	gateOut, err := h.RunInDir(operator, "axi", "run", "--intent", "guard the feature across a rebased base before cancellation")
+	if err != nil || !strings.Contains(gateOut, "rebase-1") {
+		t.Fatalf("initial review gate: %v\n%s", err, gateOut)
+	}
+	// Take the fix round, which adds a file without rewriting the operator's
+	// line, then cancel. The preserved head is now the operator's own commits
+	// replayed onto the advanced base plus one additive pipeline commit, so it
+	// still carries every local change.
+	fixOut, err := h.RunInDir(operator, "axi", "respond", "--action", "fix", "--findings", "rebase-1")
+	if err != nil {
+		t.Fatalf("review fix: %v\n%s", err, fixOut)
+	}
+	abortOut, abortErr := h.RunInDir(operator, "axi", "abort")
+	if abortErr != nil {
+		t.Fatalf("axi abort: %v\n%s", abortErr, abortOut)
+	}
+	run := h.WaitForRun("feature/rebase-recover", 30*time.Second)
+	if run.Status != types.RunCancelled {
+		t.Fatalf("run status after abort = %s", run.Status)
+	}
+
+	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
+	preservedBytes, err := h.runGit(context.Background(), gateDir, "rev-parse", "refs/heads/feature/rebase-recover")
+	if err != nil {
+		t.Fatalf("gate preserved head: %v\n%s", err, preservedBytes)
+	}
+	preserved := strings.TrimSpace(string(preservedBytes))
+	if got := strings.TrimSpace(h.WorktreeRefSHA("feature/rebase-recover")); got != submitted {
+		t.Fatalf("operator branch moved without explicit recovery: %s", got)
+	}
+	// The masking condition, asserted against the real gate: the rebase left
+	// neither head an ancestor of the other.
+	if _, ancErr := h.runGit(context.Background(), gateDir, "merge-base", "--is-ancestor", submitted, preserved); ancErr == nil {
+		t.Fatalf("pipeline did not rebase: preserved %s still descends from submitted %s", preserved, submitted)
+	}
+	if _, ancErr := h.runGit(context.Background(), gateDir, "merge-base", "--is-ancestor", preserved, submitted); ancErr == nil {
+		t.Fatalf("preserved head %s is an ancestor of submitted %s", preserved, submitted)
+	}
+
+	recoverOut, err := h.RunInDir(operator, "axi", "sync", "--recover")
+	if err != nil {
+		t.Fatalf("rebase-superset recovery escalated instead of returning custody: %v\n%s", err, recoverOut)
+	}
+	for _, want := range []string{"recovered: true", "state: custody_returned", "changed: true", "no-mistakes axi run --intent"} {
+		if !strings.Contains(recoverOut, want) {
+			t.Errorf("recover output missing %q:\n%s", want, recoverOut)
+		}
+	}
+	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", "HEAD"); gitErr != nil || strings.TrimSpace(string(got)) != preserved {
+		t.Fatalf("operator HEAD after recovery = %s (err %v), want preserved %s", strings.TrimSpace(string(got)), gitErr, preserved)
+	}
+	// The operator's own work survived the adoption unchanged, the advanced
+	// base arrived with it, and the exact pre-recovery commits stay reachable
+	// through the local anchor.
+	feature, readErr := os.ReadFile(filepath.Join(operator, "feature.txt"))
+	if readErr != nil || strings.TrimSpace(string(feature)) != "unsafe" {
+		t.Fatalf("operator feature content lost after recovery: %q (err %v)", string(feature), readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(operator, "upstream-advance.txt")); statErr != nil {
+		t.Fatalf("adopted head did not bring the advanced base into the worktree: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(operator, "guard.txt")); statErr != nil {
+		t.Fatalf("adopted head did not bring the pipeline fix into the worktree: %v", statErr)
+	}
+	if out, gitErr := h.runGit(context.Background(), operator, "status", "--porcelain"); gitErr != nil || strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("worktree not clean after adoption: %q (err %v)", string(out), gitErr)
+	}
+	localAnchor := "refs/no-mistakes/recover-local/" + run.ID
+	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", localAnchor); gitErr != nil || strings.TrimSpace(string(got)) != submitted {
+		t.Fatalf("pre-recovery anchor %s = %s (err %v), want submitted %s", localAnchor, strings.TrimSpace(string(got)), gitErr, submitted)
+	}
+
+	// Custody is back: a fresh run starts cleanly on the adopted head.
+	freshOut, err := h.RunInDir(operator, "axi", "run", "--intent", "validate on top of the adopted rebased head")
+	if err != nil {
+		t.Fatalf("fresh pipeline start after rebase recovery: %v\n%s", err, freshOut)
+	}
+	if !strings.Contains(freshOut, "gate:") {
+		t.Fatalf("fresh pipeline did not start cleanly after rebase recovery:\n%s", freshOut)
+	}
+}
+
+// TestAxiPrePushAbortUnmovedHeadCustodyJourney reproduces the ownership gap
+// hit when delivery switches to a direct PR mid-validation: the worker aborts
+// the run at the review gate BEFORE the pipeline changes anything, so the
+// terminal run's head still equals the submitted head. That cancellation
+// shape used to be invisible to branch-sync selection - status omitted the
+// branch_sync object and sync --check refused with wrong-branch ambiguity -
+// leaving the worker with no supported answer. The contract: cancellation
+// RELEASES ownership. The journey proves it end to end: abort waits for the
+// terminal state and returns the final structured ownership truth, status and
+// the guarded check report the exact branch and head as user_owned and
+// immediately usable with no sync action, a recovery request is an idempotent
+// no-op, repeated abort is an idempotent no-op with the same truth, and the
+// worker continues through a separately authorized direct delivery path
+// without starting another validation.
+func TestAxiPrePushAbortUnmovedHeadCustodyJourney(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: branchSyncScenario(t)})
+	h.CommitChange("init-unmoved", "seed.txt", "seed\n", "seed unmoved init")
+	initWorktree := h.AddWorktree("init-unmoved")
+	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+		t.Fatalf("init: %v\n%s", err, out)
+	}
+
+	submitted := h.CommitChange("feature/unmoved-abort", "feature.txt", "unsafe\n", "add unsafe feature")
+	operator := h.AddWorktree("feature/unmoved-abort")
+	gateOut, err := h.RunInDir(operator, "axi", "run", "--intent", "guard the feature before the delivery switch")
+	if err != nil || !strings.Contains(gateOut, "sync-1") {
+		t.Fatalf("initial review gate: %v\n%s", err, gateOut)
+	}
+
+	// Delivery switches to a direct PR: abort at the gate, before any pipeline
+	// edit, through the supported public command.
+	abortOut, abortErr := h.RunInDir(operator, "axi", "abort")
+	if abortErr != nil {
+		t.Fatalf("axi abort: %v\n%s", abortErr, abortOut)
+	}
+	run := h.WaitForRun("feature/unmoved-abort", 30*time.Second)
+	if run.Status != types.RunCancelled {
+		t.Fatalf("run status after abort = %s", run.Status)
+	}
+
+	// The fixture must model the exact shape: neither the gate branch nor the
+	// operator branch moved off the submitted head.
+	gateDir := filepath.Join(h.NMHome, "repos", h.repoID()+".git")
+	gateHeadBytes, gitErr := h.runGit(context.Background(), gateDir, "rev-parse", "refs/heads/feature/unmoved-abort")
+	if gitErr != nil || strings.TrimSpace(string(gateHeadBytes)) != submitted {
+		t.Fatalf("gate head = %s (err %v), want unmoved submitted %s", strings.TrimSpace(string(gateHeadBytes)), gitErr, submitted)
+	}
+	if got := strings.TrimSpace(h.WorktreeRefSHA("feature/unmoved-abort")); got != submitted {
+		t.Fatalf("operator branch moved: %s", got)
+	}
+
+	// Abort waits for the terminal state and returns the complete structured
+	// final ownership truth: the branch is user-owned and immediately usable.
+	for _, want := range []string{
+		"branch_sync:",
+		"state: user_owned",
+		"status: cancelled",
+		"safety: user_owned",
+	} {
+		if !strings.Contains(abortOut, want) {
+			t.Errorf("abort output missing %q:\n%s", want, abortOut)
+		}
+	}
+	if strings.Contains(abortOut, "recover_custody") {
+		t.Errorf("abort output represents the released branch as recoverable custody:\n%s", abortOut)
+	}
+
+	// Public structured status identifies the applicable terminal run and
+	// reports the exact branch, head, and relation facts as user-owned.
+	statusOut, err := h.RunInDir(operator, "axi", "status")
+	if err != nil {
+		t.Fatalf("axi status: %v\n%s", err, statusOut)
+	}
+	var statusDoc struct {
+		BranchSync struct {
+			Pipeline struct {
+				SubmittedHead string `toon:"submitted_head"`
+				CurrentHead   string `toon:"current_head"`
+			} `toon:"pipeline"`
+		} `toon:"branch_sync"`
+	}
+	if err := toon.UnmarshalString(statusOut, &statusDoc); err != nil {
+		t.Fatalf("decode axi status TOON: %v\n%s", err, statusOut)
+	}
+	if got := statusDoc.BranchSync.Pipeline.SubmittedHead; got != submitted {
+		t.Errorf("submitted head = %q, want %q\n%s", got, submitted, statusOut)
+	}
+	if got := statusDoc.BranchSync.Pipeline.CurrentHead; got != submitted {
+		t.Errorf("current head = %q, want %q\n%s", got, submitted, statusOut)
+	}
+	for _, want := range []string{
+		run.ID,
+		"status: cancelled",
+		"branch_sync:",
+		"branch: feature/unmoved-abort",
+		"relation: equal",
+		"state: user_owned",
+		"safety: user_owned",
+	} {
+		if !strings.Contains(statusOut, want) {
+			t.Errorf("status output missing %q:\n%s", want, statusOut)
+		}
+	}
+	for _, forbidden := range []string{"recover_custody", "next_action", "blocked_wrong_branch", "pipeline_owned"} {
+		if strings.Contains(statusOut, forbidden) {
+			t.Errorf("released status must not contain %q:\n%s", forbidden, statusOut)
+		}
+	}
+
+	// The guarded check is a non-blocking no-op: nothing to synchronize,
+	// nothing to recover, no wrong-branch ambiguity.
+	checkOut, err := h.RunInDir(operator, "axi", "sync", "--check")
+	if err != nil {
+		t.Fatalf("released sync --check must exit zero: %v\n%s", err, checkOut)
+	}
+	if !strings.Contains(checkOut, "state: user_owned") {
+		t.Errorf("released check missing user_owned state:\n%s", checkOut)
+	}
+	for _, forbidden := range []string{"blocked_wrong_branch", "ambiguous_context", "recover_custody"} {
+		if strings.Contains(checkOut, forbidden) {
+			t.Errorf("released check still reports %q:\n%s", forbidden, checkOut)
+		}
+	}
+
+	// Repeated abort is an idempotent no-op returning the same final truth.
+	reabortOut, err := h.RunInDir(operator, "axi", "abort")
+	if err != nil {
+		t.Fatalf("repeated abort: %v\n%s", err, reabortOut)
+	}
+	for _, want := range []string{"aborted: false", "no active run (no-op)", "state: user_owned"} {
+		if !strings.Contains(reabortOut, want) {
+			t.Errorf("repeated abort missing %q:\n%s", want, reabortOut)
+		}
+	}
+
+	// A wrong checked-out branch still refuses recovery without mutation.
+	if out, gitErr := h.runGit(context.Background(), operator, "checkout", "-b", "feature/unmoved-other"); gitErr != nil {
+		t.Fatalf("checkout wrong branch: %v\n%s", gitErr, out)
+	}
+	wrongOut, wrongErr := h.RunInDir(operator, "axi", "sync", "--recover")
+	if wrongErr == nil {
+		t.Fatalf("recover from the wrong branch should refuse:\n%s", wrongOut)
+	}
+	if !strings.Contains(wrongOut, "blocked_recover_not_applicable") {
+		t.Errorf("wrong-branch recover refusal missing precise reason:\n%s", wrongOut)
+	}
+	if out, gitErr := h.runGit(context.Background(), operator, "checkout", "feature/unmoved-abort"); gitErr != nil {
+		t.Fatalf("checkout back: %v\n%s", gitErr, out)
+	}
+
+	// A recovery request on the released branch is an idempotent no-op: no
+	// worktree move, no anchor ref, no hidden managed-copy tip.
+	for round := 0; round < 2; round++ {
+		recoverOut, err := h.RunInDir(operator, "axi", "sync", "--recover")
+		if err != nil {
+			t.Fatalf("released recover round %d: %v\n%s", round, err, recoverOut)
+		}
+		for _, want := range []string{"recovered: true", "state: user_owned", "changed: false"} {
+			if !strings.Contains(recoverOut, want) {
+				t.Errorf("released recover round %d missing %q:\n%s", round, want, recoverOut)
+			}
+		}
+	}
+	if got, gitErr := h.runGit(context.Background(), operator, "rev-parse", "HEAD"); gitErr != nil || strings.TrimSpace(string(got)) != submitted {
+		t.Fatalf("operator HEAD after released recover = %s (err %v), want submitted %s", strings.TrimSpace(string(got)), gitErr, submitted)
+	}
+	anchorRef := "refs/no-mistakes/recover/" + run.ID
+	if _, gitErr := h.runGit(context.Background(), operator, "rev-parse", "--verify", anchorRef); gitErr == nil {
+		t.Fatalf("released recover wrote anchor ref %s", anchorRef)
+	}
+
+	// The branch is user-owned: the worker continues through a separately
+	// authorized direct delivery path - an ordinary push to origin - and no
+	// validation run starts as a side effect.
+	runsBefore := len(h.Runs())
+	if out, gitErr := h.runGit(context.Background(), operator, "push", "origin", "feature/unmoved-abort"); gitErr != nil {
+		t.Fatalf("direct delivery push after recovery: %v\n%s", gitErr, out)
+	}
+	if got := h.UpstreamBranchSHA("feature/unmoved-abort"); got != submitted {
+		t.Fatalf("upstream branch = %s, want %s", got, submitted)
+	}
+	if got := len(h.Runs()); got != runsBefore {
+		t.Fatalf("direct delivery push changed run count from %d to %d", runsBefore, got)
+	}
+
+	// Abort-then-revalidate stays direct on a second lane: the released
+	// user-owned branch never blocks a fresh `axi run` - no recovery step in
+	// between.
+	h.CommitChange("feature/unmoved-rerun", "feature.txt", "unsafe\n", "add second unsafe feature")
+	rerunOperator := h.AddWorktree("feature/unmoved-rerun")
+	if out, err := h.RunInDir(rerunOperator, "axi", "run", "--intent", "guard the second feature"); err != nil || !strings.Contains(out, "sync-1") {
+		t.Fatalf("second lane review gate: %v\n%s", err, out)
+	}
+	if out, err := h.RunInDir(rerunOperator, "axi", "abort"); err != nil {
+		t.Fatalf("second lane abort: %v\n%s", err, out)
+	}
+	if second := h.WaitForRun("feature/unmoved-rerun", 30*time.Second); second.Status != types.RunCancelled {
+		t.Fatalf("second lane run status after abort = %s", second.Status)
+	}
+	if out, gitErr := h.runGit(context.Background(), rerunOperator, "commit", "--allow-empty", "-m", "revalidate after abort"); gitErr != nil {
+		t.Fatalf("commit follow-up: %v\n%s", gitErr, out)
+	}
+	freshOut, err := h.RunInDir(rerunOperator, "axi", "run", "--intent", "revalidate after the unmoved abort without a recovery")
+	if err != nil || !strings.Contains(freshOut, "sync-1") {
+		t.Fatalf("fresh validation after unmoved abort was blocked: %v\n%s", err, freshOut)
+	}
+	if out, err := h.RunInDir(rerunOperator, "axi", "abort"); err != nil {
+		t.Fatalf("cleanup abort: %v\n%s", err, out)
 	}
 }
 
