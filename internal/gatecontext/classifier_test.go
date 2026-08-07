@@ -2,11 +2,15 @@ package gatecontext_test
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
@@ -96,6 +100,118 @@ func TestInspectorRejectsRelocatedAndSymlinkedManagedRoots(t *testing.T) {
 	}
 	if !got.Nested || !got.ManagedGit {
 		t.Fatalf("symlinked relocated root not rejected: %+v", got)
+	}
+}
+
+func TestInspectorPreMigrationSchemaDegradesActiveAgentSteps(t *testing.T) {
+	cases := []struct {
+		name      string
+		dropRuns  []string
+		dropSteps []string
+		withRun   bool
+		wantErr   string
+	}{
+		{
+			name:     "runs missing review_approved_head_sha degrades to empty",
+			dropRuns: []string{"review_approved_head_sha"},
+		},
+		{
+			name:     "runs missing submitted_head_sha degrades to empty",
+			dropRuns: []string{"submitted_head_sha"},
+		},
+		{
+			name:     "runs missing awaiting_agent_since degrades to empty",
+			dropRuns: []string{"awaiting_agent_since"},
+		},
+		{
+			name:     "runs missing parked_ms degrades to empty",
+			dropRuns: []string{"parked_ms"},
+		},
+		{
+			name:     "runs missing any other migration column degrades to empty",
+			dropRuns: []string{"intent"},
+		},
+		{
+			name:      "step_results missing migration columns degrades to empty",
+			dropSteps: []string{"last_activity_at", "last_activity", "agent_pid", "auto_fix_limit"},
+			withRun:   true,
+		},
+		{
+			name:      "step_results missing single migration column degrades to empty",
+			dropSteps: []string{"auto_fix_limit"},
+			withRun:   true,
+		},
+		{
+			name:     "runs missing unrelated column propagates",
+			dropRuns: []string{"status"},
+			wantErr:  "no such column: status",
+		},
+		{
+			name:      "step_results missing unrelated column propagates",
+			dropSteps: []string{"status"},
+			withRun:   true,
+			wantErr:   "no such column: status",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "old.sqlite")
+			database, err := db.Open(dbPath)
+			if err != nil {
+				t.Fatalf("open db: %v", err)
+			}
+			if err := database.Close(); err != nil {
+				t.Fatalf("close db: %v", err)
+			}
+			raw, err := sql.Open("sqlite", dbPath)
+			if err != nil {
+				t.Fatalf("open raw db: %v", err)
+			}
+			for _, col := range tc.dropRuns {
+				if _, err := raw.Exec(`ALTER TABLE runs DROP COLUMN ` + col); err != nil {
+					raw.Close()
+					t.Fatalf("drop runs column %s: %v", col, err)
+				}
+			}
+			for _, col := range tc.dropSteps {
+				if _, err := raw.Exec(`ALTER TABLE step_results DROP COLUMN ` + col); err != nil {
+					raw.Close()
+					t.Fatalf("drop step_results column %s: %v", col, err)
+				}
+			}
+			if tc.withRun {
+				if _, err := raw.Exec(`INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, status, created_at, updated_at) VALUES ('run-1', 'repo-1', 'feature', 'head', 'base', 'pending', 1, 1)`); err != nil {
+					raw.Close()
+					t.Fatalf("insert run: %v", err)
+				}
+			}
+			if err := raw.Close(); err != nil {
+				t.Fatalf("close raw db: %v", err)
+			}
+
+			readonly, err := db.OpenReadOnly(dbPath)
+			if err != nil {
+				t.Fatalf("open read-only: %v", err)
+			}
+			defer readonly.Close()
+			inspector := gatecontext.Inspector{DB: readonly, Paths: paths.WithRoot(t.TempDir())}
+			got, err := inspector.Inspect(context.Background(), gatecontext.Request{})
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("inspect = %+v, want error containing %q", got, tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("inspect error = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("inspect on pre-migration schema: %v", err)
+			}
+			if got.Nested {
+				t.Fatalf("pre-migration schema classified as nested: %+v", got)
+			}
+		})
 	}
 }
 
