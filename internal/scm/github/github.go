@@ -297,15 +297,51 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	if err != nil {
 		return nil, err
 	}
+	headSHA := ""
+	if strings.TrimSpace(pr.HeadSHA) != "" {
+		headSHA, err = h.getPRHeadSHA(ctx, selector)
+		if err != nil {
+			return nil, err
+		}
+		pr.HeadSHA = headSHA
+	}
+	var checks []scm.Check
+	if headSHA != "" {
+		checks, err = h.getCommitChecks(ctx, headSHA)
+	} else {
+		checks, err = h.getPRChecks(ctx, selector)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if headSHA != "" {
+		runs, err := h.getWorkflowRunChecks(ctx, headSHA)
+		if err != nil {
+			return nil, err
+		}
+		checks = h.appendUnrepresentedWorkflowRuns(checks, runs)
+		currentHeadSHA, err := h.getPRHeadSHA(ctx, selector)
+		if err != nil {
+			return nil, err
+		}
+		if currentHeadSHA != headSHA {
+			return nil, fmt.Errorf("PR head changed during check discovery from %s to %s", headSHA, currentHeadSHA)
+		}
+	}
+	return checks, nil
+}
+
+func (h *Host) getPRChecks(ctx context.Context, selector string) ([]scm.Check, error) {
 	args := append([]string{"pr", "checks", selector}, h.repoArgs()...)
 	args = append(args, "--json", "name,state,bucket,completedAt,link")
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if strings.Contains(string(out), "no checks reported") {
-			return nil, nil
+			out = []byte("[]")
+		} else {
+			return nil, fmt.Errorf("gh pr checks: %w", err)
 		}
-		return nil, fmt.Errorf("gh pr checks: %w", err)
 	}
 	var raw []struct {
 		Name        string `json:"name"`
@@ -336,16 +372,265 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	return checks, nil
 }
 
-// RerunCheck re-runs the Actions job behind check for the same commit, so a
+const commitChecksQuery = `query($owner:String!,$name:String!,$oid:String!,$cursor:String){repository(owner:$owner,name:$name){object(expression:$oid){... on Commit{statusCheckRollup{contexts(first:100,after:$cursor){nodes{__typename ... on CheckRun{name status conclusion completedAt detailsUrl} ... on StatusContext{context state targetUrl}} pageInfo{hasNextPage endCursor}}}}}}}`
+
+func (h *Host) getCommitChecks(ctx context.Context, headSHA string) ([]scm.Check, error) {
+	repo := h.repoSlug()
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil, fmt.Errorf("resolve GitHub repository for commit checks: invalid repository %q", repo)
+	}
+	var checks []scm.Check
+	cursor := ""
+	for {
+		args := []string{"api"}
+		if h.host != "" {
+			args = append(args, "--hostname", h.host)
+		}
+		args = append(args, "graphql", "-f", "query="+commitChecksQuery,
+			"-F", "owner="+parts[0], "-F", "name="+parts[1], "-F", "oid="+strings.TrimSpace(headSHA))
+		if cursor != "" {
+			args = append(args, "-F", "cursor="+cursor)
+		}
+		out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("gh api checks for head commit: %s: %w", strings.TrimSpace(string(out)), err)
+		}
+		var response struct {
+			Data struct {
+				Repository *struct {
+					Object *struct {
+						Rollup *struct {
+							Contexts struct {
+								Nodes []struct {
+									Type        string `json:"__typename"`
+									Name        string `json:"name"`
+									Status      string `json:"status"`
+									Conclusion  string `json:"conclusion"`
+									CompletedAt string `json:"completedAt"`
+									DetailsURL  string `json:"detailsUrl"`
+									Context     string `json:"context"`
+									State       string `json:"state"`
+									TargetURL   string `json:"targetUrl"`
+								} `json:"nodes"`
+								PageInfo struct {
+									HasNextPage bool   `json:"hasNextPage"`
+									EndCursor   string `json:"endCursor"`
+								} `json:"pageInfo"`
+							} `json:"contexts"`
+						} `json:"statusCheckRollup"`
+					} `json:"object"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(out, &response); err != nil {
+			return nil, fmt.Errorf("parse checks for head commit: %w", err)
+		}
+		if response.Data.Repository == nil || response.Data.Repository.Object == nil {
+			return nil, errors.New("head commit check discovery returned no commit")
+		}
+		if response.Data.Repository.Object.Rollup == nil {
+			return checks, nil
+		}
+		contexts := response.Data.Repository.Object.Rollup.Contexts
+		for _, node := range contexts.Nodes {
+			check := scm.Check{}
+			switch node.Type {
+			case "CheckRun":
+				check.Name = strings.TrimSpace(node.Name)
+				check.State = strings.ToUpper(strings.TrimSpace(node.Conclusion))
+				if check.State == "" {
+					check.State = strings.ToUpper(strings.TrimSpace(node.Status))
+				}
+				check.Bucket = normalizeCheckBucket("", node.Conclusion)
+				if check.Bucket == "" {
+					check.Bucket = normalizeCheckBucket("", node.Status)
+				}
+				check.Link = strings.TrimSpace(node.DetailsURL)
+				if parsed, parseErr := time.Parse(time.RFC3339, node.CompletedAt); parseErr == nil {
+					check.CompletedAt = parsed
+				}
+			case "StatusContext":
+				check.Name = strings.TrimSpace(node.Context)
+				check.State = strings.ToUpper(strings.TrimSpace(node.State))
+				check.Bucket = normalizeCheckBucket("", node.State)
+				check.Link = strings.TrimSpace(node.TargetURL)
+			default:
+				return nil, fmt.Errorf("head commit check discovery returned unsupported context type %q", node.Type)
+			}
+			if check.Name == "" || check.Bucket == "" {
+				return nil, errors.New("head commit check discovery returned an incomplete context")
+			}
+			checks = append(checks, check)
+		}
+		if !contexts.PageInfo.HasNextPage {
+			return checks, nil
+		}
+		if contexts.PageInfo.EndCursor == "" || contexts.PageInfo.EndCursor == cursor {
+			return nil, errors.New("head commit check discovery returned an invalid page cursor")
+		}
+		cursor = contexts.PageInfo.EndCursor
+	}
+}
+
+func (h *Host) repoSlug() string {
+	repo := strings.TrimSpace(h.repo)
+	if prefix := strings.TrimSpace(h.host) + "/"; h.host != "" && len(repo) > len(prefix) && strings.EqualFold(repo[:len(prefix)], prefix) {
+		repo = repo[len(prefix):]
+	}
+	return repo
+}
+
+func (h *Host) appendUnrepresentedWorkflowRuns(checks, runs []scm.Check) []scm.Check {
+	represented := make(map[string]struct{}, len(checks))
+	for _, check := range checks {
+		if runID := h.actionsRunID(check.Link); runID != "" {
+			represented[runID] = struct{}{}
+		}
+	}
+	for _, run := range runs {
+		runID := h.actionsRunID(run.Link)
+		if _, exists := represented[runID]; runID != "" && exists {
+			continue
+		}
+		checks = append(checks, run)
+		if runID != "" {
+			represented[runID] = struct{}{}
+		}
+	}
+	return checks
+}
+
+func (h *Host) getPRHeadSHA(ctx context.Context, selector string) (string, error) {
+	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
+	args = append(args, "--json", "headRefOid", "--jq", ".headRefOid")
+	out, err := h.cmd(ctx, "gh", args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("gh pr view head commit: %w", err)
+	}
+	headSHA := strings.TrimSpace(string(out))
+	if headSHA == "" {
+		return "", errors.New("gh pr view returned an empty head commit")
+	}
+	return headSHA, nil
+}
+
+func (h *Host) getWorkflowRunChecks(ctx context.Context, headSHA string) ([]scm.Check, error) {
+	repo := h.repoSlug()
+	endpoint := "repos/{owner}/{repo}/actions/runs"
+	if repo != "" {
+		endpoint = "repos/" + repo + "/actions/runs"
+	}
+	args := []string{"api"}
+	if h.host != "" {
+		args = append(args, "--hostname", h.host)
+	}
+	args = append(args, "--method", "GET", endpoint,
+		"-f", "head_sha="+strings.TrimSpace(headSHA),
+		"-f", "per_page=100",
+		"--paginate", "--slurp",
+	)
+	out, err := h.cmd(ctx, "gh", args...).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("gh api workflow runs for head commit: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	type workflowRun struct {
+		ID          int64  `json:"id"`
+		Name        string `json:"name"`
+		DisplayName string `json:"display_title"`
+		Status      string `json:"status"`
+		Conclusion  string `json:"conclusion"`
+		UpdatedAt   string `json:"updated_at"`
+		HTMLURL     string `json:"html_url"`
+	}
+	var pages []struct {
+		TotalCount   *int          `json:"total_count"`
+		WorkflowRuns []workflowRun `json:"workflow_runs"`
+	}
+	if err := json.Unmarshal(out, &pages); err != nil {
+		return nil, fmt.Errorf("parse workflow runs for head commit: %w", err)
+	}
+	if len(pages) == 0 {
+		return nil, errors.New("workflow run discovery returned no pages")
+	}
+	var raw []workflowRun
+	totalCount := -1
+	runIDs := make(map[int64]struct{})
+	for pageIndex, page := range pages {
+		if page.TotalCount == nil || *page.TotalCount < 0 {
+			return nil, fmt.Errorf("workflow run page %d has no valid total_count", pageIndex+1)
+		}
+		if totalCount == -1 {
+			totalCount = *page.TotalCount
+		} else if *page.TotalCount != totalCount {
+			return nil, fmt.Errorf("workflow run page %d total_count is %d, want %d", pageIndex+1, *page.TotalCount, totalCount)
+		}
+		for _, run := range page.WorkflowRuns {
+			if run.ID == 0 {
+				return nil, fmt.Errorf("workflow run page %d contains a run without an id", pageIndex+1)
+			}
+			if _, exists := runIDs[run.ID]; exists {
+				return nil, fmt.Errorf("workflow run id %d appears more than once", run.ID)
+			}
+			runIDs[run.ID] = struct{}{}
+			raw = append(raw, run)
+		}
+	}
+	if len(runIDs) != totalCount {
+		return nil, fmt.Errorf("workflow run discovery returned %d unique runs, want %d", len(runIDs), totalCount)
+	}
+	checks := make([]scm.Check, 0, len(raw))
+	for _, run := range raw {
+		name := strings.TrimSpace(run.Name)
+		if name == "" {
+			name = strings.TrimSpace(run.DisplayName)
+		}
+		if name == "" {
+			name = "GitHub Actions workflow"
+		}
+		var completedAt time.Time
+		if run.UpdatedAt != "" {
+			if parsed, parseErr := time.Parse(time.RFC3339, run.UpdatedAt); parseErr == nil {
+				completedAt = parsed
+			}
+		}
+		bucket := normalizeCheckBucket("", run.Conclusion)
+		if bucket == "" {
+			bucket = normalizeCheckBucket("", run.Status)
+		}
+		if bucket == "" {
+			// An unrecognized or incomplete run state must not certify the
+			// commit as green. Keep monitoring until GitHub reports a terminal
+			// state that can be classified.
+			bucket = scm.CheckBucketPending
+		}
+		state := strings.ToUpper(strings.TrimSpace(run.Conclusion))
+		if state == "" {
+			state = strings.ToUpper(strings.TrimSpace(run.Status))
+		}
+		link := strings.TrimSpace(run.HTMLURL)
+		if link == "" {
+			host := strings.TrimSpace(h.host)
+			if host == "" {
+				host = "github.com"
+			}
+			link = fmt.Sprintf("https://%s/%s/actions/runs/%d", host, repo, run.ID)
+		}
+		checks = append(checks, scm.Check{Name: name, Bucket: bucket, State: state, CompletedAt: completedAt, Link: link})
+	}
+	return checks, nil
+}
+
+// RerunCheck re-runs the Actions work behind check for the same commit, so a
 // check the provider cancelled rather than failed can be retried without a new
 // push. The job is identified from the check's details link, which is the only
 // run/job identity `gh pr checks` reports: a link naming a job re-runs just that
-// job (and its dependencies), and a link naming only a run re-runs that run's
-// failed jobs. Anything else - a third-party status pointing at an external
-// dashboard, or a run path this backend cannot read - names no re-runnable job,
+// job (and its dependencies), and a cancelled check naming only a run re-runs
+// the whole run. Anything else - a third-party status pointing at an external
+// dashboard, or a run path this backend cannot read - names no re-runnable work,
 // and the error says so rather than falling back to a wider rerun.
 func (h *Host) RerunCheck(ctx context.Context, _ *scm.PR, check scm.Check) error {
-	rerunArgs, ok := rerunTargetArgs(check.Link)
+	rerunArgs, ok := h.rerunTargetArgs(check)
 	if !ok {
 		return fmt.Errorf("check %q has no GitHub Actions job to re-run", check.Name)
 	}
@@ -358,19 +643,56 @@ func (h *Host) RerunCheck(ctx context.Context, _ *scm.PR, check scm.Check) error
 	return nil
 }
 
-// rerunTargetArgs turns a check's details link into the `gh run rerun`
-// arguments that re-run exactly that work, or reports that the link names
-// nothing this backend can re-run.
-func rerunTargetArgs(link string) ([]string, bool) {
-	runID, jobID, ok := actionsRerunTarget(link)
+// rerunTargetArgs turns a check into the `gh run rerun` arguments that re-run
+// exactly that work, or reports that the link names nothing this backend can
+// re-run.
+func (h *Host) rerunTargetArgs(check scm.Check) ([]string, bool) {
+	runID, jobID, ok := h.actionsRerunTarget(check.Link)
 	switch {
 	case !ok:
 		return nil, false
 	case jobID != "":
 		return []string{"--job", jobID}, true
+	case strings.EqualFold(strings.TrimSpace(check.State), "CANCELLED"):
+		return []string{runID}, true
 	default:
 		return []string{runID, "--failed"}, true
 	}
+}
+
+func (h *Host) actionsRunID(link string) string {
+	segments, ok := h.actionsRunSegments(link)
+	if !ok {
+		return ""
+	}
+	return segments[0]
+}
+
+func (h *Host) actionsRunSegments(link string) ([]string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(link))
+	if err != nil {
+		return nil, false
+	}
+	host := strings.TrimSpace(h.host)
+	if host == "" {
+		host = "github.com"
+	}
+	if !strings.EqualFold(parsed.Hostname(), host) {
+		return nil, false
+	}
+	repo := h.repoSlug()
+	if repo == "" {
+		return nil, false
+	}
+	runsPrefix := "/" + strings.Trim(repo, "/") + "/actions/runs/"
+	if len(parsed.Path) <= len(runsPrefix) || !strings.EqualFold(parsed.Path[:len(runsPrefix)], runsPrefix) {
+		return nil, false
+	}
+	segments := strings.Split(strings.Trim(parsed.Path[len(runsPrefix):], "/"), "/")
+	if len(segments) == 0 || !isNumericID(segments[0]) {
+		return nil, false
+	}
+	return segments, true
 }
 
 // actionsRerunTarget resolves the Actions run, and where possible the exact job,
@@ -383,22 +705,12 @@ func rerunTargetArgs(link string) ([]string, bool) {
 // shapes are deliberately rejected rather than downgraded to the whole run:
 // the browser's ".../runs/<run-id>/jobs/<n>" form, whose number is a per-run
 // display index the API answers with 404, and any other unrecognized path under
-// a run. Re-running a run re-runs every failed job in it, so widening one
-// check's rerun into all of them on an unparsable link is a blast radius this
-// policy must not take; a link that names only the run itself is the one case
-// where that is exactly what it points at.
-func actionsRerunTarget(link string) (runID, jobID string, ok bool) {
-	parsed, err := url.Parse(strings.TrimSpace(link))
-	if err != nil {
-		return "", "", false
-	}
-	const runsSegment = "/actions/runs/"
-	idx := strings.Index(parsed.Path, runsSegment)
-	if idx < 0 {
-		return "", "", false
-	}
-	segments := strings.Split(strings.Trim(parsed.Path[idx+len(runsSegment):], "/"), "/")
-	if len(segments) == 0 || !isNumericID(segments[0]) {
+// a run. Re-running a run can restart more than one job, so widening one
+// check's rerun on an unparsable link is a blast radius this policy must not
+// take.
+func (h *Host) actionsRerunTarget(link string) (runID, jobID string, ok bool) {
+	segments, ok := h.actionsRunSegments(link)
+	if !ok {
 		return "", "", false
 	}
 	runID = segments[0]

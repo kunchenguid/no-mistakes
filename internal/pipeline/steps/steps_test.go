@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -304,12 +305,20 @@ func fakeCIGHReconcileHandler(args []string) {
 			os.Exit(0)
 		}
 	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid") {
+		fmt.Println(os.Getenv("FAKE_CLI_PR_HEAD_SHA"))
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
 		fmt.Println("MERGEABLE")
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr checks") {
 		fmt.Println(`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "api") && strings.Contains(joined, "graphql") {
+		printFakeCommitChecks(`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`, args)
 		os.Exit(0)
 	}
 	fmt.Fprintln(os.Stderr, "unsupported reconcile gh argv:", joined)
@@ -326,6 +335,10 @@ func fakeCIGHHandler(args []string) {
 	joined := strings.Join(args, " ")
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid") {
+		fmt.Println(os.Getenv("FAKE_CLI_PR_HEAD_SHA"))
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json mergeable") {
@@ -353,6 +366,18 @@ func fakeCIGHHandler(args []string) {
 			os.Exit(1)
 		}
 		fmt.Println(checksJSON)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "api") && strings.Contains(joined, "graphql") {
+		if checksErr != "" {
+			fmt.Fprintln(os.Stderr, checksErr)
+			os.Exit(1)
+		}
+		printFakeCommitChecks(checksJSON, args)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "api") && strings.Contains(joined, "actions/runs") {
+		printFakeWorkflowRuns()
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "run rerun") {
@@ -401,6 +426,10 @@ func fakeCIGHSequenceHandler(args []string) {
 		fmt.Println(state)
 		os.Exit(0)
 	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid") {
+		fmt.Println(os.Getenv("FAKE_CLI_PR_HEAD_SHA"))
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "pr checks") {
 		data, err := os.ReadFile(checksPath)
 		if err != nil {
@@ -427,6 +456,37 @@ func fakeCIGHSequenceHandler(args []string) {
 			os.Exit(1)
 		}
 		fmt.Println(entries[index])
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "api") && strings.Contains(joined, "graphql") {
+		data, err := os.ReadFile(checksPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		entries := strings.Split(strings.TrimSpace(string(data)), "\n")
+		if len(entries) == 0 || entries[0] == "" {
+			printFakeCommitChecks("[]", args)
+			os.Exit(0)
+		}
+		index := 0
+		if rawIndex, err := os.ReadFile(indexPath); err == nil {
+			if parsed, err := strconv.Atoi(strings.TrimSpace(string(rawIndex))); err == nil {
+				index = parsed
+			}
+		}
+		if index >= len(entries) {
+			index = len(entries) - 1
+		}
+		if err := os.WriteFile(indexPath, []byte(strconv.Itoa(index+1)), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		printFakeCommitChecks(entries[index], args)
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "api") && strings.Contains(joined, "actions/runs") {
+		printFakeWorkflowRuns()
 		os.Exit(0)
 	}
 	if strings.Contains(joined, "run rerun") {
@@ -563,9 +623,133 @@ func fakeCIGHNoChecksHandler(args []string) {
 		fmt.Fprintln(os.Stderr, "no checks reported on the 'feature/e2e' branch")
 		os.Exit(1)
 	}
+	if strings.Contains(joined, "api") && strings.Contains(joined, "actions/runs") {
+		printFakeWorkflowRuns()
+		os.Exit(0)
+	}
+	if strings.Contains(joined, "api") && strings.Contains(joined, "graphql") {
+		printFakeCommitChecks("[]", args)
+		os.Exit(0)
+	}
 	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json state") {
 		fmt.Println("OPEN")
 		os.Exit(0)
 	}
+	if strings.Contains(joined, "pr view") && strings.Contains(joined, "--json headRefOid") {
+		fmt.Println(os.Getenv("FAKE_CLI_PR_HEAD_SHA"))
+		os.Exit(0)
+	}
 	os.Exit(1)
+}
+
+func printFakeWorkflowRuns() {
+	raw := os.Getenv("FAKE_CLI_WORKFLOW_RUNS")
+	if raw == "" {
+		raw = "[]"
+	}
+	var runs []json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &runs); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	page := struct {
+		TotalCount   int               `json:"total_count"`
+		WorkflowRuns []json.RawMessage `json:"workflow_runs"`
+	}{
+		TotalCount:   len(runs),
+		WorkflowRuns: runs,
+	}
+	encoded, err := json.Marshal([]any{page})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(string(encoded))
+}
+
+func printFakeCommitChecks(raw string, args []string) {
+	var checks []struct {
+		Name        string `json:"name"`
+		State       string `json:"state"`
+		Status      string `json:"status"`
+		Conclusion  string `json:"conclusion"`
+		Bucket      string `json:"bucket"`
+		CompletedAt string `json:"completedAt"`
+		Link        string `json:"link"`
+	}
+	if err := json.Unmarshal([]byte(raw), &checks); err != nil {
+		fmt.Println(raw)
+		return
+	}
+	nodes := make([]map[string]string, 0, len(checks))
+	for _, check := range checks {
+		status := check.Status
+		if status == "" {
+			status = "COMPLETED"
+		}
+		conclusion := check.State
+		if conclusion == "" {
+			conclusion = check.Conclusion
+		}
+		if conclusion == "" {
+			switch check.Bucket {
+			case "pass":
+				conclusion = "SUCCESS"
+			case "fail":
+				conclusion = "FAILURE"
+			case "cancel":
+				conclusion = "CANCELLED"
+			case "skip":
+				conclusion = "SKIPPED"
+			}
+		}
+		if check.Bucket == "pending" {
+			status = "IN_PROGRESS"
+			conclusion = ""
+		}
+		link := check.Link
+		if repo := fakeGraphQLRepo(args); repo != "" {
+			link = strings.Replace(link, "github.com/test/repo/", "github.com/"+repo+"/", 1)
+		}
+		nodes = append(nodes, map[string]string{
+			"__typename": "CheckRun", "name": check.Name, "status": status,
+			"conclusion": conclusion, "completedAt": check.CompletedAt, "detailsUrl": link,
+		})
+	}
+	response := map[string]any{
+		"data": map[string]any{
+			"repository": map[string]any{
+				"object": map[string]any{
+					"statusCheckRollup": map[string]any{
+						"contexts": map[string]any{
+							"nodes":    nodes,
+							"pageInfo": map[string]any{"hasNextPage": false, "endCursor": ""},
+						},
+					},
+				},
+			},
+		},
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(string(encoded))
+}
+
+func fakeGraphQLRepo(args []string) string {
+	var owner, name string
+	for _, arg := range args {
+		switch {
+		case strings.HasPrefix(arg, "owner="):
+			owner = strings.TrimPrefix(arg, "owner=")
+		case strings.HasPrefix(arg, "name="):
+			name = strings.TrimPrefix(arg, "name=")
+		}
+	}
+	if owner == "" || name == "" {
+		return ""
+	}
+	return owner + "/" + name
 }

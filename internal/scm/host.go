@@ -89,6 +89,10 @@ func ExtractPRNumber(prURL string) (string, error) {
 type PR struct {
 	Number string
 	URL    string
+	// HeadSHA scopes provider check discovery to the exact commit currently
+	// being certified. Providers that expose CI outside the PR check rollup
+	// use it to include those runs.
+	HeadSHA string
 }
 
 // PRContent is the title + body for creating or updating a PR.
@@ -146,9 +150,9 @@ type Check struct {
 	// provider reported no state.
 	State       string
 	CompletedAt time.Time // zero when unknown; used to detect CI re-runs between polls
-	// Link is the provider's details URL for this check. It identifies the job
-	// behind the check, so a rerun can target that job instead of the whole PR.
-	// Empty when the provider reported no link.
+	// Link is the provider's details URL for this check. It may identify an
+	// individual job or a provider-side workflow run for targeted reruns. Empty
+	// when the provider reported no link.
 	Link string
 }
 
@@ -197,7 +201,7 @@ type Host interface {
 	FetchFailedCheckLogs(ctx context.Context, pr *PR, branch, headSHA string, failingNames []string) (string, error)
 }
 
-// CheckRerunner re-runs the provider-side job behind a failed check without
+// CheckRerunner re-runs the provider-side work behind a failed check without
 // changing the commit under test. It is deliberately a separate interface
 // rather than a Host method: a backend whose provider exposes no rerun
 // primitive simply does not implement it, and callers type-assert
@@ -206,6 +210,6 @@ type Host interface {
 type CheckRerunner interface {
 	// RerunCheck asks the provider to run check again for the same commit. It
 	// returns an error when the request could not be made, including when the
-	// check names no job the provider can re-run.
+	// check names no job or workflow run the provider can re-run.
 	RerunCheck(ctx context.Context, pr *PR, check Check) error
 }
