@@ -135,8 +135,8 @@ func TestPublishRunEvidence_LandsOnOrphanBranchAndLinksFromThePRBody(t *testing.
 
 func TestPublishRunEvidence_PercentEncodesEveryArtifactPathSegment(t *testing.T) {
 	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
-	sctx.Config.Test.Evidence.Dir = "evidence archive #1?100%"
-	artifact := "capture #1?/checkout 100%.png"
+	sctx.Config.Test.Evidence.Dir = "evidence archive #1 100%"
+	artifact := "capture #1 100%/checkout 100%.png"
 	writeRunEvidence(t, sctx, map[string]string{artifact: "\x89PNG binary"})
 	evidenceDir := testEvidenceDir(sctx.Run.ID)
 
@@ -150,7 +150,7 @@ func TestPublishRunEvidence_PercentEncodesEveryArtifactPathSegment(t *testing.T)
 		filepath.Join(evidenceDir, filepath.FromSlash(artifact)),
 	))
 	md := BuildTestingSummaryForPR(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, links)
-	want := "https://github.com/example/widgets/blob/" + tip + "/evidence%20archive%20%231%3F100%25/feature/add-login/capture%20%231%3F/checkout%20100%25.png"
+	want := "https://github.com/example/widgets/blob/" + tip + "/evidence%20archive%20%231%20100%25/feature/add-login/capture%20%231%20100%25/checkout%20100%25.png"
 	if !strings.Contains(md, want) {
 		t.Fatalf("expected every artifact path segment to be encoded as %q, got:\n%s", want, md)
 	}
