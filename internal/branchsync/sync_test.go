@@ -867,7 +867,14 @@ func TestRefreshSlowSuccessfulLsRemoteDoesNotStealFetchBudget(t *testing.T) {
 	}
 	fetchRemoteFn = func(ctx context.Context, dir, remote, branch, localRef string) error {
 		fetchDeadline, _ = ctx.Deadline()
-		return origFetchRemote(ctx, dir, remote, branch, localRef)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// Produce the fetch's real observable result without making this
+		// deadline-isolation test depend on platform-specific subprocess
+		// startup time. On Windows, starting the process can legitimately
+		// consume this deliberately tiny test budget even when it is fresh.
+		return origFetchRemote(context.Background(), dir, remote, branch, localRef)
 	}
 
 	state := f.service.Refresh(f.ctx)
