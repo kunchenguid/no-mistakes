@@ -137,7 +137,9 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 	if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
 		return false, fmt.Errorf("stage CI changes: %w", err)
 	}
-	if _, err := stepGitRun(sctx, "commit", "-m", "no-mistakes: apply CI fixes"); err != nil {
+	// Sign off (see commitAgentFixes) so DCO-gated repositories accept the CI-fix
+	// commit without a follow-up Signed-off-by remediation commit.
+	if _, err := stepGitRun(sctx, "commit", "-s", "-m", "no-mistakes: apply CI fixes"); err != nil {
 		return false, fmt.Errorf("commit: %w", err)
 	}
 	headSHA, err := stepGitHeadSHA(sctx)
