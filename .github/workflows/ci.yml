@@ -87,6 +87,27 @@ jobs:
       - name: Build
         run: go build ./cmd/no-mistakes
 
+  nix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: cachix/install-nix-action@v31
+
+      # The flake pins a fixed-output vendorHash that every go.mod/go.sum
+      # change invalidates. Without this job the Go suite stays green while
+      # `nix run github:kunchenguid/no-mistakes` fails for every user with a
+      # hash mismatch until a human notices.
+      - name: Build flake
+        run: nix build --print-build-logs
+
+      # `nix build` only touches this runner's own system, so a system the
+      # flake advertises but nixpkgs cannot evaluate would surface first as a
+      # user's failed `nix run` on that platform.
+      - name: Check flake on every advertised system
+        run: nix flake check --all-systems
+
   e2e:
     runs-on: ubuntu-latest
     steps:

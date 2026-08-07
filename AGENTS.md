@@ -238,6 +238,9 @@ Safest local verification sequence after non-trivial changes:
 **When Making Changes**
 
 - Whenever you must bring in new dependencies, check latest documentation for knowledge, and discuss with the user.
+- Any `go.mod`/`go.sum` change invalidates the fixed-output `vendorHash` pinned in `flake.nix`; recompute it in the same change or the `nix` CI job fails while the Go suite stays green.
+  `flake.nix` is also a release-please `extra-files` target, so its annotated `version` line is stamped at release and must keep matching `.release-please-manifest.json`.
+  Regressions: `TestCIWorkflowBuildsTheFlake`, `TestCIWorkflowChecksEveryAdvertisedFlakeSystem`, `TestReleasePleaseConfigBumpsFlakeVersion`, `TestFlakeVersionMatchesReleaseManifest`.
 - Always use test driven development for bug fixes and feature development.
 
 ## Maintaining this file
