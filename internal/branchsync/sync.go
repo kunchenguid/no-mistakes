@@ -1312,12 +1312,7 @@ func samePushTargetBinding(older, newer *db.Run) bool {
 }
 
 func terminalRunStatus(status types.RunStatus) bool {
-	switch status {
-	case types.RunCompleted, types.RunFailed, types.RunCancelled:
-		return true
-	default:
-		return false
-	}
+	return status.Terminal()
 }
 
 // classifyPipelineOwned reports a run that still holds branch custody without
