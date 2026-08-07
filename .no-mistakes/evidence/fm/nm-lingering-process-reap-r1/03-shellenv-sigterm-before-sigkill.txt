@@ -1,0 +1,12 @@
+# Process-group teardown now sends SIGTERM first and escalates to SIGKILL only
+# after a grace period, so a test runner or worker can flush and clean up.
+# - AsksBeforeKilling: a SIGTERM handler in the group actually runs to completion.
+# - EscalatesWhenSIGTERMIsIgnored: a SIGTERM-ignoring survivor is still SIGKILLed.
+# - CancelEscalatesWithoutBlockingWait: cancellation escalates off the Wait goroutine.
+
+$ go test -v -run 'TestTerminateShellCommandGroup_AsksBeforeKilling|...EscalatesWhenSIGTERMIsIgnored|TestConfigureShellCommand_CancelEscalatesWithoutBlockingWait' ./internal/shellenv/
+--- PASS: TestTerminateShellCommandGroup_AsksBeforeKilling (0.04s)
+--- PASS: TestTerminateShellCommandGroup_EscalatesWhenSIGTERMIsIgnored (3.07s)
+--- PASS: TestConfigureShellCommand_CancelEscalatesWithoutBlockingWait (3.03s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/shellenv	(cached)

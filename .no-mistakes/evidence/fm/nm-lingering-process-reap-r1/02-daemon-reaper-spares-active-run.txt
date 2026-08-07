@@ -1,0 +1,12 @@
+# Daemon reaper at its two real call sites, with the daemon's own log output.
+# Startup sweep reaps a finished run's orphan while SPARING an active run's process;
+# run-cleanup sweep reaps a leaked child before the worktree is removed.
+# 'sigkill=false' shows SIGTERM was enough (SIGKILL only escalated when TERM fails).
+
+$ go test -v -run 'TestSweepOrphanRunProcessesReapsFinishedRunAndSparesActiveOne|TestSweepRunWorktreeProcessesReapsLeakedChildAtRunCleanup' ./internal/daemon/
+2026/08/07 12:19:40 INFO reaped orphaned run process reason=daemon_startup pid=70074 worktree=/private/var/folders/0k/bf8mwt2n5qddzk24r20gfk0c0000gn/T/TestSweepOrphanRunProcessesReapsFinishedRunAndSparesActiveOne1168002020/001/worktrees/repo1/01KZETNDN0N2BXQH9YWSK6HMXJ command="sleep 300" sigkill=false
+--- PASS: TestSweepOrphanRunProcessesReapsFinishedRunAndSparesActiveOne (0.17s)
+2026/08/07 12:19:40 INFO reaped orphaned run process reason=run_cleanup pid=70249 worktree=/private/var/folders/0k/bf8mwt2n5qddzk24r20gfk0c0000gn/T/TestSweepRunWorktreeProcessesReapsLeakedChildAtRunCleanup2657736298/001/worktrees/repo1/run1 command="sleep 300" sigkill=false
+--- PASS: TestSweepRunWorktreeProcessesReapsLeakedChildAtRunCleanup (0.16s)
+PASS
+ok  	github.com/kunchenguid/no-mistakes/internal/daemon	(cached)
