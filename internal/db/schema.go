@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS runs (
     head_sha                TEXT NOT NULL,
     base_sha                TEXT NOT NULL,
     submitted_head_sha      TEXT,
+    no_mistakes_version     TEXT,
+    no_mistakes_build_sha   TEXT,
     review_approved_head_sha TEXT,
     status                  TEXT NOT NULL DEFAULT 'pending',
     pr_url                  TEXT,
@@ -162,6 +164,10 @@ var migrationStatements = []string{
 	// Branch synchronization provenance is intentionally nullable. Historical
 	// rows stay unbound because mutable head_sha cannot prove a successful push.
 	`ALTER TABLE runs ADD COLUMN submitted_head_sha TEXT`,
+	// Build identity is nullable for historical records. New runs record the
+	// version and embedded build SHA used by the running binary.
+	`ALTER TABLE runs ADD COLUMN no_mistakes_version TEXT`,
+	`ALTER TABLE runs ADD COLUMN no_mistakes_build_sha TEXT`,
 	// Review authority is nullable and never backfilled. A historical mutable
 	// head_sha cannot prove which exact commit a completed review approved.
 	`ALTER TABLE runs ADD COLUMN review_approved_head_sha TEXT`,
