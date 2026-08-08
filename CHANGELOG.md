@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.48.0](https://github.com/kunchenguid/no-mistakes/compare/v1.47.0...v1.48.0) (2026-08-08)
+
+
+### Features
+
+* **db:** record build identity on run records ([#687](https://github.com/kunchenguid/no-mistakes/issues/687)) ([5fc7bc7](https://github.com/kunchenguid/no-mistakes/commit/5fc7bc7353f020f302f125a2534e874256580fa1))
+
 ## [1.47.0](https://github.com/kunchenguid/no-mistakes/compare/v1.46.0...v1.47.0) (2026-08-07)
 
 
