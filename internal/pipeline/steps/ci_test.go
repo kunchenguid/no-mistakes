@@ -630,10 +630,12 @@ func TestCIStep_OpenPRKeepsMonitoringAfterChecksPass(t *testing.T) {
 func TestCIStep_ZeroConfiguredChecksBecomesTerminalNoCI(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "update-ref", "refs/remotes/origin/main", baseSHA)
 	env := fakeCIGH(t, "OPEN", "[]")
 
 	prURL := "https://github.com/test/repo/pull/42"
 	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Run.BaseSHA = strings.Repeat("0", 40)
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second

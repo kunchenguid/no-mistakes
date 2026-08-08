@@ -601,10 +601,19 @@ func (s *CIStep) configuredPRChecks(sctx *pipeline.StepContext, provider scm.Pro
 }
 
 func configuredPRChecksInBase(sctx *pipeline.StepContext, provider scm.Provider) (bool, bool) {
-	if sctx == nil || sctx.Run == nil || strings.TrimSpace(sctx.Run.BaseSHA) == "" {
+	if sctx == nil || sctx.Run == nil || sctx.Repo == nil {
 		return false, false
 	}
-	rawFiles, err := stepGitRun(sctx, "ls-tree", "-r", "--name-only", sctx.Run.BaseSHA)
+	defaultBranch := strings.TrimSpace(sctx.Repo.DefaultBranch)
+	if defaultBranch == "" {
+		return false, false
+	}
+	baseSHA, err := stepGitRun(sctx, "rev-parse", "--verify", "refs/remotes/origin/"+defaultBranch+"^{commit}")
+	if err != nil || strings.TrimSpace(baseSHA) == "" {
+		return false, false
+	}
+	baseSHA = strings.TrimSpace(baseSHA)
+	rawFiles, err := stepGitRun(sctx, "ls-tree", "-r", "--name-only", baseSHA)
 	if err != nil {
 		return false, false
 	}
@@ -633,7 +642,7 @@ func configuredPRChecksInBase(sctx *pipeline.StepContext, provider scm.Provider)
 			if !strings.HasPrefix(file, ".github/workflows/") || (!strings.HasSuffix(file, ".yml") && !strings.HasSuffix(file, ".yaml")) {
 				continue
 			}
-			workflow, err := stepGitRun(sctx, "show", sctx.Run.BaseSHA+":"+file)
+			workflow, err := stepGitRun(sctx, "show", baseSHA+":"+file)
 			if err != nil {
 				return false, false
 			}
