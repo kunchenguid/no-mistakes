@@ -38,6 +38,8 @@ step_quiet_warning: "10m"
 
 daemon_connect_timeout: "3s"
 
+branch_sync_remote_timeout: "60s"
+
 log_level: info
 
 session_reuse: true
@@ -265,6 +267,19 @@ Maximum time a CLI client waits for an existing daemon socket to accept a connec
 | Default | `3s`                   |
 
 Accepts any positive Go `time.ParseDuration` string. Overridable per-invocation with the `NM_DAEMON_CONNECT_TIMEOUT` environment variable; see [Environment Variables](/no-mistakes/reference/environment/#nm_daemon_connect_timeout).
+
+### branch_sync_remote_timeout
+
+Maximum time guarded branch synchronization (`sync`, `axi sync`, and the TUI's sync action) waits for each remote Git operation - `ls-remote` or `fetch` - before remote verification fails closed and synchronization is refused.
+
+|         |                        |
+| ------- | ---------------------- |
+| Type    | `string` (Go duration) |
+| Default | `60s`                  |
+
+Accepts any positive Go `time.ParseDuration` string.
+
+Raise this if your environment's Git credential helper (for example `gh auth git-credential`, invoked by Git as a child process against a private remote) legitimately takes longer than the default - this is a real, non-outage latency characteristic that has been observed taking 19-22s in some environments, not a hang. It is a machine/environment setting, not a per-repository one: it is read only from global config and has no matching field in a repository's `.no-mistakes.yaml`, so a pushed branch cannot widen or narrow how long the local service waits before failing closed. It never changes the fail-closed guarantee itself - a timeout or unknown remote state still always refuses synchronization without changing files or refs, whatever this value is set to.
 
 ### log_level
 

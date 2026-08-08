@@ -9,6 +9,7 @@ import (
 	toON "github.com/toon-format/toon-go"
 
 	"github.com/kunchenguid/no-mistakes/internal/branchsync"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/spf13/cobra"
 )
@@ -101,7 +102,12 @@ func openSyncService() (*branchsync.Service, func(), error) {
 		d.Close()
 		return nil, nil, err
 	}
-	return &branchsync.Service{DB: d, Repo: repo, WorkDir: ".", GateDir: p.RepoDir(repo.ID), Paths: p}, func() { _ = d.Close() }, nil
+	globalCfg, cfgErr := config.LoadGlobal(p.ConfigFile())
+	if cfgErr != nil {
+		d.Close()
+		return nil, nil, cfgErr
+	}
+	return &branchsync.Service{DB: d, Repo: repo, WorkDir: ".", GateDir: p.RepoDir(repo.ID), Paths: p, RemoteTimeout: globalCfg.BranchSyncRemoteTimeout}, func() { _ = d.Close() }, nil
 }
 
 func runHumanSync(cmd *cobra.Command, check, yes bool) error {
