@@ -534,3 +534,34 @@ func TestAzdoHelperProcess(t *testing.T) {
 	}
 	os.Exit(0)
 }
+
+// pr.draft passes --draft true to az repos pr create; unset omits it.
+func TestCreatePRAppendsDraftFlagOnlyWhenRequested(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		draft bool
+		want  bool
+	}{
+		{"draft", true, true},
+		{"ready", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var rec []capturedCmd
+			h := newCapturingHost(&rec, azdoTestResponse{stdout: `{"pullRequestId":7}` + "\n"})
+
+			if _, err := h.CreatePR(context.Background(), "feature", "main", scm.PRContent{Title: "T", Body: "B", Draft: tc.draft}); err != nil {
+				t.Fatalf("CreatePR() error = %v", err)
+			}
+			if len(rec) != 1 {
+				t.Fatalf("recorded %d commands, want 1", len(rec))
+			}
+			got := strings.Join(rec[0].args, " ")
+			if strings.Contains(got, "--draft true") != tc.want {
+				t.Fatalf("command = %q, draft flag present = %v, want %v", got, !tc.want, tc.want)
+			}
+		})
+	}
+}

@@ -492,3 +492,15 @@ func TestMerge_CarriesDisableProjectSettings(t *testing.T) {
 		t.Error("Merge must leave DisableProjectSettings false by default")
 	}
 }
+
+// pr.draft selects nothing executable and spends no maintainer resources, so
+// it stays a pushed-branch field like the other non-executing settings.
+func TestEffectiveRepoConfig_PRDraftComesFromPushedBranch(t *testing.T) {
+	t.Parallel()
+
+	draft := true
+	eff := EffectiveRepoConfig(&RepoConfig{PR: PRRaw{Draft: &draft}}, &RepoConfig{}, false)
+	if eff.PR.Draft == nil || !*eff.PR.Draft {
+		t.Fatalf("pushed pr.draft = %v, want true", eff.PR.Draft)
+	}
+}

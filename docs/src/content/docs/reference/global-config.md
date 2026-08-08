@@ -416,6 +416,19 @@ Enabling this pushes a branch to your remote, so pick a `branch` name your CI wo
 
 These are global defaults. Per-repo config can override each field, except `branch`, which is read only from the trusted default branch.
 
+### pr.draft
+
+Open every pull/merge request the pipeline creates as a draft.
+
+|         |         |
+| ------- | ------- |
+| Type    | `bool`  |
+| Default | `false` |
+
+This is the machine-wide default. A repository's own `.no-mistakes.yaml` [`pr.draft`](/reference/repo-config/#prdraft) overrides it, so a shared work repo can open PRs draft-first while a solo repo goes straight to ready-for-review.
+It applies to PR creation only, so no-mistakes never flips a PR you already marked ready-for-review back to draft.
+Supported on GitHub (`gh pr create --draft`), GitLab (`glab mr create --draft`), and Azure DevOps (`az repos pr create --draft true`); Bitbucket has no draft concept and ignores it.
+
 ## Environment variables
 
 See [Environment Variables](/no-mistakes/reference/environment/) for `NM_HOME`, `NM_DAEMON_CONNECT_TIMEOUT`, Bitbucket Cloud credentials, and update-check suppression.

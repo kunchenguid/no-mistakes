@@ -248,6 +248,9 @@ func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PR
 		"--base", base,
 	}, h.repoArgs()...)
 	args = append(args, "--title", content.Title, "--body-file", "-")
+	if content.Draft {
+		args = append(args, "--draft")
+	}
 	cmd := h.cmd(ctx, "gh", args...)
 	cmd.Stdin = strings.NewReader(content.Body)
 	out, err := cmd.CombinedOutput()

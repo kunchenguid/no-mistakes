@@ -12,7 +12,7 @@ The daemon also reads `document.instructions`, `review.path_instructions`, `disa
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`) are still read from the pushed branch, except `test.evidence.branch`, which names a git ref the daemon pushes to.
+Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`, `pr`) are still read from the pushed branch, except `test.evidence.branch`, which names a git ref the daemon pushes to.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -82,6 +82,10 @@ test:
     store_in_repo: true
     dir: .no-mistakes/evidence
     branch: no-mistakes/evidence
+
+# Open every pull/merge request for this repo as a draft. Unset inherits global.
+pr:
+  draft: true
 ```
 
 ## Fields
@@ -407,6 +411,34 @@ Fields not set here inherit from global config and then the built-in defaults.
 | `intent.disabled_readers` | `string[]` | Adds to globally disabled readers |
 
 Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `pi`, and `copilot`.
+
+### pr.draft
+
+Open every pull/merge request the pipeline creates for this repo as a draft.
+Unset inherits the global value; setting it here (to `true` **or** `false`) overrides global.
+
+| Field      | Type   | Default                              |
+| ---------- | ------ | ------------------------------------ |
+| `pr.draft` | `bool` | Inherits from global (default `false`) |
+
+Draft-vs-ready is a property of the repository being contributed to, so it belongs here.
+A shared work repo can open every PR draft-first for review while a solo repo goes straight to ready-for-review:
+
+```yaml
+# shared work repo: review before anyone is pinged
+pr:
+  draft: true
+```
+
+```yaml
+# solo repo, global default is draft: true - go straight to ready
+pr:
+  draft: false
+```
+
+It applies to PR creation only, so no-mistakes never flips a PR you already marked ready-for-review back to draft.
+Supported on GitHub, GitLab, and Azure DevOps; Bitbucket has no draft concept and ignores it.
+See [global config `pr.draft`](/reference/global-config/#prdraft) for the machine-wide default.
 
 ### test.evidence
 

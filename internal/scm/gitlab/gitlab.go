@@ -191,13 +191,17 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 }
 
 func (h *Host) CreatePR(ctx context.Context, branch, base string, content scm.PRContent) (*scm.PR, error) {
-	cmd := h.cmd(ctx, "glab", "mr", "create",
+	args := []string{"mr", "create",
 		"--source-branch", branch,
 		"--target-branch", base,
 		"--title", content.Title,
 		"--description", content.Body,
 		"--yes",
-	)
+	}
+	if content.Draft {
+		args = append(args, "--draft")
+	}
+	cmd := h.cmd(ctx, "glab", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("glab mr create: %s: %w", strings.TrimSpace(string(out)), err)

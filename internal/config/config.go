@@ -87,6 +87,25 @@ type GlobalConfig struct {
 	Commit CommitRaw
 	Intent IntentRaw
 	Test   TestRaw
+	// PR carries pull/merge-request creation preferences (currently pr.draft).
+	PR PRRaw
+}
+
+// PRRaw is the on-disk pull/merge-request creation config, settable both
+// globally and per repository. Draft is a pointer so an unset repo value is
+// distinguishable from an explicit `draft: false`: unset falls through to the
+// global default, while either explicit value overrides it. A repository is a
+// legitimate owner of this choice - a shared work repo can open every PR
+// draft-first for review while a solo repo goes straight to ready.
+type PRRaw struct {
+	Draft *bool `yaml:"draft"`
+}
+
+// PR is the resolved pull/merge-request creation config. Draft opens every PR
+// the pipeline creates as a draft. Default false preserves ready-for-review
+// behavior.
+type PR struct {
+	Draft bool
 }
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
@@ -107,6 +126,7 @@ type globalConfigRaw struct {
 	Commit               CommitRaw           `yaml:"commit"`
 	Intent               IntentRaw           `yaml:"intent"`
 	Test                 TestRaw             `yaml:"test"`
+	PR                   PRRaw               `yaml:"pr"`
 }
 
 // RepoConfig represents .no-mistakes.yaml in a repo root.
@@ -127,6 +147,11 @@ type RepoConfig struct {
 	Commit            CommitRaw  `yaml:"commit"`
 	Intent            IntentRaw  `yaml:"intent"`
 	Test              TestRaw    `yaml:"test"`
+	// PR overrides the global pull/merge-request creation config for this
+	// repository. It selects nothing executable and spends no maintainer
+	// resources, so it is read from the pushed branch like the other
+	// non-executing fields.
+	PR PRRaw `yaml:"pr"`
 	// Document carries the repository's documentation placement policy. It
 	// steers the document step's gate prompt, so it is honored ONLY from the
 	// trusted default-branch copy of .no-mistakes.yaml (see
@@ -300,6 +325,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Commit                 CommitRaw   `yaml:"commit"`
 		Intent                 IntentRaw   `yaml:"intent"`
 		Test                   TestRaw     `yaml:"test"`
+		PR                     PRRaw       `yaml:"pr"`
 		Document               DocumentRaw `yaml:"document"`
 		Review                 ReviewRaw   `yaml:"review"`
 		DisableProjectSettings bool        `yaml:"disable_project_settings"`
@@ -319,6 +345,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Commit = raw.Commit
 	c.Intent = raw.Intent
 	c.Test = raw.Test
+	c.PR = raw.PR
 	c.Document = raw.Document
 	c.Review = raw.Review
 	c.DisableProjectSettings = raw.DisableProjectSettings
@@ -393,6 +420,9 @@ type Config struct {
 	Test                 Test
 	Document             Document
 	Review               Review
+	// PR is the resolved pull/merge-request creation config (global default,
+	// overridable by the repo's own .no-mistakes.yaml).
+	PR PR
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -641,6 +671,11 @@ intent:
   threshold: 0.2
   slack_days: 3
   # disabled_readers: [codex]
+
+# Open every pull/merge request the pipeline creates as a draft. Default false.
+# A repository's own .no-mistakes.yaml pr.draft overrides this value.
+# pr:
+#   draft: true
 
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
 # gathers to demonstrate the change works). By default they are kept in a
@@ -1214,6 +1249,7 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg.Commit = raw.Commit
 	cfg.Intent = raw.Intent
 	cfg.Test = raw.Test
+	cfg.PR = raw.PR
 
 	return cfg, nil
 }
@@ -1641,6 +1677,17 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	applyTestOverrides(&test, &global.Test)
 	applyTestOverrides(&test, &repo.Test)
 
+	// An unset repo pr.draft inherits the global value; an explicit repo value
+	// (true or false) wins, so a repository can force draft-first or ready-first
+	// regardless of the operator's default.
+	var pr PR
+	if global.PR.Draft != nil {
+		pr.Draft = *global.PR.Draft
+	}
+	if repo.PR.Draft != nil {
+		pr.Draft = *repo.PR.Draft
+	}
+
 	commit := Commit{FixMessage: DefaultFixMessageTemplate}
 	if global.Commit.FixMessage != nil {
 		commit.FixMessage = *global.Commit.FixMessage
@@ -1667,6 +1714,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Commit:               commit,
 		Intent:               intent,
 		Test:                 test,
+		PR:                   pr,
 		Document:             Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		Review:               Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
 		// repo is the EffectiveRepoConfig result, so this value is already
