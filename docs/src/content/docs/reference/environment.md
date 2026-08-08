@@ -34,6 +34,61 @@ Override how long a CLI client waits for an existing daemon socket to accept a c
 
 Takes precedence over `daemon_connect_timeout` in `config.yaml`. An empty, unparsable, or non-positive value is ignored and the config value (or its default) is used instead.
 
+## `FORGEJO_BASE_URL`
+
+Canonical Forgejo web base URL used for provider discovery and forgejo-axi commands.
+
+|         |          |
+| ------- | -------- |
+| Type    | `URL`    |
+| Default | (none)   |
+
+Set this for every SSH origin, because an SSH remote does not identify the canonical Forgejo web scheme, port, or path prefix. Also set it when an HTTPS origin uses a self-hosted hostname other than `codeberg.org` or one containing `forgejo`. Recognized HTTPS origins are detected automatically, including non-default ports and path prefixes inferred from the origin. When set, the host and prefix must match the repository's upstream origin; credentials, query strings, and fragments are rejected.
+
+## `FORGEJO_TOKEN_<HOST_KEY>`
+
+Preferred host-scoped token used by forgejo-axi for Forgejo PR and CI operations.
+
+|         |          |
+| ------- | -------- |
+| Type    | `string` |
+| Default | (none)   |
+
+`HOST_KEY` is the uppercase URL host, including a non-default port, with each non-alphanumeric ASCII character replaced by its uppercase hexadecimal code point between underscores. For example, `forgejo.example:8443` uses `FORGEJO_TOKEN_FORGEJO_2E_EXAMPLE_3A_8443`. Host-scoped names prevent credentials from being reused for a look-alike host.
+
+## `FORGEJO_TOKEN`
+
+Generic Forgejo token fallback. When present, no-mistakes passes its name explicitly to forgejo-axi; prefer a host-scoped token when the daemon serves multiple Forgejo instances.
+
+|         |          |
+| ------- | -------- |
+| Type    | `string` |
+| Default | (none)   |
+
+Tokens remain in the subprocess environment: no-mistakes never puts a token value in command arguments and redacts Forgejo token values from surfaced provider errors.
+
+## `FORGEJO_TIMEOUT_MS`
+
+Per-request forgejo-axi timeout in positive integer milliseconds.
+
+|         |          |
+| ------- | -------- |
+| Type    | `int`    |
+| Default | `15000`  |
+
+The pipeline context still bounds and cancels the complete subprocess independently.
+
+## `FORGEJO_CA_FILE`
+
+Path to a replacement CA trust bundle used by forgejo-axi for HTTPS requests.
+
+|         |          |
+| ------- | -------- |
+| Type    | `string` |
+| Default | (none)   |
+
+This replaces rather than appends to the platform trust store. See [Provider Integration](/no-mistakes/guides/provider-integration/#forgejo) for provider setup.
+
 ## `NO_MISTAKES_BITBUCKET_EMAIL`
 
 Bitbucket Cloud account email used for PR creation and CI monitoring.

@@ -66,9 +66,9 @@ func stripPort(host string) string {
 }
 
 // ExtractPRNumber returns the trailing numeric segment from a PR/MR URL.
-// Supports GitHub (/pull/N), GitLab (/-/merge_requests/N), Bitbucket
-// (/pull-requests/N), and Azure DevOps (/pullrequest/N) URLs; all of them
-// end in a digit path segment.
+// Supports GitHub (/pull/N), GitLab (/-/merge_requests/N), Forgejo
+// (/pulls/N), Bitbucket (/pull-requests/N), and Azure DevOps (/pullrequest/N)
+// URLs; all of them end in a digit path segment.
 func ExtractPRNumber(prURL string) (string, error) {
 	trimmed := strings.TrimRight(prURL, "/")
 	parts := strings.Split(trimmed, "/")
@@ -87,8 +87,9 @@ func ExtractPRNumber(prURL string) (string, error) {
 
 // PR identifies a pull/merge request on a provider.
 type PR struct {
-	Number string
-	URL    string
+	Number  string
+	URL     string
+	HeadSHA string // populated when the provider exposes the exact source commit
 }
 
 // PRContent is the title + body for creating or updating a PR.
@@ -161,14 +162,46 @@ func (c Check) Pending() bool { return c.Bucket == CheckBucketPending }
 // Capabilities declares which optional Host methods return meaningful data.
 // Callers must consult Capabilities before invoking optional methods.
 type Capabilities struct {
-	MergeableState  bool
-	FailedCheckLogs bool
+	MergeableState    bool
+	FailedCheckLogs   bool
+	MergedProof       bool
+	PullRequests      bool
+	CommitStatuses    bool
+	BranchProtection  bool
+	ExpectedHeadMerge bool
+	ActionsJobLogs    bool
+	ActionsRuns       bool
+	ActionsRunJobs    bool
 }
 
-// ErrUnsupported is returned by optional Host methods that the provider
-// cannot fulfil. Callers should gate calls on Capabilities rather than
-// relying on this error, but implementations return it as a fallback.
-var ErrUnsupported = errors.New("operation not supported by this provider")
+var (
+	// ErrUnsupported is returned by optional Host methods that the provider
+	// cannot fulfil. Callers should gate calls on Capabilities rather than
+	// relying on this error, but implementations return it as a fallback.
+	ErrUnsupported = errors.New("operation not supported by this provider")
+	// ErrHeadChanged rejects results for a different PR head than the run is
+	// monitoring. It prevents a late status or already-merged race from proving
+	// the wrong commit.
+	ErrHeadChanged = errors.New("pull request head changed")
+)
+
+// MergedProof is provider evidence that a specific PR head was merged.
+type MergedProof struct {
+	Merged         bool
+	Number         string
+	URL            string
+	HeadSHA        string
+	MergeCommitSHA string
+	MergedAt       time.Time
+	MergedBy       string
+}
+
+// MergedProofHost is implemented by hosts that can prove which exact PR head
+// was merged. The expected head must be checked even when the PR is already
+// merged, because merge and monitor polling can race.
+type MergedProofHost interface {
+	GetMergedProof(ctx context.Context, pr *PR, expectedHead string) (MergedProof, error)
+}
 
 // Host is the provider-agnostic interface to a PR-hosting service.
 // Transport (CLI vs HTTP API) is an implementation detail.

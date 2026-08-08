@@ -35,6 +35,9 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	if len(cfg.AgentPathOverride) != 0 {
 		t.Errorf("agent_path_override = %v, want empty", cfg.AgentPathOverride)
 	}
+	if cfg.ForgejoAXIPath != "forgejo-axi" {
+		t.Errorf("forgejo_axi_path = %q, want forgejo-axi", cfg.ForgejoAXIPath)
+	}
 }
 
 func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
@@ -50,6 +53,7 @@ func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 	content := string(data)
 	for _, want := range []string{
 		"agent: auto",
+		"forgejo_axi_path: forgejo-axi",
 		"ci_timeout:",
 		"step_quiet_warning:",
 		"daemon_connect_timeout:",
@@ -88,6 +92,26 @@ func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "info")
+	}
+}
+
+func TestLoadGlobal_ForgejoAXIPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("forgejo_axi_path: /opt/tools/forgejo-axi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("LoadGlobal: %v", err)
+	}
+	if cfg.ForgejoAXIPath != "/opt/tools/forgejo-axi" {
+		t.Fatalf("forgejo_axi_path = %q, want configured executable", cfg.ForgejoAXIPath)
+	}
+	merged := Merge(cfg, &RepoConfig{})
+	if merged.ForgejoAXIPath != cfg.ForgejoAXIPath {
+		t.Fatalf("merged forgejo_axi_path = %q, want %q", merged.ForgejoAXIPath, cfg.ForgejoAXIPath)
 	}
 }
 

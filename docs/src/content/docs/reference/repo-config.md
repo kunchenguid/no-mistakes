@@ -375,7 +375,7 @@ Answering that gate with `fix` is still honored, and the fix round you asked for
 
 Reruns are skipped when:
 
-- The provider has no rerun API (only GitHub implements one today; GitLab, Bitbucket Cloud, and Azure DevOps reach the approval gate without a rerun).
+- The provider has no rerun API (only GitHub implements one today; GitLab, Forgejo, Bitbucket Cloud, and Azure DevOps reach the approval gate without a rerun).
 - The check's details link names nothing the provider can re-run, for example a third-party status pointing at an external dashboard, or a link under a workflow run that names no job the API accepts. A link naming one job re-runs that job; a link naming only the workflow run re-runs that run's failed jobs; an unrecognized link is widened into neither.
 - The published branch head no longer equals the commit the run delivered. That case terminates with the expected and observed commits instead: re-running checks against a different head would certify a revision this run never produced. See [pipeline steps: CI](/no-mistakes/reference/pipeline-steps/#ci).
 

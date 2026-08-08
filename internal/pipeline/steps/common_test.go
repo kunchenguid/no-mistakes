@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -374,6 +375,21 @@ func TestStepCLIAvailable_ResolvesExecutableSuffixFromCustomPath(t *testing.T) {
 	}
 	if !strings.Contains(string(logData), "auth status") {
 		t.Fatalf("expected fake gh invocation, got %q", string(logData))
+	}
+}
+
+func TestStepExecutableAvailable_ResolvesRelativePathFromWorkDir(t *testing.T) {
+	t.Parallel()
+
+	workDir := fakeCLIBinDir(t)
+	linkTestBinary(t, workDir, "forgejo-axi")
+	name := "." + string(filepath.Separator) + "forgejo-axi"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	sctx := &pipeline.StepContext{Ctx: context.Background(), WorkDir: workDir}
+	if !stepExecutableAvailable(sctx, name) {
+		t.Fatalf("expected configured executable %q to resolve from the step worktree", name)
 	}
 }
 
