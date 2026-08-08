@@ -145,6 +145,16 @@ func TestDriveRunDetectsTerminalStateAfterReconnect(t *testing.T) {
 	}
 }
 
+func TestScopeDecisionGateIsNeverAutoResolved(t *testing.T) {
+	raw := `{"findings":[{"id":"ci-1","severity":"error","description":"PIPELINE_SCOPE_DECISION_REQUIRED: proposed repair exceeds scope","action":"ask-user"}],"summary":"decision required"}`
+	if !isScopeDecisionGate(raw) {
+		t.Fatal("scope decision gate was not recognized")
+	}
+	if isScopeDecisionGate(`{"findings":[{"description":"ordinary repair","action":"ask-user"}]}`) {
+		t.Fatal("ordinary ask-user finding was mistaken for a scope decision gate")
+	}
+}
+
 func TestRunReconciler_ReconnectsBeforeReconcilingDisconnectedTransition(t *testing.T) {
 	firstEvents := make(chan ipc.Event)
 	secondEvents := make(chan ipc.Event)

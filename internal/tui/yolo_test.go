@@ -148,6 +148,24 @@ func TestModel_Yolo_FixesActionableFindings(t *testing.T) {
 	}
 }
 
+func TestModel_Yolo_DoesNotResolveScopeDecisionGate(t *testing.T) {
+	sock, client, snapshot := captureRespond(t)
+
+	run := testRun()
+	run.Steps[0].Status = types.StepStatusAwaitingApproval
+	fj := `{"findings":[{"id":"scope-1","severity":"warning","description":"PIPELINE_SCOPE_DECISION_REQUIRED: proposed repair is outside declared ticket scope","action":"ask-user"}],"summary":"scope decision required"}`
+	run.Steps[0].FindingsJSON = &fj
+	m := NewModel(sock, client, run)
+	m.yoloMode = true
+
+	if cmd := m.maybeAutoApproveCmd(); cmd != nil {
+		t.Fatal("scope decision gate must remain awaiting an explicit operator response")
+	}
+	if calls := snapshot(); len(calls) != 0 {
+		t.Fatalf("scope decision gate produced %d automatic responses", len(calls))
+	}
+}
+
 func TestModel_Yolo_FixesAllActionableFindingsDespiteManualDeselection(t *testing.T) {
 	sock, client, snapshot := captureRespond(t)
 

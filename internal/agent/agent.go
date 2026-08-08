@@ -52,6 +52,15 @@ type RunOpts struct {
 	// fallback-provider attempts, after it completes. It is instrumentation
 	// only and must not change invocation behavior.
 	OnAttempt func(Attempt)
+	// InvocationHeadSHA and InvocationTreeSHA bind the agent invocation to the
+	// exact committed checkout identity captured before it starts. They are
+	// instrumentation inputs set by the pipeline fence; adapters ignore them.
+	InvocationHeadSHA string
+	InvocationTreeSHA string
+	// AllowCheckoutMovement is reserved for an invocation whose declared job is
+	// to move the checkout itself (rebase or merge-conflict repair). Ordinary
+	// proof and repair invocations must leave it false.
+	AllowCheckoutMovement bool
 }
 
 // Attempt describes one completed concrete adapter attempt for an agent
@@ -220,6 +229,11 @@ type Result struct {
 	// durable session, so round N's counters include rounds 1..N-1. The pipeline
 	// uses it to record correct per-round token deltas (see PerRoundTokens).
 	SessionUsageCumulative bool
+	// InvocationHeadSHA and InvocationTreeSHA identify the exact committed
+	// checkout whose output the pipeline accepted. Empty means the caller did
+	// not install the checkout-identity fence.
+	InvocationHeadSHA string
+	InvocationTreeSHA string
 }
 
 // TokenUsage tracks token consumption for an agent invocation.

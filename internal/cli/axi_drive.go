@@ -455,7 +455,7 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 			return run, false, nil
 		}
 		if gate, ok := rv.awaitingStep(); ok {
-			if !autoApprove {
+			if !autoApprove || isScopeDecisionGate(gate.FindingsJSON) {
 				return run, false, nil
 			}
 			gateKey := gate.Name + "\x00" + gate.Status
@@ -483,6 +483,22 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 			return run, true, nil
 		}
 	}
+}
+
+// isScopeDecisionGate keeps the declared-scope boundary non-auto-resolvable.
+// The caller driving AXI may use --yes for routine gates, but widening a
+// ticket's mutation surface always returns control for an explicit decision.
+func isScopeDecisionGate(raw string) bool {
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return false
+	}
+	for _, finding := range findings.Items {
+		if strings.Contains(finding.Description, types.ScopeDecisionGateName) {
+			return true
+		}
+	}
+	return false
 }
 
 // ciReadyToMerge reports whether the CI step is actively monitoring and the

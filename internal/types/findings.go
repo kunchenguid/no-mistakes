@@ -13,6 +13,12 @@ const (
 	ActionAskUser = "ask-user"
 )
 
+// ScopeDecisionGateName is embedded in the stable finding description used
+// when a proposed automatic repair cannot be proven inside the submitted
+// ticket scope. AXI treats this gate as a real operator decision even under
+// --yes; it must never be auto-resolved by the same agent driving the run.
+const ScopeDecisionGateName = "PIPELINE_SCOPE_DECISION_REQUIRED"
+
 // Finding source constants. An empty Source is treated as agent-produced.
 const (
 	FindingSourceAgent = "agent"

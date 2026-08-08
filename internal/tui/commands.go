@@ -106,6 +106,9 @@ func (m Model) maybeAutoApproveCmd() tea.Cmd {
 	if !m.approvalReady(step) {
 		return nil
 	}
+	if m.stepHasScopeDecisionGate(step.StepName) {
+		return nil
+	}
 	if step.Status != types.StepStatusFixReview && !m.yoloFixed[step.StepName] && m.stepHasActionableFindings(step.StepName) {
 		m.yoloFixed[step.StepName] = true
 		m.resetFindingSelection(step.StepName)

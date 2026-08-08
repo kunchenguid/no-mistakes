@@ -217,6 +217,8 @@ All agents implement the same interface. Each invocation receives:
 - **OnLifecycle** - callback for native subprocess start, exit, and retry activity that is recorded in step logs and AXI active-step status
 - **Session** - optional no-mistakes-owned native session identity for review-fixer reuse
 - **Purpose** - local performance label for the pipeline duty served
+- **InvocationHeadSHA** and **InvocationTreeSHA** - the exact committed checkout identity captured before dispatch; adapters ignore these instrumentation fields
+- **Declared ticket scope** - an enforced prompt prefix listing the immutable `base..submitted HEAD` path set and the named decision gate required before widening it
 
 Each invocation returns:
 
@@ -225,6 +227,7 @@ Each invocation returns:
 - **Usage** - token counts (input, output, cache read, cache creation)
 - **SessionID** and **Resumed** - the adapter-native session identity and whether this invocation resumed it, when supported
 - **Model** and **Provider** - adapter-reported serving metadata when available
+- **InvocationHeadSHA** and **InvocationTreeSHA** - the accepted proof identity; ordinary invocations return no consumable result if either value moved before the post-invocation check
 
 One-shot subprocess agents (Claude, Codex, Pi, Copilot CLI, and acpx) are invocation-scoped.
 After no-mistakes starts one, it terminates any remaining child processes when the invocation exits, fails, or is cancelled, so agent-spawned test workers, build watchers, and dev servers do not survive the step.

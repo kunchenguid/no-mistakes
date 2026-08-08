@@ -112,7 +112,9 @@ CREATE TABLE IF NOT EXISTS agent_invocations (
     tool_other_calls      INTEGER,
     workload_files        INTEGER,
     workload_lines        INTEGER,
-    finding_count         INTEGER
+    finding_count         INTEGER,
+    checkout_head_sha     TEXT,
+    checkout_tree_sha     TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_invocations_run_started_id
@@ -212,4 +214,8 @@ var migrationStatements = []string{
 	`ALTER TABLE agent_invocations ADD COLUMN workload_files INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN workload_lines INTEGER`,
 	`ALTER TABLE agent_invocations ADD COLUMN finding_count INTEGER`,
+	// Invocation-bound proof identity. Historical rows remain NULL rather than
+	// pretending they were tied to a checkout that was never recorded.
+	`ALTER TABLE agent_invocations ADD COLUMN checkout_head_sha TEXT`,
+	`ALTER TABLE agent_invocations ADD COLUMN checkout_tree_sha TEXT`,
 }

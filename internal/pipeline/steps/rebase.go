@@ -395,10 +395,11 @@ Instructions:
 	prompt = testguidance.LateRepairPrompt(string(types.StepRebase), prompt)
 
 	_, err = sctx.Agent.Run(ctx, agent.RunOpts{
-		Prompt:     prompt,
-		CWD:        sctx.WorkDir,
-		JSONSchema: commitSummarySchema,
-		OnChunk:    sctx.LogChunk,
+		Prompt:                prompt,
+		CWD:                   sctx.WorkDir,
+		JSONSchema:            commitSummarySchema,
+		OnChunk:               sctx.LogChunk,
+		AllowCheckoutMovement: true,
 	})
 	if err != nil {
 		_, _ = git.Run(ctx, sctx.WorkDir, "rebase", "--abort")

@@ -244,6 +244,35 @@ func initGitRepo(t *testing.T, dir string) {
 	execGit(t, dir, "commit", "-m", "initial")
 }
 
+// bindRunToGitRepo gives executor tests with a real agent the same immutable
+// base/submitted-head shape production runs carry.
+func bindRunToGitRepo(t *testing.T, database *db.DB, dir string, run *db.Run) {
+	t.Helper()
+	initGitRepo(t, dir)
+	base := strings.TrimSpace(execGitOutput(t, dir, "rev-parse", "HEAD"))
+	writeTestFile(t, dir, "change.txt", "candidate\n")
+	execGit(t, dir, "add", "change.txt")
+	execGit(t, dir, "commit", "-m", "candidate")
+	head := strings.TrimSpace(execGitOutput(t, dir, "rev-parse", "HEAD"))
+	run.BaseSHA = base
+	run.HeadSHA = head
+	run.SubmittedHeadSHA = &head
+	if err := database.UpdateRunHeadSHA(run.ID, head); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func execGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return string(out)
+}
+
 func execGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)

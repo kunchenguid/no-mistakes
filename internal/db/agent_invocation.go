@@ -108,6 +108,11 @@ type AgentInvocation struct {
 	// FindingCount is the number of findings in this invocation's structured
 	// output. Nil when the output is not findings-shaped.
 	FindingCount *int
+	// CheckoutHeadSHA and CheckoutTreeSHA bind the invocation record to the
+	// exact committed checkout identity captured before the agent launched.
+	// Historical/unfenced invocations remain nil.
+	CheckoutHeadSHA *string
+	CheckoutTreeSHA *string
 }
 
 // agentInvocationColumns is the canonical column order shared by insert and
@@ -120,7 +125,8 @@ const agentInvocationColumns = `id, run_id, step_name, round, purpose, agent, mo
 	delta_input_tokens, delta_output_tokens, delta_cache_read_tokens,
 	model_roundtrips, tool_calls,
 	tool_wait_calls, tool_test_lint_calls, tool_edit_calls, tool_read_calls, tool_git_calls, tool_other_calls,
-	workload_files, workload_lines, finding_count`
+	workload_files, workload_lines, finding_count,
+	checkout_head_sha, checkout_tree_sha`
 
 // agentInvocationInsertPlaceholders has one '?' per agentInvocationColumns entry.
 const agentInvocationInsertPlaceholders = `?, ?, ?, ?, ?, ?, ?, ?,
@@ -131,7 +137,8 @@ const agentInvocationInsertPlaceholders = `?, ?, ?, ?, ?, ?, ?, ?,
 	?, ?, ?,
 	?, ?,
 	?, ?, ?, ?, ?, ?,
-	?, ?, ?`
+	?, ?, ?,
+	?, ?`
 
 // InsertAgentInvocation records one completed agent invocation. Nil pointer
 // fields are stored as SQL NULL (database/sql dereferences non-nil pointers).
@@ -149,6 +156,7 @@ func (d *DB) InsertAgentInvocation(inv AgentInvocation) (*AgentInvocation, error
 		inv.ModelRoundtrips, inv.ToolCalls,
 		inv.ToolWaitCalls, inv.ToolTestLintCalls, inv.ToolEditCalls, inv.ToolReadCalls, inv.ToolGitCalls, inv.ToolOtherCalls,
 		inv.WorkloadFiles, inv.WorkloadLines, inv.FindingCount,
+		inv.CheckoutHeadSHA, inv.CheckoutTreeSHA,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert agent invocation: %w", err)
@@ -194,6 +202,7 @@ func scanAgentInvocation(row scanner) (AgentInvocation, error) {
 		&inv.ModelRoundtrips, &inv.ToolCalls,
 		&inv.ToolWaitCalls, &inv.ToolTestLintCalls, &inv.ToolEditCalls, &inv.ToolReadCalls, &inv.ToolGitCalls, &inv.ToolOtherCalls,
 		&inv.WorkloadFiles, &inv.WorkloadLines, &inv.FindingCount,
+		&inv.CheckoutHeadSHA, &inv.CheckoutTreeSHA,
 	); err != nil {
 		return AgentInvocation{}, fmt.Errorf("scan agent invocation: %w", err)
 	}

@@ -567,6 +567,18 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	if e.config != nil {
 		autoFixLimit = e.config.AutoFixLimit(stepName)
 	}
+	declaredScope := DeclaredScope{}
+	if e.agent != nil {
+		submittedHead := run.HeadSHA
+		if run.SubmittedHeadSHA != nil && strings.TrimSpace(*run.SubmittedHeadSHA) != "" {
+			submittedHead = *run.SubmittedHeadSHA
+		}
+		var scopeErr error
+		declaredScope, scopeErr = declaredScopeForRun(ctx, workDir, submittedHead, run.BaseSHA)
+		if scopeErr != nil {
+			return false, scopeErr
+		}
+	}
 
 	// Mark step as running
 	if err := e.db.StartStepWithAutoFixLimit(sr.ID, autoFixLimit); err != nil {
@@ -676,6 +688,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			stepName: stepName,
 			round:    func() int { return roundNum + 1 },
 		}
+		stepAgent = &scopeAndProofFenceAgent{inner: stepAgent, workDir: workDir, scope: declaredScope}
 	}
 	ciReady := run.CIReadyAt != nil
 	ciReadyNoCI := run.CIReadyNoCI
@@ -699,6 +712,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		StepResultID:     sr.ID,
 		UserIntent:       userIntent,
 		IntentSource:     userIntentSource,
+		DeclaredScope:    declaredScope,
 		Sessions:         e.sessions,
 		Shared:           e.shared,
 		Fixing:           state.fixing,
@@ -748,6 +762,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			reviewApprovedHeadSHA = outcome.ReviewApprovedHeadSHA
 		}
 		outcome.Findings = normalizeFindingsJSON(outcome.Findings, string(stepName))
+		fixableFindings, gatedFindings := scopeAutoFixDecisionGate(outcome.Findings, declaredScope)
+		outcome.Findings = gatedFindings
 		finalExitCode = outcome.ExitCode
 		durationOverrideMS += outcome.DurationOverrideMS
 
@@ -796,7 +812,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// This runs before the NeedsApproval check so that all severity
 		// levels (including "info") get a chance at automatic fixing.
 		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
-			fixableFindings := autoFixableFindingsJSON(outcome.Findings)
 			if fixableFindings != "" {
 				autoFixAttempts++
 				telemetry.Track("fix", e.fixTelemetryFields("auto", stepName, findingsCount(fixableFindings), autoFixAttempts))
@@ -934,6 +949,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			}
 			sctx.Fixing = true
 			selectedFindings := filterFindingsJSON(outcome.Findings, response.findingIDs)
+			if authorized := authorizeSelectedScopeDecisionPaths(sctx.DeclaredScope, selectedFindings); len(authorized) > 0 {
+				writeLog(fmt.Sprintf("scope decision authorized exact path(s): %s", strings.Join(authorized, ", ")))
+			}
 			mergedFindings := mergeUserOverridesJSON(selectedFindings, response.instructions, response.addedFindings)
 			sctx.PreviousFindings = mergedFindings
 			nextTrigger = "auto_fix"

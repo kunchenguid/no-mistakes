@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"strings"
+
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -10,6 +12,17 @@ import (
 // decide between fixing a gate's findings and approving it as-is.
 func (m Model) stepHasActionableFindings(step types.StepName) bool {
 	return types.HasActionableFindings(types.Findings{Items: m.findingItems(step)})
+}
+
+// stepHasScopeDecisionGate reports the one decision gate yolo must never
+// resolve. Widening declared ticket scope requires an explicit operator choice.
+func (m Model) stepHasScopeDecisionGate(step types.StepName) bool {
+	for _, item := range m.findingItems(step) {
+		if strings.Contains(item.Description, types.ScopeDecisionGateName) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m Model) awaitingActionState() (showSelectionActions bool, allowFix bool, selectedCount int, totalCount int) {

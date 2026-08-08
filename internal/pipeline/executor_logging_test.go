@@ -177,6 +177,7 @@ func (lifecycleTestAgent) Close() error { return nil }
 func TestExecutor_AgentLifecycleLoggedAndClearsPID(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
+	bindRunToGitRepo(t, database, workDir, run)
 
 	step := &adaptiveCallStep{
 		name: types.StepReview,
