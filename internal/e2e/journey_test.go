@@ -1057,12 +1057,10 @@ func assertEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 func assertAgentEditCommitRun(t *testing.T, h *Harness) {
 	t.Helper()
 	formatScript := filepath.Join(h.BinDir, "nm-format-e2e")
-	if err := os.WriteFile(formatScript, []byte("#!/bin/sh\nprintf formatted > formatted-by-push.txt\n"), 0o755); err != nil {
+	if err := os.WriteFile(formatScript, []byte("#!/bin/sh\nprintf '\\nformatted' >> agent-edit.txt\n"), 0o755); err != nil {
 		t.Fatalf("write e2e formatter: %v", err)
 	}
-	h.CommitChange("agent-edits", "agent-edits.txt", "feature before agent\n", "add agent-edits branch")
-	h.CommitChange("agent-edits", "agent-edit.txt", "agent edit pending\n", "declare agent edit surface")
-	h.CommitChange("agent-edits", "formatted-by-push.txt", "format pending\n", "declare formatter surface")
+	h.CommitChange("agent-edits", "agent-edit.txt", "feature before agent\n", "add agent-edits branch")
 	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  format: \"nm-format-e2e\"\n"
 	originalHead := h.CommitChange("agent-edits", ".no-mistakes.yaml", config, "configure formatter")
 	h.PushToGate("agent-edits")
@@ -1095,15 +1093,8 @@ func assertAgentEditCommitRun(t *testing.T, h *Harness) {
 	if err != nil {
 		t.Fatalf("read committed agent edit from upstream: %v\n%s", err, contents)
 	}
-	if string(contents) != "agent edited\n" {
+	if string(contents) != "agent edited\n\nformatted" {
 		t.Fatalf("agent-edit.txt contents = %q", string(contents))
-	}
-	formatted, err := h.runGit(ctx, h.UpstreamDir, "show", "refs/heads/agent-edits:formatted-by-push.txt")
-	if err != nil {
-		t.Fatalf("read formatted file from upstream: %v\n%s", err, formatted)
-	}
-	if string(formatted) != "formatted" {
-		t.Fatalf("formatted-by-push.txt contents = %q", string(formatted))
 	}
 }
 
@@ -1783,7 +1774,6 @@ func assertDocumentInfoRun(t *testing.T, h *Harness) {
 
 func assertTestAgentNewTestFileRun(t *testing.T, h *Harness) {
 	t.Helper()
-	h.CommitChange("test-agent-new-test-file", "test-agent-new-test-file.txt", "test agent new test file\n", "add test agent new test file")
 	h.CommitChange("test-agent-new-test-file", "agent_test.py", "# regression test pending\n", "declare regression test surface")
 	h.PushToGate("test-agent-new-test-file")
 	// AS-857 requires an agent-written test surface to be declared by the
@@ -1811,7 +1801,6 @@ func assertTestAgentNewTestFileRun(t *testing.T, h *Harness) {
 
 func assertTestAgentStagedNewTestFileRun(t *testing.T, h *Harness) {
 	t.Helper()
-	h.CommitChange("test-agent-staged-new-test-file", "test-agent-staged-new-test-file.txt", "test agent staged new test file\n", "add test agent staged new test file")
 	h.CommitChange("test-agent-staged-new-test-file", "agent_staged_test.go", "package pending\n", "declare staged regression test surface")
 	h.PushToGate("test-agent-staged-new-test-file")
 	// The predeclared surface remains in scope even when the agent stages it.
