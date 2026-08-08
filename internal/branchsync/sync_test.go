@@ -834,9 +834,7 @@ func TestForkTargetNeverReadsParentOrigin(t *testing.T) {
 // production symptom (JVPT: axi sync reports offline / "could not refresh
 // the configured push target" even though ls-remote and fetch independently
 // succeed) by proving that a slow-but-successful ls-remote no longer shares
-// its context deadline with the subsequent fetch. It is deliberately NOT
-// t.Parallel(): it mutates the package-level lsRemoteFn/fetchRemoteFn seams,
-// which would race against other tests if they ran concurrently with it.
+// its context deadline with the subsequent fetch.
 //
 // RemoteTimeout (300ms) is set shorter than the simulated ls-remote delay
 // (400ms) on purpose: had the old code's single context.WithTimeout call
@@ -850,22 +848,15 @@ func TestForkTargetNeverReadsParentOrigin(t *testing.T) {
 func TestRefreshSlowSuccessfulLsRemoteDoesNotStealFetchBudget(t *testing.T) {
 	f := newSyncFixture(t)
 
-	origLsRemote := lsRemoteFn
-	origFetchRemote := fetchRemoteFn
-	defer func() {
-		lsRemoteFn = origLsRemote
-		fetchRemoteFn = origFetchRemote
-	}()
-
 	f.service.RemoteTimeout = 300 * time.Millisecond
 
 	var lsRemoteDeadline, fetchDeadline time.Time
-	lsRemoteFn = func(ctx context.Context, dir, remote, ref string) (string, error) {
+	f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
 		lsRemoteDeadline, _ = ctx.Deadline()
 		time.Sleep(400 * time.Millisecond)
 		return f.pushed, nil
 	}
-	fetchRemoteFn = func(ctx context.Context, dir, remote, branch, localRef string) error {
+	f.service.fetchRemote = func(ctx context.Context, dir, remote, branch, localRef string) error {
 		fetchDeadline, _ = ctx.Deadline()
 		if err := ctx.Err(); err != nil {
 			return err
@@ -874,7 +865,7 @@ func TestRefreshSlowSuccessfulLsRemoteDoesNotStealFetchBudget(t *testing.T) {
 		// deadline-isolation test depend on platform-specific subprocess
 		// startup time. On Windows, starting the process can legitimately
 		// consume this deliberately tiny test budget even when it is fresh.
-		return origFetchRemote(context.Background(), dir, remote, branch, localRef)
+		return gitpkg.FetchRemoteBranchToPrivateRef(context.Background(), dir, remote, branch, localRef)
 	}
 
 	state := f.service.Refresh(f.ctx)
@@ -893,22 +884,15 @@ func TestRefreshSlowSuccessfulLsRemoteDoesNotStealFetchBudget(t *testing.T) {
 func TestRefreshGenuineRemoteTimeoutStillReportsOffline(t *testing.T) {
 	f := newSyncFixture(t)
 
-	origFetchRemote := fetchRemoteFn
-	origLsRemote := lsRemoteFn
-	defer func() {
-		lsRemoteFn = origLsRemote
-		fetchRemoteFn = origFetchRemote
-	}()
-
 	f.service.RemoteTimeout = 80 * time.Millisecond
 	fetchCalled := false
-	lsRemoteFn = func(ctx context.Context, dir, remote, ref string) (string, error) {
+	f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
 		<-ctx.Done()
 		return "", ctx.Err()
 	}
-	fetchRemoteFn = func(ctx context.Context, dir, remote, branch, localRef string) error {
+	f.service.fetchRemote = func(ctx context.Context, dir, remote, branch, localRef string) error {
 		fetchCalled = true
-		return origFetchRemote(ctx, dir, remote, branch, localRef)
+		return gitpkg.FetchRemoteBranchToPrivateRef(ctx, dir, remote, branch, localRef)
 	}
 
 	state := f.service.Refresh(f.ctx)
@@ -950,16 +934,9 @@ func TestServiceRemoteTimeoutDefaultsToConfigDefault(t *testing.T) {
 func TestRefreshSlowButSuccessfulLsRemoteAloneExceedsItsOwnBudgetReportsOffline(t *testing.T) {
 	f := newSyncFixture(t)
 
-	origFetchRemote := fetchRemoteFn
-	origLsRemote := lsRemoteFn
-	defer func() {
-		lsRemoteFn = origLsRemote
-		fetchRemoteFn = origFetchRemote
-	}()
-
 	f.service.RemoteTimeout = 100 * time.Millisecond
 	fetchCalled := false
-	lsRemoteFn = func(ctx context.Context, dir, remote, ref string) (string, error) {
+	f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
 		select {
 		case <-time.After(200 * time.Millisecond): // legitimate but slow - would succeed given more budget
 			return f.pushed, nil
@@ -967,9 +944,9 @@ func TestRefreshSlowButSuccessfulLsRemoteAloneExceedsItsOwnBudgetReportsOffline(
 			return "", ctx.Err()
 		}
 	}
-	fetchRemoteFn = func(ctx context.Context, dir, remote, branch, localRef string) error {
+	f.service.fetchRemote = func(ctx context.Context, dir, remote, branch, localRef string) error {
 		fetchCalled = true
-		return origFetchRemote(ctx, dir, remote, branch, localRef)
+		return gitpkg.FetchRemoteBranchToPrivateRef(ctx, dir, remote, branch, localRef)
 	}
 
 	state := f.service.Refresh(f.ctx)
@@ -990,11 +967,8 @@ func TestRefreshSlowButSuccessfulLsRemoteAloneExceedsItsOwnBudgetReportsOffline(
 func TestRefreshRaisedRemoteTimeoutAcceptsTheSameLegitimateSlowLsRemote(t *testing.T) {
 	f := newSyncFixture(t)
 
-	origLsRemote := lsRemoteFn
-	defer func() { lsRemoteFn = origLsRemote }()
-
 	f.service.RemoteTimeout = 500 * time.Millisecond
-	lsRemoteFn = func(ctx context.Context, dir, remote, ref string) (string, error) {
+	f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
 		select {
 		case <-time.After(200 * time.Millisecond):
 			return f.pushed, nil
@@ -1020,12 +994,9 @@ func TestRefreshRaisedRemoteTimeoutAcceptsTheSameLegitimateSlowLsRemote(t *testi
 func TestRefreshParentCancellationStopsFetchAfterLsRemoteSucceeds(t *testing.T) {
 	f := newSyncFixture(t)
 
-	origLsRemote := lsRemoteFn
-	defer func() { lsRemoteFn = origLsRemote }()
-
 	cancelCtx, cancel := context.WithCancel(f.ctx)
-	lsRemoteFn = func(ctx context.Context, dir, remote, ref string) (string, error) {
-		live, err := origLsRemote(ctx, dir, remote, ref)
+	f.service.lsRemote = func(ctx context.Context, dir, remote, ref string) (string, error) {
+		live, err := gitpkg.LsRemote(ctx, dir, remote, ref)
 		cancel()
 		return live, err
 	}
