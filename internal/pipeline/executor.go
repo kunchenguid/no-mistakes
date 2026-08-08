@@ -579,6 +579,13 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			return false, scopeErr
 		}
 	}
+	// A recovered approval response reconstructs the step context from durable
+	// state. Reapply only the exact named paths the operator selected before the
+	// daemon stopped; automatic fix rounds never carry this authorization.
+	recoveredAuthorizedScopePaths := []string(nil)
+	if state.fixing && state.previousFindings != "" {
+		recoveredAuthorizedScopePaths = authorizeSelectedScopeDecisionPaths(declaredScope, state.previousFindings)
+	}
 
 	// Mark step as running
 	if err := e.db.StartStepWithAutoFixLimit(sr.ID, autoFixLimit); err != nil {
@@ -724,6 +731,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			touchLogActivity(text, true)
 		},
 		CIReadinessChanged: ciReadinessChanged,
+	}
+	if len(recoveredAuthorizedScopePaths) > 0 {
+		writeLog(fmt.Sprintf("scope decision restored exact authorized path(s): %s", strings.Join(recoveredAuthorizedScopePaths, ", ")))
 	}
 
 	nextTrigger := "initial"
