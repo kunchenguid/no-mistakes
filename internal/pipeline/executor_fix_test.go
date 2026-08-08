@@ -326,8 +326,8 @@ func TestExecutor_AssignsFindingIDsBeforePersistingAndEmitting(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("expected 2 findings, got %d", len(items))
 	}
-	if items[0].ID != "review-1" || items[1].ID != "review-2" {
-		t.Fatalf("unexpected finding IDs: %#v", items)
+	if items[0].ID != "finding-82cb7fdaf8d3" || items[1].ID != "finding-2144b99846a0" {
+		t.Fatalf("unexpected stable finding IDs: %#v", items)
 	}
 
 	steps, err := database.GetStepsByRun(run.ID)
@@ -341,8 +341,8 @@ func TestExecutor_AssignsFindingIDsBeforePersistingAndEmitting(t *testing.T) {
 	if len(storedItems) != 2 {
 		t.Fatalf("expected 2 stored findings, got %d", len(storedItems))
 	}
-	if storedItems[0].ID != "review-1" || storedItems[1].ID != "review-2" {
-		t.Fatalf("unexpected stored finding IDs: %#v", storedItems)
+	if storedItems[0].ID != items[0].ID || storedItems[1].ID != items[1].ID {
+		t.Fatalf("stored finding IDs differ from emitted IDs: %#v", storedItems)
 	}
 
 	if err := exec.Respond(types.StepReview, types.ActionAbort, nil); err != nil {

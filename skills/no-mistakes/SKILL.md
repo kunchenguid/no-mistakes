@@ -196,11 +196,10 @@ Run the pipeline and decide on its findings as they come up:
    the pipeline owns both the findings and the fixes. Your job at a gate is to
    decide and respond; `--action fix` has the pipeline apply the fix and
    re-review the result. For the same reason, while a run is active do **not**
-   `abort` or `rerun` to go fix a finding yourself - even a real bug in
-   your own code - because that discards the pipeline's in-flight work and
-   forces a full re-validation. `abort` and `rerun` are for *between*
-   runs (after a `failed` or `cancelled` outcome), never to circumvent a
-   gate.
+   `abort` or `rerun` to go fix a finding yourself—even a real bug in
+   your own code—because that abandons the in-flight stage and any unaccepted
+   work. `abort` and `rerun` are for *between* runs (after a `failed`
+   or `cancelled` outcome), never to circumvent a gate.
 
     Each `respond` blocks until the next `gate:`, `checks-passed` decision point, or final outcome.
 
@@ -213,24 +212,23 @@ Run the pipeline and decide on its findings as they come up:
       awaiting approval. You rarely need this; omit it to answer the active gate.
 3. Repeat step 2 until the output has an `outcome:` instead of a `gate:`. The
    outcomes are:
-   - `checks-passed` - the change is validated and CI is green (or the
-     trusted default-branch config declares `no_ci: true` and no checks are
-     registered - the help line names that declaration when it applies), but
-     the PR is not merged yet. **You are done driving the pipeline.** Do not
-     wait for the merge: tell the user the PR is ready and ask them to review
-     and merge it (the PR link is in the `help` line). A generic empty forge
-     check list without that declaration is not ready. no-mistakes keeps
+   - `checks-passed` - the change is validated and CI is green, or trusted
+     default-branch evidence establishes no CI through `no_ci: true` or zero
+     provider-recognized pull-request check configuration, but the PR is not merged
+     yet. **You are done driving the pipeline.** Do not wait for the merge: tell the
+     user the PR is ready and ask them to review and merge it (the PR link is in the
+     `help` line). A generic empty forge response is not ready. no-mistakes keeps
      monitoring the PR in the background until it is merged, closed, or its
      configured idle timeout elapses, so a human can watch it in the TUI.
    - `passed` - the changes cleared the gate and the PR was merged or closed.
    - `failed` or `cancelled` - they did not; read the output and address it.
      Fix whatever the output points at (a failing test, a lint error, a finding
      you skipped), commit the fix on the same feature branch, then drive the
-     pipeline again - `no-mistakes axi run --intent "..."` starts a fresh run,
-     or `no-mistakes rerun` re-runs the pipeline for the current branch. This
-     is the right place to start over: a fresh run or `rerun` is a
-     *between-runs* action, correct only after a terminal outcome like this -
-     never mid-run to circumvent a gate. Do not leave the user at a `failed`
+     pipeline again—`no-mistakes axi run --intent "..."` starts a fresh run,
+     while `no-mistakes rerun` resumes an unchanged failed or cancelled run at
+     its first incomplete stage when an accepted checkpoint exists, and otherwise
+     starts fresh. This is a *between-runs* action, correct only after a terminal
+     outcome like this—never mid-run to circumvent a gate.
      outcome without either retrying or explaining what blocks it.
 
 Before any post-pipeline local commit or fresh run, read the structured `branch_sync` object returned by AXI home, status, or a drive result.
@@ -247,10 +245,10 @@ After synchronization, commit the follow-up on top and re-run `no-mistakes axi r
 This preserves every prior gate-fix commit regardless of its configured subject.
 
 The CI step deliberately keeps watching the PR after checks pass, so
-`axi run` returns `checks-passed` the moment checks are green (or a trusted
-`no_ci: true` declaration covers a zero-check repository) rather than
-blocking on the human merge. Never poll or re-run waiting for the merge yourself.
-Never treat "no CI checks reported" alone as green.
+`axi run` returns `checks-passed` the moment checks are green or trusted
+default-branch evidence establishes no CI, rather than blocking on the human merge.
+Never poll or re-run waiting for the merge yourself. Never treat an empty forge
+response alone as green.
 
 Because that monitor stays live, a PR that falls behind the default branch or
 hits a merge conflict after checks pass - commonly because another PR merged
@@ -259,9 +257,9 @@ sees an actual conflict it **rebases onto the base, resolves it, and re-pushes
 the branch itself**; a PR that is merely behind but still clean needs nothing
 either, since the platform merges it. The one exception is when that monitor is
 no longer running - the PR was closed, the run was aborted or superseded, it
-idle-timed-out, or its auto-fix attempts were exhausted - in which case recover
-with `no-mistakes rerun`, which cancels the stale monitor and re-runs the full
-pipeline including a deterministic rebase step. Do **not** reach for
+idle-timed-out, or its auto-fix attempts were exhausted—in which case recover
+with `no-mistakes rerun`. It resumes an unchanged failed or cancelled run at
+the first incomplete stage when safe, and otherwise starts fresh. Do **not** reach for
 `no-mistakes axi run` to refresh a still-active PR: after `checks-passed` it
 reattaches to the running monitor (HEAD unchanged) and returns its output
 without rebasing.

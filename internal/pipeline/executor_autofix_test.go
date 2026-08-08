@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -250,6 +251,49 @@ func TestExecutor_AutoFixEmitsEvents(t *testing.T) {
 	fixingEvent := events.findLast(ipc.EventStepCompleted, string(types.StepStatusFixing))
 	if fixingEvent == nil {
 		t.Error("expected step_completed event with fixing status during auto-fix")
+	}
+}
+
+func TestExecutor_AutoFixPreflightsGitIdentity(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+	execGit(t, workDir, "config", "user.useConfigOnly", "true")
+	execGit(t, workDir, "config", "--unset-all", "user.name")
+	execGit(t, workDir, "config", "--unset-all", "user.email")
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(*StepContext) (*StepOutcome, error) {
+			callCount++
+			return &StepOutcome{
+				NeedsApproval: true,
+				AutoFixable:   true,
+				Findings:      `{"findings":[{"severity":"error","description":"bug","action":"auto-fix"}]}`,
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{Review: 1}}, nil, []Step{step}, nil)
+	err := exec.Execute(context.Background(), run, repo, workDir)
+	if err == nil {
+		t.Fatal("missing Git identity must stop before fix work")
+	}
+	if callCount != 1 {
+		t.Fatalf("step calls = %d, want initial assessment only", callCount)
+	}
+	for _, want := range []string{"Git author and committer identity", "git config user.name", "git config user.email"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("identity error missing %q: %v", want, err)
+		}
+	}
+	steps, dbErr := database.GetStepsByRun(run.ID)
+	if dbErr != nil {
+		t.Fatal(dbErr)
+	}
+	if len(steps) != 1 || steps[0].Status != types.StepStatusFailed || steps[0].Error == nil || !strings.Contains(*steps[0].Error, "Git author and committer identity") {
+		t.Fatalf("identity preflight did not persist one actionable step failure: %+v", steps)
 	}
 }
 

@@ -36,7 +36,10 @@ func publishRunEvidence(sctx *pipeline.StepContext) *evidenceLinks {
 	if sctx == nil || sctx.Config == nil || sctx.Repo == nil || sctx.Run == nil || !sctx.Config.Test.Evidence.StoreInRepo {
 		return nil
 	}
-	sourceDir := testEvidenceDir(sctx.Run.ID)
+	sourceDir := sctx.Shared.EvidenceDir()
+	if sourceDir == "" {
+		sourceDir = testEvidenceDir(sctx.Run.ID)
+	}
 	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
 	segments := evidenceBranchSlug(branch)
 	if len(segments) == 0 {

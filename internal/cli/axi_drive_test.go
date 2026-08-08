@@ -549,6 +549,39 @@ func TestRenderDriveResult_DeclaredNoCIChecksPassed(t *testing.T) {
 	}
 }
 
+func TestRenderDriveResult_DetectedZeroChecksPassed(t *testing.T) {
+	run := &ipc.RunInfo{
+		ID:          "run-1",
+		Branch:      "feature/x",
+		Status:      types.RunRunning,
+		HeadSHA:     "abcdef1234567890",
+		PRURL:       strptr("https://github.com/user/repo/pull/42"),
+		CIReady:     true,
+		CIReadyNoCI: true,
+		Steps: []ipc.StepResultInfo{{
+			StepName:     types.StepCI,
+			Status:       types.StepStatusRunning,
+			LastActivity: strptr(cimonitor.NoChecksConfiguredMsg),
+		}},
+	}
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if err := renderDriveResult(cmd, run, true); err != nil {
+		t.Fatalf("detected no-CI checks-passed must exit 0, got error: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"outcome: checks-passed", "trusted default branch configures zero pull-request checks", "https://github.com/user/repo/pull/42"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("detected no-CI output missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "no_ci: true") {
+		t.Errorf("detected no-CI path must not claim an explicit declaration:\n%s", got)
+	}
+}
+
 func TestRenderDriveResult_ChecksPassedWithFixes(t *testing.T) {
 	run := &ipc.RunInfo{
 		ID:      "run-1",

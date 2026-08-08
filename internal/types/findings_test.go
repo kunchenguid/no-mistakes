@@ -516,3 +516,29 @@ func TestFinding_Action_Values(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeFindings_CollapsesEquivalentAgentFindings(t *testing.T) {
+	findings := Findings{Items: []Finding{
+		{Severity: "warning", File: "internal/cli/run.go", Line: 42, Description: "  Missing   Git identity. ", Action: ActionAutoFix},
+		{Severity: "error", File: "./internal/cli/run.go", Line: 42, Description: "missing git identity", Action: ActionAskUser},
+		{Severity: "warning", File: "internal/cli/run.go", Line: 43, Description: "missing git identity", Action: ActionAutoFix},
+	}}
+
+	got := NormalizeFindings(findings, "review")
+	if len(got.Items) != 2 {
+		t.Fatalf("equivalent findings = %d, want 2 distinct problems", len(got.Items))
+	}
+	if got.Items[0].ID == "" || !strings.HasPrefix(got.Items[0].ID, "finding-") {
+		t.Fatalf("stable finding ID = %q, want finding-*", got.Items[0].ID)
+	}
+	if got.Items[0].Action != ActionAskUser || got.Items[0].Severity != "error" {
+		t.Fatalf("collapsed finding lost stricter classification: %+v", got.Items[0])
+	}
+
+	rerun := NormalizeFindings(Findings{Items: []Finding{{
+		Severity: "error", File: "internal/cli/run.go", Line: 42, Description: "MISSING GIT IDENTITY", Action: ActionAskUser,
+	}}}, "test")
+	if rerun.Items[0].ID != got.Items[0].ID {
+		t.Fatalf("equivalent rerun ID = %q, want stable %q", rerun.Items[0].ID, got.Items[0].ID)
+	}
+}

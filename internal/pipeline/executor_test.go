@@ -3,8 +3,11 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -385,5 +388,102 @@ func TestExecutor_ConfiguredSkippedStepDoesNotExecuteAndContinues(t *testing.T) 
 		if step.StepName == types.StepReview && step.Status != types.StepStatusSkipped {
 			t.Fatalf("review status = %s, want %s", step.Status, types.StepStatusSkipped)
 		}
+	}
+}
+
+func TestExecutor_ContinuationRestoresAcceptedTreeAndOutputs(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+	headSHA, err := git.HeadSHA(context.Background(), workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.HeadSHA = headSHA
+	if err := database.UpdateRunHeadSHA(run.ID, headSHA); err != nil {
+		t.Fatal(err)
+	}
+	evidenceDir := filepath.Join(os.TempDir(), "no-mistakes-evidence", "tasks", "repo", "branch", "evidence", "tree")
+	artifactPath := filepath.Join(evidenceDir, "screens", "accepted.png")
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifactPath, []byte("accepted image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	acceptedFindings, err := types.MarshalFindingsJSON(types.Findings{
+		Items:     []types.Finding{{Severity: "info", Description: "accepted review evidence", Action: types.ActionNoOp}},
+		Artifacts: []types.TestArtifact{{Kind: "screenshot", Label: "accepted", Path: artifactPath}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	review := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+		return &StepOutcome{}, nil
+	}}
+	testStep := &adaptiveCallStep{name: types.StepTest, fn: func(*StepContext) (*StepOutcome, error) {
+		if err := os.WriteFile(workDir+"/accepted.txt", []byte("accepted\n"), 0o644); err != nil {
+			return nil, err
+		}
+		return &StepOutcome{Findings: acceptedFindings}, nil
+	}}
+	document := &adaptiveCallStep{name: types.StepDocument, fn: func(*StepContext) (*StepOutcome, error) {
+		if err := os.WriteFile(workDir+"/rejected.txt", []byte("failed round\n"), 0o644); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("local document infrastructure failed")
+	}}
+	first := NewExecutor(database, p, nil, nil, []Step{review, testStep, document}, nil)
+	if err := first.Execute(context.Background(), run, repo, workDir); err == nil {
+		t.Fatal("first run must fail in test stage")
+	}
+
+	execGit(t, workDir, "reset", "--hard", "HEAD")
+	execGit(t, workDir, "clean", "-fd")
+	rerun, err := database.InsertRun(repo.ID, run.Branch, headSHA, run.BaseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	completedCalls := 0
+	resumedReview := &adaptiveCallStep{name: types.StepReview, fn: func(*StepContext) (*StepOutcome, error) {
+		completedCalls++
+		return nil, fmt.Errorf("completed review reran")
+	}}
+	resumedTest := &adaptiveCallStep{name: types.StepTest, fn: func(*StepContext) (*StepOutcome, error) {
+		completedCalls++
+		return nil, fmt.Errorf("completed test reran")
+	}}
+	resumedDocument := &adaptiveCallStep{name: types.StepDocument, fn: func(*StepContext) (*StepOutcome, error) {
+		if _, err := os.Stat(workDir + "/accepted.txt"); err != nil {
+			return nil, fmt.Errorf("accepted output was not restored: %w", err)
+		}
+		if _, err := os.Stat(workDir + "/rejected.txt"); !os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed-stage edits leaked into continuation")
+		}
+		return &StepOutcome{}, nil
+	}}
+	second := NewExecutor(database, p, nil, nil, []Step{resumedReview, resumedTest, resumedDocument}, nil)
+	second.SetContinuation(run.ID)
+	if err := second.Execute(context.Background(), rerun, repo, workDir); err != nil {
+		t.Fatalf("continue failed run: %v", err)
+	}
+	if completedCalls != 0 {
+		t.Fatalf("completed stages reran %d times", completedCalls)
+	}
+	if got := second.shared.EvidenceDir(); got != evidenceDir {
+		t.Fatalf("continued evidence dir = %q, want %q", got, evidenceDir)
+	}
+	if _, err := os.Stat(artifactPath); err != nil {
+		t.Fatalf("accepted evidence was not reusable after continuation: %v", err)
+	}
+
+	steps, err := database.GetStepsByRun(rerun.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 3 || steps[0].Status != types.StepStatusCompleted || steps[1].Status != types.StepStatusCompleted || steps[1].FindingsJSON == nil {
+		t.Fatalf("accepted stage outputs were not copied: %+v", steps)
 	}
 }

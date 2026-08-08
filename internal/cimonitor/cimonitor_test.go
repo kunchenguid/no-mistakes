@@ -7,7 +7,7 @@ import (
 
 func TestParseActivity_Empty(t *testing.T) {
 	a := ParseActivity(nil)
-	if a.CIFixes != 0 || a.AutoFixing || a.Ready || a.DeclaredNoCI || a.LastEvent != "" {
+	if a.CIFixes != 0 || a.AutoFixing || a.Ready || a.DeclaredNoCI || a.NoChecksConfigured || a.LastEvent != "" {
 		t.Errorf("expected zero activity for empty logs, got %+v", a)
 	}
 }
@@ -21,6 +21,11 @@ func TestFromAuthoritative_IgnoresSpoofedReadyLog(t *testing.T) {
 	a = FromAuthoritative(true, true, []string{ChecksRunningMsg})
 	if !a.Ready || !a.DeclaredNoCI {
 		t.Fatalf("authoritative declared no-CI state was lost: %+v", a)
+	}
+
+	a = FromAuthoritative(true, true, []string{NoChecksConfiguredMsg})
+	if !a.Ready || a.DeclaredNoCI || !a.NoChecksConfigured {
+		t.Fatalf("authoritative detected no-checks reason was lost: %+v", a)
 	}
 }
 
@@ -52,6 +57,7 @@ func TestChecksPassed(t *testing.T) {
 		logs         []string
 		wantReady    bool
 		wantDeclared bool
+		wantDetected bool
 	}{
 		{
 			name: "all checks passed",
@@ -67,6 +73,13 @@ func TestChecksPassed(t *testing.T) {
 			logs:         []string{NoChecksPassedMsg},
 			wantReady:    true,
 			wantDeclared: true,
+		},
+		{
+			name:         "trusted base has zero configured checks",
+			logs:         []string{NoChecksConfiguredMsg},
+			wantReady:    true,
+			wantDeclared: false,
+			wantDetected: true,
 		},
 		{
 			name: "legacy generic empty-checks marker is never ready",
@@ -141,6 +154,9 @@ func TestChecksPassed(t *testing.T) {
 			}
 			if got := DeclaredNoCI(tt.logs); got != tt.wantDeclared {
 				t.Errorf("DeclaredNoCI() = %v, want %v", got, tt.wantDeclared)
+			}
+			if got := NoChecksConfigured(tt.logs); got != tt.wantDetected {
+				t.Errorf("NoChecksConfigured() = %v, want %v", got, tt.wantDetected)
 			}
 		})
 	}

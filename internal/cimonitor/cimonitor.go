@@ -22,12 +22,11 @@ const (
 	// not yet merged or closed, so the monitor keeps watching subject to its
 	// configured timeout.
 	ChecksPassedMsg = "all CI checks passed - still monitoring until merged or closed"
-	// NoChecksPassedMsg is logged only when the trusted default-branch config
-	// declares `no_ci: true` and the forge reports zero checks. The message
-	// names the positive declaration so agents and operators can inspect the
-	// evidence rather than treating every empty forge response as green. An
-	// empty check list WITHOUT that declaration must never produce this line.
+	// NoChecksPassedMsg is logged when trusted config explicitly declares no CI.
 	NoChecksPassedMsg = "repository declares no CI (no_ci: true) - treating as all checks passed - still monitoring until merged or closed"
+	// NoChecksConfiguredMsg is logged when the trusted base tree contains no
+	// pull-request check configuration for the detected provider.
+	NoChecksConfiguredMsg = "repository has zero configured pull-request checks - treating as no CI - still monitoring until merged or closed"
 	// ChecksRunningMsg is logged when checks are (re-)running with no failures
 	// yet, which clears any previous passed-checks state.
 	ChecksRunningMsg = "CI checks running, waiting for results..."
@@ -35,11 +34,12 @@ const (
 
 // Activity summarizes what the CI step has been doing, derived from its logs.
 type Activity struct {
-	CIFixes      int    // number of auto-fix attempts observed
-	AutoFixing   bool   // an auto-fix is currently in progress
-	Ready        bool   // checks have passed (or declared no-CI); PR ready to merge
-	DeclaredNoCI bool   // Ready because of an explicit no_ci declaration, not green checks
-	LastEvent    string // the most recent recognized log line
+	CIFixes            int    // number of auto-fix attempts observed
+	AutoFixing         bool   // an auto-fix is currently in progress
+	Ready              bool   // checks passed or no-CI was established; PR ready to merge
+	DeclaredNoCI       bool   // Ready because of an explicit no_ci declaration
+	NoChecksConfigured bool   // Ready because the trusted base has no PR-check configuration
+	LastEvent          string // the most recent recognized log line
 }
 
 // FromAuthoritative combines pipeline-owned readiness with CI activity logs.
@@ -47,8 +47,10 @@ type Activity struct {
 // the persisted state supplied by the pipeline.
 func FromAuthoritative(ready, declaredNoCI bool, logs []string) Activity {
 	a := ParseActivity(logs)
+	detectedNoChecks := ready && declaredNoCI && a.NoChecksConfigured
 	a.Ready = ready
-	a.DeclaredNoCI = ready && declaredNoCI
+	a.NoChecksConfigured = detectedNoChecks
+	a.DeclaredNoCI = ready && declaredNoCI && !detectedNoChecks
 	return a
 }
 
@@ -87,6 +89,11 @@ func ParseActivity(logs []string) Activity {
 			a.Ready = true
 			a.DeclaredNoCI = true
 			a.LastEvent = line
+		case line == NoChecksConfiguredMsg:
+			a.AutoFixing = false
+			a.Ready = true
+			a.DeclaredNoCI = false
+			a.LastEvent = line
 		case strings.Contains(line, "issues detected"),
 			strings.Contains(line, "CI checks running"),
 			strings.Contains(line, "mergeable state still pending"),
@@ -116,14 +123,17 @@ func ParseActivity(logs []string) Activity {
 			a.DeclaredNoCI = false
 			a.LastEvent = line
 		}
+		if a.LastEvent == line {
+			a.NoChecksConfigured = line == NoChecksConfiguredMsg
+		}
 	}
 	return a
 }
 
 // ChecksPassed reports whether the CI monitor's latest state is "checks passed,
 // PR ready to merge". It is the agent-facing summary of ParseActivity(logs).Ready.
-// Ready covers both all-green checks and a trusted no_ci declaration with zero
-// registered checks; use DeclaredNoCI to distinguish the two for help text.
+// Ready covers all-green checks and both trusted no-CI paths; use
+// DeclaredNoCI and NoChecksConfigured to distinguish their help text.
 func ChecksPassed(logs []string) bool {
 	return ParseActivity(logs).Ready
 }
@@ -132,4 +142,10 @@ func ChecksPassed(logs []string) bool {
 // trusted no_ci declaration rather than observed green checks.
 func DeclaredNoCI(logs []string) bool {
 	return ParseActivity(logs).DeclaredNoCI
+}
+
+// NoChecksConfigured reports whether the latest ready state is backed by
+// positive evidence that the trusted base tree configures no PR checks.
+func NoChecksConfigured(logs []string) bool {
+	return ParseActivity(logs).NoChecksConfigured
 }

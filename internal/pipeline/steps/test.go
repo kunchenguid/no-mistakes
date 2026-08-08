@@ -39,7 +39,7 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	var newTestsFromFix []string
 	var fixSummary string
 	if sctx.Fixing {
-		historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + testguidance.Rule
+		historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + browserReusePromptSection(sctx) + testguidance.Rule
 		fixPrompt := fmt.Sprintf(
 			`Fix the failing tests in this repository. Reproduce the specific failure, identify the root cause, and fix either the tests or the code so that failure passes.
 
@@ -122,19 +122,23 @@ Previous test findings to address:
 
 	useEvidenceAgent := testCmd == "" || cleanedUserIntent(sctx) != ""
 	if useEvidenceAgent {
-		evidenceDir := testEvidenceDir(sctx.Run.ID)
+		evidenceDir, err := reusableEvidenceDir(sctx)
+		if err != nil {
+			return nil, fmt.Errorf("resolve reusable test evidence dir: %w", err)
+		}
 		if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 			return nil, fmt.Errorf("create test evidence dir: %w", err)
 		}
+		sctx.Shared.SetEvidenceDir(evidenceDir)
 		if testCmd == "" {
 			sctx.Log("no test command configured, asking agent to run tests...")
 		} else {
 			sctx.Log("user intent available, asking agent to gather test evidence...")
 		}
-		reassessHistory := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + testguidance.Rule
-		evidenceGuidance := fmt.Sprintf("- Write new evidence files into this evidence directory, never into the worktree: %s", evidenceDir)
+		reassessHistory := executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + browserReusePromptSection(sctx) + testguidance.Rule
+		evidenceGuidance := fmt.Sprintf("- Reuse compatible artifacts already in this evidence directory. Write new evidence files into this evidence directory, never into the worktree: %s", evidenceDir)
 		if sctx.Config.Test.Evidence.StoreInRepo {
-			evidenceGuidance = fmt.Sprintf("- Write new evidence files into this evidence directory, never into the worktree; they are published to the repository's %s branch automatically and linked from the PR: %s", sctx.Config.Test.Evidence.Branch, evidenceDir)
+			evidenceGuidance = fmt.Sprintf("- Reuse compatible artifacts already in this evidence directory. They are published to the repository's %s branch automatically and linked from the PR: %s\n- Write new evidence files into this evidence directory, never into the worktree: %s", sctx.Config.Test.Evidence.Branch, evidenceDir, evidenceDir)
 		}
 		configuredTestCommand := ""
 		if testCmd != "" {

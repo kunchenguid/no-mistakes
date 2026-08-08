@@ -45,6 +45,9 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	// artifact ever enters the pushed branch or the default branch's history.
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if strings.TrimSpace(status) != "" {
+		if err := pipeline.RequireGitIdentity(ctx, sctx.WorkDir); err != nil {
+			return nil, err
+		}
 		sctx.Log("committing agent changes...")
 		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
 			return nil, fmt.Errorf("stage agent changes: %w", err)

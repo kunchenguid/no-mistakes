@@ -692,3 +692,56 @@ func (d *DB) SetRunCIRerunState(id, state string) error {
 	}
 	return nil
 }
+
+// CopyRunContinuationState carries accepted cross-stage outputs into a rerun
+// of the same branch and head. Lifecycle status, readiness, and errors remain
+// fresh on the destination run.
+func (d *DB) CopyRunContinuationState(sourceID, destinationID string) error {
+	result, err := d.sql.Exec(`
+		UPDATE runs
+		SET (
+			review_approved_head_sha,
+			pr_url,
+			pr_state,
+			pr_state_observed_at,
+			last_pushed_sha,
+			push_target_kind,
+			push_target_fingerprint,
+			push_ref,
+			last_pushed_at,
+			push_generation,
+			terminal_head_verified_at,
+			ci_rerun_state
+		) = (
+			SELECT
+				review_approved_head_sha,
+				pr_url,
+				pr_state,
+				pr_state_observed_at,
+				last_pushed_sha,
+				push_target_kind,
+				push_target_fingerprint,
+				push_ref,
+				last_pushed_at,
+				push_generation,
+				terminal_head_verified_at,
+				ci_rerun_state
+			FROM runs
+			WHERE id = ?
+		),
+		updated_at = ?
+		WHERE id = ?`,
+		sourceID, now(), destinationID,
+	)
+	if err != nil {
+		return fmt.Errorf("copy run continuation state: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("copy run continuation state result: %w", err)
+	}
+	if affected != 1 {
+		return fmt.Errorf("copy run continuation state: destination run not found")
+	}
+	return nil
+}

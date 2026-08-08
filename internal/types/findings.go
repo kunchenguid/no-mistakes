@@ -1,8 +1,10 @@
 package types
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -115,15 +117,78 @@ func ParseFindingsJSON(raw string) (Findings, error) {
 	return Findings{Items: items, Summary: wire.Summary, Tested: wire.Tested, TestingSummary: wire.TestingSummary, Artifacts: wire.Artifacts, RiskLevel: wire.RiskLevel, RiskRationale: wire.RiskRationale, RiskScope: wire.RiskScope}, nil
 }
 
-// NormalizeFindings assigns deterministic IDs to findings that do not have one yet.
-func NormalizeFindings(findings Findings, prefix string) Findings {
-	for i := range findings.Items {
-		if findings.Items[i].ID != "" {
+// NormalizeFindings assigns content-stable IDs and collapses equivalent agent
+// findings while preserving materially distinct locations and descriptions.
+func NormalizeFindings(findings Findings, _ string) Findings {
+	seen := make(map[string]int, len(findings.Items))
+	items := make([]Finding, 0, len(findings.Items))
+	for _, item := range findings.Items {
+		key := FindingFingerprint(item)
+		if index, ok := seen[key]; ok {
+			items[index] = mergeEquivalentFinding(items[index], item)
 			continue
 		}
-		findings.Items[i].ID = prefix + "-" + itoa(i+1)
+		if item.ID == "" {
+			item.ID = key
+		}
+		seen[key] = len(items)
+		items = append(items, item)
 	}
+	findings.Items = items
 	return findings
+}
+
+// FindingFingerprint returns the stable identity of one underlying finding.
+func FindingFingerprint(f Finding) string {
+	file := filepath.ToSlash(filepath.Clean(strings.TrimSpace(f.File)))
+	if file == "." {
+		file = ""
+	}
+	description := strings.Trim(strings.Join(strings.Fields(strings.ToLower(f.Description)), " "), ".,;:!?")
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s\x00%s\x00%s", file, f.Line, description, strings.ToLower(f.ReviewScope), strings.ToLower(f.Category))))
+	return fmt.Sprintf("finding-%x", sum[:6])
+}
+
+func mergeEquivalentFinding(current, duplicate Finding) Finding {
+	if severityRank(duplicate.Severity) > severityRank(current.Severity) {
+		current.Severity = duplicate.Severity
+	}
+	if actionRank(duplicate.actionOrDefault()) > actionRank(current.actionOrDefault()) {
+		current.Action = duplicate.actionOrDefault()
+	}
+	if current.UserInstructions == "" {
+		current.UserInstructions = duplicate.UserInstructions
+	}
+	if duplicate.Source == FindingSourceUser {
+		current.Source = FindingSourceUser
+	}
+	return current
+}
+
+func severityRank(severity string) int {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "error", "critical":
+		return 3
+	case "warning", "warn":
+		return 2
+	case "info":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func actionRank(action string) int {
+	switch action {
+	case ActionAskUser:
+		return 3
+	case ActionAutoFix:
+		return 2
+	case ActionNoOp:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // FilterFindings keeps only findings whose IDs are included in ids.

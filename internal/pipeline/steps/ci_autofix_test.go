@@ -1136,6 +1136,10 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	defer cancel()
 	sctx.Ctx = ctx
 	sctx.Log = func(s string) {}
+	promptEvidenceDir, err := reusableEvidenceDir(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	step := &CIStep{
 		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
@@ -1160,5 +1164,10 @@ func TestCIStep_AutoFixPromptIncludesMustFixInstruction(t *testing.T) {
 	}
 	if !strings.Contains(capturedPrompt, "user wanted CI autofix to preserve the extracted intent") {
 		t.Errorf("prompt should include extracted user intent, got:\n%s", capturedPrompt)
+	}
+	for _, want := range []string{promptEvidenceDir, taskBrowserRuntimeDir(sctx), "Reuse compatible browser evidence before recapturing it"} {
+		if !strings.Contains(capturedPrompt, want) {
+			t.Errorf("prompt should reuse browser context %q, got:\n%s", want, capturedPrompt)
+		}
 	}
 }

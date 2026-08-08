@@ -1,9 +1,14 @@
 package steps
 
 import (
+	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
 func testEvidenceRoot() string {
@@ -20,6 +25,58 @@ func testEvidenceRoot() string {
 // the PR.
 func testEvidenceDir(runID string) string {
 	return filepath.Join(testEvidenceRoot(), runID)
+}
+
+func taskBrowserRoot(sctx *pipeline.StepContext) string {
+	repo := "repo"
+	branch := ""
+	if sctx != nil {
+		if sctx.Repo != nil {
+			if upstream := strings.TrimSpace(sctx.Repo.UpstreamURL); upstream != "" {
+				repo = upstream
+			} else if id := strings.TrimSpace(sctx.Repo.ID); id != "" {
+				repo = id
+			}
+		}
+		if sctx.Run != nil {
+			branch = sctx.Run.Branch
+		}
+	}
+	repoSum := sha256.Sum256([]byte(repo))
+	branchSum := sha256.Sum256([]byte(branch))
+	return filepath.Join(testEvidenceRoot(), "tasks", fmt.Sprintf("%x", repoSum[:6]), fmt.Sprintf("%x", branchSum[:6]))
+}
+
+func taskBrowserRuntimeDir(sctx *pipeline.StepContext) string {
+	return filepath.Join(taskBrowserRoot(sctx), "runtime")
+}
+
+// reusableEvidenceDir is stable across reruns only while the complete
+// non-ignored worktree tree is identical.
+func reusableEvidenceDir(sctx *pipeline.StepContext) (string, error) {
+	ctx := context.Background()
+	if sctx != nil && sctx.Ctx != nil {
+		ctx = sctx.Ctx
+	}
+	tree, err := pipeline.WorktreeTreeID(ctx, sctx.WorkDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(taskBrowserRoot(sctx), "evidence", tree), nil
+}
+
+func browserReusePromptSection(sctx *pipeline.StepContext) string {
+	evidenceDir, err := reusableEvidenceDir(sctx)
+	if err != nil {
+		evidenceDir = "unavailable for the current worktree"
+	}
+	return fmt.Sprintf(`
+
+Reusable browser context:
+- Reuse compatible browser evidence before recapturing it: %s
+- Reuse task-local browser/runtime configuration instead of rebuilding an equivalent environment: %s
+- Evidence is compatible only for the exact current worktree tree; runtime configuration remains scoped to this repository task and branch.
+`, evidenceDir, taskBrowserRuntimeDir(sctx))
 }
 
 // evidenceBranchSlug turns a branch name into readable, filesystem-safe path

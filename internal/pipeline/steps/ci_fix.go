@@ -19,6 +19,9 @@ import (
 // when the agent produced no changes, or (false, err) on failure.
 func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, failingNames []string, mergeConflict bool) (bool, error) {
 	ctx := sctx.Ctx
+	if err := pipeline.RequireGitIdentity(ctx, sctx.WorkDir); err != nil {
+		return false, err
+	}
 	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
 		return false, err
 	}
@@ -100,7 +103,7 @@ Context:
 CI logs:
 %s`, logOutput)
 	}
-	prompt += userIntentPromptSection(sctx)
+	prompt += executionContextPromptSection() + roundHistoryPromptSection(sctx) + userIntentPromptSection(sctx) + browserReusePromptSection(sctx)
 	prompt = testguidance.LateRepairPrompt(string(s.Name()), prompt)
 
 	sctx.Log("running agent to fix CI issues...")
@@ -132,6 +135,9 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 			return s.pushUpdatedHeadSHA(sctx, headSHA)
 		}
 		return false, nil
+	}
+	if err := pipeline.RequireGitIdentity(sctx.Ctx, sctx.WorkDir); err != nil {
+		return false, err
 	}
 
 	if _, err := stepGitRun(sctx, "add", "-A"); err != nil {

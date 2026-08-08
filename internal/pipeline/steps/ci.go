@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,6 +13,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -24,18 +27,16 @@ const (
 // checks that are still running. The canonical strings live in cimonitor so all
 // producers and consumers agree on them.
 const (
-	ciChecksPassedMsg   = cimonitor.ChecksPassedMsg
-	ciNoChecksPassedMsg = cimonitor.NoChecksPassedMsg
-	ciChecksRunningMsg  = cimonitor.ChecksRunningMsg
+	ciChecksPassedMsg       = cimonitor.ChecksPassedMsg
+	ciNoChecksPassedMsg     = cimonitor.NoChecksPassedMsg
+	ciNoChecksConfiguredMsg = cimonitor.NoChecksConfiguredMsg
+	ciChecksRunningMsg      = cimonitor.ChecksRunningMsg
 )
 
 // CIStep monitors an open PR until it is merged, closed, or its configured idle
-// timeout elapses, auto-fixing CI failures.
-//
-// Empty check lists are never treated as green unless the resolved config
-// carries the trusted default-branch `no_ci: true` declaration (config.Config.NoCI).
-// A feature branch cannot self-declare that value. When checks exist, their
-// actual states are always processed normally - even on a declared no-CI repo.
+// timeout elapses, auto-fixing CI failures. Empty check rollups become ready
+// only with trusted no_ci or positive evidence that the trusted base tree has
+// zero pull-request check configuration.
 type CIStep struct {
 	lastFixedChecks      string               // sorted check names from last fix attempt, to avoid re-fixing
 	lastFixedCompletedAt map[string]time.Time // terminally failed check completion times seen before the last fix attempt
@@ -48,7 +49,9 @@ type CIStep struct {
 	// branch. The bool is false when the SHA is a fallback/unknown value and
 	// must not re-arm the timeout. Overridable for testing; defaults to
 	// fetching the upstream default branch.
-	baseBranchTip func(context.Context) (string, bool)
+	baseBranchTip        func(context.Context) (string, bool)
+	prCheckConfigChecked bool
+	prChecksConfigured   bool
 }
 
 func (s *CIStep) Name() types.StepName { return types.StepCI }
@@ -449,6 +452,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					previousHeadSHA := sctx.Run.HeadSHA
 					pushed, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
 					if err != nil {
+						if errors.Is(err, pipeline.ErrGitIdentityUnavailable) {
+							return nil, err
+						}
 						sctx.Log(fmt.Sprintf("warning: CI manual fix failed: %v", err))
 					} else if pushed || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
@@ -473,6 +479,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					previousHeadSHA := sctx.Run.HeadSHA
 					pushed, err := s.autoFixCI(sctx, host, pr, fixTargets, mergeConflict)
 					if err != nil {
+						if errors.Is(err, pipeline.ErrGitIdentityUnavailable) {
+							return nil, err
+						}
 						sctx.Log(fmt.Sprintf("warning: CI auto-fix failed: %v", err))
 					} else if pushed || sctx.Run.HeadSHA != previousHeadSHA {
 						s.lastFixedChecks = fixKey
@@ -500,14 +509,15 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					// never waived.
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
 				case len(checks) == 0:
-					// Empty forge results are ready ONLY with positive durable
-					// evidence from trusted default-branch config (no_ci: true).
-					// Without that declaration, keep waiting - delayed registration
-					// is common and must never look green. Elapsed time is not
-					// evidence; there is no grace-period promotion path.
-					if sctx.Config != nil && sctx.Config.NoCI {
+					switch {
+					case sctx.Config != nil && sctx.Config.NoCI:
 						lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
-					} else {
+					case func() bool {
+						configured, known := s.configuredPRChecks(sctx, provider)
+						return known && !configured
+					}():
+						lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksConfiguredMsg, lastMonitorLog)
+					default:
 						clearCIMonitorReady(sctx)
 						lastMonitorLog = ""
 						sctx.Log("no CI checks reported yet, waiting for checks to register...")
@@ -551,8 +561,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 
 func logCIMonitorStatus(sctx *pipeline.StepContext, message, previous string) string {
 	if message != previous {
-		ready := message == ciChecksPassedMsg || message == ciNoChecksPassedMsg
-		declaredNoCI := message == ciNoChecksPassedMsg
+		ready := message == ciChecksPassedMsg || message == ciNoChecksPassedMsg || message == ciNoChecksConfiguredMsg
+		declaredNoCI := message == ciNoChecksPassedMsg || message == ciNoChecksConfiguredMsg
 		if err := setCIMonitorReadiness(sctx, ready, declaredNoCI); err != nil {
 			sctx.Log(fmt.Sprintf("warning: could not persist CI readiness: %v", err))
 		}
@@ -576,4 +586,128 @@ func setCIMonitorReadiness(sctx *pipeline.StepContext, ready, declaredNoCI bool)
 		sctx.CIReadinessChanged(ready, declaredNoCI)
 	}
 	return nil
+}
+
+func (s *CIStep) configuredPRChecks(sctx *pipeline.StepContext, provider scm.Provider) (bool, bool) {
+	if s.prCheckConfigChecked {
+		return s.prChecksConfigured, true
+	}
+	configured, known := configuredPRChecksInBase(sctx, provider)
+	if known {
+		s.prCheckConfigChecked = true
+		s.prChecksConfigured = configured
+	}
+	return configured, known
+}
+
+func configuredPRChecksInBase(sctx *pipeline.StepContext, provider scm.Provider) (bool, bool) {
+	if sctx == nil || sctx.Run == nil || strings.TrimSpace(sctx.Run.BaseSHA) == "" {
+		return false, false
+	}
+	rawFiles, err := stepGitRun(sctx, "ls-tree", "-r", "--name-only", sctx.Run.BaseSHA)
+	if err != nil {
+		return false, false
+	}
+	files := make(map[string]struct{})
+	for _, file := range strings.Split(strings.TrimSpace(rawFiles), "\n") {
+		file = strings.TrimSpace(file)
+		if file != "" {
+			files[file] = struct{}{}
+		}
+	}
+	has := func(names ...string) bool {
+		for _, name := range names {
+			if _, ok := files[name]; ok {
+				return true
+			}
+		}
+		return false
+	}
+
+	switch provider {
+	case scm.ProviderGitHub:
+		if has(".circleci/config.yml", ".travis.yml", "Jenkinsfile", "appveyor.yml", "azure-pipelines.yml") {
+			return true, true
+		}
+		for file := range files {
+			if !strings.HasPrefix(file, ".github/workflows/") || (!strings.HasSuffix(file, ".yml") && !strings.HasSuffix(file, ".yaml")) {
+				continue
+			}
+			workflow, err := stepGitRun(sctx, "show", sctx.Run.BaseSHA+":"+file)
+			if err != nil {
+				return false, false
+			}
+			triggers, err := workflowTriggersPullRequest(workflow)
+			if err != nil {
+				return false, false
+			}
+			if triggers {
+				return true, true
+			}
+		}
+		return false, true
+	case scm.ProviderGitLab:
+		return has(".gitlab-ci.yml"), true
+	case scm.ProviderBitbucket:
+		return has("bitbucket-pipelines.yml"), true
+	case scm.ProviderAzureDevOps:
+		if has("azure-pipelines.yml", ".azure-pipelines.yml") {
+			return true, true
+		}
+		return false, false
+	default:
+		return false, false
+	}
+}
+
+func workflowTriggersPullRequest(raw string) (bool, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(raw), &document); err != nil {
+		return false, err
+	}
+	if len(document.Content) == 0 {
+		return false, nil
+	}
+	root := document.Content[0]
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "on" {
+			return triggerNodeContainsPullRequest(root.Content[i+1]), nil
+		}
+	}
+	return false, nil
+}
+
+func triggerNodeContainsPullRequest(node *yaml.Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Kind == yaml.AliasNode {
+		return triggerNodeContainsPullRequest(node.Alias)
+	}
+	switch node.Kind {
+	case yaml.ScalarNode:
+		return pullRequestTrigger(node.Value)
+	case yaml.SequenceNode:
+		for _, child := range node.Content {
+			if triggerNodeContainsPullRequest(child) {
+				return true
+			}
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if pullRequestTrigger(node.Content[i].Value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func pullRequestTrigger(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "pull_request", "pull_request_target", "merge_group":
+		return true
+	default:
+		return false
+	}
 }

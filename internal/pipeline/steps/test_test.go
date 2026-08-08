@@ -218,6 +218,10 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 		t.Fatalf("configured test command output = %q, want %s", string(data), runtime.GOOS)
 	}
 	prompt := ag.calls[0].Prompt
+	wantEvidenceDir, err := reusableEvidenceDir(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, want := range []string{
 		"Show users a success screen after checkout",
 		"Decide what evidence or artifacts would clearly demonstrate the user intent is satisfied",
@@ -232,8 +236,10 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 		"For UI, HTML, CSS, Electron renderer, browser, visual layout, or copy-placement changes, attempt to capture reviewer-visible visual evidence",
 		"DOM snapshots, selector assertions, and text-only render summaries are not substitutes for visual evidence when a rendered surface is available",
 		"If a UI-facing change has no screenshot, image, video, GIF, or rendered HTML artifact, state why in testing_summary",
+		"Reuse compatible artifacts already in this evidence directory",
 		"Write new evidence files into this evidence directory, never into the worktree:",
-		filepath.Join(os.TempDir(), "no-mistakes-evidence", sctx.Run.ID),
+		wantEvidenceDir,
+		"Reuse task-local browser/runtime configuration instead of rebuilding an equivalent environment",
 		"Do not move, commit, or modify source files only to make evidence linkable",
 		"If no existing test produces sufficient evidence, write or improve a focused test",
 		"If automated testing cannot produce the needed evidence, execute manual verification steps",
@@ -248,8 +254,8 @@ func TestTestStep_UserIntentRunsConfiguredCommandThenEvidenceAgent(t *testing.T)
 	if strings.Contains(prompt, "will be available from the pushed commit") || strings.Contains(prompt, "files that already exist in the repository") {
 		t.Fatalf("expected prompt not to make the testing agent worry about committed evidence files, got:\n%s", prompt)
 	}
-	if _, err := os.Stat(filepath.Join(os.TempDir(), "no-mistakes-evidence", sctx.Run.ID)); err != nil {
-		t.Fatalf("expected temporary evidence directory to exist: %v", err)
+	if _, err := os.Stat(wantEvidenceDir); err != nil {
+		t.Fatalf("expected reusable evidence directory to exist: %v", err)
 	}
 
 	var findings Findings
@@ -281,7 +287,10 @@ func TestTestStep_EvidenceDirectoryIsAlwaysOutsideTheWorktree(t *testing.T) {
 	}
 
 	prompt := ag.calls[0].Prompt
-	wantDir := filepath.Join(os.TempDir(), "no-mistakes-evidence", sctx.Run.ID)
+	wantDir, err := reusableEvidenceDir(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(prompt, "Write new evidence files into this evidence directory, never into the worktree: "+wantDir) {
 		t.Fatalf("expected evidence guidance to point outside the worktree, got:\n%s", prompt)
 	}
@@ -310,7 +319,10 @@ func TestTestStep_PublishedEvidenceGuidanceNamesTheEvidenceBranch(t *testing.T) 
 	}
 
 	prompt := ag.calls[0].Prompt
-	wantDir := filepath.Join(os.TempDir(), "no-mistakes-evidence", sctx.Run.ID)
+	wantDir, err := reusableEvidenceDir(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(prompt, "published to the repository's team/ci/evidence branch automatically and linked from the PR: "+wantDir) {
 		t.Fatalf("expected evidence-branch publishing guidance, got:\n%s", prompt)
 	}

@@ -627,81 +627,43 @@ func TestCIStep_OpenPRKeepsMonitoringAfterChecksPass(t *testing.T) {
 	}
 }
 
-// TestCIStep_EmptyChecksWithoutNoCIStaysNotReadyPastOldGracePeriod proves the
-// PR 607 failure mode is closed: a generic empty forge response never becomes
-// ready, even after the historical 60s grace period and longer timing windows.
-func TestCIStep_EmptyChecksWithoutNoCIStaysNotReadyPastOldGracePeriod(t *testing.T) {
+func TestCIStep_ZeroConfiguredChecksBecomesTerminalNoCI(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-
 	env := fakeCIGH(t, "OPEN", "[]")
 
 	prURL := "https://github.com/test/repo/pull/42"
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
 	sctx.Run.PRURL = &prURL
-	sctx.Config.CITimeout = 10 * time.Minute
-	sctx.Config.NoCI = false
+	sctx.Config.CITimeout = 10 * time.Second
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
-
-	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
-	current := started
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sctx.Ctx = ctx
 
-	const oldGrace = 60 * time.Second
-	step := &CIStep{
-		pollIntervalOverride: 30 * time.Second,
-		now:                  func() time.Time { return current },
-		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
-			current = current.Add(interval)
-			// Past the old 60s grace and well into multi-minute delayed registration.
-			if current.Sub(started) > 3*time.Minute {
-				cancel()
-				return ctx.Err()
-			}
-			return nil
-		},
-	}
+	step := &CIStep{waitForNextPoll: func(ctx context.Context, _ time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}}
 	_, err := step.Execute(sctx)
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected continued waiting after empty checks, got %v", err)
+		t.Fatalf("expected terminal no-CI state to keep monitoring PR lifecycle, got %v", err)
 	}
-	if current.Sub(started) <= oldGrace {
-		t.Fatalf("test did not advance past old grace period: elapsed %v", current.Sub(started))
-	}
-	for _, l := range logs {
-		if l == cimonitor.NoChecksPassedMsg || l == cimonitor.ChecksPassedMsg {
-			t.Fatalf("empty checks without no_ci must not emit ready marker, got logs: %v", logs)
-		}
-		if l == "no CI checks reported - still monitoring until merged or closed" {
-			t.Fatalf("legacy empty-as-green marker must not be emitted, got logs: %v", logs)
-		}
-	}
-	foundWaiting := false
-	for _, l := range logs {
-		if strings.Contains(l, "waiting for checks to register") {
-			foundWaiting = true
-			break
-		}
-	}
-	if !foundWaiting {
-		t.Fatalf("expected waiting-for-registration log, got: %v", logs)
-	}
-	if cimonitor.ChecksPassed(logs) {
-		t.Fatalf("cimonitor must report not-ready for empty checks without no_ci, logs: %v", logs)
+	if !strings.Contains(strings.Join(logs, "\n"), cimonitor.NoChecksConfiguredMsg) {
+		t.Fatalf("expected zero-configured-checks marker, got %v", logs)
 	}
 	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dbRun.CIReadyAt != nil {
-		t.Fatalf("expected CI readiness unset without no_ci, got %v", *dbRun.CIReadyAt)
+	if dbRun.CIReadyAt == nil || !dbRun.CIReadyNoCI {
+		t.Fatalf("zero configured checks did not persist no-CI readiness: %+v", dbRun)
+	}
+	if !cimonitor.NoChecksConfigured(logs) || cimonitor.DeclaredNoCI(logs) {
+		t.Fatalf("zero configured checks did not retain its distinct reason: %v", logs)
 	}
 }
 
@@ -765,6 +727,24 @@ func TestCIStep_EmptyChecksWithTrustedNoCIBecomesReady(t *testing.T) {
 	}
 }
 
+func addPullRequestWorkflow(t *testing.T, dir string) (string, string) {
+	t.Helper()
+	gitCmd(t, dir, "checkout", "main")
+	workflowDir := filepath.Join(dir, ".github", "workflows")
+	if err := os.MkdirAll(workflowDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowDir, "ci.yml"), []byte("name: CI\non:\n  pull_request:\njobs: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "configure PR checks")
+	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "checkout", "feature")
+	gitCmd(t, dir, "rebase", "main")
+	return baseSHA, gitCmd(t, dir, "rev-parse", "HEAD")
+}
+
 // TestCIStep_DelayedCheckRegistrationStaysNotReadyUntilGreen replays the
 // delayed-registration path: empty forge results stay not-ready, pending
 // checks stay not-ready, failures stay failures, and only all-green becomes
@@ -772,6 +752,7 @@ func TestCIStep_EmptyChecksWithTrustedNoCIBecomesReady(t *testing.T) {
 func TestCIStep_DelayedCheckRegistrationStaysNotReadyUntilGreen(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
+	baseSHA, headSHA = addPullRequestWorkflow(t, dir)
 
 	checksSequence := []string{
 		`[]`,

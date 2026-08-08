@@ -624,6 +624,7 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 // explicit intent overrides the selected run. Otherwise an authoritative
 // intent is inherited byte-for-byte; runs without one infer intent afresh.
 func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string) (string, error) {
+	explicitIntent := strings.TrimSpace(intent) != ""
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -676,6 +677,22 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		baseSHA = matchingHead.BaseSHA
 	}
 
+	continuationRunID := ""
+	if !explicitIntent && (selectedRun.Status == types.RunFailed || selectedRun.Status == types.RunCancelled) {
+		submittedHead := selectedRun.HeadSHA
+		if selectedRun.SubmittedHeadSHA != nil && *selectedRun.SubmittedHeadSHA != "" {
+			submittedHead = *selectedRun.SubmittedHeadSHA
+		}
+		gateUnchanged := headSHA == submittedHead || headSHA == selectedRun.HeadSHA
+		if gateUnchanged {
+			if _, checkpointErr := git.Run(ctx, gateDir, "rev-parse", "--verify", pipeline.AcceptedCheckpointRef(selectedRun.ID)+"^{commit}"); checkpointErr == nil {
+				continuationRunID = selectedRun.ID
+				headSHA = selectedRun.HeadSHA
+				baseSHA = selectedRun.BaseSHA
+			}
+		}
+	}
+
 	intentSource := db.RunIntentSourceAgent
 	if strings.TrimSpace(intent) == "" {
 		intentSource = ""
@@ -689,7 +706,7 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 		}
 	}
 
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, continuationRunID)
 }
 
 // fetchRunDefaultBranch fetches the trusted branch from the refreshed
@@ -716,7 +733,11 @@ func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSH
 // startRunWithIntentSource is the common run-creation path. source is empty
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
-func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
+func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string, continuation ...string) (string, error) {
+	continuationRunID := ""
+	if len(continuation) > 0 {
+		continuationRunID = continuation[0]
+	}
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -770,6 +791,18 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
+	}
+	if continuationRunID != "" {
+		if err := m.db.CopyRunContinuationState(continuationRunID, run.ID); err != nil {
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("copy_continuation")
+			return "", err
+		}
+		run, err = m.db.GetRun(run.ID)
+		if err != nil || run == nil {
+			trackStartFailure("reload_continuation")
+			return "", fmt.Errorf("reload continued run: %w", err)
+		}
 	}
 
 	// Create worktree from the gate bare repo.
@@ -922,6 +955,9 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
 	executor.SetSkippedSteps(skipSteps)
+	if continuationRunID != "" {
+		executor.SetContinuation(continuationRunID)
+	}
 
 	// Track executor.
 	done := make(chan struct{})

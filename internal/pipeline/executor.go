@@ -53,9 +53,10 @@ type Executor struct {
 
 	// sessions manages this run's durable review-loop agent sessions; shared
 	// carries run-scoped step-to-step results. Both are created per Execute.
-	sessions *RunSessions
-	shared   *RunShared
-	workDir  string
+	sessions          *RunSessions
+	shared            *RunShared
+	workDir           string
+	continuationRunID string
 
 	mu          sync.Mutex
 	approvalCh  chan approvalResponse // buffered channel for approval responses
@@ -76,6 +77,12 @@ func (e *Executor) SetSkippedSteps(steps []types.StepName) {
 	for _, step := range steps {
 		e.skips[step] = true
 	}
+}
+
+// SetContinuation reuses the contiguous completed prefix and accepted
+// worktree snapshot from a failed run.
+func (e *Executor) SetContinuation(runID string) {
+	e.continuationRunID = runID
 }
 
 // NewExecutor creates a pipeline executor.
@@ -164,7 +171,7 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 
 	e.initializeRunScopes(run.ID)
 
-	// Create step result records in DB
+	// Create step result records in DB.
 	stepRecords := make(map[types.StepName]*db.StepResult)
 	for _, step := range e.steps {
 		sr, err := e.db.InsertStepResult(run.ID, step.Name())
@@ -173,9 +180,18 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 		}
 		stepRecords[step.Name()] = sr
 	}
+	startIndex := 0
+	if e.continuationRunID != "" {
+		var err error
+		startIndex, err = e.prepareContinuation(ctx, run, repo, workDir, stepRecords)
+		if err != nil {
+			return e.failRun(run, repo, fmt.Errorf("prepare continuation: %w", err))
+		}
+	}
 
-	// Execute steps sequentially
-	for i, step := range e.steps {
+	// Execute steps sequentially from the first unaccepted stage.
+	for i := startIndex; i < len(e.steps); i++ {
+		step := e.steps[i]
 		if ctx.Err() != nil {
 			return e.failRun(run, repo, context.Cause(ctx))
 		}
@@ -185,6 +201,9 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			if err := e.db.CompleteStepWithStatus(sr.ID, types.StepStatusSkipped, 0, 0, ""); err != nil {
 				return e.failRun(run, repo, fmt.Errorf("skip step %s: %w", step.Name(), err), ctx)
 			}
+			if err := snapshotAcceptedWorktree(ctx, workDir, run.ID); err != nil {
+				return e.failRun(run, repo, fmt.Errorf("checkpoint skipped step %s: %w", step.Name(), err), ctx)
+			}
 			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, step.Name(), string(types.StepStatusSkipped), "", "", nil)
 			continue
 		}
@@ -193,7 +212,6 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			return e.failRun(run, repo, err, ctx)
 		}
 		if skipRemaining {
-			// Mark all subsequent steps as skipped
 			for _, remaining := range e.steps[i+1:] {
 				rsr := stepRecords[remaining.Name()]
 				if dbErr := e.db.CompleteStepWithStatus(rsr.ID, types.StepStatusSkipped, 0, 0, ""); dbErr != nil {
@@ -284,9 +302,16 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		}
 		return e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusCompleted, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult))
 	}
+	checkpointRecoveredGate := func() error {
+		e.shared.AcceptFindings(gate.findings)
+		return snapshotAcceptedWorktree(ctx, workDir, run.ID)
+	}
 	completeReconciledGate := func() error {
 		if err := completeRecoveredGate(); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("complete reconciled step %s: %w", gate.step.Name(), err), ctx)
+		}
+		if err := checkpointRecoveredGate(); err != nil {
+			return e.failRun(run, repo, fmt.Errorf("checkpoint reconciled step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", &duration)
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1)
@@ -373,11 +398,17 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		if err := completeRecoveredGate(); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("complete recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
+		if err := checkpointRecoveredGate(); err != nil {
+			return e.failRun(run, repo, fmt.Errorf("checkpoint recovered step %s: %w", gate.step.Name(), err), ctx)
+		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusCompleted), "", "", &duration)
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1)
 	case types.ActionSkip:
 		if err := e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusSkipped, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
 			return e.failRun(run, repo, fmt.Errorf("skip recovered step %s: %w", gate.step.Name(), err), ctx)
+		}
+		if err := checkpointRecoveredGate(); err != nil {
+			return e.failRun(run, repo, fmt.Errorf("checkpoint skipped recovered step %s: %w", gate.step.Name(), err), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusSkipped), "", "", &duration)
 		return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, gate.index+1)
@@ -388,6 +419,14 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", "aborted by user", &duration)
 		return e.failRun(run, repo, fmt.Errorf("step %s: aborted by user", gate.step.Name()), ctx)
 	case types.ActionFix:
+		if err := RequireGitIdentity(ctx, workDir); err != nil {
+			redactedErr := safeurl.RedactText(err.Error())
+			if dbErr := e.db.FailStep(gate.stepResult.ID, redactedErr, duration); dbErr != nil {
+				slog.Warn("failed to mark recovered step as failed", "step", gate.step.Name(), "error", dbErr)
+			}
+			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFailed), "", redactedErr, &duration)
+			return e.failRun(run, repo, fmt.Errorf("step %s failed: %s", gate.step.Name(), redactedErr), ctx)
+		}
 		telemetry.Track("fix", e.fixTelemetryFields("user", gate.step.Name(), selectedFindingCount(gate.findings, response.findingIDs), 0))
 		selected := filterFindingsJSON(gate.findings, response.findingIDs)
 		merged := mergeUserOverridesJSON(selected, response.instructions, response.addedFindings)
@@ -720,6 +759,20 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	stepSkipped := false
 	currentRoundID := state.currentRoundID
 	var reviewApprovedHeadSHA string
+	var acceptedFindings string
+	failStep := func(stepErr error) (bool, error) {
+		durationMS := executionMS + time.Since(phaseStart).Milliseconds()
+		// The error often carries the only detail of why the step failed.
+		// Redact before it reaches the step log, IPC, or runs.error.
+		redactedErr := safeurl.RedactText(stepErr.Error())
+		fmt.Fprintf(logFile, "\nerror: %s\n", redactedErr)
+		touchLogActivity("error: "+redactedErr, true)
+		if dbErr := e.db.FailStep(sr.ID, redactedErr, durationMS); dbErr != nil {
+			slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
+		}
+		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", redactedErr, &durationMS)
+		return false, fmt.Errorf("step %s failed: %s", stepName, redactedErr)
+	}
 
 	// Execute with possible fix loop
 	for {
@@ -727,27 +780,21 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		roundNum++
 		roundDuration := time.Since(phaseStart).Milliseconds()
 		if err != nil {
-			durationMS := executionMS + roundDuration
-			// Persist the failure reason to the step's own log file. The error
-			// often carries the only detail of why the step failed (e.g. git
-			// stderr from a rejected push); without this the step log shows the
-			// work starting but never why it stopped. Redact defensively so a
-			// credentialled upstream URL that slipped into a wrapped error can
-			// never land in the log file.
-			redactedErr := safeurl.RedactText(err.Error())
-			fmt.Fprintf(logFile, "\nerror: %s\n", redactedErr)
-			touchLogActivity("error: "+redactedErr, true)
-			if dbErr := e.db.FailStep(sr.ID, redactedErr, durationMS); dbErr != nil {
-				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
-			}
-			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusFailed), "", redactedErr, &durationMS)
-			return false, fmt.Errorf("step %s failed: %s", stepName, redactedErr)
+			return failStep(err)
 		}
 
 		if stepName == types.StepReview {
 			reviewApprovedHeadSHA = outcome.ReviewApprovedHeadSHA
 		}
 		outcome.Findings = normalizeFindingsJSON(outcome.Findings, string(stepName))
+		if filtered, removed, actionable := e.shared.FilterAcceptedFindings(outcome.Findings); removed {
+			outcome.Findings = filtered
+			if !actionable {
+				outcome.NeedsApproval = false
+				outcome.AutoFixable = false
+			}
+		}
+		acceptedFindings = outcome.Findings
 		finalExitCode = outcome.ExitCode
 		durationOverrideMS += outcome.DurationOverrideMS
 
@@ -798,6 +845,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
 			fixableFindings := autoFixableFindingsJSON(outcome.Findings)
 			if fixableFindings != "" {
+				if err := RequireGitIdentity(ctx, workDir); err != nil {
+					return failStep(err)
+				}
 				autoFixAttempts++
 				telemetry.Track("fix", e.fixTelemetryFields("auto", stepName, findingsCount(fixableFindings), autoFixAttempts))
 				slog.Info("auto-fixing step", "step", stepName, "attempt", autoFixAttempts, "max", autoFixLimit)
@@ -913,6 +963,10 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			if err := e.db.CompleteStepWithStatus(sr.ID, types.StepStatusSkipped, finalExitCode, executionMS, logPath); err != nil {
 				return false, fmt.Errorf("complete step %s (skip): %w", stepName, err)
 			}
+			e.shared.AcceptFindings(outcome.Findings)
+			if err := snapshotAcceptedWorktree(ctx, workDir, run.ID); err != nil {
+				return false, fmt.Errorf("checkpoint skipped step %s: %w", stepName, err)
+			}
 			e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusSkipped), "", "", &executionMS)
 			return false, nil
 
@@ -924,6 +978,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			return false, fmt.Errorf("step %s: aborted by user", stepName)
 
 		case types.ActionFix:
+			if err := RequireGitIdentity(ctx, workDir); err != nil {
+				return failStep(err)
+			}
 			telemetry.Track("fix", e.fixTelemetryFields("user", stepName, selectedFindingCount(outcome.Findings, response.findingIDs), 0))
 			// Fix - mark step as fixing, resume execution timer, re-execute.
 			phaseStart = time.Now()
@@ -979,6 +1036,10 @@ done:
 		run.ReviewApprovedHeadSHA = &reviewedHead
 	} else if err := e.db.CompleteStepWithStatus(sr.ID, status, finalExitCode, durationMS, logPath); err != nil {
 		return false, fmt.Errorf("complete step %s: %w", stepName, err)
+	}
+	e.shared.AcceptFindings(acceptedFindings)
+	if err := snapshotAcceptedWorktree(ctx, workDir, run.ID); err != nil {
+		return false, fmt.Errorf("checkpoint completed step %s: %w", stepName, err)
 	}
 	e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", &durationMS)
 	return skipRemaining, nil
@@ -1434,4 +1495,226 @@ func selectedFindingCount(raw string, ids []string) int {
 		return len(ids)
 	}
 	return findingsCount(raw)
+}
+
+var ErrGitIdentityUnavailable = errors.New("Git author and committer identity unavailable")
+
+// RequireGitIdentity verifies the effective author and committer identities
+// Git itself will use before an automated fix can edit the worktree.
+func RequireGitIdentity(ctx context.Context, workDir string) error {
+	if _, err := git.Run(ctx, workDir, "rev-parse", "--git-dir"); err != nil {
+		// Executor unit steps that cannot commit do not need repository identity.
+		// Production run worktrees always pass this probe.
+		return nil
+	}
+	for _, variable := range []string{"GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"} {
+		if _, err := git.Run(ctx, workDir, "var", variable); err != nil {
+			return fmt.Errorf("%w; configure both with `git config user.name \"Your Name\"` and `git config user.email you@example.com`", ErrGitIdentityUnavailable)
+		}
+	}
+	return nil
+}
+
+// AcceptedCheckpointRef is the durable internal ref holding a failed run's
+// latest accepted worktree tree. It is never pushed.
+func AcceptedCheckpointRef(runID string) string {
+	return "refs/no-mistakes/checkpoints/" + runID
+}
+
+// WorktreeTreeID hashes tracked and untracked non-ignored files without
+// mutating the real index.
+func WorktreeTreeID(ctx context.Context, workDir string) (string, error) {
+	index, err := os.CreateTemp("", "no-mistakes-index-*")
+	if err != nil {
+		return "", err
+	}
+	indexPath := index.Name()
+	if err := index.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Remove(indexPath); err != nil {
+		return "", err
+	}
+	defer os.Remove(indexPath)
+	env := []string{"GIT_INDEX_FILE=" + indexPath}
+	if _, err := git.RunWithEnv(ctx, workDir, env, "read-tree", "HEAD"); err != nil {
+		return "", err
+	}
+	if _, err := git.RunWithEnv(ctx, workDir, env, "add", "-A"); err != nil {
+		return "", err
+	}
+	tree, err := git.RunWithEnv(ctx, workDir, env, "write-tree")
+	return strings.TrimSpace(tree), err
+}
+
+func snapshotAcceptedWorktree(ctx context.Context, workDir, runID string) error {
+	if _, err := git.Run(ctx, workDir, "rev-parse", "--git-dir"); err != nil {
+		return nil
+	}
+	tree, err := WorktreeTreeID(ctx, workDir)
+	if err != nil {
+		return err
+	}
+	head, err := git.HeadSHA(ctx, workDir)
+	if err != nil {
+		return err
+	}
+	identity := []string{
+		"GIT_AUTHOR_NAME=no-mistakes checkpoint",
+		"GIT_AUTHOR_EMAIL=checkpoint@no-mistakes.invalid",
+		"GIT_COMMITTER_NAME=no-mistakes checkpoint",
+		"GIT_COMMITTER_EMAIL=checkpoint@no-mistakes.invalid",
+	}
+	commit, err := git.RunWithEnv(ctx, workDir, identity, "commit-tree", strings.TrimSpace(tree), "-p", strings.TrimSpace(head), "-m", "no-mistakes accepted stage checkpoint")
+	if err != nil {
+		return err
+	}
+	_, err = git.Run(ctx, workDir, "update-ref", AcceptedCheckpointRef(runID), strings.TrimSpace(commit))
+	return err
+}
+
+func restoreAcceptedCheckpoint(ctx context.Context, workDir, sourceRunID, expectedHead string) error {
+	ref := AcceptedCheckpointRef(sourceRunID)
+	commit, err := git.Run(ctx, workDir, "rev-parse", "--verify", ref+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("accepted checkpoint unavailable: %w", err)
+	}
+	parent, err := git.Run(ctx, workDir, "rev-parse", strings.TrimSpace(commit)+"^")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(parent) != expectedHead {
+		return fmt.Errorf("accepted checkpoint parent %s does not match run head %s", strings.TrimSpace(parent), expectedHead)
+	}
+	if _, err := git.Run(ctx, workDir, "read-tree", "--reset", "-u", strings.TrimSpace(commit)+"^{tree}"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (e *Executor) prepareContinuation(ctx context.Context, run *db.Run, repo *db.Repo, workDir string, destinations map[types.StepName]*db.StepResult) (int, error) {
+	sourceRun, err := e.db.GetRun(e.continuationRunID)
+	if err != nil || sourceRun == nil {
+		return 0, fmt.Errorf("load source run: %w", err)
+	}
+	if sourceRun.RepoID != run.RepoID || sourceRun.Branch != run.Branch || sourceRun.HeadSHA != run.HeadSHA {
+		return 0, fmt.Errorf("source run no longer matches repository, branch, and head")
+	}
+	sources, err := e.db.GetStepsByRun(sourceRun.ID)
+	if err != nil {
+		return 0, err
+	}
+	if len(sources) != len(e.steps) {
+		return 0, fmt.Errorf("source step plan changed")
+	}
+	accepted := 0
+	for accepted < len(sources) {
+		source := sources[accepted]
+		if source.StepName != e.steps[accepted].Name() {
+			return 0, fmt.Errorf("source step plan changed at %d", accepted)
+		}
+		if source.Status != types.StepStatusCompleted && source.Status != types.StepStatusSkipped {
+			break
+		}
+		accepted++
+	}
+	if accepted == 0 {
+		return 0, fmt.Errorf("source run has no completed stage to preserve")
+	}
+	if err := restoreAcceptedCheckpoint(ctx, workDir, sourceRun.ID, sourceRun.HeadSHA); err != nil {
+		return 0, err
+	}
+	for i := range accepted {
+		source := sources[i]
+		destination := destinations[source.StepName]
+		if err := e.copyAcceptedStep(source, destination, run.ID); err != nil {
+			return 0, err
+		}
+		if source.FindingsJSON != nil {
+			e.shared.AcceptFindings(*source.FindingsJSON)
+			e.restoreEvidenceDir(source.StepName, *source.FindingsJSON)
+		}
+		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, source.StepName, string(source.Status), "", "", source.DurationMS)
+	}
+	if err := snapshotAcceptedWorktree(ctx, workDir, run.ID); err != nil {
+		return 0, err
+	}
+	return accepted, nil
+}
+
+func (e *Executor) copyAcceptedStep(source, destination *db.StepResult, runID string) error {
+	if source.FindingsJSON != nil {
+		if err := e.db.SetStepFindings(destination.ID, *source.FindingsJSON); err != nil {
+			return err
+		}
+	}
+	rounds, err := e.db.GetRoundsByStep(source.ID)
+	if err != nil {
+		return err
+	}
+	var reviewedHead string
+	for _, round := range rounds {
+		var copied *db.StepRound
+		if round.ReviewedHeadSHA != nil {
+			reviewedHead = *round.ReviewedHeadSHA
+			copied, err = e.db.InsertReviewStepRound(destination.ID, round.Round, round.Trigger, round.FindingsJSON, round.FixSummary, reviewedHead, round.DurationMS)
+		} else {
+			copied, err = e.db.InsertStepRound(destination.ID, round.Round, round.Trigger, round.FindingsJSON, round.FixSummary, round.DurationMS)
+		}
+		if err != nil {
+			return err
+		}
+		if round.SelectedFindingIDs != nil {
+			sourceName := ""
+			if round.SelectionSource != nil {
+				sourceName = *round.SelectionSource
+			}
+			if err := e.db.SetStepRoundSelection(copied.ID, round.SelectedFindingIDs, sourceName); err != nil {
+				return err
+			}
+		}
+		if round.UserFindingsJSON != nil {
+			if err := e.db.SetStepRoundUserFindings(copied.ID, round.UserFindingsJSON); err != nil {
+				return err
+			}
+		}
+	}
+	duration := recoveredStepDuration(source)
+	exitCode := recoveredExitCode(source)
+	logPath := recoveredLogPath(source)
+	if source.StepName == types.StepReview && source.Status == types.StepStatusCompleted && reviewedHead != "" {
+		return e.db.CompleteReviewStep(destination.ID, runID, reviewedHead, exitCode, duration, logPath)
+	}
+	return e.db.CompleteStepWithStatus(destination.ID, source.Status, exitCode, duration, logPath)
+}
+
+func (e *Executor) restoreEvidenceDir(step types.StepName, raw string) {
+	if step != types.StepTest {
+		return
+	}
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return
+	}
+	root := filepath.Join(os.TempDir(), "no-mistakes-evidence")
+	for _, artifact := range findings.Artifacts {
+		if artifact.Path == "" {
+			continue
+		}
+		rel, err := filepath.Rel(root, artifact.Path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		parts := strings.Split(filepath.Clean(rel), string(filepath.Separator))
+		for i := 0; i+1 < len(parts); i++ {
+			if parts[i] == "evidence" {
+				e.shared.SetEvidenceDir(filepath.Join(root, filepath.Join(parts[:i+2]...)))
+				return
+			}
+		}
+		if len(parts) > 1 {
+			e.shared.SetEvidenceDir(filepath.Join(root, parts[0]))
+			return
+		}
+	}
 }

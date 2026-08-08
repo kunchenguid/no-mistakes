@@ -485,10 +485,20 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 	}
 }
 
+func ciActivity(rv runView) cimonitor.Activity {
+	var logs []string
+	for _, step := range rv.Steps {
+		if step.Name == string(types.StepCI) && step.LastActivity != "" {
+			logs = append(logs, step.LastActivity)
+		}
+	}
+	return cimonitor.FromAuthoritative(rv.CIReady, rv.CIReadyNoCI, logs)
+}
+
 // ciReadyToMerge reports whether the CI step is actively monitoring and the
 // daemon has persisted checks-passed readiness.
 func ciReadyToMerge(rv runView) bool {
-	activity := cimonitor.FromAuthoritative(rv.CIReady, rv.CIReadyNoCI, nil)
+	activity := ciActivity(rv)
 	for _, s := range rv.Steps {
 		if s.Name == string(types.StepCI) {
 			return s.Status == string(types.StepStatusRunning) && activity.Ready
@@ -580,8 +590,8 @@ func sendRespond(client *ipc.Client, runID string, step types.StepName, action t
 
 // renderDriveResult prints the run snapshot plus one of: the active gate (exit
 // 0, a normal decision point), a checks-passed outcome (exit 0, CI readiness is
-// established by green checks or the trusted no_ci declaration and the PR is
-// ready for a human to merge), or the terminal outcome (exit 0 when passed,
+// established by green checks or either trusted no-CI determination and the PR
+// is ready for a human to merge), or the terminal outcome (exit 0 when passed,
 // exit 1 when blocked, failed, or cancelled). Successful outcomes also carry
 // the fixes the pipeline applied and reporting instructions, so the agent
 // closes the loop with the user instead of stopping at "it passed".
@@ -598,10 +608,12 @@ func renderDriveResult(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool) error
 	// for a human merge. Report it as a distinct, successful outcome so the
 	// agent stops and asks the user to review and merge instead of waiting.
 	if ciReady {
-		activity := cimonitor.FromAuthoritative(rv.CIReady, rv.CIReadyNoCI, nil)
+		activity := ciActivity(rv)
 		fields = append(fields, toon.Field{Key: "outcome", Value: "checks-passed"})
 		merge := "CI checks passed - the PR is ready. Ask the user to review and merge it."
-		if activity.DeclaredNoCI {
+		if activity.NoChecksConfigured {
+			merge = "The trusted default branch configures zero pull-request checks - treated as no CI. Ask the user to review and merge it."
+		} else if activity.DeclaredNoCI {
 			merge = "Repository declares no CI (no_ci: true on the trusted default branch) and no checks are registered - treated as all checks passed. Ask the user to review and merge it."
 		}
 		if rv.PRURL != "" {
