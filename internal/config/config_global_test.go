@@ -90,6 +90,9 @@ func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	if cfg.DaemonConnectTimeout != DefaultDaemonConnectTimeout {
 		t.Errorf("daemon_connect_timeout = %v, want %v", cfg.DaemonConnectTimeout, DefaultDaemonConnectTimeout)
 	}
+	if cfg.BranchSyncRemoteTimeout != DefaultBranchSyncRemoteTimeout {
+		t.Errorf("branch_sync_remote_timeout = %v, want %v", cfg.BranchSyncRemoteTimeout, DefaultBranchSyncRemoteTimeout)
+	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("log_level = %q, want %q", cfg.LogLevel, "info")
 	}
