@@ -491,7 +491,7 @@ func rebaseCustodyScenario(t *testing.T) string {
       findings:
         - id: "rebase-1"
           severity: warning
-          file: "feature.txt"
+          file: "guard.txt"
           line: 1
           description: "the feature needs a guard helper"
           action: auto-fix

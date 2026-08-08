@@ -115,6 +115,8 @@ func TestPRWhatChangedScopesToFinalDiffWhileEvidenceStaysStepScoped(t *testing.T
 	}
 
 	const branch = "feature/final-pr-scope"
+	h.CommitChange(branch, "docs/flag.md", "# Flag pending\n", "declare flag documentation surface")
+	h.CommitChange(branch, "docs/reference.md", "# Reference pending\n", "declare reference documentation surface")
 	h.CommitChange(branch, "internal/example/flag.go", "package example\n", "add flag behavior")
 	preDocumentHead := h.CommitChange(branch, "cmd/example/main.go", "package main\n", "add flag CLI")
 	h.PushToGate(branch)
