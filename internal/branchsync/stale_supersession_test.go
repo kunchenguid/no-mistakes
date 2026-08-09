@@ -358,6 +358,142 @@ func TestSupersedeStaleCustodyExactTwoRunChain(t *testing.T) {
 	}
 }
 
+// TestSupersedeStaleCustodyResolvesRerunByLiveHead proves that an ordinary
+// rerun of one submission does not make the transition permanently unreachable.
+// Two terminal exact-pushed runs share a submission, only one of them recorded
+// the head the forge and gate actually hold, and that freshly verified live head
+// alone decides which run may claim the adoption. The oracle for "live" is a
+// direct Git read of the remote and gate branch, never the run rows under test.
+func TestSupersedeStaleCustodyResolvesRerunByLiveHead(t *testing.T) {
+	t.Parallel()
+
+	t.Run("later candidates share one submission", func(t *testing.T) {
+		f := newStaleSupersessionFixture(t)
+		superseded := siblingPipelineHead(t, f.gate, f.branch, f.laterSubmitted, "superseded-later")
+		dead, err := f.db.InsertRun(f.repo.ID, f.branch, f.laterSubmitted, f.lineagePushed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recordExactPushedRun(t, f.db, f.repo, dead, superseded, f.branch, types.RunFailed)
+
+		liveHead := mustRun(t, f.remote, "rev-parse", "refs/heads/"+f.branch)
+		if liveHead == superseded || liveHead != mustRun(t, f.gate, "rev-parse", "refs/heads/"+f.branch) {
+			t.Fatalf("fixture live head = %s, superseded rerun push = %s", liveHead, superseded)
+		}
+
+		plan := f.service.PlanStaleCustody(f.ctx)
+		if plan.Safety != "safe_stale_custody_supersession" || plan.NextAction == nil ||
+			!strings.Contains(plan.NextAction.Command, "--later-run "+f.laterRun.ID) {
+			t.Fatalf("rerun plan = %#v next=%#v", plan, plan.NextAction)
+		}
+
+		refused := f.service.SupersedeStaleCustody(f.ctx, f.oldRun.ID, dead.ID)
+		if refused.Released || refused.Safety != "blocked_supersede_run_identity" {
+			t.Fatalf("superseded rerun transition = %#v", refused)
+		}
+		f.assertHeads(t, f.laterSubmitted, liveHead, liveHead)
+		f.assertOldCustody(t, false)
+
+		state := f.service.SupersedeStaleCustody(f.ctx, f.oldRun.ID, f.laterRun.ID)
+		if !state.Released || !state.Changed || state.CustodyTransition == nil {
+			t.Fatalf("live rerun transition = %#v", state)
+		}
+		if state.CustodyTransition.SupersedingRunID != f.laterRun.ID || state.CustodyTransition.PushedHead != liveHead {
+			t.Fatalf("live rerun transition identities = %#v", state.CustodyTransition)
+		}
+		f.assertHeads(t, liveHead, liveHead, liveHead)
+		f.assertOldCustody(t, true)
+	})
+
+	t.Run("lineage candidates share one submission", func(t *testing.T) {
+		f := newRecoverFixture(t, types.RunFailed)
+		branch := "feature/recover"
+		mustRun(t, f.local, "remote", "add", "origin", f.remote)
+		mustRun(t, f.local, "fetch", f.gate, f.preserved+":refs/no-mistakes/recover/"+f.run.ID)
+
+		publish := func(label string, force bool) string {
+			clone := filepath.Join(t.TempDir(), label)
+			mustRun(t, filepath.Dir(clone), "-c", "core.autocrlf=false", "clone", f.gate, clone)
+			configureIdentity(t, clone)
+			mustRun(t, clone, "checkout", branch)
+			mustRun(t, clone, "reset", "--hard", f.preserved)
+			mustWrite(t, filepath.Join(clone, label+".txt"), label+"\n")
+			mustRun(t, clone, "add", label+".txt")
+			mustRun(t, clone, "commit", "-m", "no-mistakes(review): "+label)
+			head := mustRun(t, clone, "rev-parse", "HEAD")
+			if force {
+				mustRun(t, clone, "push", "--force", "origin", "HEAD:refs/heads/"+branch)
+				mustRun(t, clone, "push", "--force", f.remote, "HEAD:refs/heads/"+branch)
+			} else {
+				mustRun(t, clone, "push", "origin", "HEAD:refs/heads/"+branch)
+				mustRun(t, clone, "push", f.remote, "HEAD:refs/heads/"+branch)
+			}
+			return head
+		}
+
+		dead, err := f.db.InsertRun(f.repo.ID, branch, f.preserved, f.base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recordExactPushedRun(t, f.db, f.repo, dead, publish("superseded-lineage", false), branch, types.RunFailed)
+		live, err := f.db.InsertRun(f.repo.ID, branch, f.preserved, f.base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		livePushed := publish("live-lineage", true)
+		recordExactPushedRun(t, f.db, f.repo, live, livePushed, branch, types.RunFailed)
+
+		liveHead := mustRun(t, f.remote, "rev-parse", "refs/heads/"+branch)
+		if liveHead != livePushed || liveHead != mustRun(t, f.gate, "rev-parse", "refs/heads/"+branch) {
+			t.Fatalf("fixture live head = %s, want the exact latest lineage push %s", liveHead, livePushed)
+		}
+
+		plan := f.service.PlanStaleCustody(f.ctx)
+		if plan.Safety != "safe_stale_custody_supersession" || plan.NextAction == nil ||
+			!strings.Contains(plan.NextAction.Command, "--later-run "+live.ID) {
+			t.Fatalf("lineage rerun plan = %#v next=%#v", plan, plan.NextAction)
+		}
+
+		refused := f.service.SupersedeStaleCustody(f.ctx, f.run.ID, dead.ID)
+		if refused.Released || refused.Safety != "blocked_supersede_run_identity" {
+			t.Fatalf("superseded lineage transition = %#v", refused)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != f.submitted || f.custodyReturned() {
+			t.Fatalf("refused lineage transition moved local head to %s or returned custody", got)
+		}
+
+		state := f.service.SupersedeStaleCustody(f.ctx, f.run.ID, live.ID)
+		if !state.Released || !state.Changed || state.CustodyTransition == nil {
+			t.Fatalf("live lineage transition = %#v", state)
+		}
+		if state.CustodyTransition.SupersedingRunID != live.ID || state.CustodyTransition.LineageRunID != live.ID ||
+			state.CustodyTransition.PushedHead != liveHead {
+			t.Fatalf("live lineage transition identities = %#v", state.CustodyTransition)
+		}
+		if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != liveHead || !f.custodyReturned() {
+			t.Fatalf("live lineage transition adopted head %s, custody returned %v", got, f.custodyReturned())
+		}
+	})
+}
+
+// siblingPipelineHead records one exact pipeline push that a later force push
+// replaced: the commit stays reachable in the gate through its own private ref,
+// exactly as a superseded rerun head does, but it is not the live branch head.
+func siblingPipelineHead(t *testing.T, gate, branch, parent, label string) string {
+	t.Helper()
+	clone := filepath.Join(t.TempDir(), label)
+	mustRun(t, filepath.Dir(clone), "-c", "core.autocrlf=false", "clone", gate, clone)
+	configureIdentity(t, clone)
+	mustRun(t, clone, "checkout", branch)
+	mustRun(t, clone, "reset", "--hard", parent)
+	mustWrite(t, filepath.Join(clone, label+".txt"), label+"\n")
+	mustRun(t, clone, "add", label+".txt")
+	mustRun(t, clone, "commit", "-m", "no-mistakes(review): "+label)
+	head := mustRun(t, clone, "rev-parse", "HEAD")
+	mustRun(t, clone, "push", "origin", "HEAD:refs/no-mistakes/test/"+label)
+	return head
+}
+
 func TestSupersedeStaleCustodyRefusalControls(t *testing.T) {
 	t.Parallel()
 
@@ -455,6 +591,18 @@ func TestSupersedeStaleCustodyRefusalControls(t *testing.T) {
 			t.Fatalf("ambiguous-owner transition = %#v", state)
 		}
 		f.assertHeads(t, f.laterSubmitted, f.laterPushed, f.laterPushed)
+		f.assertOldCustody(t, false)
+	})
+
+	t.Run("requested later push is no longer live", func(t *testing.T) {
+		f := newStaleSupersessionFixture(t)
+		mustRun(t, f.remote, "update-ref", "refs/heads/"+f.branch, f.lineagePushed, f.laterPushed)
+		mustRun(t, f.gate, "update-ref", "refs/heads/"+f.branch, f.lineagePushed, f.laterPushed)
+		state := f.service.SupersedeStaleCustody(f.ctx, f.oldRun.ID, f.laterRun.ID)
+		if state.Released || state.Safety != "blocked_supersede_remote_mismatch" {
+			t.Fatalf("rolled-back branch transition = %#v", state)
+		}
+		f.assertHeads(t, f.laterSubmitted, f.lineagePushed, f.lineagePushed)
 		f.assertOldCustody(t, false)
 	})
 

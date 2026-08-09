@@ -270,11 +270,12 @@ Only when it returns `next_action.code: supersede_stale_custody` may you run the
 The plan and transition require all of these exact facts:
 
 - The old run is the authoritative inactive terminal owner, has an unpublished head, and that head remains recoverable in both the invoking repository and gate object store.
-- One unique later terminal run belongs to the same repository and branch, has an exact successful push binding to the currently configured target and branch ref, and records the exact submitted and pushed heads used for adoption.
+- The freshly read configured remote and the verified gate branch already agree on one exact live head.
+- One unique later terminal run claims that live head: it belongs to the same repository and branch, has an exact successful push binding to the currently configured target and branch ref, records the exact submitted and pushed heads used for adoption, and its pushed head is exactly the live head.
+  Uniqueness is judged only among the runs that claim it, so an ordinary rerun whose earlier push is no longer live never disables the transition, while two runs recording the same live head still refuse as ambiguous.
 - One unique exact run lineage submitted the old preserved head and pushed either the later run itself or a commit that is an ancestor of the later submission.
 - The clean uniquely checked-out local branch is the later run's exact submitted head.
   The same guarded transition also accepts the exact two-run chain where local is the old submission, the old output is the later submission, and the later run pushed the target.
-- The freshly read configured remote and verified gate branch both equal the later run's exact pushed head.
 - No active, ambiguous, other-repository, other-branch, changed-generation, changed-ref, dirty-worktree, or duplicate-worktree fact exists.
 
 The lineage proof uses persisted exact run edges and Git ancestry only.
