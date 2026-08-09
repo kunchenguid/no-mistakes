@@ -255,7 +255,7 @@ The final database update is one guarded transaction that requires the journaled
 A crash before that transaction leaves only the durable journal, safety anchors, and possibly the gate branch at the already verified local and remote head, so retry is safe.
 A crash after it is a completed, idempotent release recorded with reason `preserved_head_unavailable`.
 
-Successful and refused attempts return a structured `branch_sync.custody_transition` object with the action, durable reason, exact run and heads, every created anchor, and whether the result was an idempotent retry.
+After the exact run resolves, successful and refused attempts return a structured `branch_sync.custody_transition` object with the action, durable reason, exact run, every observed head and created anchor, and whether the result was an idempotent retry.
 Success additionally returns `released: true` and `changed: false`, because ownership changed without moving the operator worktree; a released never-pushed run reports `state: custody_returned`, and a released pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
 An immediate repeated invocation returns the same successful audit with `idempotent: true`.
 Ordinary `axi run`, `axi sync --recover`, and `axi abort` behavior is unchanged outside this unavailable-head release.
@@ -287,7 +287,7 @@ A no-op gate compare-and-swap and a final fresh remote read close the mutable Gi
 
 A crash after the local compare-and-swap leaves every head anchored and the journal in a retryable phase.
 The exact command resumes the worktree update or final stamp without guessing from current refs.
-A completed retry reports `released: true`, `idempotent: true`, and the same structured `custody_transition` identities and anchors.
+An idempotent completed retry reports `released: true`, `idempotent: true`, the exact structured `custody_transition` identities, and every still-verifiable safety anchor.
 Success adopts the later pushed head and then reports its ordinary synchronized state.
 Refusal never stamps the old run, never mutates the later run, never updates an external remote, and never touches another validation.
 Ordinary `axi sync`, `axi sync --recover`, `axi run`, and `axi abort` behavior is unchanged when the read-only plan cannot prove this exact stale-owner shape.
