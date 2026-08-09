@@ -57,6 +57,12 @@ func (s *Service) PlanStaleCustody(ctx context.Context) State {
 // durable run identities plus exact Git and configured-target facts.
 //
 // The old preserved head must remain recoverable in both owned object stores.
+// Candidate selection is anchored to one freshly verified live head: the
+// configured remote and the gate must already agree on the same exact commit,
+// and only a run whose recorded pushed head is exactly that commit can claim
+// the adoption. Uniqueness is judged after that anchor, so an ordinary rerun of
+// the same submission resolves to the one run the forge actually holds, while
+// two runs claiming the same live head remain genuinely ambiguous and refuse.
 // A later exact-pushed run must be connected to it by another exact run whose
 // submitted head is the old preserved head; that run's pushed head must be an
 // ancestor of the later submission. The invoking branch must be either the
@@ -293,12 +299,32 @@ func (s *Service) buildStaleSupersessionEvidence(ctx context.Context, state Stat
 		}
 	}
 
+	targetRef := "refs/heads/" + old.Branch
+	targetURL, err := s.verifiedConfiguredPushURL(ctx, repoSnapshot)
+	if err != nil {
+		return blocked("blocked_supersede_target_ambiguous", "the invoking worktree does not have exactly one configured remote matching this repository's push target; no files or refs were changed")
+	}
+	remoteCtx, cancelRemote := context.WithTimeout(ctx, s.networkBudget())
+	remoteHead, remoteErr := git.LsRemote(remoteCtx, s.workDir(), targetURL, targetRef)
+	cancelRemote()
+	if remoteErr != nil {
+		return blocked("blocked_supersede_remote_unavailable", "the configured push target could not be read; no files or refs were changed")
+	}
+	if remoteHead == "" {
+		return blocked("blocked_supersede_remote_mismatch", "the configured remote branch does not exist, so no later exact pushed run can hold its live head; no files or refs were changed")
+	}
+	gateHead, gateErr := git.Run(ctx, gateDir, "rev-parse", targetRef+"^{commit}")
+	if gateErr != nil || gateHead != remoteHead {
+		return blocked("blocked_supersede_gate_mismatch", "the gate branch does not equal the freshly read configured remote branch head; no files or refs were changed")
+	}
+
 	var laterCandidates []*db.Run
 	for _, candidate := range runs {
 		if candidate.ID == old.ID || candidate.Branch != old.Branch || candidate.RepoID != old.RepoID ||
 			!runNewerThan(candidate, old) || !terminalRunStatus(candidate.Status) || candidate.CustodyReturnedAt != nil ||
 			normalizePRState(candidate.PRState) == "merged" || normalizePRState(candidate.PRState) == "closed" ||
-			!exactPushedBinding(repoSnapshot, candidate, old.Branch) || candidate.SubmittedHeadSHA == nil {
+			!exactPushedBinding(repoSnapshot, candidate, old.Branch) || candidate.SubmittedHeadSHA == nil ||
+			ptr(candidate.LastPushedSHA) != remoteHead {
 			continue
 		}
 		if staleAdoptionStartsAt(old, candidate, state.Local.Head, attempt) {
@@ -312,6 +338,9 @@ func (s *Service) buildStaleSupersessionEvidence(ctx context.Context, state Stat
 				return blocked("blocked_supersede_run_active", "the requested later run is still active; no files or refs were changed")
 			}
 			if requested != nil && requested.ID == requestedLaterID && requested.RepoID == old.RepoID && requested.Branch == old.Branch && exactPushedBinding(repoSnapshot, requested, old.Branch) {
+				if ptr(requested.LastPushedSHA) != remoteHead {
+					return blocked("blocked_supersede_remote_mismatch", "the configured remote branch does not equal the requested later run's exact pushed head; no files or refs were changed")
+				}
 				return blocked("blocked_supersede_submission_mismatch", "the local branch is not the exact adoption source recorded by the requested later lineage; no files or refs were changed")
 			}
 		}
@@ -346,24 +375,6 @@ func (s *Service) buildStaleSupersessionEvidence(ctx context.Context, state Stat
 		return blocked("blocked_supersede_assumptions_changed", "the durable stale-custody journal names a different exact run lineage; no ownership state was changed")
 	}
 
-	targetRef := "refs/heads/" + old.Branch
-	targetURL, err := s.verifiedConfiguredPushURL(ctx, repoSnapshot)
-	if err != nil {
-		return blocked("blocked_supersede_target_ambiguous", "the invoking worktree does not have exactly one configured remote matching this repository's push target; no files or refs were changed")
-	}
-	remoteCtx, cancelRemote := context.WithTimeout(ctx, s.networkBudget())
-	remoteHead, remoteErr := git.LsRemote(remoteCtx, s.workDir(), targetURL, targetRef)
-	cancelRemote()
-	if remoteErr != nil {
-		return blocked("blocked_supersede_remote_unavailable", "the configured push target could not be read; no files or refs were changed")
-	}
-	if remoteHead == "" || remoteHead != ptr(later.LastPushedSHA) {
-		return blocked("blocked_supersede_remote_mismatch", "the configured remote branch does not equal the requested later run's exact pushed head; no files or refs were changed")
-	}
-	gateHead, gateErr := git.Run(ctx, gateDir, "rev-parse", targetRef+"^{commit}")
-	if gateErr != nil || gateHead != ptr(later.LastPushedSHA) {
-		return blocked("blocked_supersede_gate_mismatch", "the gate branch does not equal the requested later run's exact pushed head; no files or refs were changed")
-	}
 	authority, err := s.DB.SnapshotCustodyReleaseAuthority(old.RepoID, old.Branch)
 	if err != nil {
 		return blocked("blocked_supersede_assumptions_changed", "the repository and branch ownership generations could not be read; no files or refs were changed")
