@@ -155,26 +155,20 @@ func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
 	if i.DB == nil {
 		return nil, nil
 	}
-	runs, err := i.DB.GetActiveRuns()
+	steps, err := i.DB.GetActiveRunSteps()
 	if err != nil {
-		return nil, fmt.Errorf("gate execution context: list active runs: %w", err)
+		return nil, fmt.Errorf("gate execution context: list active run steps: %w", err)
 	}
 	var out []activeAgentStep
-	for _, run := range runs {
-		steps, err := i.DB.GetStepsByRun(run.ID)
-		if err != nil {
-			return nil, fmt.Errorf("gate execution context: list steps for active run: %w", err)
+	for _, step := range steps {
+		if !activeStepStatus(step.Status) {
+			continue
 		}
-		for _, step := range steps {
-			if !activeStepStatus(step.Status) {
-				continue
-			}
-			pid := 0
-			if step.AgentPID != nil {
-				pid = *step.AgentPID
-			}
-			out = append(out, activeAgentStep{runID: run.ID, repoID: run.RepoID, phase: step.StepName, agentPID: pid})
+		pid := 0
+		if step.AgentPID != nil {
+			pid = *step.AgentPID
 		}
+		out = append(out, activeAgentStep{runID: step.RunID, repoID: step.RepoID, phase: step.StepName, agentPID: pid})
 	}
 	return out, nil
 }
@@ -202,14 +196,14 @@ func (i Inspector) registeredManagedCommonDir(commonDir string) (string, bool, e
 	if i.DB == nil {
 		return "", false, nil
 	}
-	repo, err := i.DB.GetRepo(id)
+	registered, err := i.DB.IsRepoRegistered(id)
 	if err != nil {
 		return "", false, fmt.Errorf("gate execution context: verify managed gate: %w", err)
 	}
-	if repo == nil || !sameCanonicalPath(common, i.Paths.RepoDir(repo.ID)) {
+	if !registered || !sameCanonicalPath(common, i.Paths.RepoDir(id)) {
 		return "", false, nil
 	}
-	return repo.ID, true, nil
+	return id, true, nil
 }
 
 func gitIdentity(ctx context.Context, cwd string) (commonDir, top string, ok bool) {

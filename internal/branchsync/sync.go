@@ -1200,9 +1200,9 @@ func directAnchorHead(ctx context.Context, dir, ref string) (string, bool) {
 // retains every ancestor commit, so the only proof is fetching every advertised
 // ref and asking Git.
 //
-// The probe is a throwaway bare repository that shares the invoking
-// repository's object store and starts from a copy of its refs. Both properties
-// are load-bearing:
+// The probe is a throwaway bare repository. When the invoking repository has
+// complete history, the probe shares its object store and starts from a copy of
+// its refs. Both properties are load-bearing:
 //
 //   - Refs are what Git negotiates with. A probe with no refs offers nothing,
 //     so the server sends every object behind every advertised ref - on hosts
@@ -1213,6 +1213,10 @@ func directAnchorHead(ctx context.Context, dir, ref string) (string, bool) {
 //     have, and can only make the answer conservative: reading through to the
 //     operator's store can report retention that the remote alone would not,
 //     never the reverse, and retention refuses the release.
+//
+// A shallow or unverifiable invoking repository instead gets an empty probe,
+// so the fetch negotiates complete advertised history without inheriting a
+// boundary that can hide an older retained commit.
 //
 // One probe is created per release attempt and reused across its rechecks, so
 // each later recheck only negotiates the delta since the previous fetch.
@@ -1235,11 +1239,15 @@ func newRemoteReachabilityProbe(ctx context.Context, workDir string) (*remoteRea
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
 	parent := filepath.Dir(dir)
-	if _, cloneErr := git.Run(ctx, parent, "clone", "--bare", "--shared", workDir, dir); cloneErr != nil {
-		if _, initErr := git.Run(ctx, parent, "init", "--bare", dir); initErr != nil {
-			cleanup()
-			return nil, nil, initErr
+	shallow, shallowErr := git.Run(ctx, workDir, "rev-parse", "--is-shallow-repository")
+	if shallowErr == nil && shallow == "false" {
+		if _, cloneErr := git.Run(ctx, parent, "clone", "--bare", "--shared", workDir, dir); cloneErr == nil {
+			return &remoteReachabilityProbe{dir: dir}, cleanup, nil
 		}
+	}
+	if _, initErr := git.Run(ctx, parent, "init", "--bare", dir); initErr != nil {
+		cleanup()
+		return nil, nil, initErr
 	}
 	return &remoteReachabilityProbe{dir: dir}, cleanup, nil
 }

@@ -2,6 +2,7 @@ package branchsync
 
 import (
 	"context"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -447,6 +448,59 @@ func TestReleaseUnavailableRefusesRemoteDescendantThatRetainsPreservedHead(t *te
 	if objectExists(f.ctx, f.local, f.preserved) {
 		t.Fatalf("reachability probe imported remote object %s into the invoking repository", f.preserved)
 	}
+}
+
+func TestReleaseUnavailableShallowCloneCannotHideRetainedPreservedHead(t *testing.T) {
+	t.Parallel()
+
+	f := newRecoverFixture(t, types.RunFailed)
+	writer := filepath.Join(t.TempDir(), "descendant-writer")
+	mustRun(t, filepath.Dir(writer), "-c", "core.autocrlf=false", "clone", f.gate, writer)
+	configureIdentity(t, writer)
+	mustRun(t, writer, "checkout", "feature/recover")
+	mustWrite(t, filepath.Join(writer, "descendant.txt"), "remote descendant\n")
+	mustRun(t, writer, "add", "descendant.txt")
+	mustRun(t, writer, "commit", "-m", "remote descendant")
+	descendant := mustRun(t, writer, "rev-parse", "HEAD")
+	mustRun(t, writer, "push", f.remote, "HEAD:refs/heads/safety-descendant")
+	mustRun(t, f.local, "push", f.remote, "refs/heads/feature/recover:refs/heads/feature/recover")
+
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted, f.preserved)
+	mustRun(t, f.gate, "reflog", "expire", "--expire=now", "--all")
+	mustRun(t, f.gate, "gc", "--prune=now")
+
+	shallow := filepath.Join(t.TempDir(), "shallow-operator")
+	remoteURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(f.remote)}).String()
+	mustRun(t, filepath.Dir(shallow), "clone", "--depth=1", "--branch=safety-descendant", remoteURL, shallow)
+	mustRun(t, shallow, "fetch", "--depth=1", "origin", "refs/heads/feature/recover:refs/remotes/origin/feature/recover")
+	mustRun(t, shallow, "checkout", "-b", "feature/recover", "refs/remotes/origin/feature/recover")
+	mustRun(t, shallow, "remote", "set-url", "origin", f.remote)
+	if got := mustRun(t, shallow, "rev-parse", "--is-shallow-repository"); got != "true" {
+		t.Fatalf("invoking clone shallow = %q, want true", got)
+	}
+	if got := mustRun(t, shallow, "rev-parse", "refs/heads/safety-descendant"); got != descendant {
+		t.Fatalf("local advertised tip = %s, want %s", got, descendant)
+	}
+	if objectExists(f.ctx, shallow, f.preserved) {
+		t.Fatalf("shallow invoking clone unexpectedly retained preserved head %s", f.preserved)
+	}
+	if objectExists(f.ctx, f.gate, f.preserved) {
+		t.Fatalf("gate unexpectedly retained preserved head %s", f.preserved)
+	}
+
+	repo, err := f.db.UpdateRepoWorkingPath(f.repo.ID, shallow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.repo = repo
+	f.local = shallow
+	f.service.Repo = repo
+	f.service.WorkDir = shallow
+	state := f.service.ReleaseUnavailable(f.ctx, f.run.ID)
+	if state.Released || state.Safety != "blocked_release_preserved_recoverable" {
+		t.Fatalf("shallow remote-retention release = %#v", state)
+	}
+	assertUnavailableReleaseUnchanged(t, f, f.submitted, f.submitted)
 }
 
 func makeDistinctGateHead(t *testing.T, f *recoverFixture) string {

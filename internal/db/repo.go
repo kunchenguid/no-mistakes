@@ -121,6 +121,18 @@ func (d *DB) GetRepo(id string) (*Repo, error) {
 	return r, nil
 }
 
+func (d *DB) IsRepoRegistered(id string) (bool, error) {
+	var registered int
+	err := d.sql.QueryRow(`SELECT 1 FROM repos WHERE id = ?`, id).Scan(&registered)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check registered repo: %w", err)
+	}
+	return registered == 1, nil
+}
+
 // GetRepoByPath returns a repo by its working path.
 func (d *DB) GetRepoByPath(workingPath string) (*Repo, error) {
 	r := &Repo{}

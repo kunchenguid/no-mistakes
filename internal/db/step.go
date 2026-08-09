@@ -27,6 +27,14 @@ type StepResult struct {
 	AutoFixLimit   *int
 }
 
+type ActiveRunStep struct {
+	RunID    string
+	RepoID   string
+	StepName types.StepName
+	Status   types.StepStatus
+	AgentPID *int
+}
+
 const stepResultColumns = `id, run_id, step_name, step_order, status, exit_code, duration_ms, log_path, findings_json, error, started_at, completed_at, last_activity_at, last_activity, agent_pid, auto_fix_limit`
 
 // InsertStepResult creates a new step result record.
@@ -81,6 +89,32 @@ func (d *DB) GetStepsByRun(runID string) ([]*StepResult, error) {
 		steps = append(steps, s)
 	}
 	return steps, rows.Err()
+}
+
+func (d *DB) GetActiveRunSteps() ([]ActiveRunStep, error) {
+	rows, err := d.sql.Query(`
+		SELECT runs.id, runs.repo_id, step_results.step_name, step_results.status, step_results.agent_pid
+		FROM runs
+		JOIN step_results ON step_results.run_id = runs.id
+		WHERE runs.status IN (?, ?)
+		ORDER BY runs.created_at DESC, runs.id DESC, step_results.step_order`, types.RunPending, types.RunRunning)
+	if err != nil {
+		return nil, fmt.Errorf("get active run steps: %w", err)
+	}
+	defer rows.Close()
+
+	var steps []ActiveRunStep
+	for rows.Next() {
+		var step ActiveRunStep
+		if err := rows.Scan(&step.RunID, &step.RepoID, &step.StepName, &step.Status, &step.AgentPID); err != nil {
+			return nil, fmt.Errorf("scan active run step: %w", err)
+		}
+		steps = append(steps, step)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active run steps: %w", err)
+	}
+	return steps, nil
 }
 
 // UpdateStepStatus updates a step's status.
