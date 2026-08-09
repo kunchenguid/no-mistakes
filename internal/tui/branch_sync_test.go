@@ -177,7 +177,7 @@ func TestRecoverableCustodyActionFlowsThroughConfirmationAndRecoverService(t *te
 	m.branchSync = &stranded
 
 	view := stripANSI(renderLocalBranchStatus(m.branchSync, false, 80))
-	for _, want := range []string{"preserved in the local gate", "Recover custody", "u recover custody"} {
+	for _, want := range []string{"durably preserved for guarded recovery", "Recover custody", "u recover custody"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("recoverable status missing %q:\n%s", want, view)
 		}
@@ -225,6 +225,37 @@ func TestRecoverableCustodyActionFlowsThroughConfirmationAndRecoverService(t *te
 	returned := stripANSI(renderLocalBranchStatus(m.branchSync, false, 80))
 	if !strings.Contains(returned, "Custody returned") {
 		t.Fatalf("custody_returned status:\n%s", returned)
+	}
+}
+
+// TestUnanchoredPipelineHeadOffersRerunWithoutRecoveryAction pins the TUI's
+// truthful fallback for a recorded head that recovery cannot verify.
+func TestUnanchoredPipelineHeadOffersRerunWithoutRecoveryAction(t *testing.T) {
+	run := &ipc.RunInfo{ID: "run-1", Branch: "feature", Status: types.RunFailed}
+	m := NewModel("socket", nil, run)
+	m.branchSync = &branchsync.State{
+		State: branchsync.StatePipelineOwned, Safety: "blocked_recover_unanchored",
+		Local:      branchsync.LocalState{Branch: "feature", Head: strings.Repeat("a", 40), Clean: true},
+		Pipeline:   branchsync.PipelineState{RunID: "run-1", Status: "failed", Phase: "pre_push", CurrentHead: strings.Repeat("c", 40)},
+		NextAction: &branchsync.NextAction{Code: "rerun", Command: "no-mistakes rerun"},
+	}
+	m.syncRecover = func() branchsync.State {
+		t.Fatal("recover service must not be reachable for an unanchored head")
+		return branchsync.State{}
+	}
+	view := stripANSI(renderLocalBranchStatus(m.branchSync, false, 80))
+	for _, want := range []string{"not anchored for recovery", "no-mistakes rerun", "does not recover"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("unanchored pipeline_owned view missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "u recover custody") {
+		t.Fatalf("unanchored pipeline_owned view offered recovery:\n%s", view)
+	}
+	nextModel, cmd := m.handleKey(keyMsg("u"))
+	m = nextModel.(Model)
+	if cmd != nil || m.recoverConfirm || m.syncConfirm {
+		t.Fatalf("u acted on an unanchored pipeline_owned state: %#v", m)
 	}
 }
 

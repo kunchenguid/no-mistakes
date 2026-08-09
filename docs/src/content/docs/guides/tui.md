@@ -143,7 +143,7 @@ When a clean strict-behind relation is eligible, or a diverged relation may be e
 Pressing `u` explicitly refreshes the configured upstream or fork target, then opens a confirmation with both full SHAs, the exact target ref, and the clean-worktree proof.
 Confirm with `u` or Enter, or cancel with Escape.
 The apply path rechecks every mutable assumption and can only perform the same exact strict fast-forward or anchored equivalent-diverged advance as `no-mistakes sync`; blocked states never trigger destructive Git recovery.
-When the owning run ended without publishing its pipeline commits, the same box offers `u recover custody` instead: `u` opens a confirmation naming the terminal status, the local head, and the preserved head, and applying routes through the guarded recovery documented in [`no-mistakes axi sync`](/no-mistakes/reference/cli/#no-mistakes-axi-sync).
+When the owning run ended without publishing its pipeline head and that exact recorded head is durably reachable through recovery's local or gate authority, the same box offers `u recover custody`: `u` opens a confirmation naming the terminal status, local head, and preserved head, and applying routes through the guarded recovery documented in [`no-mistakes axi sync`](/no-mistakes/reference/cli/#no-mistakes-axi-sync). If an older row records an unanchored head, the box recommends `no-mistakes rerun` to replay the logical change from the retained gate branch and does not offer the impossible recovery action.
 
 ### Footer
 

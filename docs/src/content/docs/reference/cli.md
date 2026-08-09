@@ -103,7 +103,7 @@ When starting a new run, `axi run` refuses the default branch and uncommitted wo
 Reattaching to an in-flight run does not require `--intent`.
 Reattachment accepts either the run's immutable submitted head or its current pipeline head, so pipeline-created fix commits do not detach an unchanged submitting worktree.
 When neither identity matches, `axi run` keeps the fresh-run path but refuses a gate push while `branch_sync` says the pipeline still owns the branch.
-That refusal returns the complete structured state and its `continue_active_run` or `recover_custody` next action instead of a raw Git non-fast-forward.
+That refusal returns the complete structured state and its supported `continue_active_run`, `recover_custody`, or `rerun` next action instead of a raw Git non-fast-forward; unavailable authority can remain blocked with no action.
 Reattaching to an in-flight run can proceed while the daemon is already running even if the global config file has become invalid, but starting a fresh run still requires valid global config.
 Starting a fresh run also requires a runnable effective pipeline agent.
 If the configured native agent or ACP runner is unavailable, the run fails before any pipeline step starts instead of reporting command-only validation as a passed gate.
@@ -184,7 +184,7 @@ no-mistakes axi sync --recover --keep-local
 | Flag           | Type   | Default | Description                                                                  |
 | -------------- | ------ | ------- | ---------------------------------------------------------------------------- |
 | `--check`      | `bool` | `false` | Verify the live target and exact plan without changing `HEAD`                |
-| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
+| `--recover`    | `bool` | `false` | Return custody only when `branch_sync` offers `recover_custody` (a no-op when cancellation already released the branch) |
 | `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree   |
 
 The default command is an explicit non-interactive apply request and never prompts.
@@ -201,23 +201,25 @@ Run `axi sync` only when structured output offers `next_action.code: sync`; proc
 
 ### Custody recovery
 
-A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head leaves the branch `pipeline_owned` with `safety: blocked_pipeline_owned_recoverable`, the run's terminal `pipeline.status`, the exact `submitted_head`/`current_head`/`relation` ownership facts, and `next_action.code: recover_custody`.
+A run that goes terminal (cancelled, failed, or completed without a push stage) after moving the pipeline head remains `pipeline_owned` and reports the run's terminal `pipeline.status` plus the exact `submitted_head`/`current_head`/`relation` ownership facts.
+Status offers `safety: blocked_pipeline_owned_recoverable` and `next_action.code: recover_custody` only when the recorded head is durably reachable through the exact authority recovery uses: it is reachable from the invoking branch (equal or ahead), or the local gate branch resolves exactly to it.
+The rebase step maintains that guarantee for normal runs by compare-and-swap advancing the normalized gate branch to the detached rebased head, verifying the ref, and only then publishing `runs.head_sha`; concurrent gate movement wins and fails the publication instead of being overwritten.
+For a historical or failed publication where the gate branch exists at another head, status reports `safety: blocked_recover_unanchored` and `next_action.code: rerun`, not an impossible recovery.
+`no-mistakes rerun` always starts from the current gate branch rather than `runs.head_sha`; in this unanchored case it carries forward any authoritative prior intent (otherwise intent is inferred afresh) and may replay the logical change, but it does not recover the recorded commit.
+If the required gate branch is unavailable, status remains blocked without advertising either recovery or a rerun that cannot start.
 A run whose terminalization verifies that the managed worktree head never changed from the submitted head releases the branch instead: the terminal outcome, including cancellation, ends ownership; status reports `state: user_owned` with the same exact ownership facts and no `next_action`; the branch and head are immediately usable for any separately authorized delivery; and nothing blocks a direct push or PR.
-Without that positive terminal head evidence, custody stays recoverable rather than being guessed away.
+Without that positive terminal head evidence, the exact recovery-capability check still applies rather than guessing custody away.
 While a run is still active, it reports `state: pipeline_owned`, the exact submitted/current heads and their relation, and `next_action.code: continue_active_run` with `no-mistakes axi status`, even when its head has not moved yet.
 `--recover` verifies the run is terminal, anchors the preserved head under `refs/no-mistakes/recover/<run>` in the invoking repository, and stamps custody returned so a fresh run can start.
 For equal or ahead worktrees where the preserved head is already locally reachable, recovery writes that anchor locally without gate access.
-For behind or diverged worktrees, recovery verifies the preserved head at the local gate branch and fetches it into the anchor before moving or refusing.
+For behind or diverged worktrees, recovery verifies the exact preserved head at the local gate branch and fetches it into the anchor before moving or refusing.
 A clean behind worktree fast-forwards.
 A diverged worktree is adopted only when the preserved head provably carries every local change, proven by an executable three-way merge whose result is exactly the preserved head's tree.
-This covers a pipeline rebase onto a newer base once a later pipeline commit has also advanced the gate branch to the preserved head.
-A rebase-only cancelled run can still refuse recovery because its detached worktree advances the recorded run head without advancing that gate branch; use `no-mistakes rerun` in that case.
 That adoption anchors the pre-recovery local head under `refs/no-mistakes/recover-local/<run>`, then moves the branch with Git operations that refuse on their own rather than after a preceding check: an atomic compare-and-swap on the branch ref, and a working-tree update that aborts instead of overwriting a modified or untracked file.
 The proof is deliberately narrow and never uses patch identity, which discards hunk locations and whitespace and so cannot tell a genuine replay from a same-shaped edit elsewhere.
 Anything it cannot decide - unlanded local commits, or a rebase whose fix rounds also rewrote your own lines - still refuses with the anchor named, because only escalation can tell a deliberate pipeline fix apart from a dropped change.
 A dirty worktree refuses with explicit choices.
 When you explicitly keep a behind or diverged local head instead of taking the preserved head, `--keep-local` returns custody at the current head without touching the worktree and atomically points the gate branch at it, so a concurrent gate push wins and the recovery refuses instead.
-`no-mistakes rerun` is the alternative exit that resumes validating the preserved head instead of taking the branch back.
 A recovered never-pushed run reports `state: custody_returned`; a recovered pushed run reports its ordinary classification against the last push binding, typically `local_ahead`.
 On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pipeline-created exists to recover, and no file, ref, or database row changes.
 
@@ -333,7 +335,7 @@ no-mistakes sync --recover --keep-local
 | -------------- | ------ | ------- | --------------------------------------------------------------- |
 | `--check`      | `bool` | `false` | Verify and print the fresh plan without changing `HEAD`         |
 | `-y`, `--yes`  | `bool` | `false` | Apply an eligible guarded synchronization without an interactive prompt |
-| `--recover`    | `bool` | `false` | Return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch) |
+| `--recover`    | `bool` | `false` | Return custody only when `branch_sync` offers `recover_custody` (a no-op when cancellation already released the branch) |
 | `--keep-local` | `bool` | `false` | With `--recover`: keep the current local head; never touches the worktree |
 
 Without `--yes`, apply prints the exact full-SHA plan and requires TTY confirmation; `--recover` prompts the same way before returning custody.

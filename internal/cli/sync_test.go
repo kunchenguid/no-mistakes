@@ -894,6 +894,39 @@ func TestAxiSyncCheckSurfacesRecoveryForTerminalPrePushRun(t *testing.T) {
 	}
 }
 
+func TestAxiSyncCheckUnanchoredHeadOffersRerunNotRecovery(t *testing.T) {
+	f := newCLIRecoverFixture(t)
+	cliGit(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted, f.preserved)
+	beforeLocal := cliGit(t, f.local, "rev-parse", "HEAD")
+	beforeGate := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover")
+
+	out, err := executeCmd("axi", "sync", "--check")
+	var ee *exitError
+	if err == nil || !asExitError(err, &ee) || ee.code != 1 {
+		t.Fatalf("unanchored check should exit 1, got %#v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"state: pipeline_owned",
+		"safety: blocked_recover_unanchored",
+		"code: rerun",
+		"command: no-mistakes rerun",
+		"does not recover the recorded commit",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("unanchored check missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "code: recover_custody") {
+		t.Fatalf("unanchored check advertised impossible recovery:\n%s", out)
+	}
+	if got := cliGit(t, f.local, "rev-parse", "HEAD"); got != beforeLocal {
+		t.Fatalf("unanchored check moved local HEAD to %s", got)
+	}
+	if got := cliGit(t, f.gate, "rev-parse", "refs/heads/feature/recover"); got != beforeGate {
+		t.Fatalf("unanchored check moved gate branch to %s", got)
+	}
+}
+
 func TestAxiSyncRecoverReturnsCustodyEndToEnd(t *testing.T) {
 	f := newCLIRecoverFixture(t)
 	out, err := executeCmd("axi", "sync", "--recover")

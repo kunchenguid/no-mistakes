@@ -522,6 +522,64 @@ func TestRecoverGateDivergenceAndUnavailabilityFailClosed(t *testing.T) {
 	})
 }
 
+// TestTerminalUnanchoredHeadOffersRerunWithoutMutation is the historical
+// rebase-only counterfactual: SQLite records the detached rewritten head, but
+// the gate branch still names the submitted head. Cached status must not offer
+// a recovery whose exact authority check will refuse, and that refusal must
+// leave every worktree/ref/database ownership fact untouched.
+func TestTerminalUnanchoredHeadOffersRerunWithoutMutation(t *testing.T) {
+	t.Parallel()
+
+	f := newRebasedRecoverFixture(t, types.RunCancelled)
+	// Deliberately recreate the old producer defect. The fixture initially puts
+	// the preserved object at the gate branch; move only that ref back under a
+	// CAS so the preserved object remains present but is not authoritative.
+	mustRun(t, f.gate, "update-ref", "refs/heads/feature/recover", f.submitted, f.preserved)
+	mustRun(t, f.gate, "cat-file", "-e", f.preserved+"^{commit}")
+
+	beforeLocalHead := mustRun(t, f.local, "rev-parse", "HEAD")
+	beforeLocalRefs := mustRun(t, f.local, "for-each-ref", "--format=%(refname)=%(objectname)")
+	beforeGateRefs := mustRun(t, f.gate, "for-each-ref", "--format=%(refname)=%(objectname)")
+	beforeRun, err := f.db.GetRun(f.run.ID)
+	if err != nil || beforeRun == nil {
+		t.Fatalf("load run before inspection: %#v, %v", beforeRun, err)
+	}
+
+	plan := f.service.InspectCached(f.ctx)
+	if plan.State != StatePipelineOwned || plan.Safety != "blocked_recover_unanchored" {
+		t.Fatalf("unanchored plan = %#v", plan)
+	}
+	if plan.NextAction == nil || plan.NextAction.Code != "rerun" || plan.NextAction.Command != "no-mistakes rerun" {
+		t.Fatalf("unanchored next action = %#v", plan.NextAction)
+	}
+	for _, want := range []string{"logical change", "does not recover the recorded commit"} {
+		if !strings.Contains(plan.Error, want) {
+			t.Fatalf("unanchored plan missing truthful rerun claim %q: %q", want, plan.Error)
+		}
+	}
+
+	refused := f.service.Recover(f.ctx, false)
+	if refused.Recovered || refused.Changed || refused.Safety != "blocked_recover_gate_diverged" {
+		t.Fatalf("unanchored recovery = %#v", refused)
+	}
+	if got := mustRun(t, f.local, "rev-parse", "HEAD"); got != beforeLocalHead {
+		t.Fatalf("recovery moved local HEAD to %s, want %s", got, beforeLocalHead)
+	}
+	if got := mustRun(t, f.local, "for-each-ref", "--format=%(refname)=%(objectname)"); got != beforeLocalRefs {
+		t.Fatalf("recovery changed local refs:\nold:\n%s\nnew:\n%s", beforeLocalRefs, got)
+	}
+	if got := mustRun(t, f.gate, "for-each-ref", "--format=%(refname)=%(objectname)"); got != beforeGateRefs {
+		t.Fatalf("recovery changed gate refs:\nold:\n%s\nnew:\n%s", beforeGateRefs, got)
+	}
+	afterRun, err := f.db.GetRun(f.run.ID)
+	if err != nil || afterRun == nil {
+		t.Fatalf("load run after refusal: %#v, %v", afterRun, err)
+	}
+	if afterRun.HeadSHA != beforeRun.HeadSHA || afterRun.CustodyReturnedAt != nil || afterRun.Status != beforeRun.Status {
+		t.Fatalf("recovery changed run ownership state: before=%#v after=%#v", beforeRun, afterRun)
+	}
+}
+
 // TestRecoverTerminalPostPushRunWithMovedHead covers the post-push class cell:
 // a run that pushed successfully, then went terminal with additional
 // unpublished pipeline commits. Recovery fast-forwards to the preserved head

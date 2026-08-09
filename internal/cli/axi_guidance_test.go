@@ -38,12 +38,13 @@ var canonicalBranchSyncPhrases = []string{
 	"no-mistakes axi sync",
 	"blocked",
 	"reset, stash, merge, rebase, force, or branch replacement",
-	// Guarded custody recovery for a terminal run whose pipeline commits were
-	// never published (v1.38.1 dogfood catch): the action, its next_action
-	// code, and the preservation claim must stay on every guidance surface.
+	// Guarded custody recovery is offered only with exact durable authority;
+	// historical unanchored rows instead rerun the retained gate branch and
+	// must not claim that this recovers the recorded commit.
 	"recover_custody",
 	"no-mistakes axi sync --recover",
-	"preserved in the local gate",
+	"durably preserved for guarded recovery",
+	"replays the logical change rather than recovering the recorded commit",
 	// Cancellation releases a run that never changed the submitted head
 	// (v1.44.2 dogfood catch): every surface must name the released state and
 	// that it needs no recovery.

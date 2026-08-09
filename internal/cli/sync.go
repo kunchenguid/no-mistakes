@@ -27,13 +27,14 @@ func newSyncCmd() *cobra.Command {
 			"branch to the verified pipeline head with reset semantics. It never stashes,\n" +
 			"merges genuine divergence, rebases, switches branches, or updates a remote.\n" +
 			"--check performs the fresh proof without applying it.\n" +
-			"--recover returns custody of a branch whose run went terminal with unpublished\n" +
-			"pipeline commits: it anchors the preserved head, then either fast-forwards a\n" +
-			"clean behind worktree or adopts a diverged preserved head only when proven to\n" +
-			"carry every local change. Unproven divergence refuses. A run cancelled before\n" +
-			"the pipeline changed anything releases the branch by itself (user_owned) and\n" +
-			"makes --recover a no-op. --recover --keep-local keeps the current local head\n" +
-			"instead and never touches the worktree.",
+			"--recover returns custody only when status proves the recorded head is durably\n" +
+			"reachable through recovery's exact local-branch or gate-branch authority. It\n" +
+			"anchors that head, then either fast-forwards a clean behind worktree or adopts\n" +
+			"a diverged head only when proven to carry every local change. Unproven\n" +
+			"divergence refuses. A run cancelled before the pipeline changed anything\n" +
+			"releases the branch by itself (user_owned) and makes --recover a no-op.\n" +
+			"--recover --keep-local keeps the current local head instead and never touches\n" +
+			"the worktree.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if check && yes {
@@ -53,7 +54,7 @@ func newSyncCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and show the synchronization plan without changing HEAD")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "apply an eligible guarded synchronization without prompting")
-	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch)")
+	cmd.Flags().BoolVar(&recover, "recover", false, "return custody only when branch_sync offers recover_custody (a no-op when cancellation already released the branch)")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
 	return cmd
 }
@@ -86,7 +87,7 @@ func newAxiSyncCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and return the plan without changing HEAD")
-	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch)")
+	cmd.Flags().BoolVar(&recover, "recover", false, "return custody only when branch_sync offers recover_custody (a no-op when cancellation already released the branch)")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
 	return cmd
 }
@@ -268,10 +269,14 @@ func printHumanSyncState(cmd *cobra.Command, state branchsync.State) {
 func humanSyncSummary(state branchsync.State) string {
 	switch state.State {
 	case branchsync.StatePipelineOwned:
-		if state.Safety == "blocked_pipeline_owned_recoverable" {
-			return "run ended without publishing its pipeline commits; recover custody with `no-mistakes sync --recover` (or `no-mistakes rerun` to resume validation)"
+		switch state.Safety {
+		case "blocked_pipeline_owned_recoverable":
+			return "run ended with an unpublished head durably preserved for guarded recovery; recover custody with `no-mistakes sync --recover`"
+		case "blocked_recover_unanchored":
+			return "recorded pipeline head is not anchored for recovery; `no-mistakes rerun` can replay the logical change from the retained gate branch, not recover that recorded commit"
+		default:
+			return "pipeline fix is not pushed yet; do not make local follow-up commits"
 		}
-		return "pipeline fix is not pushed yet; do not make local follow-up commits"
 	case branchsync.StateCustodyReturned:
 		return "custody returned; the branch is yours - start a fresh run when ready"
 	case branchsync.StateUserOwned:
@@ -342,7 +347,7 @@ func runAxiSync(cmd *cobra.Command, check, recover, keepLocal bool) error {
 		help = append(help, "Run `"+state.NextAction.Command+"`")
 	}
 	if state.Safety == "blocked_pipeline_owned_recoverable" {
-		help = append(help, "Run `no-mistakes rerun` instead to resume validating the preserved pipeline head")
+		help = append(help, "`no-mistakes rerun` starts from the current gate branch, not the recorded runs.head_sha; use guarded recovery to take the exact preserved head")
 	}
 	if len(help) > 0 {
 		fields = append(fields, toON.Field{Key: "help", Value: help})

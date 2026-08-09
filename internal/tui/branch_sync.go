@@ -21,8 +21,10 @@ func renderLocalBranchStatus(state *branchsync.State, refreshing bool, width int
 		switch state.State {
 		case branchsync.StatePipelineOwned:
 			if recoverableBranchSync(state) {
-				message = "Run ended without publishing its pipeline commits; they are preserved in the local gate. Recover custody to take the branch back, or rerun to resume validation."
+				message = "Run ended without publishing its pipeline head; the exact recorded head is durably preserved for guarded recovery. Recover custody to take the branch back."
 				footer = "u recover custody"
+			} else if state.NextAction != nil && state.NextAction.Code == "rerun" {
+				message = "The recorded pipeline head is not anchored for recovery. Run no-mistakes rerun to replay the logical change from the retained gate branch; it does not recover that recorded commit."
 			} else {
 				message = "Local branch unchanged; the pipeline fix is not pushed yet. Do not make follow-up commits."
 			}
@@ -117,7 +119,7 @@ func renderRecoverConfirmation(state branchsync.State, width int) string {
 	fmt.Fprintf(&b, "Local branch:   %s\n", state.Local.Branch)
 	fmt.Fprintf(&b, "Local HEAD:     %s\n", state.Local.Head)
 	fmt.Fprintf(&b, "Preserved HEAD: %s\n\n", state.Pipeline.CurrentHead)
-	b.WriteString("Dirty worktrees and divergence that cannot be proven contained refuse without changes; `no-mistakes sync --recover --keep-local` keeps the current head instead. `no-mistakes rerun` resumes validation.")
+	b.WriteString("Dirty worktrees and divergence that cannot be proven contained refuse without changes; `no-mistakes sync --recover --keep-local` keeps the current head instead. `no-mistakes rerun` always starts from the current gate branch, not the recorded run head.")
 	return renderBoxWithFooter("Confirm custody recovery", b.String(), width, "u/enter recover  ·  esc cancel")
 }
 

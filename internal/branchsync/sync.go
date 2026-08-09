@@ -439,6 +439,116 @@ func (s *Service) Apply(ctx context.Context) State {
 	return plan
 }
 
+type recoveryAuthority uint8
+
+const (
+	recoveryAuthorityNone recoveryAuthority = iota
+	recoveryAuthorityLocalBranch
+	recoveryAuthorityGateBranch
+	recoveryAuthorityResumedKeepLocal
+)
+
+type recoveryCapabilityFailure uint8
+
+const (
+	recoveryCapabilityOK recoveryCapabilityFailure = iota
+	recoveryCapabilityUnverifiedHead
+	recoveryCapabilityGateUnavailable
+	recoveryCapabilityGateDiverged
+)
+
+// recoveryCapability is the single read-only authority predicate shared by
+// cached status and Recover. A recorded head is actionable only when the exact
+// authority Recover will consume exists now: it is reachable from the invoking
+// local branch (equal/ahead), or it is the exact gate branch head. The narrow
+// resumed-keep-local case remains available only to Recover(true).
+type recoveryCapability struct {
+	authority recoveryAuthority
+	failure   recoveryCapabilityFailure
+	preserved string
+	gateHead  string
+	anchored  bool
+}
+
+func (c recoveryCapability) recoverable() bool {
+	return c.failure == recoveryCapabilityOK && c.authority != recoveryAuthorityNone
+}
+
+func (s *Service) recoveryCapability(ctx context.Context, state State, run *db.Run, keepLocal bool) recoveryCapability {
+	capability := recoveryCapability{failure: recoveryCapabilityUnverifiedHead}
+	if run == nil {
+		return capability
+	}
+	capability.preserved = strings.TrimSpace(run.HeadSHA)
+	if capability.preserved == "" || strings.TrimSpace(state.Local.Branch) == "" {
+		return capability
+	}
+
+	gateRead := false
+	readGate := func() bool {
+		if gateRead {
+			return capability.gateHead != ""
+		}
+		gateRead = true
+		gateDir := strings.TrimSpace(s.GateDir)
+		if gateDir == "" {
+			return false
+		}
+		gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+state.Local.Branch+"^{commit}")
+		if err != nil || strings.TrimSpace(gateHead) == "" {
+			return false
+		}
+		capability.gateHead = strings.TrimSpace(gateHead)
+		return true
+	}
+
+	// A terminal row without positive managed-worktree evidence first needs the
+	// same gate proof Recover has always required. A descendant gate head can be
+	// reconciled into run state by Recover; status only reports that capability.
+	if run.TerminalHeadVerifiedAt == nil {
+		if !readGate() {
+			return capability
+		}
+		if capability.gateHead != capability.preserved {
+			if !isAncestor(ctx, s.GateDir, capability.preserved, capability.gateHead) {
+				return capability
+			}
+			capability.preserved = capability.gateHead
+		}
+	}
+
+	local := strings.TrimSpace(state.Local.Head)
+	if objectExists(ctx, s.workDir(), capability.preserved) &&
+		(local == capability.preserved || isAncestor(ctx, s.workDir(), capability.preserved, local)) {
+		capability.failure = recoveryCapabilityOK
+		capability.authority = recoveryAuthorityLocalBranch
+		return capability
+	}
+
+	if !readGate() {
+		if run.TerminalHeadVerifiedAt != nil {
+			capability.failure = recoveryCapabilityGateUnavailable
+		}
+		return capability
+	}
+	anchorRef := recoverAnchorRef(run.ID)
+	if existing, err := git.Run(ctx, s.workDir(), "rev-parse", "--verify", anchorRef+"^{commit}"); err == nil && strings.TrimSpace(existing) == capability.preserved {
+		capability.anchored = true
+	}
+	if keepLocal && capability.anchored && capability.gateHead == local {
+		capability.failure = recoveryCapabilityOK
+		capability.authority = recoveryAuthorityResumedKeepLocal
+		return capability
+	}
+	if capability.gateHead != capability.preserved {
+		capability.failure = recoveryCapabilityGateDiverged
+		return capability
+	}
+	capability.failure = recoveryCapabilityOK
+	capability.authority = recoveryAuthorityGateBranch
+	return capability
+}
+
 // Recover returns custody of a branch stranded by a TERMINAL run whose MOVED
 // pipeline head was never published: cancelled or failed before the push with
 // pipeline commits in the gate, or terminal after a push with additional
@@ -448,8 +558,9 @@ func (s *Service) Apply(ctx context.Context) State {
 // head never changed from the submitted head needs no recovery at all, so
 // Recover treats that user_owned state as an idempotent no-op success.
 //
-// The decision matrix, by worktree relation to the preserved pipeline head P
-// (the gate branch head recorded as the run's head_sha):
+// The decision matrix, by worktree relation to the recorded pipeline head P.
+// For behind/diverged worktrees, P is recoverable only when the exact gate
+// branch head equals it; equal/ahead worktrees already carry P durably.
 //
 //	relation   worktree  default                        --keep-local
 //	equal      any       anchor locally; return custody same
@@ -503,8 +614,10 @@ func (s *Service) Apply(ctx context.Context) State {
 // Recovery ends with a persisted custody-return stamp on the run; inspection
 // then reports custody_returned (never-pushed runs) or the ordinary
 // classification against the last push binding (pushed runs), both pointing at
-// run_pipeline as the next step. `no-mistakes rerun` remains the alternative
-// exit that resumes validating the preserved head instead of taking it back.
+// run_pipeline as the next step. `no-mistakes rerun` always starts from the
+// current gate branch rather than runs.head_sha: when those heads match it
+// validates the preserved commit; an unanchored fallback can only replay the
+// logical change from the retained gate head.
 func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
 		return refusal
@@ -529,32 +642,30 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if !terminalRunStatus(run.Status) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_run_active", "the run that owns this branch is still active; drive it to completion or abort it first; no files or refs were changed")
 	}
-	if run.TerminalHeadVerifiedAt == nil {
-		branch := state.Local.Branch
-		if strings.TrimSpace(s.GateDir) == "" {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and no gate is available to prove preserved custody; no files or refs were changed")
+	capability := s.recoveryCapability(ctx, state, run, keepLocal)
+	if !capability.recoverable() {
+		switch capability.failure {
+		case recoveryCapabilityGateUnavailable:
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so the preserved pipeline head %s cannot be verified; no files or refs were changed", state.Local.Branch, capability.preserved))
+		case recoveryCapabilityGateDiverged:
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_diverged", fmt.Sprintf("the gate branch is at %s, not the preserved pipeline head %s recorded for this run; no files or refs were changed", capability.gateHead, capability.preserved))
+		default:
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the exact preserved gate head could not be proven; no files or refs were changed")
 		}
-		gateHead, err := git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
-		if err != nil {
-			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the preserved gate head could not be read; no files or refs were changed")
+	}
+	if capability.preserved != run.HeadSHA {
+		if err := s.DB.UpdateRunHeadSHA(run.ID, capability.preserved); err != nil {
+			return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the verified gate head could not be preserved; no files or refs were changed")
 		}
-		if gateHead != run.HeadSHA {
-			if !isAncestor(ctx, s.GateDir, run.HeadSHA, gateHead) {
-				return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the terminal run has no verified head and the gate head does not descend from the recorded head; no files or refs were changed")
-			}
-			if err := s.DB.UpdateRunHeadSHA(run.ID, gateHead); err != nil {
-				return blockedPlan(state, StatePipelineOwned, "blocked_recover_unverified_head", "the verified gate head could not be preserved; no files or refs were changed")
-			}
-			run.HeadSHA = gateHead
-			state.Pipeline.CurrentHead = gateHead
-			state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, gateHead)
-		}
+		run.HeadSHA = capability.preserved
+		state.Pipeline.CurrentHead = capability.preserved
+		state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, capability.preserved)
 	}
 
 	wd := s.workDir()
 	branch := state.Local.Branch
 	local := state.Local.Head
-	preserved := run.HeadSHA
+	preserved := capability.preserved
 	anchorRef := recoverAnchorRef(run.ID)
 	localAnchor := recoverLocalAnchorRef(run.ID)
 
@@ -564,7 +675,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return blocked
 	}
 
-	if objectExists(ctx, wd, preserved) && (local == preserved || isAncestor(ctx, wd, preserved, local)) {
+	if capability.authority == recoveryAuthorityLocalBranch {
 		if blocked, ok := s.anchorReachablePreserved(ctx, state, anchorRef, preserved); !ok {
 			return blocked
 		}
@@ -572,24 +683,8 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 
 	gateDir := strings.TrimSpace(s.GateDir)
-	if gateDir == "" {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", "no local gate is configured for this repository, so the preserved pipeline head cannot be verified; no files or refs were changed")
-	}
-	gateHead, err := git.Run(ctx, gateDir, "rev-parse", "refs/heads/"+branch+"^{commit}")
-	if err != nil {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_unavailable", fmt.Sprintf("the local gate no longer has branch %s, so the preserved pipeline head %s cannot be verified; no files or refs were changed", branch, preserved))
-	}
-	anchored := false
-	if existing, anchorErr := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); anchorErr == nil && existing == preserved {
-		anchored = true
-	}
-	// A keep-local recovery that reset the gate but crashed before stamping
-	// custody resumes here: the gate already equals the kept local head and
-	// the preserved head is already anchored.
-	resumedKeepLocal := keepLocal && anchored && gateHead == local
-	if gateHead != preserved && !resumedKeepLocal {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_gate_diverged", fmt.Sprintf("the gate branch is at %s, not the preserved pipeline head %s recorded for this run; no files or refs were changed", gateHead, preserved))
-	}
+	gateHead := capability.gateHead
+	anchored := capability.anchored
 	if !anchored {
 		if fetchErr := git.FetchRemoteBranchToPrivateRef(ctx, wd, gateDir, branch, anchorRef); fetchErr != nil {
 			return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be fetched from the local gate; no files or refs were changed")
@@ -1323,22 +1418,35 @@ func terminalRunStatus(status types.RunStatus) bool {
 // classifyPipelineOwned reports a run that still holds branch custody without
 // a successful push binding. While the run is active the block is absolute:
 // the pipeline will publish or keep moving the head, so the worktree must
-// wait. Once a run that MOVED the head is TERMINAL nothing will ever publish
-// that head - the branch would be stranded in custody forever - so the same
-// state becomes recoverable and points at the guarded custody-return action
-// (issue: v1.38.1 dogfood, cancelled pre-push run with pipeline commits). A
-// terminal run that never moved the head is classified user_owned instead:
-// its terminal outcome releases ownership. The relation between the local
-// head and the run's recorded head is exposed whenever it is computable
-// locally, so the operator sees the exact ownership facts before acting.
+// wait. A moved terminal head offers guarded custody return only when the exact
+// authority recovery consumes is present now (recoveryCapability). Historical
+// unanchored rows instead offer a rerun from the retained gate branch, without
+// claiming that rerun recovers the recorded commit. A terminal run that never
+// moved the head is classified user_owned instead: its terminal outcome
+// releases ownership. The relation between the local head and the run's
+// recorded head is exposed whenever it is computable locally, so the operator
+// sees the exact ownership facts before acting.
 func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *db.Run, activeMessage string) {
 	state.State = StatePipelineOwned
 	state.Pipeline.Phase = "pre_push"
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, run.HeadSHA)
 	if terminalRunStatus(run.Status) {
-		state.Safety = "blocked_pipeline_owned_recoverable"
-		state.Error = "the run finished " + string(run.Status) + " with unpublished pipeline commits preserved in the local gate; recover custody before any local follow-up commit"
-		state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"}
+		capability := s.recoveryCapability(ctx, *state, run, false)
+		if capability.recoverable() {
+			state.Safety = "blocked_pipeline_owned_recoverable"
+			state.Error = "the run finished " + string(run.Status) + " with unpublished pipeline commits durably preserved for guarded recovery; recover custody before any local follow-up commit"
+			state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"}
+			return
+		}
+		if capability.failure == recoveryCapabilityGateDiverged || (capability.failure == recoveryCapabilityUnverifiedHead && capability.gateHead != "") {
+			state.Safety = "blocked_recover_unanchored"
+			state.Error = "the run finished " + string(run.Status) + " after moving the pipeline head, but the recorded head is not the exact local gate branch head; `no-mistakes rerun` starts a new validation from the retained gate branch and may replay the logical change, but it does not recover the recorded commit"
+			state.NextAction = &NextAction{Code: "rerun", Command: "no-mistakes rerun"}
+			return
+		}
+		state.Safety = "blocked_recover_gate_unavailable"
+		state.Error = "the run finished " + string(run.Status) + " after moving the pipeline head, but no exact local gate branch authority is available to verify it; recovery and rerun remain blocked until the gate branch is available"
+		state.NextAction = nil
 		return
 	}
 	state.Safety = "blocked_pipeline_owned"

@@ -505,10 +505,37 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 		return nil, fmt.Errorf("resolve head after rebase: %w", err)
 	}
 	if headSHA != "" && headSHA != sctx.Run.HeadSHA {
-		sctx.Run.HeadSHA = headSHA
+		previousHead := strings.TrimSpace(sctx.Run.HeadSHA)
+		branchRef := normalizedBranchRef(sctx.Run.Branch)
+		if previousHead == "" || strings.TrimSpace(sctx.Run.Branch) == "" {
+			return nil, fmt.Errorf("preserve rebased head: recorded branch or head is empty")
+		}
+		// The managed worktree is detached, so HEAD alone stops preserving the
+		// rebased commit when manager cleanup removes the worktree. Publish the
+		// rewritten head to the shared gate branch first, under a compare-and-swap
+		// against the head this run started from. A concurrent gate push therefore
+		// wins instead of being overwritten, and an unanchored SHA is never written
+		// through this normal run-state publication path.
+		if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", branchRef, headSHA, previousHead); err != nil {
+			// Attached test/worktree callers have already moved their checked-out
+			// branch as part of git rebase. Treat exact equality as idempotent, but
+			// reject every other failed CAS so concurrent movement still wins.
+			current, resolveErr := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", branchRef+"^{commit}")
+			if resolveErr != nil || strings.TrimSpace(current) != headSHA {
+				return nil, fmt.Errorf("preserve rebased head at %s: %w", branchRef, err)
+			}
+		}
+		preserved, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", branchRef+"^{commit}")
+		if err != nil {
+			return nil, fmt.Errorf("verify rebased head at %s: %w", branchRef, err)
+		}
+		if strings.TrimSpace(preserved) != headSHA {
+			return nil, fmt.Errorf("verify rebased head at %s: resolved %s, want %s", branchRef, strings.TrimSpace(preserved), headSHA)
+		}
 		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
 			return nil, err
 		}
+		sctx.Run.HeadSHA = headSHA
 		sctx.Log(fmt.Sprintf("updated head SHA to %s", shortSHA(headSHA)))
 	}
 
