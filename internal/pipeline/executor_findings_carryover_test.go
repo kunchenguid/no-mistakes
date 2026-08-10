@@ -50,7 +50,8 @@ func TestExecutor_UnresolvedAskUserFindingsSurviveAnEmptyReReviewRound(t *testin
 
 	callCount := 0
 	step := &adaptiveCallStep{
-		name: types.StepReview,
+		name:                 types.StepReview,
+		scopeLimitedFindings: true,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
 			if callCount == 1 {
@@ -140,7 +141,8 @@ func TestExecutor_CarriedForwardFindingsSurviveIDCollisionWithFreshRoundOutput(t
 
 	callCount := 0
 	step := &adaptiveCallStep{
-		name: types.StepReview,
+		name:                 types.StepReview,
+		scopeLimitedFindings: true,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
 			if callCount == 1 {
@@ -227,7 +229,8 @@ func TestExecutor_UnresolvedFindingsSurviveAFixResponseThatSelectsNoFindings(t *
 
 	callCount := 0
 	step := &adaptiveCallStep{
-		name: types.StepReview,
+		name:                 types.StepReview,
+		scopeLimitedFindings: true,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
 			if callCount == 1 {
@@ -301,7 +304,8 @@ func TestExecutor_CarriedFindingsDoNotRepublishAStaleSummaryCount(t *testing.T) 
 
 	callCount := 0
 	step := &adaptiveCallStep{
-		name: types.StepReview,
+		name:                 types.StepReview,
+		scopeLimitedFindings: true,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
 			if callCount == 1 {
@@ -377,6 +381,150 @@ func leadingCount(summary string) (int, bool) {
 	return n, true
 }
 
+// TestExecutor_StepWithCompleteRoundsDoesNotCarryStaleFindings pins the other
+// half of the scoping rule. A step that does not declare its rounds can be
+// scope limited (CI, for example, re-polls the live check rollup every round)
+// is asserting that a fresh round is a complete current assessment. Carrying
+// there would re-park the operator on state the pipeline can currently
+// disprove - "CI check failing" while the forge reports it green.
+func TestExecutor_StepWithCompleteRoundsDoesNotCarryStaleFindings(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	round1Findings := `{"findings":[
+		{"id":"ci-1","severity":"error","description":"CI check failing: build","action":"ask-user"},
+		{"id":"ci-2","severity":"error","description":"CI check failing: lint","action":"ask-user"}
+	],"summary":"2 findings"}`
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepCI,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			if callCount == 1 {
+				return &StepOutcome{NeedsApproval: true, Findings: round1Findings}, nil
+			}
+			// A complete fresh re-observation: everything is green now.
+			return &StepOutcome{}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	waitForStepStatus(t, database, run.ID, types.StepCI, types.StepStatusAwaitingApproval)
+	// One change fixed both checks, so the operator names only ci-1.
+	if err := exec.Respond(types.StepCI, types.ActionFix, []string{"ci-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the step re-parked on ci-2 even though its own fresh round observed everything green")
+	}
+
+	dbSteps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbSteps[0].Status != types.StepStatusCompleted {
+		t.Fatalf("step status = %s, want completed", dbSteps[0].Status)
+	}
+	if dbSteps[0].FindingsJSON != nil {
+		t.Fatalf("a complete-assessment round reported nothing, so nothing may remain outstanding; got %q", *dbSteps[0].FindingsJSON)
+	}
+}
+
+// TestExecutor_CarriedFindingKeepsItsIDWhenTheRestatementMovesLine walks the
+// executor path the identity rule protects: the agent re-reports an
+// outstanding defect at its new line while also reporting a genuinely new
+// one, and the new finding's positional ID collides with the carried one.
+func TestExecutor_CarriedFindingKeepsItsIDWhenTheRestatementMovesLine(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	round1Findings := `{"findings":[
+		{"id":"review-1","severity":"error","file":"a.go","line":10,"description":"bug A","action":"ask-user"},
+		{"id":"review-2","severity":"warning","file":"c.go","line":1,"description":"typo","action":"auto-fix"}
+	],"summary":"2 findings"}`
+
+	// Round 2 reports a brand-new finding first (so it normalizes to
+	// "review-1") and restates bug A at its shifted line.
+	round2Findings := `{"findings":[
+		{"severity":"warning","file":"b.go","line":5,"description":"bug C","action":"ask-user"},
+		{"severity":"error","file":"a.go","line":12,"description":"bug A","action":"ask-user"}
+	],"summary":"2 findings"}`
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name:                 types.StepReview,
+		scopeLimitedFindings: true,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			if callCount == 1 {
+				return &StepOutcome{NeedsApproval: true, Findings: round1Findings}, nil
+			}
+			return &StepOutcome{Findings: round2Findings}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-2"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+
+	dbSteps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbSteps[0].FindingsJSON == nil {
+		t.Fatal("expected findings to be persisted")
+	}
+	parsed, err := types.ParseFindingsJSON(*dbSteps[0].FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse findings: %v", err)
+	}
+	byDescription := map[string]string{}
+	for _, item := range parsed.Items {
+		if prior, ok := byDescription[item.Description]; ok {
+			t.Fatalf("two findings share description %q (ids %q, %q)", item.Description, prior, item.ID)
+		}
+		byDescription[item.Description] = item.ID
+	}
+	if byDescription["bug A"] != "review-1" {
+		t.Errorf("bug A was shown to the operator as review-1 and is still outstanding; it is now %q, so a respond naming review-1 would dispatch %q instead", byDescription["bug A"], "bug C")
+	}
+	if byDescription["bug C"] == "review-1" {
+		t.Errorf("the brand-new finding inherited the carried identity: %#v", byDescription)
+	}
+
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+}
+
 // TestExecutor_ResumeCarriesUnselectedFindingsAcrossADaemonRestart covers the
 // recovery path's own carry-forward. A daemon restart mid-gate must not
 // reopen the hole the in-loop path closes: the parked step's findings are the
@@ -416,7 +564,8 @@ func TestExecutor_ResumeCarriesUnselectedFindingsAcrossADaemonRestart(t *testing
 	}
 
 	step := &adaptiveCallStep{
-		name: types.StepReview,
+		name:                 types.StepReview,
+		scopeLimitedFindings: true,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			// The resumed round is scoped to the fix diff and finds nothing
 			// new in it.
@@ -494,7 +643,8 @@ func TestExecutor_AutoFixDoesNotSweepUpAFindingTheOperatorLeftUnselected(t *test
 	var dispatched []string
 	callCount := 0
 	step := &adaptiveCallStep{
-		name: types.StepReview,
+		name:                 types.StepReview,
+		scopeLimitedFindings: true,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
 			switch callCount {
@@ -572,7 +722,8 @@ func TestExecutor_CarriedRoundsKeepTestEvidenceInTheStepFindings(t *testing.T) {
 
 	callCount := 0
 	step := &adaptiveCallStep{
-		name: types.StepTest,
+		name:                 types.StepTest,
+		scopeLimitedFindings: true,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
 			if callCount == 1 {
@@ -645,7 +796,8 @@ func TestExecutor_StripsFabricatedUserAcceptanceRationale(t *testing.T) {
 
 	callCount := 0
 	step := &adaptiveCallStep{
-		name: types.StepReview,
+		name:                 types.StepReview,
+		scopeLimitedFindings: true,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
 			if callCount == 1 {

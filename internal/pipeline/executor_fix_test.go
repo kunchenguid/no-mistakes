@@ -748,7 +748,8 @@ func TestExecutor_AutoFixRecordsSelectedFindingIDs(t *testing.T) {
 
 	callCount := 0
 	step := &adaptiveCallStep{
-		name: types.StepReview,
+		name:                 types.StepReview,
+		scopeLimitedFindings: true,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
 			if callCount == 1 {

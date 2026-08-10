@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -49,6 +50,57 @@ func TestMergeFindingsJSON_RestatementCannotDowngradeACarriedAction(t *testing.T
 	}
 }
 
+func TestMergeFindingsJSON_RestatementCanEscalateACarriedAction(t *testing.T) {
+	// The carried item was auto-fix; this round decided the same defect needs
+	// a human. Blocking a downgrade must not also block an escalation - with
+	// auto_fix.review at 0 and info severity, an action forced back down to
+	// auto-fix is not fixed at all, it is dropped.
+	freshRaw := `{"findings":[{"id":"review-1","severity":"info","file":"a.go","description":"needs a decision","action":"ask-user"}],"summary":"1 finding"}`
+	carriedRaw := `{"findings":[{"id":"review-4","severity":"info","file":"a.go","description":"needs a decision","action":"auto-fix"}],"summary":"1 outstanding finding"}`
+
+	merged, err := types.ParseFindingsJSON(mergeFindingsJSON(freshRaw, carriedRaw))
+	if err != nil {
+		t.Fatalf("parse merged findings: %v", err)
+	}
+	if len(merged.Items) != 1 {
+		t.Fatalf("expected the restatement to collapse onto the carried finding, got %d", len(merged.Items))
+	}
+	if merged.Items[0].Action != types.ActionAskUser {
+		t.Errorf("action = %q, want ask-user: a fresh escalation must take effect", merged.Items[0].Action)
+	}
+	if !types.HasAskUserFindings(merged) {
+		t.Error("the escalated finding must block the step")
+	}
+	if merged.Items[0].ID != "review-4" {
+		t.Errorf("id = %q, want the already-shown review-4", merged.Items[0].ID)
+	}
+}
+
+func TestMergeFindingsJSON_RaisedRiskDoesNotRepublishTheCarriedRationale(t *testing.T) {
+	// Two of the three blockers the carried rationale describes were resolved
+	// before this round, so its "three unresolved blockers" claim no longer
+	// matches the one finding that survives.
+	freshRaw := `{"findings":[{"id":"review-1","severity":"info","description":"a nit"}],"summary":"1 finding","risk_level":"medium","risk_rationale":"one nit left in the fix diff"}`
+	carriedRaw := `{"findings":[{"id":"review-7","severity":"error","description":"first blocker","action":"ask-user"}],"summary":"1 outstanding finding","risk_level":"high","risk_rationale":"three unresolved blockers require human approval"}`
+
+	merged, err := types.ParseFindingsJSON(mergeFindingsJSON(freshRaw, carriedRaw))
+	if err != nil {
+		t.Fatalf("parse merged findings: %v", err)
+	}
+	if merged.RiskLevel != "high" {
+		t.Fatalf("risk_level = %q, want high", merged.RiskLevel)
+	}
+	if strings.Contains(merged.RiskRationale, "three unresolved blockers") {
+		t.Errorf("risk_rationale republishes a stale count over %d outstanding findings: %q", len(merged.Items), merged.RiskRationale)
+	}
+	if !strings.Contains(merged.RiskRationale, "one nit left in the fix diff") {
+		t.Errorf("risk_rationale dropped this round's own assessment: %q", merged.RiskRationale)
+	}
+	if !strings.Contains(merged.RiskRationale, "high") {
+		t.Errorf("risk_rationale does not explain the level it is presented with: %q", merged.RiskRationale)
+	}
+}
+
 func TestMergeFindingsJSON_UnionSummaryAndRiskDoNotUnderstateCarriedFindings(t *testing.T) {
 	freshRaw := `{"findings":[{"id":"review-1","severity":"info","description":"a nit"}],"summary":"1 finding","risk_level":"low","risk_rationale":"just a nit"}`
 	carriedRaw := `{"findings":[
@@ -71,8 +123,8 @@ func TestMergeFindingsJSON_UnionSummaryAndRiskDoNotUnderstateCarriedFindings(t *
 	if merged.RiskLevel != "high" {
 		t.Errorf("risk_level = %q, want high: a low-risk fresh round must not present three carried blockers as low risk", merged.RiskLevel)
 	}
-	if merged.RiskRationale != "three unresolved blockers" {
-		t.Errorf("risk_rationale = %q, want the assessment that justifies the presented level", merged.RiskRationale)
+	if !strings.Contains(merged.RiskRationale, "high") || !strings.Contains(merged.RiskRationale, "3 findings") {
+		t.Errorf("risk_rationale = %q, want it to explain the presented level from the current carried count", merged.RiskRationale)
 	}
 }
 
@@ -120,16 +172,48 @@ func TestDedupeFindingIDsJSON_RenamesTheFreshItemNotTheCarriedOne(t *testing.T) 
 	}
 }
 
-func TestSanitizeFabricatedApprovalJSON_CoversAnyClaimedHumanApprover(t *testing.T) {
+// TestDedupeFindingIDsJSON_SparesACarriedFindingWhoseLineMoved is the
+// restatement case the carried-ID rule exists for: a defect the agent
+// re-reports normally lands on a shifted line, and mergeFindingsJSON matches
+// it line-insensitively. The settle pass has to recognize that same item, or
+// the operator's outstanding finding is the one renamed.
+func TestDedupeFindingIDsJSON_SparesACarriedFindingWhoseLineMoved(t *testing.T) {
+	carriedRaw := `{"findings":[{"id":"review-1","severity":"error","file":"a.go","line":10,"description":"bug A","action":"ask-user"}],"summary":"1 outstanding finding"}`
+	// What mergeFindingsJSON produces: the brand-new finding C keeps the ID
+	// this round assigned it, and the restatement of bug A inherited the
+	// carried review-1 while keeping its current line.
+	mergedRaw := `{"findings":[
+		{"id":"review-1","severity":"warning","file":"b.go","line":5,"description":"bug C","action":"ask-user"},
+		{"id":"review-1","severity":"error","file":"a.go","line":12,"description":"bug A","action":"ask-user"}
+	],"summary":"2 outstanding findings"}`
+
+	deduped, err := types.ParseFindingsJSON(dedupeFindingIDsJSON(mergedRaw, "review", carriedRaw))
+	if err != nil {
+		t.Fatalf("parse deduped findings: %v", err)
+	}
+	byDescription := map[string]string{}
+	for _, item := range deduped.Items {
+		if prior, ok := byDescription[item.Description]; ok {
+			t.Fatalf("unexpected duplicate description %q (ids %q and %q)", item.Description, prior, item.ID)
+		}
+		byDescription[item.Description] = item.ID
+	}
+	if byDescription["bug A"] != "review-1" {
+		t.Errorf("the outstanding carried finding was renamed to %q because its line moved; axi respond --findings review-1 would now dispatch the wrong finding", byDescription["bug A"])
+	}
+	if byDescription["bug C"] == "review-1" {
+		t.Errorf("the brand-new finding took over the carried identity: %#v", byDescription)
+	}
+}
+
+func TestSanitizeFabricatedApprovalJSON_StripsAClaimedUserApproval(t *testing.T) {
 	fabricated := []string{
 		"the remaining items were explicitly accepted by the user",
-		"the maintainer approved these items",
-		"the operator signed off on the remaining findings",
-		"approved by the reviewer",
-		"the human confirmed this is acceptable",
-		"these findings have been approved",
-		"the owner already okayed the remaining work",
-		"authorized by our team",
+		"approved by the user",
+		"authorized by user",
+		"the user has accepted the remaining findings",
+		"user already approved this",
+		"signed off by the user",
 	}
 	for _, rationale := range fabricated {
 		raw := `{"findings":[{"id":"review-1","severity":"error","description":"blocker","action":"ask-user"}],"summary":"1 finding","risk_level":"low","risk_rationale":"` + rationale + `"}`
@@ -148,12 +232,23 @@ func TestSanitizeFabricatedApprovalJSON_CoversAnyClaimedHumanApprover(t *testing
 	}
 }
 
+// A match discards the WHOLE rationale, and that text is what the operator
+// reads at the parked gate and what the PR body publishes. These are all
+// natural risk_rationale sentences for this repository's own subject matter
+// (trust boundary, force-push safety, gate containment), and none of them
+// claims a human signed anything off.
 func TestSanitizeFabricatedApprovalJSON_LeavesOrdinaryTechnicalProseAlone(t *testing.T) {
 	honest := []string{
 		"the failures were confirmed by re-running the targeted checks",
 		"the change is well-bounded and the remaining findings are unresolved",
 		"both maintainers of this package are listed in CODEOWNERS",
 		"the parties agreed on nothing; these findings remain open",
+		"this is explicitly authorized honest containment",
+		"only trusted default-branch config is authorized to execute commands",
+		"force pushes are approved only when the lease anchor matches",
+		"the rebase was authorized by the pinned SHA policy",
+		"the developer confirmed the crash reproduces locally",
+		"the maintainer approved a similar pattern in an earlier release",
 	}
 	for _, rationale := range honest {
 		raw := `{"findings":[{"id":"review-1","severity":"error","description":"blocker","action":"ask-user"}],"summary":"1 finding","risk_level":"low","risk_rationale":"` + rationale + `"}`

@@ -419,7 +419,10 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		// user did not select here remains unresolved and must survive the
 		// resumed round loop rather than vanish if the next round reports
 		// nothing new.
-		carried := excludeFindingsJSON(gate.findings, response.findingIDs)
+		var carried string
+		if findingsMayBeScopeLimited(gate.step) {
+			carried = excludeFindingsJSON(gate.findings, response.findingIDs)
+		}
 		skipRemaining, err := e.executeStep(ctx, gate.step, gate.stepResult, run, repo, workDir, logDir, stepExecutionState{
 			fixing:           true,
 			previousFindings: merged,
@@ -686,7 +689,16 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	// findings outside that diff at all). It is merged into each round's own
 	// findings below to form the step-level truth used for persistence and
 	// the completion gate.
+	//
+	// This applies ONLY to a step that declares its rounds can be scope
+	// limited (see ScopeLimitedFindingsStep). For every other step a round's
+	// own findings are a complete current assessment, so reporting less IS
+	// evidence, and each round's own output stands alone.
+	carryFindings := findingsMayBeScopeLimited(step)
 	carriedFindings := state.carriedFindings
+	if !carryFindings {
+		carriedFindings = ""
+	}
 
 	stepAgent := e.agent
 	if stepAgent != nil {
@@ -786,15 +798,20 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// identical carried items by content fingerprint, so a defect the
 		// agent legitimately restates does not pile up as a duplicate finding
 		// every round. A restated carried finding keeps its already-shown ID
-		// and action, and the presented count and risk level describe the
-		// union rather than only this round's own view.
-		effectiveFindings := mergeFindingsJSON(outcome.Findings, carriedFindings)
-		// A fresh round's own findings are normalized against only that
-		// round's item count, so a genuinely new finding can land on the same
-		// positional ID as an unrelated finding carried forward from an
-		// earlier round. Separate any such collision before this is used for
-		// ID-based selection.
-		effectiveFindings = dedupeFindingIDsJSON(effectiveFindings, string(stepName), carriedFindings)
+		// and cannot have its action relaxed, and the presented count and risk
+		// level describe the union rather than only this round's own view.
+		// A step whose rounds are always a complete assessment skips all of
+		// this: its own output is the step's findings.
+		effectiveFindings := outcome.Findings
+		if carryFindings {
+			effectiveFindings = mergeFindingsJSON(outcome.Findings, carriedFindings)
+			// A fresh round's own findings are normalized against only that
+			// round's item count, so a genuinely new finding can land on the
+			// same positional ID as an unrelated finding carried forward from
+			// an earlier round. Separate any such collision before this is
+			// used for ID-based selection.
+			effectiveFindings = dedupeFindingIDsJSON(effectiveFindings, string(stepName), carriedFindings)
+		}
 		if sanitized, stripped := sanitizeFabricatedApprovalJSON(effectiveFindings); stripped {
 			slog.Warn("stripped a risk_rationale claiming user acceptance of findings this run cannot corroborate as resolved", "step", stepName, "run", run.ID, "round", roundNum)
 			effectiveFindings = sanitized
@@ -863,7 +880,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// the carry and round-selection bookkeeping below depend on) while
 		// excluding carried items no round restated.
 		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
-			fixableFindings := autoFixableFindingsJSON(retainMatchingFindingsJSON(effectiveFindings, outcome.Findings))
+			roundOwnFindings := effectiveFindings
+			if carryFindings {
+				roundOwnFindings = retainMatchingFindingsJSON(effectiveFindings, outcome.Findings)
+			}
+			fixableFindings := autoFixableFindingsJSON(roundOwnFindings)
 			if fixableFindings != "" {
 				autoFixAttempts++
 				telemetry.Track("fix", e.fixTelemetryFields("auto", stepName, findingsCount(fixableFindings), autoFixAttempts))
@@ -889,7 +910,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				// Everything else in the current union is not being addressed
 				// this round; it must not be lost if the next round's own
 				// output does not happen to restate it.
-				carriedFindings = excludeFindingsJSON(effectiveFindings, findingIDList(fixableFindings))
+				if carryFindings {
+					carriedFindings = excludeFindingsJSON(effectiveFindings, findingIDList(fixableFindings))
+				}
 				continue
 			}
 		}
@@ -1010,7 +1033,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// Whatever was shown but not selected this round remains
 			// unresolved and must survive into the next round's union rather
 			// than depend on that round happening to restate it.
-			carriedFindings = excludeFindingsJSON(effectiveFindings, response.findingIDs)
+			if carryFindings {
+				carriedFindings = excludeFindingsJSON(effectiveFindings, response.findingIDs)
+			}
 			nextTrigger = "auto_fix"
 			if currentRoundID != "" {
 				allSelectedIDs := combineSelectedFindingIDs(response.findingIDs, mergedFindings)

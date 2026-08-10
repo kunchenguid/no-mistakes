@@ -153,12 +153,18 @@ func collectEvents(exec *Executor) *eventCollector {
 type adaptiveCallStep struct {
 	name types.StepName
 	fn   func(sctx *StepContext) (*StepOutcome, error)
+	// scopeLimitedFindings mirrors what the real ReviewStep declares: its
+	// rounds can report a narrower slice than an earlier round, so the
+	// executor carries unresolved findings across them. Left false, this fake
+	// behaves like every other step, whose rounds are complete assessments.
+	scopeLimitedFindings bool
 }
 
 func (a *adaptiveCallStep) Name() types.StepName { return a.name }
 func (a *adaptiveCallStep) Execute(sctx *StepContext) (*StepOutcome, error) {
 	return a.fn(sctx)
 }
+func (a *adaptiveCallStep) FindingsMayBeScopeLimited() bool { return a.scopeLimitedFindings }
 
 // waitForStepEvent polls the event collector until an event with the given type and step name appears.
 func waitForStepEvent(t *testing.T, ec *eventCollector, eventType ipc.EventType, stepName types.StepName) *ipc.Event {

@@ -17,6 +17,11 @@ type ReviewStep struct{}
 
 func (s *ReviewStep) Name() types.StepName { return types.StepReview }
 
+// FindingsMayBeScopeLimited implements pipeline.ScopeLimitedFindingsStep. A
+// fix round's rereview is scoped to the fix diff, so it cannot observe
+// findings outside that diff and must not be read as retracting them.
+func (s *ReviewStep) FindingsMayBeScopeLimited() bool { return true }
+
 func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)

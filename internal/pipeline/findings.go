@@ -2,8 +2,10 @@ package pipeline
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -167,6 +169,40 @@ func mergeUnique[T comparable](existing, additional []T) []T {
 	return merged
 }
 
+// stricterFindingAction returns whichever of the two actions blocks harder,
+// on the no-op < auto-fix < ask-user scale. An empty action is ask-user (see
+// types.actionOrDefault), so it can never be relaxed by omission.
+func stricterFindingAction(carried, fresh string) string {
+	if findingActionStrictness(fresh) > findingActionStrictness(carried) {
+		return fresh
+	}
+	return carried
+}
+
+func findingActionStrictness(action string) int {
+	switch action {
+	case types.ActionNoOp:
+		return 1
+	case types.ActionAutoFix:
+		return 2
+	default:
+		return 3
+	}
+}
+
+// raisedRiskRationale explains an elevated level without republishing the
+// carried assessment's prose, which was written about the earlier, larger
+// finding set and can claim a count that no longer holds.
+func raisedRiskRationale(freshRationale, level string, carriedCount int) string {
+	raise := fmt.Sprintf("risk raised to %s: %d %s carried from an earlier round %s unresolved", level, carriedCount,
+		pluralize(carriedCount, "finding", "findings"), pluralize(carriedCount, "remains", "remain"))
+	fresh := strings.TrimSpace(freshRationale)
+	if fresh == "" {
+		return raise
+	}
+	return strings.TrimRight(fresh, ".;") + "; " + raise
+}
+
 func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 	if existingRaw == "" {
 		return additionalRaw
@@ -205,11 +241,12 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 	for _, item := range additional.Items {
 		if index, ok := matchingFindingIndex(item, byKey, byFingerprint, additionalCounts, existingCounts); ok {
 			// This round restated a finding that is already outstanding. The
-			// restatement is the round's own untrusted output, so it may not
-			// change what the operator was already shown: the carried action
-			// and the carried ID both survive, and only an explicit respond
-			// action or a real auto-fix attempt can change either.
-			merged.Items[index].Action = item.Action
+			// restatement is the round's own untrusted output, so it cannot
+			// relax what the operator was already shown: the carried ID
+			// survives, and the action can only move toward the stricter of
+			// the two. A downgrade needs an explicit respond action or a real
+			// auto-fix attempt; a genuine escalation still takes effect.
+			merged.Items[index].Action = stricterFindingAction(item.Action, merged.Items[index].Action)
 			if item.ID != "" {
 				merged.Items[index].ID = item.ID
 			}
@@ -235,7 +272,7 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 		merged.Summary = types.SummarizeOutstandingFindings(len(merged.Items))
 		if raised := types.RiskLevelAtLeast(existing.RiskLevel, additional.RiskLevel); raised != existing.RiskLevel {
 			merged.RiskLevel = raised
-			merged.RiskRationale = additional.RiskRationale
+			merged.RiskRationale = raisedRiskRationale(existing.RiskRationale, raised, carried)
 		}
 	}
 	mergedRaw, err := types.MarshalFindingsJSON(merged)
@@ -277,7 +314,7 @@ func dedupeFindingIDsJSON(raw, prefix, carriedRaw string) string {
 		if id == "" || seen[id] {
 			continue
 		}
-		if key, ok := carried[id]; !ok || key != findingKey(findings.Items[i]) {
+		if fingerprint, ok := carried[id]; !ok || fingerprint != findingFingerprint(findings.Items[i]) {
 			continue
 		}
 		seen[id] = true
@@ -315,9 +352,12 @@ func dedupeFindingIDsJSON(raw, prefix, carriedRaw string) string {
 	return encoded
 }
 
-// carriedFindingIdentities maps each carried finding's ID to its content key,
-// so a payload item can be recognized as that exact carried finding rather
-// than merely as something that happens to share its ID.
+// carriedFindingIdentities maps each carried finding's ID to its content
+// fingerprint, so a payload item can be recognized as that exact carried
+// finding rather than merely as something that happens to share its ID. The
+// fingerprint ignores Line for the same reason mergeFindingsJSON's match
+// does: a restatement of the same defect normally reports a shifted line, and
+// the merged item keeps the fresh line while inheriting the carried ID.
 func carriedFindingIdentities(raw string) map[string]types.Finding {
 	if raw == "" {
 		return nil
@@ -334,7 +374,7 @@ func carriedFindingIdentities(raw string) map[string]types.Finding {
 		if _, ok := identities[item.ID]; ok {
 			continue
 		}
-		identities[item.ID] = findingKey(item)
+		identities[item.ID] = findingFingerprint(item)
 	}
 	return identities
 }
@@ -522,30 +562,14 @@ func filterFindingsJSON(raw string, ids []string) string {
 // such claim surviving alongside findings this run cannot corroborate as
 // resolved is fabricated by construction and must not reach storage or
 // display untouched.
-const (
-	// approvalVerb is the full vocabulary, safe to require next to an
-	// explicitly named human role.
-	approvalVerb = `(?:accepted|approved|authorized|authorised|confirmed|agreed|signed[- ]off|sign[- ]off|greenlit|green-lit|ok'd|okayed|consented)`
-	// agentlessApprovalVerb drops the verbs that carry an ordinary technical
-	// meaning ("the failure was confirmed", "the parties agreed"), because
-	// this branch matches with no actor named at all.
-	agentlessApprovalVerb = `(?:accepted|approved|authorized|authorised|signed[- ]off|greenlit|green-lit|ok'd|okayed|consented)`
-	// humanRole is any way a rationale can name the person whose approval it
-	// is claiming. AGENTS.md documents this control as covering a claimed
-	// human sign-off, not the literal noun "user".
-	humanRole = `(?:user|human|operator|maintainer|reviewer|developer|author|owner|approver|team|person)s?`
-	// approvalDeterminer keeps "approved by the maintainer" and "approved by
-	// our reviewer" on the same footing.
-	approvalDeterminer = `(?:the\s+|a\s+|an\s+|our\s+|their\s+|his\s+|her\s+|its\s+|this\s+)?`
-	// approvalAdverb absorbs the hedges an agent tends to write between the
-	// actor and the verb.
-	approvalAdverb = `(?:has\s+|have\s+|had\s+|already\s+|explicitly\s+|since\s+|then\s+|subsequently\s+|expressly\s+)*`
-)
-
-var unauthorizedApprovalClaim = regexp.MustCompile(`(?i)` +
-	approvalVerb + `\s+(?:by|from|per|with)\s+` + approvalDeterminer + humanRole +
-	`|` + approvalDeterminer + humanRole + `\s+` + approvalAdverb + approvalVerb +
-	`|(?:was|were|is|are|has\s+been|have\s+been|had\s+been)\s+(?:already\s+|explicitly\s+|expressly\s+)?` + agentlessApprovalVerb)
+// The actor must be the literal "user". Widening this to other human-role
+// nouns or to an agentless passive matched ordinary domain prose instead -
+// "is authorized to execute commands", "force pushes are approved only when
+// the lease anchor matches", "the developer confirmed the crash reproduces" -
+// and a match discards the WHOLE rationale, which is then both what the
+// operator reads at the parked gate and what the PR body publishes. The
+// demonstrated fabrication names the user, so the pattern stays there.
+var unauthorizedApprovalClaim = regexp.MustCompile(`(?i)(accepted|approved|authorized|authorised|confirmed|agreed|signed[- ]off|sign[- ]off|greenlit|green-lit|ok'd|okayed)\s+(by|from|per)\s+(the\s+)?user|user\s+(has\s+|already\s+)?(accepted|approved|authorized|authorised|confirmed|agreed|signed[- ]off|consented)`)
 
 const fabricatedApprovalNotice = "risk rationale withheld: it asserted a user acceptance of findings that remain unresolved, with no corresponding axi respond action on record"
 
