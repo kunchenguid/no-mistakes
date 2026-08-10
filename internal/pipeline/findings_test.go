@@ -23,6 +23,146 @@ func TestMergeFindingsJSON_KeepsDistinctFindingsWithSameAutoID(t *testing.T) {
 	}
 }
 
+func TestMergeFindingsJSON_RestatementCannotDowngradeACarriedAction(t *testing.T) {
+	// The fresh round restates the carried finding's content verbatim but
+	// calls it auto-fix. Only a respond action can change what the operator
+	// was shown, so the carried ask-user must survive - otherwise the step
+	// completes with an unresolved blocker silently reclassified.
+	freshRaw := `{"findings":[{"id":"review-1","severity":"error","file":"a.go","description":"copy is dishonest","action":"auto-fix"}],"summary":"1 finding"}`
+	carriedRaw := `{"findings":[{"id":"review-3","severity":"error","file":"a.go","description":"copy is dishonest","action":"ask-user"}],"summary":"1 outstanding finding"}`
+
+	merged, err := types.ParseFindingsJSON(mergeFindingsJSON(freshRaw, carriedRaw))
+	if err != nil {
+		t.Fatalf("parse merged findings: %v", err)
+	}
+	if len(merged.Items) != 1 {
+		t.Fatalf("expected the restatement to collapse onto the carried finding, got %d items: %#v", len(merged.Items), merged.Items)
+	}
+	if merged.Items[0].Action != types.ActionAskUser {
+		t.Errorf("action = %q, want ask-user: a round's own restatement must not downgrade a carried finding", merged.Items[0].Action)
+	}
+	if merged.Items[0].ID != "review-3" {
+		t.Errorf("id = %q, want review-3: the operator was shown that id and selects by it", merged.Items[0].ID)
+	}
+	if !types.HasAskUserFindings(merged) {
+		t.Error("the merged payload must still block the step")
+	}
+}
+
+func TestMergeFindingsJSON_UnionSummaryAndRiskDoNotUnderstateCarriedFindings(t *testing.T) {
+	freshRaw := `{"findings":[{"id":"review-1","severity":"info","description":"a nit"}],"summary":"1 finding","risk_level":"low","risk_rationale":"just a nit"}`
+	carriedRaw := `{"findings":[
+		{"id":"review-7","severity":"error","description":"first blocker","action":"ask-user"},
+		{"id":"review-8","severity":"error","description":"second blocker","action":"ask-user"},
+		{"id":"review-9","severity":"error","description":"third blocker","action":"ask-user"}
+	],"summary":"3 outstanding findings","risk_level":"high","risk_rationale":"three unresolved blockers"}`
+
+	merged, err := types.ParseFindingsJSON(mergeFindingsJSON(freshRaw, carriedRaw))
+	if err != nil {
+		t.Fatalf("parse merged findings: %v", err)
+	}
+	if len(merged.Items) != 4 {
+		t.Fatalf("expected the union of 1 fresh and 3 carried findings, got %d", len(merged.Items))
+	}
+	count, ok := leadingCount(merged.Summary)
+	if !ok || count != len(merged.Items) {
+		t.Errorf("summary %q must count the %d findings the gate actually shows", merged.Summary, len(merged.Items))
+	}
+	if merged.RiskLevel != "high" {
+		t.Errorf("risk_level = %q, want high: a low-risk fresh round must not present three carried blockers as low risk", merged.RiskLevel)
+	}
+	if merged.RiskRationale != "three unresolved blockers" {
+		t.Errorf("risk_rationale = %q, want the assessment that justifies the presented level", merged.RiskRationale)
+	}
+}
+
+func TestMergeFindingsJSON_KeepsFreshAssessmentWhenNothingIsCarried(t *testing.T) {
+	freshRaw := `{"findings":[{"id":"review-1","severity":"info","description":"a nit"}],"summary":"1 finding","risk_level":"low","risk_rationale":"just a nit"}`
+	carriedRaw := `{"findings":[{"id":"review-7","severity":"info","description":"a nit"}],"summary":"1 outstanding finding","risk_level":"high","risk_rationale":"stale"}`
+
+	merged, err := types.ParseFindingsJSON(mergeFindingsJSON(freshRaw, carriedRaw))
+	if err != nil {
+		t.Fatalf("parse merged findings: %v", err)
+	}
+	if len(merged.Items) != 1 {
+		t.Fatalf("expected the duplicate to collapse, got %d", len(merged.Items))
+	}
+	if merged.RiskLevel != "high" {
+		t.Errorf("risk_level = %q: the carried finding is still outstanding, so its level still applies", merged.RiskLevel)
+	}
+}
+
+func TestDedupeFindingIDsJSON_RenamesTheFreshItemNotTheCarriedOne(t *testing.T) {
+	carriedRaw := `{"findings":[{"id":"review-1","severity":"error","description":"old carried issue","action":"ask-user"}],"summary":"1 outstanding finding"}`
+	// Both items claim review-1: the fresh one because this round normalized
+	// against its own single-item list.
+	mergedRaw := `{"findings":[
+		{"id":"review-1","severity":"warning","description":"brand new issue","action":"ask-user"},
+		{"id":"review-1","severity":"error","description":"old carried issue","action":"ask-user"}
+	],"summary":"2 outstanding findings"}`
+
+	deduped, err := types.ParseFindingsJSON(dedupeFindingIDsJSON(mergedRaw, "review", carriedRaw))
+	if err != nil {
+		t.Fatalf("parse deduped findings: %v", err)
+	}
+	byDescription := map[string]string{}
+	for _, item := range deduped.Items {
+		if prior, ok := byDescription[item.Description]; ok {
+			t.Fatalf("unexpected duplicate description %q (ids %q and %q)", item.Description, prior, item.ID)
+		}
+		byDescription[item.Description] = item.ID
+	}
+	if byDescription["old carried issue"] != "review-1" {
+		t.Errorf("the already-shown carried finding lost its id (now %q); an axi respond --findings review-1 composed at the last gate would now select something else", byDescription["old carried issue"])
+	}
+	if byDescription["brand new issue"] == "review-1" || byDescription["brand new issue"] == "" {
+		t.Errorf("the newly reported finding should have been renamed, got %q", byDescription["brand new issue"])
+	}
+}
+
+func TestSanitizeFabricatedApprovalJSON_CoversAnyClaimedHumanApprover(t *testing.T) {
+	fabricated := []string{
+		"the remaining items were explicitly accepted by the user",
+		"the maintainer approved these items",
+		"the operator signed off on the remaining findings",
+		"approved by the reviewer",
+		"the human confirmed this is acceptable",
+		"these findings have been approved",
+		"the owner already okayed the remaining work",
+		"authorized by our team",
+	}
+	for _, rationale := range fabricated {
+		raw := `{"findings":[{"id":"review-1","severity":"error","description":"blocker","action":"ask-user"}],"summary":"1 finding","risk_level":"low","risk_rationale":"` + rationale + `"}`
+		sanitized, stripped := sanitizeFabricatedApprovalJSON(raw)
+		if !stripped {
+			t.Errorf("rationale %q claims a human approval this run cannot corroborate and must be stripped", rationale)
+			continue
+		}
+		parsed, err := types.ParseFindingsJSON(sanitized)
+		if err != nil {
+			t.Fatalf("parse sanitized findings: %v", err)
+		}
+		if parsed.RiskRationale == rationale {
+			t.Errorf("rationale %q survived verbatim", rationale)
+		}
+	}
+}
+
+func TestSanitizeFabricatedApprovalJSON_LeavesOrdinaryTechnicalProseAlone(t *testing.T) {
+	honest := []string{
+		"the failures were confirmed by re-running the targeted checks",
+		"the change is well-bounded and the remaining findings are unresolved",
+		"both maintainers of this package are listed in CODEOWNERS",
+		"the parties agreed on nothing; these findings remain open",
+	}
+	for _, rationale := range honest {
+		raw := `{"findings":[{"id":"review-1","severity":"error","description":"blocker","action":"ask-user"}],"summary":"1 finding","risk_level":"low","risk_rationale":"` + rationale + `"}`
+		if _, stripped := sanitizeFabricatedApprovalJSON(raw); stripped {
+			t.Errorf("rationale %q claims no human approval and must survive", rationale)
+		}
+	}
+}
+
 func TestMergeFindingsJSON_UnionsTestEvidenceFromBothSides(t *testing.T) {
 	existingRaw := `{"findings":[{"id":"test-1","severity":"warning","description":"fresh"}],"summary":"1 finding","tested":["login flow"],"testing_summary":"re-ran the fixed check","artifacts":[{"kind":"log","label":"fix round log","path":"/tmp/fix.log"}]}`
 	additionalRaw := `{"findings":[{"id":"test-2","severity":"error","description":"carried"}],"summary":"1 finding","tested":["login flow","signup flow"],"testing_summary":"ran the suite","artifacts":[{"kind":"log","label":"first round log","path":"/tmp/first.log"}]}`
@@ -165,8 +305,14 @@ func TestMergeFindingsJSON_DeduplicatesShiftedUniqueDismissedFinding(t *testing.
 	if len(merged.Items) != 1 {
 		t.Fatalf("expected 1 finding, got %d", len(merged.Items))
 	}
-	if merged.Items[0].ID != "dismissed-1" {
+	// The second argument is the already-shown carried side, so its ID is the
+	// identity that survives a restatement; the surviving item still reports
+	// the fresh side's current line.
+	if merged.Items[0].ID != "dismissed-2" {
 		t.Fatalf("unexpected merged findings: %#v", merged.Items)
+	}
+	if merged.Items[0].Line != 42 {
+		t.Fatalf("expected the fresh side's current line, got %#v", merged.Items[0])
 	}
 }
 

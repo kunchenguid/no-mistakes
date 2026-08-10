@@ -781,17 +781,20 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// above). It is the step-level truth: what gets persisted as the
 		// step's findings, what the completion gate checks for outstanding
 		// ask-user items, and what the operator is shown at the approval gate.
-		// mergeFindingsJSON keeps THIS round's own summary/risk fields (it is
-		// the freshest assessment) while deduplicating identical carried items
-		// by content fingerprint, so a defect the agent legitimately restates
-		// does not pile up as a duplicate finding every round.
+		// mergeFindingsJSON keeps THIS round's own testing summary and risk
+		// rationale (they are the freshest assessment) while deduplicating
+		// identical carried items by content fingerprint, so a defect the
+		// agent legitimately restates does not pile up as a duplicate finding
+		// every round. A restated carried finding keeps its already-shown ID
+		// and action, and the presented count and risk level describe the
+		// union rather than only this round's own view.
 		effectiveFindings := mergeFindingsJSON(outcome.Findings, carriedFindings)
 		// A fresh round's own findings are normalized against only that
 		// round's item count, so a genuinely new finding can land on the same
 		// positional ID as an unrelated finding carried forward from an
 		// earlier round. Separate any such collision before this is used for
 		// ID-based selection.
-		effectiveFindings = dedupeFindingIDsJSON(effectiveFindings, string(stepName))
+		effectiveFindings = dedupeFindingIDsJSON(effectiveFindings, string(stepName), carriedFindings)
 		if sanitized, stripped := sanitizeFabricatedApprovalJSON(effectiveFindings); stripped {
 			slog.Warn("stripped a risk_rationale claiming user acceptance of findings this run cannot corroborate as resolved", "step", stepName, "run", run.ID, "round", roundNum)
 			effectiveFindings = sanitized
@@ -852,8 +855,15 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// Only auto-fix findings whose action is "auto-fix".
 		// This runs before the NeedsApproval check so that all severity
 		// levels (including "info") get a chance at automatic fixing.
+		// Auto-fix eligibility is an offer this round makes about its own
+		// output, not a standing invitation over the carry set: a finding the
+		// operator saw at a gate and deliberately left unselected must not be
+		// swept into the next automatic round. Restricting the union to what
+		// this round itself reported keeps the effectiveFindings IDs (which
+		// the carry and round-selection bookkeeping below depend on) while
+		// excluding carried items no round restated.
 		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
-			fixableFindings := autoFixableFindingsJSON(effectiveFindings)
+			fixableFindings := autoFixableFindingsJSON(retainMatchingFindingsJSON(effectiveFindings, outcome.Findings))
 			if fixableFindings != "" {
 				autoFixAttempts++
 				telemetry.Track("fix", e.fixTelemetryFields("auto", stepName, findingsCount(fixableFindings), autoFixAttempts))

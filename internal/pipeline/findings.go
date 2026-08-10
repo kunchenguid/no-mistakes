@@ -78,6 +78,21 @@ func hasFindingMatch(item types.Finding, exact map[types.Finding]bool, itemCount
 	return itemCounts[fingerprint] == 1 && candidateCounts[fingerprint] == 1
 }
 
+// matchingFindingIndex answers the same question as hasFindingMatch and, when
+// the answer is yes, names which candidate matched so the caller can reconcile
+// the two copies instead of silently keeping one.
+func matchingFindingIndex(item types.Finding, byKey, byFingerprint map[types.Finding]int, itemCounts, candidateCounts map[types.Finding]int) (int, bool) {
+	if index, ok := byKey[findingKey(item)]; ok {
+		return index, true
+	}
+	fingerprint := findingFingerprint(item)
+	if itemCounts[fingerprint] != 1 || candidateCounts[fingerprint] != 1 {
+		return 0, false
+	}
+	index, ok := byFingerprint[fingerprint]
+	return index, ok
+}
+
 func normalizeFindingsJSON(raw string, prefix string) string {
 	if raw == "" {
 		return ""
@@ -171,12 +186,34 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 	existingCounts := countFindingFingerprints(existing.Items)
 	additionalCounts := countFindingFingerprints(additional.Items)
 	merged := types.Findings{Summary: existing.Summary, Tested: mergeUnique(existing.Tested, additional.Tested), TestingSummary: existing.TestingSummary, Artifacts: mergeUnique(existing.Artifacts, additional.Artifacts), RiskLevel: existing.RiskLevel, RiskRationale: existing.RiskRationale, RiskScope: existing.RiskScope}
+	byKey := make(map[types.Finding]int, len(existing.Items))
+	byFingerprint := make(map[types.Finding]int, len(existing.Items))
 	for _, item := range existing.Items {
+		index := len(merged.Items)
 		merged.Items = append(merged.Items, item)
-		seen[findingKey(item)] = true
+		key := findingKey(item)
+		if _, ok := byKey[key]; !ok {
+			byKey[key] = index
+		}
+		fingerprint := findingFingerprint(item)
+		if _, ok := byFingerprint[fingerprint]; !ok {
+			byFingerprint[fingerprint] = index
+		}
+		seen[key] = true
 	}
+	carried := 0
 	for _, item := range additional.Items {
-		if hasFindingMatch(item, seen, additionalCounts, existingCounts) {
+		if index, ok := matchingFindingIndex(item, byKey, byFingerprint, additionalCounts, existingCounts); ok {
+			// This round restated a finding that is already outstanding. The
+			// restatement is the round's own untrusted output, so it may not
+			// change what the operator was already shown: the carried action
+			// and the carried ID both survive, and only an explicit respond
+			// action or a real auto-fix attempt can change either.
+			merged.Items[index].Action = item.Action
+			if item.ID != "" {
+				merged.Items[index].ID = item.ID
+			}
+			carried++
 			continue
 		}
 		key := findingKey(item)
@@ -185,9 +222,21 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 		}
 		merged.Items = append(merged.Items, item)
 		seen[key] = true
+		carried++
 	}
 	if len(merged.Items) == 0 {
 		return ""
+	}
+	if carried > 0 {
+		// The item list is now the union, so the fresh round's own summary and
+		// risk level describe a strictly smaller set than what the gate shows.
+		// Restate the count, and never present a risk level below the one the
+		// still-unresolved carried findings were assessed at.
+		merged.Summary = types.SummarizeOutstandingFindings(len(merged.Items))
+		if raised := types.RiskLevelAtLeast(existing.RiskLevel, additional.RiskLevel); raised != existing.RiskLevel {
+			merged.RiskLevel = raised
+			merged.RiskRationale = additional.RiskRationale
+		}
 	}
 	mergedRaw, err := types.MarshalFindingsJSON(merged)
 	if err != nil {
@@ -207,7 +256,12 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 // mergeFindingsJSON's fingerprint match before this runs; this only
 // separates two DIFFERENT findings that happen to share one ID, which would
 // otherwise make ID-based selection (filter/exclude) silently apply to both.
-func dedupeFindingIDsJSON(raw, prefix string) string {
+//
+// carriedRaw names the findings the operator has already been shown under
+// their current IDs. Those keep their identity and the newly reported item is
+// the one renamed, because an `axi respond --findings <id>` composed from an
+// earlier gate read must keep selecting the finding it named.
+func dedupeFindingIDsJSON(raw, prefix, carriedRaw string) string {
 	if raw == "" {
 		return raw
 	}
@@ -215,10 +269,26 @@ func dedupeFindingIDsJSON(raw, prefix string) string {
 	if err != nil {
 		return raw
 	}
+	carried := carriedFindingIdentities(carriedRaw)
 	seen := make(map[string]bool, len(findings.Items))
+	settled := make([]bool, len(findings.Items))
+	for i := range findings.Items {
+		id := findings.Items[i].ID
+		if id == "" || seen[id] {
+			continue
+		}
+		if key, ok := carried[id]; !ok || key != findingKey(findings.Items[i]) {
+			continue
+		}
+		seen[id] = true
+		settled[i] = true
+	}
 	counter := 0
 	changed := false
 	for i := range findings.Items {
+		if settled[i] {
+			continue
+		}
 		id := findings.Items[i].ID
 		if id != "" && !seen[id] {
 			seen[id] = true
@@ -243,6 +313,30 @@ func dedupeFindingIDsJSON(raw, prefix string) string {
 		return raw
 	}
 	return encoded
+}
+
+// carriedFindingIdentities maps each carried finding's ID to its content key,
+// so a payload item can be recognized as that exact carried finding rather
+// than merely as something that happens to share its ID.
+func carriedFindingIdentities(raw string) map[string]types.Finding {
+	if raw == "" {
+		return nil
+	}
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return nil
+	}
+	identities := make(map[string]types.Finding, len(findings.Items))
+	for _, item := range findings.Items {
+		if item.ID == "" {
+			continue
+		}
+		if _, ok := identities[item.ID]; ok {
+			continue
+		}
+		identities[item.ID] = findingKey(item)
+	}
+	return identities
 }
 
 func removeMatchingFindingsJSON(existingRaw, removeRaw string) string {
@@ -428,7 +522,30 @@ func filterFindingsJSON(raw string, ids []string) string {
 // such claim surviving alongside findings this run cannot corroborate as
 // resolved is fabricated by construction and must not reach storage or
 // display untouched.
-var unauthorizedApprovalClaim = regexp.MustCompile(`(?i)(accepted|approved|authorized|authorised|confirmed|agreed|signed[- ]off|sign[- ]off|greenlit|green-lit|ok'd|okayed)\s+(by|from|per)\s+(the\s+)?user|user\s+(has\s+|already\s+)?(accepted|approved|authorized|authorised|confirmed|agreed|signed[- ]off|consented)`)
+const (
+	// approvalVerb is the full vocabulary, safe to require next to an
+	// explicitly named human role.
+	approvalVerb = `(?:accepted|approved|authorized|authorised|confirmed|agreed|signed[- ]off|sign[- ]off|greenlit|green-lit|ok'd|okayed|consented)`
+	// agentlessApprovalVerb drops the verbs that carry an ordinary technical
+	// meaning ("the failure was confirmed", "the parties agreed"), because
+	// this branch matches with no actor named at all.
+	agentlessApprovalVerb = `(?:accepted|approved|authorized|authorised|signed[- ]off|greenlit|green-lit|ok'd|okayed|consented)`
+	// humanRole is any way a rationale can name the person whose approval it
+	// is claiming. AGENTS.md documents this control as covering a claimed
+	// human sign-off, not the literal noun "user".
+	humanRole = `(?:user|human|operator|maintainer|reviewer|developer|author|owner|approver|team|person)s?`
+	// approvalDeterminer keeps "approved by the maintainer" and "approved by
+	// our reviewer" on the same footing.
+	approvalDeterminer = `(?:the\s+|a\s+|an\s+|our\s+|their\s+|his\s+|her\s+|its\s+|this\s+)?`
+	// approvalAdverb absorbs the hedges an agent tends to write between the
+	// actor and the verb.
+	approvalAdverb = `(?:has\s+|have\s+|had\s+|already\s+|explicitly\s+|since\s+|then\s+|subsequently\s+|expressly\s+)*`
+)
+
+var unauthorizedApprovalClaim = regexp.MustCompile(`(?i)` +
+	approvalVerb + `\s+(?:by|from|per|with)\s+` + approvalDeterminer + humanRole +
+	`|` + approvalDeterminer + humanRole + `\s+` + approvalAdverb + approvalVerb +
+	`|(?:was|were|is|are|has\s+been|have\s+been|had\s+been)\s+(?:already\s+|explicitly\s+|expressly\s+)?` + agentlessApprovalVerb)
 
 const fabricatedApprovalNotice = "risk rationale withheld: it asserted a user acceptance of findings that remain unresolved, with no corresponding axi respond action on record"
 

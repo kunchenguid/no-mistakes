@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -374,6 +375,179 @@ func leadingCount(summary string) (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// TestExecutor_ResumeCarriesUnselectedFindingsAcrossADaemonRestart covers the
+// recovery path's own carry-forward. A daemon restart mid-gate must not
+// reopen the hole the in-loop path closes: the parked step's findings are the
+// union carried into that gate, and whatever the recovery response does not
+// select is still unresolved when the resumed round reports nothing new.
+func TestExecutor_ResumeCarriesUnselectedFindingsAcrossADaemonRestart(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	stepResult, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(stepResult.ID); err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[
+		{"id":"review-1","severity":"warning","description":"selected issue","action":"ask-user"},
+		{"id":"review-2","severity":"error","description":"unselected issue","action":"ask-user"}
+	],"summary":"2 outstanding findings"}`
+	if err := database.SetStepFindings(stepResult.ID, findings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertReviewStepRound(stepResult.ID, 1, "initial", &findings, nil, "1111111111111111111111111111111111111111", 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			// The resumed round is scoped to the fix diff and finds nothing
+			// new in it.
+			return &StepOutcome{}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Resume(context.Background(), run, repo, t.TempDir())
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("recovered gate never accepted a response")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+
+	dbSteps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbSteps[0].FindingsJSON == nil {
+		t.Fatal("expected the recovered step to still carry its unresolved finding")
+	}
+	items := mustParseFindingsWithAction(t, *dbSteps[0].FindingsJSON)
+	byID := map[string]string{}
+	for _, item := range items {
+		byID[item.ID] = item.Action
+	}
+	if byID["review-2"] != "ask-user" {
+		t.Fatalf("review-2 was never named in a respond action, so it must still block after recovery; got %#v", byID)
+	}
+	if _, stillThere := byID["review-1"]; stillThere {
+		t.Errorf("review-1 was selected and fixed; it must not still be outstanding: %#v", byID)
+	}
+
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+}
+
+// TestExecutor_AutoFixDoesNotSweepUpAFindingTheOperatorLeftUnselected pins
+// what carrying a finding forward does NOT authorize. Auto-fix eligibility is
+// an offer a round makes about its own output at the gate where it was shown;
+// once the operator answered that gate without selecting the finding, a later
+// automatic round must not dispatch it anyway.
+func TestExecutor_AutoFixDoesNotSweepUpAFindingTheOperatorLeftUnselected(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	cfg := &config.Config{AutoFix: config.AutoFix{Review: 2}}
+
+	round1Findings := `{"findings":[
+		{"id":"review-1","severity":"error","description":"blocker","action":"ask-user"},
+		{"id":"review-2","severity":"warning","description":"selected nit","action":"auto-fix"},
+		{"id":"review-3","severity":"warning","description":"declined nit","action":"auto-fix"}
+	],"summary":"3 findings"}`
+
+	var dispatched []string
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				return &StepOutcome{NeedsApproval: true, Findings: round1Findings}, nil
+			default:
+				dispatched = append(dispatched, sctx.PreviousFindings)
+				return &StepOutcome{AutoFixable: true}, nil
+			}
+		},
+	}
+
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// review-1 is still outstanding, so the run re-parks rather than
+	// completing; that is the observable point at which any auto-fix dispatch
+	// for round 2 has already happened.
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+
+	for _, payload := range dispatched {
+		if strings.Contains(payload, "declined nit") {
+			t.Fatalf("review-3 was shown at the gate and deliberately left unselected; an auto-fix round must not dispatch it: %s", payload)
+		}
+	}
+
+	dbSteps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbSteps[0].FindingsJSON == nil || !strings.Contains(*dbSteps[0].FindingsJSON, "declined nit") {
+		t.Fatalf("review-3 must remain outstanding at the gate, got %v", dbSteps[0].FindingsJSON)
+	}
+
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
 }
 
 // TestExecutor_CarriedRoundsKeepTestEvidenceInTheStepFindings guards the test
