@@ -793,7 +793,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// ID-based selection.
 		effectiveFindings = dedupeFindingIDsJSON(effectiveFindings, string(stepName))
 		if sanitized, stripped := sanitizeFabricatedApprovalJSON(effectiveFindings); stripped {
-			slog.Warn("stripped a risk_rationale claiming user acceptance of findings this run cannot corroborate as resolved", "step", stepName, "run", run.ID, "round", roundNum+1)
+			slog.Warn("stripped a risk_rationale claiming user acceptance of findings this run cannot corroborate as resolved", "step", stepName, "run", run.ID, "round", roundNum)
 			effectiveFindings = sanitized
 		}
 

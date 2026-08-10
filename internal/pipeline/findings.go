@@ -94,8 +94,15 @@ func normalizeFindingsJSON(raw string, prefix string) string {
 	return normalizedRaw
 }
 
+// excludeFindingsJSON drops the named findings from a payload and returns
+// what remains. An EMPTY id list resolves nothing, so it returns the payload
+// unchanged rather than empty: this is the carry-forward set, and a fix
+// response that selects no findings (a user-added finding on its own, or a
+// bare `axi respond --action fix`) must leave every outstanding finding still
+// outstanding. Only a payload that is itself empty, unparsable, or fully
+// excluded yields "".
 func excludeFindingsJSON(raw string, ids []string) string {
-	if raw == "" || len(ids) == 0 {
+	if raw == "" {
 		return ""
 	}
 	findings, err := types.ParseFindingsJSON(raw)

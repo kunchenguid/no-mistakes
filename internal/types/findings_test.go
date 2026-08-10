@@ -115,6 +115,26 @@ func TestExcludeFindings_KeepsUnselected(t *testing.T) {
 	if excluded.RiskLevel != "medium" {
 		t.Errorf("RiskLevel = %q, want %q", excluded.RiskLevel, "medium")
 	}
+	if excluded.Summary == "3 issues" {
+		t.Errorf("Summary = %q, but only %d of 3 findings remain", excluded.Summary, len(excluded.Items))
+	}
+	if excluded.Summary != summarizeSelectedFindings(len(excluded.Items)) {
+		t.Errorf("Summary = %q, want it restated from the %d surviving items", excluded.Summary, len(excluded.Items))
+	}
+}
+
+func TestExcludeFindings_KeepsSummaryWhenNothingIsDropped(t *testing.T) {
+	f := Findings{
+		Items:   []Finding{{ID: "f1", Severity: "error", Description: "bad"}},
+		Summary: "1 issue",
+	}
+	excluded := ExcludeFindings(f, []string{"other"})
+	if len(excluded.Items) != 1 {
+		t.Fatalf("Items count = %d, want 1", len(excluded.Items))
+	}
+	if excluded.Summary != "1 issue" {
+		t.Errorf("Summary = %q, want the original %q when nothing was excluded", excluded.Summary, "1 issue")
+	}
 }
 
 func TestExcludeFindings_AllExcluded(t *testing.T) {

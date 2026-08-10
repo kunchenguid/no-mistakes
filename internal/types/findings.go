@@ -148,6 +148,10 @@ func FilterFindings(findings Findings, ids []string) Findings {
 }
 
 // ExcludeFindings keeps only findings whose IDs are NOT in the excluded set.
+// Like FilterFindings, it restates the summary from the surviving item count
+// whenever it drops something: the incoming summary counts a set that no
+// longer exists, and republishing it over a smaller set presents a stale
+// count as the current assessment.
 func ExcludeFindings(findings Findings, ids []string) Findings {
 	if len(ids) == 0 {
 		return findings
@@ -161,6 +165,9 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 		if !excluded[item.ID] {
 			result.Items = append(result.Items, item)
 		}
+	}
+	if len(result.Items) != len(findings.Items) {
+		result.Summary = summarizeSelectedFindings(len(result.Items))
 	}
 	return result
 }

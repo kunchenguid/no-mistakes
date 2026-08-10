@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -205,6 +206,174 @@ func TestExecutor_CarriedForwardFindingsSurviveIDCollisionWithFreshRoundOutput(t
 	case <-time.After(5 * time.Second):
 		t.Fatal("executor timed out")
 	}
+}
+
+// TestExecutor_UnresolvedFindingsSurviveAFixResponseThatSelectsNoFindings
+// covers the other fully supported shape of a fix response: one that names no
+// findings at all (`axi respond --action fix` with only an added finding, the
+// TUI's user-added-finding path, or Respond(step, ActionFix, nil)). Nothing
+// was resolved, so nothing may leave the carry set - otherwise the next round
+// reporting nothing new completes the step with the ask-user finding dropped,
+// which is exactly the defect this commit exists to close.
+func TestExecutor_UnresolvedFindingsSurviveAFixResponseThatSelectsNoFindings(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	round1Findings := `{"findings":[
+		{"id":"review-1","severity":"error","description":"copy is dishonest","action":"ask-user"},
+		{"id":"review-2","severity":"warning","description":"typo","action":"ask-user"}
+	],"summary":"2 findings"}`
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			if callCount == 1 {
+				return &StepOutcome{NeedsApproval: true, Findings: round1Findings}, nil
+			}
+			return &StepOutcome{}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepReview, types.ActionFix, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+
+	dbSteps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbSteps[0].FindingsJSON == nil {
+		t.Fatal("expected the step's stored findings to still carry the unresolved ask-user items")
+	}
+	items := mustParseFindingsWithAction(t, *dbSteps[0].FindingsJSON)
+	byID := map[string]string{}
+	for _, it := range items {
+		byID[it.ID] = it.Action
+	}
+	for _, want := range []string{"review-1", "review-2"} {
+		if byID[want] != "ask-user" {
+			t.Errorf("a fix response that selected no findings resolved nothing, so %s must still be outstanding; got action %q", want, byID[want])
+		}
+	}
+
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+}
+
+// TestExecutor_CarriedFindingsDoNotRepublishAStaleSummaryCount pins the
+// operator-facing honesty of the gate: when a round reports nothing of its
+// own, the carried payload becomes the step's presented assessment verbatim.
+// Its summary must count the findings that actually remain, not the larger
+// set an earlier round summarized before some of them were resolved.
+func TestExecutor_CarriedFindingsDoNotRepublishAStaleSummaryCount(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	round1Findings := `{"findings":[
+		{"id":"review-1","severity":"error","description":"copy is dishonest","action":"ask-user"},
+		{"id":"review-2","severity":"warning","description":"typo","action":"auto-fix"},
+		{"id":"review-3","severity":"error","description":"another honesty issue","action":"ask-user"},
+		{"id":"review-4","severity":"error","description":"a third honesty issue","action":"ask-user"},
+		{"id":"review-5","severity":"warning","description":"lint nit","action":"auto-fix"}
+	],"summary":"5 findings"}`
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepReview,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			if callCount == 1 {
+				return &StepOutcome{NeedsApproval: true, Findings: round1Findings}, nil
+			}
+			return &StepOutcome{}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-2", "review-5"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+
+	dbSteps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbSteps[0].FindingsJSON == nil {
+		t.Fatal("expected findings to be persisted")
+	}
+	parsed, err := types.ParseFindingsJSON(*dbSteps[0].FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse findings: %v", err)
+	}
+	if len(parsed.Items) != 3 {
+		t.Fatalf("expected the 3 unresolved findings to remain, got %d", len(parsed.Items))
+	}
+	count, ok := leadingCount(parsed.Summary)
+	if !ok {
+		t.Fatalf("summary %q carries no item count to check", parsed.Summary)
+	}
+	if count != len(parsed.Items) {
+		t.Errorf("summary %q claims %d findings but %d remain outstanding", parsed.Summary, count, len(parsed.Items))
+	}
+
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+}
+
+// leadingCount reads the leading integer of a findings summary (e.g. "3
+// selected findings" -> 3). Reports false when the summary does not start
+// with a number.
+func leadingCount(summary string) (int, bool) {
+	end := 0
+	for end < len(summary) && summary[end] >= '0' && summary[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(summary[:end])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // TestExecutor_StripsFabricatedUserAcceptanceRationale is the DEFECT 1

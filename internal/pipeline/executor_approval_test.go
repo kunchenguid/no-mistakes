@@ -312,7 +312,10 @@ func TestExecutor_TracksApprovalAndUserFixTelemetry(t *testing.T) {
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
 
-	if err := exec.Respond(types.StepReview, types.ActionFix, nil); err != nil {
+	// Both findings are selected explicitly. A fix response that names no
+	// findings dispatches none of them, so nothing would be resolved and the
+	// step would correctly re-park instead of completing.
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1", "review-2"}); err != nil {
 		t.Fatalf("respond error: %v", err)
 	}
 
