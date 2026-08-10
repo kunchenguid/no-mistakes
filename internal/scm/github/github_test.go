@@ -223,10 +223,10 @@ func TestGetChecksFallsBackToStateWhenBucketMissing(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr checks 123 --json name,state,bucket,completedAt,link": {
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
 			stdout: `[{"name":"build","state":"FAILURE","bucket":""},{"name":"tests","state":"PENDING","bucket":""}]` + "\n",
 		},
-	}), nil, "", "")
+	}), nil, "", "test/repo")
 
 	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
 	if err != nil {
@@ -307,6 +307,48 @@ func TestGetChecksTargetsKnownPRByURLWhenNumberMissing(t *testing.T) {
 	}
 }
 
+// GetChecks must carry both identities when the daemon invokes gh outside a
+// repository. A PR selector alone does not give gh repository context.
+func TestGetChecksFromNonGitCWDPassesRepoAndPR(t *testing.T) {
+	t.Parallel()
+
+	var recorded [][]string
+	record := recordingCmdFactory("[]\n", &recorded)
+	nonGitDir := t.TempDir()
+	host := New(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		cmd := record(ctx, name, args...)
+		cmd.Dir = nonGitDir
+		return cmd
+	}, nil, "", "")
+
+	prURL := "https://github.com/test/repo/pull/123"
+	if _, err := host.GetChecks(context.Background(), &scm.PR{URL: prURL}); err != nil {
+		t.Fatalf("GetChecks() error = %v", err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("expected exactly one gh invocation, got %d: %v", len(recorded), recorded)
+	}
+	got := recorded[0]
+	if len(got) < 6 || got[1] != "pr" || got[2] != "checks" {
+		t.Fatalf("unexpected argv: %v", got)
+	}
+	if got[3] != prURL {
+		t.Fatalf("check selector = %q, want %q", got[3], prURL)
+	}
+	if got[4] != "--repo" || got[5] != "test/repo" {
+		t.Fatalf("repository targeting = %v, want --repo test/repo", got[4:])
+	}
+}
+
+func TestGetChecksFailsClosedWithoutRepository(t *testing.T) {
+	t.Parallel()
+
+	host := New(failIfInvokedCmdFactory(t), nil, "", "")
+	if _, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"}); err == nil {
+		t.Fatal("GetChecks() with no repository: expected error, got nil")
+	}
+}
+
 // Compare with the proven explicit-PR invocation: when the number is known it is
 // passed verbatim as the selector, exactly as before.
 func TestGetChecksTargetsKnownPRByNumber(t *testing.T) {
@@ -376,10 +418,10 @@ func TestGetChecksParsesCompletedAt(t *testing.T) {
 	t.Parallel()
 
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr checks 123 --json name,state,bucket,completedAt,link": {
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
 			stdout: `[{"name":"build","state":"FAILURE","bucket":"fail","completedAt":"2026-04-24T04:15:00Z"},{"name":"tests","state":"SUCCESS","bucket":"pass","completedAt":"not-a-time"}]` + "\n",
 		},
-	}), nil, "", "")
+	}), nil, "", "test/repo")
 
 	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
 	if err != nil {
@@ -403,10 +445,10 @@ func TestGetChecksParsesStateAndLink(t *testing.T) {
 
 	const link = "https://github.com/test/repo/actions/runs/900/job/901"
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh pr checks 123 --json name,state,bucket,completedAt,link": {
+		"gh pr checks 123 --repo test/repo --json name,state,bucket,completedAt,link": {
 			stdout: `[{"name":"build","state":"cancelled","bucket":"cancel","link":"` + link + `"}]` + "\n",
 		},
-	}), nil, "", "")
+	}), nil, "", "test/repo")
 
 	checks, err := host.GetChecks(context.Background(), &scm.PR{Number: "123"})
 	if err != nil {

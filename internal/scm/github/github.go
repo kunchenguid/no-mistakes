@@ -121,6 +121,23 @@ func (h *Host) repoArgs() []string {
 	return []string{"--repo", h.repo}
 }
 
+// repoArgsForPR keeps PR commands independent of cwd even when the host was
+// constructed without a repository slug. The PR URL is an authoritative
+// repository identity, so it is safe to derive the --repo value from it. If
+// neither source identifies a repository, it fails closed rather than
+// allowing gh to infer one from cwd.
+func (h *Host) repoArgsForPR(pr *scm.PR) ([]string, error) {
+	if args := h.repoArgs(); len(args) != 0 {
+		return args, nil
+	}
+	if pr != nil {
+		if repo := HostPrefixedSlug(pr.URL); repo != "" {
+			return []string{"--repo", repo}, nil
+		}
+	}
+	return nil, errors.New("no repository known; refusing to run gh with cwd-inferred repository")
+}
+
 // prSelector returns the explicit gh PR selector for pr, preferring the numeric
 // PR number and falling back to the canonical PR URL; both name the exact pull
 // request to gh regardless of the process working directory. It fails closed
@@ -297,7 +314,11 @@ func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {
 	if err != nil {
 		return nil, err
 	}
-	args := append([]string{"pr", "checks", selector}, h.repoArgs()...)
+	repoArgs, err := h.repoArgsForPR(pr)
+	if err != nil {
+		return nil, err
+	}
+	args := append([]string{"pr", "checks", selector}, repoArgs...)
 	args = append(args, "--json", "name,state,bucket,completedAt,link")
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.CombinedOutput()
