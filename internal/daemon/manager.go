@@ -850,6 +850,12 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		trackStartFailure("trusted_config_unreadable")
 		return "", err
 	}
+	if err := m.db.UpdateRunTrustedConfigSHA(run.ID, trustedSHA); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("record trusted config SHA: %s", err))
+		trackStartFailure("record_trusted_config")
+		return "", fmt.Errorf("record trusted config SHA: %w", err)
+	}
+	run.TrustedConfigSHA = &trustedSHA
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, wtDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)

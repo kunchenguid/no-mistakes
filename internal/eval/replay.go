@@ -3,10 +3,12 @@ package eval
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,6 +38,7 @@ type Session struct {
 	Candidate string    `json:"candidate"`
 	Repeats   int       `json:"repeats"`
 	CaseIDs   []string  `json:"case_ids"`
+	Cohort    string    `json:"cohort"`
 }
 
 // Replay runs exactly the captured review pass. It does not start a daemon or
@@ -56,10 +59,14 @@ func Replay(ctx context.Context, store *Store, opts ReplayOptions) (Session, []E
 	if len(cases) == 0 {
 		return Session{}, nil, fmt.Errorf("case set %q is empty", opts.Set)
 	}
+	if _, err := candidateModelArgs(opts.Candidate); err != nil {
+		return Session{}, nil, err
+	}
 	session := Session{ID: newSessionID(), StartedAt: time.Now().UTC(), Set: opts.Set, Candidate: opts.Candidate.String(), Repeats: opts.Repeats}
 	for _, c := range cases {
 		session.CaseIDs = append(session.CaseIDs, c.ID)
 	}
+	session.Cohort = cohortID(session.CaseIDs, session.Repeats)
 	sessionsDir := filepath.Join(store.root, "sessions")
 	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
 		return Session{}, nil, fmt.Errorf("create eval sessions directory: %w", err)
@@ -95,6 +102,7 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 		SessionID: session.ID,
 		CaseID:    c.ID,
 		Candidate: candidate.String(),
+		Cohort:    session.Cohort,
 		Repeat:    repeat,
 		StartedAt: started.Unix(),
 		Status:    "failed",
@@ -112,6 +120,13 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 	}
 	defer os.RemoveAll(root)
 
+	isolatedPaths := paths.WithRoot(filepath.Join(root, "nmhome"))
+	if err := isolatedPaths.EnsureDirs(); err != nil {
+		evaluation.Error = safeurl.RedactText(fmt.Sprintf("create isolated eval state: %v", err))
+		evaluation.CompletedAt = time.Now().Unix()
+		return evaluation
+	}
+
 	workDir, err := restoreCase(ctx, c, root)
 	if err != nil {
 		evaluation.Error = safeurl.RedactText(err.Error())
@@ -127,7 +142,13 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 	cfg.Agent = candidate.Agent
 	cfg.Agents = []types.AgentName{candidate.Agent}
 
-	baseAgent, err := agent.NewWithOptions(candidate.Agent, cfg.AgentPathFor(candidate.Agent), candidateModelArgs(candidate), agent.Options{
+	modelArgs, err := candidateModelArgs(candidate)
+	if err != nil {
+		evaluation.Error = safeurl.RedactText(err.Error())
+		evaluation.CompletedAt = time.Now().Unix()
+		return evaluation
+	}
+	baseAgent, err := agent.NewWithOptions(candidate.Agent, cfg.AgentPathFor(candidate.Agent), modelArgs, agent.Options{
 		ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
 		DisableProjectSettings: cfg.DisableProjectSettings,
 	})
@@ -138,6 +159,14 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 	}
 	defer baseAgent.Close()
 	observed := &observedAgent{inner: agent.WithSteering(baseAgent)}
+
+	replayDB, stepResultID, fixing, previousFindings, err := replayRoundContext(isolatedPaths, c, workDir)
+	if err != nil {
+		evaluation.Error = safeurl.RedactText(err.Error())
+		evaluation.CompletedAt = time.Now().Unix()
+		return evaluation
+	}
+	defer replayDB.Close()
 
 	replayRun := &db.Run{ID: "eval-" + evaluation.ID, Branch: c.Branch, HeadSHA: c.ReviewedHeadSHA, BaseSHA: c.BaseSHA}
 	if c.Intent != "" {
@@ -155,17 +184,23 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 	replayRepo := &db.Repo{ID: "eval", WorkingPath: workDir, DefaultBranch: defaultBranch}
 	step := &steps.ReviewStep{}
 	outcome, err := step.Execute(&pipeline.StepContext{
-		Ctx:          ctx,
-		Run:          replayRun,
-		Repo:         replayRepo,
-		WorkDir:      workDir,
-		Agent:        observed,
-		Config:       cfg,
-		Log:          func(string) {},
-		LogChunk:     func(string) {},
-		LogFile:      func(string) {},
-		UserIntent:   c.Intent,
-		IntentSource: c.IntentSource,
+		Ctx:              ctx,
+		Run:              replayRun,
+		Repo:             replayRepo,
+		WorkDir:          workDir,
+		Agent:            observed,
+		Config:           cfg,
+		DB:               replayDB,
+		StepResultID:     stepResultID,
+		Fixing:           fixing,
+		SkipFixExecution: fixing,
+		PreviousFindings: previousFindings,
+		Env:              []string{"NM_HOME=" + isolatedPaths.Root()},
+		Log:              func(string) {},
+		LogChunk:         func(string) {},
+		LogFile:          func(string) {},
+		UserIntent:       c.Intent,
+		IntentSource:     c.IntentSource,
 	})
 	// Candidate wall time is the actual review invocation, matching the local
 	// agent-invocation metric rather than charging bundle restoration setup.
@@ -178,6 +213,9 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 		evaluation.Model = observed.result.Model
 		if evaluation.Model == "" {
 			evaluation.Model = candidate.Model
+		} else if evaluation.Model != candidate.Model {
+			evaluation.Error = safeurl.RedactText(fmt.Sprintf("candidate served model %q, requested %q", evaluation.Model, candidate.Model))
+			return evaluation
 		}
 		if observed.result.UsageReported {
 			evaluation.TokensReported = true
@@ -202,15 +240,80 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 	return evaluation
 }
 
-func restoreCase(ctx context.Context, c Case, root string) (string, error) {
-	// The temp Paths root is intentionally created even though this MVP invokes
-	// ReviewStep directly. It documents and enforces the same isolated-root
-	// boundary used by the e2e daemon harness, while never setting process-wide
-	// NM_HOME or touching the shared daemon.
-	p := paths.WithRoot(filepath.Join(root, "nmhome"))
-	if err := p.EnsureDirs(); err != nil {
-		return "", fmt.Errorf("create isolated eval state: %w", err)
+func replayRoundContext(p *paths.Paths, c Case, workDir string) (*db.DB, string, bool, string, error) {
+	var selected sourceRound
+	if err := readJSON(filepath.Join(c.Dir, "original", "round.json"), &selected); err != nil {
+		return nil, "", false, "", fmt.Errorf("read captured review round: %w", err)
 	}
+	var rounds []sourceRound
+	if err := readJSON(filepath.Join(c.Dir, "original", "rounds.json"), &rounds); err != nil {
+		return nil, "", false, "", fmt.Errorf("read captured round history: %w", err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		return nil, "", false, "", fmt.Errorf("open isolated replay database: %w", err)
+	}
+	fail := func(err error) (*db.DB, string, bool, string, error) {
+		database.Close()
+		return nil, "", false, "", err
+	}
+	repo, err := database.InsertRepoWithID("eval-repo", workDir, "local://eval", c.DefaultBranch)
+	if err != nil {
+		return fail(fmt.Errorf("create isolated replay repository: %w", err))
+	}
+	run, err := database.InsertRun(repo.ID, c.Branch, c.ReviewedHeadSHA, c.BaseSHA)
+	if err != nil {
+		return fail(fmt.Errorf("create isolated replay run: %w", err))
+	}
+	step, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		return fail(fmt.Errorf("create isolated replay step: %w", err))
+	}
+	var previousFindings string
+	for _, round := range rounds {
+		if round.StepName != "" && round.StepName != string(types.StepReview) {
+			continue
+		}
+		if round.Round >= selected.Round {
+			continue
+		}
+		inserted, err := database.InsertReviewStepRound(step.ID, round.Round, round.Trigger, round.FindingsJSON, round.FixSummary, stringValue(round.ReviewedHeadSHA), round.DurationMS)
+		if err != nil {
+			return fail(fmt.Errorf("restore captured review history: %w", err))
+		}
+		if round.UserFindingsJSON != nil {
+			if err := database.SetStepRoundUserFindings(inserted.ID, round.UserFindingsJSON); err != nil {
+				return fail(fmt.Errorf("restore captured user findings: %w", err))
+			}
+		}
+		if round.SelectedFindingIDs != nil {
+			source := stringValue(round.SelectionSource)
+			if err := database.SetStepRoundSelection(inserted.ID, round.SelectedFindingIDs, source); err != nil {
+				return fail(fmt.Errorf("restore captured gate decision: %w", err))
+			}
+		}
+		if round.Round == selected.Round-1 {
+			previousFindings = stringValue(round.UserFindingsJSON)
+			if previousFindings == "" {
+				previousFindings = stringValue(round.FindingsJSON)
+			}
+		}
+	}
+	fixing := selected.Trigger == "auto_fix" || selected.Trigger == "user_fix"
+	if fixing && previousFindings == "" {
+		return fail(fmt.Errorf("captured fix round %d has no previous findings", selected.Round))
+	}
+	return database, step.ID, fixing, previousFindings, nil
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func restoreCase(ctx context.Context, c Case, root string) (string, error) {
 	gateDir := filepath.Join(root, "gate.git")
 	if err := git.InitBare(ctx, gateDir); err != nil {
 		return "", fmt.Errorf("create isolated eval gate: %w", err)
@@ -250,11 +353,14 @@ func replayConfig(c Case) (*config.Config, error) {
 	return config.Merge(global, repo), nil
 }
 
-func candidateModelArgs(candidate Candidate) []string {
-	if candidate.Agent == types.AgentCodex {
-		return []string{"-m", candidate.Model}
+func candidateModelArgs(candidate Candidate) ([]string, error) {
+	if _, ok := types.ACPTargetFor(candidate.Agent); ok {
+		return nil, fmt.Errorf("candidate agent %q cannot enforce an explicit model", candidate.Agent)
 	}
-	return []string{"--model", candidate.Model}
+	if candidate.Agent == types.AgentCodex {
+		return []string{"-m", candidate.Model}, nil
+	}
+	return []string{"--model", candidate.Model}, nil
 }
 
 type observedAgent struct {
@@ -357,6 +463,13 @@ func candidatePathPart(candidate string) string {
 		return "candidate"
 	}
 	return b.String()
+}
+
+func cohortID(caseIDs []string, repeats int) string {
+	ids := append([]string(nil), caseIDs...)
+	sort.Strings(ids)
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%s", repeats, strings.Join(ids, "\x00"))))
+	return hex.EncodeToString(sum[:8])
 }
 
 func newSessionID() string {

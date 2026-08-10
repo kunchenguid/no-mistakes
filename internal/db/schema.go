@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS runs (
     submitted_head_sha      TEXT,
     no_mistakes_version     TEXT,
     no_mistakes_build_sha   TEXT,
+    trusted_config_sha      TEXT,
     review_approved_head_sha TEXT,
     status                  TEXT NOT NULL DEFAULT 'pending',
     pr_url                  TEXT,
@@ -168,6 +169,7 @@ var migrationStatements = []string{
 	// version and embedded build SHA used by the running binary.
 	`ALTER TABLE runs ADD COLUMN no_mistakes_version TEXT`,
 	`ALTER TABLE runs ADD COLUMN no_mistakes_build_sha TEXT`,
+	`ALTER TABLE runs ADD COLUMN trusted_config_sha TEXT`,
 	// Review authority is nullable and never backfilled. A historical mutable
 	// head_sha cannot prove which exact commit a completed review approved.
 	`ALTER TABLE runs ADD COLUMN review_approved_head_sha TEXT`,

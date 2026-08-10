@@ -40,7 +40,11 @@ func ParseCandidate(raw string) (Candidate, error) {
 	if agentName == "" || model == "" {
 		return Candidate{}, fmt.Errorf("candidate must include both an agent and model")
 	}
-	return Candidate{Agent: types.AgentName(agentName), Model: model}, nil
+	name := types.AgentName(agentName)
+	if _, ok := types.ACPTargetFor(name); ok {
+		return Candidate{}, fmt.Errorf("candidate agent %q cannot enforce an explicit model", name)
+	}
+	return Candidate{Agent: name, Model: model}, nil
 }
 
 // Manifest pins every input needed to recreate a review pass without storing a
@@ -121,6 +125,7 @@ type Evaluation struct {
 	SessionID        string `json:"session_id"`
 	CaseID           string `json:"case_id"`
 	Candidate        string `json:"candidate"`
+	Cohort           string `json:"cohort"`
 	Repeat           int    `json:"repeat"`
 	StartedAt        int64  `json:"started_at"`
 	CompletedAt      int64  `json:"completed_at"`

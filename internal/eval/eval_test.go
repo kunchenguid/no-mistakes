@@ -67,6 +67,44 @@ func TestCaptureCreatesPortableReviewCaseWithoutRecordingRemoteURL(t *testing.T)
 	}
 }
 
+func TestCaptureUsesSourceRunsPinnedTrustedConfiguration(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	gateDir := p.RepoDir(run.RepoID)
+	workDir := filepath.Join(p.Root(), "advance-main")
+	mustGit(t, ctx, p.Root(), "clone", gateDir, workDir)
+	mustGit(t, ctx, workDir, "config", "user.email", "eval@example.test")
+	mustGit(t, ctx, workDir, "config", "user.name", "Eval Test")
+	mustGit(t, ctx, workDir, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(workDir, ".no-mistakes.yaml"), []byte("ignore_patterns: ['advanced-only']\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, ctx, workDir, "add", ".no-mistakes.yaml")
+	mustGit(t, ctx, workDir, "commit", "-m", "advance trusted config")
+	mustGit(t, ctx, workDir, "push", "origin", "main")
+
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 1 || cases[0].TrustedConfigSHA != *run.TrustedConfigSHA {
+		t.Fatalf("trusted config pin = %#v, want %s", cases, *run.TrustedConfigSHA)
+	}
+	repoConfig, err := os.ReadFile(filepath.Join(cases[0].Dir, "config", "repo-config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(repoConfig), "advanced-only") {
+		t.Fatalf("capture used advanced default-branch config: %s", repoConfig)
+	}
+}
+
 func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
@@ -76,7 +114,7 @@ func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 	const reply = `{"type":"assistant","message":{"usage":{"input_tokens":12,"output_tokens":3},"content":[{"type":"text","text":"clean"}]}}
 {"type":"result","subtype":"success","is_error":false,"structured_output":{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"},"usage":{"input_tokens":12,"output_tokens":3}}
 `
-	if err := os.WriteFile(fake, []byte("#!/bin/sh\ncat >/dev/null\ncat <<'EOF'\n"+reply+"EOF\n"), 0o755); err != nil {
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\n[ \"$NM_HOME\" = \""+p.Root()+"\" ] && touch \""+p.Root()+"/shared-home-used\"\ncat >/dev/null\ncat <<'EOF'\n"+reply+"EOF\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(p.ConfigFile(), []byte("agent_path_override:\n  claude: "+fake+"\n"), 0o644); err != nil {
@@ -108,6 +146,9 @@ func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 	if strings.Contains(got.Error, p.Root()) {
 		t.Fatalf("replay error leaked production root: %q", got.Error)
 	}
+	if _, err := os.Stat(filepath.Join(p.Root(), "shared-home-used")); !os.IsNotExist(err) {
+		t.Fatalf("candidate used production NM_HOME: %v", err)
+	}
 }
 
 func TestReportQueuesUnexpectedParksInsteadOfScoringThemWrong(t *testing.T) {
@@ -129,8 +170,28 @@ func TestReportQueuesUnexpectedParksInsteadOfScoringThemWrong(t *testing.T) {
 	}
 }
 
+func TestConfidenceIntervalRequiresMultipleIndependentCases(t *testing.T) {
+	rows := []Evaluation{{CaseID: "only", Candidate: "claude+test", Status: "completed", ExpectedPark: boolPtr(true), CandidateParked: true}}
+	if got := confidenceInterval("claude+test", rows); got != nil {
+		t.Fatalf("single-case confidence interval = %#v, want unavailable", got)
+	}
+}
+
+func TestFrontierDoesNotCompareDifferentCohorts(t *testing.T) {
+	cheap := 10.0
+	expensive := 100.0
+	reports := []CandidateReport{
+		{Cohort: "a", Summary: EvaluationSummary{Labeled: 1, Correct: 1}, AverageTokens: &expensive},
+		{Cohort: "b", Summary: EvaluationSummary{Labeled: 1, Correct: 1}, AverageTokens: &cheap},
+	}
+	markFrontier(reports)
+	if !reports[0].OnFrontier || !reports[1].OnFrontier {
+		t.Fatalf("different cohorts dominated each other: %#v", reports)
+	}
+}
+
 func TestParseCandidateRequiresAgentAndModel(t *testing.T) {
-	for _, input := range []string{"claude", "+model", "claude+", "claude+model+extra"} {
+	for _, input := range []string{"claude", "+model", "claude+", "claude+model+extra", "cursor+model", "acp:custom+model"} {
 		if _, err := ParseCandidate(input); err == nil {
 			t.Errorf("ParseCandidate(%q) succeeded, want error", input)
 		}
@@ -192,6 +253,10 @@ func setupCapturedRun(t *testing.T, ctx context.Context) (*paths.Paths, *db.DB, 
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := database.UpdateRunTrustedConfigSHA(run.ID, baseSHA); err != nil {
+		t.Fatal(err)
+	}
+	run.TrustedConfigSHA = &baseSHA
 	step, err := database.InsertStepResult(run.ID, types.StepReview)
 	if err != nil {
 		t.Fatal(err)

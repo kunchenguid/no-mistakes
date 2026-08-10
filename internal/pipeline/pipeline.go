@@ -25,6 +25,7 @@ type StepContext struct {
 	LogChunk         func(string) // raw streaming chunk (user-visible + file)
 	LogFile          func(string) // file-only log callback (not shown to user)
 	Fixing           bool         // true when re-executing after a "fix" action
+	SkipFixExecution bool         // replay an already-completed fix round's review turn only
 	PreviousFindings string       // JSON findings from the previous execution (set during fix loop)
 	// StepResultID is the DB row ID of the current step's step_results record.
 	// Steps use it to query their own round history for multi-round prompts.

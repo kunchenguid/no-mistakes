@@ -28,6 +28,7 @@ import (
 // prompts, remote URLs, or agent session identities.
 type sourceRound struct {
 	ID                 string  `json:"id"`
+	StepName           string  `json:"step_name,omitempty"`
 	Round              int     `json:"round"`
 	Trigger            string  `json:"trigger"`
 	FindingsJSON       *string `json:"findings_json,omitempty"`
@@ -40,9 +41,9 @@ type sourceRound struct {
 	CreatedAt          int64   `json:"created_at"`
 }
 
-func portableRound(round *db.StepRound) sourceRound {
+func portableRound(round *db.StepRound, stepName types.StepName) sourceRound {
 	return sourceRound{
-		ID: round.ID, Round: round.Round, Trigger: round.Trigger,
+		ID: round.ID, StepName: string(stepName), Round: round.Round, Trigger: round.Trigger,
 		FindingsJSON: round.FindingsJSON, ReviewedHeadSHA: round.ReviewedHeadSHA,
 		UserFindingsJSON: round.UserFindingsJSON, SelectedFindingIDs: round.SelectedFindingIDs,
 		SelectionSource: round.SelectionSource, FixSummary: round.FixSummary,
@@ -123,7 +124,7 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 			return nil, fmt.Errorf("read source rounds: %w", err)
 		}
 		for _, round := range rounds {
-			allRounds = append(allRounds, portableRound(round))
+			allRounds = append(allRounds, portableRound(round, step.StepName))
 		}
 		if step.StepName == types.StepReview {
 			reviewStep = step
@@ -144,9 +145,13 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
 		return nil, fmt.Errorf("source gate is unavailable for capture: %w", err)
 	}
-	trustedSHA, trustedConfig, err := captureTrustedConfig(ctx, gateDir, repo.DefaultBranch)
+	if run.TrustedConfigSHA == nil || strings.TrimSpace(*run.TrustedConfigSHA) == "" {
+		return nil, fmt.Errorf("run %q predates SHA-pinned trusted configuration capture", run.ID)
+	}
+	trustedSHA := strings.TrimSpace(*run.TrustedConfigSHA)
+	trustedConfig, err := repoConfigAt(ctx, gateDir, trustedSHA)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read source run trusted configuration at %s: %w", trustedSHA, err)
 	}
 	globalConfig, err := agentNeutralGlobalConfig(p.ConfigFile())
 	if err != nil {
@@ -232,7 +237,7 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 		}
 		baseline := baselineForRound(invocations, round.Round)
 		c := Case{Manifest: manifest, Labels: labels, Decision: decision, Baseline: baseline, Dir: caseDir}
-		if err := writeCase(ctx, store, gateDir, c, globalConfig, repoConfigBytes, sourceRunFor(run), sourceStepsFor(steps), allRounds, sourceInvocationsFor(invocations), portableRound(round), changedPaths); err != nil {
+		if err := writeCase(ctx, store, gateDir, c, globalConfig, repoConfigBytes, sourceRunFor(run), sourceStepsFor(steps), allRounds, sourceInvocationsFor(invocations), portableRound(round, types.StepReview), changedPaths); err != nil {
 			return nil, err
 		}
 		c, err = loadCase(caseDir)
@@ -262,29 +267,6 @@ func effectiveReplayBase(ctx context.Context, gateDir, recordedBase, head, trust
 		}
 	}
 	return "", fmt.Errorf("derive replay base: reviewed head and trusted default branch have no readable merge base")
-}
-
-func captureTrustedConfig(ctx context.Context, gateDir, branch string) (string, *config.RepoConfig, error) {
-	branch = strings.TrimSpace(branch)
-	if branch == "" {
-		return "", nil, fmt.Errorf("source repository has no default branch")
-	}
-	var trustedSHA string
-	var err error
-	for _, ref := range []string{"refs/remotes/origin/" + branch, "refs/heads/" + branch} {
-		trustedSHA, err = git.ResolveRef(ctx, gateDir, ref)
-		if err == nil {
-			break
-		}
-	}
-	if trustedSHA == "" || err != nil {
-		return "", nil, fmt.Errorf("trusted default branch %q is unavailable in the gate", branch)
-	}
-	trusted, err := repoConfigAt(ctx, gateDir, trustedSHA)
-	if err != nil {
-		return "", nil, fmt.Errorf("read trusted repository config: %w", err)
-	}
-	return trustedSHA, trusted, nil
 }
 
 func repoConfigAt(ctx context.Context, gateDir, sha string) (*config.RepoConfig, error) {

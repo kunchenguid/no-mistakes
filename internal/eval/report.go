@@ -20,6 +20,7 @@ type Interval struct {
 
 // CandidateReport is one locally observed candidate slice.
 type CandidateReport struct {
+	Cohort        string
 	Summary       EvaluationSummary
 	RepeatCount   int
 	Confidence    *Interval
@@ -35,15 +36,22 @@ func Report(store *Store) ([]CandidateReport, error) {
 	if err != nil {
 		return nil, err
 	}
-	byCandidate := make(map[string][]Evaluation)
+	byCandidateCohort := make(map[string][]Evaluation)
 	for _, evaluation := range evaluations {
-		byCandidate[evaluation.Candidate] = append(byCandidate[evaluation.Candidate], evaluation)
+		cohort := evaluation.Cohort
+		if cohort == "" {
+			cohort = "legacy-unmatched"
+		}
+		key := cohort + "\x00" + evaluation.Candidate
+		byCandidateCohort[key] = append(byCandidateCohort[key], evaluation)
 	}
-	reports := make([]CandidateReport, 0, len(byCandidate))
-	for candidate, rows := range byCandidate {
+	reports := make([]CandidateReport, 0, len(byCandidateCohort))
+	for key, rows := range byCandidateCohort {
+		cohort, candidate, _ := strings.Cut(key, "\x00")
 		summary := SummarizeEvaluations(rows)
 		repeats := repeatCount(rows)
 		report := CandidateReport{
+			Cohort:        cohort,
 			Summary:       summary,
 			RepeatCount:   repeats,
 			Confidence:    confidenceInterval(candidate, rows),
@@ -54,7 +62,12 @@ func Report(store *Store) ([]CandidateReport, error) {
 		}
 		reports = append(reports, report)
 	}
-	sort.Slice(reports, func(i, j int) bool { return reports[i].Summary.Candidate < reports[j].Summary.Candidate })
+	sort.Slice(reports, func(i, j int) bool {
+		if reports[i].Cohort != reports[j].Cohort {
+			return reports[i].Cohort < reports[j].Cohort
+		}
+		return reports[i].Summary.Candidate < reports[j].Summary.Candidate
+	})
 	markFrontier(reports)
 	return reports, nil
 }
@@ -158,8 +171,8 @@ func confidenceInterval(candidate string, rows []Evaluation) *Interval {
 		return nil
 	}
 	sort.Float64s(values)
-	if len(values) == 1 {
-		return &Interval{Lower: values[0], Upper: values[0], Cases: 1}
+	if len(values) < 2 {
+		return nil
 	}
 	const samples = 2000
 	sum := sha256.Sum256([]byte(candidate))
@@ -201,7 +214,7 @@ func markFrontier(reports []CandidateReport) {
 		}
 		dominated := false
 		for j := range reports {
-			if i == j || reports[j].AverageTokens == nil || reports[j].Summary.Labeled == 0 {
+			if i == j || reports[i].Cohort != reports[j].Cohort || reports[j].AverageTokens == nil || reports[j].Summary.Labeled == 0 {
 				continue
 			}
 			betterAccuracy := reports[j].Summary.LowerBoundAccuracy() >= reports[i].Summary.LowerBoundAccuracy()
@@ -292,7 +305,7 @@ func RenderReport(reports []CandidateReport) string {
 	b.WriteString("LOCAL-ONLY EVAL REPORT\n")
 	for _, report := range reports {
 		s := report.Summary
-		fmt.Fprintf(&b, "\n%s\n", s.Candidate)
+		fmt.Fprintf(&b, "\n%s (cohort %s)\n", s.Candidate, report.Cohort)
 		fmt.Fprintf(&b, "  replays: %d across %d repeat(s); labeled: %d; failures: %d\n", s.Total, report.RepeatCount, s.Labeled, s.Failures)
 		if s.Labeled == 0 {
 			b.WriteString("  verdict agreement: no human-confirmed verdict labels yet\n")
