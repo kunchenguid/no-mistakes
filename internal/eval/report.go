@@ -187,12 +187,12 @@ func confidenceInterval(_ string, rows []Evaluation) *Interval {
 
 func markFrontier(reports []CandidateReport) {
 	for i := range reports {
-		if reports[i].AverageTokens == nil || reports[i].Summary.Labeled == 0 {
+		if reports[i].AverageTokens == nil || reports[i].Summary.Labeled == 0 || reports[i].Summary.Failures > 0 {
 			continue
 		}
 		dominated := false
 		for j := range reports {
-			if i == j || reports[i].Cohort != reports[j].Cohort || reports[j].AverageTokens == nil || reports[j].Summary.Labeled == 0 {
+			if i == j || reports[i].Cohort != reports[j].Cohort || reports[j].AverageTokens == nil || reports[j].Summary.Labeled == 0 || reports[j].Summary.Failures > 0 {
 				continue
 			}
 			betterAccuracy := reports[j].Summary.LowerBoundAccuracy() >= reports[i].Summary.LowerBoundAccuracy()

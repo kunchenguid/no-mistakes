@@ -67,7 +67,39 @@ func TestCaptureCreatesPortableReviewCaseWithoutRecordingRemoteURL(t *testing.T)
 	}
 }
 
-func TestCaptureUsesSourceRunsPinnedTrustedConfiguration(t *testing.T) {
+func TestCaptureRejectsReviewRoundBeforeGateDecision(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	if err := sourceDB.SetStepRoundSelection(reviewRound.ID, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := sourceDB.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.UpdateStepStatus(steps[0].ID, types.StepStatusAwaitingApproval); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := Capture(ctx, store, p, sourceDB, run.ID); err == nil || !strings.Contains(err.Error(), "no recorded gate decision") {
+		t.Fatalf("capture error = %v, want missing gate decision", err)
+	}
+	cases, err := store.ListCases("all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 0 {
+		t.Fatalf("premature capture registered %d cases", len(cases))
+	}
+}
+
+func TestCapturePinsConfigurationAtCapture(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
 	defer sourceDB.Close()
@@ -93,15 +125,9 @@ func TestCaptureUsesSourceRunsPinnedTrustedConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cases) != 1 || cases[0].TrustedConfigSHA != *run.TrustedConfigSHA {
-		t.Fatalf("trusted config pin = %#v, want %s", cases, *run.TrustedConfigSHA)
-	}
-	repoConfig, err := os.ReadFile(filepath.Join(cases[0].Dir, "config", "repo-config.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(repoConfig), "advanced-only") {
-		t.Fatalf("capture used advanced default-branch config: %s", repoConfig)
+	advancedSHA := mustGit(t, ctx, workDir, "rev-parse", "HEAD")
+	if len(cases) != 1 || cases[0].TrustedConfigSHA != advancedSHA {
+		t.Fatalf("trusted config pin = %#v, want capture-time SHA %s", cases, advancedSHA)
 	}
 }
 
@@ -121,10 +147,6 @@ func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 	if err := os.WriteFile(p.ConfigFile(), []byte(globalConfig), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := sourceDB.UpdateRunStatusWithConfig(run.ID, run.Status, *run.TrustedConfigSHA, globalConfig); err != nil {
-		t.Fatal(err)
-	}
-	run.GlobalConfigYAML = &globalConfig
 	store, err := Open(p.EvalDir())
 	if err != nil {
 		t.Fatal(err)
@@ -172,6 +194,22 @@ func TestReportQueuesUnexpectedParksInsteadOfScoringThemWrong(t *testing.T) {
 	}
 	if got := summary.LowerBoundAccuracy(); got != 0.5 {
 		t.Fatalf("lower-bound accuracy = %v, want 0.5", got)
+	}
+}
+
+func TestFailedLabeledReplayCountsAgainstAccuracyAndFrontier(t *testing.T) {
+	summary := SummarizeEvaluations([]Evaluation{
+		{Candidate: "claude+test", Status: "completed", ExpectedPark: boolPtr(true), CandidateParked: true},
+		{Candidate: "claude+test", Status: "failed", ExpectedPark: boolPtr(true)},
+	})
+	if summary.Labeled != 2 || summary.Conclusive != 2 || summary.Correct != 1 || summary.Misses != 1 || summary.ConfirmedAccuracy() != 0.5 {
+		t.Fatalf("summary = %#v, want failed labeled replay scored conservatively", summary)
+	}
+	cost := 10.0
+	reports := []CandidateReport{{Cohort: "same", Summary: summary, AverageTokens: &cost}}
+	markFrontier(reports)
+	if reports[0].OnFrontier {
+		t.Fatal("candidate with failed replay was marked frontier-eligible")
 	}
 }
 
@@ -343,12 +381,6 @@ func setupCapturedRun(t *testing.T, ctx context.Context) (*paths.Paths, *db.DB, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	globalConfig := "{}\n"
-	if err := database.UpdateRunStatusWithConfig(run.ID, run.Status, baseSHA, globalConfig); err != nil {
-		t.Fatal(err)
-	}
-	run.TrustedConfigSHA = &baseSHA
-	run.GlobalConfigYAML = &globalConfig
 	step, err := database.InsertStepResult(run.ID, types.StepReview)
 	if err != nil {
 		t.Fatal(err)

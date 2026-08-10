@@ -150,14 +150,8 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 	// Mark run as running. Route write failures through failRun so the
 	// in-memory lifecycle and subscriber stream still become terminal instead
 	// of leaving a silent pending run.
-	var startErr error
-	if run.TrustedConfigSHA != nil && run.GlobalConfigYAML != nil {
-		startErr = e.db.UpdateRunStatusWithConfig(run.ID, types.RunRunning, *run.TrustedConfigSHA, *run.GlobalConfigYAML)
-	} else {
-		startErr = e.db.UpdateRunStatus(run.ID, types.RunRunning)
-	}
-	if startErr != nil {
-		return e.failRun(run, repo, fmt.Errorf("update run status: %w", startErr))
+	if err := e.db.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		return e.failRun(run, repo, fmt.Errorf("update run status: %w", err))
 	}
 	run.Status = types.RunRunning
 	e.emitRunEvent(ipc.EventRunUpdated, run, repo)

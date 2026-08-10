@@ -146,18 +146,22 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
 		return nil, fmt.Errorf("source gate is unavailable for capture: %w", err)
 	}
-	if run.TrustedConfigSHA == nil || strings.TrimSpace(*run.TrustedConfigSHA) == "" {
-		return nil, fmt.Errorf("run %q predates SHA-pinned trusted configuration capture", run.ID)
+	trustedSHA, err := git.ResolveRef(ctx, gateDir, "refs/heads/"+repo.DefaultBranch)
+	if err != nil {
+		return nil, fmt.Errorf("resolve capture-time trusted configuration: %w", err)
 	}
-	trustedSHA := strings.TrimSpace(*run.TrustedConfigSHA)
+	trustedSHA = strings.TrimSpace(trustedSHA)
 	trustedConfig, err := repoConfigAt(ctx, gateDir, trustedSHA)
 	if err != nil {
-		return nil, fmt.Errorf("read source run trusted configuration at %s: %w", trustedSHA, err)
+		return nil, fmt.Errorf("read capture-time trusted configuration at %s: %w", trustedSHA, err)
 	}
-	if run.GlobalConfigYAML == nil {
-		return nil, fmt.Errorf("run %q predates pinned global configuration capture", run.ID)
+	globalConfigBytes, err := os.ReadFile(p.ConfigFile())
+	if errors.Is(err, os.ErrNotExist) {
+		globalConfigBytes = []byte("{}\n")
+	} else if err != nil {
+		return nil, fmt.Errorf("read capture-time global configuration: %w", err)
 	}
-	globalConfig, err := agentNeutralGlobalConfig([]byte(*run.GlobalConfigYAML))
+	globalConfig, err := agentNeutralGlobalConfig(globalConfigBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -176,6 +180,11 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 			// partial record, not a replayable review pass. Refuse rather than
 			// silently grade a fabricated clean result.
 			return nil, fmt.Errorf("review round %q has no recorded findings", round.ID)
+		}
+		decision := decisionForRound(round, reviewStep)
+		labels := Labels{Version: labelsVersion, Verdict: verdictFromDecision(round, decision)}
+		if !labels.Verdict.Known && (reviewStep.Status == types.StepStatusAwaitingApproval || reviewStep.Status == types.StepStatusFixReview) {
+			return nil, fmt.Errorf("review round %q has no recorded gate decision", round.ID)
 		}
 		reviewedSHA := run.HeadSHA
 		if round.ReviewedHeadSHA != nil && strings.TrimSpace(*round.ReviewedHeadSHA) != "" {
@@ -218,8 +227,6 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 			return nil, fmt.Errorf("inspect case destination: %w", err)
 		}
 
-		decision := decisionForRound(round, reviewStep)
-		labels := Labels{Version: labelsVersion, Verdict: verdictFromDecision(round, decision)}
 		manifest := Manifest{
 			Version: manifestVersion, ID: caseID, SourceRunID: run.ID, SourceRoundID: round.ID,
 			CapturedAt: time.Now().Unix(), RepoFingerprint: fingerprint(repo.UpstreamURL),

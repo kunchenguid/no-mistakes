@@ -198,13 +198,7 @@ func validateRecoveredSessionProviders(database *db.DB, runID string, ag agent.A
 }
 
 func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) (*config.Config, error) {
-	var globalCfg *config.GlobalConfig
-	var err error
-	if run.GlobalConfigYAML != nil {
-		globalCfg, err = config.LoadGlobalFromBytes([]byte(*run.GlobalConfigYAML))
-	} else {
-		globalCfg, err = config.LoadGlobal(m.paths.ConfigFile())
-	}
+	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
 	if err != nil {
 		return nil, fmt.Errorf("load global config: %w", err)
 	}
@@ -213,15 +207,13 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 		return nil, fmt.Errorf("load repo config: %w", err)
 	}
 	var trustedSHA string
-	if run.TrustedConfigSHA != nil {
-		trustedSHA = strings.TrimSpace(*run.TrustedConfigSHA)
-	} else if repo.DefaultBranch != "" {
+	if repo.DefaultBranch != "" {
 		fetchCtx, cancel := context.WithTimeout(ctx, recoveredConfigFetchTimeout)
 		defer cancel()
 		if err := fetchRecoveredRemoteBranch(fetchCtx, workDir, "origin", repo.DefaultBranch); err != nil {
-			slog.Warn("failed to fetch default branch while recovering legacy run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
+			slog.Warn("failed to fetch default branch while recovering run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
 		} else if sha, err := git.ResolveRef(ctx, workDir, "refs/remotes/origin/"+repo.DefaultBranch); err != nil {
-			slog.Warn("failed to resolve default branch while recovering legacy run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
+			slog.Warn("failed to resolve default branch while recovering run; trusted config disabled", "run_id", run.ID, "branch", repo.DefaultBranch, "error", err)
 		} else {
 			trustedSHA = sha
 		}
@@ -825,7 +817,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		}
 	}()
 
-	globalCfg, globalConfigBytes, err := config.LoadGlobalSnapshot(m.paths.ConfigFile())
+	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
 		trackStartFailure("load_global_config")
@@ -858,9 +850,6 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		trackStartFailure("trusted_config_unreadable")
 		return "", err
 	}
-	run.TrustedConfigSHA = &trustedSHA
-	globalConfigYAML := string(globalConfigBytes)
-	run.GlobalConfigYAML = &globalConfigYAML
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, wtDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)

@@ -198,6 +198,11 @@ func SummarizeEvaluations(evaluations []Evaluation) EvaluationSummary {
 		}
 		if evaluation.Status != "completed" {
 			summary.Failures++
+			if evaluation.ExpectedPark != nil {
+				summary.Labeled++
+				summary.Conclusive++
+				summary.Misses++
+			}
 			continue
 		}
 		if evaluation.ExpectedPark == nil {

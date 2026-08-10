@@ -12,10 +12,10 @@ It is separate from normal pipeline operation. It does not start or use the shar
 no-mistakes eval capture <run-id>
 ```
 
-Capture exports one case for each persisted Review pass in the run. A case includes:
+Capture exports one case for each persisted Review pass in the run. If Review is still parked, capture waits for its gate decision to be recorded rather than freezing an incomplete label. A case includes:
 
-- a self-contained Git bundle for the reviewed commit, base, and pinned trusted-config commit
-- agent-neutral global configuration and the effective repository configuration
+- a self-contained Git bundle for the reviewed commit, base, and trusted-config commit pinned at capture
+- agent-neutral global configuration and the effective repository configuration frozen at capture
 - the original run, step, review-round, decision, and local invocation-metric records
 - a manifest with commit pins, changed-file counts, build identity, and a hash of the redacted remote URL
 - a local `labels.json` file that can grow in later evaluation phases
@@ -72,7 +72,7 @@ The report groups all local replays by candidate and shows:
 - a 95% Wilson score confidence interval over cases, with repeats averaged inside each case
 - whether a candidate lies on the observed accuracy-versus-token-cost frontier
 
-The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, and it distinguishes missing token instrumentation from a real zero.
+The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, excludes candidates with failed replays from the frontier, and distinguishes missing token instrumentation from a real zero.
 
 ## MVP boundary
 
