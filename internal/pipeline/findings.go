@@ -83,6 +83,16 @@ func hasFindingMatch(item types.Finding, exact map[types.Finding]bool, itemCount
 // matchingFindingIndex answers the same question as hasFindingMatch and, when
 // the answer is yes, names which candidate matched so the caller can reconcile
 // the two copies instead of silently keeping one.
+//
+// KNOWN LIMITATION: the key still contains the finding's full free-text
+// Description (plus Severity and File), so a rereview that restates the same
+// defect in different prose - the normal case, since descriptions are
+// generated paragraphs - does not match its carried original and is appended
+// as a new item. Across several fix rounds the union can therefore accumulate
+// near-duplicate pairs of one defect, each needing its own
+// `axi respond --findings` id. This is accepted rather than fixed: it
+// over-blocks instead of dropping anything, and no cheap exact-match key does
+// better.
 func matchingFindingIndex(item types.Finding, byKey, byFingerprint map[types.Finding]int, itemCounts, candidateCounts map[types.Finding]int) (int, bool) {
 	if index, ok := byKey[findingKey(item)]; ok {
 		return index, true
@@ -111,6 +121,12 @@ func normalizeFindingsJSON(raw string, prefix string) string {
 	return normalizedRaw
 }
 
+// carriedRationalePrefix marks a risk rationale as describing an earlier,
+// larger finding set. The prose itself is the most substantive assessment the
+// operator has, so it is kept rather than discarded; what must not survive is
+// the impression that it counts the set still outstanding.
+const carriedRationalePrefix = "carried from an earlier round, when more findings were outstanding: "
+
 // excludeFindingsJSON drops the named findings from a payload and returns
 // what remains. An EMPTY id list resolves nothing, so it returns the payload
 // unchanged rather than empty: this is the carry-forward set, and a fix
@@ -118,6 +134,12 @@ func normalizeFindingsJSON(raw string, prefix string) string {
 // bare `axi respond --action fix`) must leave every outstanding finding still
 // outstanding. Only a payload that is itself empty, unparsable, or fully
 // excluded yields "".
+//
+// When items are dropped, the surviving risk rationale is marked as carried.
+// Both merge paths hand this payload straight to the gate - the raised-level
+// branch composes over it, and a round that reports nothing at all returns it
+// byte for byte - so a specific claim it makes ("three unresolved blockers")
+// would otherwise read as current over a set that has since shrunk.
 func excludeFindingsJSON(raw string, ids []string) string {
 	if raw == "" {
 		return ""
@@ -130,11 +152,25 @@ func excludeFindingsJSON(raw string, ids []string) string {
 	if len(excluded.Items) == 0 {
 		return ""
 	}
+	if len(excluded.Items) != len(findings.Items) {
+		excluded.RiskRationale = markRationaleAsCarried(excluded.RiskRationale)
+	}
 	excludedRaw, err := types.MarshalFindingsJSON(excluded)
 	if err != nil {
 		return ""
 	}
 	return excludedRaw
+}
+
+// markRationaleAsCarried is idempotent: the carry set is rebuilt from the
+// previous union every round, so a rationale already marked must not collect
+// the prefix again.
+func markRationaleAsCarried(rationale string) string {
+	trimmed := strings.TrimSpace(rationale)
+	if trimmed == "" || strings.HasPrefix(trimmed, carriedRationalePrefix) {
+		return rationale
+	}
+	return carriedRationalePrefix + trimmed
 }
 
 // mergeUnique unions two lists of test-evidence metadata, fresh side first,

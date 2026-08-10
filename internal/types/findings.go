@@ -154,6 +154,15 @@ func FilterFindings(findings Findings, ids []string) Findings {
 // count as the current assessment. The survivors are precisely what was NOT
 // selected, so the restatement uses the outstanding wording rather than the
 // selection wording.
+//
+// KNOWN LIMITATION: RiskLevel is copied forward verbatim rather than
+// recomputed from the items that actually survive, so a level justified by a
+// finding the operator has since resolved keeps applying to the smaller set -
+// one carried informational note can hold a step at "high" for the rest of
+// the run, and that level reaches the PR body. This is accepted rather than
+// fixed: it overstates rather than understates risk, and deriving a level
+// from item severities would replace the agent's own assessment with a
+// mechanical map.
 func ExcludeFindings(findings Findings, ids []string) Findings {
 	if len(ids) == 0 {
 		return findings

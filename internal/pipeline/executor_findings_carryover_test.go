@@ -117,6 +117,85 @@ func TestExecutor_UnresolvedAskUserFindingsSurviveAnEmptyReReviewRound(t *testin
 	}
 }
 
+// TestExecutor_EmptyRoundDoesNotRepublishAStaleRiskRationale covers the more
+// common shape of "this round found nothing": the step returns no findings
+// payload at all, so the merge hands the carried set straight back. The
+// carried rationale was written about the larger set, and this is exactly
+// what the gate shows and what the PR body publishes on approve, so it must
+// not read as the current assessment.
+func TestExecutor_EmptyRoundDoesNotRepublishAStaleRiskRationale(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	const staleRationale = "three unresolved blockers require human approval"
+	round1Findings := `{"findings":[
+		{"id":"review-1","severity":"error","description":"still open","action":"ask-user"},
+		{"id":"review-2","severity":"warning","description":"typo","action":"auto-fix"},
+		{"id":"review-3","severity":"warning","description":"lint nit","action":"auto-fix"}
+	],"summary":"3 findings","risk_level":"high","risk_rationale":"` + staleRationale + `"}`
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name:                 types.StepReview,
+		scopeLimitedFindings: true,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			if callCount == 1 {
+				return &StepOutcome{NeedsApproval: true, Findings: round1Findings}, nil
+			}
+			return &StepOutcome{}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-2", "review-3"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
+
+	dbSteps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbSteps[0].FindingsJSON == nil {
+		t.Fatal("expected findings to be persisted")
+	}
+	parsed, err := types.ParseFindingsJSON(*dbSteps[0].FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse findings: %v", err)
+	}
+	if len(parsed.Items) != 1 {
+		t.Fatalf("expected only the unresolved finding to remain, got %d", len(parsed.Items))
+	}
+	if parsed.RiskRationale == staleRationale {
+		t.Errorf("the gate republishes %q as the current assessment over %d outstanding finding", parsed.RiskRationale, len(parsed.Items))
+	}
+	if !strings.Contains(parsed.RiskRationale, staleRationale) {
+		t.Errorf("the earlier assessment is the most substantive text the operator has; it should be marked, not discarded: %q", parsed.RiskRationale)
+	}
+	if !strings.Contains(parsed.RiskRationale, "earlier round") {
+		t.Errorf("risk_rationale = %q, want it marked as describing an earlier, larger finding set", parsed.RiskRationale)
+	}
+
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+}
+
 // TestExecutor_CarriedForwardFindingsSurviveIDCollisionWithFreshRoundOutput
 // covers a hazard the carry-forward fix itself could introduce: a fresh
 // round's own findings are normalized against only that round's own item
@@ -700,19 +779,25 @@ func TestExecutor_AutoFixDoesNotSweepUpAFindingTheOperatorLeftUnselected(t *test
 	}
 }
 
-// TestExecutor_CarriedRoundsKeepTestEvidenceInTheStepFindings guards the test
-// step's evidence across a fix round. The PR body reads the step's merged
-// findings alone - testingEvidenceFindingsJSON stops at sr.FindingsJSON as
-// soon as it carries any testing metadata, and testing_summary always
-// survives the merge - so an artifact dropped while unioning the carried set
-// never reaches the PR body from the round records either.
+// TestExecutor_CarriedRoundsKeepTestEvidenceInTheStepFindings guards the
+// evidence fields against the merge that runs on every carried round. The
+// step here is shaped like the real ReviewStep - the only step that declares
+// its rounds may be scope limited, and so the only one whose rounds reach
+// mergeFindingsJSON at all.
+//
+// The exposure is that the merge is a whole-payload rebuild: a field it
+// forgets to carry is gone from what the step persists. That matters because
+// the PR body reads the step's merged findings alone - testingEvidenceFindingsJSON
+// stops at sr.FindingsJSON as soon as it carries any testing metadata, and
+// testing_summary always survives the merge - so evidence dropped here never
+// reaches the PR body from the round records either.
 func TestExecutor_CarriedRoundsKeepTestEvidenceInTheStepFindings(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 
 	round1Findings := `{"findings":[
-		{"id":"test-1","severity":"error","description":"flaky assertion","action":"ask-user"},
-		{"id":"test-2","severity":"warning","description":"missing case","action":"auto-fix"}
+		{"id":"review-1","severity":"error","description":"flaky assertion","action":"ask-user"},
+		{"id":"review-2","severity":"warning","description":"missing case","action":"auto-fix"}
 	],"summary":"2 findings","tested":["login flow"],"testing_summary":"ran the targeted checks",
 	"artifacts":[{"kind":"log","label":"first round log","path":"/tmp/first.log"}]}`
 
@@ -722,7 +807,7 @@ func TestExecutor_CarriedRoundsKeepTestEvidenceInTheStepFindings(t *testing.T) {
 
 	callCount := 0
 	step := &adaptiveCallStep{
-		name:                 types.StepTest,
+		name:                 types.StepReview,
 		scopeLimitedFindings: true,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
@@ -739,11 +824,11 @@ func TestExecutor_CarriedRoundsKeepTestEvidenceInTheStepFindings(t *testing.T) {
 		done <- exec.Execute(context.Background(), run, repo, workDir)
 	}()
 
-	waitForStepStatus(t, database, run.ID, types.StepTest, types.StepStatusAwaitingApproval)
-	if err := exec.Respond(types.StepTest, types.ActionFix, []string{"test-2"}); err != nil {
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-2"}); err != nil {
 		t.Fatal(err)
 	}
-	waitForStepStatus(t, database, run.ID, types.StepTest, types.StepStatusFixReview)
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
 
 	dbSteps, err := database.GetStepsByRun(run.ID)
 	if err != nil {
@@ -763,7 +848,7 @@ func TestExecutor_CarriedRoundsKeepTestEvidenceInTheStepFindings(t *testing.T) {
 		t.Fatalf("expected the earlier round's tested entries to survive, got %#v", parsed.Tested)
 	}
 
-	if err := exec.Respond(types.StepTest, types.ActionApprove, nil); err != nil {
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
 		t.Fatal(err)
 	}
 	select {
