@@ -57,6 +57,11 @@ func (p *Paths) TelemetryGateFile() string {
 	return filepath.Join(p.root, "telemetry-gate.json")
 }
 
+// EvalDir holds opt-in local evaluation cases and their separate registry.
+// EnsureDirs deliberately does not create it, so users who never invoke eval
+// see no new filesystem state.
+func (p *Paths) EvalDir() string { return filepath.Join(p.root, "eval") }
+
 func (p *Paths) ReposDir() string { return filepath.Join(p.root, "repos") }
 func (p *Paths) RepoDir(repoID string) string {
 	return filepath.Join(p.root, "repos", repoID+".git")

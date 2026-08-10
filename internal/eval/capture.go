@@ -1,0 +1,549 @@
+package eval
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/safeurl"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
+	"github.com/kunchenguid/no-mistakes/internal/types"
+	"gopkg.in/yaml.v3"
+)
+
+// sourceRound is a portable, JSON-stable export of a review round. It keeps
+// the findings and human-decision evidence needed by the MVP but no logs,
+// prompts, remote URLs, or agent session identities.
+type sourceRound struct {
+	ID                 string  `json:"id"`
+	Round              int     `json:"round"`
+	Trigger            string  `json:"trigger"`
+	FindingsJSON       *string `json:"findings_json,omitempty"`
+	ReviewedHeadSHA    *string `json:"reviewed_head_sha,omitempty"`
+	UserFindingsJSON   *string `json:"user_findings_json,omitempty"`
+	SelectedFindingIDs *string `json:"selected_finding_ids,omitempty"`
+	SelectionSource    *string `json:"selection_source,omitempty"`
+	FixSummary         *string `json:"fix_summary,omitempty"`
+	DurationMS         int64   `json:"duration_ms"`
+	CreatedAt          int64   `json:"created_at"`
+}
+
+func portableRound(round *db.StepRound) sourceRound {
+	return sourceRound{
+		ID: round.ID, Round: round.Round, Trigger: round.Trigger,
+		FindingsJSON: round.FindingsJSON, ReviewedHeadSHA: round.ReviewedHeadSHA,
+		UserFindingsJSON: round.UserFindingsJSON, SelectedFindingIDs: round.SelectedFindingIDs,
+		SelectionSource: round.SelectionSource, FixSummary: round.FixSummary,
+		DurationMS: round.DurationMS, CreatedAt: round.CreatedAt,
+	}
+}
+
+type sourceRun struct {
+	ID                 string `json:"id"`
+	Branch             string `json:"branch"`
+	HeadSHA            string `json:"head_sha"`
+	BaseSHA            string `json:"base_sha"`
+	Status             string `json:"status"`
+	Intent             string `json:"intent,omitempty"`
+	IntentSource       string `json:"intent_source,omitempty"`
+	NoMistakesVersion  string `json:"no_mistakes_version,omitempty"`
+	NoMistakesBuildSHA string `json:"no_mistakes_build_sha,omitempty"`
+	CreatedAt          int64  `json:"created_at"`
+	UpdatedAt          int64  `json:"updated_at"`
+}
+
+type sourceStep struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Status       string `json:"status"`
+	FindingsJSON string `json:"findings_json,omitempty"`
+	DurationMS   *int64 `json:"duration_ms,omitempty"`
+}
+
+type sourceInvocation struct {
+	StepName             string `json:"step_name"`
+	Round                int    `json:"round"`
+	Purpose              string `json:"purpose"`
+	Agent                string `json:"agent"`
+	Model                string `json:"model,omitempty"`
+	DurationMS           int64  `json:"duration_ms"`
+	InputTokens          int    `json:"input_tokens"`
+	OutputTokens         int    `json:"output_tokens"`
+	CacheReadTokens      int    `json:"cache_read_tokens"`
+	FreshInputTokens     *int   `json:"fresh_input_tokens,omitempty"`
+	DeltaInputTokens     *int   `json:"delta_input_tokens,omitempty"`
+	DeltaOutputTokens    *int   `json:"delta_output_tokens,omitempty"`
+	DeltaCacheReadTokens *int   `json:"delta_cache_read_tokens,omitempty"`
+	ExitStatus           string `json:"exit_status"`
+	FailureCategory      string `json:"failure_category,omitempty"`
+}
+
+// Capture exports every persisted review pass from one real run. It reads the
+// production state only; it never starts the daemon, changes a gate, fetches,
+// or sends data anywhere.
+func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB, runID string) ([]Case, error) {
+	if store == nil || p == nil || database == nil {
+		return nil, fmt.Errorf("eval capture requires a store, paths, and database")
+	}
+	run, err := database.GetRun(strings.TrimSpace(runID))
+	if err != nil {
+		return nil, fmt.Errorf("read source run: %w", err)
+	}
+	if run == nil {
+		return nil, fmt.Errorf("run %q not found", runID)
+	}
+	repo, err := database.GetRepo(run.RepoID)
+	if err != nil {
+		return nil, fmt.Errorf("read source repository: %w", err)
+	}
+	if repo == nil {
+		return nil, fmt.Errorf("source repository for run %q not found", runID)
+	}
+	steps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("read source steps: %w", err)
+	}
+	var reviewStep *db.StepResult
+	allRounds := make([]sourceRound, 0)
+	for _, step := range steps {
+		rounds, err := database.GetRoundsByStep(step.ID)
+		if err != nil {
+			return nil, fmt.Errorf("read source rounds: %w", err)
+		}
+		for _, round := range rounds {
+			allRounds = append(allRounds, portableRound(round))
+		}
+		if step.StepName == types.StepReview {
+			reviewStep = step
+		}
+	}
+	if reviewStep == nil {
+		return nil, fmt.Errorf("run %q has no review step to capture", run.ID)
+	}
+	reviewRounds, err := database.GetRoundsByStep(reviewStep.ID)
+	if err != nil {
+		return nil, fmt.Errorf("read review rounds: %w", err)
+	}
+	if len(reviewRounds) == 0 {
+		return nil, fmt.Errorf("run %q has no review passes to capture", run.ID)
+	}
+
+	gateDir := p.RepoDir(repo.ID)
+	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
+		return nil, fmt.Errorf("source gate is unavailable for capture: %w", err)
+	}
+	trustedSHA, trustedConfig, err := captureTrustedConfig(ctx, gateDir, repo.DefaultBranch)
+	if err != nil {
+		return nil, err
+	}
+	globalConfig, err := agentNeutralGlobalConfig(p.ConfigFile())
+	if err != nil {
+		return nil, err
+	}
+	invocations, err := database.GetAgentInvocationsByRun(run.ID)
+	if err != nil {
+		return nil, fmt.Errorf("read source invocation metrics: %w", err)
+	}
+	replayBaseSHA, err := effectiveReplayBase(ctx, gateDir, run.BaseSHA, run.HeadSHA, trustedSHA)
+	if err != nil {
+		return nil, err
+	}
+	captured := make([]Case, 0, len(reviewRounds))
+	for _, round := range reviewRounds {
+		if round.FindingsJSON == nil {
+			// A persisted round with no findings was an interrupted or legacy
+			// partial record, not a replayable review pass. Refuse rather than
+			// silently grade a fabricated clean result.
+			return nil, fmt.Errorf("review round %q has no recorded findings", round.ID)
+		}
+		reviewedSHA := run.HeadSHA
+		if round.ReviewedHeadSHA != nil && strings.TrimSpace(*round.ReviewedHeadSHA) != "" {
+			reviewedSHA = strings.TrimSpace(*round.ReviewedHeadSHA)
+		}
+		if _, err := git.ResolveRef(ctx, gateDir, reviewedSHA); err != nil {
+			return nil, fmt.Errorf("review round %q commit is unavailable for capture: %w", round.ID, err)
+		}
+		changedFiles, changedLines, err := git.DiffStat(ctx, gateDir, replayBaseSHA, reviewedSHA)
+		if err != nil {
+			return nil, fmt.Errorf("read review diff stat for round %q: %w", round.ID, err)
+		}
+		changedPaths, err := git.DiffNameOnly(ctx, gateDir, replayBaseSHA, reviewedSHA)
+		if err != nil {
+			return nil, fmt.Errorf("read review changed files for round %q: %w", round.ID, err)
+		}
+		pushedConfig, err := repoConfigAt(ctx, gateDir, reviewedSHA)
+		if err != nil {
+			return nil, fmt.Errorf("read review config for round %q: %w", round.ID, err)
+		}
+		effectiveRepoConfig := config.EffectiveRepoConfig(pushedConfig, trustedConfig, trustedConfig.AllowRepoCommands)
+		repoConfigBytes, err := yaml.Marshal(effectiveRepoConfig)
+		if err != nil {
+			return nil, fmt.Errorf("serialize replay config: %w", err)
+		}
+
+		caseID := run.ID + "-" + round.ID
+		caseDir := store.caseDir(caseID)
+		if existing, err := os.Stat(caseDir); err == nil && existing.IsDir() {
+			c, err := loadCase(caseDir)
+			if err != nil {
+				return nil, fmt.Errorf("read existing case %q: %w", caseID, err)
+			}
+			if err := store.registerCase(c); err != nil {
+				return nil, err
+			}
+			captured = append(captured, c)
+			continue
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("inspect case destination: %w", err)
+		}
+
+		decision := decisionForRound(round, reviewStep)
+		labels := Labels{Version: labelsVersion, Verdict: verdictFromDecision(round, decision)}
+		manifest := Manifest{
+			Version: manifestVersion, ID: caseID, SourceRunID: run.ID, SourceRoundID: round.ID,
+			CapturedAt: time.Now().Unix(), RepoFingerprint: fingerprint(repo.UpstreamURL),
+			Branch: run.Branch, DefaultBranch: repo.DefaultBranch, BaseSHA: replayBaseSHA,
+			HeadSHA: run.HeadSHA, ReviewedHeadSHA: reviewedSHA, TrustedConfigSHA: trustedSHA,
+			ChangedFiles: changedFiles, ChangedLines: changedLines,
+		}
+		if run.Intent != nil {
+			manifest.Intent = *run.Intent
+		}
+		if run.IntentSource != nil {
+			manifest.IntentSource = *run.IntentSource
+		}
+		if run.NoMistakesVersion != nil {
+			manifest.VersionAtCapture = *run.NoMistakesVersion
+		}
+		if run.NoMistakesBuildSHA != nil {
+			manifest.BuildSHA = *run.NoMistakesBuildSHA
+		}
+		baseline := baselineForRound(invocations, round.Round)
+		c := Case{Manifest: manifest, Labels: labels, Decision: decision, Baseline: baseline, Dir: caseDir}
+		if err := writeCase(ctx, store, gateDir, c, globalConfig, repoConfigBytes, sourceRunFor(run), sourceStepsFor(steps), allRounds, sourceInvocationsFor(invocations), portableRound(round), changedPaths); err != nil {
+			return nil, err
+		}
+		c, err = loadCase(caseDir)
+		if err != nil {
+			return nil, fmt.Errorf("read captured case: %w", err)
+		}
+		if err := store.registerCase(c); err != nil {
+			return nil, err
+		}
+		captured = append(captured, c)
+	}
+	return captured, nil
+}
+
+// effectiveReplayBase reproduces ReviewStep's branch-scoped base: the merge
+// base of the reviewed head and the pinned default branch. Run.BaseSHA is the
+// received-push old SHA, which may be a previous feature tip rather than the
+// review base. It is only a legacy fallback when the merge-base cannot be
+// recovered from an older gate.
+func effectiveReplayBase(ctx context.Context, gateDir, recordedBase, head, trustedSHA string) (string, error) {
+	if base, err := git.Run(ctx, gateDir, "merge-base", head, trustedSHA); err == nil && strings.TrimSpace(base) != "" {
+		return strings.TrimSpace(base), nil
+	}
+	if recordedBase != "" && !git.IsZeroSHA(recordedBase) {
+		if _, err := git.ResolveRef(ctx, gateDir, recordedBase); err == nil {
+			return recordedBase, nil
+		}
+	}
+	return "", fmt.Errorf("derive replay base: reviewed head and trusted default branch have no readable merge base")
+}
+
+func captureTrustedConfig(ctx context.Context, gateDir, branch string) (string, *config.RepoConfig, error) {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return "", nil, fmt.Errorf("source repository has no default branch")
+	}
+	var trustedSHA string
+	var err error
+	for _, ref := range []string{"refs/remotes/origin/" + branch, "refs/heads/" + branch} {
+		trustedSHA, err = git.ResolveRef(ctx, gateDir, ref)
+		if err == nil {
+			break
+		}
+	}
+	if trustedSHA == "" || err != nil {
+		return "", nil, fmt.Errorf("trusted default branch %q is unavailable in the gate", branch)
+	}
+	trusted, err := repoConfigAt(ctx, gateDir, trustedSHA)
+	if err != nil {
+		return "", nil, fmt.Errorf("read trusted repository config: %w", err)
+	}
+	return trustedSHA, trusted, nil
+}
+
+func repoConfigAt(ctx context.Context, gateDir, sha string) (*config.RepoConfig, error) {
+	if _, err := git.ResolveRef(ctx, gateDir, sha); err != nil {
+		return nil, err
+	}
+	entry, err := git.Run(ctx, gateDir, "ls-tree", sha, "--", ".no-mistakes.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("inspect repository config: %w", err)
+	}
+	if strings.TrimSpace(entry) == "" {
+		return &config.RepoConfig{}, nil
+	}
+	content, err := git.ShowFile(ctx, gateDir, sha, ".no-mistakes.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("read repository config: %w", err)
+	}
+	return config.LoadRepoFromBytes([]byte(content))
+}
+
+func agentNeutralGlobalConfig(path string) ([]byte, error) {
+	if _, err := config.LoadGlobal(path); err != nil {
+		return nil, fmt.Errorf("read global config for capture: %w", err)
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return []byte("{}\n"), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read global config bytes: %w", err)
+	}
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parse global config bytes: %w", err)
+	}
+	if raw == nil {
+		raw = map[string]any{}
+	}
+	// The candidate selects agent and model explicitly. Do not accidentally
+	// inherit a captured default model or agent list into a comparison.
+	delete(raw, "agent")
+	delete(raw, "agent_args_override")
+	out, err := yaml.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("serialize agent-neutral global config: %w", err)
+	}
+	return out, nil
+}
+
+func writeCase(ctx context.Context, store *Store, gateDir string, c Case, globalConfig, repoConfig []byte, run sourceRun, steps []sourceStep, rounds []sourceRound, invocations []sourceInvocation, selectedRound sourceRound, changedFiles []string) error {
+	tmp, err := os.MkdirTemp(store.cases, ".capture-")
+	if err != nil {
+		return fmt.Errorf("create temporary case: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+	for _, dir := range []string{filepath.Join(tmp, "config"), filepath.Join(tmp, "original"), filepath.Join(tmp, "evals")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	bundlePath := filepath.Join(tmp, "branch.bundle")
+	if err := createBundle(ctx, gateDir, bundlePath, c); err != nil {
+		return err
+	}
+	bundle, err := os.ReadFile(bundlePath)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(bundle)
+	c.BundleSHA256 = hex.EncodeToString(digest[:])
+	if err := os.WriteFile(filepath.Join(tmp, "config", "global.yaml"), globalConfig, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "config", "repo-config.yaml"), repoConfig, 0o644); err != nil {
+		return err
+	}
+	for _, item := range []struct {
+		path  string
+		value any
+	}{
+		{"manifest.json", c.Manifest},
+		{"labels.json", c.Labels},
+		{filepath.Join("original", "run.json"), run},
+		{filepath.Join("original", "steps.json"), steps},
+		{filepath.Join("original", "rounds.json"), rounds},
+		{filepath.Join("original", "round.json"), selectedRound},
+		{filepath.Join("original", "decision.json"), c.Decision},
+		{filepath.Join("original", "baseline.json"), c.Baseline},
+		{filepath.Join("original", "changed-files.json"), changedFiles},
+		{filepath.Join("original", "invocations.json"), invocations},
+	} {
+		if err := writeJSON(filepath.Join(tmp, item.path), item.value); err != nil {
+			return fmt.Errorf("write case %s: %w", item.path, err)
+		}
+	}
+	if err := os.Rename(tmp, c.Dir); err != nil {
+		return fmt.Errorf("publish captured case: %w", err)
+	}
+	return nil
+}
+
+func createBundle(ctx context.Context, gateDir, bundlePath string, c Case) error {
+	tmp, err := os.MkdirTemp("", "nm-eval-bundle-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	clone := filepath.Join(tmp, "source.git")
+	cmd := exec.CommandContext(ctx, "git", "clone", "--bare", gateDir, clone)
+	shellenv.ConfigureShellCommand(cmd)
+	if err := shellenv.RunShellCommand(cmd); err != nil {
+		return fmt.Errorf("clone source gate for bundle: %w", err)
+	}
+	prefix := "refs/no-mistakes/eval/" + c.ID + "/"
+	refs := []struct {
+		name string
+		sha  string
+	}{
+		{"head", c.ReviewedHeadSHA},
+		{"source-head", c.HeadSHA},
+		{"base", c.BaseSHA},
+		{"trusted-config", c.TrustedConfigSHA},
+	}
+	bundleRefs := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if _, err := git.Run(ctx, clone, "update-ref", prefix+ref.name, ref.sha); err != nil {
+			return fmt.Errorf("pin bundle %s: %w", ref.name, err)
+		}
+		bundleRefs = append(bundleRefs, prefix+ref.name)
+	}
+	if _, err := git.Run(ctx, clone, append([]string{"bundle", "create", bundlePath}, bundleRefs...)...); err != nil {
+		return fmt.Errorf("create review bundle: %w", err)
+	}
+	return nil
+}
+
+func sourceRunFor(run *db.Run) sourceRun {
+	out := sourceRun{ID: run.ID, Branch: run.Branch, HeadSHA: run.HeadSHA, BaseSHA: run.BaseSHA, Status: string(run.Status), CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt}
+	if run.Intent != nil {
+		out.Intent = *run.Intent
+	}
+	if run.IntentSource != nil {
+		out.IntentSource = *run.IntentSource
+	}
+	if run.NoMistakesVersion != nil {
+		out.NoMistakesVersion = *run.NoMistakesVersion
+	}
+	if run.NoMistakesBuildSHA != nil {
+		out.NoMistakesBuildSHA = *run.NoMistakesBuildSHA
+	}
+	return out
+}
+
+func sourceStepsFor(steps []*db.StepResult) []sourceStep {
+	out := make([]sourceStep, 0, len(steps))
+	for _, step := range steps {
+		item := sourceStep{ID: step.ID, Name: string(step.StepName), Status: string(step.Status), DurationMS: step.DurationMS}
+		if step.FindingsJSON != nil {
+			item.FindingsJSON = *step.FindingsJSON
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func sourceInvocationsFor(invocations []db.AgentInvocation) []sourceInvocation {
+	out := make([]sourceInvocation, 0, len(invocations))
+	for _, inv := range invocations {
+		out = append(out, sourceInvocation{StepName: inv.StepName, Round: inv.Round, Purpose: inv.Purpose, Agent: inv.Agent, Model: inv.Model, DurationMS: inv.DurationMS, InputTokens: inv.InputTokens, OutputTokens: inv.OutputTokens, CacheReadTokens: inv.CacheReadTokens, FreshInputTokens: inv.FreshInputTokens, DeltaInputTokens: inv.DeltaInputTokens, DeltaOutputTokens: inv.DeltaOutputTokens, DeltaCacheReadTokens: inv.DeltaCacheReadTokens, ExitStatus: inv.ExitStatus, FailureCategory: inv.FailureCategory})
+	}
+	return out
+}
+
+func baselineForRound(invocations []db.AgentInvocation, round int) BaselineMetrics {
+	var baseline BaselineMetrics
+	seen := false
+	for _, inv := range invocations {
+		if inv.StepName != string(types.StepReview) || inv.Round != round {
+			continue
+		}
+		baseline.DurationMS += inv.DurationMS
+		if inv.DeltaInputTokens == nil || inv.DeltaOutputTokens == nil || inv.DeltaCacheReadTokens == nil || inv.FreshInputTokens == nil {
+			continue
+		}
+		seen = true
+		baseline.InputTokens += int64(*inv.DeltaInputTokens)
+		baseline.OutputTokens += int64(*inv.DeltaOutputTokens)
+		baseline.CacheReadTokens += int64(*inv.DeltaCacheReadTokens)
+		baseline.FreshInputTokens += int64(*inv.FreshInputTokens)
+	}
+	baseline.TokensReported = seen
+	return baseline
+}
+
+func decisionForRound(round *db.StepRound, step *db.StepResult) Decision {
+	decision := Decision{Action: "unknown"}
+	if round.SelectionSource != nil {
+		decision.SelectionSource = *round.SelectionSource
+	}
+	if round.SelectedFindingIDs != nil {
+		_ = json.Unmarshal([]byte(*round.SelectedFindingIDs), &decision.SelectedFindingIDs)
+	}
+	if round.UserFindingsJSON != nil && strings.TrimSpace(*round.UserFindingsJSON) != "" {
+		decision.HasUserFindings = true
+	}
+	if len(decision.SelectedFindingIDs) > 0 {
+		decision.Action = "fix"
+		return decision
+	}
+	if step == nil {
+		return decision
+	}
+	if step.Status == types.StepStatusSkipped {
+		decision.Action = "skip"
+		return decision
+	}
+	if step.Status == types.StepStatusFailed && step.Error != nil && strings.Contains(*step.Error, "aborted by user") {
+		decision.Action = "abort"
+		return decision
+	}
+	if round.FindingsJSON != nil {
+		findings, err := types.ParseFindingsJSON(*round.FindingsJSON)
+		if err == nil && types.HasAskUserFindings(findings) && step.Status == types.StepStatusCompleted {
+			decision.Action = "approve"
+		}
+	}
+	return decision
+}
+
+func verdictFromDecision(round *db.StepRound, decision Decision) VerdictLabel {
+	if decision.SelectionSource == db.RoundSelectionSourceUser && (len(decision.SelectedFindingIDs) > 0 || decision.HasUserFindings) {
+		return VerdictLabel{Known: true, ShouldPark: true, Source: "recorded-user-fix"}
+	}
+	if decision.Action == "approve" || decision.Action == "skip" {
+		return VerdictLabel{Known: true, ShouldPark: false, Source: "recorded-human-pass"}
+	}
+	return VerdictLabel{Source: "unlabeled"}
+}
+
+func fingerprint(rawURL string) string {
+	value := safeurl.Redact(rawURL)
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func highestSeverity(raw *string) string {
+	if raw == nil {
+		return "none"
+	}
+	findings, err := types.ParseFindingsJSON(*raw)
+	if err != nil {
+		return "unknown"
+	}
+	rank := map[string]int{"none": 0, "info": 1, "warning": 2, "error": 3}
+	highest := "none"
+	for _, finding := range findings.Items {
+		if rank[finding.Severity] > rank[highest] {
+			highest = finding.Severity
+		}
+	}
+	return highest
+}

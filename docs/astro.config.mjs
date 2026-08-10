@@ -48,6 +48,7 @@ export default defineConfig({
           label: "Reference",
           items: [
             { label: "CLI Commands", slug: "reference/cli" },
+            { label: "Evaluation toolkit", slug: "reference/eval" },
             { label: "Pipeline Steps", slug: "reference/pipeline-steps" },
             { label: "Global Config", slug: "reference/global-config" },
             { label: "Repo Config", slug: "reference/repo-config" },
