@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -444,14 +445,14 @@ func baselineForRound(invocations []db.AgentInvocation, round int) BaselineMetri
 			continue
 		}
 		baseline.DurationMS += inv.DurationMS
-		if inv.DeltaInputTokens == nil || inv.DeltaOutputTokens == nil || inv.DeltaCacheReadTokens == nil || inv.FreshInputTokens == nil {
+		if inv.DeltaInputTokens == nil || inv.DeltaOutputTokens == nil || inv.DeltaCacheReadTokens == nil {
 			continue
 		}
 		seen = true
 		baseline.InputTokens += int64(*inv.DeltaInputTokens)
 		baseline.OutputTokens += int64(*inv.DeltaOutputTokens)
 		baseline.CacheReadTokens += int64(*inv.DeltaCacheReadTokens)
-		baseline.FreshInputTokens += int64(*inv.FreshInputTokens)
+		baseline.FreshInputTokens += int64(agent.FreshInputTokens(*inv.DeltaInputTokens, *inv.DeltaCacheReadTokens))
 	}
 	baseline.TokensReported = seen
 	return baseline

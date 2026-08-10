@@ -216,6 +216,26 @@ func TestPersistEvaluationQueuesEveryUnexpectedCandidateFinding(t *testing.T) {
 	}
 }
 
+func TestBaselineForRoundDerivesFreshTokensFromPerRoundDeltas(t *testing.T) {
+	deltaInput, deltaOutput, deltaCache := 100, 20, 40
+	cumulativeFresh := 900
+	got := baselineForRound([]db.AgentInvocation{
+		{
+			StepName:             string(types.StepReview),
+			Round:                2,
+			DurationMS:           50,
+			FreshInputTokens:     &cumulativeFresh,
+			DeltaInputTokens:     &deltaInput,
+			DeltaOutputTokens:    &deltaOutput,
+			DeltaCacheReadTokens: &deltaCache,
+		},
+	}, 2)
+
+	if !got.TokensReported || got.InputTokens != 100 || got.OutputTokens != 20 || got.CacheReadTokens != 40 || got.FreshInputTokens != 60 {
+		t.Fatalf("baseline = %#v, want per-round token metrics", got)
+	}
+}
+
 func TestConfidenceIntervalRequiresMultipleIndependentCases(t *testing.T) {
 	rows := []Evaluation{{CaseID: "only", Candidate: "claude+test", Status: "completed", ExpectedPark: boolPtr(true), CandidateParked: true}}
 	if got := confidenceInterval("claude+test", rows); got != nil {
@@ -231,6 +251,19 @@ func TestConfidenceIntervalRepresentsUniformSampleUncertainty(t *testing.T) {
 	got := confidenceInterval("claude+test", rows)
 	if got == nil || got.Lower <= 0 || got.Lower >= 1 || got.Upper < 0.999 {
 		t.Fatalf("uniform-success confidence interval = %#v, want finite-sample uncertainty ending at 1", got)
+	}
+}
+
+func TestRenderReportNamesWilsonScoreInterval(t *testing.T) {
+	output := RenderReport([]CandidateReport{
+		{
+			Cohort:     "cohort",
+			Summary:    EvaluationSummary{Candidate: "claude+test", Total: 2, Labeled: 2, Conclusive: 2, Correct: 2},
+			Confidence: &Interval{Lower: 0.34, Upper: 1, Cases: 2},
+		},
+	})
+	if !strings.Contains(output, "95% Wilson score CI: 34.0%-100.0% over 2 case(s)") {
+		t.Fatalf("report confidence interval = %q", output)
 	}
 }
 

@@ -290,7 +290,7 @@ func RenderReport(reports []CandidateReport) string {
 		} else {
 			fmt.Fprintf(&b, "  confirmed verdict agreement: %.1f%% (%d/%d); conservative lower bound: %.1f%%\n", 100*s.ConfirmedAccuracy(), s.Correct, s.Conclusive, 100*s.LowerBoundAccuracy())
 			if report.Confidence != nil {
-				fmt.Fprintf(&b, "  95%% bootstrap CI: %.1f%%-%.1f%% over %d case(s)\n", 100*report.Confidence.Lower, 100*report.Confidence.Upper, report.Confidence.Cases)
+				fmt.Fprintf(&b, "  95%% Wilson score CI: %.1f%%-%.1f%% over %d case(s)\n", 100*report.Confidence.Lower, 100*report.Confidence.Upper, report.Confidence.Cases)
 			}
 			if s.UnexpectedParks > 0 {
 				fmt.Fprintf(&b, "  queued unexpected parks: %d (not scored wrong pending finding-level adjudication)\n", s.UnexpectedParks)

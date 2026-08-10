@@ -69,7 +69,7 @@ The report groups all local replays by candidate and shows:
 - queued unexpected parks and failed candidate invocations
 - reported fresh-input plus output token cost
 - average wall time
-- a 95% paired bootstrap confidence interval over cases, with repeats averaged inside each case
+- a 95% Wilson score confidence interval over cases, with repeats averaged inside each case
 - whether a candidate lies on the observed accuracy-versus-token-cost frontier
 
 The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, and it distinguishes missing token instrumentation from a real zero.
