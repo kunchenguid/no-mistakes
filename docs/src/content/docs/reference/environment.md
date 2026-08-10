@@ -206,6 +206,7 @@ The legacy raw input, output, and cache-read token counters render numerically; 
 - Activity: `model_roundtrips` (a proxy for productive model turns), `tool_calls`, and a bounded tool-category histogram (`tool_wait_calls`, `tool_test_lint_calls`, `tool_edit_calls`, `tool_read_calls`, `tool_git_calls`, `tool_other_calls`); a compound command counts once per sub-command, so the histogram can sum higher than `tool_calls`.
 - Timing split: `subprocess_wait_ms` is the wall-clock spent inside tool subprocesses; model/reasoning time is the invocation duration minus it, clamped at zero.
 - Context: `workload_files`/`workload_lines` (bounded change size), `finding_count` (findings in the structured output), and `fallback_reason` (why a failed resume forced a fresh session, one of transient/parse/exit/spawn/unsupported/other).
+- Proof identity: `checkout_head_sha`/`checkout_tree_sha`, the committed checkout the invocation was bound to before it launched. Rows written before the fence existed stay unknown rather than claiming an identity that was never recorded.
 
 The count and timing definitions live in one authoritative place (`internal/agent/invocationmetrics.go`).
 Inspect the evidence with `no-mistakes stats --agents` (per-purpose aggregates, including a `METRICS` coverage count so a real zero is distinguishable from missing instrumentation) or `no-mistakes stats --run <id>` (one run's invocations, the per-round-vs-cumulative token split, and parked time).

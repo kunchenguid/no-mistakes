@@ -215,6 +215,7 @@ Press `e` to add or edit extra guidance for the current finding. Press `+` to ad
 Press `y` to toggle yolo mode when you want paused approval gates to resolve automatically.
 Yolo fixes gates with `auto-fix` and `ask-user` findings by selecting every finding, then approves the resulting fix-review gate.
 It approves gates with no findings or only `action: no-op` findings as-is, and fixes each step at most once so unresolved findings do not loop forever.
+It never resolves a `PIPELINE_SCOPE_DECISION_REQUIRED` gate: widening the submitted change's mutation surface always waits for your explicit choice, described in the [pipeline steps reference](/no-mistakes/reference/pipeline-steps/).
 
 ## Outcome banner
 

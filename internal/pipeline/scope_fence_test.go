@@ -281,6 +281,95 @@ func TestFixerAuthoredOutOfScopeFileParksForADecisionInsteadOfFailingTheRun(t *t
 	}
 }
 
+// A parked scope decision routinely outlives the daemon that raised it: the
+// operator's selection is durable state, and the recovered fix round rebuilds
+// its scope from base..submitted head, which never contains the authorized
+// path. Without reapplying the selection the retry is refused again and the run
+// can never leave its own gate; reapplying more than the selection would let a
+// recovery widen what the operator actually decided.
+func TestRecoveredScopeDecisionRestoresExactlyTheAuthorizedPath(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	// Durable parked state: the pipeline-owned gate named two undeclared
+	// paths; the operator authorizes exactly one of them.
+	parked := `{"findings":[` +
+		`{"id":"scope-1","severity":"error","file":"change_test.txt","description":"PIPELINE_SCOPE_DECISION_REQUIRED: test changed change_test.txt","action":"ask-user","scope_decision":true},` +
+		`{"id":"scope-2","severity":"error","file":"unrelated.txt","description":"PIPELINE_SCOPE_DECISION_REQUIRED: test changed unrelated.txt","action":"ask-user","scope_decision":true}` +
+		`],"summary":"declared-scope decision required"}`
+	stepResult, err := database.InsertStepResult(run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(stepResult.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetStepFindings(stepResult.ID, parked); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.InsertStepRound(stepResult.ID, 1, "initial", &parked, nil, 20); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 20); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if run, err = database.GetRun(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	bindRunToGitRepo(t, database, workDir, run)
+
+	var authorizedCommitted, unselectedStillFenced bool
+	step := &adaptiveCallStep{
+		name: types.StepTest,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			if !sctx.Fixing {
+				return nil, errors.New("recovered gate must not rerun its completed pass")
+			}
+			writeTestFile(t, sctx.WorkDir, "change_test.txt", "regression\n")
+			if err := sctx.AssertDeclaredScope("stage or commit agent fixes"); err != nil {
+				return nil, err
+			}
+			authorizedCommitted = true
+			unselectedStillFenced = !sctx.DeclaredScope.Contains("unrelated.txt")
+			return &StepOutcome{}, nil
+		},
+	}
+	exec := NewExecutor(database, p, &config.Config{}, &countingFenceAgent{}, []Step{step}, nil)
+	done := make(chan error, 1)
+	go func() { done <- exec.Resume(context.Background(), run, repo, workDir) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := exec.Respond(types.StepTest, types.ActionFix, []string{"scope-1"}); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("recovered scope gate never accepted a decision")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("recovered authorization did not let the run continue: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovered executor timed out")
+	}
+	if !authorizedCommitted {
+		t.Fatal("recovered fix round never reached its authorized path")
+	}
+	if !unselectedStillFenced {
+		t.Fatal("recovery widened scope beyond the authorized selection")
+	}
+}
+
 type capturingFenceAgent struct {
 	opts agent.RunOpts
 }

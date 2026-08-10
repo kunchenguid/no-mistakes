@@ -113,7 +113,7 @@ Local Test is never a repository-wide regression-suite substitute; broad regress
 - Evidence is always collected under the temporary `no-mistakes-evidence/<runID>` directory, outside the worktree, so artifacts never enter the branch being validated. On GitHub, [`test.evidence.store_in_repo: true`](/no-mistakes/reference/global-config/#testevidence) makes the PR step publish that directory to the push-target repository's orphan evidence branch under `<test.evidence.dir>/<branch-slug>` and link the artifacts from the PR body. The config reference owns provider support and fail-closed behavior.
 - Before finishing, test agents are instructed to remove transient working-tree artifacts they created, such as downloaded models, caches, build outputs, large binaries, or generated data directories, while preserving intentional source or test-file changes and evidence files under the dedicated evidence directory.
 - Missing evidence for user intent can be reported as a warning with `action: ask-user`.
-- If the agent creates new test files (detected via `git status --porcelain`), they are recorded as informational `no-op` findings and do not require approval when tests pass.
+- If the agent creates new test files (detected via `git status --porcelain`), they are recorded as informational `no-op` findings and do not require approval when tests pass. A new file the submitted change never declared is kept in the checkout but is not committed: it raises the `PIPELINE_SCOPE_DECISION_REQUIRED` gate described above.
 
 **Approval:** test findings with `action: ask-user` pause for approval, including missing-evidence warnings for user intent. `action: auto-fix` findings stay eligible for the fix loop. `action: no-op` findings are informational only.
 
@@ -164,6 +164,7 @@ Pushes the validated branch to the configured push target.
 **Behavior:**
 - If `commands.format` is set, runs it first
 - Commits any uncommitted agent changes with message `no-mistakes: apply agent fixes`
+- As the pipeline's last stage and commit, re-checks those changes against the declared ticket scope, including whatever the format command left behind; an undeclared path is preserved in the checkout but never staged, committed, or pushed, and raises the `PIPELINE_SCOPE_DECISION_REQUIRED` gate instead
 - Without fork routing, successful run-start validation selects the upstream URL from the working clone; when it matches the gate worktree's `origin`, the worktree URL is used so embedded credentials retained outside the database can authenticate. If validation fails, the run continues with its prior routing.
 - With GitHub fork routing, the push target is `repos.fork_url`
 - Immediately before remote mutation, reloads the durable review-approved commit and refuses to push when that binding is missing, malformed, or unreachable
@@ -181,7 +182,7 @@ A remote branch can move without being rejected when all remote commits are alre
 Any other out-of-band commit stops the push instead of being overwritten.
 Pre-skipping or later skipping Review leaves no approval binding, so Push fails closed unless Push is also skipped.
 
-This step never requires approval - it runs automatically after review, test, document, and lint pass.
+This step has no approval gate of its own - it runs automatically after review, test, document, and lint pass - but it parks for an explicit decision when the changes it would commit fall outside the declared ticket scope.
 
 ## PR
 
