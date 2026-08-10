@@ -170,6 +170,47 @@ func TestReportQueuesUnexpectedParksInsteadOfScoringThemWrong(t *testing.T) {
 	}
 }
 
+func TestPersistEvaluationQueuesEveryUnexpectedCandidateFinding(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	caseDir := store.caseDir("candidate-findings")
+	if err := os.MkdirAll(caseDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	labels := Labels{Version: 1, Verdict: VerdictLabel{Known: true}}
+	if err := writeJSON(filepath.Join(caseDir, "labels.json"), labels); err != nil {
+		t.Fatal(err)
+	}
+	c := Case{Manifest: Manifest{ID: "candidate-findings", SourceRunID: "run", SourceRoundID: "round"}, Labels: labels, Dir: caseDir}
+	if err := store.registerCase(c); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.persistEvaluation(c, Evaluation{
+		ID:              "evaluation",
+		SessionID:       "session",
+		CaseID:          c.ID,
+		Candidate:       "claude+test",
+		Repeat:          1,
+		Status:          "completed",
+		ExpectedPark:    boolPtr(false),
+		CandidateParked: true,
+		FindingCount:    3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := readJSON(filepath.Join(caseDir, "labels.json"), &labels); err != nil {
+		t.Fatal(err)
+	}
+	if labels.QueuedCandidateFindings != 3 {
+		t.Fatalf("queued candidate findings = %d, want 3", labels.QueuedCandidateFindings)
+	}
+}
+
 func TestConfidenceIntervalRequiresMultipleIndependentCases(t *testing.T) {
 	rows := []Evaluation{{CaseID: "only", Candidate: "claude+test", Status: "completed", ExpectedPark: boolPtr(true), CandidateParked: true}}
 	if got := confidenceInterval("claude+test", rows); got != nil {
