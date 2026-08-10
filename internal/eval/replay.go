@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -172,7 +173,7 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 		return evaluation
 	}
 	defer baseAgent.Close()
-	observed := &observedAgent{inner: agent.WithSteering(baseAgent)}
+	observed := &observedAgent{inner: agent.WithSteering(baseAgent), ownership: ownership}
 
 	replayDB, stepResultID, fixing, previousFindings, err := replayRoundContext(isolatedPaths, c, workDir)
 	if err != nil {
@@ -383,18 +384,42 @@ func candidateModelArgs(candidate Candidate) ([]string, error) {
 }
 
 type observedAgent struct {
-	inner      agent.Agent
-	result     *agent.Result
-	durationMS int64
+	inner        agent.Agent
+	ownership    *e2edaemon.Ownership
+	result       *agent.Result
+	durationMS   int64
+	ownershipErr error
+	mu           sync.Mutex
 }
 
 func (a *observedAgent) Name() string { return a.inner.Name() }
 func (a *observedAgent) Close() error { return a.inner.Close() }
 func (a *observedAgent) Run(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+	previousLifecycle := opts.OnLifecycle
+	opts.OnLifecycle = func(event agent.LifecycleEvent) {
+		if event.Phase == "start" && event.PID > 0 {
+			if syncErr := a.ownership.SyncProcess(event.PID); syncErr != nil {
+				a.mu.Lock()
+				if a.ownershipErr == nil {
+					a.ownershipErr = syncErr
+				}
+				a.mu.Unlock()
+			}
+		}
+		if previousLifecycle != nil {
+			previousLifecycle(event)
+		}
+	}
 	started := time.Now()
 	result, err := a.inner.Run(ctx, opts)
 	a.durationMS += time.Since(started).Milliseconds()
 	a.result = result
+	a.mu.Lock()
+	ownershipErr := a.ownershipErr
+	a.mu.Unlock()
+	if ownershipErr != nil {
+		return result, ownershipErr
+	}
 	return result, err
 }
 

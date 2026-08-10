@@ -12,7 +12,7 @@ It is separate from normal pipeline operation. It does not start or use the shar
 no-mistakes eval capture <run-id>
 ```
 
-Capture exports one case for each persisted Review pass in the run. If Review is still parked without a recorded gate decision, capture returns an error rather than freezing an incomplete label; retry after the decision is recorded. A case includes:
+Capture exports one case for each persisted Review pass in the run. The source daemon must have started with [`NO_MISTAKES_EVAL_CAPTURE_PROVENANCE=1`](/no-mistakes/reference/environment/#no_mistakes_eval_capture_provenance); normal pipeline runs do not record eval provenance. If Review is still parked without a recorded gate decision, capture returns an error rather than freezing an incomplete label; retry after the decision is recorded. A case includes:
 
 - a self-contained Git bundle for the reviewed commit, base, and trusted-config commit pinned at capture
 - agent-neutral global configuration and the effective repository configuration frozen at capture

@@ -431,21 +431,29 @@ func sourceInvocationsFor(invocations []db.AgentInvocation) []sourceInvocation {
 func baselineForRound(invocations []db.AgentInvocation, round int) BaselineMetrics {
 	var baseline BaselineMetrics
 	seen := false
+	complete := true
 	for _, inv := range invocations {
-		if inv.StepName != string(types.StepReview) || inv.Round != round {
-			continue
-		}
-		baseline.DurationMS += inv.DurationMS
-		if inv.DeltaInputTokens == nil || inv.DeltaOutputTokens == nil || inv.DeltaCacheReadTokens == nil {
+		if inv.StepName != string(types.StepReview) || inv.Round != round || inv.Purpose != "review" {
 			continue
 		}
 		seen = true
+		baseline.DurationMS += inv.DurationMS
+		if inv.DeltaInputTokens == nil || inv.DeltaOutputTokens == nil || inv.DeltaCacheReadTokens == nil {
+			complete = false
+			continue
+		}
 		baseline.InputTokens += int64(*inv.DeltaInputTokens)
 		baseline.OutputTokens += int64(*inv.DeltaOutputTokens)
 		baseline.CacheReadTokens += int64(*inv.DeltaCacheReadTokens)
 		baseline.FreshInputTokens += int64(agent.FreshInputTokens(*inv.DeltaInputTokens, *inv.DeltaCacheReadTokens))
 	}
-	baseline.TokensReported = seen
+	baseline.TokensReported = seen && complete
+	if !baseline.TokensReported {
+		baseline.InputTokens = 0
+		baseline.OutputTokens = 0
+		baseline.CacheReadTokens = 0
+		baseline.FreshInputTokens = 0
+	}
 	return baseline
 }
 

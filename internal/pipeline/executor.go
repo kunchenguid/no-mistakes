@@ -776,14 +776,11 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		var inserted *db.StepRound
 		var dbErr error
 		if stepName == types.StepReview {
-			var trustedConfigSHA string
-			var globalConfigYAML, repoConfigYAML []byte
-			if e.config != nil {
-				trustedConfigSHA = e.config.TrustedConfigSHA
-				globalConfigYAML = e.config.ReplayGlobalYAML
-				repoConfigYAML = e.config.ReplayRepoYAML
+			if e.config != nil && e.config.CaptureEvalProvenance {
+				inserted, dbErr = e.db.InsertReviewStepRoundWithProvenance(sr.ID, roundNum, nextTrigger, findingsPtr, fixSummaryPtr, reviewApprovedHeadSHA, reviewStartingHeadSHA, e.config.TrustedConfigSHA, e.config.ReplayGlobalYAML, e.config.ReplayRepoYAML, roundDuration)
+			} else {
+				inserted, dbErr = e.db.InsertReviewStepRound(sr.ID, roundNum, nextTrigger, findingsPtr, fixSummaryPtr, reviewApprovedHeadSHA, roundDuration)
 			}
-			inserted, dbErr = e.db.InsertReviewStepRoundWithProvenance(sr.ID, roundNum, nextTrigger, findingsPtr, fixSummaryPtr, reviewApprovedHeadSHA, reviewStartingHeadSHA, trustedConfigSHA, globalConfigYAML, repoConfigYAML, roundDuration)
 		} else {
 			inserted, dbErr = e.db.InsertStepRound(sr.ID, roundNum, nextTrigger, findingsPtr, fixSummaryPtr, roundDuration)
 		}

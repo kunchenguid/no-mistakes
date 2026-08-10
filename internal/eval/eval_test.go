@@ -211,6 +211,24 @@ func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 	}
 }
 
+func TestBaselineForRoundIncludesOnlyCompleteReviewInvocationMetrics(t *testing.T) {
+	input, output, cache := 100, 20, 30
+	invocations := []db.AgentInvocation{
+		{StepName: string(types.StepReview), Round: 2, Purpose: "review-fix", DurationMS: 900, DeltaInputTokens: &input, DeltaOutputTokens: &output, DeltaCacheReadTokens: &cache},
+		{StepName: string(types.StepReview), Round: 2, Purpose: "review", DurationMS: 100, DeltaInputTokens: &input, DeltaOutputTokens: &output, DeltaCacheReadTokens: &cache},
+	}
+	baseline := baselineForRound(invocations, 2)
+	if baseline.DurationMS != 100 || !baseline.TokensReported || baseline.InputTokens != 100 || baseline.OutputTokens != 20 || baseline.CacheReadTokens != 30 || baseline.FreshInputTokens != 70 {
+		t.Fatalf("review baseline = %#v", baseline)
+	}
+
+	invocations = append(invocations, db.AgentInvocation{StepName: string(types.StepReview), Round: 2, Purpose: "review", DurationMS: 50})
+	baseline = baselineForRound(invocations, 2)
+	if baseline.DurationMS != 150 || baseline.TokensReported || baseline.InputTokens != 0 || baseline.OutputTokens != 0 || baseline.CacheReadTokens != 0 || baseline.FreshInputTokens != 0 {
+		t.Fatalf("incomplete review baseline = %#v", baseline)
+	}
+}
+
 func TestReportQueuesUnexpectedParksInsteadOfScoringThemWrong(t *testing.T) {
 	summary := SummarizeEvaluations([]Evaluation{
 		{CaseID: "must-park", Candidate: "claude+test", Status: "completed", ExpectedPark: boolPtr(true), CandidateParked: true},

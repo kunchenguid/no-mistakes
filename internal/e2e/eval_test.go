@@ -17,6 +17,7 @@ import (
 // the source daemon; eval itself must create its own temporary sandbox and
 // never reuse it.
 func TestEvalJourney(t *testing.T) {
+	t.Setenv("NO_MISTAKES_EVAL_CAPTURE_PROVENANCE", "1")
 	scenario := filepath.Join(t.TempDir(), "eval-scenario.yaml")
 	if err := os.WriteFile(scenario, []byte(`actions:
   - match: "Review the code changes and return structured findings with a risk assessment."

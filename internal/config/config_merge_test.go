@@ -24,6 +24,21 @@ func TestMerge_GlobalOnly(t *testing.T) {
 	}
 }
 
+func TestMergeLeavesEvalProvenanceDisabledUntilExplicitlyEnabled(t *testing.T) {
+	global := &GlobalConfig{SourceYAML: []byte("agent: claude\n"), Agent: types.AgentClaude}
+	repo := &RepoConfig{IgnorePatterns: []string{"vendor/**"}}
+	cfg := Merge(global, repo)
+	if cfg.CaptureEvalProvenance || len(cfg.ReplayGlobalYAML) != 0 || len(cfg.ReplayRepoYAML) != 0 {
+		t.Fatalf("ordinary merged config contains eval provenance: %#v", cfg)
+	}
+	if err := cfg.EnableEvalProvenance(global, repo); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.CaptureEvalProvenance || string(cfg.ReplayGlobalYAML) != "agent: claude\n" || len(cfg.ReplayRepoYAML) == 0 {
+		t.Fatalf("enabled eval provenance = %#v", cfg)
+	}
+}
+
 func TestMerge_RepoOverridesAgent(t *testing.T) {
 	global := &GlobalConfig{
 		Agent:             types.AgentClaude,

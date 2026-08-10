@@ -225,8 +225,14 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	}
 	trustedRepoCfg := loadTrustedRepoConfig(ctx, workDir, trustedSHA, run.ID)
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
-	cfg := config.Merge(globalCfg, config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands))
+	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
+	cfg := config.Merge(globalCfg, effectiveRepoCfg)
 	cfg.TrustedConfigSHA = trustedSHA
+	if os.Getenv("NO_MISTAKES_EVAL_CAPTURE_PROVENANCE") == "1" {
+		if err := cfg.EnableEvalProvenance(globalCfg, effectiveRepoCfg); err != nil {
+			return nil, err
+		}
+	}
 	return cfg, nil
 }
 
@@ -865,6 +871,13 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
 	cfg.TrustedConfigSHA = trustedSHA
+	if os.Getenv("NO_MISTAKES_EVAL_CAPTURE_PROVENANCE") == "1" {
+		if err := cfg.EnableEvalProvenance(globalCfg, effectiveRepoCfg); err != nil {
+			m.db.UpdateRunError(run.ID, err.Error())
+			trackStartFailure("eval_provenance")
+			return "", err
+		}
+	}
 
 	// Create agent. In demo mode, skip resolution and use a no-op agent.
 	var ag agent.Agent

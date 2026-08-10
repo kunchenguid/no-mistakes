@@ -375,28 +375,29 @@ type AutoFix struct {
 
 // Config is the merged result of global + per-repo configuration.
 type Config struct {
-	ReplayGlobalYAML     []byte
-	ReplayRepoYAML       []byte
-	TrustedConfigSHA     string
-	Agent                types.AgentName
-	Agents               []types.AgentName
-	ACPXPath             string
-	ACPRegistryOverrides map[string]string
-	AgentPathOverride    map[string]string
-	AgentArgsOverride    map[string][]string
-	CITimeout            time.Duration
-	StepQuietWarning     time.Duration
-	LogLevel             string
-	SessionReuse         bool
-	Commands             Commands
-	IgnorePatterns       []string
-	AutoFix              AutoFix
-	CI                   CI
-	Commit               Commit
-	Intent               Intent
-	Test                 Test
-	Document             Document
-	Review               Review
+	ReplayGlobalYAML      []byte
+	ReplayRepoYAML        []byte
+	TrustedConfigSHA      string
+	CaptureEvalProvenance bool
+	Agent                 types.AgentName
+	Agents                []types.AgentName
+	ACPXPath              string
+	ACPRegistryOverrides  map[string]string
+	AgentPathOverride     map[string]string
+	AgentArgsOverride     map[string][]string
+	CITimeout             time.Duration
+	StepQuietWarning      time.Duration
+	LogLevel              string
+	SessionReuse          bool
+	Commands              Commands
+	IgnorePatterns        []string
+	AutoFix               AutoFix
+	CI                    CI
+	Commit                Commit
+	Intent                Intent
+	Test                  Test
+	Document              Document
+	Review                Review
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -1658,10 +1659,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		commit.FixMessage = *repo.Commit.FixMessage
 	}
 
-	repoYAML, _ := yaml.Marshal(repo)
 	cfg := &Config{
-		ReplayGlobalYAML:     append([]byte(nil), global.SourceYAML...),
-		ReplayRepoYAML:       repoYAML,
 		Agent:                global.Agent,
 		Agents:               copyAgents(global.Agents),
 		ACPXPath:             global.ACPXPath,
@@ -1696,4 +1694,18 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	}
 
 	return cfg
+}
+
+func (c *Config) EnableEvalProvenance(global *GlobalConfig, repo *RepoConfig) error {
+	if c == nil || global == nil || repo == nil {
+		return fmt.Errorf("eval provenance requires merged, global, and repository configuration")
+	}
+	repoYAML, err := yaml.Marshal(repo)
+	if err != nil {
+		return fmt.Errorf("serialize eval repository configuration: %w", err)
+	}
+	c.ReplayGlobalYAML = append([]byte(nil), global.SourceYAML...)
+	c.ReplayRepoYAML = repoYAML
+	c.CaptureEvalProvenance = true
+	return nil
 }

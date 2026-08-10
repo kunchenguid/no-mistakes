@@ -101,6 +101,17 @@ Fallback GitHub token used by `no-mistakes update` when `GITHUB_TOKEN` is unset 
 
 See [`GITHUB_TOKEN`](#github_token) for the updater's authentication behavior and precedence.
 
+## `NO_MISTAKES_EVAL_CAPTURE_PROVENANCE`
+
+Opt source runs into recording the immutable local configuration provenance required by `no-mistakes eval capture`.
+
+|         |                                                      |
+| ------- | ---------------------------------------------------- |
+| Type    | `1` to enable, anything else to leave disabled       |
+| Default | unset (normal pipeline rounds record no eval data)   |
+
+Set this in the daemon environment before starting a source run that you intend to capture. It does not enable replay, send data, or change pipeline decisions. See [Evaluation toolkit](/no-mistakes/reference/eval/).
+
 ## `NO_MISTAKES_NO_UPDATE_CHECK`
 
 Disable background update checks.
