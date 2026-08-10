@@ -28,13 +28,15 @@ That order matches the actual boundaries in the system:
 
 ## Daemon won't start
 
-Symptoms: `no-mistakes daemon status` shows stopped, or `no-mistakes` exits with "daemon not running."
+Symptoms: `no-mistakes daemon status` shows stopped, or `no-mistakes` exits with "daemon not running." After a fresh install, this is expected until you explicitly start it.
 
 ### Start it manually
 
 ```sh
 no-mistakes daemon start
 ```
+
+If you are already inside a repo you plan to gate, `no-mistakes init` also starts the daemon explicitly as part of setup.
 
 This installs or refreshes the managed service (launchd, systemd user service, or Task Scheduler), then starts it. If service install or startup fails, it falls back to a detached daemon.
 
@@ -67,7 +69,7 @@ no-mistakes daemon stop
 no-mistakes daemon start
 ```
 
-If the socket file exists but nothing answers at all (a dead socket left behind by an unclean exit, e.g. a crash or `SIGKILL`), commands that ensure the daemon is running (`no-mistakes`, `init`, `attach`, `rerun`, `axi run`, `axi respond`) now fail fast with a `connect to daemon socket` error instead of silently starting a replacement daemon. The error message itself includes a `(run 'no-mistakes daemon start' to recover)` hint - run `no-mistakes daemon start` directly to recover, since it self-heals past a dead socket and starts a fresh daemon.
+If the socket file exists but nothing answers at all (a dead socket left behind by an unclean exit, e.g. a crash or `SIGKILL`), commands that require a running daemon (`no-mistakes`, `attach`, `rerun`, `axi run`, `axi respond`) fail fast with a `connect to daemon socket` error instead of silently starting a replacement daemon. Run `no-mistakes daemon start` directly to recover, since it self-heals past a dead socket and starts a fresh daemon.
 
 ### Managed service logs
 

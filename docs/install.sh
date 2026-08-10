@@ -76,8 +76,9 @@ fi
 
 echo "no-mistakes ${VERSION} installed to ${BIN_PATH}"
 echo "Command path: ${LINK_PATH} -> ${BIN_PATH}"
-
-"$BIN_PATH" daemon restart >/dev/null
+echo "The installer did not start the background daemon."
+echo "Run 'no-mistakes init' to set up a repo and start it explicitly."
+echo "Run 'no-mistakes daemon start' to start it explicitly without init."
 
 case ":$PATH:" in
   *":$LINK_DIR:"*) ;;

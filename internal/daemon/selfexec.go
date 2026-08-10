@@ -886,7 +886,7 @@ func upsertEnv(env []string, key, value string) []string {
 	return result
 }
 
-// EnsureDaemon starts the daemon if it's not already running.
+// EnsureDaemon verifies that the daemon is already running and reachable.
 func EnsureDaemon(p *paths.Paths) error {
 	alive, err := daemonHealthCheck(p)
 	if err != nil {
@@ -895,7 +895,7 @@ func EnsureDaemon(p *paths.Paths) error {
 	if alive {
 		return nil
 	}
-	return daemonStart(p)
+	return fmt.Errorf("daemon not running (run 'no-mistakes daemon start' to start it explicitly)")
 }
 
 // ReadPID reads the daemon PID from the PID file.

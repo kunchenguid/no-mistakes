@@ -1,26 +1,18 @@
 # Contributing
 
-Thanks for wanting to contribute. One rule up front:
+Thanks for wanting to contribute.
 
-**All pull requests to this repository must be raised through `no-mistakes`.**
+**Please prefer raising PRs through `no-mistakes` when your environment supports it.**
 
-This repo _is_ no-mistakes. Contributions should be done using the tool itself, which reduces the maintainer's burden of reviewing and merging contributions.
-The `Require no-mistakes` GitHub Actions workflow runs on every PR and fails if the body is missing the deterministic signature that no-mistakes writes. PRs without it will not be reviewed or merged.
+This repo _is_ no-mistakes. Using the tool on changes here exercises the local gate end to end and keeps the deterministic `## Pipeline` evidence in the PR body. If you cannot use the gate in your environment, open a direct PR and briefly explain the constraint in the PR description.
 
-Every `opened` or `edited` event gets an independent run, including first-time-fork runs that become actionable through GitHub's normal approval process. The integration contract for consumers such as Wheelhouse is:
-
-- The stable check name is `PR must be raised via no-mistakes`.
-- The workflow run's `display_title` identifies the PR number, event action, `run_number`, and immutable `run_id`. For a PR, increasing `run_number` orders distinct events; a re-run retains that event identity and increments `run_attempt`.
-- The run's `head_sha` binds the evidence to the reviewed commit. After the latest `opened` or `edited` run reaches `status: completed`, `conclusion: success` means that event's body contained the signature and `conclusion: failure` means it did not. `action_required` or `cancelled` is not compliance evidence and must be handled conservatively.
-- Fork runs stay on the `pull_request` boundary with read-only contents permission, no repository secrets, and no checkout or execution of fork code. Approval permits only this body check; it does not grant write authority.
-
-## Workflow
+## Preferred workflow
 
 1. Fork the repo, then clone the parent repo or set your local `origin` back to the parent repo (`git@github.com:kunchenguid/no-mistakes.git`).
 2. Create a branch and make your changes.
 3. Initialize or refresh the gate with your fork as the push target: `no-mistakes init --fork-url git@github.com:<you>/no-mistakes.git`.
 4. Commit your changes.
-5. Push through the gate instead of pushing to `origin`:
+5. Push through the gate instead of pushing directly to `origin` when you can:
 
    ```sh
    git push no-mistakes
@@ -28,6 +20,8 @@ Every `opened` or `edited` event gets an independent run, including first-time-f
 
 6. Run `no-mistakes` to attach to the pipeline, watch findings, and auto-fix or review as needed.
 7. Once the pipeline passes, it pushes the branch to your fork and opens the PR against the parent repo for you.
+
+If you need to open a direct PR instead, keep the same local validation discipline: run the relevant tests yourself, summarize what you verified, and explain why the gate was not available.
 
 See the [quick start](https://kunchenguid.github.io/no-mistakes/start-here/quick-start/) for the full first-run walkthrough.
 

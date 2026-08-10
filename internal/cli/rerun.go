@@ -43,7 +43,7 @@ func newRerunCmd() *cobra.Command {
 				}
 
 				if err := daemon.EnsureDaemon(p); err != nil {
-					return fmt.Errorf("start daemon: %w", err)
+					return err
 				}
 
 				client, err := ipc.Dial(p.Socket())

@@ -41,9 +41,9 @@ func attachRun(ctx context.Context, w io.Writer, runID string, rootDefault bool,
 		}
 	}
 
-	// Ensure daemon is running.
+	// Ensure the daemon is already running.
 	if err := daemon.EnsureDaemon(p); err != nil {
-		return fmt.Errorf("start daemon: %w", err)
+		return err
 	}
 
 	// Connect to daemon.

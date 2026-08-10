@@ -123,6 +123,36 @@ func TestDaemonStartTimeoutCoversColdProductionWork(t *testing.T) {
 	}
 }
 
+func TestEnsureDaemonReturnsExplicitStartHintWhenStopped(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+
+	oldHealthCheck := daemonHealthCheck
+	oldStart := daemonStart
+	started := false
+	daemonHealthCheck = func(*paths.Paths) (bool, error) { return false, nil }
+	daemonStart = func(*paths.Paths) error {
+		started = true
+		return nil
+	}
+	t.Cleanup(func() {
+		daemonHealthCheck = oldHealthCheck
+		daemonStart = oldStart
+	})
+
+	err := EnsureDaemon(p)
+	if err == nil {
+		t.Fatal("EnsureDaemon should report that the daemon must be started explicitly")
+	}
+	if started {
+		t.Fatal("EnsureDaemon must not auto-start the daemon when it is stopped")
+	}
+	for _, want := range []string{"daemon not running", "no-mistakes daemon start"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("EnsureDaemon error = %q, want substring %q", err.Error(), want)
+		}
+	}
+}
+
 func TestEnsureDaemonDoesNotStartWhenHealthCheckTimesOut(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "dtest")
 	if err != nil {

@@ -4,9 +4,10 @@ description: Background process management, worktrees, state, and recovery.
 ---
 
 The daemon is a long-running background process that manages pipeline runs. The
-installer prefers setting it up as a managed background service, and
-`no-mistakes`, `init`, `attach`, `rerun`, and `update` keep that service
-installed and running for you when that path is available.
+installer only installs the binary. `no-mistakes init`, `no-mistakes daemon start`,
+and `no-mistakes daemon restart` are the explicit startup paths; other commands
+that need the daemon now fail with a direct `no-mistakes daemon start` hint
+instead of silently creating background persistence.
 
 ## Why a daemon exists
 
@@ -31,25 +32,24 @@ On macOS this is a per-user `launchd` agent, on Linux a per-user `systemd` servi
 
 ## Starting and stopping
 
-Most people do not need to manage the daemon directly. The usual commands
-already make sure it exists when needed.
+The installer does not start the daemon by default. The explicit lifecycle commands are:
 
 ```sh
-# Explicit management
+# Explicit lifecycle management
+no-mistakes init
 no-mistakes daemon start
 no-mistakes daemon stop
 no-mistakes daemon restart
 no-mistakes daemon status
 
-# Ensures the daemon is running, using the managed service when possible
+# Commands that require an already-running daemon
 no-mistakes
-no-mistakes init
 no-mistakes attach
 no-mistakes rerun
 no-mistakes axi run
 no-mistakes axi respond
 
-# Resets the daemon after replacing the binary
+# Resets the daemon after replacing the binary when it is already running
 no-mistakes update
 ```
 
@@ -67,7 +67,7 @@ any lifecycle mutation, with no `--force` or `--yes` bypass.
 Every invocation of `daemon stop`, `daemon restart`, or `update` - forced or not - logs the caller's PID, parent PID, and parent command line to `~/.no-mistakes/logs/cli.log` so a later incident can identify which agent or process triggered it.
 
 The daemon writes an identity record to `~/.no-mistakes/daemon.pid` and listens on a Unix socket at `~/.no-mistakes/socket`. On Windows, it uses a localhost TCP listener and a protected endpoint file at the same path. CLI clients bound how long they wait for that socket to accept a connection with `daemon_connect_timeout` (default `3s`, override with `NM_DAEMON_CONNECT_TIMEOUT`), so a daemon process that is alive but stuck fails the connection instead of hanging the caller; see [Troubleshooting](/no-mistakes/guides/troubleshooting/#check-for-stale-artifacts).
-Commands that ensure the daemon is running (`no-mistakes`, `init`, `attach`, `rerun`, `axi run`, `axi respond`) also fail fast rather than silently starting a replacement daemon when the socket file exists but nothing answers at all, such as a dead socket left behind by an unclean exit; `no-mistakes daemon start` self-heals past that case.
+Commands that require the daemon (`no-mistakes`, `attach`, `rerun`, `axi run`, `axi respond`) also fail fast rather than silently starting a replacement daemon when the socket file exists but nothing answers at all, such as a dead socket left behind by an unclean exit; `no-mistakes daemon start` remains the explicit self-healing recovery path.
 After accepting a shutdown request, `daemon stop` waits for the daemon process itself to exit before returning success. Losing IPC health is not enough because the listener closes near the start of shutdown, while the singleton lock and other process-owned resources are released only at process exit. `daemon restart` uses the same complete-stop handoff before starting the replacement, so the old and new processes do not contend for the root.
 
 Process launch and daemon readiness are separate states. After taking the singleton lock, the daemon publishes its PID before exclusive crash recovery begins, but startup is not successful until the IPC server returns a real health response. `daemon start` allows up to 45 seconds for cold environment setup and recovery, reports a child that exits before readiness promptly, and never treats the PID file or a bound socket as proof that the daemon is ready. If detached startup times out, the command kills and reaps that child before returning; if managed startup fails, it cleans up the managed attempt before trying the detached fallback and preserves both errors when both paths fail.
@@ -142,7 +142,7 @@ log_level: debug # debug | info | warn | error
 
 ## Shutdown
 
-`no-mistakes daemon stop` stops the current daemon process without removing the managed service. The next `no-mistakes daemon start`, `no-mistakes`, `init`, `attach`, `rerun`, or `update` will start it again through the same service manager when available, or as a detached daemon otherwise.
+`no-mistakes daemon stop` stops the current daemon process without removing the managed service. A later `no-mistakes init`, `no-mistakes daemon start`, or `no-mistakes daemon restart` can start it again through the same service manager when available, or as a detached daemon otherwise. Other commands now require it to already be running and fail with an explicit daemon-start hint.
 The [starting and stopping](#starting-and-stopping) section owns the active-run
 guard, the top-level `--force` override, and the separate validation-step
 containment rule.

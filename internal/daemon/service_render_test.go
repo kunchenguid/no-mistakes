@@ -73,6 +73,26 @@ func TestRenderLaunchAgentIncludesManagedPath(t *testing.T) {
 	}
 }
 
+func TestRenderLaunchAgentUsesConditionalKeepAlive(t *testing.T) {
+	t.Parallel()
+	p := paths.WithRoot(filepath.Join(t.TempDir(), "nm"))
+	plist := renderLaunchAgent("/opt/no-mistakes/bin/no-mistakes", p, "/Users/test")
+
+	want := strings.Join([]string{
+		"<key>KeepAlive</key>",
+		"  <dict>",
+		"    <key>SuccessfulExit</key>",
+		"    <false/>",
+		"  </dict>",
+	}, "\n")
+	if !strings.Contains(plist, want) {
+		t.Fatalf("expected conditional KeepAlive in launchd plist, got:\n%s", plist)
+	}
+	if strings.Contains(plist, "<key>KeepAlive</key>\n  <true/>") {
+		t.Fatalf("launchd plist should not use unconditional KeepAlive, got:\n%s", plist)
+	}
+}
+
 // TestRenderSystemdUnitIncludesManagedPath mirrors the launchd coverage for
 // systemd user services so Linux installs don't regress into the same
 // "agent binary not in PATH" failure mode when launched at login.

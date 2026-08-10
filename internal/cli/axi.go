@@ -79,9 +79,9 @@ func (e *axiEnv) close() {
 }
 
 // openAxiEnv resolves paths, opens the DB, and finds the repo for the current
-// directory. When ensureDaemon is true it also starts (if needed) and dials
-// the daemon, populating client. Errors are returned for the caller to render
-// as structured TOON.
+// directory. When ensureDaemon is true it verifies that the daemon is already
+// running and then dials it, populating client. Errors are returned for the
+// caller to render as structured TOON.
 func openAxiEnv(ensureDaemonConn bool) (*axiEnv, error) {
 	return openAxiEnvWithOptions(axiEnvOptions{ensureDaemonConn: ensureDaemonConn})
 }
@@ -139,7 +139,7 @@ func openAxiEnvWithOptions(opts axiEnvOptions) (*axiEnv, error) {
 	if opts.ensureDaemonConn {
 		if err := daemon.EnsureDaemon(p); err != nil {
 			env.close()
-			return nil, fmt.Errorf("start daemon: %w", err)
+			return nil, err
 		}
 		client, err := ipc.Dial(p.Socket())
 		if err != nil {

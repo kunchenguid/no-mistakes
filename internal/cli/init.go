@@ -40,15 +40,28 @@ func newInitCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("init: %w", err)
 				}
-				if err := daemon.EnsureDaemon(p); err != nil {
+				alive, err := daemon.IsRunning(p)
+				if err != nil {
 					// Only roll back a gate we created in this run; a re-init
 					// must never eject a user's pre-existing gate.
 					if created {
 						if _, ejectErr := gate.Eject(cmd.Context(), d, p, "."); ejectErr != nil {
-							return fmt.Errorf("start daemon: %w, rollback init: %v", err, ejectErr)
+							return fmt.Errorf("check daemon: %w, rollback init: %v", err, ejectErr)
 						}
 					}
-					return fmt.Errorf("start daemon: %w", err)
+					return fmt.Errorf("check daemon: %w", err)
+				}
+				if !alive {
+					if err := daemon.Start(p); err != nil {
+						// Only roll back a gate we created in this run; a re-init
+						// must never eject a user's pre-existing gate.
+						if created {
+							if _, ejectErr := gate.Eject(cmd.Context(), d, p, "."); ejectErr != nil {
+								return fmt.Errorf("start daemon: %w, rollback init: %v", err, ejectErr)
+							}
+						}
+						return fmt.Errorf("start daemon: %w", err)
+					}
 				}
 
 				// Install the agent skill at user level so agents can drive

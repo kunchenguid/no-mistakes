@@ -38,7 +38,7 @@ When you run `no-mistakes init` in a repo:
 5. It adds a `no-mistakes` remote to your working repo that points at the gate.
 6. When `--fork-url` is supplied, it records that GitHub fork as the branch push target while keeping `origin` as the parent repository used for PR bases.
 7. It installs or refreshes the `/no-mistakes` agent skill at user level, into `~/.claude/skills/no-mistakes/SKILL.md` and `~/.agents/skills/no-mistakes/SKILL.md`, on a best-effort basis, following existing symlinks between the home `.claude` and `.agents` skill directories. It writes no skill files into the repo; if the repo still carries a vendored copy from an older version, `init` prints a notice that the copy can be removed.
-8. It makes sure the daemon is running so incoming pushes can start runs.
+8. If the daemon is not already running, it starts it explicitly so incoming pushes can start runs.
 
 `init` is idempotent.
 If the repo is already initialized, it refreshes the existing gate instead of failing: managed hook installation, push-option support, hook-path isolation, gate and working remotes, origin/default-branch metadata, and the `/no-mistakes` agent skill are repaired or updated where needed.
@@ -138,9 +138,9 @@ A long-running background process that manages pipeline runs. It:
 - Persists state to SQLite
 - Streams events to connected TUI clients via IPC
 
-The installer prefers setting up the daemon as a managed background service, and `no-mistakes`, `init`, `attach`, `rerun`, and `update` make sure the daemon is running when needed.
+The installer only installs the binary. `no-mistakes init`, `no-mistakes daemon start`, and `no-mistakes daemon restart` are the explicit startup paths.
 Bare `no-mistakes` then attaches to the active run on the current branch when one exists, or routes to the setup wizard when it needs to create a new branch/run.
-If managed service install or startup is unavailable or fails, startup falls back to a detached daemon process.
+If managed service install or startup is unavailable or fails, explicit startup falls back to a detached daemon process.
 `update` resets the daemon after replacing the binary when the daemon is running or stale daemon artifacts exist.
 If the daemon is already running from a different executable path, `update` prompts before replacing it.
 If the daemon executable path cannot be determined, `update` aborts before replacing anything.

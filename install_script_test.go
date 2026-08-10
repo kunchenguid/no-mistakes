@@ -62,7 +62,7 @@ func TestInstallScriptReplacesExistingPathEntryWithSymlink(t *testing.T) {
 	assertSymlinkTarget(t, oldPath, realBin)
 }
 
-func TestInstallScriptRestartsDaemonAfterInstall(t *testing.T) {
+func TestInstallScriptDoesNotStartDaemonAfterInstall(t *testing.T) {
 	skipInstallScriptTestsOnWindows(t)
 
 	home := t.TempDir()
@@ -81,21 +81,23 @@ func TestInstallScriptRestartsDaemonAfterInstall(t *testing.T) {
 	})
 
 	data, err := os.ReadFile(callLog)
-	if err != nil {
+	switch {
+	case os.IsNotExist(err):
+		return
+	case err != nil:
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "daemon restart") {
-		t.Fatalf("install.sh should restart the daemon after install, got calls %q", string(data))
+	if got := strings.TrimSpace(string(data)); got != "" {
+		t.Fatalf("install.sh should not start the daemon during install, got calls %q", got)
 	}
 }
 
-func TestInstallScriptFailsWhenDaemonRestartFails(t *testing.T) {
+func TestInstallScriptPrintsExplicitDaemonStartupGuidance(t *testing.T) {
 	skipInstallScriptTestsOnWindows(t)
 
 	home := t.TempDir()
 	archivePath := filepath.Join(t.TempDir(), "no-mistakes-v1.2.3-darwin-arm64.tar.gz")
-	callLog := filepath.Join(t.TempDir(), "calls.log")
-	makeInstallArchive(t, archivePath, "#!/bin/sh\nprintf '%s\n' \"$*\" >> \"$NO_MISTAKES_CALL_LOG\"\nif [ \"$1\" = \"daemon\" ] && [ \"$2\" = \"restart\" ]; then\n  exit 23\nfi\n")
+	makeInstallArchive(t, archivePath, "#!/bin/sh\nexit 0\n")
 	fakeBin := makeFakeInstallCommands(t)
 	localBin := filepath.Join(home, ".local", "bin")
 	if err := os.MkdirAll(localBin, 0o755); err != nil {
@@ -104,38 +106,38 @@ func TestInstallScriptFailsWhenDaemonRestartFails(t *testing.T) {
 
 	output, err := runInstallScriptCommand(t, home, fakeBin, map[string]string{
 		"FAKE_RELEASE_ARCHIVE": archivePath,
-		"NO_MISTAKES_CALL_LOG": callLog,
 	})
-	if err == nil {
-		t.Fatalf("install.sh should fail when daemon restart fails\n%s", output)
-	}
-
-	data, err := os.ReadFile(callLog)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("install.sh should succeed without starting the daemon\n%s", output)
 	}
-	if !strings.Contains(string(data), "daemon restart") {
-		t.Fatalf("install.sh should still attempt daemon restart, got calls %q", string(data))
+	for _, want := range []string{
+		"The installer did not start the background daemon.",
+		"Run 'no-mistakes init' to set up a repo and start it explicitly.",
+		"Run 'no-mistakes daemon start' to start it explicitly without init.",
+	} {
+		if !strings.Contains(string(output), want) {
+			t.Fatalf("install.sh output should contain %q, got:\n%s", want, output)
+		}
 	}
 }
 
-func TestPowerShellInstallScriptChecksDaemonRestartFailure(t *testing.T) {
+func TestPowerShellInstallScriptDoesNotStartDaemonAutomatically(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("docs", "install.ps1"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "$restart = Start-Process -FilePath \"$installDir\\no-mistakes.exe\" -ArgumentList @(") {
-		t.Fatal("install.ps1 should run daemon restart in a way that exposes the exit code")
+	if strings.Contains(text, "Start-Process -FilePath \"$installDir\\no-mistakes.exe\"") {
+		t.Fatal("install.ps1 should not start the daemon automatically during install")
 	}
-	if !strings.Contains(text, "-Wait -PassThru") {
-		t.Fatal("install.ps1 should wait for daemon restart to finish and inspect the process result")
-	}
-	if !strings.Contains(text, "if ($restart.ExitCode -ne 0)") {
-		t.Fatal("install.ps1 should fail the install when daemon restart returns a non-zero exit code")
-	}
-	if !strings.Contains(text, "throw \"Failed to restart daemon (exit code $($restart.ExitCode))\"") {
-		t.Fatal("install.ps1 should surface the daemon restart exit code")
+	for _, want := range []string{
+		"The installer did not start the background daemon.",
+		"Run 'no-mistakes init' to set up a repo and start it explicitly.",
+		"Run 'no-mistakes daemon start' to start it explicitly without init.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("install.ps1 should contain %q", want)
+		}
 	}
 }
 
