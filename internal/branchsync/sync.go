@@ -142,6 +142,12 @@ type Service struct {
 	beforeRecoverWorktreeMove func()
 	beforeRecoverBranchMove   func()
 	afterRecoverBranchMove    func()
+	// beforeRefreshFetch fires after Refresh observes the live remote head via
+	// ls-remote but before it fetches that branch into a private ref. It
+	// exists only so tests can deterministically reproduce the mid-refresh
+	// race where the remote changes again in that window (see
+	// TestRefresh_RaceDuringRefreshDoesNotCarryForwardStaleNextAction).
+	beforeRefreshFetch func()
 }
 
 // OpenCurrent opens a service for the invoking registered worktree. The caller
@@ -270,19 +276,30 @@ func (s *Service) Refresh(ctx context.Context) State {
 		return state
 	}
 
+	if s.beforeRefreshFetch != nil {
+		s.beforeRefreshFetch()
+	}
 	privateRef := "refs/no-mistakes/sync/" + run.ID
 	branch := strings.TrimPrefix(state.Target.Ref, "refs/heads/")
 	if err := git.FetchRemoteBranchToPrivateRef(refreshCtx, s.workDir(), pushURL, branch, privateRef); err != nil {
 		state.State = StateOffline
 		state.Safety = "blocked_offline"
 		state.Error = "could not fetch the configured push target; no files or worktree refs were changed"
+		state.NextAction = nil
 		return state
 	}
 	fetched, err := git.Run(ctx, s.workDir(), "rev-parse", privateRef)
 	if err != nil || fetched != live {
+		// A cached classification computed above (before this live check) may
+		// have set an actionable NextAction such as {Code: "sync"}. That
+		// guidance was for the pre-check world and must not carry forward onto
+		// a state that just discovered the remote is unstable: stale next-step
+		// guidance on a blocked state is exactly the "continue on stale state"
+		// hazard this whole method exists to prevent.
 		state.State = StateRemoteRewritten
 		state.Safety = "blocked_remote_changed_during_refresh"
 		state.Error = "the remote branch changed while it was being refreshed; no files or worktree refs were changed"
+		state.NextAction = &NextAction{Code: "recover_remote_rewritten", Command: "no-mistakes axi sync --recover"}
 		return state
 	}
 
@@ -299,6 +316,11 @@ func (s *Service) Refresh(ctx context.Context) State {
 			state.Safety = "blocked_remote_rewritten"
 			state.Relation = RelationUnknown
 			state.Error = "the live remote no longer equals the persisted pipeline push binding; no files or refs were changed"
+			// Unlike remote_advanced, a rewrite can never be resolved by an
+			// ordinary sync: the persisted binding itself is wrong now. Offer
+			// the guarded reconciliation instead of leaving the operator with
+			// no route forward but hand-editing state.sqlite.
+			state.NextAction = &NextAction{Code: "recover_remote_rewritten", Command: "no-mistakes axi sync --recover"}
 		}
 		return state
 	}
@@ -505,6 +527,13 @@ func (s *Service) Apply(ctx context.Context) State {
 // classification against the last push binding (pushed runs), both pointing at
 // run_pipeline as the next step. `no-mistakes rerun` remains the alternative
 // exit that resumes validating the preserved head instead of taking it back.
+//
+// A second, unrelated hazard shares this entry point: blocked_remote_rewritten
+// (the live remote no longer equals the persisted pipeline push binding,
+// discovered only by a fresh Refresh - the cached classification above can
+// never produce it). There is nothing gate-preserved to adopt for that case,
+// so it takes no matrix row above; see tryRecoverRemoteRewritten for its own
+// guarded, halt-on-stale-reading reconciliation.
 func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
 		return refusal
@@ -524,7 +553,17 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		return state
 	}
 	if state.State != StatePipelineOwned || run == nil {
-		return blockedPlan(state, state.State, "blocked_recover_not_applicable", "nothing to recover: the branch is not held by a terminal run with unpublished pipeline commits; no files or refs were changed")
+		// The cached classification above never observes a rewritten remote by
+		// itself - only a live check does. Before concluding there is nothing
+		// to recover, offer that reconciliation: it is the supported route for
+		// blocked_remote_rewritten (see tryRecoverRemoteRewritten), replacing
+		// what used to require a hand edit of state.sqlite.
+		if run != nil {
+			if handled, result := s.tryRecoverRemoteRewritten(ctx, run); handled {
+				return result
+			}
+		}
+		return blockedPlan(state, state.State, "blocked_recover_not_applicable", "nothing to recover: the branch is not held by a terminal run with unpublished pipeline commits, and a fresh check found no remote rewritten out from under a verified push; no files or refs were changed")
 	}
 	if !terminalRunStatus(run.Status) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_run_active", "the run that owns this branch is still active; drive it to completion or abort it first; no files or refs were changed")
@@ -633,6 +672,66 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 		blocked.NextAction = &NextAction{Code: "inspect_and_reconcile_manually", Command: "git log --oneline --left-right HEAD..." + anchorRef}
 		return blocked
 	}
+}
+
+// tryRecoverRemoteRewritten reconciles a branch whose bound push target no
+// longer reflects reality: the live remote was rewritten by something
+// outside this pipeline (a hand force-push, another tool, an operator
+// correction). Unlike the pipeline_owned recovery above, there is no
+// gate-preserved content to prove or adopt here - the true content now lives
+// only on the remote - so this never touches the worktree, a branch ref, or
+// the gate. It only corrects the persisted push binding to the freshly
+// verified live head: the guarded, code-owned form of the single-field
+// state.sqlite correction an operator previously had to perform by hand.
+//
+// The live remote is re-verified here with a fresh Refresh, immediately
+// before the write, rather than trusting the cached classification that
+// routed the caller to this method: recovery must halt if the hazard is no
+// longer present (it resolved on its own, the remote is unreachable, or an
+// active run now owns the branch), never act on a stale reading. A
+// mid-flight change to the push binding or run status between that fresh
+// read and the write refuses for the same reason.
+//
+// handled reports whether this call owns the response, including a refusal:
+// true means the caller should return result as-is; false means the fresh
+// check did not confirm a rewritten remote (or the run is not terminal), and
+// the caller should fall through to its own "nothing to recover" response.
+func (s *Service) tryRecoverRemoteRewritten(ctx context.Context, run *db.Run) (bool, State) {
+	if !terminalRunStatus(run.Status) {
+		return false, State{}
+	}
+	fresh := s.Refresh(ctx)
+	if fresh.State != StateRemoteRewritten || fresh.Remote.ObservedHead == "" {
+		return false, State{}
+	}
+	rewritten := fresh.Remote.ObservedHead
+	freshRun, err := s.DB.GetRun(run.ID)
+	if err != nil || freshRun == nil || !terminalRunStatus(freshRun.Status) || freshRun.PushActive ||
+		value(freshRun.PushGeneration) != fresh.Pipeline.PushGeneration ||
+		ptr(freshRun.LastPushedSHA) != fresh.Pipeline.PushedHead ||
+		ptr(freshRun.PushRef) != fresh.Target.Ref ||
+		ptr(freshRun.PushTargetFingerprint) != TargetFingerprint(s.Repo.PushURL()) {
+		return true, blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_assumptions_changed", "the pipeline push binding or run status changed while custody was being returned; no files or refs were changed")
+	}
+	if err := s.DB.UpdateRunPushBinding(run.ID, db.PushBinding{
+		HeadSHA:           rewritten,
+		TargetKind:        fresh.Target.Kind,
+		TargetFingerprint: TargetFingerprint(s.Repo.PushURL()),
+		Ref:               fresh.Target.Ref,
+	}); err != nil {
+		return true, blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_stamp_failed", "the corrected push binding could not be recorded; re-run the recovery; no files or refs were changed")
+	}
+	// The push binding alone is not enough: inspect() treats HeadSHA !=
+	// LastPushedSHA as an unpublished pipeline head and would misclassify this
+	// run as pipeline_owned again immediately after "recovering" it. Advancing
+	// HeadSHA to match is what actually retires the stale block.
+	if err := s.DB.UpdateRunHeadSHA(run.ID, rewritten); err != nil {
+		return true, blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_stamp_failed", "the push binding was corrected, but the run's head could not be updated to match; re-run the recovery; no files or refs were changed")
+	}
+	state, _, _ := s.inspect(ctx)
+	state.Recovered = true
+	state.Changed = false
+	return true, state
 }
 
 // recoverKeepLocal performs the explicit keep-local custody return: the
