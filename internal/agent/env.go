@@ -29,9 +29,9 @@ const GateRoleEnvVar = "NO_MISTAKES_GATE"
 // dir must be the value assigned to cmd.Dir so PWD stays coupled to the working
 // directory; see git.NonInteractiveEnv for why this matters.
 func gitSafeEnv(dir string, extra ...[]string) []string {
-	env := append(git.NonInteractiveEnv(dir), GateRoleEnvVar+"=1")
+	env := git.NonInteractiveEnv(dir)
 	if len(extra) > 0 {
 		env = append(env, extra[0]...)
 	}
-	return env
+	return append(env, GateRoleEnvVar+"=1")
 }

@@ -138,7 +138,11 @@ func confidenceInterval(_ string, rows []Evaluation) *Interval {
 	// separately in every report as a queue count and a lower-bound accuracy.
 	perCase := map[string][]float64{}
 	for _, row := range rows {
-		if row.Status != "completed" || row.ExpectedPark == nil {
+		if row.ExpectedPark == nil {
+			continue
+		}
+		if row.Status != "completed" {
+			perCase[row.CaseID] = append(perCase[row.CaseID], 0)
 			continue
 		}
 		var score *float64

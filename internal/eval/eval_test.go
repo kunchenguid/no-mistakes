@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -99,9 +100,9 @@ func TestCaptureRejectsReviewRoundBeforeGateDecision(t *testing.T) {
 	}
 }
 
-func TestCapturePinsConfigurationAtCapture(t *testing.T) {
+func TestCapturePinsConfigurationFromSourceReview(t *testing.T) {
 	ctx := context.Background()
-	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
+	p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
 	defer sourceDB.Close()
 	gateDir := p.RepoDir(run.RepoID)
 	workDir := filepath.Join(p.Root(), "advance-main")
@@ -113,6 +114,8 @@ func TestCapturePinsConfigurationAtCapture(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustGit(t, ctx, workDir, "add", ".no-mistakes.yaml")
+	t.Setenv("GIT_AUTHOR_DATE", time.Unix(reviewRound.CreatedAt+60, 0).Format(time.RFC3339))
+	t.Setenv("GIT_COMMITTER_DATE", time.Unix(reviewRound.CreatedAt+60, 0).Format(time.RFC3339))
 	mustGit(t, ctx, workDir, "commit", "-m", "advance trusted config")
 	mustGit(t, ctx, workDir, "push", "origin", "main")
 
@@ -125,15 +128,48 @@ func TestCapturePinsConfigurationAtCapture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	advancedSHA := mustGit(t, ctx, workDir, "rev-parse", "HEAD")
-	if len(cases) != 1 || cases[0].TrustedConfigSHA != advancedSHA {
-		t.Fatalf("trusted config pin = %#v, want capture-time SHA %s", cases, advancedSHA)
+	if len(cases) != 1 || cases[0].TrustedConfigSHA != run.BaseSHA {
+		t.Fatalf("trusted config pin = %#v, want source-review SHA %s", cases, run.BaseSHA)
+	}
+}
+
+func TestCapturePreservesFixRoundStartingHead(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, repo, firstRound := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	if err := os.WriteFile(filepath.Join(repo.WorkingPath, "main.go"), []byte("package sample\n\nfunc Fixed() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, ctx, repo.WorkingPath, "add", "main.go")
+	mustGit(t, ctx, repo.WorkingPath, "commit", "-m", "fix review finding")
+	mustGit(t, ctx, repo.WorkingPath, "push", "origin", "feature/eval")
+	fixedSHA := mustGit(t, ctx, repo.WorkingPath, "rev-parse", "HEAD")
+	steps, err := sourceDB.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clean := `{"findings":[],"risk_level":"low","risk_rationale":"fixed","risk_scope":"source-or-external"}`
+	secondRound, err := sourceDB.InsertReviewStepRound(steps[0].ID, 2, "auto_fix", &clean, nil, fixedSHA, 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 2 || cases[1].SourceRoundID != secondRound.ID || cases[1].StartingHeadSHA != stringValue(firstRound.ReviewedHeadSHA) || cases[1].ReviewedHeadSHA != fixedSHA {
+		t.Fatalf("captured fix-round provenance = %#v", cases)
 	}
 }
 
 func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 	ctx := context.Background()
-	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
+	p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
 	defer sourceDB.Close()
 
 	fake := filepath.Join(t.TempDir(), "claude")
@@ -145,6 +181,10 @@ func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 	}
 	globalConfig := "agent_path_override:\n  claude: " + fake + "\n"
 	if err := os.WriteFile(p.ConfigFile(), []byte(globalConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configTime := time.Unix(reviewRound.CreatedAt-1, 0)
+	if err := os.Chtimes(p.ConfigFile(), configTime, configTime); err != nil {
 		t.Fatal(err)
 	}
 	store, err := Open(p.EvalDir())
@@ -289,6 +329,17 @@ func TestConfidenceIntervalRepresentsUniformSampleUncertainty(t *testing.T) {
 	got := confidenceInterval("claude+test", rows)
 	if got == nil || got.Lower <= 0 || got.Lower >= 1 || got.Upper < 0.999 {
 		t.Fatalf("uniform-success confidence interval = %#v, want finite-sample uncertainty ending at 1", got)
+	}
+}
+
+func TestConfidenceIntervalIncludesFailedLabeledReplays(t *testing.T) {
+	rows := []Evaluation{
+		{CaseID: "passed", Status: "completed", ExpectedPark: boolPtr(true), CandidateParked: true},
+		{CaseID: "failed", Status: "failed", ExpectedPark: boolPtr(true)},
+	}
+	got := confidenceInterval("claude+test", rows)
+	if got == nil || got.Cases != 2 || got.Lower >= 0.5 || got.Upper <= 0.5 {
+		t.Fatalf("confidence interval with scored failure = %#v, want interval around 50%% over two cases", got)
 	}
 }
 

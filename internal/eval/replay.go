@@ -168,7 +168,11 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 	}
 	defer replayDB.Close()
 
-	replayRun := &db.Run{ID: "eval-" + evaluation.ID, Branch: c.Branch, HeadSHA: c.ReviewedHeadSHA, BaseSHA: c.BaseSHA}
+	startingHeadSHA := c.StartingHeadSHA
+	if startingHeadSHA == "" {
+		startingHeadSHA = c.ReviewedHeadSHA
+	}
+	replayRun := &db.Run{ID: "eval-" + evaluation.ID, Branch: c.Branch, HeadSHA: startingHeadSHA, BaseSHA: c.BaseSHA}
 	if c.Intent != "" {
 		intent := c.Intent
 		replayRun.Intent = &intent

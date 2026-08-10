@@ -60,6 +60,7 @@ type Manifest struct {
 	DefaultBranch    string `json:"default_branch"`
 	BaseSHA          string `json:"base_sha"`
 	HeadSHA          string `json:"head_sha"`
+	StartingHeadSHA  string `json:"starting_head_sha"`
 	ReviewedHeadSHA  string `json:"reviewed_head_sha"`
 	TrustedConfigSHA string `json:"trusted_config_sha"`
 	Intent           string `json:"intent,omitempty"`
