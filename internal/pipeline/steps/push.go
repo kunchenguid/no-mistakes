@@ -43,11 +43,24 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	// deliberately not among them: it is collected outside the worktree and
 	// published to the orphan evidence branch (internal/evidence), so no
 	// artifact ever enters the pushed branch or the default branch's history.
+	// This is the last stage/commit in the pipeline and the only one whose
+	// input includes the configured formatter's output, so it carries the same
+	// declared-scope fence as the fix-round and CI-repair commits: an
+	// out-of-scope edit that reached this far (a review turn that returned no
+	// findings, a pre-skipped document step, a deterministic lint command, or a
+	// formatter that rewrote an undeclared file) must raise the decision gate
+	// rather than be published.
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if strings.TrimSpace(status) != "" {
+		if err := sctx.AssertDeclaredScope("stage or commit agent changes before push"); err != nil {
+			return nil, err
+		}
 		sctx.Log("committing agent changes...")
 		if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
 			return nil, fmt.Errorf("stage agent changes: %w", err)
+		}
+		if err := sctx.AssertDeclaredScope("commit staged agent changes before push"); err != nil {
+			return nil, err
 		}
 		_, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", "no-mistakes: apply agent fixes")
 		if err != nil {

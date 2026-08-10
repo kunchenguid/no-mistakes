@@ -294,8 +294,9 @@ The one exception for ordinary findings is `--yes` (below): it is the user's sta
 drive ordinary gates unattended, so under `--yes` you resolve ordinary `ask-user`
 findings automatically instead of stopping to ask. A `PIPELINE_SCOPE_DECISION_REQUIRED`
 finding is never auto-resolved: it means the proposed repair is outside the immutable
-`base..submitted HEAD` path set, or has no file/surface identity that can prove it
-is inside. Return that gate to the user before any fixer dispatch. Only the user's explicit
+`base..submitted HEAD` path set, has no file/surface identity that can prove it
+is inside, or a pipeline stage already produced an edit outside that path set and refused to
+commit or push it. Return that gate to the user before any fixer dispatch. Only the user's explicit
 `respond --action fix` selection authorizes that gate's exact non-empty path for
 the following fix round; `--yes` never does, and a file-less gate cannot widen an
 unknowable surface.

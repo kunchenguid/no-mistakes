@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
 // TestPushStep_RefusesPostReviewClobberWithoutLaterPipelineCommit reproduces
@@ -343,6 +345,59 @@ func TestPushStep_DoesNotPublishTestEvidenceIntoThePushedBranch(t *testing.T) {
 	if strings.Contains(tracked, "evidence") || strings.Contains(tracked, ".png") {
 		t.Fatalf("pushed branch carries evidence files:\n%s", tracked)
 	}
+}
+
+// Push owns the pipeline's last stage/commit, and it is reachable with an
+// out-of-scope working-tree edit no fix-round commit ever saw (a review turn
+// that returned no findings, a skipped document step, a deterministic lint
+// command, or the configured formatter rewriting an undeclared file). It must
+// raise the declared-scope decision rather than publish that content.
+func TestPushStep_RefusesToPublishOutOfScopeWorkingTreeEdit(t *testing.T) {
+	t.Parallel()
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+
+	dir, baseSHA, submittedHead := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, submittedHead, config.Commands{})
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	sctx.DeclaredScope = pipeline.NewDeclaredScope(declaredScopePaths(t, dir, baseSHA, submittedHead))
+	recordReviewApproval(t, sctx, submittedHead)
+
+	if err := os.WriteFile(filepath.Join(dir, "undeclared.txt"), []byte("out of scope\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := (&PushStep{}).Execute(sctx)
+	var boundary *pipeline.ScopeBoundaryError
+	if !errors.As(err, &boundary) {
+		t.Fatalf("push accepted an out-of-scope edit: err=%v", err)
+	}
+	if len(boundary.Paths) != 1 || boundary.Paths[0] != "undeclared.txt" {
+		t.Fatalf("refusal did not name the out-of-scope path: %#v", boundary.Paths)
+	}
+	if remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); remoteHead != submittedHead {
+		t.Fatalf("remote moved to %s despite the refusal", remoteHead)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "undeclared.txt")); statErr != nil {
+		t.Fatalf("refusal erased the edit instead of preserving it: %v", statErr)
+	}
+}
+
+func declaredScopePaths(t *testing.T, dir, baseSHA, headSHA string) []string {
+	t.Helper()
+	out := gitCmd(t, dir, "diff", "--name-only", "-z", "--no-renames", baseSHA+".."+headSHA)
+	var paths []string
+	for _, path := range strings.Split(out, "\x00") {
+		if strings.TrimSpace(path) != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths
 }
 
 func TestPushStep_TargetsForkWhenConfigured(t *testing.T) {

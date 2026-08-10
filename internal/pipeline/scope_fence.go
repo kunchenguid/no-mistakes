@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -112,19 +113,55 @@ func (s DeclaredScope) authorize(paths []string) []string {
 	return added
 }
 
+// declaredScopeForRun derives the immutable path set with the same NUL-delimited
+// reader the fence inspects the checkout with. A plain `--name-only` C-quotes
+// any path git considers unusual (non-ASCII bytes under the default
+// core.quotePath, embedded quotes, control characters), which would enter the
+// scope set as `"pkg/caf\303\251.go"` while the checkout side yields the raw
+// bytes - the membership test would then miss and refuse every fix round in
+// that repository. `-z` emits raw paths on both sides. `--no-renames` keeps a
+// renamed file's old path declared too, so repairing either end stays in scope.
 func declaredScopeForRun(ctx context.Context, workDir string, runHead, baseSHA string) (DeclaredScope, error) {
 	if strings.TrimSpace(baseSHA) == "" || git.IsZeroSHA(baseSHA) {
 		baseSHA = git.EmptyTreeSHA
 	}
-	paths, err := git.DiffNameOnly(ctx, workDir, baseSHA, runHead)
+	out, err := git.Run(ctx, workDir, "diff", "--name-only", "-z", "--no-renames", baseSHA+".."+runHead)
 	if err != nil {
 		return DeclaredScope{}, fmt.Errorf("derive declared scope from %s..%s: %w", baseSHA, runHead, err)
 	}
-	return NewDeclaredScope(paths), nil
+	return NewDeclaredScope(splitNulPaths(out)), nil
+}
+
+func splitNulPaths(out string) []string {
+	var paths []string
+	for _, path := range strings.Split(out, "\x00") {
+		if strings.TrimSpace(path) != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+// ScopeBoundaryError is the refusal AssertDeclaredScope returns when an agent
+// left a working-tree change outside the immutable submitted path set. It is a
+// decision, not a failure: the executor turns it into the same named
+// ask-user gate the findings path raises, so the operator can authorize the
+// exact paths (or abort) instead of losing the run and the work in the
+// checkout. The edits themselves are never touched - the pipeline only refuses
+// to stage, commit, or push them.
+type ScopeBoundaryError struct {
+	Effect string
+	Paths  []string
+}
+
+func (e *ScopeBoundaryError) Error() string {
+	return fmt.Sprintf("%s: refusing %s because agent changes exceed declared ticket scope: %s", ScopeDecisionGateName, e.Effect, strings.Join(e.Paths, ", "))
 }
 
 // AssertDeclaredScope refuses staging, committing, or pushing when an agent
 // has left a working-tree change outside the immutable submitted path set.
+// An inspection failure is a hard error (fail closed); an actually observed
+// out-of-scope path is a *ScopeBoundaryError the executor parks on.
 func (sctx *StepContext) AssertDeclaredScope(effect string) error {
 	if sctx == nil {
 		return fmt.Errorf("%s: missing step context before %s", ScopeDecisionGateName, effect)
@@ -143,10 +180,9 @@ func (sctx *StepContext) AssertDeclaredScope(effect string) error {
 		if err != nil {
 			return fmt.Errorf("%s: inspect checkout before %s: %w", ScopeDecisionGateName, effect, err)
 		}
-		for _, path := range strings.Split(out, "\x00") {
-			path = strings.TrimSpace(path)
-			if path != "" && !sctx.DeclaredScope.Contains(path) {
-				outside[path] = struct{}{}
+		for _, path := range splitNulPaths(out) {
+			if !sctx.DeclaredScope.Contains(path) {
+				outside[strings.TrimSpace(path)] = struct{}{}
 			}
 		}
 	}
@@ -158,7 +194,45 @@ func (sctx *StepContext) AssertDeclaredScope(effect string) error {
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
-	return fmt.Errorf("%s: refusing %s because agent changes exceed declared ticket scope: %s", ScopeDecisionGateName, effect, strings.Join(paths, ", "))
+	return &ScopeBoundaryError{Effect: effect, Paths: paths}
+}
+
+// scopeBoundaryGateOutcome converts a refused effect into the parked decision
+// gate. A fixer that must touch a surface the submitted delta never declared -
+// the new regression test its own guidance demands, say - would otherwise kill
+// the run with its work stranded uncommitted, and no fixer role can raise the
+// gate itself (they are all pinned to the commit-summary schema). Returning the
+// gate here is what makes the boundary an operator decision from every effect
+// site: the fix rounds, the CI repair commit, and the push commit.
+func scopeBoundaryGateOutcome(err error, stepName types.StepName) (*StepOutcome, bool) {
+	var boundary *ScopeBoundaryError
+	if !errors.As(err, &boundary) {
+		return nil, false
+	}
+	findings := types.Findings{
+		Summary:       fmt.Sprintf("%s: %s requires a declared-scope decision", ScopeDecisionGateName, boundary.Effect),
+		RiskLevel:     "high",
+		RiskRationale: "the pipeline changed paths the submitted change never declared",
+	}
+	for _, path := range boundary.Paths {
+		findings.Items = append(findings.Items, types.Finding{
+			Severity:      "error",
+			File:          path,
+			Action:        types.ActionAskUser,
+			ScopeDecision: true,
+			Description: fmt.Sprintf("%s: %s changed %s, which is outside the declared ticket scope; the edit is preserved in the checkout. Selecting this finding for a fix authorizes exactly this path for the next round.",
+				ScopeDecisionGateName, stepName, path),
+		})
+	}
+	return &StepOutcome{NeedsApproval: true, Findings: mustMarshalFindings(findings)}, true
+}
+
+func mustMarshalFindings(findings types.Findings) string {
+	raw, err := types.MarshalFindingsJSON(findings)
+	if err != nil {
+		return ""
+	}
+	return raw
 }
 
 func (s DeclaredScope) promptBoundary() string {
@@ -178,6 +252,11 @@ If a correct repair requires any other path or surface, do not edit it and do no
 // scopeAutoFixDecisionGate separates in-scope automatic repairs from explicit
 // out-of-scope proposals. The latter become ask-user findings before the
 // executor dispatches a fixer, which is the pre-effect gate AS-440 lacked.
+//
+// It is also the single ingress that owns the ScopeDecision flag: every
+// incoming finding is stripped first, so a step's agent cannot hand back a
+// self-minted gate whose selected path would later widen the very scope the
+// fence exists to hold.
 func scopeAutoFixDecisionGate(raw string, scope DeclaredScope) (fixableRaw, gatedRaw string) {
 	if raw == "" {
 		return "", ""
@@ -186,47 +265,36 @@ func scopeAutoFixDecisionGate(raw string, scope DeclaredScope) (fixableRaw, gate
 	if err != nil {
 		return "", raw
 	}
-	if !scope.initialized() {
-		fixable := types.AutoFixableFindings(findings)
-		if len(fixable.Items) == 0 {
-			return "", raw
-		}
-		encoded, marshalErr := types.MarshalFindingsJSON(fixable)
-		if marshalErr != nil {
-			return "", raw
-		}
-		return encoded, raw
-	}
 	for i := range findings.Items {
-		item := &findings.Items[i]
-		if item.Action != types.ActionAutoFix || (strings.TrimSpace(item.File) != "" && scope.Contains(item.File)) {
-			continue
-		}
-		item.Action = types.ActionAskUser
-		if strings.TrimSpace(item.File) == "" {
-			item.Description = fmt.Sprintf("%s: proposed repair has no file/surface identity, so it cannot be proven inside the declared ticket scope; %s", ScopeDecisionGateName, item.Description)
-		} else {
-			item.Description = fmt.Sprintf("%s: proposed repair to %s is outside the declared ticket scope; %s", ScopeDecisionGateName, item.File, item.Description)
+		findings.Items[i].ScopeDecision = false
+	}
+	if scope.initialized() {
+		for i := range findings.Items {
+			item := &findings.Items[i]
+			if item.Action != types.ActionAutoFix || (strings.TrimSpace(item.File) != "" && scope.Contains(item.File)) {
+				continue
+			}
+			item.Action = types.ActionAskUser
+			item.ScopeDecision = true
+			if strings.TrimSpace(item.File) == "" {
+				item.Description = fmt.Sprintf("%s: proposed repair has no file/surface identity, so it cannot be proven inside the declared ticket scope; %s", ScopeDecisionGateName, item.Description)
+			} else {
+				item.Description = fmt.Sprintf("%s: proposed repair to %s is outside the declared ticket scope; %s", ScopeDecisionGateName, item.File, item.Description)
+			}
 		}
 	}
 	gated, err := types.MarshalFindingsJSON(findings)
 	if err != nil {
 		return "", raw
 	}
-	fixable := types.AutoFixableFindings(findings)
-	if len(fixable.Items) == 0 {
-		return "", gated
-	}
-	encoded, err := types.MarshalFindingsJSON(fixable)
-	if err != nil {
-		return "", gated
-	}
-	return encoded, gated
+	return autoFixableFindingsJSON(gated), gated
 }
 
 // authorizeSelectedScopeDecisionPaths widens scope only after an explicit
-// user fix response selects the named decision finding. Automatic resolution
-// never calls this path. File-less gates cannot widen an unknowable surface.
+// user fix response selects the decision finding. Automatic resolution never
+// calls this path. Authorization keys on the pipeline-owned ScopeDecision
+// flag, never on description prose an agent controls; file-less gates cannot
+// widen an unknowable surface.
 func authorizeSelectedScopeDecisionPaths(scope DeclaredScope, raw string) []string {
 	findings, err := types.ParseFindingsJSON(raw)
 	if err != nil {
@@ -234,7 +302,7 @@ func authorizeSelectedScopeDecisionPaths(scope DeclaredScope, raw string) []stri
 	}
 	var paths []string
 	for _, item := range findings.Items {
-		if strings.TrimSpace(item.File) == "" || !strings.Contains(item.Description, ScopeDecisionGateName) {
+		if !item.ScopeDecision || strings.TrimSpace(item.File) == "" {
 			continue
 		}
 		paths = append(paths, item.File)

@@ -153,7 +153,7 @@ func TestModel_Yolo_DoesNotResolveScopeDecisionGate(t *testing.T) {
 
 	run := testRun()
 	run.Steps[0].Status = types.StepStatusAwaitingApproval
-	fj := `{"findings":[{"id":"scope-1","severity":"warning","description":"PIPELINE_SCOPE_DECISION_REQUIRED: proposed repair is outside declared ticket scope","action":"ask-user"}],"summary":"scope decision required"}`
+	fj := `{"findings":[{"id":"scope-1","severity":"warning","description":"PIPELINE_SCOPE_DECISION_REQUIRED: proposed repair is outside declared ticket scope","action":"ask-user","scope_decision":true}],"summary":"scope decision required"}`
 	run.Steps[0].FindingsJSON = &fj
 	m := NewModel(sock, client, run)
 	m.yoloMode = true

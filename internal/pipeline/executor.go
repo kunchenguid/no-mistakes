@@ -750,6 +750,15 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		outcome, err := step.Execute(sctx)
 		roundNum++
 		roundDuration := time.Since(phaseStart).Milliseconds()
+		// A refused effect is a decision, not a failure. Park it as the named
+		// gate carrying the observed paths so the operator can authorize them
+		// (or abort); the agent's work stays in the checkout either way. This
+		// outcome is pipeline-authored, so it deliberately bypasses the
+		// agent-findings gate below, which strips the ScopeDecision marker.
+		scopeGated := false
+		if gate, ok := scopeBoundaryGateOutcome(err, stepName); ok {
+			outcome, err, scopeGated = gate, nil, true
+		}
 		if err != nil {
 			durationMS := executionMS + roundDuration
 			// Persist the failure reason to the step's own log file. The error
@@ -772,8 +781,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			reviewApprovedHeadSHA = outcome.ReviewApprovedHeadSHA
 		}
 		outcome.Findings = normalizeFindingsJSON(outcome.Findings, string(stepName))
-		fixableFindings, gatedFindings := scopeAutoFixDecisionGate(outcome.Findings, declaredScope)
-		outcome.Findings = gatedFindings
+		fixableFindings := ""
+		if !scopeGated {
+			var gatedFindings string
+			fixableFindings, gatedFindings = scopeAutoFixDecisionGate(outcome.Findings, declaredScope)
+			outcome.Findings = gatedFindings
+		}
 		finalExitCode = outcome.ExitCode
 		durationOverrideMS += outcome.DurationOverrideMS
 

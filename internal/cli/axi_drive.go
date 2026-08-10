@@ -488,17 +488,14 @@ func driveRunWithReconciler(ctx context.Context, progress io.Writer, client *ipc
 // isScopeDecisionGate keeps the declared-scope boundary non-auto-resolvable.
 // The caller driving AXI may use --yes for routine gates, but widening a
 // ticket's mutation surface always returns control for an explicit decision.
+// It reads the pipeline-owned marker rather than the description, so an agent
+// cannot make its own finding unresolvable (or mint one) by quoting the name.
 func isScopeDecisionGate(raw string) bool {
 	findings, err := types.ParseFindingsJSON(raw)
 	if err != nil {
 		return false
 	}
-	for _, finding := range findings.Items {
-		if strings.Contains(finding.Description, types.ScopeDecisionGateName) {
-			return true
-		}
-	}
-	return false
+	return types.HasScopeDecisionGate(findings)
 }
 
 // ciReadyToMerge reports whether the CI step is actively monitoring and the
