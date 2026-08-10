@@ -758,14 +758,37 @@ func TestExecutor_AutoFixRecordsSelectedFindingIDs(t *testing.T) {
 	}
 
 	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
-	if err := exec.Execute(context.Background(), run, repo, workDir); err != nil {
-		t.Fatalf("execute: %v", err)
-	}
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
 
+	// review-2 (ask-user) was never selected for auto-fix and the follow-up
+	// round reports nothing new, so it must still surface at an approval gate
+	// rather than silently completing the step - the exact carry-forward
+	// behavior TestExecutor_UnresolvedAskUserFindingsSurviveAnEmptyReReviewRound
+	// covers for the manual-fix path.
+	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
 	dbSteps, err := database.GetStepsByRun(run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if dbSteps[0].FindingsJSON == nil || !strings.Contains(*dbSteps[0].FindingsJSON, "review-2") {
+		t.Fatalf("expected the leftover ask-user finding review-2 to still be pending at the gate, got %v", dbSteps[0].FindingsJSON)
+	}
+	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+
 	rounds, err := database.GetRoundsByStep(dbSteps[0].ID)
 	if err != nil {
 		t.Fatal(err)

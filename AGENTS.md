@@ -162,6 +162,12 @@ Safest local verification sequence after non-trivial changes:
   This is a prompt contract, not an enforced sandbox.
   Regression: `TestReviewStep_FixMode_FocusedVerificationContract`.
 
+**Cross-Round Finding Persistence (`internal/pipeline/executor.go`)**
+
+- A finding the user never resolved must never stop blocking. `executeStep` keeps a `carriedFindings` accumulator across a step's fix rounds and merges it (`mergeFindingsJSON`, content-fingerprint deduped) with each round's own output into `effectiveFindings` - the value used for the step's persisted `findings_json`, the completion gate (`hasAskUserFindingsJSON`), and what the operator sees at the gate. A round's own raw output (`outcome.Findings`) still lands in `step_rounds` unmodified, so the per-round history stays an honest record of what that round actually reported. A finding is resolved only by an explicit `axi respond` action naming it (or by an auto-fix round that actually attempted it) - never by a later round, including a diff-scoped rereview, simply failing to re-mention it. Recovery (`Resume`'s `ActionFix` path) reconstructs the same carry set from the parked step's already-unioned findings minus the newly selected ids, so a daemon restart mid-gate does not reopen this hole.
+- `risk_rationale` cannot be trusted to admit it is lying, so a prompt asking it not to isn't a control: `sanitizeFabricatedApprovalJSON` structurally strips any round's rationale that claims a human "accepted"/"approved"/"authorized"/"signed off" something while `effectiveFindings` still carries unresolved ask-user items - the executor is the only place that knows whether a corroborating respond action ever happened, and an agent's own generated text has no honest way to originate that claim.
+- Regressions: `TestExecutor_UnresolvedAskUserFindingsSurviveAnEmptyReReviewRound`, `TestExecutor_StripsFabricatedUserAcceptanceRationale`, `TestExecutor_AutoFixRecordsSelectedFindingIDs` (the auto-fix path has the identical carry-forward shape when auto-fix budget runs out with an untouched ask-user finding left over).
+
 **Local Test Is Targeted Validation (`internal/pipeline/steps/test.go`)**
 
 - Local Test (normal evidence agent and Test-repair agent) validates the requested intent with the smallest relevant checks and end-user-aligned evidence; it is never a repository-wide regression-suite walk.

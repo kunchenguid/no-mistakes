@@ -226,6 +226,12 @@ type stepExecutionState struct {
 	autoFixAttempts  int
 	executionMS      int64
 	currentRoundID   string
+	// carriedFindings holds findings from earlier rounds that were shown to
+	// the user but not selected for this fix (or not selected for auto-fix)
+	// and so remain unresolved. It must survive into the resumed round loop so
+	// a round that reports nothing new cannot silently make them disappear.
+	// See executeStep's carriedFindings local for the in-loop invariant.
+	carriedFindings string
 }
 
 type recoveredGate struct {
@@ -408,6 +414,12 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			return e.failRun(run, repo, fmt.Errorf("mark recovered step %s fixing: %w", gate.step.Name(), dbErr), ctx)
 		}
 		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, gate.step.Name(), string(types.StepStatusFixing), "", "", nil)
+		// gate.findings is the step-level parked findings, which already holds
+		// the full union carried into this gate (see executeStep). Whatever the
+		// user did not select here remains unresolved and must survive the
+		// resumed round loop rather than vanish if the next round reports
+		// nothing new.
+		carried := excludeFindingsJSON(gate.findings, response.findingIDs)
 		skipRemaining, err := e.executeStep(ctx, gate.step, gate.stepResult, run, repo, workDir, logDir, stepExecutionState{
 			fixing:           true,
 			previousFindings: merged,
@@ -415,6 +427,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			autoFixAttempts:  gate.autoFixes,
 			executionMS:      duration,
 			currentRoundID:   gate.lastRoundID,
+			carriedFindings:  carried,
 		})
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
@@ -664,6 +677,16 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	// invocation during execution of round N+1 sees roundNum still at N.
 	autoFixAttempts := state.autoFixAttempts
 	roundNum := state.roundNum
+	// carriedFindings holds findings from earlier rounds in THIS step that
+	// were shown to the user or fixer but not selected/addressed this round,
+	// so they remain unresolved. A finding is resolved only by an explicit
+	// axi respond action naming it, or by an auto-fix round that actually
+	// attempted it - never by a later round simply failing to re-mention it
+	// (a scoped re-review of only the fix diff, for instance, cannot see
+	// findings outside that diff at all). It is merged into each round's own
+	// findings below to form the step-level truth used for persistence and
+	// the completion gate.
+	carriedFindings := state.carriedFindings
 
 	stepAgent := e.agent
 	if stepAgent != nil {
@@ -753,8 +776,29 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		finalExitCode = outcome.ExitCode
 		durationOverrideMS += outcome.DurationOverrideMS
 
-		if outcome.Findings != "" {
-			if dbErr := e.db.SetStepFindings(sr.ID, outcome.Findings); dbErr != nil {
+		// effectiveFindings is this round's own findings unioned with whatever
+		// remains carried forward from earlier rounds (see carriedFindings
+		// above). It is the step-level truth: what gets persisted as the
+		// step's findings, what the completion gate checks for outstanding
+		// ask-user items, and what the operator is shown at the approval gate.
+		// mergeFindingsJSON keeps THIS round's own summary/risk fields (it is
+		// the freshest assessment) while deduplicating identical carried items
+		// by content fingerprint, so a defect the agent legitimately restates
+		// does not pile up as a duplicate finding every round.
+		effectiveFindings := mergeFindingsJSON(outcome.Findings, carriedFindings)
+		// A fresh round's own findings are normalized against only that
+		// round's item count, so a genuinely new finding can land on the same
+		// positional ID as an unrelated finding carried forward from an
+		// earlier round. Separate any such collision before this is used for
+		// ID-based selection.
+		effectiveFindings = dedupeFindingIDsJSON(effectiveFindings, string(stepName))
+		if sanitized, stripped := sanitizeFabricatedApprovalJSON(effectiveFindings); stripped {
+			slog.Warn("stripped a risk_rationale claiming user acceptance of findings this run cannot corroborate as resolved", "step", stepName, "run", run.ID, "round", roundNum+1)
+			effectiveFindings = sanitized
+		}
+
+		if effectiveFindings != "" {
+			if dbErr := e.db.SetStepFindings(sr.ID, effectiveFindings); dbErr != nil {
 				slog.Warn("failed to set step findings in db", "step", stepName, "error", dbErr)
 			}
 		} else {
@@ -763,10 +807,17 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			}
 		}
 
-		// Persist this execution round.
+		// Persist this execution round with its own raw findings (not the
+		// step-level union): the round table is a historical record of what
+		// THIS round actually reported, and a scoped re-review that legitimately
+		// found nothing new should show as having found nothing new.
 		var findingsPtr *string
 		if outcome.Findings != "" {
 			findingsPtr = &outcome.Findings
+		}
+		var effectiveFindingsPtr *string
+		if effectiveFindings != "" {
+			effectiveFindingsPtr = &effectiveFindings
 		}
 		var fixSummaryPtr *string
 		if outcome.FixSummary != "" {
@@ -802,7 +853,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// This runs before the NeedsApproval check so that all severity
 		// levels (including "info") get a chance at automatic fixing.
 		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
-			fixableFindings := autoFixableFindingsJSON(outcome.Findings)
+			fixableFindings := autoFixableFindingsJSON(effectiveFindings)
 			if fixableFindings != "" {
 				autoFixAttempts++
 				telemetry.Track("fix", e.fixTelemetryFields("auto", stepName, findingsCount(fixableFindings), autoFixAttempts))
@@ -825,11 +876,15 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 				sctx.Fixing = true
 				sctx.PreviousFindings = fixableFindings
 				nextTrigger = "auto_fix"
+				// Everything else in the current union is not being addressed
+				// this round; it must not be lost if the next round's own
+				// output does not happen to restate it.
+				carriedFindings = excludeFindingsJSON(effectiveFindings, findingIDList(fixableFindings))
 				continue
 			}
 		}
 
-		if !outcome.NeedsApproval && !hasAskUserFindingsJSON(outcome.Findings) {
+		if !outcome.NeedsApproval && !hasAskUserFindingsJSON(effectiveFindings) {
 			// Step completed without needing approval.
 			// Any remaining info-only or non-blocking findings
 			// are acceptable and don't block the pipeline.
@@ -869,14 +924,14 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// tell in one `axi status` read that the run is waiting for the agent
 		// to drive this gate (versus actively running/fixing/ci). Observability
 		// only: it does not change the wait below. Cleared once the wait ends.
-		if dbErr := e.db.ParkStepForApproval(run.ID, sr.ID, approvalStatus, executionMS, findingsPtr); dbErr != nil {
+		if dbErr := e.db.ParkStepForApproval(run.ID, sr.ID, approvalStatus, executionMS, effectiveFindingsPtr); dbErr != nil {
 			e.mu.Lock()
 			e.waiting = false
 			e.waitingStep = ""
 			e.mu.Unlock()
 			return false, fmt.Errorf("persist %s approval gate: %w", stepName, dbErr)
 		}
-		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), outcome.Findings, "", &executionMS)
+		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(approvalStatus), effectiveFindings, "", &executionMS)
 
 		response, reconciled, err := e.waitForApprovalOrReconcile(ctx, step, sctx, true)
 		if dbErr := e.db.CompleteRunAwaitingAgent(run.ID, time.Since(parkStart).Milliseconds()); dbErr != nil {
@@ -902,7 +957,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		if agentName := e.telemetryAgentName(); agentName != "" {
 			approvalFields["agent"] = agentName
 		}
-		if selectedCount := selectedFindingCount(outcome.Findings, response.findingIDs); selectedCount > 0 {
+		if selectedCount := selectedFindingCount(effectiveFindings, response.findingIDs); selectedCount > 0 {
 			approvalFields["selected_findings_count"] = selectedCount
 		}
 		telemetry.Track("approval", approvalFields)
@@ -930,18 +985,22 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			return false, fmt.Errorf("step %s: aborted by user", stepName)
 
 		case types.ActionFix:
-			telemetry.Track("fix", e.fixTelemetryFields("user", stepName, selectedFindingCount(outcome.Findings, response.findingIDs), 0))
+			telemetry.Track("fix", e.fixTelemetryFields("user", stepName, selectedFindingCount(effectiveFindings, response.findingIDs), 0))
 			// Fix - mark step as fixing, resume execution timer, re-execute.
 			phaseStart = time.Now()
-			selectedCount := selectedFindingCount(outcome.Findings, response.findingIDs)
+			selectedCount := selectedFindingCount(effectiveFindings, response.findingIDs)
 			writeLog(fmt.Sprintf("user-fix round starting after round %d (%d %s selected)", roundNum, selectedCount, pluralize(selectedCount, "finding", "findings")))
 			if dbErr := e.db.UpdateStepStatus(sr.ID, types.StepStatusFixing); dbErr != nil {
 				slog.Warn("failed to update step status in db", "step", stepName, "status", "fixing", "error", dbErr)
 			}
 			sctx.Fixing = true
-			selectedFindings := filterFindingsJSON(outcome.Findings, response.findingIDs)
+			selectedFindings := filterFindingsJSON(effectiveFindings, response.findingIDs)
 			mergedFindings := mergeUserOverridesJSON(selectedFindings, response.instructions, response.addedFindings)
 			sctx.PreviousFindings = mergedFindings
+			// Whatever was shown but not selected this round remains
+			// unresolved and must survive into the next round's union rather
+			// than depend on that round happening to restate it.
+			carriedFindings = excludeFindingsJSON(effectiveFindings, response.findingIDs)
 			nextTrigger = "auto_fix"
 			if currentRoundID != "" {
 				allSelectedIDs := combineSelectedFindingIDs(response.findingIDs, mergedFindings)

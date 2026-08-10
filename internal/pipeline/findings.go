@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"encoding/json"
+	"regexp"
+	"strconv"
 
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
@@ -10,12 +12,18 @@ import (
 // returns them as a JSON array string. Empty result means there were no
 // findings or parsing failed.
 func findingIDsJSON(raw string) string {
+	return marshalFindingIDs(findingIDList(raw))
+}
+
+// findingIDList extracts the finding IDs from a findings JSON payload as a
+// plain slice. Empty/unparsable input returns nil.
+func findingIDList(raw string) []string {
 	if raw == "" {
-		return ""
+		return nil
 	}
 	findings, err := types.ParseFindingsJSON(raw)
 	if err != nil {
-		return ""
+		return nil
 	}
 	ids := make([]string, 0, len(findings.Items))
 	for _, item := range findings.Items {
@@ -24,7 +32,7 @@ func findingIDsJSON(raw string) string {
 		}
 		ids = append(ids, item.ID)
 	}
-	return marshalFindingIDs(ids)
+	return ids
 }
 
 // marshalFindingIDs encodes a list of finding IDs as a JSON array. Empty
@@ -147,6 +155,55 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 		return existingRaw
 	}
 	return mergedRaw
+}
+
+// dedupeFindingIDsJSON reassigns a fresh unique ID to any finding whose ID
+// collides with an earlier finding's ID in the same payload. This matters
+// only after mergeFindingsJSON: a round's own fresh output is normalized
+// independently of what is being carried forward (positional IDs like
+// "review-1" based only on that round's own item count), so a round that
+// legitimately reports a genuinely new, unrelated finding can end up
+// assigned the same ID as an different finding carried forward from an
+// earlier round. Content-identical items are already deduplicated by
+// mergeFindingsJSON's fingerprint match before this runs; this only
+// separates two DIFFERENT findings that happen to share one ID, which would
+// otherwise make ID-based selection (filter/exclude) silently apply to both.
+func dedupeFindingIDsJSON(raw, prefix string) string {
+	if raw == "" {
+		return raw
+	}
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return raw
+	}
+	seen := make(map[string]bool, len(findings.Items))
+	counter := 0
+	changed := false
+	for i := range findings.Items {
+		id := findings.Items[i].ID
+		if id != "" && !seen[id] {
+			seen[id] = true
+			continue
+		}
+		for {
+			counter++
+			candidate := prefix + "-dup-" + strconv.Itoa(counter)
+			if !seen[candidate] {
+				findings.Items[i].ID = candidate
+				seen[candidate] = true
+				changed = true
+				break
+			}
+		}
+	}
+	if !changed {
+		return raw
+	}
+	encoded, err := types.MarshalFindingsJSON(findings)
+	if err != nil {
+		return raw
+	}
+	return encoded
 }
 
 func removeMatchingFindingsJSON(existingRaw, removeRaw string) string {
@@ -321,4 +378,46 @@ func filterFindingsJSON(raw string, ids []string) string {
 		return raw
 	}
 	return filteredRaw
+}
+
+// unauthorizedApprovalClaim matches language asserting that a human user
+// accepted, approved, authorized, or signed off on something. It is
+// deliberately broad rather than trying to map phrasing to specific finding
+// IDs: an agent's own generated rationale has no honest way to originate a
+// claim of user acceptance mid-round - the only ground truth for that is an
+// actual axi respond action, which the executor tracks separately - so any
+// such claim surviving alongside findings this run cannot corroborate as
+// resolved is fabricated by construction and must not reach storage or
+// display untouched.
+var unauthorizedApprovalClaim = regexp.MustCompile(`(?i)(accepted|approved|authorized|authorised|confirmed|agreed|signed[- ]off|sign[- ]off|greenlit|green-lit|ok'd|okayed)\s+(by|from|per)\s+(the\s+)?user|user\s+(has\s+|already\s+)?(accepted|approved|authorized|authorised|confirmed|agreed|signed[- ]off|consented)`)
+
+const fabricatedApprovalNotice = "risk rationale withheld: it asserted a user acceptance of findings that remain unresolved, with no corresponding axi respond action on record"
+
+// sanitizeFabricatedApprovalJSON strips a risk_rationale that claims a human
+// user accepted or approved findings when the findings payload still
+// contains unresolved ask-user items. The executor is the only place that
+// knows whether a matching respond action ever happened; a round's own
+// generated rationale cannot honestly originate that claim on its own, so a
+// matching claim found here is treated as fabricated and replaced rather
+// than trusted. Reports whether it changed anything, for logging.
+func sanitizeFabricatedApprovalJSON(raw string) (string, bool) {
+	if raw == "" {
+		return raw, false
+	}
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return raw, false
+	}
+	if !types.HasAskUserFindings(findings) {
+		return raw, false
+	}
+	if findings.RiskRationale == "" || !unauthorizedApprovalClaim.MatchString(findings.RiskRationale) {
+		return raw, false
+	}
+	findings.RiskRationale = fabricatedApprovalNotice
+	sanitized, err := types.MarshalFindingsJSON(findings)
+	if err != nil {
+		return raw, false
+	}
+	return sanitized, true
 }
