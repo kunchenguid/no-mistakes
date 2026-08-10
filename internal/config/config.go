@@ -1131,16 +1131,25 @@ func DefaultGlobalConfig() *GlobalConfig {
 
 // LoadGlobal reads global config from path. Returns defaults if file doesn't exist.
 func LoadGlobal(path string) (*GlobalConfig, error) {
-	cfg := DefaultGlobalConfig()
+	cfg, _, err := LoadGlobalSnapshot(path)
+	return cfg, err
+}
 
+func LoadGlobalSnapshot(path string) (*GlobalConfig, []byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return cfg, nil
+			data = []byte("{}\n")
+		} else {
+			return nil, nil, fmt.Errorf("read global config: %w", err)
 		}
-		return nil, fmt.Errorf("read global config: %w", err)
 	}
+	cfg, err := LoadGlobalFromBytes(data)
+	return cfg, data, err
+}
 
+func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
+	cfg := DefaultGlobalConfig()
 	var raw globalConfigRaw
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)

@@ -23,6 +23,7 @@ type Run struct {
 	NoMistakesVersion  *string
 	NoMistakesBuildSHA *string
 	TrustedConfigSHA   *string
+	GlobalConfigYAML   *string
 	// ReviewApprovedHeadSHA is the exact commit approved by the last
 	// successfully completed full review. It is nil for legacy runs and until
 	// review completes; mutable run/worktree heads never infer this authority.
@@ -67,13 +68,13 @@ type Run struct {
 	UpdatedAt       int64
 }
 
-const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, trusted_config_sha, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
+const runColumns = `id, repo_id, branch, head_sha, base_sha, submitted_head_sha, no_mistakes_version, no_mistakes_build_sha, trusted_config_sha, global_config_yaml, review_approved_head_sha, status, pr_url, pr_state, pr_state_observed_at, ci_ready_at, COALESCE(ci_ready_no_ci, 0), last_pushed_sha, push_target_kind, push_target_fingerprint, push_ref, last_pushed_at, push_generation, COALESCE(push_active, 0), terminal_head_verified_at, custody_returned_at, error, awaiting_agent_since, COALESCE(parked_ms, 0), intent, intent_source, intent_session_id, intent_score, created_at, updated_at`
 
 func scanRun(row interface {
 	Scan(...any) error
 }, r *Run) error {
 	return row.Scan(
-		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.SubmittedHeadSHA, &r.NoMistakesVersion, &r.NoMistakesBuildSHA, &r.TrustedConfigSHA, &r.ReviewApprovedHeadSHA, &r.Status,
+		&r.ID, &r.RepoID, &r.Branch, &r.HeadSHA, &r.BaseSHA, &r.SubmittedHeadSHA, &r.NoMistakesVersion, &r.NoMistakesBuildSHA, &r.TrustedConfigSHA, &r.GlobalConfigYAML, &r.ReviewApprovedHeadSHA, &r.Status,
 		&r.PRURL, &r.PRState, &r.PRStateObservedAt, &r.CIReadyAt, &r.CIReadyNoCI,
 		&r.LastPushedSHA, &r.PushTargetKind, &r.PushTargetFingerprint, &r.PushRef,
 		&r.LastPushedAt, &r.PushGeneration, &r.PushActive, &r.TerminalHeadVerifiedAt,
@@ -449,6 +450,14 @@ func (d *DB) UpdateRunTrustedConfigSHA(id, trustedSHA string) error {
 		return fmt.Errorf("trusted config SHA is required")
 	}
 	_, err := d.sql.Exec(`UPDATE runs SET trusted_config_sha = ?, updated_at = ? WHERE id = ?`, trustedSHA, now(), id)
+	return err
+}
+
+func (d *DB) UpdateRunStatusWithConfig(id string, status types.RunStatus, trustedSHA, globalConfigYAML string) error {
+	if strings.TrimSpace(trustedSHA) == "" {
+		return fmt.Errorf("trusted config SHA is required")
+	}
+	_, err := d.sql.Exec(`UPDATE runs SET status = ?, trusted_config_sha = ?, global_config_yaml = ?, updated_at = ? WHERE id = ?`, status, trustedSHA, globalConfigYAML, now(), id)
 	return err
 }
 

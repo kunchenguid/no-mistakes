@@ -153,7 +153,10 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 	if err != nil {
 		return nil, fmt.Errorf("read source run trusted configuration at %s: %w", trustedSHA, err)
 	}
-	globalConfig, err := agentNeutralGlobalConfig(p.ConfigFile())
+	if run.GlobalConfigYAML == nil {
+		return nil, fmt.Errorf("run %q predates pinned global configuration capture", run.ID)
+	}
+	globalConfig, err := agentNeutralGlobalConfig([]byte(*run.GlobalConfigYAML))
 	if err != nil {
 		return nil, err
 	}
@@ -287,16 +290,9 @@ func repoConfigAt(ctx context.Context, gateDir, sha string) (*config.RepoConfig,
 	return config.LoadRepoFromBytes([]byte(content))
 }
 
-func agentNeutralGlobalConfig(path string) ([]byte, error) {
-	if _, err := config.LoadGlobal(path); err != nil {
-		return nil, fmt.Errorf("read global config for capture: %w", err)
-	}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return []byte("{}\n"), nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read global config bytes: %w", err)
+func agentNeutralGlobalConfig(data []byte) ([]byte, error) {
+	if _, err := config.LoadGlobalFromBytes(data); err != nil {
+		return nil, fmt.Errorf("read pinned global config for capture: %w", err)
 	}
 	var raw map[string]any
 	if err := yaml.Unmarshal(data, &raw); err != nil {

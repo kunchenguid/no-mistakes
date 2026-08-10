@@ -1,17 +1,15 @@
 package eval
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"math"
-	"math/rand"
 	"sort"
 	"strings"
 )
 
-// Interval is a two-sided 95% bootstrap confidence interval over cases. Cases
-// are the independent unit; repeats are averaged inside each case before
-// resampling so a noisy provider does not inflate apparent sample size.
+// Interval is a two-sided 95% Wilson score interval over cases. Cases are the
+// independent unit; repeats are averaged inside each case so a noisy provider
+// does not inflate apparent sample size.
 type Interval struct {
 	Lower float64
 	Upper float64
@@ -134,7 +132,7 @@ func averageTokens(rows []Evaluation) (float64, bool) {
 	return float64(total) / float64(count), true
 }
 
-func confidenceInterval(candidate string, rows []Evaluation) *Interval {
+func confidenceInterval(_ string, rows []Evaluation) *Interval {
 	// First turn each case into a mean over CONCLUSIVE repeats. A pending
 	// unexpected park stays out of this conditional interval and is surfaced
 	// separately in every report as a queue count and a lower-bound accuracy.
@@ -170,41 +168,21 @@ func confidenceInterval(candidate string, rows []Evaluation) *Interval {
 	if len(values) == 0 {
 		return nil
 	}
-	sort.Float64s(values)
 	if len(values) < 2 {
 		return nil
 	}
-	const samples = 2000
-	sum := sha256.Sum256([]byte(candidate))
-	seed := int64(0)
-	for _, b := range sum[:8] {
-		seed = seed<<8 | int64(b)
+	var total float64
+	for _, value := range values {
+		total += value
 	}
-	rng := rand.New(rand.NewSource(seed))
-	boot := make([]float64, samples)
-	for i := range boot {
-		var total float64
-		for range values {
-			total += values[rng.Intn(len(values))]
-		}
-		boot[i] = total / float64(len(values))
-	}
-	sort.Float64s(boot)
-	return &Interval{Lower: percentile(boot, 0.025), Upper: percentile(boot, 0.975), Cases: len(values)}
-}
-
-func percentile(values []float64, p float64) float64 {
-	if len(values) == 0 {
-		return 0
-	}
-	index := int(math.Round(p * float64(len(values)-1)))
-	if index < 0 {
-		index = 0
-	}
-	if index >= len(values) {
-		index = len(values) - 1
-	}
-	return values[index]
+	n := float64(len(values))
+	proportion := total / n
+	const z = 1.959963984540054
+	z2 := z * z
+	denominator := 1 + z2/n
+	center := (proportion + z2/(2*n)) / denominator
+	halfWidth := z * math.Sqrt((proportion*(1-proportion)+z2/(4*n))/n) / denominator
+	return &Interval{Lower: center - halfWidth, Upper: center + halfWidth, Cases: len(values)}
 }
 
 func markFrontier(reports []CandidateReport) {

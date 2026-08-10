@@ -117,9 +117,14 @@ func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 	if err := os.WriteFile(fake, []byte("#!/bin/sh\n[ \"$NM_HOME\" = \""+p.Root()+"\" ] && touch \""+p.Root()+"/shared-home-used\"\ncat >/dev/null\ncat <<'EOF'\n"+reply+"EOF\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p.ConfigFile(), []byte("agent_path_override:\n  claude: "+fake+"\n"), 0o644); err != nil {
+	globalConfig := "agent_path_override:\n  claude: " + fake + "\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(globalConfig), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := sourceDB.UpdateRunStatusWithConfig(run.ID, run.Status, *run.TrustedConfigSHA, globalConfig); err != nil {
+		t.Fatal(err)
+	}
+	run.GlobalConfigYAML = &globalConfig
 	store, err := Open(p.EvalDir())
 	if err != nil {
 		t.Fatal(err)
@@ -218,6 +223,17 @@ func TestConfidenceIntervalRequiresMultipleIndependentCases(t *testing.T) {
 	}
 }
 
+func TestConfidenceIntervalRepresentsUniformSampleUncertainty(t *testing.T) {
+	rows := []Evaluation{
+		{CaseID: "one", Status: "completed", ExpectedPark: boolPtr(true), CandidateParked: true},
+		{CaseID: "two", Status: "completed", ExpectedPark: boolPtr(true), CandidateParked: true},
+	}
+	got := confidenceInterval("claude+test", rows)
+	if got == nil || got.Lower <= 0 || got.Lower >= 1 || got.Upper < 0.999 {
+		t.Fatalf("uniform-success confidence interval = %#v, want finite-sample uncertainty ending at 1", got)
+	}
+}
+
 func TestFrontierDoesNotCompareDifferentCohorts(t *testing.T) {
 	cheap := 10.0
 	expensive := 100.0
@@ -294,10 +310,12 @@ func setupCapturedRun(t *testing.T, ctx context.Context) (*paths.Paths, *db.DB, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.UpdateRunTrustedConfigSHA(run.ID, baseSHA); err != nil {
+	globalConfig := "{}\n"
+	if err := database.UpdateRunStatusWithConfig(run.ID, run.Status, baseSHA, globalConfig); err != nil {
 		t.Fatal(err)
 	}
 	run.TrustedConfigSHA = &baseSHA
+	run.GlobalConfigYAML = &globalConfig
 	step, err := database.InsertStepResult(run.ID, types.StepReview)
 	if err != nil {
 		t.Fatal(err)
