@@ -312,6 +312,7 @@ func TestBaselineForRoundDerivesFreshTokensFromPerRoundDeltas(t *testing.T) {
 		{
 			StepName:             string(types.StepReview),
 			Round:                2,
+			Purpose:              "review",
 			DurationMS:           50,
 			FreshInputTokens:     &cumulativeFresh,
 			DeltaInputTokens:     &deltaInput,

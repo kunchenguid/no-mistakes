@@ -65,6 +65,7 @@ func TestEvalJourney(t *testing.T) {
 	if !strings.Contains(out, "captured 1 local review case") {
 		t.Fatalf("capture output = %q", out)
 	}
+	t.Logf("eval capture output:\n%s", out)
 
 	out, err = h.Run("eval", "sets")
 	if err != nil {
@@ -73,14 +74,17 @@ func TestEvalJourney(t *testing.T) {
 	if !strings.Contains(out, "LOCAL-ONLY EVAL CASE SETS") || !strings.Contains(out, "diversified:") {
 		t.Fatalf("sets output = %q", out)
 	}
+	t.Logf("eval sets output:\n%s", out)
 
-	out, err = h.Run("eval", "run", "--cases", "all", "--candidate", "claude+fake-model", "--repeats", "1")
+	out, err = h.Run("eval", "run", "--cases", "all", "--candidate", "claude+claude-opus-4-7", "--repeats", "1")
 	if err != nil {
-		t.Fatalf("eval run: %v\n%s", err, out)
+		report, reportErr := h.Run("eval", "report")
+		t.Fatalf("eval run: %v\n%s\neval report after failure (%v):\n%s", err, out, reportErr, report)
 	}
 	if !strings.Contains(out, "local eval session") {
 		t.Fatalf("run output = %q", out)
 	}
+	t.Logf("eval run output:\n%s", out)
 	invocations := h.AgentInvocations()
 	if len(invocations) == 0 {
 		t.Fatal("expected replay agent invocation")
@@ -94,7 +98,8 @@ func TestEvalJourney(t *testing.T) {
 	if err != nil {
 		t.Fatalf("eval report: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "LOCAL-ONLY EVAL REPORT") || !strings.Contains(out, "claude+fake-model") || !strings.Contains(out, "queued unexpected parks: 1") {
+	if !strings.Contains(out, "LOCAL-ONLY EVAL REPORT") || !strings.Contains(out, "claude+claude-opus-4-7") || !strings.Contains(out, "queued unexpected parks: 1") {
 		t.Fatalf("report output = %q", out)
 	}
+	t.Logf("eval report output:\n%s", out)
 }

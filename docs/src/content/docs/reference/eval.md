@@ -4,7 +4,9 @@ title: Evaluation toolkit
 
 `no-mistakes eval` is an opt-in, **local-only** toolkit for comparing review candidates against review passes your own pipeline has already recorded.
 
-It is separate from normal pipeline operation. It does not start or use the shared daemon, alter a gate, add configuration, emit remote telemetry, push a branch, open a PR, or run CI. Case bundles, source findings, decisions, candidate outputs, and metrics stay under `<NM_HOME>/eval/`.
+It is separate from normal pipeline operation. It does not start or use the shared daemon, alter a gate, add configuration, emit remote telemetry, push a branch, open a PR, or run CI. Case bundles, source findings, decisions, candidate outputs, and metrics are stored only under `<NM_HOME>/eval/`; there is no export, sharing, synchronization, or remote case store.
+
+Replay does invoke the selected agent normally, so that agent may send the restored code and review context to its configured model provider. The local-only guarantee concerns eval storage and transport added by no-mistakes, not the selected agent's ordinary provider traffic.
 
 ## Capture a run
 
@@ -47,15 +49,15 @@ no-mistakes eval run \
 
 A candidate is always explicit: `agent+model`. The replay restores each case into a fresh temporary bare gate and worktree, then invokes only the existing Review step. Push, PR, CI, test, lint, document, and fix loops are outside this MVP.
 
-The captured human gate decision supplies the verdict policy:
+The captured human gate evidence supplies the verdict policy:
 
-- a recorded user-selected fix means the candidate should park
-- a recorded human approval or skip means the candidate should pass
-- incomplete or ambiguous historical decisions are left unlabeled and excluded from verdict scoring
+- a user selection recorded for a fix means the candidate should park
+- a skipped Review gate, or a completed gate whose recorded findings required a user decision, means the candidate should pass
+- clean completions, approvals that cannot be established from the persisted round, and other incomplete or ambiguous historical decisions remain unlabeled and are excluded from verdict scoring
 
 If a candidate parks on a human-pass case, the finding is queued locally for later adjudication. It is not automatically called wrong. This protects potentially good, unexpected findings until finding-level labeling exists.
 
-`--repeats` defaults to `3` and must be at least `1`. Replays are intentionally isolated from the production `NM_HOME`; they do not contact the shared no-mistakes daemon. The selected agent still communicates with its configured model provider in the normal way.
+`--repeats` defaults to `3` and must be at least `1`. Candidates must use an agent that can enforce an explicit model; ACP targets such as `cursor` and `acp:<target>` are rejected. Replays are intentionally isolated from the production `NM_HOME`; they do not contact the shared no-mistakes daemon. The selected agent still communicates with its configured model provider in the normal way.
 
 ## Report results
 
@@ -63,7 +65,7 @@ If a candidate parks on a human-pass case, the finding is queued locally for lat
 no-mistakes eval report
 ```
 
-The report groups all local replays by candidate and shows:
+The report groups local replays by candidate and cohort. A cohort pins the selected case IDs and repeat count, so frontier comparisons only compare candidates run over the same corpus and repeat plan. It shows:
 
 - confirmed verdict agreement and its conservative lower bound
 - queued unexpected parks and failed candidate invocations

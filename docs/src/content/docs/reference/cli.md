@@ -369,6 +369,12 @@ no-mistakes runs [--limit <n>]
 
 Shows runs newest-first with branch, status (styled), short SHA, timestamp, and PR URL if set.
 
+## no-mistakes eval
+
+Capture local review-round cases, inspect case sets before spending tokens, replay an explicit agent and model in isolation, and report verdict accuracy, token cost, wall time, and the accuracy-versus-cost frontier.
+
+See [Evaluation toolkit](/no-mistakes/reference/eval/) for the local-only boundary, capture prerequisite, command flags, label policy, and reporting semantics.
+
 ## no-mistakes stats
 
 Show historical usage stats across all repos.
