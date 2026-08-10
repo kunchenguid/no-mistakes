@@ -248,9 +248,25 @@ func (o *Ownership) SyncProcess(pid int) error {
 	if pid <= 0 {
 		return nil
 	}
-	command, err := processCommandLine(pid)
+	var command string
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		command, err = processCommandLine(pid)
+		if err == nil {
+			break
+		}
+		alive, aliveErr := processAlive(pid)
+		if aliveErr == nil && !alive {
+			// A short-lived candidate can exit before its synchronous start
+			// callback inspects it. It no longer needs reaper ownership.
+			return nil
+		}
+		if attempt < 2 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 	if err != nil {
-		_ = terminateProcessTree(pid)
+		// Never signal a PID whose identity could not be established.
 		return fmt.Errorf("e2edaemon: inspect candidate process: %w", err)
 	}
 	if err := o.Inv.updateProcess(o.ID, pid, processHash(command)); err != nil {

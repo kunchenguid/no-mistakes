@@ -158,6 +158,24 @@ func safetyReap(t *testing.T) {
 	})
 }
 
+func TestSyncProcessAllowsCandidateThatAlreadyExited(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(EnvInventory, filepath.Join(root, "inventory"))
+	ownership, err := Acquire(filepath.Join(root, "nm-eval-finished", "nmhome"), "", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ownership.Release()
+
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ownership.SyncProcess(cmd.Process.Pid); err != nil {
+		t.Fatalf("SyncProcess rejected a candidate that had already exited: %v", err)
+	}
+}
+
 func TestReapAll_OwnedCandidateProcess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix process model")

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -172,11 +173,19 @@ func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
 	defer sourceDB.Close()
 
-	fake := filepath.Join(t.TempDir(), "claude")
+	fakeDir := t.TempDir()
+	fake := filepath.Join(fakeDir, "claude")
 	const reply = `{"type":"assistant","message":{"usage":{"input_tokens":12,"output_tokens":3},"content":[{"type":"text","text":"clean"}]}}
 {"type":"result","subtype":"success","is_error":false,"structured_output":{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"},"usage":{"input_tokens":12,"output_tokens":3}}
 `
-	if err := os.WriteFile(fake, []byte("#!/bin/sh\n[ \"$NM_HOME\" = \""+p.Root()+"\" ] && touch \""+p.Root()+"/shared-home-used\"\ncat >/dev/null\ncat <<'EOF'\n"+reply+"EOF\n"), 0o755); err != nil {
+	var script string
+	if runtime.GOOS == "windows" {
+		fake += ".cmd"
+		script = "@echo off\r\nmore >nul\r\necho " + strings.ReplaceAll(strings.TrimSpace(reply), "\n", "\r\necho ") + "\r\n"
+	} else {
+		script = "#!/bin/sh\n[ \"$NM_HOME\" = \"" + p.Root() + "\" ] && touch \"" + p.Root() + "/shared-home-used\"\ncat >/dev/null\ncat <<'EOF'\n" + reply + "EOF\n"
+	}
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", filepath.Dir(fake)+string(os.PathListSeparator)+os.Getenv("PATH"))
