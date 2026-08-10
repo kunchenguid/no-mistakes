@@ -67,6 +67,10 @@ CREATE TABLE IF NOT EXISTS step_rounds (
     trigger_type         TEXT NOT NULL,
     findings_json        TEXT,
     reviewed_head_sha    TEXT,
+    starting_head_sha    TEXT,
+    trusted_config_sha   TEXT,
+    global_config_yaml   BLOB,
+    repo_config_yaml     BLOB,
     user_findings_json   TEXT,
     selected_finding_ids TEXT,
     selection_source     TEXT,
@@ -149,6 +153,10 @@ var migrationStatements = []string{
 	// A parked round may retain the reviewed commit as a non-authoritative
 	// candidate. Only atomic review completion promotes it onto the run.
 	`ALTER TABLE step_rounds ADD COLUMN reviewed_head_sha TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN starting_head_sha TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN trusted_config_sha TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN global_config_yaml BLOB`,
+	`ALTER TABLE step_rounds ADD COLUMN repo_config_yaml BLOB`,
 	`ALTER TABLE runs ADD COLUMN intent TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,

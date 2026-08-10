@@ -115,6 +115,7 @@ func isAllowedTempRoot(nmHome string) bool {
 	// tests use nmh-*; suite labs use nm-e2e-keepalive / private/tmp prefixes.
 	lower := strings.ToLower(nmHome)
 	if strings.Contains(lower, string(filepath.Separator)+"nm-e2e") ||
+		strings.Contains(lower, string(filepath.Separator)+"nm-eval-") ||
 		strings.Contains(lower, string(filepath.Separator)+"nmh-") ||
 		strings.Contains(lower, "/tmp/") ||
 		strings.Contains(lower, "/private/tmp/") ||

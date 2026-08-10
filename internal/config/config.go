@@ -62,6 +62,7 @@ const (
 
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
 type GlobalConfig struct {
+	SourceYAML           []byte              `yaml:"-"`
 	Agent                types.AgentName     `yaml:"agent"`
 	Agents               []types.AgentName   `yaml:"-"`
 	ACPXPath             string              `yaml:"acpx_path"`
@@ -374,6 +375,9 @@ type AutoFix struct {
 
 // Config is the merged result of global + per-repo configuration.
 type Config struct {
+	ReplayGlobalYAML     []byte
+	ReplayRepoYAML       []byte
+	TrustedConfigSHA     string
 	Agent                types.AgentName
 	Agents               []types.AgentName
 	ACPXPath             string
@@ -1135,6 +1139,7 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
+			cfg.SourceYAML = []byte("{}\n")
 			return cfg, nil
 		}
 		return nil, fmt.Errorf("read global config: %w", err)
@@ -1144,6 +1149,7 @@ func LoadGlobal(path string) (*GlobalConfig, error) {
 
 func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	cfg := DefaultGlobalConfig()
+	cfg.SourceYAML = append([]byte(nil), data...)
 	var raw globalConfigRaw
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
@@ -1652,7 +1658,10 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		commit.FixMessage = *repo.Commit.FixMessage
 	}
 
+	repoYAML, _ := yaml.Marshal(repo)
 	cfg := &Config{
+		ReplayGlobalYAML:     append([]byte(nil), global.SourceYAML...),
+		ReplayRepoYAML:       repoYAML,
 		Agent:                global.Agent,
 		Agents:               copyAgents(global.Agents),
 		ACPXPath:             global.ACPXPath,

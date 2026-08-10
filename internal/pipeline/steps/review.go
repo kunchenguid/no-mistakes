@@ -28,7 +28,11 @@ func (s *ReviewStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 
 	reviewScope := fmt.Sprintf("branch changes between %s and %s", baseSHA, sctx.Run.HeadSHA)
 	if sctx.Fixing {
-		reviewScope = fmt.Sprintf("current worktree and HEAD changes relative to base commit %s (starting head %s)", baseSHA, sctx.Run.HeadSHA)
+		startingHeadSHA := sctx.ReviewStartingHeadSHA
+		if startingHeadSHA == "" {
+			startingHeadSHA = sctx.Run.HeadSHA
+		}
+		reviewScope = fmt.Sprintf("current worktree and HEAD changes relative to base commit %s (starting head %s)", baseSHA, startingHeadSHA)
 	}
 
 	// Bounded workload size (changed files + net lines) for local telemetry, so

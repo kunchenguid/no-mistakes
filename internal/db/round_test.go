@@ -28,6 +28,25 @@ func TestInsertReviewStepRoundPersistsNonAuthoritativeCandidate(t *testing.T) {
 	}
 }
 
+func TestReviewRoundPersistsExactReplayProvenance(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/tmp/review-provenance", "https://example.com/repo.git", "main")
+	run, _ := d.InsertRun(repo.ID, "feature", "reviewed", "base")
+	step, _ := d.InsertStepResult(run.ID, types.StepReview)
+	_, err := d.InsertReviewStepRoundWithProvenance(step.ID, 1, "auto_fix", nil, nil, "reviewed", "starting", "trusted", []byte("agent: claude\n"), []byte("ignore_patterns: ['vendor']\n"), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rounds, err := d.GetRoundsByStep(step.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rounds[0]
+	if got.StartingHeadSHA == nil || *got.StartingHeadSHA != "starting" || got.TrustedConfigSHA == nil || *got.TrustedConfigSHA != "trusted" || string(got.GlobalConfigYAML) != "agent: claude\n" || string(got.RepoConfigYAML) != "ignore_patterns: ['vendor']\n" {
+		t.Fatalf("review provenance = %#v", got)
+	}
+}
+
 func TestStepRoundInsertAndGet(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

@@ -1,9 +1,9 @@
-// Package e2edaemon owns temporary E2E daemon lifecycle: exact inventory,
-// a reaper with bounded ownership checks, and a concurrency slot cap.
+// Package e2edaemon owns isolated temporary no-mistakes process lifecycle:
+// exact inventory, a reaper with bounded ownership checks, and a concurrency
+// slot cap.
 //
-// Scope is temporary E2E daemons only (NM_TEST_START_DAEMON detached starts
-// under harness temp roots). The shared production daemon and external
-// sleep-loop keepalive shells are out of scope.
+// Scope includes temporary E2E daemons and eval candidate roots. The shared
+// production daemon and external sleep-loop keepalive shells are out of scope.
 //
 // Recovery boundary (honest):
 //   - t.Cleanup and package TestMain reapers cover normal completion and

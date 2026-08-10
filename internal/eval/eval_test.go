@@ -149,7 +149,7 @@ func TestCapturePreservesFixRoundStartingHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	clean := `{"findings":[],"risk_level":"low","risk_rationale":"fixed","risk_scope":"source-or-external"}`
-	secondRound, err := sourceDB.InsertReviewStepRound(steps[0].ID, 2, "auto_fix", &clean, nil, fixedSHA, 25)
+	secondRound, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 2, "auto_fix", &clean, nil, fixedSHA, stringValue(firstRound.ReviewedHeadSHA), stringValue(firstRound.TrustedConfigSHA), firstRound.GlobalConfigYAML, firstRound.RepoConfigYAML, 25)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestCapturePreservesFixRoundStartingHead(t *testing.T) {
 
 func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 	ctx := context.Background()
-	p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
+	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
 	defer sourceDB.Close()
 
 	fake := filepath.Join(t.TempDir(), "claude")
@@ -179,14 +179,7 @@ func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 	if err := os.WriteFile(fake, []byte("#!/bin/sh\n[ \"$NM_HOME\" = \""+p.Root()+"\" ] && touch \""+p.Root()+"/shared-home-used\"\ncat >/dev/null\ncat <<'EOF'\n"+reply+"EOF\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	globalConfig := "agent_path_override:\n  claude: " + fake + "\n"
-	if err := os.WriteFile(p.ConfigFile(), []byte(globalConfig), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	configTime := time.Unix(reviewRound.CreatedAt-1, 0)
-	if err := os.Chtimes(p.ConfigFile(), configTime, configTime); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("PATH", filepath.Dir(fake)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	store, err := Open(p.EvalDir())
 	if err != nil {
 		t.Fatal(err)
@@ -356,6 +349,16 @@ func TestRenderReportNamesWilsonScoreInterval(t *testing.T) {
 	}
 }
 
+func TestAverageTokensRequiresCompleteReplayCoverage(t *testing.T) {
+	rows := []Evaluation{
+		{TokensReported: true, FreshInputTokens: 10, OutputTokens: 2},
+		{TokensReported: false},
+	}
+	if cost, ok := averageTokens(rows); ok {
+		t.Fatalf("partial token cost = %v, want unknown", cost)
+	}
+}
+
 func TestFrontierDoesNotCompareDifferentCohorts(t *testing.T) {
 	cheap := 10.0
 	expensive := 100.0
@@ -437,7 +440,11 @@ func setupCapturedRun(t *testing.T, ctx context.Context) (*paths.Paths, *db.DB, 
 		t.Fatal(err)
 	}
 	findings := `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`
-	reviewRound, err := database.InsertReviewStepRound(step.ID, 1, "initial", &findings, nil, headSHA, 50)
+	repoConfigYAML, err := os.ReadFile(filepath.Join(workDir, ".no-mistakes.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewRound, err := database.InsertReviewStepRoundWithProvenance(step.ID, 1, "initial", &findings, nil, headSHA, headSHA, baseSHA, []byte("{}\n"), repoConfigYAML, 50)
 	if err != nil {
 		t.Fatal(err)
 	}

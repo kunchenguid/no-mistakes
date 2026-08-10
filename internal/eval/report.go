@@ -117,19 +117,17 @@ func averageWallMS(rows []Evaluation) float64 {
 }
 
 func averageTokens(rows []Evaluation) (float64, bool) {
-	var total int64
-	count := 0
-	for _, row := range rows {
-		if !row.TokensReported {
-			continue
-		}
-		total += row.FreshInputTokens + row.OutputTokens
-		count++
-	}
-	if count == 0 {
+	if len(rows) == 0 {
 		return 0, false
 	}
-	return float64(total) / float64(count), true
+	var total int64
+	for _, row := range rows {
+		if !row.TokensReported {
+			return 0, false
+		}
+		total += row.FreshInputTokens + row.OutputTokens
+	}
+	return float64(total) / float64(len(rows)), true
 }
 
 func confidenceInterval(_ string, rows []Evaluation) *Interval {
@@ -301,7 +299,7 @@ func RenderReport(reports []CandidateReport) string {
 			}
 		}
 		if report.AverageTokens == nil {
-			b.WriteString("  token cost: unknown (candidate did not report token usage)\n")
+			b.WriteString("  token cost: unknown (token usage was not reported for every replay)\n")
 		} else {
 			fmt.Fprintf(&b, "  token cost: %.0f fresh-input + output tokens per reported replay\n", *report.AverageTokens)
 		}

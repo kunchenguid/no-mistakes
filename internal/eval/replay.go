@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/e2edaemon"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -126,6 +127,19 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 		evaluation.CompletedAt = time.Now().Unix()
 		return evaluation
 	}
+	isolatedHome := filepath.Join(root, "home")
+	if err := os.MkdirAll(isolatedHome, 0o755); err != nil {
+		evaluation.Error = safeurl.RedactText(fmt.Sprintf("create isolated eval home: %v", err))
+		evaluation.CompletedAt = time.Now().Unix()
+		return evaluation
+	}
+	ownership, err := e2edaemon.Acquire(isolatedPaths.Root(), "", 2*time.Minute)
+	if err != nil {
+		evaluation.Error = safeurl.RedactText(fmt.Sprintf("acquire isolated eval ownership: %v", err))
+		evaluation.CompletedAt = time.Now().Unix()
+		return evaluation
+	}
+	defer ownership.Release()
 
 	workDir, err := restoreCase(ctx, c, root)
 	if err != nil {
@@ -172,7 +186,7 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 	if startingHeadSHA == "" {
 		startingHeadSHA = c.ReviewedHeadSHA
 	}
-	replayRun := &db.Run{ID: "eval-" + evaluation.ID, Branch: c.Branch, HeadSHA: startingHeadSHA, BaseSHA: c.BaseSHA}
+	replayRun := &db.Run{ID: "eval-" + evaluation.ID, Branch: c.Branch, HeadSHA: c.ReviewedHeadSHA, BaseSHA: c.BaseSHA}
 	if c.Intent != "" {
 		intent := c.Intent
 		replayRun.Intent = &intent
@@ -188,23 +202,24 @@ func replayOne(ctx context.Context, c Case, session Session, candidate Candidate
 	replayRepo := &db.Repo{ID: "eval", WorkingPath: workDir, DefaultBranch: defaultBranch}
 	step := &steps.ReviewStep{}
 	outcome, err := step.Execute(&pipeline.StepContext{
-		Ctx:              ctx,
-		Run:              replayRun,
-		Repo:             replayRepo,
-		WorkDir:          workDir,
-		Agent:            observed,
-		Config:           cfg,
-		DB:               replayDB,
-		StepResultID:     stepResultID,
-		Fixing:           fixing,
-		SkipFixExecution: fixing,
-		PreviousFindings: previousFindings,
-		Env:              []string{"NM_HOME=" + isolatedPaths.Root()},
-		Log:              func(string) {},
-		LogChunk:         func(string) {},
-		LogFile:          func(string) {},
-		UserIntent:       c.Intent,
-		IntentSource:     c.IntentSource,
+		Ctx:                   ctx,
+		Run:                   replayRun,
+		Repo:                  replayRepo,
+		WorkDir:               workDir,
+		Agent:                 observed,
+		Config:                cfg,
+		DB:                    replayDB,
+		StepResultID:          stepResultID,
+		Fixing:                fixing,
+		SkipFixExecution:      fixing,
+		ReviewStartingHeadSHA: startingHeadSHA,
+		PreviousFindings:      previousFindings,
+		Env:                   []string{"NM_HOME=" + isolatedPaths.Root(), "HOME=" + isolatedHome},
+		Log:                   func(string) {},
+		LogChunk:              func(string) {},
+		LogFile:               func(string) {},
+		UserIntent:            c.Intent,
+		IntentSource:          c.IntentSource,
 	})
 	// Candidate wall time is the actual review invocation, matching the local
 	// agent-invocation metric rather than charging bundle restoration setup.

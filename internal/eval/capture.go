@@ -146,42 +146,12 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 	if err := git.ValidateBareRepository(ctx, gateDir); err != nil {
 		return nil, fmt.Errorf("source gate is unavailable for capture: %w", err)
 	}
-	trustedSHA, err := trustedConfigSHAAtReview(ctx, gateDir, repo.DefaultBranch, reviewRounds[0].CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-	trustedConfig, err := repoConfigAt(ctx, gateDir, trustedSHA)
-	if err != nil {
-		return nil, fmt.Errorf("read source trusted configuration at %s: %w", trustedSHA, err)
-	}
-	globalConfigBytes, err := os.ReadFile(p.ConfigFile())
-	if errors.Is(err, os.ErrNotExist) {
-		globalConfigBytes = []byte("{}\n")
-	} else if err != nil {
-		return nil, fmt.Errorf("read source global configuration: %w", err)
-	} else {
-		info, statErr := os.Stat(p.ConfigFile())
-		if statErr != nil {
-			return nil, fmt.Errorf("stat source global configuration: %w", statErr)
-		}
-		if info.ModTime().Unix() > reviewRounds[0].CreatedAt {
-			return nil, fmt.Errorf("global configuration changed after the source review; its original configuration is unavailable")
-		}
-	}
-	globalConfig, err := agentNeutralGlobalConfig(globalConfigBytes)
-	if err != nil {
-		return nil, err
-	}
 	invocations, err := database.GetAgentInvocationsByRun(run.ID)
 	if err != nil {
 		return nil, fmt.Errorf("read source invocation metrics: %w", err)
 	}
-	replayBaseSHA, err := effectiveReplayBase(ctx, gateDir, run.BaseSHA, run.HeadSHA, trustedSHA)
-	if err != nil {
-		return nil, err
-	}
 	captured := make([]Case, 0, len(reviewRounds))
-	for roundIndex, round := range reviewRounds {
+	for _, round := range reviewRounds {
 		if round.FindingsJSON == nil {
 			// A persisted round with no findings was an interrupted or legacy
 			// partial record, not a replayable review pass. Refuse rather than
@@ -197,12 +167,22 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 		if round.ReviewedHeadSHA != nil && strings.TrimSpace(*round.ReviewedHeadSHA) != "" {
 			reviewedSHA = strings.TrimSpace(*round.ReviewedHeadSHA)
 		}
-		startingSHA := reviewedSHA
-		if round.IsFixRound() {
-			if roundIndex == 0 || reviewRounds[roundIndex-1].ReviewedHeadSHA == nil || strings.TrimSpace(*reviewRounds[roundIndex-1].ReviewedHeadSHA) == "" {
-				return nil, fmt.Errorf("review fix round %q has no preceding reviewed head", round.ID)
-			}
-			startingSHA = strings.TrimSpace(*reviewRounds[roundIndex-1].ReviewedHeadSHA)
+		if round.StartingHeadSHA == nil || strings.TrimSpace(*round.StartingHeadSHA) == "" || round.TrustedConfigSHA == nil || strings.TrimSpace(*round.TrustedConfigSHA) == "" || len(round.GlobalConfigYAML) == 0 || len(round.RepoConfigYAML) == 0 {
+			return nil, fmt.Errorf("review round %q predates exact eval configuration provenance", round.ID)
+		}
+		startingSHA := strings.TrimSpace(*round.StartingHeadSHA)
+		trustedSHA := strings.TrimSpace(*round.TrustedConfigSHA)
+		globalConfig, err := agentNeutralGlobalConfig(round.GlobalConfigYAML)
+		if err != nil {
+			return nil, fmt.Errorf("read review round %q global configuration: %w", round.ID, err)
+		}
+		if _, err := config.LoadRepoFromBytes(round.RepoConfigYAML); err != nil {
+			return nil, fmt.Errorf("read review round %q repository configuration: %w", round.ID, err)
+		}
+		repoConfigBytes := append([]byte(nil), round.RepoConfigYAML...)
+		replayBaseSHA, err := effectiveReplayBase(ctx, gateDir, run.BaseSHA, reviewedSHA, trustedSHA)
+		if err != nil {
+			return nil, err
 		}
 		if _, err := git.ResolveRef(ctx, gateDir, reviewedSHA); err != nil {
 			return nil, fmt.Errorf("review round %q commit is unavailable for capture: %w", round.ID, err)
@@ -215,16 +195,6 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 		if err != nil {
 			return nil, fmt.Errorf("read review changed files for round %q: %w", round.ID, err)
 		}
-		pushedConfig, err := repoConfigAt(ctx, gateDir, reviewedSHA)
-		if err != nil {
-			return nil, fmt.Errorf("read review config for round %q: %w", round.ID, err)
-		}
-		effectiveRepoConfig := config.EffectiveRepoConfig(pushedConfig, trustedConfig, trustedConfig.AllowRepoCommands)
-		repoConfigBytes, err := yaml.Marshal(effectiveRepoConfig)
-		if err != nil {
-			return nil, fmt.Errorf("serialize replay config: %w", err)
-		}
-
 		caseID := run.ID + "-" + round.ID
 		caseDir := store.caseDir(caseID)
 		if existing, err := os.Stat(caseDir); err == nil && existing.IsDir() {
@@ -275,19 +245,6 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 		captured = append(captured, c)
 	}
 	return captured, nil
-}
-
-func trustedConfigSHAAtReview(ctx context.Context, gateDir, defaultBranch string, reviewedAt int64) (string, error) {
-	ref := "refs/heads/" + defaultBranch
-	sha, err := git.Run(ctx, gateDir, "rev-list", "-1", "--first-parent", fmt.Sprintf("--before=@%d", reviewedAt), ref)
-	if err != nil {
-		return "", fmt.Errorf("resolve source trusted configuration: %w", err)
-	}
-	sha = strings.TrimSpace(sha)
-	if sha == "" {
-		return "", fmt.Errorf("source trusted configuration commit is unavailable at review time")
-	}
-	return sha, nil
 }
 
 // effectiveReplayBase reproduces ReviewStep's branch-scoped base: the merge

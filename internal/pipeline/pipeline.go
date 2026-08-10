@@ -14,19 +14,20 @@ var ErrFatalGateReconciliation = errors.New("fatal gate reconciliation")
 
 // StepContext provides shared resources to pipeline steps during execution.
 type StepContext struct {
-	Ctx              context.Context
-	Run              *db.Run
-	Repo             *db.Repo
-	WorkDir          string
-	Agent            agent.Agent
-	Config           *config.Config
-	DB               *db.DB
-	Log              func(string) // discrete log line (newline-terminated, user-visible + file)
-	LogChunk         func(string) // raw streaming chunk (user-visible + file)
-	LogFile          func(string) // file-only log callback (not shown to user)
-	Fixing           bool         // true when re-executing after a "fix" action
-	SkipFixExecution bool         // replay an already-completed fix round's review turn only
-	PreviousFindings string       // JSON findings from the previous execution (set during fix loop)
+	Ctx                   context.Context
+	Run                   *db.Run
+	Repo                  *db.Repo
+	WorkDir               string
+	Agent                 agent.Agent
+	Config                *config.Config
+	DB                    *db.DB
+	Log                   func(string) // discrete log line (newline-terminated, user-visible + file)
+	LogChunk              func(string) // raw streaming chunk (user-visible + file)
+	LogFile               func(string) // file-only log callback (not shown to user)
+	Fixing                bool         // true when re-executing after a "fix" action
+	SkipFixExecution      bool         // replay an already-completed fix round's review turn only
+	ReviewStartingHeadSHA string
+	PreviousFindings      string // JSON findings from the previous execution (set during fix loop)
 	// StepResultID is the DB row ID of the current step's step_results record.
 	// Steps use it to query their own round history for multi-round prompts.
 	StepResultID string
