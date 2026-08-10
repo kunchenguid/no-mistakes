@@ -520,3 +520,100 @@ func TestOpencodeAgent_StructuredOutputError(t *testing.T) {
 		t.Errorf("error must not embed the reasoning prose snippet, got %q", msg)
 	}
 }
+
+// TestOpencodeAgent_StructuredOutputErrorEmptyMessage guards the wedge
+// symptom where opencode reports info.error.name=StructuredOutputError
+// with an empty Message (the model produced prose but never invoked the
+// StructuredOutput tool). The agent must:
+//
+//  1. surface a non-empty fallback explanation in the error so the
+//     operator can tell what failed without digging through the run
+//     log, and
+//  2. fire a lifecycle activity event carrying an excerpt of the
+//     streamed text so no-mistakes axi status does not stay frozen on
+//     the cold-session notice while the run actually completed one
+//     tool-free model turn.
+func TestOpencodeAgent_StructuredOutputErrorEmptyMessage(t *testing.T) {
+	const streamedText = `{"action":"retry","reason":"prose"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			fmt.Fprint(w, `{"id":"s1"}`)
+
+		case r.URL.Path == "/global/event" && r.Method == http.MethodGet:
+			// Intentionally no text/message part updates: this mirrors
+			// the wedge condition where the SSE stream ends before the
+			// message is classified as assistant, so no OnChunk fires
+			// and last_activity would otherwise stay at the cold-session
+			// notice. The message response below seeds state.lastText
+			// from the response parts; the activity-event assertion
+			// checks that excerpt reaches OnLifecycle.
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "data: {\"payload\":{\"type\":\"session.idle\"}}\n\n")
+
+		case r.URL.Path == "/session/s1/message" && r.Method == http.MethodPost:
+			// info.error.message is empty: the opencode wedge symptom.
+			fmt.Fprintf(w, `{"info":{"id":"msg1","role":"assistant","error":{"name":"StructuredOutputError","message":"","retries":0}},"parts":[{"type":"text","text":%q}]}`, streamedText)
+
+		case r.URL.Path == "/session/s1" && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	a := &opencodeAgent{
+		bin:    "opencode",
+		server: &managedServer{port: mustParsePort(server.URL)},
+	}
+
+	var lifecycle []LifecycleEvent
+	result, err := a.Run(context.Background(), RunOpts{
+		Prompt:     "fix the failing tests",
+		CWD:        t.TempDir(),
+		JSONSchema: json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}`),
+		OnLifecycle: func(ev LifecycleEvent) {
+			lifecycle = append(lifecycle, ev)
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected error, got result %+v", result)
+	}
+	if result != nil {
+		t.Fatalf("expected nil result on error, got %+v", result)
+	}
+
+	msg := err.Error()
+	if !strings.Contains(msg, "structured output failed") {
+		t.Errorf("expected error to mention structured output failure, got %q", msg)
+	}
+	if !strings.Contains(msg, "model produced prose but did not call the StructuredOutput tool") {
+		t.Errorf("expected fallback explanation in error, got %q", msg)
+	}
+	if !strings.Contains(msg, "0 internal retries") {
+		t.Errorf("expected error to surface retry count, got %q", msg)
+	}
+	if strings.Contains(msg, streamedText) {
+		t.Errorf("error must not embed the streamed prose snippet, got %q", msg)
+	}
+
+	if len(lifecycle) == 0 {
+		t.Fatalf("expected OnLifecycle event carrying streamed text excerpt, got none")
+	}
+	var activityForError LifecycleEvent
+	for _, ev := range lifecycle {
+		if ev.Agent == "opencode" && strings.Contains(ev.Message, streamedText) && strings.Contains(ev.Message, "structured output error") {
+			activityForError = ev
+			break
+		}
+	}
+	if activityForError.Message == "" {
+		t.Fatalf("expected OnLifecycle activity event from opencode with streamed text excerpt, got %+v", lifecycle)
+	}
+	if !strings.Contains(activityForError.Message, "- model output: ") {
+		t.Errorf("expected activity event to label the streamed excerpt, got %q", activityForError.Message)
+	}
+}

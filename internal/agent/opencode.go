@@ -186,8 +186,44 @@ func (a *opencodeAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, err
 		if mr.resp.Info.Error.Retries != nil {
 			retries = *mr.resp.Info.Error.Retries
 		}
+		errMsg := strings.TrimSpace(mr.resp.Info.Error.Message)
+		emptyMessage := errMsg == ""
+		if emptyMessage {
+			// opencode's StructuredOutputError sometimes arrives with an
+			// empty Message field — the wedge symptom where the model
+			// produced JSON-shaped prose but never invoked the
+			// StructuredOutput tool. Without a fallback the formatted error
+			// carries no diagnostic content (and the run's last_activity
+			// stays frozen on the cold-session notice while operators
+			// stare at it). Surface a stable explanation and pin the
+			// retries value so the operator can tell opencode already
+			// re-asked the model once.
+			errMsg = fmt.Sprintf("the model produced prose but did not call the StructuredOutput tool (opencode retryCount=%d in the message request body)", retries)
+		}
+		if emptyMessage && opts.OnLifecycle != nil {
+			// Send the streamed text opencode did receive as a lifecycle
+			// event. The pipeline's lifecycle wrapper routes default-phase
+			// events through TouchStepActivity, which updates last_activity
+			// and writes the line to the step log so the operator can see
+			// what the model actually produced before the
+			// StructuredOutput tool dropped its call.
+			streamed := state.lastFinalText
+			if streamed == "" {
+				streamed = state.lastText
+			}
+			excerpt := outputSnippet(streamed)
+			activity := "opencode structured output error: " + errMsg
+			if excerpt != "" {
+				activity += " - model output: " + excerpt
+			}
+			opts.OnLifecycle(LifecycleEvent{
+				Agent:   "opencode",
+				Phase:   LifecyclePhaseRetry,
+				Message: activity,
+			})
+		}
 		return nil, fmt.Errorf("opencode structured output failed after %d internal retries: %s",
-			retries, mr.resp.Info.Error.Message)
+			retries, errMsg)
 	}
 
 	// Fall back to parsing JSON from text
