@@ -376,6 +376,81 @@ func leadingCount(summary string) (int, bool) {
 	return n, true
 }
 
+// TestExecutor_CarriedRoundsKeepTestEvidenceInTheStepFindings guards the test
+// step's evidence across a fix round. The PR body reads the step's merged
+// findings alone - testingEvidenceFindingsJSON stops at sr.FindingsJSON as
+// soon as it carries any testing metadata, and testing_summary always
+// survives the merge - so an artifact dropped while unioning the carried set
+// never reaches the PR body from the round records either.
+func TestExecutor_CarriedRoundsKeepTestEvidenceInTheStepFindings(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+
+	round1Findings := `{"findings":[
+		{"id":"test-1","severity":"error","description":"flaky assertion","action":"ask-user"},
+		{"id":"test-2","severity":"warning","description":"missing case","action":"auto-fix"}
+	],"summary":"2 findings","tested":["login flow"],"testing_summary":"ran the targeted checks",
+	"artifacts":[{"kind":"log","label":"first round log","path":"/tmp/first.log"}]}`
+
+	// The fix round re-runs only the check it repaired and reports no
+	// artifacts of its own.
+	round2Findings := `{"findings":[],"summary":"0 findings","testing_summary":"re-ran the repaired check"}`
+
+	callCount := 0
+	step := &adaptiveCallStep{
+		name: types.StepTest,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			callCount++
+			if callCount == 1 {
+				return &StepOutcome{NeedsApproval: true, Findings: round1Findings}, nil
+			}
+			return &StepOutcome{Findings: round2Findings}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Execute(context.Background(), run, repo, workDir)
+	}()
+
+	waitForStepStatus(t, database, run.ID, types.StepTest, types.StepStatusAwaitingApproval)
+	if err := exec.Respond(types.StepTest, types.ActionFix, []string{"test-2"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForStepStatus(t, database, run.ID, types.StepTest, types.StepStatusFixReview)
+
+	dbSteps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbSteps[0].FindingsJSON == nil {
+		t.Fatal("expected findings to be persisted")
+	}
+	parsed, err := types.ParseFindingsJSON(*dbSteps[0].FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse findings: %v", err)
+	}
+	if len(parsed.Artifacts) != 1 || parsed.Artifacts[0].Label != "first round log" {
+		t.Fatalf("the fix round produced no artifacts of its own, so the earlier round's must survive into the step findings the PR body reads; got %#v", parsed.Artifacts)
+	}
+	if len(parsed.Tested) != 1 || parsed.Tested[0] != "login flow" {
+		t.Fatalf("expected the earlier round's tested entries to survive, got %#v", parsed.Tested)
+	}
+
+	if err := exec.Respond(types.StepTest, types.ActionApprove, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+}
+
 // TestExecutor_StripsFabricatedUserAcceptanceRationale is the DEFECT 1
 // fabricated-approval regression: round 2's own generated risk_rationale
 // claims the remaining ask-user findings were "explicitly accepted by the

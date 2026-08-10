@@ -120,6 +120,38 @@ func excludeFindingsJSON(raw string, ids []string) string {
 	return excludedRaw
 }
 
+// mergeUnique unions two lists of test-evidence metadata, fresh side first,
+// dropping exact duplicates. The evidence a carried round produced is not
+// re-stated by a later round that only reports its own new work, and the PR
+// body reads the step's merged findings alone (testingEvidenceFindingsJSON
+// never falls back to the round records once the merged payload carries any
+// testing metadata), so anything dropped here is gone from the PR body.
+func mergeUnique[T comparable](existing, additional []T) []T {
+	if len(additional) == 0 {
+		return existing
+	}
+	if len(existing) == 0 {
+		return additional
+	}
+	seen := make(map[T]bool, len(existing)+len(additional))
+	merged := make([]T, 0, len(existing)+len(additional))
+	for _, entry := range existing {
+		if seen[entry] {
+			continue
+		}
+		seen[entry] = true
+		merged = append(merged, entry)
+	}
+	for _, entry := range additional {
+		if seen[entry] {
+			continue
+		}
+		seen[entry] = true
+		merged = append(merged, entry)
+	}
+	return merged
+}
+
 func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 	if existingRaw == "" {
 		return additionalRaw
@@ -138,7 +170,7 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 	seen := make(map[types.Finding]bool, len(existing.Items)+len(additional.Items))
 	existingCounts := countFindingFingerprints(existing.Items)
 	additionalCounts := countFindingFingerprints(additional.Items)
-	merged := types.Findings{Summary: existing.Summary, Tested: existing.Tested, TestingSummary: existing.TestingSummary, RiskLevel: existing.RiskLevel, RiskRationale: existing.RiskRationale, RiskScope: existing.RiskScope}
+	merged := types.Findings{Summary: existing.Summary, Tested: mergeUnique(existing.Tested, additional.Tested), TestingSummary: existing.TestingSummary, Artifacts: mergeUnique(existing.Artifacts, additional.Artifacts), RiskLevel: existing.RiskLevel, RiskRationale: existing.RiskRationale, RiskScope: existing.RiskScope}
 	for _, item := range existing.Items {
 		merged.Items = append(merged.Items, item)
 		seen[findingKey(item)] = true

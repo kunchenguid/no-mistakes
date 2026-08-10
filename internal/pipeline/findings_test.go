@@ -23,6 +23,45 @@ func TestMergeFindingsJSON_KeepsDistinctFindingsWithSameAutoID(t *testing.T) {
 	}
 }
 
+func TestMergeFindingsJSON_UnionsTestEvidenceFromBothSides(t *testing.T) {
+	existingRaw := `{"findings":[{"id":"test-1","severity":"warning","description":"fresh"}],"summary":"1 finding","tested":["login flow"],"testing_summary":"re-ran the fixed check","artifacts":[{"kind":"log","label":"fix round log","path":"/tmp/fix.log"}]}`
+	additionalRaw := `{"findings":[{"id":"test-2","severity":"error","description":"carried"}],"summary":"1 finding","tested":["login flow","signup flow"],"testing_summary":"ran the suite","artifacts":[{"kind":"log","label":"first round log","path":"/tmp/first.log"}]}`
+
+	merged, err := types.ParseFindingsJSON(mergeFindingsJSON(existingRaw, additionalRaw))
+	if err != nil {
+		t.Fatalf("parse merged findings: %v", err)
+	}
+	labels := make([]string, 0, len(merged.Artifacts))
+	for _, artifact := range merged.Artifacts {
+		labels = append(labels, artifact.Label)
+	}
+	if len(merged.Artifacts) != 2 || labels[0] != "fix round log" || labels[1] != "first round log" {
+		t.Fatalf("expected both rounds' artifacts, fresh first, got %#v", merged.Artifacts)
+	}
+	if len(merged.Tested) != 2 || merged.Tested[0] != "login flow" || merged.Tested[1] != "signup flow" {
+		t.Fatalf("expected the union of tested entries with no duplicates, got %#v", merged.Tested)
+	}
+	if merged.TestingSummary != "re-ran the fixed check" {
+		t.Fatalf("testing_summary should stay the fresh round's assessment, got %q", merged.TestingSummary)
+	}
+}
+
+func TestMergeFindingsJSON_KeepsCarriedEvidenceWhenFreshRoundReportsNone(t *testing.T) {
+	existingRaw := `{"findings":[{"id":"test-1","severity":"warning","description":"fresh"}],"summary":"1 finding","testing_summary":"re-ran the fixed check"}`
+	additionalRaw := `{"findings":[{"id":"test-2","severity":"error","description":"carried"}],"summary":"1 finding","tested":["login flow"],"artifacts":[{"kind":"log","label":"first round log","path":"/tmp/first.log"}]}`
+
+	merged, err := types.ParseFindingsJSON(mergeFindingsJSON(existingRaw, additionalRaw))
+	if err != nil {
+		t.Fatalf("parse merged findings: %v", err)
+	}
+	if len(merged.Artifacts) != 1 || merged.Artifacts[0].Label != "first round log" {
+		t.Fatalf("expected the carried artifact to survive a fresh round that produced none, got %#v", merged.Artifacts)
+	}
+	if len(merged.Tested) != 1 || merged.Tested[0] != "login flow" {
+		t.Fatalf("expected the carried tested entries to survive, got %#v", merged.Tested)
+	}
+}
+
 func TestRetainMatchingFindingsJSON_DropsFindingsMissingFromLatestReview(t *testing.T) {
 	existingRaw := `{"findings":[{"id":"review-1","severity":"warning","description":"first"},{"id":"review-2","severity":"error","description":"second"}],"summary":"2 findings"}`
 	keepRaw := `{"findings":[{"id":"review-7","severity":"error","description":"second"},{"id":"review-8","severity":"warning","description":"third"}],"summary":"2 findings"}`
