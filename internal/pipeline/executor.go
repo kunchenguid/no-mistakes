@@ -467,8 +467,8 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 				return nil, fmt.Errorf("recovered approval gate has no complete round")
 			}
 			latest := rounds[len(rounds)-1]
-			if latest.FindingsJSON == nil || *latest.FindingsJSON != *result.FindingsJSON {
-				return nil, fmt.Errorf("recovered approval gate findings are incomplete")
+			if err := validateRecoveredGateFindings(*result.FindingsJSON, rounds, findingsMayBeScopeLimited(e.steps[index])); err != nil {
+				return nil, err
 			}
 			autoFixes := 0
 			for _, round := range rounds {
@@ -504,6 +504,65 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 		return nil, fmt.Errorf("recovered run has no approval gate")
 	}
 	return gate, nil
+}
+
+// validateRecoveredGateFindings checks that the parked step's findings - the
+// authoritative set the operator was shown and that Resume acts on - is fully
+// accounted for by the step's recorded round history, so a torn write between
+// the round insert and the park is caught instead of resumed against a set no
+// round ever produced.
+//
+// A step whose every round is a complete assessment writes its own round
+// output as the step findings in the same iteration, so exact equality with
+// the latest round is the tightest available statement and stays the check.
+//
+// A step that carries findings across its rounds cannot satisfy that: its
+// step findings are the union of the latest round's own output with whatever
+// remained unresolved from earlier rounds, so it is a superset - and in the
+// canonical case, a scoped rereview that found nothing new, the latest round
+// records no findings at all while the union still carries the outstanding
+// ones. The invariant that does hold there, in both directions, is
+// containment: every finding the latest round reported is in the parked set
+// (nothing this round found got lost on the way to the gate), and every
+// finding in the parked set was reported by some round of this step (nothing
+// in it was invented outside the recorded history). Identity is by content
+// fingerprint, because the union deliberately rewrites a restated finding's
+// ID and may raise its action.
+func validateRecoveredGateFindings(stepFindings string, rounds []*db.StepRound, scopeLimited bool) error {
+	latest := rounds[len(rounds)-1]
+	if !scopeLimited {
+		if latest.FindingsJSON == nil || *latest.FindingsJSON != stepFindings {
+			return fmt.Errorf("recovered approval gate findings are incomplete")
+		}
+		return nil
+	}
+
+	parked := findingFingerprintSet(stepFindings)
+	if len(parked) == 0 {
+		return fmt.Errorf("recovered approval gate findings are incomplete")
+	}
+	if latest.FindingsJSON != nil {
+		for fingerprint := range findingFingerprintSet(*latest.FindingsJSON) {
+			if !parked[fingerprint] {
+				return fmt.Errorf("recovered approval gate findings are incomplete")
+			}
+		}
+	}
+	reported := make(map[types.Finding]bool, len(parked))
+	for _, round := range rounds {
+		if round.FindingsJSON == nil {
+			continue
+		}
+		for fingerprint := range findingFingerprintSet(*round.FindingsJSON) {
+			reported[fingerprint] = true
+		}
+	}
+	for fingerprint := range parked {
+		if !reported[fingerprint] {
+			return fmt.Errorf("recovered approval gate findings are incomplete")
+		}
+	}
+	return nil
 }
 
 func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, repo *db.Repo, workDir, logDir string, start int) error {
@@ -812,10 +871,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// used for ID-based selection.
 			effectiveFindings = dedupeFindingIDsJSON(effectiveFindings, string(stepName), carriedFindings)
 		}
-		if sanitized, stripped := sanitizeFabricatedApprovalJSON(effectiveFindings); stripped {
-			slog.Warn("stripped a risk_rationale claiming user acceptance of findings this run cannot corroborate as resolved", "step", stepName, "run", run.ID, "round", roundNum)
-			effectiveFindings = sanitized
-		}
 
 		if effectiveFindings != "" {
 			if dbErr := e.db.SetStepFindings(sr.ID, effectiveFindings); dbErr != nil {
@@ -827,13 +882,23 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			}
 		}
 
-		// Persist this execution round with its own raw findings (not the
+		// Persist this execution round with its own findings (not the
 		// step-level union): the round table is a historical record of what
 		// THIS round actually reported, and a scoped re-review that legitimately
 		// found nothing new should show as having found nothing new.
+		//
+		// Its items are restated under the identities the union assigned them,
+		// because the selection recorded against this round below names union
+		// IDs, and the round record is read back with those IDs to reconstruct
+		// which findings the operator chose to fix. Two ID spaces for one item
+		// make a selected finding read as an ignored one.
+		roundFindings := outcome.Findings
+		if carryFindings {
+			roundFindings = reconcileRoundFindingIDsJSON(outcome.Findings, effectiveFindings)
+		}
 		var findingsPtr *string
-		if outcome.Findings != "" {
-			findingsPtr = &outcome.Findings
+		if roundFindings != "" {
+			findingsPtr = &roundFindings
 		}
 		var effectiveFindingsPtr *string
 		if effectiveFindings != "" {

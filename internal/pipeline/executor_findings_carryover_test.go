@@ -2,12 +2,14 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -861,23 +863,184 @@ func TestExecutor_CarriedRoundsKeepTestEvidenceInTheStepFindings(t *testing.T) {
 	}
 }
 
-// TestExecutor_StripsFabricatedUserAcceptanceRationale is the DEFECT 1
-// fabricated-approval regression: round 2's own generated risk_rationale
-// claims the remaining ask-user findings were "explicitly accepted by the
-// user". Nobody accepted them - the only respond action on record selected
-// two unrelated findings for fix. That claim must not survive into stored or
-// displayed output.
-func TestExecutor_StripsFabricatedUserAcceptanceRationale(t *testing.T) {
+// TestExecutor_ResumesAGateParkedAfterAnEmptyCarryingRound is the crash
+// recovery regression for a carrying step. Round 1 reported two ask-user
+// findings and the operator fixed only one; round 2's scoped rereview found
+// nothing new in the fix diff, so its round row holds NULL findings while the
+// step parks on the carried survivor. The daemon then restarts. Recovery must
+// accept that gate: the old byte-equality pre-check between the step's
+// findings and the latest round's own findings rejected it, which dropped the
+// run out of parked-run planning and into generic crash recovery - reopening,
+// on restart, exactly the unresolved-findings hole carry-forward closes.
+func TestExecutor_ResumesAGateParkedAfterAnEmptyCarryingRound(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	stepResult, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(stepResult.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	round1Findings := `{"findings":[
+		{"id":"review-1","severity":"warning","description":"selected issue","action":"ask-user"},
+		{"id":"review-2","severity":"error","description":"unselected issue","action":"ask-user"}
+	],"summary":"2 findings"}`
+	// What the gate parked on after round 2: only the carried survivor.
+	carriedFindings := `{"findings":[
+		{"id":"review-2","severity":"error","description":"unselected issue","action":"ask-user"}
+	],"summary":"1 outstanding finding"}`
+
+	if _, err := database.InsertReviewStepRound(stepResult.ID, 1, "initial", &round1Findings, nil, "1111111111111111111111111111111111111111", 25); err != nil {
+		t.Fatal(err)
+	}
+	// Round 2's scoped rereview reported nothing at all.
+	if _, err := database.InsertReviewStepRound(stepResult.ID, 2, "auto_fix", nil, nil, "2222222222222222222222222222222222222222", 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetStepFindings(stepResult.ID, carriedFindings); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusFixReview, 50); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	step := &adaptiveCallStep{
+		name:                 types.StepReview,
+		scopeLimitedFindings: true,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			return &StepOutcome{}, nil
+		},
+	}
+
+	// The daemon consults this before it will plan a parked-run resume at all
+	// (internal/daemon/manager.go prepareRecoveredRun); a failure here sends
+	// the run to generic crash recovery instead.
+	if err := ValidateRecoveredRun(database, run, []Step{step}); err != nil {
+		t.Fatalf("a gate parked on carried findings after an empty round must be resumable, got: %v", err)
+	}
+
+	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.Resume(context.Background(), run, repo, t.TempDir())
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("recovered gate never accepted a response")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("executor timed out")
+	}
+
+	dbSteps, err := database.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbSteps[0].Status != types.StepStatusCompleted {
+		t.Fatalf("step status = %s, want completed after the recovered gate was approved", dbSteps[0].Status)
+	}
+}
+
+// TestExecutor_ResumeRejectsAGateFindingNoRoundEverReported is the other half
+// of the recovery invariant: relaxing byte equality for a carrying step must
+// not degrade into accepting anything. A parked set containing a finding that
+// appears in none of the step's rounds is not a gate this run produced, so
+// recovery must still refuse it rather than resume against invented state.
+func TestExecutor_ResumeRejectsAGateFindingNoRoundEverReported(t *testing.T) {
+	database, _, run, _ := setupTest(t)
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	stepResult, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.StartStep(stepResult.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	roundFindings := `{"findings":[
+		{"id":"review-1","severity":"warning","description":"reported issue","action":"ask-user"}
+	],"summary":"1 finding"}`
+	parkedFindings := `{"findings":[
+		{"id":"review-1","severity":"warning","description":"reported issue","action":"ask-user"},
+		{"id":"review-2","severity":"error","description":"never reported by any round","action":"ask-user"}
+	],"summary":"2 outstanding findings"}`
+
+	if _, err := database.InsertReviewStepRound(stepResult.ID, 1, "initial", &roundFindings, nil, "1111111111111111111111111111111111111111", 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetStepFindings(stepResult.ID, parkedFindings); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatusWithDuration(stepResult.ID, types.StepStatusAwaitingApproval, 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	run, err = database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	step := &adaptiveCallStep{
+		name:                 types.StepReview,
+		scopeLimitedFindings: true,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			return &StepOutcome{}, nil
+		},
+	}
+	if err := ValidateRecoveredRun(database, run, []Step{step}); err == nil {
+		t.Fatal("a parked finding no round ever reported must not be accepted as a recoverable gate")
+	}
+}
+
+// TestExecutor_SelectedCarriedFindingIsNotRecordedAsIgnoredByItsRound is the
+// ID-space regression. Round 1 reports A and B; the operator fixes A, so B is
+// carried as review-2. Round 2's rereview restates B, which normalizes to its
+// own positional review-1 before the merge stamps the carried review-2 back
+// onto it - so the gate shows B as review-2 and the operator responds
+// `--findings review-2`. If the round row still names B review-1, the
+// selection recorded on that round matches nothing in it and B renders under
+// user_chose_to_ignore in the next round's history, telling the fix agent to
+// leave alone the very finding the operator asked to have fixed.
+func TestExecutor_SelectedCarriedFindingIsNotRecordedAsIgnoredByItsRound(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
 
+	const bugB = "the carried blocker"
 	round1Findings := `{"findings":[
-		{"id":"review-1","severity":"error","description":"copy is dishonest","action":"ask-user"},
-		{"id":"review-2","severity":"warning","description":"typo","action":"auto-fix"}
+		{"id":"review-1","severity":"warning","file":"a.go","line":3,"description":"fixed nit","action":"ask-user"},
+		{"id":"review-2","severity":"error","file":"b.go","line":9,"description":"` + bugB + `","action":"ask-user"}
 	],"summary":"2 findings"}`
-
-	const fabricatedRationale = "the remaining copy-honesty items were explicitly accepted by the user"
-	round2Findings := `{"findings":[],"summary":"0 findings","risk_level":"low","risk_rationale":"` + fabricatedRationale + `"}`
+	// Round 2 restates only B, normalized against its own single-item count.
+	round2Findings := `{"findings":[
+		{"id":"review-1","severity":"error","file":"b.go","line":9,"description":"` + bugB + `","action":"ask-user"}
+	],"summary":"1 finding"}`
 
 	callCount := 0
 	step := &adaptiveCallStep{
@@ -885,25 +1048,27 @@ func TestExecutor_StripsFabricatedUserAcceptanceRationale(t *testing.T) {
 		scopeLimitedFindings: true,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			callCount++
-			if callCount == 1 {
+			switch callCount {
+			case 1:
 				return &StepOutcome{NeedsApproval: true, Findings: round1Findings}, nil
+			case 2:
+				return &StepOutcome{NeedsApproval: true, Findings: round2Findings}, nil
+			default:
+				return &StepOutcome{}, nil
 			}
-			return &StepOutcome{Findings: round2Findings}, nil
 		},
 	}
 
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
-
 	done := make(chan error, 1)
 	go func() {
 		done <- exec.Execute(context.Background(), run, repo, workDir)
 	}()
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
-	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-2"}); err != nil {
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-1"}); err != nil {
 		t.Fatal(err)
 	}
-
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusFixReview)
 
 	dbSteps, err := database.GetStepsByRun(run.ID)
@@ -911,20 +1076,15 @@ func TestExecutor_StripsFabricatedUserAcceptanceRationale(t *testing.T) {
 		t.Fatal(err)
 	}
 	if dbSteps[0].FindingsJSON == nil {
-		t.Fatal("expected findings to be persisted")
+		t.Fatal("expected the carried finding to still be parked")
 	}
-	parsed, err := types.ParseFindingsJSON(*dbSteps[0].FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse findings: %v", err)
-	}
-	if strings.Contains(strings.ToLower(parsed.RiskRationale), "accepted by the user") {
-		t.Fatalf("risk_rationale still asserts an uncorroborated user acceptance: %q", parsed.RiskRationale)
-	}
-	if parsed.RiskRationale == fabricatedRationale {
-		t.Fatalf("fabricated rationale was persisted verbatim: %q", parsed.RiskRationale)
+	gateItems := mustParseFindingsWithAction(t, *dbSteps[0].FindingsJSON)
+	if len(gateItems) != 1 || gateItems[0].ID != "review-2" {
+		t.Fatalf("expected the gate to keep showing the carried finding as review-2, got %#v", gateItems)
 	}
 
-	if err := exec.Respond(types.StepReview, types.ActionApprove, nil); err != nil {
+	// The operator answers the gate with the ID it showed them.
+	if err := exec.Respond(types.StepReview, types.ActionFix, []string{"review-2"}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -934,5 +1094,47 @@ func TestExecutor_StripsFabricatedUserAcceptanceRationale(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("executor timed out")
+	}
+
+	rounds, err := database.GetRoundsByStep(dbSteps[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var round2 *db.StepRound
+	for _, r := range rounds {
+		if r.Round == 2 {
+			round2 = r
+		}
+	}
+	if round2 == nil {
+		t.Fatalf("round 2 was not recorded (%d rounds)", len(rounds))
+	}
+	if round2.FindingsJSON == nil {
+		t.Fatal("round 2 reported a finding; its record must not be empty")
+	}
+	if round2.SelectedFindingIDs == nil {
+		t.Fatal("round 2's user selection was not recorded")
+	}
+	var selected []string
+	if err := json.Unmarshal([]byte(*round2.SelectedFindingIDs), &selected); err != nil {
+		t.Fatalf("parse recorded selection: %v", err)
+	}
+	selectedSet := map[string]bool{}
+	for _, id := range selected {
+		selectedSet[id] = true
+	}
+	roundItems, err := types.ParseFindingsJSON(*round2.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse round 2 findings: %v", err)
+	}
+	if len(roundItems.Items) != 1 {
+		t.Fatalf("round 2 reported one finding; got %#v", roundItems.Items)
+	}
+	if roundItems.Items[0].Description != bugB {
+		t.Fatalf("round 2's record must still be its own finding, got %q", roundItems.Items[0].Description)
+	}
+	if !selectedSet[roundItems.Items[0].ID] {
+		t.Fatalf("the operator selected %v to fix, but round 2 records that same finding as %q, so it renders as user_chose_to_ignore in the next round's history",
+			selected, roundItems.Items[0].ID)
 	}
 }

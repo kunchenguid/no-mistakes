@@ -206,58 +206,6 @@ func TestDedupeFindingIDsJSON_SparesACarriedFindingWhoseLineMoved(t *testing.T) 
 	}
 }
 
-func TestSanitizeFabricatedApprovalJSON_StripsAClaimedUserApproval(t *testing.T) {
-	fabricated := []string{
-		"the remaining items were explicitly accepted by the user",
-		"approved by the user",
-		"authorized by user",
-		"the user has accepted the remaining findings",
-		"user already approved this",
-		"signed off by the user",
-	}
-	for _, rationale := range fabricated {
-		raw := `{"findings":[{"id":"review-1","severity":"error","description":"blocker","action":"ask-user"}],"summary":"1 finding","risk_level":"low","risk_rationale":"` + rationale + `"}`
-		sanitized, stripped := sanitizeFabricatedApprovalJSON(raw)
-		if !stripped {
-			t.Errorf("rationale %q claims a human approval this run cannot corroborate and must be stripped", rationale)
-			continue
-		}
-		parsed, err := types.ParseFindingsJSON(sanitized)
-		if err != nil {
-			t.Fatalf("parse sanitized findings: %v", err)
-		}
-		if parsed.RiskRationale == rationale {
-			t.Errorf("rationale %q survived verbatim", rationale)
-		}
-	}
-}
-
-// A match discards the WHOLE rationale, and that text is what the operator
-// reads at the parked gate and what the PR body publishes. These are all
-// natural risk_rationale sentences for this repository's own subject matter
-// (trust boundary, force-push safety, gate containment), and none of them
-// claims a human signed anything off.
-func TestSanitizeFabricatedApprovalJSON_LeavesOrdinaryTechnicalProseAlone(t *testing.T) {
-	honest := []string{
-		"the failures were confirmed by re-running the targeted checks",
-		"the change is well-bounded and the remaining findings are unresolved",
-		"both maintainers of this package are listed in CODEOWNERS",
-		"the parties agreed on nothing; these findings remain open",
-		"this is explicitly authorized honest containment",
-		"only trusted default-branch config is authorized to execute commands",
-		"force pushes are approved only when the lease anchor matches",
-		"the rebase was authorized by the pinned SHA policy",
-		"the developer confirmed the crash reproduces locally",
-		"the maintainer approved a similar pattern in an earlier release",
-	}
-	for _, rationale := range honest {
-		raw := `{"findings":[{"id":"review-1","severity":"error","description":"blocker","action":"ask-user"}],"summary":"1 finding","risk_level":"low","risk_rationale":"` + rationale + `"}`
-		if _, stripped := sanitizeFabricatedApprovalJSON(raw); stripped {
-			t.Errorf("rationale %q claims no human approval and must survive", rationale)
-		}
-	}
-}
-
 func TestMergeFindingsJSON_UnionsTestEvidenceFromBothSides(t *testing.T) {
 	existingRaw := `{"findings":[{"id":"test-1","severity":"warning","description":"fresh"}],"summary":"1 finding","tested":["login flow"],"testing_summary":"re-ran the fixed check","artifacts":[{"kind":"log","label":"fix round log","path":"/tmp/fix.log"}]}`
 	additionalRaw := `{"findings":[{"id":"test-2","severity":"error","description":"carried"}],"summary":"1 finding","tested":["login flow","signup flow"],"testing_summary":"ran the suite","artifacts":[{"kind":"log","label":"first round log","path":"/tmp/first.log"}]}`

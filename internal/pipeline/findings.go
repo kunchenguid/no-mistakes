@@ -3,7 +3,6 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -62,6 +61,26 @@ func findingFingerprint(item types.Finding) types.Finding {
 	item = findingKey(item)
 	item.Line = 0
 	return item
+}
+
+// findingFingerprintSet reduces a findings payload to the set of content
+// fingerprints it contains, so two payloads can be compared for containment
+// without regard to the ID and action the carry-forward merge may rewrite, or
+// to the surrounding summary and risk prose each round restates in its own
+// words. Empty or unparsable input yields an empty set.
+func findingFingerprintSet(raw string) map[types.Finding]bool {
+	if raw == "" {
+		return nil
+	}
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return nil
+	}
+	set := make(map[types.Finding]bool, len(findings.Items))
+	for _, item := range findings.Items {
+		set[findingFingerprint(item)] = true
+	}
+	return set
 }
 
 func countFindingFingerprints(items []types.Finding) map[types.Finding]int {
@@ -388,6 +407,69 @@ func dedupeFindingIDsJSON(raw, prefix, carriedRaw string) string {
 	return encoded
 }
 
+// reconcileRoundFindingIDsJSON restates a round's own findings payload under
+// the identities the step-level union assigned to those same items. It
+// changes nothing else: the items, their prose, and the round's own summary,
+// risk assessment, and test evidence are left exactly as the round reported
+// them, so the round record stays an honest account of what that round found.
+//
+// Only the IDs need reconciling, and only because the union may reassign
+// them: mergeFindingsJSON stamps a restated finding with the already-shown
+// carried ID, and dedupeFindingIDsJSON renames a fresh item whose positional
+// ID collided with a carried one. Both leave the round's own copy naming an
+// ID that no longer identifies it anywhere else. Selections are recorded
+// against the union (that is what the operator was shown and responded to),
+// and the round record is read back with those IDs to work out which of its
+// findings the operator chose to fix versus leave alone - so two ID spaces
+// for one item make a selected finding read as an ignored one, which then
+// tells the next fix agent not to touch it.
+//
+// Matching is by findingKey, which the union preserves verbatim (it zeroes
+// exactly the ID and Action that the merge may rewrite), so a round item
+// always finds its own union copy. Identical keys are consumed in order, so
+// two same-key items in one round take the two distinct union identities
+// rather than collapsing onto the first.
+func reconcileRoundFindingIDsJSON(roundRaw, unionRaw string) string {
+	if roundRaw == "" || unionRaw == "" || roundRaw == unionRaw {
+		return roundRaw
+	}
+	round, err := types.ParseFindingsJSON(roundRaw)
+	if err != nil {
+		return roundRaw
+	}
+	union, err := types.ParseFindingsJSON(unionRaw)
+	if err != nil {
+		return roundRaw
+	}
+	available := make(map[types.Finding][]string, len(union.Items))
+	for _, item := range union.Items {
+		key := findingKey(item)
+		available[key] = append(available[key], item.ID)
+	}
+	changed := false
+	for i := range round.Items {
+		key := findingKey(round.Items[i])
+		ids := available[key]
+		if len(ids) == 0 {
+			continue
+		}
+		available[key] = ids[1:]
+		if ids[0] == "" || ids[0] == round.Items[i].ID {
+			continue
+		}
+		round.Items[i].ID = ids[0]
+		changed = true
+	}
+	if !changed {
+		return roundRaw
+	}
+	encoded, err := types.MarshalFindingsJSON(round)
+	if err != nil {
+		return roundRaw
+	}
+	return encoded
+}
+
 // carriedFindingIdentities maps each carried finding's ID to its content
 // fingerprint, so a payload item can be recognized as that exact carried
 // finding rather than merely as something that happens to share its ID. The
@@ -587,53 +669,4 @@ func filterFindingsJSON(raw string, ids []string) string {
 		return raw
 	}
 	return filteredRaw
-}
-
-// unauthorizedApprovalClaim matches language asserting that a human user
-// accepted, approved, authorized, or signed off on something. It is
-// deliberately broad rather than trying to map phrasing to specific finding
-// IDs: an agent's own generated rationale has no honest way to originate a
-// claim of user acceptance mid-round - the only ground truth for that is an
-// actual axi respond action, which the executor tracks separately - so any
-// such claim surviving alongside findings this run cannot corroborate as
-// resolved is fabricated by construction and must not reach storage or
-// display untouched.
-// The actor must be the literal "user". Widening this to other human-role
-// nouns or to an agentless passive matched ordinary domain prose instead -
-// "is authorized to execute commands", "force pushes are approved only when
-// the lease anchor matches", "the developer confirmed the crash reproduces" -
-// and a match discards the WHOLE rationale, which is then both what the
-// operator reads at the parked gate and what the PR body publishes. The
-// demonstrated fabrication names the user, so the pattern stays there.
-var unauthorizedApprovalClaim = regexp.MustCompile(`(?i)(accepted|approved|authorized|authorised|confirmed|agreed|signed[- ]off|sign[- ]off|greenlit|green-lit|ok'd|okayed)\s+(by|from|per)\s+(the\s+)?user|user\s+(has\s+|already\s+)?(accepted|approved|authorized|authorised|confirmed|agreed|signed[- ]off|consented)`)
-
-const fabricatedApprovalNotice = "risk rationale withheld: it asserted a user acceptance of findings that remain unresolved, with no corresponding axi respond action on record"
-
-// sanitizeFabricatedApprovalJSON strips a risk_rationale that claims a human
-// user accepted or approved findings when the findings payload still
-// contains unresolved ask-user items. The executor is the only place that
-// knows whether a matching respond action ever happened; a round's own
-// generated rationale cannot honestly originate that claim on its own, so a
-// matching claim found here is treated as fabricated and replaced rather
-// than trusted. Reports whether it changed anything, for logging.
-func sanitizeFabricatedApprovalJSON(raw string) (string, bool) {
-	if raw == "" {
-		return raw, false
-	}
-	findings, err := types.ParseFindingsJSON(raw)
-	if err != nil {
-		return raw, false
-	}
-	if !types.HasAskUserFindings(findings) {
-		return raw, false
-	}
-	if findings.RiskRationale == "" || !unauthorizedApprovalClaim.MatchString(findings.RiskRationale) {
-		return raw, false
-	}
-	findings.RiskRationale = fabricatedApprovalNotice
-	sanitized, err := types.MarshalFindingsJSON(findings)
-	if err != nil {
-		return raw, false
-	}
-	return sanitized, true
 }
