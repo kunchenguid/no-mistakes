@@ -39,6 +39,8 @@ ci_timeout: "168h"
 
 step_quiet_warning: "10m"
 
+review_agent_timeout: "30m"
+
 daemon_connect_timeout: "3s"
 
 branch_sync_remote_timeout: "60s"
@@ -281,6 +283,19 @@ This is observability only.
 It does not cancel the step, change auto-fix behavior, or mark the run failed.
 AXI renders the quiet signal in the `active_steps` table as part of `last_activity`, for example `quiet 12m3s ago: codex started pid=4242`.
 For older active runs that do not yet have activity rows, AXI falls back to the step log file's modification time.
+
+### review_agent_timeout
+
+Maximum wall-clock time for one review round, including its optional review-fix and rereview turns.
+When the deadline expires, the review agent is cancelled and the run fails with a diagnostic instead of remaining active indefinitely.
+
+|         |                        |
+| ------- | ---------------------- |
+| Type    | `string` (Go duration) |
+| Default | `30m`                  |
+
+Accepts any positive Go `time.ParseDuration` string: `5m`, `30m`, `1h`, etc.
+Non-positive values are rejected when loading the global config.
 
 ### daemon_connect_timeout
 

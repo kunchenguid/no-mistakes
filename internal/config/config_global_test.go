@@ -26,6 +26,9 @@ func TestLoadGlobal_Defaults(t *testing.T) {
 	if cfg.StepQuietWarning != DefaultStepQuietWarning {
 		t.Errorf("step_quiet_warning = %v, want %v", cfg.StepQuietWarning, DefaultStepQuietWarning)
 	}
+	if cfg.ReviewAgentTimeout != DefaultReviewAgentTimeout {
+		t.Errorf("review_agent_timeout = %v, want %v", cfg.ReviewAgentTimeout, DefaultReviewAgentTimeout)
+	}
 	if cfg.DaemonConnectTimeout != DefaultDaemonConnectTimeout {
 		t.Errorf("daemon_connect_timeout = %v, want %v", cfg.DaemonConnectTimeout, DefaultDaemonConnectTimeout)
 	}
@@ -58,6 +61,7 @@ func TestEnsureDefaultGlobalConfig_CreatesFile(t *testing.T) {
 		"agent: auto",
 		"ci_timeout:",
 		"step_quiet_warning:",
+		"review_agent_timeout:",
 		"daemon_connect_timeout:",
 		"branch_sync_remote_timeout:",
 		"log_level: info",
@@ -89,6 +93,9 @@ func TestEnsureDefaultGlobalConfig_CreatedConfigIsLoadable(t *testing.T) {
 	}
 	if cfg.StepQuietWarning != DefaultStepQuietWarning {
 		t.Errorf("step_quiet_warning = %v, want %v", cfg.StepQuietWarning, DefaultStepQuietWarning)
+	}
+	if cfg.ReviewAgentTimeout != DefaultReviewAgentTimeout {
+		t.Errorf("review_agent_timeout = %v, want %v", cfg.ReviewAgentTimeout, DefaultReviewAgentTimeout)
 	}
 	if cfg.DaemonConnectTimeout != DefaultDaemonConnectTimeout {
 		t.Errorf("daemon_connect_timeout = %v, want %v", cfg.DaemonConnectTimeout, DefaultDaemonConnectTimeout)
@@ -137,6 +144,22 @@ func TestLoadGlobal_StepQuietWarning(t *testing.T) {
 	}
 	if cfg.StepQuietWarning != 90*time.Second {
 		t.Fatalf("step_quiet_warning = %v, want 90s", cfg.StepQuietWarning)
+	}
+}
+
+func TestLoadGlobal_ReviewAgentTimeout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("review_agent_timeout: 90s\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatalf("LoadGlobal: %v", err)
+	}
+	if cfg.ReviewAgentTimeout != 90*time.Second {
+		t.Fatalf("review_agent_timeout = %v, want 90s", cfg.ReviewAgentTimeout)
 	}
 }
 
