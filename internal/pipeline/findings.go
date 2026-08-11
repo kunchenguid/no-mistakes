@@ -247,32 +247,69 @@ func findingActionStrictness(action string) int {
 }
 
 // raisedRiskRationale explains an elevated level without republishing the
-// carried assessment's prose, which was written about the earlier, larger
+// assessment prose it is composed over, which was written about a different
 // finding set and can claim a count that no longer holds.
-func raisedRiskRationale(freshRationale, level string, carriedCount int) string {
-	raise := fmt.Sprintf("risk raised to %s: %d %s carried from an earlier round %s unresolved", level, carriedCount,
-		pluralize(carriedCount, "finding", "findings"), pluralize(carriedCount, "remains", "remain"))
-	fresh := strings.TrimSpace(freshRationale)
-	if fresh == "" {
+//
+// raisedByCarried names which side drove the elevation. The owner of the
+// published assessment is whichever side reported items of its own, so the
+// level that raises it belongs to the other side: normally the carried set
+// still outstanding, but this round's own higher reading when the carried set
+// owns the assessment because this round reported nothing. The two are not
+// interchangeable prose - this is exactly what the driving agent reads at the
+// gate - so the raise must name the side that actually holds the level.
+func raisedRiskRationale(baseRationale, level string, carriedCount int, raisedByCarried bool) string {
+	raise := fmt.Sprintf("risk raised to %s: this round assessed the changes it reviewed at that level", level)
+	if raisedByCarried {
+		raise = fmt.Sprintf("risk raised to %s: %d %s carried from an earlier round %s unresolved", level, carriedCount,
+			pluralize(carriedCount, "finding", "findings"), pluralize(carriedCount, "remains", "remain"))
+	}
+	base := strings.TrimSpace(baseRationale)
+	if base == "" {
 		return raise
 	}
-	return strings.TrimRight(fresh, ".;") + "; " + raise
+	return strings.TrimRight(base, ".;") + "; " + raise
+}
+
+// preferNonEmpty returns the fresh value unless it is blank, in which case the
+// carried one stands in. The fresh round's own prose is the freshest reading
+// and wins whenever it exists; a round that says nothing is not a reason to
+// discard what an earlier round said about the same run.
+func preferNonEmpty(fresh, carried string) string {
+	if strings.TrimSpace(fresh) == "" {
+		return carried
+	}
+	return fresh
 }
 
 func mergeFindingsJSON(existingRaw, additionalRaw string) string {
+	merged, _ := mergeCarriedFindingsJSON(existingRaw, additionalRaw)
+	return merged
+}
+
+// mergeCarriedFindingsJSON merges a round's own findings (existingRaw) with
+// the set carried forward from earlier rounds (additionalRaw) and additionally
+// reports the indices of the merged items whose ID came from the carried side.
+//
+// Those indices are provenance, not a content guess: they are the identities
+// the operator has already been shown and selects by, and only this function
+// knows which merged item each carried ID landed on. Re-deriving that
+// afterwards from content is ambiguous whenever two items share a fingerprint,
+// which is why dedupeFindingIDsJSON takes the indices rather than the carried
+// payload.
+func mergeCarriedFindingsJSON(existingRaw, additionalRaw string) (string, []int) {
 	if existingRaw == "" {
-		return additionalRaw
+		return additionalRaw, allFindingIndices(additionalRaw)
 	}
 	if additionalRaw == "" {
-		return existingRaw
+		return existingRaw, nil
 	}
 	existing, err := types.ParseFindingsJSON(existingRaw)
 	if err != nil {
-		return additionalRaw
+		return additionalRaw, allFindingIndices(additionalRaw)
 	}
 	additional, err := types.ParseFindingsJSON(additionalRaw)
 	if err != nil {
-		return existingRaw
+		return existingRaw, nil
 	}
 	seen := make(map[types.Finding]bool, len(existing.Items)+len(additional.Items))
 	existingCounts := countFindingFingerprints(existing.Items)
@@ -297,10 +334,16 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 	// level is strictly higher. The item count above it is still the union's,
 	// so this narrows the prose, never the set.
 	assessment, otherRiskLevel := existing, additional.RiskLevel
-	if len(existing.Items) == 0 {
+	carriedOwnsAssessment := len(existing.Items) == 0
+	if carriedOwnsAssessment {
 		assessment, otherRiskLevel = additional, existing.RiskLevel
 	}
-	merged := types.Findings{Summary: assessment.Summary, Tested: mergeUnique(existing.Tested, additional.Tested), TestingSummary: existing.TestingSummary, Artifacts: mergeUnique(existing.Artifacts, additional.Artifacts), RiskLevel: assessment.RiskLevel, RiskRationale: assessment.RiskRationale, RiskScope: assessment.RiskScope}
+	// TestingSummary falls back to the carried side the same way Tested and
+	// Artifacts union: a round that reported no testing prose of its own must
+	// not silently drop the earlier round's, whose Tested and Artifacts
+	// entries survive right beside it and would otherwise be presented with no
+	// account of what they show.
+	merged := types.Findings{Summary: assessment.Summary, Tested: mergeUnique(existing.Tested, additional.Tested), TestingSummary: preferNonEmpty(existing.TestingSummary, additional.TestingSummary), Artifacts: mergeUnique(existing.Artifacts, additional.Artifacts), RiskLevel: assessment.RiskLevel, RiskRationale: assessment.RiskRationale, RiskScope: assessment.RiskScope}
 	byKey := make(map[types.Finding]int, len(existing.Items))
 	byFingerprint := make(map[types.Finding]int, len(existing.Items))
 	for _, item := range existing.Items {
@@ -317,6 +360,7 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 		seen[key] = true
 	}
 	carried := 0
+	var carriedIdentities []int
 	for _, item := range additional.Items {
 		if index, ok := matchingFindingIndex(item, byKey, byFingerprint, additionalCounts, existingCounts); ok {
 			// This round restated a finding that is already outstanding. The
@@ -328,6 +372,7 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 			merged.Items[index].Action = stricterFindingAction(item.Action, merged.Items[index].Action)
 			if item.ID != "" {
 				merged.Items[index].ID = item.ID
+				carriedIdentities = append(carriedIdentities, index)
 			}
 			carried++
 			continue
@@ -336,12 +381,15 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 		if seen[key] {
 			continue
 		}
+		if item.ID != "" {
+			carriedIdentities = append(carriedIdentities, len(merged.Items))
+		}
 		merged.Items = append(merged.Items, item)
 		seen[key] = true
 		carried++
 	}
 	if len(merged.Items) == 0 {
-		return ""
+		return "", nil
 	}
 	if carried > 0 {
 		// The item list is now the union, so the fresh round's own summary and
@@ -361,14 +409,31 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 		merged.Summary = types.SummarizeOutstandingFindings(len(merged.Items))
 		if raised := types.RiskLevelAtLeast(assessment.RiskLevel, otherRiskLevel); raised != assessment.RiskLevel {
 			merged.RiskLevel = raised
-			merged.RiskRationale = raisedRiskRationale(assessment.RiskRationale, raised, carried)
+			merged.RiskRationale = raisedRiskRationale(assessment.RiskRationale, raised, carried, !carriedOwnsAssessment)
 		}
 	}
 	mergedRaw, err := types.MarshalFindingsJSON(merged)
 	if err != nil {
-		return existingRaw
+		return existingRaw, nil
 	}
-	return mergedRaw
+	return mergedRaw, carriedIdentities
+}
+
+// allFindingIndices names every item in a payload as carried, for the merge
+// paths that return the carried payload whole.
+func allFindingIndices(raw string) []int {
+	if raw == "" {
+		return nil
+	}
+	findings, err := types.ParseFindingsJSON(raw)
+	if err != nil {
+		return nil
+	}
+	indices := make([]int, 0, len(findings.Items))
+	for i := range findings.Items {
+		indices = append(indices, i)
+	}
+	return indices
 }
 
 // dedupeFindingIDsJSON reassigns a fresh unique ID to any finding whose ID
@@ -383,11 +448,15 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 // separates two DIFFERENT findings that happen to share one ID, which would
 // otherwise make ID-based selection (filter/exclude) silently apply to both.
 //
-// carriedRaw names the findings the operator has already been shown under
-// their current IDs. Those keep their identity and the newly reported item is
-// the one renamed, because an `axi respond --findings <id>` composed from an
-// earlier gate read must keep selecting the finding it named.
-func dedupeFindingIDsJSON(raw, prefix, carriedRaw string) string {
+// carriedIndices names the merged items whose ID came from the carried side,
+// as mergeCarriedFindingsJSON stamped them. Those keep their identity and the
+// newly reported item is the one renamed, because an
+// `axi respond --findings <id>` composed from an earlier gate read must keep
+// selecting the finding it named. The provenance has to come from the merge:
+// recovering it here from content cannot separate a carried item from a fresh
+// item that shares its fingerprint, and picking the wrong one hands the
+// already-shown ID to a finding the operator has never seen.
+func dedupeFindingIDsJSON(raw, prefix string, carriedIndices []int) string {
 	if raw == "" {
 		return raw
 	}
@@ -395,15 +464,14 @@ func dedupeFindingIDsJSON(raw, prefix, carriedRaw string) string {
 	if err != nil {
 		return raw
 	}
-	carried := carriedFindingIdentities(carriedRaw)
 	seen := make(map[string]bool, len(findings.Items))
 	settled := make([]bool, len(findings.Items))
-	for i := range findings.Items {
-		id := findings.Items[i].ID
-		if id == "" || seen[id] {
+	for _, i := range carriedIndices {
+		if i < 0 || i >= len(findings.Items) {
 			continue
 		}
-		if fingerprint, ok := carried[id]; !ok || fingerprint != findingFingerprint(findings.Items[i]) {
+		id := findings.Items[i].ID
+		if id == "" || seen[id] {
 			continue
 		}
 		seen[id] = true
@@ -502,33 +570,6 @@ func reconcileRoundFindingIDsJSON(roundRaw, unionRaw string) string {
 		return roundRaw
 	}
 	return encoded
-}
-
-// carriedFindingIdentities maps each carried finding's ID to its content
-// fingerprint, so a payload item can be recognized as that exact carried
-// finding rather than merely as something that happens to share its ID. The
-// fingerprint ignores Line for the same reason mergeFindingsJSON's match
-// does: a restatement of the same defect normally reports a shifted line, and
-// the merged item keeps the fresh line while inheriting the carried ID.
-func carriedFindingIdentities(raw string) map[string]types.Finding {
-	if raw == "" {
-		return nil
-	}
-	findings, err := types.ParseFindingsJSON(raw)
-	if err != nil {
-		return nil
-	}
-	identities := make(map[string]types.Finding, len(findings.Items))
-	for _, item := range findings.Items {
-		if item.ID == "" {
-			continue
-		}
-		if _, ok := identities[item.ID]; ok {
-			continue
-		}
-		identities[item.ID] = findingFingerprint(item)
-	}
-	return identities
 }
 
 func removeMatchingFindingsJSON(existingRaw, removeRaw string) string {

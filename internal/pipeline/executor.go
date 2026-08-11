@@ -863,13 +863,15 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// this: its own output is the step's findings.
 		effectiveFindings := outcome.Findings
 		if carryFindings {
-			effectiveFindings = mergeFindingsJSON(outcome.Findings, carriedFindings)
+			var carriedIdentities []int
+			effectiveFindings, carriedIdentities = mergeCarriedFindingsJSON(outcome.Findings, carriedFindings)
 			// A fresh round's own findings are normalized against only that
 			// round's item count, so a genuinely new finding can land on the
 			// same positional ID as an unrelated finding carried forward from
 			// an earlier round. Separate any such collision before this is
-			// used for ID-based selection.
-			effectiveFindings = dedupeFindingIDsJSON(effectiveFindings, string(stepName), carriedFindings)
+			// used for ID-based selection, keeping the identity on whichever
+			// merged item the carried ID was actually stamped onto.
+			effectiveFindings = dedupeFindingIDsJSON(effectiveFindings, string(stepName), carriedIdentities)
 		}
 
 		if effectiveFindings != "" {

@@ -128,7 +128,7 @@ func TestMergeFindingsJSON_UnionSummaryAndRiskDoNotUnderstateCarriedFindings(t *
 	}
 }
 
-func TestMergeFindingsJSON_KeepsFreshAssessmentWhenNothingIsCarried(t *testing.T) {
+func TestMergeFindingsJSON_CarriedLevelStillAppliesToARestatedFinding(t *testing.T) {
 	freshRaw := `{"findings":[{"id":"review-1","severity":"info","description":"a nit"}],"summary":"1 finding","risk_level":"low","risk_rationale":"just a nit"}`
 	carriedRaw := `{"findings":[{"id":"review-7","severity":"info","description":"a nit"}],"summary":"1 outstanding finding","risk_level":"high","risk_rationale":"stale"}`
 
@@ -144,26 +144,37 @@ func TestMergeFindingsJSON_KeepsFreshAssessmentWhenNothingIsCarried(t *testing.T
 	}
 }
 
-func TestDedupeFindingIDsJSON_RenamesTheFreshItemNotTheCarriedOne(t *testing.T) {
-	carriedRaw := `{"findings":[{"id":"review-1","severity":"error","description":"old carried issue","action":"ask-user"}],"summary":"1 outstanding finding"}`
-	// Both items claim review-1: the fresh one because this round normalized
-	// against its own single-item list.
-	mergedRaw := `{"findings":[
-		{"id":"review-1","severity":"warning","description":"brand new issue","action":"ask-user"},
-		{"id":"review-1","severity":"error","description":"old carried issue","action":"ask-user"}
-	],"summary":"2 outstanding findings"}`
-
-	deduped, err := types.ParseFindingsJSON(dedupeFindingIDsJSON(mergedRaw, "review", carriedRaw))
+// mergeThenDedupe runs the pair exactly as the executor does, so the identity
+// a merged finding ends up with is the one the operator would be shown.
+func mergeThenDedupe(t *testing.T, freshRaw, carriedRaw string) types.Findings {
+	t.Helper()
+	mergedRaw, carriedIdentities := mergeCarriedFindingsJSON(freshRaw, carriedRaw)
+	deduped, err := types.ParseFindingsJSON(dedupeFindingIDsJSON(mergedRaw, "review", carriedIdentities))
 	if err != nil {
 		t.Fatalf("parse deduped findings: %v", err)
 	}
+	return deduped
+}
+
+func findingIDsByDescription(t *testing.T, findings types.Findings) map[string]string {
+	t.Helper()
 	byDescription := map[string]string{}
-	for _, item := range deduped.Items {
+	for _, item := range findings.Items {
 		if prior, ok := byDescription[item.Description]; ok {
 			t.Fatalf("unexpected duplicate description %q (ids %q and %q)", item.Description, prior, item.ID)
 		}
 		byDescription[item.Description] = item.ID
 	}
+	return byDescription
+}
+
+func TestDedupeFindingIDsJSON_RenamesTheFreshItemNotTheCarriedOne(t *testing.T) {
+	// Both items claim review-1: the fresh one because this round normalized
+	// against its own single-item list.
+	freshRaw := `{"findings":[{"id":"review-1","severity":"warning","description":"brand new issue","action":"ask-user"}],"summary":"1 finding"}`
+	carriedRaw := `{"findings":[{"id":"review-1","severity":"error","description":"old carried issue","action":"ask-user"}],"summary":"1 outstanding finding"}`
+
+	byDescription := findingIDsByDescription(t, mergeThenDedupe(t, freshRaw, carriedRaw))
 	if byDescription["old carried issue"] != "review-1" {
 		t.Errorf("the already-shown carried finding lost its id (now %q); an axi respond --findings review-1 composed at the last gate would now select something else", byDescription["old carried issue"])
 	}
@@ -178,31 +189,61 @@ func TestDedupeFindingIDsJSON_RenamesTheFreshItemNotTheCarriedOne(t *testing.T) 
 // it line-insensitively. The settle pass has to recognize that same item, or
 // the operator's outstanding finding is the one renamed.
 func TestDedupeFindingIDsJSON_SparesACarriedFindingWhoseLineMoved(t *testing.T) {
-	carriedRaw := `{"findings":[{"id":"review-1","severity":"error","file":"a.go","line":10,"description":"bug A","action":"ask-user"}],"summary":"1 outstanding finding"}`
-	// What mergeFindingsJSON produces: the brand-new finding C keeps the ID
-	// this round assigned it, and the restatement of bug A inherited the
-	// carried review-1 while keeping its current line.
-	mergedRaw := `{"findings":[
+	// This round reports a brand-new bug C plus a restatement of the carried
+	// bug A on a shifted line; the merge matches bug A line-insensitively and
+	// stamps it with the already-shown review-1.
+	freshRaw := `{"findings":[
 		{"id":"review-1","severity":"warning","file":"b.go","line":5,"description":"bug C","action":"ask-user"},
-		{"id":"review-1","severity":"error","file":"a.go","line":12,"description":"bug A","action":"ask-user"}
-	],"summary":"2 outstanding findings"}`
+		{"id":"review-2","severity":"error","file":"a.go","line":12,"description":"bug A","action":"ask-user"}
+	],"summary":"2 findings"}`
+	carriedRaw := `{"findings":[{"id":"review-1","severity":"error","file":"a.go","line":10,"description":"bug A","action":"ask-user"}],"summary":"1 outstanding finding"}`
 
-	deduped, err := types.ParseFindingsJSON(dedupeFindingIDsJSON(mergedRaw, "review", carriedRaw))
-	if err != nil {
-		t.Fatalf("parse deduped findings: %v", err)
-	}
-	byDescription := map[string]string{}
-	for _, item := range deduped.Items {
-		if prior, ok := byDescription[item.Description]; ok {
-			t.Fatalf("unexpected duplicate description %q (ids %q and %q)", item.Description, prior, item.ID)
-		}
-		byDescription[item.Description] = item.ID
-	}
+	byDescription := findingIDsByDescription(t, mergeThenDedupe(t, freshRaw, carriedRaw))
 	if byDescription["bug A"] != "review-1" {
 		t.Errorf("the outstanding carried finding was renamed to %q because its line moved; axi respond --findings review-1 would now dispatch the wrong finding", byDescription["bug A"])
 	}
 	if byDescription["bug C"] == "review-1" {
 		t.Errorf("the brand-new finding took over the carried identity: %#v", byDescription)
+	}
+}
+
+// TestDedupeFindingIDsJSON_KeepsTheCarriedIdentityWhenTwoFreshItemsShareItsFingerprint
+// is the case content cannot settle: two fresh items differ only in line, so
+// the merge's uniqueness guard refuses to match either to the carried finding
+// and appends it unmatched. Every one of the three then shares a fingerprint,
+// and the first fresh item also shares the carried ID - so an identity
+// re-derived from content lands on the fresh item and renames the finding the
+// operator is actually waiting on.
+func TestDedupeFindingIDsJSON_KeepsTheCarriedIdentityWhenTwoFreshItemsShareItsFingerprint(t *testing.T) {
+	freshRaw := `{"findings":[
+		{"id":"review-1","severity":"error","file":"a.go","line":10,"description":"unchecked error","action":"ask-user"},
+		{"id":"review-2","severity":"error","file":"a.go","line":20,"description":"unchecked error","action":"ask-user"}
+	],"summary":"2 findings"}`
+	carriedRaw := `{"findings":[{"id":"review-1","severity":"error","file":"a.go","line":5,"description":"unchecked error","action":"ask-user"}],"summary":"1 outstanding finding"}`
+
+	deduped := mergeThenDedupe(t, freshRaw, carriedRaw)
+	if len(deduped.Items) != 3 {
+		t.Fatalf("expected the carried finding to survive beside both fresh items, got %d: %#v", len(deduped.Items), deduped.Items)
+	}
+	byLine := map[int]string{}
+	for _, item := range deduped.Items {
+		if prior, ok := byLine[item.Line]; ok {
+			t.Fatalf("unexpected duplicate line %d (ids %q and %q)", item.Line, prior, item.ID)
+		}
+		byLine[item.Line] = item.ID
+	}
+	if byLine[5] != "review-1" {
+		t.Errorf("the carried finding's id is now %q; axi respond --findings review-1 would dispatch the fresh line-10 finding instead of the one the operator was shown", byLine[5])
+	}
+	if byLine[10] == "review-1" || byLine[10] == "" {
+		t.Errorf("the fresh finding kept the already-shown identity: %#v", byLine)
+	}
+	seen := map[string]bool{}
+	for _, item := range deduped.Items {
+		if item.ID == "" || seen[item.ID] {
+			t.Fatalf("duplicate or empty id %q survived dedupe: %#v", item.ID, deduped.Items)
+		}
+		seen[item.ID] = true
 	}
 }
 
@@ -242,6 +283,47 @@ func TestMergeFindingsJSON_KeepsCarriedEvidenceWhenFreshRoundReportsNone(t *test
 	}
 	if len(merged.Tested) != 1 || merged.Tested[0] != "login flow" {
 		t.Fatalf("expected the carried tested entries to survive, got %#v", merged.Tested)
+	}
+}
+
+func TestMergeFindingsJSON_KeepsCarriedTestingSummaryWhenTheFreshRoundHasNone(t *testing.T) {
+	// The carried round's tested entries and artifacts survive the merge, so
+	// dropping the prose that accounts for them leaves the gate showing
+	// evidence nothing explains.
+	existingRaw := `{"findings":[{"id":"test-1","severity":"warning","description":"fresh"}],"summary":"1 finding"}`
+	additionalRaw := `{"findings":[{"id":"test-2","severity":"error","description":"carried"}],"summary":"1 finding","tested":["login flow"],"testing_summary":"ran the login suite against the rewritten handler"}`
+
+	merged, err := types.ParseFindingsJSON(mergeFindingsJSON(existingRaw, additionalRaw))
+	if err != nil {
+		t.Fatalf("parse merged findings: %v", err)
+	}
+	if merged.TestingSummary != "ran the login suite against the rewritten handler" {
+		t.Errorf("testing_summary = %q; the carried account of the surviving tested entries was dropped", merged.TestingSummary)
+	}
+}
+
+func TestMergeFindingsJSON_RaiseDrivenByTheFreshRoundIsNotBlamedOnTheCarriedSet(t *testing.T) {
+	// The fresh round reported no items of its own, so the carried side owns
+	// the published assessment - but the higher level is the fresh round's own
+	// reading, and this prose is what the driving agent reads at the gate.
+	freshRaw := `{"findings":[],"summary":"no new findings","risk_level":"high","risk_rationale":"the fix diff rewrites the force-push decision"}`
+	carriedRaw := `{"findings":[{"id":"review-7","severity":"info","description":"a nit","action":"ask-user"}],"summary":"1 outstanding finding","risk_level":"low","risk_rationale":"carried from an earlier round, when more findings were outstanding: just a nit"}`
+
+	merged, err := types.ParseFindingsJSON(mergeFindingsJSON(freshRaw, carriedRaw))
+	if err != nil {
+		t.Fatalf("parse merged findings: %v", err)
+	}
+	if merged.RiskLevel != "high" {
+		t.Fatalf("risk_level = %q, want high", merged.RiskLevel)
+	}
+	if strings.Contains(merged.RiskRationale, "carried from an earlier round remains unresolved") {
+		t.Errorf("risk_rationale blames the carried finding for a raise the fresh round's own assessment drove: %q", merged.RiskRationale)
+	}
+	if !strings.Contains(merged.RiskRationale, "high") {
+		t.Errorf("risk_rationale does not explain the level it is presented with: %q", merged.RiskRationale)
+	}
+	if !strings.Contains(merged.RiskRationale, "just a nit") {
+		t.Errorf("risk_rationale dropped the assessment it composes over: %q", merged.RiskRationale)
 	}
 }
 
