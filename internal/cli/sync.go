@@ -53,7 +53,7 @@ func newSyncCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and show the synchronization plan without changing HEAD")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "apply an eligible guarded synchronization without prompting")
-	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch)")
+	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits, or correct a push binding whose remote was rewritten outside this pipeline (a no-op when cancellation already released the branch)")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
 	return cmd
 }
@@ -71,7 +71,11 @@ func newAxiSyncCmd() *cobra.Command {
 			"verified pipeline head with reset semantics.\n" +
 			"--check performs the same fresh read-only plan. Blocked states change nothing.\n" +
 			"--recover performs the guarded custody return offered by\n" +
-			"next_action.code: recover_custody; --keep-local keeps the current local head.",
+			"next_action.code: recover_custody; --keep-local keeps the current local head.\n" +
+			"It also performs the binding correction offered by\n" +
+			"next_action.code: recover_remote_rewritten, which anchors the superseded\n" +
+			"pipeline head and rewrites only the recorded push binding to the freshly\n" +
+			"verified live remote head; no worktree, branch ref, or gate is touched.",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -86,7 +90,7 @@ func newAxiSyncCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and return the plan without changing HEAD")
-	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits (a no-op when cancellation already released the branch)")
+	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits, or correct a push binding whose remote was rewritten outside this pipeline (a no-op when cancellation already released the branch)")
 	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
 	return cmd
 }
@@ -193,8 +197,15 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 	}
 	defer closeFn()
 
-	state := service.InspectCached(cmd.Context())
+	// A rewritten remote is only ever discovered by a live check, so the
+	// consent text can describe what this run of --recover would actually do
+	// only if the classification behind it is live too. Refresh is the cached
+	// inspection for every state that cannot be refreshed, including the
+	// ordinary custody-recovery shapes, so this costs no extra remote read
+	// outside the case it exists to name.
+	state := service.Refresh(cmd.Context())
 	observed = state
+	bindingCorrection := state.Safety == "blocked_remote_rewritten"
 	// A branch released by cancellation needs no confirmation: the recovery is
 	// an idempotent no-op that cannot mutate anything.
 	if !yes && state.State != branchsync.StateUserOwned {
@@ -204,16 +215,26 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 			result = "refused"
 			return &exitError{code: 1}
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "  Recovery returns custody of this branch from its terminal run. The only")
-		if keepLocal {
+		prompt := "  Return custody of this branch? [y/N] "
+		switch {
+		case bindingCorrection:
+			fmt.Fprintln(cmd.OutOrStdout(), "  Something outside this pipeline force-updated the remote branch. Recovery")
+			fmt.Fprintln(cmd.OutOrStdout(), "  only corrects this run's recorded push binding to the freshly verified live")
+			fmt.Fprintln(cmd.OutOrStdout(), "  remote head, after anchoring the superseded pipeline head so it stays")
+			fmt.Fprintln(cmd.OutOrStdout(), "  reachable. No worktree, branch ref, or gate is touched, and no custody is")
+			fmt.Fprintln(cmd.OutOrStdout(), "  returned.")
+			prompt = "  Correct the recorded push binding? [y/N] "
+		case keepLocal:
+			fmt.Fprintln(cmd.OutOrStdout(), "  Recovery returns custody of this branch from its terminal run. The only")
 			fmt.Fprintln(cmd.OutOrStdout(), "  possible changes are anchoring the preserved pipeline commits and moving the")
 			fmt.Fprintln(cmd.OutOrStdout(), "  local gate branch to your current head; the worktree is never touched.")
-		} else {
+		default:
+			fmt.Fprintln(cmd.OutOrStdout(), "  Recovery returns custody of this branch from its terminal run. The only")
 			fmt.Fprintln(cmd.OutOrStdout(), "  possible worktree change is a fast-forward of this clean behind branch, or")
 			fmt.Fprintln(cmd.OutOrStdout(), "  adoption of a diverged preserved head proven to carry every local change;")
 			fmt.Fprintln(cmd.OutOrStdout(), "  unproven divergence refuses, and --keep-local keeps the current head.")
 		}
-		fmt.Fprint(cmd.OutOrStdout(), "  Return custody of this branch? [y/N] ")
+		fmt.Fprint(cmd.OutOrStdout(), prompt)
 		line, readErr := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
 		if readErr != nil && strings.TrimSpace(line) == "" {
 			return readErr
@@ -230,9 +251,14 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 	observed = recovered
 	printHumanSyncState(cmd, recovered)
 	if recovered.Recovered {
-		if recovered.State == branchsync.StateUserOwned {
+		switch {
+		case recovered.RecoveryKind == branchsync.RecoveryPushBindingCorrected:
+			fmt.Fprintf(cmd.OutOrStdout(), "  Push binding corrected to the verified remote head %s; no worktree, branch, or gate ref was changed.\n", recovered.Pipeline.PushedHead)
+			result = "applied"
+			return nil
+		case recovered.State == branchsync.StateUserOwned:
 			fmt.Fprintln(cmd.OutOrStdout(), "  Nothing to recover; cancellation already released this branch to you.")
-		} else {
+		default:
 			fmt.Fprintln(cmd.OutOrStdout(), "  Custody returned; start a fresh run when ready.")
 		}
 		if recovered.Changed {
@@ -450,6 +476,9 @@ func branchSyncField(state branchsync.State) toON.Field {
 	}
 	if state.Recovered {
 		fields = append(fields, toON.Field{Key: "recovered", Value: true})
+		if state.RecoveryKind != "" {
+			fields = append(fields, toON.Field{Key: "recovery", Value: state.RecoveryKind})
+		}
 	}
 	fields = append(fields,
 		toON.Field{Key: "local", Value: toON.NewObject(local...)},

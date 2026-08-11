@@ -60,6 +60,17 @@ const (
 	SafetySafeEquivalentAdvance = "safe_equivalent_advance"
 )
 
+const (
+	// RecoveryCustodyReturned is the recovery that hands a stranded terminal
+	// run's branch back to the operator, stamping custody on the run.
+	RecoveryCustodyReturned = "custody_returned"
+	// RecoveryPushBindingCorrected is the recovery that only rewrites the
+	// persisted push binding to a freshly verified live remote head. No
+	// custody is stamped, and no worktree, branch ref, or gate is touched, so
+	// presenters must never report it as a custody return.
+	RecoveryPushBindingCorrected = "push_binding_corrected"
+)
+
 // State is the shared branch synchronization contract rendered by CLI, AXI,
 // and TUI presenters. Cached inspection never contacts a remote.
 type State struct {
@@ -77,9 +88,14 @@ type State struct {
 	// returned (by this call or an earlier, idempotent one), or the terminal
 	// outcome had already released the branch (user_owned), making recovery an
 	// idempotent no-op.
-	Recovered  bool
-	NextAction *NextAction
-	Error      string
+	Recovered bool
+	// RecoveryKind names which recovery produced Recovered, because they end
+	// in materially different places: RecoveryCustodyReturned hands the branch
+	// back, while RecoveryPushBindingCorrected only repairs persisted
+	// provenance. It is empty whenever Recovered is false.
+	RecoveryKind string
+	NextAction   *NextAction
+	Error        string
 }
 
 type LocalState struct {
@@ -536,17 +552,30 @@ func (s *Service) Apply(ctx context.Context) State {
 //
 // A second, unrelated hazard shares this entry point: blocked_remote_rewritten
 // (the live remote no longer equals the persisted pipeline push binding,
-// discovered only by a fresh Refresh - the cached classification above can
-// never produce it). There is nothing gate-preserved to adopt for that case,
-// so it takes no matrix row above; see tryRecoverRemoteRewritten for its own
-// guarded, halt-on-stale-reading reconciliation.
+// discovered only by a fresh Refresh - no cached classification can produce
+// it, which is why probeRemoteRewritten runs before every cached branch here,
+// including the idempotent no-ops). Its true content lives only on the remote,
+// so there is nothing to adopt and it takes no matrix row above; it anchors the
+// superseded pipeline head and repairs provenance only. See
+// probeRemoteRewritten for its guarded, halt-on-stale-reading reconciliation.
 func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	if refusal, blocked := s.gateContextRefusal(ctx); blocked {
 		return refusal
 	}
 	state, run, _ := s.inspect(ctx)
+	// Only a live check observes a rewritten remote, so every cached
+	// classification below can hide one - including the custody-returned and
+	// released-branch no-ops, whose runs keep an intact push binding a third
+	// party can still force-update out from under. The probe therefore runs
+	// first, and owns the response only when a fresh verified reading confirms
+	// the rewrite; every other shape falls through to the behavior below.
+	probe := s.probeRemoteRewritten(ctx, run)
+	if probe.handled {
+		return probe.result
+	}
 	if run != nil && run.CustodyReturnedAt != nil {
 		state.Recovered = true
+		state.RecoveryKind = RecoveryCustodyReturned
 		state.Changed = false
 		return state
 	}
@@ -555,21 +584,12 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	// no-op that mutates no file, ref, or database row.
 	if state.State == StateUserOwned {
 		state.Recovered = true
+		state.RecoveryKind = RecoveryCustodyReturned
 		state.Changed = false
 		return state
 	}
 	if state.State != StatePipelineOwned || run == nil {
-		// The cached classification above never observes a rewritten remote by
-		// itself - only a live check does. Before concluding there is nothing
-		// to recover, offer that reconciliation: it is the supported route for
-		// blocked_remote_rewritten (see tryRecoverRemoteRewritten), replacing
-		// what used to require a hand edit of state.sqlite.
-		if run != nil {
-			if handled, result := s.tryRecoverRemoteRewritten(ctx, run); handled {
-				return result
-			}
-		}
-		return blockedPlan(state, state.State, "blocked_recover_not_applicable", "nothing to recover: the branch is not held by a terminal run with unpublished pipeline commits, and a fresh check found no remote rewritten out from under a verified push; no files or refs were changed")
+		return blockedPlan(state, state.State, "blocked_recover_not_applicable", "nothing to recover: the branch is not held by a terminal run with unpublished pipeline commits"+probe.liveCheckClause()+"; no files or refs were changed")
 	}
 	if !terminalRunStatus(run.Status) {
 		return blockedPlan(state, StatePipelineOwned, "blocked_recover_run_active", "the run that owns this branch is still active; drive it to completion or abort it first; no files or refs were changed")
@@ -610,7 +630,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 
 	if objectExists(ctx, wd, preserved) && (local == preserved || isAncestor(ctx, wd, preserved, local)) {
-		if blocked, ok := s.anchorReachablePreserved(ctx, state, anchorRef, preserved); !ok {
+		if blocked, ok := s.anchorReachablePreserved(ctx, state, StatePipelineOwned, anchorRef, preserved); !ok {
 			return blocked
 		}
 		return s.finishRecover(ctx, run, false)
@@ -680,13 +700,31 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 }
 
-// tryRecoverRemoteRewritten reconciles a branch whose bound push target no
-// longer reflects reality: the live remote was rewritten by something
-// outside this pipeline (a hand force-push, another tool, an operator
-// correction). Unlike the pipeline_owned recovery above, there is no
-// gate-preserved content to prove or adopt here - the true content now lives
-// only on the remote - so this never touches the worktree, a branch ref, or
-// the gate. It only corrects the persisted push binding to the freshly
+// remoteRewriteProbe is the outcome of looking for a rewritten remote at the
+// recovery entry point. handled means this probe owns the caller's response,
+// including a refusal. observedLive records whether a fresh reading of the push
+// target actually completed and was verified, so a caller reporting "nothing to
+// recover" never claims a live check that never ran or that failed.
+type remoteRewriteProbe struct {
+	handled      bool
+	result       State
+	observedLive bool
+}
+
+func (p remoteRewriteProbe) liveCheckClause() string {
+	if p.observedLive {
+		return ", and a fresh reading of the live push target still matches the verified pipeline push binding"
+	}
+	return ", and no verified live reading of the push target was available to check for a rewritten remote"
+}
+
+// probeRemoteRewritten reconciles a branch whose bound push target no longer
+// reflects reality: the live remote was rewritten by something outside this
+// pipeline (a hand force-push, another tool, an operator correction). Unlike
+// the pipeline_owned recovery above, the true content now lives only on the
+// remote, so this never touches the worktree, a branch ref, or the gate. It
+// anchors the pipeline's own superseded head so that head stays reachable
+// through the tool, then corrects the persisted push binding to the freshly
 // verified live head: the guarded, code-owned form of the single-field
 // state.sqlite correction an operator previously had to perform by hand.
 //
@@ -697,14 +735,9 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 // active run now owns the branch), never act on a stale reading. A
 // mid-flight change to the push binding or run status between that fresh
 // read and the write refuses for the same reason.
-//
-// handled reports whether this call owns the response, including a refusal:
-// true means the caller should return result as-is; false means the fresh
-// check did not confirm a rewritten remote (or the run is not terminal), and
-// the caller should fall through to its own "nothing to recover" response.
-func (s *Service) tryRecoverRemoteRewritten(ctx context.Context, run *db.Run) (bool, State) {
-	if !terminalRunStatus(run.Status) {
-		return false, State{}
+func (s *Service) probeRemoteRewritten(ctx context.Context, run *db.Run) remoteRewriteProbe {
+	if run == nil || !terminalRunStatus(run.Status) {
+		return remoteRewriteProbe{}
 	}
 	fresh := s.Refresh(ctx)
 	// StateRemoteRewritten covers two different discoveries, and only one of
@@ -715,8 +748,9 @@ func (s *Service) tryRecoverRemoteRewritten(ctx context.Context, run *db.Run) (b
 	// verification either way, so the state alone cannot separate them and
 	// gating on it would persist an unverified SHA. Match the safety value
 	// that means "verified", never the state family.
+	verified := fresh.Remote.Freshness == "live" && fresh.Safety != "blocked_remote_changed_during_refresh"
 	if fresh.State != StateRemoteRewritten || fresh.Safety != "blocked_remote_rewritten" || fresh.Remote.ObservedHead == "" {
-		return false, State{}
+		return remoteRewriteProbe{observedLive: verified}
 	}
 	rewritten := fresh.Remote.ObservedHead
 	freshRun, err := s.DB.GetRun(run.ID)
@@ -725,27 +759,64 @@ func (s *Service) tryRecoverRemoteRewritten(ctx context.Context, run *db.Run) (b
 		ptr(freshRun.LastPushedSHA) != fresh.Pipeline.PushedHead ||
 		ptr(freshRun.PushRef) != fresh.Target.Ref ||
 		ptr(freshRun.PushTargetFingerprint) != TargetFingerprint(s.Repo.PushURL()) {
-		return true, blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_assumptions_changed", "the pipeline push binding or run status changed while custody was being returned; no files or refs were changed")
+		return remoteRewriteProbe{handled: true, observedLive: true,
+			result: blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_assumptions_changed", "the pipeline push binding or run status changed while the push binding was being corrected; no files or refs were changed")}
 	}
-	if err := s.DB.UpdateRunPushBinding(run.ID, db.PushBinding{
+	if blocked, ok := s.anchorSupersededPipelineHead(ctx, fresh, freshRun); !ok {
+		return remoteRewriteProbe{handled: true, observedLive: true, result: blocked}
+	}
+	// The binding and the run head must move together: inspect() reads
+	// LastPushedSHA != HeadSHA as an unpublished pipeline head, so a run left
+	// holding only half of this correction would be reclassified as
+	// pipeline_owned and route a retry into the worktree-moving custody
+	// recovery against a head the remote no longer has.
+	if err := s.DB.UpdateRunPushBindingAndHead(run.ID, db.PushBinding{
 		HeadSHA:           rewritten,
 		TargetKind:        fresh.Target.Kind,
 		TargetFingerprint: TargetFingerprint(s.Repo.PushURL()),
 		Ref:               fresh.Target.Ref,
 	}); err != nil {
-		return true, blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_stamp_failed", "the corrected push binding could not be recorded; re-run the recovery; no files or refs were changed")
-	}
-	// The push binding alone is not enough: inspect() treats HeadSHA !=
-	// LastPushedSHA as an unpublished pipeline head and would misclassify this
-	// run as pipeline_owned again immediately after "recovering" it. Advancing
-	// HeadSHA to match is what actually retires the stale block.
-	if err := s.DB.UpdateRunHeadSHA(run.ID, rewritten); err != nil {
-		return true, blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_stamp_failed", "the push binding was corrected, but the run's head could not be updated to match; re-run the recovery; no files or refs were changed")
+		return remoteRewriteProbe{handled: true, observedLive: true,
+			result: blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_stamp_failed", "the corrected push binding could not be recorded; re-run the recovery; no files or refs were changed")}
 	}
 	state, _, _ := s.inspect(ctx)
 	state.Recovered = true
+	state.RecoveryKind = RecoveryPushBindingCorrected
 	state.Changed = false
-	return true, state
+	// The correction succeeded, so this call is not blocked. Whatever the
+	// branch's relation to the corrected binding now is, it is ordinary
+	// follow-up work carried by NextAction, never a failure of this recovery.
+	state.Error = ""
+	return remoteRewriteProbe{handled: true, observedLive: true, result: state}
+}
+
+// anchorSupersededPipelineHead keeps the pipeline's own head reachable through
+// the tool before the push binding stops recording it. Correcting the binding
+// to a foreign remote head otherwise drops the last pointer to commits this
+// pipeline produced and successfully pushed, which a third party then replaced.
+// It reuses the custody recovery's anchor ref shape, and refuses rather than
+// erasing a head it cannot make locally reachable.
+func (s *Service) anchorSupersededPipelineHead(ctx context.Context, state State, run *db.Run) (State, bool) {
+	superseded := strings.TrimSpace(run.HeadSHA)
+	if superseded == "" {
+		return blockedPlan(state, StateRemoteRewritten, "blocked_recover_preserve_failed", "the run records no pipeline head, so the correction cannot prove what it would supersede; no files or refs were changed"), false
+	}
+	wd := s.workDir()
+	anchorRef := recoverAnchorRef(run.ID)
+	if anchored, err := git.Run(ctx, wd, "rev-parse", anchorRef+"^{commit}"); err == nil && anchored == superseded {
+		return State{}, true
+	}
+	if !objectExists(ctx, wd, superseded) {
+		gateDir := strings.TrimSpace(s.GateDir)
+		branch := state.Local.Branch
+		if gateDir == "" || branch == "" {
+			return blockedPlan(state, StateRemoteRewritten, "blocked_recover_preserve_failed", fmt.Sprintf("the pipeline head %s is not present in this worktree and no local gate is available to preserve it, so correcting the push binding would drop the last record of it; no files or refs were changed", superseded)), false
+		}
+		if err := git.FetchRemoteBranchToPrivateRef(ctx, wd, gateDir, branch, anchorRef); err != nil || !objectExists(ctx, wd, superseded) {
+			return blockedPlan(state, StateRemoteRewritten, "blocked_recover_preserve_failed", fmt.Sprintf("the pipeline head %s could not be fetched from the local gate, so correcting the push binding would drop the last record of it; no files or refs were changed", superseded)), false
+		}
+	}
+	return s.anchorReachablePreserved(ctx, state, StateRemoteRewritten, anchorRef, superseded)
 }
 
 // recoverKeepLocal performs the explicit keep-local custody return: the
@@ -984,12 +1055,12 @@ func (s *Service) recoverAdoptPreserved(ctx context.Context, run *db.Run, state 
 	return s.finishRecover(ctx, run, true)
 }
 
-func (s *Service) anchorReachablePreserved(ctx context.Context, state State, anchorRef, preserved string) (State, bool) {
+func (s *Service) anchorReachablePreserved(ctx context.Context, state State, stateName, anchorRef, preserved string) (State, bool) {
 	if _, err := git.Run(ctx, s.workDir(), "update-ref", anchorRef, preserved); err != nil {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; no files or refs were changed"), false
+		return blockedPlan(state, stateName, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; no files or refs were changed"), false
 	}
 	if anchored, err := git.Run(ctx, s.workDir(), "rev-parse", anchorRef+"^{commit}"); err != nil || anchored != preserved {
-		return blockedPlan(state, StatePipelineOwned, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; no files or refs were changed"), false
+		return blockedPlan(state, stateName, "blocked_recover_preserve_failed", "the preserved pipeline commits could not be anchored locally; no files or refs were changed"), false
 	}
 	return State{}, true
 }
@@ -1007,6 +1078,7 @@ func (s *Service) finishRecover(ctx context.Context, run *db.Run, changed bool) 
 	}
 	state, _, _ := s.inspect(ctx)
 	state.Recovered = true
+	state.RecoveryKind = RecoveryCustodyReturned
 	state.Changed = changed
 	return state
 }

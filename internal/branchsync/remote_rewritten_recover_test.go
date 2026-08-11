@@ -1,6 +1,7 @@
 package branchsync
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,15 +17,11 @@ import (
 func TestRefresh_RemoteRewrittenOffersWorkingRecoveryNextAction(t *testing.T) {
 	t.Parallel()
 	f := newSyncFixture(t)
+	attachGateHoldingPipelineHead(t, f)
 
 	writer := cloneRemoteBranch(t, f.remote)
-	mustRun(t, writer, "checkout", "--orphan", "rewrite")
-	mustRun(t, writer, "rm", "-rf", ".")
-	mustWrite(t, filepath.Join(writer, "rewrite.txt"), "rewrite\n")
-	mustRun(t, writer, "add", "rewrite.txt")
-	mustRun(t, writer, "commit", "-m", "rewrite")
+	rewriteRemote(t, writer, "rewrite", "rewrite.txt")
 	rewrittenHead := mustRun(t, writer, "rev-parse", "HEAD")
-	mustRun(t, writer, "push", "--force", "origin", "HEAD:refs/heads/feature/sync")
 
 	state := f.service.Refresh(f.ctx)
 	if state.State != StateRemoteRewritten || state.Safety != "blocked_remote_rewritten" {
@@ -64,6 +61,131 @@ func TestRefresh_RemoteRewrittenOffersWorkingRecoveryNextAction(t *testing.T) {
 	if run.HeadSHA != rewrittenHead {
 		t.Fatalf("run head was not advanced to match the corrected binding: got %s, want %s", run.HeadSHA, rewrittenHead)
 	}
+	if recovered.RecoveryKind != RecoveryPushBindingCorrected {
+		t.Fatalf("a binding correction reported itself as %q; presenters would announce a custody return that never happened", recovered.RecoveryKind)
+	}
+	if run.CustodyReturnedAt != nil {
+		t.Fatalf("the binding correction stamped custody it never returned")
+	}
+	if recovered.Error != "" {
+		t.Fatalf("a successful correction still reported a blocked reason: %q", recovered.Error)
+	}
+	// The pipeline's own head is the only thing this correction supersedes, so
+	// it must stay reachable through the tool rather than surviving only in the
+	// gate's object store.
+	anchored := mustRun(t, f.local, "rev-parse", "refs/no-mistakes/recover/"+f.run.ID+"^{commit}")
+	if anchored != f.pushed {
+		t.Fatalf("the superseded pipeline head was not anchored: got %s, want %s", anchored, f.pushed)
+	}
+}
+
+// TestRecover_CustodyReturnedRunReachesRemoteRewrittenCorrection covers the run
+// shape whose cached classification hides the hazard entirely: custody was
+// already returned, so inspect() never reports pipeline_owned and Recover used
+// to answer from the custody stamp alone - reporting success while the stale
+// binding, and therefore the identical block, survived every retry.
+func TestRecover_CustodyReturnedRunReachesRemoteRewrittenCorrection(t *testing.T) {
+	t.Parallel()
+	f := newSyncFixture(t)
+	attachGateHoldingPipelineHead(t, f)
+	if err := f.db.SetRunCustodyReturned(f.run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	writer := cloneRemoteBranch(t, f.remote)
+	rewriteRemote(t, writer, "rewrite", "rewrite.txt")
+	rewrittenHead := mustRun(t, writer, "rev-parse", "HEAD")
+
+	blocked := f.service.Refresh(f.ctx)
+	if blocked.Safety != "blocked_remote_rewritten" {
+		t.Fatalf("setup: a custody-returned run did not surface the rewritten remote: %#v", blocked)
+	}
+	if blocked.NextAction == nil || blocked.NextAction.Code != "recover_remote_rewritten" {
+		t.Fatalf("setup: next_action = %#v", blocked.NextAction)
+	}
+
+	recovered := f.service.Recover(f.ctx, false)
+	if !recovered.Recovered || recovered.RecoveryKind != RecoveryPushBindingCorrected {
+		t.Fatalf("the offered recovery did not correct the binding for a custody-returned run: %#v", recovered)
+	}
+
+	run, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.LastPushedSHA == nil || *run.LastPushedSHA != rewrittenHead {
+		t.Fatalf("pushed_head was not corrected: got %v, want %s", run.LastPushedSHA, rewrittenHead)
+	}
+	if after := f.service.Refresh(f.ctx); after.State == StateRemoteRewritten {
+		t.Fatalf("the identical block survived the offered recovery: %#v", after)
+	}
+}
+
+// TestRecover_RemoteRewrittenRefusesWhenSupersededHeadCannotBeAnchored proves
+// the correction is never destructive: the push binding is the last record of
+// the head this pipeline produced and pushed, so when that head cannot be made
+// reachable in the worktree the correction refuses instead of overwriting it.
+func TestRecover_RemoteRewrittenRefusesWhenSupersededHeadCannotBeAnchored(t *testing.T) {
+	t.Parallel()
+	f := newSyncFixture(t)
+
+	writer := cloneRemoteBranch(t, f.remote)
+	rewriteRemote(t, writer, "rewrite", "rewrite.txt")
+
+	// No gate is attached, and the operator worktree never received the
+	// pipeline head, so nothing can anchor it.
+	recovered := f.service.Recover(f.ctx, false)
+	if recovered.Recovered {
+		t.Fatalf("the correction erased the last record of an unreachable pipeline head: %#v", recovered)
+	}
+	if recovered.Safety != "blocked_recover_preserve_failed" {
+		t.Fatalf("safety = %q, want blocked_recover_preserve_failed: %#v", recovered.Safety, recovered)
+	}
+	if !strings.Contains(recovered.Error, f.pushed) {
+		t.Fatalf("the refusal did not name the head it protected (%s): %q", f.pushed, recovered.Error)
+	}
+
+	run, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.LastPushedSHA == nil || *run.LastPushedSHA != f.pushed {
+		t.Fatalf("push binding moved despite the refusal: got %v, want %s", run.LastPushedSHA, f.pushed)
+	}
+}
+
+// TestRecover_NotApplicableNeverClaimsALiveCheckThatDidNotRun keeps the refusal
+// honest: with no remote reachable at all, the "nothing to recover" answer must
+// not assert that a fresh reading of the push target cleared the hazard.
+func TestRecover_NotApplicableNeverClaimsALiveCheckThatDidNotRun(t *testing.T) {
+	t.Parallel()
+	f := newSyncFixture(t)
+	if err := os.RemoveAll(f.remote); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered := f.service.Recover(f.ctx, false)
+	if recovered.Safety != "blocked_recover_not_applicable" {
+		t.Fatalf("safety = %q: %#v", recovered.Safety, recovered)
+	}
+	if strings.Contains(recovered.Error, "still matches") {
+		t.Fatalf("the refusal claimed a live reading that never completed: %q", recovered.Error)
+	}
+	if !strings.Contains(recovered.Error, "no verified live reading") {
+		t.Fatalf("the refusal did not disclose that no live reading was available: %q", recovered.Error)
+	}
+}
+
+// attachGateHoldingPipelineHead gives the fixture the local bare gate every
+// registered repository has, holding the branch at the pipeline's pushed head.
+func attachGateHoldingPipelineHead(t *testing.T, f *syncFixture) string {
+	t.Helper()
+	root := filepath.Dir(f.local)
+	gate := filepath.Join(root, "gate.git")
+	mustRun(t, root, "init", "--bare", gate)
+	mustRun(t, filepath.Join(root, "pipeline"), "push", gate, "HEAD:refs/heads/feature/sync")
+	f.service.GateDir = gate
+	return gate
 }
 
 // TestRefresh_RaceDuringRefreshDoesNotCarryForwardStaleNextAction is the
@@ -83,12 +205,7 @@ func TestRefresh_RaceDuringRefreshDoesNotCarryForwardStaleNextAction(t *testing.
 	// worktree is still at the pre-pipeline commit).
 	writer := cloneRemoteBranch(t, f.remote)
 	f.service.beforeRefreshFetch = func() {
-		mustRun(t, writer, "checkout", "--orphan", "race")
-		mustRun(t, writer, "rm", "-rf", ".")
-		mustWrite(t, filepath.Join(writer, "race.txt"), "race\n")
-		mustRun(t, writer, "add", "race.txt")
-		mustRun(t, writer, "commit", "-m", "race")
-		mustRun(t, writer, "push", "--force", "origin", "HEAD:refs/heads/feature/sync")
+		rewriteRemote(t, writer, "race", "race.txt")
 	}
 
 	state := f.service.Refresh(f.ctx)
