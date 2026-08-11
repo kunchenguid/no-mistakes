@@ -135,6 +135,19 @@ func TestLoadGlobal_AgentArgsOverride_ReservedArgsRejected(t *testing.T) {
 		{"grok", "--restore-code"},
 		{"grok", "--worktree"},
 		{"grok", "--worktree-ref"},
+		{"pi", "--mode"},
+		{"pi", "--mode=json"},
+		{"pi", "--no-session"},
+		{"pi", "-c"},
+		{"pi", "--continue"},
+		{"pi", "--resume"},
+		{"pi", "--resume=session-id"},
+		{"pi", "--session"},
+		{"pi", "--session=session-id"},
+		{"pi", "--session-id"},
+		{"pi", "--session-id=session-id"},
+		{"pi", "--fork"},
+		{"pi", "--fork=session-id"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.agent+"_"+tt.arg, func(t *testing.T) {

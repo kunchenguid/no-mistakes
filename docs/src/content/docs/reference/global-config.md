@@ -196,11 +196,11 @@ User-supplied flags are normally inserted ahead of no-mistakes' managed flags, s
 | `grok`     | `-p`, `--single`, `--prompt-file`, `--prompt-json`, `--output-format`, `--json-schema`, `-r`, `--resume`, `-c`, `--continue`, `--fork-session`, `--session-id`, `--system-prompt-override`, `--system-prompt`, `--rules`, `--append-system-prompt`, `--agent`, `--agents`, `--verbatim`, `--no-subagents`, `--no-auto-update`, `--cwd`, `--restore-code`, `--worktree`, `--worktree-ref` |
 | `rovodev`  | `rovodev`, `serve`, `--disable-session-token`                                                               |
 | `opencode` | `serve`, `--hostname`, `--port`, `--print-logs`                                                             |
-| `pi`       | `--mode`, `--no-session`                                                                                    |
+| `pi`       | `--mode`, `--no-session`, `-c`, `--continue`, `-r`, `--resume`, `--session`, `--session-id`, `--fork`     |
 | `copilot`  | `-p`, `--prompt`, `--output-format`, `--no-color`                                                          |
 
 For structured `codex` runs, no-mistakes also appends its own `--output-schema <tempfile>` after your overrides. Treat that flag as managed even though config validation does not currently reject it.
-The Claude, Codex, and Grok session-control forms are reserved so no-mistakes can keep review-loop conversations deterministic: review turns stay session-free while the fixer keeps its own isolated durable session.
+The Claude, Codex, Grok, and Pi session-control forms are reserved so no-mistakes can keep review-loop conversations deterministic: review turns stay session-free while the fixer keeps its own isolated durable session.
 
 Smart defaults:
 
@@ -325,11 +325,11 @@ Per-run agent session reuse for the review loop's fixer role.
 | Type    | `bool` |
 | Default | `true` |
 
-When enabled and the pipeline agent supports native session resume (Claude or Grok via `--resume`, Codex via `exec resume`), each run keeps one durable fixer session across its review-fix turns.
+When enabled and the pipeline agent supports native session resume (Claude or Grok via `--resume`, Codex via `exec resume`, Pi via `--session <UUID>`), each run keeps one durable fixer session across its review-fix turns.
 Review turns - the initial full review and every full rereview - always run as fresh, session-free invocations regardless of this setting: a rereview certifies fixes that implement the previous review turn's findings, so it must never resume the session that prescribed them; cross-round review context travels only in the explicit sanitized round history.
 The fixer session is never lent to review turns, other pipeline steps stay session-isolated in their own cold invocations, and different runs never reuse identities.
-When resume is unavailable or fails, the fix turn falls back to a cold run or a fresh fixer session and the fallback is recorded in the local `agent_invocations` performance record.
-Session identities are persisted only as minimum local resume metadata, never as prompts or transcripts.
+When resume is unavailable or fails, the fix turn falls back to a cold run or a fresh fixer session and the fallback is recorded in the local `agent_invocations` performance record. Pi emits per-invocation usage after a resume, unlike Codex's cumulative session counters.
+Session identities are persisted only as minimum local resume metadata, never as prompts or transcripts; Pi's own session directory retains its native transcript. Keep Pi's session directory private, and keep any `--session-dir` or `PI_CODING_AGENT_SESSION_DIR` setting stable while a run is active so a daemon restart can find the fixer session.
 The [daemon crash-recovery reference](/no-mistakes/concepts/daemon/#crash-recovery) owns which parked gates can resume or reconcile after a restart.
 Set `false` to force every agent invocation cold.
 

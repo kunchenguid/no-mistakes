@@ -715,8 +715,8 @@ branch_sync_remote_timeout: "60s"
 
 # Reuse one durable fixer session per run across review-fix turns. Review turns
 # always run session-free so a rereview never resumes the session that prescribed
-# its fixes. Supported for claude, codex, and grok; other agents run cold. Set false to
-# force every agent invocation cold.
+# its fixes. Supported for claude, codex, grok, and pi; other agents run cold.
+# Set false to force every agent invocation cold.
 session_reuse: true
 
 # Log level for daemon output
@@ -1274,6 +1274,13 @@ var reservedAgentArgs = map[string]map[string]bool{
 	string(types.AgentPi): {
 		"--mode":       true,
 		"--no-session": true,
+		"-c":           true,
+		"--continue":   true,
+		"-r":           true,
+		"--resume":     true,
+		"--session":    true,
+		"--session-id": true,
+		"--fork":       true,
 	},
 	string(types.AgentCopilot): {
 		"-p":              true,

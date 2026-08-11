@@ -14,7 +14,7 @@ import (
 
 func TestPiAgent_BuildArgs(t *testing.T) {
 	pa := &piAgent{bin: "pi"}
-	args := pa.buildArgs()
+	args := pa.buildArgs(nil)
 
 	expected := []string{"--mode", "json", "--no-session"}
 
@@ -28,9 +28,23 @@ func TestPiAgent_BuildArgs(t *testing.T) {
 	}
 }
 
+func TestPiAgent_BuildArgs_DurableSession(t *testing.T) {
+	pa := &piAgent{bin: "pi"}
+	started := pa.buildArgs(&SessionRef{})
+	if got, want := strings.Join(started, " "), "--mode json"; got != want {
+		t.Fatalf("durable-session args = %q, want %q", got, want)
+	}
+
+	const sessionID = "019ff2f3-5f31-744b-90b8-679074ff7686"
+	resumed := pa.buildArgs(&SessionRef{ID: sessionID})
+	if got, want := strings.Join(resumed, " "), "--mode json --session "+sessionID; got != want {
+		t.Fatalf("resume args = %q, want %q", got, want)
+	}
+}
+
 func TestPiAgent_BuildArgs_PrependsExtraArgs(t *testing.T) {
 	pa := &piAgent{bin: "pi", extraArgs: []string{"--provider", "google"}}
-	args := pa.buildArgs()
+	args := pa.buildArgs(nil)
 
 	expected := []string{"--provider", "google", "--mode", "json", "--no-session"}
 
@@ -46,7 +60,7 @@ func TestPiAgent_BuildArgs_PrependsExtraArgs(t *testing.T) {
 
 func TestPiAgent_BuildArgs_OptOutAddsNoContextFiles(t *testing.T) {
 	pa := &piAgent{bin: "pi", extraArgs: []string{"--system-prompt"}, disableProjectSettings: true}
-	args := pa.buildArgs()
+	args := pa.buildArgs(nil)
 	expected := []string{"--no-context-files", "--system-prompt", "--mode", "json", "--no-session"}
 	if len(args) != len(expected) {
 		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
@@ -60,7 +74,7 @@ func TestPiAgent_BuildArgs_OptOutAddsNoContextFiles(t *testing.T) {
 
 func TestPiAgent_BuildArgs_OptOutDoesNotDuplicateNoContextFiles(t *testing.T) {
 	pa := &piAgent{bin: "pi", extraArgs: []string{"--provider", "google", "-nc"}, disableProjectSettings: true}
-	args := pa.buildArgs()
+	args := pa.buildArgs(nil)
 	expected := []string{"-nc", "--provider", "google", "--mode", "json", "--no-session"}
 	if len(args) != len(expected) {
 		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
@@ -74,7 +88,7 @@ func TestPiAgent_BuildArgs_OptOutDoesNotDuplicateNoContextFiles(t *testing.T) {
 
 func TestPiAgent_BuildArgs_OptOutPreservesNoContextFilesOptionValue(t *testing.T) {
 	pa := &piAgent{bin: "pi", extraArgs: []string{"--system-prompt", "-nc"}, disableProjectSettings: true}
-	args := pa.buildArgs()
+	args := pa.buildArgs(nil)
 	expected := []string{"--no-context-files", "--system-prompt", "-nc", "--mode", "json", "--no-session"}
 	if len(args) != len(expected) {
 		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
@@ -138,12 +152,12 @@ func TestPiAgent_RunOptOutPassesNoContextFilesToCLI(t *testing.T) {
 	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
 printf '%s\n' "$*" > pi-argv.txt
 cat > /dev/null
-printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":"ok"}]}'
+printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"ok"}]}]}'
 `, strings.Join([]string{
 		"@echo off",
 		"echo %* > pi-argv.txt",
 		"more > nul",
-		"echo {\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":\"ok\"}]}",
+		"echo {\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}]}",
 	}, "\r\n"))
 
 	pa := &piAgent{
@@ -173,15 +187,15 @@ func TestPiAgent_RunParsesAssistantContentAndUsage(t *testing.T) {
 	// content blocks and a usage record. Mirrors the live JSONL shape.
 	bin := writeFakePi(t, dir, `#!/bin/sh
 cat > /dev/null
-printf '%s\n' '{"type":"message_update","message":{"role":"assistant","responseId":"r1"},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"{\"ok"}}'
-printf '%s\n' '{"type":"message_update","message":{"role":"assistant","responseId":"r1"},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"\":true}"}}'
+printf '%s\n' '{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"{\"ok"}}'
+printf '%s\n' '{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"\":true}"}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","responseId":"r1","content":[{"type":"text","text":"{\"ok\":true}"}],"usage":{"input":11,"output":7,"cacheRead":3,"cacheWrite":1}}}'
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 `, strings.Join([]string{
 		"@echo off",
 		"more > nul",
-		"echo {\"type\":\"message_update\",\"message\":{\"role\":\"assistant\",\"responseId\":\"r1\"},\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"{\\\"ok\"}}",
-		"echo {\"type\":\"message_update\",\"message\":{\"role\":\"assistant\",\"responseId\":\"r1\"},\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"\\\":true}\"}}",
+		"echo {\"type\":\"message_update\",\"usage\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0},\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"{\\\"ok\"}}",
+		"echo {\"type\":\"message_update\",\"usage\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0},\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"\\\":true}\"}}",
 		"echo {\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"r1\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}],\"usage\":{\"input\":11,\"output\":7,\"cacheRead\":3,\"cacheWrite\":1}}}",
 		"echo {\"type\":\"agent_end\",\"messages\":[]}",
 	}, "\r\n"))
@@ -227,11 +241,11 @@ func TestPiAgent_RunFallsBackToAgentEndMessages(t *testing.T) {
 	dir := t.TempDir()
 	bin := writeFakePi(t, dir, `#!/bin/sh
 cat > /dev/null
-printf '%s\n' '{"type":"agent_end","messages":[{"role":"user","content":"prompt"},{"role":"assistant","content":"{\"ok\":true}"}]}'
+printf '%s\n' '{"type":"agent_end","messages":[{"role":"user","content":"prompt"},{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}'
 `, strings.Join([]string{
 		"@echo off",
 		"more > nul",
-		"echo {\"type\":\"agent_end\",\"messages\":[{\"role\":\"user\",\"content\":\"prompt\"},{\"role\":\"assistant\",\"content\":\"{\\\"ok\\\":true}\"}]}",
+		"echo {\"type\":\"agent_end\",\"messages\":[{\"role\":\"user\",\"content\":\"prompt\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}]}]}",
 	}, "\r\n"))
 
 	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
@@ -246,6 +260,155 @@ printf '%s\n' '{"type":"agent_end","messages":[{"role":"user","content":"prompt"
 	}
 	if string(result.Output) != `{"ok":true}` {
 		t.Fatalf("unexpected output: %s", string(result.Output))
+	}
+}
+
+func TestPiAgent_RunResumesPersistedSession(t *testing.T) {
+	const sessionID = "019ff2f3-5f31-744b-90b8-679074ff7686"
+	workDir := t.TempDir()
+	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
+set -eu
+cat > /dev/null
+printf '%s\n' "$*" >> pi-argv.txt
+if [ -f pi-session-id ]; then
+	id=$(cat pi-session-id)
+	[ "$*" = "--mode json --session $id" ] || { echo "unexpected resume args: $*" >&2; exit 1; }
+	input=22
+else
+	[ "$*" = "--mode json" ] || { echo "unexpected start args: $*" >&2; exit 1; }
+	id=019ff2f3-5f31-744b-90b8-679074ff7686
+	printf '%s\n' "$id" > pi-session-id
+	input=11
+fi
+printf '%s\n' "{\"type\":\"session\",\"version\":3,\"id\":\"$id\",\"timestamp\":\"2026-08-21T00:00:00.000Z\",\"cwd\":\"$PWD\"}"
+printf '%s\n' "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"r$input\",\"stopReason\":\"stop\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}],\"usage\":{\"input\":$input,\"output\":7,\"cacheRead\":3,\"cacheWrite\":1}}}"
+printf '%s\n' "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"user\",\"content\":\"fix\"},{\"role\":\"assistant\",\"responseId\":\"r$input\",\"stopReason\":\"stop\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}],\"usage\":{\"input\":$input,\"output\":7,\"cacheRead\":3,\"cacheWrite\":1}}]}"
+`, strings.Join([]string{
+		"@echo off",
+		"setlocal EnableDelayedExpansion",
+		"more > nul",
+		"echo %*>> pi-argv.txt",
+		"if exist pi-session-id (",
+		"  set /p id=<pi-session-id",
+		"  echo %*| findstr /x /c:\"--mode json --session !id!\" >nul",
+		"  if errorlevel 1 (echo unexpected resume args: %* 1>&2 & exit /b 1)",
+		"  set input=22",
+		") else (",
+		"  echo %*| findstr /x /c:\"--mode json\" >nul",
+		"  if errorlevel 1 (echo unexpected start args: %* 1>&2 & exit /b 1)",
+		"  set id=019ff2f3-5f31-744b-90b8-679074ff7686",
+		"  echo !id!>pi-session-id",
+		"  set input=11",
+		")",
+		"echo {\"type\":\"session\",\"version\":3,\"id\":\"!id!\",\"timestamp\":\"2026-08-21T00:00:00.000Z\",\"cwd\":\"%CD%\"}",
+		"echo {\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"responseId\":\"r!input!\",\"stopReason\":\"stop\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}],\"usage\":{\"input\":!input!,\"output\":7,\"cacheRead\":3,\"cacheWrite\":1}}}",
+		"echo {\"type\":\"agent_end\",\"messages\":[{\"role\":\"user\",\"content\":\"fix\"},{\"role\":\"assistant\",\"responseId\":\"r!input!\",\"stopReason\":\"stop\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true}\"}],\"usage\":{\"input\":!input!,\"output\":7,\"cacheRead\":3,\"cacheWrite\":1}}]}",
+	}, "\r\n"))
+
+	schema := json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`)
+	pa := &piAgent{bin: bin}
+	started, err := pa.Run(context.Background(), RunOpts{Prompt: "fix", CWD: workDir, JSONSchema: schema, Session: &SessionRef{}})
+	if err != nil {
+		t.Fatalf("start durable Pi session: %v", err)
+	}
+	if started.SessionID != sessionID || started.Resumed {
+		t.Fatalf("started session = %+v, want id=%q and Resumed=false", started, sessionID)
+	}
+	if started.Usage.InputTokens != 11 || started.SessionUsageCumulative {
+		t.Fatalf("started usage = %+v, want invocation-only input 11", started.Usage)
+	}
+	if got, err := os.ReadFile(filepath.Join(workDir, "pi-session-id")); err != nil || strings.TrimSpace(string(got)) != sessionID {
+		t.Fatalf("persisted session ID = %q, %v; want %q", got, err, sessionID)
+	}
+
+	resumed, err := pa.Run(context.Background(), RunOpts{Prompt: "fix", CWD: workDir, JSONSchema: schema, Session: &SessionRef{ID: started.SessionID}})
+	if err != nil {
+		t.Fatalf("resume durable Pi session: %v", err)
+	}
+	if resumed.SessionID != sessionID || !resumed.Resumed {
+		t.Fatalf("resumed session = %+v, want id=%q and Resumed=true", resumed, sessionID)
+	}
+	if resumed.Usage.InputTokens != 22 || resumed.SessionUsageCumulative {
+		t.Fatalf("resumed usage = %+v, want invocation-only input 22", resumed.Usage)
+	}
+
+	argv, err := os.ReadFile(filepath.Join(workDir, "pi-argv.txt"))
+	if err != nil {
+		t.Fatalf("read captured pi argv: %v", err)
+	}
+	if got, want := strings.Fields(string(argv)), []string{"--mode", "json", "--mode", "json", "--session", sessionID}; strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("pi argv = %q, want %q", got, want)
+	}
+}
+
+func TestPiAgent_RunFailsWhenStartingDurableSessionWithoutHeader(t *testing.T) {
+	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
+cat > /dev/null
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+`, strings.Join([]string{
+		"@echo off",
+		"more > nul",
+		"echo {\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}",
+		"echo {\"type\":\"agent_end\",\"messages\":[]}",
+	}, "\r\n"))
+
+	_, err := (&piAgent{bin: bin}).Run(context.Background(), RunOpts{
+		Prompt:  "fix",
+		CWD:     t.TempDir(),
+		Session: &SessionRef{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "did not report a session identity") {
+		t.Fatalf("missing-session-header error = %v", err)
+	}
+}
+
+func TestPiAgent_RunRejectsUnconfirmedResume(t *testing.T) {
+	bin := writeFakePi(t, t.TempDir(), `#!/bin/sh
+cat > /dev/null
+printf '%s\n' '{"type":"session","id":"019ff2f3-5f31-744b-90b8-679074ff7686"}'
+printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":"ok"}]}'
+`, strings.Join([]string{
+		"@echo off",
+		"more > nul",
+		"echo {\"type\":\"session\",\"id\":\"019ff2f3-5f31-744b-90b8-679074ff7686\"}",
+		"echo {\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":\"ok\"}]}",
+	}, "\r\n"))
+
+	_, err := (&piAgent{bin: bin}).Run(context.Background(), RunOpts{
+		Prompt:  "fix",
+		CWD:     t.TempDir(),
+		Session: &SessionRef{ID: "019ff2f3-5f31-744b-90b8-679074ff7687"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "did not confirm") {
+		t.Fatalf("resume mismatch error = %v", err)
+	}
+}
+
+func TestPiAgent_RunRejectsInvalidResumeID(t *testing.T) {
+	_, err := (&piAgent{bin: "unused"}).Run(context.Background(), RunOpts{
+		Prompt:  "fix",
+		CWD:     t.TempDir(),
+		Session: &SessionRef{ID: "/tmp/not-a-pi-session"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid pi session identity") {
+		t.Fatalf("invalid session error = %v", err)
+	}
+}
+
+func TestPiParser_CapturesFirstValidSessionHeader(t *testing.T) {
+	const sessionID = "019ff2f3-5f31-744b-90b8-679074ff7686"
+	stream := strings.Join([]string{
+		`{"type":"session","id":"not-a-uuid"}`,
+		`{"type":"session","id":"019ff2f3-5f31-744b-90b8-679074ff7686"}`,
+		`{"type":"session","id":"019ff2f3-5f31-744b-90b8-679074ff7687"}`,
+	}, "\n")
+	pp := &piParser{}
+	if err := pp.parse(context.Background(), strings.NewReader(stream)); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if pp.sessionID != sessionID {
+		t.Fatalf("session ID = %q, want first valid %q", pp.sessionID, sessionID)
 	}
 }
 
