@@ -17,6 +17,10 @@ import (
 const (
 	defaultBaseBranchTipResolveWindow = 30 * time.Second
 	defaultPublishedHeadResolveWindow = 30 * time.Second
+	// emptyChecksTimeout is how long we wait for zero CI checks before concluding
+	// that the repo has no CI configured (rather than checks being slow to register).
+	// This prevents waiting the full ci_timeout (default 168 hours) on repos with no CI.
+	emptyChecksTimeout = 5 * time.Minute
 )
 
 // CI monitoring status messages. These are surfaced to the user and parsed by
@@ -49,6 +53,11 @@ type CIStep struct {
 	// must not re-arm the timeout. Overridable for testing; defaults to
 	// fetching the upstream default branch.
 	baseBranchTip func(context.Context) (string, bool)
+	// firstSeenEmptyChecks tracks when we first started consistently seeing
+	// zero CI checks, to distinguish "checks pending" from "no CI configured".
+	// If we see zero checks for a prolonged period, we conclude the latter
+	// and exit promptly instead of waiting the full ci_timeout.
+	firstSeenEmptyChecks time.Time
 }
 
 func (s *CIStep) Name() types.StepName { return types.StepCI }
@@ -486,6 +495,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			} else {
 				s.lastFixedChecks = ""
 				s.lastFixedCompletedAt = nil
+				// We have non-empty checks, so reset the empty-checks timer
+				if len(checks) > 0 {
+					s.firstSeenEmptyChecks = time.Time{}
+				}
 				switch {
 				case !prStateKnown || !mergeabilityKnown:
 					clearCIMonitorReady(sctx)
@@ -498,6 +511,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					// and unknown checks must never be promoted as green.
 					// Applies even when no_ci is declared: registered checks are
 					// never waived.
+					s.firstSeenEmptyChecks = time.Time{} // Reset: we have checks now
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
 				case len(checks) == 0:
 					// Empty forge results are ready ONLY with positive durable
@@ -508,11 +522,25 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					if sctx.Config != nil && sctx.Config.NoCI {
 						lastMonitorLog = logCIMonitorStatus(sctx, ciNoChecksPassedMsg, lastMonitorLog)
 					} else {
+						// Track when we first started seeing zero CI checks to distinguish
+						// "checks pending" from "no CI configured".
+						if s.firstSeenEmptyChecks.IsZero() {
+							s.firstSeenEmptyChecks = now()
+						}
+						waitingFor := now().Sub(s.firstSeenEmptyChecks)
+						if waitingFor >= emptyChecksTimeout {
+							// We've been seeing zero CI checks for the threshold period.
+							// Conclude that this repo has no CI configured (not slow registration)
+							// and exit promptly instead of waiting the full ci_timeout.
+							sctx.Log(fmt.Sprintf("no CI checks reported after %s - concluding this repository has no CI configured", waitingFor.Round(time.Second)))
+							return ciMonitoringTimeoutOutcome(), nil
+						}
 						clearCIMonitorReady(sctx)
 						lastMonitorLog = ""
 						sctx.Log("no CI checks reported yet, waiting for checks to register...")
 					}
 				case allChecksPassed(checks):
+					s.firstSeenEmptyChecks = time.Time{} // Reset: we have checks now
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
 				default:
 					clearCIMonitorReady(sctx)

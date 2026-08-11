@@ -2620,3 +2620,106 @@ func TestCIStep_DelayedSameNameCheckRetainsLegacyNameBehavior(t *testing.T) {
 		t.Fatal("new conclusive link did not retire the rerun record")
 	}
 }
+
+// TestCIStep_NoChecksConfiguredExitsPromptly tests that a repo with no CI checks
+// configured exits promptly after emptyChecksTimeout instead of waiting the full
+// ci_timeout. This prevents the defect where runs on futures-intel waited 24 minutes
+// (and would wait 168 hours) because the monitor couldn't distinguish "checks
+// pending" from "no checks can ever register".
+func TestCIStep_NoChecksConfiguredExitsPromptly(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	// Simulate a repo that returns zero checks consistently (no CI configured)
+	checksSequence := []string{
+		`[]`, // Empty checks response
+		`[]`, // Still empty after first poll
+		`[]`, // Still empty after multiple polls
+		`[]`, // Should exit before this
+	}
+	env := fakeCIGHSequence(t, "OPEN", checksSequence)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	// Set a long ci_timeout to prove we exit before it
+	sctx.Config.CITimeout = 168 * time.Hour
+
+	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	current := started
+	pollCount := 0
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	step := &CIStep{
+		now: func() time.Time { return current },
+		waitForNextPoll: func(ctx context.Context, interval time.Duration) error {
+			pollCount++
+			// Advance time: first poll advances 1 minute, subsequent polls advance
+			// to cross the emptyChecksTimeout threshold (5 minutes)
+			switch pollCount {
+			case 1:
+				current = started.Add(1 * time.Minute)
+			case 2:
+				current = started.Add(3 * time.Minute)
+			case 3:
+				current = started.Add(6 * time.Minute) // Past the 5-minute threshold
+			default:
+				t.Fatalf("expected exit after 3 polls, got poll #%d", pollCount)
+			}
+			return nil
+		},
+	}
+
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify we exited promptly (after 3 polls = 6 minutes) instead of waiting
+	// the full 168-hour timeout
+	if pollCount != 3 {
+		t.Fatalf("poll count = %d, want 3 (should exit after 6 minutes, not 168 hours)", pollCount)
+	}
+
+	// Verify the outcome is a timeout (not success, not an error)
+	if outcome == nil {
+		t.Fatal("expected non-nil outcome")
+	}
+	var findings Findings
+	if outcome.Findings != "" {
+		if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+			t.Fatalf("unmarshal findings: %v", err)
+		}
+	}
+	if !outcome.NeedsApproval {
+		t.Fatal("expected NeedsApproval=true for timeout outcome")
+	}
+	if findings.Summary == "" {
+		t.Fatal("expected non-empty summary")
+	}
+
+	// Verify that we saw the "no CI checks reported" message in logs
+	logs := sctx.Logs()
+	sawNoCIChecksMessage := false
+	for _, log := range logs {
+		if strings.Contains(log, "no CI checks reported after") && 
+		   strings.Contains(log, "concluding this repository has no CI configured") {
+			sawNoCIChecksMessage = true
+			break
+		}
+	}
+	if !sawNoCIChecksMessage {
+		t.Fatalf("expected log message about concluding no CI, got: %v", logs)
+	}
+
+	// Verify we didn't wait anywhere near the full timeout
+	elapsed := current.Sub(started)
+	if elapsed >= 10*time.Minute {
+		t.Fatalf("took too long to exit: %v (should exit around 6 minutes)", elapsed)
+	}
+}
