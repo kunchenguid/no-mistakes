@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	toon "github.com/toon-format/toon-go"
 )
 
 // TestAxiRemoteRewrittenRecoveryJourney reproduces the operator-facing dead end
@@ -158,10 +160,26 @@ func TestAxiRemoteRewrittenRecoveryJourney(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post-correction check should no longer be blocked: %v\n%s", err, afterOut)
 	}
-	for _, want := range []string{"state: behind", "pushed_head: " + rewritten} {
-		if !strings.Contains(afterOut, want) {
-			t.Errorf("post-correction check missing %q:\n%s", want, afterOut)
-		}
+	// Decode the document rather than matching a raw line: TOON quotes a
+	// scalar that begins with a digit-ambiguous prefix, so a SHA starting with
+	// "0" renders as `pushed_head: "0035..."` and a raw substring would flake
+	// on roughly one commit in sixteen.
+	var afterDoc struct {
+		BranchSync struct {
+			State    string `toon:"state"`
+			Pipeline struct {
+				PushedHead string `toon:"pushed_head"`
+			} `toon:"pipeline"`
+		} `toon:"branch_sync"`
+	}
+	if err := toon.UnmarshalString(afterOut, &afterDoc); err != nil {
+		t.Fatalf("decode post-correction check TOON: %v\n%s", err, afterOut)
+	}
+	if got := afterDoc.BranchSync.State; got != "behind" {
+		t.Errorf("post-correction state = %q, want %q:\n%s", got, "behind", afterOut)
+	}
+	if got := afterDoc.BranchSync.Pipeline.PushedHead; got != rewritten {
+		t.Errorf("post-correction pushed head = %q, want the verified remote head %q:\n%s", got, rewritten, afterOut)
 	}
 	if strings.Contains(afterOut, "remote_rewritten") {
 		t.Errorf("post-correction check still reports a rewritten remote:\n%s", afterOut)
