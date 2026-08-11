@@ -151,6 +151,18 @@ func stepFindingStats(step *StepResult, rounds []*StepRound) StepStats {
 		}
 		current = items
 	}
+	// The step's own findings_json is the authoritative outstanding set: it is
+	// what parks the approval gate and what the completion check reads. For a
+	// step whose rounds carry unresolved findings forward it is the union of
+	// the latest round's own output with what remains carried, so the latest
+	// round alone understates what is still open - and in the canonical case,
+	// a scoped rereview that found nothing new, that round records nothing at
+	// all while the step is parked on carried findings. A step whose rounds
+	// are each a complete assessment persists the two identically, so reading
+	// the step here leaves its numbers unchanged.
+	if items := findingItems(step.FindingsJSON); len(items) > 0 {
+		current = items
+	}
 
 	stats.ReportedFindings = len(reported)
 	currentCount := len(current)

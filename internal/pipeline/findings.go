@@ -324,6 +324,16 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 		// risk level describe a strictly smaller set than what the gate shows.
 		// Restate the count, and never present a risk level below the one the
 		// still-unresolved carried findings were assessed at.
+		//
+		// KNOWN LIMITATION: carried counts every carried item, matched or
+		// appended, so it is above zero merely because a carry set existed -
+		// it does not mean the union grew. When a round restates exactly the
+		// carried findings and reports nothing else, merged.Items equals
+		// existing.Items and this still replaces the round's own prose
+		// summary with a generic outstanding count, which is what the driving
+		// agent reads at the gate. Accepted rather than fixed here: it loses
+		// assessment prose but never a finding, and the count it publishes is
+		// always true of the set shown.
 		merged.Summary = types.SummarizeOutstandingFindings(len(merged.Items))
 		if raised := types.RiskLevelAtLeast(existing.RiskLevel, additional.RiskLevel); raised != existing.RiskLevel {
 			merged.RiskLevel = raised
