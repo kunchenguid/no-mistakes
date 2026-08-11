@@ -1336,6 +1336,12 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.Pipeline.Phase = "pre_push"
 	state.Relation = relationBetween(ctx, s.workDir(), state.Local.Head, run.HeadSHA)
 	if terminalRunStatus(run.Status) {
+		if !s.terminalHeadReachable(ctx, *state, run) {
+			state.Safety = "blocked_pipeline_owned_unreachable"
+			state.Error = "the terminal run recorded a preserved pipeline head that is not reachable from the local repository or gate; custody recovery is unavailable and no local follow-up commit is safe"
+			state.NextAction = nil
+			return
+		}
 		state.Safety = "blocked_pipeline_owned_recoverable"
 		state.Error = "the run finished " + string(run.Status) + " with unpublished pipeline commits preserved in the local gate; recover custody before any local follow-up commit"
 		state.NextAction = &NextAction{Code: "recover_custody", Command: "no-mistakes axi sync --recover"}
@@ -1344,6 +1350,24 @@ func (s *Service) classifyPipelineOwned(ctx context.Context, state *State, run *
 	state.Safety = "blocked_pipeline_owned"
 	state.Error = activeMessage
 	state.NextAction = &NextAction{Code: "continue_active_run", Command: "no-mistakes axi status"}
+}
+
+// terminalHeadReachable is the read-only custody proof used before advertising
+// recover_custody. A verified terminal head must still be reachable from the
+// invoking branch or from the gate branch that recovery will read.
+func (s *Service) terminalHeadReachable(ctx context.Context, state State, run *db.Run) bool {
+	if run == nil || strings.TrimSpace(run.HeadSHA) == "" {
+		return false
+	}
+	if objectExists(ctx, s.workDir(), run.HeadSHA) &&
+		(state.Local.Head == run.HeadSHA || isAncestor(ctx, s.workDir(), run.HeadSHA, state.Local.Head)) {
+		return true
+	}
+	if strings.TrimSpace(s.GateDir) == "" {
+		return false
+	}
+	gateHead, err := git.Run(ctx, s.GateDir, "rev-parse", "refs/heads/"+state.Local.Branch+"^{commit}")
+	return err == nil && gateHead == run.HeadSHA
 }
 
 // classifyUserOwned reports a branch released by its terminal outcome: the

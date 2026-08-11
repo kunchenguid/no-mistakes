@@ -1277,13 +1277,59 @@ func (e *Executor) reconcileTerminalRunHead(run *db.Run) (string, bool) {
 		return "", false
 	}
 	if observed == recorded {
+		if !e.preserveTerminalHead(ctx, run, observed) {
+			return "", false
+		}
 		return recorded, true
 	}
 	if _, err := git.Run(ctx, e.workDir, "merge-base", "--is-ancestor", recorded, observed); err != nil {
 		slog.Warn("worktree head is not a verified descendant before terminalization", "run", run.ID, "error", err)
 		return "", false
 	}
+	if !e.preserveTerminalHead(ctx, run, observed) {
+		return "", false
+	}
 	return observed, true
+}
+
+// preserveTerminalHead makes the head recorded during terminalization
+// reachable from the gate branch before the database records it. A pipeline
+// agent can commit while the run worktree is detached; observing that HEAD is
+// not enough because worktree cleanup can leave the commit without a durable
+// branch reference. The compare-and-swap keeps a concurrent branch change
+// fail-closed instead of overwriting it.
+func (e *Executor) preserveTerminalHead(ctx context.Context, run *db.Run, observed string) bool {
+	if run == nil || strings.TrimSpace(e.workDir) == "" || strings.TrimSpace(observed) == "" {
+		return false
+	}
+	branch := strings.TrimSpace(run.Branch)
+	branch = strings.TrimPrefix(branch, "refs/heads/")
+	if branch == "" {
+		slog.Warn("cannot preserve terminal head without a branch", "run", run.ID)
+		return false
+	}
+	ref := "refs/heads/" + branch
+	gateHead, err := git.Run(ctx, e.workDir, "rev-parse", ref+"^{commit}")
+	if err != nil {
+		slog.Warn("cannot resolve gate branch before terminalization", "run", run.ID, "branch", branch, "error", err)
+		return false
+	}
+	if gateHead != observed {
+		if _, err := git.Run(ctx, e.workDir, "merge-base", "--is-ancestor", gateHead, observed); err != nil {
+			slog.Warn("gate branch does not precede terminal worktree head", "run", run.ID, "branch", branch, "error", err)
+			return false
+		}
+		if _, err := git.Run(ctx, e.workDir, "update-ref", ref, observed, gateHead); err != nil {
+			slog.Warn("failed to preserve terminal worktree head in gate branch", "run", run.ID, "branch", branch, "error", err)
+			return false
+		}
+	}
+	verified, err := git.Run(ctx, e.workDir, "rev-parse", ref+"^{commit}")
+	if err != nil || verified != observed {
+		slog.Warn("terminal worktree head was not durably reachable from gate branch", "run", run.ID, "branch", branch, "error", err)
+		return false
+	}
+	return true
 }
 
 // --- event helpers ---
