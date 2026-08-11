@@ -2647,6 +2647,10 @@ func TestCIStep_NoChecksConfiguredExitsPromptly(t *testing.T) {
 	// Set a long ci_timeout to prove we exit before it
 	sctx.Config.CITimeout = 168 * time.Hour
 
+	// Capture logs for verification
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
 	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	current := started
 	pollCount := 0
@@ -2704,7 +2708,6 @@ func TestCIStep_NoChecksConfiguredExitsPromptly(t *testing.T) {
 	}
 
 	// Verify that we saw the "no CI checks reported" message in logs
-	logs := sctx.Logs()
 	sawNoCIChecksMessage := false
 	for _, log := range logs {
 		if strings.Contains(log, "no CI checks reported after") && 
