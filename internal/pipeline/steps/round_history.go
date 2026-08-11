@@ -18,6 +18,18 @@ import (
 //
 // The section is meant to be appended to an existing prompt and begins with
 // two newlines so it separates cleanly from surrounding context.
+//
+// KNOWN LIMITATION: `user_chose_to_ignore` names what a round's own selection
+// left unselected, NOT the finding's current status. For a step that carries
+// unresolved findings across its rounds, a finding the operator declined to
+// fix at one gate stays genuinely outstanding and keeps blocking until an
+// explicit respond action resolves it, yet it still renders under that
+// round's ignore list - and a later gate can resolve it while that entry
+// stands. A future round's agent should read the label as "not selected in
+// that round", not as permanently settled. Nothing is lost when it does read
+// it the wrong way: the carry set, not this prompt, decides what stays
+// outstanding, and a round's restatement can never relax the action the
+// operator was already shown.
 func roundHistoryPromptSection(sctx *pipeline.StepContext) string {
 	if sctx == nil || sctx.DB == nil || sctx.StepResultID == "" {
 		return ""

@@ -170,9 +170,11 @@ func TestStepFindingStatsAddsNewFindingsToTotal(t *testing.T) {
 // TestStepFindingStatsCountsCarriedFindingsAsStillOutstanding pins the
 // carry-forward shape: round 1 reports two findings, the operator fixes one,
 // and round 2's scoped rereview finds nothing new in the fix diff, so its own
-// record is NULL while the step is parked on the carried survivor. Reading
-// "currently outstanding" off that last round says every finding was fixed -
-// the exact opposite of why the step is parked - and those numbers are what
+// record holds a ZERO-ITEM payload - the shape the executor actually writes,
+// because a step marshals a Findings struct even when it found nothing -
+// while the step is parked on the carried survivor. Reading "currently
+// outstanding" off that last round says every finding was fixed - the exact
+// opposite of why the step is parked - and those numbers are what
 // `axi status`, the TUI step info, and step telemetry report to whoever is
 // driving the run.
 func TestStepFindingStatsCountsCarriedFindingsAsStillOutstanding(t *testing.T) {
@@ -185,7 +187,11 @@ func TestStepFindingStatsCountsCarriedFindingsAsStillOutstanding(t *testing.T) {
 	if _, err := d.InsertStepRound(step.ID, 1, "initial", &round1, nil, 100); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.InsertStepRound(step.ID, 2, "auto_fix", nil, nil, 100); err != nil {
+	round2, err := types.MarshalFindingsJSON(types.Findings{Summary: "0 findings", RiskLevel: "low", RiskRationale: "nothing new in the fix diff"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.InsertStepRound(step.ID, 2, "auto_fix", &round2, nil, 100); err != nil {
 		t.Fatal(err)
 	}
 	// What the gate parked on: the carried survivor of round 1.

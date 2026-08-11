@@ -288,6 +288,14 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 	// Findings struct even when it found nothing, so `{"findings":[]}` is the
 	// shape that actually reaches here and the empty-string early returns
 	// above are only for a step that produced no payload at all.
+	//
+	// KNOWN LIMITATION: when the fresh round DID report items of its own it
+	// owns the assessment, so the union can publish that round's own
+	// fix-diff-scoped rationale, unmarked, over an outstanding set larger
+	// than the diff it describes - the carried side's marked rationale is
+	// dropped, and nothing composes over the fresh prose unless the carried
+	// level is strictly higher. The item count above it is still the union's,
+	// so this narrows the prose, never the set.
 	assessment, otherRiskLevel := existing, additional.RiskLevel
 	if len(existing.Items) == 0 {
 		assessment, otherRiskLevel = additional, existing.RiskLevel
