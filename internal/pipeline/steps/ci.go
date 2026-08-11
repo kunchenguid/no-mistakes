@@ -511,7 +511,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 					// and unknown checks must never be promoted as green.
 					// Applies even when no_ci is declared: registered checks are
 					// never waived.
-					s.firstSeenEmptyChecks = time.Time{} // Reset: we have checks now
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksRunningMsg, lastMonitorLog)
 				case len(checks) == 0:
 					// Empty forge results are ready ONLY with positive durable
@@ -540,7 +539,6 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 						sctx.Log("no CI checks reported yet, waiting for checks to register...")
 					}
 				case allChecksPassed(checks):
-					s.firstSeenEmptyChecks = time.Time{} // Reset: we have checks now
 					lastMonitorLog = logCIMonitorStatus(sctx, ciChecksPassedMsg, lastMonitorLog)
 				default:
 					clearCIMonitorReady(sctx)
