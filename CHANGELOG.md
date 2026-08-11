@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.49.0](https://github.com/kunchenguid/no-mistakes/compare/v1.48.0...v1.49.0) (2026-08-11)
+
+
+### Features
+
+* **eval:** add local review evaluation toolkit ([#701](https://github.com/kunchenguid/no-mistakes/issues/701)) ([331ee93](https://github.com/kunchenguid/no-mistakes/commit/331ee9386f7a6765f7880313b01ca78a6b16983a))
+
 ## [1.48.0](https://github.com/kunchenguid/no-mistakes/compare/v1.47.0...v1.48.0) (2026-08-08)
 
 
