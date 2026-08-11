@@ -891,13 +891,44 @@ func TestExecutor_CarriedRoundsKeepTestEvidenceInTheStepFindings(t *testing.T) {
 // TestExecutor_ResumesAGateParkedAfterAnEmptyCarryingRound is the crash
 // recovery regression for a carrying step. Round 1 reported two ask-user
 // findings and the operator fixed only one; round 2's scoped rereview found
-// nothing new in the fix diff, so its round row holds NULL findings while the
+// nothing new in the fix diff, so its round row records no findings while the
 // step parks on the carried survivor. The daemon then restarts. Recovery must
 // accept that gate: the old byte-equality pre-check between the step's
 // findings and the latest round's own findings rejected it, which dropped the
 // run out of parked-run planning and into generic crash recovery - reopening,
 // on restart, exactly the unresolved-findings hole carry-forward closes.
+//
+// Both shapes of "this round reported nothing" are covered because they take
+// different branches of validateRecoveredGateFindings. A zero-item payload is
+// what the executor actually writes today (ReviewStep marshals a Findings
+// struct at both of its outcome sites, so the round's own findings are never
+// the empty string); a NULL row is what a step that produced no payload at
+// all - including any row written before that was true - leaves behind.
 func TestExecutor_ResumesAGateParkedAfterAnEmptyCarryingRound(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		round2Round func(t *testing.T) *string
+	}{
+		{
+			name: "round records a zero-item payload",
+			round2Round: func(t *testing.T) *string {
+				raw := emptyRereviewFindings(t, "low", "nothing new in the fix diff")
+				return &raw
+			},
+		},
+		{
+			name:        "legacy round row with no findings recorded",
+			round2Round: func(t *testing.T) *string { return nil },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resumesAGateParkedAfterAnEmptyCarryingRound(t, tc.round2Round(t))
+		})
+	}
+}
+
+func resumesAGateParkedAfterAnEmptyCarryingRound(t *testing.T, round2Findings *string) {
+	t.Helper()
 	database, p, run, repo := setupTest(t)
 	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 		t.Fatal(err)
@@ -922,8 +953,8 @@ func TestExecutor_ResumesAGateParkedAfterAnEmptyCarryingRound(t *testing.T) {
 	if _, err := database.InsertReviewStepRound(stepResult.ID, 1, "initial", &round1Findings, nil, "1111111111111111111111111111111111111111", 25); err != nil {
 		t.Fatal(err)
 	}
-	// Round 2's scoped rereview reported nothing at all.
-	if _, err := database.InsertReviewStepRound(stepResult.ID, 2, "auto_fix", nil, nil, "2222222222222222222222222222222222222222", 25); err != nil {
+	// Round 2's scoped rereview reported nothing of its own.
+	if _, err := database.InsertReviewStepRound(stepResult.ID, 2, "auto_fix", round2Findings, nil, "2222222222222222222222222222222222222222", 25); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.SetStepFindings(stepResult.ID, carriedFindings); err != nil {
