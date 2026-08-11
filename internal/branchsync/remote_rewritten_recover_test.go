@@ -98,4 +98,73 @@ func TestRefresh_RaceDuringRefreshDoesNotCarryForwardStaleNextAction(t *testing.
 	if state.NextAction != nil && state.NextAction.Code == "sync" {
 		t.Fatalf("a blocked mid-refresh race carried forward the stale pre-check next_action instead of halting on the fresh discovery: %#v", state.NextAction)
 	}
+	// The race never verified the head it observed, so it must not advertise
+	// the reconciliation, which writes the observed head to the push binding.
+	if state.NextAction != nil && state.NextAction.Code == "recover_remote_rewritten" {
+		t.Fatalf("an unverified mid-refresh reading offered the binding-correcting recovery: %#v", state.NextAction)
+	}
+}
+
+// TestRecover_MidRefreshRaceRefusesToPersistUnverifiedRemoteHead pins the
+// distinction the recovery gate must draw: StateRemoteRewritten is reached both
+// by the confirmed rewrite (the ls-remote head was fetched and rev-parsed back
+// to the same commit) and by the mid-refresh race (that verification failed).
+// Remote.ObservedHead is populated before the verification either way, so a gate
+// that matches only the state family writes an unverified - here already stale -
+// SHA into the run's push binding and reports success.
+func TestRecover_MidRefreshRaceRefusesToPersistUnverifiedRemoteHead(t *testing.T) {
+	t.Parallel()
+	f := newSyncFixture(t)
+
+	writer := cloneRemoteBranch(t, f.remote)
+	rewriteRemote(t, writer, "first-rewrite", "first.txt")
+	observed := mustRun(t, writer, "rev-parse", "HEAD")
+
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateRemoteRewritten || state.Safety != "blocked_remote_rewritten" {
+		t.Fatalf("setup: state = %#v", state)
+	}
+	if state.Remote.ObservedHead != observed {
+		t.Fatalf("setup: observed head = %s, want %s", state.Remote.ObservedHead, observed)
+	}
+
+	// The remote moves again inside the recovery's own re-verification window,
+	// so the head it observed by ls-remote is no longer the remote's head.
+	raced := false
+	f.service.beforeRefreshFetch = func() {
+		if raced {
+			return
+		}
+		raced = true
+		rewriteRemote(t, writer, "second-rewrite", "second.txt")
+	}
+
+	recovered := f.service.Recover(f.ctx, false)
+	if recovered.Recovered {
+		t.Fatalf("recovery reported success from an unverified mid-refresh reading: %#v", recovered)
+	}
+	if recovered.Changed {
+		t.Fatalf("recovery reported a change it never made: %#v", recovered)
+	}
+
+	run, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.LastPushedSHA == nil || *run.LastPushedSHA != f.pushed {
+		t.Fatalf("push binding was rewritten from an unverified reading: got %v, want the untouched %s", run.LastPushedSHA, f.pushed)
+	}
+	if run.HeadSHA != f.pushed {
+		t.Fatalf("run head was advanced from an unverified reading: got %s, want the untouched %s", run.HeadSHA, f.pushed)
+	}
+}
+
+func rewriteRemote(t *testing.T, writer, branch, file string) {
+	t.Helper()
+	mustRun(t, writer, "checkout", "--orphan", branch)
+	mustRun(t, writer, "rm", "-rf", ".")
+	mustWrite(t, filepath.Join(writer, file), branch+"\n")
+	mustRun(t, writer, "add", file)
+	mustRun(t, writer, "commit", "-m", branch)
+	mustRun(t, writer, "push", "--force", "origin", "HEAD:refs/heads/feature/sync")
 }

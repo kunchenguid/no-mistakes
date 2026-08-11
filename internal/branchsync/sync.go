@@ -285,7 +285,7 @@ func (s *Service) Refresh(ctx context.Context) State {
 		state.State = StateOffline
 		state.Safety = "blocked_offline"
 		state.Error = "could not fetch the configured push target; no files or worktree refs were changed"
-		state.NextAction = nil
+		state.NextAction = &NextAction{Code: "retry", Command: "no-mistakes sync --check"}
 		return state
 	}
 	fetched, err := git.Run(ctx, s.workDir(), "rev-parse", privateRef)
@@ -296,10 +296,16 @@ func (s *Service) Refresh(ctx context.Context) State {
 		// a state that just discovered the remote is unstable: stale next-step
 		// guidance on a blocked state is exactly the "continue on stale state"
 		// hazard this whole method exists to prevent.
+		//
+		// This is NOT the confirmed rewrite below: the ls-remote reading was
+		// never verified by the fetch, so no head observed here is trustworthy
+		// enough to write anywhere. Offer the same retry the sibling offline
+		// exit does, never the reconciliation, which must only ever act on a
+		// verified reading.
 		state.State = StateRemoteRewritten
 		state.Safety = "blocked_remote_changed_during_refresh"
 		state.Error = "the remote branch changed while it was being refreshed; no files or worktree refs were changed"
-		state.NextAction = &NextAction{Code: "recover_remote_rewritten", Command: "no-mistakes axi sync --recover"}
+		state.NextAction = &NextAction{Code: "retry", Command: "no-mistakes sync --check"}
 		return state
 	}
 
@@ -701,7 +707,15 @@ func (s *Service) tryRecoverRemoteRewritten(ctx context.Context, run *db.Run) (b
 		return false, State{}
 	}
 	fresh := s.Refresh(ctx)
-	if fresh.State != StateRemoteRewritten || fresh.Remote.ObservedHead == "" {
+	// StateRemoteRewritten covers two different discoveries, and only one of
+	// them carries a verified head: blocked_remote_rewritten fetched the
+	// ls-remote reading and rev-parsed it back to the same commit, while
+	// blocked_remote_changed_during_refresh is exactly the case where that
+	// verification FAILED. Remote.ObservedHead is populated before the
+	// verification either way, so the state alone cannot separate them and
+	// gating on it would persist an unverified SHA. Match the safety value
+	// that means "verified", never the state family.
+	if fresh.State != StateRemoteRewritten || fresh.Safety != "blocked_remote_rewritten" || fresh.Remote.ObservedHead == "" {
 		return false, State{}
 	}
 	rewritten := fresh.Remote.ObservedHead

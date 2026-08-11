@@ -49,6 +49,10 @@ var canonicalBranchSyncPhrases = []string{
 	// that it needs no recovery.
 	"user_owned",
 	"before changing the submitted head",
+	// A remote force-updated outside the pipeline is the second hazard
+	// `--recover` answers; the live guidance previously forbade the command
+	// for this code while the skill body offered it.
+	"recover_remote_rewritten",
 }
 
 const canonicalPipelineAgentPrerequisite = "a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`"
