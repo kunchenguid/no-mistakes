@@ -236,6 +236,8 @@ If the PR is merged or closed externally, the stale gate completes automatically
 
 Set it to `unlimited` (`none`, `off`, and `never` are accepted aliases), `0`, or any non-positive duration to monitor until the PR is merged, closed, or the run is aborted with `no-mistakes axi abort --run <id>`.
 
+`ci_timeout` does not bound how long a repo with no CI can go unrecognized: if the forge keeps reporting zero checks for 5 minutes and the repo has no trusted `no_ci: true` declaration, the monitor concludes the repository has no CI configured and parks for a decision immediately, rather than waiting out `ci_timeout`. See [`no_ci`](/no-mistakes/reference/repo-config/#no_ci) to declare intentional no-CI repos so the run can complete instead of parking.
+
 Legacy alias: `babysit_timeout`.
 
 ### step_quiet_warning
