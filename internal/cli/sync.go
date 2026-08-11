@@ -33,7 +33,11 @@ func newSyncCmd() *cobra.Command {
 			"carry every local change. Unproven divergence refuses. A run cancelled before\n" +
 			"the pipeline changed anything releases the branch by itself (user_owned) and\n" +
 			"makes --recover a no-op. --recover --keep-local keeps the current local head\n" +
-			"instead and never touches the worktree.",
+			"instead and never touches the worktree.\n" +
+			"--recover also corrects a push binding whose remote was force-updated outside\n" +
+			"this pipeline: it anchors the superseded pipeline head and rewrites only the\n" +
+			"recorded binding, touching no worktree, branch ref, or gate. --keep-local does\n" +
+			"not apply to that correction and is refused there.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if check && yes {
@@ -54,7 +58,7 @@ func newSyncCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and show the synchronization plan without changing HEAD")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "apply an eligible guarded synchronization without prompting")
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits, or correct a push binding whose remote was rewritten outside this pipeline (a no-op when cancellation already released the branch)")
-	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
+	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head (custody return only; it does not apply to a remote-rewritten binding correction)")
 	return cmd
 }
 
@@ -91,7 +95,7 @@ func newAxiSyncCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "freshly verify and return the plan without changing HEAD")
 	cmd.Flags().BoolVar(&recover, "recover", false, "return custody of a branch stranded by a terminal run with unpublished pipeline commits, or correct a push binding whose remote was rewritten outside this pipeline (a no-op when cancellation already released the branch)")
-	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head")
+	cmd.Flags().BoolVar(&keepLocal, "keep-local", false, "with --recover: keep the current local head; the preserved commits stay anchored and the gate follows the kept head (custody return only; it does not apply to a remote-rewritten binding correction)")
 	return cmd
 }
 
@@ -205,10 +209,16 @@ func runHumanRecover(cmd *cobra.Command, keepLocal, yes bool) error {
 	// outside the case it exists to name.
 	state := service.Refresh(cmd.Context())
 	observed = state
-	bindingCorrection := state.Safety == "blocked_remote_rewritten"
+	// The offered next_action, not the safety value alone, is what says this
+	// run can take the binding correction: a rewritten remote under a still
+	// active run reports the same safety but offers no such route, so reading
+	// the safety here would describe a correction that then refuses.
+	// --keep-local does not apply to this path at all, and the service refuses
+	// it, so there is nothing to consent to either.
+	bindingCorrection := state.NextAction != nil && state.NextAction.Code == "recover_remote_rewritten"
 	// A branch released by cancellation needs no confirmation: the recovery is
 	// an idempotent no-op that cannot mutate anything.
-	if !yes && state.State != branchsync.StateUserOwned {
+	if !yes && state.State != branchsync.StateUserOwned && !(bindingCorrection && keepLocal) {
 		printHumanSyncState(cmd, state)
 		if !syncInteractive() {
 			fmt.Fprintln(cmd.OutOrStdout(), "  Non-interactive input cannot confirm this recovery. Re-run with `no-mistakes sync --recover --yes`.")

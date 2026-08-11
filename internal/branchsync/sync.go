@@ -341,8 +341,17 @@ func (s *Service) Refresh(ctx context.Context) State {
 			// Unlike remote_advanced, a rewrite can never be resolved by an
 			// ordinary sync: the persisted binding itself is wrong now. Offer
 			// the guarded reconciliation instead of leaving the operator with
-			// no route forward but hand-editing state.sqlite.
-			state.NextAction = &NextAction{Code: "recover_remote_rewritten", Command: "no-mistakes axi sync --recover"}
+			// no route forward but hand-editing state.sqlite - but only where
+			// it can actually run. The correction rewrites this run's push
+			// provenance, so it requires the same terminal run probeRemoteRewritten
+			// requires; offering it to an active run would be the dead-end
+			// next_action this whole path exists to remove.
+			if terminalRunStatus(run.Status) {
+				state.NextAction = &NextAction{Code: "recover_remote_rewritten", Command: "no-mistakes axi sync --recover"}
+			} else {
+				state.Error = "the live remote no longer equals the persisted pipeline push binding while a validation run still owns this branch; the guarded binding correction becomes available once that run reaches a terminal state; no files or refs were changed"
+				state.NextAction = &NextAction{Code: "continue_active_run", Command: "no-mistakes axi status"}
+			}
 		}
 		return state
 	}
@@ -569,7 +578,7 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	// party can still force-update out from under. The probe therefore runs
 	// first, and owns the response only when a fresh verified reading confirms
 	// the rewrite; every other shape falls through to the behavior below.
-	probe := s.probeRemoteRewritten(ctx, run)
+	probe := s.probeRemoteRewritten(ctx, run, keepLocal)
 	if probe.handled {
 		return probe.result
 	}
@@ -700,22 +709,41 @@ func (s *Service) Recover(ctx context.Context, keepLocal bool) State {
 	}
 }
 
+const (
+	// liveReadingNone means no verified reading of the push target completed:
+	// the state was not refreshable, the remote was unreachable, or the
+	// mid-refresh race left the observed head unverified.
+	liveReadingNone = ""
+	// liveReadingMatchesBinding means a verified reading found the live head
+	// exactly equal to the persisted pipeline push binding.
+	liveReadingMatchesBinding = "matches_binding"
+	// liveReadingDiffersWithoutRewrite means a verified reading found a head
+	// other than the binding - deleted, advanced, or retired - without
+	// confirming the rewrite this recovery corrects. Claiming a match here is
+	// exactly the overstated-verification hazard this path exists to remove.
+	liveReadingDiffersWithoutRewrite = "differs_without_confirmed_rewrite"
+)
+
 // remoteRewriteProbe is the outcome of looking for a rewritten remote at the
 // recovery entry point. handled means this probe owns the caller's response,
-// including a refusal. observedLive records whether a fresh reading of the push
-// target actually completed and was verified, so a caller reporting "nothing to
-// recover" never claims a live check that never ran or that failed.
+// including a refusal. liveReading records exactly what a fresh reading of the
+// push target established, so a caller reporting "nothing to recover" never
+// claims a check that did not run, failed, or found something else.
 type remoteRewriteProbe struct {
-	handled      bool
-	result       State
-	observedLive bool
+	handled     bool
+	result      State
+	liveReading string
 }
 
 func (p remoteRewriteProbe) liveCheckClause() string {
-	if p.observedLive {
+	switch p.liveReading {
+	case liveReadingMatchesBinding:
 		return ", and a fresh reading of the live push target still matches the verified pipeline push binding"
+	case liveReadingDiffersWithoutRewrite:
+		return ", and a fresh reading of the live push target no longer matches the pipeline push binding but confirmed no rewrite this recovery can correct"
+	default:
+		return ", and no verified live reading of the push target was available to check for a rewritten remote"
 	}
-	return ", and no verified live reading of the push target was available to check for a rewritten remote"
 }
 
 // probeRemoteRewritten reconciles a branch whose bound push target no longer
@@ -735,7 +763,7 @@ func (p remoteRewriteProbe) liveCheckClause() string {
 // active run now owns the branch), never act on a stale reading. A
 // mid-flight change to the push binding or run status between that fresh
 // read and the write refuses for the same reason.
-func (s *Service) probeRemoteRewritten(ctx context.Context, run *db.Run) remoteRewriteProbe {
+func (s *Service) probeRemoteRewritten(ctx context.Context, run *db.Run, keepLocal bool) remoteRewriteProbe {
 	if run == nil || !terminalRunStatus(run.Status) {
 		return remoteRewriteProbe{}
 	}
@@ -748,9 +776,27 @@ func (s *Service) probeRemoteRewritten(ctx context.Context, run *db.Run) remoteR
 	// verification either way, so the state alone cannot separate them and
 	// gating on it would persist an unverified SHA. Match the safety value
 	// that means "verified", never the state family.
-	verified := fresh.Remote.Freshness == "live" && fresh.Safety != "blocked_remote_changed_during_refresh"
+	reading := liveReadingNone
+	if fresh.Remote.Freshness == "live" && fresh.Safety != "blocked_remote_changed_during_refresh" {
+		reading = liveReadingDiffersWithoutRewrite
+		if fresh.Remote.ObservedHead == fresh.Pipeline.PushedHead {
+			reading = liveReadingMatchesBinding
+		}
+	}
 	if fresh.State != StateRemoteRewritten || fresh.Safety != "blocked_remote_rewritten" || fresh.Remote.ObservedHead == "" {
-		return remoteRewriteProbe{observedLive: verified}
+		return remoteRewriteProbe{liveReading: reading}
+	}
+	// --keep-local chooses between the operator's head and a gate-preserved
+	// pipeline head, a choice that exists only because a pipeline rebase can
+	// leave two candidate histories for the same branch. This hazard has no
+	// such pair: something outside the pipeline force-updated the remote, the
+	// true content lives only there, and the superseded pipeline head is
+	// anchored rather than adopted - so there is nothing preserved to keep a
+	// local head instead of. Refuse rather than accept a flag whose promised
+	// behavior this path cannot deliver.
+	if keepLocal {
+		return remoteRewriteProbe{handled: true, liveReading: reading,
+			result: blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_keep_local_not_applicable", "--keep-local chooses between your local head and a gate-preserved pipeline head, which only exists when this pipeline rewrote your branch; here the remote was force-updated outside this pipeline, so there is no preserved head to keep a local one instead of - re-run the recovery without --keep-local to correct the recorded push binding; no files or refs were changed")}
 	}
 	rewritten := fresh.Remote.ObservedHead
 	freshRun, err := s.DB.GetRun(run.ID)
@@ -759,11 +805,11 @@ func (s *Service) probeRemoteRewritten(ctx context.Context, run *db.Run) remoteR
 		ptr(freshRun.LastPushedSHA) != fresh.Pipeline.PushedHead ||
 		ptr(freshRun.PushRef) != fresh.Target.Ref ||
 		ptr(freshRun.PushTargetFingerprint) != TargetFingerprint(s.Repo.PushURL()) {
-		return remoteRewriteProbe{handled: true, observedLive: true,
+		return remoteRewriteProbe{handled: true, liveReading: reading,
 			result: blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_assumptions_changed", "the pipeline push binding or run status changed while the push binding was being corrected; no files or refs were changed")}
 	}
 	if blocked, ok := s.anchorSupersededPipelineHead(ctx, fresh, freshRun); !ok {
-		return remoteRewriteProbe{handled: true, observedLive: true, result: blocked}
+		return remoteRewriteProbe{handled: true, liveReading: reading, result: blocked}
 	}
 	// The binding and the run head must move together: inspect() reads
 	// LastPushedSHA != HeadSHA as an unpublished pipeline head, so a run left
@@ -776,7 +822,7 @@ func (s *Service) probeRemoteRewritten(ctx context.Context, run *db.Run) remoteR
 		TargetFingerprint: TargetFingerprint(s.Repo.PushURL()),
 		Ref:               fresh.Target.Ref,
 	}); err != nil {
-		return remoteRewriteProbe{handled: true, observedLive: true,
+		return remoteRewriteProbe{handled: true, liveReading: reading,
 			result: blockedPlan(fresh, StateRemoteRewritten, "blocked_recover_stamp_failed", "the corrected push binding could not be recorded; re-run the recovery; no files or refs were changed")}
 	}
 	state, _, _ := s.inspect(ctx)
@@ -787,7 +833,7 @@ func (s *Service) probeRemoteRewritten(ctx context.Context, run *db.Run) remoteR
 	// branch's relation to the corrected binding now is, it is ordinary
 	// follow-up work carried by NextAction, never a failure of this recovery.
 	state.Error = ""
-	return remoteRewriteProbe{handled: true, observedLive: true, result: state}
+	return remoteRewriteProbe{handled: true, liveReading: reading, result: state}
 }
 
 // anchorSupersededPipelineHead keeps the pipeline's own head reachable through

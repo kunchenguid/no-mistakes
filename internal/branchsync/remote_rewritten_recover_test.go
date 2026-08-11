@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // TestRefresh_RemoteRewrittenOffersWorkingRecoveryNextAction is the DEFECT 2(b)
@@ -173,6 +175,111 @@ func TestRecover_NotApplicableNeverClaimsALiveCheckThatDidNotRun(t *testing.T) {
 	}
 	if !strings.Contains(recovered.Error, "no verified live reading") {
 		t.Fatalf("the refusal did not disclose that no live reading was available: %q", recovered.Error)
+	}
+}
+
+// TestRefresh_RemoteRewrittenUnderActiveRunOffersNoRecoveryThatWouldRefuse
+// covers the run shape the correction cannot serve: the binding it would
+// rewrite belongs to a run that is still using it. Offering the correction
+// there is the same dead-end next_action this path exists to remove - the
+// command refuses the moment it is tried, after the operator has confirmed it.
+func TestRefresh_RemoteRewrittenUnderActiveRunOffersNoRecoveryThatWouldRefuse(t *testing.T) {
+	t.Parallel()
+	f := newSyncFixture(t)
+	attachGateHoldingPipelineHead(t, f)
+	if err := f.db.UpdateRunStatus(f.run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	writer := cloneRemoteBranch(t, f.remote)
+	rewriteRemote(t, writer, "rewrite", "rewrite.txt")
+
+	state := f.service.Refresh(f.ctx)
+	if state.State != StateRemoteRewritten || state.Safety != "blocked_remote_rewritten" {
+		t.Fatalf("setup: state = %#v", state)
+	}
+	if state.NextAction != nil && state.NextAction.Code == "recover_remote_rewritten" {
+		t.Fatalf("an active run was offered a recovery that refuses when run: %#v", state.NextAction)
+	}
+	if state.NextAction == nil {
+		t.Fatalf("an active run was left with no route forward at all: %#v", state)
+	}
+
+	// Whatever is offered must not be this recovery, and the recovery itself
+	// must still refuse to touch a binding an active run is using.
+	recovered := f.service.Recover(f.ctx, false)
+	if recovered.Recovered {
+		t.Fatalf("the correction rewrote the push binding of a still-active run: %#v", recovered)
+	}
+	run, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.LastPushedSHA == nil || *run.LastPushedSHA != f.pushed {
+		t.Fatalf("push binding moved under an active run: got %v, want %s", run.LastPushedSHA, f.pushed)
+	}
+}
+
+// TestRecover_KeepLocalIsRefusedOnTheBindingCorrection pins that --keep-local
+// is never silently ignored here. The flag chooses between a local head and a
+// gate-preserved pipeline head; this hazard has no such pair, so accepting it
+// would hand the operator a behavior the path cannot deliver.
+func TestRecover_KeepLocalIsRefusedOnTheBindingCorrection(t *testing.T) {
+	t.Parallel()
+	f := newSyncFixture(t)
+	attachGateHoldingPipelineHead(t, f)
+
+	writer := cloneRemoteBranch(t, f.remote)
+	rewriteRemote(t, writer, "rewrite", "rewrite.txt")
+
+	recovered := f.service.Recover(f.ctx, true)
+	if recovered.Recovered {
+		t.Fatalf("--keep-local was silently ignored and the binding was corrected anyway: %#v", recovered)
+	}
+	if recovered.Safety != "blocked_recover_keep_local_not_applicable" {
+		t.Fatalf("safety = %q, want blocked_recover_keep_local_not_applicable: %#v", recovered.Safety, recovered)
+	}
+	if !strings.Contains(recovered.Error, "no preserved head to keep a local one instead of") {
+		t.Fatalf("the refusal did not explain why the flag does not apply: %q", recovered.Error)
+	}
+
+	run, err := f.db.GetRun(f.run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.LastPushedSHA == nil || *run.LastPushedSHA != f.pushed {
+		t.Fatalf("the refusal still moved the push binding: got %v, want %s", run.LastPushedSHA, f.pushed)
+	}
+
+	// Dropping the flag is the route the refusal names, and it must work.
+	if corrected := f.service.Recover(f.ctx, false); !corrected.Recovered {
+		t.Fatalf("the route named by the refusal did not work: %#v", corrected)
+	}
+}
+
+// TestRecover_NotApplicableNeverClaimsAMatchTheReadingDidNotObserve covers a
+// live reading that completed but found something other than the binding: a
+// third party deleted the remote branch. Reporting that the reading "still
+// matches" would be the overstated verification this path exists to remove.
+func TestRecover_NotApplicableNeverClaimsAMatchTheReadingDidNotObserve(t *testing.T) {
+	t.Parallel()
+	f := newSyncFixture(t)
+
+	writer := cloneRemoteBranch(t, f.remote)
+	mustRun(t, writer, "push", "origin", "--delete", "feature/sync")
+
+	if state := f.service.Refresh(f.ctx); state.State != StateRemoteMissing {
+		t.Fatalf("setup: state = %#v", state)
+	}
+	recovered := f.service.Recover(f.ctx, false)
+	if recovered.Safety != "blocked_recover_not_applicable" {
+		t.Fatalf("safety = %q: %#v", recovered.Safety, recovered)
+	}
+	if strings.Contains(recovered.Error, "still matches") {
+		t.Fatalf("the refusal claimed the live reading matched a binding whose branch is gone: %q", recovered.Error)
+	}
+	if !strings.Contains(recovered.Error, "no longer matches the pipeline push binding") {
+		t.Fatalf("the refusal did not report what the live reading actually found: %q", recovered.Error)
 	}
 }
 
