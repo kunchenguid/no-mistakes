@@ -18,6 +18,24 @@ type findingWithAction struct {
 	Action string `json:"action"`
 }
 
+// emptyRereviewFindings is what a scoped rereview that found nothing new
+// actually returns. Both of ReviewStep.Execute's outcome sites marshal a
+// Findings struct, so the payload is always valid JSON carrying the round's
+// own assessment with zero items - never the Go zero-value empty string. A
+// test that returns "" exercises an executor branch production cannot reach.
+func emptyRereviewFindings(t *testing.T, riskLevel, riskRationale string) string {
+	t.Helper()
+	raw, err := types.MarshalFindingsJSON(types.Findings{
+		Summary:       "0 findings",
+		RiskLevel:     riskLevel,
+		RiskRationale: riskRationale,
+	})
+	if err != nil {
+		t.Fatalf("marshal empty rereview findings: %v", err)
+	}
+	return raw
+}
+
 func mustParseFindingsWithAction(t *testing.T, raw string) []findingWithAction {
 	t.Helper()
 	parsed, err := types.ParseFindingsJSON(raw)
@@ -60,8 +78,9 @@ func TestExecutor_UnresolvedAskUserFindingsSurviveAnEmptyReReviewRound(t *testin
 				return &StepOutcome{NeedsApproval: true, Findings: round1Findings}, nil
 			}
 			// Round 2: a re-review scoped to only the fix diff. It legitimately
-			// finds nothing new in that diff.
-			return &StepOutcome{}, nil
+			// finds nothing new in that diff, and says so the way the real
+			// ReviewStep does - a marshalled payload with zero items.
+			return &StepOutcome{Findings: emptyRereviewFindings(t, "low", "the fix diff is a two-line guard")}, nil
 		},
 	}
 
@@ -119,12 +138,13 @@ func TestExecutor_UnresolvedAskUserFindingsSurviveAnEmptyReReviewRound(t *testin
 	}
 }
 
-// TestExecutor_EmptyRoundDoesNotRepublishAStaleRiskRationale covers the more
-// common shape of "this round found nothing": the step returns no findings
-// payload at all, so the merge hands the carried set straight back. The
-// carried rationale was written about the larger set, and this is exactly
-// what the gate shows and what the PR body publishes on approve, so it must
-// not read as the current assessment.
+// TestExecutor_EmptyRoundDoesNotRepublishAStaleRiskRationale covers the
+// canonical shape of "this round found nothing": the step returns its own
+// marshalled payload with zero items, so the union is entirely carried. The
+// rereview's own rationale describes only the fix diff it looked at, and the
+// carried rationale was written about the larger set - and this is exactly
+// what the gate shows and what the PR body publishes on approve, so neither
+// may present itself as an unqualified assessment of what is still open.
 func TestExecutor_EmptyRoundDoesNotRepublishAStaleRiskRationale(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
@@ -145,7 +165,12 @@ func TestExecutor_EmptyRoundDoesNotRepublishAStaleRiskRationale(t *testing.T) {
 			if callCount == 1 {
 				return &StepOutcome{NeedsApproval: true, Findings: round1Findings}, nil
 			}
-			return &StepOutcome{}, nil
+			// The rereview found nothing in the fix diff and assessed that
+			// diff at the same level round 1 assessed the whole change at, so
+			// no level raise composes over its prose. Its rationale is a true
+			// statement about the fix diff and a false one about the finding
+			// that is still outstanding.
+			return &StepOutcome{Findings: emptyRereviewFindings(t, "high", "the fix is a one-line guard, well-bounded")}, nil
 		},
 	}
 
@@ -317,7 +342,7 @@ func TestExecutor_UnresolvedFindingsSurviveAFixResponseThatSelectsNoFindings(t *
 			if callCount == 1 {
 				return &StepOutcome{NeedsApproval: true, Findings: round1Findings}, nil
 			}
-			return &StepOutcome{}, nil
+			return &StepOutcome{Findings: emptyRereviewFindings(t, "low", "nothing new in the fix diff")}, nil
 		},
 	}
 
@@ -392,7 +417,7 @@ func TestExecutor_CarriedFindingsDoNotRepublishAStaleSummaryCount(t *testing.T) 
 			if callCount == 1 {
 				return &StepOutcome{NeedsApproval: true, Findings: round1Findings}, nil
 			}
-			return &StepOutcome{}, nil
+			return &StepOutcome{Findings: emptyRereviewFindings(t, "low", "nothing new in the fix diff")}, nil
 		},
 	}
 
@@ -650,7 +675,7 @@ func TestExecutor_ResumeCarriesUnselectedFindingsAcrossADaemonRestart(t *testing
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
 			// The resumed round is scoped to the fix diff and finds nothing
 			// new in it.
-			return &StepOutcome{}, nil
+			return &StepOutcome{Findings: emptyRereviewFindings(t, "low", "nothing new in the fix diff")}, nil
 		},
 	}
 
@@ -919,7 +944,7 @@ func TestExecutor_ResumesAGateParkedAfterAnEmptyCarryingRound(t *testing.T) {
 		name:                 types.StepReview,
 		scopeLimitedFindings: true,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
-			return &StepOutcome{}, nil
+			return &StepOutcome{Findings: emptyRereviewFindings(t, "low", "nothing new in the fix diff")}, nil
 		},
 	}
 
@@ -1011,7 +1036,7 @@ func TestExecutor_ResumeRejectsAGateFindingNoRoundEverReported(t *testing.T) {
 		name:                 types.StepReview,
 		scopeLimitedFindings: true,
 		fn: func(sctx *StepContext) (*StepOutcome, error) {
-			return &StepOutcome{}, nil
+			return &StepOutcome{Findings: emptyRereviewFindings(t, "low", "nothing new in the fix diff")}, nil
 		},
 	}
 	if err := ValidateRecoveredRun(database, run, []Step{step}); err == nil {
@@ -1054,7 +1079,7 @@ func TestExecutor_SelectedCarriedFindingIsNotRecordedAsIgnoredByItsRound(t *test
 			case 2:
 				return &StepOutcome{NeedsApproval: true, Findings: round2Findings}, nil
 			default:
-				return &StepOutcome{}, nil
+				return &StepOutcome{Findings: emptyRereviewFindings(t, "low", "nothing new in the fix diff")}, nil
 			}
 		},
 	}

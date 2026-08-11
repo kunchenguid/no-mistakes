@@ -1108,6 +1108,15 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 	// them - a data gap we must not paper over as "no issues found".
 	missingRoundFindingsData := sr.FindingsJSON != nil && !roundsHaveFindings(rounds) && !roundsHaveParseFailure(rounds)
 
+	// KNOWN LIMITATION: the per-round narrative below is built from
+	// step_rounds alone, so "no issues remain" describes only what THAT round
+	// itself reported. For a step whose rounds carry unresolved findings
+	// forward, a fix round's own zero-item result renders that line even while
+	// the step-level union still holds findings the operator never resolved.
+	// The parent step summary above is built from sr.FindingsJSON and does
+	// report those correctly, so the body states the outstanding count
+	// accurately and only the round detail under it reads narrowly. Accepted
+	// rather than fixed here.
 	for _, r := range rounds {
 		isFixRound := r.IsFixRound()
 		if isFixRound {

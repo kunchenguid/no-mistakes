@@ -31,7 +31,11 @@ func (s *scopeLimitedFakeStep) Execute(sctx *pipeline.StepContext) (*pipeline.St
 		return outcome, nil
 	}
 	s.calls++
-	return &pipeline.StepOutcome{}, nil
+	raw, err := types.MarshalFindingsJSON(types.Findings{Summary: "0 findings", RiskLevel: "low", RiskRationale: "nothing new in the fix diff"})
+	if err != nil {
+		return nil, err
+	}
+	return &pipeline.StepOutcome{Findings: raw}, nil
 }
 
 // TestRoundHistoryPromptSection_CarriedFindingSelectedForFixIsNotRenderedAsIgnored

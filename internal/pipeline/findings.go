@@ -155,10 +155,11 @@ const carriedRationalePrefix = "carried from an earlier round, when more finding
 // excluded yields "".
 //
 // When items are dropped, the surviving risk rationale is marked as carried.
-// Both merge paths hand this payload straight to the gate - the raised-level
-// branch composes over it, and a round that reports nothing at all returns it
-// byte for byte - so a specific claim it makes ("three unresolved blockers")
-// would otherwise read as current over a set that has since shrunk.
+// mergeFindingsJSON hands this payload's assessment straight to the gate
+// whenever the fresh round reported no items of its own, and composes over it
+// when a raised level needs saying, so a specific claim it makes ("three
+// unresolved blockers") would otherwise read as current over a set that has
+// since shrunk.
 func excludeFindingsJSON(raw string, ids []string) string {
 	if raw == "" {
 		return ""
@@ -276,7 +277,22 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 	seen := make(map[types.Finding]bool, len(existing.Items)+len(additional.Items))
 	existingCounts := countFindingFingerprints(existing.Items)
 	additionalCounts := countFindingFingerprints(additional.Items)
-	merged := types.Findings{Summary: existing.Summary, Tested: mergeUnique(existing.Tested, additional.Tested), TestingSummary: existing.TestingSummary, Artifacts: mergeUnique(existing.Artifacts, additional.Artifacts), RiskLevel: existing.RiskLevel, RiskRationale: existing.RiskRationale, RiskScope: existing.RiskScope}
+	// Which side's risk assessment describes the union. Normally this round's
+	// own, the freshest reading of findings it actually reported. But a round
+	// that reported NO items of its own assessed only its own scope - for a
+	// scoped rereview, the fix diff - and saying nothing about the outstanding
+	// set is not an assessment of it; the carried assessment, already marked
+	// by excludeFindingsJSON as describing an earlier round, is the only prose
+	// written about the findings the gate is about to show. "Reported no
+	// items" is a parsed item count, not an empty payload: a step marshals a
+	// Findings struct even when it found nothing, so `{"findings":[]}` is the
+	// shape that actually reaches here and the empty-string early returns
+	// above are only for a step that produced no payload at all.
+	assessment, otherRiskLevel := existing, additional.RiskLevel
+	if len(existing.Items) == 0 {
+		assessment, otherRiskLevel = additional, existing.RiskLevel
+	}
+	merged := types.Findings{Summary: assessment.Summary, Tested: mergeUnique(existing.Tested, additional.Tested), TestingSummary: existing.TestingSummary, Artifacts: mergeUnique(existing.Artifacts, additional.Artifacts), RiskLevel: assessment.RiskLevel, RiskRationale: assessment.RiskRationale, RiskScope: assessment.RiskScope}
 	byKey := make(map[types.Finding]int, len(existing.Items))
 	byFingerprint := make(map[types.Finding]int, len(existing.Items))
 	for _, item := range existing.Items {
@@ -335,9 +351,9 @@ func mergeFindingsJSON(existingRaw, additionalRaw string) string {
 		// assessment prose but never a finding, and the count it publishes is
 		// always true of the set shown.
 		merged.Summary = types.SummarizeOutstandingFindings(len(merged.Items))
-		if raised := types.RiskLevelAtLeast(existing.RiskLevel, additional.RiskLevel); raised != existing.RiskLevel {
+		if raised := types.RiskLevelAtLeast(assessment.RiskLevel, otherRiskLevel); raised != assessment.RiskLevel {
 			merged.RiskLevel = raised
-			merged.RiskRationale = raisedRiskRationale(existing.RiskRationale, raised, carried)
+			merged.RiskRationale = raisedRiskRationale(assessment.RiskRationale, raised, carried)
 		}
 	}
 	mergedRaw, err := types.MarshalFindingsJSON(merged)
