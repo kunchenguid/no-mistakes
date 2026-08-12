@@ -7,6 +7,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -62,21 +63,6 @@ func TestWaitForManagedDaemonStartDetectsPublishedChildExit(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	childDone := make(chan struct{})
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		close(childDone)
-	}()
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		select {
-		case <-childDone:
-		case <-time.After(time.Second):
-		}
-	})
-
 	startedAt, err := daemonProcessStartTime(cmd.Process.Pid)
 	if err != nil {
 		t.Fatal(err)
@@ -84,6 +70,34 @@ func TestWaitForManagedDaemonStartDetectsPublishedChildExit(t *testing.T) {
 	if err := writeDaemonPIDFile(p.PIDFile(), daemonPIDFile{PID: cmd.Process.Pid, StartedAt: startedAt.UTC()}); err != nil {
 		t.Fatal(err)
 	}
+
+	oldStartTime := daemonProcessStartTime
+	managedPIDCaptured := make(chan struct{})
+	var releaseChild sync.Once
+	daemonProcessStartTime = func(pid int) (time.Time, error) {
+		actual, err := oldStartTime(pid)
+		if pid == cmd.Process.Pid && err == nil {
+			releaseChild.Do(func() { close(managedPIDCaptured) })
+		}
+		return actual, err
+	}
+	t.Cleanup(func() { daemonProcessStartTime = oldStartTime })
+
+	childDone := make(chan struct{})
+	go func() {
+		<-managedPIDCaptured
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		close(childDone)
+	}()
+	t.Cleanup(func() {
+		releaseChild.Do(func() { close(managedPIDCaptured) })
+		_ = cmd.Process.Kill()
+		select {
+		case <-childDone:
+		case <-time.After(time.Second):
+		}
+	})
 	oldHealth := daemonHealthCheck
 	daemonHealthCheck = func(*paths.Paths) (bool, error) { return false, nil }
 	t.Cleanup(func() { daemonHealthCheck = oldHealth })
