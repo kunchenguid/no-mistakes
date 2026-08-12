@@ -2710,8 +2710,8 @@ func TestCIStep_NoChecksConfiguredExitsPromptly(t *testing.T) {
 	// Verify that we saw the "no CI checks reported" message in logs
 	sawNoCIChecksMessage := false
 	for _, log := range logs {
-		if strings.Contains(log, "no CI checks reported after") && 
-		   strings.Contains(log, "concluding this repository has no CI configured") {
+		if strings.Contains(log, "no CI checks reported after") &&
+			strings.Contains(log, "concluding this repository has no CI configured") {
 			sawNoCIChecksMessage = true
 			break
 		}
