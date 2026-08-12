@@ -65,6 +65,11 @@ CREATE TABLE IF NOT EXISTS cases (
     verdict_should_park INTEGER NOT NULL,
     path TEXT NOT NULL UNIQUE
 );
+CREATE TABLE IF NOT EXISTS pending_case_deletions (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL,
+    repo_fingerprint TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS evaluations (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -197,13 +202,18 @@ func (s *Store) ListCases(set string) ([]Case, error) {
 // invalidate a published comparison. When protected cases alone exceed the cap
 // the corpus stays over it rather than deleting that evidence - the cap is a
 // retention target, not a promise to reach a number.
-//
-// The registry row goes first and the bytes second: a crash between them leaves
-// inert files, whereas the reverse order leaves a row pointing at a case that
-// no longer loads, which would break every later listing.
 func (s *Store) Prune(ctx context.Context, maxCases int) (int, error) {
 	if s == nil || s.db == nil {
 		return 0, fmt.Errorf("eval registry is closed")
+	}
+	unlock, err := lockCorpus(ctx, s.root)
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+
+	if err := s.cleanupPendingCaseDeletions(ctx); err != nil {
+		return 0, err
 	}
 	if maxCases <= 0 {
 		return 0, nil
@@ -240,18 +250,60 @@ ORDER BY c.captured_at, c.id LIMIT ?`, excess)
 
 	pruned := 0
 	for _, v := range victims {
-		if _, err := s.db.Exec(`DELETE FROM cases WHERE id = ?`, v.id); err != nil {
-			return pruned, fmt.Errorf("drop eval case %q: %w", v.id, err)
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return pruned, fmt.Errorf("begin eval case prune: %w", err)
 		}
-		if err := os.RemoveAll(v.dir); err != nil {
-			return pruned, fmt.Errorf("remove eval case %q: %w", v.id, err)
+		if _, err = tx.ExecContext(ctx, `INSERT OR REPLACE INTO pending_case_deletions (id, path, repo_fingerprint) VALUES (?, ?, ?)`, v.id, v.dir, v.fingerprint); err == nil {
+			_, err = tx.ExecContext(ctx, `DELETE FROM cases WHERE id = ?`, v.id)
 		}
-		if err := dropCaseObjects(ctx, s.poolDir(v.fingerprint), v.id); err != nil {
-			return pruned, err
+		if err != nil {
+			_ = tx.Rollback()
+			return pruned, fmt.Errorf("stage eval case %q deletion: %w", v.id, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return pruned, fmt.Errorf("commit eval case %q deletion: %w", v.id, err)
 		}
 		pruned++
 	}
+	if err := s.cleanupPendingCaseDeletions(ctx); err != nil {
+		return pruned, err
+	}
 	return pruned, nil
+}
+
+func (s *Store) cleanupPendingCaseDeletions(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, path, repo_fingerprint FROM pending_case_deletions ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("list pending eval case deletions: %w", err)
+	}
+	type pending struct{ id, dir, fingerprint string }
+	var items []pending
+	for rows.Next() {
+		var item pending
+		if err := rows.Scan(&item.id, &item.dir, &item.fingerprint); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan pending eval case deletion: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("list pending eval case deletions: %w", err)
+	}
+	rows.Close()
+	for _, item := range items {
+		if err := dropCaseObjects(ctx, s.poolDir(item.fingerprint), item.id); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(item.dir); err != nil {
+			return fmt.Errorf("remove eval case %q: %w", item.id, err)
+		}
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM pending_case_deletions WHERE id = ?`, item.id); err != nil {
+			return fmt.Errorf("finish eval case %q deletion: %w", item.id, err)
+		}
+	}
+	return nil
 }
 
 func loadCase(dir string) (Case, error) {

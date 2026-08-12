@@ -1082,11 +1082,14 @@ func (m *RunManager) autoCaptureEvalCase(ctx context.Context, cfg *config.Config
 			slog.Error("panic while collecting eval case", "run_id", runID, "panic", r)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(ctx, evalAutoCaptureTimeout)
-	defer cancel()
-
 	m.evalCaptureMu.Lock()
 	defer m.evalCaptureMu.Unlock()
+
+	if ctx.Err() != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, evalAutoCaptureTimeout)
+	defer cancel()
 
 	result, err := eval.AutoCapture(ctx, m.paths, m.db, runID, cfg.Eval.MaxCases)
 	switch {

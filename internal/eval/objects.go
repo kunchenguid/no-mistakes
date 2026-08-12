@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -129,8 +130,13 @@ func restoreCaseObjects(ctx context.Context, poolPath, gateDir, caseID string) e
 // best effort by design - a pool that is already gone means the case's objects
 // are gone too, which is exactly the state the caller is trying to reach.
 func dropCaseObjects(ctx context.Context, poolPath, caseID string) error {
-	if err := git.ValidateBareRepository(ctx, poolPath); err != nil {
+	if _, err := os.Stat(poolPath); errors.Is(err, os.ErrNotExist) {
 		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect eval object pool: %w", err)
+	}
+	if err := git.ValidateBareRepository(ctx, poolPath); err != nil {
+		return fmt.Errorf("validate eval object pool: %w", err)
 	}
 	prefix := caseRefPrefix(caseID)
 	var failures []string

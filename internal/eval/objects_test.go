@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -136,6 +137,99 @@ func TestPruneKeepsEveryCaseWhenTheCapIsDisabled(t *testing.T) {
 // TestDropCaseObjectsReleasesOnlyItsOwnPins proves retention reclaims the right
 // objects: one case leaving the corpus must not strip the pins another case
 // still replays from.
+func TestConcurrentCaptureKeepsThePublishedCaseRestorable(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+
+	const workers = 8
+	stores := make([]*Store, workers)
+	for i := range stores {
+		store, err := Open(p.EvalDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		stores[i] = store
+		defer store.Close()
+	}
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for _, store := range stores {
+		wg.Add(1)
+		go func(store *Store) {
+			defer wg.Done()
+			<-start
+			_, err := Capture(ctx, store, p, sourceDB, run.ID)
+			errs <- err
+		}(store)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent capture failed: %v", err)
+		}
+	}
+
+	cases, err := stores[0].ListCases("all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 1 {
+		t.Fatalf("captured cases = %d, want 1", len(cases))
+	}
+	restored := filepath.Join(t.TempDir(), "restore.git")
+	if err := git.InitBare(ctx, restored); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreCaseObjects(ctx, stores[0].poolDir(cases[0].RepoFingerprint), restored, cases[0].ID); err != nil {
+		t.Fatalf("concurrently published case is not restorable: %v", err)
+	}
+}
+
+func TestPruneRetriesDurablePendingObjectCleanup(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := cases[0]
+
+	tx, err := store.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`INSERT INTO pending_case_deletions (id, path, repo_fingerprint) VALUES (?, ?, ?)`, c.ID, c.Dir, c.RepoFingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`DELETE FROM cases WHERE id = ?`, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Prune(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(c.Dir); !os.IsNotExist(err) {
+		t.Fatalf("pending case directory survived retry: %v", err)
+	}
+	refs := mustGit(t, ctx, store.poolDir(c.RepoFingerprint), "for-each-ref", "--format=%(refname)", caseRefPrefix(c.ID))
+	if strings.TrimSpace(refs) != "" {
+		t.Fatalf("pending case still pins objects: %s", refs)
+	}
+}
+
 func TestDropCaseObjectsReleasesOnlyItsOwnPins(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, repo, firstRound := setupCapturedRun(t, ctx)

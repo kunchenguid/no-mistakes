@@ -107,6 +107,12 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 	if store == nil || p == nil || database == nil {
 		return nil, fmt.Errorf("eval capture requires a store, paths, and database")
 	}
+	unlock, err := lockCorpus(ctx, store.root)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
 	run, err := database.GetRun(strings.TrimSpace(runID))
 	if err != nil {
 		return nil, fmt.Errorf("read source run: %w", err)
