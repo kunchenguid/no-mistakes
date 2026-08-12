@@ -427,11 +427,13 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 // runs after stale-run recovery so every run's status is settled, and before
 // worktree cleanup so the directories are freed of their holders first.
 func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths) {
+	ctx := context.Background()
+	wtRoot := p.WorktreesDir()
 	procreap.SweepAndLog(procreap.Options{
-		WorktreesRoot: p.WorktreesDir(),
+		WorktreesRoot: wtRoot,
 		MinAge:        orphanProcessMinAge,
-		RunActive: func(_, runID string) bool {
-			skip, _ := skipWorktreeCleanup(d, runID)
+		RunActive: func(repoID, runID string) bool {
+			skip, _ := skipWorktreeCleanup(ctx, d, runID, filepath.Join(wtRoot, repoID, runID))
 			return skip
 		},
 	}, "daemon_startup")
