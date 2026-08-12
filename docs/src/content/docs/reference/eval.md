@@ -4,15 +4,15 @@ title: Evaluation toolkit
 
 `no-mistakes eval` is a **local-only** toolkit for comparing review candidates against review passes your own pipeline has already recorded.
 
-The corpus collects itself: every finished run's decided review passes become cases, so the sets are populated by the time you want to compare something. Replay and reporting stay explicit commands you run.
+The corpus collects itself: eligible finished runs' decided review passes become cases, so the sets are populated by the time you want to compare something. Replay and reporting stay explicit commands you run.
 
-It is separate from normal pipeline operation. It does not start or use the shared daemon, alter a gate, emit remote telemetry, push a branch, open a PR, or run CI. Cases, source findings, decisions, candidate outputs, and metrics are stored only under `<NM_HOME>/eval/`; there is no export, sharing, synchronization, or remote case store.
+The `eval` commands do not start or use the shared daemon, alter a gate, emit remote telemetry, push a branch, open a PR, or run CI. Cases, source findings, decisions, candidate outputs, and metrics are stored only under `<NM_HOME>/eval/`; there is no export, sharing, synchronization, or remote case store.
 
 Replay does invoke the selected agent normally, so that agent may send the restored code and review context to its configured model provider. The local-only guarantee concerns eval storage and transport added by no-mistakes, not the selected agent's ordinary provider traffic.
 
 ## How cases are collected
 
-Cases arrive on their own. When a run finishes, its decided Review passes are frozen into the local corpus - one case per pass. Collection happens after the pipeline has already reported its outcome, so it can never change, delay a decision in, or fail a run; a problem is logged and nothing else.
+Cases arrive on their own. When an eligible run finishes, its decided Review passes are frozen into the local corpus - one case per pass. Collection happens after the pipeline has already reported its outcome, so it can never change or fail the run; a problem is logged and nothing else.
 
 Two settings in `config.yaml` govern it, both on by default and both documented in [Global configuration](/no-mistakes/reference/global-config/#eval):
 
@@ -43,9 +43,11 @@ The manifest never stores a remote URL. Capture is read-only against the existin
 
 Cases from the same repository share one local Git object pool under `<NM_HOME>/eval/pools/`. The first case from a repository stores its history once; every later case adds only the objects its own commits introduced, which is normally a few kilobytes.
 
-`eval.max_cases` (default 200) bounds the corpus. When it is exceeded the oldest cases are dropped first, and a case that already has recorded candidate replays is never dropped - an eval report's cohort pins the case IDs it compared, so reclaiming one would invalidate a comparison you already paid for. Set it to `0` to keep every case.
+`eval.max_cases` (default 200) is the retention target enforced after automatic collection. When it is exceeded the oldest unprotected cases are dropped first. A case that has a replay in progress or already has recorded candidate replays is never dropped - an eval report's cohort pins the case IDs it compared, so reclaiming one would invalidate a comparison you already paid for. Protected cases can therefore keep the corpus above the target. Set it to `0` to keep every case.
 
 Because the objects live in the pool rather than inside each case, a case directory is not a portable archive: copying it elsewhere does not carry the code it replays.
+
+Cases captured by releases using manifest version 1 are not compatible with the shared-pool format. If an eval command reports an unsupported case manifest version, remove `<NM_HOME>/eval/` to start a fresh corpus; automatic collection will refill it from later runs.
 
 ## Inspect case sets before spending tokens
 

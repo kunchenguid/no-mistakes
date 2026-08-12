@@ -298,7 +298,7 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		IntentSource:          c.IntentSource,
 	})
 	// Candidate wall time is the actual review invocation, matching the local
-	// agent-invocation metric rather than charging bundle restoration setup.
+	// agent-invocation metric rather than charging case restoration setup.
 	evaluation.DurationMS = observed.durationMS
 	if evaluation.DurationMS == 0 && observed.result == nil {
 		evaluation.DurationMS = time.Since(started).Milliseconds()

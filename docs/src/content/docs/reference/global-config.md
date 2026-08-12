@@ -427,16 +427,16 @@ Local review-evaluation corpus settings for [`no-mistakes eval`](/no-mistakes/re
 | Field                      | Type   | Default | Description                                                            |
 | -------------------------- | ------ | ------- | ---------------------------------------------------------------------- |
 | `eval.capture_provenance`  | `bool` | `true`  | Record the exact commit and configuration inputs a replay needs        |
-| `eval.auto_capture`        | `bool` | `true`  | Freeze each finished run's review passes into the local corpus         |
-| `eval.max_cases`           | `int`  | `200`   | Cap on collected cases; `0` keeps every case                           |
+| `eval.auto_capture`        | `bool` | `true`  | Freeze eligible finished runs' review passes into the local corpus     |
+| `eval.max_cases`           | `int`  | `200`   | Retention target for automatic collection; `0` keeps every case        |
 
 `capture_provenance` is what makes a review pass replayable at all. It is recorded when the round is written and cannot be added afterwards, because the pinned configuration is a point-in-time snapshot, so a run reviewed with it off can never be captured later.
 
-`auto_capture` collects those passes without any command: when a run finishes, its decided review rounds become cases. It does nothing while `capture_provenance` is off. Collection runs after the pipeline has already reported its outcome and can never change it; a failure is logged and nothing else.
+`auto_capture` collects those passes without any command: when an eligible run finishes, its decided review rounds become cases. It does nothing while `capture_provenance` is off. Collection runs after the pipeline has already reported its outcome and can never change it; a failure is logged and nothing else.
 
-`max_cases` keeps the corpus a rolling window. When it is exceeded the oldest cases are dropped first, and a case that already has recorded candidate replays is never dropped, so a comparison you have spent tokens on stays intact. Cases from the same repository share one local object pool, so a case costs its own records plus the objects its commits introduced rather than a copy of the repository.
+`max_cases` sets the retention target enforced after automatic collection. When it is exceeded the oldest unprotected cases are dropped first. A case with a replay in progress or recorded candidate replays is protected, so the corpus can remain above the target rather than invalidate a comparison you have spent tokens on. Cases from the same repository share one local object pool, so a case costs its own records plus the objects its commits introduced rather than a copy of the repository.
 
-These are operator settings for this machine's local disk, so they are global-only: an `eval` block in a repository's `.no-mistakes.yaml` is ignored. Everything stays under `<NM_HOME>/eval` and is never uploaded.
+These are operator settings for this machine's local disk, so they are global-only: an `eval` block in a repository's `.no-mistakes.yaml` is ignored. Corpus storage stays under `<NM_HOME>/eval` and no-mistakes never uploads it; replay still sends code to the selected agent's configured model provider as described in the [Evaluation toolkit](/no-mistakes/reference/eval/).
 
 ## Environment variables
 

@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -105,6 +106,33 @@ func TestCaptureRejectsReviewRoundBeforeGateDecision(t *testing.T) {
 	}
 	if len(cases) != 0 {
 		t.Fatalf("premature capture registered %d cases", len(cases))
+	}
+}
+
+func TestCaptureExplainsMissingConfigurationProvenance(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	steps, err := sourceDB.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clean := `{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`
+	if _, err := sourceDB.InsertReviewStepRound(steps[0].ID, 2, "legacy", &clean, nil, run.HeadSHA, 10); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, err = Capture(ctx, store, p, sourceDB, run.ID)
+	if !errors.Is(err, ErrNoCapturableReview) {
+		t.Fatalf("capture error = %v, want ErrNoCapturableReview", err)
+	}
+	if !strings.Contains(err.Error(), "eval.capture_provenance was off") {
+		t.Fatalf("capture error = %q, want the disabled setting named as the likely cause", err)
 	}
 }
 
