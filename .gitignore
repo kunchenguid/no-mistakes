@@ -31,3 +31,4 @@ demo_raw.gif
 # Environment
 .env
 .env.local
+.no-mistakes/evidence/
