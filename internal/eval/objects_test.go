@@ -14,6 +14,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // TestCaptureDoesNotCopyRepositoryHistoryPerCase is the regression test for the
@@ -111,6 +112,36 @@ func TestPruneBoundsTheCorpusOldestFirstAndKeepsEvaluatedCases(t *testing.T) {
 // TestPruneKeepsEveryCaseWhenTheCapIsDisabled pins the documented meaning of a
 // zero cap, which is the escape hatch for someone building a large corpus on
 // purpose.
+func TestPruneKeepsCasesReservedByAReplaySession(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for i, id := range []string{"a", "b", "c"} {
+		seedCase(t, store, id, int64(i))
+	}
+	_, session, err := store.prepareReplay(ctx, ReplayOptions{Set: "all", Candidate: Candidate{Agent: types.AgentClaude, Model: "test"}, Repeats: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(session.CaseIDs) != 3 {
+		t.Fatalf("reserved cases = %v, want all three cases", session.CaseIDs)
+	}
+	pruned, err := store.Prune(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining, err := store.ListCases("all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned != 0 || len(remaining) != 3 {
+		t.Fatalf("prune removed %d replay-reserved cases, %d remain", pruned, len(remaining))
+	}
+}
+
 func TestPruneKeepsEveryCaseWhenTheCapIsDisabled(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(t.TempDir())
@@ -189,7 +220,7 @@ func TestConcurrentCaptureKeepsThePublishedCaseRestorable(t *testing.T) {
 	}
 }
 
-func TestPruneRetriesDurablePendingObjectCleanup(t *testing.T) {
+func TestCaptureReconcilesPendingDeletionBeforeRecapturing(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
 	defer sourceDB.Close()
@@ -218,15 +249,29 @@ func TestPruneRetriesDurablePendingObjectCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	recaptured, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recaptured) != 1 || recaptured[0].ID != c.ID {
+		t.Fatalf("recaptured cases = %#v, want %q", recaptured, c.ID)
+	}
 	if _, err := store.Prune(ctx, 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(c.Dir); !os.IsNotExist(err) {
-		t.Fatalf("pending case directory survived retry: %v", err)
+	remaining, err := store.ListCases("all")
+	if err != nil {
+		t.Fatal(err)
 	}
-	refs := mustGit(t, ctx, store.poolDir(c.RepoFingerprint), "for-each-ref", "--format=%(refname)", caseRefPrefix(c.ID))
-	if strings.TrimSpace(refs) != "" {
-		t.Fatalf("pending case still pins objects: %s", refs)
+	if len(remaining) != 1 || remaining[0].ID != c.ID {
+		t.Fatalf("remaining cases = %#v, want recaptured case %q", remaining, c.ID)
+	}
+	restored := filepath.Join(t.TempDir(), "restore.git")
+	if err := git.InitBare(ctx, restored); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreCaseObjects(ctx, store.poolDir(c.RepoFingerprint), restored, c.ID); err != nil {
+		t.Fatalf("recaptured case is not restorable: %v", err)
 	}
 }
 

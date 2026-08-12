@@ -70,6 +70,11 @@ CREATE TABLE IF NOT EXISTS pending_case_deletions (
     path TEXT NOT NULL,
     repo_fingerprint TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS replay_case_reservations (
+    session_id TEXT NOT NULL,
+    case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE RESTRICT,
+    PRIMARY KEY (session_id, case_id)
+);
 CREATE TABLE IF NOT EXISTS evaluations (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -196,12 +201,13 @@ func (s *Store) ListCases(set string) ([]Case, error) {
 // Prune bounds the corpus at maxCases by dropping the oldest cases first, and
 // reports how many it removed. A maxCases of 0 or less keeps every case.
 //
-// It never removes a case that already has recorded candidate replays: those
-// evaluations are the result of tokens somebody spent, and a cohort in an eval
-// report pins the exact case IDs it compared, so reclaiming one would silently
-// invalidate a published comparison. When protected cases alone exceed the cap
-// the corpus stays over it rather than deleting that evidence - the cap is a
-// retention target, not a promise to reach a number.
+// It never removes a case reserved by a replay session or one that already has
+// recorded candidate replays: those evaluations are the result of tokens
+// somebody spent, and a cohort in an eval report pins the exact case IDs it
+// compared, so reclaiming one would silently invalidate a published comparison.
+// When protected cases alone exceed the cap the corpus stays over it rather than
+// deleting that evidence - the cap is a retention target, not a promise to
+// reach a number.
 func (s *Store) Prune(ctx context.Context, maxCases int) (int, error) {
 	if s == nil || s.db == nil {
 		return 0, fmt.Errorf("eval registry is closed")
@@ -228,6 +234,7 @@ func (s *Store) Prune(ctx context.Context, maxCases int) (int, error) {
 	}
 	rows, err := s.db.Query(`SELECT c.id, c.path, c.repo_fingerprint FROM cases c
 WHERE NOT EXISTS (SELECT 1 FROM evaluations e WHERE e.case_id = c.id)
+  AND NOT EXISTS (SELECT 1 FROM replay_case_reservations r WHERE r.case_id = c.id)
 ORDER BY c.captured_at, c.id LIMIT ?`, excess)
 	if err != nil {
 		return 0, fmt.Errorf("select prunable eval cases: %w", err)

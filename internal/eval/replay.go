@@ -54,27 +54,12 @@ func Replay(ctx context.Context, store *Store, opts ReplayOptions) (Session, []E
 	if opts.Repeats <= 0 {
 		return Session{}, nil, fmt.Errorf("repeats must be at least 1")
 	}
-	cases, err := store.ListCases(opts.Set)
-	if err != nil {
-		return Session{}, nil, err
-	}
-	if len(cases) == 0 {
-		return Session{}, nil, fmt.Errorf("case set %q is empty", opts.Set)
-	}
 	if _, err := candidateModelArgs(opts.Candidate); err != nil {
 		return Session{}, nil, err
 	}
-	session := Session{ID: newSessionID(), StartedAt: time.Now().UTC(), Set: opts.Set, Candidate: opts.Candidate.String(), Repeats: opts.Repeats}
-	for _, c := range cases {
-		session.CaseIDs = append(session.CaseIDs, c.ID)
-	}
-	session.Cohort = cohortID(session.CaseIDs, session.Repeats)
-	sessionsDir := filepath.Join(store.root, "sessions")
-	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
-		return Session{}, nil, fmt.Errorf("create eval sessions directory: %w", err)
-	}
-	if err := writeJSON(filepath.Join(sessionsDir, session.ID+".json"), session); err != nil {
-		return Session{}, nil, fmt.Errorf("write eval session: %w", err)
+	cases, session, err := store.prepareReplay(ctx, opts)
+	if err != nil {
+		return Session{}, nil, err
 	}
 
 	evaluations := make([]Evaluation, 0, len(cases)*opts.Repeats)
@@ -95,6 +80,51 @@ func Replay(ctx context.Context, store *Store, opts ReplayOptions) (Session, []E
 		return session, evaluations, fmt.Errorf("%d replay invocation(s) failed; inspect eval report for the local failure count", failed)
 	}
 	return session, evaluations, nil
+}
+
+func (s *Store) prepareReplay(ctx context.Context, opts ReplayOptions) ([]Case, Session, error) {
+	unlock, err := lockCorpus(ctx, s.root)
+	if err != nil {
+		return nil, Session{}, err
+	}
+	defer unlock()
+
+	cases, err := s.ListCases(opts.Set)
+	if err != nil {
+		return nil, Session{}, err
+	}
+	if len(cases) == 0 {
+		return nil, Session{}, fmt.Errorf("case set %q is empty", opts.Set)
+	}
+	session := Session{ID: newSessionID(), StartedAt: time.Now().UTC(), Set: opts.Set, Candidate: opts.Candidate.String(), Repeats: opts.Repeats}
+	for _, c := range cases {
+		session.CaseIDs = append(session.CaseIDs, c.ID)
+	}
+	session.Cohort = cohortID(session.CaseIDs, session.Repeats)
+	sessionsDir := filepath.Join(s.root, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		return nil, Session{}, fmt.Errorf("create eval sessions directory: %w", err)
+	}
+	sessionPath := filepath.Join(sessionsDir, session.ID+".json")
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, Session{}, fmt.Errorf("begin eval replay reservation: %w", err)
+	}
+	for _, c := range cases {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO replay_case_reservations (session_id, case_id) VALUES (?, ?)`, session.ID, c.ID); err != nil {
+			_ = tx.Rollback()
+			return nil, Session{}, fmt.Errorf("reserve eval case %q: %w", c.ID, err)
+		}
+	}
+	if err := writeJSON(sessionPath, session); err != nil {
+		_ = tx.Rollback()
+		return nil, Session{}, fmt.Errorf("write eval session: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		_ = os.Remove(sessionPath)
+		return nil, Session{}, fmt.Errorf("commit eval replay reservation: %w", err)
+	}
+	return cases, session, nil
 }
 
 func replayOne(ctx context.Context, store *Store, c Case, session Session, candidate Candidate, repeat int) Evaluation {

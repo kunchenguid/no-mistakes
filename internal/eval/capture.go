@@ -113,6 +113,10 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 	}
 	defer unlock()
 
+	if err := store.cleanupPendingCaseDeletions(ctx); err != nil {
+		return nil, err
+	}
+
 	run, err := database.GetRun(strings.TrimSpace(runID))
 	if err != nil {
 		return nil, fmt.Errorf("read source run: %w", err)
