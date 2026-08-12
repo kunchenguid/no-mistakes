@@ -225,6 +225,13 @@ func TestReplayRestoresCaseIntoAnIsolatedWorktree(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(p.Root(), "shared-home-used")); !os.IsNotExist(err) {
 		t.Fatalf("candidate used production NM_HOME: %v", err)
 	}
+	var reservations int
+	if err := store.db.QueryRow(`SELECT count(*) FROM replay_case_reservations WHERE session_id = ?`, session.ID).Scan(&reservations); err != nil {
+		t.Fatal(err)
+	}
+	if reservations != 0 {
+		t.Fatalf("completed replay retained %d case reservations", reservations)
+	}
 }
 
 func TestBaselineForRoundIncludesOnlyCompleteReviewInvocationMetrics(t *testing.T) {

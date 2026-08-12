@@ -140,6 +140,34 @@ func TestPruneKeepsCasesReservedByAReplaySession(t *testing.T) {
 	if pruned != 0 || len(remaining) != 3 {
 		t.Fatalf("prune removed %d replay-reserved cases, %d remain", pruned, len(remaining))
 	}
+	store.releaseReplayReservation(session.ID)
+}
+
+func TestPruneReleasesAbandonedReplayReservations(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for i, id := range []string{"old", "new"} {
+		seedCase(t, store, id, int64(i))
+	}
+	if _, err := store.db.Exec(`INSERT INTO replay_case_reservations (session_id, case_id, reserved_until) VALUES (?, ?, ?)`, "abandoned", "old", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	pruned, err := store.Prune(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining, err := store.ListCases("all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned != 1 || len(remaining) != 1 || remaining[0].ID != "new" {
+		t.Fatalf("prune removed %d cases and left %#v, want abandoned oldest case removed", pruned, remaining)
+	}
 }
 
 func TestPruneKeepsEveryCaseWhenTheCapIsDisabled(t *testing.T) {
@@ -272,6 +300,29 @@ func TestCaptureReconcilesPendingDeletionBeforeRecapturing(t *testing.T) {
 	}
 	if err := restoreCaseObjects(ctx, store.poolDir(c.RepoFingerprint), restored, c.ID); err != nil {
 		t.Fatalf("recaptured case is not restorable: %v", err)
+	}
+}
+
+func TestDropCaseObjectsRemovesPoolAfterLastCase(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := store.poolDir(cases[0].RepoFingerprint)
+
+	if err := dropCaseObjects(ctx, pool, cases[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(pool); !os.IsNotExist(err) {
+		t.Fatalf("empty object pool survived last case deletion: %v", err)
 	}
 }
 

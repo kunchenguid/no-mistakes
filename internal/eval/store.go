@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -73,6 +74,7 @@ CREATE TABLE IF NOT EXISTS pending_case_deletions (
 CREATE TABLE IF NOT EXISTS replay_case_reservations (
     session_id TEXT NOT NULL,
     case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE RESTRICT,
+    reserved_until INTEGER NOT NULL,
     PRIMARY KEY (session_id, case_id)
 );
 CREATE TABLE IF NOT EXISTS evaluations (
@@ -98,6 +100,15 @@ CREATE INDEX IF NOT EXISTS idx_eval_evaluations_case ON evaluations(case_id, com
 `)
 	if err != nil {
 		return fmt.Errorf("migrate eval registry: %w", err)
+	}
+	var reservationLeaseColumn int
+	if err := s.db.QueryRow(`SELECT count(*) FROM pragma_table_info('replay_case_reservations') WHERE name = 'reserved_until'`).Scan(&reservationLeaseColumn); err != nil {
+		return fmt.Errorf("inspect eval replay reservation schema: %w", err)
+	}
+	if reservationLeaseColumn == 0 {
+		if _, err := s.db.Exec(`ALTER TABLE replay_case_reservations ADD COLUMN reserved_until INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("migrate eval replay reservations: %w", err)
+		}
 	}
 	return nil
 }
@@ -221,6 +232,9 @@ func (s *Store) Prune(ctx context.Context, maxCases int) (int, error) {
 	if err := s.cleanupPendingCaseDeletions(ctx); err != nil {
 		return 0, err
 	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM replay_case_reservations WHERE reserved_until <= ?`, time.Now().Unix()); err != nil {
+		return 0, fmt.Errorf("release abandoned eval replay reservations: %w", err)
+	}
 	if maxCases <= 0 {
 		return 0, nil
 	}
@@ -234,8 +248,8 @@ func (s *Store) Prune(ctx context.Context, maxCases int) (int, error) {
 	}
 	rows, err := s.db.Query(`SELECT c.id, c.path, c.repo_fingerprint FROM cases c
 WHERE NOT EXISTS (SELECT 1 FROM evaluations e WHERE e.case_id = c.id)
-  AND NOT EXISTS (SELECT 1 FROM replay_case_reservations r WHERE r.case_id = c.id)
-ORDER BY c.captured_at, c.id LIMIT ?`, excess)
+  AND NOT EXISTS (SELECT 1 FROM replay_case_reservations r WHERE r.case_id = c.id AND r.reserved_until > ?)
+ORDER BY c.captured_at, c.id LIMIT ?`, time.Now().Unix(), excess)
 	if err != nil {
 		return 0, fmt.Errorf("select prunable eval cases: %w", err)
 	}

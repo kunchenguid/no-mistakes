@@ -124,11 +124,10 @@ func restoreCaseObjects(ctx context.Context, poolPath, gateDir, caseID string) e
 	return nil
 }
 
-// dropCaseObjects releases one case's claim on the pool. Deleting the refs is
-// the whole job: the objects become unreachable and Git's own maintenance
-// reclaims them, while any object another case still pins stays alive. It is
-// best effort by design - a pool that is already gone means the case's objects
-// are gone too, which is exactly the state the caller is trying to reach.
+// dropCaseObjects releases one case's claim on the pool. Deleting the refs
+// makes its objects unreachable while any object another case still pins stays
+// alive. It is best effort by design - a pool that is already gone means the
+// case's objects are gone too, which is exactly the requested state.
 func dropCaseObjects(ctx context.Context, poolPath, caseID string) error {
 	if _, err := os.Stat(poolPath); errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -147,6 +146,16 @@ func dropCaseObjects(ctx context.Context, poolPath, caseID string) error {
 	}
 	if len(failures) > 0 {
 		return fmt.Errorf("release case %q objects: %s", caseID, strings.Join(failures, ", "))
+	}
+	refs, err := git.Run(ctx, poolPath, "for-each-ref", "--format=%(refname)", caseRefNamespace)
+	if err != nil {
+		return fmt.Errorf("inspect remaining eval pool pins: %w", err)
+	}
+	if strings.TrimSpace(refs) == "" {
+		if err := os.RemoveAll(poolPath); err != nil {
+			return fmt.Errorf("remove empty eval object pool: %w", err)
+		}
+		return nil
 	}
 	// --auto respects Git's own maintenance thresholds, so a retention pass
 	// stays cheap: it schedules repacking when the pool has actually grown

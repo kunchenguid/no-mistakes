@@ -43,6 +43,11 @@ type Session struct {
 	Cohort    string    `json:"cohort"`
 }
 
+const (
+	replayReservationLease   = 5 * time.Minute
+	replayReservationRefresh = time.Minute
+)
+
 // Replay runs exactly the captured review pass. It does not start a daemon or
 // use the production NM_HOME: every case is restored into a fresh temp gate and
 // worktree. Push, PR, CI, and all fix loops are intentionally absent from the
@@ -61,12 +66,19 @@ func Replay(ctx context.Context, store *Store, opts ReplayOptions) (Session, []E
 	if err != nil {
 		return Session{}, nil, err
 	}
+	replayCtx, cancelReplay := context.WithCancel(ctx)
+	stopReservation := store.keepReplayReservation(replayCtx, cancelReplay, session.ID)
+	defer func() {
+		cancelReplay()
+		stopReservation()
+		store.releaseReplayReservation(session.ID)
+	}()
 
 	evaluations := make([]Evaluation, 0, len(cases)*opts.Repeats)
 	var failed int
 	for repeat := 1; repeat <= opts.Repeats; repeat++ {
 		for _, c := range cases {
-			evaluation := replayOne(ctx, store, c, session, opts.Candidate, repeat)
+			evaluation := replayOne(replayCtx, store, c, session, opts.Candidate, repeat)
 			if evaluation.Status != "completed" {
 				failed++
 			}
@@ -110,8 +122,9 @@ func (s *Store) prepareReplay(ctx context.Context, opts ReplayOptions) ([]Case, 
 	if err != nil {
 		return nil, Session{}, fmt.Errorf("begin eval replay reservation: %w", err)
 	}
+	reservedUntil := time.Now().Add(replayReservationLease).Unix()
 	for _, c := range cases {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO replay_case_reservations (session_id, case_id) VALUES (?, ?)`, session.ID, c.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO replay_case_reservations (session_id, case_id, reserved_until) VALUES (?, ?, ?)`, session.ID, c.ID, reservedUntil); err != nil {
 			_ = tx.Rollback()
 			return nil, Session{}, fmt.Errorf("reserve eval case %q: %w", c.ID, err)
 		}
@@ -125,6 +138,38 @@ func (s *Store) prepareReplay(ctx context.Context, opts ReplayOptions) ([]Case, 
 		return nil, Session{}, fmt.Errorf("commit eval replay reservation: %w", err)
 	}
 	return cases, session, nil
+}
+
+func (s *Store) keepReplayReservation(ctx context.Context, cancelReplay context.CancelFunc, sessionID string) func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(replayReservationRefresh)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-stop:
+				return
+			case <-ticker.C:
+				reservedUntil := time.Now().Add(replayReservationLease).Unix()
+				if _, err := s.db.ExecContext(ctx, `UPDATE replay_case_reservations SET reserved_until = ? WHERE session_id = ?`, reservedUntil, sessionID); err != nil {
+					cancelReplay()
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+	}
+}
+
+func (s *Store) releaseReplayReservation(sessionID string) {
+	_, _ = s.db.Exec(`DELETE FROM replay_case_reservations WHERE session_id = ?`, sessionID)
 }
 
 func replayOne(ctx context.Context, store *Store, c Case, session Session, candidate Candidate, repeat int) Evaluation {
