@@ -14,8 +14,8 @@ import (
 func newEvalCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "eval",
-		Short: "Capture and locally replay review evaluation cases",
-		Long:  "Capture review passes and compare agent+model candidates using local-only case bundles. Eval never starts or uses the shared daemon.",
+		Short: "Inspect and locally replay review evaluation cases",
+		Long:  "Inspect automatically collected review cases, capture runs on demand, and compare agent+model candidates. Eval never starts or uses the shared daemon.",
 		Args:  cobra.NoArgs,
 	}
 	cmd.AddCommand(newEvalCaptureCmd())
@@ -28,7 +28,7 @@ func newEvalCmd() *cobra.Command {
 func newEvalCaptureCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "capture <run>",
-		Short: "Capture every review pass from a run into local portable cases",
+		Short: "Capture every review pass from a run into local cases",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p, database, err := openResources()
