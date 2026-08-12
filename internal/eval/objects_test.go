@@ -64,6 +64,30 @@ func TestCaptureDoesNotCopyRepositoryHistoryPerCase(t *testing.T) {
 	}
 }
 
+// TestObjectPoolEnablesLongPaths verifies that Git can create the case refs in
+// deep Windows temp directories. Git for Windows otherwise uses the legacy
+// path limit and fails while locking an otherwise valid ref.
+func TestObjectPoolEnablesLongPaths(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	pool := store.poolDir(strings.Repeat("a", 64))
+	if err := initializeObjectPool(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	got, err := git.Run(ctx, pool, "config", "--bool", "core.longpaths")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(got) != "true" {
+		t.Fatalf("core.longpaths = %q, want true", strings.TrimSpace(got))
+	}
+}
+
 // TestPruneBoundsTheCorpusOldestFirstAndKeepsEvaluatedCases pins the retention
 // contract: automatic collection must not grow without bound, and it must never
 // reclaim a case a candidate comparison already depends on.

@@ -66,10 +66,25 @@ func (s *Store) poolDir(repoFingerprint string) string {
 // the commits are named in a throwaway bare clone of the gate - local clones
 // hardlink their objects, so this costs no meaningful disk or time - and the
 // pool fetches them from there by refspec, which is ordinary supported Git.
-func (s *Store) storeCaseObjects(ctx context.Context, gateDir, repoFingerprint, caseID string, refs map[string]string) error {
-	pool := s.poolDir(repoFingerprint)
+func initializeObjectPool(ctx context.Context, pool string) error {
 	if err := git.InitBare(ctx, pool); err != nil {
 		return fmt.Errorf("create eval object pool: %w", err)
+	}
+	// Case refs intentionally carry both the case ID and a descriptive commit
+	// name. In a normal Windows temp or user-data path their lock files can
+	// exceed Git for Windows' legacy MAX_PATH handling even though the
+	// filesystem supports the path. Keep this repository-local so capture does
+	// not depend on or modify the operator's global Git configuration.
+	if _, err := git.Run(ctx, pool, "config", "core.longpaths", "true"); err != nil {
+		return fmt.Errorf("enable long paths in eval object pool: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) storeCaseObjects(ctx context.Context, gateDir, repoFingerprint, caseID string, refs map[string]string) error {
+	pool := s.poolDir(repoFingerprint)
+	if err := initializeObjectPool(ctx, pool); err != nil {
+		return err
 	}
 	// The staging clone goes under the eval root rather than the system temp
 	// directory because both live on the same filesystem as the gate, which is
