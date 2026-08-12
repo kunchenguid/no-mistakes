@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.50.0](https://github.com/kunchenguid/no-mistakes/compare/v1.49.0...v1.50.0) (2026-08-12)
+
+
+### Features
+
+* **eval:** automatically collect an affordable local corpus ([#711](https://github.com/kunchenguid/no-mistakes/issues/711)) ([366dfce](https://github.com/kunchenguid/no-mistakes/commit/366dfce2673dbd4bc566c58ea6c6a4edb37c4576))
+
 ## [1.49.0](https://github.com/kunchenguid/no-mistakes/compare/v1.48.0...v1.49.0) (2026-08-11)
 
 
