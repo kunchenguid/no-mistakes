@@ -1,8 +1,12 @@
-// Package eval implements the opt-in, local-only review evaluation toolkit.
+// Package eval implements the local-only review evaluation toolkit.
 //
-// It deliberately owns a separate registry under <NM_HOME>/eval. The normal
-// pipeline database, daemon, configuration, telemetry, and command output do
-// not observe or depend on this package.
+// It deliberately owns a separate registry under <NM_HOME>/eval, so opening the
+// normal pipeline database never creates an eval table or runs an eval
+// migration, and nothing here emits telemetry or reaches the network.
+//
+// The dependency runs one way: the daemon calls AutoCapture when a run finishes
+// (see RunManager.autoCaptureEvalCase), and this package never calls back into
+// the daemon, alters a gate, or influences a pipeline decision.
 package eval
 
 import (
@@ -13,7 +17,11 @@ import (
 )
 
 const (
-	manifestVersion = 1
+	// manifestVersion is 2 because a case no longer carries its own Git
+	// bundle: its commits live in a shared per-repository object pool (see
+	// Store.poolDir). A version-1 case on disk points at a bundle this code no
+	// longer reads, so it is rejected on load rather than half-restored.
+	manifestVersion = 2
 	labelsVersion   = 1
 )
 
@@ -48,7 +56,10 @@ func ParseCandidate(raw string) (Candidate, error) {
 }
 
 // Manifest pins every input needed to recreate a review pass without storing a
-// remote URL. Case content stays local in the adjacent bundle and config files.
+// remote URL. The commits it names live in this repository's local object pool
+// and the configuration it replays under sits beside it in the case directory.
+// It carries no digest of those objects: Git object names are content hashes,
+// so the pins are their own integrity check.
 type Manifest struct {
 	Version          int    `json:"version"`
 	ID               string `json:"id"`
@@ -69,7 +80,6 @@ type Manifest struct {
 	BuildSHA         string `json:"no_mistakes_build_sha,omitempty"`
 	ChangedFiles     int    `json:"changed_files"`
 	ChangedLines     int    `json:"changed_lines"`
-	BundleSHA256     string `json:"bundle_sha256"`
 }
 
 // Decision records the human gate evidence available for the exported review

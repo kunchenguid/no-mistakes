@@ -41,8 +41,15 @@ func TestCaptureCreatesPortableReviewCaseWithoutRecordingRemoteURL(t *testing.T)
 	if !captured.Labels.Verdict.Known || !captured.Labels.Verdict.ShouldPark {
 		t.Fatalf("verdict label = %#v, want recorded user-fix park label", captured.Labels.Verdict)
 	}
-	if _, err := os.Stat(filepath.Join(captured.Dir, "branch.bundle")); err != nil {
-		t.Fatalf("case bundle missing: %v", err)
+	restored := filepath.Join(t.TempDir(), "restore.git")
+	if err := git.InitBare(ctx, restored); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreCaseObjects(ctx, store.poolDir(captured.RepoFingerprint), restored, captured.ID); err != nil {
+		t.Fatalf("case objects are not restorable: %v", err)
+	}
+	if got := mustGit(t, ctx, restored, "rev-parse", captured.ReviewedHeadSHA+"^{commit}"); got != captured.ReviewedHeadSHA {
+		t.Fatalf("restored reviewed commit = %q, want %q", got, captured.ReviewedHeadSHA)
 	}
 
 	manifestBytes, err := os.ReadFile(filepath.Join(captured.Dir, "manifest.json"))
@@ -417,6 +424,15 @@ func TestParseCandidateRequiresAgentAndModel(t *testing.T) {
 
 func setupCapturedRun(t *testing.T, ctx context.Context) (*paths.Paths, *db.DB, *db.Run, *db.Repo, *db.StepRound) {
 	t.Helper()
+	return setupCapturedRunWithHistory(t, ctx, 0)
+}
+
+// setupCapturedRunWithHistory builds the fixture run. padCommits adds that many
+// commits of incompressible content to the default branch BEFORE the reviewed
+// branch is cut, so the padding is real ancestry of every commit a case pins -
+// which is what makes duplicated history measurable.
+func setupCapturedRunWithHistory(t *testing.T, ctx context.Context, padCommits int) (*paths.Paths, *db.DB, *db.Run, *db.Repo, *db.StepRound) {
+	t.Helper()
 	root := t.TempDir()
 	p := paths.WithRoot(root)
 	if err := p.EnsureDirs(); err != nil {
@@ -444,6 +460,7 @@ func setupCapturedRun(t *testing.T, ctx context.Context) (*paths.Paths, *db.DB, 
 	mustGit(t, ctx, workDir, "add", ".")
 	mustGit(t, ctx, workDir, "commit", "-m", "base")
 	mustGit(t, ctx, workDir, "branch", "-M", "main")
+	padHistory(t, ctx, workDir, padCommits)
 	mustGit(t, ctx, workDir, "push", "origin", "main")
 	baseSHA := mustGit(t, ctx, workDir, "rev-parse", "HEAD")
 	mustGit(t, ctx, workDir, "checkout", "-b", "feature/eval")

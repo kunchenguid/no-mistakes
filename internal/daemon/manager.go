@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/eval"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
@@ -47,6 +48,11 @@ type RunManager struct {
 	steps        StepFactory
 
 	branchLocks sync.Map // repoID+"/"+branch → *sync.Mutex
+
+	// evalCaptureMu serializes automatic eval collection. Concurrent runs
+	// finishing together would otherwise write the same per-repository object
+	// pool and the same registry file at once.
+	evalCaptureMu sync.Mutex
 
 	// subMu guards the subscriber set and the per-run state revisions. It is
 	// a plain Mutex, not an RWMutex, because revision assignment and fan-out
@@ -228,7 +234,7 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
 	cfg.TrustedConfigSHA = trustedSHA
-	if os.Getenv("NO_MISTAKES_EVAL_CAPTURE_PROVENANCE") == "1" {
+	if globalCfg.Eval.CaptureProvenance {
 		if err := cfg.EnableEvalProvenance(globalCfg, effectiveRepoCfg); err != nil {
 			return nil, err
 		}
@@ -871,7 +877,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
 	cfg.TrustedConfigSHA = trustedSHA
-	if os.Getenv("NO_MISTAKES_EVAL_CAPTURE_PROVENANCE") == "1" {
+	if globalCfg.Eval.CaptureProvenance {
 		if err := cfg.EnableEvalProvenance(globalCfg, effectiveRepoCfg); err != nil {
 			m.db.UpdateRunError(run.ID, err.Error())
 			trackStartFailure("eval_provenance")
@@ -1030,9 +1036,67 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			telemetry.Track("run", fields)
 			slog.Info("pipeline completed", "run_id", run.ID)
 		}
+		// Collection runs here, on the finished run, because a case is only
+		// honest once the human gate decision it labels is recorded - which is
+		// exactly what reaching this point means. It is last on purpose: the
+		// pipeline's own outcome is already decided and reported above, so
+		// nothing below can change it.
+		m.autoCaptureEvalCase(runCtx, cfg, run.ID)
 	}()
 
 	return run.ID, nil
+}
+
+// evalAutoCaptureTimeout bounds one automatic collection pass. Collection is
+// local Git and SQLite work whose slowest step is seeding a repository's object
+// pool the first time it is seen, so this is generous rather than tight; the
+// pass also stops early with the run context, which Shutdown cancels.
+const evalAutoCaptureTimeout = 3 * time.Minute
+
+// autoCaptureEvalCase freezes a finished run's review passes into the local
+// eval corpus.
+//
+// Everything here is subordinate to the run: collection can be slow, can fail,
+// can find nothing, and none of that may reach the pipeline. So it swallows its
+// own panic rather than letting the run goroutine's recover mark a completed
+// run as failed, it bounds its own time, and it reports failure only to the
+// log. Runs are serialized against each other because they share one object
+// pool and one registry file; the wait is harmless, since every run holding
+// this lock has already finished its pipeline.
+//
+// A run with nothing to collect is the common case (no review step, a skipped
+// gate, rounds recorded before provenance was on), so that outcome is DEBUG.
+// Only a genuine capture fault is worth a warning.
+func (m *RunManager) autoCaptureEvalCase(ctx context.Context, cfg *config.Config, runID string) {
+	if cfg == nil || !cfg.Eval.AutoCapture || !cfg.Eval.CaptureProvenance {
+		return
+	}
+	// A cancelled or aborted run has nothing worth freezing and every Git call
+	// below would fail on the dead context anyway. Leaving early keeps that
+	// ordinary outcome out of the warning log.
+	if ctx.Err() != nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("panic while collecting eval case", "run_id", runID, "panic", r)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(ctx, evalAutoCaptureTimeout)
+	defer cancel()
+
+	m.evalCaptureMu.Lock()
+	defer m.evalCaptureMu.Unlock()
+
+	result, err := eval.AutoCapture(ctx, m.paths, m.db, runID, cfg.Eval.MaxCases)
+	switch {
+	case err != nil:
+		slog.Warn("failed to collect eval case", "run_id", runID, "error", err)
+	case result.Skipped:
+		slog.Debug("run has no eval case to collect", "run_id", runID, "reason", result.Reason)
+	default:
+		slog.Info("collected eval case", "run_id", runID, "cases", result.Captured, "pruned", result.Pruned)
+	}
 }
 
 // addRunPerformanceSummary attaches the bounded per-run performance rollup

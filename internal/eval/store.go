@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -187,13 +188,79 @@ func (s *Store) ListCases(set string) ([]Case, error) {
 	}
 }
 
+// Prune bounds the corpus at maxCases by dropping the oldest cases first, and
+// reports how many it removed. A maxCases of 0 or less keeps every case.
+//
+// It never removes a case that already has recorded candidate replays: those
+// evaluations are the result of tokens somebody spent, and a cohort in an eval
+// report pins the exact case IDs it compared, so reclaiming one would silently
+// invalidate a published comparison. When protected cases alone exceed the cap
+// the corpus stays over it rather than deleting that evidence - the cap is a
+// retention target, not a promise to reach a number.
+//
+// The registry row goes first and the bytes second: a crash between them leaves
+// inert files, whereas the reverse order leaves a row pointing at a case that
+// no longer loads, which would break every later listing.
+func (s *Store) Prune(ctx context.Context, maxCases int) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("eval registry is closed")
+	}
+	if maxCases <= 0 {
+		return 0, nil
+	}
+	var total int
+	if err := s.db.QueryRow(`SELECT count(*) FROM cases`).Scan(&total); err != nil {
+		return 0, fmt.Errorf("count eval cases: %w", err)
+	}
+	excess := total - maxCases
+	if excess <= 0 {
+		return 0, nil
+	}
+	rows, err := s.db.Query(`SELECT c.id, c.path, c.repo_fingerprint FROM cases c
+WHERE NOT EXISTS (SELECT 1 FROM evaluations e WHERE e.case_id = c.id)
+ORDER BY c.captured_at, c.id LIMIT ?`, excess)
+	if err != nil {
+		return 0, fmt.Errorf("select prunable eval cases: %w", err)
+	}
+	type victim struct{ id, dir, fingerprint string }
+	var victims []victim
+	for rows.Next() {
+		var v victim
+		if err := rows.Scan(&v.id, &v.dir, &v.fingerprint); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan prunable eval case: %w", err)
+		}
+		victims = append(victims, v)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("select prunable eval cases: %w", err)
+	}
+	rows.Close()
+
+	pruned := 0
+	for _, v := range victims {
+		if _, err := s.db.Exec(`DELETE FROM cases WHERE id = ?`, v.id); err != nil {
+			return pruned, fmt.Errorf("drop eval case %q: %w", v.id, err)
+		}
+		if err := os.RemoveAll(v.dir); err != nil {
+			return pruned, fmt.Errorf("remove eval case %q: %w", v.id, err)
+		}
+		if err := dropCaseObjects(ctx, s.poolDir(v.fingerprint), v.id); err != nil {
+			return pruned, err
+		}
+		pruned++
+	}
+	return pruned, nil
+}
+
 func loadCase(dir string) (Case, error) {
 	var manifest Manifest
 	if err := readJSON(filepath.Join(dir, "manifest.json"), &manifest); err != nil {
 		return Case{}, err
 	}
 	if manifest.Version != manifestVersion {
-		return Case{}, fmt.Errorf("unsupported case manifest version %d", manifest.Version)
+		return Case{}, fmt.Errorf("unsupported case manifest version %d (captured by an older no-mistakes whose case format is no longer readable; remove the eval directory to start a fresh corpus, which now refills itself)", manifest.Version)
 	}
 	var labels Labels
 	if err := readJSON(filepath.Join(dir, "labels.json"), &labels); err != nil {

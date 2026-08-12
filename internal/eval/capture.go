@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,7 +18,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
-	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"gopkg.in/yaml.v3"
 )
@@ -92,6 +90,16 @@ type sourceInvocation struct {
 	FailureCategory      string `json:"failure_category,omitempty"`
 }
 
+// ErrNoCapturableReview marks the outcomes where a run simply holds nothing to
+// freeze - no review step, no finished pass, a decision the human has not made
+// yet, or rounds recorded before this machine started keeping replay
+// provenance. These are ordinary states of a healthy pipeline, not failures, so
+// automatic collection can pass over them silently while still surfacing a real
+// capture fault. Every one of them is a deliberate refusal to invent a case:
+// grading a candidate against a half-recorded review pass would be worse than
+// having no case at all.
+var ErrNoCapturableReview = errors.New("run has no capturable review pass")
+
 // Capture exports every persisted review pass from one real run. It reads the
 // production state only; it never starts the daemon, changes a gate, fetches,
 // or sends data anywhere.
@@ -132,14 +140,14 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 		}
 	}
 	if reviewStep == nil {
-		return nil, fmt.Errorf("run %q has no review step to capture", run.ID)
+		return nil, fmt.Errorf("%w: run %q has no review step", ErrNoCapturableReview, run.ID)
 	}
 	reviewRounds, err := database.GetRoundsByStep(reviewStep.ID)
 	if err != nil {
 		return nil, fmt.Errorf("read review rounds: %w", err)
 	}
 	if len(reviewRounds) == 0 {
-		return nil, fmt.Errorf("run %q has no review passes to capture", run.ID)
+		return nil, fmt.Errorf("%w: run %q recorded no review passes", ErrNoCapturableReview, run.ID)
 	}
 
 	gateDir := p.RepoDir(repo.ID)
@@ -156,19 +164,25 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 			// A persisted round with no findings was an interrupted or legacy
 			// partial record, not a replayable review pass. Refuse rather than
 			// silently grade a fabricated clean result.
-			return nil, fmt.Errorf("review round %q has no recorded findings", round.ID)
+			return nil, fmt.Errorf("%w: review round %q has no recorded findings", ErrNoCapturableReview, round.ID)
 		}
 		decision := decisionForRound(round, reviewStep)
 		labels := Labels{Version: labelsVersion, Verdict: verdictFromDecision(round, decision)}
 		if !labels.Verdict.Known && (reviewStep.Status == types.StepStatusAwaitingApproval || reviewStep.Status == types.StepStatusFixReview) {
-			return nil, fmt.Errorf("review round %q has no recorded gate decision", round.ID)
+			return nil, fmt.Errorf("%w: review round %q has no recorded gate decision", ErrNoCapturableReview, round.ID)
 		}
 		reviewedSHA := run.HeadSHA
 		if round.ReviewedHeadSHA != nil && strings.TrimSpace(*round.ReviewedHeadSHA) != "" {
 			reviewedSHA = strings.TrimSpace(*round.ReviewedHeadSHA)
 		}
 		if round.StartingHeadSHA == nil || strings.TrimSpace(*round.StartingHeadSHA) == "" || round.TrustedConfigSHA == nil || strings.TrimSpace(*round.TrustedConfigSHA) == "" || len(round.GlobalConfigYAML) == 0 || len(round.RepoConfigYAML) == 0 {
-			return nil, fmt.Errorf("review round %q predates exact eval configuration provenance", round.ID)
+			// Provenance is a point-in-time snapshot of configuration that no
+			// longer exists anywhere, so this can never be backfilled - only
+			// later runs are capturable. Name the setting rather than the age:
+			// a round recorded seconds ago with capture_provenance off fails
+			// here too, and calling that "old" sends the reader hunting for a
+			// version problem that is not there.
+			return nil, fmt.Errorf("%w: review round %q was recorded without eval configuration provenance (eval.capture_provenance was off, or the run predates the setting); only runs reviewed after it is enabled can be captured", ErrNoCapturableReview, round.ID)
 		}
 		startingSHA := strings.TrimSpace(*round.StartingHeadSHA)
 		trustedSHA := strings.TrimSpace(*round.TrustedConfigSHA)
@@ -304,7 +318,7 @@ func agentNeutralGlobalConfig(data []byte) ([]byte, error) {
 	return out, nil
 }
 
-func writeCase(ctx context.Context, store *Store, gateDir string, c Case, globalConfig, repoConfig []byte, run sourceRun, steps []sourceStep, rounds []sourceRound, invocations []sourceInvocation, selectedRound sourceRound, changedFiles []string) error {
+func writeCase(ctx context.Context, store *Store, gateDir string, c Case, globalConfig, repoConfig []byte, run sourceRun, steps []sourceStep, rounds []sourceRound, invocations []sourceInvocation, selectedRound sourceRound, changedFiles []string) (err error) {
 	tmp, err := os.MkdirTemp(store.cases, ".capture-")
 	if err != nil {
 		return fmt.Errorf("create temporary case: %w", err)
@@ -315,16 +329,22 @@ func writeCase(ctx context.Context, store *Store, gateDir string, c Case, global
 			return err
 		}
 	}
-	bundlePath := filepath.Join(tmp, "branch.bundle")
-	if err := createBundle(ctx, gateDir, bundlePath, c); err != nil {
+	if err := store.storeCaseObjects(ctx, gateDir, c.RepoFingerprint, c.ID, map[string]string{
+		refHead:          c.ReviewedHeadSHA,
+		refSourceHead:    c.HeadSHA,
+		refBase:          c.BaseSHA,
+		refTrustedConfig: c.TrustedConfigSHA,
+	}); err != nil {
 		return err
 	}
-	bundle, err := os.ReadFile(bundlePath)
-	if err != nil {
-		return err
-	}
-	digest := sha256.Sum256(bundle)
-	c.BundleSHA256 = hex.EncodeToString(digest[:])
+	// The case directory is published last, so a failure after this point
+	// would leave pool refs pinning objects no case will ever claim. Release
+	// them rather than growing an unreachable, unreclaimable remainder.
+	defer func() {
+		if err != nil {
+			_ = dropCaseObjects(ctx, store.poolDir(c.RepoFingerprint), c.ID)
+		}
+	}()
 	if err := os.WriteFile(filepath.Join(tmp, "config", "global.yaml"), globalConfig, 0o644); err != nil {
 		return err
 	}
@@ -352,41 +372,6 @@ func writeCase(ctx context.Context, store *Store, gateDir string, c Case, global
 	}
 	if err := os.Rename(tmp, c.Dir); err != nil {
 		return fmt.Errorf("publish captured case: %w", err)
-	}
-	return nil
-}
-
-func createBundle(ctx context.Context, gateDir, bundlePath string, c Case) error {
-	tmp, err := os.MkdirTemp("", "nm-eval-bundle-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(tmp)
-	clone := filepath.Join(tmp, "source.git")
-	cmd := exec.CommandContext(ctx, "git", "clone", "--bare", gateDir, clone)
-	shellenv.ConfigureShellCommand(cmd)
-	if err := shellenv.RunShellCommand(cmd); err != nil {
-		return fmt.Errorf("clone source gate for bundle: %w", err)
-	}
-	prefix := "refs/no-mistakes/eval/" + c.ID + "/"
-	refs := []struct {
-		name string
-		sha  string
-	}{
-		{"head", c.ReviewedHeadSHA},
-		{"source-head", c.HeadSHA},
-		{"base", c.BaseSHA},
-		{"trusted-config", c.TrustedConfigSHA},
-	}
-	bundleRefs := make([]string, 0, len(refs))
-	for _, ref := range refs {
-		if _, err := git.Run(ctx, clone, "update-ref", prefix+ref.name, ref.sha); err != nil {
-			return fmt.Errorf("pin bundle %s: %w", ref.name, err)
-		}
-		bundleRefs = append(bundleRefs, prefix+ref.name)
-	}
-	if _, err := git.Run(ctx, clone, append([]string{"bundle", "create", bundlePath}, bundleRefs...)...); err != nil {
-		return fmt.Errorf("create review bundle: %w", err)
 	}
 	return nil
 }
