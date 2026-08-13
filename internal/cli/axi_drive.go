@@ -61,6 +61,7 @@ func newAxiRunCmd() *cobra.Command {
 	var autoYes bool
 	var skipValue string
 	var intent string
+	var target string
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -73,6 +74,8 @@ func newAxiRunCmd() *cobra.Command {
 			"--intent is required when starting a new run: pass what the user set out\n" +
 			"to accomplish (the goal behind the change, not a description of the diff)\n" +
 			"so no-mistakes uses it directly instead of inferring it from transcripts.\n\n" +
+			"Use --target <branch> when the parent-upstream target branch differs from the\n" +
+			"repository default. The daemon validates and pins that branch before the run.\n\n" +
 			"The calling agent drives AXI approval gates but does not become the pipeline\n" +
 			"agent. The daemon requires a supported native agent binary, the `agent: cursor`\n" +
 			"ACP alias, or an explicit `acp:<target>` through `acpx`, and fails before the\n" +
@@ -82,27 +85,37 @@ func newAxiRunCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			targetSet := cmd.Flags().Changed("target")
+			if targetSet && strings.TrimSpace(target) == "" {
+				return emitError(cmd, 2, "--target must not be empty")
+			}
 			return trackAxiSurface("axi-run", "/axi/run", telemetry.Fields{
 				"auto_yes":   autoYes,
 				"has_intent": strings.TrimSpace(intent) != "",
 				"has_skip":   strings.TrimSpace(skipValue) != "",
+				"has_target": targetSet,
 			}, func() error {
 				skipSteps, err := parseSkipSteps(skipValue)
 				if err != nil {
 					return emitError(cmd, 2, err.Error(),
 						"Valid steps: intent, rebase, review, test, document, lint, push, pr, ci")
 				}
-				return runAxiRun(cmd, autoYes, skipSteps, intent)
+				return runAxiRunForTarget(cmd, autoYes, skipSteps, intent, target, targetSet)
 			})
 		},
 	}
 	cmd.Flags().BoolVarP(&autoYes, "yes", "y", false, "auto-resolve every gate (fix findings, then accept) until a decision point or outcome")
 	cmd.Flags().StringVar(&skipValue, "skip", "", "comma-separated pipeline steps to skip")
 	cmd.Flags().StringVar(&intent, "intent", "", "what the user set out to accomplish (not a description of the diff); used instead of inferring from transcripts (required to start a run)")
+	cmd.Flags().StringVar(&target, "target", "", "parent-upstream branch this run targets (defaults to the repository default branch)")
 	return cmd
 }
 
 func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent string) error {
+	return runAxiRunForTarget(cmd, autoYes, skipSteps, intent, "", false)
+}
+
+func runAxiRunForTarget(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, intent, requestedTarget string, targetSet bool) error {
 	ctx := cmd.Context()
 	env, err := openAxiRunEnv()
 	if err != nil {
@@ -124,7 +137,30 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 		return emitError(cmd, 1, fmt.Sprintf("get current HEAD: %v", err))
 	}
 
-	runID := activeRunID(env, branch, headSHA)
+	effectiveTarget := strings.TrimSpace(requestedTarget)
+	if !targetSet {
+		effectiveTarget = strings.TrimSpace(env.repo.DefaultBranch)
+	}
+	if targetSet {
+		if requestedTarget != effectiveTarget {
+			return emitError(cmd, 2, "invalid --target: surrounding whitespace is not allowed")
+		}
+		if strings.EqualFold(effectiveTarget, "HEAD") {
+			return emitError(cmd, 2, "invalid --target: HEAD is ambiguous")
+		}
+		if checked, checkErr := git.Run(ctx, ".", "check-ref-format", "--branch", effectiveTarget); checkErr != nil || strings.TrimSpace(checked) != effectiveTarget {
+			return emitError(cmd, 2, fmt.Sprintf("invalid --target branch %q", effectiveTarget))
+		}
+	}
+	activeRun := activeRunForHead(env, branch, headSHA)
+	if activeRun != nil && targetSet && activeRun.TargetBranch != effectiveTarget {
+		return emitError(cmd, 1, fmt.Sprintf("active run targets %q, not requested target %q", activeRun.TargetBranch, effectiveTarget),
+			"Finish or abort the active run before starting one with a different target")
+	}
+	runID := ""
+	if activeRun != nil {
+		runID = activeRun.ID
+	}
 	if runID == "" {
 		if err := configErrorForFreshAxiRun(env, runID); err != nil {
 			return emitError(cmd, 1, err.Error(), repoInitHelp(err)...)
@@ -141,11 +177,15 @@ func runAxiRun(cmd *cobra.Command, autoYes bool, skipSteps []types.StepName, int
 		// silent auto-branching/auto-committing. The gate validates committed
 		// history, so a wrong branch or uncommitted work would otherwise be
 		// validated incorrectly or not at all.
-		if guard := preflightGuard(ctx, env, branch); guard != nil {
+		guard := preflightGuardForTarget(ctx, env, branch, effectiveTarget)
+		if !targetSet {
+			guard = preflightGuard(ctx, env, branch)
+		}
+		if guard != nil {
 			return guard(cmd)
 		}
 		var err error
-		runID, err = triggerRun(ctx, env, branch, headSHA, skipSteps, intent)
+		runID, err = triggerRunForTarget(ctx, env, branch, headSHA, skipSteps, intent, requestedTarget, targetSet)
 		if err != nil {
 			if ownershipErr, ok := err.(*branchOwnershipError); ok {
 				return emitBranchOwnershipError(cmd, ownershipErr)
@@ -170,11 +210,19 @@ func configErrorForFreshAxiRun(env *axiEnv, runID string) error {
 
 // activeRunID returns the ID of a non-terminal run for branch and head, or "" if none.
 func activeRunID(env *axiEnv, branch, headSHA string) string {
-	var active ipc.GetActiveRunResult
-	if err := env.client.Call(ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
+	run := activeRunForHead(env, branch, headSHA)
+	if run == nil {
 		return ""
 	}
-	return activeRunIDForHead(&active, headSHA)
+	return run.ID
+}
+
+func activeRunForHead(env *axiEnv, branch, headSHA string) *ipc.RunInfo {
+	var active ipc.GetActiveRunResult
+	if err := env.client.Call(ipc.MethodGetActiveRun, activeRunLookupParams(env.repo.ID, branch), &active); err != nil {
+		return nil
+	}
+	return activeRunInfoForHead(active.Run, headSHA)
 }
 
 func activeRunIDForHead(active *ipc.GetActiveRunResult, headSHA string) string {
@@ -199,12 +247,22 @@ func activeRunInfoForHead(run *ipc.RunInfo, headSHA string) *ipc.RunInfo {
 // preflightGuard returns an emitter for the first unmet pre-flight condition
 // when starting a new run, or nil when the branch is ready to validate. It
 // mirrors the wizard's branch/commit hygiene as detect-and-guide: refuse the
-// default branch, and refuse an uncommitted working tree, each with the
+// selected target branch, and refuse an uncommitted working tree, each with the
 // command the agent should run.
 func preflightGuard(ctx context.Context, env *axiEnv, branch string) func(*cobra.Command) error {
-	if env.repo.DefaultBranch != "" && branch == env.repo.DefaultBranch {
+	if branch == env.repo.DefaultBranch {
 		return func(cmd *cobra.Command) error {
 			return emitError(cmd, 1, fmt.Sprintf("refusing to validate %q: it is the default branch", branch),
+				"Put your changes on a feature branch: `git switch -c <branch>`, then re-run")
+		}
+	}
+	return preflightGuardForTarget(ctx, env, branch, env.repo.DefaultBranch)
+}
+
+func preflightGuardForTarget(ctx context.Context, env *axiEnv, branch, targetBranch string) func(*cobra.Command) error {
+	if strings.TrimSpace(targetBranch) != "" && branch == strings.TrimSpace(targetBranch) {
+		return func(cmd *cobra.Command) error {
+			return emitError(cmd, 1, fmt.Sprintf("refusing to validate %q: it is the target branch", branch),
 				"Put your changes on a feature branch: `git switch -c <branch>`, then re-run")
 		}
 	}
@@ -292,9 +350,16 @@ func freshRunBranchOwnershipState(ctx context.Context, env *axiEnv) *branchsync.
 // no-op (the gate already had this commit). Callers must check for an existing
 // active run first (see activeRunID) and apply pre-flight guards.
 func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent string) (string, error) {
+	return triggerRunForTarget(ctx, env, branch, headSHA, skipSteps, intent, "", false)
+}
+
+func triggerRunForTarget(ctx context.Context, env *axiEnv, branch, headSHA string, skipSteps []types.StepName, intent, target string, targetSet bool) (string, error) {
 	pushOptions := formatSkipPushOptions(skipSteps)
 	if opt := formatIntentPushOption(intent); opt != "" {
 		pushOptions = append(pushOptions, opt)
+	}
+	if targetSet {
+		pushOptions = append(pushOptions, formatTargetPushOption(target))
 	}
 	priorRunIDs, err := runIDsForHead(env.client, env.repo.ID, branch, headSHA)
 	if err != nil {
@@ -325,7 +390,7 @@ func triggerRun(ctx context.Context, env *axiEnv, branch, headSHA string, skipSt
 	// No run appeared: the push was likely up-to-date. Rerun the latest gate
 	// head so `axi run` is still useful when there are no new commits.
 	var rr ipc.RerunResult
-	if err := env.client.Call(ipc.MethodRerun, rerunParams(env.repo.ID, branch, skipSteps, intent), &rr); err != nil {
+	if err := env.client.Call(ipc.MethodRerun, rerunParamsForTarget(env.repo.ID, branch, skipSteps, intent, target), &rr); err != nil {
 		return "", fmt.Errorf("no run started for %q: %v", branch, err)
 	}
 	return rr.RunID, nil
@@ -410,7 +475,11 @@ func activeRunLookupParams(repoID, branch string) *ipc.GetActiveRunParams {
 }
 
 func rerunParams(repoID, branch string, skipSteps []types.StepName, intent string) *ipc.RerunParams {
-	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent}
+	return rerunParamsForTarget(repoID, branch, skipSteps, intent, "")
+}
+
+func rerunParamsForTarget(repoID, branch string, skipSteps []types.StepName, intent, target string) *ipc.RerunParams {
+	return &ipc.RerunParams{RepoID: repoID, Branch: branch, SkipSteps: skipSteps, Intent: intent, Target: target}
 }
 
 // driveRun subscribes to a run and reconciles authoritative state on transition

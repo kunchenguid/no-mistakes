@@ -1993,17 +1993,23 @@ func waitForStepStatus(t *testing.T, h *Harness, branch string, stepName types.S
 
 func assertSupersededRunCancellation(t *testing.T, h *Harness) {
 	t.Helper()
+	const startMarker = ".nm-superseded-test-started"
 	slowCommand := filepath.Join(h.BinDir, "nm-superseded-test-e2e")
 	// Keep the first run deterministically active even when the full e2e suite
-	// is CPU-saturated. Cancellation reaps the process group, so this does not
-	// add wall time on the passing path.
-	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nsleep 120\n"), 0o755); err != nil {
+	// is CPU-saturated. The marker proves this run's child has parsed its sleep
+	// before the shared helper is rewritten; step status alone precedes process
+	// launch. Cancellation reaps the process group, so the sleep adds no wall
+	// time on the passing path.
+	slowScript := "#!/bin/sh\n: > \"$PWD/" + startMarker + "\"; exec sleep 120\n"
+	if err := os.WriteFile(slowCommand, []byte(slowScript), 0o755); err != nil {
 		t.Fatalf("write superseded slow test command: %v", err)
 	}
 	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  test: nm-superseded-test-e2e\n  lint: true\n"
 	h.CommitChange("superseded-run", ".no-mistakes.yaml", config, "configure superseded slow test")
 	h.PushToGate("superseded-run")
 	first := waitForStepStatus(t, h, "superseded-run", types.StepTest, types.StepStatusRunning, 60*time.Second)
+	markerPath := filepath.Join(paths.WithRoot(h.NMHome).WorktreeDir(h.repoID(), first.ID), startMarker)
+	waitForFile(t, h, markerPath, 60*time.Second)
 	if err := os.WriteFile(slowCommand, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatalf("replace superseded test command with fast version: %v", err)
 	}
@@ -2020,6 +2026,21 @@ func assertSupersededRunCancellation(t *testing.T, h *Harness) {
 	if second.Status != types.RunCompleted {
 		t.Fatalf("superseding run did not complete: status=%s error=%v", second.Status, deref(second.Error))
 	}
+}
+
+func waitForFile(t *testing.T, h *Harness, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat process-start marker %s: %v", path, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	h.dumpDebugState()
+	t.Fatalf("process-start marker %s did not appear in %v", path, timeout)
 }
 
 func assertDifferentBranchDoesNotCancelActiveRun(t *testing.T, h *Harness) {

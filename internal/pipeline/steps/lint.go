@@ -20,7 +20,14 @@ func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		return nil, err
 	}
 	ctx := sctx.Ctx
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseSHA, err := resolveRunBranchBaseSHA(ctx, sctx)
+	if err != nil {
+		return nil, err
+	}
+	targetBranch, _, _, err := runTargetIdentity(sctx)
+	if err != nil {
+		return nil, err
+	}
 	lintCmd := sctx.Config.Commands.Lint
 
 	if lintCmd == "" {
@@ -43,6 +50,7 @@ Context:
 - branch: %s
 - base commit: %s
 - target commit: %s
+- target branch: %s
 
 Task:
 - Discover the configured linters and formatters for this repository.
@@ -61,6 +69,7 @@ Rules:
 			sctx.Run.Branch,
 			baseSHA,
 			sctx.Run.HeadSHA,
+			targetBranch,
 			reassessHistory,
 		)
 		if sctx.PreviousFindings != "" {
@@ -119,6 +128,7 @@ Context:
 - branch: %s
 - base commit: %s
 - target commit: %s
+- target branch: %s
 
 Rules:
 - Make the smallest correct root-cause fix.
@@ -131,6 +141,7 @@ Rules:
 			sctx.Run.Branch,
 			baseSHA,
 			sctx.Run.HeadSHA,
+			targetBranch,
 			historySection,
 		)
 		if sctx.PreviousFindings != "" {

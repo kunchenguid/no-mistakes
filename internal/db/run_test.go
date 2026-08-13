@@ -81,6 +81,34 @@ func TestInsertRunWithIntent(t *testing.T) {
 	}
 }
 
+func TestInsertRunWithTargetPersistsImmutableIdentity(t *testing.T) {
+	d := openTestDB(t)
+	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "master")
+
+	run, err := d.InsertRunWithIntentAndTarget(
+		repo.ID,
+		"feature",
+		"abc123",
+		"def456",
+		nil,
+		"test",
+		"0123456789012345678901234567890123456789",
+	)
+	if err != nil {
+		t.Fatalf("insert run with target: %v", err)
+	}
+	got, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if got.TargetBranch != "test" {
+		t.Fatalf("target branch = %q, want test", got.TargetBranch)
+	}
+	if got.TargetSHA != "0123456789012345678901234567890123456789" {
+		t.Fatalf("target SHA = %q, want immutable test SHA", got.TargetSHA)
+	}
+}
+
 func TestRunCIReadinessStoresNoCIDeclaration(t *testing.T) {
 	d := openTestDB(t)
 	repo, _ := d.InsertRepo("/home/user/project", "git@github.com:user/project.git", "main")

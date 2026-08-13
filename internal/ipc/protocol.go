@@ -73,6 +73,7 @@ type PushReceivedParams struct {
 	New       string           `json:"new"`
 	SkipSteps []types.StepName `json:"skip_steps,omitempty"`
 	Intent    string           `json:"intent,omitempty"`
+	Target    string           `json:"target,omitempty"`
 }
 
 // GetRunParams requests a single run by ID.
@@ -128,6 +129,7 @@ type RerunParams struct {
 	PreviousRunID string           `json:"previous_run_id,omitempty"`
 	SkipSteps     []types.StepName `json:"skip_steps,omitempty"`
 	Intent        string           `json:"intent,omitempty"`
+	Target        string           `json:"target,omitempty"`
 }
 
 // SubscribeParams starts an event stream for a run.
@@ -248,6 +250,8 @@ type RunInfo struct {
 	HeadSHA          string          `json:"head_sha"`
 	SubmittedHeadSHA *string         `json:"submitted_head_sha,omitempty"`
 	BaseSHA          string          `json:"base_sha"`
+	TargetBranch     string          `json:"target_branch,omitempty"`
+	TargetSHA        string          `json:"target_sha,omitempty"`
 	Status           types.RunStatus `json:"status"`
 	PRURL            *string         `json:"pr_url,omitempty"`
 	Error            *string         `json:"error,omitempty"`

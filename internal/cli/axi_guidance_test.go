@@ -22,6 +22,7 @@ import (
 // auto-rebases and re-pushes such a PR, so the agent runs no command and never
 // hand-rebases, and `no-mistakes rerun` is only the dead-monitor recovery.
 var canonicalStaleMonitorPhrases = []string{
+	"target branch",
 	"never hand-rebase",
 	"re-pushes",
 	"no-mistakes rerun",
@@ -52,6 +53,8 @@ var canonicalBranchSyncPhrases = []string{
 }
 
 const canonicalPipelineAgentPrerequisite = "a supported native agent binary, the `agent: cursor` ACP alias, or an explicit `acp:<target>` through `acpx`"
+
+var canonicalTargetBranchPhrases = []string{"--target", "repository default", "target branch"}
 
 // TestStaleMonitorGuidance_SyncedAcrossSurfaces guards the repo invariant that
 // agent-driving guidance stays in sync across its three surfaces: the skill
@@ -152,6 +155,21 @@ func TestPipelineAgentPrerequisiteGuidance_SyncedAcrossSurfaces(t *testing.T) {
 		normalized := strings.Join(strings.Fields(content), " ")
 		if !strings.Contains(normalized, canonicalPipelineAgentPrerequisite) {
 			t.Errorf("%s is missing the canonical pipeline-agent prerequisite %q", name, canonicalPipelineAgentPrerequisite)
+		}
+	}
+}
+
+func TestTargetBranchGuidance_SyncedAcrossAgentSurfaces(t *testing.T) {
+	surfaces := map[string]string{
+		"skill body":   skill.Markdown(),
+		"agents guide": readAgentsGuide(t),
+		"axi run help": newAxiRunCmd().Long,
+	}
+	for name, content := range surfaces {
+		for _, phrase := range canonicalTargetBranchPhrases {
+			if !strings.Contains(content, phrase) {
+				t.Errorf("%s is missing target-branch guidance phrase %q", name, phrase)
+			}
 		}
 	}
 }

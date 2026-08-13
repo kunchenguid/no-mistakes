@@ -12,6 +12,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
@@ -95,6 +96,89 @@ func TestResolveBaseSHA_ZeroNoDefaultBranch(t *testing.T) {
 	got := resolveBaseSHA(context.Background(), dir, zeroSHA, "main")
 	if got != git.EmptyTreeSHA {
 		t.Errorf("resolveBaseSHA zero no default = %q, want %q", got, git.EmptyTreeSHA)
+	}
+}
+
+func TestResolveRunBranchBaseSHAExplicitTargetNeverFallsBackToRepoDefault(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "master")
+	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, dir, "add", "base.txt")
+	gitCmd(t, dir, "commit", "-m", "master base")
+	masterSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	gitCmd(t, dir, "checkout", "-b", "test")
+	for i := 0; i < 4; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("test-%d.txt", i))
+		os.WriteFile(path, []byte("test\n"), 0o644)
+		gitCmd(t, dir, "add", path)
+		gitCmd(t, dir, "commit", "-m", fmt.Sprintf("test %d", i))
+	}
+	testSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("only intended change\n"), 0o644)
+	gitCmd(t, dir, "add", "feature.txt")
+	gitCmd(t, dir, "commit", "-m", "feature change")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	sctx := newTestContext(t, &mockAgent{name: "test"}, dir, strings.Repeat("0", 40), headSHA, config.Commands{})
+	sctx.Repo.DefaultBranch = "master"
+	sctx.Run.TargetBranch = "test"
+	sctx.Run.TargetSHA = testSHA
+
+	got, err := resolveRunBranchBaseSHA(context.Background(), sctx)
+	if err != nil {
+		t.Fatalf("resolve explicit target base: %v", err)
+	}
+	if got != testSHA {
+		t.Fatalf("base = %s, want target test SHA %s (master %s)", got, testSHA, masterSHA)
+	}
+	files, err := git.DiffNameOnly(context.Background(), dir, got, headSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := strings.Join(files, ","); diff != "feature.txt" {
+		t.Fatalf("target-scoped diff = %q, want only feature.txt", diff)
+	}
+}
+
+func TestRunTargetIdentityFailsClosedWhenPinnedSHAIsMissing(t *testing.T) {
+	sctx := &pipeline.StepContext{
+		Run:  &db.Run{TargetBranch: "test"},
+		Repo: &db.Repo{DefaultBranch: "master"},
+	}
+	if _, _, _, err := runTargetIdentity(sctx); err == nil {
+		t.Fatal("target branch without immutable SHA fell back instead of failing closed")
+	}
+}
+
+func TestBaseSensitiveHelpersUsePinnedTarget(t *testing.T) {
+	t.Parallel()
+	const targetSHA = "0123456789012345678901234567890123456789"
+	const branchBaseSHA = "ffffffffffffffffffffffffffffffffffffffff"
+	sctx := &pipeline.StepContext{
+		Run:  &db.Run{BaseSHA: branchBaseSHA, TargetBranch: "test", TargetSHA: targetSHA},
+		Repo: &db.Repo{DefaultBranch: "master"},
+	}
+	if got, err := forcePushBaseSHA(sctx); err != nil || got != branchBaseSHA {
+		t.Fatalf("force-push base = %q, %v; want known branch base %s", got, err, branchBaseSHA)
+	}
+	targets := rebaseTargetsForRun("feature", "test", "origin/feature", targetSHA)
+	if got := strings.Join(targets, ","); got != "origin/feature,"+targetSHA {
+		t.Fatalf("rebase targets = %q, want feature then pinned target", got)
+	}
+}
+
+func TestForcePushBaseFailsClosedOnIncompleteRunTarget(t *testing.T) {
+	sctx := &pipeline.StepContext{
+		Run:  &db.Run{BaseSHA: strings.Repeat("f", 40), TargetBranch: "test"},
+		Repo: &db.Repo{DefaultBranch: "master"},
+	}
+	if _, err := forcePushBaseSHA(sctx); err == nil {
+		t.Fatal("force-push safety accepted an incomplete run target")
 	}
 }
 

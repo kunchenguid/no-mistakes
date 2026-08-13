@@ -21,7 +21,14 @@ func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 		return nil, err
 	}
 	ctx := sctx.Ctx
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseSHA, err := resolveRunBranchBaseSHA(ctx, sctx)
+	if err != nil {
+		return nil, err
+	}
+	targetBranch, _, _, err := runTargetIdentity(sctx)
+	if err != nil {
+		return nil, err
+	}
 
 	// In fix mode, ask agent to fix test failures first.
 	//
@@ -47,6 +54,7 @@ Context:
 - branch: %s
 - base commit: %s
 - target commit: %s
+- target branch: %s
 
 Rules:
 - Make the smallest correct root-cause fix.
@@ -64,6 +72,7 @@ Rules:
 			sctx.Run.Branch,
 			baseSHA,
 			sctx.Run.HeadSHA,
+			targetBranch,
 			historySection,
 		)
 		if sctx.PreviousFindings != "" {
@@ -148,6 +157,7 @@ Context:
 - branch: %s
 - base commit: %s
 - target commit: %s
+- target branch: %s
 %s
 
 Task:
@@ -189,6 +199,7 @@ Rules:
 				sctx.Run.Branch,
 				baseSHA,
 				sctx.Run.HeadSHA,
+				targetBranch,
 				configuredTestCommand,
 				evidenceGuidance,
 				reassessHistory,

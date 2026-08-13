@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
@@ -9,6 +10,83 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 )
+
+// runTargetIdentity returns the one branch/SHA pair that owns every
+// base-sensitive phase. Historical runs with neither field retain the former
+// repository-default behavior; a partially populated identity fails closed.
+func runTargetIdentity(sctx *pipeline.StepContext) (branch, sha string, pinned bool, err error) {
+	if sctx == nil || sctx.Run == nil || sctx.Repo == nil {
+		return "", "", false, fmt.Errorf("run target identity is unavailable")
+	}
+	branch = strings.TrimSpace(sctx.Run.TargetBranch)
+	sha = strings.TrimSpace(sctx.Run.TargetSHA)
+	if branch == "" && sha == "" {
+		return strings.TrimSpace(sctx.Repo.DefaultBranch), "", false, nil
+	}
+	if branch == "" || sha == "" {
+		return "", "", false, fmt.Errorf("run target identity is incomplete")
+	}
+	if !isFullGitObjectID(sha) {
+		return "", "", false, fmt.Errorf("run target SHA is malformed")
+	}
+	return branch, sha, true, nil
+}
+
+// resolveRunBranchBaseSHA returns the merge base between the current run head
+// and its immutable target. Only historical rows without target fields use the
+// repository-default fallback.
+func resolveRunBranchBaseSHA(ctx context.Context, sctx *pipeline.StepContext) (string, error) {
+	branch, targetSHA, pinned, err := runTargetIdentity(sctx)
+	if err != nil {
+		return "", err
+	}
+	if !pinned {
+		return resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, branch), nil
+	}
+	mb, err := git.Run(ctx, sctx.WorkDir, "merge-base", "HEAD", targetSHA)
+	if err != nil || strings.TrimSpace(mb) == "" {
+		if err == nil {
+			err = fmt.Errorf("empty merge base")
+		}
+		return "", fmt.Errorf("resolve branch base against target %s@%s: %w", branch, shortSHA(targetSHA), err)
+	}
+	return strings.TrimSpace(mb), nil
+}
+
+func resolveRunTargetTip(ctx context.Context, sctx *pipeline.StepContext) (string, bool, error) {
+	branch, targetSHA, pinned, err := runTargetIdentity(sctx)
+	if err != nil {
+		return "", false, err
+	}
+	if !pinned {
+		sha, resolved := resolveRunDefaultBranchTip(ctx, sctx, sctx.Run.BaseSHA, branch)
+		return sha, resolved, nil
+	}
+	if err := fetchRunUpstreamBranch(ctx, sctx, branch); err != nil {
+		return targetSHA, false, nil
+	}
+	sha, err := git.ResolveRef(ctx, sctx.WorkDir, "refs/remotes/origin/"+branch)
+	if err != nil {
+		return targetSHA, false, nil
+	}
+	return strings.TrimSpace(sha), true, nil
+}
+
+func resolveRunTargetTipSHA(ctx context.Context, sctx *pipeline.StepContext) (string, error) {
+	sha, _, err := resolveRunTargetTip(ctx, sctx)
+	return sha, err
+}
+
+func forcePushBaseSHA(sctx *pipeline.StepContext) (string, error) {
+	_, _, _, err := runTargetIdentity(sctx)
+	if err != nil {
+		return "", err
+	}
+	// BaseSHA is the last feature-branch state the run is authorized to
+	// rewrite. The run target is validated above, but it must not replace this
+	// branch-history safety boundary.
+	return sctx.Run.BaseSHA, nil
+}
 
 // reviewWorkload returns the bounded change size (files + net lines) between
 // base and head for local telemetry, or nil when the diff-stat cannot be

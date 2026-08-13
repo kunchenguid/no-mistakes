@@ -106,6 +106,10 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			target, err := parseTargetPushOptions(pushOptions)
+			if err != nil {
+				return err
+			}
 			gatePath, err := normalizeNotifyGatePath(gate)
 			if err != nil {
 				return err
@@ -130,6 +134,7 @@ func newDaemonNotifyPushCmd() *cobra.Command {
 				New:       newSHA,
 				SkipSteps: skipSteps,
 				Intent:    intent,
+				Target:    target,
 			}, &result)
 		},
 	}
@@ -219,6 +224,33 @@ func parseIntentPushOptions(options []string) (string, error) {
 		intent = string(decoded)
 	}
 	return intent, nil
+}
+
+const targetPushOptionPrefix = "no-mistakes.target="
+
+func formatTargetPushOption(target string) string {
+	if strings.TrimSpace(target) == "" {
+		return ""
+	}
+	return targetPushOptionPrefix + base64.StdEncoding.EncodeToString([]byte(target))
+}
+
+// parseTargetPushOptions extracts the requested parent-upstream target. The
+// last occurrence wins, matching the existing intent push-option contract.
+func parseTargetPushOptions(options []string) (string, error) {
+	target := ""
+	for _, option := range options {
+		encoded, ok := strings.CutPrefix(option, targetPushOptionPrefix)
+		if !ok {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return "", fmt.Errorf("decode target push option: %w", err)
+		}
+		target = string(decoded)
+	}
+	return target, nil
 }
 
 func formatSkipPushOptions(steps []types.StepName) []string {

@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS runs (
     branch               TEXT NOT NULL,
     head_sha                TEXT NOT NULL,
     base_sha                TEXT NOT NULL,
+    target_branch           TEXT,
+    target_sha              TEXT,
     submitted_head_sha      TEXT,
     no_mistakes_version     TEXT,
     no_mistakes_build_sha   TEXT,
@@ -161,6 +163,10 @@ var migrationStatements = []string{
 	`ALTER TABLE runs ADD COLUMN intent_source TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_session_id TEXT`,
 	`ALTER TABLE runs ADD COLUMN intent_score REAL`,
+	// Target identity is nullable only for historical rows. New runs resolve
+	// the selected parent-upstream branch to an immutable commit before launch.
+	`ALTER TABLE runs ADD COLUMN target_branch TEXT`,
+	`ALTER TABLE runs ADD COLUMN target_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN awaiting_agent_since INTEGER`,
 	`ALTER TABLE runs ADD COLUMN parked_ms INTEGER`,
 	// The CI step's per-check rerun budget. It is durable because a run

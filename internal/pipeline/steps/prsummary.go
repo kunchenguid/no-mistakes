@@ -27,8 +27,10 @@ const (
 )
 
 type pipelineAttestation struct {
-	HeadSHA string                    `json:"head_sha"`
-	Steps   []pipelineAttestationStep `json:"steps"`
+	HeadSHA      string                    `json:"head_sha"`
+	TargetBranch string                    `json:"target_branch,omitempty"`
+	TargetSHA    string                    `json:"target_sha,omitempty"`
+	Steps        []pipelineAttestationStep `json:"steps"`
 }
 
 type pipelineAttestationStep struct {
@@ -56,6 +58,12 @@ type testingSummaryOptions struct {
 
 // BuildPipelineSummary produces a deterministic markdown section from step results and rounds.
 func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound, headSHA string) (string, string) {
+	return BuildPipelineSummaryForTarget(steps, rounds, headSHA, "", "")
+}
+
+// BuildPipelineSummaryForTarget adds the run-owned immutable target identity
+// to the machine-readable PR attestation.
+func BuildPipelineSummaryForTarget(steps []*db.StepResult, rounds map[string][]*db.StepRound, headSHA, targetBranch, targetSHA string) (string, string) {
 	if len(steps) == 0 {
 		return "", ""
 	}
@@ -81,7 +89,7 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 	b.WriteString("## Pipeline\n\n")
 	b.WriteString(noMistakesPRSignature)
 	b.WriteString("\n\n")
-	b.WriteString(buildPipelineAttestation(steps, headSHA))
+	b.WriteString(buildPipelineAttestation(steps, headSHA, targetBranch, targetSHA))
 	b.WriteString("\n\n")
 	for i, detail := range detailBlocks {
 		if i > 0 {
@@ -97,10 +105,20 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 // buildPipelineAttestation records the exact step lifecycle snapshot available
 // when no-mistakes writes the PR body. Its compact JSON is deliberately data
 // only: consumers decide their own policy from the step names and statuses.
-func buildPipelineAttestation(steps []*db.StepResult, headSHA string) string {
+func buildPipelineAttestation(steps []*db.StepResult, headSHA string, target ...string) string {
+	targetBranch := ""
+	targetSHA := ""
+	if len(target) > 0 {
+		targetBranch = target[0]
+	}
+	if len(target) > 1 {
+		targetSHA = target[1]
+	}
 	attestation := pipelineAttestation{
-		HeadSHA: headSHA,
-		Steps:   make([]pipelineAttestationStep, 0, len(steps)),
+		HeadSHA:      headSHA,
+		TargetBranch: targetBranch,
+		TargetSHA:    targetSHA,
+		Steps:        make([]pipelineAttestationStep, 0, len(steps)),
 	}
 	for _, sr := range steps {
 		if sr == nil {

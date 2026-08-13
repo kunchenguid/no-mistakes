@@ -59,8 +59,10 @@ machine-readable [TOON](https://toonformat.dev) to stdout and progress to stderr
 
 When the user invokes ` + "`/no-mistakes`" + `, report the outcome at the end. If the user
 asks for something specific, translate that request into the matching ` + "`axi run`" + `
-flags yourself - for example, "skip the lint step" becomes ` + "`--skip=lint`" + `. Run
+flags yourself - for example, "skip the lint step" becomes ` + "`--skip=lint`" + ` and
+"target the test branch" becomes ` + "`--target=test`" + `. Run
 ` + "`no-mistakes axi run --help`" + ` to see the available flags.
+Omit ` + "`--target`" + ` to use the repository default target branch.
 
 ## Two ways to invoke
 
@@ -252,7 +254,7 @@ The CI step deliberately keeps watching the PR after checks pass, so
 blocking on the human merge. Never poll or re-run waiting for the merge yourself.
 Never treat "no CI checks reported" alone as green.
 
-Because that monitor stays live, a PR that falls behind the default branch or
+Because that monitor stays live, a PR that falls behind the target branch or
 hits a merge conflict after checks pass - commonly because another PR merged
 first - needs **no command from you**: never hand-rebase. When the CI monitor
 sees an actual conflict it **rebases onto the base, resolves it, and re-pushes

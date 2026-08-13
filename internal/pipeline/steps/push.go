@@ -21,6 +21,11 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}
+	targetBranch, targetSHA, _, err := runTargetIdentity(sctx)
+	if err != nil {
+		return nil, err
+	}
+	sctx.Log(fmt.Sprintf("verifying push continuity for target %s@%s", targetBranch, shortSHA(targetSHA)))
 	ctx := sctx.Ctx
 	newHeadSHA := ""
 	if err := sctx.DB.SetRunPushActive(sctx.Run.ID, true); err != nil {
@@ -42,7 +47,7 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	// Commit any uncommitted changes from agent fixes. Test evidence is
 	// deliberately not among them: it is collected outside the worktree and
 	// published to the orphan evidence branch (internal/evidence), so no
-	// artifact ever enters the pushed branch or the default branch's history.
+	// artifact ever enters the pushed branch or the target branch's history.
 	status, _ := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
 	if strings.TrimSpace(status) != "" {
 		sctx.Log("committing agent changes...")
@@ -89,7 +94,11 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	// when pushing to a URL (no remote-tracking refs), so the anchor is explicit.
 	lastSeen := lastFetchedBranchTip(ctx, sctx.WorkDir, branch, usingFork)
 	gitRun := func(args ...string) (string, error) { return git.Run(ctx, sctx.WorkDir, args...) }
-	decision, err := resolveForcePushDecision(gitRun, pushURL, ref, headBeingPushed, lastSeen, sctx.Run.BaseSHA)
+	forceBaseSHA, err := forcePushBaseSHA(sctx)
+	if err != nil {
+		return nil, err
+	}
+	decision, err := resolveForcePushDecision(gitRun, pushURL, ref, headBeingPushed, lastSeen, forceBaseSHA)
 	if err != nil {
 		return nil, fmt.Errorf("push to %s: %w", pushTarget, err)
 	}

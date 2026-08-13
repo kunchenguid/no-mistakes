@@ -19,7 +19,7 @@ func TestRunToInfoIncludesImmutableSubmittedHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert repo: %v", err)
 	}
-	run, err := d.InsertRun(repo.ID, "feature", "submitted-head", "base-head")
+	run, err := d.InsertRunWithIntentAndTarget(repo.ID, "feature", "submitted-head", "base-head", nil, "test", "target-head")
 	if err != nil {
 		t.Fatalf("insert run: %v", err)
 	}
@@ -37,6 +37,9 @@ func TestRunToInfoIncludesImmutableSubmittedHead(t *testing.T) {
 	}
 	if info.SubmittedHeadSHA == nil || *info.SubmittedHeadSHA != "submitted-head" {
 		t.Fatalf("submitted head = %v, want submitted-head", info.SubmittedHeadSHA)
+	}
+	if info.TargetBranch != "test" || info.TargetSHA != "target-head" {
+		t.Fatalf("target = %s@%s, want test@target-head", info.TargetBranch, info.TargetSHA)
 	}
 }
 

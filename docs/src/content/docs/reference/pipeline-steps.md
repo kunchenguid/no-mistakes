@@ -22,6 +22,16 @@ They instead require an executable interface or a typed or normalized semantic m
 Reading a file remains valid when that file is itself an owned output or data contract, and deterministic tests may inspect the final emitted agent prompt as a generated interface; model interpretation is reserved for development-only evaluation.
 Review flags every newly added violation and requires same-pattern tests encountered directly in the accepted change's scope to be removed or made semantic, without expanding the change into a repository-wide test cleanup.
 
+## Run target contract
+
+Every new run owns one parent-upstream target identity: a branch name and the immutable commit SHA resolved for that branch before the run is created.
+`no-mistakes axi run --target <branch>` selects a non-default target, while omission selects the repository default and preserves existing behavior.
+The daemon validates the selector as one unambiguous safe branch name, fetches that exact `refs/heads/<branch>` from the registered parent upstream, resolves it to a commit, and rejects a missing, unsafe, ambiguous, or source-equals-explicit-target request before creating a run or invoking Review, Push, or PR activity.
+The resolved branch and SHA are stored on the run and are the only base identity used by Intent, Rebase, empty-diff detection, Review, Test, Document, Lint, force-push safety, PR lookup and creation, CI target-tip monitoring, merge-conflict repair, and automatic rebase.
+Legacy runs created before this contract have neither field and retain repository-default behavior; a run with only one target field fails closed.
+Trusted repository configuration still comes from the freshly fetched repository default branch at its own pinned SHA, because that is a separate security boundary rather than a change-diff base.
+AXI run and status output exposes `target_branch` and the full `target_sha`, step logs name the selected target, and the PR pipeline attestation carries both values so an operator can prove the contract before approval.
+
 ## Intent
 
 Uses explicit intent when a run provides it, including exact explicit intent inherited by a rerun, otherwise infers the author's intent from recent local Claude Code, Codex, OpenCode, Rovo Dev, Pi, or GitHub Copilot CLI transcripts.
@@ -41,20 +51,20 @@ It can fail the run only if cleanup fails after the disambiguation agent leaves 
 
 ## Rebase
 
-Fetches the latest authoritative remote state, fetches the configured pushed-branch target, and rebases your branch onto those refs.
+Uses the run-owned parent-upstream target and the configured pushed-branch target to rebase your branch onto the exact intended refs.
 
 **Behavior:**
-- Fetches `origin/<default_branch>` from the remote into the worktree, and also fetches the pushed branch for non-default branches unless the push rewrote branch history
+- Verifies and rebases onto the immutable target SHA resolved before the run was created, rather than re-reading the mutable repository default
 - Without fork routing, the pushed-branch target is `origin/<branch>`
 - With GitHub fork routing, the pushed-branch target is the fork branch fetched into `refs/remotes/no-mistakes-push/<branch>`
-- If the branch is not the default branch, tries rebasing onto the pushed-branch target first, then `origin/<default_branch>`
+- If the branch is not the target branch, tries rebasing onto the pushed-branch target first, then the immutable run target
 - If the push rewrote branch history, skips the pushed-branch rebase target so prior remote autofix commits do not get reintroduced
-- If the push rewrote the default branch and `origin/<default_branch>` advanced after that rewrite, pauses for manual approval before updating the branch
-- If the branch carries commits from the contributor's local default branch that are not on `origin/<default_branch>`, pauses with an `ask-user` finding instead of silently bundling that local work into the PR
-- The local-default check is best-effort and only fires when the local default tip is ahead of `origin/<default_branch>` and is an ancestor of the branch `HEAD`
+- If the push rewrote the target branch and the upstream target advanced after that rewrite, pauses for manual approval before updating the branch
+- If the branch carries commits from the contributor's local target branch that are not on the pinned upstream target, pauses with an `ask-user` finding instead of silently bundling that local work into the PR
+- The local-target check is best-effort and only fires when the local target tip is ahead of the pinned upstream target and is an ancestor of the branch `HEAD`
 - Skips targets that don't exist or are already ancestors
 - If a fast-forward is possible, does a hard-reset instead of a rebase
-- If the diff against the default branch is empty after rebase, completes rebase and skips all remaining pipeline steps
+- If the diff against the run target is empty after rebase, completes rebase and skips all remaining pipeline steps
 - On conflict: records conflicting files, aborts the rebase, and reports findings
 
 **Auto-fix:** when enabled, the agent resolves conflict markers, stages files, and runs `git rebase --continue` in a non-interactive Git environment so Git accepts the existing commit message instead of opening an editor. The prompt includes user intent when available. Manual fix rounds also include any per-conflict user notes, any selected user-authored findings from the TUI or AXI interface, and sanitized prior-round history in the prompt. The Rebase step does not synthesize a fix commit subject; `git rebase --continue` preserves the rebased commits' subjects.
@@ -186,7 +196,7 @@ This step never requires approval - it runs automatically after review, test, do
 Creates or updates a pull request.
 
 **Skipped when:**
-- The branch is the default branch
+- The branch is the run target branch
 - The upstream host is not GitHub, GitLab, Bitbucket Cloud (`bitbucket.org`), or Azure DevOps (`dev.azure.com` / `*.visualstudio.com`)
 - The provider CLI (`gh` or `glab`) is not installed for GitHub or GitLab
 - The provider CLI is not authenticated for GitHub or GitLab
@@ -217,18 +227,24 @@ Stores the PR URL in the database and streams it to the TUI.
 Immediately after the existing `Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)` signature, no-mistakes writes one stable HTML comment:
 
 ```html
-<!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"0123456789abcdef0123456789abcdef01234567","steps":[{"step":"review","status":"completed"}]} -->
+<!-- no-mistakes-pipeline-attestation:v1 {"head_sha":"0123456789abcdef0123456789abcdef01234567","target_branch":"test","target_sha":"89abcdef0123456789abcdef0123456789abcdef","steps":[{"step":"review","status":"completed"}]} -->
 ```
 
-The `v1` payload is compact JSON with these required fields:
+The `v1` payload is compact JSON with these fields:
 
 - `head_sha`: the exact git commit SHA recorded for the run when no-mistakes writes the PR body
+- `target_branch`: the parent-upstream branch selected for the run
+- `target_sha`: the immutable target commit resolved before the run began
 - `steps`: the ordered pipeline step snapshot; every item has exactly the fields below
 
 - `step`: the raw pipeline step name, such as `intent`, `rebase`, `review`, `test`, `document`, `lint`, `push`, `pr`, or `ci`
 - `status`: the raw [step status](#step-statuses) recorded for that step, such as `completed`, `skipped`, or `failed`
 
-Items are ordered by the fixed pipeline order and represent the exact database snapshot when no-mistakes creates or updates the PR body. The attestation includes `pr` and `ci` records even though their human-readable details are not shown in `## Pipeline`; at the normal PR write point those records are commonly `running` and `pending`. The `head_sha` binds that snapshot to the commit it describes, so consumers can detect when a later push has made the comment stale. It is not refreshed after the PR step unless no-mistakes writes the body again.
+Items are ordered by the fixed pipeline order and represent the exact database snapshot when no-mistakes creates or updates the PR body.
+The attestation includes `pr` and `ci` records even though their human-readable details are not shown in `## Pipeline`; at the normal PR write point those records are commonly `running` and `pending`.
+The `head_sha` binds that snapshot to the commit it describes, while `target_branch` and `target_sha` prove the base contract used to produce it.
+Historical runs created before target identity was stored omit the two target fields.
+The attestation is not refreshed after the PR step unless no-mistakes writes the body again.
 
 The comment is intentionally data only. It does not declare any step required, passed for a policy, compliant, or mergeable. Consumers can parse the versioned JSON without scraping prose and apply their own policy. The comment stays with the Pipeline header when no-mistakes truncates older human-readable update details to fit a PR-body limit.
 
@@ -250,7 +266,7 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 - On GitHub, GitLab, and Azure DevOps, polls provider mergeability alongside CI checks while the PR remains open
 - While the PR stays open, the TUI and terminal title show `Checks passed` once CI readiness is established and known mergeability is clear, and `no-mistakes axi` returns `outcome: checks-passed` with successful-output reporting instructions so agents can summarize the run, ask the user to review and merge, and list any pipeline fixes instead of waiting
 - An empty forge check list is never treated as green unless the trusted default-branch config declares [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci). That declaration is positive durable evidence the repository intentionally has no CI; absence means CI is expected and delayed registration stays not-ready. If checks still appear on a declared no-CI repo, their actual states are honored
-- If the default branch moves after `checks-passed`, keeps watching the same PR; a clean behind PR needs no action, while an actual GitHub, GitLab, or Azure DevOps merge conflict is auto-fixed by rebasing onto the base and re-pushing through the force-push safety guard
+- If the target branch moves after `checks-passed`, keeps watching the same PR; a clean behind PR needs no action, while an actual GitHub, GitLab, or Azure DevOps merge conflict is auto-fixed by rebasing onto the latest target tip and re-pushing through the force-push safety guard
 - The ready signal clears if checks start running again, new failures appear, provider state becomes uncertain, or the PR is merged, closed, or declined
 - If CI failures or, on GitHub, GitLab, or Azure DevOps, a merge conflict are already known while other checks are still pending: waits for all checks to finish before attempting an auto-fix
 - Once every check has finished, classifies each terminally failed check by the provider's own reported outcome before anything escalates; [`ci.rerun_transient`](/no-mistakes/reference/repo-config/#cirerun_transient) owns which outcomes count as the provider reporting itself
@@ -260,7 +276,7 @@ Monitors PR health after creation and auto-fixes CI failures. Mergeability polli
 - Keeps waiting, rather than pausing, while any check can still finish on its own, so a cancellation observed alongside a running check is decided only once the rollup has stopped moving
 - Never re-runs checks across a head change: if the published branch head no longer equals the commit the run delivered, the step clears any ready-to-merge signal and pauses for user approval with the expected and observed commits, because re-running checks would certify a revision this run never produced
 - On CI failure: fetches failed job logs (GitHub via `gh run view --log-failed`, GitLab via `glab ci trace`, Bitbucket Cloud via failed pipeline step logs; Azure DevOps has no first-class build-log command, so the agent fixes from the failing-check list without logs), sends them to the agent with user intent when available, and, if the agent produces changes, commits them and uses the same force-push safety guard as the push step
-- On GitHub, GitLab, or Azure DevOps merge conflict: asks the agent to rebase onto the latest default-branch tip and make the smallest correct root-cause fix for the conflicts, using user intent when available
+- On GitHub, GitLab, or Azure DevOps merge conflict: asks the agent to rebase onto the latest run-target tip and make the smallest correct root-cause fix for the conflicts, using user intent when available
 - If both CI failures and a GitHub, GitLab, or Azure DevOps merge conflict are present: fixes both in the same attempt
 - If a fix attempt produces no changes: automatic mode leaves the failure undeduplicated so it can retry until the auto-fix limit, while manual fix mode returns immediately for manual intervention
 - Deduplicates fix attempts only after a fix is actually committed and pushed

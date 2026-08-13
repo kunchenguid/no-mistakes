@@ -84,10 +84,12 @@ func TestTruncateDisclosesTotal(t *testing.T) {
 
 func TestWriteRunObjectShape(t *testing.T) {
 	rv := runView{
-		ID:      "run-1",
-		Branch:  "feature/x",
-		Status:  string(types.RunRunning),
-		HeadSHA: "abcdef1234567890",
+		ID:           "run-1",
+		Branch:       "feature/x",
+		Status:       string(types.RunRunning),
+		HeadSHA:      "abcdef1234567890",
+		TargetBranch: "test",
+		TargetSHA:    "0123456789012345678901234567890123456789",
 		Steps: []stepView{
 			{Name: "review", Status: "completed", DurationMS: 1200, FindingsJSON: findingsJSON(t, []types.Finding{{ID: "r1", Action: types.ActionNoOp, Description: "ok"}}, "s")},
 			{Name: "test", Status: "awaiting_approval"},
@@ -101,6 +103,8 @@ func TestWriteRunObjectShape(t *testing.T) {
 		"  branch: feature/x\n",
 		"  status: running\n",
 		"  head: abcdef12\n",
+		"  target_branch: test\n",
+		"  target_sha: \"0123456789012345678901234567890123456789\"\n",
 		"  findings: 1 info\n",
 		"  steps[2]{step,status,findings,duration_ms}:\n",
 		"    review,completed,1,1200\n",
@@ -108,6 +112,18 @@ func TestWriteRunObjectShape(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("run object missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunViewsPreserveTargetIdentity(t *testing.T) {
+	t.Parallel()
+	const targetSHA = "0123456789012345678901234567890123456789"
+	fromIPC := runViewFromIPC(&ipc.RunInfo{TargetBranch: "test", TargetSHA: targetSHA})
+	fromDB := runViewFromDB(&db.Run{TargetBranch: "test", TargetSHA: targetSHA}, nil)
+	for name, view := range map[string]runView{"ipc": fromIPC, "db": fromDB} {
+		if view.TargetBranch != "test" || view.TargetSHA != targetSHA {
+			t.Fatalf("%s view target = %s@%s, want test@%s", name, view.TargetBranch, view.TargetSHA, targetSHA)
 		}
 	}
 }
@@ -502,6 +518,31 @@ func TestRerunParamsIncludeSkipSteps(t *testing.T) {
 	}
 	if len(params.SkipSteps) != 1 || params.SkipSteps[0] != types.StepReview {
 		t.Fatalf("SkipSteps = %#v, want review", params.SkipSteps)
+	}
+}
+
+func TestRerunParamsIncludeExplicitTarget(t *testing.T) {
+	params := rerunParamsForTarget("repo-1", "feature/x", nil, "user goal", "test")
+	if params.Target != "test" {
+		t.Fatalf("Target = %q, want test", params.Target)
+	}
+}
+
+func TestAxiRunExposesSingleTargetBranchFlag(t *testing.T) {
+	cmd := newAxiRunCmd()
+	flag := cmd.Flags().Lookup("target")
+	if flag == nil {
+		t.Fatal("axi run is missing --target")
+	}
+	if flag.DefValue != "" {
+		t.Fatalf("--target default = %q, want omitted", flag.DefValue)
+	}
+}
+
+func TestPreflightGuardRejectsValidatingTargetBranchItself(t *testing.T) {
+	guard := preflightGuardForTarget(context.Background(), &axiEnv{repo: &db.Repo{DefaultBranch: "master"}}, "test", "test")
+	if guard == nil {
+		t.Fatal("expected source-equals-target refusal")
 	}
 }
 
