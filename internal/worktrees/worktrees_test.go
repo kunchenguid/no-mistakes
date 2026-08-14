@@ -110,11 +110,13 @@ func TestLayout_RecordedDirDerivesWhenNothingWasRecorded(t *testing.T) {
 	}
 }
 
-// Validate is the layer internal/config cannot be: a root inside the directory
-// no-mistakes places its own run worktrees in is indistinguishable from that
-// placement's per-repository directories, so it is refused outright instead of
-// walked, swept, and removed by the default placement's rules.
-func TestLayout_ValidateRefusesRootInsideTheDaemonsOwnWorktreesDirectory(t *testing.T) {
+// Validate is the layer internal/config cannot be: it knows where NM_HOME is,
+// and every placement inside it collides with the daemon's own state. Under
+// worktrees a run worktree is indistinguishable from the per-repository
+// directories the default placement owns and sweeps; under logs a run's
+// worktree IS its log directory (paths.RunLogDir), so removing the worktree
+// would destroy the logs of the run that just finished.
+func TestLayout_ValidateRefusesRootInsideAppState(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
 	checkout := filepath.Join(t.TempDir(), "src", "repo1")
 
@@ -122,6 +124,9 @@ func TestLayout_ValidateRefusesRootInsideTheDaemonsOwnWorktreesDirectory(t *test
 		"the worktrees directory itself": p.WorktreesDir(),
 		"a directory inside it":          filepath.Join(p.WorktreesDir(), "my-runs"),
 		"a per-repository directory":     filepath.Join(p.WorktreesDir(), "repo1"),
+		"the run log directory":          p.LogsDir(),
+		"the gates directory":            p.ReposDir(),
+		"NM_HOME itself":                 p.Root(),
 	} {
 		err := worktrees.New(p, map[string]string{checkout: root}).Validate()
 		if err == nil {
@@ -131,6 +136,35 @@ func TestLayout_ValidateRefusesRootInsideTheDaemonsOwnWorktreesDirectory(t *test
 		if !strings.Contains(err.Error(), root) || !strings.Contains(err.Error(), "worktree_roots") {
 			t.Errorf("%s: refusal %q names neither the setting nor the root", name, err)
 		}
+	}
+}
+
+// A root inside the checkout whose runs it holds is refused for a different
+// reason: the run worktree is then an untracked directory in that checkout, so
+// the checkout is dirty for as long as a run executes and guarded branch
+// synchronization refuses to move it. `init --worktree-root` already refuses
+// this; a hand-written config entry reaches the same rule here.
+func TestLayout_ValidateRefusesRootInsideItsCheckout(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	checkout := filepath.Join(t.TempDir(), "src", "repo1")
+
+	for _, root := range []string{
+		filepath.Join(checkout, "runs"),
+		filepath.Join(checkout, ".no-mistakes", "runs"),
+	} {
+		err := worktrees.New(p, map[string]string{checkout: root}).Validate()
+		if err == nil {
+			t.Errorf("root %q inside its own checkout was accepted; want a refusal", root)
+			continue
+		}
+		if !strings.Contains(err.Error(), root) || !strings.Contains(err.Error(), "worktree_roots") {
+			t.Errorf("refusal %q names neither the setting nor the root", err)
+		}
+	}
+	// A sibling of the checkout is the normal case and must stay accepted.
+	sibling := filepath.Join(filepath.Dir(checkout), "repo1-runs")
+	if err := worktrees.New(p, map[string]string{checkout: sibling}).Validate(); err != nil {
+		t.Errorf("root next to the checkout rejected: %v", err)
 	}
 }
 

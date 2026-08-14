@@ -64,7 +64,7 @@ func TestSweepOrphanRunProcessesReapsFinishedRunAndSparesActiveOne(t *testing.T)
 	activePID := startOrphanInWorktree(t, p.WorktreeDir(repo.ID, activeRun.ID))
 	leakedPID := startOrphanInWorktree(t, p.WorktreeDir(repo.ID, finishedRun.ID))
 
-	sweepOrphanRunProcesses(d, p, recordedWorktreesOutsideDefaultRoot(d, p))
+	sweepOrphanRunProcesses(d, p, sweepableWorktrees(leftoverRecordedRunWorktrees(d, p), activeRecordedRunWorktrees(d, p)))
 
 	if !pidGoneWithin(leakedPID, 10*time.Second) {
 		t.Fatalf("orphan %d in the finished run's worktree survived the startup sweep", leakedPID)
@@ -133,7 +133,7 @@ func TestSweepOrphanRunProcessesReachesRecordedWorktreeAndSparesUnclaimedOnes(t 
 	operatorPID := startOrphanInWorktree(t, filepath.Join(abandonedRoot, "scratch-checkout"))
 	unclaimedPID := startOrphanInWorktree(t, filepath.Join(abandonedRoot, "01JZ8XQ7V6K9M3B0T5N2R4C8YD"))
 
-	sweepOrphanRunProcesses(d, p, recordedWorktreesOutsideDefaultRoot(d, p))
+	sweepOrphanRunProcesses(d, p, sweepableWorktrees(leftoverRecordedRunWorktrees(d, p), activeRecordedRunWorktrees(d, p)))
 
 	if !pidGoneWithin(leakedPID, 10*time.Second) {
 		t.Fatalf("orphan %d in a recorded worktree the config no longer names survived the startup sweep", leakedPID)

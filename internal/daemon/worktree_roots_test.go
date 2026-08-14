@@ -181,7 +181,7 @@ func TestCleanupOrphanWorktrees_ConfiguredRootRemovesOnlyRunDirectories(t *testi
 		t.Fatal(err)
 	}
 
-	cleanupOrphanWorktrees(d, p, recordedWorktreesOutsideDefaultRoot(d, p))
+	cleanupOrphanWorktrees(d, p, leftoverRecordedRunWorktrees(d, p))
 
 	if _, err := os.Stat(terminalWT); !os.IsNotExist(err) {
 		t.Fatalf("terminal run worktree should have been cleaned up, stat err: %v", err)
@@ -227,7 +227,7 @@ func TestCleanupOrphanWorktrees_UnconfiguredRepoUsesDefaultRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanupOrphanWorktrees(d, p, recordedWorktreesOutsideDefaultRoot(d, p))
+	cleanupOrphanWorktrees(d, p, leftoverRecordedRunWorktrees(d, p))
 
 	if _, err := os.Stat(terminalWT); !os.IsNotExist(err) {
 		t.Fatalf("default-root worktree should have been cleaned up, stat err: %v", err)
@@ -373,7 +373,7 @@ func TestCleanupOrphanWorktrees_OperatorRootRemovesOnlyWhatARunRecorded(t *testi
 		}
 	}
 
-	cleanupOrphanWorktrees(d, p, recordedWorktreesOutsideDefaultRoot(d, p))
+	cleanupOrphanWorktrees(d, p, leftoverRecordedRunWorktrees(d, p))
 
 	for _, gone := range []string{ownWT, otherWT} {
 		if _, err := os.Stat(gone); !os.IsNotExist(err) {
@@ -384,6 +384,94 @@ func TestCleanupOrphanWorktrees_OperatorRootRemovesOnlyWhatARunRecorded(t *testi
 		if _, err := os.Stat(keep); err != nil {
 			t.Errorf("cleanup removed %q, which no run record names: %v", keep, err)
 		}
+	}
+}
+
+// TestStartupSweepSetIsBoundedByThePresentNotByRunHistory pins what the startup
+// process sweep may carry outside the default tree. Every entry costs a path
+// matcher tested against every candidate process, and run rows are never pruned,
+// so a set built from the whole recorded history would make each restart of a
+// long-lived install slower than the last. Two things must hold at once: a
+// finished run whose worktree is already gone contributes nothing, and a run
+// that was still executing when the daemon started contributes even though its
+// directory is gone - that is the leaked-process case the sweep exists for, and
+// nothing else can name that directory.
+func TestStartupSweepSetIsBoundedByThePresentNotByRunHistory(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	repo, err := d.InsertRepoWithID("repo1", filepath.Join(t.TempDir(), "checkout"), "https://example.com/owner/repo1", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "repo-runs")
+
+	// History: a finished run whose worktree was removed at run end.
+	history, err := d.InsertRun(repo.ID, "old", "headsha", "basesha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	historyWT := filepath.Join(root, history.ID)
+	if err := d.SetRunWorktreeDir(history.ID, historyWT); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(history.ID, types.RunCompleted); err != nil {
+		t.Fatal(err)
+	}
+
+	// A leftover: finished, but its directory is still there.
+	leftoverRun, err := d.InsertRun(repo.ID, "leftover", "headsha", "basesha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leftoverWT := filepath.Join(root, leftoverRun.ID)
+	if err := os.MkdirAll(leftoverWT, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunWorktreeDir(leftoverRun.ID, leftoverWT); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(leftoverRun.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	// Executing when the daemon started, and its worktree is already gone.
+	crashed, err := d.InsertRun(repo.ID, "crashed", "headsha", "basesha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashedWT := filepath.Join(root, crashed.ID)
+	if err := d.SetRunWorktreeDir(crashed.ID, crashedWT); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(crashed.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	sweepSet := sweepableWorktrees(leftoverRecordedRunWorktrees(d, p), activeRecordedRunWorktrees(d, p))
+
+	carried := make(map[string]string, len(sweepSet))
+	for _, wt := range sweepSet {
+		if previous, dup := carried[wt.Dir]; dup {
+			t.Errorf("worktree %q carried twice (runs %q and %q)", wt.Dir, previous, wt.RunID)
+		}
+		carried[wt.Dir] = wt.RunID
+	}
+	if carried[leftoverWT] != leftoverRun.ID {
+		t.Errorf("leftover worktree %q missing from the sweep set: %v", leftoverWT, carried)
+	}
+	if carried[crashedWT] != crashed.ID {
+		t.Errorf("worktree of a run that was executing at startup missing from the sweep set: %v", carried)
+	}
+	if _, present := carried[historyWT]; present {
+		t.Errorf("a finished run whose worktree is gone is still carried: %v", carried)
 	}
 }
 
@@ -425,7 +513,7 @@ func TestCleanupOrphanWorktrees_ReachesARootTheConfigNoLongerNames(t *testing.T)
 		t.Fatal(err)
 	}
 
-	cleanupOrphanWorktrees(d, p, recordedWorktreesOutsideDefaultRoot(d, p))
+	cleanupOrphanWorktrees(d, p, leftoverRecordedRunWorktrees(d, p))
 
 	if _, err := os.Stat(recordedWT); !os.IsNotExist(err) {
 		t.Fatalf("recorded worktree in a root the config no longer names survived cleanup, stat err: %v", err)

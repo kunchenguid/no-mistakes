@@ -47,6 +47,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 const (
@@ -238,16 +240,24 @@ func protectedPIDs(byPID map[int]Process) map[int]bool {
 }
 
 // pathPrefixes returns the comparable forms of dir: the cleaned path and, when
-// it differs, its symlink-resolved form. macOS reports /private/var for a
-// /var path, so a single spelling is not enough to recognise our own tree.
+// it differs, its canonical form. macOS reports /private/var for a /var path,
+// so a single spelling is not enough to recognise our own tree.
+//
+// The canonical form resolves symlinks through the deepest ancestor that still
+// exists (see worktrees.Canonical), which matters because the directory named
+// here is often gone: a run worktree is removed at run end while a process that
+// escaped its process group keeps standing in it, and that deleted cwd is the
+// whole reason this package exists. Resolving only paths that still exist would
+// leave such a process unreachable whenever any component of its path is a
+// symlink - which on macOS includes anything under /tmp.
 func pathPrefixes(dir string) []string {
 	if strings.TrimSpace(dir) == "" {
 		return nil
 	}
 	cleaned := filepath.Clean(dir)
 	out := []string{cleaned}
-	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil && resolved != cleaned {
-		out = append(out, resolved)
+	if canonical := worktrees.Canonical(cleaned); canonical != cleaned {
+		out = append(out, canonical)
 	}
 	return out
 }

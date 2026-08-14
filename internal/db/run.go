@@ -138,12 +138,11 @@ func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent
 	return r, nil
 }
 
-// RunWorktree is one run's recorded worktree placement, with just enough of the
-// run to decide whether that directory may be swept or removed.
+// RunWorktree is one run's recorded worktree placement, identified by the run
+// and repository that own it.
 type RunWorktree struct {
 	RunID  string
 	RepoID string
-	Status types.RunStatus
 	Dir    string
 }
 
@@ -162,12 +161,37 @@ type RunWorktree struct {
 // Rows with no recorded placement are deliberately excluded. A run predating
 // the column also predates worktree_roots, so its worktree can only be in the
 // default tree, which is walked directly.
+//
+// Run rows are never pruned, so this grows with the history of a repository
+// that uses worktree_roots. Callers therefore bound what they do with it -
+// see ActiveRunWorktreesOutside for the bounded set, and the daemon's startup
+// recovery for how the two are used.
 func (d *DB) RunWorktreesOutside(prefix string) ([]RunWorktree, error) {
+	return d.runWorktreesOutside(prefix, "")
+}
+
+// ActiveRunWorktreesOutside is RunWorktreesOutside restricted to runs that are
+// still pending or running.
+//
+// It is the bounded set: it holds a handful of rows at any time, where the full
+// set grows with a repository's whole history. That matters where the cost is
+// per row rather than per directory on disk - the startup process sweep turns
+// every entry into a path matcher tested against every candidate process - and
+// it is the right restriction there, because a worktree that is gone while
+// something is still standing in it belongs to a run that was executing when
+// this daemon started. Read it BEFORE crash recovery settles run statuses,
+// which turns exactly those runs terminal.
+func (d *DB) ActiveRunWorktreesOutside(prefix string) ([]RunWorktree, error) {
+	return d.runWorktreesOutside(prefix, ` AND status IN ('pending', 'running')`)
+}
+
+func (d *DB) runWorktreesOutside(prefix, statusClause string) ([]RunWorktree, error) {
 	bounded := strings.TrimSuffix(filepath.Clean(prefix), string(filepath.Separator)) + string(filepath.Separator)
 	rows, err := d.sql.Query(
-		`SELECT id, repo_id, status, worktree_dir FROM runs
-		 WHERE worktree_dir IS NOT NULL AND worktree_dir <> '' AND substr(worktree_dir, 1, ?) <> ?
-		 ORDER BY created_at DESC, id DESC`,
+		`SELECT id, repo_id, worktree_dir FROM runs
+		 WHERE worktree_dir IS NOT NULL AND worktree_dir <> '' AND substr(worktree_dir, 1, ?) <> ?`+
+			statusClause+
+			` ORDER BY created_at DESC, id DESC`,
 		len(bounded), bounded,
 	)
 	if err != nil {
@@ -177,7 +201,7 @@ func (d *DB) RunWorktreesOutside(prefix string) ([]RunWorktree, error) {
 	var out []RunWorktree
 	for rows.Next() {
 		var wt RunWorktree
-		if err := rows.Scan(&wt.RunID, &wt.RepoID, &wt.Status, &wt.Dir); err != nil {
+		if err := rows.Scan(&wt.RunID, &wt.RepoID, &wt.Dir); err != nil {
 			return nil, fmt.Errorf("scan run worktree: %w", err)
 		}
 		out = append(out, wt)

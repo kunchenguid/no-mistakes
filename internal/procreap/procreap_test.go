@@ -387,6 +387,53 @@ func TestSweepNamedWorktreesReachOnlyWhatARunRecorded(t *testing.T) {
 	}
 }
 
+// TestSweepReachesDeletedNamedWorktreeThroughSymlinkedRoot is the deleted-cwd
+// case this package exists for, in an operator's own directory. The worktree is
+// gone - the daemon removed it at run end while a process that had left its
+// process group kept standing in it - so the only spelling left to resolve is
+// the directory that held it. On macOS every path under /tmp goes through a
+// symlink, so the recorded spelling and the process's cwd differ, and matching
+// only the recorded one leaves that process burning CPU forever.
+func TestSweepReachesDeletedNamedWorktreeThroughSymlinkedRoot(t *testing.T) {
+	base := t.TempDir()
+	realRoot := filepath.Join(base, "real-runs")
+	if err := os.MkdirAll(realRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkedRoot := filepath.Join(base, "runs")
+	if err := os.Symlink(realRoot, linkedRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	const runID = "01JZ8XQ7V6K9M3B0T5N2R4C8YD"
+	// /proc and lsof report a cwd with every symlink already resolved, which is
+	// the spelling that survives the directory's removal.
+	resolvedRoot, err := filepath.EvalSymlinks(realRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fake := &fakeSystem{
+		procs: []Process{{PID: 100, PPID: 1, PGID: 100, Command: "leaked", Elapsed: 40 * time.Hour}},
+		cwds:  map[int]string{100: filepath.Join(resolvedRoot, runID, "internal")},
+	}
+	fake.install(t)
+
+	victims, sweepErr := Sweep(Options{
+		WorktreesRoot: filepath.Join(base, "worktrees"),
+		// Recorded the way the run created it, through the symlink, and long
+		// since removed from disk.
+		Worktrees: []Worktree{{Dir: filepath.Join(linkedRoot, runID), RepoID: "repo1", RunID: runID}},
+		MinAge:    DefaultMinAge,
+		RunActive: func(string, string) bool { return false },
+	})
+	if sweepErr != nil {
+		t.Fatalf("Sweep: %v", sweepErr)
+	}
+	if got := victimPIDs(victims); len(got) != 1 || got[0] != 100 {
+		t.Fatalf("Sweep victims = %v, want [100]: a deleted worktree recorded through a symlink is still the process's own worktree", got)
+	}
+}
+
 // A named worktree without the run identity to check it against is dropped
 // rather than matched, so a caller that cannot say which run owns a directory
 // never gets it signalled.

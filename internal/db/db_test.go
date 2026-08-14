@@ -220,8 +220,61 @@ func TestRunWorktreesOutsideReturnsOnlyRecordedPlacementsElsewhere(t *testing.T)
 	if got[0].RunID != elsewhere.ID || got[0].RepoID != repo.ID || got[0].Dir != elsewhereDir {
 		t.Errorf("RunWorktreesOutside() = %+v, want run %s of %s at %q", got[0], elsewhere.ID, repo.ID, elsewhereDir)
 	}
-	if got[0].Status != types.RunFailed {
-		t.Errorf("status = %q, want %q so cleanup can tell a finished run from a live one", got[0].Status, types.RunFailed)
+}
+
+// ActiveRunWorktreesOutside is the bounded set the startup process sweep turns
+// into path matchers: it must hold the runs that were still executing when the
+// daemon started - whose worktrees may already be gone - and not the history of
+// every run ever placed outside the default tree.
+func TestActiveRunWorktreesOutsideReturnsOnlyRunsStillActive(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepoWithID("repo-1", "/work/repo", "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultRoot := filepath.Join("/nm-home", "worktrees")
+
+	statuses := map[types.RunStatus]bool{
+		types.RunPending:   true,
+		types.RunRunning:   true,
+		types.RunCompleted: false,
+		types.RunFailed:    false,
+		types.RunCancelled: false,
+	}
+	wantActive := make(map[string]bool)
+	for status, active := range statuses {
+		run, err := d.InsertRun(repo.ID, string(status), "head", "base")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := d.SetRunWorktreeDir(run.ID, filepath.Join("/work", "repo-runs", run.ID)); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.UpdateRunStatus(run.ID, status); err != nil {
+			t.Fatal(err)
+		}
+		if active {
+			wantActive[run.ID] = true
+		}
+	}
+
+	got, err := d.ActiveRunWorktreesOutside(defaultRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotActive := make(map[string]bool, len(got))
+	for _, wt := range got {
+		gotActive[wt.RunID] = true
+	}
+	for runID := range wantActive {
+		if !gotActive[runID] {
+			t.Errorf("active run %s missing from ActiveRunWorktreesOutside()", runID)
+		}
+	}
+	for runID := range gotActive {
+		if !wantActive[runID] {
+			t.Errorf("terminal run %s returned by ActiveRunWorktreesOutside()", runID)
+		}
 	}
 }
 

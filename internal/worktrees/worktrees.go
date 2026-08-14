@@ -81,38 +81,49 @@ func (l *Layout) RecordedDir(recorded, repoID, workingPath, runID string) string
 	return l.Dir(repoID, workingPath, runID)
 }
 
-// Validate rejects a configured placement this NM_HOME cannot host.
+// Validate rejects the two placements a worktree_roots entry can name that do
+// not work, and that internal/config cannot judge: it validates every entry it
+// can on its own (absolute paths, two checkouts sharing a root, a root equal to
+// its checkout), but it never learns where NM_HOME is, and it is not the owner
+// of what a run worktree does to the checkout it belongs to. The daemon refuses
+// to start on either, and run creation refuses the same way.
 //
-// internal/config validates every worktree_roots entry it can judge on its own
-// (absolute paths, two checkouts sharing a root, a root equal to its checkout),
-// but it never learns where NM_HOME is, so this second layer belongs to the
-// process that does: the daemon refuses to start on a root it would then be
-// unable to tell apart from its own state.
+// A root inside NM_HOME collides with the daemon's own state. Inside
+// <NM_HOME>/worktrees the collision is total: those entries are the ULID-named
+// per-repository directories the default placement owns and sweeps wholesale,
+// and a run ID is a ULID too, so a repository directory holding another
+// repository's live run worktrees looks exactly like one more leftover run.
+// Elsewhere under NM_HOME it is just as destructive for being narrower -
+// <NM_HOME>/logs makes a run's worktree its own log directory (paths.RunLogDir
+// is <NM_HOME>/logs/<runID>), so removing the worktree at run end destroys the
+// logs of the run that just finished. Nothing an operator can want lives under
+// NM_HOME anyway: it carries none of the directory-scoped toolchain
+// configuration the setting exists to reach.
 //
-// A root equal to or inside <NM_HOME>/worktrees is that case. The entries of
-// that directory are the ULID-named per-repository directories the default
-// placement owns and sweeps wholesale, and a run ID is a ULID too, so a run
-// directory placed there is indistinguishable from a repository directory: a
-// walk of the operator's root becomes a walk of the daemon's own state, and a
-// repository directory holding another repository's live run worktrees looks
-// exactly like one more leftover run. Nothing an operator can want lives
-// there either - it is under NM_HOME, so it carries none of the
-// directory-scoped toolchain configuration the setting exists to reach.
+// A root inside the checkout whose runs it holds puts an untracked directory in
+// that checkout for as long as a run is executing, which makes it dirty. A
+// dirty checkout blocks the guarded branch synchronization in
+// internal/branchsync, so the operator cannot take a validated branch back
+// while any run is in flight - the placement does not merely look odd, it
+// stops the workflow it is part of. `init --worktree-root` already refuses it;
+// this is the same rule for a hand-written entry.
 //
-// Placements that are merely questionable - a root inside the checkout whose
-// runs it holds, a key matching no registered repository - are reported at
-// startup instead of refused, because they do work.
+// A key matching no registered repository stays a startup warning, because it
+// places nothing at all.
 func (l *Layout) Validate() error {
 	if len(l.roots) == 0 {
 		return nil
 	}
-	worktreesDir := l.paths.WorktreesDir()
+	home := l.paths.Root()
 	checkouts := l.Checkouts()
 	sort.Strings(checkouts)
 	for _, checkout := range checkouts {
 		root := l.roots[checkout]
-		if Contains(worktreesDir, root) {
-			return fmt.Errorf("invalid worktree_roots[%q]: run worktree root %q is inside the directory no-mistakes places its own run worktrees in (%q); choose a directory outside NM_HOME", checkout, root, worktreesDir)
+		if Contains(home, root) {
+			return fmt.Errorf("invalid worktree_roots[%q]: run worktree root %q is inside no-mistakes' own state directory (%q), where it would collide with the daemon's worktrees, logs, or gates; choose a directory outside it", checkout, root, home)
+		}
+		if Contains(checkout, root) {
+			return fmt.Errorf("invalid worktree_roots[%q]: run worktree root %q is inside the checkout whose runs it would hold, which leaves that checkout with an untracked run worktree while a run executes and blocks branch synchronization; choose a directory outside the checkout", checkout, root)
 		}
 	}
 	return nil
