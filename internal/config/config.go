@@ -1324,6 +1324,57 @@ func DefaultGlobalConfig() *GlobalConfig {
 	}
 }
 
+// GlobalConfigHasKey reports whether the global config document at path already
+// has the given top-level key, whatever its value: `key:` with nothing after it
+// and `key: {}` both count as present.
+//
+// The parsed configuration cannot answer this. Both of those forms decode to a
+// map of length zero, exactly like an absent key - so anything that must not
+// duplicate a top-level key has to ask the document instead. YAML rejects a
+// duplicate top-level key outright, which would leave the operator with a
+// configuration that no longer loads at all.
+//
+// It answers from the document, and never fails: a missing or unreadable file has
+// no key, and a file this package cannot parse is scanned for the key written at
+// the start of a line, which is where a top-level key is. The operator has to fix
+// an unparseable configuration either way; the point here is to not tell them to
+// add a key that is already there.
+func GlobalConfigHasKey(path, key string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return hasTopLevelKeyLine(data, key)
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return false
+	}
+	mapping := doc.Content[0]
+	if mapping.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			return true
+		}
+	}
+	return false
+}
+
+// hasTopLevelKeyLine is the fallback for a document YAML cannot parse: a
+// top-level key starts its line, so an indented or commented occurrence is not
+// one.
+func hasTopLevelKeyLine(data []byte, key string) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, key+":") {
+			return true
+		}
+	}
+	return false
+}
+
 // LoadGlobal reads global config from path. Returns defaults if file doesn't exist.
 func LoadGlobal(path string) (*GlobalConfig, error) {
 	cfg := DefaultGlobalConfig()

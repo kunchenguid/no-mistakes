@@ -278,6 +278,55 @@ func TestPrintWorktreeRootGuidanceMergesIntoAnExistingBlock(t *testing.T) {
 	}
 }
 
+// TestPrintWorktreeRootGuidanceMergesIntoAnEmptyBlock covers the block shapes
+// that parse to no entries at all: `worktree_roots:` with nothing after it, and
+// `worktree_roots: {}`. The key is there, so telling the operator to add another
+// one produces the duplicate top-level key that stops the daemon - and the
+// parsed configuration cannot tell these apart from an absent key, which is why
+// presence is read from the document.
+func TestPrintWorktreeRootGuidanceMergesIntoAnEmptyBlock(t *testing.T) {
+	dir := t.TempDir()
+	checkout := filepath.Join(dir, "src", "repo1")
+	root := filepath.Join(dir, "work", "repo1-runs")
+	entry := "  " + checkout + ": " + root
+
+	for name, block := range map[string]string{
+		"a key with no value":       "worktree_roots:\n",
+		"a key set to an empty map": "worktree_roots: {}\n",
+	} {
+		p := paths.WithRoot(t.TempDir())
+		if err := p.EnsureDirs(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p.ConfigFile(), []byte(block), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		var out bytes.Buffer
+		printWorktreeRootGuidance(&out, p, checkout, root)
+
+		got := out.String()
+		if !containsYAMLLine(got, strings.TrimSpace(entry)) {
+			t.Errorf("%s: guidance missing the entry %q, got:\n%s", name, entry, got)
+		}
+		if containsYAMLLine(got, "worktree_roots:") {
+			t.Errorf("%s: guidance repeats the key that already exists, got:\n%s", name, got)
+		}
+	}
+
+	// For the block form, the merge the guidance describes must load and place
+	// the repository.
+	merged := "worktree_roots:\n" + entry + "\n"
+	p := paths.WithRoot(t.TempDir())
+	cfg, err := config.LoadGlobal(writeConfig(t, p, merged))
+	if err != nil {
+		t.Fatalf("config built by following the guidance does not load: %v", err)
+	}
+	if configured, ok := worktrees.New(p, cfg.WorktreeRoots).CustomRoot(checkout); !ok || configured != root {
+		t.Errorf("merged config places %q at (%q, %v), want %q", checkout, configured, ok, root)
+	}
+}
+
 // containsYAMLLine reports whether the rendered guidance carries want as a line
 // of its own, which is what the operator would paste. Prose that merely mentions
 // a key does not count, and the terminal styling around a line is stripped.

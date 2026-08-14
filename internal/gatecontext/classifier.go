@@ -72,18 +72,18 @@ func (i Inspector) Inspect(ctx context.Context, req Request) (Result, error) {
 		return result, fmt.Errorf("gate execution context: paths are required")
 	}
 
-	var managedRepo *db.Repo
+	var managedRepoID string
 	var worktreeRoot string
 	if !req.SkipManagedGit && strings.TrimSpace(req.CWD) != "" {
 		commonDir, top, ok := gitIdentity(ctx, req.CWD)
 		if ok {
 			worktreeRoot = top
-			repo, managed, err := i.registeredManagedCommonDir(commonDir)
+			id, managed, err := i.registeredManagedCommonDir(commonDir)
 			if err != nil {
 				return result, err
 			}
 			if managed {
-				managedRepo = repo
+				managedRepoID = id
 				result.ManagedGit = true
 				result.Nested = true
 			}
@@ -129,15 +129,15 @@ func (i Inspector) Inspect(ctx context.Context, req Request) (Result, error) {
 	// Canonical topology remains authoritative when a marker is removed or an
 	// adapter omits it. Attach run/phase only when the worktree path and active
 	// DB record agree exactly; otherwise omit them rather than guessing.
-	if result.ManagedGit && result.RunID == "" && managedRepo != nil && worktreeRoot != "" {
+	if result.ManagedGit && result.RunID == "" && managedRepoID != "" && worktreeRoot != "" {
 		// Where a run's worktree is is recorded on the run, so the comparison
 		// reads that placement rather than deriving one from configuration this
 		// process may not be able to read (see worktrees.RecordedDir).
 		for _, step := range active {
-			if step.repoID != managedRepo.ID {
+			if step.repoID != managedRepoID {
 				continue
 			}
-			want := worktrees.RecordedDir(i.Paths, step.worktreeDir, managedRepo.ID, step.runID)
+			want := worktrees.RecordedDir(i.Paths, step.worktreeDir, step.repoID, step.runID)
 			if sameCanonicalPath(worktreeRoot, want) {
 				result.RunID = step.runID
 				result.Phase = step.phase
@@ -197,28 +197,28 @@ func activeStepStatus(status types.StepStatus) bool {
 	}
 }
 
-func (i Inspector) registeredManagedCommonDir(commonDir string) (*db.Repo, bool, error) {
+func (i Inspector) registeredManagedCommonDir(commonDir string) (string, bool, error) {
 	common := canonicalPath(commonDir)
 	reposDir := canonicalPath(i.Paths.ReposDir())
 	if filepath.Dir(common) != reposDir {
-		return nil, false, nil
+		return "", false, nil
 	}
 	base := filepath.Base(common)
 	if !strings.HasSuffix(base, ".git") || base == ".git" || !git.LooksLikeBareRepository(common) {
-		return nil, false, nil
+		return "", false, nil
 	}
 	id := strings.TrimSuffix(base, ".git")
 	if i.DB == nil {
-		return nil, false, nil
+		return "", false, nil
 	}
 	repo, err := i.DB.GetRepo(id)
 	if err != nil {
-		return nil, false, fmt.Errorf("gate execution context: verify managed gate: %w", err)
+		return "", false, fmt.Errorf("gate execution context: verify managed gate: %w", err)
 	}
 	if repo == nil || !sameCanonicalPath(common, i.Paths.RepoDir(repo.ID)) {
-		return nil, false, nil
+		return "", false, nil
 	}
-	return repo, true, nil
+	return repo.ID, true, nil
 }
 
 func gitIdentity(ctx context.Context, cwd string) (commonDir, top string, ok bool) {

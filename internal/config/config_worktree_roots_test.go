@@ -168,3 +168,65 @@ func TestLoadGlobal_RejectsMisspelledWorktreeRootsKey(t *testing.T) {
 		t.Errorf("error = %v, want it to name the unknown key", err)
 	}
 }
+
+// GlobalConfigHasKey answers a question the parsed configuration cannot: whether
+// the document already carries a top-level key. Both empty forms of a key parse
+// to nothing, so a caller that must not write a second one - YAML rejects a
+// duplicate top-level key, and the daemon then refuses to start - has to ask the
+// document.
+func TestGlobalConfigHasKey(t *testing.T) {
+	present := map[string]string{
+		"an entry":                    "worktree_roots:\n  " + yamlPath(filepath.Join(string(filepath.Separator), "src", "repo")) + ": " + yamlPath(filepath.Join(string(filepath.Separator), "work", "runs")) + "\n",
+		"a key with no value":         "worktree_roots:\n",
+		"a key set to an empty map":   "worktree_roots: {}\n",
+		"a key among other settings":  "log_level: info\nworktree_roots: {}\nsession_reuse: true\n",
+		"a document YAML cannot read": "worktree_roots:\n  /src/repo: /work/runs\n\t bad indentation\n",
+	}
+	for name, contents := range present {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if !GlobalConfigHasKey(path, "worktree_roots") {
+			t.Errorf("%s: reported absent, want present", name)
+		}
+	}
+
+	absent := map[string]string{
+		"an empty document":        "",
+		"other settings only":      "log_level: info\n",
+		"a commented-out key":      "# worktree_roots:\n#   /src/repo: /work/runs\n",
+		"an indented mention":      "some_block:\n  worktree_roots: {}\n",
+		"a value that mentions it": "log_level: worktree_roots:\n",
+	}
+	for name, contents := range absent {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if GlobalConfigHasKey(path, "worktree_roots") {
+			t.Errorf("%s: reported present, want absent", name)
+		}
+	}
+
+	if GlobalConfigHasKey(filepath.Join(t.TempDir(), "missing.yaml"), "worktree_roots") {
+		t.Error("a config that does not exist reported the key as present")
+	}
+}
+
+// The empty forms are exactly the ones the parsed value cannot distinguish from
+// an absent key, which is why GlobalConfigHasKey exists.
+func TestEmptyWorktreeRootsFormsParseToNoEntries(t *testing.T) {
+	for name, contents := range map[string]string{
+		"a key with no value":       "worktree_roots:\n",
+		"a key set to an empty map": "worktree_roots: {}\n",
+	} {
+		cfg, err := LoadGlobalFromBytes([]byte(contents))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(cfg.WorktreeRoots) != 0 {
+			t.Errorf("%s: parsed %d entries, want none", name, len(cfg.WorktreeRoots))
+		}
+	}
+}

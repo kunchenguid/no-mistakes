@@ -208,15 +208,19 @@ func checkoutClaimingWorktreeRoot(p *paths.Paths, checkout, root string) (string
 // place - would get a config that no longer loads, and a daemon that refuses to
 // start until they repair it by hand. With a block already present, only the
 // entry line is printed, to add under the existing key.
+//
+// Presence is a question about the document, not about the entries it parsed to
+// (see config.GlobalConfigHasKey): a key with no value and a key set to {} both
+// parse to nothing, and telling the operator to add a second one is the failure
+// this branch exists to avoid.
 func printWorktreeRootGuidance(w io.Writer, p *paths.Paths, workingPath, root string) {
-	blockPresent := false
 	if cfg, err := config.LoadGlobal(p.ConfigFile()); err == nil {
 		if configured, ok := worktrees.New(p, cfg.WorktreeRoots).CustomRoot(workingPath); ok && worktrees.Canonical(configured) == worktrees.Canonical(root) {
 			fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render("  runs"), sGreen.Render(root), sDim.Render("(already configured)"))
 			return
 		}
-		blockPresent = len(cfg.WorktreeRoots) > 0
 	}
+	blockPresent := config.GlobalConfigHasKey(p.ConfigFile(), "worktree_roots")
 	entry := "  " + workingPath + ": " + root
 	fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  runs"), root)
 	fmt.Fprintln(w)
