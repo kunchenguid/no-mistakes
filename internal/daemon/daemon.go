@@ -668,21 +668,59 @@ func reportUnusableWorktreeRoots(d *db.DB, layout *worktrees.Layout) {
 // sees has already been resolved to a terminal status; it is factored out
 // separately so it can also be exercised - and its DB-aware skip behavior
 // verified - independent of stale-run recovery's side effects. Worktrees the
-// operator placed outside this tree are cleaned by
-// cleanupRecordedRunWorktrees, which never walks a directory it does not own.
+// operator placed outside this tree are named by recordedOrphanWorktrees, which
+// never walks a directory it does not own.
+//
+// Every directory it is going to remove is swept in ONE process snapshot before
+// any of them is removed. The sweep-before-removal invariant is what matters
+// (see procreap.SweepRunWorktrees), not that each directory gets a snapshot of
+// its own: reading the process table is the expensive part, a scoped sweep has
+// no age floor so every process on the machine is a candidate, and this whole
+// pass runs before the daemon binds its socket, against the startup budget. A
+// crash that leaves several directories behind would otherwise make the daemon
+// slower to start the more there is to clean up.
 func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree) {
+	ctx := context.Background()
+	removable, repoDirs := defaultTreeOrphanWorktrees(d, p)
+	removable = append(removable, recordedOrphanWorktrees(d, p, leftover)...)
+
+	sweepable := make([]procreap.Worktree, 0, len(removable))
+	for _, wt := range removable {
+		sweepable = append(sweepable, procreap.Worktree{Dir: wt.dir, RepoID: wt.repoID, RunID: wt.runID})
+	}
+	sweepRunWorktrees(p.WorktreesDir(), sweepable, "worktree_cleanup")
+
+	for _, wt := range removable {
+		removeOrphanWorktree(ctx, wt)
+	}
+	for _, dir := range repoDirs {
+		os.Remove(dir)
+	}
+}
+
+// orphanWorktree is one run worktree directory startup cleanup has decided it
+// may remove, resolved before anything is swept or removed.
+type orphanWorktree struct {
+	gateDir string
+	dir     string
+	repoID  string
+	runID   string
+}
+
+// defaultTreeOrphanWorktrees walks <NM_HOME>/worktrees, which no-mistakes owns
+// outright, and returns the run worktrees no run still owns plus the repository
+// directories to drop once they are empty.
+func defaultTreeOrphanWorktrees(d *db.DB, p *paths.Paths) (removable []orphanWorktree, repoDirs []string) {
 	wtRoot := p.WorktreesDir()
 	entries, err := os.ReadDir(wtRoot)
 	if err != nil {
-		return // directory may not exist yet
+		return nil, nil // directory may not exist yet
 	}
-	ctx := context.Background()
 	for _, repoEntry := range entries {
 		if !repoEntry.IsDir() {
 			continue
 		}
 		repoPath := filepath.Join(wtRoot, repoEntry.Name())
-		gateDir := p.RepoDir(repoEntry.Name())
 		runEntries, err := os.ReadDir(repoPath)
 		if err != nil {
 			continue
@@ -691,47 +729,62 @@ func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree)
 			if !runEntry.IsDir() {
 				continue
 			}
-			removeOrphanWorktree(ctx, d, p, gateDir, filepath.Join(repoPath, runEntry.Name()), repoEntry.Name(), runEntry.Name())
+			wt := orphanWorktree{
+				gateDir: p.RepoDir(repoEntry.Name()),
+				dir:     filepath.Join(repoPath, runEntry.Name()),
+				repoID:  repoEntry.Name(),
+				runID:   runEntry.Name(),
+			}
+			if removableOrphanWorktree(d, wt) {
+				removable = append(removable, wt)
+			}
 		}
-		// Remove empty repo dir.
-		os.Remove(repoPath)
+		repoDirs = append(repoDirs, repoPath)
 	}
-	cleanupRecordedRunWorktrees(ctx, d, p, leftover)
+	return removable, repoDirs
 }
 
-// cleanupRecordedRunWorktrees removes the leftover worktrees of runs the
-// operator placed outside <NM_HOME>/worktrees (see worktree_roots in the global
-// config).
+// recordedOrphanWorktrees names the leftover worktrees of runs the operator
+// placed outside <NM_HOME>/worktrees (see worktree_roots in the global config).
 //
 // That directory belongs to the operator, not to no-mistakes: it holds the
 // mise.local.toml, .envrc, or scratch checkout that motivated pointing runs at
 // it in the first place, and it can hold a run-shaped directory this daemon
 // never created - another tool's, or one left by a repository that used to
 // point here. So unlike the default tree, which is discovered by walking, this
-// removes only the exact directories run records name, which is the same rule
+// names only the exact directories run records name, which is the same rule
 // eject applies (see gate.removeRepoWorktrees): nothing there is enumerated,
 // and a directory no run recorded is never even looked at. Whether a named
 // directory may go is still the active-run guard (see skipWorktreeCleanup).
-func cleanupRecordedRunWorktrees(ctx context.Context, d *db.DB, p *paths.Paths, leftover []db.RunWorktree) {
+func recordedOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree) []orphanWorktree {
+	var removable []orphanWorktree
 	for _, wt := range leftover {
 		if info, err := os.Stat(wt.Dir); err != nil || !info.IsDir() {
 			continue
 		}
-		removeOrphanWorktree(ctx, d, p, p.RepoDir(wt.RepoID), wt.Dir, wt.RepoID, wt.RunID)
+		candidate := orphanWorktree{gateDir: p.RepoDir(wt.RepoID), dir: wt.Dir, repoID: wt.RepoID, runID: wt.RunID}
+		if removableOrphanWorktree(d, candidate) {
+			removable = append(removable, candidate)
+		}
 	}
+	return removable
 }
 
-// removeOrphanWorktree removes one run worktree directory unless its run still
-// owns it (see skipWorktreeCleanup), sweeping it first like every other removal
-// path (see procreap.SweepRunWorktree). The startup sweep has usually reaped this
-// directory already, but the ordering belongs to the removal, not to the caller
-// that happens to run before it.
-func removeOrphanWorktree(ctx context.Context, d *db.DB, p *paths.Paths, gateDir, wtPath, repoID, runID string) {
-	if skip, reason := skipWorktreeCleanup(d, runID); skip {
-		slog.Info("skipping worktree cleanup", "path", wtPath, "reason", reason)
-		return
+// removableOrphanWorktree reports whether cleanup may take this directory,
+// which is the active-run guard (see skipWorktreeCleanup). A directory it
+// spares is neither swept nor removed.
+func removableOrphanWorktree(d *db.DB, wt orphanWorktree) bool {
+	if skip, reason := skipWorktreeCleanup(d, wt.runID); skip {
+		slog.Info("skipping worktree cleanup", "path", wt.dir, "reason", reason)
+		return false
 	}
-	procreap.SweepRunWorktree(p.WorktreesDir(), repoID, runID, wtPath, "worktree_cleanup")
+	return true
+}
+
+// removeOrphanWorktree removes one run worktree directory its caller has
+// already decided on and swept (see cleanupOrphanWorktrees).
+func removeOrphanWorktree(ctx context.Context, wt orphanWorktree) {
+	gateDir, wtPath := wt.gateDir, wt.dir
 	if err := git.WorktreeRemove(ctx, gateDir, wtPath); err != nil {
 		slog.Warn("git worktree remove failed, falling back to os.RemoveAll", "path", wtPath, "error", err)
 		if err := os.RemoveAll(wtPath); err != nil {
@@ -772,6 +825,8 @@ type gateMigrationStats struct {
 }
 
 var ensureGateHooksPathIsolation = git.EnsureHooksPathIsolation
+
+var sweepRunWorktrees = procreap.SweepRunWorktrees
 
 // migrateGateConfigs discovers gates from authoritative DB records plus legacy
 // directories with the strict <id>.git shape. Every unstamped candidate is
