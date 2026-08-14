@@ -11,6 +11,16 @@ commands:
   lint: "make lint"
   format: "gofmt -w ."
 
+# Pin review auto-fix to the product's own default (autoFixDefaults in
+# internal/config/config.go) so this repo does not inherit an operator's global
+# override. A review finding here parks for a human decision instead of being
+# self-fixed: on a one-line CI-timeout change, an enabled review auto-fixer
+# turned a speculative finding into a new DB table, a schema migration, and a
+# new package, then spent three rounds failing to fix its own invention. The
+# other steps keep whatever the operator configured.
+auto_fix:
+  review: 0
+
 # Documentation ownership map for the document step's placement policy.
 document:
   instructions: |
