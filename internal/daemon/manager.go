@@ -233,6 +233,9 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	allowRepoCommands := trustedRepoCfg != nil && trustedRepoCfg.AllowRepoCommands
 	effectiveRepoCfg := config.EffectiveRepoConfig(repoCfg, trustedRepoCfg, allowRepoCommands)
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
+	if err := m.paths.ValidateEvidenceRoot(cfg.Test.Evidence.LocalRoot); err != nil {
+		return nil, err
+	}
 	cfg.TrustedConfigSHA = trustedSHA
 	if globalCfg.Eval.CaptureProvenance {
 		if err := cfg.EnableEvalProvenance(globalCfg, effectiveRepoCfg); err != nil {
@@ -915,6 +918,11 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.Merge(globalCfg, effectiveRepoCfg)
+	if err := m.paths.ValidateEvidenceRoot(cfg.Test.Evidence.LocalRoot); err != nil {
+		m.db.UpdateRunError(run.ID, err.Error())
+		trackStartFailure("evidence_root")
+		return "", err
+	}
 	cfg.TrustedConfigSHA = trustedSHA
 	if globalCfg.Eval.CaptureProvenance {
 		if err := cfg.EnableEvalProvenance(globalCfg, effectiveRepoCfg); err != nil {

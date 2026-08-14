@@ -86,6 +86,10 @@ func Run() (retErr error) {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	resolvedCfg := config.Merge(globalCfg, &config.RepoConfig{})
+	if err := p.ValidateEvidenceRoot(resolvedCfg.Test.Evidence.LocalRoot); err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
 	initLogger(lifecycleLog, globalCfg.LogLevel)
 
 	databaseStarted := time.Now()

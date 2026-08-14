@@ -80,6 +80,13 @@ func TestEvidenceRootHonorsAbsoluteOverrideAndIgnoresRelative(t *testing.T) {
 	}
 }
 
+func TestValidateEvidenceRootRefusesWorktreeOverlap(t *testing.T) {
+	p := WithRoot(t.TempDir())
+	if err := p.ValidateEvidenceRoot(p.WorktreeDir("repo-1", "run-1")); err == nil {
+		t.Fatal("expected a worktree-overlapping evidence root to be refused")
+	}
+}
+
 // TestEnsureDirsDoesNotCreateEvidence keeps a machine that never gathers
 // evidence from growing the directory: the test step creates it on demand.
 func TestEnsureDirsDoesNotCreateEvidence(t *testing.T) {
