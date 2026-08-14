@@ -225,3 +225,67 @@ func TestContains(t *testing.T) {
 		t.Errorf("Contains(%q, %q) = true, want false", dir, sibling)
 	}
 }
+
+// Contains has to agree with the filesystem, not with spelling: on a
+// case-insensitive volume - the macOS and Windows default - a differently-cased
+// ancestor names the same directory, and a guard that compares names would wave
+// through a worktree root that then collides with the daemon's own state (a run
+// worktree that IS paths.RunLogDir, so removing it takes the run's logs).
+func TestContainsFollowsTheFilesystemAcrossCaseVariantSpellings(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "nm-home")
+	if err := os.MkdirAll(filepath.Join(home, "logs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	variantHome := filepath.Join(base, strings.ToUpper("nm-home"))
+	variantChild := filepath.Join(variantHome, "logs")
+
+	// Whether the two spellings are one directory is the volume's answer, not
+	// ours, so the expectation comes from the volume.
+	sameDirectory := false
+	if a, err := os.Stat(home); err == nil {
+		if b, err := os.Stat(variantHome); err == nil {
+			sameDirectory = os.SameFile(a, b)
+		}
+	}
+
+	if got := worktrees.Contains(home, variantChild); got != sameDirectory {
+		t.Errorf("Contains(%q, %q) = %v, want %v (the volume reports the two spellings as the same directory: %v)",
+			home, variantChild, got, sameDirectory, sameDirectory)
+	}
+	// A genuinely different sibling stays outside on every volume.
+	if worktrees.Contains(home, filepath.Join(base, "nm-home-elsewhere", "logs")) {
+		t.Error("a sibling directory was reported as inside NM_HOME")
+	}
+}
+
+// The placement guard is what that agreement protects: a root under NM_HOME must
+// be refused however the operator spelled the path to it.
+func TestCheckPlacementRefusesCaseVariantAppStateRoot(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "nm-home")
+	if err := os.MkdirAll(filepath.Join(home, "logs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	variantRoot := filepath.Join(base, strings.ToUpper("nm-home"), "logs")
+
+	sameDirectory := false
+	if a, err := os.Stat(home); err == nil {
+		if b, err := os.Stat(filepath.Dir(variantRoot)); err == nil {
+			sameDirectory = os.SameFile(a, b)
+		}
+	}
+	if !sameDirectory {
+		t.Skip("case-sensitive volume: the variant spelling is a genuinely different directory")
+	}
+
+	p := paths.WithRoot(home)
+	checkout := filepath.Join(base, "src", "repo1")
+	err := worktrees.CheckPlacement(p, checkout, variantRoot)
+	if err == nil {
+		t.Fatalf("root %q was accepted; it is NM_HOME's own log directory on this volume", variantRoot)
+	}
+	if !strings.Contains(err.Error(), variantRoot) {
+		t.Errorf("refusal %q does not name the offending root", err)
+	}
+}

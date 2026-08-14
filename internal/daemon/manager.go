@@ -341,10 +341,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			cancel(nil)
 			_ = plan.agent.Close()
 			m.closeSubscribers(plan.run.ID)
-			m.sweepRunWorktreeProcesses(plan.repo.ID, plan.run.ID, plan.workDir)
-			if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
-				slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
-			}
+			m.removeRunWorktree(plan.repo.ID, plan.run.ID, plan.gateDir, plan.workDir, "resumed_run_finished")
 			// A recovered run is a finished run too. This is the second of the
 			// two completion boundaries, and leaving it out is what let a run
 			// resumed after a daemon restart keep its empty evidence directory
@@ -497,12 +494,12 @@ func (m *RunManager) broadcast(event ipc.Event) {
 // outside the default tree needs no configuration lookup and cannot be hidden
 // by a worktree_roots edit made while the run was executing.
 //
-// Every path that removes a run's worktree must call this first, whether the
-// run was started here or resumed after a crash. It is the only moment a
-// worktree outside the default tree is reliably nameable: the startup sweep
-// reaches such a directory through the run records, which name it only while it
-// still exists or while the run is still active, whereas under the default tree
-// the surviving <NM_HOME>/worktrees prefix keeps matching a deleted cwd forever.
+// It is the only moment a worktree outside the default tree is reliably
+// nameable: the startup sweep reaches such a directory through the run records,
+// which name it only while it still exists or while the run is still active,
+// whereas under the default tree the surviving <NM_HOME>/worktrees prefix keeps
+// matching a deleted cwd forever. removeRunWorktree is what guarantees no
+// removal path skips it.
 func (m *RunManager) sweepRunWorktreeProcesses(repoID, runID, wtDir string) {
 	procreap.SweepAndLog(procreap.Options{
 		WorktreesRoot: m.paths.WorktreesDir(),
@@ -543,6 +540,23 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 		slog.Debug("run evidence kept", "run_id", runID, "reason", err)
 	}
 	reapEvidence(m.db, root, policy, time.Now())
+}
+
+// removeRunWorktree tears one run's worktree down: it sweeps whatever is still
+// standing in the directory and only then removes it.
+//
+// Every removal of a run worktree goes through here, and none calls
+// git.WorktreeRemove directly, because the ordering is easy to forget at one
+// site and invisible when forgotten - a run whose setup failed, whose execution
+// returned, or which was resumed after a crash all reach this point by different
+// routes, and a directory removed without the sweep leaves a process that
+// escaped its group holding a deleted cwd with nothing left able to name it (see
+// sweepRunWorktreeProcesses). reason distinguishes the routes in the log.
+func (m *RunManager) removeRunWorktree(repoID, runID, gateDir, wtDir, reason string) {
+	m.sweepRunWorktreeProcesses(repoID, runID, wtDir)
+	if err := git.WorktreeRemove(context.Background(), gateDir, wtDir); err != nil {
+		slog.Warn("failed to remove run worktree", "reason", reason, "run_id", runID, "path", wtDir, "error", err)
+	}
 }
 
 // closeSubscribers soft-closes every subscriber for a run and marks the run
@@ -903,9 +917,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	bgOwnsWorktree := false
 	defer func() {
 		if !bgOwnsWorktree {
-			if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
-				slog.Warn("failed to remove worktree during setup cleanup", "path", wtDir, "error", rmErr)
-			}
+			m.removeRunWorktree(repo.ID, run.ID, gateDir, wtDir, "run_setup_failed")
 		}
 	}()
 
@@ -1068,11 +1080,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			ag.Close()
 			// Close subscriber channels for this run.
 			m.closeSubscribers(run.ID)
-			m.sweepRunWorktreeProcesses(repo.ID, run.ID, wtDir)
-			// Clean up worktree.
-			if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
-				slog.Warn("failed to remove worktree", "path", wtDir, "error", rmErr)
-			}
+			m.removeRunWorktree(repo.ID, run.ID, gateDir, wtDir, "run_finished")
 			m.cleanupRunEvidence(cfg, run.ID)
 			// Remove tracking.
 			m.mu.Lock()

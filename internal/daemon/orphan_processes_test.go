@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -273,6 +274,128 @@ func TestResumeRecoveredRunSweepsWorktreeProcessesBeforeRemoval(t *testing.T) {
 	if !processIsAlive(operatorPID) {
 		t.Errorf("cleanup signalled %d in the operator's own directory", operatorPID)
 	}
+}
+
+// TestRemoveRunWorktreeSweepsBeforeRemoving pins the ordering every removal path
+// depends on. It is one helper precisely because the ordering is invisible when
+// forgotten: the process outlives the directory, and outside the default tree
+// nothing can name that directory again once the run is terminal and the
+// directory is gone.
+func TestRemoveRunWorktreeSweepsBeforeRemoving(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	_, headSHA := setupTestGitRepo(t, p, d, "repo1")
+
+	root := filepath.Join(t.TempDir(), "repo-runs")
+	const runID = "01JZ8XQ7V6K9M3B0T5N2R4C8YD"
+	wtDir := filepath.Join(root, runID)
+	gitCmd(t, p.RepoDir("repo1"), "worktree", "add", "--detach", wtDir, headSHA)
+	leakedPID := startOrphanInWorktree(t, wtDir)
+	operatorPID := startOrphanInWorktree(t, filepath.Join(root, "scratch-checkout"))
+
+	NewRunManager(d, p, nil).removeRunWorktree("repo1", runID, p.RepoDir("repo1"), wtDir, "test")
+
+	if !pidGoneWithin(leakedPID, 10*time.Second) {
+		t.Fatalf("orphan %d in the removed worktree survived removal", leakedPID)
+	}
+	if !processIsAlive(operatorPID) {
+		t.Errorf("removal signalled %d in the operator's own directory", operatorPID)
+	}
+	if _, err := os.Stat(wtDir); !os.IsNotExist(err) {
+		t.Errorf("worktree directory survived removal, stat err: %v", err)
+	}
+}
+
+// TestRunSetupFailureSweepsTheWorktreeItRemoves is the reachable path that
+// motivated the shared helper: setup fails after the worktree exists, and a
+// process the setup itself left standing in it (a git hook that backgrounds a
+// child, an SSH control master, a credential helper) must not be stranded by the
+// removal that follows.
+func TestRunSetupFailureSweepsTheWorktreeItRemoves(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+
+	repo, _ := setupTestGitRepo(t, p, d, "setup-failure-repo")
+	root := filepath.Join(t.TempDir(), "repo-runs")
+	configureWorktreeRoot(t, p, repo.WorkingPath, root)
+
+	// A post-checkout hook fires inside the new worktree when the daemon creates
+	// it, and leaves a process standing there whose parent exits immediately.
+	pidFile := filepath.Join(t.TempDir(), "orphan.pid")
+	gateHooks := filepath.Join(p.RepoDir("setup-failure-repo"), "hooks")
+	if err := os.MkdirAll(gateHooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hook := "#!/bin/sh\nsleep 300 >/dev/null 2>&1 &\necho $! > " + pidFile + "\n"
+	if err := os.WriteFile(filepath.Join(gateHooks, "post-checkout"), []byte(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Setup then fails after the worktree exists: the pushed tree's repo config
+	// does not parse.
+	headSHA := commitInvalidRepoConfig(t, repo.WorkingPath)
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.PushReceivedResult
+	pushErr := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: p.RepoDir("setup-failure-repo"),
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &result)
+	if pushErr == nil {
+		t.Fatal("push with an unparseable repo config created a run")
+	}
+
+	leakedPID := readOrphanPID(t, pidFile)
+	if leakedPID == 0 {
+		t.Skip("post-checkout hook did not run, so no orphan was planted in the worktree")
+	}
+	if !pidGoneWithin(leakedPID, 10*time.Second) {
+		t.Fatalf("orphan %d planted in the worktree survived the setup-failure removal", leakedPID)
+	}
+}
+
+// commitInvalidRepoConfig pushes a commit whose .no-mistakes.yaml cannot be
+// parsed, which fails run setup after the worktree has been created.
+func commitInvalidRepoConfig(t *testing.T, workDir string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(workDir, ".no-mistakes.yaml"), []byte("auto_fix: [not, a, mapping\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, workDir, "add", ".no-mistakes.yaml")
+	gitCmd(t, workDir, "commit", "-m", "invalid config")
+	gitCmd(t, workDir, "push", "gate", "HEAD:refs/heads/main")
+	return gitOutput(t, workDir, "rev-parse", "HEAD")
+}
+
+// readOrphanPID waits briefly for the hook to record its background child, and
+// reports 0 when the hook never ran.
+func readOrphanPID(t *testing.T, pidFile string) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(pidFile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && pid > 0 {
+				t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+				return pid
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return 0
 }
 
 // startOrphanInWorktree leaves a real long-lived process standing in dir whose
