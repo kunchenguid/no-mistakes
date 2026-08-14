@@ -131,33 +131,22 @@ func averageTokens(rows []Evaluation) (float64, bool) {
 }
 
 func confidenceInterval(_ string, rows []Evaluation) *Interval {
-	// First turn each case into a mean over CONCLUSIVE repeats. A pending
-	// unexpected park stays out of this conditional interval and is surfaced
-	// separately in every report as a queue count and a lower-bound accuracy.
+	// Each case becomes a mean recall over labeled repeats. Unlabeled
+	// replays stay out of this interval and are reported as pending.
 	perCase := map[string][]float64{}
 	for _, row := range rows {
-		if row.ExpectedPark == nil {
+		if row.GoldCount == 0 {
 			continue
 		}
 		if row.Status != "completed" {
 			perCase[row.CaseID] = append(perCase[row.CaseID], 0)
 			continue
 		}
-		var score *float64
-		switch {
-		case *row.ExpectedPark && row.CandidateParked:
-			v := 1.0
-			score = &v
-		case *row.ExpectedPark && !row.CandidateParked:
-			v := 0.0
-			score = &v
-		case !*row.ExpectedPark && !row.CandidateParked:
-			v := 1.0
-			score = &v
+		denom := row.TruePositive + row.FalseNegative
+		if denom == 0 {
+			continue
 		}
-		if score != nil {
-			perCase[row.CaseID] = append(perCase[row.CaseID], *score)
-		}
+		perCase[row.CaseID] = append(perCase[row.CaseID], float64(row.TruePositive)/float64(denom))
 	}
 	values := make([]float64, 0, len(perCase))
 	for _, scores := range perCase {
@@ -166,9 +155,6 @@ func confidenceInterval(_ string, rows []Evaluation) *Interval {
 			total += score
 		}
 		values = append(values, total/float64(len(scores)))
-	}
-	if len(values) == 0 {
-		return nil
 	}
 	if len(values) < 2 {
 		return nil
@@ -197,10 +183,10 @@ func markFrontier(reports []CandidateReport) {
 			if i == j || reports[i].Cohort != reports[j].Cohort || reports[j].AverageTokens == nil || reports[j].Summary.Labeled == 0 || reports[j].Summary.Failures > 0 {
 				continue
 			}
-			betterAccuracy := reports[j].Summary.LowerBoundAccuracy() >= reports[i].Summary.LowerBoundAccuracy()
+			betterRecall := reports[j].Summary.Recall() >= reports[i].Summary.Recall()
 			cheaper := *reports[j].AverageTokens <= *reports[i].AverageTokens
-			strict := reports[j].Summary.LowerBoundAccuracy() > reports[i].Summary.LowerBoundAccuracy() || *reports[j].AverageTokens < *reports[i].AverageTokens
-			if betterAccuracy && cheaper && strict {
+			strict := reports[j].Summary.Recall() > reports[i].Summary.Recall() || *reports[j].AverageTokens < *reports[i].AverageTokens
+			if betterRecall && cheaper && strict {
 				dominated = true
 				break
 			}
@@ -213,14 +199,15 @@ func markFrontier(reports []CandidateReport) {
 type SetSummary struct {
 	Name           string
 	Cases          int
-	VerdictLabels  int
-	ShouldPark     int
-	ShouldPass     int
+	GoldCases      int
+	TruePositive   int
+	FalseNegative  int
+	Unlabeled      int
 	QueuedFindings int
 	Composition    map[string]int
 }
 
-// InspectSets summarizes all logical MVP sets and their diversified mix.
+// InspectSets summarizes all logical sets and their diversified mix.
 func InspectSets(store *Store) ([]SetSummary, error) {
 	sets := []string{"all", "labeled", "diversified"}
 	result := make([]SetSummary, 0, len(sets))
@@ -231,13 +218,18 @@ func InspectSets(store *Store) ([]SetSummary, error) {
 		}
 		summary := SetSummary{Name: name, Cases: len(cases), Composition: map[string]int{}}
 		for _, c := range cases {
-			if c.Labels.Verdict.Known {
-				summary.VerdictLabels++
-				if c.Labels.Verdict.ShouldPark {
-					summary.ShouldPark++
-				} else {
-					summary.ShouldPass++
+			if c.Labels.HasGold() {
+				summary.GoldCases++
+				for _, finding := range c.Labels.Findings {
+					switch finding.Kind {
+					case GoldTruePositive:
+						summary.TruePositive++
+					case GoldFalseNegative:
+						summary.FalseNegative++
+					}
 				}
+			} else {
+				summary.Unlabeled++
 			}
 			summary.QueuedFindings += c.Labels.QueuedCandidateFindings
 			language, size, severity := caseComposition(c)
@@ -261,7 +253,8 @@ func RenderSets(summaries []SetSummary) string {
 	var b strings.Builder
 	b.WriteString("LOCAL-ONLY EVAL CASE SETS\n")
 	for _, summary := range summaries {
-		fmt.Fprintf(&b, "\n%s: %d cases, %d verdict labels (park %d, pass %d), %d candidate findings queued\n", summary.Name, summary.Cases, summary.VerdictLabels, summary.ShouldPark, summary.ShouldPass, summary.QueuedFindings)
+		fmt.Fprintf(&b, "\n%s: %d cases, %d with finding-level gold (true-positive %d, false-negative %d), %d unlabeled / pending, %d candidate findings queued\n",
+			summary.Name, summary.Cases, summary.GoldCases, summary.TruePositive, summary.FalseNegative, summary.Unlabeled, summary.QueuedFindings)
 		keys := make([]string, 0, len(summary.Composition))
 		for key := range summary.Composition {
 			keys = append(keys, key)
@@ -274,9 +267,9 @@ func RenderSets(summaries []SetSummary) string {
 	return b.String()
 }
 
-// RenderReport is a stable human-readable local comparison. Confidence
-// intervals are conditional on conclusive verdicts; the lower-bound metric
-// includes queued unexpected parks so the uncertainty is explicit.
+// RenderReport is a stable human-readable local comparison. Scores are
+// finding-level. Unmatched candidate findings stay pending and are never
+// called false positives. A replay with no gold is unlabeled, not a pass.
 func RenderReport(reports []CandidateReport) string {
 	if len(reports) == 0 {
 		return "LOCAL-ONLY EVAL REPORT\nno candidate replays recorded yet\n"
@@ -288,15 +281,16 @@ func RenderReport(reports []CandidateReport) string {
 		fmt.Fprintf(&b, "\n%s (cohort %s)\n", s.Candidate, report.Cohort)
 		fmt.Fprintf(&b, "  replays: %d across %d repeat(s); labeled: %d; failures: %d\n", s.Total, report.RepeatCount, s.Labeled, s.Failures)
 		if s.Labeled == 0 {
-			b.WriteString("  verdict agreement: no human-confirmed verdict labels yet\n")
+			b.WriteString("  finding scores: unlabeled / pending (no finding-level gold yet)\n")
 		} else {
-			fmt.Fprintf(&b, "  confirmed verdict agreement: %.1f%% (%d/%d); conservative lower bound: %.1f%%\n", 100*s.ConfirmedAccuracy(), s.Correct, s.Conclusive, 100*s.LowerBoundAccuracy())
+			fmt.Fprintf(&b, "  finding scores: true-positive %d, false-negative %d, false-positive %d, pending %d\n", s.TruePositive, s.FalseNegative, s.FalsePositive, s.Pending)
+			fmt.Fprintf(&b, "  recall: %.1f%% (%d/%d gold issues)\n", 100*s.Recall(), s.TruePositive, s.TruePositive+s.FalseNegative)
 			if report.Confidence != nil {
 				fmt.Fprintf(&b, "  95%% Wilson score CI: %.1f%%-%.1f%% over %d case(s)\n", 100*report.Confidence.Lower, 100*report.Confidence.Upper, report.Confidence.Cases)
 			}
-			if s.UnexpectedParks > 0 {
-				fmt.Fprintf(&b, "  queued unexpected parks: %d (not scored wrong pending finding-level adjudication)\n", s.UnexpectedParks)
-			}
+		}
+		if s.Pending > 0 {
+			fmt.Fprintf(&b, "  queued unmatched candidate findings: %d (not scored as false-positive)\n", s.Pending)
 		}
 		if report.AverageTokens == nil {
 			b.WriteString("  token cost: unknown (token usage was not reported for every replay)\n")
@@ -305,7 +299,7 @@ func RenderReport(reports []CandidateReport) string {
 		}
 		fmt.Fprintf(&b, "  wall time: %.1fs average\n", report.AverageWallMS/1000)
 		if report.AverageTokens != nil {
-			fmt.Fprintf(&b, "  accuracy-vs-cost frontier: %t\n", report.OnFrontier)
+			fmt.Fprintf(&b, "  recall-vs-cost frontier: %t\n", report.OnFrontier)
 		}
 	}
 	return b.String()

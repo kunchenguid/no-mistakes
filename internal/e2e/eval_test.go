@@ -98,7 +98,7 @@ func TestEvalJourney(t *testing.T) {
 	if err != nil {
 		t.Fatalf("eval report: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "LOCAL-ONLY EVAL REPORT") || !strings.Contains(out, "claude+claude-opus-4-7") || !strings.Contains(out, "queued unexpected parks: 1") {
+	if !strings.Contains(out, "LOCAL-ONLY EVAL REPORT") || !strings.Contains(out, "claude+claude-opus-4-7") || !strings.Contains(out, "unlabeled / pending") || !strings.Contains(out, "queued unmatched candidate findings: 1") {
 		t.Fatalf("report output = %q", out)
 	}
 	t.Logf("eval report output:\n%s", out)

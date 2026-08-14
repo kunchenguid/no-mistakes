@@ -51,6 +51,9 @@ func (s *Store) migrate() error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("eval registry is closed")
 	}
+	if err := s.dropParkPassSchema(); err != nil {
+		return err
+	}
 	_, err := s.db.Exec(`
 CREATE TABLE IF NOT EXISTS cases (
     id TEXT PRIMARY KEY,
@@ -62,8 +65,7 @@ CREATE TABLE IF NOT EXISTS cases (
     language TEXT NOT NULL,
     size_bucket TEXT NOT NULL,
     severity TEXT NOT NULL,
-    verdict_known INTEGER NOT NULL,
-    verdict_should_park INTEGER NOT NULL,
+    gold_count INTEGER NOT NULL,
     path TEXT NOT NULL UNIQUE
 );
 CREATE TABLE IF NOT EXISTS pending_case_deletions (
@@ -86,8 +88,11 @@ CREATE TABLE IF NOT EXISTS evaluations (
     started_at INTEGER NOT NULL,
     completed_at INTEGER NOT NULL,
     status TEXT NOT NULL,
-    expected_park INTEGER,
-    candidate_parked INTEGER NOT NULL,
+    gold_count INTEGER NOT NULL,
+    true_positive INTEGER NOT NULL,
+    false_negative INTEGER NOT NULL,
+    false_positive INTEGER NOT NULL,
+    pending INTEGER NOT NULL,
     tokens_reported INTEGER NOT NULL,
     input_tokens INTEGER NOT NULL,
     output_tokens INTEGER NOT NULL,
@@ -113,6 +118,26 @@ CREATE INDEX IF NOT EXISTS idx_eval_evaluations_case ON evaluations(case_id, com
 	return nil
 }
 
+func (s *Store) dropParkPassSchema() error {
+	var parkColumn int
+	if err := s.db.QueryRow(`SELECT count(*) FROM pragma_table_info('cases') WHERE name = 'verdict_should_park'`).Scan(&parkColumn); err != nil {
+		return fmt.Errorf("inspect eval case schema: %w", err)
+	}
+	if parkColumn == 0 {
+		return nil
+	}
+	_, err := s.db.Exec(`
+DROP TABLE IF EXISTS evaluations;
+DROP TABLE IF EXISTS replay_case_reservations;
+DROP TABLE IF EXISTS pending_case_deletions;
+DROP TABLE IF EXISTS cases;
+`)
+	if err != nil {
+		return fmt.Errorf("replace park/pass eval registry: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
@@ -129,25 +154,18 @@ func (s *Store) registerCase(c Case) error {
 		return fmt.Errorf("eval registry is closed")
 	}
 	language, size, severity := caseComposition(c)
-	known, shouldPark := 0, 0
-	if c.Labels.Verdict.Known {
-		known = 1
-	}
-	if c.Labels.Verdict.ShouldPark {
-		shouldPark = 1
-	}
 	_, err := s.db.Exec(`INSERT OR IGNORE INTO cases
-(id, source_run_id, source_round_id, captured_at, repo_fingerprint, branch, language, size_bucket, severity, verdict_known, verdict_should_park, path)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.ID, c.SourceRunID, c.SourceRoundID, c.CapturedAt, c.RepoFingerprint, c.Branch, language, size, severity, known, shouldPark, c.Dir)
+(id, source_run_id, source_round_id, captured_at, repo_fingerprint, branch, language, size_bucket, severity, gold_count, path)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.SourceRunID, c.SourceRoundID, c.CapturedAt, c.RepoFingerprint, c.Branch, language, size, severity, len(c.Labels.Findings), c.Dir)
 	if err != nil {
 		return fmt.Errorf("register eval case: %w", err)
 	}
 	return nil
 }
 
-// ListCases resolves the three MVP logical sets. Diversified is deterministic:
-// it retains the lexicographically first case in each repo/language/size/verdict
+// ListCases resolves the three logical sets. Diversified is deterministic:
+// it retains the lexicographically first case in each repo/language/size/gold
 // bucket, making its composition visible and stable before a user spends tokens.
 func (s *Store) ListCases(set string) ([]Case, error) {
 	if s == nil || s.db == nil {
@@ -187,7 +205,7 @@ func (s *Store) ListCases(set string) ([]Case, error) {
 	case "labeled":
 		out := make([]Case, 0, len(all))
 		for _, c := range all {
-			if c.Labels.Verdict.Known {
+			if c.Labels.HasGold() {
 				out = append(out, c)
 			}
 		}
@@ -340,7 +358,7 @@ func loadCase(dir string) (Case, error) {
 		return Case{}, err
 	}
 	if labels.Version != labelsVersion {
-		return Case{}, fmt.Errorf("unsupported case labels version %d", labels.Version)
+		return Case{}, fmt.Errorf("unsupported case labels version %d (finding-level gold replaced the park/pass verdict; remove the eval directory to start a fresh corpus)", labels.Version)
 	}
 	var decision Decision
 	if err := readJSON(filepath.Join(dir, "original", "decision.json"), &decision); err != nil {
@@ -378,14 +396,29 @@ func writeJSON(path string, value any) error {
 
 func diversifiedKey(c Case) string {
 	language, size, _ := caseComposition(c)
-	verdict := "unlabeled"
-	if c.Labels.Verdict.Known {
-		verdict = "pass"
-		if c.Labels.Verdict.ShouldPark {
-			verdict = "park"
+	return strings.Join([]string{c.RepoFingerprint, language, size, goldBucket(c.Labels)}, "\x00")
+}
+
+func goldBucket(labels Labels) string {
+	hasTP, hasFN := false, false
+	for _, finding := range labels.Findings {
+		switch finding.Kind {
+		case GoldTruePositive:
+			hasTP = true
+		case GoldFalseNegative:
+			hasFN = true
 		}
 	}
-	return strings.Join([]string{c.RepoFingerprint, language, size, verdict}, "\x00")
+	switch {
+	case hasTP && hasFN:
+		return "true-positive+false-negative"
+	case hasTP:
+		return GoldTruePositive
+	case hasFN:
+		return GoldFalseNegative
+	default:
+		return "unlabeled"
+	}
 }
 
 func caseComposition(c Case) (language, size, severity string) {

@@ -371,7 +371,7 @@ Shows runs newest-first with branch, status (styled), short SHA, timestamp, and 
 
 ## no-mistakes eval
 
-Inspect the locally collected review-case corpus before spending tokens, replay an explicit agent and model in isolation, and report verdict accuracy, token cost, wall time, and the accuracy-versus-cost frontier. Eligible cases are collected automatically as runs finish; `eval capture <run-id>` collects one on demand.
+Inspect the locally collected review-case corpus before spending tokens, replay an explicit agent and model in isolation, and report finding-level true-positive / false-negative scores, token cost, wall time, and the recall-versus-cost frontier. Eligible cases are collected automatically as runs finish; `eval capture <run-id>` collects one on demand.
 
 See [Evaluation toolkit](/no-mistakes/reference/eval/) for the local-only boundary, collection and retention, command flags, label policy, and reporting semantics.
 

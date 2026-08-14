@@ -35,9 +35,23 @@ A case includes:
 - agent-neutral global configuration and the effective repository configuration frozen at capture
 - the original run, step, review-round, decision, and local invocation-metric records
 - a manifest with commit pins, changed-file counts, build identity, and a hash of the redacted remote URL
-- a local `labels.json` file that can grow in later evaluation phases
+- a local `labels.json` file that stores finding-level gold and queued unmatched candidate findings
 
 The manifest never stores a remote URL. Capture is read-only against the existing local database and gate. It does not fetch from the network.
+
+## Finding-level gold
+
+The unit of truth is whether a review **finding** was a real issue, scored with scientific terms, not whether the run parked or passed.
+
+Capture writes gold only from recorded human gate evidence. It does not invent labels the human did not give:
+
+- A finding the human selected for Fix (`selected_finding_ids` with a user source) is **true-positive** gold: that finding is a true issue.
+- A finding the human added (`user_findings_json`, source `user`) is **false-negative** gold: the original review missed a real issue.
+- Skip, and approve-with-findings, are **ambiguous**. They do not become invalid, pass, or true-negative gold. The case stays unlabeled / pending until later adjudication.
+- A later replay that raises a new issue absent from the gold set is queued as an unmatched candidate finding. It is never auto-scored as a false positive.
+- A merged pull request is not ground truth.
+
+A case with no finding-level gold is unlabeled / pending, never a pass.
 
 ## Disk use and retention
 
@@ -47,7 +61,7 @@ Cases from the same repository share one local Git object pool under `<NM_HOME>/
 
 Because the objects live in the pool rather than inside each case, a case directory is not a portable archive: copying it elsewhere does not carry the code it replays.
 
-Cases captured by releases using manifest version 1 are not compatible with the shared-pool format. If an eval command reports an unsupported case manifest version, remove `<NM_HOME>/eval/` to start a fresh corpus; automatic collection will refill it from later runs.
+Cases captured by releases using manifest version 1, or labels that still store a park/pass verdict, are not compatible with the current finding-level gold format. If an eval command reports an unsupported case or labels version, remove `<NM_HOME>/eval/` to start a fresh corpus; automatic collection will refill it from later runs.
 
 ## Inspect case sets before spending tokens
 
@@ -55,13 +69,13 @@ Cases captured by releases using manifest version 1 are not compatible with the 
 no-mistakes eval sets
 ```
 
-The command shows counts, verdict-label coverage, queued candidate findings, and composition by repository fingerprint, dominant language, change-size bucket, and source severity.
+The command shows counts, finding-level gold coverage, unlabeled / pending cases, queued candidate findings, and composition by repository fingerprint, dominant language, change-size bucket, and source severity.
 
 Three logical sets are available to replay:
 
 - `all` - every captured review pass
-- `labeled` - only cases with a verdict label derived from a recorded human gate decision
-- `diversified` - a deterministic representative, retaining one earliest case per repository, language, size, and expected-verdict bucket
+- `labeled` - only cases with at least one finding-level gold label
+- `diversified` - a deterministic representative, retaining one earliest case per repository, language, size, and gold-status bucket
 
 ## Replay a candidate
 
@@ -72,15 +86,14 @@ no-mistakes eval run \
   --repeats 3
 ```
 
-A candidate is always explicit: `agent+model`. The replay restores each case into a fresh temporary bare gate and worktree, then invokes only the existing Review step. Push, PR, CI, test, lint, document, and fix loops are outside this MVP.
+A candidate is always explicit: `agent+model`. The replay restores each case into a fresh temporary bare gate and worktree, then invokes only the existing Review step. Push, PR, CI, test, lint, document, and fix loops are outside this subject under test.
 
-The captured human gate evidence supplies the verdict policy:
+Replay scores each candidate finding against that gold:
 
-- a user selection recorded for a fix means the candidate should park
-- a skipped Review gate, or a completed gate whose recorded findings required a user decision, means the candidate should pass
-- clean completions, approvals that cannot be established from the persisted round, and other incomplete or ambiguous historical decisions remain unlabeled and are excluded from verdict scoring
-
-If a candidate parks on a human-pass case, the finding is queued locally for later adjudication. It is not automatically called wrong. This protects potentially good, unexpected findings until finding-level labeling exists.
+- **true-positive**: the candidate raises the same underlying issue as a human-accepted finding, or finds a human-added miss
+- **false-negative**: the candidate misses a human-accepted finding or a human-added miss
+- **false-positive**: only when a candidate finding is explicitly labeled invalid. Unmatched candidate findings are never treated as false positives
+- **pending / unlabeled**: unmatched candidate findings, and cases with no finding-level gold yet
 
 `--repeats` defaults to `3` and must be at least `1`. Candidates must use an agent that can enforce an explicit model; ACP targets such as `cursor` and `acp:<target>` are rejected. Replays are intentionally isolated from the production `NM_HOME`; they do not contact the shared no-mistakes daemon. The selected agent still communicates with its configured model provider in the normal way.
 
@@ -92,15 +105,17 @@ no-mistakes eval report
 
 The report groups local replays by candidate and cohort. A cohort pins the selected case IDs and repeat count, so frontier comparisons only compare candidates run over the same corpus and repeat plan. It shows:
 
-- confirmed verdict agreement and its conservative lower bound
-- queued unexpected parks and failed candidate invocations
+- finding-level true-positive, false-negative, false-positive, and pending counts
+- recall over gold issues, or unlabeled / pending when a case has no finding-level gold
+- queued unmatched candidate findings, which are not scored as false positives
+- failed candidate invocations
 - reported fresh-input plus output token cost
 - average wall time
 - a 95% Wilson score confidence interval over cases, with repeats averaged inside each case
-- whether a candidate lies on the observed accuracy-versus-token-cost frontier
+- whether a candidate lies on the observed recall-versus-token-cost frontier
 
 The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, excludes candidates with failed replays from the frontier, and distinguishes missing token instrumentation from a real zero.
 
-## MVP boundary
+## Current boundary
 
-The MVP measures verdict-level agreement only. Finding-level valid/invalid labels, an adjudication CLI, matching candidate findings to labels, PR-comment miss scanning, precision/recall/F1, holdouts, sharing, sync, and full-pipeline replay are not part of this command surface.
+Finding-level gold is derived from recorded Fix and add-finding evidence. An adjudication CLI, explicit invalid labels, PR-comment miss scanning, holdouts, sharing, sync, and full-pipeline replay are not part of this command surface.

@@ -177,8 +177,8 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 			return nil, fmt.Errorf("%w: review round %q has no recorded findings", ErrNoCapturableReview, round.ID)
 		}
 		decision := decisionForRound(round, reviewStep)
-		labels := Labels{Version: labelsVersion, Verdict: verdictFromDecision(round, decision)}
-		if !labels.Verdict.Known && (reviewStep.Status == types.StepStatusAwaitingApproval || reviewStep.Status == types.StepStatusFixReview) {
+		labels := goldFromRound(round, decision)
+		if !labels.HasGold() && (reviewStep.Status == types.StepStatusAwaitingApproval || reviewStep.Status == types.StepStatusFixReview) {
 			return nil, fmt.Errorf("%w: review round %q has no recorded gate decision", ErrNoCapturableReview, round.ID)
 		}
 		reviewedSHA := run.HeadSHA
@@ -487,14 +487,91 @@ func decisionForRound(round *db.StepRound, step *db.StepResult) Decision {
 	return decision
 }
 
-func verdictFromDecision(round *db.StepRound, decision Decision) VerdictLabel {
-	if decision.SelectionSource == db.RoundSelectionSourceUser && (len(decision.SelectedFindingIDs) > 0 || decision.HasUserFindings) {
-		return VerdictLabel{Known: true, ShouldPark: true, Source: "recorded-user-fix"}
+// goldFromRound writes only labels the recorded human evidence supports.
+// A user-selected agent finding is true-positive gold. A human-added finding
+// is false-negative gold. Skip and approve-with-findings stay unlabeled.
+func goldFromRound(round *db.StepRound, decision Decision) Labels {
+	labels := Labels{Version: labelsVersion}
+	if decision.SelectionSource != db.RoundSelectionSourceUser {
+		return labels
 	}
-	if decision.Action == "approve" || decision.Action == "skip" {
-		return VerdictLabel{Known: true, ShouldPark: false, Source: "recorded-human-pass"}
+	byID := findingIndex(round)
+	seen := map[string]bool{}
+	for _, id := range decision.SelectedFindingIDs {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		finding, ok := byID[id]
+		if !ok {
+			labels.Findings = append(labels.Findings, FindingGold{ID: id, Kind: GoldTruePositive, Source: goldSourceUserFix})
+			continue
+		}
+		labels.Findings = append(labels.Findings, goldForRecordedFinding(finding, true))
 	}
-	return VerdictLabel{Source: "unlabeled"}
+	if round.UserFindingsJSON == nil || strings.TrimSpace(*round.UserFindingsJSON) == "" {
+		return labels
+	}
+	for _, finding := range parseFindingItems(*round.UserFindingsJSON) {
+		if finding.Source != types.FindingSourceUser {
+			continue
+		}
+		id := strings.TrimSpace(finding.ID)
+		if id != "" && seen[id] {
+			continue
+		}
+		if id != "" {
+			seen[id] = true
+		}
+		labels.Findings = append(labels.Findings, goldForRecordedFinding(finding, false))
+	}
+	return labels
+}
+
+func goldForRecordedFinding(finding types.Finding, selected bool) FindingGold {
+	gold := FindingGold{
+		ID:          finding.ID,
+		File:        finding.File,
+		Line:        finding.Line,
+		Description: finding.Description,
+		Severity:    finding.Severity,
+	}
+	if finding.Source == types.FindingSourceUser {
+		gold.Kind = GoldFalseNegative
+		gold.Source = goldSourceUserAdded
+		return gold
+	}
+	if selected {
+		gold.Kind = GoldTruePositive
+		gold.Source = goldSourceUserFix
+		return gold
+	}
+	gold.Kind = GoldTruePositive
+	gold.Source = goldSourceUserFix
+	return gold
+}
+
+func findingIndex(round *db.StepRound) map[string]types.Finding {
+	index := map[string]types.Finding{}
+	if round == nil {
+		return index
+	}
+	if round.FindingsJSON != nil {
+		for _, finding := range parseFindingItems(*round.FindingsJSON) {
+			if id := strings.TrimSpace(finding.ID); id != "" {
+				index[id] = finding
+			}
+		}
+	}
+	if round.UserFindingsJSON != nil {
+		for _, finding := range parseFindingItems(*round.UserFindingsJSON) {
+			if id := strings.TrimSpace(finding.ID); id != "" {
+				index[id] = finding
+			}
+		}
+	}
+	return index
 }
 
 func fingerprint(rawURL string) string {

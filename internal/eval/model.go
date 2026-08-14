@@ -22,7 +22,24 @@ const (
 	// Store.poolDir). A version-1 case on disk points at a bundle this code no
 	// longer reads, so it is rejected on load rather than half-restored.
 	manifestVersion = 2
-	labelsVersion   = 1
+	// labelsVersion is 2 because the unit of truth is a finding-level
+	// confusion-matrix gold label, not a case-level park/pass verdict.
+	// Version-1 labels.json files are rejected on load.
+	labelsVersion = 2
+)
+
+// Gold kinds are the scientific labels written from recorded human evidence.
+// Capture only writes true-positive and false-negative gold. False-positive
+// gold requires an explicit invalid label and is never inferred.
+const (
+	GoldTruePositive  = "true-positive"
+	GoldFalseNegative = "false-negative"
+	GoldFalsePositive = "false-positive"
+)
+
+const (
+	goldSourceUserFix   = "recorded-user-fix"
+	goldSourceUserAdded = "recorded-user-added"
 )
 
 // Candidate identifies one agent and model combination under evaluation. The
@@ -92,20 +109,44 @@ type Decision struct {
 	HasUserFindings    bool     `json:"has_user_findings"`
 }
 
-// VerdictLabel is intentionally only verdict-level in the MVP. Finding-level
-// valid/invalid labels and their adjudication UI belong to phase 1.
-type VerdictLabel struct {
-	Known      bool   `json:"known"`
-	ShouldPark bool   `json:"should_park"`
-	Source     string `json:"source,omitempty"`
+// FindingGold is one human-given label for an underlying issue. Capture writes
+// only what the recorded gate evidence supports: a user-selected Fix is a
+// true-positive gold issue, and a user-added finding is a false-negative gold
+// miss. Skip, approve-with-findings, and unmatched later candidate findings
+// stay unlabeled.
+type FindingGold struct {
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	Source      string `json:"source,omitempty"`
+	File        string `json:"file,omitempty"`
+	Line        int    `json:"line,omitempty"`
+	Description string `json:"description,omitempty"`
+	Severity    string `json:"severity,omitempty"`
 }
 
-// Labels is a local, growing label file. Queued candidate findings are kept as
-// evidence for a future adjudication pass, never scored as false positives.
+// Labels is a local, growing label file. Finding-level gold is the unit of
+// truth. Queued candidate findings are kept as evidence for later
+// adjudication and are never scored as false positives.
 type Labels struct {
-	Version                 int          `json:"version"`
-	Verdict                 VerdictLabel `json:"verdict"`
-	QueuedCandidateFindings int          `json:"queued_candidate_findings"`
+	Version                 int           `json:"version"`
+	Findings                []FindingGold `json:"findings,omitempty"`
+	QueuedCandidateFindings int           `json:"queued_candidate_findings"`
+}
+
+func (l Labels) HasGold() bool { return len(l.Findings) > 0 }
+
+func (l Labels) TrueIssueCount() int {
+	n := 0
+	for _, finding := range l.Findings {
+		if isTrueIssueGold(finding.Kind) {
+			n++
+		}
+	}
+	return n
+}
+
+func isTrueIssueGold(kind string) bool {
+	return kind == GoldTruePositive || kind == GoldFalseNegative
 }
 
 // BaselineMetrics is the recorded source-review performance baseline. A false
@@ -131,6 +172,8 @@ type Case struct {
 
 // Evaluation is one candidate replay over one case. Status is "completed" or
 // "failed"; failures remain visible in reports and are not silently scored.
+// Confusion-matrix fields are finding-level: unmatched candidate findings stay
+// in Pending and are never treated as false positives.
 type Evaluation struct {
 	ID               string `json:"id"`
 	SessionID        string `json:"session_id"`
@@ -142,8 +185,11 @@ type Evaluation struct {
 	CompletedAt      int64  `json:"completed_at"`
 	Status           string `json:"status"`
 	Error            string `json:"error,omitempty"`
-	ExpectedPark     *bool  `json:"expected_park,omitempty"`
-	CandidateParked  bool   `json:"candidate_parked"`
+	GoldCount        int    `json:"gold_count"`
+	TruePositive     int    `json:"true_positive"`
+	FalseNegative    int    `json:"false_negative"`
+	FalsePositive    int    `json:"false_positive"`
+	Pending          int    `json:"pending"`
 	FindingsJSON     string `json:"findings_json,omitempty"`
 	FindingCount     int    `json:"finding_count"`
 	InputTokens      int64  `json:"input_tokens"`
@@ -155,17 +201,17 @@ type Evaluation struct {
 	Model            string `json:"model,omitempty"`
 }
 
-// EvaluationSummary is deliberately three-valued for a human-pass label:
-// an unexpected candidate park is queued rather than declared wrong before
-// finding-level adjudication exists.
+// EvaluationSummary aggregates finding-level scores. A case with no gold is
+// unlabeled / pending, never a pass. Unmatched candidate findings stay in
+// Pending and do not become false positives.
 type EvaluationSummary struct {
 	Candidate        string
 	Total            int
 	Labeled          int
-	Conclusive       int
-	Correct          int
-	Misses           int
-	UnexpectedParks  int
+	TruePositive     int
+	FalseNegative    int
+	FalsePositive    int
+	Pending          int
 	Failures         int
 	InputTokens      int64
 	OutputTokens     int64
@@ -174,25 +220,16 @@ type EvaluationSummary struct {
 	DurationMS       int64
 }
 
-func (s EvaluationSummary) ConfirmedAccuracy() float64 {
-	if s.Conclusive == 0 {
+func (s EvaluationSummary) Recall() float64 {
+	denom := s.TruePositive + s.FalseNegative
+	if denom == 0 {
 		return 0
 	}
-	return float64(s.Correct) / float64(s.Conclusive)
+	return float64(s.TruePositive) / float64(denom)
 }
 
-// LowerBoundAccuracy counts a queued unexpected park in the denominator but
-// not the numerator. It is the conservative number suitable for comparing
-// candidates before phase-1 finding adjudication is available.
-func (s EvaluationSummary) LowerBoundAccuracy() float64 {
-	if s.Labeled == 0 {
-		return 0
-	}
-	return float64(s.Correct) / float64(s.Labeled)
-}
-
-// SummarizeEvaluations applies the MVP verdict policy without inferring that a
-// new finding is invalid merely because the original human passed the run.
+// SummarizeEvaluations scores finding-level gold only. Unmatched candidate
+// findings stay pending. A replay with no gold is unlabeled, not a pass.
 func SummarizeEvaluations(evaluations []Evaluation) EvaluationSummary {
 	var summary EvaluationSummary
 	for _, evaluation := range evaluations {
@@ -209,30 +246,21 @@ func SummarizeEvaluations(evaluations []Evaluation) EvaluationSummary {
 		}
 		if evaluation.Status != "completed" {
 			summary.Failures++
-			if evaluation.ExpectedPark != nil {
+			if evaluation.GoldCount > 0 {
 				summary.Labeled++
-				summary.Conclusive++
-				summary.Misses++
+				summary.FalseNegative += evaluation.GoldCount
 			}
+			summary.Pending += evaluation.Pending
 			continue
 		}
-		if evaluation.ExpectedPark == nil {
+		summary.Pending += evaluation.Pending
+		if evaluation.GoldCount == 0 {
 			continue
 		}
 		summary.Labeled++
-		switch {
-		case *evaluation.ExpectedPark && evaluation.CandidateParked:
-			summary.Conclusive++
-			summary.Correct++
-		case *evaluation.ExpectedPark && !evaluation.CandidateParked:
-			summary.Conclusive++
-			summary.Misses++
-		case !*evaluation.ExpectedPark && !evaluation.CandidateParked:
-			summary.Conclusive++
-			summary.Correct++
-		case !*evaluation.ExpectedPark && evaluation.CandidateParked:
-			summary.UnexpectedParks++
-		}
+		summary.TruePositive += evaluation.TruePositive
+		summary.FalseNegative += evaluation.FalseNegative
+		summary.FalsePositive += evaluation.FalsePositive
 	}
 	return summary
 }

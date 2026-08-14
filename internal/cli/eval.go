@@ -60,7 +60,7 @@ func newEvalRunCmd() *cobra.Command {
 	var repeats int
 	cmd := &cobra.Command{
 		Use:   "run --cases <all|labeled|diversified> --candidate <agent+model>",
-		Short: "Replay captured review passes in an isolated local sandbox",
+		Short: "Replay captured review passes and score findings against gold",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			candidate, err := eval.ParseCandidate(candidateRaw)
@@ -84,7 +84,7 @@ func newEvalRunCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&cases, "cases", "", "case set: all, labeled, or diversified")
+	cmd.Flags().StringVar(&cases, "cases", "", "case set: all, labeled (finding-level gold), or diversified")
 	cmd.Flags().StringVar(&candidateRaw, "candidate", "", "candidate as agent+model (for example codex+gpt-5.4)")
 	cmd.Flags().IntVar(&repeats, "repeats", 3, "replays per case (minimum 1)")
 	_ = cmd.MarkFlagRequired("cases")
@@ -95,7 +95,7 @@ func newEvalRunCmd() *cobra.Command {
 func newEvalSetsCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "sets",
-		Short: "Inspect local case-set size, labels, and diversified composition",
+		Short: "Inspect local case-set size, finding-level gold, and composition",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p, err := paths.New()
@@ -120,7 +120,7 @@ func newEvalSetsCmd() *cobra.Command {
 func newEvalReportCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "report",
-		Short: "Report local verdict accuracy, tokens, time, and cost frontier",
+		Short: "Report local true-positive / false-negative scores, tokens, and cost",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p, err := paths.New()
