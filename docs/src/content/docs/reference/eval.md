@@ -51,7 +51,7 @@ Capture writes gold only from recorded human gate evidence. It does not invent l
 - A later replay that raises a new issue absent from the gold set is queued as an unmatched candidate finding. It is never auto-scored as a false positive.
 - A merged pull request is not ground truth.
 
-A case with no finding-level gold is unlabeled / pending, never a pass.
+A case with no finding-level gold is unlabeled / pending, never a pass. True-negative also stays unlabeled because the current capture evidence cannot establish that a finding is invalid.
 
 ## Disk use and retention
 
@@ -61,7 +61,7 @@ Cases from the same repository share one local Git object pool under `<NM_HOME>/
 
 Because the objects live in the pool rather than inside each case, a case directory is not a portable archive: copying it elsewhere does not carry the code it replays.
 
-Cases captured by releases using manifest version 1, or labels that still store a park/pass verdict, are not compatible with the current finding-level gold format. If an eval command reports an unsupported case or labels version, remove `<NM_HOME>/eval/` to start a fresh corpus; automatic collection will refill it from later runs.
+Finding-level gold uses `labels.json` schema version 2. There is no migration from labels that store a park/pass verdict, and manifest version 1 cases are also incompatible. If an eval command reports an unsupported case or labels version, remove `<NM_HOME>/eval/` to start a fresh corpus; automatic collection will refill it from later runs.
 
 ## Inspect case sets before spending tokens
 
@@ -94,6 +94,8 @@ Replay scores each candidate finding against that gold:
 - **false-negative**: the candidate misses a human-accepted finding or a human-added miss
 - **false-positive**: only when a candidate finding is explicitly labeled invalid. Unmatched candidate findings are never treated as false positives
 - **pending / unlabeled**: unmatched candidate findings, and cases with no finding-level gold yet
+
+Matching is conservative: findings match by the same finding ID, or by the same file and description after whitespace and case normalization. A candidate that does not raise explicitly invalid gold would be a true-negative, but that outcome remains unlabeled on the current surface.
 
 `--repeats` defaults to `3` and must be at least `1`. Candidates must use an agent that can enforce an explicit model; ACP targets such as `cursor` and `acp:<target>` are rejected. Replays are intentionally isolated from the production `NM_HOME`; they do not contact the shared no-mistakes daemon. The selected agent still communicates with its configured model provider in the normal way.
 
