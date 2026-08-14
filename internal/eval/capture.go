@@ -500,12 +500,11 @@ func goldFromRound(round *db.StepRound, decision Decision) Labels {
 			if id == "" || seen[id] {
 				continue
 			}
-			seen[id] = true
 			finding, ok := byID[id]
 			if !ok {
-				labels.Findings = append(labels.Findings, FindingGold{ID: id, Kind: GoldTruePositive, Source: goldSourceUserFix})
 				continue
 			}
+			seen[id] = true
 			labels.Findings = append(labels.Findings, goldForRecordedFinding(finding, true))
 		}
 	}

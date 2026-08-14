@@ -394,13 +394,12 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 		if gate.lastRoundID != "" {
 			allSelectedIDs := combineSelectedFindingIDs(response.findingIDs, merged)
 			if idsJSON := marshalFindingIDs(allSelectedIDs); idsJSON != "" {
-				if dbErr := e.db.SetStepRoundSelection(gate.lastRoundID, &idsJSON, db.RoundSelectionSourceUser); dbErr != nil {
-					slog.Warn("failed to record recovered selected finding ids", "step", gate.step.Name(), "round", gate.round, "error", dbErr)
+				var userFindingsJSON *string
+				if merged != "" && merged != selected {
+					userFindingsJSON = &merged
 				}
-			}
-			if merged != "" && merged != selected {
-				if dbErr := e.db.SetStepRoundUserFindings(gate.lastRoundID, &merged); dbErr != nil {
-					slog.Warn("failed to record recovered user findings", "step", gate.step.Name(), "round", gate.round, "error", dbErr)
+				if dbErr := e.db.SetStepRoundUserDecision(gate.lastRoundID, &idsJSON, db.RoundSelectionSourceUser, userFindingsJSON); dbErr != nil {
+					slog.Warn("failed to record recovered user decision", "step", gate.step.Name(), "round", gate.round, "error", dbErr)
 				}
 			}
 		}
@@ -946,14 +945,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			if currentRoundID != "" {
 				allSelectedIDs := combineSelectedFindingIDs(response.findingIDs, mergedFindings)
 				if idsJSON := marshalFindingIDs(allSelectedIDs); idsJSON != "" {
-					if dbErr := e.db.SetStepRoundSelection(currentRoundID, &idsJSON, db.RoundSelectionSourceUser); dbErr != nil {
-						slog.Warn("failed to record selected finding ids", "step", stepName, "round", roundNum, "error", dbErr)
+					var userFindingsJSON *string
+					if mergedFindings != "" && mergedFindings != selectedFindings {
+						userFindingsJSON = &mergedFindings
 					}
-				}
-				if mergedFindings != "" && mergedFindings != selectedFindings {
-					merged := mergedFindings
-					if dbErr := e.db.SetStepRoundUserFindings(currentRoundID, &merged); dbErr != nil {
-						slog.Warn("failed to record user findings", "step", stepName, "round", roundNum, "error", dbErr)
+					if dbErr := e.db.SetStepRoundUserDecision(currentRoundID, &idsJSON, db.RoundSelectionSourceUser, userFindingsJSON); dbErr != nil {
+						slog.Warn("failed to record user decision", "step", stepName, "round", roundNum, "error", dbErr)
 					}
 				}
 			}

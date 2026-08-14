@@ -190,6 +190,20 @@ func (d *DB) SetStepRoundSelection(id string, selectedFindingIDs *string, source
 	return nil
 }
 
+func (d *DB) SetStepRoundUserDecision(id string, selectedFindingIDs *string, source string, userFindingsJSON *string) error {
+	var selectionSource *string
+	if selectedFindingIDs != nil && *selectedFindingIDs != "" && source != "" {
+		selectionSource = &source
+	}
+	if _, err := d.sql.Exec(
+		`UPDATE step_rounds SET selected_finding_ids = ?, selection_source = ?, user_findings_json = ? WHERE id = ?`,
+		selectedFindingIDs, selectionSource, userFindingsJSON, id,
+	); err != nil {
+		return fmt.Errorf("set step round user decision: %w", err)
+	}
+	return nil
+}
+
 // SetStepRoundSelectedFindingIDs preserves the old API for callers that do not
 // need to distinguish how the selection was made.
 func (d *DB) SetStepRoundSelectedFindingIDs(id string, selectedFindingIDs *string) error {

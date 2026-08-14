@@ -553,6 +553,29 @@ func TestCaptureWritesUserAddedGoldWithoutSelectionSource(t *testing.T) {
 	}
 }
 
+func TestCaptureLeavesUnknownSelectedFindingUnlabeled(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	selected := `["user-added-write-was-lost"]`
+	if err := sourceDB.SetStepRoundSelection(reviewRound.ID, &selected, db.RoundSelectionSourceUser); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 1 || cases[0].Labels.HasGold() {
+		t.Fatalf("captured labels = %#v, want unknown selection left unlabeled", cases)
+	}
+}
+
 func TestCaptureAndReportScoresMatchingCandidateAsTruePositive(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
