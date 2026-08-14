@@ -210,8 +210,10 @@ func assertCheckoutHoldsNoConfiguredWorktreeRoot(p *paths.Paths, workDir string)
 // set the daemon's startup gate judges against, so init cannot accept a
 // placement that then stops the daemon.
 //
-// An unreadable config or database yields whichever half could be read: the
-// operator has a different problem, and the daemon reports that one on its own.
+// An unreadable database yields the config half alone, which is the whole set on
+// a machine that has registered nothing. An unreadable config cannot get here:
+// init refuses one before it registers anything (see
+// assertCheckoutHoldsNoConfiguredWorktreeRoot).
 func knownCheckouts(p *paths.Paths, d *db.DB) []string {
 	var out []string
 	if cfg, err := config.LoadGlobal(p.ConfigFile()); err == nil {
@@ -227,8 +229,9 @@ func knownCheckouts(p *paths.Paths, d *db.DB) []string {
 
 // checkoutClaimingWorktreeRoot reports the configured checkout that already
 // places its run worktrees in root, when that checkout is not the one being
-// initialized. An unreadable config yields no claim: the operator has a
-// different problem, and the daemon reports that one on its own.
+// initialized. An unreadable config yields no claim, and cannot get here anyway:
+// init refuses one before it registers anything (see
+// assertCheckoutHoldsNoConfiguredWorktreeRoot).
 func checkoutClaimingWorktreeRoot(p *paths.Paths, checkout, root string) (string, bool) {
 	cfg, err := config.LoadGlobal(p.ConfigFile())
 	if err != nil {
@@ -256,7 +259,7 @@ func checkoutClaimingWorktreeRoot(p *paths.Paths, checkout, root string) (string
 // What it prints is whatever edit leaves the config loadable, because YAML
 // rejects a duplicate key at either level and a config that no longer loads is a
 // daemon that refuses to start - every command runs EnsureDaemon, so the
-// operator's whole CLI goes with it. Five edits, five shapes:
+// operator's whole CLI goes with it. Four edits, four shapes:
 //
 //   - No key: the key and the entry.
 //   - The key is there but nothing can be added under it - `worktree_roots: {}`,
@@ -271,16 +274,6 @@ func checkoutClaimingWorktreeRoot(p *paths.Paths, checkout, root string) (string
 //     the config spells them, so the operator can find the one to replace.
 //   - A block without this checkout: only the entry line, to add under the
 //     existing key.
-//   - A document that does not parse at all: the entry line again, at the column
-//     its raw lines put the key's entries at, and a note that the file has to be
-//     repaired first. Nothing about the key was read then except that it is
-//     there, so replacing it would carry the entries nobody read - silently
-//     returning every other repository to the default placement, which no later
-//     warning reports. An edit that adds a line is the one shape that cannot
-//     lose an entry it never saw, and the operator is repairing the document by
-//     hand regardless. When even those lines show no column to add beside, the
-//     block form is printed instead: a guessed indentation is the unloadable
-//     document again, while a block carries its own.
 //
 // Which of those applies is a question about the document rather than about the
 // entries it parsed to (see config.InspectGlobalConfigMapping): a key with no
@@ -288,6 +281,11 @@ func checkoutClaimingWorktreeRoot(p *paths.Paths, checkout, root string) (string
 // cannot tell them from an absent key, nor a block mapping from a flow one. That
 // includes whether this checkout already has an entry, which decides between
 // replacing a line and adding one (see configuredWorktreeRootEntry).
+//
+// A configuration this guidance cannot describe an edit to never reaches it: a
+// config that does not load is refused before the repository is registered (see
+// assertCheckoutHoldsNoConfiguredWorktreeRoot), and a document nobody can parse
+// is one of those.
 //
 // Every line printed for an existing block carries that block's own indentation,
 // for the same reason: the siblings of a block mapping all sit at one column, so
@@ -309,12 +307,6 @@ func printWorktreeRootGuidance(w io.Writer, p *paths.Paths, workingPath, root st
 		fmt.Fprintf(w, "  %s\n", sDim.Render("Add this to "+p.ConfigFile()+" so runs are created there:"))
 		fmt.Fprintf(w, "  %s\n", sBold.Render("worktree_roots:"))
 		fmt.Fprintf(w, "  %s\n", sBold.Render(indent+workingPath+": "+root))
-	case shape.Unparsed && shape.EntryIndent > 0:
-		printWorktreeRootsEntryAddition(w, p, indent, workingPath, root)
-	case shape.Unparsed:
-		fmt.Fprintf(w, "  %s\n", sDim.Render("Replace the worktree_roots: entry in "+p.ConfigFile()+" so runs are created there:"))
-		fmt.Fprintf(w, "  %s\n", sBold.Render("worktree_roots:"))
-		fmt.Fprintf(w, "  %s\n", sBold.Render("  "+workingPath+": "+root))
 	case !shape.AppendableBlock:
 		printWorktreeRootsBlockReplacement(w, p, shape, workingPath, configuredKey, root)
 	case configured:
@@ -323,19 +315,9 @@ func printWorktreeRootGuidance(w io.Writer, p *paths.Paths, workingPath, root st
 		fmt.Fprintf(w, "  %s\n", sDim.Render("with:"))
 		fmt.Fprintf(w, "  %s\n", sBold.Render(indent+configuredKey+": "+root))
 	default:
-		printWorktreeRootsEntryAddition(w, p, indent, workingPath, root)
+		fmt.Fprintf(w, "  %s\n", sDim.Render("Add this under the existing worktree_roots: in "+p.ConfigFile()+" so runs are created there:"))
+		fmt.Fprintf(w, "  %s\n", sBold.Render(indent+workingPath+": "+root))
 	}
-	if shape.Unparsed {
-		fmt.Fprintln(w)
-		fmt.Fprintf(w, "  %s\n", sYellow.Render(p.ConfigFile()+" does not parse right now, so the entries it already holds could not be read: repair it first and keep them."))
-	}
-}
-
-// printWorktreeRootsEntryAddition prints the one edit that cannot lose an entry:
-// a line added under the key as it stands.
-func printWorktreeRootsEntryAddition(w io.Writer, p *paths.Paths, indent, workingPath, root string) {
-	fmt.Fprintf(w, "  %s\n", sDim.Render("Add this under the existing worktree_roots: in "+p.ConfigFile()+" so runs are created there:"))
-	fmt.Fprintf(w, "  %s\n", sBold.Render(indent+workingPath+": "+root))
 }
 
 // worktreeRootsEntryIndent is the indentation an entry line must carry: the one
@@ -380,11 +362,9 @@ func printWorktreeRootsBlockReplacement(w io.Writer, p *paths.Paths, shape confi
 // checkout's runs, spelled the way the config file spells it.
 //
 // It reads the document rather than the parsed configuration for the same reason
-// the rest of this guidance does: a config that does not load still has a shape,
-// and a daemon started before it broke is still alive, so init still reaches
-// here. Asking the parse then answers "no entry" for a key the block plainly
-// contains, and the guidance prints an entry to ADD - the duplicate key one level
-// down, which is exactly the unloadable document this code exists to avoid.
+// the rest of this guidance does: the document is what the operator edits, and it
+// is the same read that already decided the shape, so one source answers every
+// question about the file rather than two that can disagree about it.
 //
 // The key is returned as written rather than canonicalized because guidance that
 // names a line has to name the line the operator will find: a trailing separator

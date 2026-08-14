@@ -531,9 +531,18 @@ func sweepableWorktrees(sets ...[]db.RunWorktree) []procreap.Worktree {
 // directory a run is still recorded as owning, and nothing would ever name it
 // again.
 //
-// Only rows whose directory is still there survive, which keeps the work
-// proportional to what is actually left over rather than to how many runs this
-// machine has ever placed outside the default tree.
+// Only rows whose directory is still there survive, so everything DOWNSTREAM -
+// the canonical-path comparison, the process sweep, the removals - is
+// proportional to what is actually left over, which is normally nothing.
+//
+// The filter itself is not: run rows are never pruned, so this pays one os.Stat
+// per run this machine has ever placed outside the default tree, on every
+// startup, before the socket is bound. That cost is accepted rather than bounded.
+// A cheaper set cannot be had from the run status here, because this runs AFTER
+// crash recovery has already turned the runs that left directories behind
+// terminal - the status that would filter them out is the status that identifies
+// them. Bounding it by age instead would trade a stat-per-row for a directory
+// nobody ever removes, which is the failure this exists to prevent.
 func leftoverRecordedRunWorktrees(d *db.DB, p *paths.Paths) []db.RunWorktree {
 	recorded, err := d.RunWorktreesOutside(p.WorktreesDir())
 	if err != nil {
