@@ -97,6 +97,14 @@ func reapEvidence(d *db.DB, root string, policy evidenceReapPolicy, now time.Tim
 			continue
 		}
 		runID := entry.Name()
+		run, err := d.GetRun(runID)
+		if err != nil {
+			slog.Debug("skipping evidence cleanup", "run_id", runID, "reason", err)
+			continue
+		}
+		if run == nil {
+			continue
+		}
 		if skip, reason := skipWorktreeCleanup(d, runID); skip {
 			slog.Debug("skipping evidence cleanup", "run_id", runID, "reason", reason)
 			continue

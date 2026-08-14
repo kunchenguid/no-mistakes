@@ -170,6 +170,24 @@ func TestReapEvidenceKeepsEverythingWhenBothBoundsAreDisabled(t *testing.T) {
 	}
 }
 
+func TestReapEvidenceLeavesUnownedDirectoriesAlone(t *testing.T) {
+	f := newEvidenceFixture(t)
+	unowned := filepath.Join(f.root, "unrelated-directory")
+	if err := os.MkdirAll(unowned, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Now().Add(-365 * 24 * time.Hour)
+	if err := os.Chtimes(unowned, when, when); err != nil {
+		t.Fatal(err)
+	}
+
+	reapEvidence(f.db, f.root, evidenceReapPolicy{Retention: time.Hour, MaxRuns: 1}, time.Now())
+
+	if _, err := os.Stat(unowned); err != nil {
+		t.Errorf("reaper removed a directory not owned by a recorded run: %v", err)
+	}
+}
+
 // TestReapLegacyEvidenceDrainsTheSharedTempRootUnderTheSamePolicy covers the
 // upgrade path. Older versions wrote to a fixed directory inside the system
 // temp directory and never reaped it; an upgraded daemon drains that under the
