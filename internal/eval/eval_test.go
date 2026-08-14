@@ -299,13 +299,23 @@ func TestScoreCandidateDoesNotMatchRoundLocalFindingIDsAcrossReviews(t *testing.
 	}
 }
 
-func TestScoreCandidateMatchesDurableFindingIDs(t *testing.T) {
-	labels := Labels{Findings: []FindingGold{{ID: "issue-response-lifecycle", Kind: GoldTruePositive, File: "old.go", Description: "old wording"}}}
-	candidate := `{"findings":[{"id":"issue-response-lifecycle","file":"new.go","description":"clearer wording"}]}`
+func TestScoreCandidateDoesNotTreatAgentFindingIDsAsDurable(t *testing.T) {
+	labels := Labels{Findings: []FindingGold{{ID: "error-handling", Kind: GoldTruePositive, File: "old.go", Description: "drops an HTTP error"}}}
+	candidate := `{"findings":[{"id":"error-handling","file":"new.go","description":"drops a database error"}]}`
+
+	score := ScoreCandidate(labels, candidate)
+	if score.TruePositive != 0 || score.FalseNegative != 1 || score.Pending != 1 {
+		t.Fatalf("score = %#v, want unrelated reused-ID finding left pending", score)
+	}
+}
+
+func TestScoreCandidateMatchesNormalizedFileAndDescription(t *testing.T) {
+	labels := Labels{Findings: []FindingGold{{ID: "review-1", Kind: GoldTruePositive, File: " internal/eval/score.go ", Description: "Drops   an HTTP Error"}}}
+	candidate := `{"findings":[{"id":"different","file":"internal/eval/score.go","description":"drops an http error"}]}`
 
 	score := ScoreCandidate(labels, candidate)
 	if score.TruePositive != 1 || score.FalseNegative != 0 || score.Pending != 0 {
-		t.Fatalf("score = %#v, want durable ID match", score)
+		t.Fatalf("score = %#v, want conservative file-and-description match", score)
 	}
 }
 
@@ -444,7 +454,7 @@ func TestConfidenceIntervalIncludesFailedLabeledReplays(t *testing.T) {
 	}
 }
 
-func TestRenderReportNamesWilsonScoreInterval(t *testing.T) {
+func TestRenderReportNamesCaseLevelRecallRange(t *testing.T) {
 	output := RenderReport([]CandidateReport{
 		{
 			Cohort:     "cohort",
@@ -452,8 +462,8 @@ func TestRenderReportNamesWilsonScoreInterval(t *testing.T) {
 			Confidence: &Interval{Lower: 0.34, Upper: 1, Cases: 2},
 		},
 	})
-	if !strings.Contains(output, "95% Wilson score CI: 34.0%-100.0% over 2 case(s)") {
-		t.Fatalf("report confidence interval = %q", output)
+	if !strings.Contains(output, "case-level recall range: 34.0%-100.0% over 2 case(s)") {
+		t.Fatalf("report recall range = %q", output)
 	}
 }
 

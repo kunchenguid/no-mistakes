@@ -7,9 +7,8 @@ import (
 	"strings"
 )
 
-// Interval is a two-sided 95% Wilson score interval over cases. Cases are the
-// independent unit; repeats are averaged inside each case so a noisy provider
-// does not inflate apparent sample size.
+// Interval is a finite-sample recall range over cases. Repeats are averaged
+// inside each case so a noisy provider does not inflate apparent sample size.
 type Interval struct {
 	Lower float64
 	Upper float64
@@ -286,7 +285,7 @@ func RenderReport(reports []CandidateReport) string {
 			fmt.Fprintf(&b, "  finding scores: true-positive %d, false-negative %d, false-positive %d, pending %d\n", s.TruePositive, s.FalseNegative, s.FalsePositive, s.Pending)
 			fmt.Fprintf(&b, "  recall: %.1f%% (%d/%d gold issues)\n", 100*s.Recall(), s.TruePositive, s.TruePositive+s.FalseNegative)
 			if report.Confidence != nil {
-				fmt.Fprintf(&b, "  95%% Wilson score CI: %.1f%%-%.1f%% over %d case(s)\n", 100*report.Confidence.Lower, 100*report.Confidence.Upper, report.Confidence.Cases)
+				fmt.Fprintf(&b, "  case-level recall range: %.1f%%-%.1f%% over %d case(s)\n", 100*report.Confidence.Lower, 100*report.Confidence.Upper, report.Confidence.Cases)
 			}
 		}
 		if s.Pending > 0 {

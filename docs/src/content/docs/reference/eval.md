@@ -111,7 +111,7 @@ The report groups local replays by candidate and cohort. A cohort pins the selec
 - failed candidate invocations
 - reported fresh-input plus output token cost
 - average wall time
-- a 95% Wilson score confidence interval over cases, with repeats averaged inside each case
+- a finite-sample case-level recall range, with repeats averaged inside each case
 - whether a candidate lies on the observed recall-versus-token-cost frontier
 
 The report is deliberately cautious. It never treats an unadjudicated candidate finding as a false positive, excludes candidates with failed replays from the frontier, and distinguishes missing token instrumentation from a real zero.
