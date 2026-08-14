@@ -606,16 +606,12 @@ func registeredCheckouts(d *db.DB) []string {
 	if d == nil {
 		return nil
 	}
-	repos, err := d.GetRepos()
+	checkouts, err := d.RepoWorkingPaths()
 	if err != nil {
 		slog.Warn("failed to list repositories while checking configured worktree placement", "error", err)
 		return nil
 	}
-	out := make([]string, 0, len(repos))
-	for _, repo := range repos {
-		out = append(out, repo.WorkingPath)
-	}
-	return out
+	return checkouts
 }
 
 // startupWorktreeLayout resolves worktree placement for startup recovery. The

@@ -9,6 +9,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -46,7 +47,7 @@ func newInitCmd() *cobra.Command {
 				}
 				resolvedWorktreeRoot := ""
 				if cmd.Flags().Changed("worktree-root") {
-					resolvedWorktreeRoot, err = resolveWorktreeRoot(p, ".", worktreeRoot)
+					resolvedWorktreeRoot, err = resolveWorktreeRoot(p, d, ".", worktreeRoot)
 					if err != nil {
 						return err
 					}
@@ -119,19 +120,18 @@ func newInitCmd() *cobra.Command {
 // where it would be read by a daemon with an unrelated working directory.
 //
 // It also refuses every placement the daemon refuses to start on, through the
-// same owner (worktrees.CheckPlacement): a root inside NM_HOME, a root inside
-// the checkout being initialized, and a root inside any other checkout the
-// config already names. The daemon additionally knows every registered
-// repository, so a root inside a checkout that has no worktree_roots entry is
-// caught there instead.
+// same owner (worktrees.CheckPlacement) and against the same checkouts: NM_HOME,
+// the checkout being initialized, every checkout the config names, and every
+// registered repository (db.RepoWorkingPaths, which is where the daemon's startup
+// gate reads them too).
 //
 // Finally it refuses a root another checkout has already claimed, which the
-// config loader rejects. Both belong here rather than only in the daemon: the
-// daemon refuses to start on a config it cannot load, and every command starts
-// the daemon, so printing that entry would hand the operator a paste that takes
-// their whole CLI down instead of placing anything - the failure belongs where
-// they can still pick another directory.
-func resolveWorktreeRoot(p *paths.Paths, workDir, root string) (string, error) {
+// config loader rejects. All of it belongs here rather than only in the daemon:
+// the daemon refuses to start on a config it cannot load or place, and every
+// command starts the daemon, so printing such an entry would hand the operator a
+// paste that takes their whole CLI down instead of placing anything - the failure
+// belongs where they can still pick another directory.
+func resolveWorktreeRoot(p *paths.Paths, d *db.DB, workDir, root string) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return "", fmt.Errorf("init: --worktree-root must not be empty")
@@ -145,7 +145,7 @@ func resolveWorktreeRoot(p *paths.Paths, workDir, root string) (string, error) {
 		return "", fmt.Errorf("init: --worktree-root %s is not a directory", abs)
 	}
 	gitRoot, _ := git.FindMainRepoRoot(workDir)
-	if err := worktrees.CheckPlacement(p, gitRoot, abs, configuredCheckouts(p)...); err != nil {
+	if err := worktrees.CheckPlacement(p, gitRoot, abs, knownCheckouts(p, d)...); err != nil {
 		return "", fmt.Errorf("init: --worktree-root %w", err)
 	}
 	if claimant, claimed := checkoutClaimingWorktreeRoot(p, gitRoot, abs); claimed {
@@ -154,16 +154,24 @@ func resolveWorktreeRoot(p *paths.Paths, workDir, root string) (string, error) {
 	return abs, nil
 }
 
-// configuredCheckouts lists the checkouts the global config already names, so
-// placement validation can refuse a root inside one of them. An unreadable
-// config yields none: the operator has a different problem, and the daemon
-// reports that one on its own.
-func configuredCheckouts(p *paths.Paths) []string {
-	cfg, err := config.LoadGlobal(p.ConfigFile())
-	if err != nil {
-		return nil
+// knownCheckouts lists every checkout placement validation must protect: the
+// ones the global config names plus every registered repository. It is the same
+// set the daemon's startup gate judges against, so init cannot accept a
+// placement that then stops the daemon.
+//
+// An unreadable config or database yields whichever half could be read: the
+// operator has a different problem, and the daemon reports that one on its own.
+func knownCheckouts(p *paths.Paths, d *db.DB) []string {
+	var out []string
+	if cfg, err := config.LoadGlobal(p.ConfigFile()); err == nil {
+		out = append(out, worktrees.New(p, cfg.WorktreeRoots).Checkouts()...)
 	}
-	return worktrees.New(p, cfg.WorktreeRoots).Checkouts()
+	if d != nil {
+		if registered, err := d.RepoWorkingPaths(); err == nil {
+			out = append(out, registered...)
+		}
+	}
+	return out
 }
 
 // checkoutClaimingWorktreeRoot reports the configured checkout that already
@@ -193,17 +201,31 @@ func checkoutClaimingWorktreeRoot(p *paths.Paths, checkout, root string) (string
 // rewrites the global config - it is a hand-maintained file with the
 // operator's own comments - so init prints the exact entry to add instead of
 // editing it, and says nothing further when the entry is already in effect.
+//
+// What it prints depends on whether the config already has a worktree_roots
+// block, because YAML rejects a duplicate top-level key: an operator who pasted
+// a second `worktree_roots:` - the normal outcome for the second repository they
+// place - would get a config that no longer loads, and a daemon that refuses to
+// start until they repair it by hand. With a block already present, only the
+// entry line is printed, to add under the existing key.
 func printWorktreeRootGuidance(w io.Writer, p *paths.Paths, workingPath, root string) {
-	cfg, err := config.LoadGlobal(p.ConfigFile())
-	if err == nil {
+	blockPresent := false
+	if cfg, err := config.LoadGlobal(p.ConfigFile()); err == nil {
 		if configured, ok := worktrees.New(p, cfg.WorktreeRoots).CustomRoot(workingPath); ok && worktrees.Canonical(configured) == worktrees.Canonical(root) {
 			fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render("  runs"), sGreen.Render(root), sDim.Render("(already configured)"))
 			return
 		}
+		blockPresent = len(cfg.WorktreeRoots) > 0
 	}
+	entry := "  " + workingPath + ": " + root
 	fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  runs"), root)
 	fmt.Fprintln(w)
+	if blockPresent {
+		fmt.Fprintf(w, "  %s\n", sDim.Render("Add this under the existing worktree_roots: in "+p.ConfigFile()+" so runs are created there:"))
+		fmt.Fprintf(w, "  %s\n", sBold.Render(entry))
+		return
+	}
 	fmt.Fprintf(w, "  %s\n", sDim.Render("Add this to "+p.ConfigFile()+" so runs are created there:"))
 	fmt.Fprintf(w, "  %s\n", sBold.Render("worktree_roots:"))
-	fmt.Fprintf(w, "  %s\n", sBold.Render("  "+workingPath+": "+root))
+	fmt.Fprintf(w, "  %s\n", sBold.Render(entry))
 }

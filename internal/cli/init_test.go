@@ -4,21 +4,25 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 func TestResolveWorktreeRoot(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
 	workDir := t.TempDir()
 
-	if _, err := resolveWorktreeRoot(p, workDir, "   "); err == nil {
+	if _, err := resolveWorktreeRoot(p, nil, workDir, "   "); err == nil {
 		t.Fatal("expected error for empty --worktree-root")
 	}
 	abs := filepath.Join(t.TempDir(), "runs")
-	got, err := resolveWorktreeRoot(p, workDir, abs)
+	got, err := resolveWorktreeRoot(p, nil, workDir, abs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -27,7 +31,7 @@ func TestResolveWorktreeRoot(t *testing.T) {
 	}
 	// A relative value never reaches the config, where the daemon's own
 	// working directory would decide what it means.
-	relative, err := resolveWorktreeRoot(p, workDir, "runs")
+	relative, err := resolveWorktreeRoot(p, nil, workDir, "runs")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,18 +58,18 @@ func TestResolveWorktreeRootRejectsUnusablePlacements(t *testing.T) {
 		"the gates directory":             p.ReposDir(),
 		"NM_HOME itself":                  p.Root(),
 	} {
-		if _, err := resolveWorktreeRoot(p, repoDir, root); err == nil {
+		if _, err := resolveWorktreeRoot(p, nil, repoDir, root); err == nil {
 			t.Errorf("expected error for a root inside %s (%q)", name, root)
 		}
 	}
-	if _, err := resolveWorktreeRoot(p, repoDir, filepath.Join(repoDir, "runs")); err == nil {
+	if _, err := resolveWorktreeRoot(p, nil, repoDir, filepath.Join(repoDir, "runs")); err == nil {
 		t.Error("expected error for a root inside the repository being initialized")
 	}
 	file := filepath.Join(t.TempDir(), "not-a-dir")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveWorktreeRoot(p, repoDir, file); err == nil {
+	if _, err := resolveWorktreeRoot(p, nil, repoDir, file); err == nil {
 		t.Error("expected error for a root that is not a directory")
 	}
 }
@@ -88,7 +92,7 @@ func TestResolveWorktreeRootRefusesRootInsideAnotherConfiguredCheckout(t *testin
 	}
 
 	root := filepath.Join(otherCheckout, "runs")
-	_, err := resolveWorktreeRoot(p, repoDir, root)
+	_, err := resolveWorktreeRoot(p, nil, repoDir, root)
 	if err == nil {
 		t.Fatal("expected a refusal for a root inside another configured checkout")
 	}
@@ -97,7 +101,43 @@ func TestResolveWorktreeRootRefusesRootInsideAnotherConfiguredCheckout(t *testin
 	}
 
 	// A directory next to that checkout is the normal case.
-	if _, err := resolveWorktreeRoot(p, repoDir, filepath.Join(t.TempDir(), "runs")); err != nil {
+	if _, err := resolveWorktreeRoot(p, nil, repoDir, filepath.Join(t.TempDir(), "runs")); err != nil {
+		t.Errorf("root outside every checkout refused: %v", err)
+	}
+}
+
+// A registered repository is a checkout even when it has no worktree_roots entry
+// of its own, and the daemon refuses to start on a root inside one. init must
+// judge against the same set, or the entry it prints takes the whole CLI down the
+// moment it is pasted.
+func TestResolveWorktreeRootRefusesRootInsideAnotherRegisteredCheckout(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	repoDir := setupTestRepo(t)
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	// Registered, with no entry in the config at all.
+	otherCheckout := filepath.Join(t.TempDir(), "other-checkout")
+	if _, err := d.InsertRepoWithID("otherrepo", otherCheckout, "https://example.com/owner/other", "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	root := filepath.Join(otherCheckout, "runs")
+	_, err = resolveWorktreeRoot(p, d, repoDir, root)
+	if err == nil {
+		t.Fatal("expected a refusal for a root inside another registered checkout")
+	}
+	if !strings.Contains(err.Error(), otherCheckout) {
+		t.Errorf("refusal %q does not name the checkout the root sits in", err)
+	}
+
+	if _, err := resolveWorktreeRoot(p, d, repoDir, filepath.Join(t.TempDir(), "runs")); err != nil {
 		t.Errorf("root outside every checkout refused: %v", err)
 	}
 }
@@ -119,7 +159,7 @@ func TestResolveWorktreeRootRefusesRootClaimedByAnotherCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := resolveWorktreeRoot(p, repoDir, root)
+	_, err := resolveWorktreeRoot(p, nil, repoDir, root)
 	if err == nil {
 		t.Fatal("expected a refusal for a root another checkout already claims")
 	}
@@ -133,7 +173,7 @@ func TestResolveWorktreeRootRefusesRootClaimedByAnotherCheckout(t *testing.T) {
 	if err := os.WriteFile(p.ConfigFile(), []byte(selfConfig), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveWorktreeRoot(p, repoDir, root); err != nil {
+	if _, err := resolveWorktreeRoot(p, nil, repoDir, root); err != nil {
 		t.Errorf("re-initializing the checkout that already uses this root was refused: %v", err)
 	}
 }
@@ -182,6 +222,85 @@ func TestPrintWorktreeRootGuidanceReportsExistingEntry(t *testing.T) {
 	if strings.Contains(got, "worktree_roots:") {
 		t.Errorf("guidance should not repeat an entry that is already in effect, got:\n%s", got)
 	}
+}
+
+// TestPrintWorktreeRootGuidanceMergesIntoAnExistingBlock is the second
+// repository an operator places somewhere: the config already has a
+// worktree_roots block, so an instruction to add another one produces a config
+// that no longer loads at all - a duplicate top-level YAML key - and a daemon
+// that refuses to start until it is repaired by hand. The guidance must describe
+// a merge, and this asserts the merge it describes actually loads while the
+// duplicate it must not describe does not.
+func TestPrintWorktreeRootGuidanceMergesIntoAnExistingBlock(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	existingCheckout := filepath.Join(dir, "src", "repo1")
+	existingRoot := filepath.Join(dir, "work", "repo1-runs")
+	block := "worktree_roots:\n  " + yamlPath(existingCheckout) + ": " + yamlPath(existingRoot) + "\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(block), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	checkout := filepath.Join(dir, "src", "repo2")
+	root := filepath.Join(dir, "work", "repo2-runs")
+	var out bytes.Buffer
+	printWorktreeRootGuidance(&out, p, checkout, root)
+
+	got := out.String()
+	entry := "  " + checkout + ": " + root
+	if !containsYAMLLine(got, strings.TrimSpace(entry)) {
+		t.Errorf("guidance missing the entry %q, got:\n%s", entry, got)
+	}
+	if containsYAMLLine(got, "worktree_roots:") {
+		t.Errorf("guidance repeats the top-level key that already exists, got:\n%s", got)
+	}
+
+	// The merge the guidance describes must load, with both repositories placed.
+	merged := block + entry + "\n"
+	cfg, err := config.LoadGlobal(writeConfig(t, p, merged))
+	if err != nil {
+		t.Fatalf("config built by following the guidance does not load: %v", err)
+	}
+	layout := worktrees.New(p, cfg.WorktreeRoots)
+	for checkoutPath, wantRoot := range map[string]string{existingCheckout: existingRoot, checkout: root} {
+		if configured, ok := layout.CustomRoot(checkoutPath); !ok || configured != wantRoot {
+			t.Errorf("merged config places %q at (%q, %v), want %q", checkoutPath, configured, ok, wantRoot)
+		}
+	}
+
+	// ... and the duplicate block is why: it makes the config unloadable.
+	duplicate := block + "worktree_roots:\n" + entry + "\n"
+	if _, err := config.LoadGlobal(writeConfig(t, p, duplicate)); err == nil {
+		t.Error("a duplicate worktree_roots block loaded; the guidance's merge shape would then be a matter of taste")
+	}
+}
+
+// containsYAMLLine reports whether the rendered guidance carries want as a line
+// of its own, which is what the operator would paste. Prose that merely mentions
+// a key does not count, and the terminal styling around a line is stripped.
+func containsYAMLLine(rendered, want string) bool {
+	for _, line := range strings.Split(ansiEscape.ReplaceAllString(rendered, ""), "\n") {
+		if strings.TrimSpace(line) == want {
+			return true
+		}
+	}
+	return false
+}
+
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// writeConfig writes a global config into its own directory and returns its
+// path, so one test can load several shapes without disturbing p.
+func writeConfig(t *testing.T, p *paths.Paths, contents string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // yamlPath quotes a path for YAML so a Windows drive letter is not read as a

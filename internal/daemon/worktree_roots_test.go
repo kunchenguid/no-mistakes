@@ -118,6 +118,61 @@ func TestRunWorktreeIsCreatedInConfiguredRoot(t *testing.T) {
 	}
 }
 
+// TestRunCreationJudgesOnlyItsOwnPlacement covers the placement mistake that
+// appears while the daemon is already running: the registered-checkout half of
+// the policy depends on state that changes after startup, so an entry that was
+// fine at boot can become unusable once another repository is gated into its
+// path. The repository that entry names must stop starting runs; every other
+// repository must keep working, and must never be failed with an error naming an
+// entry it has nothing to do with.
+func TestRunCreationJudgesOnlyItsOwnPlacement(t *testing.T) {
+	step := &mockPassStep{name: types.StepReview}
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{step}
+	})
+
+	misplaced, misplacedHead := setupTestGitRepo(t, p, d, "misplaced-repo")
+	unrelated, unrelatedHead := setupTestGitRepo(t, p, d, "unrelated-repo")
+	// Valid at boot, unusable now: the root sits inside a checkout that is
+	// registered too.
+	configureWorktreeRoot(t, p, misplaced.WorkingPath, filepath.Join(unrelated.WorkingPath, "runs"))
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	push := func(gateID, head, branch string) (ipc.PushReceivedResult, error) {
+		var result ipc.PushReceivedResult
+		err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+			Gate: p.RepoDir(gateID),
+			Ref:  "refs/heads/" + branch,
+			Old:  "0000000000000000000000000000000000000000",
+			New:  head,
+		}, &result)
+		return result, err
+	}
+
+	if _, err := push("misplaced-repo", misplacedHead, "main"); err == nil {
+		t.Error("a run was created for the repository whose own placement is unusable")
+	} else if !strings.Contains(err.Error(), misplaced.WorkingPath) {
+		t.Errorf("refusal %q does not name the offending entry", err)
+	}
+
+	result, err := push("unrelated-repo", unrelatedHead, "main")
+	if err != nil {
+		t.Fatalf("another repository's bad entry failed this repository's run: %v", err)
+	}
+	if run := waitForRunTerminalState(t, d, result.RunID); run.Status != types.RunCompleted {
+		errText := ""
+		if run.Error != nil {
+			errText = *run.Error
+		}
+		t.Fatalf("unrelated run status = %q (error %q), want %q", run.Status, errText, types.RunCompleted)
+	}
+}
+
 // TestCleanupOrphanWorktrees_ConfiguredRootRemovesOnlyRunDirectories is the
 // startup-cleanup half of the same contract. The configured root belongs to
 // the operator, so cleanup removes the leftovers of terminal runs and nothing

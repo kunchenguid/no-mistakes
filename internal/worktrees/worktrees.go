@@ -146,8 +146,9 @@ func CheckPlacement(p *paths.Paths, checkout, root string, otherCheckouts ...str
 
 // Validate rejects every configured entry CheckPlacement refuses, judged against
 // the configured checkouts plus known, whose members the caller supplies from
-// outside this package (the daemon passes every registered repository). The
-// daemon refuses to start on one, and run creation refuses the same way.
+// outside this package (the daemon passes every registered repository). It is the
+// whole-configuration gate: the daemon refuses to start while any entry is
+// unusable, and `init --worktree-root` refuses to print one.
 //
 // A checkout registered AFTER a root was configured is therefore caught at the
 // next daemon startup rather than when it is registered, which is the moment the
@@ -156,18 +157,46 @@ func CheckPlacement(p *paths.Paths, checkout, root string, otherCheckouts ...str
 // A key matching no registered repository stays a startup warning, because it
 // places nothing at all.
 func (l *Layout) Validate(known ...string) error {
-	if len(l.roots) == 0 {
+	checkouts := l.Checkouts()
+	sort.Strings(checkouts)
+	for _, checkout := range checkouts {
+		if err := l.validateEntry(checkout, known); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateCheckout rejects only the entry that places one checkout's runs, and
+// says nothing about the rest of the configuration.
+//
+// It is what a single run's creation asks, because the alternative punishes the
+// wrong repository: the registered-checkout half of this policy depends on state
+// that changes while the daemon runs (a checkout registered into the path of an
+// existing root), so a whole-configuration check would start failing every push
+// for every repository, naming an entry the pushed repository has nothing to do
+// with. The daemon's startup gate stays whole-configuration, and refuses to come
+// back up until the operator fixes it.
+func (l *Layout) ValidateCheckout(workingPath string, known ...string) error {
+	if _, ok := l.CustomRoot(workingPath); !ok {
+		return nil
+	}
+	return l.validateEntry(Canonical(workingPath), known)
+}
+
+// validateEntry judges one canonical entry against every checkout this layout
+// and its caller know about, so both gates apply the identical rule.
+func (l *Layout) validateEntry(checkout string, known []string) error {
+	root, ok := l.roots[checkout]
+	if !ok {
 		return nil
 	}
 	checkouts := l.Checkouts()
-	sort.Strings(checkouts)
 	protected := make([]string, 0, len(known)+len(checkouts))
 	protected = append(protected, known...)
 	protected = append(protected, checkouts...)
-	for _, checkout := range checkouts {
-		if err := CheckPlacement(l.paths, checkout, l.roots[checkout], protected...); err != nil {
-			return fmt.Errorf("invalid worktree_roots[%q]: run worktree root %w", checkout, err)
-		}
+	if err := CheckPlacement(l.paths, checkout, root, protected...); err != nil {
+		return fmt.Errorf("invalid worktree_roots[%q]: run worktree root %w", checkout, err)
 	}
 	return nil
 }
