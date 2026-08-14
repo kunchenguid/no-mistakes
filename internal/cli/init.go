@@ -225,6 +225,11 @@ func checkoutClaimingWorktreeRoot(p *paths.Paths, checkout, root string) (string
 // entries it parsed to (see config.InspectGlobalConfigMapping): a key with no
 // value and a key set to {} both parse to nothing, so the parsed configuration
 // cannot tell them from an absent key, nor a block mapping from a flow one.
+//
+// Every line printed for an existing block carries that block's own indentation,
+// for the same reason: the siblings of a block mapping all sit at one column, so
+// an entry line at another one is the same unloadable document, and a line named
+// for replacement at another one is not a line the operator's file contains.
 func printWorktreeRootGuidance(w io.Writer, p *paths.Paths, workingPath, root string) {
 	configuredKey, configuredRoot, configured := "", "", false
 	if cfg, err := config.LoadGlobal(p.ConfigFile()); err == nil {
@@ -238,23 +243,32 @@ func printWorktreeRootGuidance(w io.Writer, p *paths.Paths, workingPath, root st
 	fmt.Fprintln(w)
 
 	shape := config.InspectGlobalConfigMapping(p.ConfigFile(), "worktree_roots")
-	entry := "  " + workingPath + ": " + root
+	indent := worktreeRootsEntryIndent(shape)
 	switch {
 	case !shape.Present:
 		fmt.Fprintf(w, "  %s\n", sDim.Render("Add this to "+p.ConfigFile()+" so runs are created there:"))
 		fmt.Fprintf(w, "  %s\n", sBold.Render("worktree_roots:"))
-		fmt.Fprintf(w, "  %s\n", sBold.Render(entry))
+		fmt.Fprintf(w, "  %s\n", sBold.Render(indent+workingPath+": "+root))
 	case !shape.AppendableBlock:
 		printWorktreeRootsBlockReplacement(w, p, shape, workingPath, configuredKey, root)
 	case configured:
 		fmt.Fprintf(w, "  %s\n", sDim.Render("Replace this line in "+p.ConfigFile()+" so runs are created there:"))
-		fmt.Fprintf(w, "  %s\n", sBold.Render("  "+configuredKey+": "+configuredRoot))
+		fmt.Fprintf(w, "  %s\n", sBold.Render(indent+configuredKey+": "+configuredRoot))
 		fmt.Fprintf(w, "  %s\n", sDim.Render("with:"))
-		fmt.Fprintf(w, "  %s\n", sBold.Render("  "+configuredKey+": "+root))
+		fmt.Fprintf(w, "  %s\n", sBold.Render(indent+configuredKey+": "+root))
 	default:
 		fmt.Fprintf(w, "  %s\n", sDim.Render("Add this under the existing worktree_roots: in "+p.ConfigFile()+" so runs are created there:"))
-		fmt.Fprintf(w, "  %s\n", sBold.Render(entry))
+		fmt.Fprintf(w, "  %s\n", sBold.Render(indent+workingPath+": "+root))
 	}
+}
+
+// worktreeRootsEntryIndent is the indentation an entry line must carry: the one
+// the block's existing entries use, or two spaces when there are none to match.
+func worktreeRootsEntryIndent(shape config.GlobalConfigMapping) string {
+	if shape.EntryIndent > 0 {
+		return strings.Repeat(" ", shape.EntryIndent)
+	}
+	return "  "
 }
 
 // printWorktreeRootsBlockReplacement prints the block form of the whole

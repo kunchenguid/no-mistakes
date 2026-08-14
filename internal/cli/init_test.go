@@ -366,6 +366,82 @@ func TestPrintWorktreeRootGuidanceNamesTheEntryAsTheConfigSpellsIt(t *testing.T)
 	}
 }
 
+// TestPrintWorktreeRootGuidanceMatchesTheBlocksIndentation covers a config.yaml
+// indented with four spaces, which is a hand-maintained file's prerogative. The
+// entries of a block mapping all sit at one column, so an entry line added at
+// another one leaves a document YAML rejects outright - the daemon then refuses to
+// start and every command goes with it. The line named for replacement has the
+// same requirement in a milder form: at the wrong indentation it is not a line the
+// operator's file contains.
+func TestPrintWorktreeRootGuidanceMatchesTheBlocksIndentation(t *testing.T) {
+	dir := t.TempDir()
+	existingCheckout := filepath.Join(dir, "src", "repo1")
+	existingRoot := filepath.Join(dir, "work", "repo1-runs")
+	checkout := filepath.Join(dir, "src", "repo2")
+	root := filepath.Join(dir, "work", "repo2-runs")
+	block := "worktree_roots:\n    " + existingCheckout + ": " + existingRoot + "\n"
+
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.ConfigFile(), []byte(block), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second repository placed somewhere: the entry is added under the block.
+	var out bytes.Buffer
+	printWorktreeRootGuidance(&out, p, checkout, root)
+	entry := indentedYAMLLine(t, out.String(), checkout+": "+root)
+	merged := block + entry + "\n"
+	cfg, err := config.LoadGlobal(writeConfig(t, p, merged))
+	if err != nil {
+		t.Fatalf("config built by following the guidance does not load: %v\nmerged:\n%s", err, merged)
+	}
+	layout := worktrees.New(p, cfg.WorktreeRoots)
+	for checkoutPath, wantRoot := range map[string]string{existingCheckout: existingRoot, checkout: root} {
+		if configured, ok := layout.CustomRoot(checkoutPath); !ok || configured != wantRoot {
+			t.Errorf("merged config places %q at (%q, %v), want %q", checkoutPath, configured, ok, wantRoot)
+		}
+	}
+
+	// ... and an entry at the wrong indentation is why the guidance has to match:
+	// it is not another entry of that mapping at all.
+	if _, err := config.LoadGlobal(writeConfig(t, p, block+"  "+checkout+": "+root+"\n")); err == nil {
+		t.Error("an entry indented differently from its siblings loaded; matching the block would then be cosmetic")
+	}
+
+	// Re-pointing the checkout the block already has: the line named for
+	// replacement is the one the file contains.
+	var repoint bytes.Buffer
+	printWorktreeRootGuidance(&repoint, p, existingCheckout, root)
+	if named := indentedYAMLLine(t, repoint.String(), existingCheckout+": "+existingRoot); named != "    "+existingCheckout+": "+existingRoot {
+		t.Errorf("guidance named %q for replacement, which is not the line the config contains", named)
+	}
+	replacement := indentedYAMLLine(t, repoint.String(), existingCheckout+": "+root)
+	cfg, err = config.LoadGlobal(writeConfig(t, p, "worktree_roots:\n"+replacement+"\n"))
+	if err != nil {
+		t.Fatalf("re-pointed config does not load: %v", err)
+	}
+	if configured, ok := worktrees.New(p, cfg.WorktreeRoots).CustomRoot(existingCheckout); !ok || configured != root {
+		t.Errorf("re-pointed config places %q at (%q, %v), want %q", existingCheckout, configured, ok, root)
+	}
+}
+
+// indentedYAMLLine returns the printed line whose content is want, with its
+// indentation intact and the terminal styling and display margin removed.
+func indentedYAMLLine(t *testing.T, rendered, want string) string {
+	t.Helper()
+	for _, raw := range strings.Split(ansiEscape.ReplaceAllString(rendered, ""), "\n") {
+		line := strings.TrimPrefix(raw, "  ")
+		if strings.TrimSpace(line) == want {
+			return line
+		}
+	}
+	t.Fatalf("guidance never printed %q as a line of its own, got:\n%s", want, rendered)
+	return ""
+}
+
 // TestPrintWorktreeRootGuidanceReplacesAKeyWithNoBlockToAddTo covers the shapes
 // that have the key but no block mapping to add an entry to: `worktree_roots: {}`,
 // an inline `worktree_roots: {<checkout>: <root>}`, and `worktree_roots:` with

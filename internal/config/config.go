@@ -1345,6 +1345,10 @@ type GlobalConfigMappingEntry struct {
 // continuation of the mapping at all - YAML rejects the document with "did not
 // find expected key" - and after a valueless `key:` the safe edit is the same
 // replacement, so both are reported as not appendable.
+//
+// Indentation: siblings of a block mapping all sit at the same column, so an
+// entry line added at a different one is rejected the same way. The document is
+// hand-maintained, so its indentation is whatever its operator chose.
 type GlobalConfigMapping struct {
 	// Present reports that the key is in the document, whatever its value.
 	Present bool
@@ -1352,6 +1356,11 @@ type GlobalConfigMapping struct {
 	// AppendableBlock reports that one more indented entry line under the key is
 	// a valid edit.
 	AppendableBlock bool
+
+	// EntryIndent is the column the key's entries start at, counted from zero, so
+	// an added or replaced entry line matches its siblings. Zero when the key has
+	// no entries to match.
+	EntryIndent int
 
 	// Line is the document line that spells the key, as written, so guidance can
 	// name the line to replace. Empty when the key's value spans further lines.
@@ -1400,6 +1409,9 @@ func InspectGlobalConfigMapping(path, key string) GlobalConfigMapping {
 					Key:   value.Content[j].Value,
 					Value: value.Content[j+1].Value,
 				})
+			}
+			if found.AppendableBlock && len(value.Content) > 0 && value.Content[0].Column > 1 {
+				found.EntryIndent = value.Content[0].Column - 1
 			}
 		}
 		if !found.AppendableBlock {
