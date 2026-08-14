@@ -854,7 +854,13 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	// here on is inert for this run.
 	gateDir := m.paths.RepoDir(repo.ID)
 	layout := worktrees.New(m.paths, globalCfg.WorktreeRoots)
-	if err := layout.ValidateCheckout(repo.WorkingPath, registeredCheckouts(m.db)...); err != nil {
+	checkouts, err := registeredCheckouts(m.db)
+	if err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("list registered checkouts: %s", err))
+		trackStartFailure("list_registered_checkouts")
+		return "", fmt.Errorf("list registered checkouts: %w", err)
+	}
+	if err := layout.ValidateCheckout(repo.WorkingPath, checkouts...); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("worktree placement: %s", err))
 		trackStartFailure("invalid_worktree_placement")
 		return "", fmt.Errorf("worktree placement: %w", err)

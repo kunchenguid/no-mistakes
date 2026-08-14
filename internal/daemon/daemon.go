@@ -613,7 +613,11 @@ func outsideDefaultWorktreesTree(p *paths.Paths, recorded []db.RunWorktree) []db
 // here on the next startup.
 func validatedWorktreeLayout(d *db.DB, p *paths.Paths, globalCfg *config.GlobalConfig) (*worktrees.Layout, error) {
 	layout := worktrees.New(p, globalCfg.WorktreeRoots)
-	if err := layout.Validate(registeredCheckouts(d)...); err != nil {
+	checkouts, err := registeredCheckouts(d)
+	if err != nil {
+		return nil, fmt.Errorf("list registered checkouts for worktree placement: %w", err)
+	}
+	if err := layout.Validate(checkouts...); err != nil {
 		return nil, fmt.Errorf("configured worktree placement is unusable: %w", err)
 	}
 	return layout, nil
@@ -621,18 +625,16 @@ func validatedWorktreeLayout(d *db.DB, p *paths.Paths, globalCfg *config.GlobalC
 
 // registeredCheckouts lists the working paths of every registered repository, so
 // placement validation can name a checkout a configured root would dirty. A
-// failure to read them is not fatal: validation then judges what it can from the
-// configuration alone rather than refusing to start over an unrelated fault.
-func registeredCheckouts(d *db.DB) []string {
+// failure to read them is fatal to the caller's guard: an unreadable repository
+// list means the guard cannot see the set it protects, and a guard that cannot
+// see its set must refuse rather than silently validate against nothing — the
+// database has already opened and migrated by the time any caller runs, so the
+// failure is never routine.
+func registeredCheckouts(d *db.DB) ([]string, error) {
 	if d == nil {
-		return nil
+		return nil, nil
 	}
-	checkouts, err := d.RepoWorkingPaths()
-	if err != nil {
-		slog.Warn("failed to list repositories while checking configured worktree placement", "error", err)
-		return nil
-	}
-	return checkouts
+	return d.RepoWorkingPaths()
 }
 
 // reportUnusableWorktreeRoots names configured placements that will not do
