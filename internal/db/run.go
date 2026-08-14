@@ -23,7 +23,8 @@ type Run struct {
 	// internal/worktrees). Every consumer of an existing run's worktree reads
 	// it instead of re-deriving placement, so editing that configuration while
 	// a run exists cannot retarget the run. It is nil only for runs recorded
-	// before the column existed; Layout.RecordedDir derives those.
+	// before the column existed, which worktrees.RecordedDir resolves to the
+	// default placement.
 	WorktreeDir      *string
 	SubmittedHeadSHA *string
 	// NoMistakesVersion and NoMistakesBuildSHA identify the binary that created
@@ -92,7 +93,7 @@ func scanRun(row interface {
 
 // WorktreePath returns the recorded worktree directory of this run, or "" for
 // a run recorded before placement was durable. Callers resolve the empty case
-// through worktrees.Layout.RecordedDir rather than treating it as a path.
+// through worktrees.RecordedDir rather than treating it as a path.
 func (r *Run) WorktreePath() string {
 	if r == nil || r.WorktreeDir == nil {
 		return ""

@@ -61,32 +61,44 @@ func (l *Layout) Dir(repoID, workingPath, runID string) string {
 	return l.paths.WorktreeDir(repoID, runID)
 }
 
-// RecordedDir returns the worktree directory of an EXISTING run.
+// RecordedDir returns the worktree directory of an EXISTING run, and needs no
+// configuration to do it.
 //
 // recorded is the run's runs.worktree_dir: the placement resolved by Dir when
-// the run was created. Reading it back rather than re-deriving it is what
-// makes an edit to worktree_roots inert for runs that already exist - resume,
-// step diff, startup cleanup, process reaping and eject all keep addressing
-// the directory the run was actually created in, so a mid-flight edit can
-// neither strand a parked run nor point a removal at a path it never created.
+// the run was created. Reading it back rather than re-deriving it is what makes
+// an edit to worktree_roots inert for runs that already exist - resume, step
+// diff, startup cleanup, process reaping and eject all keep addressing the
+// directory the run was actually created in, so a mid-flight edit can neither
+// strand a parked run nor point a removal at a path it never created.
 //
-// An empty value is a run recorded before placement was durable. Those are
-// derived from the current layout, exactly as every consumer did before the
-// column existed, which is the closest thing to the truth still available for
-// them.
-func (l *Layout) RecordedDir(recorded, repoID, workingPath, runID string) string {
+// An empty value is the default placement, never a configured root. Such a row
+// was written before this column existed, and the column shipped with
+// worktree_roots itself, so a run that recorded nothing predates the setting and
+// can only have run under <NM_HOME>/worktrees. Consulting the current
+// configuration for it would send resume and cleanup to a directory that run
+// never used, and adding an entry for the checkout would be enough to strand a
+// parked run upgraded across that boundary.
+//
+// Because neither branch reads configuration, a caller that only needs to find
+// an existing run's worktree keeps working while the global config is
+// unreadable.
+func RecordedDir(p *paths.Paths, recorded, repoID, runID string) string {
 	if trimmed := strings.TrimSpace(recorded); trimmed != "" {
 		return filepath.Clean(trimmed)
 	}
-	return l.Dir(repoID, workingPath, runID)
+	return p.WorktreeDir(repoID, runID)
 }
 
-// Validate rejects the two placements a worktree_roots entry can name that do
-// not work, and that internal/config cannot judge: it validates every entry it
-// can on its own (absolute paths, two checkouts sharing a root, a root equal to
-// its checkout), but it never learns where NM_HOME is, and it is not the owner
-// of what a run worktree does to the checkout it belongs to. The daemon refuses
-// to start on either, and run creation refuses the same way.
+// CheckPlacement reports why root cannot hold the run worktrees of the
+// repository checked out at checkout, or nil when it can. It is the one owner of
+// that policy, so `init --worktree-root` refuses exactly what the daemon refuses
+// to start on: a divergence there would print an entry that stops the daemon
+// once pasted, and every command starts the daemon.
+//
+// internal/config validates every worktree_roots entry it can judge on its own
+// (absolute paths, two checkouts sharing a root, a root equal to its checkout),
+// but it never learns where NM_HOME is, and it is not the owner of what a run
+// worktree does to the checkout it belongs to. Those two are this policy:
 //
 // A root inside NM_HOME collides with the daemon's own state. Inside
 // <NM_HOME>/worktrees the collision is total: those entries are the ULID-named
@@ -104,9 +116,22 @@ func (l *Layout) RecordedDir(recorded, repoID, workingPath, runID string) string
 // that checkout for as long as a run is executing, which makes it dirty. A
 // dirty checkout blocks the guarded branch synchronization in
 // internal/branchsync, so the operator cannot take a validated branch back
-// while any run is in flight - the placement does not merely look odd, it
-// stops the workflow it is part of. `init --worktree-root` already refuses it;
-// this is the same rule for a hand-written entry.
+// while any run is in flight - the placement does not merely look odd, it stops
+// the workflow it is part of. An empty checkout skips that half, for a caller
+// that does not know which checkout the root is for.
+func CheckPlacement(p *paths.Paths, checkout, root string) error {
+	home := p.Root()
+	if Contains(home, root) {
+		return fmt.Errorf("%q is inside no-mistakes' own state directory (%q), where it would collide with the daemon's worktrees, logs, or gates; choose a directory outside it", root, home)
+	}
+	if strings.TrimSpace(checkout) != "" && Contains(checkout, root) {
+		return fmt.Errorf("%q is inside the checkout whose runs it would hold, which leaves that checkout with an untracked run worktree while a run executes and blocks branch synchronization; choose a directory outside the checkout", root)
+	}
+	return nil
+}
+
+// Validate rejects every configured entry CheckPlacement refuses. The daemon
+// refuses to start on one, and run creation refuses the same way.
 //
 // A key matching no registered repository stays a startup warning, because it
 // places nothing at all.
@@ -114,16 +139,11 @@ func (l *Layout) Validate() error {
 	if len(l.roots) == 0 {
 		return nil
 	}
-	home := l.paths.Root()
 	checkouts := l.Checkouts()
 	sort.Strings(checkouts)
 	for _, checkout := range checkouts {
-		root := l.roots[checkout]
-		if Contains(home, root) {
-			return fmt.Errorf("invalid worktree_roots[%q]: run worktree root %q is inside no-mistakes' own state directory (%q), where it would collide with the daemon's worktrees, logs, or gates; choose a directory outside it", checkout, root, home)
-		}
-		if Contains(checkout, root) {
-			return fmt.Errorf("invalid worktree_roots[%q]: run worktree root %q is inside the checkout whose runs it would hold, which leaves that checkout with an untracked run worktree while a run executes and blocks branch synchronization; choose a directory outside the checkout", checkout, root)
+		if err := CheckPlacement(l.paths, checkout, l.roots[checkout]); err != nil {
+			return fmt.Errorf("invalid worktree_roots[%q]: run worktree root %w", checkout, err)
 		}
 	}
 	return nil

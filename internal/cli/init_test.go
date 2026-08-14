@@ -39,12 +39,24 @@ func TestResolveWorktreeRoot(t *testing.T) {
 // The placements the config would accept but that defeat the flag: inside the
 // directory no-mistakes already owns, inside the repository being initialized,
 // or a path that is not a directory at all.
+//
+// Every NM_HOME placement has to be refused here, not just the worktrees
+// subdirectory: the daemon refuses to start on any of them, and every command
+// starts the daemon, so printing such an entry would hand the operator a paste
+// that takes their whole CLI down.
 func TestResolveWorktreeRootRejectsUnusablePlacements(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
 	repoDir := setupTestRepo(t)
 
-	if _, err := resolveWorktreeRoot(p, repoDir, filepath.Join(p.WorktreesDir(), "runs")); err == nil {
-		t.Error("expected error for a root inside the default worktrees directory")
+	for name, root := range map[string]string{
+		"the default worktrees directory": filepath.Join(p.WorktreesDir(), "runs"),
+		"the run log directory":           p.LogsDir(),
+		"the gates directory":             p.ReposDir(),
+		"NM_HOME itself":                  p.Root(),
+	} {
+		if _, err := resolveWorktreeRoot(p, repoDir, root); err == nil {
+			t.Errorf("expected error for a root inside %s (%q)", name, root)
+		}
 	}
 	if _, err := resolveWorktreeRoot(p, repoDir, filepath.Join(repoDir, "runs")); err == nil {
 		t.Error("expected error for a root inside the repository being initialized")

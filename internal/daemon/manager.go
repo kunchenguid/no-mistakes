@@ -92,21 +92,6 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 	}
 }
 
-// worktreeLayout resolves where this machine places run worktrees, which is
-// operator configuration in the global config rather than repository state
-// (see internal/worktrees). It is read per use so an edit takes effect on the
-// next run instead of at the next daemon restart. Runs that already exist are
-// unaffected by such an edit: their placement was recorded when they were
-// created, and this layout only derives it back for rows written before that
-// was durable (Layout.RecordedDir).
-func (m *RunManager) worktreeLayout() (*worktrees.Layout, error) {
-	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
-	if err != nil {
-		return nil, fmt.Errorf("load global config: %w", err)
-	}
-	return worktrees.New(m.paths, globalCfg.WorktreeRoots), nil
-}
-
 type recoveredRunPlan struct {
 	run     *db.Run
 	repo    *db.Repo
@@ -123,11 +108,6 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 		slog.Error("failed to list active runs for recovery", "error", err)
 		return nil
 	}
-	layout, err := m.worktreeLayout()
-	if err != nil {
-		slog.Error("failed to resolve worktree placement for recovery", "error", err)
-		return nil
-	}
 	plans := make([]recoveredRunPlan, 0, len(runs))
 	branchCounts := make(map[string]int, len(runs))
 	for _, run := range runs {
@@ -138,7 +118,7 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 			slog.Warn("active run cannot be safely resumed", "run_id", run.ID, "error", "conflicting active run for branch")
 			continue
 		}
-		plan, err := m.prepareRecoveredRun(ctx, layout, run)
+		plan, err := m.prepareRecoveredRun(ctx, run)
 		if err != nil {
 			slog.Warn("active run cannot be safely resumed", "run_id", run.ID, "error", err)
 			continue
@@ -148,7 +128,7 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 	return plans
 }
 
-func (m *RunManager) prepareRecoveredRun(ctx context.Context, layout *worktrees.Layout, run *db.Run) (*recoveredRunPlan, error) {
+func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*recoveredRunPlan, error) {
 	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince == nil || run.Branch == "" {
 		return nil, fmt.Errorf("run is not a parked running run")
 	}
@@ -159,7 +139,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, layout *worktrees.
 	if repo == nil {
 		return nil, fmt.Errorf("run repository is missing")
 	}
-	workDir := layout.RecordedDir(run.WorktreePath(), repo.ID, repo.WorkingPath, run.ID)
+	workDir := worktrees.RecordedDir(m.paths, run.WorktreePath(), repo.ID, run.ID)
 	if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("worktree is missing")
 	}

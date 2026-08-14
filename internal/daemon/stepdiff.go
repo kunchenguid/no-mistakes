@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 // maxStepDiffBytes bounds one fix-review diff response. The IPC transport
@@ -42,12 +43,7 @@ func (m *RunManager) StepDiff(ctx context.Context, runID string) (string, bool, 
 		return "", false, fmt.Errorf("repo not found for run %s", runID)
 	}
 
-	layout, err := m.worktreeLayout()
-	if err != nil {
-		return "", false, err
-	}
-
-	diff, err := git.DiffHead(ctx, layout.RecordedDir(run.WorktreePath(), repo.ID, repo.WorkingPath, run.ID))
+	diff, err := git.DiffHead(ctx, worktrees.RecordedDir(m.paths, run.WorktreePath(), repo.ID, run.ID))
 	if err != nil {
 		return "", false, fmt.Errorf("diff worktree: %w", err)
 	}

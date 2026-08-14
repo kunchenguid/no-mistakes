@@ -1028,6 +1028,11 @@ func TestEjectCleansUpWorktreesInConfiguredRoot(t *testing.T) {
 
 	root := filepath.Join(t.TempDir(), "repo-runs")
 	ownRunDir := filepath.Join(root, ownRun.ID)
+	// The run records where it was placed, the way startRun does; that record is
+	// what makes this directory ours to remove.
+	if err := d.SetRunWorktreeDir(ownRun.ID, ownRunDir); err != nil {
+		t.Fatalf("record placement: %v", err)
+	}
 	// A run-shaped directory this repository never created: a leftover from
 	// another tool, or from a repository that used to point here.
 	foreignRunDir := filepath.Join(root, "01JZ8XQ7V6K9M3B0T5N2R4C8YD")

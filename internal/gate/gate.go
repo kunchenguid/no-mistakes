@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -346,19 +345,13 @@ func removeRepoWorktrees(d *db.DB, p *paths.Paths, repo *db.Repo) {
 	defaultDir := filepath.Join(p.WorktreesDir(), repo.ID)
 	os.RemoveAll(defaultDir)
 
-	globalCfg, err := config.LoadGlobal(p.ConfigFile())
-	if err != nil {
-		slog.Warn("failed to load configured worktree roots during eject", "repo_id", repo.ID, "error", err)
-		globalCfg = config.DefaultGlobalConfig()
-	}
-	layout := worktrees.New(p, globalCfg.WorktreeRoots)
 	runs, err := d.GetRunsByRepo(repo.ID)
 	if err != nil {
 		slog.Warn("failed to list runs while removing worktrees during eject", "repo_id", repo.ID, "error", err)
 		return
 	}
 	for _, run := range runs {
-		path := layout.RecordedDir(run.WorktreePath(), repo.ID, repo.WorkingPath, run.ID)
+		path := worktrees.RecordedDir(p, run.WorktreePath(), repo.ID, run.ID)
 		if worktrees.Contains(defaultDir, path) {
 			continue // already removed with the directory we own outright
 		}

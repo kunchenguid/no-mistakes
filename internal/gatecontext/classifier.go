@@ -5,13 +5,11 @@ package gatecontext
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
-	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -59,15 +57,11 @@ type Result struct {
 
 // Inspector combines canonical managed Git identity with authenticated IPC
 // peer ancestry. ParentPID exists for deterministic tests; production callers
-// leave it nil to use the platform process table. Worktrees is likewise
-// test-only: it describes where run worktrees live (see internal/worktrees),
-// and production callers leave it nil so the operator's configured placement
-// is read from the global config.
+// leave it nil to use the platform process table.
 type Inspector struct {
 	DB        *db.DB
 	Paths     *paths.Paths
 	ParentPID func(int) (int, error)
-	Worktrees *worktrees.Layout
 }
 
 // Inspect classifies a caller without mutating repositories, runs, refs,
@@ -136,28 +130,14 @@ func (i Inspector) Inspect(ctx context.Context, req Request) (Result, error) {
 	// adapter omits it. Attach run/phase only when the worktree path and active
 	// DB record agree exactly; otherwise omit them rather than guessing.
 	if result.ManagedGit && result.RunID == "" && managedRepo != nil && worktreeRoot != "" {
-		// The repository's checkout path is what decides whether its run
-		// worktrees live in a configured root rather than under NM_HOME, so
-		// the comparison is made through the same placement seam that created
-		// them.
-		// A config this process cannot read costs only the run/phase names in
-		// the refusal message, which is already optional here. Degrading to
-		// the refusal we have beats turning an unrelated config fault into a
-		// classification error at every gate boundary.
-		layout := i.Worktrees
-		if layout == nil {
-			globalCfg, err := config.LoadGlobal(i.Paths.ConfigFile())
-			if err != nil {
-				slog.Warn("gate execution context: worktree placement unavailable; omitting run metadata", "error", err)
-				return result, nil
-			}
-			layout = worktrees.New(i.Paths, globalCfg.WorktreeRoots)
-		}
+		// Where a run's worktree is is recorded on the run, so the comparison
+		// reads that placement rather than deriving one from configuration this
+		// process may not be able to read (see worktrees.RecordedDir).
 		for _, step := range active {
 			if step.repoID != managedRepo.ID {
 				continue
 			}
-			want := layout.RecordedDir(step.worktreeDir, managedRepo.ID, managedRepo.WorkingPath, step.runID)
+			want := worktrees.RecordedDir(i.Paths, step.worktreeDir, managedRepo.ID, step.runID)
 			if sameCanonicalPath(worktreeRoot, want) {
 				result.RunID = step.runID
 				result.Phase = step.phase

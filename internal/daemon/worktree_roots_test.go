@@ -615,16 +615,60 @@ func TestPrepareRecoveredRun_LocatesThePlacementItsRunRecorded(t *testing.T) {
 	configureWorktreeRoot(t, p, repo.WorkingPath, filepath.Join(t.TempDir(), "somewhere-else"))
 
 	m := NewRunManager(d, p, nil)
-	layout, err := m.worktreeLayout()
-	if err != nil {
-		t.Fatal(err)
-	}
 	stored, err := d.GetRun(run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.prepareRecoveredRun(context.Background(), layout, stored); err != nil && strings.Contains(err.Error(), "worktree is missing") {
+	if _, err := m.prepareRecoveredRun(context.Background(), stored); err != nil && strings.Contains(err.Error(), "worktree is missing") {
 		t.Fatalf("recovery lost the run's recorded worktree %q: %v", created, err)
+	}
+}
+
+// TestPrepareRecoveredRun_UnrecordedRunKeepsItsDefaultPlacement is the upgrade
+// path: a run parked at a gate when the operator upgraded to a build that
+// records placement has no recorded value, and then they add a worktree_roots
+// entry for that checkout - which `init --worktree-root` invites. Its worktree
+// is in the default tree, where the previous build put it, and resolving it
+// through the new entry would report it missing, fail the parked run as a crash,
+// and let the default-tree walk delete the worktree it was still using.
+func TestPrepareRecoveredRun_UnrecordedRunKeepsItsDefaultPlacement(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	repo, headSHA := setupTestGitRepo(t, p, d, "repo1")
+	run, err := d.InsertRun(repo.ID, "feature", headSHA, headSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Written by the previous build: a worktree in the default tree and no
+	// recorded placement.
+	legacyWT := p.WorktreeDir(repo.ID, run.ID)
+	gitCmd(t, p.RepoDir(repo.ID), "worktree", "add", "--detach", legacyWT, headSHA)
+	configureWorktreeRoot(t, p, repo.WorkingPath, filepath.Join(t.TempDir(), "repo-runs"))
+
+	stored, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.WorktreePath() != "" {
+		t.Fatalf("fixture recorded a placement %q, want the pre-upgrade NULL", stored.WorktreePath())
+	}
+	if _, err := NewRunManager(d, p, nil).prepareRecoveredRun(context.Background(), stored); err != nil && strings.Contains(err.Error(), "worktree is missing") {
+		t.Fatalf("recovery looked past the default placement of a run that recorded none: %v", err)
 	}
 }
 

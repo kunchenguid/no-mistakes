@@ -75,38 +75,28 @@ func TestLayout_MatchesUnnormalizedAndSymlinkedCheckout(t *testing.T) {
 
 // RecordedDir is what makes a worktree_roots edit inert for runs that already
 // exist: the directory a run was created in is recorded with the run, so every
-// later consumer keeps addressing it no matter what the configuration says now.
-func TestLayout_RecordedDirIgnoresLaterConfiguration(t *testing.T) {
+// later consumer keeps addressing it, and no configuration is consulted at all.
+func TestRecordedDirReadsBackWhatTheRunRecorded(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
-	dir := t.TempDir()
-	checkout := filepath.Join(dir, "src", "repo1")
-	created := filepath.Join(dir, "work", "repo1-runs", "run1")
+	created := filepath.Join(t.TempDir(), "work", "repo1-runs", "run1")
 
-	// The operator has since pointed this checkout somewhere else entirely.
-	edited := worktrees.New(p, map[string]string{checkout: filepath.Join(dir, "work", "elsewhere")})
-	if got := edited.RecordedDir(created, "repo1", checkout, "run1"); got != created {
+	if got := worktrees.RecordedDir(p, created, "repo1", "run1"); got != created {
 		t.Errorf("RecordedDir() = %q, want the recorded %q", got, created)
-	}
-	// ... and back to the default placement, which must not win either.
-	if got := worktrees.New(p, nil).RecordedDir(created, "repo1", checkout, "run1"); got != created {
-		t.Errorf("RecordedDir() under default placement = %q, want the recorded %q", got, created)
 	}
 }
 
-// A run recorded before placement was durable has nothing to read back, so it
-// falls back to what every consumer derived before the record existed.
-func TestLayout_RecordedDirDerivesWhenNothingWasRecorded(t *testing.T) {
+// A run that recorded nothing predates the column, and the column shipped with
+// worktree_roots, so such a run can only have run in the default tree. Resolving
+// it through a configured root would be resolving it to a directory it never
+// used - and adding an entry for the checkout is exactly what `init
+// --worktree-root` invites an operator to do right after upgrading.
+func TestRecordedDirResolvesUnrecordedRunsToTheDefaultTree(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
-	dir := t.TempDir()
-	checkout := filepath.Join(dir, "src", "repo1")
-	configured := filepath.Join(dir, "work", "repo1-runs")
-	layout := worktrees.New(p, map[string]string{checkout: configured})
 
-	if got, want := layout.RecordedDir("", "repo1", checkout, "run1"), filepath.Join(configured, "run1"); got != want {
-		t.Errorf("RecordedDir(\"\") = %q, want the derived %q", got, want)
-	}
-	if got, want := layout.RecordedDir("  ", "repo2", filepath.Join(dir, "src", "repo2"), "run2"), p.WorktreeDir("repo2", "run2"); got != want {
-		t.Errorf("RecordedDir(blank) = %q, want the derived %q", got, want)
+	for _, recorded := range []string{"", "  "} {
+		if got, want := worktrees.RecordedDir(p, recorded, "repo1", "run1"), p.WorktreeDir("repo1", "run1"); got != want {
+			t.Errorf("RecordedDir(%q) = %q, want the default placement %q", recorded, got, want)
+		}
 	}
 }
 

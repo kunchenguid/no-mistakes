@@ -178,8 +178,10 @@ var migrationStatements = []string{
 	// edited while a run exists: recording it makes such an edit inert for
 	// runs already in flight instead of retargeting their resume, diff, and
 	// cleanup at a directory they were never created in. Nullable for rows
-	// written before the column existed, which internal/worktrees derives from
-	// the current layout at read time (Layout.RecordedDir).
+	// written before the column existed, which resolve to the default
+	// <NM_HOME>/worktrees placement at read time - the only one they can have,
+	// since this column shipped with the setting that moves it
+	// (worktrees.RecordedDir).
 	`ALTER TABLE runs ADD COLUMN worktree_dir TEXT`,
 	// Build identity is nullable for historical records. New runs record the
 	// version and embedded build SHA used by the running binary.

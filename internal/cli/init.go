@@ -118,17 +118,16 @@ func newInitCmd() *cobra.Command {
 // against the current directory here rather than accepted into the config,
 // where it would be read by a daemon with an unrelated working directory.
 //
-// It also refuses the two placements that are accepted by the config yet
-// defeat the point of the flag: a root inside the checkout being initialized
-// would put every run worktree inside the repository under validation, and a
-// root inside <NM_HOME>/worktrees is the default placement the flag exists to
-// leave, in a directory no-mistakes cleans by its own rules.
+// It also refuses every placement the daemon refuses to start on, through the
+// same owner (worktrees.CheckPlacement): a root inside NM_HOME, and a root
+// inside the checkout being initialized.
 //
-// Finally it refuses a root another checkout has already claimed. The loader
-// rejects two checkouts sharing one, and the daemon refuses to start on a
-// config it cannot load, so printing that entry would hand the operator a
-// paste that stops the daemon instead of placing anything - the failure belongs
-// here, while they can still pick another directory.
+// Finally it refuses a root another checkout has already claimed, which the
+// config loader rejects. Both belong here rather than only in the daemon: the
+// daemon refuses to start on a config it cannot load, and every command starts
+// the daemon, so printing that entry would hand the operator a paste that takes
+// their whole CLI down instead of placing anything - the failure belongs where
+// they can still pick another directory.
 func resolveWorktreeRoot(p *paths.Paths, workDir, root string) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -142,12 +141,9 @@ func resolveWorktreeRoot(p *paths.Paths, workDir, root string) (string, error) {
 	if info, err := os.Stat(abs); err == nil && !info.IsDir() {
 		return "", fmt.Errorf("init: --worktree-root %s is not a directory", abs)
 	}
-	if worktrees.Contains(p.WorktreesDir(), abs) {
-		return "", fmt.Errorf("init: --worktree-root %s is inside the default worktrees directory %s", abs, p.WorktreesDir())
-	}
-	gitRoot, gitRootErr := git.FindMainRepoRoot(workDir)
-	if gitRootErr == nil && worktrees.Contains(gitRoot, abs) {
-		return "", fmt.Errorf("init: --worktree-root %s is inside the repository %s", abs, gitRoot)
+	gitRoot, _ := git.FindMainRepoRoot(workDir)
+	if err := worktrees.CheckPlacement(p, gitRoot, abs); err != nil {
+		return "", fmt.Errorf("init: --worktree-root %w", err)
 	}
 	if claimant, claimed := checkoutClaimingWorktreeRoot(p, gitRoot, abs); claimed {
 		return "", fmt.Errorf("init: --worktree-root %s is already the worktree root of %s; each checkout needs its own root", abs, claimant)
