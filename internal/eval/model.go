@@ -185,6 +185,7 @@ type Evaluation struct {
 	CompletedAt      int64  `json:"completed_at"`
 	Status           string `json:"status"`
 	Error            string `json:"error,omitempty"`
+	HasFindingGold   bool   `json:"has_finding_gold"`
 	GoldCount        int    `json:"gold_count"`
 	TruePositive     int    `json:"true_positive"`
 	FalseNegative    int    `json:"false_negative"`
@@ -244,9 +245,10 @@ func SummarizeEvaluations(evaluations []Evaluation) EvaluationSummary {
 		if evaluation.TokensReported {
 			summary.TokensReported++
 		}
+		hasFindingGold := evaluation.HasFindingGold || evaluation.GoldCount > 0
 		if evaluation.Status != "completed" {
 			summary.Failures++
-			if evaluation.GoldCount > 0 {
+			if hasFindingGold {
 				summary.Labeled++
 				summary.FalseNegative += evaluation.GoldCount
 			}
@@ -254,7 +256,7 @@ func SummarizeEvaluations(evaluations []Evaluation) EvaluationSummary {
 			continue
 		}
 		summary.Pending += evaluation.Pending
-		if evaluation.GoldCount == 0 {
+		if !hasFindingGold {
 			continue
 		}
 		summary.Labeled++

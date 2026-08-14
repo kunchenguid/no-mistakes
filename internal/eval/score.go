@@ -72,7 +72,7 @@ func firstUnusedMatch(gold FindingGold, candidate []types.Finding, used []bool) 
 }
 
 func sameUnderlyingIssue(gold FindingGold, finding types.Finding) bool {
-	if gold.ID != "" && gold.ID == finding.ID {
+	if gold.ID != "" && gold.ID == finding.ID && !isRoundLocalFindingID(gold.ID) {
 		return true
 	}
 	goldFile, goldDesc := normalizeIssue(gold.File, gold.Description)
@@ -81,6 +81,26 @@ func sameUnderlyingIssue(gold FindingGold, finding types.Finding) bool {
 		return false
 	}
 	return goldFile == candFile && goldDesc == candDesc
+}
+
+func isRoundLocalFindingID(id string) bool {
+	for _, prefix := range []string{"review-", "user-"} {
+		suffix, ok := strings.CutPrefix(id, prefix)
+		if !ok || suffix == "" {
+			continue
+		}
+		allDigits := true
+		for _, char := range suffix {
+			if char < '0' || char > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeIssue(file, description string) (string, string) {

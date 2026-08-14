@@ -284,10 +284,35 @@ func TestBaselineForRoundIncludesOnlyCompleteReviewInvocationMetrics(t *testing.
 	}
 }
 
+func TestScoreCandidateDoesNotMatchRoundLocalFindingIDsAcrossReviews(t *testing.T) {
+	labels := Labels{Findings: []FindingGold{{
+		ID:          "review-1",
+		Kind:        GoldTruePositive,
+		File:        "old.go",
+		Description: "closes the response body too early",
+	}}}
+	candidate := `{"findings":[{"id":"review-1","file":"new.go","description":"drops a database error"}]}`
+
+	score := ScoreCandidate(labels, candidate)
+	if score.TruePositive != 0 || score.FalseNegative != 1 || score.Pending != 1 {
+		t.Fatalf("score = %#v, want unrelated ordinal-ID finding left pending", score)
+	}
+}
+
+func TestScoreCandidateMatchesDurableFindingIDs(t *testing.T) {
+	labels := Labels{Findings: []FindingGold{{ID: "issue-response-lifecycle", Kind: GoldTruePositive, File: "old.go", Description: "old wording"}}}
+	candidate := `{"findings":[{"id":"issue-response-lifecycle","file":"new.go","description":"clearer wording"}]}`
+
+	score := ScoreCandidate(labels, candidate)
+	if score.TruePositive != 1 || score.FalseNegative != 0 || score.Pending != 0 {
+		t.Fatalf("score = %#v, want durable ID match", score)
+	}
+}
+
 func TestSummarizeEvaluationsScoresFindingGoldAndLeavesUnmatchedPending(t *testing.T) {
 	summary := SummarizeEvaluations([]Evaluation{
-		{CaseID: "fix-gold", Candidate: "claude+test", Status: "completed", GoldCount: 1, TruePositive: 1},
-		{CaseID: "fix-gold", Candidate: "claude+test", Status: "completed", GoldCount: 1, FalseNegative: 1},
+		{CaseID: "fix-gold", Candidate: "claude+test", Status: "completed", HasFindingGold: true, GoldCount: 1, TruePositive: 1},
+		{CaseID: "fix-gold", Candidate: "claude+test", Status: "completed", HasFindingGold: true, GoldCount: 1, FalseNegative: 1},
 		{CaseID: "approve-unlabeled", Candidate: "claude+test", Status: "completed", Pending: 2},
 		{CaseID: "approve-unlabeled", Candidate: "claude+test", Status: "completed"},
 	})
@@ -297,6 +322,19 @@ func TestSummarizeEvaluationsScoresFindingGoldAndLeavesUnmatchedPending(t *testi
 	}
 	if got := summary.Recall(); got != 0.5 {
 		t.Fatalf("recall = %v, want 0.5", got)
+	}
+}
+
+func TestSummarizeEvaluationsKeepsExplicitInvalidOnlyScoresLabeled(t *testing.T) {
+	summary := SummarizeEvaluations([]Evaluation{{
+		Candidate:      "claude+test",
+		Status:         "completed",
+		HasFindingGold: true,
+		FalsePositive:  1,
+	}})
+
+	if summary.Labeled != 1 || summary.FalsePositive != 1 {
+		t.Fatalf("summary = %#v, want explicit-invalid-only evaluation retained", summary)
 	}
 }
 

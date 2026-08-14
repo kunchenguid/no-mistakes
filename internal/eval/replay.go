@@ -184,6 +184,7 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 		StartedAt: started.Unix(),
 		Status:    "failed",
 	}
+	evaluation.HasFindingGold = c.Labels.HasGold()
 	evaluation.GoldCount = c.Labels.TrueIssueCount()
 	defer func() {
 		if evaluation.Status != "completed" {
