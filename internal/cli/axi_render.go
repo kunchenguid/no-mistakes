@@ -95,13 +95,15 @@ type stepView struct {
 
 // runView is a render-ready view of a pipeline run.
 type runView struct {
-	ID          string
-	Branch      string
-	Status      string
-	HeadSHA     string
-	PRURL       string
-	CIReady     bool
-	CIReadyNoCI bool
+	ID           string
+	Branch       string
+	Status       string
+	HeadSHA      string
+	TargetBranch string
+	TargetSHA    string
+	PRURL        string
+	CIReady      bool
+	CIReadyNoCI  bool
 	// AwaitingAgentSince is the unix-seconds time the run parked at a gate
 	// awaiting the driving agent, or nil when the run is not parked. It powers
 	// the top-level parked signal in the run object.
@@ -115,6 +117,8 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 		Branch:             r.Branch,
 		Status:             string(r.Status),
 		HeadSHA:            r.HeadSHA,
+		TargetBranch:       r.TargetBranch,
+		TargetSHA:          r.TargetSHA,
 		CIReady:            r.CIReady,
 		CIReadyNoCI:        r.CIReadyNoCI,
 		AwaitingAgentSince: r.AwaitingAgentSince,
@@ -156,6 +160,8 @@ func runViewFromDB(r *db.Run, steps []*db.StepResult) runView {
 		Branch:             r.Branch,
 		Status:             string(r.Status),
 		HeadSHA:            r.HeadSHA,
+		TargetBranch:       r.TargetBranch,
+		TargetSHA:          r.TargetSHA,
 		AwaitingAgentSince: r.AwaitingAgentSince,
 	}
 	if r.PRURL != nil {
@@ -421,6 +427,12 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 		fields = append(fields, toon.Field{Key: "awaiting_agent", Value: formatParkedFor(*rv.AwaitingAgentSince)})
 	}
 	fields = append(fields, toon.Field{Key: "head", Value: shortSHA(rv.HeadSHA)})
+	if rv.TargetBranch != "" {
+		fields = append(fields, toon.Field{Key: "target_branch", Value: rv.TargetBranch})
+	}
+	if rv.TargetSHA != "" {
+		fields = append(fields, toon.Field{Key: "target_sha", Value: rv.TargetSHA})
+	}
 	if rv.PRURL != "" {
 		fields = append(fields, toon.Field{Key: "pr", Value: rv.PRURL})
 	}

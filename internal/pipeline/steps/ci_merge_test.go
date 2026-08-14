@@ -220,7 +220,7 @@ func TestCIStep_MergeConflictOnly_AutoFix(t *testing.T) {
 	}
 }
 
-func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
+func TestCIStep_MergeConflictAutoFixPromptUsesExplicitTargetTip(t *testing.T) {
 	t.Parallel()
 	upstream := t.TempDir()
 	gitCmd(t, upstream, "init", "--bare")
@@ -237,7 +237,16 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	gitCmd(t, dir, "commit", "-m", "initial")
 	baseSHA := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "remote", "add", "origin", upstream)
-	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "HEAD:master")
+
+	gitCmd(t, dir, "checkout", "-b", "test")
+	if err := os.WriteFile(filepath.Join(dir, "target.txt"), []byte("target base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "target.txt")
+	gitCmd(t, dir, "commit", "-m", "test target")
+	testStart := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "test")
 
 	gitCmd(t, dir, "checkout", "-b", "feature")
 	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
@@ -248,14 +257,14 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	featureHead := gitCmd(t, dir, "rev-parse", "HEAD")
 	gitCmd(t, dir, "push", "origin", "feature")
 
-	gitCmd(t, dir, "checkout", "main")
+	gitCmd(t, dir, "checkout", "test")
 	if err := os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("base updated\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitCmd(t, dir, "add", "shared.txt")
-	gitCmd(t, dir, "commit", "-m", "main update")
-	mainTip := gitCmd(t, dir, "rev-parse", "HEAD")
-	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "commit", "-m", "test update")
+	testTip := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "push", "origin", "test")
 	gitCmd(t, dir, "checkout", "feature")
 
 	checksJSON := `[{"name":"build","state":"SUCCESS","bucket":"pass"}]`
@@ -279,7 +288,9 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.Repo.UpstreamURL = upstream
 	sctx.Run.Branch = "refs/heads/feature"
-	sctx.Repo.DefaultBranch = "main"
+	sctx.Repo.DefaultBranch = "master"
+	sctx.Run.TargetBranch = "test"
+	sctx.Run.TargetSHA = testStart
 	sctx.Config.CITimeout = 30 * time.Second
 	sctx.Config.AutoFix = config.AutoFix{CI: 1}
 
@@ -296,10 +307,13 @@ func TestCIStep_MergeConflictAutoFixPromptUsesBaseBranchTip(t *testing.T) {
 	if capturedPrompt == "" {
 		t.Fatal("expected agent to receive a prompt")
 	}
-	if !strings.Contains(capturedPrompt, "base commit: "+mainTip) {
-		t.Fatalf("expected prompt to use base branch tip %s, got:\n%s", mainTip, capturedPrompt)
+	if !strings.Contains(capturedPrompt, "base commit: "+testTip) {
+		t.Fatalf("expected prompt to use target branch tip %s, got:\n%s", testTip, capturedPrompt)
 	}
-	if strings.Contains(capturedPrompt, "base commit: "+baseSHA) {
-		t.Fatalf("expected prompt to avoid merge-base %s, got:\n%s", baseSHA, capturedPrompt)
+	if !strings.Contains(capturedPrompt, "target branch: test") {
+		t.Fatalf("expected prompt to identify test target, got:\n%s", capturedPrompt)
+	}
+	if strings.Contains(capturedPrompt, "target branch: master") || strings.Contains(capturedPrompt, "base commit: "+baseSHA) {
+		t.Fatalf("expected prompt to avoid repository default %s, got:\n%s", baseSHA, capturedPrompt)
 	}
 }

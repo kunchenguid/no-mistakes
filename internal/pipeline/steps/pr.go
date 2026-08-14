@@ -60,8 +60,12 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if strings.HasPrefix(branch, "refs/heads/") {
 		branch = strings.TrimPrefix(branch, "refs/heads/")
 	}
-	if branch == sctx.Repo.DefaultBranch {
-		sctx.Log(fmt.Sprintf("skipping PR creation on default branch %s", branch))
+	targetBranch, targetSHA, _, err := runTargetIdentity(sctx)
+	if err != nil {
+		return nil, err
+	}
+	if branch == targetBranch {
+		sctx.Log(fmt.Sprintf("skipping PR creation on target branch %s", branch))
 		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	provider := scm.DetectProviderContext(ctx, sctx.Repo.UpstreamURL)
@@ -76,14 +80,17 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 
 	// Resolve the branch base so PR summaries cover the full branch delta.
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
-	content, err := s.buildPRContent(sctx, branch, baseSHA, scm.MaxPRBodyChars(provider))
+	baseSHA, err := resolveRunBranchBaseSHA(ctx, sctx)
+	if err != nil {
+		return nil, err
+	}
+	content, err := s.buildPRContent(sctx, branch, baseSHA, targetBranch, scm.MaxPRBodyChars(provider))
 	if err != nil {
 		return nil, err
 	}
 
-	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
-	existing, err := host.FindPR(ctx, branch, sctx.Repo.DefaultBranch)
+	sctx.Log(fmt.Sprintf("checking for existing pull request from %s into target %s@%s...", branch, targetBranch, shortSHA(targetSHA)))
+	existing, err := host.FindPR(ctx, branch, targetBranch)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +111,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 
 	sctx.Log("creating pull request...")
-	created, err := host.CreatePR(ctx, branch, sctx.Repo.DefaultBranch, scm.PRContent(content))
+	created, err := host.CreatePR(ctx, branch, targetBranch, scm.PRContent(content))
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +138,7 @@ func describePR(pr *scm.PR) string {
 	return ""
 }
 
-func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseSHA string, bodyLimit int) (prContent, error) {
+func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseSHA, targetBranch string, bodyLimit int) (prContent, error) {
 	ctx := sctx.Ctx
 	diffStat, _ := git.Run(ctx, sctx.WorkDir, "diff", "--stat", baseSHA+".."+sctx.Run.HeadSHA)
 	finalDiff, err := git.Run(ctx, sctx.WorkDir, "diff", "--name-status", baseSHA+".."+sctx.Run.HeadSHA)
@@ -146,7 +153,7 @@ Context:
 - branch: %s
 - base commit: %s
 - target commit: %s
-- default branch: %s
+- target branch: %s
 
 Rules:
 - Cover the full branch delta, not just the latest commit.
@@ -162,7 +169,7 @@ Diff stat:
 %s
 
 Final diff paths and statuses:
-%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, sctx.Repo.DefaultBranch, conventional.ReleaseTypeRule, diffStat, finalDiff, userIntentPromptSection(sctx), executionContextPromptSection())
+%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, targetBranch, conventional.ReleaseTypeRule, diffStat, finalDiff, userIntentPromptSection(sctx), executionContextPromptSection())
 
 	prompt += prBodyBudgetPromptSection(bodyLimit)
 
@@ -224,7 +231,7 @@ func (s *PRStep) buildPipelineSection(sctx *pipeline.StepContext) (pipelineMD, r
 		rounds[sr.ID] = r
 	}
 
-	pipelineMD, riskLine = BuildPipelineSummary(steps, rounds, sctx.Run.HeadSHA)
+	pipelineMD, riskLine = BuildPipelineSummaryForTarget(steps, rounds, sctx.Run.HeadSHA, sctx.Run.TargetBranch, sctx.Run.TargetSHA)
 	testingMD = BuildTestingSummaryForPR(steps, rounds, sctx.Repo.UpstreamURL, sctx.Run.HeadSHA, sctx.WorkDir, publishRunEvidence(sctx))
 	return pipelineMD, riskLine, testingMD
 }

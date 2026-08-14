@@ -138,6 +138,27 @@ func TestBuildPipelineSummary_EmitsStructuredStepAttestation(t *testing.T) {
 	}
 }
 
+func TestBuildPipelineSummary_AttestsRunTargetIdentity(t *testing.T) {
+	t.Parallel()
+	const targetSHA = "0123456789012345678901234567890123456789"
+	steps := []*db.StepResult{{ID: "review", StepName: types.StepReview, Status: types.StepStatusCompleted}}
+
+	got, _ := BuildPipelineSummaryForTarget(steps, nil, testPipelineHeadSHA, "test", targetSHA)
+	start := strings.Index(got, pipelineAttestationCommentPrefix)
+	if start < 0 {
+		t.Fatalf("pipeline summary missing attestation: %s", got)
+	}
+	start += len(pipelineAttestationCommentPrefix)
+	end := strings.Index(got[start:], pipelineAttestationCommentClosingToken)
+	var attestation pipelineAttestation
+	if end < 0 || json.Unmarshal([]byte(got[start:start+end]), &attestation) != nil {
+		t.Fatalf("pipeline target attestation is not valid JSON: %s", got)
+	}
+	if attestation.TargetBranch != "test" || attestation.TargetSHA != targetSHA {
+		t.Fatalf("attested target = %s@%s, want test@%s", attestation.TargetBranch, attestation.TargetSHA, targetSHA)
+	}
+}
+
 func TestBuildPipelineSummary_IncludesAllPipelineSteps(t *testing.T) {
 	steps := []*db.StepResult{
 		{ID: "s1", StepName: types.StepRebase, Status: types.StepStatusCompleted},

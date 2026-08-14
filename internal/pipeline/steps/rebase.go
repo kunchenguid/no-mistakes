@@ -18,7 +18,7 @@ import (
 )
 
 // RebaseStep syncs the pushed branch with the configured push target and the
-// latest default branch from upstream.
+// run's immutable parent-upstream target.
 type RebaseStep struct{}
 
 func (s *RebaseStep) Name() types.StepName { return types.StepRebase }
@@ -28,9 +28,21 @@ const forkBranchRefPrefix = "refs/remotes/no-mistakes-push/"
 func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	ctx := sctx.Ctx
 	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
-	defaultBranch := strings.TrimSpace(sctx.Repo.DefaultBranch)
-	if defaultBranch == "" {
-		defaultBranch = "main"
+	targetBranch, targetSHA, pinnedTarget, err := runTargetIdentity(sctx)
+	if err != nil {
+		return nil, err
+	}
+	if targetBranch == "" {
+		return nil, fmt.Errorf("run target branch is unavailable")
+	}
+	targetRef := "origin/" + targetBranch
+	if pinnedTarget {
+		resolved, resolveErr := git.ResolveRef(ctx, sctx.WorkDir, targetSHA)
+		if resolveErr != nil || !strings.EqualFold(strings.TrimSpace(resolved), targetSHA) {
+			return nil, fmt.Errorf("run target %s@%s is not readable", targetBranch, shortSHA(targetSHA))
+		}
+		targetRef = targetSHA
+		sctx.Log(fmt.Sprintf("target branch %s pinned at %s", targetBranch, targetSHA))
 	}
 	branchTarget := ""
 	pushRemote := resolveUpstreamURL(sctx)
@@ -49,8 +61,10 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	forcePush := isForcePushAgainstRemote(ctx, sctx.WorkDir, pushRemote, branch, branchTarget, sctx.Run.BaseSHA)
 
 	sctx.Log("fetching latest upstream state...")
-	if err := fetchRunUpstreamBranch(ctx, sctx, defaultBranch); err != nil {
-		sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", defaultBranch, err))
+	if !pinnedTarget {
+		if err := fetchRunUpstreamBranch(ctx, sctx, targetBranch); err != nil {
+			sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", targetBranch, err))
+		}
 	}
 	// Sync the push branch's remote-tracking ref only when we are about to rebase
 	// onto it (a normal push). On a force push we deliberately skip both the fetch
@@ -62,7 +76,7 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	// when the remote carries an out-of-band commit - silently clobbering it
 	// (the original #281/#305 hazard, in the force-push path). Leaving it stale is
 	// what lets the push step's content check catch that case.
-	if !forcePush && branch != "" && branch != defaultBranch {
+	if !forcePush && branch != "" && branch != targetBranch {
 		if strings.TrimSpace(sctx.Repo.ForkURL) == "" {
 			if err := fetchRunUpstreamBranch(ctx, sctx, branch); err != nil {
 				sctx.LogFile(fmt.Sprintf("warning: could not fetch origin/%s: %v", branch, err))
@@ -73,21 +87,21 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 	}
 
 	// Stop before rebasing when the gated branch carries commits that live on
-	// the contributor's local default branch but were never pushed to
-	// origin/<default>. Rebasing onto the fresh remote default keeps those
+	// the contributor's local target branch but were never pushed to
+	// origin/<target>. Rebasing onto the pinned upstream target keeps those
 	// commits in the branch's history, so the PR would silently bundle another
 	// workstream's unpushed work. Surface it for a human decision instead.
-	if outcome := detectBundledLocalDefaultCommits(ctx, sctx, branch, defaultBranch); outcome != nil {
+	if outcome := detectBundledLocalTargetCommits(ctx, sctx, branch, targetBranch, targetRef); outcome != nil {
 		return outcome, nil
 	}
-	if forcePush && branch == defaultBranch && remoteDefaultBranchAdvanced(ctx, sctx.WorkDir, defaultBranch, sctx.Run.BaseSHA) {
+	if forcePush && branch == targetBranch && remoteTargetBranchAdvanced(ctx, sctx.WorkDir, targetBranch, sctx.Run.BaseSHA) {
 		findingsJSON, _ := json.Marshal(Findings{
 			Items: []Finding{{
 				Severity:    "warning",
 				File:        filepath.Join("internal", "pipeline", "steps", "rebase.go"),
-				Description: fmt.Sprintf("origin/%s advanced after the force push; manual review required before updating the default branch", defaultBranch),
+				Description: fmt.Sprintf("origin/%s advanced after the force push; manual review required before updating the target branch", targetBranch),
 			}},
-			Summary: fmt.Sprintf("remote %s advanced during force push", defaultBranch),
+			Summary: fmt.Sprintf("remote %s advanced during force push", targetBranch),
 		})
 		return &pipeline.StepOutcome{
 			NeedsApproval: true,
@@ -95,10 +109,10 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 		}, nil
 	}
 
-	targets := rebaseTargetsForBranch(branch, defaultBranch, branchTarget)
+	targets := rebaseTargetsForRun(branch, targetBranch, branchTarget, targetRef)
 	if forcePush {
 		sctx.Log("force push detected, skipping " + branchTarget + " sync")
-		targets = forcePushRebaseTargets(branch, defaultBranch)
+		targets = forcePushRebaseTargetsForRun(branch, targetBranch, targetRef)
 	}
 
 	if sctx.Fixing {
@@ -119,12 +133,16 @@ func (s *RebaseStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome,
 			return nil, err
 		}
 		if len(conflictFiles) > 0 {
-			conflictTargets = append(conflictTargets, target)
+			evidenceTarget := target
+			if pinnedTarget && target == targetRef {
+				evidenceTarget = fmt.Sprintf("origin/%s@%s", targetBranch, targetSHA)
+			}
+			conflictTargets = append(conflictTargets, evidenceTarget)
 			for _, file := range conflictFiles {
 				conflictFindings = append(conflictFindings, Finding{
 					Severity:    "warning",
 					File:        file,
-					Description: fmt.Sprintf("merge conflict rebasing onto %s", target),
+					Description: fmt.Sprintf("merge conflict rebasing onto %s", evidenceTarget),
 				})
 			}
 		}
@@ -149,12 +167,16 @@ func rebaseTargets(branch, defaultBranch string) []string {
 }
 
 func rebaseTargetsForBranch(branch, defaultBranch, branchTarget string) []string {
+	return rebaseTargetsForRun(branch, defaultBranch, branchTarget, "origin/"+defaultBranch)
+}
+
+func rebaseTargetsForRun(branch, targetBranch, branchTarget, targetRef string) []string {
 	var targets []string
-	if branch != "" && branch != defaultBranch {
+	if branch != "" && branch != targetBranch {
 		targets = append(targets, branchTarget)
 	}
-	if branch != defaultBranch {
-		targets = append(targets, "origin/"+defaultBranch)
+	if branch != targetBranch {
+		targets = append(targets, targetRef)
 	}
 	return targets
 }
@@ -163,34 +185,38 @@ func rebaseTargetsForBranch(branch, defaultBranch, branchTarget string) []string
 // branch target is skipped because it may contain autofix commits from prior
 // pipeline runs that the force push intended to discard.
 func forcePushRebaseTargets(branch, defaultBranch string) []string {
-	if branch == defaultBranch {
-		return nil
-	}
-	return []string{"origin/" + defaultBranch}
+	return forcePushRebaseTargetsForRun(branch, defaultBranch, "origin/"+defaultBranch)
 }
 
-// detectBundledLocalDefaultCommits returns a blocking finding when the gated
-// branch carries commits that exist on the contributor's local default branch
-// but were never pushed to origin/<default>. In multi-session / monorepo setups
-// the local default branch routinely carries another workstream's unpushed
+func forcePushRebaseTargetsForRun(branch, targetBranch, targetRef string) []string {
+	if branch == targetBranch {
+		return nil
+	}
+	return []string{targetRef}
+}
+
+// detectBundledLocalTargetCommits returns a blocking finding when the gated
+// branch carries commits that exist on the contributor's local target branch
+// but were never pushed to origin/<target>. In multi-session / monorepo setups
+// the local target branch can carry another workstream's unpushed
 // work; branching a fix off that local tip silently drags it into the PR when
-// the branch is rebased onto the remote default. Returns nil when no such
+// the branch is rebased onto the upstream target. Returns nil when no such
 // divergence is detected so the run proceeds normally.
 //
-// It only flags commits the branch actually carries: it reads the local default
-// tip from the working repo, confirms that tip is ahead of origin/<default> and
+// It only flags commits the branch actually carries: it reads the local target
+// tip from the working repo, confirms that tip is ahead of origin/<target> and
 // is an ancestor of the branch HEAD, then enumerates the unpushed commits.
 // Detection is best-effort - if the local default tip advanced past the branch
 // point, or the working repo cannot be read, it returns nil rather than guess.
-func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepContext, branch, defaultBranch string) *pipeline.StepOutcome {
-	if branch == "" || branch == defaultBranch {
+func detectBundledLocalTargetCommits(ctx context.Context, sctx *pipeline.StepContext, branch, targetBranch, targetRef string) *pipeline.StepOutcome {
+	if branch == "" || branch == targetBranch {
 		return nil
 	}
 	workingPath := strings.TrimSpace(sctx.Repo.WorkingPath)
 	if workingPath == "" {
 		return nil
 	}
-	localTip, err := git.Run(ctx, workingPath, "rev-parse", "--verify", "--quiet", "refs/heads/"+defaultBranch+"^{commit}")
+	localTip, err := git.Run(ctx, workingPath, "rev-parse", "--verify", "--quiet", "refs/heads/"+targetBranch+"^{commit}")
 	if err != nil {
 		return nil
 	}
@@ -198,20 +224,20 @@ func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepCo
 	if localTip == "" {
 		return nil
 	}
-	remoteRef := "origin/" + defaultBranch
+	remoteRef := targetRef
 	if _, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", remoteRef+"^{commit}"); err != nil {
 		return nil
 	}
-	// The local default tip must be present in the gate's object store (it is
+	// The local target tip must be present in the gate's object store (it is
 	// when the branch carries it as an ancestor) for the reachability checks.
 	if _, err := git.Run(ctx, sctx.WorkDir, "rev-parse", "--verify", "--quiet", localTip+"^{commit}"); err != nil {
 		return nil
 	}
-	// Already pushed (local default not ahead of remote) -> nothing bundled.
+	// Already pushed (local target not ahead of remote) -> nothing bundled.
 	if isAncestor(ctx, sctx.WorkDir, localTip, remoteRef) {
 		return nil
 	}
-	// The branch must actually carry the local default tip's commits.
+	// The branch must actually carry the local target tip's commits.
 	if !isAncestor(ctx, sctx.WorkDir, localTip, "HEAD") {
 		return nil
 	}
@@ -229,7 +255,7 @@ func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepCo
 
 	description := fmt.Sprintf(
 		"branch carries %d commit(s) that exist on your local %s branch but were never pushed to origin/%s; rebasing would bundle this unrelated work (%d file(s)) into the PR:\n- %s\n\nPush %s to origin, or rebase your branch onto origin/%s, before gating.",
-		len(commits), defaultBranch, defaultBranch, len(files), strings.Join(commits, "\n- "), defaultBranch, defaultBranch,
+		len(commits), targetBranch, targetBranch, len(files), strings.Join(commits, "\n- "), targetBranch, targetBranch,
 	)
 	findingsJSON, _ := json.Marshal(Findings{
 		Items: []Finding{{
@@ -242,7 +268,7 @@ func detectBundledLocalDefaultCommits(ctx context.Context, sctx *pipeline.StepCo
 			// classifies it correctly and the driving agent escalates.
 			Action: types.ActionAskUser,
 		}},
-		Summary: fmt.Sprintf("branch bundles %d unpushed %s commit(s)", len(commits), defaultBranch),
+		Summary: fmt.Sprintf("branch bundles %d unpushed %s commit(s)", len(commits), targetBranch),
 	})
 	return &pipeline.StepOutcome{
 		NeedsApproval: true,
@@ -256,11 +282,11 @@ func isAncestor(ctx context.Context, workDir, ancestor, descendant string) bool 
 	return err == nil
 }
 
-func remoteDefaultBranchAdvanced(ctx context.Context, workDir, defaultBranch, baseSHA string) bool {
+func remoteTargetBranchAdvanced(ctx context.Context, workDir, targetBranch, baseSHA string) bool {
 	if baseSHA == "" || git.IsZeroSHA(baseSHA) {
 		return false
 	}
-	remoteSHA, err := git.Run(ctx, workDir, "rev-parse", "--verify", "origin/"+defaultBranch)
+	remoteSHA, err := git.Run(ctx, workDir, "rev-parse", "--verify", "origin/"+targetBranch)
 	if err != nil {
 		return false
 	}
@@ -497,8 +523,8 @@ func dedupeRebaseFindings(findings []Finding) []Finding {
 	return filtered
 }
 
-// updateHeadSHA syncs the run's head SHA after rebase and checks for an empty diff.
-// When the branch diff against the default branch is empty, SkipRemaining is set.
+// updateHeadSHA syncs the run's head SHA after rebase and checks for an empty
+// diff against the run-owned target.
 func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
 	headSHA, err := git.HeadSHA(ctx, sctx.WorkDir)
 	if err != nil {
@@ -512,13 +538,12 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 		sctx.Log(fmt.Sprintf("updated head SHA to %s", shortSHA(headSHA)))
 	}
 
-	// Check if the branch has any diff against the default branch.
+	// Check if the branch has any diff against the run target.
 	// If the diff is empty (e.g. branch was already merged), skip remaining steps.
-	defaultBranch := strings.TrimSpace(sctx.Repo.DefaultBranch)
-	if defaultBranch == "" {
-		defaultBranch = "main"
+	baseSHA, err := resolveRunBranchBaseSHA(ctx, sctx)
+	if err != nil {
+		return nil, err
 	}
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, defaultBranch)
 	diff, err := git.Diff(ctx, sctx.WorkDir, baseSHA, "HEAD")
 	if err == nil && strings.TrimSpace(diff) == "" {
 		sctx.Log("empty diff after rebase, skipping remaining steps")

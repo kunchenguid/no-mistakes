@@ -358,6 +358,61 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	}
 }
 
+func TestPRStep_ExplicitTargetScopesDiffAndRoutesLookupAndCreation(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	gitCmd(t, dir, "init")
+	gitCmd(t, dir, "config", "user.name", "test")
+	gitCmd(t, dir, "config", "user.email", "test@test.com")
+	gitCmd(t, dir, "checkout", "-b", "master")
+	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "master base")
+	masterSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "checkout", "-b", "test")
+	for i := 0; i < 4; i++ {
+		os.WriteFile(filepath.Join(dir, fmt.Sprintf("test-%d.txt", i)), []byte("target history\n"), 0o644)
+		gitCmd(t, dir, "add", "-A")
+		gitCmd(t, dir, "commit", "-m", fmt.Sprintf("test history %d", i))
+	}
+	testSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+	gitCmd(t, dir, "checkout", "-b", "feature")
+	os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("one intended commit\n"), 0o644)
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-m", "feature")
+	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
+
+	env, logFile := fakeGH(t, "")
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, masterSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.DefaultBranch = "master"
+	sctx.Run.TargetBranch = "test"
+	sctx.Run.TargetSHA = testSHA
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	for _, want := range []string{
+		"pr list --head feature --base test",
+		"pr create --head feature --base test",
+		"A\tfeature.txt",
+	} {
+		if !strings.Contains(ghLog, want) {
+			t.Fatalf("expected target-scoped PR evidence %q, got:\n%s", want, ghLog)
+		}
+	}
+	for _, forbidden := range []string{"--base master", "test-0.txt", "test-1.txt", "test-2.txt", "test-3.txt"} {
+		if strings.Contains(ghLog, forbidden) {
+			t.Fatalf("PR phase fell back to repository default scope %q:\n%s", forbidden, ghLog)
+		}
+	}
+}
+
 func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -1328,7 +1383,7 @@ func TestPRStep_BuildPRContentTruncatesGeneratedPipelineUpdates(t *testing.T) {
 		}
 	}
 
-	content, err := (&PRStep{}).buildPRContent(sctx, "feature", baseSHA, 0)
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature", baseSHA, "main", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1974,7 +2029,7 @@ func TestPRStep_PromptRequiresReleaseTypesForProductImpact(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 
 	step := &PRStep{}
-	if _, err := step.buildPRContent(sctx, "feature", baseSHA, 0); err != nil {
+	if _, err := step.buildPRContent(sctx, "feature", baseSHA, "main", 0); err != nil {
 		t.Fatal(err)
 	}
 	if len(ag.calls) != 1 {

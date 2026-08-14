@@ -44,10 +44,10 @@ type CIStep struct {
 	pollIntervalOverride time.Duration        // if set, overrides computed poll interval (for testing)
 	waitForNextPoll      func(context.Context, time.Duration) error
 	now                  func() time.Time
-	// baseBranchTip resolves the current tip SHA of the upstream default
+	// baseBranchTip resolves the current tip SHA of the run-owned upstream target
 	// branch. The bool is false when the SHA is a fallback/unknown value and
 	// must not re-arm the timeout. Overridable for testing; defaults to
-	// fetching the upstream default branch.
+	// fetching the upstream target branch.
 	baseBranchTip func(context.Context) (string, bool)
 }
 
@@ -131,6 +131,10 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	targetBranch, targetSHA, _, err := runTargetIdentity(sctx)
+	if err != nil {
+		return nil, err
+	}
 	provider := scm.DetectProviderContext(ctx, sctx.Repo.UpstreamURL)
 	if provider == scm.ProviderUnknown && sctx.Run.PRURL != nil {
 		provider = scm.DetectProviderContext(ctx, *sctx.Run.PRURL)
@@ -179,9 +183,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 
 	if unlimited {
-		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (no timeout, until merged or closed)...", prNumber))
+		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s against target %s@%s (no timeout, until merged or closed)...", prNumber, targetBranch, shortSHA(targetSHA)))
 	} else {
-		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s (timeout: %s)...", prNumber, timeout))
+		sctx.Log(fmt.Sprintf("monitoring CI for PR #%s against target %s@%s (timeout: %s)...", prNumber, targetBranch, shortSHA(targetSHA), timeout))
 	}
 	now := s.now
 	if now == nil {
@@ -190,7 +194,8 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	baseBranchTip := s.baseBranchTip
 	if baseBranchTip == nil {
 		baseBranchTip = func(ctx context.Context) (string, bool) {
-			return resolveRunDefaultBranchTip(ctx, sctx, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+			sha, resolved, _ := resolveRunTargetTip(ctx, sctx)
+			return sha, resolved
 		}
 	}
 	started := now()

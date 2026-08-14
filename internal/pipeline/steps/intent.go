@@ -178,7 +178,10 @@ func defaultRunIntent(ctx context.Context, sctx *pipeline.StepContext) (*intent.
 		gitWorkDir = repo.WorkingPath
 	}
 
-	resolvedBaseSHA := resolveIntentBaseSHA(ctx, gitWorkDir, run.BaseSHA, repo.DefaultBranch)
+	resolvedBaseSHA, err := resolveRunIntentBaseSHA(ctx, sctx, gitWorkDir)
+	if err != nil {
+		return nil, err
+	}
 	diffFiles, err := diffFilesForIntentMatching(ctx, gitWorkDir, resolvedBaseSHA, run.HeadSHA)
 	if err != nil {
 		return nil, err
@@ -251,6 +254,24 @@ func splitDiffNameOnly(out string) []string {
 	return files
 }
 
+// resolveRunIntentBaseSHA keeps transcript matching on the same immutable
+// target identity as every later diff-sensitive phase. Historical rows with
+// no target identity retain the former repository-default resolution.
+func resolveRunIntentBaseSHA(ctx context.Context, sctx *pipeline.StepContext, workDir string) (string, error) {
+	_, targetSHA, pinnedTarget, err := runTargetIdentity(sctx)
+	if err != nil {
+		return "", err
+	}
+	if !pinnedTarget {
+		return resolveIntentBaseSHA(ctx, workDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch), nil
+	}
+	baseSHA, err := mergeBaseForCommits(ctx, workDir, sctx.Run.HeadSHA, targetSHA)
+	if err != nil {
+		return "", fmt.Errorf("resolve intent base against run target: %w", err)
+	}
+	return baseSHA, nil
+}
+
 // resolveIntentBaseSHA returns a usable base SHA for diff'ing against head.
 // Prefers an explicit run.BaseSHA when reachable in the worktree, but falls
 // back to merge-base against the default branch when the SHA is the zero ref
@@ -265,6 +286,18 @@ func resolveIntentBaseSHA(ctx context.Context, workDir, baseSHA, defaultBranch s
 		return mb
 	}
 	return git.EmptyTreeSHA
+}
+
+func mergeBaseForCommits(ctx context.Context, workDir, headSHA, targetSHA string) (string, error) {
+	mergeBase, err := git.Run(ctx, workDir, "merge-base", headSHA, targetSHA)
+	if err != nil {
+		return "", err
+	}
+	mergeBase = strings.TrimSpace(mergeBase)
+	if mergeBase == "" {
+		return "", fmt.Errorf("empty merge base")
+	}
+	return mergeBase, nil
 }
 
 func commitReachable(ctx context.Context, workDir, sha string) bool {

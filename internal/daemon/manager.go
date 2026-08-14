@@ -631,13 +631,17 @@ func (m *RunManager) HandlePushReceived(ctx context.Context, params *ipc.PushRec
 	}
 
 	branch := branchFromRef(params.Ref)
-	return m.startRun(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent)
+	return m.startRunForTarget(ctx, repo, branch, params.New, params.Old, "push", params.SkipSteps, params.Intent, params.Target)
 }
 
 // HandleRerun creates a new run for the latest gate head on a branch. An
 // explicit intent overrides the selected run. Otherwise an authoritative
 // intent is inherited byte-for-byte; runs without one infer intent afresh.
 func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent string) (string, error) {
+	return m.handleRerunForTarget(ctx, repoID, branch, previousRunID, skipSteps, intent, "")
+}
+
+func (m *RunManager) handleRerunForTarget(ctx context.Context, repoID, branch, previousRunID string, skipSteps []types.StepName, intent, requestedTarget string) (string, error) {
 	repo, err := m.db.GetRepo(repoID)
 	if err != nil {
 		return "", fmt.Errorf("get repo: %w", err)
@@ -702,35 +706,80 @@ func (m *RunManager) HandleRerun(ctx context.Context, repoID, branch, previousRu
 			intentSource = db.RunIntentSourceRerun
 		}
 	}
+	if strings.TrimSpace(requestedTarget) == "" && selectedRun.TargetBranch != "" && selectedRun.TargetBranch != repo.DefaultBranch {
+		requestedTarget = selectedRun.TargetBranch
+	}
 
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource)
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, "rerun", skipSteps, intent, intentSource, requestedTarget)
 }
 
-// fetchRunDefaultBranch fetches the trusted branch from the refreshed
+// fetchRunUpstreamBranch fetches one parent-upstream branch from the refreshed
 // registration when it differs from the gate worktree's inherited origin. It
 // updates only the run worktree's existing origin tracking ref and never
 // rewrites clone or gate remote configuration. When the values agree after
 // redaction, origin remains authoritative so embedded credentials retained in
 // the gate can still authenticate without ever entering the database.
-func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) error {
+func fetchRunUpstreamBranch(ctx context.Context, workDir string, repo *db.Repo, branch string) error {
 	originURL, err := git.GetRemoteURL(ctx, workDir, "origin")
 	if !repo.URLsVerified || (err == nil && safeurl.Redact(originURL) == repo.UpstreamURL) {
-		return git.FetchRemoteBranch(ctx, workDir, "origin", repo.DefaultBranch)
+		return git.FetchRemoteBranch(ctx, workDir, "origin", branch)
 	}
-	return git.FetchRemoteBranchToRef(ctx, workDir, repo.UpstreamURL, repo.DefaultBranch, "refs/remotes/origin/"+repo.DefaultBranch)
+	return git.FetchRemoteBranchToRef(ctx, workDir, repo.UpstreamURL, branch, "refs/remotes/origin/"+branch)
+}
+
+func fetchRunDefaultBranch(ctx context.Context, workDir string, repo *db.Repo) error {
+	return fetchRunUpstreamBranch(ctx, workDir, repo, repo.DefaultBranch)
+}
+
+// resolveRunTarget validates one short branch name against the parent
+// upstream, fetches that exact heads ref, and returns its immutable commit.
+// An omitted request selects the registered repository default.
+func resolveRunTarget(ctx context.Context, gateDir string, repo *db.Repo, requested string) (string, string, error) {
+	if repo == nil {
+		return "", "", fmt.Errorf("resolve target branch: repository is missing")
+	}
+	if requested != strings.TrimSpace(requested) {
+		return "", "", fmt.Errorf("invalid target branch %q: surrounding whitespace is not allowed", requested)
+	}
+	target := strings.TrimSpace(requested)
+	if target == "" {
+		target = strings.TrimSpace(repo.DefaultBranch)
+	}
+	if target == "" {
+		return "", "", fmt.Errorf("resolve target branch: repository has no default branch")
+	}
+	if strings.EqualFold(target, "HEAD") {
+		return "", "", fmt.Errorf("invalid target branch %q: HEAD is ambiguous", target)
+	}
+	checked, err := git.Run(ctx, gateDir, "check-ref-format", "--branch", target)
+	if err != nil || strings.TrimSpace(checked) != target {
+		return "", "", fmt.Errorf("invalid target branch %q", target)
+	}
+	if err := fetchRunUpstreamBranch(ctx, gateDir, repo, target); err != nil {
+		return "", "", fmt.Errorf("fetch target branch %q from parent upstream: %w", target, err)
+	}
+	sha, err := git.ResolveRef(ctx, gateDir, "refs/remotes/origin/"+target)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve target branch %q: %w", target, err)
+	}
+	return target, strings.TrimSpace(sha), nil
 }
 
 // startRun creates a run, sets up a worktree, and launches pipeline execution.
 // A non-empty intent is stamped onto the run as agent-supplied, so the intent
 // step uses it instead of inferring from transcripts.
 func (m *RunManager) startRun(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent string) (string, error) {
-	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent)
+	return m.startRunForTarget(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, "")
+}
+
+func (m *RunManager) startRunForTarget(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, requestedTarget string) (string, error) {
+	return m.startRunWithIntentSource(ctx, repo, branch, headSHA, baseSHA, trigger, skipSteps, intent, db.RunIntentSourceAgent, requestedTarget)
 }
 
 // startRunWithIntentSource is the common run-creation path. source is empty
 // when no intent is supplied, RunIntentSourceAgent for a new explicit
 // override, and RunIntentSourceRerun for inherited explicit intent.
-func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source string) (string, error) {
+func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo, branch, headSHA, baseSHA, trigger string, skipSteps []types.StepName, intent, source, requestedTarget string) (string, error) {
 	branchRole := telemetryBranchRole(branch, repo.DefaultBranch)
 	trackStartFailure := func(stage string) {
 		telemetry.Track("run", telemetry.Fields{
@@ -764,6 +813,15 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	} else {
 		repo = refreshed
 	}
+	targetBranch, targetSHA, err := resolveRunTarget(ctx, m.paths.RepoDir(repo.ID), repo, requestedTarget)
+	if err != nil {
+		trackStartFailure("resolve_target")
+		return "", err
+	}
+	if strings.TrimSpace(requestedTarget) != "" && branch == targetBranch {
+		trackStartFailure("target_is_source")
+		return "", fmt.Errorf("refusing to validate branch %q against itself as target", branch)
+	}
 
 	// Cancel any active run for this repo+branch.
 	m.cancelActiveRuns(repo.ID, branch)
@@ -780,11 +838,12 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		runIntent = &db.RunIntent{Summary: storedIntent, Source: source, Score: 1}
 	}
 
-	run, err := m.db.InsertRunWithIntent(repo.ID, branch, headSHA, baseSHA, runIntent)
+	run, err := m.db.InsertRunWithIntentAndTarget(repo.ID, branch, headSHA, baseSHA, runIntent, targetBranch, targetSHA)
 	if err != nil {
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
 	}
+	slog.Info("run target resolved", "run_id", run.ID, "target_branch", targetBranch, "target_sha", targetSHA)
 
 	// Create worktree from the gate bare repo.
 	gateDir := m.paths.RepoDir(repo.ID)

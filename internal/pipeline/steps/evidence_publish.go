@@ -42,6 +42,15 @@ func publishRunEvidence(sctx *pipeline.StepContext) *evidenceLinks {
 	if len(segments) == 0 {
 		segments = []string{sctx.Run.ID}
 	}
+	targetBranch, _, _, err := runTargetIdentity(sctx)
+	if err != nil {
+		sctx.Log(fmt.Sprintf("test evidence not published: %v", err))
+		return nil
+	}
+	forbiddenBranches := []string{branch, sctx.Repo.DefaultBranch}
+	if targetBranch != "" && targetBranch != sctx.Repo.DefaultBranch {
+		forbiddenBranches = append(forbiddenBranches, targetBranch)
+	}
 	// Links are built from the registered repository URL, never from the push
 	// URL: the latter can carry an embedded credential, and a PR body must
 	// never publish one. Without a link base there is nothing to gain from
@@ -65,7 +74,7 @@ func publishRunEvidence(sctx *pipeline.StepContext) *evidenceLinks {
 		Segments:          segments,
 		SourceDir:         sourceDir,
 		Message:           fmt.Sprintf("no-mistakes: evidence for %s (run %s)", branch, sctx.Run.ID),
-		ForbiddenBranches: []string{branch, sctx.Repo.DefaultBranch},
+		ForbiddenBranches: forbiddenBranches,
 	})
 	if err != nil {
 		sctx.Log(fmt.Sprintf("test evidence not published, linking local paths instead: %v", err))

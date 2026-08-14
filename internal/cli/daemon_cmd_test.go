@@ -109,3 +109,24 @@ func TestParseIntentPushOptionsNone(t *testing.T) {
 		t.Fatalf("parseIntentPushOptions(no intent) = %q, want empty", got)
 	}
 }
+
+func TestTargetPushOptionRoundTrip(t *testing.T) {
+	target := "release/test"
+	opt := formatTargetPushOption(target)
+	if opt == "" {
+		t.Fatal("formatTargetPushOption returned empty for a non-empty target")
+	}
+	got, err := parseTargetPushOptions([]string{"no-mistakes.skip=test", opt})
+	if err != nil {
+		t.Fatalf("parseTargetPushOptions() error = %v", err)
+	}
+	if got != target {
+		t.Fatalf("round-trip mismatch: got %q, want %q", got, target)
+	}
+}
+
+func TestFormatTargetPushOptionEmpty(t *testing.T) {
+	if got := formatTargetPushOption("   "); got != "" {
+		t.Fatalf("formatTargetPushOption(blank) = %q, want empty", got)
+	}
+}

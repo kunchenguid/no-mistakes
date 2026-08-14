@@ -23,8 +23,18 @@ func (s *CIStep) autoFixCI(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR
 		return false, err
 	}
 	defer func() { _ = sctx.DB.SetRunPushActive(sctx.Run.ID, false) }()
-	baseSHA := resolveBranchBaseSHA(ctx, sctx.WorkDir, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
-	rebaseBaseSHA := resolveRunDefaultBranchTipSHA(ctx, sctx, sctx.Run.BaseSHA, sctx.Repo.DefaultBranch)
+	baseSHA, err := resolveRunBranchBaseSHA(ctx, sctx)
+	if err != nil {
+		return false, err
+	}
+	rebaseBaseSHA, err := resolveRunTargetTipSHA(ctx, sctx)
+	if err != nil {
+		return false, err
+	}
+	targetBranch, _, _, err := runTargetIdentity(sctx)
+	if err != nil {
+		return false, err
+	}
 	promptBaseSHA := baseSHA
 	if mergeConflict {
 		promptBaseSHA = rebaseBaseSHA
@@ -76,6 +86,7 @@ Context:
 - branch: %s
 - base commit: %s
 - target commit: %s
+- target branch: %s
 - PR number: %s
 - failing checks: %s
 - merge conflict: %v
@@ -86,6 +97,7 @@ Context:
 		sctx.Run.Branch,
 		promptBaseSHA,
 		sctx.Run.HeadSHA,
+		targetBranch,
 		pr.Number,
 		strings.Join(failingNames, ", "),
 		mergeConflict,
@@ -104,7 +116,7 @@ CI logs:
 	prompt = testguidance.LateRepairPrompt(string(s.Name()), prompt)
 
 	sctx.Log("running agent to fix CI issues...")
-	_, err := sctx.Agent.Run(ctx, agent.RunOpts{
+	_, err = sctx.Agent.Run(ctx, agent.RunOpts{
 		Prompt:  prompt,
 		CWD:     sctx.WorkDir,
 		OnChunk: sctx.LogChunk,
@@ -159,7 +171,11 @@ func (s *CIStep) pushUpdatedHeadSHA(sctx *pipeline.StepContext, newHeadSHA strin
 	// commit that reached origin out of band. resolveForcePushDecision refuses
 	// the push when the remote carries commits this run never incorporated.
 	gitRun := func(args ...string) (string, error) { return stepGitRun(sctx, args...) }
-	decision, err := resolveForcePushDecision(gitRun, pushURL, ref, newHeadSHA, sctx.Run.HeadSHA, sctx.Run.BaseSHA)
+	forceBaseSHA, err := forcePushBaseSHA(sctx)
+	if err != nil {
+		return false, err
+	}
+	decision, err := resolveForcePushDecision(gitRun, pushURL, ref, newHeadSHA, sctx.Run.HeadSHA, forceBaseSHA)
 	if err != nil {
 		return false, err
 	}
