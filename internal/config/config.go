@@ -12,12 +12,14 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/evidence"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/winproc"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 	"gopkg.in/yaml.v3"
 )
 
@@ -86,10 +88,18 @@ type GlobalConfig struct {
 	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
 	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
-	CITimeout            time.Duration       `yaml:"-"`
-	StepQuietWarning     time.Duration       `yaml:"-"`
-	DaemonConnectTimeout time.Duration       `yaml:"-"`
-	LogLevel             string              `yaml:"log_level"`
+	// WorktreeRoots places a repository's pipeline run worktrees under a
+	// directory the operator chose instead of the default
+	// <NM_HOME>/worktrees/<repoID>. Keys are registered checkout paths
+	// (Repo.WorkingPath), values are absolute directories. It exists for
+	// directory-scoped toolchain configuration (mise, direnv), which resolves
+	// by path ancestry and therefore never reaches a worktree under NM_HOME.
+	// Placement is resolved for every consumer in internal/worktrees.
+	WorktreeRoots        map[string]string `yaml:"worktree_roots"`
+	CITimeout            time.Duration     `yaml:"-"`
+	StepQuietWarning     time.Duration     `yaml:"-"`
+	DaemonConnectTimeout time.Duration     `yaml:"-"`
+	LogLevel             string            `yaml:"log_level"`
 	// SessionReuse controls per-run agent session reuse in the review loop:
 	// one durable fixer session across review-fix turns. Review turns always
 	// run session-free so the rereview never resumes the session whose
@@ -119,6 +129,7 @@ type globalConfigRaw struct {
 	ACPRegistryOverrides map[string]string   `yaml:"acp_registry_overrides"`
 	AgentPathOverride    map[string]string   `yaml:"agent_path_override"`
 	AgentArgsOverride    map[string][]string `yaml:"agent_args_override"`
+	WorktreeRoots        map[string]string   `yaml:"worktree_roots"`
 	CITimeout            string              `yaml:"ci_timeout"`
 	DaemonConnectTimeout string              `yaml:"daemon_connect_timeout"`
 	BabysitTimeout       string              `yaml:"babysit_timeout"`
@@ -686,6 +697,18 @@ log_level: info
 #     - -c
 #     - model_reasoning_effort="low"
 #
+# Where a repository's pipeline run worktrees are created (optional). By
+# default they live under <NM_HOME>/worktrees/<repo id>, which inherits no
+# directory-scoped toolchain configuration. Point a checkout at a directory of
+# your own and its runs are created there instead, one directory per run, so
+# mise/direnv settings on that directory reach every run. Keys are the checkout
+# paths you ran "no-mistakes init" in, values must be absolute directories.
+# Only directories whose name is a run ID are ever created, cleaned up, or
+# removed there; your own files and directories are left alone. Each checkout
+# needs its own root.
+# worktree_roots:
+#   /Users/you/src/my-repo: /Users/you/work/my-repo-runs
+
 # Maximum follow-up auto-fix attempts per step (0 = disabled after the initial pass)
 # Document fixes are attempted during the initial document pass.
 auto_fix:
@@ -1208,6 +1231,66 @@ func validateAgentArgsOverride(override map[string][]string) error {
 	return nil
 }
 
+// ValidateWorktreeRoots checks a worktree_roots map before any placement is
+// derived from it. Every entry must name an absolute checkout path and an
+// absolute directory: a relative path would be interpreted against whatever
+// working directory the daemon happens to have, so run worktrees would land
+// somewhere different depending on who started it - the opposite of the
+// deterministic placement the setting exists to provide.
+//
+// Two entries may not name the same root, and two keys may not name the same
+// checkout once canonicalized (a symlink and its target, "/x" and "/x/").
+// Both are rejected rather than resolved because the consequences are
+// destructive, not cosmetic: cleanup and eject identify a run worktree by its
+// position in a root, so two repositories sharing a root would delete each
+// other's runs, and a duplicate key would pick an arbitrary winner. A root
+// equal to its own checkout is rejected for the same reason - it would place
+// run worktrees inside the repository they are validating.
+func ValidateWorktreeRoots(roots map[string]string) error {
+	owners := make(map[string]string, len(roots))
+	checkouts := make(map[string]string, len(roots))
+	for _, checkout := range sortedKeys(roots) {
+		root := roots[checkout]
+		if strings.TrimSpace(checkout) == "" {
+			return fmt.Errorf("invalid worktree_roots: empty checkout path")
+		}
+		if !filepath.IsAbs(checkout) {
+			return fmt.Errorf("invalid worktree_roots: checkout path %q is not absolute", checkout)
+		}
+		if strings.TrimSpace(root) == "" {
+			return fmt.Errorf("invalid worktree_roots[%q]: empty worktree root", checkout)
+		}
+		if !filepath.IsAbs(root) {
+			return fmt.Errorf("invalid worktree_roots[%q]: %q is not an absolute path", checkout, root)
+		}
+		canonicalCheckout := worktrees.Canonical(checkout)
+		if first, dup := checkouts[canonicalCheckout]; dup {
+			return fmt.Errorf("invalid worktree_roots[%q]: %q already names the same checkout", checkout, first)
+		}
+		checkouts[canonicalCheckout] = checkout
+		canonicalRoot := worktrees.Canonical(root)
+		if first, dup := owners[canonicalRoot]; dup {
+			return fmt.Errorf("invalid worktree_roots[%q]: worktree root %q is already used by %q; each checkout needs its own root", checkout, root, first)
+		}
+		owners[canonicalRoot] = checkout
+		if canonicalRoot == canonicalCheckout {
+			return fmt.Errorf("invalid worktree_roots[%q]: worktree root must not be the checkout itself", checkout)
+		}
+	}
+	return nil
+}
+
+// sortedKeys keeps validation errors deterministic: map iteration order would
+// otherwise decide which of several bad entries is reported.
+func sortedKeys(roots map[string]string) []string {
+	keys := make([]string, 0, len(roots))
+	for key := range roots {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // EnsureDefaultGlobalConfig writes the default config file at path if it does
 // not already exist. Failures are logged at debug level and silently ignored.
 func EnsureDefaultGlobalConfig(path string) {
@@ -1291,6 +1374,12 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 			return nil, err
 		}
 		cfg.AgentArgsOverride = raw.AgentArgsOverride
+	}
+	if raw.WorktreeRoots != nil {
+		if err := ValidateWorktreeRoots(raw.WorktreeRoots); err != nil {
+			return nil, err
+		}
+		cfg.WorktreeRoots = raw.WorktreeRoots
 	}
 	timeoutValue := raw.CITimeout
 	if timeoutValue == "" {

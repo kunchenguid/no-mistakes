@@ -2,12 +2,19 @@ package cli
 
 import (
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/daemon"
 	"github.com/kunchenguid/no-mistakes/internal/gate"
+	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/skill"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 	"github.com/spf13/cobra"
 )
 
@@ -17,6 +24,7 @@ const banner = `_  _ ____    _  _ _ ____ ___ ____ _  _ ____ ____
 
 func newInitCmd() *cobra.Command {
 	var forkURL string
+	var worktreeRoot string
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize no-mistakes gate for the current repository",
@@ -35,6 +43,13 @@ func newInitCmd() *cobra.Command {
 
 				if cmd.Flags().Changed("fork-url") && strings.TrimSpace(forkURL) == "" {
 					return fmt.Errorf("init: --fork-url must not be empty")
+				}
+				resolvedWorktreeRoot := ""
+				if cmd.Flags().Changed("worktree-root") {
+					resolvedWorktreeRoot, err = resolveWorktreeRoot(p, ".", worktreeRoot)
+					if err != nil {
+						return err
+					}
 				}
 				repo, created, err := gate.InitWithFork(cmd.Context(), d, p, ".", forkURL)
 				if err != nil {
@@ -80,6 +95,9 @@ func newInitCmd() *cobra.Command {
 				} else {
 					fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render(" skill"), sGreen.Render("/no-mistakes"), sDim.Render("installed for agents at user level"))
 				}
+				if resolvedWorktreeRoot != "" {
+					printWorktreeRootGuidance(w, p, repo.WorkingPath, resolvedWorktreeRoot)
+				}
 				if legacy := skill.Vendored(repo.WorkingPath); len(legacy) > 0 {
 					fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  note"), sDim.Render("vendored skill copy ("+strings.Join(legacy, ", ")+") is no longer needed and can be removed"))
 				}
@@ -91,5 +109,58 @@ func newInitCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&forkURL, "fork-url", "", "GitHub fork remote URL to push branches to while opening PRs against origin")
+	cmd.Flags().StringVar(&worktreeRoot, "worktree-root", "", "Directory to create this repository's run worktrees in, so directory-scoped toolchain config (mise, direnv) reaches them; prints the worktree_roots entry to add to the global config")
 	return cmd
+}
+
+// resolveWorktreeRoot validates a --worktree-root value and returns the
+// absolute directory the config entry must name. A relative value is resolved
+// against the current directory here rather than accepted into the config,
+// where it would be read by a daemon with an unrelated working directory.
+//
+// It also refuses the two placements that are accepted by the config yet
+// defeat the point of the flag: a root inside the checkout being initialized
+// would put every run worktree inside the repository under validation, and a
+// root inside <NM_HOME>/worktrees is the default placement the flag exists to
+// leave, in a directory no-mistakes cleans by its own rules.
+func resolveWorktreeRoot(p *paths.Paths, workDir, root string) (string, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return "", fmt.Errorf("init: --worktree-root must not be empty")
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("init: resolve --worktree-root: %w", err)
+	}
+	abs = filepath.Clean(abs)
+	if info, err := os.Stat(abs); err == nil && !info.IsDir() {
+		return "", fmt.Errorf("init: --worktree-root %s is not a directory", abs)
+	}
+	if worktrees.Contains(p.WorktreesDir(), abs) {
+		return "", fmt.Errorf("init: --worktree-root %s is inside the default worktrees directory %s", abs, p.WorktreesDir())
+	}
+	if gitRoot, err := git.FindMainRepoRoot(workDir); err == nil && worktrees.Contains(gitRoot, abs) {
+		return "", fmt.Errorf("init: --worktree-root %s is inside the repository %s", abs, gitRoot)
+	}
+	return abs, nil
+}
+
+// printWorktreeRootGuidance reports the worktree_roots entry that places this
+// repository's run worktrees in the requested directory. no-mistakes never
+// rewrites the global config - it is a hand-maintained file with the
+// operator's own comments - so init prints the exact entry to add instead of
+// editing it, and says nothing further when the entry is already in effect.
+func printWorktreeRootGuidance(w io.Writer, p *paths.Paths, workingPath, root string) {
+	cfg, err := config.LoadGlobal(p.ConfigFile())
+	if err == nil {
+		if configured, ok := worktrees.New(p, cfg.WorktreeRoots).CustomRoot(workingPath); ok && worktrees.Canonical(configured) == worktrees.Canonical(root) {
+			fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render("  runs"), sGreen.Render(root), sDim.Render("(already configured)"))
+			return
+		}
+	}
+	fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  runs"), root)
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  %s\n", sDim.Render("Add this to "+p.ConfigFile()+" so runs are created there:"))
+	fmt.Fprintf(w, "  %s\n", sBold.Render("worktree_roots:"))
+	fmt.Fprintf(w, "  %s\n", sBold.Render("  "+workingPath+": "+root))
 }

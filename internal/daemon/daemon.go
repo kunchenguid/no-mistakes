@@ -27,6 +27,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 // orphanProcessMinAge is the age floor for the startup orphan-process sweep.
@@ -413,12 +414,15 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	}
 	logStartupPhase("stale_runs", staleStarted, "recovered", count)
 
+	layout := startupWorktreeLayout(p)
+	reportUnusableWorktreeRoots(d, p, layout)
+
 	orphanProcStarted := time.Now()
-	sweepOrphanRunProcesses(d, p)
+	sweepOrphanRunProcesses(d, p, layout)
 	logStartupPhase("orphan_processes", orphanProcStarted)
 
 	worktreeStarted := time.Now()
-	cleanupOrphanWorktrees(d, p)
+	cleanupOrphanWorktrees(d, p, layout)
 	logStartupPhase("worktree_cleanup", worktreeStarted)
 
 	// Evidence is reaped after stale-run recovery for the same reason worktrees
@@ -447,15 +451,72 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 // again - it just keeps burning CPU and holding a deleted worktree open. This
 // runs after stale-run recovery so every run's status is settled, and before
 // worktree cleanup so the directories are freed of their holders first.
-func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths) {
+func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths, layout *worktrees.Layout) {
+	repos, err := d.GetRepos()
+	if err != nil {
+		slog.Warn("failed to list repositories for orphan process sweep", "error", err)
+	}
 	procreap.SweepAndLog(procreap.Options{
 		WorktreesRoot: p.WorktreesDir(),
+		RootOwners:    customWorktreeRoots(layout, repos),
 		MinAge:        orphanProcessMinAge,
 		RunActive: func(_, runID string) bool {
 			skip, _ := skipWorktreeCleanup(d, runID)
 			return skip
 		},
 	}, "daemon_startup")
+}
+
+// startupWorktreeLayout resolves worktree placement for startup recovery. The
+// daemon already refused to start on an unreadable global config, so a failure
+// here is a late fault on the same file: recovery continues with the default
+// layout, which leaves configured roots alone rather than acting on a guess
+// about where a repository's worktrees live.
+func startupWorktreeLayout(p *paths.Paths) *worktrees.Layout {
+	globalCfg, err := config.LoadGlobal(p.ConfigFile())
+	if err != nil {
+		slog.Warn("failed to load configured worktree roots; using default placement", "error", err)
+		return worktrees.New(p, nil)
+	}
+	return worktrees.New(p, globalCfg.WorktreeRoots)
+}
+
+// reportUnusableWorktreeRoots names configured placements that will not do
+// what the operator expects. A worktree_roots key is matched against a
+// registered checkout path, so a stale key left behind by a moved or ejected
+// checkout - or one that differs from the recorded path in a way this
+// filesystem does not consider equal, such as letter case - silently places
+// nothing and is worth a line in the log. A root that sits inside the checkout
+// whose runs it holds, or inside the directory no-mistakes already owns, is
+// reported for the same reason: it is accepted, but it is almost certainly not
+// what was meant.
+func reportUnusableWorktreeRoots(d *db.DB, p *paths.Paths, layout *worktrees.Layout) {
+	checkouts := layout.Checkouts()
+	if len(checkouts) == 0 {
+		return
+	}
+	repos, err := d.GetRepos()
+	if err != nil {
+		slog.Warn("failed to list repositories while checking configured worktree roots", "error", err)
+		return
+	}
+	registered := make(map[string]bool, len(repos))
+	for _, repo := range repos {
+		registered[worktrees.Canonical(repo.WorkingPath)] = true
+	}
+	for _, checkout := range checkouts {
+		if !registered[checkout] {
+			slog.Warn("worktree_roots entry matches no registered repository; its runs use the default placement", "checkout", checkout)
+			continue
+		}
+		root, _ := layout.CustomRoot(checkout)
+		if worktrees.Contains(checkout, root) {
+			slog.Warn("worktree_roots entry places run worktrees inside the checkout they validate", "checkout", checkout, "root", root)
+		}
+		if worktrees.Contains(p.WorktreesDir(), root) {
+			slog.Warn("worktree_roots entry places run worktrees inside the default worktrees directory", "checkout", checkout, "root", root)
+		}
+	}
 }
 
 // cleanupOrphanWorktrees removes worktree directories left behind by runs
@@ -467,8 +528,11 @@ func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths) {
 // RecoverStaleRuns, so in the normal single-daemon path every run this loop
 // sees has already been resolved to a terminal status; it is factored out
 // separately so it can also be exercised - and its DB-aware skip behavior
-// verified - independent of stale-run recovery's side effects.
-func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths) {
+// verified - independent of stale-run recovery's side effects. Repositories
+// whose worktrees live in a configured root are cleaned by
+// cleanupOrphanWorktreesInCustomRoots, which walks those roots the same way
+// under a stricter rule about what it may touch.
+func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths, layout *worktrees.Layout) {
 	wtRoot := p.WorktreesDir()
 	entries, err := os.ReadDir(wtRoot)
 	if err != nil {
@@ -489,23 +553,61 @@ func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths) {
 			if !runEntry.IsDir() {
 				continue
 			}
-			runID := runEntry.Name()
-			wtPath := filepath.Join(repoPath, runID)
-			if skip, reason := skipWorktreeCleanup(d, runID); skip {
-				slog.Info("skipping worktree cleanup", "path", wtPath, "reason", reason)
-				continue
-			}
-			if err := git.WorktreeRemove(ctx, gateDir, wtPath); err != nil {
-				slog.Warn("git worktree remove failed, falling back to os.RemoveAll", "path", wtPath, "error", err)
-				if err := os.RemoveAll(wtPath); err != nil {
-					slog.Warn("failed to remove orphaned worktree", "path", wtPath, "error", err)
-				}
-			} else {
-				slog.Info("removed orphaned worktree", "path", wtPath)
-			}
+			removeOrphanWorktree(ctx, d, gateDir, filepath.Join(repoPath, runEntry.Name()), runEntry.Name())
 		}
 		// Remove empty repo dir.
 		os.Remove(repoPath)
+	}
+	cleanupOrphanWorktreesInCustomRoots(d, p, layout)
+}
+
+// cleanupOrphanWorktreesInCustomRoots is cleanupOrphanWorktrees for the
+// repositories whose run worktrees the operator placed in a directory of their
+// own (see worktree_roots in the global config). That directory belongs to the
+// operator, not to no-mistakes: it holds the mise.local.toml, .envrc, or
+// checkout that motivated pointing runs at it in the first place. Only an
+// entry that is a directory named like a run ID can have been created by a
+// run, so nothing else there is ever inspected, let alone removed.
+func cleanupOrphanWorktreesInCustomRoots(d *db.DB, p *paths.Paths, layout *worktrees.Layout) {
+	repos, err := d.GetRepos()
+	if err != nil {
+		slog.Warn("failed to list repositories for worktree cleanup", "error", err)
+		return
+	}
+	ctx := context.Background()
+	for _, repo := range repos {
+		root, ok := layout.CustomRoot(repo.WorkingPath)
+		if !ok {
+			continue
+		}
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue // directory may not exist yet
+		}
+		gateDir := p.RepoDir(repo.ID)
+		for _, entry := range entries {
+			if !entry.IsDir() || !worktrees.IsRunID(entry.Name()) {
+				continue
+			}
+			removeOrphanWorktree(ctx, d, gateDir, filepath.Join(root, entry.Name()), entry.Name())
+		}
+	}
+}
+
+// removeOrphanWorktree removes one run worktree directory unless its run still
+// owns it (see skipWorktreeCleanup).
+func removeOrphanWorktree(ctx context.Context, d *db.DB, gateDir, wtPath, runID string) {
+	if skip, reason := skipWorktreeCleanup(d, runID); skip {
+		slog.Info("skipping worktree cleanup", "path", wtPath, "reason", reason)
+		return
+	}
+	if err := git.WorktreeRemove(ctx, gateDir, wtPath); err != nil {
+		slog.Warn("git worktree remove failed, falling back to os.RemoveAll", "path", wtPath, "error", err)
+		if err := os.RemoveAll(wtPath); err != nil {
+			slog.Warn("failed to remove orphaned worktree", "path", wtPath, "error", err)
+		}
+	} else {
+		slog.Info("removed orphaned worktree", "path", wtPath)
 	}
 }
 

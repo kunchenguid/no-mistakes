@@ -5,6 +5,7 @@ package daemon
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -14,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 // TestSweepOrphanRunProcessesReapsFinishedRunAndSparesActiveOne is the daemon
@@ -63,7 +65,7 @@ func TestSweepOrphanRunProcessesReapsFinishedRunAndSparesActiveOne(t *testing.T)
 	activePID := startOrphanInWorktree(t, p.WorktreeDir(repo.ID, activeRun.ID))
 	leakedPID := startOrphanInWorktree(t, p.WorktreeDir(repo.ID, finishedRun.ID))
 
-	sweepOrphanRunProcesses(d, p)
+	sweepOrphanRunProcesses(d, p, worktrees.New(p, nil))
 
 	if !pidGoneWithin(leakedPID, 10*time.Second) {
 		t.Fatalf("orphan %d in the finished run's worktree survived the startup sweep", leakedPID)
@@ -89,7 +91,8 @@ func TestSweepRunWorktreeProcessesReapsLeakedChildAtRunCleanup(t *testing.T) {
 	leakedPID := startOrphanInWorktree(t, finished)
 	otherPID := startOrphanInWorktree(t, other)
 
-	m.sweepRunWorktreeProcesses(finished)
+	repo := &db.Repo{ID: "repo1", WorkingPath: filepath.Join(t.TempDir(), "checkout")}
+	m.sweepRunWorktreeProcesses(worktrees.New(p, nil), repo, finished)
 
 	if !pidGoneWithin(leakedPID, 10*time.Second) {
 		t.Fatalf("orphan %d in the finished run's worktree survived run cleanup", leakedPID)

@@ -1,0 +1,145 @@
+// Package worktrees resolves where a repository's pipeline run worktrees
+// live.
+//
+// By default a run worktree is created at <NM_HOME>/worktrees/<repoID>/<runID>,
+// which is deliberately outside every checkout. That placement defeats
+// directory-scoped toolchain configuration: mise, direnv and friends resolve
+// their settings by path ancestry, so a worktree under NM_HOME inherits none
+// of the configuration the operator applied to the directory their checkouts
+// live in. The worktree_roots map in the global config lets an operator name
+// the directory a repository's run worktrees are created in, and this package
+// is the single seam every consumer of a worktree path goes through, so
+// placement is decided in exactly one place.
+//
+// The package sits below internal/config, which validates worktree_roots (see
+// ValidateRoots there) before any layout is built from it.
+package worktrees
+
+import (
+	"path/filepath"
+	"strings"
+
+	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/oklog/ulid/v2"
+)
+
+// Layout maps a repository to the directory holding its run worktrees.
+type Layout struct {
+	paths *paths.Paths
+	// roots is keyed by the canonical form of a registered checkout path so a
+	// symlinked or unnormalized config key still matches the recorded
+	// repository path.
+	roots map[string]string
+}
+
+// New returns the layout described by roots, a validated worktree_roots map
+// keyed by registered checkout path. A nil or empty map yields the default
+// layout. Validation has already rejected keys that collide once canonicalized,
+// so this is a plain mapping with no conflict to resolve.
+func New(p *paths.Paths, roots map[string]string) *Layout {
+	l := &Layout{paths: p}
+	if len(roots) == 0 {
+		return l
+	}
+	l.roots = make(map[string]string, len(roots))
+	for checkout, root := range roots {
+		l.roots[Canonical(checkout)] = filepath.Clean(root)
+	}
+	return l
+}
+
+// RepoDir returns the directory that holds every run worktree of the
+// repository with the given ID, checked out at workingPath.
+func (l *Layout) RepoDir(repoID, workingPath string) string {
+	if root, ok := l.CustomRoot(workingPath); ok {
+		return root
+	}
+	return filepath.Join(l.paths.WorktreesDir(), repoID)
+}
+
+// Dir returns the worktree directory of one run.
+func (l *Layout) Dir(repoID, workingPath, runID string) string {
+	if root, ok := l.CustomRoot(workingPath); ok {
+		return filepath.Join(root, runID)
+	}
+	return l.paths.WorktreeDir(repoID, runID)
+}
+
+// CustomRoot reports the configured worktree root for a checkout, if any.
+// Callers that walk the filesystem need it to tell an operator-owned
+// directory - which holds their own files next to our run worktrees - from
+// the default per-repository directory no-mistakes owns outright.
+func (l *Layout) CustomRoot(workingPath string) (string, bool) {
+	if len(l.roots) == 0 || strings.TrimSpace(workingPath) == "" {
+		return "", false
+	}
+	root, ok := l.roots[Canonical(workingPath)]
+	return root, ok
+}
+
+// Checkouts returns the canonical checkout path of every configured entry.
+// It exists so startup can report a key that matches no registered
+// repository, which is otherwise a silent no-op.
+func (l *Layout) Checkouts() []string {
+	out := make([]string, 0, len(l.roots))
+	for checkout := range l.roots {
+		out = append(out, checkout)
+	}
+	return out
+}
+
+// IsRunID reports whether name is a run identifier. Run IDs are uppercase
+// ULIDs, so a directory entry that is not one was never created by a run.
+// Every walk of a configured worktree root is filtered through this: that root
+// is a directory the operator also keeps their own files in (a
+// mise.local.toml, a scratch checkout), and none of it may be swept, removed,
+// or attributed to a run. Case is part of the test because ULID parsing
+// accepts lowercase, which no ID this daemon ever minted uses - honoring it
+// would only widen what may be deleted.
+func IsRunID(name string) bool {
+	if name != strings.ToUpper(name) {
+		return false
+	}
+	_, err := ulid.ParseStrict(name)
+	return err == nil
+}
+
+// Canonical resolves a path to the form used to compare two spellings of the
+// same directory. macOS reports /private/var for a /var path, so a single
+// spelling is not enough to recognize the same checkout in a config key and a
+// repository record. It is the one canonicalization every worktree_roots
+// consumer uses, so a path that matches in one place matches in all of them.
+func Canonical(path string) string {
+	cleaned := filepath.Clean(path)
+	if abs, err := filepath.Abs(cleaned); err == nil {
+		cleaned = abs
+	}
+	// EvalSymlinks fails outright on a path that does not exist yet, and a
+	// configured worktree root usually does not until its first run. Resolve
+	// the deepest existing ancestor and keep the remainder, so a root and the
+	// checkout it belongs to are still compared in the same spelling.
+	current, rest := cleaned, ""
+	for {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			return filepath.Clean(filepath.Join(resolved, rest))
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return cleaned
+		}
+		rest = filepath.Join(filepath.Base(current), rest)
+		current = parent
+	}
+}
+
+// Contains reports whether path is dir itself or sits below it, comparing
+// canonical forms. It is how the pathological placements are recognized: a
+// worktree root inside the checkout whose runs it would hold, or inside the
+// directory no-mistakes already owns.
+func Contains(dir, path string) bool {
+	rel, err := filepath.Rel(Canonical(dir), Canonical(path))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel))
+}

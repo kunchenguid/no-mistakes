@@ -69,7 +69,7 @@ func TestRecoverOnStartup_DoesNotDeleteActiveRunWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanupOrphanWorktrees(d, p)
+	cleanupOrphanWorktrees(d, p, startupWorktreeLayout(p))
 
 	if _, err := os.Stat(activeWT); err != nil {
 		t.Fatalf("active run worktree must survive cleanup, got: %v", err)

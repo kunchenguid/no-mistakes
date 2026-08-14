@@ -42,7 +42,12 @@ func (m *RunManager) StepDiff(ctx context.Context, runID string) (string, bool, 
 		return "", false, fmt.Errorf("repo not found for run %s", runID)
 	}
 
-	diff, err := git.DiffHead(ctx, m.paths.WorktreeDir(repo.ID, run.ID))
+	layout, err := m.worktreeLayout()
+	if err != nil {
+		return "", false, err
+	}
+
+	diff, err := git.DiffHead(ctx, layout.Dir(repo.ID, repo.WorkingPath, run.ID))
 	if err != nil {
 		return "", false, fmt.Errorf("diff worktree: %w", err)
 	}

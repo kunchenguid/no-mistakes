@@ -26,6 +26,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/telemetry"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 // StepFactory creates pipeline steps for a run. Defaults to steps.AllSteps.
@@ -91,6 +92,18 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 	}
 }
 
+// worktreeLayout resolves where this machine places run worktrees, which is
+// operator configuration in the global config rather than repository state
+// (see internal/worktrees). It is read per use so an edit takes effect on the
+// next run instead of at the next daemon restart.
+func (m *RunManager) worktreeLayout() (*worktrees.Layout, error) {
+	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
+	if err != nil {
+		return nil, fmt.Errorf("load global config: %w", err)
+	}
+	return worktrees.New(m.paths, globalCfg.WorktreeRoots), nil
+}
+
 type recoveredRunPlan struct {
 	run     *db.Run
 	repo    *db.Repo
@@ -107,6 +120,11 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 		slog.Error("failed to list active runs for recovery", "error", err)
 		return nil
 	}
+	layout, err := m.worktreeLayout()
+	if err != nil {
+		slog.Error("failed to resolve worktree placement for recovery", "error", err)
+		return nil
+	}
 	plans := make([]recoveredRunPlan, 0, len(runs))
 	branchCounts := make(map[string]int, len(runs))
 	for _, run := range runs {
@@ -117,7 +135,7 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 			slog.Warn("active run cannot be safely resumed", "run_id", run.ID, "error", "conflicting active run for branch")
 			continue
 		}
-		plan, err := m.prepareRecoveredRun(ctx, run)
+		plan, err := m.prepareRecoveredRun(ctx, layout, run)
 		if err != nil {
 			slog.Warn("active run cannot be safely resumed", "run_id", run.ID, "error", err)
 			continue
@@ -127,7 +145,7 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 	return plans
 }
 
-func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*recoveredRunPlan, error) {
+func (m *RunManager) prepareRecoveredRun(ctx context.Context, layout *worktrees.Layout, run *db.Run) (*recoveredRunPlan, error) {
 	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince == nil || run.Branch == "" {
 		return nil, fmt.Errorf("run is not a parked running run")
 	}
@@ -138,7 +156,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	if repo == nil {
 		return nil, fmt.Errorf("run repository is missing")
 	}
-	workDir := m.paths.WorktreeDir(repo.ID, run.ID)
+	workDir := layout.Dir(repo.ID, repo.WorkingPath, run.ID)
 	if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("worktree is missing")
 	}
@@ -491,9 +509,10 @@ func (m *RunManager) broadcast(event ipc.Event) {
 // can no longer be attributed to any run. No age floor applies: the caller
 // owns this run and has already observed its execution return, so nothing
 // standing in it can still be legitimate work.
-func (m *RunManager) sweepRunWorktreeProcesses(wtDir string) {
+func (m *RunManager) sweepRunWorktreeProcesses(layout *worktrees.Layout, repo *db.Repo, wtDir string) {
 	procreap.SweepAndLog(procreap.Options{
 		WorktreesRoot: m.paths.WorktreesDir(),
+		RootOwners:    customWorktreeRoots(layout, []*db.Repo{repo}),
 		Scope:         wtDir,
 	}, "run_cleanup")
 }
@@ -530,6 +549,28 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 		slog.Debug("run evidence kept", "run_id", runID, "reason", err)
 	}
 	reapEvidence(m.db, root, policy, time.Now())
+}
+
+// customWorktreeRoots returns the procreap view of the repositories whose run
+// worktrees the operator placed outside <NM_HOME>/worktrees: the configured
+// root directory mapped to the repository that owns it. Config validation
+// rejects two checkouts sharing a root, so no entry can be overwritten here.
+func customWorktreeRoots(layout *worktrees.Layout, repos []*db.Repo) map[string]string {
+	var roots map[string]string
+	for _, repo := range repos {
+		if repo == nil {
+			continue
+		}
+		root, ok := layout.CustomRoot(repo.WorkingPath)
+		if !ok {
+			continue
+		}
+		if roots == nil {
+			roots = make(map[string]string, len(repos))
+		}
+		roots[root] = repo.ID
+	}
+	return roots
 }
 
 // closeSubscribers soft-closes every subscriber for a run and marks the run
@@ -828,9 +869,18 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		return "", fmt.Errorf("create run: %w", err)
 	}
 
-	// Create worktree from the gate bare repo.
+	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
+	if err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
+		trackStartFailure("load_global_config")
+		return "", fmt.Errorf("load global config: %w", err)
+	}
+
+	// Create worktree from the gate bare repo, where this repository's
+	// worktree placement says it belongs (see internal/worktrees).
 	gateDir := m.paths.RepoDir(repo.ID)
-	wtDir := m.paths.WorktreeDir(repo.ID, run.ID)
+	layout := worktrees.New(m.paths, globalCfg.WorktreeRoots)
+	wtDir := layout.Dir(repo.ID, repo.WorkingPath, run.ID)
 	if err := git.WorktreeAdd(ctx, gateDir, wtDir, headSHA); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("create worktree: %s", err))
 		trackStartFailure("create_worktree")
@@ -873,12 +923,6 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		}
 	}()
 
-	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
-	if err != nil {
-		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
-		trackStartFailure("load_global_config")
-		return "", fmt.Errorf("load global config: %w", err)
-	}
 	repoCfg, err := config.LoadRepo(wtDir)
 	if err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("load config: %s", err))
@@ -1038,7 +1082,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			ag.Close()
 			// Close subscriber channels for this run.
 			m.closeSubscribers(run.ID)
-			m.sweepRunWorktreeProcesses(wtDir)
+			m.sweepRunWorktreeProcesses(layout, repo, wtDir)
 			// Clean up worktree.
 			if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
 				slog.Warn("failed to remove worktree", "path", wtDir, "error", rmErr)

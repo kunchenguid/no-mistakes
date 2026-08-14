@@ -33,10 +33,11 @@
 //     started moments ago is never mistaken for a leak.
 //   - SIGTERM first; SIGKILL only for what is still alive after Options.Grace.
 //
-// A process whose cwd is outside <NM_HOME>/worktrees can never match, which is
-// what keeps long-lived unrelated daemons (a user's LaunchAgent worker, an
-// editor, another tool's background job) out of reach by construction rather
-// than by name-based allowlisting.
+// A process whose cwd is outside the worktree roots (<NM_HOME>/worktrees plus
+// any per-repository root the operator configured, see Options.RootOwners) can
+// never match, which is what keeps long-lived unrelated daemons (a user's
+// LaunchAgent worker, an editor, another tool's background job) out of reach
+// by construction rather than by name-based allowlisting.
 package procreap
 
 import (
@@ -46,6 +47,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 const (
@@ -82,6 +85,18 @@ type Options struct {
 	// WorktreesRoot is <NM_HOME>/worktrees. Required.
 	WorktreesRoot string
 
+	// RootOwners are the operator-configured per-repository worktree roots
+	// (worktree_roots in the global config). The direction is root directory
+	// to owning repository ID, because a sweep starts from a process's cwd and
+	// needs the repository the path no longer spells out. They differ from
+	// WorktreesRoot in two ways: a run directory sits directly below them,
+	// with no repository level in between, and they are directories the
+	// operator also keeps their own files in - so only a child whose name is a
+	// run ID is ever a candidate, and nothing else standing there is ever
+	// signalled. Each root belongs to exactly one repository; the config
+	// rejects two checkouts sharing one.
+	RootOwners map[string]string
+
 	// Scope, when set, restricts the sweep to exactly this worktree directory
 	// and to its subdirectories. The caller that sets it owns that run and has
 	// already observed its execution return, so RunActive and MinAge are not
@@ -115,7 +130,7 @@ var (
 // error is the normal outcome and also what platforms without a process-table
 // reader (Windows, where job objects already contain the whole tree) return.
 func Sweep(opts Options) ([]Victim, error) {
-	if strings.TrimSpace(opts.WorktreesRoot) == "" {
+	if strings.TrimSpace(opts.WorktreesRoot) == "" && len(opts.RootOwners) == 0 {
 		return nil, nil
 	}
 	procs, err := listProcessesFunc()
@@ -147,7 +162,7 @@ func Sweep(opts Options) ([]Victim, error) {
 	}
 
 	cwds := processCWDsFunc(candidates)
-	roots := pathPrefixes(opts.WorktreesRoot)
+	roots := worktreeRoots(opts)
 	scopes := pathPrefixes(opts.Scope)
 
 	matched := make(map[int]string)
@@ -225,24 +240,56 @@ func pathPrefixes(dir string) []string {
 	return out
 }
 
-// worktreeRef reports the run worktree that path sits in. It requires at least
-// <root>/<repoID>/<runID>, so a process standing in the worktrees root itself,
-// or in a repo directory with no run below it, never matches.
-func worktreeRef(roots []string, path string) (dir, repoID, runID string, ok bool) {
+// worktreeRoot is one directory below which run worktrees are found. The
+// default root holds a repository level above the run directories; a
+// configured per-repository root (Options.RootOwners) holds them directly and
+// carries the repository identity the path no longer spells out.
+type worktreeRoot struct {
+	prefix string
+	repoID string
+}
+
+// worktreeRoots returns every comparable root prefix a cwd may sit under.
+func worktreeRoots(opts Options) []worktreeRoot {
+	var roots []worktreeRoot
+	for _, prefix := range pathPrefixes(opts.WorktreesRoot) {
+		roots = append(roots, worktreeRoot{prefix: prefix})
+	}
+	for dir, repoID := range opts.RootOwners {
+		for _, prefix := range pathPrefixes(dir) {
+			roots = append(roots, worktreeRoot{prefix: prefix, repoID: repoID})
+		}
+	}
+	return roots
+}
+
+// worktreeRef reports the run worktree that path sits in. Under the default
+// root it requires at least <root>/<repoID>/<runID>, so a process standing in
+// the worktrees root itself, or in a repo directory with no run below it,
+// never matches. Under a configured per-repository root it requires
+// <root>/<runID> and the name must actually be a run ID, so a process standing
+// in the operator's own directory next to our run worktrees never matches.
+func worktreeRef(roots []worktreeRoot, path string) (dir, repoID, runID string, ok bool) {
 	if path == "" {
 		return "", "", "", false
 	}
 	cleaned := filepath.Clean(path)
 	for _, root := range roots {
-		rel, err := filepath.Rel(root, cleaned)
+		rel, err := filepath.Rel(root.prefix, cleaned)
 		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 			continue
 		}
 		parts := strings.Split(rel, string(filepath.Separator))
+		if root.repoID != "" {
+			if parts[0] == "" || !worktrees.IsRunID(parts[0]) {
+				continue
+			}
+			return filepath.Join(root.prefix, parts[0]), root.repoID, parts[0], true
+		}
 		if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 			continue
 		}
-		return filepath.Join(root, parts[0], parts[1]), parts[0], parts[1], true
+		return filepath.Join(root.prefix, parts[0], parts[1]), parts[0], parts[1], true
 	}
 	return "", "", "", false
 }

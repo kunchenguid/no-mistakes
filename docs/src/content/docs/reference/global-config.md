@@ -42,6 +42,9 @@ log_level: info
 
 session_reuse: true
 
+worktree_roots:
+  /Users/you/src/my-repo: /Users/you/work/my-repo-runs
+
 auto_fix:
   rebase: 3
   review: 0
@@ -294,6 +297,29 @@ When resume is unavailable or fails, the fix turn falls back to a cold run or a 
 Session identities are persisted only as minimum local resume metadata, never as prompts or transcripts.
 The [daemon crash-recovery reference](/no-mistakes/concepts/daemon/#crash-recovery) owns which parked gates can resume or reconcile after a restart.
 Set `false` to force every agent invocation cold.
+
+### worktree_roots
+
+Where a repository's pipeline run worktrees are created.
+
+|         |                                                 |
+| ------- | ----------------------------------------------- |
+| Type    | `map[string]string`                             |
+| Keys    | Absolute registered checkout paths (what you ran `no-mistakes init` in) |
+| Values  | Absolute directory paths                        |
+| Default | Empty (`<NM_HOME>/worktrees/<repo id>/<run id>`) |
+
+By default a run worktree is created under `NM_HOME`, outside every checkout, so directory-scoped toolchain configuration (mise, direnv) never reaches it: those tools resolve their settings by path ancestry.
+Point a checkout at a directory of your own and its runs are created at `<value>/<run id>` instead, inheriting whatever that directory configures.
+A relative value is rejected at load time, because the daemon that reads it has an unrelated working directory.
+
+The directory stays yours, with one rule you have to know: a **directory whose name is a 26-character uppercase ULID** is treated as a run worktree, so startup cleanup may remove it and `no-mistakes eject` removes the ones this repository's run rows name. Everything else there - files, and directories named anything else - is never read, never swept, and never removed.
+
+Each checkout needs its own root: two entries pointing at the same directory, two spellings of one checkout, or a root equal to its checkout are rejected at load time.
+
+The key is matched against the checkout path recorded at `init`. After moving a checkout, re-run `no-mistakes init` from the new path and update the key; a key that matches no registered repository is reported in the daemon log at startup and otherwise does nothing.
+
+`no-mistakes init --worktree-root <dir>` prints the exact entry to add for the checkout you are initializing. The global config is hand-maintained, so init never rewrites it for you.
 
 ### auto_fix
 

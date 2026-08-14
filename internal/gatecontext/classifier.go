@@ -5,15 +5,18 @@ package gatecontext
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 const ErrorCode = "nested_gate_context"
@@ -56,11 +59,15 @@ type Result struct {
 
 // Inspector combines canonical managed Git identity with authenticated IPC
 // peer ancestry. ParentPID exists for deterministic tests; production callers
-// leave it nil to use the platform process table.
+// leave it nil to use the platform process table. Worktrees is likewise
+// test-only: it describes where run worktrees live (see internal/worktrees),
+// and production callers leave it nil so the operator's configured placement
+// is read from the global config.
 type Inspector struct {
 	DB        *db.DB
 	Paths     *paths.Paths
 	ParentPID func(int) (int, error)
+	Worktrees *worktrees.Layout
 }
 
 // Inspect classifies a caller without mutating repositories, runs, refs,
@@ -71,18 +78,18 @@ func (i Inspector) Inspect(ctx context.Context, req Request) (Result, error) {
 		return result, fmt.Errorf("gate execution context: paths are required")
 	}
 
-	var managedRepoID string
+	var managedRepo *db.Repo
 	var worktreeRoot string
 	if !req.SkipManagedGit && strings.TrimSpace(req.CWD) != "" {
 		commonDir, top, ok := gitIdentity(ctx, req.CWD)
 		if ok {
 			worktreeRoot = top
-			id, managed, err := i.registeredManagedCommonDir(commonDir)
+			repo, managed, err := i.registeredManagedCommonDir(commonDir)
 			if err != nil {
 				return result, err
 			}
 			if managed {
-				managedRepoID = id
+				managedRepo = repo
 				result.ManagedGit = true
 				result.Nested = true
 			}
@@ -128,12 +135,29 @@ func (i Inspector) Inspect(ctx context.Context, req Request) (Result, error) {
 	// Canonical topology remains authoritative when a marker is removed or an
 	// adapter omits it. Attach run/phase only when the worktree path and active
 	// DB record agree exactly; otherwise omit them rather than guessing.
-	if result.ManagedGit && result.RunID == "" && managedRepoID != "" && worktreeRoot != "" {
+	if result.ManagedGit && result.RunID == "" && managedRepo != nil && worktreeRoot != "" {
+		// The repository's checkout path is what decides whether its run
+		// worktrees live in a configured root rather than under NM_HOME, so
+		// the comparison is made through the same placement seam that created
+		// them.
+		// A config this process cannot read costs only the run/phase names in
+		// the refusal message, which is already optional here. Degrading to
+		// the refusal we have beats turning an unrelated config fault into a
+		// classification error at every gate boundary.
+		layout := i.Worktrees
+		if layout == nil {
+			globalCfg, err := config.LoadGlobal(i.Paths.ConfigFile())
+			if err != nil {
+				slog.Warn("gate execution context: worktree placement unavailable; omitting run metadata", "error", err)
+				return result, nil
+			}
+			layout = worktrees.New(i.Paths, globalCfg.WorktreeRoots)
+		}
 		for _, step := range active {
-			if step.repoID != managedRepoID {
+			if step.repoID != managedRepo.ID {
 				continue
 			}
-			want := i.Paths.WorktreeDir(step.repoID, step.runID)
+			want := layout.Dir(managedRepo.ID, managedRepo.WorkingPath, step.runID)
 			if sameCanonicalPath(worktreeRoot, want) {
 				result.RunID = step.runID
 				result.Phase = step.phase
@@ -188,28 +212,28 @@ func activeStepStatus(status types.StepStatus) bool {
 	}
 }
 
-func (i Inspector) registeredManagedCommonDir(commonDir string) (string, bool, error) {
+func (i Inspector) registeredManagedCommonDir(commonDir string) (*db.Repo, bool, error) {
 	common := canonicalPath(commonDir)
 	reposDir := canonicalPath(i.Paths.ReposDir())
 	if filepath.Dir(common) != reposDir {
-		return "", false, nil
+		return nil, false, nil
 	}
 	base := filepath.Base(common)
 	if !strings.HasSuffix(base, ".git") || base == ".git" || !git.LooksLikeBareRepository(common) {
-		return "", false, nil
+		return nil, false, nil
 	}
 	id := strings.TrimSuffix(base, ".git")
 	if i.DB == nil {
-		return "", false, nil
+		return nil, false, nil
 	}
 	repo, err := i.DB.GetRepo(id)
 	if err != nil {
-		return "", false, fmt.Errorf("gate execution context: verify managed gate: %w", err)
+		return nil, false, fmt.Errorf("gate execution context: verify managed gate: %w", err)
 	}
 	if repo == nil || !sameCanonicalPath(common, i.Paths.RepoDir(repo.ID)) {
-		return "", false, nil
+		return nil, false, nil
 	}
-	return repo.ID, true, nil
+	return repo, true, nil
 }
 
 func gitIdentity(ctx context.Context, cwd string) (commonDir, top string, ok bool) {
@@ -243,15 +267,10 @@ func ancestry(pid int, parent func(int) (int, error)) (map[int]bool, error) {
 	return chain, nil
 }
 
+// canonicalPath is the shared worktree_roots canonicalization, so a path that
+// compares equal here compares equal everywhere placement is resolved.
 func canonicalPath(path string) string {
-	path = filepath.Clean(path)
-	if abs, err := filepath.Abs(path); err == nil {
-		path = abs
-	}
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		path = resolved
-	}
-	return filepath.Clean(path)
+	return worktrees.Canonical(path)
 }
 
 func sameCanonicalPath(a, b string) bool {

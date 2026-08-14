@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 type topologyFixture struct {
@@ -155,6 +156,63 @@ func TestInspectorUsesAuthenticatedProcessAncestryAfterCWDChange(t *testing.T) {
 	}
 	if !daemonChild.Nested || !daemonChild.DaemonDescendant || daemonChild.RunID != "" {
 		t.Fatalf("daemon-descendant classification = %+v, want refusal without guessed run metadata", daemonChild)
+	}
+}
+
+// TestInspectorAttributesRunInConfiguredWorktreeRoot covers a repository whose
+// run worktrees the operator placed in a directory of their own
+// (worktree_roots): the path no longer spells out <NM_HOME>/worktrees, so
+// run/phase attribution has to come from the same placement seam that created
+// the worktree. Without it the caller is still refused as managed Git, but the
+// refusal cannot name what it is standing in.
+func TestInspectorAttributesRunInConfiguredWorktreeRoot(t *testing.T) {
+	f := newTopologyFixture(t)
+	repo, err := f.d.GetRepo(f.repoID)
+	if err != nil {
+		t.Fatalf("get repo: %v", err)
+	}
+	runRecord, err := f.d.InsertRun(f.repoID, "feature", "head", "base")
+	if err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
+	if err := f.d.UpdateRunStatus(runRecord.ID, types.RunRunning); err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	step, err := f.d.InsertStepResult(runRecord.ID, types.StepDocument)
+	if err != nil {
+		t.Fatalf("insert step: %v", err)
+	}
+	if err := f.d.StartStep(step.ID); err != nil {
+		t.Fatalf("start step: %v", err)
+	}
+
+	root := filepath.Join(t.TempDir(), "repo-runs")
+	managed := filepath.Join(root, runRecord.ID)
+	run(t, f.gate, "git", "worktree", "add", "--detach", managed, "refs/heads/feature")
+
+	configured := gatecontext.Inspector{
+		DB:        f.d,
+		Paths:     f.p,
+		Worktrees: worktrees.New(f.p, map[string]string{repo.WorkingPath: root}),
+	}
+	got, err := configured.Inspect(context.Background(), gatecontext.Request{CWD: managed})
+	if err != nil {
+		t.Fatalf("inspect configured worktree: %v", err)
+	}
+	if !got.Nested || !got.ManagedGit {
+		t.Fatalf("worktree in a configured root not rejected: %+v", got)
+	}
+	if got.RunID != runRecord.ID || got.Phase != types.StepDocument {
+		t.Fatalf("run attribution = (%q, %q), want (%q, %q)", got.RunID, got.Phase, runRecord.ID, types.StepDocument)
+	}
+
+	unconfigured := gatecontext.Inspector{DB: f.d, Paths: f.p, Worktrees: worktrees.New(f.p, nil)}
+	plain, err := unconfigured.Inspect(context.Background(), gatecontext.Request{CWD: managed})
+	if err != nil {
+		t.Fatalf("inspect without configured placement: %v", err)
+	}
+	if !plain.Nested || plain.RunID != "" {
+		t.Fatalf("classification without configured placement = %+v, want refusal without run metadata", plain)
 	}
 }
 
