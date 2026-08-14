@@ -450,8 +450,6 @@ func cleanReviewScenario(t *testing.T) string {
     edits:
       - path: "agent_test.py"
         new: "def test_agent():\n    pass\n"
-      - path: "readme.md"
-        new: "# readme\n"
     structured:
       findings: []
       summary: "all tests passed"
@@ -1059,10 +1057,10 @@ func assertEmptyDiffAfterRebaseRun(t *testing.T, h *Harness) {
 func assertAgentEditCommitRun(t *testing.T, h *Harness) {
 	t.Helper()
 	formatScript := filepath.Join(h.BinDir, "nm-format-e2e")
-	if err := os.WriteFile(formatScript, []byte("#!/bin/sh\nprintf formatted > formatted-by-push.txt\n"), 0o755); err != nil {
+	if err := os.WriteFile(formatScript, []byte("#!/bin/sh\nprintf '\\nformatted' >> agent-edit.txt\n"), 0o755); err != nil {
 		t.Fatalf("write e2e formatter: %v", err)
 	}
-	h.CommitChange("agent-edits", "agent-edits.txt", "feature before agent\n", "add agent-edits branch")
+	h.CommitChange("agent-edits", "agent-edit.txt", "feature before agent\n", "add agent-edits branch")
 	config := "ignore_patterns:\n  - '*.generated.go'\n  - 'vendor/**'\ncommands:\n  format: \"nm-format-e2e\"\n"
 	originalHead := h.CommitChange("agent-edits", ".no-mistakes.yaml", config, "configure formatter")
 	h.PushToGate("agent-edits")
@@ -1095,15 +1093,8 @@ func assertAgentEditCommitRun(t *testing.T, h *Harness) {
 	if err != nil {
 		t.Fatalf("read committed agent edit from upstream: %v\n%s", err, contents)
 	}
-	if string(contents) != "agent edited\n" {
+	if string(contents) != "agent edited\n\nformatted" {
 		t.Fatalf("agent-edit.txt contents = %q", string(contents))
-	}
-	formatted, err := h.runGit(ctx, h.UpstreamDir, "show", "refs/heads/agent-edits:formatted-by-push.txt")
-	if err != nil {
-		t.Fatalf("read formatted file from upstream: %v\n%s", err, formatted)
-	}
-	if string(formatted) != "formatted" {
-		t.Fatalf("formatted-by-push.txt contents = %q", string(formatted))
 	}
 }
 
@@ -1508,8 +1499,11 @@ func assertDocumentLegacyFindingRun(t *testing.T, h *Harness) {
 	if len(findings.Items) != 1 {
 		t.Fatalf("expected one legacy documentation finding, got %+v", findings.Items)
 	}
-	if findings.Items[0].Action != types.ActionAutoFix {
-		t.Fatalf("expected legacy documentation finding to normalize to auto-fix, got action %q", findings.Items[0].Action)
+	if findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("expected fileless legacy documentation finding to require an explicit scope decision, got action %q", findings.Items[0].Action)
+	}
+	if !strings.Contains(findings.Items[0].Description, types.ScopeDecisionGateName) {
+		t.Fatalf("expected fileless legacy documentation finding to carry %s, got %q", types.ScopeDecisionGateName, findings.Items[0].Description)
 	}
 	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
 	completed := h.WaitForRun("document-legacy-finding", 60*time.Second)
@@ -1736,11 +1730,11 @@ func assertDocumentWarningRun(t *testing.T, h *Harness) {
 	if item.Severity != "warning" {
 		t.Fatalf("expected documentation finding severity warning, got %q", item.Severity)
 	}
-	if item.Description != "README missing new CLI flag" {
-		t.Fatalf("document warning description = %q, want README missing new CLI flag", item.Description)
+	if !strings.Contains(item.Description, types.ScopeDecisionGateName) || !strings.Contains(item.Description, "README missing new CLI flag") {
+		t.Fatalf("document warning description = %q, want named scope gate plus original warning", item.Description)
 	}
-	if item.Action != types.ActionAutoFix {
-		t.Fatalf("expected document warning to stay auto-fixable, got action %q", item.Action)
+	if item.Action != types.ActionAskUser {
+		t.Fatalf("expected fileless document warning to require an explicit scope decision, got action %q", item.Action)
 	}
 	h.Respond(run.ID, types.StepDocument, types.ActionAbort)
 	completed := h.WaitForRun("document-warning", 60*time.Second)
@@ -1780,11 +1774,11 @@ func assertDocumentInfoRun(t *testing.T, h *Harness) {
 
 func assertTestAgentNewTestFileRun(t *testing.T, h *Harness) {
 	t.Helper()
-	h.CommitChange("test-agent-new-test-file", "test-agent-new-test-file.txt", "test agent new test file\n", "add test agent new test file")
+	h.CommitChange("test-agent-new-test-file", "agent_test.py", "# regression test pending\n", "declare regression test surface")
 	h.PushToGate("test-agent-new-test-file")
-	// Issue #140: a passing test run whose only finding is an informational
-	// "new test file written by agent" note must not gate on approval; the run
-	// proceeds automatically to completion.
+	// AS-857 requires an agent-written test surface to be declared by the
+	// submitted delta. Once declared, the test agent may update it and the run
+	// proceeds without a scope gate.
 	run := h.WaitForRun("test-agent-new-test-file", 60*time.Second)
 	if run.Status != types.RunCompleted {
 		t.Fatalf("test-agent-new-test-file run status = %s, want completed; error=%v", run.Status, deref(run.Error))
@@ -1796,37 +1790,20 @@ func assertTestAgentNewTestFileRun(t *testing.T, h *Harness) {
 	if testStep.Status != types.StepStatusCompleted {
 		t.Fatalf("test step status = %s, want completed", testStep.Status)
 	}
-	if testStep.FindingsJSON == nil {
-		t.Fatal("expected test step to record findings JSON for new test file")
+	if testStep.FindingsJSON != nil && strings.Contains(*testStep.FindingsJSON, types.ScopeDecisionGateName) {
+		t.Fatalf("declared test surfaces unexpectedly raised a scope gate: %s", *testStep.FindingsJSON)
 	}
-	findings, err := types.ParseFindingsJSON(*testStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse new test file findings: %v", err)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected one new test file finding, got %+v", findings.Items)
-	}
-	item := findings.Items[0]
-	if item.Severity != "info" {
-		t.Fatalf("new test file finding severity = %q, want info", item.Severity)
-	}
-	if item.Action != types.ActionNoOp {
-		t.Fatalf("new test file finding action = %q, want no-op", item.Action)
-	}
-	if item.File != "agent_test.py" {
-		t.Fatalf("new test file finding file = %q, want agent_test.py", item.File)
-	}
-	if !strings.Contains(item.Description, "new test file written by agent: agent_test.py") {
-		t.Fatalf("new test file finding description = %q", item.Description)
+	contents, err := h.runGit(context.Background(), h.UpstreamDir, "show", "refs/heads/test-agent-new-test-file:agent_test.py")
+	if err != nil || string(contents) != "def test_agent():\n    pass\n" {
+		t.Fatalf("declared regression test was not committed: err=%v contents=%q", err, contents)
 	}
 }
 
 func assertTestAgentStagedNewTestFileRun(t *testing.T, h *Harness) {
 	t.Helper()
-	h.CommitChange("test-agent-staged-new-test-file", "test-agent-staged-new-test-file.txt", "test agent staged new test file\n", "add test agent staged new test file")
+	h.CommitChange("test-agent-staged-new-test-file", "agent_staged_test.go", "package pending\n", "declare staged regression test surface")
 	h.PushToGate("test-agent-staged-new-test-file")
-	// Issue #140: same as the untracked case, but the agent stages the new test
-	// file. It is still purely informational, so the run proceeds automatically.
+	// The predeclared surface remains in scope even when the agent stages it.
 	run := h.WaitForRun("test-agent-staged-new-test-file", 60*time.Second)
 	if run.Status != types.RunCompleted {
 		t.Fatalf("test-agent-staged-new-test-file run status = %s, want completed; error=%v", run.Status, deref(run.Error))
@@ -1838,28 +1815,12 @@ func assertTestAgentStagedNewTestFileRun(t *testing.T, h *Harness) {
 	if testStep.Status != types.StepStatusCompleted {
 		t.Fatalf("test step status = %s, want completed", testStep.Status)
 	}
-	if testStep.FindingsJSON == nil {
-		t.Fatal("expected test step to record findings JSON for staged new test file")
+	if testStep.FindingsJSON != nil && strings.Contains(*testStep.FindingsJSON, types.ScopeDecisionGateName) {
+		t.Fatalf("declared staged test surface unexpectedly raised a scope gate: %s", *testStep.FindingsJSON)
 	}
-	findings, err := types.ParseFindingsJSON(*testStep.FindingsJSON)
-	if err != nil {
-		t.Fatalf("parse staged new test file findings: %v", err)
-	}
-	if len(findings.Items) != 1 {
-		t.Fatalf("expected one staged new test file finding, got %+v", findings.Items)
-	}
-	item := findings.Items[0]
-	if item.Severity != "info" {
-		t.Fatalf("staged new test file finding severity = %q, want info", item.Severity)
-	}
-	if item.Action != types.ActionNoOp {
-		t.Fatalf("staged new test file finding action = %q, want no-op", item.Action)
-	}
-	if item.File != "agent_staged_test.go" {
-		t.Fatalf("staged new test file finding file = %q, want agent_staged_test.go", item.File)
-	}
-	if !strings.Contains(item.Description, "new test file written by agent: agent_staged_test.go") {
-		t.Fatalf("staged new test file finding description = %q", item.Description)
+	contents, err := h.runGit(context.Background(), h.UpstreamDir, "show", "refs/heads/test-agent-staged-new-test-file:agent_staged_test.go")
+	if err != nil || string(contents) != "package main\n" {
+		t.Fatalf("declared staged regression test was not committed: err=%v contents=%q", err, contents)
 	}
 }
 

@@ -290,13 +290,20 @@ it to the user before you respond:
   `respond` call: `--action fix` (pass their guidance through
   `--instructions`), `--action approve`, or `--action skip`.
 
-The one exception is `--yes` (below): it is the user's standing consent to
-drive every gate unattended, so under `--yes` you resolve `ask-user`
-findings automatically instead of stopping to ask.
+The one exception for ordinary findings is `--yes` (below): it is the user's standing consent to
+drive ordinary gates unattended, so under `--yes` you resolve ordinary `ask-user`
+findings automatically instead of stopping to ask. A `PIPELINE_SCOPE_DECISION_REQUIRED`
+finding is never auto-resolved: it means the proposed repair is outside the immutable
+`base..submitted HEAD` path set, has no file/surface identity that can prove it
+is inside, or a pipeline stage already produced an edit outside that path set and refused to
+commit or push it. Return that gate to the user before any fixer dispatch. Only the user's explicit
+`respond --action fix` selection authorizes that gate's exact non-empty path for
+the following fix round; `--yes` never does, and a file-less gate cannot widen an
+unknowable surface.
 
 If you have clear consent to drive the run automatically, pass `--yes` to `axi run`
-or `axi respond`. It treats every actionable finding - `auto-fix` and
-`ask-user` alike - as consent to fix it, selects every current finding for one
+or `axi respond`. Except for `PIPELINE_SCOPE_DECISION_REQUIRED`, it treats every actionable finding - `auto-fix` and
+ordinary `ask-user` alike - as consent to fix it, selects every current finding for one
 fix round, accepts the resulting fix review, and approves gates with only
 `no-op` findings. Only use it when the user has asked you to drive the whole
 run without checking back.

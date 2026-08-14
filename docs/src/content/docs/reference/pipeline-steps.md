@@ -10,7 +10,9 @@ intent → rebase → review → test → document → lint → push → pr → 
 ```
 
 Each step can produce findings, request approval, trigger auto-fix, or apply safe fixes during its own pass. Steps that encounter fatal errors stop the pipeline. Steps can also be pre-skipped when starting a run, skipped by the user, or skipped automatically by the pipeline.
-In the TUI, yolo mode is an explicit override that auto-resolves paused steps: `auto-fix` and `ask-user` findings are fixed once with every finding selected, fix-review gates are approved, and gates with only `no-op` findings are approved as-is.
+In the TUI, yolo mode is an explicit override that auto-resolves ordinary paused steps: `auto-fix` and `ask-user` findings are fixed once with every finding selected, fix-review gates are approved, and gates with only `no-op` findings are approved as-is. A `PIPELINE_SCOPE_DECISION_REQUIRED` finding is the exception: widening a submitted ticket's mutation surface is never auto-resolved, including under yolo or `axi run --yes`.
+At run start, no-mistakes derives the declared ticket scope once from the exact paths in `base..submitted HEAD`. Every pipeline agent invocation receives that path list. An automatic repair with an explicit path outside it, or with no path/surface identity that can prove membership, becomes the named `PIPELINE_SCOPE_DECISION_REQUIRED` gate before a fixer is dispatched. Agent edits are checked again before every pipeline stage and commit, including the push step's own commit and any output the configured format command left behind. An out-of-scope edit is preserved for inspection but is never committed or pushed; it raises the same `PIPELINE_SCOPE_DECISION_REQUIRED` gate naming the exact observed paths, so the run parks for a decision instead of failing. Automatic resolution never widens scope. Only an explicit user `fix` response selecting a scope gate authorizes that gate's exact non-empty path for the subsequent fix round; a file-less gate remains a decision because the pipeline has no concrete surface to authorize.
+Every pipeline agent invocation is also bound to the exact committed checkout identity (`HEAD` plus `HEAD^{tree}`) captured before launch. The local `agent_invocations` record stores both values. Unless the invocation's declared job is checkout movement (rebase or merge-conflict repair), no-mistakes re-reads both values before returning the result; movement raises `PIPELINE_PROOF_IDENTITY_MOVED` and the mixed-head output is not consumed. This is why proof and receipt claims are invocation-bound rather than accepted merely because their command eventually exited successfully.
 Every pipeline agent invocation is prompt-steered to keep intentional writes inside the run worktree and avoid mutating system state outside it.
 This is a soft boundary, not OS-level sandbox enforcement.
 The steering still allows requested test evidence under the managed temporary `no-mistakes-evidence` directory, plus incidental temp or cache writes from normal development tools.
@@ -111,7 +113,7 @@ Local Test is never a repository-wide regression-suite substitute; broad regress
 - Evidence is always collected under the temporary `no-mistakes-evidence/<runID>` directory, outside the worktree, so artifacts never enter the branch being validated. On GitHub, [`test.evidence.store_in_repo: true`](/no-mistakes/reference/global-config/#testevidence) makes the PR step publish that directory to the push-target repository's orphan evidence branch under `<test.evidence.dir>/<branch-slug>` and link the artifacts from the PR body. The config reference owns provider support and fail-closed behavior.
 - Before finishing, test agents are instructed to remove transient working-tree artifacts they created, such as downloaded models, caches, build outputs, large binaries, or generated data directories, while preserving intentional source or test-file changes and evidence files under the dedicated evidence directory.
 - Missing evidence for user intent can be reported as a warning with `action: ask-user`.
-- If the agent creates new test files (detected via `git status --porcelain`), they are recorded as informational `no-op` findings and do not require approval when tests pass.
+- If the agent creates new test files (detected via `git status --porcelain`), they are recorded as informational `no-op` findings and do not require approval when tests pass. A new file the submitted change never declared is kept in the checkout but is not committed: it raises the `PIPELINE_SCOPE_DECISION_REQUIRED` gate described above.
 
 **Approval:** test findings with `action: ask-user` pause for approval, including missing-evidence warnings for user intent. `action: auto-fix` findings stay eligible for the fix loop. `action: no-op` findings are informational only.
 
@@ -162,6 +164,7 @@ Pushes the validated branch to the configured push target.
 **Behavior:**
 - If `commands.format` is set, runs it first
 - Commits any uncommitted agent changes with message `no-mistakes: apply agent fixes`
+- As the pipeline's last stage and commit, re-checks those changes against the declared ticket scope, including whatever the format command left behind; an undeclared path is preserved in the checkout but never staged, committed, or pushed, and raises the `PIPELINE_SCOPE_DECISION_REQUIRED` gate instead
 - Without fork routing, successful run-start validation selects the upstream URL from the working clone; when it matches the gate worktree's `origin`, the worktree URL is used so embedded credentials retained outside the database can authenticate. If validation fails, the run continues with its prior routing.
 - With GitHub fork routing, the push target is `repos.fork_url`
 - Immediately before remote mutation, reloads the durable review-approved commit and refuses to push when that binding is missing, malformed, or unreachable
@@ -179,7 +182,7 @@ A remote branch can move without being rejected when all remote commits are alre
 Any other out-of-band commit stops the push instead of being overwritten.
 Pre-skipping or later skipping Review leaves no approval binding, so Push fails closed unless Push is also skipped.
 
-This step never requires approval - it runs automatically after review, test, document, and lint pass.
+This step has no approval gate of its own - it runs automatically after review, test, document, and lint pass - but it parks for an explicit decision when the changes it would commit fall outside the declared ticket scope.
 
 ## PR
 

@@ -125,6 +125,9 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 		sctx.Log("no agent changes to commit")
 		return nil
 	}
+	if err := sctx.AssertDeclaredScope("stage or commit agent fixes"); err != nil {
+		return err
+	}
 	if summary == "" {
 		summary = fallbackSummary
 	}
@@ -137,6 +140,9 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	}
 	if _, err := git.Run(ctx, sctx.WorkDir, "add", "-A"); err != nil {
 		return fmt.Errorf("stage %s changes: %w", stepName, err)
+	}
+	if err := sctx.AssertDeclaredScope("commit staged agent fixes"); err != nil {
+		return err
 	}
 	if _, err := git.Run(ctx, sctx.WorkDir, "commit", "-m", commitMessage); err != nil {
 		return fmt.Errorf("commit %s changes: %w", stepName, err)

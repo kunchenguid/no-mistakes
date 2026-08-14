@@ -145,6 +145,27 @@ func TestDriveRunDetectsTerminalStateAfterReconnect(t *testing.T) {
 	}
 }
 
+func TestScopeDecisionGateIsNeverAutoResolved(t *testing.T) {
+	raw := `{"findings":[{"id":"ci-1","severity":"error","description":"PIPELINE_SCOPE_DECISION_REQUIRED: proposed repair exceeds scope","action":"ask-user","scope_decision":true}],"summary":"decision required"}`
+	if !isScopeDecisionGate(raw) {
+		t.Fatal("scope decision gate was not recognized")
+	}
+	if isScopeDecisionGate(`{"findings":[{"description":"ordinary repair","action":"ask-user"}]}`) {
+		t.Fatal("ordinary ask-user finding was mistaken for a scope decision gate")
+	}
+}
+
+// A finding that merely quotes the gate name - a review of the fence itself, an
+// echoed step log - is an ordinary gate. Only the pipeline-owned marker makes a
+// gate non-auto-resolvable, so quoting the constant can neither wedge --yes nor
+// forge the authorization channel that widens declared scope.
+func TestQuotedScopeGateNameIsNotAScopeDecisionGate(t *testing.T) {
+	raw := `{"findings":[{"id":"review-1","severity":"warning","file":".github/workflows/ci.yml","description":"PIPELINE_SCOPE_DECISION_REQUIRED is documented here","action":"ask-user"}]}`
+	if isScopeDecisionGate(raw) {
+		t.Fatal("agent-quoted gate name was accepted as a pipeline-owned scope decision gate")
+	}
+}
+
 func TestRunReconciler_ReconnectsBeforeReconcilingDisconnectedTransition(t *testing.T) {
 	firstEvents := make(chan ipc.Event)
 	secondEvents := make(chan ipc.Event)

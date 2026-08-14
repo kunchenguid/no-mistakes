@@ -45,6 +45,9 @@ type StepContext struct {
 	// authoritative acceptance criteria; an agent name ("claude", "codex", ...)
 	// means it was inferred from a transcript (a hint). Empty when no intent exists.
 	IntentSource string
+	// DeclaredScope is the immutable file scope captured from the submitted
+	// change before any pipeline repair runs. It is never widened by an agent.
+	DeclaredScope DeclaredScope
 	// Sessions manages the run's durable review-fixer session. The session
 	// machinery remains role-generic for legacy recovery; nil runs every
 	// invocation cold.

@@ -59,6 +59,7 @@ func (a *fallbackUsageAgent) Close() error { return nil }
 func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 	database, p, run, repo := setupTest(t)
 	workDir := t.TempDir()
+	bindRunToGitRepo(t, database, workDir, run)
 
 	step := &adaptiveCallStep{
 		name: types.StepReview,
@@ -105,6 +106,9 @@ func TestExecutor_RecordsAgentInvocationsLocally(t *testing.T) {
 	}
 	if review.ExitStatus != "ok" || review.StartedAt == 0 || review.CompletedAt == 0 {
 		t.Fatalf("timing/exit not recorded: %+v", review)
+	}
+	if review.CheckoutHeadSHA == nil || review.CheckoutTreeSHA == nil || *review.CheckoutHeadSHA == "" || *review.CheckoutTreeSHA == "" {
+		t.Fatalf("invocation checkout identity not recorded: %+v", review)
 	}
 
 	// The second invocation ran outside any session and defaults its purpose

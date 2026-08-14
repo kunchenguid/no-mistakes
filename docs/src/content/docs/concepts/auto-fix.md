@@ -73,6 +73,10 @@ An unclassified finding is never eligible for automatic fixing.
 In the TUI, yolo mode is an explicit override that auto-resolves paused steps by treating `auto-fix` and `ask-user` findings as consent to run one fix round.
 Steps with only `no-op` findings are approved as-is.
 
+Before any fix round is dispatched, each `auto-fix` finding is held against the run's declared ticket scope.
+A finding whose file lies outside the paths in `base..submitted HEAD`, or that names no file at all, becomes an `ask-user` `PIPELINE_SCOPE_DECISION_REQUIRED` gate instead of entering the loop, and neither yolo nor AXI `--yes` resolves it.
+The [pipeline steps reference](/no-mistakes/reference/pipeline-steps/) owns the fence's exact rules, including how an explicit `fix` response authorizes one named path.
+
 The `review`, `test`, and configured-command `lint` steps use this shared model directly. The `document` step also uses the same `action` field, but unresolved documentation findings pause for approval because the initial document pass already attempted the documentation updates it could make safely.
 When `commands.lint` is empty, the combined housekeeping pass routes documentation and lint findings to their owning gates. Its unresolved lint findings describe issues left after safe fixes, so blocking findings pause for approval instead of remaining eligible for another automatic fix loop.
 
@@ -103,6 +107,7 @@ The combined document-and-lint housekeeping pass runs in the Document step, so i
 
 Before a step-specific fix commit, the pipeline verifies that the live worktree HEAD still descends from the head recorded after its previous commit.
 It allows a legitimate forward commit made by an agent, but aborts the run if an out-of-band backward or divergent reset would drop the reviewed history.
+The same commit path refuses to stage or commit a path outside the declared ticket scope: the edit stays in the checkout for inspection and the step parks at the `PIPELINE_SCOPE_DECISION_REQUIRED` gate naming it, rather than failing the run.
 
 The template does not control commits created by the Rebase, CI, or Push steps.
 The CI step uses `no-mistakes: apply CI fixes`, and the Push step uses `no-mistakes: apply agent fixes` for remaining uncommitted changes.

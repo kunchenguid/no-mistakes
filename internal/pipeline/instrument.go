@@ -87,6 +87,14 @@ func (a *perfRecordingAgent) record(ctx context.Context, opts agent.RunOpts, age
 		DurationMS:  completedAt.Sub(startedAt).Milliseconds(),
 		ExitStatus:  "ok",
 	}
+	if opts.InvocationHeadSHA != "" {
+		head := opts.InvocationHeadSHA
+		inv.CheckoutHeadSHA = &head
+	}
+	if opts.InvocationTreeSHA != "" {
+		tree := opts.InvocationTreeSHA
+		inv.CheckoutTreeSHA = &tree
+	}
 	if opts.SessionFallback && opts.SessionFallbackReason != "" {
 		reason := opts.SessionFallbackReason
 		inv.FallbackReason = &reason

@@ -566,6 +566,25 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	if e.config != nil {
 		autoFixLimit = e.config.AutoFixLimit(stepName)
 	}
+	declaredScope := DeclaredScope{}
+	if e.agent != nil {
+		submittedHead := run.HeadSHA
+		if run.SubmittedHeadSHA != nil && strings.TrimSpace(*run.SubmittedHeadSHA) != "" {
+			submittedHead = *run.SubmittedHeadSHA
+		}
+		var scopeErr error
+		declaredScope, scopeErr = declaredScopeForRun(ctx, workDir, submittedHead, run.BaseSHA)
+		if scopeErr != nil {
+			return false, scopeErr
+		}
+	}
+	// A recovered approval response reconstructs the step context from durable
+	// state. Reapply only the exact named paths the operator selected before the
+	// daemon stopped; automatic fix rounds never carry this authorization.
+	recoveredAuthorizedScopePaths := []string(nil)
+	if state.fixing && state.previousFindings != "" {
+		recoveredAuthorizedScopePaths = authorizeSelectedScopeDecisionPaths(declaredScope, state.previousFindings)
+	}
 
 	// Mark step as running
 	if err := e.db.StartStepWithAutoFixLimit(sr.ID, autoFixLimit); err != nil {
@@ -675,6 +694,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			stepName: stepName,
 			round:    func() int { return roundNum + 1 },
 		}
+		stepAgent = &scopeAndProofFenceAgent{inner: stepAgent, workDir: workDir, scope: declaredScope}
 	}
 	ciReady := run.CIReadyAt != nil
 	ciReadyNoCI := run.CIReadyNoCI
@@ -698,6 +718,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		StepResultID:     sr.ID,
 		UserIntent:       userIntent,
 		IntentSource:     userIntentSource,
+		DeclaredScope:    declaredScope,
 		Sessions:         e.sessions,
 		Shared:           e.shared,
 		Fixing:           state.fixing,
@@ -709,6 +730,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			touchLogActivity(text, true)
 		},
 		CIReadinessChanged: ciReadinessChanged,
+	}
+	if len(recoveredAuthorizedScopePaths) > 0 {
+		writeLog(fmt.Sprintf("scope decision restored exact authorized path(s): %s", strings.Join(recoveredAuthorizedScopePaths, ", ")))
 	}
 
 	nextTrigger := "initial"
@@ -727,6 +751,15 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		outcome, err := step.Execute(sctx)
 		roundNum++
 		roundDuration := time.Since(phaseStart).Milliseconds()
+		// A refused effect is a decision, not a failure. Park it as the named
+		// gate carrying the observed paths so the operator can authorize them
+		// (or abort); the agent's work stays in the checkout either way. This
+		// outcome is pipeline-authored, so it deliberately bypasses the
+		// agent-findings gate below, which strips the ScopeDecision marker.
+		scopeGated := false
+		if gate, ok := scopeBoundaryGateOutcome(err, stepName); ok {
+			outcome, err, scopeGated = gate, nil, true
+		}
 		if err != nil {
 			durationMS := executionMS + roundDuration
 			// Persist the failure reason to the step's own log file. The error
@@ -749,6 +782,12 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			reviewApprovedHeadSHA = outcome.ReviewApprovedHeadSHA
 		}
 		outcome.Findings = normalizeFindingsJSON(outcome.Findings, string(stepName))
+		fixableFindings := ""
+		if !scopeGated {
+			var gatedFindings string
+			fixableFindings, gatedFindings = scopeAutoFixDecisionGate(outcome.Findings, declaredScope)
+			outcome.Findings = gatedFindings
+		}
 		finalExitCode = outcome.ExitCode
 		durationOverrideMS += outcome.DurationOverrideMS
 
@@ -801,7 +840,6 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		// This runs before the NeedsApproval check so that all severity
 		// levels (including "info") get a chance at automatic fixing.
 		if outcome.AutoFixable && autoFixLimit > 0 && autoFixAttempts < autoFixLimit {
-			fixableFindings := autoFixableFindingsJSON(outcome.Findings)
 			if fixableFindings != "" {
 				autoFixAttempts++
 				telemetry.Track("fix", e.fixTelemetryFields("auto", stepName, findingsCount(fixableFindings), autoFixAttempts))
@@ -939,6 +977,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			}
 			sctx.Fixing = true
 			selectedFindings := filterFindingsJSON(outcome.Findings, response.findingIDs)
+			if authorized := authorizeSelectedScopeDecisionPaths(sctx.DeclaredScope, selectedFindings); len(authorized) > 0 {
+				writeLog(fmt.Sprintf("scope decision authorized exact path(s): %s", strings.Join(authorized, ", ")))
+			}
 			mergedFindings := mergeUserOverridesJSON(selectedFindings, response.instructions, response.addedFindings)
 			sctx.PreviousFindings = mergedFindings
 			nextTrigger = "auto_fix"

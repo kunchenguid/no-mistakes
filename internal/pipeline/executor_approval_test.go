@@ -158,6 +158,8 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	workDir := t.TempDir()
+	bindRunToGitRepo(t, database, workDir, run)
 
 	fake := newFakeSessionAgent()
 	step := &adaptiveCallStep{
@@ -180,7 +182,7 @@ func TestExecutor_ResumeRestoresParkedGateAndReviewSessions(t *testing.T) {
 	exec := NewExecutor(database, p, &config.Config{SessionReuse: true}, fake, []Step{step}, nil)
 	done := make(chan error, 1)
 	go func() {
-		done <- exec.Resume(context.Background(), run, repo, t.TempDir())
+		done <- exec.Resume(context.Background(), run, repo, workDir)
 	}()
 
 	deadline := time.Now().Add(5 * time.Second)

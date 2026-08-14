@@ -105,9 +105,10 @@ CI logs:
 
 	sctx.Log("running agent to fix CI issues...")
 	_, err := sctx.Agent.Run(ctx, agent.RunOpts{
-		Prompt:  prompt,
-		CWD:     sctx.WorkDir,
-		OnChunk: sctx.LogChunk,
+		Prompt:                prompt,
+		CWD:                   sctx.WorkDir,
+		OnChunk:               sctx.LogChunk,
+		AllowCheckoutMovement: mergeConflict,
 	})
 	if err != nil {
 		return false, fmt.Errorf("agent CI fix: %w", err)
@@ -133,9 +134,15 @@ func (s *CIStep) commitAndPush(sctx *pipeline.StepContext) (bool, error) {
 		}
 		return false, nil
 	}
+	if err := sctx.AssertDeclaredScope("stage, commit, or push CI repair"); err != nil {
+		return false, err
+	}
 
 	if _, err := stepGitRun(sctx, "add", "-A"); err != nil {
 		return false, fmt.Errorf("stage CI changes: %w", err)
+	}
+	if err := sctx.AssertDeclaredScope("commit staged CI repair"); err != nil {
+		return false, err
 	}
 	if _, err := stepGitRun(sctx, "commit", "-m", "no-mistakes: apply CI fixes"); err != nil {
 		return false, fmt.Errorf("commit: %w", err)

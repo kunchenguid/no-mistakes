@@ -177,6 +177,14 @@ This means the branch was created from a local default branch that is ahead of `
 Push the default branch to `origin` if those commits belong in the shared base, or rebase your feature branch onto `origin/<default_branch>` to remove the unrelated work before running the gate again.
 Approve the finding only when you intentionally want that local default-branch work to stay in the branch.
 
+### A step parks with `PIPELINE_SCOPE_DECISION_REQUIRED`
+
+This means the pipeline wanted to change a file the pushed change never touched, so widening the change needs your decision.
+The edit is preserved in the run worktree, but it is not committed or pushed, and neither TUI yolo nor `axi run --yes` resolves this gate.
+
+Read the named paths in the finding, then either fix that gate to authorize exactly those paths for the next round, or abort the run and submit that extra work as its own change.
+[Pipeline Steps](/no-mistakes/reference/pipeline-steps/) owns the declared-scope rules.
+
 ## `git push no-mistakes` doesn't start a pipeline
 
 Symptom: push succeeds but `no-mistakes` shows no active run.

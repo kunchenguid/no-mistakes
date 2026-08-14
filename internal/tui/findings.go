@@ -12,6 +12,14 @@ func (m Model) stepHasActionableFindings(step types.StepName) bool {
 	return types.HasActionableFindings(types.Findings{Items: m.findingItems(step)})
 }
 
+// stepHasScopeDecisionGate reports the one decision gate yolo must never
+// resolve. Widening declared ticket scope requires an explicit operator choice.
+// The pipeline-owned marker is the test, not the description text: an agent
+// that merely quotes the gate name must not be able to wedge yolo.
+func (m Model) stepHasScopeDecisionGate(step types.StepName) bool {
+	return types.HasScopeDecisionGate(types.Findings{Items: m.findingItems(step)})
+}
+
 func (m Model) awaitingActionState() (showSelectionActions bool, allowFix bool, selectedCount int, totalCount int) {
 	step := awaitingStep(m.steps)
 	if step == nil {

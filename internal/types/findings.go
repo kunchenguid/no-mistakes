@@ -13,6 +13,16 @@ const (
 	ActionAskUser = "ask-user"
 )
 
+// ScopeDecisionGateName is embedded in the stable finding description used
+// when a proposed automatic repair cannot be proven inside the submitted
+// ticket scope. AXI treats this gate as a real operator decision even under
+// --yes; it must never be auto-resolved by the same agent driving the run.
+//
+// The name is operator-facing prose only. Whether a finding IS such a gate is
+// answered by the pipeline-owned Finding.ScopeDecision flag, never by matching
+// this substring in an agent-authored description.
+const ScopeDecisionGateName = "PIPELINE_SCOPE_DECISION_REQUIRED"
+
 // Finding source constants. An empty Source is treated as agent-produced.
 const (
 	FindingSourceAgent = "agent"
@@ -52,6 +62,13 @@ type Finding struct {
 	// Category separates the combined document+lint housekeeping pass's
 	// findings into their owning gates. Empty everywhere else.
 	Category string `json:"category,omitempty"`
+	// ScopeDecision marks a declared-ticket-scope decision gate. It is
+	// pipeline-owned: the scope fence is the only writer, and it clears the
+	// flag on every finding it ingests before setting it on the ones it
+	// gates, so an agent (or a contributor branch steering one) can never
+	// mint the gate that widens its own mutation surface. Consumers must test
+	// this flag rather than searching a description for ScopeDecisionGateName.
+	ScopeDecision bool `json:"scope_decision,omitempty"`
 }
 
 // TestArtifact describes evidence produced by the test step for human review.
@@ -74,6 +91,7 @@ type findingWire struct {
 	UserInstructions    string `json:"user_instructions,omitempty"`
 	ReviewScope         string `json:"review_scope,omitempty"`
 	Category            string `json:"category,omitempty"`
+	ScopeDecision       bool   `json:"scope_decision,omitempty"`
 	RequiresHumanReview *bool  `json:"requires_human_review,omitempty"`
 }
 
@@ -211,6 +229,7 @@ func MergeUserOverrides(findings Findings, instructions map[string]string, added
 	appended := false
 	for _, item := range added {
 		item.Source = FindingSourceUser
+		item.ScopeDecision = false
 		if item.Action == "" {
 			item.Action = ActionAutoFix
 		}
@@ -236,6 +255,19 @@ func MergeUserOverrides(findings Findings, instructions map[string]string, added
 func HasAskUserFindings(findings Findings) bool {
 	for _, item := range findings.Items {
 		if item.actionOrDefault() == ActionAskUser {
+			return true
+		}
+	}
+	return false
+}
+
+// HasScopeDecisionGate reports whether any finding is a pipeline-owned
+// declared-scope decision gate. Widening a submitted ticket's mutation surface
+// is never auto-resolved, so yolo and `axi run --yes` must return control when
+// this is true.
+func HasScopeDecisionGate(findings Findings) bool {
+	for _, item := range findings.Items {
+		if item.ScopeDecision {
 			return true
 		}
 	}
@@ -337,6 +369,7 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	f.UserInstructions = wire.UserInstructions
 	f.ReviewScope = wire.ReviewScope
 	f.Category = wire.Category
+	f.ScopeDecision = wire.ScopeDecision
 	if f.Action == "" && wire.RequiresHumanReview != nil {
 		if *wire.RequiresHumanReview {
 			f.Action = ActionAskUser

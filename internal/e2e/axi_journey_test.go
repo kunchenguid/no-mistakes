@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,9 @@ import (
 
 	toon "github.com/toon-format/toon-go"
 
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -491,7 +494,7 @@ func rebaseCustodyScenario(t *testing.T) string {
       findings:
         - id: "rebase-1"
           severity: warning
-          file: "feature.txt"
+          file: "guard.txt"
           line: 1
           description: "the feature needs a guard helper"
           action: auto-fix
@@ -1188,6 +1191,146 @@ func TestAxiRunPreflightGuards(t *testing.T) {
 	if !strings.Contains(out, "uncommitted changes") {
 		t.Errorf("dirty-tree error not surfaced; output:\n%s", out)
 	}
+}
+
+// TestAxiDeclaredScopeDecisionJourney is the operator-visible half of AS-857.
+// The configured formatter rewrites a path the submitted change never declared,
+// which reaches Push - the pipeline's last stage/commit - with no fix round
+// having ever staged it. Push must raise the named declared-scope decision
+// instead of publishing it, `--yes` must refuse to resolve that one gate, and an
+// explicit decision must authorize exactly the named path and let the run finish
+// and deliver it.
+func TestAxiDeclaredScopeDecisionJourney(t *testing.T) {
+	h := NewHarness(t, SetupOpts{Agent: "claude"})
+
+	h.CommitChange("init-scope-fence", "seed.txt", "seed\n", "seed for scope fence init")
+	initWorktree := h.AddWorktree("init-scope-fence")
+	if out, err := h.RunInDir(initWorktree, "init"); err != nil {
+		t.Fatalf("nm init: %v\n%s", err, out)
+	}
+
+	// A formatter that touches a file the ticket never declared.
+	formatScript := filepath.Join(h.BinDir, "nm-scope-fence-format-e2e")
+	if err := os.WriteFile(formatScript, []byte("#!/bin/sh\nprintf 'rewritten by the formatter\\n' > undeclared_helper.txt\n"), 0o755); err != nil {
+		t.Fatalf("write e2e formatter: %v", err)
+	}
+
+	const branch = "feature/scope-fence"
+	h.CommitChange(branch, "feature.txt", "declared change\n", "add the one declared surface")
+	h.CommitChange(branch, ".no-mistakes.yaml", "commands:\n  format: \"nm-scope-fence-format-e2e\"\n", "configure formatter")
+	fw := h.AddWorktree(branch)
+
+	gateOut, err := h.RunInDir(fw, "axi", "run", "--yes", "--intent", "wire the declared feature surface")
+	if err != nil {
+		t.Fatalf("axi run --yes (expected to stop at the scope decision, exit 0): %v\n%s", err, gateOut)
+	}
+	for _, want := range []string{
+		"gate:",
+		"step: push",
+		"status: awaiting_approval",
+		"ask-user",
+		types.ScopeDecisionGateName,
+		"undeclared_helper.txt",
+	} {
+		if !strings.Contains(gateOut, want) {
+			t.Errorf("axi run --yes gate output missing %q in:\n%s", want, gateOut)
+		}
+	}
+	t.Logf("axi run --yes returned control at the declared-scope decision:\n%s", gateOut)
+
+	parked := waitForStepStatus(t, h, branch, types.StepPush, types.StepStatusAwaitingApproval, 60*time.Second)
+	pushStep, ok := findStep(parked.Steps, types.StepPush)
+	if !ok || pushStep.FindingsJSON == nil {
+		t.Fatalf("parked push step carries no findings to decide on: %+v", parked.Steps)
+	}
+	findings, err := types.ParseFindingsJSON(*pushStep.FindingsJSON)
+	if err != nil {
+		t.Fatalf("parse parked push findings: %v", err)
+	}
+	if len(findings.Items) != 1 || findings.Items[0].File != "undeclared_helper.txt" {
+		t.Fatalf("parked gate did not name exactly the out-of-scope path: %+v", findings.Items)
+	}
+	gate := findings.Items[0]
+	if gate.Action != types.ActionAskUser || !gate.ScopeDecision {
+		t.Fatalf("parked gate is not a pipeline-owned scope decision: %+v", gate)
+	}
+
+	// Nothing may reach the push target while the decision is outstanding.
+	if out, err := h.runGit(context.Background(), h.UpstreamDir, "rev-parse", "--verify", "refs/heads/"+branch); err == nil {
+		t.Fatalf("refused push still published %s: %s", branch, out)
+	}
+
+	statusOut, err := h.RunInDir(fw, "axi", "status")
+	if err != nil {
+		t.Fatalf("axi status: %v\n%s", err, statusOut)
+	}
+	for _, want := range []string{"branch: " + branch, "step: push", types.ScopeDecisionGateName} {
+		if !strings.Contains(statusOut, want) {
+			t.Errorf("axi status missing %q in:\n%s", want, statusOut)
+		}
+	}
+	t.Logf("axi status while parked on the declared-scope decision:\n%s", statusOut)
+
+	// The explicit decision authorizes exactly the named path; the run finishes.
+	decidedOut, err := h.RunInDir(fw, "axi", "respond", "--action", "fix", "--findings", gate.ID)
+	if err != nil {
+		t.Fatalf("axi respond fix on the scope decision: %v\n%s", err, decidedOut)
+	}
+	t.Logf("axi respond --action fix authorized %s:\n%s", gate.File, decidedOut)
+
+	completed := h.WaitForRun(branch, 120*time.Second)
+	if completed.Status != types.RunCompleted {
+		t.Fatalf("authorized run status = %s, want completed; error=%v", completed.Status, deref(completed.Error))
+	}
+	for path, want := range map[string]string{
+		"feature.txt":           "declared change\n",
+		"undeclared_helper.txt": "rewritten by the formatter\n",
+	} {
+		contents, err := h.runGit(context.Background(), h.UpstreamDir, "show", "refs/heads/"+branch+":"+path)
+		if err != nil {
+			t.Fatalf("read %s from the push target: %v\n%s", path, err, contents)
+		}
+		if string(contents) != want {
+			t.Fatalf("%s published as %q, want %q", path, string(contents), want)
+		}
+	}
+	pushLog := readStepLog(t, h, completed.ID, "push")
+	if !strings.Contains(pushLog, "scope decision authorized exact path(s): undeclared_helper.txt") {
+		t.Errorf("push log does not record the exact authorization; log:\n%s", pushLog)
+	}
+	t.Logf("push step log after the decision:\n%s", pushLog)
+
+	// Every agent invocation of the run is durably bound to the committed
+	// checkout identity it was proven against.
+	invocations := readRunAgentInvocations(t, h.NMHome, completed.ID)
+	if len(invocations) == 0 {
+		t.Fatal("run recorded no agent invocations to bind")
+	}
+	var bound []string
+	for _, inv := range invocations {
+		if inv.CheckoutHeadSHA == nil || inv.CheckoutTreeSHA == nil {
+			t.Errorf("invocation %s/%s is not bound to a checkout identity", inv.StepName, inv.Purpose)
+			continue
+		}
+		bound = append(bound, fmt.Sprintf("%-9s %-12s head=%s tree=%s", inv.StepName, inv.Purpose, (*inv.CheckoutHeadSHA)[:12], (*inv.CheckoutTreeSHA)[:12]))
+	}
+	t.Logf("persisted invocation-bound proof identity (agent_invocations):\n%s", strings.Join(bound, "\n"))
+}
+
+// readRunAgentInvocations reads the run's durable agent-invocation records
+// straight out of the daemon's database.
+func readRunAgentInvocations(t *testing.T, nmHome, runID string) []db.AgentInvocation {
+	t.Helper()
+	database, err := db.Open(paths.WithRoot(nmHome).DB())
+	if err != nil {
+		t.Fatalf("open e2e db: %v", err)
+	}
+	defer database.Close()
+	invocations, err := database.GetAgentInvocationsByRun(runID)
+	if err != nil {
+		t.Fatalf("get agent invocations for run %s: %v", runID, err)
+	}
+	return invocations
 }
 
 // readStepLog returns the contents of a step's log file for a run.

@@ -69,6 +69,8 @@ func TestAgentInvocations_NullableFidelityFieldsRoundTrip(t *testing.T) {
 		ToolWaitCalls: intPtr(0), ToolTestLintCalls: intPtr(1), ToolEditCalls: intPtr(1),
 		ToolReadCalls: intPtr(1), ToolGitCalls: intPtr(0), ToolOtherCalls: intPtr(0),
 		WorkloadFiles: intPtr(4), WorkloadLines: intPtr(120), FindingCount: intPtr(2),
+		CheckoutHeadSHA: strPtr("1111111111111111111111111111111111111111"),
+		CheckoutTreeSHA: strPtr("2222222222222222222222222222222222222222"),
 	}
 	if _, err := d.InsertAgentInvocation(full); err != nil {
 		t.Fatalf("insert full: %v", err)
@@ -96,7 +98,9 @@ func TestAgentInvocations_NullableFidelityFieldsRoundTrip(t *testing.T) {
 		f.CacheCreationTokens == nil || *f.CacheCreationTokens != 0 ||
 		f.DeltaInputTokens == nil || *f.DeltaInputTokens != 1500 ||
 		f.ToolTestLintCalls == nil || *f.ToolTestLintCalls != 1 ||
-		f.FindingCount == nil || *f.FindingCount != 2 {
+		f.FindingCount == nil || *f.FindingCount != 2 ||
+		f.CheckoutHeadSHA == nil || *f.CheckoutHeadSHA != "1111111111111111111111111111111111111111" ||
+		f.CheckoutTreeSHA == nil || *f.CheckoutTreeSHA != "2222222222222222222222222222222222222222" {
 		t.Fatalf("full row lost a fidelity field: %+v", f)
 	}
 	m := got[1]
@@ -111,6 +115,8 @@ func TestAgentInvocations_NullableFidelityFieldsRoundTrip(t *testing.T) {
 		"ToolCalls":        m.ToolCalls == nil,
 		"WorkloadFiles":    m.WorkloadFiles == nil,
 		"FindingCount":     m.FindingCount == nil,
+		"CheckoutHeadSHA":  m.CheckoutHeadSHA == nil,
+		"CheckoutTreeSHA":  m.CheckoutTreeSHA == nil,
 	} {
 		if !isNil {
 			t.Fatalf("minimal row %s should read back as unknown (nil)", name)
