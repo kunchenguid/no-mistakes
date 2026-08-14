@@ -319,6 +319,16 @@ func TestScoreCandidateMatchesNormalizedFileAndDescription(t *testing.T) {
 	}
 }
 
+func TestScoreCandidateDoesNotMatchFindingsWithoutFiles(t *testing.T) {
+	labels := Labels{Findings: []FindingGold{{ID: "gold", Kind: GoldTruePositive, Description: "drops an HTTP error"}}}
+	candidate := `{"findings":[{"id":"candidate","description":"drops an http error"}]}`
+
+	score := ScoreCandidate(labels, candidate)
+	if score.TruePositive != 0 || score.FalseNegative != 1 || score.Pending != 1 {
+		t.Fatalf("score = %#v, want file-less findings left unmatched", score)
+	}
+}
+
 func TestSummarizeEvaluationsScoresFindingGoldAndLeavesUnmatchedPending(t *testing.T) {
 	summary := SummarizeEvaluations([]Evaluation{
 		{CaseID: "fix-gold", Candidate: "claude+test", Status: "completed", HasFindingGold: true, GoldCount: 1, TruePositive: 1},
@@ -464,6 +474,21 @@ func TestRenderReportNamesCaseLevelRecallRange(t *testing.T) {
 	})
 	if !strings.Contains(output, "case-level recall range: 34.0%-100.0% over 2 case(s)") {
 		t.Fatalf("report recall range = %q", output)
+	}
+}
+
+func TestRenderReportKeepsInvalidOnlyScoreWithoutClaimingRecall(t *testing.T) {
+	cost := 10.0
+	output := RenderReport([]CandidateReport{{
+		Cohort:        "cohort",
+		Summary:       EvaluationSummary{Candidate: "claude+test", Total: 1, Labeled: 1, FalsePositive: 1},
+		AverageTokens: &cost,
+	}})
+	if !strings.Contains(output, "false-positive 1") || !strings.Contains(output, "recall: unavailable (no true-issue gold)") {
+		t.Fatalf("invalid-only report = %q, want FP score with unavailable recall", output)
+	}
+	if strings.Contains(output, "0/0 gold issues") || strings.Contains(output, "recall-vs-cost frontier: true") {
+		t.Fatalf("invalid-only report claims recall evidence: %q", output)
 	}
 }
 

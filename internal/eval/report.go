@@ -283,9 +283,13 @@ func RenderReport(reports []CandidateReport) string {
 			b.WriteString("  finding scores: unlabeled / pending (no finding-level gold yet)\n")
 		} else {
 			fmt.Fprintf(&b, "  finding scores: true-positive %d, false-negative %d, false-positive %d, pending %d\n", s.TruePositive, s.FalseNegative, s.FalsePositive, s.Pending)
-			fmt.Fprintf(&b, "  recall: %.1f%% (%d/%d gold issues)\n", 100*s.Recall(), s.TruePositive, s.TruePositive+s.FalseNegative)
-			if report.Confidence != nil {
-				fmt.Fprintf(&b, "  case-level recall range: %.1f%%-%.1f%% over %d case(s)\n", 100*report.Confidence.Lower, 100*report.Confidence.Upper, report.Confidence.Cases)
+			if s.TruePositive+s.FalseNegative == 0 {
+				b.WriteString("  recall: unavailable (no true-issue gold)\n")
+			} else {
+				fmt.Fprintf(&b, "  recall: %.1f%% (%d/%d gold issues)\n", 100*s.Recall(), s.TruePositive, s.TruePositive+s.FalseNegative)
+				if report.Confidence != nil {
+					fmt.Fprintf(&b, "  case-level recall range: %.1f%%-%.1f%% over %d case(s)\n", 100*report.Confidence.Lower, 100*report.Confidence.Upper, report.Confidence.Cases)
+				}
 			}
 		}
 		if s.Pending > 0 {
@@ -298,7 +302,11 @@ func RenderReport(reports []CandidateReport) string {
 		}
 		fmt.Fprintf(&b, "  wall time: %.1fs average\n", report.AverageWallMS/1000)
 		if report.AverageTokens != nil {
-			fmt.Fprintf(&b, "  recall-vs-cost frontier: %t\n", report.OnFrontier)
+			if s.TruePositive+s.FalseNegative == 0 {
+				b.WriteString("  recall-vs-cost frontier: unavailable (no true-issue gold)\n")
+			} else {
+				fmt.Fprintf(&b, "  recall-vs-cost frontier: %t\n", report.OnFrontier)
+			}
 		}
 	}
 	return b.String()
