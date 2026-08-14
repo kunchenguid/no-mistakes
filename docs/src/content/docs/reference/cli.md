@@ -54,6 +54,10 @@ When the file already has a `worktree_roots:` block, `init` prints just the entr
 Runs are created at `<dir>/<run id>` once the entry is in place; no-mistakes only ever touches the directories its own run records name, and everything else in that directory is left alone.
 `init` rejects the directories the daemon would refuse to start on, so the entry it prints is always one you can paste: a directory inside `NM_HOME`, inside the repository being initialized or any other gated checkout, already used by another checkout (it names that checkout), or that exists as a non-directory.
 
+Two refusals apply to every `init`, with or without the flag.
+It refuses to register a checkout that contains a directory an existing [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) entry points at, naming that entry, because registering it is what would make the placement unusable and stop the daemon; place the checkout elsewhere or repoint the entry first.
+It also refuses to register anything while `~/.no-mistakes/config.yaml` does not load, naming the fault, because the daemon refuses to start on that same config.
+
 Re-running `init` on an already-initialized repo succeeds and reports `Gate already initialized (refreshed)`.
 It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.
 When a fork URL is already recorded, re-running `init` without `--fork-url` preserves it.

@@ -151,9 +151,10 @@ func CheckPlacement(p *paths.Paths, checkout, root string, otherCheckouts ...str
 // whole-configuration gate: the daemon refuses to start while any entry is
 // unusable, and `init --worktree-root` refuses to print one.
 //
-// A checkout registered AFTER a root was configured is therefore caught at the
-// next daemon startup rather than when it is registered, which is the moment the
-// placement first has a victim to name.
+// Registering a checkout AROUND an existing root reaches the same unusable state
+// from the other direction, so init refuses that registration itself (see
+// assertCheckoutHoldsNoConfiguredWorktreeRoot); this gate is the backstop for a
+// configuration that reached the file another way.
 //
 // A key matching no registered repository stays a startup warning, because it
 // places nothing at all.
