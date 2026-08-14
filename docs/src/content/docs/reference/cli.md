@@ -50,8 +50,8 @@ Fork routing currently requires both `origin` and `--fork-url` to be GitHub remo
 
 `--worktree-root` is for directory-scoped toolchain configuration (mise, direnv), which resolves by path ancestry and so never reaches a run worktree under `NM_HOME`.
 The flag resolves the directory, then prints the [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) entry to add to `~/.no-mistakes/config.yaml`; the global config is hand-maintained, so `init` never rewrites it for you.
-Runs are created at `<dir>/<run id>` once the entry is in place; only directories named like a run ID are ever treated as worktrees there, and everything else in that directory is left alone.
-`init` rejects the directories the daemon would refuse to start on, so the entry it prints is always one you can paste: a directory inside `NM_HOME`, inside the repository being initialized, already used by another checkout (it names that checkout), or that exists as a non-directory.
+Runs are created at `<dir>/<run id>` once the entry is in place; no-mistakes only ever touches the directories its own run records name, and everything else in that directory is left alone.
+`init` rejects the directories the daemon would refuse to start on, so the entry it prints is always one you can paste: a directory inside `NM_HOME`, inside the repository being initialized or any other checkout the config names, already used by another checkout (it names that checkout), or that exists as a non-directory.
 
 Re-running `init` on an already-initialized repo succeeds and reports `Gate already initialized (refreshed)`.
 It refreshes managed gate wiring, origin/default-branch metadata, hook-path isolation, and the installed agent skill, overwriting any stale `SKILL.md` content from an older binary.

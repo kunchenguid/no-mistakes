@@ -703,9 +703,10 @@ log_level: info
 # your own and its runs are created there instead, one directory per run, so
 # mise/direnv settings on that directory reach every run. Keys are the checkout
 # paths you ran "no-mistakes init" in, values must be absolute directories.
-# Only directories whose name is a run ID are ever created, cleaned up, or
-# removed there; your own files and directories are left alone. Each checkout
-# needs its own root.
+# Only the directories no-mistakes' own run records name are ever created,
+# cleaned up, or removed there; everything else, including a directory that
+# merely looks like a run worktree, is left alone. Each checkout needs its own
+# root, and it must be outside NM_HOME and outside every checkout.
 # worktree_roots:
 #   /Users/you/src/my-repo: /Users/you/work/my-repo-runs
 

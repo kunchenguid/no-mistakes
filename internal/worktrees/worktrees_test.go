@@ -158,6 +158,43 @@ func TestLayout_ValidateRefusesRootInsideItsCheckout(t *testing.T) {
 	}
 }
 
+// The same dirty-checkout consequence applies to a checkout that is not the one
+// whose runs land there, so a root inside ANY known checkout is refused: every
+// run placed there would block that checkout's branch synchronization, with
+// nothing naming the cause. Known checkouts are the configured keys plus
+// whatever the caller supplies (the daemon supplies every registered
+// repository).
+func TestLayout_ValidateRefusesRootInsideAnotherKnownCheckout(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	dir := t.TempDir()
+	own := filepath.Join(dir, "src", "own")
+	other := filepath.Join(dir, "src", "other")
+	root := filepath.Join(other, "runs")
+
+	// Known only because the other checkout also has an entry.
+	both := worktrees.New(p, map[string]string{
+		own:   root,
+		other: filepath.Join(dir, "work", "other-runs"),
+	})
+	err := both.Validate()
+	if err == nil {
+		t.Fatalf("root %q inside the configured checkout %q was accepted; want a refusal", root, other)
+	}
+	if !strings.Contains(err.Error(), root) || !strings.Contains(err.Error(), other) {
+		t.Errorf("refusal %q does not name both the root and the checkout it would dirty", err)
+	}
+
+	// Known only because the caller supplied it, which is how a registered
+	// repository with no entry of its own reaches this rule.
+	configured := worktrees.New(p, map[string]string{own: root})
+	if err := configured.Validate(); err != nil {
+		t.Fatalf("unknown checkout must not be judged: %v", err)
+	}
+	if err := configured.Validate(other); err == nil {
+		t.Errorf("root %q inside the registered checkout %q was accepted; want a refusal", root, other)
+	}
+}
+
 func TestLayout_ValidateAcceptsPlacementOutsideAppState(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
 	dir := t.TempDir()

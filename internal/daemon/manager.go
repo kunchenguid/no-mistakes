@@ -341,6 +341,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			cancel(nil)
 			_ = plan.agent.Close()
 			m.closeSubscribers(plan.run.ID)
+			m.sweepRunWorktreeProcesses(plan.repo.ID, plan.run.ID, plan.workDir)
 			if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
 				slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
 			}
@@ -495,6 +496,13 @@ func (m *RunManager) broadcast(event ipc.Event) {
 // The run's own worktree is what the sweep is pointed at, so a placement
 // outside the default tree needs no configuration lookup and cannot be hidden
 // by a worktree_roots edit made while the run was executing.
+//
+// Every path that removes a run's worktree must call this first, whether the
+// run was started here or resumed after a crash. It is the only moment a
+// worktree outside the default tree is reliably nameable: the startup sweep
+// reaches such a directory through the run records, which name it only while it
+// still exists or while the run is still active, whereas under the default tree
+// the surviving <NM_HOME>/worktrees prefix keeps matching a deleted cwd forever.
 func (m *RunManager) sweepRunWorktreeProcesses(repoID, runID, wtDir string) {
 	procreap.SweepAndLog(procreap.Options{
 		WorktreesRoot: m.paths.WorktreesDir(),
@@ -848,7 +856,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	// here on is inert for this run.
 	gateDir := m.paths.RepoDir(repo.ID)
 	layout := worktrees.New(m.paths, globalCfg.WorktreeRoots)
-	if err := layout.Validate(); err != nil {
+	if err := layout.Validate(registeredCheckouts(m.db)...); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("worktree placement: %s", err))
 		trackStartFailure("invalid_worktree_placement")
 		return "", fmt.Errorf("worktree placement: %w", err)

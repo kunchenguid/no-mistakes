@@ -70,6 +70,38 @@ func TestResolveWorktreeRootRejectsUnusablePlacements(t *testing.T) {
 	}
 }
 
+// A root inside another checkout the config already names is refused here too:
+// every run placed there would leave that checkout with an untracked worktree
+// and block its branch synchronization, and the daemon refuses to start on it -
+// so printing the entry would hand the operator a paste that takes their CLI
+// down.
+func TestResolveWorktreeRootRefusesRootInsideAnotherConfiguredCheckout(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	repoDir := setupTestRepo(t)
+	otherCheckout := filepath.Join(t.TempDir(), "other-checkout")
+	configYAML := "worktree_roots:\n  " + yamlPath(otherCheckout) + ": " + yamlPath(filepath.Join(t.TempDir(), "other-runs")) + "\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(configYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := filepath.Join(otherCheckout, "runs")
+	_, err := resolveWorktreeRoot(p, repoDir, root)
+	if err == nil {
+		t.Fatal("expected a refusal for a root inside another configured checkout")
+	}
+	if !strings.Contains(err.Error(), otherCheckout) {
+		t.Errorf("refusal %q does not name the checkout the root sits in", err)
+	}
+
+	// A directory next to that checkout is the normal case.
+	if _, err := resolveWorktreeRoot(p, repoDir, filepath.Join(t.TempDir(), "runs")); err != nil {
+		t.Errorf("root outside every checkout refused: %v", err)
+	}
+}
+
 // A root another checkout already claims is refused while the operator can
 // still pick another one: the loader rejects two checkouts sharing a root, and
 // the daemon refuses to start on a config it cannot load, so printing the entry

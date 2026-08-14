@@ -112,14 +112,17 @@ func RecordedDir(p *paths.Paths, recorded, repoID, runID string) string {
 // NM_HOME anyway: it carries none of the directory-scoped toolchain
 // configuration the setting exists to reach.
 //
-// A root inside the checkout whose runs it holds puts an untracked directory in
-// that checkout for as long as a run is executing, which makes it dirty. A
-// dirty checkout blocks the guarded branch synchronization in
-// internal/branchsync, so the operator cannot take a validated branch back
-// while any run is in flight - the placement does not merely look odd, it stops
-// the workflow it is part of. An empty checkout skips that half, for a caller
-// that does not know which checkout the root is for.
-func CheckPlacement(p *paths.Paths, checkout, root string) error {
+// A root inside ANY checkout puts an untracked directory in that checkout for as
+// long as a run is executing, which makes it dirty. A dirty checkout blocks the
+// guarded branch synchronization in internal/branchsync, so nobody can take a
+// validated branch back there while a run is in flight - the placement does not
+// merely look odd, it stops the workflow it is part of. That is true whether the
+// victim is the checkout whose own runs land there or an unrelated one, so the
+// caller passes every checkout it knows: the one the root belongs to first, then
+// the other known checkouts (config keys, and at daemon startup every registered
+// repository). Passing none skips that half, for a caller that knows no checkout
+// at all.
+func CheckPlacement(p *paths.Paths, checkout, root string, otherCheckouts ...string) error {
 	home := p.Root()
 	if Contains(home, root) {
 		return fmt.Errorf("%q is inside no-mistakes' own state directory (%q), where it would collide with the daemon's worktrees, logs, or gates; choose a directory outside it", root, home)
@@ -127,22 +130,42 @@ func CheckPlacement(p *paths.Paths, checkout, root string) error {
 	if strings.TrimSpace(checkout) != "" && Contains(checkout, root) {
 		return fmt.Errorf("%q is inside the checkout whose runs it would hold, which leaves that checkout with an untracked run worktree while a run executes and blocks branch synchronization; choose a directory outside the checkout", root)
 	}
+	own := Canonical(checkout)
+	others := append([]string(nil), otherCheckouts...)
+	sort.Strings(others)
+	for _, other := range others {
+		if strings.TrimSpace(other) == "" || Canonical(other) == own {
+			continue
+		}
+		if Contains(other, root) {
+			return fmt.Errorf("%q is inside the checkout %q, which every run placed there would leave with an untracked run worktree, blocking that checkout's branch synchronization while the run executes; choose a directory outside every checkout", root, other)
+		}
+	}
 	return nil
 }
 
-// Validate rejects every configured entry CheckPlacement refuses. The daemon
-// refuses to start on one, and run creation refuses the same way.
+// Validate rejects every configured entry CheckPlacement refuses, judged against
+// the configured checkouts plus known, whose members the caller supplies from
+// outside this package (the daemon passes every registered repository). The
+// daemon refuses to start on one, and run creation refuses the same way.
+//
+// A checkout registered AFTER a root was configured is therefore caught at the
+// next daemon startup rather than when it is registered, which is the moment the
+// placement first has a victim to name.
 //
 // A key matching no registered repository stays a startup warning, because it
 // places nothing at all.
-func (l *Layout) Validate() error {
+func (l *Layout) Validate(known ...string) error {
 	if len(l.roots) == 0 {
 		return nil
 	}
 	checkouts := l.Checkouts()
 	sort.Strings(checkouts)
+	protected := make([]string, 0, len(known)+len(checkouts))
+	protected = append(protected, known...)
+	protected = append(protected, checkouts...)
 	for _, checkout := range checkouts {
-		if err := CheckPlacement(l.paths, checkout, l.roots[checkout]); err != nil {
+		if err := CheckPlacement(l.paths, checkout, l.roots[checkout], protected...); err != nil {
 			return fmt.Errorf("invalid worktree_roots[%q]: run worktree root %w", checkout, err)
 		}
 	}

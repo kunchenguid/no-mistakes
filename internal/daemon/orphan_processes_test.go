@@ -12,8 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -207,6 +210,68 @@ func TestSweepRunWorktreeProcessesReapsLeakedChildInTheRunsRecordedRoot(t *testi
 	}
 	if !processIsAlive(unclaimedPID) {
 		t.Fatalf("run cleanup signalled %d in a run-shaped directory this run does not own", unclaimedPID)
+	}
+}
+
+// TestResumeRecoveredRunSweepsWorktreeProcessesBeforeRemoval covers the run that
+// this daemon did not start: a crash-recovered one. Its cleanup removes the
+// worktree just as a normal run's does, so it must sweep first for the same
+// reason - a descendant that called setsid(2) survives with the removed
+// directory as its cwd, and outside the default worktrees tree nothing can name
+// that directory again once it is gone and the run is terminal.
+func TestResumeRecoveredRunSweepsWorktreeProcessesBeforeRemoval(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	repo, err := d.InsertRepoWithID("repo1", filepath.Join(t.TempDir(), "checkout"), "https://example.com/owner/repo1", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "headsha", "basesha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	// Placed in a directory of the operator's own, the way worktree_roots does.
+	root := filepath.Join(t.TempDir(), "repo-runs")
+	wtDir := filepath.Join(root, run.ID)
+	if err := d.SetRunWorktreeDir(run.ID, wtDir); err != nil {
+		t.Fatal(err)
+	}
+	leakedPID := startOrphanInWorktree(t, wtDir)
+	operatorPID := startOrphanInWorktree(t, filepath.Join(root, "scratch-checkout"))
+
+	stored, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewRunManager(d, p, nil)
+	m.resumeRecoveredRun(recoveredRunPlan{
+		run:     stored,
+		repo:    repo,
+		workDir: wtDir,
+		gateDir: p.RepoDir(repo.ID),
+		cfg:     config.Merge(config.DefaultGlobalConfig(), &config.RepoConfig{}),
+		agent:   agent.NewNoop(),
+		steps:   []pipeline.Step{&mockPassStep{name: types.StepReview}},
+	})
+	m.Shutdown()
+
+	if !pidGoneWithin(leakedPID, 10*time.Second) {
+		t.Fatalf("orphan %d in a resumed run's worktree survived its cleanup", leakedPID)
+	}
+	if !processIsAlive(operatorPID) {
+		t.Errorf("cleanup signalled %d in the operator's own directory", operatorPID)
 	}
 }
 

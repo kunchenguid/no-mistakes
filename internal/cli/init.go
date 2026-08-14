@@ -119,8 +119,11 @@ func newInitCmd() *cobra.Command {
 // where it would be read by a daemon with an unrelated working directory.
 //
 // It also refuses every placement the daemon refuses to start on, through the
-// same owner (worktrees.CheckPlacement): a root inside NM_HOME, and a root
-// inside the checkout being initialized.
+// same owner (worktrees.CheckPlacement): a root inside NM_HOME, a root inside
+// the checkout being initialized, and a root inside any other checkout the
+// config already names. The daemon additionally knows every registered
+// repository, so a root inside a checkout that has no worktree_roots entry is
+// caught there instead.
 //
 // Finally it refuses a root another checkout has already claimed, which the
 // config loader rejects. Both belong here rather than only in the daemon: the
@@ -142,13 +145,25 @@ func resolveWorktreeRoot(p *paths.Paths, workDir, root string) (string, error) {
 		return "", fmt.Errorf("init: --worktree-root %s is not a directory", abs)
 	}
 	gitRoot, _ := git.FindMainRepoRoot(workDir)
-	if err := worktrees.CheckPlacement(p, gitRoot, abs); err != nil {
+	if err := worktrees.CheckPlacement(p, gitRoot, abs, configuredCheckouts(p)...); err != nil {
 		return "", fmt.Errorf("init: --worktree-root %w", err)
 	}
 	if claimant, claimed := checkoutClaimingWorktreeRoot(p, gitRoot, abs); claimed {
 		return "", fmt.Errorf("init: --worktree-root %s is already the worktree root of %s; each checkout needs its own root", abs, claimant)
 	}
 	return abs, nil
+}
+
+// configuredCheckouts lists the checkouts the global config already names, so
+// placement validation can refuse a root inside one of them. An unreadable
+// config yields none: the operator has a different problem, and the daemon
+// reports that one on its own.
+func configuredCheckouts(p *paths.Paths) []string {
+	cfg, err := config.LoadGlobal(p.ConfigFile())
+	if err != nil {
+		return nil
+	}
+	return worktrees.New(p, cfg.WorktreeRoots).Checkouts()
 }
 
 // checkoutClaimingWorktreeRoot reports the configured checkout that already

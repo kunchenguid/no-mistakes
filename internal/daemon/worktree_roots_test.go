@@ -234,6 +234,48 @@ func TestCleanupOrphanWorktrees_UnconfiguredRepoUsesDefaultRoot(t *testing.T) {
 	}
 }
 
+// TestDaemonRefusesToStartWithWorktreeRootInsideAnotherRegisteredCheckout is the
+// placement only the daemon can judge: a root inside a checkout that is not the
+// one whose runs it holds. Every run placed there leaves that checkout with an
+// untracked worktree, so its branch synchronization is blocked for the duration
+// of somebody else's run, with nothing naming the cause. The repository list is
+// what makes the victim knowable, and it lives here.
+func TestDaemonRefusesToStartWithWorktreeRootInsideAnotherRegisteredCheckout(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	victim, err := d.InsertRepoWithID("victimrepo", filepath.Join(t.TempDir(), "victim"), "https://example.com/owner/victim", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The victim has no worktree_roots entry of its own, so only the registered
+	// repositories reveal that this root sits inside a checkout.
+	placed, err := d.InsertRepoWithID("repo1", filepath.Join(t.TempDir(), "checkout"), "https://example.com/owner/repo1", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(victim.WorkingPath, "runs")
+	configureWorktreeRoot(t, p, placed.WorkingPath, root)
+
+	err = RunWithResources(p, d)
+	if err == nil {
+		t.Fatal("daemon started with a worktree root inside another registered checkout")
+	}
+	if !strings.Contains(err.Error(), root) || !strings.Contains(err.Error(), victim.WorkingPath) {
+		t.Errorf("startup failure %q names neither the root nor the checkout it would dirty", err)
+	}
+	if _, statErr := os.Stat(p.Socket()); statErr == nil {
+		t.Error("daemon bound its socket despite refusing the configured placement")
+	}
+}
+
 // TestDaemonRefusesToStartWithWorktreeRootInsideItsOwnWorktreesDirectory is the
 // reviewer's scenario for the destructive misconfiguration: <NM_HOME>/worktrees
 // holds one ULID-named directory per repository, a run ID is a ULID too, so a

@@ -190,7 +190,7 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, sta
 	// removes a directory under it. This is the second half of worktree_roots
 	// validation: internal/config checks every entry it can judge without
 	// knowing NM_HOME, and this process is the one that knows.
-	if err := assertConfiguredWorktreePlacement(p); err != nil {
+	if err := assertConfiguredWorktreePlacement(d, p); err != nil {
 		return err
 	}
 
@@ -576,21 +576,46 @@ func outsideDefaultWorktreesTree(p *paths.Paths, recorded []db.RunWorktree) []db
 }
 
 // assertConfiguredWorktreePlacement fails startup when the configured run
-// worktree placement is one this NM_HOME cannot host (see
-// worktrees.Layout.Validate for which placement that is and why). Refusing to
+// worktree placement is one this machine cannot host (see
+// worktrees.CheckPlacement for which placements those are and why). Refusing to
 // start is the same treatment an unreadable global config already gets, and
 // for the same reason: the daemon's first act is crash recovery, which walks
 // and removes directories, so a placement it would misread must be rejected
 // before that runs rather than warned about afterwards.
-func assertConfiguredWorktreePlacement(p *paths.Paths) error {
+//
+// This is where the registered repositories are known, so it is the only layer
+// that can judge a root placed inside a checkout other than the one whose runs
+// it holds. A repository registered after such a root was configured is caught
+// here on the next startup.
+func assertConfiguredWorktreePlacement(d *db.DB, p *paths.Paths) error {
 	globalCfg, err := config.LoadGlobal(p.ConfigFile())
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	if err := worktrees.New(p, globalCfg.WorktreeRoots).Validate(); err != nil {
+	if err := worktrees.New(p, globalCfg.WorktreeRoots).Validate(registeredCheckouts(d)...); err != nil {
 		return fmt.Errorf("configured worktree placement is unusable: %w", err)
 	}
 	return nil
+}
+
+// registeredCheckouts lists the working paths of every registered repository, so
+// placement validation can name a checkout a configured root would dirty. A
+// failure to read them is not fatal: validation then judges what it can from the
+// configuration alone rather than refusing to start over an unrelated fault.
+func registeredCheckouts(d *db.DB) []string {
+	if d == nil {
+		return nil
+	}
+	repos, err := d.GetRepos()
+	if err != nil {
+		slog.Warn("failed to list repositories while checking configured worktree placement", "error", err)
+		return nil
+	}
+	out := make([]string, 0, len(repos))
+	for _, repo := range repos {
+		out = append(out, repo.WorkingPath)
+	}
+	return out
 }
 
 // startupWorktreeLayout resolves worktree placement for startup recovery. The
