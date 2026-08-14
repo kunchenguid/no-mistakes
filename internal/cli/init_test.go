@@ -237,6 +237,57 @@ func TestInitRefusesToRegisterACheckoutHoldingAConfiguredWorktreeRoot(t *testing
 	}
 }
 
+// A config that does not load cannot be judged - the entries to judge against are
+// the ones that did not load - so skipping the cross-check registers the very
+// placement it exists to refuse. The sequence: an entry places another checkout's
+// runs inside this one AND a second entry has a relative root, so LoadGlobal
+// fails while a daemon started before the edit is still alive. Registering here
+// and repairing the relative value later is a daemon that refuses to start,
+// naming an entry the operator never touched.
+func TestInitRefusesToRegisterWhileTheGlobalConfigDoesNotLoad(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	repoDir := setupTestRepo(t)
+
+	otherCheckout := filepath.Join(t.TempDir(), "other-checkout")
+	unrelatedCheckout := filepath.Join(t.TempDir(), "unrelated-checkout")
+	unloadable := "worktree_roots:\n" +
+		"  " + yamlPath(otherCheckout) + ": " + yamlPath(filepath.Join(repoDir, "runs")) + "\n" +
+		"  " + yamlPath(unrelatedCheckout) + ": relative-runs\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(unloadable), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfgErr := func() error {
+		_, err := config.LoadGlobal(p.ConfigFile())
+		return err
+	}()
+	if cfgErr == nil {
+		t.Fatal("fixture config loads; it must be the parseable-but-unloadable shape")
+	}
+
+	err := assertCheckoutHoldsNoConfiguredWorktreeRoot(p, repoDir)
+	if err == nil {
+		t.Fatal("expected a refusal while the global config does not load")
+	}
+	if !strings.Contains(err.Error(), p.ConfigFile()) {
+		t.Errorf("refusal %q does not name the config that has to be repaired", err)
+	}
+
+	// Repairing the relative value is what would otherwise have taken the CLI
+	// down, and the placement is then refused on its own terms.
+	repaired := "worktree_roots:\n" +
+		"  " + yamlPath(otherCheckout) + ": " + yamlPath(filepath.Join(repoDir, "runs")) + "\n" +
+		"  " + yamlPath(unrelatedCheckout) + ": " + yamlPath(filepath.Join(t.TempDir(), "unrelated-runs")) + "\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(repaired), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertCheckoutHoldsNoConfiguredWorktreeRoot(p, repoDir); err == nil {
+		t.Error("expected the placement refusal once the config loads")
+	}
+}
+
 // TestPrintWorktreeRootGuidanceReplacesThisCheckoutsEntryFromAnUnloadableConfig
 // covers the config that parses but does not load - one entry with a relative
 // root, an unrelated malformed key - while a daemon started before it broke is
@@ -351,6 +402,79 @@ func TestPrintWorktreeRootGuidanceNeverRewritesAKeyItCouldNotRead(t *testing.T) 
 	// entry alone does not load until it is.
 	if !strings.Contains(got, "does not parse") {
 		t.Errorf("guidance does not say the config currently does not parse, got:\n%s", got)
+	}
+}
+
+// TestPrintWorktreeRootGuidanceNeverGuessesAnIndentItCouldNotRead is the same
+// unparseable document, indented the way its operator chose. The entries of a
+// block mapping all sit at one column, so an entry line offered at another one
+// leaves a document YAML rejects even after the operator repairs the fault they
+// came for - the daemon still refuses to start, and every command goes with it.
+// The lines themselves carry that column, and when they show none, the edit that
+// carries its own indentation is printed instead of a guessed one.
+func TestPrintWorktreeRootGuidanceNeverGuessesAnIndentItCouldNotRead(t *testing.T) {
+	dir := t.TempDir()
+	existingCheckout := filepath.Join(dir, "src", "repo1")
+	existingRoot := filepath.Join(dir, "work", "repo1-runs")
+	checkout := filepath.Join(dir, "src", "repo2")
+	root := filepath.Join(dir, "work", "repo2-runs")
+	block := "worktree_roots:\n    " + yamlPath(existingCheckout) + ": " + yamlPath(existingRoot) + "\n"
+
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	unparseable := block + "log_level: \"info\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(unparseable), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.LoadGlobal(p.ConfigFile()); err == nil {
+		t.Fatal("fixture config parses; it must be the document YAML cannot read")
+	}
+
+	var out bytes.Buffer
+	printWorktreeRootGuidance(&out, p, checkout, root)
+	entry := indentedYAMLLine(t, out.String(), checkout+": "+root)
+	if entry != "    "+checkout+": "+root {
+		t.Errorf("guidance printed %q, which is not the column the block's entries sit at", entry)
+	}
+
+	// Following it, after repairing the fault the operator came for, loads with
+	// both repositories placed.
+	cfg, err := config.LoadGlobal(writeConfig(t, p, block+entry+"\n"+"log_level: info\n"))
+	if err != nil {
+		t.Fatalf("config built by following the guidance does not load: %v", err)
+	}
+	layout := worktrees.New(p, cfg.WorktreeRoots)
+	for checkoutPath, wantRoot := range map[string]string{existingCheckout: existingRoot, checkout: root} {
+		if configured, ok := layout.CustomRoot(checkoutPath); !ok || configured != wantRoot {
+			t.Errorf("config places %q at (%q, %v), want %q", checkoutPath, configured, ok, wantRoot)
+		}
+	}
+
+	// A key whose lines show no entry to sit beside: nothing can be lost by
+	// naming the whole key, and the block form carries its own indentation
+	// rather than assuming the document's.
+	empty := paths.WithRoot(t.TempDir())
+	if err := empty.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(empty.ConfigFile(), []byte("worktree_roots:\nlog_level: \"info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.LoadGlobal(empty.ConfigFile()); err == nil {
+		t.Fatal("fixture config parses; it must be the document YAML cannot read")
+	}
+	var blockForm bytes.Buffer
+	printWorktreeRootGuidance(&blockForm, empty, checkout, root)
+	if !containsYAMLLine(blockForm.String(), "worktree_roots:") {
+		t.Errorf("guidance offered an entry line at a column it never read, got:\n%s", blockForm.String())
+	}
+	pasted := "worktree_roots:\n" + indentedYAMLLine(t, blockForm.String(), checkout+": "+root) + "\n"
+	if cfg, err := config.LoadGlobal(writeConfig(t, empty, pasted)); err != nil {
+		t.Errorf("block form printed for an unreadable key does not load: %v\npasted:\n%s", err, pasted)
+	} else if configured, ok := worktrees.New(empty, cfg.WorktreeRoots).CustomRoot(checkout); !ok || configured != root {
+		t.Errorf("block form places %q at (%q, %v), want %q", checkout, configured, ok, root)
 	}
 }
 

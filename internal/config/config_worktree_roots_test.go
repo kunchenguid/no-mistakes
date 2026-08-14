@@ -269,6 +269,31 @@ func TestInspectGlobalConfigMappingSeparatesUnreadEntriesFromNone(t *testing.T) 
 		t.Errorf("a parseable document reported Unparsed=%v with %d entries, want false and 2", shape.Unparsed, len(shape.Entries))
 	}
 
+	// The column its entries sit at is read from the lines themselves, because a
+	// caller offering a line at another one leaves a document YAML rejects even
+	// after the operator repairs the fault this one has.
+	if got.EntryIndent != 2 {
+		t.Errorf("EntryIndent = %d, want the 2 its unread entries are written at", got.EntryIndent)
+	}
+	indented := strings.Replace(unparseable, "\n  ", "\n      ", -1)
+	deep := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(deep, []byte(indented), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if shape := InspectGlobalConfigMapping(deep, "worktree_roots"); shape.EntryIndent != 6 {
+		t.Errorf("EntryIndent = %d, want the 6 the document uses", shape.EntryIndent)
+	}
+
+	// A key whose lines show nothing to sit beside reports no column at all,
+	// rather than one a caller would then guess with.
+	bare := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(bare, []byte("worktree_roots:\nlog_level: \"info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if shape := InspectGlobalConfigMapping(bare, "worktree_roots"); shape.EntryIndent != 0 {
+		t.Errorf("EntryIndent = %d for a key with no entry lines, want 0", shape.EntryIndent)
+	}
+
 	// An absent key in an unreadable document is still unread, not a key known
 	// to be missing.
 	broken := filepath.Join(t.TempDir(), "config.yaml")

@@ -175,8 +175,12 @@ func resolveWorktreeRoot(p *paths.Paths, d *db.DB, workDir, root string) (string
 // is already unusable is the daemon's report to make: it is not this
 // registration's doing, and init has no business refusing to run over it.
 //
-// An unreadable config yields no refusal for the same reason - the operator has
-// a different problem, and the daemon reports that one on its own.
+// A config that does not load is refused outright instead, naming the fault. It
+// cannot be judged - the entries it would be judged against are the ones that
+// did not load - and registering into it is never useful: the daemon refuses to
+// start on that same config, so the registration lands in a CLI that is already
+// down, and the placement it may have broken then surfaces as a second fault to
+// find by hand.
 func assertCheckoutHoldsNoConfiguredWorktreeRoot(p *paths.Paths, workDir string) error {
 	checkout, err := git.FindMainRepoRoot(workDir)
 	if err != nil || strings.TrimSpace(checkout) == "" {
@@ -184,7 +188,7 @@ func assertCheckoutHoldsNoConfiguredWorktreeRoot(p *paths.Paths, workDir string)
 	}
 	cfg, err := config.LoadGlobal(p.ConfigFile())
 	if err != nil {
-		return nil
+		return fmt.Errorf("init: %s must load before a repository can be registered: %w", p.ConfigFile(), err)
 	}
 	layout := worktrees.New(p, cfg.WorktreeRoots)
 	configured := layout.Checkouts()
@@ -267,13 +271,16 @@ func checkoutClaimingWorktreeRoot(p *paths.Paths, checkout, root string) (string
 //     the config spells them, so the operator can find the one to replace.
 //   - A block without this checkout: only the entry line, to add under the
 //     existing key.
-//   - A document that does not parse at all: the entry line again, and a note
-//     that the file has to be repaired first. Nothing about the key was read
-//     then except that it is there, so replacing it would carry the entries
-//     nobody read - silently returning every other repository to the default
-//     placement, which no later warning reports. An edit that adds a line is
-//     the one shape that cannot lose an entry it never saw, and the operator is
-//     repairing the document by hand regardless.
+//   - A document that does not parse at all: the entry line again, at the column
+//     its raw lines put the key's entries at, and a note that the file has to be
+//     repaired first. Nothing about the key was read then except that it is
+//     there, so replacing it would carry the entries nobody read - silently
+//     returning every other repository to the default placement, which no later
+//     warning reports. An edit that adds a line is the one shape that cannot
+//     lose an entry it never saw, and the operator is repairing the document by
+//     hand regardless. When even those lines show no column to add beside, the
+//     block form is printed instead: a guessed indentation is the unloadable
+//     document again, while a block carries its own.
 //
 // Which of those applies is a question about the document rather than about the
 // entries it parsed to (see config.InspectGlobalConfigMapping): a key with no
@@ -302,8 +309,12 @@ func printWorktreeRootGuidance(w io.Writer, p *paths.Paths, workingPath, root st
 		fmt.Fprintf(w, "  %s\n", sDim.Render("Add this to "+p.ConfigFile()+" so runs are created there:"))
 		fmt.Fprintf(w, "  %s\n", sBold.Render("worktree_roots:"))
 		fmt.Fprintf(w, "  %s\n", sBold.Render(indent+workingPath+": "+root))
-	case shape.Unparsed:
+	case shape.Unparsed && shape.EntryIndent > 0:
 		printWorktreeRootsEntryAddition(w, p, indent, workingPath, root)
+	case shape.Unparsed:
+		fmt.Fprintf(w, "  %s\n", sDim.Render("Replace the worktree_roots: entry in "+p.ConfigFile()+" so runs are created there:"))
+		fmt.Fprintf(w, "  %s\n", sBold.Render("worktree_roots:"))
+		fmt.Fprintf(w, "  %s\n", sBold.Render("  "+workingPath+": "+root))
 	case !shape.AppendableBlock:
 		printWorktreeRootsBlockReplacement(w, p, shape, workingPath, configuredKey, root)
 	case configured:

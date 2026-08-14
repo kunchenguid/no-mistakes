@@ -1358,8 +1358,11 @@ type GlobalConfigMapping struct {
 	AppendableBlock bool
 
 	// EntryIndent is the column the key's entries start at, counted from zero, so
-	// an added or replaced entry line matches its siblings. Zero when the key has
-	// no entries to match.
+	// an added or replaced entry line matches its siblings. Zero when there is no
+	// column to match: the key has no entries, or - for an Unparsed document,
+	// where it is read from the raw lines - none that a line could be added
+	// beside. A caller must then name an edit that carries its own indentation
+	// rather than assume one.
 	EntryIndent int
 
 	// Line is the document line that spells the key, as written, so guidance can
@@ -1400,7 +1403,11 @@ func InspectGlobalConfigMapping(path, key string) GlobalConfigMapping {
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return GlobalConfigMapping{Present: hasTopLevelKeyLine(data, key), Unparsed: true}
+		found := GlobalConfigMapping{Present: hasTopLevelKeyLine(data, key), Unparsed: true}
+		if found.Present {
+			found.EntryIndent = rawEntryIndent(data, key)
+		}
+		return found
 	}
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
 		return GlobalConfigMapping{}
@@ -1456,6 +1463,36 @@ func lastNodeLine(n *yaml.Node) int {
 		}
 	}
 	return last
+}
+
+// rawEntryIndent is the column the key's entries sit at in a document nobody
+// could parse, read from the lines themselves: the first indented, non-comment
+// line after the key, which is where an entry of a block mapping is.
+//
+// Guidance needs it because the entries of a block mapping all sit at one
+// column, so a line offered at another one leaves a document YAML rejects - and
+// the caller is already looking at a file that does not parse. Zero means the
+// lines show nothing that could be an entry, which is a different answer from
+// "two spaces will do": the caller then names an edit that needs no column at
+// all, rather than guessing one.
+//
+// A space-indented entry line is the only shape recognized. Tabs are not
+// indentation in YAML, so treating one as a column would produce exactly the
+// unloadable document this exists to avoid.
+func rawEntryIndent(data []byte, key string) int {
+	found := false
+	for _, line := range strings.Split(string(data), "\n") {
+		if !found {
+			found = strings.HasPrefix(line, key+":")
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		return len(line) - len(strings.TrimLeft(line, " "))
+	}
+	return 0
 }
 
 // hasTopLevelKeyLine is the fallback for a document YAML cannot parse: a
