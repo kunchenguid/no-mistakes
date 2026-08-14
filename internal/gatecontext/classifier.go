@@ -164,13 +164,17 @@ func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
 	if i.DB == nil {
 		return nil, nil
 	}
-	runs, err := i.DB.GetActiveRuns()
+	// The narrow placement query rather than whole run rows: this runs in the
+	// CLI preflight, which reads a database no command has migrated yet, so it
+	// must not name a column the schema may not have (see
+	// db.ActiveRunWorktrees).
+	runs, err := i.DB.ActiveRunWorktrees()
 	if err != nil {
 		return nil, fmt.Errorf("gate execution context: list active runs: %w", err)
 	}
 	var out []activeAgentStep
 	for _, run := range runs {
-		steps, err := i.DB.GetStepsByRun(run.ID)
+		steps, err := i.DB.GetStepsByRun(run.RunID)
 		if err != nil {
 			return nil, fmt.Errorf("gate execution context: list steps for active run: %w", err)
 		}
@@ -182,7 +186,7 @@ func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
 			if step.AgentPID != nil {
 				pid = *step.AgentPID
 			}
-			out = append(out, activeAgentStep{runID: run.ID, repoID: run.RepoID, worktreeDir: run.WorktreePath(), phase: step.StepName, agentPID: pid})
+			out = append(out, activeAgentStep{runID: run.RunID, repoID: run.RepoID, worktreeDir: run.Dir, phase: step.StepName, agentPID: pid})
 		}
 	}
 	return out, nil

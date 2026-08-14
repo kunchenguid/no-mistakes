@@ -691,7 +691,7 @@ func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths, leftover []db.RunWorktree)
 			if !runEntry.IsDir() {
 				continue
 			}
-			removeOrphanWorktree(ctx, d, gateDir, filepath.Join(repoPath, runEntry.Name()), runEntry.Name())
+			removeOrphanWorktree(ctx, d, p, gateDir, filepath.Join(repoPath, runEntry.Name()), repoEntry.Name(), runEntry.Name())
 		}
 		// Remove empty repo dir.
 		os.Remove(repoPath)
@@ -717,17 +717,21 @@ func cleanupRecordedRunWorktrees(ctx context.Context, d *db.DB, p *paths.Paths, 
 		if info, err := os.Stat(wt.Dir); err != nil || !info.IsDir() {
 			continue
 		}
-		removeOrphanWorktree(ctx, d, p.RepoDir(wt.RepoID), wt.Dir, wt.RunID)
+		removeOrphanWorktree(ctx, d, p, p.RepoDir(wt.RepoID), wt.Dir, wt.RepoID, wt.RunID)
 	}
 }
 
 // removeOrphanWorktree removes one run worktree directory unless its run still
-// owns it (see skipWorktreeCleanup).
-func removeOrphanWorktree(ctx context.Context, d *db.DB, gateDir, wtPath, runID string) {
+// owns it (see skipWorktreeCleanup), sweeping it first like every other removal
+// path (see procreap.SweepRunWorktree). The startup sweep has usually reaped this
+// directory already, but the ordering belongs to the removal, not to the caller
+// that happens to run before it.
+func removeOrphanWorktree(ctx context.Context, d *db.DB, p *paths.Paths, gateDir, wtPath, repoID, runID string) {
 	if skip, reason := skipWorktreeCleanup(d, runID); skip {
 		slog.Info("skipping worktree cleanup", "path", wtPath, "reason", reason)
 		return
 	}
+	procreap.SweepRunWorktree(p.WorktreesDir(), repoID, runID, wtPath, "worktree_cleanup")
 	if err := git.WorktreeRemove(ctx, gateDir, wtPath); err != nil {
 		slog.Warn("git worktree remove failed, falling back to os.RemoveAll", "path", wtPath, "error", err)
 		if err := os.RemoveAll(wtPath); err != nil {

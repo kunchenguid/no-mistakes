@@ -13,6 +13,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/gatecontext"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/procreap"
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/scm/github"
@@ -339,6 +340,12 @@ func Eject(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.R
 // recorded placement rather than deriving it is also what reaches a run left in
 // a root the operator has since reconfigured away.
 //
+// Each such directory is swept before it is removed, and this whole function runs
+// before the repository record is deleted: the cascade takes the run rows with
+// it, and outside the default tree those rows are the only thing that can name
+// the directory. Sweeping afterwards would be sweeping a directory nothing knows
+// about (see procreap.SweepRunWorktree).
+//
 // Failures are logged rather than fatal: an eject that cannot delete a leftover
 // worktree must still finish removing the gate.
 func removeRepoWorktrees(d *db.DB, p *paths.Paths, repo *db.Repo) {
@@ -355,6 +362,7 @@ func removeRepoWorktrees(d *db.DB, p *paths.Paths, repo *db.Repo) {
 		if worktrees.Contains(defaultDir, path) {
 			continue // already removed with the directory we own outright
 		}
+		procreap.SweepRunWorktree(p.WorktreesDir(), repo.ID, run.ID, path, "eject")
 		if err := os.RemoveAll(path); err != nil {
 			slog.Warn("failed to remove run worktree during eject", "path", path, "error", err)
 		}

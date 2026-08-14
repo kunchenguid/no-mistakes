@@ -118,6 +118,71 @@ func TestRunWorktreeIsCreatedInConfiguredRoot(t *testing.T) {
 	}
 }
 
+// TestRunSetupFailureLeavesNoWorktreeBehind covers the failures that happen
+// between creating the worktree and the run goroutine taking ownership of it.
+// Cleanup ownership is armed the moment the directory exists, so none of them can
+// leave it behind - in the operator's own worktree root, where it would sit until
+// the next daemon start noticed it.
+//
+// git identity configuration is the earliest of those failures: it reads the
+// checkout's git config, so a repository whose checkout is gone fails there.
+func TestRunSetupFailureLeavesNoWorktreeBehind(t *testing.T) {
+	p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+		return []pipeline.Step{&mockPassStep{name: types.StepReview}}
+	})
+
+	// A gate whose registered checkout no longer exists.
+	source := filepath.Join(t.TempDir(), "work")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, source, "init")
+	gitCmd(t, source, "config", "user.email", "test@test.com")
+	gitCmd(t, source, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(source, "test.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, source, "add", ".")
+	gitCmd(t, source, "commit", "-m", "initial")
+	headSHA := gitOutput(t, source, "rev-parse", "HEAD")
+	gateDir := p.RepoDir("gone-checkout-repo")
+	gitCmd(t, "", "init", "--bare", gateDir)
+	gitCmd(t, source, "remote", "add", "gate", gateDir)
+	gitCmd(t, source, "push", "gate", "HEAD:refs/heads/main")
+	gitCmd(t, gateDir, "remote", "add", "origin", gateDir)
+
+	missingCheckout := filepath.Join(t.TempDir(), "removed-checkout")
+	repo, err := d.InsertRepoWithID("gone-checkout-repo", missingCheckout, "https://example.com/owner/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "repo-runs")
+	configureWorktreeRoot(t, p, repo.WorkingPath, root)
+
+	client, err := ipc.Dial(p.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var result ipc.PushReceivedResult
+	if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+		Gate: gateDir,
+		Ref:  "refs/heads/main",
+		Old:  "0000000000000000000000000000000000000000",
+		New:  headSHA,
+	}, &result); err == nil {
+		t.Fatal("run setup succeeded although the repository's checkout is gone")
+	}
+
+	entries, err := os.ReadDir(root)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		t.Errorf("setup failure left %q behind in the operator's worktree root", filepath.Join(root, entry.Name()))
+	}
+}
+
 // TestRunCreationJudgesOnlyItsOwnPlacement covers the placement mistake that
 // appears while the daemon is already running: the registered-checkout half of
 // the policy depends on state that changes after startup, so an entry that was

@@ -147,6 +147,56 @@ type RunWorktree struct {
 	Dir    string
 }
 
+// ActiveRunWorktrees returns the identity and recorded placement of every
+// pending or running run, and is the one runs query that must work against a
+// database this binary has not migrated yet.
+//
+// The gate-execution-context preflight runs before any command opens the database
+// read-write, so on the first invocation after an upgrade it reads through
+// OpenReadOnly, which deliberately does not migrate. A query naming a column the
+// schema does not have yet fails there, and because that preflight guards every
+// pipeline-control command - including the ones that would perform the migration -
+// the whole CLI would be unusable until the file was repaired by hand. So the
+// placement column is selected only when the schema has it; a database without it
+// predates worktree_roots entirely, and the empty value resolves to the default
+// placement (see worktrees.RecordedDir), which is the only one such a run can
+// have.
+func (d *DB) ActiveRunWorktrees() ([]RunWorktree, error) {
+	placement := "''"
+	if d.hasColumn("runs", "worktree_dir") {
+		placement = "COALESCE(worktree_dir, '')"
+	}
+	rows, err := d.sql.Query(
+		`SELECT id, repo_id, `+placement+` FROM runs WHERE status IN (?, ?) ORDER BY created_at DESC, id DESC`,
+		types.RunPending, types.RunRunning,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get active run worktrees: %w", err)
+	}
+	defer rows.Close()
+	var out []RunWorktree
+	for rows.Next() {
+		var wt RunWorktree
+		if err := rows.Scan(&wt.RunID, &wt.RepoID, &wt.Dir); err != nil {
+			return nil, fmt.Errorf("scan active run worktree: %w", err)
+		}
+		out = append(out, wt)
+	}
+	return out, rows.Err()
+}
+
+// hasColumn reports whether a table currently has a column. It reads the live
+// schema rather than assuming this binary's migrations have been applied, which
+// is what lets a read-only caller work against an older database.
+func (d *DB) hasColumn(table, column string) bool {
+	rows, err := d.sql.Query(`SELECT 1 FROM pragma_table_info(?) WHERE name = ?`, table, column)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	return rows.Next()
+}
+
 // RunWorktreesOutside returns every run whose recorded worktree directory is
 // not under prefix, newest first. It exists so startup recovery can find the
 // run worktrees this machine placed outside <NM_HOME>/worktrees without asking

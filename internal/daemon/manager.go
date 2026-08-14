@@ -485,27 +485,13 @@ func (m *RunManager) broadcast(event ipc.Event) {
 // group the pipeline can name - only the worktree it is standing in still
 // identifies it (see internal/procreap).
 //
-// It runs before the worktree directory is removed, because a process that
-// outlives its worktree holds the deleted directory open through its cwd and
-// can no longer be attributed to any run. No age floor applies: the caller
-// owns this run and has already observed its execution return, so nothing
-// standing in it can still be legitimate work.
 // The run's own worktree is what the sweep is pointed at, so a placement
 // outside the default tree needs no configuration lookup and cannot be hidden
-// by a worktree_roots edit made while the run was executing.
-//
-// It is the only moment a worktree outside the default tree is reliably
-// nameable: the startup sweep reaches such a directory through the run records,
-// which name it only while it still exists or while the run is still active,
-// whereas under the default tree the surviving <NM_HOME>/worktrees prefix keeps
-// matching a deleted cwd forever. removeRunWorktree is what guarantees no
-// removal path skips it.
+// by a worktree_roots edit made while the run was executing. The ordering rule
+// and its rationale live on procreap.SweepRunWorktree, which every removal site
+// in every package goes through.
 func (m *RunManager) sweepRunWorktreeProcesses(repoID, runID, wtDir string) {
-	procreap.SweepAndLog(procreap.Options{
-		WorktreesRoot: m.paths.WorktreesDir(),
-		Worktrees:     []procreap.Worktree{{Dir: wtDir, RepoID: repoID, RunID: runID}},
-		Scope:         wtDir,
-	}, "run_cleanup")
+	procreap.SweepRunWorktree(m.paths.WorktreesDir(), repoID, runID, wtDir, "run_cleanup")
 }
 
 // cleanupRunEvidence tidies up after one finished run, then bounds the whole
@@ -545,13 +531,11 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 // removeRunWorktree tears one run's worktree down: it sweeps whatever is still
 // standing in the directory and only then removes it.
 //
-// Every removal of a run worktree goes through here, and none calls
-// git.WorktreeRemove directly, because the ordering is easy to forget at one
-// site and invisible when forgotten - a run whose setup failed, whose execution
-// returned, or which was resumed after a crash all reach this point by different
-// routes, and a directory removed without the sweep leaves a process that
-// escaped its group holding a deleted cwd with nothing left able to name it (see
-// sweepRunWorktreeProcesses). reason distinguishes the routes in the log.
+// Every removal of a run worktree this package performs goes through here, and
+// none calls git.WorktreeRemove directly, because the ordering is easy to forget
+// at one site and invisible when forgotten - a run whose setup failed, whose
+// execution returned, or which was resumed after a crash all reach this point by
+// different routes. reason distinguishes the routes in the log.
 func (m *RunManager) removeRunWorktree(repoID, runID, gateDir, wtDir, reason string) {
 	m.sweepRunWorktreeProcesses(repoID, runID, wtDir)
 	if err := git.WorktreeRemove(context.Background(), gateDir, wtDir); err != nil {
@@ -886,6 +870,19 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 		trackStartFailure("create_worktree")
 		return "", fmt.Errorf("create worktree: %w", err)
 	}
+
+	// The worktree exists from here on, so cleanup ownership is armed from here
+	// on: every later setup failure returns through this defer, and the
+	// background goroutine takes ownership only once it is running. Arming it any
+	// later would leave the directory behind - in the operator's own worktree
+	// root, unswept - for whichever failures happen in between.
+	bgOwnsWorktree := false
+	defer func() {
+		if !bgOwnsWorktree {
+			m.removeRunWorktree(repo.ID, run.ID, gateDir, wtDir, "run_setup_failed")
+		}
+	}()
+
 	if err := git.CopyLocalUserIdentity(ctx, repo.WorkingPath, wtDir); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("configure worktree git identity: %s", err))
 		trackStartFailure("configure_worktree_identity")
@@ -911,15 +908,6 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			trustedSHA = sha
 		}
 	}
-
-	// Track whether the background goroutine takes ownership of worktree cleanup.
-	// If setup fails before the goroutine launches, we must clean up here.
-	bgOwnsWorktree := false
-	defer func() {
-		if !bgOwnsWorktree {
-			m.removeRunWorktree(repo.ID, run.ID, gateDir, wtDir, "run_setup_failed")
-		}
-	}()
 
 	repoCfg, err := config.LoadRepo(wtDir)
 	if err != nil {

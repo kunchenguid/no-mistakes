@@ -222,6 +222,27 @@ func SweepAndLog(opts Options, reason string) {
 	}
 }
 
+// SweepRunWorktree terminates whatever is still standing in one run's worktree,
+// which every caller that is about to REMOVE that directory must do first.
+//
+// It is one entry point because the removal sites are spread across packages -
+// run cleanup, startup cleanup, and eject - and a directory removed without this
+// leaves a process that escaped its group holding a deleted cwd. Under
+// <NM_HOME>/worktrees that process stays reachable through the surviving root
+// prefix, but a worktree the operator placed elsewhere is named only by the run
+// record, so removing the directory (and, at eject, the record too) is the last
+// moment anything can reach it.
+//
+// The sweep is scoped to dir, so no age floor and no run-active check apply: the
+// caller owns this run and is about to delete its worktree.
+func SweepRunWorktree(worktreesRoot, repoID, runID, dir string, reason string) {
+	SweepAndLog(Options{
+		WorktreesRoot: worktreesRoot,
+		Worktrees:     []Worktree{{Dir: dir, RepoID: repoID, RunID: runID}},
+		Scope:         dir,
+	}, reason)
+}
+
 // protectedPIDs is this process plus its ancestor chain. Signalling any of
 // them would take down the daemon (or whatever launched it) while trying to
 // clean up after it.
