@@ -16,7 +16,9 @@
 package worktrees
 
 import (
+	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -57,12 +59,73 @@ func (l *Layout) RepoDir(repoID, workingPath string) string {
 	return filepath.Join(l.paths.WorktreesDir(), repoID)
 }
 
-// Dir returns the worktree directory of one run.
+// Dir resolves where a NEW run's worktree belongs. It is the only placement
+// decision this package makes from configuration, and it is made once, at run
+// creation: the resolved directory is recorded on the run (runs.worktree_dir)
+// and every later consumer reads it back through RecordedDir, so editing
+// worktree_roots while a run is in flight cannot retarget that run.
 func (l *Layout) Dir(repoID, workingPath, runID string) string {
 	if root, ok := l.CustomRoot(workingPath); ok {
 		return filepath.Join(root, runID)
 	}
 	return l.paths.WorktreeDir(repoID, runID)
+}
+
+// RecordedDir returns the worktree directory of an EXISTING run.
+//
+// recorded is the run's runs.worktree_dir: the placement resolved by Dir when
+// the run was created. Reading it back rather than re-deriving it is what
+// makes an edit to worktree_roots inert for runs that already exist - resume,
+// step diff, startup cleanup, process reaping and eject all keep addressing
+// the directory the run was actually created in, so a mid-flight edit can
+// neither strand a parked run nor point a removal at a path it never created.
+//
+// An empty value is a run recorded before placement was durable. Those are
+// derived from the current layout, exactly as every consumer did before the
+// column existed, which is the closest thing to the truth still available for
+// them.
+func (l *Layout) RecordedDir(recorded, repoID, workingPath, runID string) string {
+	if trimmed := strings.TrimSpace(recorded); trimmed != "" {
+		return filepath.Clean(trimmed)
+	}
+	return l.Dir(repoID, workingPath, runID)
+}
+
+// Validate rejects a configured placement this NM_HOME cannot host.
+//
+// internal/config validates every worktree_roots entry it can judge on its own
+// (absolute paths, two checkouts sharing a root, a root equal to its checkout),
+// but it never learns where NM_HOME is, so this second layer belongs to the
+// process that does: the daemon refuses to start on a root it would then be
+// unable to tell apart from its own state.
+//
+// A root equal to or inside <NM_HOME>/worktrees is that case. The entries of
+// that directory are the ULID-named per-repository directories the default
+// placement owns and sweeps wholesale, and a run ID is a ULID too, so a run
+// directory placed there is indistinguishable from a repository directory: a
+// walk of the operator's root becomes a walk of the daemon's own state, and a
+// repository directory holding another repository's live run worktrees looks
+// exactly like one more leftover run. Nothing an operator can want lives
+// there either - it is under NM_HOME, so it carries none of the
+// directory-scoped toolchain configuration the setting exists to reach.
+//
+// Placements that are merely questionable - a root inside the checkout whose
+// runs it holds, a key matching no registered repository - are reported at
+// startup instead of refused, because they do work.
+func (l *Layout) Validate() error {
+	if len(l.roots) == 0 {
+		return nil
+	}
+	worktreesDir := l.paths.WorktreesDir()
+	checkouts := l.Checkouts()
+	sort.Strings(checkouts)
+	for _, checkout := range checkouts {
+		root := l.roots[checkout]
+		if Contains(worktreesDir, root) {
+			return fmt.Errorf("invalid worktree_roots[%q]: run worktree root %q is inside the directory no-mistakes places its own run worktrees in (%q); choose a directory outside NM_HOME", checkout, root, worktreesDir)
+		}
+	}
+	return nil
 }
 
 // CustomRoot reports the configured worktree root for a checkout, if any.

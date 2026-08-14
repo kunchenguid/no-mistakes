@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -106,6 +107,11 @@ func TestRunWorktreeIsCreatedInConfiguredRoot(t *testing.T) {
 	}
 	if want := filepath.Join(root, result.RunID); !samePath(executedIn, want) {
 		t.Fatalf("step ran in %q, want %q", executedIn, want)
+	}
+	// The run records where it was placed, so nothing that looks at it later
+	// has to ask the configuration again.
+	if recorded := run.WorktreePath(); !samePath(recorded, executedIn) {
+		t.Fatalf("run recorded worktree %q, want the directory it executed in %q", recorded, executedIn)
 	}
 	if _, err := os.Stat(foreign); err != nil {
 		t.Fatalf("operator file in the configured root must survive the run: %v", err)
@@ -222,6 +228,247 @@ func TestCleanupOrphanWorktrees_UnconfiguredRepoUsesDefaultRoot(t *testing.T) {
 	}
 }
 
+// TestDaemonRefusesToStartWithWorktreeRootInsideItsOwnWorktreesDirectory is the
+// reviewer's scenario for the destructive misconfiguration: <NM_HOME>/worktrees
+// holds one ULID-named directory per repository, a run ID is a ULID too, so a
+// worktree root pointed at that directory would have every repository's
+// directory read as a leftover run worktree - including the ones holding
+// another repository's pending and running run worktrees. Config loading cannot
+// catch it (it never learns where NM_HOME is), so the daemon refuses to start
+// rather than starting and sweeping.
+func TestDaemonRefusesToStartWithWorktreeRootInsideItsOwnWorktreesDirectory(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	// A second repository with a live run, whose worktree the misread would
+	// have deleted along with the directory holding it.
+	victim, err := d.InsertRepoWithID("victimrepo", filepath.Join(t.TempDir(), "victim"), "https://example.com/owner/victim", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveRun, err := d.InsertRun(victim.ID, "feature", "headsha", "basesha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(liveRun.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	liveWT := p.WorktreeDir(victim.ID, liveRun.ID)
+	if err := os.MkdirAll(liveWT, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	misconfigured, err := d.InsertRepoWithID("repo1", filepath.Join(t.TempDir(), "checkout"), "https://example.com/owner/repo1", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configureWorktreeRoot(t, p, misconfigured.WorkingPath, p.WorktreesDir())
+
+	err = RunWithResources(p, d)
+	if err == nil {
+		t.Fatal("daemon started with a worktree root inside its own worktrees directory")
+	}
+	if !strings.Contains(err.Error(), "worktree_roots") || !strings.Contains(err.Error(), p.WorktreesDir()) {
+		t.Errorf("startup failure %q names neither the setting nor the offending directory", err)
+	}
+	if _, statErr := os.Stat(liveWT); statErr != nil {
+		t.Errorf("another repository's live run worktree was removed: %v", statErr)
+	}
+	if _, statErr := os.Stat(p.Socket()); statErr == nil {
+		t.Error("daemon bound its socket despite refusing the configured placement")
+	}
+}
+
+// TestCleanupOrphanWorktrees_ConfiguredRootRemovesOnlyThisRepositorysRuns is
+// the other half of the same misconfiguration: a run-shaped directory in the
+// operator's root is not evidence that a run of this repository created it.
+// Startup cleanup therefore requires the same proof eject requires - one of
+// this repository's own run rows recording that exact directory - so a
+// leftover from another tool, or from a repository that used to point here,
+// stays where it is.
+func TestCleanupOrphanWorktrees_ConfiguredRootRemovesOnlyThisRepositorysRuns(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	workingPath := filepath.Join(t.TempDir(), "checkout")
+	root := filepath.Join(t.TempDir(), "repo-runs")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.ConfigFile(), []byte("worktree_roots:\n  "+yamlPath(workingPath)+": "+yamlPath(root)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repo, err := d.InsertRepoWithID("repo1", workingPath, "https://example.com/owner/repo1", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownRun, err := d.InsertRun(repo.ID, "feature", "headsha", "basesha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunWorktreeDir(ownRun.ID, filepath.Join(root, ownRun.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(ownRun.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	// A terminal run of a different repository that also placed its worktrees
+	// here before the operator reassigned the directory.
+	otherRepo, err := d.InsertRepoWithID("repo2", filepath.Join(t.TempDir(), "other-checkout"), "https://example.com/owner/repo2", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherRun, err := d.InsertRun(otherRepo.ID, "feature", "headsha", "basesha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(otherRun.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	ownWT := filepath.Join(root, ownRun.ID)
+	otherWT := filepath.Join(root, otherRun.ID)
+	// Run-shaped, but no run row anywhere claims it.
+	unclaimedWT := filepath.Join(root, "01JZ8XQ7V6K9M3B0T5N2R4C8YD")
+	for _, dir := range []string{ownWT, otherWT, unclaimedWT} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cleanupOrphanWorktrees(d, p, startupWorktreeLayout(p))
+
+	if _, err := os.Stat(ownWT); !os.IsNotExist(err) {
+		t.Fatalf("this repository's terminal run worktree should have been cleaned up, stat err: %v", err)
+	}
+	for _, keep := range []string{otherWT, unclaimedWT} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("cleanup removed %q, which no run of this repository recorded: %v", keep, err)
+		}
+	}
+}
+
+// TestStepDiff_ReadsThePlacementItsRunRecorded covers a config edit made while
+// a run exists - exactly what `init --worktree-root` invites, since it prints
+// an entry for the operator to paste in. The fix-review diff is served from the
+// run's worktree on demand, so a re-derived placement would resolve a directory
+// that never existed and fail the RPC the parked gate depends on.
+func TestStepDiff_ReadsThePlacementItsRunRecorded(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	workingPath := filepath.Join(t.TempDir(), "checkout")
+	repo, err := d.InsertRepoWithID("repo1", workingPath, "https://example.com/owner/repo1", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "abc123", "def456")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created := filepath.Join(t.TempDir(), "repo-runs", run.ID)
+	if err := os.MkdirAll(created, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, created, "init")
+	runGit(t, created, "config", "user.email", "test@example.com")
+	runGit(t, created, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(created, "tracked.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, created, "add", "tracked.txt")
+	runGit(t, created, "commit", "-m", "base")
+	if err := os.WriteFile(filepath.Join(created, "tracked.txt"), []byte("agent fix\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunWorktreeDir(run.ID, created); err != nil {
+		t.Fatal(err)
+	}
+
+	// The operator pastes a different root while the run is parked.
+	configureWorktreeRoot(t, p, workingPath, filepath.Join(t.TempDir(), "somewhere-else"))
+
+	diff, truncated, err := NewRunManager(d, p, nil).StepDiff(context.Background(), run.ID)
+	if err != nil {
+		t.Fatalf("step diff after a mid-run placement edit: %v", err)
+	}
+	if truncated || !strings.Contains(diff, "agent fix") {
+		t.Fatalf("diff = %q (truncated=%v), want the recorded worktree's change", diff, truncated)
+	}
+}
+
+// TestPrepareRecoveredRun_LocatesThePlacementItsRunRecorded is the crash-recovery
+// half: a parked run whose placement was re-derived from an edited config looks
+// like a run whose worktree vanished, which fails it instead of resuming it.
+func TestPrepareRecoveredRun_LocatesThePlacementItsRunRecorded(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	repo, headSHA := setupTestGitRepo(t, p, d, "repo1")
+	run, err := d.InsertRun(repo.ID, "feature", headSHA, headSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunAwaitingAgent(run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	created := filepath.Join(t.TempDir(), "repo-runs", run.ID)
+	gitCmd(t, p.RepoDir(repo.ID), "worktree", "add", "--detach", created, headSHA)
+	if err := d.SetRunWorktreeDir(run.ID, created); err != nil {
+		t.Fatal(err)
+	}
+	// The operator points the checkout at a root this run knows nothing about.
+	configureWorktreeRoot(t, p, repo.WorkingPath, filepath.Join(t.TempDir(), "somewhere-else"))
+
+	m := NewRunManager(d, p, nil)
+	layout, err := m.worktreeLayout()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.prepareRecoveredRun(context.Background(), layout, stored); err != nil && strings.Contains(err.Error(), "worktree is missing") {
+		t.Fatalf("recovery lost the run's recorded worktree %q: %v", created, err)
+	}
+}
+
 // TestReportUnusableWorktreeRoots_NamesEntriesThatDoNothing covers the silent
 // failure mode of a path-keyed setting: an entry whose key does not match a
 // registered checkout - a stale key after a move, a spelling this filesystem
@@ -255,7 +502,7 @@ func TestReportUnusableWorktreeRoots_NamesEntriesThatDoNothing(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	defer slog.SetDefault(oldLogger)
 
-	reportUnusableWorktreeRoots(d, p, startupWorktreeLayout(p))
+	reportUnusableWorktreeRoots(d, startupWorktreeLayout(p))
 
 	got := logs.String()
 	if !strings.Contains(got, "matches no registered repository") {

@@ -330,33 +330,38 @@ func Eject(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.R
 // removeRepoWorktrees deletes the ejected repository's run worktrees.
 //
 // Under the default placement no-mistakes owns <NM_HOME>/worktrees/<repoID>
-// outright, so the whole directory goes. A configured worktree root (see
-// worktree_roots and internal/worktrees) is a directory of the operator's own
-// - it holds the toolchain configuration the runs were placed there to
-// inherit - so there eject removes exactly the directories named by this
-// repository's own run rows, and touches nothing else: not the root, not the
-// operator's files, and not a neighbouring directory that merely looks like a
-// run. Failures are logged rather than fatal: an eject that cannot delete a
-// leftover worktree must still finish removing the gate.
+// outright, so the whole directory goes. Everything a run recorded outside it
+// is removed one directory at a time (see worktree_roots and
+// internal/worktrees): such a directory sits in a directory of the operator's
+// own - it holds the toolchain configuration the runs were placed there to
+// inherit - so eject removes exactly what this repository's own run rows
+// recorded, and touches nothing else: not the root, not the operator's files,
+// and not a neighbouring directory that merely looks like a run. Reading the
+// recorded placement rather than deriving it is also what reaches a run left in
+// a root the operator has since reconfigured away.
+//
+// Failures are logged rather than fatal: an eject that cannot delete a leftover
+// worktree must still finish removing the gate.
 func removeRepoWorktrees(d *db.DB, p *paths.Paths, repo *db.Repo) {
+	defaultDir := filepath.Join(p.WorktreesDir(), repo.ID)
+	os.RemoveAll(defaultDir)
+
 	globalCfg, err := config.LoadGlobal(p.ConfigFile())
 	if err != nil {
 		slog.Warn("failed to load configured worktree roots during eject", "repo_id", repo.ID, "error", err)
 		globalCfg = config.DefaultGlobalConfig()
 	}
 	layout := worktrees.New(p, globalCfg.WorktreeRoots)
-	root, custom := layout.CustomRoot(repo.WorkingPath)
-	if !custom {
-		os.RemoveAll(layout.RepoDir(repo.ID, repo.WorkingPath))
-		return
-	}
 	runs, err := d.GetRunsByRepo(repo.ID)
 	if err != nil {
 		slog.Warn("failed to list runs while removing worktrees during eject", "repo_id", repo.ID, "error", err)
 		return
 	}
 	for _, run := range runs {
-		path := filepath.Join(root, run.ID)
+		path := layout.RecordedDir(run.WorktreePath(), repo.ID, repo.WorkingPath, run.ID)
+		if worktrees.Contains(defaultDir, path) {
+			continue // already removed with the directory we own outright
+		}
 		if err := os.RemoveAll(path); err != nil {
 			slog.Warn("failed to remove run worktree during eject", "path", path, "error", err)
 		}

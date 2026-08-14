@@ -186,6 +186,14 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 }
 
 func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, startupStarted time.Time) error {
+	// Refuse an unusable worktree placement before anything walks, sweeps, or
+	// removes a directory under it. This is the second half of worktree_roots
+	// validation: internal/config checks every entry it can judge without
+	// knowing NM_HOME, and this process is the one that knows.
+	if err := assertConfiguredWorktreePlacement(p); err != nil {
+		return err
+	}
+
 	managedServerLog, err := logstore.Open(p.ManagedServerLog(), logstore.ManagedServerPolicy())
 	if err != nil {
 		return fmt.Errorf("open managed server log: %w", err)
@@ -415,7 +423,7 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	logStartupPhase("stale_runs", staleStarted, "recovered", count)
 
 	layout := startupWorktreeLayout(p)
-	reportUnusableWorktreeRoots(d, p, layout)
+	reportUnusableWorktreeRoots(d, layout)
 
 	orphanProcStarted := time.Now()
 	sweepOrphanRunProcesses(d, p, layout)
@@ -467,6 +475,24 @@ func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths, layout *worktrees.Layout)
 	}, "daemon_startup")
 }
 
+// assertConfiguredWorktreePlacement fails startup when the configured run
+// worktree placement is one this NM_HOME cannot host (see
+// worktrees.Layout.Validate for which placement that is and why). Refusing to
+// start is the same treatment an unreadable global config already gets, and
+// for the same reason: the daemon's first act is crash recovery, which walks
+// and removes directories, so a placement it would misread must be rejected
+// before that runs rather than warned about afterwards.
+func assertConfiguredWorktreePlacement(p *paths.Paths) error {
+	globalCfg, err := config.LoadGlobal(p.ConfigFile())
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if err := worktrees.New(p, globalCfg.WorktreeRoots).Validate(); err != nil {
+		return fmt.Errorf("configured worktree placement is unusable: %w", err)
+	}
+	return nil
+}
+
 // startupWorktreeLayout resolves worktree placement for startup recovery. The
 // daemon already refused to start on an unreadable global config, so a failure
 // here is a late fault on the same file: recovery continues with the default
@@ -487,10 +513,11 @@ func startupWorktreeLayout(p *paths.Paths) *worktrees.Layout {
 // checkout - or one that differs from the recorded path in a way this
 // filesystem does not consider equal, such as letter case - silently places
 // nothing and is worth a line in the log. A root that sits inside the checkout
-// whose runs it holds, or inside the directory no-mistakes already owns, is
-// reported for the same reason: it is accepted, but it is almost certainly not
-// what was meant.
-func reportUnusableWorktreeRoots(d *db.DB, p *paths.Paths, layout *worktrees.Layout) {
+// whose runs it holds is reported for the same reason: it is accepted, but it
+// is almost certainly not what was meant. A placement that is not merely
+// questionable but unusable already refused startup
+// (assertConfiguredWorktreePlacement), so nothing reported here is fatal.
+func reportUnusableWorktreeRoots(d *db.DB, layout *worktrees.Layout) {
 	checkouts := layout.Checkouts()
 	if len(checkouts) == 0 {
 		return
@@ -512,9 +539,6 @@ func reportUnusableWorktreeRoots(d *db.DB, p *paths.Paths, layout *worktrees.Lay
 		root, _ := layout.CustomRoot(checkout)
 		if worktrees.Contains(checkout, root) {
 			slog.Warn("worktree_roots entry places run worktrees inside the checkout they validate", "checkout", checkout, "root", root)
-		}
-		if worktrees.Contains(p.WorktreesDir(), root) {
-			slog.Warn("worktree_roots entry places run worktrees inside the default worktrees directory", "checkout", checkout, "root", root)
 		}
 	}
 }
@@ -567,7 +591,9 @@ func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths, layout *worktrees.Layout) 
 // operator, not to no-mistakes: it holds the mise.local.toml, .envrc, or
 // checkout that motivated pointing runs at it in the first place. Only an
 // entry that is a directory named like a run ID can have been created by a
-// run, so nothing else there is ever inspected, let alone removed.
+// run, so nothing else there is ever inspected, let alone removed - and a
+// run-shaped directory still has to be claimed by one of this repository's own
+// run rows before it is touched (see ownsRunWorktree).
 func cleanupOrphanWorktreesInCustomRoots(d *db.DB, p *paths.Paths, layout *worktrees.Layout) {
 	repos, err := d.GetRepos()
 	if err != nil {
@@ -589,9 +615,43 @@ func cleanupOrphanWorktreesInCustomRoots(d *db.DB, p *paths.Paths, layout *workt
 			if !entry.IsDir() || !worktrees.IsRunID(entry.Name()) {
 				continue
 			}
-			removeOrphanWorktree(ctx, d, gateDir, filepath.Join(root, entry.Name()), entry.Name())
+			wtPath := filepath.Join(root, entry.Name())
+			if !ownsRunWorktree(d, layout, repo, entry.Name(), wtPath) {
+				continue
+			}
+			removeOrphanWorktree(ctx, d, gateDir, wtPath, entry.Name())
 		}
 	}
+}
+
+// ownsRunWorktree reports whether a run-shaped directory in an operator's
+// configured worktree root was created by a run of this repository.
+//
+// In the default worktrees directory a run-shaped directory with no run row is
+// a leftover no-mistakes owns outright, because it created everything there.
+// A configured root is the operator's directory: it can hold a run-shaped
+// directory this repository never created - another tool's, or one left by a
+// repository that used to point here - and removing that would be removing
+// somebody else's data. Ownership is therefore proved from run rows, the same
+// rule eject applies (see gate.removeRepoWorktrees), and against the placement
+// recorded when the run was created rather than the placement configuration
+// would derive today.
+func ownsRunWorktree(d *db.DB, layout *worktrees.Layout, repo *db.Repo, runID, wtPath string) bool {
+	run, err := d.GetRun(runID)
+	if err != nil {
+		slog.Warn("failed to look up run while cleaning a configured worktree root", "path", wtPath, "error", err)
+		return false
+	}
+	if run == nil || run.RepoID != repo.ID {
+		slog.Debug("leaving run-shaped directory in configured worktree root; no run of this repository owns it", "path", wtPath)
+		return false
+	}
+	recorded := layout.RecordedDir(run.WorktreePath(), repo.ID, repo.WorkingPath, run.ID)
+	if !samePath(recorded, wtPath) {
+		slog.Debug("leaving run-shaped directory in configured worktree root; its run records another worktree", "path", wtPath, "recorded", recorded)
+		return false
+	}
+	return true
 }
 
 // removeOrphanWorktree removes one run worktree directory unless its run still

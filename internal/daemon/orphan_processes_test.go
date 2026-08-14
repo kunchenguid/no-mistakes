@@ -91,14 +91,42 @@ func TestSweepRunWorktreeProcessesReapsLeakedChildAtRunCleanup(t *testing.T) {
 	leakedPID := startOrphanInWorktree(t, finished)
 	otherPID := startOrphanInWorktree(t, other)
 
-	repo := &db.Repo{ID: "repo1", WorkingPath: filepath.Join(t.TempDir(), "checkout")}
-	m.sweepRunWorktreeProcesses(worktrees.New(p, nil), repo, finished)
+	m.sweepRunWorktreeProcesses("repo1", finished)
 
 	if !pidGoneWithin(leakedPID, 10*time.Second) {
 		t.Fatalf("orphan %d in the finished run's worktree survived run cleanup", leakedPID)
 	}
 	if !processIsAlive(otherPID) {
 		t.Fatalf("run cleanup reached another run's worktree and killed %d", otherPID)
+	}
+}
+
+// TestSweepRunWorktreeProcessesReapsLeakedChildInTheRunsRecordedRoot covers a
+// run the operator placed in a directory of their own (worktree_roots): the
+// reaper's reach comes from the directory that run was actually created in, not
+// from the configuration - which may have been edited, or removed, while the run
+// was executing. The operator's own directories in the same root are still out
+// of reach, because their names are not run IDs.
+func TestSweepRunWorktreeProcessesReapsLeakedChildInTheRunsRecordedRoot(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	m := NewRunManager(nil, p, nil)
+
+	root := filepath.Join(t.TempDir(), "repo-runs")
+	finished := filepath.Join(root, "01JZ8XQ7V6K9M3B0T5N2R4C8YD")
+	operatorDir := filepath.Join(root, "scratch-checkout")
+	leakedPID := startOrphanInWorktree(t, finished)
+	operatorPID := startOrphanInWorktree(t, operatorDir)
+
+	m.sweepRunWorktreeProcesses("repo1", finished)
+
+	if !pidGoneWithin(leakedPID, 10*time.Second) {
+		t.Fatalf("orphan %d in the finished run's configured worktree survived run cleanup", leakedPID)
+	}
+	if !processIsAlive(operatorPID) {
+		t.Fatalf("run cleanup signalled %d in the operator's own directory", operatorPID)
 	}
 }
 

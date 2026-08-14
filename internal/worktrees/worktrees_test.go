@@ -3,6 +3,7 @@ package worktrees_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -75,6 +76,81 @@ func TestLayout_MatchesUnnormalizedAndSymlinkedCheckout(t *testing.T) {
 		if got, want := layout.Dir("repo1", spelling, "run1"), filepath.Join(configured, "run1"); got != want {
 			t.Errorf("Dir(%q) = %q, want %q", spelling, got, want)
 		}
+	}
+}
+
+// RecordedDir is what makes a worktree_roots edit inert for runs that already
+// exist: the directory a run was created in is recorded with the run, so every
+// later consumer keeps addressing it no matter what the configuration says now.
+func TestLayout_RecordedDirIgnoresLaterConfiguration(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	dir := t.TempDir()
+	checkout := filepath.Join(dir, "src", "repo1")
+	created := filepath.Join(dir, "work", "repo1-runs", "run1")
+
+	// The operator has since pointed this checkout somewhere else entirely.
+	edited := worktrees.New(p, map[string]string{checkout: filepath.Join(dir, "work", "elsewhere")})
+	if got := edited.RecordedDir(created, "repo1", checkout, "run1"); got != created {
+		t.Errorf("RecordedDir() = %q, want the recorded %q", got, created)
+	}
+	// ... and back to the default placement, which must not win either.
+	if got := worktrees.New(p, nil).RecordedDir(created, "repo1", checkout, "run1"); got != created {
+		t.Errorf("RecordedDir() under default placement = %q, want the recorded %q", got, created)
+	}
+}
+
+// A run recorded before placement was durable has nothing to read back, so it
+// falls back to what every consumer derived before the record existed.
+func TestLayout_RecordedDirDerivesWhenNothingWasRecorded(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	dir := t.TempDir()
+	checkout := filepath.Join(dir, "src", "repo1")
+	configured := filepath.Join(dir, "work", "repo1-runs")
+	layout := worktrees.New(p, map[string]string{checkout: configured})
+
+	if got, want := layout.RecordedDir("", "repo1", checkout, "run1"), filepath.Join(configured, "run1"); got != want {
+		t.Errorf("RecordedDir(\"\") = %q, want the derived %q", got, want)
+	}
+	if got, want := layout.RecordedDir("  ", "repo2", filepath.Join(dir, "src", "repo2"), "run2"), p.WorktreeDir("repo2", "run2"); got != want {
+		t.Errorf("RecordedDir(blank) = %q, want the derived %q", got, want)
+	}
+}
+
+// Validate is the layer internal/config cannot be: a root inside the directory
+// no-mistakes places its own run worktrees in is indistinguishable from that
+// placement's per-repository directories, so it is refused outright instead of
+// walked, swept, and removed by the default placement's rules.
+func TestLayout_ValidateRefusesRootInsideTheDaemonsOwnWorktreesDirectory(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	checkout := filepath.Join(t.TempDir(), "src", "repo1")
+
+	for name, root := range map[string]string{
+		"the worktrees directory itself": p.WorktreesDir(),
+		"a directory inside it":          filepath.Join(p.WorktreesDir(), "my-runs"),
+		"a per-repository directory":     filepath.Join(p.WorktreesDir(), "repo1"),
+	} {
+		err := worktrees.New(p, map[string]string{checkout: root}).Validate()
+		if err == nil {
+			t.Errorf("%s (%q) was accepted; want a refusal", name, root)
+			continue
+		}
+		if !strings.Contains(err.Error(), root) || !strings.Contains(err.Error(), "worktree_roots") {
+			t.Errorf("%s: refusal %q names neither the setting nor the root", name, err)
+		}
+	}
+}
+
+func TestLayout_ValidateAcceptsPlacementOutsideAppState(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	dir := t.TempDir()
+	checkout := filepath.Join(dir, "src", "repo1")
+
+	if err := worktrees.New(p, nil).Validate(); err != nil {
+		t.Errorf("default placement rejected: %v", err)
+	}
+	layout := worktrees.New(p, map[string]string{checkout: filepath.Join(dir, "work", "repo1-runs")})
+	if err := layout.Validate(); err != nil {
+		t.Errorf("placement outside NM_HOME rejected: %v", err)
 	}
 }
 

@@ -157,7 +157,7 @@ func (i Inspector) Inspect(ctx context.Context, req Request) (Result, error) {
 			if step.repoID != managedRepo.ID {
 				continue
 			}
-			want := layout.Dir(managedRepo.ID, managedRepo.WorkingPath, step.runID)
+			want := layout.RecordedDir(step.worktreeDir, managedRepo.ID, managedRepo.WorkingPath, step.runID)
 			if sameCanonicalPath(worktreeRoot, want) {
 				result.RunID = step.runID
 				result.Phase = step.phase
@@ -169,10 +169,15 @@ func (i Inspector) Inspect(ctx context.Context, req Request) (Result, error) {
 }
 
 type activeAgentStep struct {
-	runID    string
-	repoID   string
-	phase    types.StepName
-	agentPID int
+	runID  string
+	repoID string
+	// worktreeDir is the run's recorded worktree placement, empty for a run
+	// recorded before it was durable. It travels with the step so attribution
+	// compares against the directory the run was created in rather than the
+	// one current configuration would derive.
+	worktreeDir string
+	phase       types.StepName
+	agentPID    int
 }
 
 func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
@@ -197,7 +202,7 @@ func (i Inspector) activeAgentSteps() ([]activeAgentStep, error) {
 			if step.AgentPID != nil {
 				pid = *step.AgentPID
 			}
-			out = append(out, activeAgentStep{runID: run.ID, repoID: run.RepoID, phase: step.StepName, agentPID: pid})
+			out = append(out, activeAgentStep{runID: run.ID, repoID: run.RepoID, worktreeDir: run.WorktreePath(), phase: step.StepName, agentPID: pid})
 		}
 	}
 	return out, nil

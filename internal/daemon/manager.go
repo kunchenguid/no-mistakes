@@ -95,7 +95,10 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 // worktreeLayout resolves where this machine places run worktrees, which is
 // operator configuration in the global config rather than repository state
 // (see internal/worktrees). It is read per use so an edit takes effect on the
-// next run instead of at the next daemon restart.
+// next run instead of at the next daemon restart. Runs that already exist are
+// unaffected by such an edit: their placement was recorded when they were
+// created, and this layout only derives it back for rows written before that
+// was durable (Layout.RecordedDir).
 func (m *RunManager) worktreeLayout() (*worktrees.Layout, error) {
 	globalCfg, err := config.LoadGlobal(m.paths.ConfigFile())
 	if err != nil {
@@ -156,7 +159,7 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, layout *worktrees.
 	if repo == nil {
 		return nil, fmt.Errorf("run repository is missing")
 	}
-	workDir := layout.Dir(repo.ID, repo.WorkingPath, run.ID)
+	workDir := layout.RecordedDir(run.WorktreePath(), repo.ID, repo.WorkingPath, run.ID)
 	if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("worktree is missing")
 	}
@@ -509,10 +512,10 @@ func (m *RunManager) broadcast(event ipc.Event) {
 // can no longer be attributed to any run. No age floor applies: the caller
 // owns this run and has already observed its execution return, so nothing
 // standing in it can still be legitimate work.
-func (m *RunManager) sweepRunWorktreeProcesses(layout *worktrees.Layout, repo *db.Repo, wtDir string) {
+func (m *RunManager) sweepRunWorktreeProcesses(repoID, wtDir string) {
 	procreap.SweepAndLog(procreap.Options{
 		WorktreesRoot: m.paths.WorktreesDir(),
-		RootOwners:    customWorktreeRoots(layout, []*db.Repo{repo}),
+		RootOwners:    runWorktreeRootOwner(m.paths, repoID, wtDir),
 		Scope:         wtDir,
 	}, "run_cleanup")
 }
@@ -551,10 +554,27 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 	reapEvidence(m.db, root, policy, time.Now())
 }
 
+// runWorktreeRootOwner returns the procreap root a single run's worktree sits
+// in, when that is not the default <NM_HOME>/worktrees tree procreap already
+// walks. It is derived from the run's own directory rather than from the
+// current configuration, so a worktree_roots edit made while the run was
+// executing cannot leave its leaked processes unreachable.
+func runWorktreeRootOwner(p *paths.Paths, repoID, wtDir string) map[string]string {
+	if strings.TrimSpace(wtDir) == "" || worktrees.Contains(p.WorktreesDir(), wtDir) {
+		return nil
+	}
+	return map[string]string{filepath.Dir(wtDir): repoID}
+}
+
 // customWorktreeRoots returns the procreap view of the repositories whose run
 // worktrees the operator placed outside <NM_HOME>/worktrees: the configured
 // root directory mapped to the repository that owns it. Config validation
 // rejects two checkouts sharing a root, so no entry can be overwritten here.
+//
+// This is configuration-derived on purpose: the startup sweep looks for
+// processes in whatever roots this machine currently places runs in, and a
+// misattributed repository ID cannot widen what it may signal (the run-active
+// check keys on the run ID, and only run-ID-named directories are candidates).
 func customWorktreeRoots(layout *worktrees.Layout, repos []*db.Repo) map[string]string {
 	var roots map[string]string
 	for _, repo := range repos {
@@ -877,10 +897,24 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	}
 
 	// Create worktree from the gate bare repo, where this repository's
-	// worktree placement says it belongs (see internal/worktrees).
+	// worktree placement says it belongs (see internal/worktrees). This is the
+	// only point at which configuration decides placement: the resolved
+	// directory is recorded on the run before it exists on disk, and every
+	// later consumer reads that record back, so an edit to worktree_roots from
+	// here on is inert for this run.
 	gateDir := m.paths.RepoDir(repo.ID)
 	layout := worktrees.New(m.paths, globalCfg.WorktreeRoots)
+	if err := layout.Validate(); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("worktree placement: %s", err))
+		trackStartFailure("invalid_worktree_placement")
+		return "", fmt.Errorf("worktree placement: %w", err)
+	}
 	wtDir := layout.Dir(repo.ID, repo.WorkingPath, run.ID)
+	if err := m.db.SetRunWorktreeDir(run.ID, wtDir); err != nil {
+		m.db.UpdateRunError(run.ID, fmt.Sprintf("record worktree placement: %s", err))
+		trackStartFailure("record_worktree_placement")
+		return "", fmt.Errorf("record worktree placement: %w", err)
+	}
 	if err := git.WorktreeAdd(ctx, gateDir, wtDir, headSHA); err != nil {
 		m.db.UpdateRunError(run.ID, fmt.Sprintf("create worktree: %s", err))
 		trackStartFailure("create_worktree")
@@ -1082,7 +1116,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			ag.Close()
 			// Close subscriber channels for this run.
 			m.closeSubscribers(run.ID)
-			m.sweepRunWorktreeProcesses(layout, repo, wtDir)
+			m.sweepRunWorktreeProcesses(repo.ID, wtDir)
 			// Clean up worktree.
 			if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
 				slog.Warn("failed to remove worktree", "path", wtDir, "error", rmErr)

@@ -76,7 +76,7 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if !hasColumn(t, d, "repos", "fork_url") {
 		t.Fatal("repos.fork_url column missing from fresh schema")
 	}
-	for _, column := range []string{"submitted_head_sha", "no_mistakes_version", "no_mistakes_build_sha", "review_approved_head_sha", "last_pushed_sha", "push_target_fingerprint", "push_ref", "last_pushed_at", "push_generation", "push_active", "terminal_head_verified_at", "pr_state", "pr_state_observed_at", "ci_ready_at", "ci_ready_no_ci", "custody_returned_at"} {
+	for _, column := range []string{"worktree_dir", "submitted_head_sha", "no_mistakes_version", "no_mistakes_build_sha", "review_approved_head_sha", "last_pushed_sha", "push_target_fingerprint", "push_ref", "last_pushed_at", "push_generation", "push_active", "terminal_head_verified_at", "pr_state", "pr_state_observed_at", "ci_ready_at", "ci_ready_no_ci", "custody_returned_at"} {
 		if !hasColumn(t, d, "runs", column) {
 			t.Fatalf("runs.%s column missing from fresh schema", column)
 		}
@@ -127,6 +127,40 @@ func TestOpenMigratesRunSyncProvenanceWithoutBackfillingMutableHead(t *testing.T
 	}
 	if run.CustodyReturnedAt != nil {
 		t.Fatalf("legacy run gained a custody-return stamp: %#v", run)
+	}
+	// Placement cannot be recovered for a row written before it was recorded,
+	// so it reads back as unknown rather than as a guessed directory; callers
+	// derive it through worktrees.Layout.RecordedDir.
+	if run.WorktreeDir != nil || run.WorktreePath() != "" {
+		t.Fatalf("legacy run gained a worktree placement: %#v", run)
+	}
+}
+
+// A run's worktree placement is durable because the configuration it comes from
+// can be edited while the run exists (see internal/worktrees).
+func TestSetRunWorktreeDirRecordsPlacementDurably(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepoWithID("repo-1", "/work/repo", "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.WorktreePath() != "" {
+		t.Fatalf("new run started with a placement: %q", run.WorktreePath())
+	}
+	dir := filepath.Join("/work", "repo-runs", run.ID)
+	if err := d.SetRunWorktreeDir(run.ID, dir); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := d.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.WorktreePath() != dir {
+		t.Fatalf("recorded placement = %q, want %q", stored.WorktreePath(), dir)
 	}
 }
 
