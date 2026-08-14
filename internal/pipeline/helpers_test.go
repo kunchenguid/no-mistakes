@@ -191,7 +191,10 @@ func waitForEvent(t *testing.T, ec *eventCollector, eventType ipc.EventType, sta
 // waitForStepStatus polls the DB until a step reaches the expected status.
 func waitForStepStatus(t *testing.T, database *db.DB, runID string, stepName types.StepName, expected types.StepStatus) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	// Race-enabled Windows CI can take several seconds per SQLite write under
+	// filesystem contention. Keep this above the time needed for a multi-round
+	// transition so a slow executor is not mistaken for a failed transition.
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		steps, err := database.GetStepsByRun(runID)
 		if err == nil {
