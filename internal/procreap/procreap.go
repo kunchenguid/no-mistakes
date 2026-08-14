@@ -111,18 +111,22 @@ type Options struct {
 	// be applied to it.
 	Worktrees []Worktree
 
-	// Scope, when set, restricts the sweep to exactly this worktree directory
-	// and to its subdirectories. The caller that sets it owns that run and has
-	// already observed its execution return, so RunActive and MinAge are not
-	// consulted for a scoped sweep.
-	Scope string
+	// Scopes, when set, restricts the sweep to exactly these worktree
+	// directories and their subdirectories. The caller that sets them owns
+	// those runs and has already observed their execution return, so RunActive
+	// and MinAge are not consulted for a scoped sweep.
+	//
+	// It is a set rather than a single directory because a caller that is about
+	// to remove many of a repository's worktrees at once must still pay for one
+	// process-table snapshot, not one per directory (see SweepRunWorktrees).
+	Scopes []string
 
-	// MinAge skips processes younger than this. Ignored when Scope is set.
+	// MinAge skips processes younger than this. Ignored when Scopes is set.
 	MinAge time.Duration
 
 	// RunActive reports whether the run still owns its worktree; its worktree
 	// is then left alone. A nil RunActive means "no run is active", which is
-	// only correct for a scoped sweep. Ignored when Scope is set.
+	// only correct for a scoped sweep. Ignored when Scopes is set.
 	RunActive func(repoID, runID string) bool
 
 	// Grace is how long a signalled process may exit before SIGKILL.
@@ -166,7 +170,7 @@ func Sweep(opts Options) ([]Victim, error) {
 		if p.PID <= 1 || protected[p.PID] {
 			continue
 		}
-		if opts.Scope == "" && opts.MinAge > 0 && p.Elapsed < opts.MinAge {
+		if len(opts.Scopes) == 0 && opts.MinAge > 0 && p.Elapsed < opts.MinAge {
 			continue
 		}
 		candidates = append(candidates, p.PID)
@@ -177,7 +181,10 @@ func Sweep(opts Options) ([]Victim, error) {
 
 	cwds := processCWDsFunc(candidates)
 	matchers := worktreeMatchers(opts)
-	scopes := pathPrefixes(opts.Scope)
+	var scopes []string
+	for _, scope := range opts.Scopes {
+		scopes = append(scopes, pathPrefixes(scope)...)
+	}
 
 	matched := make(map[int]string)
 	for pid, cwd := range cwds {
@@ -236,10 +243,38 @@ func SweepAndLog(opts Options, reason string) {
 // The sweep is scoped to dir, so no age floor and no run-active check apply: the
 // caller owns this run and is about to delete its worktree.
 func SweepRunWorktree(worktreesRoot, repoID, runID, dir string, reason string) {
+	SweepRunWorktrees(worktreesRoot, []Worktree{{Dir: dir, RepoID: repoID, RunID: runID}}, reason)
+}
+
+// SweepRunWorktrees is SweepRunWorktree for a caller that is about to remove
+// several of a repository's worktrees at once, such as eject.
+//
+// Reading the process table is the expensive part of a sweep and it is paid per
+// call, not per directory: one pass over `ps` plus one cwd read for every
+// candidate process answers any number of worktrees, while a loop over
+// SweepRunWorktree pays that pass again for each one. A repository's run rows
+// are never pruned, so the loop's cost grows with everything the machine has
+// ever run rather than with what is being removed now.
+//
+// With no worktree to sweep this does nothing at all, deliberately: an empty
+// scope set would turn the sweep into an unscoped one over the whole default
+// worktrees tree, with neither the age floor nor the run-active check an
+// unscoped caller must supply.
+func SweepRunWorktrees(worktreesRoot string, wts []Worktree, reason string) {
+	scopes := make([]string, 0, len(wts))
+	for _, wt := range wts {
+		if strings.TrimSpace(wt.Dir) == "" {
+			continue
+		}
+		scopes = append(scopes, wt.Dir)
+	}
+	if len(scopes) == 0 {
+		return
+	}
 	SweepAndLog(Options{
 		WorktreesRoot: worktreesRoot,
-		Worktrees:     []Worktree{{Dir: dir, RepoID: repoID, RunID: runID}},
-		Scope:         dir,
+		Worktrees:     wts,
+		Scopes:        scopes,
 	}, reason)
 }
 

@@ -17,10 +17,13 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/safeurl"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/scm/github"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 var ensureGateHooksPathIsolation = git.EnsureHooksPathIsolation
+
+var sweepRunWorktrees = procreap.SweepRunWorktrees
 
 // RemoteName is the name of the git remote that points to the local gate.
 const RemoteName = "no-mistakes"
@@ -340,11 +343,11 @@ func Eject(ctx context.Context, d *db.DB, p *paths.Paths, workDir string) (*db.R
 // recorded placement rather than deriving it is also what reaches a run left in
 // a root the operator has since reconfigured away.
 //
-// Each such directory is swept before it is removed, and this whole function runs
-// before the repository record is deleted: the cascade takes the run rows with
-// it, and outside the default tree those rows are the only thing that can name
-// the directory. Sweeping afterwards would be sweeping a directory nothing knows
-// about (see procreap.SweepRunWorktree).
+// Those directories are swept before any of them is removed, and this whole
+// function runs before the repository record is deleted: the cascade takes the
+// run rows with it, and outside the default tree those rows are the only thing
+// that can name the directory. Sweeping afterwards would be sweeping a directory
+// nothing knows about (see procreap.SweepRunWorktrees).
 //
 // Failures are logged rather than fatal: an eject that cannot delete a leftover
 // worktree must still finish removing the gate.
@@ -357,14 +360,40 @@ func removeRepoWorktrees(d *db.DB, p *paths.Paths, repo *db.Repo) {
 		slog.Warn("failed to list runs while removing worktrees during eject", "repo_id", repo.ID, "error", err)
 		return
 	}
+	var recorded []string
+	var sweepable []procreap.Worktree
 	for _, run := range runs {
 		path := worktrees.RecordedDir(p, run.WorktreePath(), repo.ID, run.ID)
 		if worktrees.Contains(defaultDir, path) {
 			continue // already removed with the directory we own outright
 		}
-		procreap.SweepRunWorktree(p.WorktreesDir(), repo.ID, run.ID, path, "eject")
+		recorded = append(recorded, path)
+		if reachableRunWorktree(path, run.Status) {
+			sweepable = append(sweepable, procreap.Worktree{Dir: path, RepoID: repo.ID, RunID: run.ID})
+		}
+	}
+	sweepRunWorktrees(p.WorktreesDir(), sweepable, "eject")
+	for _, path := range recorded {
 		if err := os.RemoveAll(path); err != nil {
 			slog.Warn("failed to remove run worktree during eject", "path", path, "error", err)
 		}
 	}
+}
+
+// reachableRunWorktree reports whether a recorded placement can still have
+// anything standing in it, which is the same bound daemon startup applies to the
+// same set (see leftoverRecordedRunWorktrees and db.ActiveRunWorktreesOutside):
+// a directory that is still on disk, or the worktree of a run that never
+// reached a terminal state and may therefore have lost its directory while a
+// process it leaked kept holding it.
+//
+// A terminal run whose directory is already gone is not in reach: its removal
+// swept it, and eject would otherwise pay a full sweep for every run this
+// repository has ever had - run rows are never pruned, so that set grows without
+// bound while the work it does is empty.
+func reachableRunWorktree(dir string, status types.RunStatus) bool {
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		return true
+	}
+	return status == types.RunPending || status == types.RunRunning
 }
