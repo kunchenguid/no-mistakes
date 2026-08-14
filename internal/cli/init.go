@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -44,6 +45,9 @@ func newInitCmd() *cobra.Command {
 
 				if cmd.Flags().Changed("fork-url") && strings.TrimSpace(forkURL) == "" {
 					return fmt.Errorf("init: --fork-url must not be empty")
+				}
+				if err := assertCheckoutHoldsNoConfiguredWorktreeRoot(p, "."); err != nil {
+					return err
 				}
 				resolvedWorktreeRoot := ""
 				if cmd.Flags().Changed("worktree-root") {
@@ -154,6 +158,49 @@ func resolveWorktreeRoot(p *paths.Paths, d *db.DB, workDir, root string) (string
 	return abs, nil
 }
 
+// assertCheckoutHoldsNoConfiguredWorktreeRoot refuses to register a checkout
+// that contains a directory the configuration already places run worktrees in.
+//
+// It runs on EVERY init, not only the one that names a directory, because which
+// placements are usable is decided by which checkouts exist: worktrees.CheckPlacement
+// refuses a root inside ANY registered checkout, and the daemon refuses to start
+// while a configured entry is unusable. Registering a checkout AROUND an existing
+// root therefore reaches the very state --worktree-root is careful never to
+// print, from the other direction - and the operator would find out at the next
+// daemon start, when every command goes down with it, from a message naming a
+// config entry they did not touch. Refusing here leaves them a checkout they can
+// still place elsewhere and an entry they can still repoint.
+//
+// Only entries this checkout would newly break are judged. An unrelated one that
+// is already unusable is the daemon's report to make: it is not this
+// registration's doing, and init has no business refusing to run over it.
+//
+// An unreadable config yields no refusal for the same reason - the operator has
+// a different problem, and the daemon reports that one on its own.
+func assertCheckoutHoldsNoConfiguredWorktreeRoot(p *paths.Paths, workDir string) error {
+	checkout, err := git.FindMainRepoRoot(workDir)
+	if err != nil || strings.TrimSpace(checkout) == "" {
+		return nil
+	}
+	cfg, err := config.LoadGlobal(p.ConfigFile())
+	if err != nil {
+		return nil
+	}
+	layout := worktrees.New(p, cfg.WorktreeRoots)
+	configured := layout.Checkouts()
+	sort.Strings(configured)
+	for _, other := range configured {
+		root, ok := layout.CustomRoot(other)
+		if !ok || !worktrees.Contains(checkout, root) {
+			continue
+		}
+		if err := layout.ValidateCheckout(other, checkout); err != nil {
+			return fmt.Errorf("init: registering %s makes the configured worktree placement unusable: %w", checkout, err)
+		}
+	}
+	return nil
+}
+
 // knownCheckouts lists every checkout placement validation must protect: the
 // ones the global config names plus every registered repository. It is the same
 // set the daemon's startup gate judges against, so init cannot accept a
@@ -224,25 +271,24 @@ func checkoutClaimingWorktreeRoot(p *paths.Paths, checkout, root string) (string
 // Which of those applies is a question about the document rather than about the
 // entries it parsed to (see config.InspectGlobalConfigMapping): a key with no
 // value and a key set to {} both parse to nothing, so the parsed configuration
-// cannot tell them from an absent key, nor a block mapping from a flow one.
+// cannot tell them from an absent key, nor a block mapping from a flow one. That
+// includes whether this checkout already has an entry, which decides between
+// replacing a line and adding one (see configuredWorktreeRootEntry).
 //
 // Every line printed for an existing block carries that block's own indentation,
 // for the same reason: the siblings of a block mapping all sit at one column, so
 // an entry line at another one is the same unloadable document, and a line named
 // for replacement at another one is not a line the operator's file contains.
 func printWorktreeRootGuidance(w io.Writer, p *paths.Paths, workingPath, root string) {
-	configuredKey, configuredRoot, configured := "", "", false
-	if cfg, err := config.LoadGlobal(p.ConfigFile()); err == nil {
-		configuredKey, configuredRoot, configured = configuredWorktreeRootEntry(cfg, workingPath)
-		if configured && worktrees.Canonical(configuredRoot) == worktrees.Canonical(root) {
-			fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render("  runs"), sGreen.Render(root), sDim.Render("(already configured)"))
-			return
-		}
+	shape := config.InspectGlobalConfigMapping(p.ConfigFile(), "worktree_roots")
+	configuredKey, configuredRoot, configured := configuredWorktreeRootEntry(shape, workingPath)
+	if configured && worktrees.Canonical(configuredRoot) == worktrees.Canonical(root) {
+		fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render("  runs"), sGreen.Render(root), sDim.Render("(already configured)"))
+		return
 	}
 	fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  runs"), root)
 	fmt.Fprintln(w)
 
-	shape := config.InspectGlobalConfigMapping(p.ConfigFile(), "worktree_roots")
 	indent := worktreeRootsEntryIndent(shape)
 	switch {
 	case !shape.Present:
@@ -301,16 +347,26 @@ func printWorktreeRootsBlockReplacement(w io.Writer, p *paths.Paths, shape confi
 // configuredWorktreeRootEntry returns the worktree_roots entry that places this
 // checkout's runs, spelled the way the config file spells it.
 //
+// It reads the document rather than the parsed configuration for the same reason
+// the rest of this guidance does: a config that does not load still has a shape,
+// and a daemon started before it broke is still alive, so init still reaches
+// here. Asking the parse then answers "no entry" for a key the block plainly
+// contains, and the guidance prints an entry to ADD - the duplicate key one level
+// down, which is exactly the unloadable document this code exists to avoid.
+//
 // The key is returned as written rather than canonicalized because guidance that
 // names a line has to name the line the operator will find: a trailing separator
 // or a symlinked spelling still matches the same checkout (that is what
 // worktrees.Canonical is for), and re-writing the key would also risk two
 // literal keys naming one checkout, which the config loader rejects.
-func configuredWorktreeRootEntry(cfg *config.GlobalConfig, workingPath string) (key, root string, ok bool) {
+func configuredWorktreeRootEntry(shape config.GlobalConfigMapping, workingPath string) (key, root string, ok bool) {
 	want := worktrees.Canonical(workingPath)
-	for checkout, configured := range cfg.WorktreeRoots {
-		if worktrees.Canonical(checkout) == want {
-			return checkout, configured, true
+	for _, entry := range shape.Entries {
+		if strings.TrimSpace(entry.Key) == "" {
+			continue
+		}
+		if worktrees.Canonical(entry.Key) == want {
+			return entry.Key, entry.Value, true
 		}
 	}
 	return "", "", false

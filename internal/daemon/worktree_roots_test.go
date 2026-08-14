@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -862,12 +863,21 @@ func TestReportUnusableWorktreeRoots_NamesEntriesThatDoNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	globalCfg, err := config.LoadGlobal(p.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout, err := validatedWorktreeLayout(d, p, globalCfg)
+	if err != nil {
+		t.Fatalf("startup refused a placement it can host: %v", err)
+	}
+
 	var logs bytes.Buffer
 	oldLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	defer slog.SetDefault(oldLogger)
 
-	reportUnusableWorktreeRoots(d, startupWorktreeLayout(p))
+	reportUnusableWorktreeRoots(d, layout)
 
 	got := logs.String()
 	if !strings.Contains(got, "matches no registered repository") {

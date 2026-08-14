@@ -178,6 +178,123 @@ func TestResolveWorktreeRootRefusesRootClaimedByAnotherCheckout(t *testing.T) {
 	}
 }
 
+// A checkout can be registered AROUND an existing worktree root, which reaches
+// the placement `init --worktree-root` refuses from the other direction: the root
+// is unchanged, but it is now inside a registered checkout. The daemon refuses to
+// start on that, and every command starts the daemon, so a plain `no-mistakes
+// init` would otherwise take the operator's whole CLI down at its next start,
+// naming a config entry they never touched.
+func TestInitRefusesToRegisterACheckoutHoldingAConfiguredWorktreeRoot(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	repoDir := setupTestRepo(t)
+
+	// A directory inside the checkout about to be registered, placing the runs
+	// of an unrelated checkout.
+	otherCheckout := filepath.Join(t.TempDir(), "other-checkout")
+	insideConfig := "worktree_roots:\n  " + yamlPath(otherCheckout) + ": " + yamlPath(filepath.Join(repoDir, "runs")) + "\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(insideConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := assertCheckoutHoldsNoConfiguredWorktreeRoot(p, repoDir)
+	if err == nil {
+		t.Fatal("expected a refusal for a checkout that contains a configured worktree root")
+	}
+	if !strings.Contains(err.Error(), otherCheckout) {
+		t.Errorf("refusal %q does not name the entry that becomes unusable", err)
+	}
+
+	// ... and refusing is not a taste: the daemon's own startup gate, given the
+	// same registration, refuses to come up at all.
+	cfg, cfgErr := config.LoadGlobal(p.ConfigFile())
+	if cfgErr != nil {
+		t.Fatal(cfgErr)
+	}
+	if err := worktrees.New(p, cfg.WorktreeRoots).Validate(repoDir); err == nil {
+		t.Error("the daemon's startup gate accepts this registration; init must not be stricter than it")
+	}
+
+	// The same checkout placing its own runs inside itself is refused too.
+	selfConfig := "worktree_roots:\n  " + yamlPath(repoDir) + ": " + yamlPath(filepath.Join(repoDir, "runs")) + "\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(selfConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertCheckoutHoldsNoConfiguredWorktreeRoot(p, repoDir); err == nil {
+		t.Error("expected a refusal for a checkout that contains its own configured worktree root")
+	}
+
+	// A configuration whose roots are all outside this checkout registers
+	// normally: init refuses only what this registration itself breaks.
+	outsideConfig := "worktree_roots:\n  " + yamlPath(otherCheckout) + ": " + yamlPath(filepath.Join(t.TempDir(), "runs")) + "\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(outsideConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := assertCheckoutHoldsNoConfiguredWorktreeRoot(p, repoDir); err != nil {
+		t.Errorf("registration of a checkout that holds no configured root refused: %v", err)
+	}
+}
+
+// TestPrintWorktreeRootGuidanceReplacesThisCheckoutsEntryFromAnUnloadableConfig
+// covers the config that parses but does not load - one entry with a relative
+// root, an unrelated malformed key - while a daemon started before it broke is
+// still alive, so init still reaches its guidance. Asking the parse whether this
+// checkout has an entry answers "no" for a key the block plainly contains, and
+// the guidance then tells the operator to ADD it: the duplicate key one level
+// down, which makes the config unloadable for a second reason.
+func TestPrintWorktreeRootGuidanceReplacesThisCheckoutsEntryFromAnUnloadableConfig(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	checkout := filepath.Join(dir, "src", "repo1")
+	oldRoot := filepath.Join(dir, "work", "repo1-runs")
+	newRoot := filepath.Join(dir, "work", "repo1-runs-v2")
+	otherCheckout := filepath.Join(dir, "src", "repo2")
+	block := "worktree_roots:\n" +
+		"  " + yamlPath(checkout) + ": " + yamlPath(oldRoot) + "\n" +
+		"  " + yamlPath(otherCheckout) + ": relative-runs\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(block), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.LoadGlobal(p.ConfigFile()); err == nil {
+		t.Fatal("fixture config loads; it must be the parseable-but-unloadable shape")
+	}
+
+	var out bytes.Buffer
+	printWorktreeRootGuidance(&out, p, checkout, newRoot)
+	got := out.String()
+
+	if !containsYAMLLine(got, checkout+": "+oldRoot) {
+		t.Errorf("guidance does not name the entry the document already has, got:\n%s", got)
+	}
+	if strings.Contains(got, "Add this") {
+		t.Errorf("guidance says to add an entry the block already has, which is the duplicate key, got:\n%s", got)
+	}
+
+	// Following it produces a document whose only remaining fault is the one the
+	// operator already had.
+	replaced := "worktree_roots:\n" +
+		"  " + yamlPath(checkout) + ": " + yamlPath(newRoot) + "\n"
+	cfg, err := config.LoadGlobal(writeConfig(t, p, replaced))
+	if err != nil {
+		t.Fatalf("config built by following the guidance does not load: %v", err)
+	}
+	if configured, ok := worktrees.New(p, cfg.WorktreeRoots).CustomRoot(checkout); !ok || configured != newRoot {
+		t.Errorf("replaced config places %q at (%q, %v), want %q", checkout, configured, ok, newRoot)
+	}
+
+	// ... and adding the entry instead is why: two keys naming one checkout.
+	if _, err := config.LoadGlobal(writeConfig(t, p, "worktree_roots:\n"+
+		"  "+yamlPath(checkout)+": "+yamlPath(oldRoot)+"\n"+
+		"  "+yamlPath(checkout)+": "+yamlPath(newRoot)+"\n")); err == nil {
+		t.Error("a second entry for the same checkout loaded; the guidance's replace shape would then be a matter of taste")
+	}
+}
+
 func TestPrintWorktreeRootGuidancePrintsConfigEntry(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
 	if err := p.EnsureDirs(); err != nil {

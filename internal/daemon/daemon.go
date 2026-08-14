@@ -101,7 +101,7 @@ func Run() (retErr error) {
 	defer d.Close()
 	logStartupPhase("database", databaseStarted)
 
-	return runWithOptionsLocked(p, d, nil, startupStarted)
+	return runWithOptionsLocked(p, d, globalCfg, nil, startupStarted)
 }
 
 func prepareDaemonEnvironment() error {
@@ -182,15 +182,25 @@ func RunWithOptions(p *paths.Paths, d *db.DB, stepFactory StepFactory) error {
 	}
 	defer lock.Release()
 
-	return runWithOptionsLocked(p, d, stepFactory, startupStarted)
+	globalCfg, err := config.LoadGlobal(p.ConfigFile())
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	return runWithOptionsLocked(p, d, globalCfg, stepFactory, startupStarted)
 }
 
-func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, startupStarted time.Time) error {
+// runWithOptionsLocked takes the global configuration its caller already loaded,
+// so startup reads and validates config.yaml exactly once. Re-reading it per
+// consumer would let one startup act on two different documents, and every later
+// read needs a fallback for a failure the caller has already refused to start on.
+func runWithOptionsLocked(p *paths.Paths, d *db.DB, globalCfg *config.GlobalConfig, stepFactory StepFactory, startupStarted time.Time) error {
 	// Refuse an unusable worktree placement before anything walks, sweeps, or
 	// removes a directory under it. This is the second half of worktree_roots
 	// validation: internal/config checks every entry it can judge without
 	// knowing NM_HOME, and this process is the one that knows.
-	if err := assertConfiguredWorktreePlacement(d, p); err != nil {
+	layout, err := validatedWorktreeLayout(d, p, globalCfg)
+	if err != nil {
 		return err
 	}
 
@@ -236,7 +246,7 @@ func runWithOptionsLocked(p *paths.Paths, d *db.DB, stepFactory StepFactory, sta
 	slog.Info("daemon process launched", "pid", pidRecord.PID)
 
 	// Recovery remains exclusive and completes before IPC is bound.
-	recoverOnStartup(d, p, mgr)
+	recoverOnStartup(d, p, mgr, layout)
 
 	srv := ipc.NewServer()
 
@@ -372,7 +382,7 @@ func writeDaemonPIDFile(path string, record daemonPIDFile) error {
 // best-effort migrates gate bare repos in place so older installs pick up
 // the per-worktree hookspath isolation introduced for issue #122 when Git
 // supports config --worktree.
-func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
+func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktrees.Layout) {
 	orphanStarted := time.Now()
 	reapOrphanedServers(p)
 	logStartupPhase("orphan_servers", orphanStarted)
@@ -427,7 +437,7 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	}
 	logStartupPhase("stale_runs", staleStarted, "recovered", count)
 
-	reportUnusableWorktreeRoots(d, startupWorktreeLayout(p))
+	reportUnusableWorktreeRoots(d, layout)
 	leftover := leftoverRecordedRunWorktrees(d, p)
 
 	orphanProcStarted := time.Now()
@@ -575,27 +585,29 @@ func outsideDefaultWorktreesTree(p *paths.Paths, recorded []db.RunWorktree) []db
 	return out
 }
 
-// assertConfiguredWorktreePlacement fails startup when the configured run
-// worktree placement is one this machine cannot host (see
+// validatedWorktreeLayout is the one worktree placement startup resolves, and it
+// fails startup when that placement is one this machine cannot host (see
 // worktrees.CheckPlacement for which placements those are and why). Refusing to
 // start is the same treatment an unreadable global config already gets, and
 // for the same reason: the daemon's first act is crash recovery, which walks
 // and removes directories, so a placement it would misread must be rejected
 // before that runs rather than warned about afterwards.
 //
+// Because the layout it returns is the validated one, every later startup
+// consumer is handed it rather than rebuilding one from another read of the same
+// file - which would have to carry a fallback for a failure this function has
+// already refused to start on.
+//
 // This is where the registered repositories are known, so it is the only layer
 // that can judge a root placed inside a checkout other than the one whose runs
 // it holds. A repository registered after such a root was configured is caught
 // here on the next startup.
-func assertConfiguredWorktreePlacement(d *db.DB, p *paths.Paths) error {
-	globalCfg, err := config.LoadGlobal(p.ConfigFile())
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+func validatedWorktreeLayout(d *db.DB, p *paths.Paths, globalCfg *config.GlobalConfig) (*worktrees.Layout, error) {
+	layout := worktrees.New(p, globalCfg.WorktreeRoots)
+	if err := layout.Validate(registeredCheckouts(d)...); err != nil {
+		return nil, fmt.Errorf("configured worktree placement is unusable: %w", err)
 	}
-	if err := worktrees.New(p, globalCfg.WorktreeRoots).Validate(registeredCheckouts(d)...); err != nil {
-		return fmt.Errorf("configured worktree placement is unusable: %w", err)
-	}
-	return nil
+	return layout, nil
 }
 
 // registeredCheckouts lists the working paths of every registered repository, so
@@ -614,20 +626,6 @@ func registeredCheckouts(d *db.DB) []string {
 	return checkouts
 }
 
-// startupWorktreeLayout resolves worktree placement for startup recovery. The
-// daemon already refused to start on an unreadable global config, so a failure
-// here is a late fault on the same file: recovery continues with the default
-// layout, which leaves configured roots alone rather than acting on a guess
-// about where a repository's worktrees live.
-func startupWorktreeLayout(p *paths.Paths) *worktrees.Layout {
-	globalCfg, err := config.LoadGlobal(p.ConfigFile())
-	if err != nil {
-		slog.Warn("failed to load configured worktree roots; using default placement", "error", err)
-		return worktrees.New(p, nil)
-	}
-	return worktrees.New(p, globalCfg.WorktreeRoots)
-}
-
 // reportUnusableWorktreeRoots names configured placements that will not do
 // what the operator expects. A worktree_roots key is matched against a
 // registered checkout path, so a stale key left behind by a moved or ejected
@@ -636,7 +634,7 @@ func startupWorktreeLayout(p *paths.Paths) *worktrees.Layout {
 // nothing, which has no other symptom than runs continuing to appear under
 // NM_HOME. That is the one placement worth only a log line: a root that does
 // not work at all already refused startup (see
-// assertConfiguredWorktreePlacement and worktrees.Layout.Validate).
+// validatedWorktreeLayout and worktrees.Layout.Validate).
 func reportUnusableWorktreeRoots(d *db.DB, layout *worktrees.Layout) {
 	checkouts := layout.Checkouts()
 	if len(checkouts) == 0 {
