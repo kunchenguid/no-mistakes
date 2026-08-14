@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.51.1](https://github.com/kunchenguid/no-mistakes/compare/v1.51.0...v1.51.1) (2026-08-14)
+
+
+### Bug Fixes
+
+* **daemon:** move test evidence out of system temp storage ([#735](https://github.com/kunchenguid/no-mistakes/issues/735)) ([2498e75](https://github.com/kunchenguid/no-mistakes/commit/2498e75f6a075efc710b2cda18333a3a69986c7c))
+
 ## [1.51.0](https://github.com/kunchenguid/no-mistakes/compare/v1.50.0...v1.51.0) (2026-08-14)
 
 
