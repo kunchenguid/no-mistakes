@@ -56,9 +56,13 @@ func TestTerminateShellCommandGroup_AsksBeforeKilling(t *testing.T) {
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "grandchild.pid")
 	termFile := filepath.Join(dir, "grandchild.term")
+	readyFile := filepath.Join(dir, "grandchild.ready")
 
-	script := "( trap 'echo terminated > " + termFile + "; exit 0' TERM; while :; do sleep 0.1; done ) >/dev/null 2>&1 & " +
-		"echo $! > " + pidFile + "; exit 0"
+	// Do not let the leader exit until the grandchild has installed its trap.
+	// A PID file only proves that the shell forked: SIGTERM can otherwise land
+	// before the child executes trap, making the default action kill it.
+	script := "( trap 'echo terminated > " + termFile + "; exit 0' TERM; echo ready > " + readyFile + "; while :; do sleep 0.1; done ) >/dev/null 2>&1 & " +
+		"echo $! > " + pidFile + "; while [ ! -f " + readyFile + " ]; do sleep 0.01; done; exit 0"
 	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", script)
 	ConfigureShellCommand(cmd)
 	if err := cmd.Run(); err != nil {
