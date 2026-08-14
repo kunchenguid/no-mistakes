@@ -205,21 +205,26 @@ func checkoutClaimingWorktreeRoot(p *paths.Paths, checkout, root string) (string
 // What it prints is whatever edit leaves the config loadable, because YAML
 // rejects a duplicate key at either level and a config that no longer loads is a
 // daemon that refuses to start - every command runs EnsureDaemon, so the
-// operator's whole CLI goes with it. Three edits, three shapes:
+// operator's whole CLI goes with it. Four edits, four shapes:
 //
-//   - This checkout already has a DIFFERENT root: its key is already in the
-//     block, so the edit is to replace that entry's value. Adding a second
-//     `<checkout>:` under the same block is the duplicate-key failure one level
-//     down from a second `worktree_roots:`. Both lines are printed as the config
-//     spells them, so the operator can find the one to replace.
-//   - The block exists but not this checkout: only the entry line, to add under
-//     the existing key.
-//   - No block: the key and the entry.
+//   - No key: the key and the entry.
+//   - The key is there but nothing can be added under it - `worktree_roots: {}`,
+//     `worktree_roots: {a: b}`, or a valueless `worktree_roots:`: the whole key
+//     is replaced by the block form, carrying the entries it already had. An
+//     indented entry line after a flow mapping is not part of that mapping at
+//     all; YAML rejects the document.
+//   - A block, and this checkout already has a DIFFERENT root: its key is
+//     already in the block, so the edit is to replace that entry's value. Adding
+//     a second `<checkout>:` under the same block is the duplicate-key failure
+//     one level down from a second `worktree_roots:`. Both lines are printed as
+//     the config spells them, so the operator can find the one to replace.
+//   - A block without this checkout: only the entry line, to add under the
+//     existing key.
 //
-// Block presence is a question about the document, not about the entries it
-// parsed to (see config.GlobalConfigHasKey): a key with no value and a key set to
-// {} both parse to nothing, and telling the operator to add a second one is the
-// failure that branch exists to avoid.
+// Which of those applies is a question about the document rather than about the
+// entries it parsed to (see config.InspectGlobalConfigMapping): a key with no
+// value and a key set to {} both parse to nothing, so the parsed configuration
+// cannot tell them from an absent key, nor a block mapping from a flow one.
 func printWorktreeRootGuidance(w io.Writer, p *paths.Paths, workingPath, root string) {
 	configuredKey, configuredRoot, configured := "", "", false
 	if cfg, err := config.LoadGlobal(p.ConfigFile()); err == nil {
@@ -231,22 +236,52 @@ func printWorktreeRootGuidance(w io.Writer, p *paths.Paths, workingPath, root st
 	}
 	fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  runs"), root)
 	fmt.Fprintln(w)
-	if configured {
+
+	shape := config.InspectGlobalConfigMapping(p.ConfigFile(), "worktree_roots")
+	entry := "  " + workingPath + ": " + root
+	switch {
+	case !shape.Present:
+		fmt.Fprintf(w, "  %s\n", sDim.Render("Add this to "+p.ConfigFile()+" so runs are created there:"))
+		fmt.Fprintf(w, "  %s\n", sBold.Render("worktree_roots:"))
+		fmt.Fprintf(w, "  %s\n", sBold.Render(entry))
+	case !shape.AppendableBlock:
+		printWorktreeRootsBlockReplacement(w, p, shape, workingPath, configuredKey, root)
+	case configured:
 		fmt.Fprintf(w, "  %s\n", sDim.Render("Replace this line in "+p.ConfigFile()+" so runs are created there:"))
 		fmt.Fprintf(w, "  %s\n", sBold.Render("  "+configuredKey+": "+configuredRoot))
 		fmt.Fprintf(w, "  %s\n", sDim.Render("with:"))
 		fmt.Fprintf(w, "  %s\n", sBold.Render("  "+configuredKey+": "+root))
-		return
-	}
-	entry := "  " + workingPath + ": " + root
-	if config.GlobalConfigHasKey(p.ConfigFile(), "worktree_roots") {
+	default:
 		fmt.Fprintf(w, "  %s\n", sDim.Render("Add this under the existing worktree_roots: in "+p.ConfigFile()+" so runs are created there:"))
 		fmt.Fprintf(w, "  %s\n", sBold.Render(entry))
-		return
 	}
-	fmt.Fprintf(w, "  %s\n", sDim.Render("Add this to "+p.ConfigFile()+" so runs are created there:"))
+}
+
+// printWorktreeRootsBlockReplacement prints the block form of the whole
+// worktree_roots key, which is the only edit that works when nothing can be
+// added under the key as written. It carries every entry the operator already
+// has, either re-pointing this checkout's or adding one for it.
+func printWorktreeRootsBlockReplacement(w io.Writer, p *paths.Paths, shape config.GlobalConfigMapping, workingPath, configuredKey, root string) {
+	if shape.Line != "" {
+		fmt.Fprintf(w, "  %s\n", sDim.Render("Replace this line in "+p.ConfigFile()+" so runs are created there:"))
+		fmt.Fprintf(w, "  %s\n", sBold.Render(shape.Line))
+		fmt.Fprintf(w, "  %s\n", sDim.Render("with:"))
+	} else {
+		fmt.Fprintf(w, "  %s\n", sDim.Render("Replace the worktree_roots: entry in "+p.ConfigFile()+" so runs are created there:"))
+	}
 	fmt.Fprintf(w, "  %s\n", sBold.Render("worktree_roots:"))
-	fmt.Fprintf(w, "  %s\n", sBold.Render(entry))
+	repointed := false
+	for _, existing := range shape.Entries {
+		value := existing.Value
+		if configuredKey != "" && existing.Key == configuredKey {
+			value = root
+			repointed = true
+		}
+		fmt.Fprintf(w, "  %s\n", sBold.Render("  "+existing.Key+": "+value))
+	}
+	if !repointed {
+		fmt.Fprintf(w, "  %s\n", sBold.Render("  "+workingPath+": "+root))
+	}
 }
 
 // configuredWorktreeRootEntry returns the worktree_roots entry that places this

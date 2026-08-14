@@ -81,7 +81,6 @@ func (d *DB) InsertRepoWithFork(workingPath, upstreamURL, forkURL, defaultBranch
 	return r, nil
 }
 
-// GetRepos returns every authoritative repository record ordered by ID.
 // RepoWorkingPaths returns the working path of every registered repository.
 //
 // It is the set of checkouts a run worktree placement must stay out of (see
@@ -110,6 +109,7 @@ func (d *DB) RepoWorkingPaths() ([]string, error) {
 	return paths, nil
 }
 
+// GetRepos returns every authoritative repository record ordered by ID.
 func (d *DB) GetRepos() ([]*Repo, error) {
 	rows, err := d.sql.Query(
 		`SELECT id, working_path, upstream_url, COALESCE(fork_url, ''), default_branch, created_at FROM repos ORDER BY id`,

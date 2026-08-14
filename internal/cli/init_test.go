@@ -366,53 +366,137 @@ func TestPrintWorktreeRootGuidanceNamesTheEntryAsTheConfigSpellsIt(t *testing.T)
 	}
 }
 
-// TestPrintWorktreeRootGuidanceMergesIntoAnEmptyBlock covers the block shapes
-// that parse to no entries at all: `worktree_roots:` with nothing after it, and
-// `worktree_roots: {}`. The key is there, so telling the operator to add another
-// one produces the duplicate top-level key that stops the daemon - and the
-// parsed configuration cannot tell these apart from an absent key, which is why
-// presence is read from the document.
-func TestPrintWorktreeRootGuidanceMergesIntoAnEmptyBlock(t *testing.T) {
+// TestPrintWorktreeRootGuidanceReplacesAKeyWithNoBlockToAddTo covers the shapes
+// that have the key but no block mapping to add an entry to: `worktree_roots: {}`,
+// an inline `worktree_roots: {<checkout>: <root>}`, and `worktree_roots:` with
+// nothing after it. An indented entry line after a flow mapping is not part of it,
+// and YAML rejects the whole document - the daemon then refuses to start and every
+// command goes with it, which is the same outcome as the duplicate key one shape
+// over. So the edit is to replace that line with the block form, and this asserts
+// that following the guidance literally produces a config that loads and places
+// every repository the old one did.
+func TestPrintWorktreeRootGuidanceReplacesAKeyWithNoBlockToAddTo(t *testing.T) {
 	dir := t.TempDir()
 	checkout := filepath.Join(dir, "src", "repo1")
 	root := filepath.Join(dir, "work", "repo1-runs")
-	entry := "  " + checkout + ": " + root
+	otherCheckout := filepath.Join(dir, "src", "repo2")
+	otherRoot := filepath.Join(dir, "work", "repo2-runs")
 
-	for name, block := range map[string]string{
-		"a key with no value":       "worktree_roots:\n",
-		"a key set to an empty map": "worktree_roots: {}\n",
+	for name, tc := range map[string]struct {
+		document string
+		placed   map[string]string
+	}{
+		"a key set to an empty map": {
+			document: "worktree_roots: {}\n",
+			placed:   map[string]string{checkout: root},
+		},
+		"a key with no value": {
+			document: "worktree_roots:\n",
+			placed:   map[string]string{checkout: root},
+		},
+		"an inline mapping another checkout uses": {
+			document: "worktree_roots: {" + otherCheckout + ": " + otherRoot + "}\n",
+			placed:   map[string]string{checkout: root, otherCheckout: otherRoot},
+		},
 	} {
 		p := paths.WithRoot(t.TempDir())
 		if err := p.EnsureDirs(); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(p.ConfigFile(), []byte(block), 0o644); err != nil {
+		if err := os.WriteFile(p.ConfigFile(), []byte(tc.document), 0o644); err != nil {
 			t.Fatal(err)
 		}
 
 		var out bytes.Buffer
 		printWorktreeRootGuidance(&out, p, checkout, root)
-
 		got := out.String()
-		if !containsYAMLLine(got, strings.TrimSpace(entry)) {
-			t.Errorf("%s: guidance missing the entry %q, got:\n%s", name, entry, got)
+
+		// The line to replace is named as the file spells it.
+		if !containsYAMLLine(got, strings.TrimSpace(tc.document)) {
+			t.Errorf("%s: guidance does not name the line to replace, got:\n%s", name, got)
 		}
-		if containsYAMLLine(got, "worktree_roots:") {
-			t.Errorf("%s: guidance repeats the key that already exists, got:\n%s", name, got)
+
+		// Following it produces a config that loads and places everything.
+		pasted := pastedWorktreeRootsBlock(t, got)
+		cfg, err := config.LoadGlobal(writeConfig(t, p, pasted))
+		if err != nil {
+			t.Errorf("%s: config built by following the guidance does not load: %v\npasted:\n%s", name, err, pasted)
+			continue
 		}
+		layout := worktrees.New(p, cfg.WorktreeRoots)
+		for checkoutPath, wantRoot := range tc.placed {
+			if configured, ok := layout.CustomRoot(checkoutPath); !ok || configured != wantRoot {
+				t.Errorf("%s: config places %q at (%q, %v), want %q\npasted:\n%s", name, checkoutPath, configured, ok, wantRoot, pasted)
+			}
+		}
+
+		// ... and adding an entry under the key as written is why it must be a
+		// replacement.
+		appended := tc.document + "  " + checkout + ": " + root + "\n"
+		if _, err := config.LoadGlobal(writeConfig(t, p, appended)); err == nil && strings.Contains(tc.document, "{") {
+			t.Errorf("%s: appending under a flow mapping loaded; the guidance's shape would then be a matter of taste", name)
+		}
+	}
+}
+
+// TestPrintWorktreeRootGuidanceRepointsAnInlineEntry is re-pointing a checkout
+// whose entry lives in a flow mapping: naming its ` <checkout>: <root>` line
+// would name a line the file does not contain, so the whole key is replaced with
+// the block form carrying the new value.
+func TestPrintWorktreeRootGuidanceRepointsAnInlineEntry(t *testing.T) {
+	dir := t.TempDir()
+	checkout := filepath.Join(dir, "src", "repo1")
+	oldRoot := filepath.Join(dir, "work", "repo1-runs")
+	newRoot := filepath.Join(dir, "work", "repo1-runs-v2")
+	document := "worktree_roots: {" + checkout + ": " + oldRoot + "}\n"
+
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.ConfigFile(), []byte(document), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	// For the block form, the merge the guidance describes must load and place
-	// the repository.
-	merged := "worktree_roots:\n" + entry + "\n"
-	p := paths.WithRoot(t.TempDir())
-	cfg, err := config.LoadGlobal(writeConfig(t, p, merged))
+	var out bytes.Buffer
+	printWorktreeRootGuidance(&out, p, checkout, newRoot)
+	got := out.String()
+
+	if !containsYAMLLine(got, strings.TrimSpace(document)) {
+		t.Errorf("guidance does not name the line the config contains, got:\n%s", got)
+	}
+	pasted := pastedWorktreeRootsBlock(t, got)
+	cfg, err := config.LoadGlobal(writeConfig(t, p, pasted))
 	if err != nil {
-		t.Fatalf("config built by following the guidance does not load: %v", err)
+		t.Fatalf("config built by following the guidance does not load: %v\npasted:\n%s", err, pasted)
 	}
-	if configured, ok := worktrees.New(p, cfg.WorktreeRoots).CustomRoot(checkout); !ok || configured != root {
-		t.Errorf("merged config places %q at (%q, %v), want %q", checkout, configured, ok, root)
+	if configured, ok := worktrees.New(p, cfg.WorktreeRoots).CustomRoot(checkout); !ok || configured != newRoot {
+		t.Errorf("config places %q at (%q, %v), want %q\npasted:\n%s", checkout, configured, ok, newRoot, pasted)
 	}
+	if containsYAMLLine(pasted, checkout+": "+oldRoot) {
+		t.Errorf("the replacement still carries the old entry, so the checkout would have two:\n%s", pasted)
+	}
+}
+
+// pastedWorktreeRootsBlock is the YAML an operator would paste from the guidance:
+// the block it prints, from its `worktree_roots:` line to the end of the output,
+// with the terminal styling and the display margin removed.
+func pastedWorktreeRootsBlock(t *testing.T, rendered string) string {
+	t.Helper()
+	var block []string
+	for _, raw := range strings.Split(ansiEscape.ReplaceAllString(rendered, ""), "\n") {
+		line := strings.TrimPrefix(raw, "  ")
+		switch {
+		case strings.TrimSpace(line) == "worktree_roots:":
+			block = []string{line}
+		case len(block) > 0 && strings.TrimSpace(line) != "":
+			block = append(block, line)
+		}
+	}
+	if len(block) < 2 {
+		t.Fatalf("guidance printed no worktree_roots block to paste:\n%s", rendered)
+	}
+	return strings.Join(block, "\n") + "\n"
 }
 
 // containsYAMLLine reports whether the rendered guidance carries want as a line

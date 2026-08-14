@@ -12,7 +12,7 @@
 // placement is decided in exactly one place.
 //
 // The package sits below internal/config, which validates worktree_roots (see
-// ValidateRoots there) before any layout is built from it.
+// ValidateWorktreeRoots there) before any layout is built from it.
 package worktrees
 
 import (

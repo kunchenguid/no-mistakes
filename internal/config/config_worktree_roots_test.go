@@ -169,12 +169,12 @@ func TestLoadGlobal_RejectsMisspelledWorktreeRootsKey(t *testing.T) {
 	}
 }
 
-// GlobalConfigHasKey answers a question the parsed configuration cannot: whether
-// the document already carries a top-level key. Both empty forms of a key parse
-// to nothing, so a caller that must not write a second one - YAML rejects a
-// duplicate top-level key, and the daemon then refuses to start - has to ask the
-// document.
-func TestGlobalConfigHasKey(t *testing.T) {
+// InspectGlobalConfigMapping answers questions the parsed configuration cannot:
+// whether the document already carries a top-level key, and whether an entry can
+// be added under it. Both empty forms of a key parse to nothing, so a caller that
+// must not write a second one - YAML rejects a duplicate top-level key, and the
+// daemon then refuses to start - has to ask the document.
+func TestInspectGlobalConfigMappingPresence(t *testing.T) {
 	present := map[string]string{
 		"an entry":                    "worktree_roots:\n  " + yamlPath(filepath.Join(string(filepath.Separator), "src", "repo")) + ": " + yamlPath(filepath.Join(string(filepath.Separator), "work", "runs")) + "\n",
 		"a key with no value":         "worktree_roots:\n",
@@ -187,7 +187,7 @@ func TestGlobalConfigHasKey(t *testing.T) {
 		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if !GlobalConfigHasKey(path, "worktree_roots") {
+		if !InspectGlobalConfigMapping(path, "worktree_roots").Present {
 			t.Errorf("%s: reported absent, want present", name)
 		}
 	}
@@ -204,18 +204,18 @@ func TestGlobalConfigHasKey(t *testing.T) {
 		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if GlobalConfigHasKey(path, "worktree_roots") {
+		if InspectGlobalConfigMapping(path, "worktree_roots").Present {
 			t.Errorf("%s: reported present, want absent", name)
 		}
 	}
 
-	if GlobalConfigHasKey(filepath.Join(t.TempDir(), "missing.yaml"), "worktree_roots") {
+	if InspectGlobalConfigMapping(filepath.Join(t.TempDir(), "missing.yaml"), "worktree_roots").Present {
 		t.Error("a config that does not exist reported the key as present")
 	}
 }
 
 // The empty forms are exactly the ones the parsed value cannot distinguish from
-// an absent key, which is why GlobalConfigHasKey exists.
+// an absent key, which is why InspectGlobalConfigMapping reads the document.
 func TestEmptyWorktreeRootsFormsParseToNoEntries(t *testing.T) {
 	for name, contents := range map[string]string{
 		"a key with no value":       "worktree_roots:\n",
@@ -227,6 +227,84 @@ func TestEmptyWorktreeRootsFormsParseToNoEntries(t *testing.T) {
 		}
 		if len(cfg.WorktreeRoots) != 0 {
 			t.Errorf("%s: parsed %d entries, want none", name, len(cfg.WorktreeRoots))
+		}
+	}
+}
+
+// TestInspectGlobalConfigMappingReportsWhatCanBeAppended pins the shape half of
+// the inspection against the YAML a caller has to produce. AppendableBlock says
+// the value is a block mapping one more entry line can go into; after a flow
+// mapping it cannot, and the document then stops loading at all - a daemon that
+// refuses to start. Every appendable claim is checked with the loader, because a
+// wrong one is exactly that failure.
+func TestInspectGlobalConfigMappingReportsWhatCanBeAppended(t *testing.T) {
+	checkout := yamlPath(filepath.Join(string(filepath.Separator), "src", "repo"))
+	root := yamlPath(filepath.Join(string(filepath.Separator), "work", "runs"))
+	entry := "  " + checkout + ": " + root + "\n"
+
+	for name, tc := range map[string]struct {
+		contents        string
+		appendableBlock bool
+		appendLoads     bool
+		line            string
+		entries         []GlobalConfigMappingEntry
+	}{
+		"a block mapping": {
+			contents:        "worktree_roots:\n  /src/other: /work/other-runs\n",
+			appendableBlock: true,
+			appendLoads:     true,
+			entries:         []GlobalConfigMappingEntry{{Key: "/src/other", Value: "/work/other-runs"}},
+		},
+		"an empty flow mapping": {
+			contents: "worktree_roots: {}\n",
+			line:     "worktree_roots: {}",
+		},
+		"a flow mapping with an entry": {
+			contents: "worktree_roots: {/src/other: /work/other-runs}\n",
+			line:     "worktree_roots: {/src/other: /work/other-runs}",
+			entries:  []GlobalConfigMappingEntry{{Key: "/src/other", Value: "/work/other-runs"}},
+		},
+		// A valueless key has no block to append into either, so it is reported
+		// with the flow shapes and takes the same replacement; appending happens
+		// to parse, which is why the field is about the document rather than
+		// about what YAML tolerates.
+		"a key with no value": {
+			contents:    "worktree_roots:\n",
+			appendLoads: true,
+			line:        "worktree_roots:",
+		},
+	} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(tc.contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got := InspectGlobalConfigMapping(path, "worktree_roots")
+		if !got.Present {
+			t.Fatalf("%s: reported absent", name)
+		}
+		if got.AppendableBlock != tc.appendableBlock {
+			t.Errorf("%s: AppendableBlock = %v, want %v", name, got.AppendableBlock, tc.appendableBlock)
+		}
+		if got.Line != tc.line {
+			t.Errorf("%s: Line = %q, want %q", name, got.Line, tc.line)
+		}
+		if len(got.Entries) != len(tc.entries) {
+			t.Fatalf("%s: Entries = %+v, want %+v", name, got.Entries, tc.entries)
+		}
+		for i, want := range tc.entries {
+			if got.Entries[i] != want {
+				t.Errorf("%s: Entries[%d] = %+v, want %+v", name, i, got.Entries[i], want)
+			}
+		}
+
+		// An appendable claim has to hold against the loader, and a flow mapping
+		// has to be the failure it is reported as.
+		_, err := LoadGlobalFromBytes([]byte(tc.contents + entry))
+		if tc.appendableBlock && err != nil {
+			t.Errorf("%s: reported appendable, but appending an entry does not load: %v", name, err)
+		}
+		if !tc.appendLoads && err == nil {
+			t.Errorf("%s: appending an entry loads, so this document needs no replacement", name)
 		}
 	}
 }

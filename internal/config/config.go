@@ -1324,43 +1324,113 @@ func DefaultGlobalConfig() *GlobalConfig {
 	}
 }
 
-// GlobalConfigHasKey reports whether the global config document at path already
-// has the given top-level key, whatever its value: `key:` with nothing after it
-// and `key: {}` both count as present.
+// GlobalConfigMappingEntry is one entry of a top-level mapping, spelled the way
+// the document spells it.
+type GlobalConfigMappingEntry struct {
+	Key   string
+	Value string
+}
+
+// GlobalConfigMapping describes how a top-level mapping key is written in the
+// global config document. It is what decides which edit an operator can be told
+// to make, and every field answers a question the parsed configuration cannot.
 //
-// The parsed configuration cannot answer this. Both of those forms decode to a
-// map of length zero, exactly like an absent key - so anything that must not
-// duplicate a top-level key has to ask the document instead. YAML rejects a
-// duplicate top-level key outright, which would leave the operator with a
-// configuration that no longer loads at all.
+// Presence: `key:` with nothing after it and `key: {}` both decode to a map of
+// length zero, exactly like an absent key, so anything that must not duplicate a
+// top-level key has to ask the document. YAML rejects a duplicate top-level key
+// outright, leaving a configuration that no longer loads.
 //
-// It answers from the document, and never fails: a missing or unreadable file has
-// no key, and a file this package cannot parse is scanned for the key written at
-// the start of a line, which is where a top-level key is. The operator has to fix
-// an unparseable configuration either way; the point here is to not tell them to
-// add a key that is already there.
-func GlobalConfigHasKey(path, key string) bool {
+// Shape: an entry line can be added under a key only when its value is a BLOCK
+// mapping. After `key: {}` or `key: {a: b}` an indented entry line is not a
+// continuation of the mapping at all - YAML rejects the document with "did not
+// find expected key" - and after a valueless `key:` the safe edit is the same
+// replacement, so both are reported as not appendable.
+type GlobalConfigMapping struct {
+	// Present reports that the key is in the document, whatever its value.
+	Present bool
+
+	// AppendableBlock reports that one more indented entry line under the key is
+	// a valid edit.
+	AppendableBlock bool
+
+	// Line is the document line that spells the key, as written, so guidance can
+	// name the line to replace. Empty when the key's value spans further lines.
+	Line string
+
+	// Entries are the key's entries in document order, so a replacement can
+	// carry the ones the operator already has.
+	Entries []GlobalConfigMappingEntry
+}
+
+// InspectGlobalConfigMapping describes the top-level key in the global config
+// document at path.
+//
+// It never fails: a missing or unreadable file has no key, and a file this
+// package cannot parse is scanned for the key written at the start of a line,
+// which is where a top-level key is - reported as present but not appendable, so
+// guidance falls back to naming the whole replacement. The operator has to fix an
+// unparseable configuration either way; the point here is to not hand them an
+// edit that breaks a document that still loads.
+func InspectGlobalConfigMapping(path, key string) GlobalConfigMapping {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return false
+		return GlobalConfigMapping{}
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return hasTopLevelKeyLine(data, key)
+		return GlobalConfigMapping{Present: hasTopLevelKeyLine(data, key)}
 	}
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		return false
+		return GlobalConfigMapping{}
 	}
 	mapping := doc.Content[0]
 	if mapping.Kind != yaml.MappingNode {
-		return false
+		return GlobalConfigMapping{}
 	}
 	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		if mapping.Content[i].Value == key {
-			return true
+		keyNode, value := mapping.Content[i], mapping.Content[i+1]
+		if keyNode.Value != key {
+			continue
+		}
+		found := GlobalConfigMapping{Present: true}
+		if value.Kind == yaml.MappingNode {
+			found.AppendableBlock = value.Style&yaml.FlowStyle == 0
+			for j := 0; j+1 < len(value.Content); j += 2 {
+				found.Entries = append(found.Entries, GlobalConfigMappingEntry{
+					Key:   value.Content[j].Value,
+					Value: value.Content[j+1].Value,
+				})
+			}
+		}
+		if !found.AppendableBlock {
+			found.Line = documentLine(data, keyNode, value)
+		}
+		return found
+	}
+	return GlobalConfigMapping{}
+}
+
+// documentLine returns the single line that holds the key and its whole value,
+// empty when the value continues past it and no one line can be named.
+func documentLine(data []byte, keyNode, value *yaml.Node) string {
+	if lastNodeLine(value) != keyNode.Line {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	if keyNode.Line < 1 || keyNode.Line > len(lines) {
+		return ""
+	}
+	return strings.TrimRight(lines[keyNode.Line-1], " \t\r")
+}
+
+func lastNodeLine(n *yaml.Node) int {
+	last := n.Line
+	for _, child := range n.Content {
+		if line := lastNodeLine(child); line > last {
+			last = line
 		}
 	}
-	return false
+	return last
 }
 
 // hasTopLevelKeyLine is the fallback for a document YAML cannot parse: a
