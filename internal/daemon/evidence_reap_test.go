@@ -1,14 +1,17 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -345,5 +348,51 @@ func TestRunCleanupIsSafeWithoutConfigAndForUnknownRuns(t *testing.T) {
 
 	if !f.exists(kept) {
 		t.Error("cleanup with no config removed a run's evidence artifacts")
+	}
+}
+
+// recoveredRunTestAgent is the minimum an agent must be for a recovered run to
+// reach its completion boundary; nothing in this test invokes it.
+type recoveredRunTestAgent struct{}
+
+func (recoveredRunTestAgent) Name() string { return "test" }
+func (recoveredRunTestAgent) Run(context.Context, agent.RunOpts) (*agent.Result, error) {
+	return &agent.Result{}, nil
+}
+func (recoveredRunTestAgent) Close() error { return nil }
+
+// TestRecoveredRunCleanupRemovesItsEmptyEvidenceDir covers the OTHER completion
+// boundary. A run parked at an approval gate when the daemon stopped is resumed
+// by resumeRecoveredRun, which finishes through its own defer rather than the
+// fresh-run one - so evidence ownership is only true "after each run" if both
+// paths clean up. Every outcome of a resumed run shares that defer, which is why
+// asserting on the boundary is enough here: the run below is rejected early by
+// Resume, and its evidence directory must still be gone afterwards.
+func TestRecoveredRunCleanupRemovesItsEmptyEvidenceDir(t *testing.T) {
+	f := newEvidenceFixture(t)
+	m := NewRunManager(f.db, f.p, func() []pipeline.Step { return nil })
+
+	runID := f.seed("recovered", types.RunRunning, time.Minute, nil)
+	run, err := f.db.GetRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !f.exists(runID) {
+		t.Fatal("fixture did not create the run's evidence directory")
+	}
+
+	m.resumeRecoveredRun(recoveredRunPlan{
+		run:     run,
+		repo:    f.repo,
+		workDir: t.TempDir(),
+		gateDir: t.TempDir(),
+		cfg:     config.Merge(config.DefaultGlobalConfig(), &config.RepoConfig{}),
+		agent:   recoveredRunTestAgent{},
+	})
+	m.wg.Wait()
+
+	if f.exists(runID) {
+		t.Error("a resumed run left its empty evidence directory behind")
 	}
 }

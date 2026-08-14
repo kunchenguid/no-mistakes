@@ -340,6 +340,11 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
 				slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
 			}
+			// A recovered run is a finished run too. This is the second of the
+			// two completion boundaries, and leaving it out is what let a run
+			// resumed after a daemon restart keep its empty evidence directory
+			// until some later run or restart happened to sweep it.
+			m.cleanupRunEvidence(plan.cfg, plan.run.ID)
 			m.mu.Lock()
 			delete(m.executors, plan.run.ID)
 			delete(m.cancels, plan.run.ID)
