@@ -33,11 +33,11 @@
 //     started moments ago is never mistaken for a leak.
 //   - SIGTERM first; SIGKILL only for what is still alive after Options.Grace.
 //
-// A process whose cwd is outside the worktree roots (<NM_HOME>/worktrees plus
-// any per-repository root the operator configured, see Options.RootOwners) can
-// never match, which is what keeps long-lived unrelated daemons (a user's
-// LaunchAgent worker, an editor, another tool's background job) out of reach
-// by construction rather than by name-based allowlisting.
+// A process whose cwd is outside <NM_HOME>/worktrees and outside the run
+// worktrees the caller names explicitly (Options.Worktrees) can never match,
+// which is what keeps long-lived unrelated daemons (a user's LaunchAgent
+// worker, an editor, another tool's background job) out of reach by
+// construction rather than by name-based allowlisting.
 package procreap
 
 import (
@@ -47,8 +47,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 const (
@@ -80,22 +78,36 @@ type Victim struct {
 	Killed   bool // true when SIGTERM was not enough and SIGKILL was needed
 }
 
+// Worktree is one run worktree named by the record of the run that created it.
+type Worktree struct {
+	Dir    string
+	RepoID string
+	RunID  string
+}
+
 // Options configures a sweep.
 type Options struct {
 	// WorktreesRoot is <NM_HOME>/worktrees. Required.
 	WorktreesRoot string
 
-	// RootOwners are the operator-configured per-repository worktree roots
-	// (worktree_roots in the global config). The direction is root directory
-	// to owning repository ID, because a sweep starts from a process's cwd and
-	// needs the repository the path no longer spells out. They differ from
-	// WorktreesRoot in two ways: a run directory sits directly below them,
-	// with no repository level in between, and they are directories the
-	// operator also keeps their own files in - so only a child whose name is a
-	// run ID is ever a candidate, and nothing else standing there is ever
-	// signalled. Each root belongs to exactly one repository; the config
-	// rejects two checkouts sharing one.
-	RootOwners map[string]string
+	// Worktrees are run worktrees that do not live under WorktreesRoot,
+	// because the operator placed that repository's runs in a directory of
+	// their own (worktree_roots in the global config). Each entry must come
+	// from the record of the run that created it, and only that directory and
+	// its subdirectories are then in reach.
+	//
+	// Reach there cannot be a path shape the way it is under WorktreesRoot,
+	// which this process owns outright: the operator keeps their own files,
+	// scratch checkouts, and another tool's leftovers next to our run
+	// worktrees, and a directory whose name merely looks like a run ID is not
+	// evidence that a run created it. Naming the worktrees explicitly is what
+	// makes an unclaimed directory there unmatchable, and therefore
+	// unsignallable, by construction.
+	//
+	// An entry missing its directory, repository, or run is dropped rather
+	// than matched: without a run identity the caller's RunActive check cannot
+	// be applied to it.
+	Worktrees []Worktree
 
 	// Scope, when set, restricts the sweep to exactly this worktree directory
 	// and to its subdirectories. The caller that sets it owns that run and has
@@ -130,7 +142,7 @@ var (
 // error is the normal outcome and also what platforms without a process-table
 // reader (Windows, where job objects already contain the whole tree) return.
 func Sweep(opts Options) ([]Victim, error) {
-	if strings.TrimSpace(opts.WorktreesRoot) == "" && len(opts.RootOwners) == 0 {
+	if strings.TrimSpace(opts.WorktreesRoot) == "" && len(opts.Worktrees) == 0 {
 		return nil, nil
 	}
 	procs, err := listProcessesFunc()
@@ -162,12 +174,12 @@ func Sweep(opts Options) ([]Victim, error) {
 	}
 
 	cwds := processCWDsFunc(candidates)
-	roots := worktreeRoots(opts)
+	matchers := worktreeMatchers(opts)
 	scopes := pathPrefixes(opts.Scope)
 
 	matched := make(map[int]string)
 	for pid, cwd := range cwds {
-		dir, repoID, runID, ok := worktreeRef(roots, cwd)
+		dir, repoID, runID, ok := worktreeRef(matchers, cwd)
 		if !ok {
 			continue
 		}
@@ -240,56 +252,62 @@ func pathPrefixes(dir string) []string {
 	return out
 }
 
-// worktreeRoot is one directory below which run worktrees are found. The
-// default root holds a repository level above the run directories; a
-// configured per-repository root (Options.RootOwners) holds them directly and
-// carries the repository identity the path no longer spells out.
-type worktreeRoot struct {
+// worktreeMatcher is one directory a process's cwd may sit in or under for it
+// to belong to a run worktree. A named matcher is one worktree the caller
+// identified outright (Options.Worktrees); an unnamed one is the default
+// worktrees root, which holds a repository level above the run directories and
+// therefore spells the identity out in the path itself.
+type worktreeMatcher struct {
 	prefix string
+	named  bool
 	repoID string
+	runID  string
 }
 
-// worktreeRoots returns every comparable root prefix a cwd may sit under.
-func worktreeRoots(opts Options) []worktreeRoot {
-	var roots []worktreeRoot
+// worktreeMatchers returns every comparable directory prefix a cwd may sit
+// under, in both spellings a path can have (see pathPrefixes).
+func worktreeMatchers(opts Options) []worktreeMatcher {
+	var out []worktreeMatcher
 	for _, prefix := range pathPrefixes(opts.WorktreesRoot) {
-		roots = append(roots, worktreeRoot{prefix: prefix})
+		out = append(out, worktreeMatcher{prefix: prefix})
 	}
-	for dir, repoID := range opts.RootOwners {
-		for _, prefix := range pathPrefixes(dir) {
-			roots = append(roots, worktreeRoot{prefix: prefix, repoID: repoID})
+	for _, wt := range opts.Worktrees {
+		if strings.TrimSpace(wt.Dir) == "" || strings.TrimSpace(wt.RepoID) == "" || strings.TrimSpace(wt.RunID) == "" {
+			continue
+		}
+		for _, prefix := range pathPrefixes(wt.Dir) {
+			out = append(out, worktreeMatcher{prefix: prefix, named: true, repoID: wt.RepoID, runID: wt.RunID})
 		}
 	}
-	return roots
+	return out
 }
 
-// worktreeRef reports the run worktree that path sits in. Under the default
-// root it requires at least <root>/<repoID>/<runID>, so a process standing in
-// the worktrees root itself, or in a repo directory with no run below it,
-// never matches. Under a configured per-repository root it requires
-// <root>/<runID> and the name must actually be a run ID, so a process standing
-// in the operator's own directory next to our run worktrees never matches.
-func worktreeRef(roots []worktreeRoot, path string) (dir, repoID, runID string, ok bool) {
+// worktreeRef reports the run worktree that path sits in. A named worktree
+// matches that directory and anything below it, and carries the identity the
+// path no longer spells out. Under the default worktrees root the path must
+// reach at least <root>/<repoID>/<runID>, so a process standing in the root
+// itself, or in a repository directory with no run below it, never matches.
+func worktreeRef(matchers []worktreeMatcher, path string) (dir, repoID, runID string, ok bool) {
 	if path == "" {
 		return "", "", "", false
 	}
 	cleaned := filepath.Clean(path)
-	for _, root := range roots {
-		rel, err := filepath.Rel(root.prefix, cleaned)
-		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+	for _, matcher := range matchers {
+		rel, err := filepath.Rel(matcher.prefix, cleaned)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		if matcher.named {
+			return matcher.prefix, matcher.repoID, matcher.runID, true
+		}
+		if rel == "." {
 			continue
 		}
 		parts := strings.Split(rel, string(filepath.Separator))
-		if root.repoID != "" {
-			if parts[0] == "" || !worktrees.IsRunID(parts[0]) {
-				continue
-			}
-			return filepath.Join(root.prefix, parts[0]), root.repoID, parts[0], true
-		}
 		if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 			continue
 		}
-		return filepath.Join(root.prefix, parts[0], parts[1]), parts[0], parts[1], true
+		return filepath.Join(matcher.prefix, parts[0], parts[1]), parts[0], parts[1], true
 	}
 	return "", "", "", false
 }

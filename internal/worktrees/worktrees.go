@@ -22,7 +22,6 @@ import (
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
-	"github.com/oklog/ulid/v2"
 )
 
 // Layout maps a repository to the directory holding its run worktrees.
@@ -48,15 +47,6 @@ func New(p *paths.Paths, roots map[string]string) *Layout {
 		l.roots[Canonical(checkout)] = filepath.Clean(root)
 	}
 	return l
-}
-
-// RepoDir returns the directory that holds every run worktree of the
-// repository with the given ID, checked out at workingPath.
-func (l *Layout) RepoDir(repoID, workingPath string) string {
-	if root, ok := l.CustomRoot(workingPath); ok {
-		return root
-	}
-	return filepath.Join(l.paths.WorktreesDir(), repoID)
 }
 
 // Dir resolves where a NEW run's worktree belongs. It is the only placement
@@ -128,10 +118,10 @@ func (l *Layout) Validate() error {
 	return nil
 }
 
-// CustomRoot reports the configured worktree root for a checkout, if any.
-// Callers that walk the filesystem need it to tell an operator-owned
-// directory - which holds their own files next to our run worktrees - from
-// the default per-repository directory no-mistakes owns outright.
+// CustomRoot reports the configured worktree root for a checkout, if any. It
+// answers what the configuration currently says, which is what startup
+// reporting and `init --worktree-root` guidance need; where an existing run's
+// worktree is is RecordedDir's question, not this one's.
 func (l *Layout) CustomRoot(workingPath string) (string, bool) {
 	if len(l.roots) == 0 || strings.TrimSpace(workingPath) == "" {
 		return "", false
@@ -149,22 +139,6 @@ func (l *Layout) Checkouts() []string {
 		out = append(out, checkout)
 	}
 	return out
-}
-
-// IsRunID reports whether name is a run identifier. Run IDs are uppercase
-// ULIDs, so a directory entry that is not one was never created by a run.
-// Every walk of a configured worktree root is filtered through this: that root
-// is a directory the operator also keeps their own files in (a
-// mise.local.toml, a scratch checkout), and none of it may be swept, removed,
-// or attributed to a run. Case is part of the test because ULID parsing
-// accepts lowercase, which no ID this daemon ever minted uses - honoring it
-// would only widen what may be deleted.
-func IsRunID(name string) bool {
-	if name != strings.ToUpper(name) {
-		return false
-	}
-	_, err := ulid.ParseStrict(name)
-	return err == nil
 }
 
 // Canonical resolves a path to the form used to compare two spellings of the

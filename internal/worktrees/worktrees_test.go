@@ -18,9 +18,6 @@ func TestLayout_DefaultPlacement(t *testing.T) {
 	if got, want := layout.Dir("repo1", checkout, "run1"), p.WorktreeDir("repo1", "run1"); got != want {
 		t.Errorf("Dir() = %q, want %q", got, want)
 	}
-	if got, want := layout.RepoDir("repo1", checkout), filepath.Join(p.WorktreesDir(), "repo1"); got != want {
-		t.Errorf("RepoDir() = %q, want %q", got, want)
-	}
 	if root, ok := layout.CustomRoot(checkout); ok {
 		t.Errorf("CustomRoot() = %q, true; want no configured root", root)
 	}
@@ -37,9 +34,6 @@ func TestLayout_ConfiguredPlacement(t *testing.T) {
 
 	if got, want := layout.Dir("repo1", checkout, "run1"), filepath.Join(configured, "run1"); got != want {
 		t.Errorf("Dir() = %q, want %q", got, want)
-	}
-	if got, want := layout.RepoDir("repo1", checkout), configured; got != want {
-		t.Errorf("RepoDir() = %q, want %q", got, want)
 	}
 	other := filepath.Join(dir, "src", "repo2")
 	if got, want := layout.Dir("repo2", other, "run2"), p.WorktreeDir("repo2", "run2"); got != want {
@@ -168,24 +162,5 @@ func TestContains(t *testing.T) {
 	sibling := filepath.Join(filepath.Dir(dir), filepath.Base(dir)+"-sibling")
 	if worktrees.Contains(dir, sibling) {
 		t.Errorf("Contains(%q, %q) = true, want false", dir, sibling)
-	}
-}
-
-// Everything walked in an operator-owned root is filtered through IsRunID, so
-// this is the boundary that protects their own files there.
-func TestIsRunID(t *testing.T) {
-	cases := map[string]bool{
-		"01JZ8XQ7V6K9M3B0T5N2R4C8YD": true,
-		"mise.local.toml":            false,
-		"scratch":                    false,
-		"":                           false,
-		".envrc":                     false,
-		"01JZ8XQ7V6K9M3B0T5N2R4C8Y":  false, // one character short of a ULID
-		"01jz8xq7v6k9m3b0t5n2r4c8yd": false, // parses as a ULID, but no ID we mint is lowercase
-	}
-	for name, want := range cases {
-		if got := worktrees.IsRunID(name); got != want {
-			t.Errorf("IsRunID(%q) = %v, want %v", name, got, want)
-		}
 	}
 }

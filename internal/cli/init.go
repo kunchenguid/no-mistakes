@@ -123,6 +123,12 @@ func newInitCmd() *cobra.Command {
 // would put every run worktree inside the repository under validation, and a
 // root inside <NM_HOME>/worktrees is the default placement the flag exists to
 // leave, in a directory no-mistakes cleans by its own rules.
+//
+// Finally it refuses a root another checkout has already claimed. The loader
+// rejects two checkouts sharing one, and the daemon refuses to start on a
+// config it cannot load, so printing that entry would hand the operator a
+// paste that stops the daemon instead of placing anything - the failure belongs
+// here, while they can still pick another directory.
 func resolveWorktreeRoot(p *paths.Paths, workDir, root string) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -139,10 +145,36 @@ func resolveWorktreeRoot(p *paths.Paths, workDir, root string) (string, error) {
 	if worktrees.Contains(p.WorktreesDir(), abs) {
 		return "", fmt.Errorf("init: --worktree-root %s is inside the default worktrees directory %s", abs, p.WorktreesDir())
 	}
-	if gitRoot, err := git.FindMainRepoRoot(workDir); err == nil && worktrees.Contains(gitRoot, abs) {
+	gitRoot, gitRootErr := git.FindMainRepoRoot(workDir)
+	if gitRootErr == nil && worktrees.Contains(gitRoot, abs) {
 		return "", fmt.Errorf("init: --worktree-root %s is inside the repository %s", abs, gitRoot)
 	}
+	if claimant, claimed := checkoutClaimingWorktreeRoot(p, gitRoot, abs); claimed {
+		return "", fmt.Errorf("init: --worktree-root %s is already the worktree root of %s; each checkout needs its own root", abs, claimant)
+	}
 	return abs, nil
+}
+
+// checkoutClaimingWorktreeRoot reports the configured checkout that already
+// places its run worktrees in root, when that checkout is not the one being
+// initialized. An unreadable config yields no claim: the operator has a
+// different problem, and the daemon reports that one on its own.
+func checkoutClaimingWorktreeRoot(p *paths.Paths, checkout, root string) (string, bool) {
+	cfg, err := config.LoadGlobal(p.ConfigFile())
+	if err != nil {
+		return "", false
+	}
+	layout := worktrees.New(p, cfg.WorktreeRoots)
+	self := worktrees.Canonical(checkout)
+	for _, configured := range layout.Checkouts() {
+		if checkout != "" && configured == self {
+			continue
+		}
+		if claimed, ok := layout.CustomRoot(configured); ok && worktrees.Canonical(claimed) == worktrees.Canonical(root) {
+			return configured, true
+		}
+	}
+	return "", false
 }
 
 // printWorktreeRootGuidance reports the worktree_roots entry that places this

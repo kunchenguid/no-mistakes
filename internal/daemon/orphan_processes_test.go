@@ -15,7 +15,6 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
-	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 // TestSweepOrphanRunProcessesReapsFinishedRunAndSparesActiveOne is the daemon
@@ -65,13 +64,88 @@ func TestSweepOrphanRunProcessesReapsFinishedRunAndSparesActiveOne(t *testing.T)
 	activePID := startOrphanInWorktree(t, p.WorktreeDir(repo.ID, activeRun.ID))
 	leakedPID := startOrphanInWorktree(t, p.WorktreeDir(repo.ID, finishedRun.ID))
 
-	sweepOrphanRunProcesses(d, p, worktrees.New(p, nil))
+	sweepOrphanRunProcesses(d, p, recordedWorktreesOutsideDefaultRoot(d, p))
 
 	if !pidGoneWithin(leakedPID, 10*time.Second) {
 		t.Fatalf("orphan %d in the finished run's worktree survived the startup sweep", leakedPID)
 	}
 	if !processIsAlive(activePID) {
 		t.Fatalf("orphan %d in an active run's worktree must not be swept", activePID)
+	}
+}
+
+// TestSweepOrphanRunProcessesReachesRecordedWorktreeAndSparesUnclaimedOnes is
+// the startup sweep in an operator's own directory (worktree_roots). Two
+// properties hold there, and both come from the run records rather than the
+// configuration: a leaked process in a recorded worktree is reaped even after
+// the operator edited that root out of the config - nothing else would ever
+// name that directory again - while a process standing in a directory no run
+// recorded is out of reach, exactly as cleanup refuses to remove one.
+func TestSweepOrphanRunProcessesReachesRecordedWorktreeAndSparesUnclaimedOnes(t *testing.T) {
+	orig := orphanProcessMinAge
+	orphanProcessMinAge = 0
+	t.Cleanup(func() { orphanProcessMinAge = orig })
+
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	repo, err := d.InsertRepoWithID("repo1", filepath.Join(t.TempDir(), "checkout"), "https://example.com/owner/repo1", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	finishedRun, err := d.InsertRun(repo.ID, "old-branch", "headsha", "basesha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeRun, err := d.InsertRun(repo.ID, "feature", "headsha2", "basesha2")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The root lives only on the run records: the config names nothing.
+	abandonedRoot := filepath.Join(t.TempDir(), "former-runs")
+	finishedWT := filepath.Join(abandonedRoot, finishedRun.ID)
+	activeWT := filepath.Join(abandonedRoot, activeRun.ID)
+	for _, spec := range []struct {
+		id  string
+		dir string
+	}{{finishedRun.ID, finishedWT}, {activeRun.ID, activeWT}} {
+		if err := d.SetRunWorktreeDir(spec.id, spec.dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.UpdateRunStatus(finishedRun.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(activeRun.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	leakedPID := startOrphanInWorktree(t, finishedWT)
+	activePID := startOrphanInWorktree(t, activeWT)
+	operatorPID := startOrphanInWorktree(t, filepath.Join(abandonedRoot, "scratch-checkout"))
+	unclaimedPID := startOrphanInWorktree(t, filepath.Join(abandonedRoot, "01JZ8XQ7V6K9M3B0T5N2R4C8YD"))
+
+	sweepOrphanRunProcesses(d, p, recordedWorktreesOutsideDefaultRoot(d, p))
+
+	if !pidGoneWithin(leakedPID, 10*time.Second) {
+		t.Fatalf("orphan %d in a recorded worktree the config no longer names survived the startup sweep", leakedPID)
+	}
+	if !processIsAlive(activePID) {
+		t.Errorf("orphan %d in an active run's worktree must not be swept", activePID)
+	}
+	if !processIsAlive(operatorPID) {
+		t.Errorf("the sweep signalled %d in the operator's own directory", operatorPID)
+	}
+	if !processIsAlive(unclaimedPID) {
+		t.Errorf("the sweep signalled %d in a run-shaped directory no run recorded", unclaimedPID)
 	}
 }
 
@@ -91,7 +165,7 @@ func TestSweepRunWorktreeProcessesReapsLeakedChildAtRunCleanup(t *testing.T) {
 	leakedPID := startOrphanInWorktree(t, finished)
 	otherPID := startOrphanInWorktree(t, other)
 
-	m.sweepRunWorktreeProcesses("repo1", finished)
+	m.sweepRunWorktreeProcesses("repo1", "run1", finished)
 
 	if !pidGoneWithin(leakedPID, 10*time.Second) {
 		t.Fatalf("orphan %d in the finished run's worktree survived run cleanup", leakedPID)
@@ -103,10 +177,10 @@ func TestSweepRunWorktreeProcessesReapsLeakedChildAtRunCleanup(t *testing.T) {
 
 // TestSweepRunWorktreeProcessesReapsLeakedChildInTheRunsRecordedRoot covers a
 // run the operator placed in a directory of their own (worktree_roots): the
-// reaper's reach comes from the directory that run was actually created in, not
-// from the configuration - which may have been edited, or removed, while the run
-// was executing. The operator's own directories in the same root are still out
-// of reach, because their names are not run IDs.
+// reaper's reach is the directory that run was actually created in, not
+// anything the configuration says - it may have been edited, or removed, while
+// the run was executing. Everything else in that directory is out of reach,
+// including a directory that looks just like another run's worktree.
 func TestSweepRunWorktreeProcessesReapsLeakedChildInTheRunsRecordedRoot(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
 	if err := p.EnsureDirs(); err != nil {
@@ -115,18 +189,24 @@ func TestSweepRunWorktreeProcessesReapsLeakedChildInTheRunsRecordedRoot(t *testi
 	m := NewRunManager(nil, p, nil)
 
 	root := filepath.Join(t.TempDir(), "repo-runs")
-	finished := filepath.Join(root, "01JZ8XQ7V6K9M3B0T5N2R4C8YD")
+	const runID = "01JZ8XQ7V6K9M3B0T5N2R4C8YD"
+	finished := filepath.Join(root, runID)
 	operatorDir := filepath.Join(root, "scratch-checkout")
+	unclaimed := filepath.Join(root, "01JZ8XQ7V6K9M3B0T5N2R4C8YF")
 	leakedPID := startOrphanInWorktree(t, finished)
 	operatorPID := startOrphanInWorktree(t, operatorDir)
+	unclaimedPID := startOrphanInWorktree(t, unclaimed)
 
-	m.sweepRunWorktreeProcesses("repo1", finished)
+	m.sweepRunWorktreeProcesses("repo1", runID, finished)
 
 	if !pidGoneWithin(leakedPID, 10*time.Second) {
 		t.Fatalf("orphan %d in the finished run's configured worktree survived run cleanup", leakedPID)
 	}
 	if !processIsAlive(operatorPID) {
 		t.Fatalf("run cleanup signalled %d in the operator's own directory", operatorPID)
+	}
+	if !processIsAlive(unclaimedPID) {
+		t.Fatalf("run cleanup signalled %d in a run-shaped directory this run does not own", unclaimedPID)
 	}
 }
 

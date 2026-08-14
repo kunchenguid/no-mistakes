@@ -321,7 +321,7 @@ func TestSweepEscalatesToSIGKILLOnlyAfterSIGTERMFails(t *testing.T) {
 // must never make a process a candidate.
 func TestWorktreeRefRequiresRunDirectory(t *testing.T) {
 	root := t.TempDir()
-	roots := worktreeRoots(Options{WorktreesRoot: root})
+	roots := worktreeMatchers(Options{WorktreesRoot: root})
 	for _, path := range []string{root, filepath.Join(root, "repo1"), filepath.Dir(root), "/tmp"} {
 		if _, _, _, ok := worktreeRef(roots, path); ok {
 			t.Fatalf("worktreeRef(%q) matched; want no match", path)
@@ -333,35 +333,42 @@ func TestWorktreeRefRequiresRunDirectory(t *testing.T) {
 	}
 }
 
-// TestSweepConfiguredRepoRootMatchesOnlyRunDirectories covers the operator
-// worktree root (worktree_roots): run worktrees sit directly below it, so a
-// stale run process there is reaped, while the operator's own directories in
-// the same root - the reason they pointed runs at it - are out of reach
-// because their names are not run IDs.
-func TestSweepConfiguredRepoRootMatchesOnlyRunDirectories(t *testing.T) {
+// TestSweepNamedWorktreesReachOnlyWhatARunRecorded covers a repository whose
+// runs the operator placed in a directory of their own (worktree_roots). Reach
+// there is the worktrees the caller names, one per run record, so a stale run
+// process is still reaped - while everything else in that directory is out of
+// reach, including a directory whose name looks exactly like a run worktree but
+// that no run created. The name is not evidence in somebody else's directory.
+func TestSweepNamedWorktreesReachOnlyWhatARunRecorded(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "worktrees")
 	repoRoot := filepath.Join(t.TempDir(), "repo-runs")
 	const doneRun = "01JZ8XQ7V6K9M3B0T5N2R4C8YD"
 	const activeRun = "01JZ8XQ7V6K9M3B0T5N2R4C8YE"
+	const unclaimedRun = "01JZ8XQ7V6K9M3B0T5N2R4C8YF"
 	fake := &fakeSystem{
 		procs: []Process{
 			{PID: 100, PPID: 1, PGID: 100, Command: "leaked", Elapsed: 40 * time.Hour},
 			{PID: 200, PPID: 1, PGID: 200, Command: "operator editor", Elapsed: 40 * time.Hour},
 			{PID: 300, PPID: 1, PGID: 300, Command: "live run", Elapsed: 40 * time.Hour},
+			{PID: 400, PPID: 1, PGID: 400, Command: "operator worker", Elapsed: 40 * time.Hour},
 		},
 		cwds: map[int]string{
 			100: filepath.Join(repoRoot, doneRun, "internal"),
 			200: filepath.Join(repoRoot, "scratch-checkout"),
 			300: filepath.Join(repoRoot, activeRun),
+			400: filepath.Join(repoRoot, unclaimedRun, "internal"),
 		},
 	}
 	fake.install(t)
 
 	victims, err := Sweep(Options{
 		WorktreesRoot: root,
-		RootOwners:    map[string]string{repoRoot: "repo1"},
-		MinAge:        DefaultMinAge,
-		RunActive:     func(repoID, runID string) bool { return repoID == "repo1" && runID == activeRun },
+		Worktrees: []Worktree{
+			{Dir: filepath.Join(repoRoot, doneRun), RepoID: "repo1", RunID: doneRun},
+			{Dir: filepath.Join(repoRoot, activeRun), RepoID: "repo1", RunID: activeRun},
+		},
+		MinAge:    DefaultMinAge,
+		RunActive: func(repoID, runID string) bool { return repoID == "repo1" && runID == activeRun },
 	})
 	if err != nil {
 		t.Fatalf("Sweep: %v", err)
@@ -374,5 +381,34 @@ func TestSweepConfiguredRepoRootMatchesOnlyRunDirectories(t *testing.T) {
 	}
 	if fake.anySignalTo(300) {
 		t.Fatalf("active run's process must never be signalled: %+v", fake.signals)
+	}
+	if fake.anySignalTo(400) {
+		t.Fatalf("a run-shaped directory no run recorded must never be signalled: %+v", fake.signals)
+	}
+}
+
+// A named worktree without the run identity to check it against is dropped
+// rather than matched, so a caller that cannot say which run owns a directory
+// never gets it signalled.
+func TestSweepIgnoresNamedWorktreeWithoutRunIdentity(t *testing.T) {
+	repoRoot := filepath.Join(t.TempDir(), "repo-runs")
+	const runID = "01JZ8XQ7V6K9M3B0T5N2R4C8YD"
+	fake := &fakeSystem{
+		procs: []Process{{PID: 100, PPID: 1, PGID: 100, Command: "leaked", Elapsed: 40 * time.Hour}},
+		cwds:  map[int]string{100: filepath.Join(repoRoot, runID)},
+	}
+	fake.install(t)
+
+	victims, err := Sweep(Options{
+		WorktreesRoot: filepath.Join(t.TempDir(), "worktrees"),
+		Worktrees:     []Worktree{{Dir: filepath.Join(repoRoot, runID)}},
+		MinAge:        DefaultMinAge,
+		RunActive:     func(string, string) bool { return false },
+	})
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if len(victims) != 0 || fake.anySignalTo(100) {
+		t.Fatalf("worktree without a run identity was swept: victims=%v signals=%+v", victimPIDs(victims), fake.signals)
 	}
 }

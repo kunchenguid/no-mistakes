@@ -422,15 +422,15 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 	}
 	logStartupPhase("stale_runs", staleStarted, "recovered", count)
 
-	layout := startupWorktreeLayout(p)
-	reportUnusableWorktreeRoots(d, layout)
+	reportUnusableWorktreeRoots(d, startupWorktreeLayout(p))
+	recorded := recordedWorktreesOutsideDefaultRoot(d, p)
 
 	orphanProcStarted := time.Now()
-	sweepOrphanRunProcesses(d, p, layout)
+	sweepOrphanRunProcesses(d, p, recorded)
 	logStartupPhase("orphan_processes", orphanProcStarted)
 
 	worktreeStarted := time.Now()
-	cleanupOrphanWorktrees(d, p, layout)
+	cleanupOrphanWorktrees(d, p, recorded)
 	logStartupPhase("worktree_cleanup", worktreeStarted)
 
 	// Evidence is reaped after stale-run recovery for the same reason worktrees
@@ -459,20 +459,60 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager) {
 // again - it just keeps burning CPU and holding a deleted worktree open. This
 // runs after stale-run recovery so every run's status is settled, and before
 // worktree cleanup so the directories are freed of their holders first.
-func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths, layout *worktrees.Layout) {
-	repos, err := d.GetRepos()
-	if err != nil {
-		slog.Warn("failed to list repositories for orphan process sweep", "error", err)
-	}
+//
+// Reach outside the default worktrees tree is exactly the recorded run
+// worktrees, never a configured root: signalling in an operator's own directory
+// is limited to the directories our own run rows name, matching what cleanup
+// there may remove, and a placement the operator has since reconfigured away is
+// still swept because the run recorded it.
+func sweepOrphanRunProcesses(d *db.DB, p *paths.Paths, recorded []db.RunWorktree) {
 	procreap.SweepAndLog(procreap.Options{
 		WorktreesRoot: p.WorktreesDir(),
-		RootOwners:    customWorktreeRoots(layout, repos),
+		Worktrees:     sweepableWorktrees(recorded),
 		MinAge:        orphanProcessMinAge,
 		RunActive: func(_, runID string) bool {
 			skip, _ := skipWorktreeCleanup(d, runID)
 			return skip
 		},
 	}, "daemon_startup")
+}
+
+// sweepableWorktrees is the procreap view of the recorded run worktrees.
+func sweepableWorktrees(recorded []db.RunWorktree) []procreap.Worktree {
+	out := make([]procreap.Worktree, 0, len(recorded))
+	for _, wt := range recorded {
+		out = append(out, procreap.Worktree{Dir: wt.Dir, RepoID: wt.RepoID, RunID: wt.RunID})
+	}
+	return out
+}
+
+// recordedWorktreesOutsideDefaultRoot returns every run worktree this machine
+// placed outside <NM_HOME>/worktrees, as the run that created it recorded it
+// (see internal/worktrees). It is the search set both startup sweeps use there,
+// so neither depends on the live configuration: an operator who edits or drops
+// a worktree_roots entry after a crash would otherwise hide the directory a run
+// is still recorded as owning, leaving the leaked processes standing in it
+// unreachable and the directory itself never removed.
+//
+// A failure to read the records is not fatal to startup, and it is deliberately
+// not fallen back to a configuration-derived guess: recovery proceeds with the
+// default tree, which this process owns outright, and leaves the operator's
+// directories untouched.
+func recordedWorktreesOutsideDefaultRoot(d *db.DB, p *paths.Paths) []db.RunWorktree {
+	worktreesDir := p.WorktreesDir()
+	recorded, err := d.RunWorktreesOutside(worktreesDir)
+	if err != nil {
+		slog.Warn("failed to list recorded run worktrees; skipping placements outside the default worktrees directory", "error", err)
+		return nil
+	}
+	out := make([]db.RunWorktree, 0, len(recorded))
+	for _, wt := range recorded {
+		if worktrees.Contains(worktreesDir, wt.Dir) {
+			continue
+		}
+		out = append(out, wt)
+	}
+	return out
 }
 
 // assertConfiguredWorktreePlacement fails startup when the configured run
@@ -552,11 +592,10 @@ func reportUnusableWorktreeRoots(d *db.DB, layout *worktrees.Layout) {
 // RecoverStaleRuns, so in the normal single-daemon path every run this loop
 // sees has already been resolved to a terminal status; it is factored out
 // separately so it can also be exercised - and its DB-aware skip behavior
-// verified - independent of stale-run recovery's side effects. Repositories
-// whose worktrees live in a configured root are cleaned by
-// cleanupOrphanWorktreesInCustomRoots, which walks those roots the same way
-// under a stricter rule about what it may touch.
-func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths, layout *worktrees.Layout) {
+// verified - independent of stale-run recovery's side effects. Worktrees the
+// operator placed outside this tree are cleaned by
+// cleanupRecordedRunWorktrees, which never walks a directory it does not own.
+func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths, recorded []db.RunWorktree) {
 	wtRoot := p.WorktreesDir()
 	entries, err := os.ReadDir(wtRoot)
 	if err != nil {
@@ -582,76 +621,29 @@ func cleanupOrphanWorktrees(d *db.DB, p *paths.Paths, layout *worktrees.Layout) 
 		// Remove empty repo dir.
 		os.Remove(repoPath)
 	}
-	cleanupOrphanWorktreesInCustomRoots(d, p, layout)
+	cleanupRecordedRunWorktrees(ctx, d, p, recorded)
 }
 
-// cleanupOrphanWorktreesInCustomRoots is cleanupOrphanWorktrees for the
-// repositories whose run worktrees the operator placed in a directory of their
-// own (see worktree_roots in the global config). That directory belongs to the
-// operator, not to no-mistakes: it holds the mise.local.toml, .envrc, or
-// checkout that motivated pointing runs at it in the first place. Only an
-// entry that is a directory named like a run ID can have been created by a
-// run, so nothing else there is ever inspected, let alone removed - and a
-// run-shaped directory still has to be claimed by one of this repository's own
-// run rows before it is touched (see ownsRunWorktree).
-func cleanupOrphanWorktreesInCustomRoots(d *db.DB, p *paths.Paths, layout *worktrees.Layout) {
-	repos, err := d.GetRepos()
-	if err != nil {
-		slog.Warn("failed to list repositories for worktree cleanup", "error", err)
-		return
-	}
-	ctx := context.Background()
-	for _, repo := range repos {
-		root, ok := layout.CustomRoot(repo.WorkingPath)
-		if !ok {
+// cleanupRecordedRunWorktrees removes the leftover worktrees of runs the
+// operator placed outside <NM_HOME>/worktrees (see worktree_roots in the global
+// config).
+//
+// That directory belongs to the operator, not to no-mistakes: it holds the
+// mise.local.toml, .envrc, or scratch checkout that motivated pointing runs at
+// it in the first place, and it can hold a run-shaped directory this daemon
+// never created - another tool's, or one left by a repository that used to
+// point here. So unlike the default tree, which is discovered by walking, this
+// removes only the exact directories run records name, which is the same rule
+// eject applies (see gate.removeRepoWorktrees): nothing there is enumerated,
+// and a directory no run recorded is never even looked at. Whether a named
+// directory may go is still the active-run guard (see skipWorktreeCleanup).
+func cleanupRecordedRunWorktrees(ctx context.Context, d *db.DB, p *paths.Paths, recorded []db.RunWorktree) {
+	for _, wt := range recorded {
+		if info, err := os.Stat(wt.Dir); err != nil || !info.IsDir() {
 			continue
 		}
-		entries, err := os.ReadDir(root)
-		if err != nil {
-			continue // directory may not exist yet
-		}
-		gateDir := p.RepoDir(repo.ID)
-		for _, entry := range entries {
-			if !entry.IsDir() || !worktrees.IsRunID(entry.Name()) {
-				continue
-			}
-			wtPath := filepath.Join(root, entry.Name())
-			if !ownsRunWorktree(d, layout, repo, entry.Name(), wtPath) {
-				continue
-			}
-			removeOrphanWorktree(ctx, d, gateDir, wtPath, entry.Name())
-		}
+		removeOrphanWorktree(ctx, d, p.RepoDir(wt.RepoID), wt.Dir, wt.RunID)
 	}
-}
-
-// ownsRunWorktree reports whether a run-shaped directory in an operator's
-// configured worktree root was created by a run of this repository.
-//
-// In the default worktrees directory a run-shaped directory with no run row is
-// a leftover no-mistakes owns outright, because it created everything there.
-// A configured root is the operator's directory: it can hold a run-shaped
-// directory this repository never created - another tool's, or one left by a
-// repository that used to point here - and removing that would be removing
-// somebody else's data. Ownership is therefore proved from run rows, the same
-// rule eject applies (see gate.removeRepoWorktrees), and against the placement
-// recorded when the run was created rather than the placement configuration
-// would derive today.
-func ownsRunWorktree(d *db.DB, layout *worktrees.Layout, repo *db.Repo, runID, wtPath string) bool {
-	run, err := d.GetRun(runID)
-	if err != nil {
-		slog.Warn("failed to look up run while cleaning a configured worktree root", "path", wtPath, "error", err)
-		return false
-	}
-	if run == nil || run.RepoID != repo.ID {
-		slog.Debug("leaving run-shaped directory in configured worktree root; no run of this repository owns it", "path", wtPath)
-		return false
-	}
-	recorded := layout.RecordedDir(run.WorktreePath(), repo.ID, repo.WorkingPath, run.ID)
-	if !samePath(recorded, wtPath) {
-		slog.Debug("leaving run-shaped directory in configured worktree root; its run records another worktree", "path", wtPath, "recorded", recorded)
-		return false
-	}
-	return true
 }
 
 // removeOrphanWorktree removes one run worktree directory unless its run still

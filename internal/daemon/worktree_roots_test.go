@@ -161,6 +161,12 @@ func TestCleanupOrphanWorktrees_ConfiguredRootRemovesOnlyRunDirectories(t *testi
 	if err := d.UpdateRunStatus(terminalRun.ID, types.RunFailed); err != nil {
 		t.Fatal(err)
 	}
+	// Both runs record where they were placed, the way startRun does.
+	for _, run := range []*db.Run{activeRun, terminalRun} {
+		if err := d.SetRunWorktreeDir(run.ID, filepath.Join(root, run.ID)); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	activeWT := filepath.Join(root, activeRun.ID)
 	terminalWT := filepath.Join(root, terminalRun.ID)
@@ -175,7 +181,7 @@ func TestCleanupOrphanWorktrees_ConfiguredRootRemovesOnlyRunDirectories(t *testi
 		t.Fatal(err)
 	}
 
-	cleanupOrphanWorktrees(d, p, startupWorktreeLayout(p))
+	cleanupOrphanWorktrees(d, p, recordedWorktreesOutsideDefaultRoot(d, p))
 
 	if _, err := os.Stat(terminalWT); !os.IsNotExist(err) {
 		t.Fatalf("terminal run worktree should have been cleaned up, stat err: %v", err)
@@ -221,7 +227,7 @@ func TestCleanupOrphanWorktrees_UnconfiguredRepoUsesDefaultRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanupOrphanWorktrees(d, p, startupWorktreeLayout(p))
+	cleanupOrphanWorktrees(d, p, recordedWorktreesOutsideDefaultRoot(d, p))
 
 	if _, err := os.Stat(terminalWT); !os.IsNotExist(err) {
 		t.Fatalf("default-root worktree should have been cleaned up, stat err: %v", err)
@@ -286,14 +292,12 @@ func TestDaemonRefusesToStartWithWorktreeRootInsideItsOwnWorktreesDirectory(t *t
 	}
 }
 
-// TestCleanupOrphanWorktrees_ConfiguredRootRemovesOnlyThisRepositorysRuns is
-// the other half of the same misconfiguration: a run-shaped directory in the
-// operator's root is not evidence that a run of this repository created it.
-// Startup cleanup therefore requires the same proof eject requires - one of
-// this repository's own run rows recording that exact directory - so a
-// leftover from another tool, or from a repository that used to point here,
-// stays where it is.
-func TestCleanupOrphanWorktrees_ConfiguredRootRemovesOnlyThisRepositorysRuns(t *testing.T) {
+// TestCleanupOrphanWorktrees_OperatorRootRemovesOnlyWhatARunRecorded is the
+// other half of the same misconfiguration: a run-shaped directory in the
+// operator's own directory is not evidence that a run created it. Cleanup there
+// removes the exact directories run records name - whichever repository's run
+// recorded them - and never enumerates the directory to guess at the rest.
+func TestCleanupOrphanWorktrees_OperatorRootRemovesOnlyWhatARunRecorded(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatal(err)
@@ -328,8 +332,9 @@ func TestCleanupOrphanWorktrees_ConfiguredRootRemovesOnlyThisRepositorysRuns(t *
 		t.Fatal(err)
 	}
 
-	// A terminal run of a different repository that also placed its worktrees
-	// here before the operator reassigned the directory.
+	// A terminal run of a different repository that recorded a worktree in the
+	// same directory, from before the operator reassigned it. Its own record
+	// makes it ours to remove.
 	otherRepo, err := d.InsertRepoWithID("repo2", filepath.Join(t.TempDir(), "other-checkout"), "https://example.com/owner/repo2", "main")
 	if err != nil {
 		t.Fatal(err)
@@ -338,29 +343,95 @@ func TestCleanupOrphanWorktrees_ConfiguredRootRemovesOnlyThisRepositorysRuns(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := d.SetRunWorktreeDir(otherRun.ID, filepath.Join(root, otherRun.ID)); err != nil {
+		t.Fatal(err)
+	}
 	if err := d.UpdateRunStatus(otherRun.ID, types.RunFailed); err != nil {
 		t.Fatal(err)
 	}
 
 	ownWT := filepath.Join(root, ownRun.ID)
 	otherWT := filepath.Join(root, otherRun.ID)
-	// Run-shaped, but no run row anywhere claims it.
+	// Run-shaped, but no run record names it.
 	unclaimedWT := filepath.Join(root, "01JZ8XQ7V6K9M3B0T5N2R4C8YD")
-	for _, dir := range []string{ownWT, otherWT, unclaimedWT} {
+	// A run whose record names another directory entirely must not make this
+	// one removable either.
+	strayRun, err := d.InsertRun(repo.ID, "stray", "headsha", "basesha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunWorktreeDir(strayRun.ID, filepath.Join(t.TempDir(), "elsewhere", strayRun.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(strayRun.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+	strayWT := filepath.Join(root, strayRun.ID)
+	for _, dir := range []string{ownWT, otherWT, unclaimedWT, strayWT} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	cleanupOrphanWorktrees(d, p, startupWorktreeLayout(p))
+	cleanupOrphanWorktrees(d, p, recordedWorktreesOutsideDefaultRoot(d, p))
 
-	if _, err := os.Stat(ownWT); !os.IsNotExist(err) {
-		t.Fatalf("this repository's terminal run worktree should have been cleaned up, stat err: %v", err)
-	}
-	for _, keep := range []string{otherWT, unclaimedWT} {
-		if _, err := os.Stat(keep); err != nil {
-			t.Errorf("cleanup removed %q, which no run of this repository recorded: %v", keep, err)
+	for _, gone := range []string{ownWT, otherWT} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("recorded terminal run worktree %q should have been cleaned up, stat err: %v", gone, err)
 		}
+	}
+	for _, keep := range []string{root, unclaimedWT, strayWT} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("cleanup removed %q, which no run record names: %v", keep, err)
+		}
+	}
+}
+
+// TestCleanupOrphanWorktrees_ReachesARootTheConfigNoLongerNames is the stale
+// placement: a run executed in a directory the operator has since edited out of
+// worktree_roots (or pointed elsewhere). Its worktree is still recorded, so the
+// leftover must still be removed - deriving the search set from the live config
+// instead would leave that directory behind forever, with nothing left to name
+// it.
+func TestCleanupOrphanWorktrees_ReachesARootTheConfigNoLongerNames(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	repo, err := d.InsertRepoWithID("repo1", filepath.Join(t.TempDir(), "checkout"), "https://example.com/owner/repo1", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.InsertRun(repo.ID, "feature", "headsha", "basesha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No worktree_roots entry at all: this placement exists only on the run.
+	abandonedRoot := filepath.Join(t.TempDir(), "former-runs")
+	recordedWT := filepath.Join(abandonedRoot, run.ID)
+	if err := os.MkdirAll(recordedWT, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunWorktreeDir(run.ID, recordedWT); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(run.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanupOrphanWorktrees(d, p, recordedWorktreesOutsideDefaultRoot(d, p))
+
+	if _, err := os.Stat(recordedWT); !os.IsNotExist(err) {
+		t.Fatalf("recorded worktree in a root the config no longer names survived cleanup, stat err: %v", err)
+	}
+	if _, err := os.Stat(abandonedRoot); err != nil {
+		t.Errorf("cleanup removed the operator's directory itself: %v", err)
 	}
 }
 

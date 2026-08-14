@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 func openTestDB(t *testing.T) *DB {
@@ -161,6 +163,65 @@ func TestSetRunWorktreeDirRecordsPlacementDurably(t *testing.T) {
 	}
 	if stored.WorktreePath() != dir {
 		t.Fatalf("recorded placement = %q, want %q", stored.WorktreePath(), dir)
+	}
+}
+
+// RunWorktreesOutside is how startup recovery finds run worktrees placed
+// outside the tree it walks itself, without asking the configuration where they
+// might be. It answers from the records only: a run in the default tree is
+// found by walking, and a run that never recorded a placement predates the
+// column - and therefore predates any placement but the default one.
+func TestRunWorktreesOutsideReturnsOnlyRecordedPlacementsElsewhere(t *testing.T) {
+	d := openTestDB(t)
+	repo, err := d.InsertRepoWithID("repo-1", "/work/repo", "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultRoot := filepath.Join("/nm-home", "worktrees")
+
+	inDefaultTree, err := d.InsertRun(repo.ID, "a", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunWorktreeDir(inDefaultTree.ID, filepath.Join(defaultRoot, repo.ID, inDefaultTree.ID)); err != nil {
+		t.Fatal(err)
+	}
+	unrecorded, err := d.InsertRun(repo.ID, "b", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	elsewhere, err := d.InsertRun(repo.ID, "c", "head", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	elsewhereDir := filepath.Join("/work", "repo-runs", elsewhere.ID)
+	if err := d.SetRunWorktreeDir(elsewhere.ID, elsewhereDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpdateRunStatus(elsewhere.ID, types.RunFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := d.RunWorktreesOutside(defaultRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wt := range got {
+		if wt.RunID == inDefaultTree.ID {
+			t.Errorf("a placement inside %q was returned: %+v", defaultRoot, wt)
+		}
+		if wt.RunID == unrecorded.ID {
+			t.Errorf("a run with no recorded placement was returned: %+v", wt)
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("RunWorktreesOutside() = %+v, want only the placement outside %q", got, defaultRoot)
+	}
+	if got[0].RunID != elsewhere.ID || got[0].RepoID != repo.ID || got[0].Dir != elsewhereDir {
+		t.Errorf("RunWorktreesOutside() = %+v, want run %s of %s at %q", got[0], elsewhere.ID, repo.ID, elsewhereDir)
+	}
+	if got[0].Status != types.RunFailed {
+		t.Errorf("status = %q, want %q so cleanup can tell a finished run from a live one", got[0].Status, types.RunFailed)
 	}
 }
 

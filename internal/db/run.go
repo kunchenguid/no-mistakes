@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
@@ -135,6 +136,53 @@ func (d *DB) InsertRunWithIntent(repoID, branch, headSHA, baseSHA string, intent
 		return nil, fmt.Errorf("insert run: %w", err)
 	}
 	return r, nil
+}
+
+// RunWorktree is one run's recorded worktree placement, with just enough of the
+// run to decide whether that directory may be swept or removed.
+type RunWorktree struct {
+	RunID  string
+	RepoID string
+	Status types.RunStatus
+	Dir    string
+}
+
+// RunWorktreesOutside returns every run whose recorded worktree directory is
+// not under prefix, newest first. It exists so startup recovery can find the
+// run worktrees this machine placed outside <NM_HOME>/worktrees without asking
+// the configuration where they might be: an edited or deleted worktree_roots
+// entry must not hide a directory a run recorded, and the run rows are the only
+// record of it.
+//
+// The prefix test is a cheap pre-filter, not the authority - a caller compares
+// canonical paths itself, since two spellings of one directory (/var and
+// /private/var) are equal to the filesystem but not to SQLite. It errs toward
+// returning too much for that reason.
+//
+// Rows with no recorded placement are deliberately excluded. A run predating
+// the column also predates worktree_roots, so its worktree can only be in the
+// default tree, which is walked directly.
+func (d *DB) RunWorktreesOutside(prefix string) ([]RunWorktree, error) {
+	bounded := strings.TrimSuffix(filepath.Clean(prefix), string(filepath.Separator)) + string(filepath.Separator)
+	rows, err := d.sql.Query(
+		`SELECT id, repo_id, status, worktree_dir FROM runs
+		 WHERE worktree_dir IS NOT NULL AND worktree_dir <> '' AND substr(worktree_dir, 1, ?) <> ?
+		 ORDER BY created_at DESC, id DESC`,
+		len(bounded), bounded,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get run worktrees outside %s: %w", prefix, err)
+	}
+	defer rows.Close()
+	var out []RunWorktree
+	for rows.Next() {
+		var wt RunWorktree
+		if err := rows.Scan(&wt.RunID, &wt.RepoID, &wt.Status, &wt.Dir); err != nil {
+			return nil, fmt.Errorf("scan run worktree: %w", err)
+		}
+		out = append(out, wt)
+	}
+	return out, rows.Err()
 }
 
 // GetRun returns a run by ID.

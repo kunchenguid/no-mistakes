@@ -512,10 +512,13 @@ func (m *RunManager) broadcast(event ipc.Event) {
 // can no longer be attributed to any run. No age floor applies: the caller
 // owns this run and has already observed its execution return, so nothing
 // standing in it can still be legitimate work.
-func (m *RunManager) sweepRunWorktreeProcesses(repoID, wtDir string) {
+// The run's own worktree is what the sweep is pointed at, so a placement
+// outside the default tree needs no configuration lookup and cannot be hidden
+// by a worktree_roots edit made while the run was executing.
+func (m *RunManager) sweepRunWorktreeProcesses(repoID, runID, wtDir string) {
 	procreap.SweepAndLog(procreap.Options{
 		WorktreesRoot: m.paths.WorktreesDir(),
-		RootOwners:    runWorktreeRootOwner(m.paths, repoID, wtDir),
+		Worktrees:     []procreap.Worktree{{Dir: wtDir, RepoID: repoID, RunID: runID}},
 		Scope:         wtDir,
 	}, "run_cleanup")
 }
@@ -552,45 +555,6 @@ func (m *RunManager) cleanupRunEvidence(cfg *config.Config, runID string) {
 		slog.Debug("run evidence kept", "run_id", runID, "reason", err)
 	}
 	reapEvidence(m.db, root, policy, time.Now())
-}
-
-// runWorktreeRootOwner returns the procreap root a single run's worktree sits
-// in, when that is not the default <NM_HOME>/worktrees tree procreap already
-// walks. It is derived from the run's own directory rather than from the
-// current configuration, so a worktree_roots edit made while the run was
-// executing cannot leave its leaked processes unreachable.
-func runWorktreeRootOwner(p *paths.Paths, repoID, wtDir string) map[string]string {
-	if strings.TrimSpace(wtDir) == "" || worktrees.Contains(p.WorktreesDir(), wtDir) {
-		return nil
-	}
-	return map[string]string{filepath.Dir(wtDir): repoID}
-}
-
-// customWorktreeRoots returns the procreap view of the repositories whose run
-// worktrees the operator placed outside <NM_HOME>/worktrees: the configured
-// root directory mapped to the repository that owns it. Config validation
-// rejects two checkouts sharing a root, so no entry can be overwritten here.
-//
-// This is configuration-derived on purpose: the startup sweep looks for
-// processes in whatever roots this machine currently places runs in, and a
-// misattributed repository ID cannot widen what it may signal (the run-active
-// check keys on the run ID, and only run-ID-named directories are candidates).
-func customWorktreeRoots(layout *worktrees.Layout, repos []*db.Repo) map[string]string {
-	var roots map[string]string
-	for _, repo := range repos {
-		if repo == nil {
-			continue
-		}
-		root, ok := layout.CustomRoot(repo.WorkingPath)
-		if !ok {
-			continue
-		}
-		if roots == nil {
-			roots = make(map[string]string, len(repos))
-		}
-		roots[root] = repo.ID
-	}
-	return roots
 }
 
 // closeSubscribers soft-closes every subscriber for a run and marks the run
@@ -1116,7 +1080,7 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 			ag.Close()
 			// Close subscriber channels for this run.
 			m.closeSubscribers(run.ID)
-			m.sweepRunWorktreeProcesses(repo.ID, wtDir)
+			m.sweepRunWorktreeProcesses(repo.ID, run.ID, wtDir)
 			// Clean up worktree.
 			if rmErr := git.WorktreeRemove(context.Background(), gateDir, wtDir); rmErr != nil {
 				slog.Warn("failed to remove worktree", "path", wtDir, "error", rmErr)

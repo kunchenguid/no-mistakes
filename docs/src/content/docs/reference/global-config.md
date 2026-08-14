@@ -313,13 +313,13 @@ By default a run worktree is created under `NM_HOME`, outside every checkout, so
 Point a checkout at a directory of your own and its runs are created at `<value>/<run id>` instead, inheriting whatever that directory configures.
 A relative value is rejected at load time, because the daemon that reads it has an unrelated working directory.
 
-The directory stays yours: only a **directory whose name is a 26-character uppercase ULID** is even looked at, and it is removed only when one of this repository's own run rows recorded it - which is what startup cleanup and `no-mistakes eject` both go by. Everything else there - files, directories named anything else, and a run-shaped directory no run of this repository created - is never read, never swept, and never removed.
+The directory stays yours. no-mistakes never enumerates it: the only directories it touches there are the exact ones its own run records name, which is what startup cleanup, orphan-process reaping, and `no-mistakes eject` all go by. Anything else in it - your files, your scratch checkouts, and a directory that merely looks like a run worktree but no run created - is never read, never swept, never signalled, and never removed.
 
-Each checkout needs its own root: two entries pointing at the same directory, two spellings of one checkout, or a root equal to its checkout are rejected at load time.
+Each checkout needs its own root: two entries pointing at the same directory, two spellings of one checkout, or a root equal to its checkout are rejected at load time, and `init --worktree-root` refuses a directory another checkout already claims.
 A value inside `<NM_HOME>/worktrees` is refused at daemon startup: that is where the default placement keeps its own ULID-named directories, so a run worktree there could not be told apart from them.
 
 Changing an entry affects new runs only.
-Each run records the directory it was created in, so editing, adding, or removing an entry never retargets a run that already exists - resuming it after a restart, reading its diff, cleaning it up, and ejecting its repository all keep using the directory that run actually has.
+Each run records the directory it was created in, so editing, adding, or removing an entry never retargets a run that already exists - resuming it after a restart, reading its diff, cleaning it up, reaping processes left standing in it, and ejecting its repository all keep using the directory that run actually has, including after you point the checkout somewhere else.
 
 The key is matched against the checkout path recorded at `init`. After moving a checkout, re-run `no-mistakes init` from the new path and update the key; a key that matches no registered repository is reported in the daemon log at startup and otherwise does nothing.
 

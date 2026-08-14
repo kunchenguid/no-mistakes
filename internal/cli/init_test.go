@@ -58,6 +58,42 @@ func TestResolveWorktreeRootRejectsUnusablePlacements(t *testing.T) {
 	}
 }
 
+// A root another checkout already claims is refused while the operator can
+// still pick another one: the loader rejects two checkouts sharing a root, and
+// the daemon refuses to start on a config it cannot load, so printing the entry
+// would hand them a paste that stops the daemon instead of placing anything.
+func TestResolveWorktreeRootRefusesRootClaimedByAnotherCheckout(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	repoDir := setupTestRepo(t)
+	root := filepath.Join(t.TempDir(), "shared-runs")
+	otherCheckout := filepath.Join(t.TempDir(), "other-checkout")
+	configYAML := "worktree_roots:\n  " + yamlPath(otherCheckout) + ": " + yamlPath(root) + "\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(configYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := resolveWorktreeRoot(p, repoDir, root)
+	if err == nil {
+		t.Fatal("expected a refusal for a root another checkout already claims")
+	}
+	if !strings.Contains(err.Error(), otherCheckout) {
+		t.Errorf("refusal %q does not name the checkout that claims the root", err)
+	}
+
+	// The same checkout re-initializing with the root it already uses is not a
+	// conflict with itself.
+	selfConfig := "worktree_roots:\n  " + yamlPath(repoDir) + ": " + yamlPath(root) + "\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(selfConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveWorktreeRoot(p, repoDir, root); err != nil {
+		t.Errorf("re-initializing the checkout that already uses this root was refused: %v", err)
+	}
+}
+
 func TestPrintWorktreeRootGuidancePrintsConfigEntry(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
 	if err := p.EnsureDirs(); err != nil {
