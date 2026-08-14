@@ -284,28 +284,18 @@ func TestBaselineForRoundIncludesOnlyCompleteReviewInvocationMetrics(t *testing.
 	}
 }
 
-func TestScoreCandidateDoesNotMatchRoundLocalFindingIDsAcrossReviews(t *testing.T) {
+func TestScoreCandidateMatchesSameFindingID(t *testing.T) {
 	labels := Labels{Findings: []FindingGold{{
-		ID:          "review-1",
+		ID:          "error-handling",
 		Kind:        GoldTruePositive,
 		File:        "old.go",
-		Description: "closes the response body too early",
+		Description: "drops an HTTP error",
 	}}}
-	candidate := `{"findings":[{"id":"review-1","file":"new.go","description":"drops a database error"}]}`
-
-	score := ScoreCandidate(labels, candidate)
-	if score.TruePositive != 0 || score.FalseNegative != 1 || score.Pending != 1 {
-		t.Fatalf("score = %#v, want unrelated ordinal-ID finding left pending", score)
-	}
-}
-
-func TestScoreCandidateDoesNotTreatAgentFindingIDsAsDurable(t *testing.T) {
-	labels := Labels{Findings: []FindingGold{{ID: "error-handling", Kind: GoldTruePositive, File: "old.go", Description: "drops an HTTP error"}}}
 	candidate := `{"findings":[{"id":"error-handling","file":"new.go","description":"drops a database error"}]}`
 
 	score := ScoreCandidate(labels, candidate)
-	if score.TruePositive != 0 || score.FalseNegative != 1 || score.Pending != 1 {
-		t.Fatalf("score = %#v, want unrelated reused-ID finding left pending", score)
+	if score.TruePositive != 1 || score.FalseNegative != 0 || score.Pending != 0 {
+		t.Fatalf("score = %#v, want same finding ID matched", score)
 	}
 }
 

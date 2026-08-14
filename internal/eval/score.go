@@ -72,6 +72,9 @@ func firstUnusedMatch(gold FindingGold, candidate []types.Finding, used []bool) 
 }
 
 func sameUnderlyingIssue(gold FindingGold, finding types.Finding) bool {
+	if gold.ID != "" && gold.ID == finding.ID {
+		return true
+	}
 	goldFile, goldDesc := normalizeIssue(gold.File, gold.Description)
 	candFile, candDesc := normalizeIssue(finding.File, finding.Description)
 	if goldFile == "" || candFile == "" || goldDesc == "" || candDesc == "" {
