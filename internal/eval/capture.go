@@ -492,23 +492,22 @@ func decisionForRound(round *db.StepRound, step *db.StepResult) Decision {
 // is false-negative gold. Skip and approve-with-findings stay unlabeled.
 func goldFromRound(round *db.StepRound, decision Decision) Labels {
 	labels := Labels{Version: labelsVersion}
-	if decision.SelectionSource != db.RoundSelectionSourceUser {
-		return labels
-	}
 	byID := findingIndex(round)
 	seen := map[string]bool{}
-	for _, id := range decision.SelectedFindingIDs {
-		id = strings.TrimSpace(id)
-		if id == "" || seen[id] {
-			continue
+	if decision.SelectionSource == db.RoundSelectionSourceUser {
+		for _, id := range decision.SelectedFindingIDs {
+			id = strings.TrimSpace(id)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			finding, ok := byID[id]
+			if !ok {
+				labels.Findings = append(labels.Findings, FindingGold{ID: id, Kind: GoldTruePositive, Source: goldSourceUserFix})
+				continue
+			}
+			labels.Findings = append(labels.Findings, goldForRecordedFinding(finding, true))
 		}
-		seen[id] = true
-		finding, ok := byID[id]
-		if !ok {
-			labels.Findings = append(labels.Findings, FindingGold{ID: id, Kind: GoldTruePositive, Source: goldSourceUserFix})
-			continue
-		}
-		labels.Findings = append(labels.Findings, goldForRecordedFinding(finding, true))
 	}
 	if round.UserFindingsJSON == nil || strings.TrimSpace(*round.UserFindingsJSON) == "" {
 		return labels

@@ -524,6 +524,35 @@ func TestCaptureWritesFalseNegativeGoldForUserAddedFinding(t *testing.T) {
 	}
 }
 
+func TestCaptureWritesUserAddedGoldWithoutSelectionSource(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	userFindings := `{"findings":[{"id":"user-1","severity":"warning","file":"main.go","line":1,"description":"missing audit","action":"auto-fix","source":"user"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`
+	if err := sourceDB.SetStepRoundUserFindings(reviewRound.ID, &userFindings); err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.SetStepRoundSelection(reviewRound.ID, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(p.EvalDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 1 || len(cases[0].Labels.Findings) != 1 {
+		t.Fatalf("captured gold = %#v, want independent human-added miss", cases)
+	}
+	if got := cases[0].Labels.Findings[0]; got.ID != "user-1" || got.Kind != GoldFalseNegative || got.Source != goldSourceUserAdded {
+		t.Fatalf("user-added gold = %#v, want false-negative without selection evidence", got)
+	}
+}
+
 func TestCaptureAndReportScoresMatchingCandidateAsTruePositive(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
