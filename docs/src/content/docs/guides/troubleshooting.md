@@ -150,7 +150,7 @@ Pipeline prompts steer agents to keep intentional writes inside the disposable w
 This reduces macOS App Management prompts from agent-invoked commands, but it is not an OS sandbox.
 
 If you still see prompts, check the step log for commands that intentionally write outside the worktree and move that setup into your normal development environment or an explicit repo-local command.
-Requested test evidence may still be written under the managed temporary `no-mistakes-evidence` directory. On GitHub, it is published to the push-target repository's orphan evidence branch when `test.evidence.store_in_repo` is enabled; the [Global Config Reference](/no-mistakes/reference/global-config/#testevidence) lists the cases that leave it local instead.
+Requested test evidence may still be written under the managed evidence directory (`<NM_HOME>/evidence/<run-id>` by default). On GitHub, it is published to the push-target repository's orphan evidence branch when `test.evidence.store_in_repo` is enabled; the [Global Config Reference](/no-mistakes/reference/global-config/#testevidence) lists the cases that leave it local instead.
 Normal tool temp or cache writes can still happen outside the worktree.
 Testing prompts ask agents to remove transient working-tree artifacts they created, such as downloaded models, caches, build outputs, large binaries, or generated data directories, before completion.
 

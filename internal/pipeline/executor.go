@@ -96,6 +96,22 @@ func NewExecutor(database *db.DB, p *paths.Paths, cfg *config.Config, ag agent.A
 	}
 }
 
+// runEvidenceDir resolves where this run's test evidence is written. The
+// executor is the single owner of that answer for the pipeline: steps read it
+// from StepContext rather than recomputing a path, which is what let the
+// steering preamble and the test step drift apart while both hardcoded the
+// system temp directory.
+func (e *Executor) runEvidenceDir(runID string) string {
+	if e.paths == nil {
+		return ""
+	}
+	configured := ""
+	if e.config != nil {
+		configured = e.config.Test.Evidence.LocalRoot
+	}
+	return e.paths.RunEvidenceDir(configured, runID)
+}
+
 // SetGateReconcileTimings overrides the interval between approval-gate
 // reconciliation checks and the deadline for each check. It is primarily used
 // by deterministic tests and specialized embeddings; non-positive values keep
@@ -700,6 +716,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		IntentSource:     userIntentSource,
 		Sessions:         e.sessions,
 		Shared:           e.shared,
+		EvidenceDir:      e.runEvidenceDir(run.ID),
 		Fixing:           state.fixing,
 		PreviousFindings: state.previousFindings,
 		Log:              writeLog,

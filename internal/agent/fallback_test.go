@@ -111,7 +111,7 @@ func TestFallbackAgentDoesNotFallBackOnStructuredOutputError(t *testing.T) {
 func TestFallbackAgent_ForwardsSessionCapability(t *testing.T) {
 	first := &fallbackTestAgent{name: "codex", resumable: true, run: func() (*Result, error) { return &Result{}, nil }}
 	second := &fallbackTestAgent{name: "claude", resumable: true, run: func() (*Result, error) { return &Result{}, nil }}
-	if !SupportsSessionResume(NewFallback([]Agent{WithSteering(first), WithSteering(second)})) {
+	if !SupportsSessionResume(NewFallback([]Agent{WithSteering(first, "/evidence"), WithSteering(second, "/evidence")})) {
 		t.Fatal("fallback's primary resumable agent must retain session support")
 	}
 }

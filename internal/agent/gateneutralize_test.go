@@ -94,22 +94,22 @@ func TestEnsureGateNeutralized_RefusesUnsupportedUnderOptOut(t *testing.T) {
 // proves the capability propagates through both wrappers and fails closed if ANY
 // fallback member is unverified.
 func TestNeutralizesGateInstructions_ThroughProductionWrapping(t *testing.T) {
-	if !NeutralizesGateInstructions(WithSteering(optOutAgent(t, types.AgentCodex, nil))) {
+	if !NeutralizesGateInstructions(WithSteering(optOutAgent(t, types.AgentCodex, nil), "/evidence")) {
 		t.Error("WithSteering(codex) must remain neutralized under opt-out")
 	}
-	if NeutralizesGateInstructions(WithSteering(optOutAgent(t, types.AgentOpenCode, nil))) {
+	if NeutralizesGateInstructions(WithSteering(optOutAgent(t, types.AgentOpenCode, nil), "/evidence")) {
 		t.Error("WithSteering(opencode) must remain non-neutralized")
 	}
 	allVerified := NewFallback([]Agent{
-		WithSteering(optOutAgent(t, types.AgentCodex, nil)),
-		WithSteering(optOutAgent(t, types.AgentClaude, nil)),
+		WithSteering(optOutAgent(t, types.AgentCodex, nil), "/evidence"),
+		WithSteering(optOutAgent(t, types.AgentClaude, nil), "/evidence"),
 	})
 	if err := EnsureGateNeutralized(allVerified); err != nil {
 		t.Errorf("fallback [codex, claude] must pass under opt-out: %v", err)
 	}
 	oneUnverified := NewFallback([]Agent{
-		WithSteering(optOutAgent(t, types.AgentCodex, nil)),
-		WithSteering(optOutAgent(t, types.AgentOpenCode, nil)),
+		WithSteering(optOutAgent(t, types.AgentCodex, nil), "/evidence"),
+		WithSteering(optOutAgent(t, types.AgentOpenCode, nil), "/evidence"),
 	})
 	if err := EnsureGateNeutralized(oneUnverified); err == nil {
 		t.Error("fallback [codex, opencode] must be refused under opt-out")

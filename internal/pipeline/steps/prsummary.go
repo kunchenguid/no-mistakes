@@ -48,6 +48,11 @@ type testingSummaryOptions struct {
 	summaryParagraph     bool
 	omitOutcome          bool
 	repoRoot             string
+	// evidenceRoot is the run's evidence directory. Together with repoRoot it
+	// is the allowlist for absolute artifact paths an agent reported: a path
+	// under neither is dropped rather than rendered into the PR body. Empty
+	// disables the evidence half of the allowlist, which fails closed.
+	evidenceRoot string
 	// evidence links artifacts published to the repository's orphan evidence
 	// branch. It is nil when nothing was published, and the artifacts then
 	// render as local paths rather than as links that would not resolve.
@@ -130,12 +135,13 @@ func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 	return buildTestingSummary(steps, rounds, testingSummaryOptions{includeTestedDetails: true})
 }
 
-func BuildTestingSummaryForPR(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot string, links *evidenceLinks) string {
+func BuildTestingSummaryForPR(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot, evidenceRoot string, links *evidenceLinks) string {
 	opts := testingSummaryOptionsForGitHub(upstreamURL, ref)
 	opts.compactArtifacts = true
 	opts.summaryParagraph = true
 	opts.omitOutcome = true
 	opts.repoRoot = repoRoot
+	opts.evidenceRoot = evidenceRoot
 	opts.evidence = links
 	return buildTestingSummary(steps, rounds, opts)
 }
@@ -543,7 +549,10 @@ func artifactFilesystemPath(p string, opts testingSummaryOptions) string {
 	if !filepath.IsAbs(p) {
 		return ""
 	}
-	if _, ok := artifactPathRelativeToRoot(p, testEvidenceRoot()); !ok {
+	if opts.evidenceRoot == "" {
+		return ""
+	}
+	if _, ok := artifactPathRelativeToRoot(p, opts.evidenceRoot); !ok {
 		return ""
 	}
 	return p
@@ -673,8 +682,10 @@ func sanitizeAbsoluteArtifactPath(clean string, opts testingSummaryOptions) stri
 	if _, ok := artifactPathRelativeToRoot(cleanedPath, opts.repoRoot); ok {
 		return cleanedPath
 	}
-	if _, ok := artifactPathRelativeToRoot(cleanedPath, testEvidenceRoot()); ok {
-		return cleanedPath
+	if opts.evidenceRoot != "" {
+		if _, ok := artifactPathRelativeToRoot(cleanedPath, opts.evidenceRoot); ok {
+			return cleanedPath
+		}
 	}
 	return ""
 }

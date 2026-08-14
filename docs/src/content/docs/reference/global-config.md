@@ -67,6 +67,8 @@ test:
     store_in_repo: false
     dir: .no-mistakes/evidence
     branch: no-mistakes/evidence
+    retention: 336h
+    max_runs: 200
 ```
 
 ## Fields
@@ -392,19 +394,22 @@ Otherwise, accepted candidates are ranked by confidence, which combines the raw 
 ### test.evidence
 
 Test-step evidence storage settings.
-By default, evidence artifacts stay in a temporary directory keyed by run ID and are referenced by local path.
+By default, evidence artifacts are written to `<NM_HOME>/evidence/<run-id>` and referenced by local path.
 
 |      |          |
 | ---- | -------- |
 | Type | `object` |
 
-| Field                         | Type     | Default                 | Description                                                                 |
-| ----------------------------- | -------- | ----------------------- | --------------------------------------------------------------------------- |
-| `test.evidence.store_in_repo` | `bool`   | `false`                 | Publish test evidence artifacts to the repository's orphan evidence branch  |
-| `test.evidence.dir`           | `string` | `.no-mistakes/evidence` | Directory prefix inside the evidence branch                                 |
-| `test.evidence.branch`        | `string` | `no-mistakes/evidence`  | Name of the orphan evidence branch                                          |
+| Field                         | Type     | Default                  | Description                                                                |
+| ----------------------------- | -------- | ------------------------ | -------------------------------------------------------------------------- |
+| `test.evidence.store_in_repo` | `bool`   | `false`                  | Publish test evidence artifacts to the repository's orphan evidence branch |
+| `test.evidence.dir`           | `string` | `.no-mistakes/evidence`  | Directory prefix inside the evidence branch                                |
+| `test.evidence.branch`        | `string` | `no-mistakes/evidence`   | Name of the orphan evidence branch                                         |
+| `test.evidence.local_root`    | `string` | `<NM_HOME>/evidence`     | Absolute directory where run evidence is written on local disk             |
+| `test.evidence.retention`     | `string` | `336h` (14 days)         | How long a run's evidence survives; `unlimited`/`none`/`off`/`never` or `0` disables the bound |
+| `test.evidence.max_runs`      | `int`    | `200`                    | How many run directories survive regardless of age; `0` disables the bound |
 
-The test step always collects evidence in a temporary directory outside the worktree, so artifacts never enter the branch under validation.
+The test step always collects evidence outside the worktree, so artifacts never enter the branch under validation.
 When `store_in_repo` is true for a GitHub repository, the PR step copies that directory onto `branch` under `<dir>/<branch-slug>` in the code branch's push-target repository (the fork when fork routing is configured), pushes it, and links the artifacts from the pull request body.
 The branch is an orphan: it shares no history with your code branches, so evidence never reaches the default branch. Links use the evidence commit rather than the branch, so they keep resolving after later runs.
 Branch slashes become nested directories, unsafe branch characters are replaced, and an empty branch slug falls back to the run ID.
@@ -414,7 +419,22 @@ Publication is also refused when the remote cannot be read or pushed, an artifac
 Evidence-branch publication currently supports GitHub links only. On other providers, no evidence branch is pushed and the PR body keeps its local rendering.
 Enabling this pushes a branch to your remote, so pick a `branch` name your CI workflows do not build.
 
-These are global defaults. Per-repo config can override each field, except `branch`, which is read only from the trusted default branch.
+#### Local storage and cleanup
+
+Evidence lives under the app root rather than the system temp directory. On Linux the daemon runs from a service unit that does not export `TMPDIR`, so the old temp-directory default resolved to the shared `/tmp`, which current Ubuntu mounts as a RAM-backed `tmpfs`. The app root is disk backed on macOS, Linux, and Windows alike.
+
+no-mistakes reaps this directory itself rather than relying on an operating-system temp cleaner:
+
+- A finished run that produced no artifacts leaves nothing behind.
+- Run directories older than `retention` are removed.
+- Whatever survives is trimmed to `max_runs`, oldest first.
+- A run that is still pending or running is never touched.
+
+Reaping runs after each finished run and again at daemon startup. An upgraded daemon also drains the pre-relocation directory in the system temp directory under the same rules; nothing is migrated, because absolute paths recorded in older pull request bodies name the old location.
+
+`local_root` must be an absolute path; a relative value fails the config. Because `retention` bounds how long a PR body's local artifact links keep resolving, raise it rather than lowering it if your reviews run long.
+
+These are global defaults. Per-repo config can override each field, except `branch`, which is read only from the trusted default branch, and `local_root`, `retention`, and `max_runs`, which are global-only: a repository does not get to name a filesystem path this machine's daemon writes to, or set the retention budget for a directory every repository on the machine shares.
 
 ### eval
 

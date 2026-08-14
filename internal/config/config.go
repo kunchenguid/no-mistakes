@@ -64,6 +64,17 @@ const (
 	// copy of the repository. The cap exists to bound that JSON and to keep
 	// the corpus a recent, representative window rather than an archive.
 	DefaultEvalMaxCases = 200
+	// DefaultEvidenceRetention is how long a run's on-disk evidence survives
+	// before the daemon reaps it. It is comfortably longer than typical PR
+	// review latency because a PR body references these artifacts by local path
+	// whenever publishing is off or the provider has no derivable links. This
+	// is no-mistakes' own budget: the point of owning it is that no OS temp
+	// timer decides when a user's screenshots disappear.
+	DefaultEvidenceRetention = 14 * 24 * time.Hour
+	// DefaultEvidenceMaxRuns caps how many run directories survive regardless
+	// of age, so a burst of parallel runs that all land inside the retention
+	// window still cannot grow the directory without bound.
+	DefaultEvidenceMaxRuns = 200
 )
 
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
@@ -452,6 +463,19 @@ type EvidenceRaw struct {
 	// EffectiveRepoConfig): a contributor's pushed branch must not be able to
 	// aim evidence commits at another branch of the repository.
 	Branch *string `yaml:"branch"`
+	// LocalRoot, Retention, and MaxRuns describe this MACHINE's evidence
+	// storage: where the daemon writes artifacts on local disk and how long it
+	// keeps them. They are global-only - Merge resolves them straight from
+	// GlobalConfig and never from a repository, trusted copy included. A
+	// repository does not get to name a filesystem path the daemon writes to,
+	// nor to set the retention budget for a resource every other repository on
+	// the machine shares. (Contrast Branch, which is trusted-repo-settable
+	// because a branch genuinely is per-repository state.)
+	//
+	// LocalRoot must be absolute; see validateTestRaw.
+	LocalRoot *string `yaml:"local_root"`
+	Retention *string `yaml:"retention"`
+	MaxRuns   *int    `yaml:"max_runs"`
 }
 
 // Test is the resolved test-step config.
@@ -463,12 +487,19 @@ type Test struct {
 // run publishes its evidence artifacts to the orphan Branch of the same
 // repository, under Dir, and links them from the pull request body. Evidence
 // never enters the pushed code branch, so it never reaches the default
-// branch's history. Otherwise evidence stays in a temporary directory
+// branch's history. Otherwise evidence stays on local disk under LocalRoot,
 // referenced only by local path.
 type Evidence struct {
 	StoreInRepo bool
 	Dir         string
 	Branch      string
+	// LocalRoot overrides the app-root default for on-disk evidence; empty
+	// means paths.EvidenceDir(). Retention and MaxRuns bound how much of it
+	// survives: no-mistakes reaps its own evidence rather than leaving that to
+	// an OS temp-directory timer. Zero disables the corresponding bound.
+	LocalRoot string
+	Retention time.Duration
+	MaxRuns   int
 }
 
 // EvalRaw is the YAML representation of local evaluation-corpus settings.
@@ -693,16 +724,28 @@ intent:
   # disabled_readers: [codex]
 
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
-# gathers to demonstrate the change works). By default they are kept in a
-# temporary directory and referenced by local path. Opt in to store_in_repo to
-# publish them to an orphan evidence branch in the same repository and link them
-# from the PR body. The evidence branch shares no history with your code
-# branches, so artifacts never enter the pushed branch or the default branch.
+# gathers to demonstrate the change works). By default they are kept on local
+# disk under <NM_HOME>/evidence and referenced by local path. Opt in to
+# store_in_repo to publish them to an orphan evidence branch in the same
+# repository and link them from the PR body. The evidence branch shares no
+# history with your code branches, so artifacts never enter the pushed branch or
+# the default branch.
+#
+# no-mistakes reaps its own evidence rather than leaving that to an OS temp
+# directory timer: retention ages run directories out (default 14 days) and
+# max_runs caps how many survive regardless of age (default 200). Set retention
+# to "unlimited", or either to 0, to disable that bound. local_root moves the
+# directory to another disk and must be an absolute path. These three are
+# global-only - a repository's .no-mistakes.yaml cannot change where this
+# machine writes evidence or how long it keeps it.
 # test:
 #   evidence:
 #     store_in_repo: true
 #     dir: .no-mistakes/evidence
 #     branch: no-mistakes/evidence
+#     local_root: /var/lib/no-mistakes/evidence
+#     retention: 720h
+#     max_runs: 50
 
 # Local review evaluation corpus, used by "no-mistakes eval" to compare
 # agent+model candidates against review passes your own pipeline already made.
@@ -1581,6 +1624,9 @@ func testDefaults() Test {
 			StoreInRepo: false,
 			Dir:         ".no-mistakes/evidence",
 			Branch:      evidence.DefaultBranch,
+			LocalRoot:   "",
+			Retention:   DefaultEvidenceRetention,
+			MaxRuns:     DefaultEvidenceMaxRuns,
 		},
 	}
 }
@@ -1588,6 +1634,10 @@ func testDefaults() Test {
 // applyTestOverrides applies non-nil raw values onto resolved defaults.
 // The branch name is validated at config parse time (validateTestRaw), so an
 // unusable value never reaches here.
+//
+// It deliberately covers only the repository-relevant half of test.evidence.
+// The local-storage half is applied separately by applyEvidenceStorageOverrides
+// so a repository config can never reach it (see EvidenceRaw.LocalRoot).
 func applyTestOverrides(dst *Test, src *TestRaw) {
 	if src.Evidence.StoreInRepo != nil {
 		dst.Evidence.StoreInRepo = *src.Evidence.StoreInRepo
@@ -1600,6 +1650,47 @@ func applyTestOverrides(dst *Test, src *TestRaw) {
 			dst.Evidence.Branch = branch
 		}
 	}
+}
+
+// applyEvidenceStorageOverrides applies the global-only local-storage half of
+// test.evidence. Merge calls it with the GlobalConfig copy and nothing else, so
+// neither a pushed nor a trusted repository config can move the daemon's
+// evidence directory or change its retention budget. Values are validated at
+// config parse time (validateTestRaw), so an unusable value never reaches here.
+func applyEvidenceStorageOverrides(dst *Evidence, src *EvidenceRaw) {
+	if src.LocalRoot != nil && strings.TrimSpace(*src.LocalRoot) != "" {
+		dst.LocalRoot = strings.TrimSpace(*src.LocalRoot)
+	}
+	if src.Retention != nil {
+		if d, err := parseEvidenceRetention(*src.Retention); err == nil {
+			dst.Retention = d
+		}
+	}
+	if src.MaxRuns != nil && *src.MaxRuns >= 0 {
+		dst.MaxRuns = *src.MaxRuns
+	}
+}
+
+// parseEvidenceRetention interprets test.evidence.retention. The keyword
+// "unlimited" (also "none"/"off"/"never"), or any non-positive duration,
+// disables age-based reaping and resolves to 0, which keeps every run's
+// evidence until the max_runs ceiling removes it.
+func parseEvidenceRetention(value string) (time.Duration, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	switch trimmed {
+	case "":
+		return DefaultEvidenceRetention, nil
+	case "unlimited", "none", "off", "never":
+		return 0, nil
+	}
+	d, err := time.ParseDuration(trimmed)
+	if err != nil {
+		return 0, fmt.Errorf("test.evidence.retention: parse %q: %w", value, err)
+	}
+	if d <= 0 {
+		return 0, nil
+	}
+	return d, nil
 }
 
 // evalDefaults returns the default local evaluation-corpus settings. Both
@@ -1643,11 +1734,31 @@ func validateEvalRaw(raw EvalRaw) error {
 // though EffectiveRepoConfig only honors the trusted branch name: a branch
 // carrying an invalid value has to fail before it merges.
 func validateTestRaw(test TestRaw) error {
-	if test.Evidence.Branch == nil {
-		return nil
+	if test.Evidence.Branch != nil {
+		if _, err := evidence.NormalizeBranch(*test.Evidence.Branch); err != nil {
+			return fmt.Errorf("test.evidence.branch: %w", err)
+		}
 	}
-	if _, err := evidence.NormalizeBranch(*test.Evidence.Branch); err != nil {
-		return fmt.Errorf("test.evidence.branch: %w", err)
+	// local_root must be absolute. The daemon's working directory is a bare
+	// gate repository, so a relative path would resolve somewhere the operator
+	// never named - and evidence would silently scatter instead of landing
+	// where they asked. Surface the mistake in the config rather than at run
+	// time. Like branch, this also validates the PUSHED copy even though the
+	// value is honored only from the global config: a branch carrying an
+	// invalid value has to fail before it merges.
+	if test.Evidence.LocalRoot != nil {
+		root := strings.TrimSpace(*test.Evidence.LocalRoot)
+		if root != "" && !filepath.IsAbs(root) {
+			return fmt.Errorf("test.evidence.local_root must be an absolute path, got %q", root)
+		}
+	}
+	if test.Evidence.Retention != nil {
+		if _, err := parseEvidenceRetention(*test.Evidence.Retention); err != nil {
+			return err
+		}
+	}
+	if test.Evidence.MaxRuns != nil && *test.Evidence.MaxRuns < 0 {
+		return fmt.Errorf("test.evidence.max_runs must be 0 (keep every run) or greater, got %d", *test.Evidence.MaxRuns)
 	}
 	return nil
 }
@@ -1750,6 +1861,10 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 	test := testDefaults()
 	applyTestOverrides(&test, &global.Test)
 	applyTestOverrides(&test, &repo.Test)
+	// Applied last and from the global config only: where the daemon writes
+	// evidence on this machine, and how long it keeps it, is never a
+	// repository's decision (see EvidenceRaw.LocalRoot).
+	applyEvidenceStorageOverrides(&test.Evidence, &global.Test.Evidence)
 
 	commit := Commit{FixMessage: DefaultFixMessageTemplate}
 	if global.Commit.FixMessage != nil {

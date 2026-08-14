@@ -147,16 +147,20 @@ func newTestContext(t *testing.T, ag agent.Agent, workDir, baseSHA, headSHA stri
 	t.Cleanup(func() { database.Close() })
 
 	return &pipeline.StepContext{
-		Ctx:      context.Background(),
-		Run:      &db.Run{ID: "run-1", RepoID: "repo-1", Branch: "refs/heads/feature", HeadSHA: headSHA, BaseSHA: baseSHA},
-		Repo:     &db.Repo{ID: "repo-1", WorkingPath: workDir, UpstreamURL: "https://github.com/test/repo", DefaultBranch: "main"},
-		WorkDir:  workDir,
-		Agent:    ag,
-		Config:   &config.Config{Agent: types.AgentClaude, Commands: cmds},
-		DB:       database,
-		Log:      func(s string) {},
-		LogChunk: func(s string) {},
-		LogFile:  func(s string) {},
+		Ctx:  context.Background(),
+		Run:  &db.Run{ID: "run-1", RepoID: "repo-1", Branch: "refs/heads/feature", HeadSHA: headSHA, BaseSHA: baseSHA},
+		Repo: &db.Repo{ID: "repo-1", WorkingPath: workDir, UpstreamURL: "https://github.com/test/repo", DefaultBranch: "main"},
+		// The executor resolves this from the app root in production. Tests get
+		// a per-test directory so a step under test can never write evidence
+		// into a shared location the next test would then observe.
+		EvidenceDir: filepath.Join(t.TempDir(), "evidence", "run-1"),
+		WorkDir:     workDir,
+		Agent:       ag,
+		Config:      &config.Config{Agent: types.AgentClaude, Commands: cmds},
+		DB:          database,
+		Log:         func(s string) {},
+		LogChunk:    func(s string) {},
+		LogFile:     func(s string) {},
 	}
 }
 
