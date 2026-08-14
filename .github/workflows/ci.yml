@@ -39,7 +39,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    # Sized for the Windows leg, which sets the floor: it compiles every test
+    # binary and then runs the git-backed packages at roughly 10x their Linux
+    # cost (see the Defender note below). At 25 the job was cancelled mid-suite
+    # with no verdict even though every package that reported had passed, which
+    # reads as a failure of the change under test rather than of the budget.
+    # This is a runaway guard, not a target - Linux and macOS finish far inside
+    # it, and 40 still keeps a wedged runner well short of the six-hour default.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
 
