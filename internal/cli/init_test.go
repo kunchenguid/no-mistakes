@@ -278,6 +278,94 @@ func TestPrintWorktreeRootGuidanceMergesIntoAnExistingBlock(t *testing.T) {
 	}
 }
 
+// TestPrintWorktreeRootGuidanceReplacesThisCheckoutsEntry is re-pointing: the
+// operator placed this checkout's runs somewhere, then runs init again with a
+// different directory. Its key is already in the block, so the edit is a
+// replacement - adding a second entry for the same key is the duplicate-key
+// failure one level down from a second worktree_roots:, and it stops the daemon
+// just as thoroughly.
+func TestPrintWorktreeRootGuidanceReplacesThisCheckoutsEntry(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	checkout := filepath.Join(dir, "src", "repo1")
+	oldRoot := filepath.Join(dir, "work", "repo1-runs")
+	newRoot := filepath.Join(dir, "work", "repo1-runs-v2")
+	oldEntry := "  " + checkout + ": " + oldRoot
+	newEntry := "  " + checkout + ": " + newRoot
+	block := "worktree_roots:\n" + oldEntry + "\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(block), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	printWorktreeRootGuidance(&out, p, checkout, newRoot)
+
+	got := out.String()
+	for _, want := range []string{strings.TrimSpace(oldEntry), strings.TrimSpace(newEntry)} {
+		if !containsYAMLLine(got, want) {
+			t.Errorf("guidance missing the line %q, so the operator cannot see what to replace, got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Add this") {
+		t.Errorf("guidance says to add an entry for a checkout the block already has, got:\n%s", got)
+	}
+
+	// The replacement the guidance describes loads and re-points the checkout.
+	replaced := "worktree_roots:\n" + newEntry + "\n"
+	cfg, err := config.LoadGlobal(writeConfig(t, p, replaced))
+	if err != nil {
+		t.Fatalf("config built by following the guidance does not load: %v", err)
+	}
+	if configured, ok := worktrees.New(p, cfg.WorktreeRoots).CustomRoot(checkout); !ok || configured != newRoot {
+		t.Errorf("replaced config places %q at (%q, %v), want %q", checkout, configured, ok, newRoot)
+	}
+
+	// ... and appending instead is why it must be a replacement.
+	if _, err := config.LoadGlobal(writeConfig(t, p, block+newEntry+"\n")); err == nil {
+		t.Error("a second entry for the same checkout loaded; the guidance's replace shape would then be a matter of taste")
+	}
+
+	// Re-pointing to the directory already configured stays a no-op report.
+	var same bytes.Buffer
+	printWorktreeRootGuidance(&same, p, checkout, oldRoot)
+	if !strings.Contains(same.String(), "already configured") {
+		t.Errorf("guidance for the configured root should report it is in effect, got:\n%s", same.String())
+	}
+}
+
+// A key spelled differently from the checkout path still names the same checkout,
+// and the line the operator is told to replace has to be the line their file
+// contains - not a normalized rewrite of it.
+func TestPrintWorktreeRootGuidanceNamesTheEntryAsTheConfigSpellsIt(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	checkout := filepath.Join(dir, "src", "repo1")
+	configuredKey := checkout + string(filepath.Separator)
+	oldRoot := filepath.Join(dir, "work", "repo1-runs")
+	newRoot := filepath.Join(dir, "work", "repo1-runs-v2")
+	block := "worktree_roots:\n  " + yamlPath(configuredKey) + ": " + yamlPath(oldRoot) + "\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(block), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	printWorktreeRootGuidance(&out, p, checkout, newRoot)
+
+	got := out.String()
+	if !containsYAMLLine(got, configuredKey+": "+oldRoot) {
+		t.Errorf("guidance does not name the line the config actually contains, got:\n%s", got)
+	}
+	if containsYAMLLine(got, checkout+": "+newRoot) {
+		t.Errorf("guidance rewrote the key, which would leave two keys naming one checkout, got:\n%s", got)
+	}
+}
+
 // TestPrintWorktreeRootGuidanceMergesIntoAnEmptyBlock covers the block shapes
 // that parse to no entries at all: `worktree_roots:` with nothing after it, and
 // `worktree_roots: {}`. The key is there, so telling the operator to add another

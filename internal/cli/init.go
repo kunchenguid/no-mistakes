@@ -202,29 +202,44 @@ func checkoutClaimingWorktreeRoot(p *paths.Paths, checkout, root string) (string
 // operator's own comments - so init prints the exact entry to add instead of
 // editing it, and says nothing further when the entry is already in effect.
 //
-// What it prints depends on whether the config already has a worktree_roots
-// block, because YAML rejects a duplicate top-level key: an operator who pasted
-// a second `worktree_roots:` - the normal outcome for the second repository they
-// place - would get a config that no longer loads, and a daemon that refuses to
-// start until they repair it by hand. With a block already present, only the
-// entry line is printed, to add under the existing key.
+// What it prints is whatever edit leaves the config loadable, because YAML
+// rejects a duplicate key at either level and a config that no longer loads is a
+// daemon that refuses to start - every command runs EnsureDaemon, so the
+// operator's whole CLI goes with it. Three edits, three shapes:
 //
-// Presence is a question about the document, not about the entries it parsed to
-// (see config.GlobalConfigHasKey): a key with no value and a key set to {} both
-// parse to nothing, and telling the operator to add a second one is the failure
-// this branch exists to avoid.
+//   - This checkout already has a DIFFERENT root: its key is already in the
+//     block, so the edit is to replace that entry's value. Adding a second
+//     `<checkout>:` under the same block is the duplicate-key failure one level
+//     down from a second `worktree_roots:`. Both lines are printed as the config
+//     spells them, so the operator can find the one to replace.
+//   - The block exists but not this checkout: only the entry line, to add under
+//     the existing key.
+//   - No block: the key and the entry.
+//
+// Block presence is a question about the document, not about the entries it
+// parsed to (see config.GlobalConfigHasKey): a key with no value and a key set to
+// {} both parse to nothing, and telling the operator to add a second one is the
+// failure that branch exists to avoid.
 func printWorktreeRootGuidance(w io.Writer, p *paths.Paths, workingPath, root string) {
+	configuredKey, configuredRoot, configured := "", "", false
 	if cfg, err := config.LoadGlobal(p.ConfigFile()); err == nil {
-		if configured, ok := worktrees.New(p, cfg.WorktreeRoots).CustomRoot(workingPath); ok && worktrees.Canonical(configured) == worktrees.Canonical(root) {
+		configuredKey, configuredRoot, configured = configuredWorktreeRootEntry(cfg, workingPath)
+		if configured && worktrees.Canonical(configuredRoot) == worktrees.Canonical(root) {
 			fmt.Fprintf(w, "  %s  %s %s\n", sDim.Render("  runs"), sGreen.Render(root), sDim.Render("(already configured)"))
 			return
 		}
 	}
-	blockPresent := config.GlobalConfigHasKey(p.ConfigFile(), "worktree_roots")
-	entry := "  " + workingPath + ": " + root
 	fmt.Fprintf(w, "  %s  %s\n", sDim.Render("  runs"), root)
 	fmt.Fprintln(w)
-	if blockPresent {
+	if configured {
+		fmt.Fprintf(w, "  %s\n", sDim.Render("Replace this line in "+p.ConfigFile()+" so runs are created there:"))
+		fmt.Fprintf(w, "  %s\n", sBold.Render("  "+configuredKey+": "+configuredRoot))
+		fmt.Fprintf(w, "  %s\n", sDim.Render("with:"))
+		fmt.Fprintf(w, "  %s\n", sBold.Render("  "+configuredKey+": "+root))
+		return
+	}
+	entry := "  " + workingPath + ": " + root
+	if config.GlobalConfigHasKey(p.ConfigFile(), "worktree_roots") {
 		fmt.Fprintf(w, "  %s\n", sDim.Render("Add this under the existing worktree_roots: in "+p.ConfigFile()+" so runs are created there:"))
 		fmt.Fprintf(w, "  %s\n", sBold.Render(entry))
 		return
@@ -232,4 +247,22 @@ func printWorktreeRootGuidance(w io.Writer, p *paths.Paths, workingPath, root st
 	fmt.Fprintf(w, "  %s\n", sDim.Render("Add this to "+p.ConfigFile()+" so runs are created there:"))
 	fmt.Fprintf(w, "  %s\n", sBold.Render("worktree_roots:"))
 	fmt.Fprintf(w, "  %s\n", sBold.Render(entry))
+}
+
+// configuredWorktreeRootEntry returns the worktree_roots entry that places this
+// checkout's runs, spelled the way the config file spells it.
+//
+// The key is returned as written rather than canonicalized because guidance that
+// names a line has to name the line the operator will find: a trailing separator
+// or a symlinked spelling still matches the same checkout (that is what
+// worktrees.Canonical is for), and re-writing the key would also risk two
+// literal keys naming one checkout, which the config loader rejects.
+func configuredWorktreeRootEntry(cfg *config.GlobalConfig, workingPath string) (key, root string, ok bool) {
+	want := worktrees.Canonical(workingPath)
+	for checkout, configured := range cfg.WorktreeRoots {
+		if worktrees.Canonical(checkout) == want {
+			return checkout, configured, true
+		}
+	}
+	return "", "", false
 }
