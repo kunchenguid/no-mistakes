@@ -268,7 +268,7 @@ Start a new run only after abort confirms the terminal state; see the [abort com
 
 ## Worktree won't clean up
 
-Symptom: `~/.no-mistakes/worktrees/<repoID>/<runID>/` sticks around after a run ends.
+Symptom: `~/.no-mistakes/worktrees/<repoID>/<runID>/` - or `<root>/<runID>` when the repository has a [configured worktree root](/no-mistakes/reference/global-config/#worktree_roots) - sticks around after a run ends.
 
 The daemon removes worktrees at run completion, and also on daemon startup (crash recovery). If one is still there:
 
