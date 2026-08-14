@@ -410,7 +410,7 @@ Valid `disabled_readers` values are `claude`, `codex`, `opencode`, `rovodev`, `p
 
 ### test.evidence
 
-Override where evidence artifacts from the test step are stored.
+Configure repository publication of evidence artifacts from the test step.
 Fields not set here inherit from global config and then the built-in defaults.
 
 | Field | Type | Default |
