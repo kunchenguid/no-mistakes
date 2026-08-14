@@ -295,6 +295,65 @@ func TestPrintWorktreeRootGuidanceReplacesThisCheckoutsEntryFromAnUnloadableConf
 	}
 }
 
+// TestPrintWorktreeRootGuidanceNeverRewritesAKeyItCouldNotRead covers the config
+// that does not parse at all - a stray tab, an unclosed quote - while a daemon
+// started before it broke is still alive, so init reaches its guidance. The whole
+// worktree_roots key is then present but unread, and telling the operator to
+// replace it with a block carrying "every entry it already had" writes out the
+// one entry this init knows: pasting it returns every other repository to the
+// default placement, silently, since nothing warns about a key that vanished.
+func TestPrintWorktreeRootGuidanceNeverRewritesAKeyItCouldNotRead(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	checkoutA := filepath.Join(dir, "src", "repo-a")
+	rootA := filepath.Join(dir, "work", "repo-a-runs")
+	checkoutB := filepath.Join(dir, "src", "repo-b")
+	rootB := filepath.Join(dir, "work", "repo-b-runs")
+	block := "worktree_roots:\n" +
+		"  " + yamlPath(checkoutA) + ": " + yamlPath(rootA) + "\n" +
+		"  " + yamlPath(checkoutB) + ": " + yamlPath(rootB) + "\n"
+	unparseable := block + "log_level: \"info\n"
+	if err := os.WriteFile(p.ConfigFile(), []byte(unparseable), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.LoadGlobal(p.ConfigFile()); err == nil {
+		t.Fatal("fixture config parses; it must be the document YAML cannot read")
+	}
+
+	checkout := filepath.Join(dir, "src", "repo-c")
+	root := filepath.Join(dir, "work", "repo-c-runs")
+	var out bytes.Buffer
+	printWorktreeRootGuidance(&out, p, checkout, root)
+	got := out.String()
+
+	if containsYAMLLine(got, "worktree_roots:") {
+		t.Errorf("guidance offers a whole-key replacement built from entries it never read, got:\n%s", got)
+	}
+	entry := indentedYAMLLine(t, got, checkout+": "+root)
+
+	// Following it after repairing the parse error keeps every repository placed.
+	repaired := block + entry + "\n" + "log_level: info\n"
+	cfg, err := config.LoadGlobal(writeConfig(t, p, repaired))
+	if err != nil {
+		t.Fatalf("config built by following the guidance does not load: %v", err)
+	}
+	layout := worktrees.New(p, cfg.WorktreeRoots)
+	for checkoutPath, wantRoot := range map[string]string{checkoutA: rootA, checkoutB: rootB, checkout: root} {
+		if configured, ok := layout.CustomRoot(checkoutPath); !ok || configured != wantRoot {
+			t.Errorf("config places %q at (%q, %v), want %q", checkoutPath, configured, ok, wantRoot)
+		}
+	}
+
+	// ... and the operator is told the file has to be repaired first, since the
+	// entry alone does not load until it is.
+	if !strings.Contains(got, "does not parse") {
+		t.Errorf("guidance does not say the config currently does not parse, got:\n%s", got)
+	}
+}
+
 func TestPrintWorktreeRootGuidancePrintsConfigEntry(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
 	if err := p.EnsureDirs(); err != nil {

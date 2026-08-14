@@ -252,7 +252,7 @@ func checkoutClaimingWorktreeRoot(p *paths.Paths, checkout, root string) (string
 // What it prints is whatever edit leaves the config loadable, because YAML
 // rejects a duplicate key at either level and a config that no longer loads is a
 // daemon that refuses to start - every command runs EnsureDaemon, so the
-// operator's whole CLI goes with it. Four edits, four shapes:
+// operator's whole CLI goes with it. Five edits, five shapes:
 //
 //   - No key: the key and the entry.
 //   - The key is there but nothing can be added under it - `worktree_roots: {}`,
@@ -267,6 +267,13 @@ func checkoutClaimingWorktreeRoot(p *paths.Paths, checkout, root string) (string
 //     the config spells them, so the operator can find the one to replace.
 //   - A block without this checkout: only the entry line, to add under the
 //     existing key.
+//   - A document that does not parse at all: the entry line again, and a note
+//     that the file has to be repaired first. Nothing about the key was read
+//     then except that it is there, so replacing it would carry the entries
+//     nobody read - silently returning every other repository to the default
+//     placement, which no later warning reports. An edit that adds a line is
+//     the one shape that cannot lose an entry it never saw, and the operator is
+//     repairing the document by hand regardless.
 //
 // Which of those applies is a question about the document rather than about the
 // entries it parsed to (see config.InspectGlobalConfigMapping): a key with no
@@ -295,6 +302,8 @@ func printWorktreeRootGuidance(w io.Writer, p *paths.Paths, workingPath, root st
 		fmt.Fprintf(w, "  %s\n", sDim.Render("Add this to "+p.ConfigFile()+" so runs are created there:"))
 		fmt.Fprintf(w, "  %s\n", sBold.Render("worktree_roots:"))
 		fmt.Fprintf(w, "  %s\n", sBold.Render(indent+workingPath+": "+root))
+	case shape.Unparsed:
+		printWorktreeRootsEntryAddition(w, p, indent, workingPath, root)
 	case !shape.AppendableBlock:
 		printWorktreeRootsBlockReplacement(w, p, shape, workingPath, configuredKey, root)
 	case configured:
@@ -303,9 +312,19 @@ func printWorktreeRootGuidance(w io.Writer, p *paths.Paths, workingPath, root st
 		fmt.Fprintf(w, "  %s\n", sDim.Render("with:"))
 		fmt.Fprintf(w, "  %s\n", sBold.Render(indent+configuredKey+": "+root))
 	default:
-		fmt.Fprintf(w, "  %s\n", sDim.Render("Add this under the existing worktree_roots: in "+p.ConfigFile()+" so runs are created there:"))
-		fmt.Fprintf(w, "  %s\n", sBold.Render(indent+workingPath+": "+root))
+		printWorktreeRootsEntryAddition(w, p, indent, workingPath, root)
 	}
+	if shape.Unparsed {
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "  %s\n", sYellow.Render(p.ConfigFile()+" does not parse right now, so the entries it already holds could not be read: repair it first and keep them."))
+	}
+}
+
+// printWorktreeRootsEntryAddition prints the one edit that cannot lose an entry:
+// a line added under the key as it stands.
+func printWorktreeRootsEntryAddition(w io.Writer, p *paths.Paths, indent, workingPath, root string) {
+	fmt.Fprintf(w, "  %s\n", sDim.Render("Add this under the existing worktree_roots: in "+p.ConfigFile()+" so runs are created there:"))
+	fmt.Fprintf(w, "  %s\n", sBold.Render(indent+workingPath+": "+root))
 }
 
 // worktreeRootsEntryIndent is the indentation an entry line must carry: the one
@@ -320,7 +339,9 @@ func worktreeRootsEntryIndent(shape config.GlobalConfigMapping) string {
 // printWorktreeRootsBlockReplacement prints the block form of the whole
 // worktree_roots key, which is the only edit that works when nothing can be
 // added under the key as written. It carries every entry the operator already
-// has, either re-pointing this checkout's or adding one for it.
+// has, either re-pointing this checkout's or adding one for it - which is why it
+// is reached only for a document that parsed: entries nobody could read are
+// entries this rewrite would drop.
 func printWorktreeRootsBlockReplacement(w io.Writer, p *paths.Paths, shape config.GlobalConfigMapping, workingPath, configuredKey, root string) {
 	if shape.Line != "" {
 		fmt.Fprintf(w, "  %s\n", sDim.Render("Replace this line in "+p.ConfigFile()+" so runs are created there:"))

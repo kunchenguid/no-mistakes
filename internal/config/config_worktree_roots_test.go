@@ -231,6 +231,55 @@ func TestEmptyWorktreeRootsFormsParseToNoEntries(t *testing.T) {
 	}
 }
 
+// TestInspectGlobalConfigMappingSeparatesUnreadEntriesFromNone pins the one
+// distinction a caller that rewrites the key depends on: a document nobody could
+// parse yields no entries because none were READ, which is not the same answer as
+// a key that has none. Reported as the same shape, a rewrite built from the
+// inspection silently drops every entry the file holds.
+func TestInspectGlobalConfigMappingSeparatesUnreadEntriesFromNone(t *testing.T) {
+	entries := "worktree_roots:\n" +
+		"  " + yamlPath(filepath.Join(string(filepath.Separator), "src", "a")) + ": " + yamlPath(filepath.Join(string(filepath.Separator), "work", "a-runs")) + "\n" +
+		"  " + yamlPath(filepath.Join(string(filepath.Separator), "src", "b")) + ": " + yamlPath(filepath.Join(string(filepath.Separator), "work", "b-runs")) + "\n"
+
+	unparseable := entries + "log_level: \"info\n"
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(unparseable), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadGlobalFromBytes([]byte(unparseable)); err == nil {
+		t.Fatal("fixture parses; it must be the document YAML cannot read")
+	}
+	got := InspectGlobalConfigMapping(path, "worktree_roots")
+	if !got.Present {
+		t.Fatal("the key is written at the start of a line, but was reported absent")
+	}
+	if !got.Unparsed {
+		t.Error("a document that could not be parsed reported its entries as read")
+	}
+	if len(got.Entries) != 0 {
+		t.Errorf("Entries = %+v, want none read from a document that does not parse", got.Entries)
+	}
+
+	// The same key in a document that parses, with the entries actually read.
+	parsed := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(parsed, []byte(entries), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if shape := InspectGlobalConfigMapping(parsed, "worktree_roots"); shape.Unparsed || len(shape.Entries) != 2 {
+		t.Errorf("a parseable document reported Unparsed=%v with %d entries, want false and 2", shape.Unparsed, len(shape.Entries))
+	}
+
+	// An absent key in an unreadable document is still unread, not a key known
+	// to be missing.
+	broken := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(broken, []byte("log_level: \"info\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if shape := InspectGlobalConfigMapping(broken, "worktree_roots"); !shape.Unparsed {
+		t.Error("a document that could not be parsed reported itself as read")
+	}
+}
+
 // TestInspectGlobalConfigMappingReportsWhatCanBeAppended pins the shape half of
 // the inspection against the YAML a caller has to produce. AppendableBlock says
 // the value is a block mapping one more entry line can go into; after a flow

@@ -1369,6 +1369,18 @@ type GlobalConfigMapping struct {
 	// Entries are the key's entries in document order, so a replacement can
 	// carry the ones the operator already has.
 	Entries []GlobalConfigMappingEntry
+
+	// Unparsed reports that the document could not be parsed, so Present is the
+	// only thing known about the key: its shape, its indentation, its line and
+	// its entries were never read rather than found to be absent.
+	//
+	// It exists because those two are not the same answer to the question this
+	// type is asked. A consumer that rewrites the key carries the entries it
+	// read, and reading none of them looks exactly like a key that has none - so
+	// without this field the rewrite silently drops every entry the document
+	// holds, which for worktree_roots returns other repositories to the default
+	// placement with nothing to report it.
+	Unparsed bool
 }
 
 // InspectGlobalConfigMapping describes the top-level key in the global config
@@ -1376,10 +1388,11 @@ type GlobalConfigMapping struct {
 //
 // It never fails: a missing or unreadable file has no key, and a file this
 // package cannot parse is scanned for the key written at the start of a line,
-// which is where a top-level key is - reported as present but not appendable, so
-// guidance falls back to naming the whole replacement. The operator has to fix an
-// unparseable configuration either way; the point here is to not hand them an
-// edit that breaks a document that still loads.
+// which is where a top-level key is - reported as present and Unparsed, which
+// says that everything else about the key is unread rather than absent. The
+// operator has to fix an unparseable configuration either way; the point here is
+// to not hand them an edit that breaks a document that still loads, or one built
+// from a document nothing could read.
 func InspectGlobalConfigMapping(path, key string) GlobalConfigMapping {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1387,7 +1400,7 @@ func InspectGlobalConfigMapping(path, key string) GlobalConfigMapping {
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return GlobalConfigMapping{Present: hasTopLevelKeyLine(data, key)}
+		return GlobalConfigMapping{Present: hasTopLevelKeyLine(data, key), Unparsed: true}
 	}
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
 		return GlobalConfigMapping{}
