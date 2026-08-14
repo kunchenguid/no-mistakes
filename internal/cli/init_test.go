@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -96,7 +97,7 @@ func TestResolveWorktreeRootRefusesRootInsideAnotherConfiguredCheckout(t *testin
 	if err == nil {
 		t.Fatal("expected a refusal for a root inside another configured checkout")
 	}
-	if !strings.Contains(err.Error(), otherCheckout) {
+	if !namesPath(err, otherCheckout) {
 		t.Errorf("refusal %q does not name the checkout the root sits in", err)
 	}
 
@@ -133,7 +134,7 @@ func TestResolveWorktreeRootRefusesRootInsideAnotherRegisteredCheckout(t *testin
 	if err == nil {
 		t.Fatal("expected a refusal for a root inside another registered checkout")
 	}
-	if !strings.Contains(err.Error(), otherCheckout) {
+	if !namesPath(err, otherCheckout) {
 		t.Errorf("refusal %q does not name the checkout the root sits in", err)
 	}
 
@@ -163,7 +164,7 @@ func TestResolveWorktreeRootRefusesRootClaimedByAnotherCheckout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a refusal for a root another checkout already claims")
 	}
-	if !strings.Contains(err.Error(), otherCheckout) {
+	if !namesPath(err, otherCheckout) {
 		t.Errorf("refusal %q does not name the checkout that claims the root", err)
 	}
 
@@ -203,7 +204,7 @@ func TestInitRefusesToRegisterACheckoutHoldingAConfiguredWorktreeRoot(t *testing
 	if err == nil {
 		t.Fatal("expected a refusal for a checkout that contains a configured worktree root")
 	}
-	if !strings.Contains(err.Error(), otherCheckout) {
+	if !namesPath(err, otherCheckout) {
 		t.Errorf("refusal %q does not name the entry that becomes unusable", err)
 	}
 
@@ -714,4 +715,24 @@ func writeConfig(t *testing.T, p *paths.Paths, contents string) string {
 // mapping and its separators survive as literal backslashes.
 func yamlPath(path string) string {
 	return `"` + strings.ReplaceAll(path, `\`, `\\`) + `"`
+}
+
+// namesPath reports whether a refusal identifies path to the operator who has
+// to repair it. Two spellings of one directory both count, and so does the
+// quoted rendering:
+//
+// A refusal writes paths with %q, which escapes the separator, so a Windows
+// path appears as "C:\\src\\repo" and never contains its own raw spelling.
+// And a refusal names either the spelling the configuration carries or its
+// canonical form, which differ wherever the filesystem has a second name for a
+// directory - the macOS /var -> /private/var symlink, and the 8.3 short names
+// Windows keeps for the temporary directories these tests run in.
+func namesPath(err error, path string) bool {
+	msg := err.Error()
+	for _, spelling := range []string{path, worktrees.Canonical(path)} {
+		if strings.Contains(msg, spelling) || strings.Contains(msg, strconv.Quote(spelling)) {
+			return true
+		}
+	}
+	return false
 }

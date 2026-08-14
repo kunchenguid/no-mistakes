@@ -238,9 +238,20 @@ func TestEmptyWorktreeRootsFormsParseToNoEntries(t *testing.T) {
 // refuses to start. Every appendable claim is checked with the loader, because a
 // wrong one is exactly that failure.
 func TestInspectGlobalConfigMappingReportsWhatCanBeAppended(t *testing.T) {
-	checkout := yamlPath(filepath.Join(string(filepath.Separator), "src", "repo"))
-	root := yamlPath(filepath.Join(string(filepath.Separator), "work", "runs"))
+	// worktree_roots refuses a path that is not absolute, and absolute is what
+	// the platform says it is: a leading-separator path carries no volume, so
+	// Windows reads it as relative and the appended entry would stop the
+	// document from loading for a reason this test is not about. Both the entry
+	// being appended and the one already in the document are therefore spelled
+	// from a real absolute directory.
+	dir := t.TempDir()
+	checkout := yamlPath(filepath.Join(dir, "src", "repo"))
+	root := yamlPath(filepath.Join(dir, "work", "runs"))
 	entry := "  " + checkout + ": " + root + "\n"
+
+	otherCheckout := filepath.Join(dir, "src", "other")
+	otherRoot := filepath.Join(dir, "work", "other-runs")
+	otherEntry := yamlPath(otherCheckout) + ": " + yamlPath(otherRoot)
 
 	for name, tc := range map[string]struct {
 		contents        string
@@ -250,19 +261,19 @@ func TestInspectGlobalConfigMappingReportsWhatCanBeAppended(t *testing.T) {
 		entries         []GlobalConfigMappingEntry
 	}{
 		"a block mapping": {
-			contents:        "worktree_roots:\n  /src/other: /work/other-runs\n",
+			contents:        "worktree_roots:\n  " + otherEntry + "\n",
 			appendableBlock: true,
 			appendLoads:     true,
-			entries:         []GlobalConfigMappingEntry{{Key: "/src/other", Value: "/work/other-runs"}},
+			entries:         []GlobalConfigMappingEntry{{Key: otherCheckout, Value: otherRoot}},
 		},
 		"an empty flow mapping": {
 			contents: "worktree_roots: {}\n",
 			line:     "worktree_roots: {}",
 		},
 		"a flow mapping with an entry": {
-			contents: "worktree_roots: {/src/other: /work/other-runs}\n",
-			line:     "worktree_roots: {/src/other: /work/other-runs}",
-			entries:  []GlobalConfigMappingEntry{{Key: "/src/other", Value: "/work/other-runs"}},
+			contents: "worktree_roots: {" + otherEntry + "}\n",
+			line:     "worktree_roots: {" + otherEntry + "}",
+			entries:  []GlobalConfigMappingEntry{{Key: otherCheckout, Value: otherRoot}},
 		},
 		// A valueless key has no block to append into either, so it is reported
 		// with the flow shapes and takes the same replacement; appending happens

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
+	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
 
 // mockWorkDirStep records the directory the pipeline executed it in, which is
@@ -37,6 +39,26 @@ func (s *mockWorkDirStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOut
 // mapping and its separators survive as literal backslashes.
 func yamlPath(path string) string {
 	return `"` + strings.ReplaceAll(path, `\`, `\\`) + `"`
+}
+
+// namesPath reports whether a refusal identifies path to the operator who has
+// to repair it. Two spellings of one directory both count, and so does the
+// quoted rendering:
+//
+// A refusal writes paths with %q, which escapes the separator, so a Windows
+// path appears as "C:\\src\\repo" and never contains its own raw spelling.
+// And a refusal names either the spelling the configuration carries or its
+// canonical form, which differ wherever the filesystem has a second name for a
+// directory - the macOS /var -> /private/var symlink, and the 8.3 short names
+// Windows keeps for the temporary directories these tests run in.
+func namesPath(err error, path string) bool {
+	msg := err.Error()
+	for _, spelling := range []string{path, worktrees.Canonical(path)} {
+		if strings.Contains(msg, spelling) || strings.Contains(msg, strconv.Quote(spelling)) {
+			return true
+		}
+	}
+	return false
 }
 
 // configureWorktreeRoot points a checkout's run worktrees at root, the way an
@@ -222,7 +244,7 @@ func TestRunCreationJudgesOnlyItsOwnPlacement(t *testing.T) {
 
 	if _, err := push("misplaced-repo", misplacedHead, "main"); err == nil {
 		t.Error("a run was created for the repository whose own placement is unusable")
-	} else if !strings.Contains(err.Error(), misplaced.WorkingPath) {
+	} else if !namesPath(err, misplaced.WorkingPath) {
 		t.Errorf("refusal %q does not name the offending entry", err)
 	}
 
@@ -389,7 +411,7 @@ func TestDaemonRefusesToStartWithWorktreeRootInsideAnotherRegisteredCheckout(t *
 	if err == nil {
 		t.Fatal("daemon started with a worktree root inside another registered checkout")
 	}
-	if !strings.Contains(err.Error(), root) || !strings.Contains(err.Error(), victim.WorkingPath) {
+	if !namesPath(err, root) || !namesPath(err, victim.WorkingPath) {
 		t.Errorf("startup failure %q names neither the root nor the checkout it would dirty", err)
 	}
 	if _, statErr := os.Stat(p.Socket()); statErr == nil {
@@ -444,7 +466,7 @@ func TestDaemonRefusesToStartWithWorktreeRootInsideItsOwnWorktreesDirectory(t *t
 	if err == nil {
 		t.Fatal("daemon started with a worktree root inside its own worktrees directory")
 	}
-	if !strings.Contains(err.Error(), "worktree_roots") || !strings.Contains(err.Error(), p.WorktreesDir()) {
+	if !strings.Contains(err.Error(), "worktree_roots") || !namesPath(err, p.WorktreesDir()) {
 		t.Errorf("startup failure %q names neither the setting nor the offending directory", err)
 	}
 	if _, statErr := os.Stat(liveWT); statErr != nil {

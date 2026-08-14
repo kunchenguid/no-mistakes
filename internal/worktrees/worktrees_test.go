@@ -3,12 +3,33 @@ package worktrees_test
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/worktrees"
 )
+
+// namesPath reports whether a refusal identifies path to the operator who has
+// to repair it. Two spellings of one directory both count, and so does the
+// quoted rendering:
+//
+// A refusal writes paths with %q, which escapes the separator, so a Windows
+// path appears as "C:\\src\\repo" and never contains its own raw spelling.
+// And a refusal names either the spelling the configuration carries or its
+// canonical form, which differ wherever the filesystem has a second name for a
+// directory - the macOS /var -> /private/var symlink, and the 8.3 short names
+// Windows keeps for the temporary directories these tests run in.
+func namesPath(err error, path string) bool {
+	msg := err.Error()
+	for _, spelling := range []string{path, worktrees.Canonical(path)} {
+		if strings.Contains(msg, spelling) || strings.Contains(msg, strconv.Quote(spelling)) {
+			return true
+		}
+	}
+	return false
+}
 
 func TestLayout_DefaultPlacement(t *testing.T) {
 	p := paths.WithRoot(t.TempDir())
@@ -123,7 +144,7 @@ func TestLayout_ValidateRefusesRootInsideAppState(t *testing.T) {
 			t.Errorf("%s (%q) was accepted; want a refusal", name, root)
 			continue
 		}
-		if !strings.Contains(err.Error(), root) || !strings.Contains(err.Error(), "worktree_roots") {
+		if !namesPath(err, root) || !strings.Contains(err.Error(), "worktree_roots") {
 			t.Errorf("%s: refusal %q names neither the setting nor the root", name, err)
 		}
 	}
@@ -147,7 +168,7 @@ func TestLayout_ValidateRefusesRootInsideItsCheckout(t *testing.T) {
 			t.Errorf("root %q inside its own checkout was accepted; want a refusal", root)
 			continue
 		}
-		if !strings.Contains(err.Error(), root) || !strings.Contains(err.Error(), "worktree_roots") {
+		if !namesPath(err, root) || !strings.Contains(err.Error(), "worktree_roots") {
 			t.Errorf("refusal %q names neither the setting nor the root", err)
 		}
 	}
@@ -180,7 +201,7 @@ func TestLayout_ValidateRefusesRootInsideAnotherKnownCheckout(t *testing.T) {
 	if err == nil {
 		t.Fatalf("root %q inside the configured checkout %q was accepted; want a refusal", root, other)
 	}
-	if !strings.Contains(err.Error(), root) || !strings.Contains(err.Error(), other) {
+	if !namesPath(err, root) || !namesPath(err, other) {
 		t.Errorf("refusal %q does not name both the root and the checkout it would dirty", err)
 	}
 
@@ -285,7 +306,7 @@ func TestCheckPlacementRefusesCaseVariantAppStateRoot(t *testing.T) {
 	if err == nil {
 		t.Fatalf("root %q was accepted; it is NM_HOME's own log directory on this volume", variantRoot)
 	}
-	if !strings.Contains(err.Error(), variantRoot) {
+	if !namesPath(err, variantRoot) {
 		t.Errorf("refusal %q does not name the offending root", err)
 	}
 }
