@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.51.0](https://github.com/kunchenguid/no-mistakes/compare/v1.50.0...v1.51.0) (2026-08-14)
+
+
+### Features
+
+* **eval:** score replay findings against human gold ([#726](https://github.com/kunchenguid/no-mistakes/issues/726)) ([a3954e1](https://github.com/kunchenguid/no-mistakes/commit/a3954e19f232b944bacfb2599faee946045d6671))
+
 ## [1.50.0](https://github.com/kunchenguid/no-mistakes/compare/v1.49.0...v1.50.0) (2026-08-12)
 
 
