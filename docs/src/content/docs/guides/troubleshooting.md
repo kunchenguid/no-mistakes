@@ -69,6 +69,11 @@ no-mistakes daemon start
 
 If the socket file exists but nothing answers at all (a dead socket left behind by an unclean exit, e.g. a crash or `SIGKILL`), commands that ensure the daemon is running (`no-mistakes`, `init`, `attach`, `rerun`, `axi run`, `axi respond`) now fail fast with a `connect to daemon socket` error instead of silently starting a replacement daemon. The error message itself includes a `(run 'no-mistakes daemon start' to recover)` hint - run `no-mistakes daemon start` directly to recover, since it self-heals past a dead socket and starts a fresh daemon.
 
+### "configured worktree placement is unusable"
+
+The daemon refuses to start while any [`worktree_roots`](/no-mistakes/reference/global-config/#worktree_roots) entry names a directory it cannot create run worktrees in, and `~/.no-mistakes/logs/daemon.log` names the offending entry.
+Because every command starts the daemon, that takes the whole CLI down until the entry is fixed: point it at a directory outside `NM_HOME` and outside every gated checkout, or remove it, then run `no-mistakes daemon start`.
+
 ### Managed service logs
 
 - **macOS (launchd):** `launchctl list | grep no-mistakes` and check `~/Library/LaunchAgents/com.kunchenguid.no-mistakes.daemon.*.plist`

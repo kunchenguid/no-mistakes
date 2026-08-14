@@ -377,6 +377,59 @@ func TestCleanupOrphanWorktrees_UnconfiguredRepoUsesDefaultRoot(t *testing.T) {
 	}
 }
 
+// TestValidatedWorktreeLayoutRefusesWhenTheCheckoutListIsUnreadable is the
+// fail-closed half of that same judgement. The registered checkouts are the set
+// the placement guard protects, so a guard that cannot read them has no evidence
+// at all - and validating against the empty set it gets instead accepts exactly
+// the root the readable list refuses, placing run worktrees inside a checkout
+// that is then dirty for the duration of somebody else's run.
+func TestValidatedWorktreeLayoutRefusesWhenTheCheckoutListIsUnreadable(t *testing.T) {
+	p := paths.WithRoot(t.TempDir())
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	victim, err := d.InsertRepoWithID("victimrepo", filepath.Join(t.TempDir(), "victim"), "https://example.com/owner/victim", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	placed, err := d.InsertRepoWithID("repo1", filepath.Join(t.TempDir(), "checkout"), "https://example.com/owner/repo1", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only the repository list reveals that this root sits inside a checkout,
+	// so it is unjudgeable without it.
+	root := filepath.Join(victim.WorkingPath, "runs")
+	configureWorktreeRoot(t, p, placed.WorkingPath, root)
+	globalCfg, err := config.LoadGlobal(p.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The readable list refuses it, which is what the unreadable one must not
+	// quietly reverse.
+	if _, err := validatedWorktreeLayout(d, p, globalCfg); err == nil {
+		t.Fatal("readable checkout list accepted a root inside a registered checkout")
+	}
+
+	// The repository list now cannot be read at all.
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	layout, err := validatedWorktreeLayout(d, p, globalCfg)
+	if err == nil {
+		t.Fatalf("unreadable checkout list validated against nothing and placed runs at %q",
+			layout.Dir(placed.ID, placed.WorkingPath, "01M0000000000000000000000"))
+	}
+	if layout != nil {
+		t.Error("refused startup still handed out a worktree layout")
+	}
+}
+
 // TestDaemonRefusesToStartWithWorktreeRootInsideAnotherRegisteredCheckout is the
 // placement only the daemon can judge: a root inside a checkout that is not the
 // one whose runs it holds. Every run placed there leaves that checkout with an
