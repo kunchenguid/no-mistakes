@@ -129,6 +129,43 @@ func TestPhaseAUserFacingTranscripts(t *testing.T) {
 		write("eval-sets-cap-reconcile.txt", "BEFORE (cap 3, Hamilton extras in one stratum):\n"+beforeOut+"\nAFTER (cap 0, at most one official case per stratum):\n"+afterOut)
 	})
 
+	t.Run("lower cap fill does not dump leftover seats into one unoccupied stratum", func(t *testing.T) {
+		store := openEvalStore(t)
+		store.SetDiversifiedSize(6)
+		writeGoldStratum(t, store, "repo-a", "error", 10, 10)
+		writeGoldStratum(t, store, "repo-b", "error", 10, 20)
+		writeGoldStratum(t, store, "repo-c", "info", 2, 30)
+		before, err := store.ListCases("diversified")
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeCounts := map[string]int{}
+		for _, c := range before {
+			beforeCounts[c.RepoFingerprint]++
+		}
+		if beforeCounts["repo-a"] < 2 || beforeCounts["repo-b"] < 2 || beforeCounts["repo-c"] != 0 {
+			t.Fatalf("setup diversified = %#v, want duplicate pins in repo-a/repo-b and repo-c unoccupied", beforeCounts)
+		}
+		beforeOut := RenderSets(mustInspectSets(t, store))
+
+		store.SetDiversifiedSize(5)
+		after, err := store.ListCases("diversified")
+		if err != nil {
+			t.Fatal(err)
+		}
+		perStratum := map[string]int{}
+		for _, c := range after {
+			perStratum[diversifiedStratum(c)]++
+		}
+		for stratum, n := range perStratum {
+			if n > 1 {
+				t.Fatalf("after cap 5, stratum %q has %d official cases (ids=%v)", stratum, n, caseIDs(after))
+			}
+		}
+		afterOut := RenderSets(mustInspectSets(t, store))
+		write("eval-sets-lower-cap-no-overallocate.txt", "BEFORE (cap 6, Hamilton pins duplicates in two strata and leaves a third unoccupied):\n"+beforeOut+"\nAFTER (cap 5, collapse-freed seats must not reallocate multiple official cases into one stratum):\n"+afterOut)
+	})
+
 	t.Run("report withholds F1 without FP gold and headlines it when FP gold exists", func(t *testing.T) {
 		noFP := SummarizeEvaluations([]Evaluation{{
 			Candidate: "codex+test", Status: "completed", HasFindingGold: true, GoldCount: 2,
