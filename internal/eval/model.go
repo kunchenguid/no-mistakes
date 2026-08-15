@@ -5,8 +5,9 @@
 // migration, and nothing here emits telemetry or reaches the network.
 //
 // The dependency runs one way: the daemon calls AutoCapture when a run finishes
-// (see RunManager.autoCaptureEvalCase), and this package never calls back into
-// the daemon, alters a gate, or influences a pipeline decision.
+// (see RunManager.autoCaptureEvalCase) and RelabelRun when a source PR merges
+// (see RunManager.relabelEvalRun). This package never calls back into the
+// daemon, alters a gate, or influences a pipeline decision.
 package eval
 
 import (

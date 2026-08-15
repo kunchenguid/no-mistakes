@@ -26,8 +26,8 @@ type Store struct {
 	diversifiedSize int
 }
 
-// Open creates the local eval registry. Nothing calls this outside an explicit
-// eval subcommand.
+// Open creates the local eval registry. The eval CLI, AutoCapture, and
+// RelabelRun open it explicitly; opening the pipeline database never does.
 func Open(root string) (*Store, error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, fmt.Errorf("eval root is empty")
