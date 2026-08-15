@@ -43,7 +43,7 @@ The manifest never stores a remote URL. Capture is read-only against the existin
 
 The unit of truth is whether a review **finding** was a real issue, scored with scientific terms, not whether the run parked or passed.
 
-Capture writes gold from recorded gate evidence. It does not invent labels the human did not give, and it does not treat every merged PR as ground truth:
+Capture writes gold from recorded gate evidence: human Fix and add-finding decisions, plus the merge-derived auto-fix and shipped-unfixed rules below. A merged PR is not a case-level pass or fail:
 
 - A finding the human selected for Fix (`selected_finding_ids` with a user source) is **true-positive** gold: that finding is a true issue. Merge is not required.
 - A finding the human added (`user_findings_json`, source `user`) is **false-negative** gold: the original review missed a real issue.
@@ -52,7 +52,7 @@ Capture writes gold from recorded gate evidence. It does not invent labels the h
 - Skip, and approve-with-findings on an unmerged PR, stay **unlabeled / pending** until later adjudication.
 - A later replay that raises a new issue absent from the gold set is queued as an unmatched candidate finding. It is never auto-scored as a false positive.
 
-If a PR merges after the first capture, `eval relabel [run-id]` (or recapture) adds the merge-derived labels onto previously unlabeled findings and drops obsolete derived merge labels that the current rounds no longer support. Adjudicated and user-fix labels are never overwritten.
+If a PR merges after the first capture, already-captured cases are relabeled. The daemon does this best-effort when it observes the merge; `eval relabel [run-id]` or recapture is the CLI path. Relabel adds merge-derived labels onto previously unlabeled findings and drops obsolete derived merge labels that the current rounds no longer support. Adjudicated and user-fix labels are never overwritten.
 
 A case with no finding-level gold is unlabeled / pending, never a pass. True-negative also stays unlabeled because the current capture evidence cannot establish that a finding is invalid without the shipped-unfixed or adjudication paths above.
 
@@ -103,7 +103,7 @@ Replay scores each candidate finding against that gold:
 - **false-positive**: only when a candidate finding matches explicit false-positive gold (adjudicated invalid, or shipped-unfixed). Unmatched candidate findings are never treated as false positives
 - **pending / unlabeled**: unmatched candidate findings, and cases with no finding-level gold yet
 
-Matching is a documented cascade of strengths: the same finding ID, the same file and description after whitespace and case normalization, the same file with lines within 3 and token-Jaccard ≥ 0.5, then gated containment (same file, one normalized description contains the other, shorter side ≥ 8 tokens). Assignment is maximum matching per strength tier, preferring exact over fuzzy, so gold-label order cannot undercount. Headline recall uses the full cascade. Reports also show recall-if-exact-only so a fuzzy-threshold change is visible. File-less or description-less findings do not match.
+Matching is a documented cascade of strengths: the same finding ID, the same file and description after whitespace and case normalization, the same file with lines within 3 and token-Jaccard ≥ 0.5, then gated containment (same file, one normalized description contains the other, shorter side ≥ 8 tokens). Assignment is maximum matching per strength tier, preferring exact over fuzzy, so gold-label order cannot undercount. Headline recall uses the full cascade. Reports also show recall-if-exact-only so a fuzzy-threshold change is visible. File-less or description-less findings do not match on the text, location, or containment strengths.
 
 The report prints recall, precision bounds (adjudicated vs pending-as-FP), and F1 as the headline metric **only when false-positive gold exists** so precision is real. Otherwise F1 is withheld rather than reported as recall-in-disguise.
 
@@ -131,4 +131,4 @@ The report is deliberately cautious. It never treats an unadjudicated candidate 
 
 ## Current boundary
 
-Finding-level gold is derived from recorded Fix, add-finding, auto-fix-merged, and shipped-unfixed evidence. An adjudication CLI, PR-comment miss scanning, sharing, sync, and full-pipeline replay are not part of this command surface. `eval relabel` backfills merge-derived labels onto already captured cases.
+Finding-level gold is derived from recorded Fix, add-finding, auto-fix-merged, and shipped-unfixed evidence. An adjudication CLI, PR-comment miss scanning, sharing, sync, and full-pipeline replay are not part of this command surface. A live merge, `eval relabel`, or recapture backfills merge-derived labels onto already captured cases.
