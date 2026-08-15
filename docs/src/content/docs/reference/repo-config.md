@@ -190,7 +190,8 @@ When unset, no-mistakes preserves the existing behavior and targets `Repo.Defaul
 
 Because this setting controls where a PR lands, a pushed branch cannot redirect its own PR target by changing `pr.base_branch`.
 It is read from the trusted default-branch copy regardless of `allow_repo_commands` by default.
-The established explicit `allow_repo_commands: true` opt-in also applies to this setting for repositories that intentionally trust their pushed configuration.
+The established explicit `allow_repo_commands: true` opt-in also applies to this setting for repositories that intentionally trust their pushed configuration, including a repository with no trusted default-branch copy of this file at all.
+An empty value is valid and means "fall back to the forge default branch"; a non-empty value that Git would reject as a branch name fails config parsing closed, naming `pr.base_branch` in the error.
 
 ### commands.test
 

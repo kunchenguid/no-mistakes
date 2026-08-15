@@ -341,6 +341,37 @@ func TestPRStep_UsesConfiguredBaseBranch(t *testing.T) {
 	}
 }
 
+// TestPRStep_SkipsWhenBranchMatchesConfiguredBaseBranch reproduces the
+// 0530823 bug: with pr.base_branch configured to a branch other than the
+// repo's forge default, pushing directly to that configured base branch must
+// still skip PR creation instead of attempting a self-targeting PR. Before
+// that fix, the skip check compared only against sctx.Repo.DefaultBranch, so
+// a run on "develop" (configured base) would fall through to gh pr create.
+func TestPRStep_SkipsWhenBranchMatchesConfiguredBaseBranch(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, logFile := fakeGH(t, "")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Config.PR.BaseBranch = "develop"
+	sctx.Run.Branch = "refs/heads/develop"
+
+	outcome, err := (&PRStep{}).Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Skipped {
+		t.Fatal("expected PR creation to be skipped when branch matches configured base branch")
+	}
+
+	if logData, err := os.ReadFile(logFile); err == nil {
+		t.Fatalf("expected no gh invocation when branch matches configured base branch, got log:\n%s", logData)
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
 func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
