@@ -499,6 +499,68 @@ func TestFixRoundProvenanceClause_EmitsForUncertifiedRangeWhenNotFixing(t *testi
 	}
 }
 
+func TestUncertifiedRange_PersistsThenFeedsNextInitialReview(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	fixAgent := &mockAgent{name: "test"}
+	fixCtx := newTestContextWithDBRecords(t, fixAgent, dir, baseSHA, headSHA, config.Commands{})
+	fixCtx.ReviewStartingHeadSHA = headSHA
+	if err := os.WriteFile(filepath.Join(dir, "review-fix.txt"), []byte("fixed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := commitAgentFixes(fixCtx, types.StepReview, "apply fix", "fallback"); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := fixCtx.DB.GetUncertifiedPipelineRange(fixCtx.Repo.ID, fixCtx.Run.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted == nil || persisted.FromSHA != headSHA || persisted.ToSHA != fixCtx.Run.HeadSHA {
+		t.Fatalf("fixer commit did not persist range: %#v", persisted)
+	}
+
+	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	reviewAgent := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+	nextRun, err := fixCtx.DB.InsertRun(fixCtx.Repo.ID, fixCtx.Run.Branch, fixCtx.Run.HeadSHA, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sctx := newTestContext(t, reviewAgent, dir, baseSHA, fixCtx.Run.HeadSHA, config.Commands{})
+	sctx.DB = fixCtx.DB
+	sctx.Repo = fixCtx.Repo
+	sctx.Run = nextRun
+	sctx.Fixing = false
+	pipeline.BindUncertifiedPipelineRange(sctx)
+	if sctx.UncertifiedFromSHA != persisted.FromSHA || sctx.UncertifiedToSHA != persisted.ToSHA {
+		t.Fatalf("next initial review bound from=%q to=%q, want from=%q to=%q", sctx.UncertifiedFromSHA, sctx.UncertifiedToSHA, persisted.FromSHA, persisted.ToSHA)
+	}
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(reviewAgent.calls) != 1 {
+		t.Fatalf("expected 1 review call, got %d", len(reviewAgent.calls))
+	}
+	prompt := reviewAgent.calls[0].Prompt
+	want := fmt.Sprintf("Commits after %s through %s on this branch were authored by a previous run's fixer and were never certified", persisted.FromSHA, persisted.ToSHA)
+	if !strings.Contains(prompt, want) {
+		t.Fatalf("next initial review missing persisted provenance %q:\n%s", want, prompt)
+	}
+	if sctx.Fixing {
+		t.Fatal("next initial review ran in fix mode")
+	}
+	if strings.Contains(prompt, "This is a re-review after this run's automated fix round(s)") {
+		t.Fatalf("next initial review used current-run fixer framing:\n%s", prompt)
+	}
+}
+
 func TestReviewStep_FixMode_RequiresPreviousFindings(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

@@ -627,6 +627,29 @@ func TestCommitAgentFixes_LintDoesNotPersistUncertifiedRange(t *testing.T) {
 	}
 }
 
+func TestCommitAgentFixes_DocumentDoesNotPersistUncertifiedRange(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "checkout", "--detach", headSHA)
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.ReviewStartingHeadSHA = headSHA
+	if err := os.WriteFile(filepath.Join(dir, "docs-fix.txt"), []byte("fixed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := commitAgentFixes(sctx, types.StepDocument, "apply fix", "fallback"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := sctx.DB.GetUncertifiedPipelineRange(sctx.Repo.ID, sctx.Run.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Fatalf("document persist = %#v, want no uncertified range", got)
+	}
+}
+
 func TestCommitAgentFixes_NoChanges(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

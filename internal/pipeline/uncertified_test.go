@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -161,6 +162,95 @@ func TestParkedReview_DoesNotClearUncertifiedRange(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-done
+	got, err = database.GetUncertifiedPipelineRange(repo.ID, run.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.ToSHA != run.HeadSHA {
+		t.Fatalf("aborted review cleared uncertified range: %#v", got)
+	}
+}
+
+func TestFailedReview_DoesNotClearUncertifiedRange(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	if err := database.UpsertUncertifiedPipelineRange(repo.ID, run.Branch, "from-sha", run.HeadSHA, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	step := newFailStep(types.StepReview, fmt.Errorf("review agent failed"))
+	exec := NewExecutor(database, p, &config.Config{}, nil, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, t.TempDir()); err == nil {
+		t.Fatal("expected failed review")
+	}
+	got, err := database.GetUncertifiedPipelineRange(repo.ID, run.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.ToSHA != run.HeadSHA {
+		t.Fatalf("failed review cleared uncertified range: %#v", got)
+	}
+}
+
+func TestApprovedReview_ClearsUncertifiedRangeWhenApprovedHeadIsDescendant(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	fromSHA := currentSHA(t, dir)
+	writeTestFile(t, dir, "fixer.txt", "fixer\n")
+	execGit(t, dir, "add", ".")
+	execGit(t, dir, "commit", "-m", "fixer")
+	toSHA := currentSHA(t, dir)
+	writeTestFile(t, dir, "later.txt", "later\n")
+	execGit(t, dir, "add", ".")
+	execGit(t, dir, "commit", "-m", "later pipeline commit")
+	approved := currentSHA(t, dir)
+	run.HeadSHA = approved
+	if err := database.UpsertUncertifiedPipelineRange(repo.ID, run.Branch, fromSHA, toSHA, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	step := &mockStep{name: types.StepReview, outcome: &StepOutcome{ReviewApprovedHeadSHA: approved}}
+	exec := NewExecutor(database, p, &config.Config{}, nil, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, dir); err != nil {
+		t.Fatal(err)
+	}
+	got, err := database.GetUncertifiedPipelineRange(repo.ID, run.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Fatalf("descendant approved head left uncertified range %#v", got)
+	}
+}
+
+func TestApprovedReview_DoesNotClearWhenApprovedHeadIsNotDescendant(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	fromSHA := currentSHA(t, dir)
+	writeTestFile(t, dir, "fixer.txt", "fixer\n")
+	execGit(t, dir, "add", ".")
+	execGit(t, dir, "commit", "-m", "fixer")
+	toSHA := currentSHA(t, dir)
+	execGit(t, dir, "checkout", "-b", "other", fromSHA)
+	writeTestFile(t, dir, "other.txt", "other\n")
+	execGit(t, dir, "add", ".")
+	execGit(t, dir, "commit", "-m", "unrelated head")
+	other := currentSHA(t, dir)
+	run.HeadSHA = other
+	if err := database.UpsertUncertifiedPipelineRange(repo.ID, run.Branch, fromSHA, toSHA, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	step := &mockStep{name: types.StepReview, outcome: &StepOutcome{ReviewApprovedHeadSHA: other}}
+	exec := NewExecutor(database, p, &config.Config{}, nil, []Step{step}, nil)
+	if err := exec.Execute(context.Background(), run, repo, dir); err != nil {
+		t.Fatal(err)
+	}
+	got, err := database.GetUncertifiedPipelineRange(repo.ID, run.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.FromSHA != fromSHA || got.ToSHA != toSHA {
+		t.Fatalf("non-descendant approved head cleared or rewrote range: %#v", got)
+	}
 }
 
 func TestPersistUncertifiedPipelineRange_KeepsFromSHAAcrossRunsOnSameLineage(t *testing.T) {
