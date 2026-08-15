@@ -316,6 +316,57 @@ func TestReviewStep_DurableFixAdequacyContract(t *testing.T) {
 	}
 }
 
+// Counterexample construction is a general review principle for any new or
+// changed logic, not a bug-fix-only reconstruction. Silently wrong values,
+// labels, and sets are named as risks. The principle stays short and general:
+// it must not become a checklist of incident-specific probes.
+func TestReviewStep_CounterexampleConstructionIsUnconditional(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 review call, got %d", len(ag.calls))
+	}
+	prompt := ag.calls[0].Prompt
+
+	for _, want := range []string{
+		"For any new or changed logic, construct at least one concrete input or state and trace it",
+		"wrong result without erroring",
+		"wrong value, label, or set without failing",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("review prompt missing general correctness principle %q:\n%s", want, prompt)
+		}
+	}
+
+	// Durable-fix reconstruction remains a paired, still-gated discipline.
+	if !strings.Contains(prompt, "For a claimed durable fix, reconstruct the concrete failing sequence") {
+		t.Errorf("review prompt dropped the durable-fix reconstruction pairing:\n%s", prompt)
+	}
+
+	for _, overfit := range []string{
+		"each read path and each write/refresh path",
+		"configured bound is changed after state already exists",
+		"greedy or order-dependent loop",
+	} {
+		if strings.Contains(prompt, overfit) {
+			t.Errorf("review prompt overfit an incident-specific probe %q:\n%s", overfit, prompt)
+		}
+	}
+}
+
 // The rereview that certifies a fix round examines code the pipeline itself
 // authored, moments earlier, to the previous review turn's prescription. The
 // prompt must reframe that code as unreviewed new work under the same
@@ -535,6 +586,11 @@ func TestReviewStep_ConformanceObligationTracksIntentProvenance(t *testing.T) {
 				if !strings.Contains(prompt, `you MUST emit an "ask-user" finding`) {
 					t.Errorf("conformance clause missing the ask-user obligation:\n%s", prompt)
 				}
+				if !strings.Contains(prompt, "Conformance does not replace correctness review") {
+					t.Errorf("conformance clause missing the correctness-is-not-conformance note:\n%s", prompt)
+				}
+			} else if strings.Contains(prompt, "Conformance does not replace correctness review") {
+				t.Errorf("inferred intent must not carry the conformance-vs-correctness note:\n%s", prompt)
 			}
 		})
 	}
