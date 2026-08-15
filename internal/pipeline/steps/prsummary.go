@@ -451,6 +451,12 @@ func renderTestingSummaryFor(summary string, flavor prBodyFlavor) string {
 	if clean == "" {
 		return ""
 	}
+	// Bitbucket Cloud PR descriptions are prose. Wrapping a summary in
+	// backticks or a fence because it mentions HTML tags turns the whole
+	// paragraph into a numbered code bar.
+	if flavor == prBodyMarkdown {
+		return escapeMarkdownFence(clean)
+	}
 	// Inline backtick code spans are valid markdown prose and render fine on
 	// their own; only newlines or angle brackets need wrapping.
 	if strings.ContainsAny(clean, "\n<>") {

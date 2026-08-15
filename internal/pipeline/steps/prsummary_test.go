@@ -669,6 +669,27 @@ func TestBuildTestingSummaryForPR_BitbucketCloudOmitsHTMLAndKeepsEvidence(t *tes
 	}
 }
 
+func TestBuildTestingSummaryForPR_BitbucketKeepsHTMLMentioningSummaryAsProse(t *testing.T) {
+	t.Parallel()
+	summary := "Bitbucket render is clean of <details>, <summary>, <code>, <video>, and the attestation HTML comment."
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":%q}`, summary)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPRWithProvider(steps, rounds, "https://bitbucket.org/example/widgets.git", "abc123", t.TempDir(), "", nil, scm.ProviderBitbucket)
+
+	if !strings.Contains(md, "## Testing\n\n"+summary) {
+		t.Fatalf("expected Bitbucket testing summary to stay prose, got:\n%s", md)
+	}
+	if strings.Contains(md, "```") || strings.Contains(md, "`"+summary+"`") {
+		t.Fatalf("Bitbucket testing summary must not be wrapped as code just because it mentions HTML tags, got:\n%s", md)
+	}
+}
+
 func TestBuildTestingSummaryForPR_RendersLocalTempVisualArtifactPath(t *testing.T) {
 	t.Parallel()
 	repoRoot := t.TempDir()
