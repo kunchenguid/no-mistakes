@@ -167,6 +167,8 @@ func planDiversified(gold []Case, cap int, existing []diversifiedPin) []diversif
 	}
 
 	if cap == 0 {
+		kept = onePinPerStratum(kept)
+		pinned = pinSet(kept)
 		for _, key := range keys {
 			already := 0
 			for _, pin := range kept {
@@ -178,19 +180,17 @@ func planDiversified(gold []Case, cap int, existing []diversifiedPin) []diversif
 				continue
 			}
 			kept = append(kept, seatsFor(key, 1)...)
-			for _, pin := range kept {
-				pinned[pin.CaseID] = true
-			}
+			pinned = pinSet(kept)
 		}
 		return kept
 	}
 
 	if len(kept) > cap {
-		kept = append([]diversifiedPin(nil), kept[:cap]...)
-		pinned = map[string]bool{}
-		for _, pin := range kept {
-			pinned[pin.CaseID] = true
+		kept = onePinPerStratum(kept)
+		if len(kept) > cap {
+			kept = append([]diversifiedPin(nil), kept[:cap]...)
 		}
+		pinned = pinSet(kept)
 	}
 
 	remaining := cap - len(kept)
@@ -225,6 +225,27 @@ func planDiversified(gold []Case, cap int, existing []diversifiedPin) []diversif
 		}
 	}
 	return kept
+}
+
+func onePinPerStratum(pins []diversifiedPin) []diversifiedPin {
+	seen := map[string]bool{}
+	out := make([]diversifiedPin, 0, len(pins))
+	for _, pin := range pins {
+		if seen[pin.Stratum] {
+			continue
+		}
+		seen[pin.Stratum] = true
+		out = append(out, pin)
+	}
+	return out
+}
+
+func pinSet(pins []diversifiedPin) map[string]bool {
+	out := map[string]bool{}
+	for _, pin := range pins {
+		out[pin.CaseID] = true
+	}
+	return out
 }
 
 func hamiltonSeats(weights []int, cap int, capacities []int) []int {

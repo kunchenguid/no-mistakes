@@ -189,9 +189,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 // ListCases resolves the logical sets. Diversified is gold-only, size-capped,
 // stratified, and pinned: unlabeled cases never fill it. Pins stay until the
 // case is pruned, loses its gold, RefreshDiversified is called, or the live
-// cap shrinks (the read path trims oldest pins to the current cap). Tune is
-// leftover labeled cases after those pins, the set matcher thresholds may be
-// fitted on.
+// cap shrinks (the read path trims oldest pins to the current cap, at most
+// one per stratum when reconciling to 0 or a lower cap). Tune is leftover
+// labeled cases after those pins, the set matcher thresholds may be fitted on.
 func (s *Store) ListCases(set string) ([]Case, error) {
 	return s.listCases(set, false)
 }

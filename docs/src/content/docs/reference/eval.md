@@ -81,7 +81,7 @@ Four logical sets are available to replay:
 - `diversified` - the official gold-only holdout: a pinned, size-capped stratified sample of labeled cases (repository, language, size, severity, finding-type). Empty gold produces an empty set and a warning, never a silent unlabeled fill. Rebuild pins with `eval sets --refresh-diversified`.
 - `tune` - leftover labeled cases after the diversified pins. Iterate matcher thresholds and prompt experiments here, never on `diversified`.
 
-`eval.diversified_size` (default 32, documented in [Global configuration](/no-mistakes/reference/global-config/#eval)) caps the official set. `0` keeps one gold case per stratum. Pins stay until a case is pruned, loses its gold, or an explicit refresh. Lowering the cap takes effect on the next `eval sets` / `ListCases` read: oldest pins are trimmed to the live cap without waiting for `--refresh-diversified`.
+`eval.diversified_size` (default 32, documented in [Global configuration](/no-mistakes/reference/global-config/#eval)) caps the official set. `0` keeps one gold case per stratum. Pins stay until a case is pruned, loses its gold, or an explicit refresh. Lowering the cap takes effect on the next `eval sets` / `ListCases` read: oldest pins are trimmed to the live cap, at most one per stratum, without waiting for `--refresh-diversified`.
 
 Do not fit matcher thresholds or review product prompts against `diversified`. That set is the held-out official measurement; `tune` is the only labeled leftover it is safe to iterate on.
 

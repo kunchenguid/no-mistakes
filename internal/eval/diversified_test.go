@@ -235,6 +235,70 @@ func TestListCasesDiversified_RefreshHonorsLoweredCap(t *testing.T) {
 	}
 }
 
+func TestListCasesDiversified_ZeroCapKeepsAtMostOneCasePerStratum(t *testing.T) {
+	store := openEvalStore(t)
+	store.SetDiversifiedSize(3)
+	writeGoldStratum(t, store, "repo-heavy", "error", 5, 10)
+	writeGoldStratum(t, store, "repo-mid", "warning", 3, 20)
+	writeGoldStratum(t, store, "repo-light", "info", 1, 30)
+
+	first, err := store.ListCases("diversified")
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, c := range first {
+		counts[c.RepoFingerprint]++
+	}
+	if counts["repo-heavy"] != 2 {
+		t.Fatalf("setup diversified = %#v, want Hamilton to pin 2 cases in repo-heavy before lowering the cap to 0", counts)
+	}
+
+	store.SetDiversifiedSize(0)
+	got, err := store.ListCases("diversified")
+	if err != nil {
+		t.Fatal(err)
+	}
+	perStratum := map[string]int{}
+	for _, c := range got {
+		perStratum[diversifiedStratum(c)]++
+	}
+	for stratum, n := range perStratum {
+		if n > 1 {
+			t.Fatalf("after cap 0, stratum %q has %d official cases (ids=%v); want at most one case per stratum", stratum, n, caseIDs(got))
+		}
+	}
+}
+
+func TestListCasesDiversified_LowCapKeepsAtMostOneCasePerStratum(t *testing.T) {
+	store := openEvalStore(t)
+	store.SetDiversifiedSize(3)
+	writeGoldStratum(t, store, "repo-heavy", "error", 5, 10)
+	writeGoldStratum(t, store, "repo-mid", "warning", 3, 20)
+	writeGoldStratum(t, store, "repo-light", "info", 1, 30)
+	if _, err := store.ListCases("diversified"); err != nil {
+		t.Fatal(err)
+	}
+
+	store.SetDiversifiedSize(2)
+	got, err := store.ListCases("diversified")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) > 2 {
+		t.Fatalf("after cap 2, diversified = %v (n=%d), want at most the live cap", caseIDs(got), len(got))
+	}
+	perStratum := map[string]int{}
+	for _, c := range got {
+		perStratum[diversifiedStratum(c)]++
+	}
+	for stratum, n := range perStratum {
+		if n > 1 {
+			t.Fatalf("after cap 2, stratum %q has %d official cases (ids=%v); want at most one case per stratum", stratum, n, caseIDs(got))
+		}
+	}
+}
+
 func TestListCasesTune_IsLabeledMinusPins(t *testing.T) {
 	store := openEvalStore(t)
 	store.SetDiversifiedSize(1)
