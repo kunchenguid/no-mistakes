@@ -350,6 +350,87 @@ func TestRelabelDoesNotClobberAdjudicatedLabels(t *testing.T) {
 	}
 }
 
+func TestCaptureDoesNotWriteShippedUnfixedWhenIntermediateRoundThenFinalRoundDropsIt(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, firstRound := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	if err := sourceDB.SetStepRoundSelection(firstRound.ID, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := sourceDB.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.UpdateStepStatus(steps[0].ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	stillRaised := `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"still present","risk_scope":"source-or-external"}`
+	if _, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 2, "auto_fix", &stillRaised, nil, run.HeadSHA, stringValue(firstRound.ReviewedHeadSHA), stringValue(firstRound.TrustedConfigSHA), firstRound.GlobalConfigYAML, firstRound.RepoConfigYAML, 25); err != nil {
+		t.Fatal(err)
+	}
+	final := `{"findings":[{"id":"other-bug","severity":"warning","file":"main.go","line":1,"description":"style","action":"ask-user","review_scope":"source"}],"risk_level":"low","risk_rationale":"different issue","risk_scope":"source-or-external"}`
+	if _, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 3, "auto_fix", &final, nil, run.HeadSHA, stringValue(firstRound.ReviewedHeadSHA), stringValue(firstRound.TrustedConfigSHA), firstRound.GlobalConfigYAML, firstRound.RepoConfigYAML, 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.UpdateRunPRState(run.ID, "merged"); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := captureAll(t, ctx, p, sourceDB, run.ID)
+	byRound := map[string]Labels{}
+	for _, c := range cases {
+		byRound[c.SourceRoundID] = c.Labels
+	}
+	if byRound[firstRound.ID].HasGold() {
+		t.Fatalf("first-round labels = %#v, want unlabeled: the finding was gone from the final review round before merge", byRound[firstRound.ID])
+	}
+}
+
+func TestRelabelRemovesShippedUnfixedWhenLaterRoundShowsTheFindingLanded(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, firstRound := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	if err := sourceDB.SetStepRoundSelection(firstRound.ID, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := sourceDB.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.UpdateStepStatus(steps[0].ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.UpdateRunPRState(run.ID, "merged"); err != nil {
+		t.Fatal(err)
+	}
+
+	store := mustOpenEval(t, p)
+	first, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || len(first[0].Labels.Findings) != 1 || first[0].Labels.Findings[0].Source != goldSourceShippedUnfixed {
+		t.Fatalf("initial capture = %#v, want shipped-unfixed FP before the later round exists", first)
+	}
+
+	later := `{"findings":[{"id":"other-bug","severity":"warning","file":"main.go","line":1,"description":"style","action":"ask-user","review_scope":"source"}],"risk_level":"low","risk_rationale":"different issue","risk_scope":"source-or-external"}`
+	if _, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 2, "auto_fix", &later, nil, run.HeadSHA, stringValue(firstRound.ReviewedHeadSHA), stringValue(firstRound.TrustedConfigSHA), firstRound.GlobalConfigYAML, firstRound.RepoConfigYAML, 25); err != nil {
+		t.Fatal(err)
+	}
+	relabeled, err := RelabelRun(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(relabeled) != 1 {
+		t.Fatalf("relabeled cases = %d, want the original round", len(relabeled))
+	}
+	for _, gold := range relabeled[0].Labels.Findings {
+		if gold.ID == "real-bug" && gold.Source == goldSourceShippedUnfixed {
+			t.Fatalf("relabeled labels = %#v, want obsolete shipped-unfixed FP removed once a later round no longer raises the finding", relabeled[0].Labels)
+		}
+	}
+}
+
 func TestCaptureKeepsUserFixWithoutMerge(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)

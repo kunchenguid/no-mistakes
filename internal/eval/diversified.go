@@ -185,6 +185,14 @@ func planDiversified(gold []Case, cap int, existing []diversifiedPin) []diversif
 		return kept
 	}
 
+	if len(kept) > cap {
+		kept = append([]diversifiedPin(nil), kept[:cap]...)
+		pinned = map[string]bool{}
+		for _, pin := range kept {
+			pinned[pin.CaseID] = true
+		}
+	}
+
 	remaining := cap - len(kept)
 	if remaining <= 0 {
 		return kept

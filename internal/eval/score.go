@@ -38,32 +38,35 @@ type Score struct {
 //   - FP: only an explicit false-positive gold that the candidate still raised
 //   - Pending: unmatched candidate findings, never inferred as invalid
 //
-// Matching is a documented cascade: exact-id, exact-text, nearby-line Jaccard,
-// then gated containment. Headline recall uses the full cascade; exact vs
+// Matching is a documented cascade of strengths: exact-id, exact-text,
+// nearby-line Jaccard, then gated containment. Assignment is maximum matching
+// per strength tier so an earlier gold cannot consume a candidate that a later
+// gold matches more strongly. Headline recall uses the full cascade; exact vs
 // fuzzy counts are reported separately so a threshold change is visible.
 func ScoreCandidate(labels Labels, findingsJSON string) Score {
 	candidate := parseFindingItems(findingsJSON)
+	assigned := assignMatches(labels.Findings, candidate)
 	used := make([]bool, len(candidate))
 	var score Score
-	for _, gold := range labels.Findings {
+	for i, gold := range labels.Findings {
 		if gold.Kind == GoldFalsePositive {
 			score.FalsePositiveGold++
 		}
-		match, strength := firstUnusedMatch(gold, candidate, used)
+		match := assigned[i]
 		switch {
-		case isTrueIssueGold(gold.Kind) && match >= 0:
+		case isTrueIssueGold(gold.Kind) && match.cand >= 0:
 			score.TruePositive++
-			if strength == matchExactID || strength == matchExactText {
+			if match.strength == matchExactID || match.strength == matchExactText {
 				score.TruePositiveExact++
 			} else {
 				score.TruePositiveFuzzy++
 			}
-			used[match] = true
+			used[match.cand] = true
 		case isTrueIssueGold(gold.Kind):
 			score.FalseNegative++
-		case gold.Kind == GoldFalsePositive && match >= 0:
+		case gold.Kind == GoldFalsePositive && match.cand >= 0:
 			score.FalsePositive++
-			used[match] = true
+			used[match.cand] = true
 		}
 	}
 	for i := range candidate {
@@ -85,18 +88,82 @@ func parseFindingItems(raw string) []types.Finding {
 	return findings.Items
 }
 
-func firstUnusedMatch(gold FindingGold, candidate []types.Finding, used []bool) (int, string) {
+type assignedMatch struct {
+	cand     int
+	strength string
+}
+
+func assignMatches(golds []FindingGold, candidate []types.Finding) []assignedMatch {
+	out := make([]assignedMatch, len(golds))
+	for i := range out {
+		out[i].cand = -1
+	}
+	matchedGold := make([]bool, len(golds))
+	usedCand := make([]bool, len(candidate))
 	for _, strength := range []string{matchExactID, matchExactText, matchLocation, matchContainment} {
-		for i, finding := range candidate {
-			if used[i] {
+		adj := make([][]int, len(golds))
+		for gi, gold := range golds {
+			if matchedGold[gi] {
 				continue
 			}
-			if matchAt(gold, finding, strength) {
-				return i, strength
+			for ci, finding := range candidate {
+				if usedCand[ci] {
+					continue
+				}
+				if matchAt(gold, finding, strength) {
+					adj[gi] = append(adj[gi], ci)
+				}
 			}
 		}
+		goldToCand := maxBipartiteMatching(adj, len(candidate))
+		for gi, ci := range goldToCand {
+			if ci < 0 {
+				continue
+			}
+			out[gi] = assignedMatch{cand: ci, strength: strength}
+			matchedGold[gi] = true
+			usedCand[ci] = true
+		}
 	}
-	return -1, ""
+	return out
+}
+
+func maxBipartiteMatching(adj [][]int, candCount int) []int {
+	candToGold := make([]int, candCount)
+	for i := range candToGold {
+		candToGold[i] = -1
+	}
+	var dfs func(gi int, seen []bool) bool
+	dfs = func(gi int, seen []bool) bool {
+		for _, ci := range adj[gi] {
+			if seen[ci] {
+				continue
+			}
+			seen[ci] = true
+			if candToGold[ci] < 0 || dfs(candToGold[ci], seen) {
+				candToGold[ci] = gi
+				return true
+			}
+		}
+		return false
+	}
+	for gi := range adj {
+		if len(adj[gi]) == 0 {
+			continue
+		}
+		seen := make([]bool, candCount)
+		_ = dfs(gi, seen)
+	}
+	goldToCand := make([]int, len(adj))
+	for i := range goldToCand {
+		goldToCand[i] = -1
+	}
+	for ci, gi := range candToGold {
+		if gi >= 0 {
+			goldToCand[gi] = ci
+		}
+	}
+	return goldToCand
 }
 
 func matchAt(gold FindingGold, finding types.Finding, strength string) bool {

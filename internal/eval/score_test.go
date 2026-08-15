@@ -52,6 +52,34 @@ func TestScoreCandidatePrefersExactOverFuzzy(t *testing.T) {
 	}
 }
 
+func TestScoreCandidateDoesNotLetFuzzyEarlierGoldStealExactLaterMatch(t *testing.T) {
+	labels := Labels{Findings: []FindingGold{
+		{
+			ID:          "nil-deref",
+			Kind:        GoldTruePositive,
+			File:        "main.go",
+			Line:        10,
+			Description: "nil pointer dereference in the request handler",
+		},
+		{
+			ID:          "missing-unlock",
+			Kind:        GoldTruePositive,
+			File:        "lock.go",
+			Line:        1,
+			Description: "mutex not released on the error path",
+		},
+	}}
+	candidate := `{"findings":[` +
+		`{"id":"missing-unlock","file":"main.go","line":12,"description":"nil pointer deref in request handler"},` +
+		`{"id":"other","file":"main.go","line":11,"description":"nil pointer dereference in the request handler during shutdown"}` +
+		`]}`
+
+	score := ScoreCandidate(labels, candidate)
+	if score.TruePositive != 2 || score.FalseNegative != 0 {
+		t.Fatalf("score = %#v, want both gold items matched (exact-id later gold plus leftover fuzzy cover for the earlier gold), not a greedy first-gold steal", score)
+	}
+}
+
 func TestScoreCandidateKeepsUnmatchedPendingUntilAdjudicated(t *testing.T) {
 	labels := Labels{Findings: []FindingGold{{
 		ID:          "gold",

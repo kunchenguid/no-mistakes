@@ -488,8 +488,10 @@ func decisionForRound(round *db.StepRound, step *db.StepResult) Decision {
 // A user-selected finding is true-positive gold without merge. An auto-fix
 // selection is true-positive gold only when the source PR merged and the fix
 // landed. A raised auto-fix/ask-user finding that shipped unfixed in a merged
-// PR is false-positive gold. Skip, approve-with-findings on an unmerged PR,
-// reverted auto-fixes, and no-op notes stay unlabeled.
+// PR is false-positive gold. An intermediate re-raise that is gone from the
+// last later review round is treated as fixed, not shipped-unfixed. Skip,
+// approve-with-findings on an unmerged PR, reverted auto-fixes, and no-op
+// notes stay unlabeled.
 func goldFromRound(round *db.StepRound, decision Decision, prState string, later []*db.StepRound) Labels {
 	labels := Labels{Version: labelsVersion}
 	byID := findingIndex(round)
@@ -559,7 +561,7 @@ func goldFromRound(round *db.StepRound, decision Decision, prState string, later
 			if finding.ActionOrDefault() == types.ActionNoOp {
 				continue
 			}
-			if len(later) > 0 && fixLanded(finding, later) {
+			if !stillRaisedAtMerge(finding, later) {
 				continue
 			}
 			seen[id] = true
@@ -597,6 +599,40 @@ func fixLanded(finding types.Finding, later []*db.StepRound) bool {
 	return true
 }
 
+// stillRaisedAtMerge reports whether the finding is still present in the last
+// later review round, which is the merge-time evidence for shipped-unfixed FP.
+// An intermediate re-raise that disappears before that last round is a fix,
+// not a shipped-unfixed finding. No later round means this round is last.
+func stillRaisedAtMerge(finding types.Finding, later []*db.StepRound) bool {
+	last := lastLaterRound(later)
+	if last == nil {
+		return true
+	}
+	if last.FindingsJSON == nil {
+		return false
+	}
+	gold := FindingGold{ID: finding.ID, File: finding.File, Description: finding.Description}
+	for _, item := range parseFindingItems(*last.FindingsJSON) {
+		if sameUnderlyingIssue(gold, item) {
+			return true
+		}
+	}
+	return false
+}
+
+func lastLaterRound(later []*db.StepRound) *db.StepRound {
+	var last *db.StepRound
+	for _, round := range later {
+		if round == nil {
+			continue
+		}
+		if last == nil || round.Round > last.Round {
+			last = round
+		}
+	}
+	return last
+}
+
 func runPRState(run *db.Run) string {
 	if run == nil || run.PRState == nil || strings.TrimSpace(*run.PRState) == "" {
 		return "none"
@@ -605,34 +641,42 @@ func runPRState(run *db.Run) string {
 }
 
 func mergeGold(existing, computed Labels) Labels {
-	out := existing
-	out.Version = labelsVersion
-	byID := map[string]int{}
-	for i, g := range out.Findings {
-		id := strings.TrimSpace(g.ID)
-		if id != "" {
-			byID[id] = i
+	out := Labels{
+		Version:                 labelsVersion,
+		QueuedCandidateFindings: existing.QueuedCandidateFindings,
+	}
+	keptID := map[string]bool{}
+	for _, g := range existing.Findings {
+		if isDerivedMergeGold(g.Source) {
+			continue
+		}
+		out.Findings = append(out.Findings, g)
+		if id := strings.TrimSpace(g.ID); id != "" {
+			keptID[id] = true
 		}
 	}
 	for _, g := range computed.Findings {
 		id := strings.TrimSpace(g.ID)
-		if id == "" {
-			out.Findings = append(out.Findings, g)
-			continue
-		}
-		if _, ok := byID[id]; ok {
+		if id != "" && keptID[id] {
 			continue
 		}
 		out.Findings = append(out.Findings, g)
-		byID[id] = len(out.Findings) - 1
+		if id != "" {
+			keptID[id] = true
+		}
 	}
 	return out
 }
 
-// RelabelRun recomputes gold for every captured case of a run and merges new
-// auto-fix-merged / shipped-unfixed labels onto previously unlabeled findings.
-// It never overwrites adjudicated or user-fix labels. Missing cases are a
-// no-op so a merge observed before the first capture cannot fail the pipeline.
+func isDerivedMergeGold(source string) bool {
+	return source == goldSourceAutoFixMerged || source == goldSourceShippedUnfixed
+}
+
+// RelabelRun recomputes gold for every captured case of a run. It adds new
+// auto-fix-merged / shipped-unfixed labels onto previously unlabeled findings
+// and drops obsolete derived merge labels that the current rounds no longer
+// support. It never overwrites adjudicated or user-fix labels. Missing cases
+// are a no-op so a merge observed before the first capture cannot fail the pipeline.
 func RelabelRun(ctx context.Context, store *Store, p *paths.Paths, database *db.DB, runID string) ([]Case, error) {
 	if store == nil || p == nil || database == nil {
 		return nil, fmt.Errorf("eval relabel requires a store, paths, and database")

@@ -48,11 +48,11 @@ Capture writes gold from recorded gate evidence. It does not invent labels the h
 - A finding the human selected for Fix (`selected_finding_ids` with a user source) is **true-positive** gold: that finding is a true issue. Merge is not required.
 - A finding the human added (`user_findings_json`, source `user`) is **false-negative** gold: the original review missed a real issue.
 - A finding the pipeline auto-fixed that later **landed in a merged PR** is **true-positive** gold (`recorded-auto-fix-merged`). Closed-not-merged, still-open, reverted, and superseded auto-fixes stay unlabeled.
-- A finding that was raised (`auto-fix` or `ask-user`, including a missing action that defaults to `ask-user`) and then **shipped unfixed in a merged PR** is **false-positive** gold (`recorded-shipped-unfixed`). A later review round that no longer raises the same issue treats it as fixed, so earlier rounds stay unlabeled. Informational `no-op` findings are not labeled this way.
+- A finding that was raised (`auto-fix` or `ask-user`, including a missing action that defaults to `ask-user`) and then **shipped unfixed in a merged PR** is **false-positive** gold (`recorded-shipped-unfixed`). If a later review round exists and the last of those rounds no longer raises the same issue, earlier rounds stay unlabeled - an intermediate re-raise that was gone before merge is a fix, not a false positive. Informational `no-op` findings are not labeled this way.
 - Skip, and approve-with-findings on an unmerged PR, stay **unlabeled / pending** until later adjudication.
 - A later replay that raises a new issue absent from the gold set is queued as an unmatched candidate finding. It is never auto-scored as a false positive.
 
-If a PR merges after the first capture, `eval relabel [run-id]` (or recapture) adds the merge-derived labels onto previously unlabeled findings. Adjudicated and user-fix labels are never overwritten.
+If a PR merges after the first capture, `eval relabel [run-id]` (or recapture) adds the merge-derived labels onto previously unlabeled findings and drops obsolete derived merge labels that the current rounds no longer support. Adjudicated and user-fix labels are never overwritten.
 
 A case with no finding-level gold is unlabeled / pending, never a pass. True-negative also stays unlabeled because the current capture evidence cannot establish that a finding is invalid without the shipped-unfixed or adjudication paths above.
 
@@ -81,7 +81,7 @@ Four logical sets are available to replay:
 - `diversified` - the official gold-only holdout: a pinned, size-capped stratified sample of labeled cases (repository, language, size, severity, finding-type). Empty gold produces an empty set and a warning, never a silent unlabeled fill. Rebuild pins with `eval sets --refresh-diversified`.
 - `tune` - leftover labeled cases after the diversified pins. Iterate matcher thresholds and prompt experiments here, never on `diversified`.
 
-`eval.diversified_size` (default 32, documented in [Global configuration](/no-mistakes/reference/global-config/#eval)) caps the official set. `0` keeps one gold case per stratum. Pins stay until a case is pruned, loses its gold, or an explicit refresh.
+`eval.diversified_size` (default 32, documented in [Global configuration](/no-mistakes/reference/global-config/#eval)) caps the official set. `0` keeps one gold case per stratum. Pins stay until a case is pruned, loses its gold, or an explicit refresh. Lowering the cap takes effect on the next `eval sets` / `ListCases` read: oldest pins are trimmed to the live cap without waiting for `--refresh-diversified`.
 
 Do not fit matcher thresholds or review product prompts against `diversified`. That set is the held-out official measurement; `tune` is the only labeled leftover it is safe to iterate on.
 
@@ -103,7 +103,7 @@ Replay scores each candidate finding against that gold:
 - **false-positive**: only when a candidate finding matches explicit false-positive gold (adjudicated invalid, or shipped-unfixed). Unmatched candidate findings are never treated as false positives
 - **pending / unlabeled**: unmatched candidate findings, and cases with no finding-level gold yet
 
-Matching is a documented cascade: the same finding ID, the same file and description after whitespace and case normalization, the same file with lines within 3 and token-Jaccard ≥ 0.5, then gated containment (same file, one normalized description contains the other, shorter side ≥ 8 tokens). Headline recall uses the full cascade. Reports also show recall-if-exact-only so a fuzzy-threshold change is visible. File-less or description-less findings do not match.
+Matching is a documented cascade of strengths: the same finding ID, the same file and description after whitespace and case normalization, the same file with lines within 3 and token-Jaccard ≥ 0.5, then gated containment (same file, one normalized description contains the other, shorter side ≥ 8 tokens). Assignment is maximum matching per strength tier, preferring exact over fuzzy, so gold-label order cannot undercount. Headline recall uses the full cascade. Reports also show recall-if-exact-only so a fuzzy-threshold change is visible. File-less or description-less findings do not match.
 
 The report prints recall, precision bounds (adjudicated vs pending-as-FP), and F1 as the headline metric **only when false-positive gold exists** so precision is real. Otherwise F1 is withheld rather than reported as recall-in-disguise.
 

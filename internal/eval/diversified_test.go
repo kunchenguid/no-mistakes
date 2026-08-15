@@ -191,6 +191,50 @@ func TestListCasesDiversified_SeverityAndFindingTypeAxes(t *testing.T) {
 	}
 }
 
+func TestListCasesDiversified_LoweringCapTakesEffectWithoutRefresh(t *testing.T) {
+	store := openEvalStore(t)
+	store.SetDiversifiedSize(3)
+	writeGoldStratum(t, store, "repo-a", "error", 1, 10)
+	writeGoldStratum(t, store, "repo-b", "error", 1, 20)
+	writeGoldStratum(t, store, "repo-c", "error", 1, 30)
+
+	first, err := store.ListCases("diversified")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 3 {
+		t.Fatalf("initial diversified = %v, want 3 pins under cap 3", caseIDs(first))
+	}
+
+	store.SetDiversifiedSize(1)
+	got, err := store.ListCases("diversified")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("after lowering cap to 1, diversified = %v (n=%d), want membership to reconcile to the live cap without --refresh-diversified", caseIDs(got), len(got))
+	}
+}
+
+func TestListCasesDiversified_RefreshHonorsLoweredCap(t *testing.T) {
+	store := openEvalStore(t)
+	store.SetDiversifiedSize(3)
+	writeGoldStratum(t, store, "repo-a", "error", 1, 10)
+	writeGoldStratum(t, store, "repo-b", "error", 1, 20)
+	writeGoldStratum(t, store, "repo-c", "error", 1, 30)
+	if _, err := store.ListCases("diversified"); err != nil {
+		t.Fatal(err)
+	}
+	store.SetDiversifiedSize(1)
+	got, err := store.RefreshDiversified()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("refresh after lowering cap to 1 = %v (n=%d), want the explicit refresh to honor the live cap", caseIDs(got), len(got))
+	}
+}
+
 func TestListCasesTune_IsLabeledMinusPins(t *testing.T) {
 	store := openEvalStore(t)
 	store.SetDiversifiedSize(1)
