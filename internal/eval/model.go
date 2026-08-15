@@ -114,11 +114,9 @@ type Decision struct {
 	HasUserFindings    bool     `json:"has_user_findings"`
 }
 
-// FindingGold is one human-given label for an underlying issue. Capture writes
-// only what the recorded gate evidence supports: a user-selected Fix is a
-// true-positive gold issue, and a user-added finding is a false-negative gold
-// miss. Skip, approve-with-findings, and unmatched later candidate findings
-// stay unlabeled.
+// FindingGold is one finding-level gold label for an underlying issue.
+// Capture writes only the labels goldFromRound can support from recorded
+// evidence; unmatched later candidate findings stay unlabeled.
 type FindingGold struct {
 	ID          string `json:"id"`
 	Kind        string `json:"kind"`
