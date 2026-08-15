@@ -1439,11 +1439,29 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
 	cfg.PR.BaseBranch = strings.TrimSpace(cfg.PR.BaseBranch)
+	if err := validatePRRaw(cfg.PR); err != nil {
+		return nil, fmt.Errorf("parse repo config: %w", err)
+	}
 	if cfg.AutoFix.CI == nil {
 		cfg.AutoFix.CI = cfg.AutoFix.Babysit
 	}
 
 	return cfg, nil
+}
+
+// validatePRRaw fails the config closed on a pr.base_branch value Git would
+// reject as a branch name, the same convention validateTestRaw already
+// applies to test.evidence.branch. An empty value is valid: it means "fall
+// back to the repository's forge default branch" and is intentionally not
+// normalized to any particular name here.
+func validatePRRaw(pr PRRaw) error {
+	if pr.BaseBranch == "" {
+		return nil
+	}
+	if _, err := evidence.NormalizeBranch(pr.BaseBranch); err != nil {
+		return fmt.Errorf("pr.base_branch: %w", err)
+	}
+	return nil
 }
 
 // validateReviewRaw fails the config closed on a review.path_instructions list
@@ -1589,7 +1607,9 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.NoCI = false
 		effective.CI = CIRaw{}
 		effective.Test.Evidence.Branch = nil
-		effective.PR = PRRaw{}
+		if !allowRepoCommands {
+			effective.PR = PRRaw{}
+		}
 	}
 	if allowRepoCommands {
 		return &effective
