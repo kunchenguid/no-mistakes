@@ -435,7 +435,7 @@ func renderTestedDetailFor(detail string, flavor prBodyFlavor) string {
 		return fmt.Sprintf("`%s`", clean)
 	}
 	if flavor == prBodyMarkdown {
-		return fmt.Sprintf("```text\n%s\n```", escapeMarkdownFence(clean))
+		return fmt.Sprintf("```text\n%s\n```", escapeMarkdownFence(escapePipelineFoldMarkers(clean)))
 	}
 	escaped := html.EscapeString(clean)
 	escaped = strings.ReplaceAll(escaped, "\n", "&#10;")
@@ -1294,9 +1294,32 @@ func writeTestedDetails(b *strings.Builder, sr *db.StepResult, findings *types.F
 
 func escapePRText(s string, flavor prBodyFlavor) string {
 	if flavor == prBodyMarkdown {
+		return escapePipelineFoldMarkers(s)
+	}
+	return escapePipelineFoldMarkers(html.EscapeString(s))
+}
+
+// escapePipelineFoldMarkers neutralizes the literal byte sequences the PR-body
+// truncation parser (parsePipelineUpdateGroups/nextPipelineFoldStart) treats as
+// step-fold boundaries ("### " and "<details>" at the start of a line), so
+// agent-authored text embedded in a finding, fix summary, or tested detail can
+// never be mistaken for a real fold point.
+func escapePipelineFoldMarkers(s string) string {
+	if s == "" {
 		return s
 	}
-	return html.EscapeString(s)
+	replacer := strings.NewReplacer(
+		"\n### ", "\n\\### ",
+		"\n<details>", "\n\\<details>",
+	)
+	out := replacer.Replace(s)
+	switch {
+	case strings.HasPrefix(out, "### "):
+		out = "\\" + out
+	case strings.HasPrefix(out, "<details>"):
+		out = "\\" + out
+	}
+	return out
 }
 
 func writeStepStatusDetail(b *strings.Builder, sr *db.StepResult) {
