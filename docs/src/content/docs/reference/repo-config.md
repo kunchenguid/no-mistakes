@@ -8,7 +8,7 @@ Per-repo configuration lives in `.no-mistakes.yaml` at the root of your reposito
 :::caution[Security: gate-control fields are read from the default branch]
 `commands.*` execute arbitrary shell on the daemon host via `sh -c` / `cmd.exe /c`, and `agent` selects which process launches there (including ordered fallback lists, ACP aliases such as `cursor`, and `acp:` targets) with the maintainer's credentials.
 To prevent a supply-chain attack where a contributor lands a hostile value on a gated branch, the daemon always reads **`commands` and `agent` from your default branch** (e.g. `origin/main`), never from the pushed SHA, and reads them at the exact commit a fresh fetch resolved (so a stale `origin/<default>` ref cannot serve a value the live default branch removed).
-The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, and `test.evidence.branch` only from that trusted copy.
+The daemon also reads `document.instructions`, `review.path_instructions`, `disable_project_settings`, `no_ci`, `ci.rerun_transient`, `test.evidence.branch`, and `pr.base_branch` only from that trusted copy.
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
@@ -55,6 +55,11 @@ disable_project_settings: true
 # Positive declaration that this repository intentionally has no CI.
 # Read only from the trusted default branch. Defaults to false (CI expected).
 # no_ci: true
+
+# Optional PR target branch, read from the trusted default branch.
+# When unset, PRs target the repository's forge default branch.
+pr:
+  base_branch: develop
 
 auto_fix:
   rebase: 3
@@ -167,6 +172,24 @@ If checks still appear on a declared no-CI repository, their actual states are p
 
 This field is honored **only from the trusted default-branch copy** of `.no-mistakes.yaml`, regardless of `allow_repo_commands`.
 A feature branch cannot self-declare `no_ci: true` to bypass checks, and cannot clear a trusted declaration either.
+
+### pr.base_branch
+
+Select the branch that newly created pull requests target.
+
+| | |
+| --- | --- |
+| Type | `string` |
+| Default | The repository's forge default branch |
+| Trust | Trusted default branch, unless `allow_repo_commands: true` is explicitly enabled there |
+
+Use this when the repository's integration branch differs from its forge default branch, for example `develop` instead of `main`.
+The configured branch is used for PR lookup and creation across supported SCM providers.
+When unset, no-mistakes preserves the existing behavior and targets `Repo.DefaultBranch`.
+
+Because this setting controls where a PR lands, a pushed branch cannot redirect its own PR target by changing `pr.base_branch`.
+It is read from the trusted default-branch copy regardless of `allow_repo_commands` by default.
+The established explicit `allow_repo_commands: true` opt-in also applies to this setting for repositories that intentionally trust their pushed configuration.
 
 ### commands.test
 

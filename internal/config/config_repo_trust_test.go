@@ -264,6 +264,46 @@ func TestEffectiveRepoConfig_DocumentPolicyTrustedOnly(t *testing.T) {
 	}
 }
 
+func TestEffectiveRepoConfig_PRBaseBranchTrustedOnly(t *testing.T) {
+	pushed := &RepoConfig{PR: PRRaw{BaseBranch: "feature-selected"}}
+	trusted := &RepoConfig{PR: PRRaw{BaseBranch: "develop"}}
+
+	got := EffectiveRepoConfig(pushed, trusted, false)
+	if got.PR.BaseBranch != "develop" {
+		t.Fatalf("PR.BaseBranch = %q, want trusted branch", got.PR.BaseBranch)
+	}
+
+	got = EffectiveRepoConfig(pushed, &RepoConfig{}, false)
+	if got.PR.BaseBranch != "" {
+		t.Fatalf("PR.BaseBranch = %q, want empty trusted fallback", got.PR.BaseBranch)
+	}
+
+	got = EffectiveRepoConfig(pushed, trusted, true)
+	if got.PR.BaseBranch != "feature-selected" {
+		t.Fatalf("PR.BaseBranch = %q, want pushed branch under explicit opt-in", got.PR.BaseBranch)
+	}
+}
+
+func TestEffectiveRepoConfig_PRBaseBranchOptInUsesPushedValue(t *testing.T) {
+	pushed := &RepoConfig{PR: PRRaw{BaseBranch: "develop"}}
+	trusted := &RepoConfig{AllowRepoCommands: true}
+
+	got := EffectiveRepoConfig(pushed, trusted, trusted.AllowRepoCommands)
+	if got.PR.BaseBranch != "develop" {
+		t.Fatalf("PR.BaseBranch = %q, want pushed branch under explicit opt-in", got.PR.BaseBranch)
+	}
+}
+
+func TestLoadRepoConfig_PRBaseBranch(t *testing.T) {
+	cfg, err := LoadRepoFromBytes([]byte("pr:\n  base_branch: develop\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cfg.PR.BaseBranch != "develop" {
+		t.Fatalf("PR.BaseBranch = %q, want develop", cfg.PR.BaseBranch)
+	}
+}
+
 // TestLoadRepo_DocumentInstructions proves the document.instructions key
 // parses from .no-mistakes.yaml.
 func TestLoadRepo_DocumentInstructions(t *testing.T) {

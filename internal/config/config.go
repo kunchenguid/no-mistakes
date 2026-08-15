@@ -148,12 +148,16 @@ type RepoConfig struct {
 	// ONLY from the trusted default-branch copy of .no-mistakes.yaml (never
 	// the pushed SHA), so a contributor cannot self-enable. Default false:
 	// the pushed branch controls nothing that executes.
-	AllowRepoCommands bool       `yaml:"allow_repo_commands"`
-	AutoFix           AutoFixRaw `yaml:"auto_fix"`
-	CI                CIRaw      `yaml:"ci"`
-	Commit            CommitRaw  `yaml:"commit"`
-	Intent            IntentRaw  `yaml:"intent"`
-	Test              TestRaw    `yaml:"test"`
+	AllowRepoCommands bool `yaml:"allow_repo_commands"`
+	// PR carries pull-request routing settings. BaseBranch controls where a PR
+	// lands, so EffectiveRepoConfig treats it as trusted-only unless the
+	// repository explicitly opts into pushed settings.
+	AutoFix AutoFixRaw `yaml:"auto_fix"`
+	CI      CIRaw      `yaml:"ci"`
+	Commit  CommitRaw  `yaml:"commit"`
+	Intent  IntentRaw  `yaml:"intent"`
+	Test    TestRaw    `yaml:"test"`
+	PR      PRRaw      `yaml:"pr"`
 	// Document carries the repository's documentation placement policy. It
 	// steers the document step's gate prompt, so it is honored ONLY from the
 	// trusted default-branch copy of .no-mistakes.yaml (see
@@ -206,6 +210,15 @@ type ReviewRaw struct {
 	// at least one changed file; a run that touches nothing matching leaves
 	// the review prompt exactly as it is without this setting.
 	PathInstructions []PathInstruction `yaml:"path_instructions"`
+}
+
+// PRRaw is the YAML representation of pull-request settings.
+type PRRaw struct {
+	// BaseBranch selects the forge branch a PR targets. It is gate-control
+	// configuration: the trusted default-branch copy wins unless the
+	// repository explicitly opts into pushed-branch settings with
+	// allow_repo_commands.
+	BaseBranch string `yaml:"base_branch"`
 }
 
 // PathInstruction is one glob-scoped block of review guidance. Path follows the
@@ -327,6 +340,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Commit                 CommitRaw   `yaml:"commit"`
 		Intent                 IntentRaw   `yaml:"intent"`
 		Test                   TestRaw     `yaml:"test"`
+		PR                     PRRaw       `yaml:"pr"`
 		Document               DocumentRaw `yaml:"document"`
 		Review                 ReviewRaw   `yaml:"review"`
 		DisableProjectSettings bool        `yaml:"disable_project_settings"`
@@ -346,6 +360,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Commit = raw.Commit
 	c.Intent = raw.Intent
 	c.Test = raw.Test
+	c.PR = raw.PR
 	c.Document = raw.Document
 	c.Review = raw.Review
 	c.DisableProjectSettings = raw.DisableProjectSettings
@@ -425,6 +440,7 @@ type Config struct {
 	Test                  Test
 	Document              Document
 	Review                Review
+	PR                    PR
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -434,6 +450,11 @@ type Config struct {
 	// intentionally has no CI (see the RepoConfig field). When true and the
 	// forge reports zero checks, the CI monitor treats that as all-checks-passed.
 	NoCI bool
+}
+
+// PR is the resolved pull-request configuration.
+type PR struct {
+	BaseBranch string
 }
 
 // Document is the resolved document-step config. Instructions come from the
@@ -1417,6 +1438,7 @@ func parseRepoConfig(data []byte) (*RepoConfig, error) {
 	if err := validateTestRaw(cfg.Test); err != nil {
 		return nil, fmt.Errorf("parse repo config: %w", err)
 	}
+	cfg.PR.BaseBranch = strings.TrimSpace(cfg.PR.BaseBranch)
 	if cfg.AutoFix.CI == nil {
 		cfg.AutoFix.CI = cfg.AutoFix.Babysit
 	}
@@ -1499,8 +1521,10 @@ func validatePathInstructionGlob(pattern string) error {
 // project-instruction boundary. NoCI is trusted-only so a pushed branch cannot
 // self-declare no-CI and bypass its own checks, and CI (the transient-rerun
 // budget) is trusted-only because every rerun it authorizes is another
-// provider-side workflow run billed to the repository. All five ignore
-// allowRepoCommands, which scopes only the code-executing selection fields.
+// provider-side workflow run billed to the repository. These gate-control
+// fields ignore allowRepoCommands. PR is the explicit exception: the
+// allowRepoCommands opt-in also permits a pushed PR target because it controls
+// where a maintainer-authorized PR lands, not code execution.
 // When allowRepoCommands is
 // true the maintainer has explicitly opted in (via allow_repo_commands on the
 // TRUSTED default-branch copy) to honoring the pushed branch's commands and
@@ -1552,6 +1576,12 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// artifacts are collected. The publisher independently refuses any
 		// branch without its marker file, so this is defense in depth.
 		effective.Test.Evidence.Branch = trusted.Test.Evidence.Branch
+		// pr.base_branch controls where the contributor's PR lands, so it is
+		// trusted-only unless the repository explicitly opts into pushed
+		// settings alongside commands and agent selection.
+		if !allowRepoCommands {
+			effective.PR = trusted.PR
+		}
 	} else {
 		effective.Document = DocumentRaw{}
 		effective.Review = ReviewRaw{}
@@ -1559,6 +1589,7 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		effective.NoCI = false
 		effective.CI = CIRaw{}
 		effective.Test.Evidence.Branch = nil
+		effective.PR = PRRaw{}
 	}
 	if allowRepoCommands {
 		return &effective
@@ -1913,6 +1944,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		Test:           test,
 		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
 		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
+		PR:             PR{BaseBranch: strings.TrimSpace(repo.PR.BaseBranch)},
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,
