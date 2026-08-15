@@ -431,6 +431,116 @@ func TestRelabelRemovesShippedUnfixedWhenLaterRoundShowsTheFindingLanded(t *test
 	}
 }
 
+func TestMergeGoldClearsStoredShippedUnfixedWhenRecomputedUnlabeled(t *testing.T) {
+	existing := Labels{
+		Version: labelsVersion,
+		Findings: []FindingGold{{
+			ID:          "real-bug",
+			Kind:        GoldFalsePositive,
+			Source:      goldSourceShippedUnfixed,
+			File:        "main.go",
+			Line:        3,
+			Description: "bug",
+			Severity:    "error",
+			Action:      "ask-user",
+		}},
+		QueuedCandidateFindings: 2,
+	}
+	got := mergeGold(existing, Labels{Version: labelsVersion})
+	if got.HasGold() {
+		t.Fatalf("mergeGold = %#v, want the stored shipped-unfixed FP cleared when recomputed gold has none", got)
+	}
+	if got.QueuedCandidateFindings != 2 {
+		t.Fatalf("queued candidate findings = %d, want the existing queue preserved while derived gold is dropped", got.QueuedCandidateFindings)
+	}
+}
+
+func TestRelabelClearsStoredShippedUnfixedFPWhenRecomputedUnlabeled(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, firstRound := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	if err := sourceDB.SetStepRoundSelection(firstRound.ID, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := sourceDB.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.UpdateStepStatus(steps[0].ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	stillRaised := `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"still present","risk_scope":"source-or-external"}`
+	if _, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 2, "auto_fix", &stillRaised, nil, run.HeadSHA, stringValue(firstRound.ReviewedHeadSHA), stringValue(firstRound.TrustedConfigSHA), firstRound.GlobalConfigYAML, firstRound.RepoConfigYAML, 25); err != nil {
+		t.Fatal(err)
+	}
+	final := `{"findings":[{"id":"other-bug","severity":"warning","file":"main.go","line":1,"description":"style","action":"ask-user","review_scope":"source"}],"risk_level":"low","risk_rationale":"different issue","risk_scope":"source-or-external"}`
+	if _, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 3, "auto_fix", &final, nil, run.HeadSHA, stringValue(firstRound.ReviewedHeadSHA), stringValue(firstRound.TrustedConfigSHA), firstRound.GlobalConfigYAML, firstRound.RepoConfigYAML, 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.UpdateRunPRState(run.ID, "merged"); err != nil {
+		t.Fatal(err)
+	}
+
+	store := mustOpenEval(t, p)
+	cases, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first Case
+	for _, c := range cases {
+		if c.SourceRoundID == firstRound.ID {
+			first = c
+			break
+		}
+	}
+	if first.Dir == "" || first.Labels.HasGold() {
+		t.Fatalf("first-round capture = %#v, want unlabeled so the stored FP is planted, not freshly written", first)
+	}
+	stale := first.Labels
+	stale.Findings = []FindingGold{{
+		ID:          "real-bug",
+		Kind:        GoldFalsePositive,
+		Source:      goldSourceShippedUnfixed,
+		File:        "main.go",
+		Line:        3,
+		Description: "bug",
+		Severity:    "error",
+		Action:      "ask-user",
+	}}
+	if err := writeJSON(filepath.Join(first.Dir, "labels.json"), stale); err != nil {
+		t.Fatal(err)
+	}
+
+	relabeled, err := RelabelRun(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Case
+	for _, c := range relabeled {
+		if c.SourceRoundID == firstRound.ID {
+			got = c
+			break
+		}
+	}
+	if got.Dir == "" {
+		t.Fatal("relabel did not return the first-round case")
+	}
+	for _, gold := range got.Labels.Findings {
+		if gold.ID == "real-bug" && gold.Source == goldSourceShippedUnfixed {
+			t.Fatalf("relabeled in-memory labels = %#v, want stored shipped-unfixed FP cleared", got.Labels)
+		}
+	}
+	onDisk, err := loadCase(got.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gold := range onDisk.Labels.Findings {
+		if gold.ID == "real-bug" && gold.Source == goldSourceShippedUnfixed {
+			t.Fatalf("labels.json = %#v, want stored shipped-unfixed FP removed from disk, not append-only retention", onDisk.Labels)
+		}
+	}
+}
+
 func TestCaptureKeepsUserFixWithoutMerge(t *testing.T) {
 	ctx := context.Background()
 	p, sourceDB, run, _, _ := setupCapturedRun(t, ctx)
