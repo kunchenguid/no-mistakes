@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -58,6 +59,50 @@ func TestBuildPipelineSummary_AllClean(t *testing.T) {
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("expected %q in pipeline summary, got:\n%s", want, md)
+		}
+	}
+	if risk != "" {
+		t.Errorf("expected empty risk for clean run, got: %q", risk)
+	}
+}
+
+func TestBuildPipelineSummary_BitbucketCloudOmitsHTMLAndAttestation(t *testing.T) {
+	t.Parallel()
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepReview, Status: types.StepStatusCompleted},
+		{ID: "s2", StepName: types.StepTest, Status: types.StepStatusCompleted},
+		{ID: "s3", StepName: types.StepLint, Status: types.StepStatusCompleted},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", DurationMS: 500}},
+		"s2": {{Round: 1, Trigger: "initial", DurationMS: 300}},
+		"s3": {{Round: 1, Trigger: "initial", DurationMS: 200}},
+	}
+
+	md, risk := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, scm.ProviderBitbucket)
+
+	if !strings.Contains(md, "## Pipeline") {
+		t.Fatal("missing Pipeline heading")
+	}
+	if !strings.Contains(md, noMistakesPRSignature) {
+		t.Fatalf("expected human signature, got:\n%s", md)
+	}
+	for _, want := range []string{
+		"✅ **Review** - passed",
+		"✅ **Test** - passed",
+		"✅ **Lint** - passed",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("expected %q in Bitbucket pipeline summary, got:\n%s", want, md)
+		}
+	}
+	for _, leak := range []string{
+		"<details>", "</details>", "<summary>", "</summary>",
+		"<!--", "-->", "<code>", "<video", "No issues found.",
+		pipelineAttestationCommentPrefix,
+	} {
+		if strings.Contains(md, leak) {
+			t.Errorf("Bitbucket pipeline leaked %q:\n%s", leak, md)
 		}
 	}
 	if risk != "" {
@@ -537,6 +582,40 @@ func TestBuildTestingSummaryForPR_RendersEvidenceArtifactsCompactly(t *testing.T
 	for _, broken := range []string{"![Checkout screenshot]", "raw.githubusercontent.com", "](artifacts/checkout.png)", "](artifacts/server.log)"} {
 		if strings.Contains(md, broken) {
 			t.Fatalf("did not expect broken or noisy artifact rendering %q, got:\n%s", broken, md)
+		}
+	}
+}
+
+func TestBuildTestingSummaryForPR_BitbucketCloudOmitsHTMLAndKeepsEvidence(t *testing.T) {
+	t.Parallel()
+	evidenceRoot := filepath.Join(t.TempDir(), "evidence", "run-123")
+	localPath := writeTempEvidenceFile(t, evidenceRoot, "server.log", []byte("POST /checkout 200"))
+	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"log","label":"Placement rectangle evidence","content":"{\"button\":{\"top\":169}}"},{"kind":"video","label":"Checkout recording","url":"https://example.com/checkout.mp4"},{"kind":"log","label":"Server log","path":%q}]}`, localPath)
+	steps := []*db.StepResult{
+		{ID: "s1", StepName: types.StepTest, Status: types.StepStatusCompleted, FindingsJSON: &findings},
+	}
+	rounds := map[string][]*db.StepRound{
+		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &findings, DurationMS: 300}},
+	}
+
+	md := BuildTestingSummaryForPRWithProvider(steps, rounds, "https://bitbucket.org/example/widgets.git", "abc123", t.TempDir(), evidenceRoot, nil, scm.ProviderBitbucket)
+
+	for _, want := range []string{
+		"## Testing",
+		"Evidence was collected.",
+		"### Evidence: Placement rectangle evidence",
+		"```text\n{\"button\":{\"top\":169}}\n```",
+		"[Checkout recording](https://example.com/checkout.mp4)",
+		"### Evidence: Server log",
+		"```text\nPOST /checkout 200\n```",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("expected %q in Bitbucket testing summary, got:\n%s", want, md)
+		}
+	}
+	for _, leak := range []string{"<details>", "<summary>", "<code>", "<video", "![Checkout recording]"} {
+		if strings.Contains(md, leak) {
+			t.Errorf("Bitbucket testing leaked %q:\n%s", leak, md)
 		}
 	}
 }

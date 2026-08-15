@@ -409,6 +409,69 @@ func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
 	}
 }
 
+func TestPRStep_BitbucketCreateDoesNotShipHTMLPipelineBody(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	api := newFakeBitbucketPRAPI(t, 0, "")
+
+	reviewFindings := `{"findings":[],"summary":"clean","risk_level":"low"}`
+	testFindings := `{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"log","label":"Server log","content":"ok"}]}`
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			payload := json.RawMessage(`{"title":"fix: bitbucket body","body":"## What Changed\n\n- no html"}`)
+			return &agent.Result{Output: payload}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = fakeBitbucketEnv(api.server.URL)
+	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
+
+	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(reviewStep.ID, reviewFindings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sctx.DB.InsertStepRound(reviewStep.ID, 1, "initial", &reviewFindings, nil, 200); err != nil {
+		t.Fatal(err)
+	}
+	testStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.UpdateStepStatus(testStep.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.SetStepFindings(testStep.ID, testFindings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sctx.DB.InsertStepRound(testStep.ID, 1, "initial", &testFindings, nil, 300); err != nil {
+		t.Fatal(err)
+	}
+
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if api.createCalls != 1 {
+		t.Fatalf("create calls = %d, want 1", api.createCalls)
+	}
+	description := bitbucketPRDescriptionForTest(t, api.lastCreateBody)
+	for _, leak := range []string{"<details>", "<summary>", "<code>", "<video", pipelineAttestationCommentPrefix} {
+		if strings.Contains(description, leak) {
+			t.Errorf("Bitbucket PR create shipped HTML %q:\n%s", leak, description)
+		}
+	}
+	if !strings.Contains(description, "## Pipeline") || !strings.Contains(description, "## Testing") {
+		t.Fatalf("expected Bitbucket body to keep pipeline and testing facts, got %s", description)
+	}
+}
+
 func TestPRStep_BitbucketCreatesNewPRWithoutHTMLLink(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -911,6 +974,33 @@ func TestAppendGeneratedSections_TruncatesPipelineUpdatesBeforeGitHubLimit(t *te
 	}
 }
 
+func TestAppendGeneratedSections_TruncatesBitbucketHeadingGroups(t *testing.T) {
+	body := "## What Changed\n\n- essential summary survives\n\n" + strings.Repeat("essential details stay intact\n", 350)
+	riskLine := "✅ Low: generated PR body length guard only"
+	testingMD := "## Testing\n\nEvidence was collected."
+	rounds := make([]string, 0, 160)
+	for i := 1; i <= 160; i++ {
+		rounds = append(rounds, fmt.Sprintf("review round %03d - %s", i, strings.Repeat("x", 700)))
+	}
+	pipelineMD := bitbucketPipelineMarkdownForTest(rounds...)
+
+	got := appendGeneratedSections(body, riskLine, testingMD, pipelineMD)
+
+	assertGitHubBodyLimitForTest(t, got)
+	if strings.Contains(got, "<details>") || strings.Contains(got, pipelineAttestationCommentPrefix) {
+		t.Fatalf("Bitbucket truncation reintroduced HTML:\n%s", got)
+	}
+	if !strings.Contains(got, "### ✅ **Review** - passed") {
+		t.Fatalf("expected Bitbucket heading fold to survive truncation, got:\n%s", got)
+	}
+	if strings.Contains(got, "review round 001") {
+		t.Fatalf("expected oldest Bitbucket pipeline update to be omitted, got:\n%s", got)
+	}
+	if !strings.Contains(got, "review round 160") {
+		t.Fatalf("expected newest Bitbucket pipeline update to be retained, got:\n%s", got)
+	}
+}
+
 func TestAppendGeneratedSections_RetainsPipelineAttestationWhenTruncated(t *testing.T) {
 	steps := []*db.StepResult{
 		{StepName: types.StepReview, Status: types.StepStatusCompleted},
@@ -1328,7 +1418,7 @@ func TestPRStep_BuildPRContentTruncatesGeneratedPipelineUpdates(t *testing.T) {
 		}
 	}
 
-	content, err := (&PRStep{}).buildPRContent(sctx, "feature", baseSHA, 0)
+	content, err := (&PRStep{}).buildPRContent(sctx, "feature", baseSHA, scm.ProviderGitHub, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1457,6 +1547,20 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 	}
 }
 
+func bitbucketPRDescriptionForTest(t *testing.T, raw string) string {
+	t.Helper()
+	var payload struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode Bitbucket PR payload: %v\n%s", err, raw)
+	}
+	if payload.Description == "" {
+		t.Fatalf("Bitbucket PR payload missing description:\n%s", raw)
+	}
+	return payload.Description
+}
+
 func pipelineMarkdownForTest(rounds ...string) string {
 	var b strings.Builder
 	b.WriteString("## Pipeline\n\nUpdates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)\n\n")
@@ -1467,6 +1571,17 @@ func pipelineMarkdownForTest(rounds ...string) string {
 		b.WriteString("\n\n")
 	}
 	b.WriteString("</details>\n")
+	return b.String()
+}
+
+func bitbucketPipelineMarkdownForTest(rounds ...string) string {
+	var b strings.Builder
+	b.WriteString("## Pipeline\n\nUpdates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)\n\n")
+	b.WriteString("### ✅ **Review** - passed\n\n")
+	for _, round := range rounds {
+		b.WriteString(round)
+		b.WriteString("\n\n")
+	}
 	return b.String()
 }
 
@@ -1974,7 +2089,7 @@ func TestPRStep_PromptRequiresReleaseTypesForProductImpact(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 
 	step := &PRStep{}
-	if _, err := step.buildPRContent(sctx, "feature", baseSHA, 0); err != nil {
+	if _, err := step.buildPRContent(sctx, "feature", baseSHA, scm.ProviderGitHub, 0); err != nil {
 		t.Fatal(err)
 	}
 	if len(ag.calls) != 1 {

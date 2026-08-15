@@ -15,8 +15,23 @@ import (
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+type prBodyFlavor int
+
+const (
+	prBodyHTML prBodyFlavor = iota
+	prBodyMarkdown
+)
+
+func prBodyFlavorFor(provider scm.Provider) prBodyFlavor {
+	if provider == scm.ProviderBitbucket {
+		return prBodyMarkdown
+	}
+	return prBodyHTML
+}
 
 const (
 	maxEmbeddedArtifactBytes               = 16 * 1024
@@ -41,6 +56,7 @@ type testingArtifactRenderState struct {
 }
 
 type testingSummaryOptions struct {
+	flavor               prBodyFlavor
 	githubBlobBase       string
 	githubRawBase        string
 	includeTestedDetails bool
@@ -61,10 +77,18 @@ type testingSummaryOptions struct {
 
 // BuildPipelineSummary produces a deterministic markdown section from step results and rounds.
 func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRound, headSHA string) (string, string) {
+	return BuildPipelineSummaryFor(steps, rounds, headSHA, scm.ProviderUnknown)
+}
+
+// BuildPipelineSummaryFor is BuildPipelineSummary with a host-specific body skin.
+// Unknown, GitHub, GitLab, and Azure stay on today's HTML. Bitbucket Cloud is
+// no-HTML markdown: no attestation comment, no <details>.
+func BuildPipelineSummaryFor(steps []*db.StepResult, rounds map[string][]*db.StepRound, headSHA string, provider scm.Provider) (string, string) {
 	if len(steps) == 0 {
 		return "", ""
 	}
 
+	flavor := prBodyFlavorFor(provider)
 	var detailBlocks []string
 
 	for _, sr := range steps {
@@ -72,7 +96,7 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 			continue
 		}
 		stepRounds := rounds[sr.ID]
-		line, detail := buildStepEntry(sr, stepRounds)
+		line, detail := buildStepEntry(sr, stepRounds, flavor)
 		if line != "" && detail != "" {
 			detailBlocks = append(detailBlocks, detail)
 		}
@@ -86,8 +110,10 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 	b.WriteString("## Pipeline\n\n")
 	b.WriteString(noMistakesPRSignature)
 	b.WriteString("\n\n")
-	b.WriteString(buildPipelineAttestation(steps, headSHA))
-	b.WriteString("\n\n")
+	if flavor == prBodyHTML {
+		b.WriteString(buildPipelineAttestation(steps, headSHA))
+		b.WriteString("\n\n")
+	}
 	for i, detail := range detailBlocks {
 		if i > 0 {
 			b.WriteString("\n")
@@ -136,7 +162,12 @@ func BuildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 }
 
 func BuildTestingSummaryForPR(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot, evidenceRoot string, links *evidenceLinks) string {
+	return BuildTestingSummaryForPRWithProvider(steps, rounds, upstreamURL, ref, repoRoot, evidenceRoot, links, scm.ProviderUnknown)
+}
+
+func BuildTestingSummaryForPRWithProvider(steps []*db.StepResult, rounds map[string][]*db.StepRound, upstreamURL, ref, repoRoot, evidenceRoot string, links *evidenceLinks, provider scm.Provider) string {
 	opts := testingSummaryOptionsForGitHub(upstreamURL, ref)
+	opts.flavor = prBodyFlavorFor(provider)
 	opts.compactArtifacts = true
 	opts.summaryParagraph = true
 	opts.omitOutcome = true
@@ -153,7 +184,7 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 		}
 
 		stepRounds := rounds[sr.ID]
-		line, _ := buildStepEntry(sr, stepRounds)
+		line, _ := buildStepEntry(sr, stepRounds, opts.flavor)
 		if line == "" {
 			return ""
 		}
@@ -169,7 +200,7 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 		b.WriteString("## Testing\n\n")
 		wroteSummary := false
 		if testingSummary != "" {
-			rendered := renderTestingSummary(testingSummary)
+			rendered := renderTestingSummaryFor(testingSummary, opts.flavor)
 			if rendered != "" {
 				writeTestingSummary(&b, rendered, opts)
 				wroteSummary = true
@@ -180,7 +211,7 @@ func buildTestingSummary(steps []*db.StepResult, rounds map[string][]*db.StepRou
 		}
 		if opts.includeTestedDetails {
 			for _, detail := range tested {
-				rendered := renderTestedDetail(detail)
+				rendered := renderTestedDetailFor(detail, opts.flavor)
 				if rendered == "" {
 					continue
 				}
@@ -389,6 +420,10 @@ func appendTestingDetails(details []string, seen map[string]bool, raw *string) [
 }
 
 func renderTestedDetail(detail string) string {
+	return renderTestedDetailFor(detail, prBodyHTML)
+}
+
+func renderTestedDetailFor(detail string, flavor prBodyFlavor) string {
 	clean := sanitizePromptMultilineText(detail)
 	if clean == "" {
 		return ""
@@ -399,20 +434,27 @@ func renderTestedDetail(detail string) string {
 	if !strings.Contains(clean, "`") && !strings.Contains(clean, "\n") {
 		return fmt.Sprintf("`%s`", clean)
 	}
+	if flavor == prBodyMarkdown {
+		return fmt.Sprintf("```text\n%s\n```", escapeMarkdownFence(clean))
+	}
 	escaped := html.EscapeString(clean)
 	escaped = strings.ReplaceAll(escaped, "\n", "&#10;")
 	return fmt.Sprintf("<code>%s</code>", escaped)
 }
 
 func renderTestingSummary(summary string) string {
+	return renderTestingSummaryFor(summary, prBodyHTML)
+}
+
+func renderTestingSummaryFor(summary string, flavor prBodyFlavor) string {
 	clean := sanitizePromptMultilineText(summary)
 	if clean == "" {
 		return ""
 	}
 	// Inline backtick code spans are valid markdown prose and render fine on
-	// their own; only newlines or angle brackets need the escaped <code> wrapper.
+	// their own; only newlines or angle brackets need wrapping.
 	if strings.ContainsAny(clean, "\n<>") {
-		return renderTestedDetail(clean)
+		return renderTestedDetailFor(clean, flavor)
 	}
 	return clean
 }
@@ -441,19 +483,23 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 	if target != "" && isImageArtifact(artifact.Kind, target) {
 		b.WriteString(fmt.Sprintf("**%s**\n\n![%s](%s)\n", html.EscapeString(label), markdownAltText(label), target))
 	} else if target != "" && isVideoArtifact(artifact.Kind, target) {
-		b.WriteString(fmt.Sprintf("**%s**\n\n<video src=\"%s\" controls></video>\n", html.EscapeString(label), html.EscapeString(target)))
+		if opts.flavor == prBodyMarkdown {
+			b.WriteString(fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target))
+		} else {
+			b.WriteString(fmt.Sprintf("**%s**\n\n<video src=\"%s\" controls></video>\n", html.EscapeString(label), html.EscapeString(target)))
+		}
 	} else if !hasFile {
 		if target != "" {
 			b.WriteString(fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target))
 		} else if localPath != "" {
-			b.WriteString(renderLocalArtifactLine(label, localPath))
+			b.WriteString(renderLocalArtifactLine(label, localPath, opts.flavor))
 		}
 	}
 	if descriptionLine != "" {
 		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n\n") {
 			b.WriteString("\n")
 		}
-		b.WriteString(renderTestedDetail(descriptionLine))
+		b.WriteString(renderTestedDetailFor(descriptionLine, opts.flavor))
 		b.WriteString("\n")
 	}
 	if fenceBody != "" {
@@ -483,7 +529,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 		if target != "" {
 			return fmt.Sprintf("- Evidence: [%s](%s)\n", html.EscapeString(label), target)
 		}
-		return renderLocalArtifactLine(label, localPath)
+		return renderLocalArtifactLine(label, localPath, opts.flavor)
 	}
 
 	fenceBody, descriptionLine := caption, ""
@@ -491,22 +537,19 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 		fenceBody, descriptionLine = fileText, caption
 	}
 
-	var b strings.Builder
-	b.WriteString("<details>\n")
-	b.WriteString(fmt.Sprintf("<summary>Evidence: %s</summary>\n\n", html.EscapeString(label)))
+	var inner strings.Builder
 	if target != "" {
-		b.WriteString(fmt.Sprintf("Source: [%s](%s)\n\n", html.EscapeString(label), target))
+		inner.WriteString(fmt.Sprintf("Source: [%s](%s)\n\n", html.EscapeString(label), target))
 	} else if !hasFile && localPath != "" {
-		b.WriteString(renderLocalArtifactReference("Source", label, localPath))
-		b.WriteString("\n")
+		inner.WriteString(renderLocalArtifactReference("Source", label, localPath, opts.flavor))
+		inner.WriteString("\n")
 	}
 	if descriptionLine != "" {
-		b.WriteString(renderTestedDetail(descriptionLine))
-		b.WriteString("\n\n")
+		inner.WriteString(renderTestedDetailFor(descriptionLine, opts.flavor))
+		inner.WriteString("\n\n")
 	}
-	b.WriteString(fmt.Sprintf("```text\n%s\n```\n", escapeMarkdownFence(fenceBody)))
-	b.WriteString("</details>\n")
-	return b.String()
+	inner.WriteString(fmt.Sprintf("```text\n%s\n```\n", escapeMarkdownFence(fenceBody)))
+	return foldPRBlock("Evidence: "+html.EscapeString(label), inner.String(), opts.flavor)
 }
 
 // embeddedArtifactText reads a file artifact and returns its text content,
@@ -765,12 +808,16 @@ func sameVolume(a, b string) bool {
 	return strings.EqualFold(filepath.VolumeName(a), filepath.VolumeName(b)) || filepath.VolumeName(a) == "" || filepath.VolumeName(b) == ""
 }
 
-func renderLocalArtifactLine(label, localPath string) string {
-	return renderLocalArtifactReference("- Evidence", label, localPath)
+func renderLocalArtifactLine(label, localPath string, flavor prBodyFlavor) string {
+	return renderLocalArtifactReference("- Evidence", label, localPath, flavor)
 }
 
-func renderLocalArtifactReference(prefix, label, localPath string) string {
-	return fmt.Sprintf("%s: %s (local file: <code>%s</code>)\n", prefix, html.EscapeString(label), html.EscapeString(localPath))
+func renderLocalArtifactReference(prefix, label, localPath string, flavor prBodyFlavor) string {
+	path := "<code>" + html.EscapeString(localPath) + "</code>"
+	if flavor == prBodyMarkdown {
+		path = "`" + localPath + "`"
+	}
+	return fmt.Sprintf("%s: %s (local file: %s)\n", prefix, html.EscapeString(label), path)
 }
 
 func sanitizeArtifactURL(target string) string {
@@ -863,10 +910,10 @@ func formatTestingDuration(ms int64) string {
 	return d.Round(time.Second).String()
 }
 
-func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound) (statusLine, detailBlock string) {
+func buildStepEntry(sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) (statusLine, detailBlock string) {
 	name := stepDisplayName(sr.StepName)
 	buildDetail := func(line string) (string, string) {
-		return line, buildStepDetails(line, sr, rounds)
+		return line, buildStepDetails(line, sr, rounds, flavor)
 	}
 
 	switch sr.Status {
@@ -1104,15 +1151,11 @@ func buildFixResultText(rounds []*db.StepRound) string {
 // prefixed with the fix the agent applied (its commit summary) so a reader can
 // see what was wrong and what was done about it without mentally replaying
 // "rounds".
-func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound) string {
-	var b strings.Builder
-	b.WriteString("<details>\n")
-	b.WriteString(fmt.Sprintf("<summary>%s</summary>\n\n", summaryLine))
-
+func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) string {
+	var inner strings.Builder
 	if len(rounds) == 0 {
-		writeStepStatusDetail(&b, sr)
-		b.WriteString("</details>\n")
-		return b.String()
+		writeStepStatusDetail(&inner, sr)
+		return foldPRBlock(summaryLine, inner.String(), flavor)
 	}
 
 	// True only when the step recorded final findings but no round captured
@@ -1122,55 +1165,90 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 	for _, r := range rounds {
 		isFixRound := r.IsFixRound()
 		if isFixRound {
-			b.WriteString(fixRoundLine(r))
-			b.WriteString("\n")
+			inner.WriteString(fixRoundLine(r, flavor))
+			inner.WriteString("\n")
 		}
 
 		if r.FindingsJSON == nil {
 			switch {
 			case missingRoundFindingsData:
-				b.WriteString("findings not recorded\n\n")
+				inner.WriteString("findings not recorded\n\n")
 			case isFixRound:
-				b.WriteString("✅ Re-checked - no issues remain.\n\n")
+				inner.WriteString("✅ Re-checked - no issues remain.\n\n")
 			default:
-				b.WriteString("✅ No issues found.\n\n")
+				inner.WriteString("✅ No issues found.\n\n")
 			}
 			continue
 		}
 
 		findings, err := types.ParseFindingsJSON(*r.FindingsJSON)
 		if err != nil {
-			b.WriteString("failed to parse findings\n\n")
+			inner.WriteString("failed to parse findings\n\n")
 			continue
 		}
 
 		if len(findings.Items) == 0 {
 			if isFixRound {
-				b.WriteString("✅ Re-checked - no issues remain.\n")
+				inner.WriteString("✅ Re-checked - no issues remain.\n")
 			} else {
-				b.WriteString("✅ No issues found.\n")
+				inner.WriteString("✅ No issues found.\n")
 			}
-			writeTestedDetails(&b, sr, &findings)
-			b.WriteString("\n")
+			writeTestedDetails(&inner, sr, &findings, flavor)
+			inner.WriteString("\n")
 			continue
 		}
 
 		// A fix round that still has findings means the fix did not fully
 		// land; label what remained so the chain reads as fix -> still open.
 		if isFixRound {
-			b.WriteString(fmt.Sprintf("%s still open:\n", countFindingsBySeverity(&findings)))
+			inner.WriteString(fmt.Sprintf("%s still open:\n\n", countFindingsBySeverity(&findings)))
 		}
-		writeFindingItems(&b, sr, &findings)
-		b.WriteString("\n")
+		writeFindingItems(&inner, sr, &findings, flavor)
+		inner.WriteString("\n")
 	}
 
+	return foldPRBlock(summaryLine, inner.String(), flavor)
+}
+
+func foldPRBlock(summaryLine, inner string, flavor prBodyFlavor) string {
+	inner = strings.TrimSpace(inner)
+	if flavor == prBodyMarkdown {
+		if isTautologicalStepInner(inner) {
+			return summaryLine + "\n"
+		}
+		if inner == "" {
+			return summaryLine + "\n"
+		}
+		return "### " + summaryLine + "\n\n" + inner + "\n"
+	}
+	var b strings.Builder
+	b.WriteString("<details>\n")
+	b.WriteString(fmt.Sprintf("<summary>%s</summary>\n\n", summaryLine))
+	if inner != "" {
+		b.WriteString(inner)
+		if !strings.HasSuffix(inner, "\n") {
+			b.WriteString("\n")
+		}
+	}
 	b.WriteString("</details>\n")
 	return b.String()
 }
 
+func isTautologicalStepInner(inner string) bool {
+	switch strings.TrimSpace(inner) {
+	case "✅ No issues found.", "Step has not started yet.", "Step is currently running.",
+		"Waiting for user approval.", "Agent is currently applying fixes.",
+		"Waiting to review the latest fix.", "Step was skipped.", "Step failed.",
+		"No round details recorded.", "Status unavailable.":
+		return true
+	default:
+		return false
+	}
+}
+
 // fixRoundLine renders the one-line summary of the fix the agent applied in a
 // fix round, falling back to a generic note when no summary was captured.
-func fixRoundLine(r *db.StepRound) string {
+func fixRoundLine(r *db.StepRound, flavor prBodyFlavor) string {
 	summary := ""
 	if r.FixSummary != nil {
 		summary = strings.TrimSpace(*r.FixSummary)
@@ -1178,12 +1256,12 @@ func fixRoundLine(r *db.StepRound) string {
 	if summary == "" {
 		return "🔧 Fix applied."
 	}
-	return fmt.Sprintf("🔧 Fix: %s", html.EscapeString(summary))
+	return fmt.Sprintf("🔧 Fix: %s", escapePRText(summary, flavor))
 }
 
 // writeFindingItems renders each finding as a `file:line - description` bullet,
 // followed by any test command details for the test step.
-func writeFindingItems(b *strings.Builder, sr *db.StepResult, findings *types.Findings) {
+func writeFindingItems(b *strings.Builder, sr *db.StepResult, findings *types.Findings, flavor prBodyFlavor) {
 	for _, f := range findings.Items {
 		emoji := severityEmoji(f.Severity)
 		loc := ""
@@ -1194,24 +1272,31 @@ func writeFindingItems(b *strings.Builder, sr *db.StepResult, findings *types.Fi
 			}
 			loc += "` - "
 		}
-		b.WriteString(fmt.Sprintf("- %s %s%s\n", emoji, loc, html.EscapeString(f.Description)))
+		b.WriteString(fmt.Sprintf("- %s %s%s\n", emoji, loc, escapePRText(f.Description, flavor)))
 	}
-	writeTestedDetails(b, sr, findings)
+	writeTestedDetails(b, sr, findings, flavor)
 }
 
 // writeTestedDetails lists the commands the test step exercised. It is a no-op
 // for non-test steps.
-func writeTestedDetails(b *strings.Builder, sr *db.StepResult, findings *types.Findings) {
+func writeTestedDetails(b *strings.Builder, sr *db.StepResult, findings *types.Findings, flavor prBodyFlavor) {
 	if sr.StepName != types.StepTest {
 		return
 	}
 	for _, detail := range findings.Tested {
-		rendered := renderTestedDetail(detail)
+		rendered := renderTestedDetailFor(detail, flavor)
 		if rendered == "" {
 			continue
 		}
 		b.WriteString(fmt.Sprintf("- %s\n", rendered))
 	}
+}
+
+func escapePRText(s string, flavor prBodyFlavor) string {
+	if flavor == prBodyMarkdown {
+		return s
+	}
+	return html.EscapeString(s)
 }
 
 func writeStepStatusDetail(b *strings.Builder, sr *db.StepResult) {
