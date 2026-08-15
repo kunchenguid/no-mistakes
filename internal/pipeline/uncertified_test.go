@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -160,4 +161,231 @@ func TestParkedReview_DoesNotClearUncertifiedRange(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-done
+}
+
+func TestPersistUncertifiedPipelineRange_KeepsFromSHAAcrossRunsOnSameLineage(t *testing.T) {
+	database, _, runA, repo := setupTest(t)
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	h0 := currentSHA(t, dir)
+	writeTestFile(t, dir, "fix-a.txt", "a\n")
+	execGit(t, dir, "add", ".")
+	execGit(t, dir, "commit", "-m", "fixer a")
+	h1 := currentSHA(t, dir)
+	writeTestFile(t, dir, "fix-b.txt", "b\n")
+	execGit(t, dir, "add", ".")
+	execGit(t, dir, "commit", "-m", "fixer b")
+	h2 := currentSHA(t, dir)
+
+	PersistUncertifiedPipelineRange(&StepContext{
+		Ctx:     context.Background(),
+		DB:      database,
+		Repo:    repo,
+		Run:     runA,
+		WorkDir: dir,
+	}, h0, h1)
+
+	runB, err := database.InsertRun(repo.ID, runA.Branch, h2, "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	PersistUncertifiedPipelineRange(&StepContext{
+		Ctx:     context.Background(),
+		DB:      database,
+		Repo:    repo,
+		Run:     runB,
+		WorkDir: dir,
+	}, h1, h2)
+
+	got, err := database.GetUncertifiedPipelineRange(repo.ID, runA.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.FromSHA != h0 || got.ToSHA != h2 || got.SourceRunID != runB.ID {
+		t.Fatalf("cross-run persist = %#v, want from=%s to=%s source=%s", got, h0, h2, runB.ID)
+	}
+}
+
+func TestPersistUncertifiedPipelineRange_KeepsFromSHAOnSameRun(t *testing.T) {
+	database, _, run, repo := setupTest(t)
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	h0 := currentSHA(t, dir)
+	writeTestFile(t, dir, "fix-1.txt", "1\n")
+	execGit(t, dir, "add", ".")
+	execGit(t, dir, "commit", "-m", "fixer 1")
+	h1 := currentSHA(t, dir)
+	writeTestFile(t, dir, "fix-2.txt", "2\n")
+	execGit(t, dir, "add", ".")
+	execGit(t, dir, "commit", "-m", "fixer 2")
+	h2 := currentSHA(t, dir)
+
+	sctx := &StepContext{
+		Ctx:     context.Background(),
+		DB:      database,
+		Repo:    repo,
+		Run:     run,
+		WorkDir: dir,
+	}
+	PersistUncertifiedPipelineRange(sctx, h0, h1)
+	PersistUncertifiedPipelineRange(sctx, h1, h2)
+
+	got, err := database.GetUncertifiedPipelineRange(repo.ID, run.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.FromSHA != h0 || got.ToSHA != h2 || got.SourceRunID != run.ID {
+		t.Fatalf("same-run persist = %#v, want from=%s to=%s source=%s", got, h0, h2, run.ID)
+	}
+}
+
+func TestPersistUncertifiedPipelineRange_ReplacesRangeWhenHistoryDiverged(t *testing.T) {
+	database, _, runA, repo := setupTest(t)
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	h0 := currentSHA(t, dir)
+	writeTestFile(t, dir, "line-a.txt", "a\n")
+	execGit(t, dir, "add", ".")
+	execGit(t, dir, "commit", "-m", "line a")
+	h1 := currentSHA(t, dir)
+
+	PersistUncertifiedPipelineRange(&StepContext{
+		Ctx:     context.Background(),
+		DB:      database,
+		Repo:    repo,
+		Run:     runA,
+		WorkDir: dir,
+	}, h0, h1)
+
+	execGit(t, dir, "checkout", "-b", "diverged", h0)
+	writeTestFile(t, dir, "line-c.txt", "c\n")
+	execGit(t, dir, "add", ".")
+	execGit(t, dir, "commit", "-m", "line c")
+	hC := currentSHA(t, dir)
+	writeTestFile(t, dir, "line-d.txt", "d\n")
+	execGit(t, dir, "add", ".")
+	execGit(t, dir, "commit", "-m", "line d")
+	hD := currentSHA(t, dir)
+
+	runB, err := database.InsertRun(repo.ID, runA.Branch, hD, "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	PersistUncertifiedPipelineRange(&StepContext{
+		Ctx:     context.Background(),
+		DB:      database,
+		Repo:    repo,
+		Run:     runB,
+		WorkDir: dir,
+	}, hC, hD)
+
+	got, err := database.GetUncertifiedPipelineRange(repo.ID, runA.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.FromSHA != hC || got.ToSHA != hD || got.SourceRunID != runB.ID {
+		t.Fatalf("diverged persist = %#v, want from=%s to=%s source=%s", got, hC, hD, runB.ID)
+	}
+}
+
+func TestRemapUncertifiedPipelineRangeAfterRebase_RewrittenHeadStaysBindable(t *testing.T) {
+	database, _, run, repo := setupTest(t)
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	base := currentSHA(t, dir)
+	execGit(t, dir, "checkout", "-b", "feature")
+	writeTestFile(t, dir, "author.txt", "author\n")
+	execGit(t, dir, "add", ".")
+	execGit(t, dir, "commit", "-m", "author")
+	fromSHA := currentSHA(t, dir)
+	writeTestFile(t, dir, "fixer.txt", "fixer\n")
+	execGit(t, dir, "add", ".")
+	execGit(t, dir, "commit", "-m", "fixer")
+	toSHA := currentSHA(t, dir)
+	if err := database.UpsertUncertifiedPipelineRange(repo.ID, run.Branch, fromSHA, toSHA, run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	execGit(t, dir, "branch", "newbase", base)
+	execGit(t, dir, "checkout", "newbase")
+	writeTestFile(t, dir, "main.txt", "main\n")
+	execGit(t, dir, "add", ".")
+	execGit(t, dir, "commit", "-m", "main advance")
+	execGit(t, dir, "checkout", "feature")
+	execGit(t, dir, "rebase", "newbase")
+	newHead := currentSHA(t, dir)
+	if newHead == toSHA {
+		t.Fatal("rebase did not rewrite the uncertified head")
+	}
+
+	sctx := &StepContext{
+		Ctx:     context.Background(),
+		DB:      database,
+		Repo:    repo,
+		Run:     run,
+		WorkDir: dir,
+	}
+	sctx.Run.HeadSHA = newHead
+	RemapUncertifiedPipelineRangeAfterRebase(sctx, toSHA, newHead)
+
+	got, err := database.GetUncertifiedPipelineRange(repo.ID, run.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.FromSHA == fromSHA || got.ToSHA == toSHA {
+		t.Fatalf("remap left old SHAs: %#v (old from=%s to=%s)", got, fromSHA, toSHA)
+	}
+	if got.ToSHA != newHead || got.SourceRunID != run.ID {
+		t.Fatalf("remapped range = %#v, want to=%s source=%s", got, newHead, run.ID)
+	}
+
+	BindUncertifiedPipelineRange(sctx)
+	if sctx.UncertifiedFromSHA != got.FromSHA || sctx.UncertifiedToSHA != got.ToSHA {
+		t.Fatalf("bind after remap from=%q to=%q, want from=%q to=%q", sctx.UncertifiedFromSHA, sctx.UncertifiedToSHA, got.FromSHA, got.ToSHA)
+	}
+}
+
+func TestRemapUncertifiedPipelineRangeAfterRebase_LeavesRangeWhenOldHeadDidNotContainIt(t *testing.T) {
+	database, _, run, repo := setupTest(t)
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	base := currentSHA(t, dir)
+	writeTestFile(t, dir, "other.txt", "other\n")
+	execGit(t, dir, "add", ".")
+	execGit(t, dir, "commit", "-m", "other")
+	oldHead := currentSHA(t, dir)
+	if err := database.UpsertUncertifiedPipelineRange(repo.ID, run.Branch, "from-missing", "to-missing", run.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	execGit(t, dir, "checkout", "-b", "rewritten", base)
+	writeTestFile(t, dir, "rewrite.txt", "rewrite\n")
+	execGit(t, dir, "add", ".")
+	execGit(t, dir, "commit", "-m", "rewrite")
+	newHead := currentSHA(t, dir)
+
+	RemapUncertifiedPipelineRangeAfterRebase(&StepContext{
+		Ctx:     context.Background(),
+		DB:      database,
+		Repo:    repo,
+		Run:     run,
+		WorkDir: dir,
+	}, oldHead, newHead)
+
+	got, err := database.GetUncertifiedPipelineRange(repo.ID, run.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.FromSHA != "from-missing" || got.ToSHA != "to-missing" {
+		t.Fatalf("unrelated range was rewritten: %#v", got)
+	}
+}
+
+func currentSHA(t *testing.T, dir string) string {
+	t.Helper()
+	sha, err := git.HeadSHA(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sha
 }

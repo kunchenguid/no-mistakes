@@ -505,6 +505,8 @@ func updateHeadSHA(ctx context.Context, sctx *pipeline.StepContext) (*pipeline.S
 		return nil, fmt.Errorf("resolve head after rebase: %w", err)
 	}
 	if headSHA != "" && headSHA != sctx.Run.HeadSHA {
+		oldHead := sctx.Run.HeadSHA
+		pipeline.RemapUncertifiedPipelineRangeAfterRebase(sctx, oldHead, headSHA)
 		sctx.Run.HeadSHA = headSHA
 		if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, headSHA); err != nil {
 			return nil, err
