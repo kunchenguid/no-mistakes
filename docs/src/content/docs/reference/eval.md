@@ -48,7 +48,7 @@ Capture writes gold from recorded gate evidence. It does not invent labels the h
 - A finding the human selected for Fix (`selected_finding_ids` with a user source) is **true-positive** gold: that finding is a true issue. Merge is not required.
 - A finding the human added (`user_findings_json`, source `user`) is **false-negative** gold: the original review missed a real issue.
 - A finding the pipeline auto-fixed that later **landed in a merged PR** is **true-positive** gold (`recorded-auto-fix-merged`). Closed-not-merged, still-open, reverted, and superseded auto-fixes stay unlabeled.
-- A finding that was raised (`auto-fix` or `ask-user`) and then **shipped unfixed in a merged PR** is **false-positive** gold (`recorded-shipped-unfixed`). Informational `no-op` findings are not labeled this way.
+- A finding that was raised (`auto-fix` or `ask-user`, including a missing action that defaults to `ask-user`) and then **shipped unfixed in a merged PR** is **false-positive** gold (`recorded-shipped-unfixed`). A later review round that no longer raises the same issue treats it as fixed, so earlier rounds stay unlabeled. Informational `no-op` findings are not labeled this way.
 - Skip, and approve-with-findings on an unmerged PR, stay **unlabeled / pending** until later adjudication.
 - A later replay that raises a new issue absent from the gold set is queued as an unmatched candidate finding. It is never auto-scored as a false positive.
 

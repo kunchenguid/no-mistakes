@@ -556,7 +556,10 @@ func goldFromRound(round *db.StepRound, decision Decision, prState string, later
 			if id == "" || seen[id] || selected[id] {
 				continue
 			}
-			if finding.Action != types.ActionAutoFix && finding.Action != types.ActionAskUser {
+			if finding.ActionOrDefault() == types.ActionNoOp {
+				continue
+			}
+			if len(later) > 0 && fixLanded(finding, later) {
 				continue
 			}
 			seen[id] = true

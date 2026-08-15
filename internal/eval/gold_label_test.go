@@ -144,6 +144,73 @@ func TestCaptureWritesShippedUnfixedAsFalsePositive(t *testing.T) {
 	}
 }
 
+func TestCaptureLeavesLaterRoundLandedUnselectedUnlabeled(t *testing.T) {
+	ctx := context.Background()
+	p, sourceDB, run, _, firstRound := setupCapturedRun(t, ctx)
+	defer sourceDB.Close()
+	if err := sourceDB.SetStepRoundSelection(firstRound.ID, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := sourceDB.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.UpdateStepStatus(steps[0].ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	later := `{"findings":[{"id":"other-bug","severity":"warning","file":"main.go","line":1,"description":"style","action":"ask-user","review_scope":"source"}],"risk_level":"low","risk_rationale":"different issue","risk_scope":"source-or-external"}`
+	if _, err := sourceDB.InsertReviewStepRoundWithProvenance(steps[0].ID, 2, "auto_fix", &later, nil, run.HeadSHA, stringValue(firstRound.ReviewedHeadSHA), stringValue(firstRound.TrustedConfigSHA), firstRound.GlobalConfigYAML, firstRound.RepoConfigYAML, 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.UpdateRunPRState(run.ID, "merged"); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := captureAll(t, ctx, p, sourceDB, run.ID)
+	byRound := map[string]Labels{}
+	for _, c := range cases {
+		byRound[c.SourceRoundID] = c.Labels
+	}
+	if byRound[firstRound.ID].HasGold() {
+		t.Fatalf("later-fixed first-round labels = %#v, want unlabeled (finding no longer raised)", byRound[firstRound.ID])
+	}
+	var second Labels
+	for id, labels := range byRound {
+		if id != firstRound.ID {
+			second = labels
+			break
+		}
+	}
+	if len(second.Findings) != 1 || second.Findings[0].Kind != GoldFalsePositive || second.Findings[0].Source != goldSourceShippedUnfixed || second.Findings[0].ID != "other-bug" {
+		t.Fatalf("last-round gold = %#v, want shipped-unfixed FP for the still-raised finding", second)
+	}
+}
+
+func TestCaptureWritesEmptyActionShippedUnfixedAsFalsePositive(t *testing.T) {
+	ctx := context.Background()
+	findings := `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`
+	p, sourceDB, run, _, reviewRound := setupCapturedRunWithFindings(t, ctx, findings)
+	defer sourceDB.Close()
+	if err := sourceDB.SetStepRoundSelection(reviewRound.ID, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := sourceDB.GetStepsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.UpdateStepStatus(steps[0].ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceDB.UpdateRunPRState(run.ID, "merged"); err != nil {
+		t.Fatal(err)
+	}
+
+	gold := captureOne(t, ctx, p, sourceDB, run.ID)
+	if gold.Kind != GoldFalsePositive || gold.Source != goldSourceShippedUnfixed || gold.ID != "real-bug" {
+		t.Fatalf("empty-action shipped-unfixed gold = %#v, want recorded-shipped-unfixed false-positive", gold)
+	}
+}
+
 func TestCaptureDoesNotLabelNoOpShippedUnfixed(t *testing.T) {
 	ctx := context.Background()
 	findings := `{"findings":[{"id":"note","severity":"info","file":"main.go","line":1,"description":"style","action":"no-op","review_scope":"source"}],"risk_level":"low","risk_rationale":"note","risk_scope":"source-or-external"}`

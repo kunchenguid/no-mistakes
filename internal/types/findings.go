@@ -171,7 +171,7 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 func AutoFixableFindings(findings Findings) Findings {
 	result := Findings{Summary: findings.Summary, Tested: findings.Tested, TestingSummary: findings.TestingSummary, Artifacts: findings.Artifacts, RiskLevel: findings.RiskLevel, RiskRationale: findings.RiskRationale, RiskScope: findings.RiskScope}
 	for _, item := range findings.Items {
-		if item.actionOrDefault() == ActionAutoFix {
+		if item.ActionOrDefault() == ActionAutoFix {
 			result.Items = append(result.Items, item)
 		}
 	}
@@ -229,13 +229,13 @@ func MergeUserOverrides(findings Findings, instructions map[string]string, added
 }
 
 // HasAskUserFindings returns true if any finding has an effective action of
-// "ask-user". It uses actionOrDefault so an empty/missing action (which now
+// "ask-user". It uses ActionOrDefault so an empty/missing action (which now
 // defaults to ask-user) parks for a human, keeping this in agreement with
 // AutoFixableFindings: an unclassified finding is never auto-fixed and is
 // always caught here as ask-user.
 func HasAskUserFindings(findings Findings) bool {
 	for _, item := range findings.Items {
-		if item.actionOrDefault() == ActionAskUser {
+		if item.ActionOrDefault() == ActionAskUser {
 			return true
 		}
 	}
@@ -250,7 +250,7 @@ func HasAskUserFindings(findings Findings) bool {
 // accept the step as-is.
 func HasActionableFindings(findings Findings) bool {
 	for _, item := range findings.Items {
-		if item.actionOrDefault() != ActionNoOp {
+		if item.ActionOrDefault() != ActionNoOp {
 			return true
 		}
 	}
@@ -347,7 +347,7 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// actionOrDefault resolves a finding's effective action, defaulting an
+// ActionOrDefault resolves a finding's effective action, defaulting an
 // empty/missing action to ask-user (park), not auto-fix. This closes a
 // fail-open hole: an unclassified finding on a non-schema path (a legacy
 // requires_human_review omission, an IPC- or user-supplied finding) must
@@ -355,7 +355,7 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 // review prompt's own "When in doubt, default to ask-user" instruction.
 // (MergeUserOverrides still stamps user-*added* findings auto-fix explicitly -
 // a user who hand-adds a finding is asking for a fix.)
-func (f Finding) actionOrDefault() string {
+func (f Finding) ActionOrDefault() string {
 	if f.Action == "" {
 		return ActionAskUser
 	}
