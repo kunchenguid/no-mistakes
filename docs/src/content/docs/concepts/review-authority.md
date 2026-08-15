@@ -27,7 +27,7 @@ risk posture — never something a single run can escalate on its own.
 
 | Band | What the gate may do | Mechanism |
 |---|---|---|
-| **L0 — Advisory** | Review, comment, report. Every finding parks for a decision; nothing is fixed or pushed without a human action. | Every `auto_fix` step set to zero. This is an opt-in posture, not the shipped default. |
+| **L0 — Advisory** | Review, comment, report. No follow-up auto-fix loops: every finding parks for a human decision, and nothing is auto-fixed in a follow-up round. | Every `auto_fix` step set to zero. That disables the follow-up fix loops only — the document step still applies its fixes during its own initial pass, and Push, PR, and CI still run unattended when nothing blocks. This is an opt-in posture, not the shipped default. |
 | **L1 — Human-clicks** | The gate may fix findings, but the merge decision stays with a human; `ask-user` findings always pause; yolo is explicit per-run consent, not standing authority. | `auto_fix.review` > 0 only for findings classed `auto-fix`; `ask-user` always pauses; yolo documented as consent, never default. |
 | **L2 — Conditional auto** | Within hard caps (change size, scope, finding class), the gate may fix, re-verify, and push unattended; anything above a cap or outside the class pauses. | Per-step `auto_fix` limits; review step auto-fixes only within class. Size and scope caps are not implemented yet — see [Known gaps](#known-gaps-deferred). |
 | **L3 — Scoped full-auto** | Full autonomy inside a bounded, measured, reversible domain (e.g. generated docs, dependency bumps, lint normalization). | Explicit repo policy declaring the domain; still never for irreversible actions. |
@@ -58,14 +58,18 @@ non-reversible actions.
    regression.
 3. **`ask-user` is not auto-fixable.** Intent-sensitive findings exist
    precisely because judgment is required. No `auto_fix` limit may convert an
-   `ask-user` finding into an unattended fix.
+   `ask-user` finding into an unattended fix. Two overrides do resolve
+   `ask-user` findings unattended — TUI yolo mode and
+   `no-mistakes axi run --yes` — and both are deliberate per-run consent given
+   before the run starts. The invariant is that unattended resolution of an
+   `ask-user` finding always requires explicit consent, never the default.
 4. **Escalation is frictionless.** A human can pause, respond to, or abort
    any run at any point (`no-mistakes axi respond` / TUI / `axi abort`).
    Override must never require blaming the requester.
 5. **Evidence parity.** A run's record — findings, fix commits, step logs,
-   PR link, intent — must be reconstructable for an auditor without any
-   human in the loop having been the AI. The gate's SQLite state plus the PR
-   trail is the audit surface; keep it complete.
+   PR link, intent — must stand on its own for an auditor, without relying on
+   a human having supervised any AI-authored step. The gate's SQLite state
+   plus the PR trail is the audit surface; keep it complete.
 6. **Shrink before you investigate.** Any revert or incident attributable to
    a change the gate auto-approved or auto-fixed drops the repository's band
    by one immediately. Investigate after shrinking, never before.
