@@ -359,6 +359,12 @@ func fencedJSONCandidates(text string) []string {
 		body := rest[start:]
 		end, next := indexJSONFenceClose(body)
 		if end < 0 {
+			// No closing fence: some agents (notably pi JSONL streams) emit an
+			// opening ```json fence glued to a JSON body that runs to the end
+			// of the output with no closing fence. Take everything after the
+			// opener as a candidate; parseStructuredCandidate validates it
+			// later and only adopts it when it is actually valid JSON.
+			candidates = append(candidates, body)
 			return candidates
 		}
 		candidates = append(candidates, body[:end])
@@ -392,10 +398,38 @@ func indexJSONFenceOpen(text string) int {
 func fenceContentStart(text string, fenceStart int) (int, string) {
 	after := text[fenceStart+3:]
 	lineEnd := strings.IndexByte(after, '\n')
-	if lineEnd < 0 {
-		return fenceStart + 3 + len(after), after
+	if lineEnd >= 0 {
+		after = after[:lineEnd]
 	}
-	return fenceStart + 3 + lineEnd + 1, after[:lineEnd]
+	info, rest := fenceInfoToken(after)
+	start := fenceStart + 3 + rest
+	if start < len(text) && text[start] == '\n' {
+		start++
+	}
+	return start, info
+}
+
+// fenceInfoToken returns the leading info token of a fence line (the part
+// after ```) together with its end offset within s. The token is a word
+// made of letters/digits/`-`/`_`; anything else (whitespace, `{`, `[`, …)
+// terminates it. This tolerates ```json glued directly to a JSON body on
+// the same line (e.g. ```json{"findings":[]}) — a shape real pi JSONL
+// streams produce when content blocks are concatenated without separators.
+func fenceInfoToken(s string) (string, int) {
+	i := 0
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	start := i
+	for i < len(s) {
+		c := s[i]
+		isWord := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_'
+		if !isWord {
+			break
+		}
+		i++
+	}
+	return s[start:i], i
 }
 
 func skipFenceBlock(text string) int {

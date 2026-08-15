@@ -662,3 +662,37 @@ func TestOutputSnippet_TruncatesLongText(t *testing.T) {
 		t.Errorf("expected 200 runes plus ellipsis, got %d runes", len(runes))
 	}
 }
+
+func TestFinalizeTextResult_WithSchemaParsesPiSameLineFence(t *testing.T) {
+	// Regression: pi JSONL output concatenates content blocks without
+	// separators, producing ```json glued to the JSON body on the same line
+	// (no newline after the fence info token). The fence parser must still
+	// recognize the ```json fence and extract the body.
+	text := "The change is docs-only: 3 lines appended to README.md.```json{  \"findings\": [],  \"summary\": \"docs-only change\"}"
+	result, err := finalizeTextResult("pi", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output struct {
+		Findings []any  `json:"findings"`
+		Summary  string `json:"summary"`
+	}
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if output.Summary != "docs-only change" {
+		t.Errorf("expected summary=docs-only change, got %q", output.Summary)
+	}
+}
+
+func TestFenceContentStart_InfoTokenWithSameLineBody(t *testing.T) {
+	// fence info token followed immediately by content on the same line.
+	start, info := fenceContentStart("```json{\"findings\":[]}", 0)
+	if info != "json" {
+		t.Errorf("expected info=json, got %q", info)
+	}
+	want := `{"findings":[]}`
+	if got := "```json{\"findings\":[]}"[start:]; got != want {
+		t.Errorf("content start = %d (got %q), want %q", start, got, want)
+	}
+}
