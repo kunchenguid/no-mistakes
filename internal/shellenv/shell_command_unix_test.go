@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -52,32 +53,78 @@ func TestTerminateShellCommandGroup_ReapsGrandchildAfterCleanExit(t *testing.T) 
 // group member is given the chance to shut down: it receives SIGTERM and its
 // handler runs to completion. SIGKILL would deny a test runner or worker
 // script the chance to flush output and clean up its own temporary state.
+//
+// A /bin/sh grandchild with `trap` and `sleep` is not this contract: macOS
+// /bin/sh (bash 3.2) delivers process-group SIGTERM to both the shell and its
+// sleep child, then exits without running the trap. The ready-file handshake
+// only proved trap was registered, which is why this test still failed in
+// 0.01s on CI run 31827318230 after that fix. The grandchild is a Go helper
+// that uses signal.Notify, so SIGTERM is observed by this process, not a
+// sleep(1) that dies with the default action.
 func TestTerminateShellCommandGroup_AsksBeforeKilling(t *testing.T) {
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "grandchild.pid")
 	termFile := filepath.Join(dir, "grandchild.term")
 	readyFile := filepath.Join(dir, "grandchild.ready")
 
-	// Do not let the leader exit until the grandchild has installed its trap.
-	// A PID file only proves that the shell forked: SIGTERM can otherwise land
-	// before the child executes trap, making the default action kill it.
-	script := "( trap 'echo terminated > " + termFile + "; exit 0' TERM; echo ready > " + readyFile + "; while :; do sleep 0.1; done ) >/dev/null 2>&1 & " +
-		"echo $! > " + pidFile + "; while [ ! -f " + readyFile + " ]; do sleep 0.01; done; exit 0"
-	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", script)
+	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestTerminateShellCommandGroupTermHelper$")
+	cmd.Env = append(os.Environ(),
+		"NM_SHELLENV_TERM_HELPER=leader",
+		"NM_SHELLENV_TERM_PID="+pidFile,
+		"NM_SHELLENV_TERM_READY="+readyFile,
+		"NM_SHELLENV_TERM_FILE="+termFile,
+	)
 	ConfigureShellCommand(cmd)
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("leader Run: %v", err)
 	}
 	grandchild := readPID(t, pidFile, 5*time.Second)
+	t.Cleanup(func() { _ = syscall.Kill(grandchild, syscall.SIGKILL) })
 
 	TerminateShellCommandGroup(cmd)
 
 	if !pidGoneWithin(grandchild, 5*time.Second) {
-		_ = syscall.Kill(grandchild, syscall.SIGKILL)
 		t.Fatalf("grandchild %d still alive after TerminateShellCommandGroup", grandchild)
 	}
 	if _, err := os.Stat(termFile); err != nil {
 		t.Fatalf("grandchild never ran its SIGTERM handler: %v", err)
+	}
+}
+
+func TestTerminateShellCommandGroupTermHelper(t *testing.T) {
+	switch os.Getenv("NM_SHELLENV_TERM_HELPER") {
+	case "leader":
+		child := exec.Command(os.Args[0], "-test.run=^TestTerminateShellCommandGroupTermHelper$")
+		child.Env = append(os.Environ(),
+			"NM_SHELLENV_TERM_HELPER=grandchild",
+			"NM_SHELLENV_TERM_PID="+os.Getenv("NM_SHELLENV_TERM_PID"),
+			"NM_SHELLENV_TERM_READY="+os.Getenv("NM_SHELLENV_TERM_READY"),
+			"NM_SHELLENV_TERM_FILE="+os.Getenv("NM_SHELLENV_TERM_FILE"),
+		)
+		if err := child.Start(); err != nil {
+			os.Exit(2)
+		}
+		if !waitForHelperReady(os.Getenv("NM_SHELLENV_TERM_READY"), 5*time.Second) {
+			_ = child.Process.Kill()
+			os.Exit(3)
+		}
+		os.Exit(0)
+	case "grandchild":
+		term := make(chan os.Signal, 1)
+		signal.Notify(term, syscall.SIGTERM)
+		if err := os.WriteFile(os.Getenv("NM_SHELLENV_TERM_PID"), []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+			os.Exit(4)
+		}
+		if err := os.WriteFile(os.Getenv("NM_SHELLENV_TERM_READY"), []byte("ready"), 0o644); err != nil {
+			os.Exit(5)
+		}
+		<-term
+		if err := os.WriteFile(os.Getenv("NM_SHELLENV_TERM_FILE"), []byte("terminated"), 0o644); err != nil {
+			os.Exit(6)
+		}
+		os.Exit(0)
+	default:
+		t.Skip("helper invoked by TestTerminateShellCommandGroup_AsksBeforeKilling")
 	}
 }
 

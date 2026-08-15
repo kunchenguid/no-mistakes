@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -191,22 +193,68 @@ func waitForEvent(t *testing.T, ec *eventCollector, eventType ipc.EventType, sta
 // waitForStepStatus polls the DB until a step reaches the expected status.
 func waitForStepStatus(t *testing.T, database *db.DB, runID string, stepName types.StepName, expected types.StepStatus) {
 	t.Helper()
-	// Race-enabled Windows CI can take several seconds per SQLite write under
-	// filesystem contention. Keep this above the time needed for a multi-round
-	// transition so a slow executor is not mistaken for a failed transition.
+	// The executor and this poller share one SQLite connection (MaxOpenConns(1)).
+	// A 10ms loop starved writers on Windows CI: auto-fix rounds never reached
+	// fix_review before the deadline, then TempDir cleanup failed because the
+	// still-running executor held lint.log open. Sleep long enough that a write
+	// can land between polls, and keep the deadline above a multi-round
+	// transition under filesystem contention.
 	deadline := time.Now().Add(30 * time.Second)
+	var last []string
 	for time.Now().Before(deadline) {
 		steps, err := database.GetStepsByRun(runID)
 		if err == nil {
+			last = last[:0]
 			for _, s := range steps {
+				last = append(last, fmt.Sprintf("%s=%s", s.StepName, s.Status))
 				if s.StepName == stepName && s.Status == expected {
 					return
 				}
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("step %s did not reach status %q within timeout", stepName, expected)
+	t.Fatalf("step %s did not reach status %q within timeout; last seen %v", stepName, expected, last)
+}
+
+// startExecutor runs Execute in a goroutine and cancels it during cleanup so a
+// parked step closes its log file before t.TempDir removes the tree. Windows
+// refuses unlinkat on a still-open handle; leaving Execute running after a
+// failed wait was the lint.log leak in TestExecutor_AutoFixRespectsMaxAttempts.
+func startExecutor(t *testing.T, exec *Executor, run *db.Run, repo *db.Repo, workDir string) (<-chan error, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	var finished atomic.Bool
+	t.Cleanup(func() {
+		cancel()
+		if finished.Load() {
+			return
+		}
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("executor did not return after cancel")
+		}
+	})
+	go func() {
+		err := exec.Execute(ctx, run, repo, workDir)
+		finished.Store(true)
+		done <- err
+	}()
+	return done, cancel
+}
+
+func waitExecutorDone(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("executor timed out")
+	}
 }
 
 func dirExists(path string) bool {

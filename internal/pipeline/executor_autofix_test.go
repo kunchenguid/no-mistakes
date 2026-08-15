@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -108,11 +110,7 @@ func TestExecutor_AutoFixRespectsMaxAttempts(t *testing.T) {
 	}
 
 	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- exec.Execute(context.Background(), run, repo, workDir)
-	}()
+	done, _ := startExecutor(t, exec, run, repo, workDir)
 
 	// After 2 auto-fix attempts fail, should fall back to manual approval
 	// 1 initial + 2 auto-fix = 3 calls, then waits for approval
@@ -125,15 +123,7 @@ func TestExecutor_AutoFixRespectsMaxAttempts(t *testing.T) {
 
 	// Now approve manually to finish
 	exec.Respond(types.StepLint, types.ActionApprove, nil)
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("expected no error, got: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("executor timed out")
-	}
+	waitExecutorDone(t, done)
 }
 
 func TestExecutor_AutoFixDisabledWithZero(t *testing.T) {
@@ -156,11 +146,7 @@ func TestExecutor_AutoFixDisabledWithZero(t *testing.T) {
 	}
 
 	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- exec.Execute(context.Background(), run, repo, workDir)
-	}()
+	done, _ := startExecutor(t, exec, run, repo, workDir)
 
 	// Should immediately wait for approval (no auto-fix)
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
@@ -170,15 +156,7 @@ func TestExecutor_AutoFixDisabledWithZero(t *testing.T) {
 	}
 
 	exec.Respond(types.StepReview, types.ActionApprove, nil)
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("expected no error, got: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("executor timed out")
-	}
+	waitExecutorDone(t, done)
 }
 
 func TestExecutor_AutoFixNilConfigUsesDefaults(t *testing.T) {
@@ -199,11 +177,7 @@ func TestExecutor_AutoFixNilConfigUsesDefaults(t *testing.T) {
 	}
 
 	exec := NewExecutor(database, p, nil, nil, []Step{step}, nil)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- exec.Execute(context.Background(), run, repo, workDir)
-	}()
+	done, _ := startExecutor(t, exec, run, repo, workDir)
 
 	// With nil config, should wait for approval
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
@@ -272,11 +246,7 @@ func TestExecutor_DoesNotAutoFixManualApprovalOutcome(t *testing.T) {
 	}
 
 	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- exec.Execute(context.Background(), run, repo, workDir)
-	}()
+	done, _ := startExecutor(t, exec, run, repo, workDir)
 
 	waitForStepStatus(t, database, run.ID, types.StepTest, types.StepStatusAwaitingApproval)
 
@@ -287,15 +257,7 @@ func TestExecutor_DoesNotAutoFixManualApprovalOutcome(t *testing.T) {
 	if err := exec.Respond(types.StepTest, types.ActionApprove, nil); err != nil {
 		t.Fatalf("respond error: %v", err)
 	}
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("expected no error, got: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("executor timed out")
-	}
+	waitExecutorDone(t, done)
 }
 
 func TestExecutor_AutoFixInfoFindings(t *testing.T) {
@@ -358,11 +320,7 @@ func TestExecutor_AutoFixSkipsHumanReviewFindings(t *testing.T) {
 	}
 
 	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- exec.Execute(context.Background(), run, repo, workDir)
-	}()
+	done, _ := startExecutor(t, exec, run, repo, workDir)
 
 	// Should go straight to user approval without auto-fix
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
@@ -372,15 +330,7 @@ func TestExecutor_AutoFixSkipsHumanReviewFindings(t *testing.T) {
 	}
 
 	exec.Respond(types.StepReview, types.ActionApprove, nil)
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("expected no error, got: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("executor timed out")
-	}
+	waitExecutorDone(t, done)
 }
 
 func TestExecutor_HumanReviewFindingsRequireApprovalWithoutNeedsApprovalFlag(t *testing.T) {
@@ -399,24 +349,12 @@ func TestExecutor_HumanReviewFindingsRequireApprovalWithoutNeedsApprovalFlag(t *
 	}
 
 	exec := NewExecutor(database, p, &config.Config{AutoFix: config.AutoFix{Review: 3}}, nil, []Step{step}, nil)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- exec.Execute(context.Background(), run, repo, workDir)
-	}()
+	done, _ := startExecutor(t, exec, run, repo, workDir)
 
 	waitForStepStatus(t, database, run.ID, types.StepReview, types.StepStatusAwaitingApproval)
 
 	exec.Respond(types.StepReview, types.ActionApprove, nil)
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("expected no error, got: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("executor timed out")
-	}
+	waitExecutorDone(t, done)
 }
 
 func TestExecutor_AutoFixMixedFindings(t *testing.T) {
@@ -462,11 +400,7 @@ func TestExecutor_AutoFixMixedFindings(t *testing.T) {
 	}
 
 	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- exec.Execute(context.Background(), run, repo, workDir)
-	}()
+	done, _ := startExecutor(t, exec, run, repo, workDir)
 
 	// After auto-fixing the bug, only ask-user finding remains.
 	// No more fixable findings, so falls through to user approval.
@@ -477,13 +411,41 @@ func TestExecutor_AutoFixMixedFindings(t *testing.T) {
 	}
 
 	exec.Respond(types.StepReview, types.ActionApprove, nil)
+	waitExecutorDone(t, done)
+}
 
+func TestExecutor_ParkedStepReleasesLogFileAfterCancel(t *testing.T) {
+	database, p, run, repo := setupTest(t)
+	workDir := t.TempDir()
+	cfg := &config.Config{AutoFix: config.AutoFix{Lint: 0}}
+	step := &adaptiveCallStep{
+		name: types.StepLint,
+		fn: func(sctx *StepContext) (*StepOutcome, error) {
+			return &StepOutcome{
+				NeedsApproval: true,
+				Findings:      `{"findings":[{"severity":"warning","description":"style issue","action":"auto-fix"}],"summary":"lint issue"}`,
+			}, nil
+		},
+	}
+
+	exec := NewExecutor(database, p, cfg, nil, []Step{step}, nil)
+	done, cancel := startExecutor(t, exec, run, repo, workDir)
+
+	waitForStepStatus(t, database, run.ID, types.StepLint, types.StepStatusAwaitingApproval)
+	logPath := filepath.Join(p.RunLogDir(run.ID), "lint.log")
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("expected lint.log while parked: %v", err)
+	}
+
+	cancel()
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("expected no error, got: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("executor timed out")
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("executor did not return after cancel")
+	}
+	// Windows refuses unlinkat on a handle the parked executor still holds
+	// (run 31829193856). Cancel must close the log before cleanup.
+	if err := os.Remove(logPath); err != nil {
+		t.Fatalf("parked step must close lint.log on cancel so the worktree can be removed: %v", err)
 	}
 }

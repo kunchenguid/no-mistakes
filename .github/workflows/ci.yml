@@ -34,18 +34,31 @@ jobs:
         run: go vet ./...
 
   test:
+    name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            name: test (ubuntu-latest)
+          - os: macos-latest
+            name: test (macos-latest)
+          - os: windows-latest
+            name: test (windows-core)
+            shard: core
+          - os: windows-latest
+            name: test (windows-git)
+            shard: git
     runs-on: ${{ matrix.os }}
-    # Sized for the Windows leg, which sets the floor: it compiles every test
-    # binary and then runs the git-backed packages at roughly 10x their Linux
-    # cost (see the Defender note below). At 25 the job was cancelled mid-suite
-    # with no verdict even though every package that reported had passed, which
-    # reads as a failure of the change under test rather than of the budget.
-    # This is a runaway guard, not a target - Linux and macOS finish far inside
-    # it, and 40 still keeps a wedged runner well short of the six-hour default.
+    # Sized for each Windows shard, which still sets the floor: git.exe plus
+    # Defender tax makes git-backed packages ~10x their Linux time (see the
+    # Defender note below). A single Windows `./...` job compiled every binary
+    # and then ran those packages sequentially, so total wall could exceed
+    # timeout-minutes with no package hitting go test -timeout - an
+    # evidence-free cancellation. Splitting git-heavy packages from the rest
+    # drops each shard's wall below this cap so a real hang dumps goroutines.
+    # 40 is a runaway guard, not a target - Linux and macOS finish far inside
+    # it, and it still keeps a wedged runner well short of the six-hour default.
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
@@ -87,9 +100,21 @@ jobs:
         if: runner.os != 'Windows'
         run: go test -race ./...
 
-      - name: Test on Windows
-        if: runner.os == 'Windows'
-        run: go test -v -timeout=15m ./...
+      # Git-heavy packages are the Windows wall floor. Keep this list in lockstep
+      # with NM_CI_WINDOWS_GIT_EXCLUDE on the core shard; the workflow tests
+      # resolve both through `go list` and fail if they drift.
+      - name: Test on Windows (git-heavy)
+        if: runner.os == 'Windows' && matrix.shard == 'git'
+        run: go test -v -timeout=15m ./internal/git ./internal/branchsync ./internal/gate ./internal/evidence ./internal/pipeline/steps ./internal/daemon ./internal/eval
+
+      - name: Test on Windows (core)
+        if: runner.os == 'Windows' && matrix.shard == 'core'
+        shell: pwsh
+        env:
+          NM_CI_WINDOWS_GIT_EXCLUDE: '/internal/(git|branchsync|gate|evidence|pipeline/steps|daemon|eval)$'
+        run: |
+          $pkgs = go list ./... | Where-Object { $_ -notmatch $env:NM_CI_WINDOWS_GIT_EXCLUDE }
+          go test -v -timeout=15m @pkgs
 
       - name: Build
         run: go build ./cmd/no-mistakes
