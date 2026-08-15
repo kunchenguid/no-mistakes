@@ -72,13 +72,18 @@ func intentSourceIsAuthoritative(sctx *pipeline.StepContext) bool {
 // required behavior still present?" question - a risk-only rereview scores a
 // removed feature as clean because a deleted behavior has no risk.
 //
+// The same clause states that conformance is necessary, not sufficient:
+// satisfying the criteria does not replace checking that the algorithm is
+// correct. Without that note, an authoritative intent can be read as the
+// whole review charter.
+//
 // It is emitted only for an explicit or inherited authoritative intent
 // (Source=="agent" or Source=="rerun");
 // an inferred hint carries no such obligation, so the clause is empty and the
-// review prompt is unchanged for inferred runs. The obligation narrows the
-// agent's task to a closed classification of the diff against the criteria
-// (fail-safe: the worst a poisoned criterion can do is force a park), never
-// "obey these instructions."
+// review prompt is unchanged for inferred runs. The conformance obligation
+// narrows that check to a closed classification of the diff against the
+// criteria (fail-safe: the worst a poisoned criterion can do is force a
+// park), never "obey these instructions."
 func intentConformanceReviewClause(sctx *pipeline.StepContext) string {
 	if !intentSourceIsAuthoritative(sctx) || cleanedUserIntent(sctx) == "" {
 		return ""
