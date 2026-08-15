@@ -186,6 +186,51 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	return nil
 }
 
+func (s *Store) appendFindingGold(c Case, added []FindingGold) (Case, int, error) {
+	if s == nil || s.db == nil {
+		return Case{}, 0, fmt.Errorf("eval registry is closed")
+	}
+	if strings.TrimSpace(c.Dir) == "" {
+		return Case{}, 0, fmt.Errorf("case %q has no directory", c.ID)
+	}
+	labels := c.Labels
+	if labels.Version == 0 {
+		labels.Version = labelsVersion
+	}
+	seen := make(map[string]bool, len(labels.Findings)+len(added))
+	for _, gold := range labels.Findings {
+		if id := strings.TrimSpace(gold.ID); id != "" {
+			seen[id] = true
+		}
+	}
+	n := 0
+	for _, gold := range added {
+		id := strings.TrimSpace(gold.ID)
+		if id != "" && seen[id] {
+			continue
+		}
+		if gold.Kind == "" {
+			gold.Kind = GoldFalseNegative
+		}
+		if gold.Source == "" {
+			gold.Source = goldSourcePostPRMiss
+		}
+		labels.Findings = append(labels.Findings, gold)
+		if id != "" {
+			seen[id] = true
+		}
+		n++
+	}
+	if err := writeJSON(filepath.Join(c.Dir, "labels.json"), labels); err != nil {
+		return Case{}, 0, fmt.Errorf("write case labels: %w", err)
+	}
+	c.Labels = labels
+	if _, err := s.db.Exec(`UPDATE cases SET gold_count = ? WHERE id = ?`, len(labels.Findings), c.ID); err != nil {
+		return Case{}, 0, fmt.Errorf("update eval case gold count: %w", err)
+	}
+	return c, n, nil
+}
+
 // ListCases resolves the logical sets. Diversified is gold-only, size-capped,
 // stratified, and pinned: unlabeled cases never fill it. Pins stay until the
 // case is pruned, loses its gold, RefreshDiversified is called, or the live

@@ -170,11 +170,11 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 	}
 	captured := make([]Case, 0, len(reviewRounds))
 	for i, round := range reviewRounds {
-		if round.FindingsJSON == nil {
-			// A persisted round with no findings was an interrupted or legacy
-			// partial record, not a replayable review pass. Refuse rather than
-			// silently grade a fabricated clean result.
-			return nil, fmt.Errorf("%w: review round %q has no recorded findings", ErrNoCapturableReview, round.ID)
+		if round.FindingsJSON == nil || strings.TrimSpace(*round.FindingsJSON) == "" {
+			// An interrupted or cancelled later round is not a replayable
+			// pass. Skip it so a completed sibling of the same run can still
+			// be captured rather than failing the whole export.
+			continue
 		}
 		decision := decisionForRound(round, reviewStep)
 		labels := goldFromRound(round, decision, runPRState(run), reviewRounds[i+1:])
@@ -264,6 +264,9 @@ func Capture(ctx context.Context, store *Store, p *paths.Paths, database *db.DB,
 			return nil, err
 		}
 		captured = append(captured, c)
+	}
+	if len(captured) == 0 {
+		return nil, fmt.Errorf("%w: run %q has no capturable review pass", ErrNoCapturableReview, run.ID)
 	}
 	return captured, nil
 }
@@ -491,7 +494,8 @@ func decisionForRound(round *db.StepRound, step *db.StepResult) Decision {
 // PR is false-positive gold. An intermediate re-raise that is gone from the
 // last later review round is treated as fixed, not shipped-unfixed. Skip,
 // approve-with-findings on an unmerged PR, reverted auto-fixes, and no-op
-// notes stay unlabeled.
+// notes stay unlabeled. Confirmed post-PR misses are written later by
+// IngestPostPRMiss, not here.
 func goldFromRound(round *db.StepRound, decision Decision, prState string, later []*db.StepRound) Labels {
 	labels := Labels{Version: labelsVersion}
 	byID := findingIndex(round)

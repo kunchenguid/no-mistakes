@@ -33,8 +33,9 @@ const (
 // Capture writes true-positive gold from a user Fix or from an auto-fix
 // selection that later landed in a merged PR, false-negative gold from a
 // user-added finding, and false-positive gold from a finding that shipped
-// unfixed in a merged PR. Adjudicated labels are never inferred from pending
-// unmatched candidate findings.
+// unfixed in a merged PR. IngestPostPRMiss writes additional false-negative
+// gold after a green review. Adjudicated labels are never inferred from
+// pending unmatched candidate findings.
 const (
 	GoldTruePositive  = "true-positive"
 	GoldFalseNegative = "false-negative"
@@ -46,6 +47,7 @@ const (
 	goldSourceUserAdded      = "recorded-user-added"
 	goldSourceAutoFixMerged  = "recorded-auto-fix-merged"
 	goldSourceShippedUnfixed = "recorded-shipped-unfixed"
+	goldSourcePostPRMiss     = "recorded-post-pr-miss"
 )
 
 // Candidate identifies one agent and model combination under evaluation. The
@@ -118,6 +120,8 @@ type Decision struct {
 // FindingGold is one finding-level gold label for an underlying issue.
 // Capture writes only the labels goldFromRound can support from recorded
 // evidence; unmatched later candidate findings stay unlabeled.
+// IngestPostPRMiss writes additional false-negative gold for a confirmed
+// miss after a green review.
 type FindingGold struct {
 	ID          string `json:"id"`
 	Kind        string `json:"kind"`

@@ -25,7 +25,18 @@ You can also capture a specific run yourself:
 no-mistakes eval capture <run-id>
 ```
 
-Both paths do exactly the same thing, so a case is equally trustworthy either way. Capturing a run that was already collected relabels gold from later merge evidence and otherwise leaves the frozen case in place.
+A confirmed post-PR miss - review passed green, and a later human-vetted finding showed a real defect - is ingested as false-negative gold through the same local corpus:
+
+```sh
+no-mistakes eval miss ingest <run-id> \
+  --finding '{"id":"stable-id","file":"path.go","line":12,"severity":"error","description":"one-sentence defect"}'
+```
+
+`--finding` is repeatable. The command captures the run if needed (recapture is a no-op, so existing labels survive), then writes false-negative gold onto the last completed non-blocking review pass. Duplicate finding IDs are no-ops. A parked or blocking review is refused: that class found something, so it is not a post-PR miss.
+
+The ingest payload is the source of truth. Eval does not scrape GitHub review comments and does not read an external markdown ledger. The curator (a human, or an automation that already vetted the miss) supplies the structured finding.
+
+Both paths do exactly the same thing, so a case is equally trustworthy either way. Capturing a run that was already collected relabels gold from later merge evidence and otherwise leaves the frozen case in place; ingest can still attach gold afterwards.
 
 A run is skipped when there is nothing honest to freeze: no Review step, no finished pass, a gate decision the human has not made yet, or rounds recorded before provenance was on. Capturing such a run by hand reports the reason instead of freezing an incomplete label; for a parked Review, retry after the decision is recorded.
 
@@ -49,6 +60,7 @@ Capture writes gold from recorded gate evidence: human Fix and add-finding decis
 - A finding the human added (`user_findings_json`, source `user`) is **false-negative** gold: the original review missed a real issue.
 - A finding the pipeline auto-fixed that later **landed in a merged PR** is **true-positive** gold (`recorded-auto-fix-merged`). Closed-not-merged, still-open, reverted, and superseded auto-fixes stay unlabeled.
 - A finding that was raised (`auto-fix` or `ask-user`, including a missing action that defaults to `ask-user`) and then **shipped unfixed in a merged PR** is **false-positive** gold (`recorded-shipped-unfixed`). If a later review round exists and the last of those rounds no longer raises the same issue, earlier rounds stay unlabeled - an intermediate re-raise that was gone before merge is a fix, not a false positive. Informational `no-op` findings are not labeled this way.
+- A confirmed post-PR miss ingested with `eval miss ingest` is also **false-negative** gold (`recorded-post-pr-miss`): review passed green, and a later vetted finding showed a real defect.
 - Skip, and approve-with-findings on an unmerged PR, stay **unlabeled / pending** until later adjudication.
 - A later replay that raises a new issue absent from the gold set is queued as an unmatched candidate finding. It is never auto-scored as a false positive.
 
@@ -98,7 +110,7 @@ A candidate is always explicit: `agent+model`. The replay restores each case int
 
 Replay scores each candidate finding against that gold:
 
-- **true-positive**: the candidate raises the same underlying issue as a true-issue gold finding
+- **true-positive**: the candidate raises the same underlying issue as a true-issue gold finding (user Fix, auto-fix-merged, human-added miss, or a confirmed post-PR miss)
 - **false-negative**: the candidate misses a true-issue gold finding
 - **false-positive**: only when a candidate finding matches explicit false-positive gold (adjudicated invalid, or shipped-unfixed). Unmatched candidate findings are never treated as false positives
 - **pending / unlabeled**: unmatched candidate findings, and cases with no finding-level gold yet
@@ -131,4 +143,4 @@ The report is deliberately cautious. It never treats an unadjudicated candidate 
 
 ## Current boundary
 
-Finding-level gold is derived from recorded Fix, add-finding, auto-fix-merged, and shipped-unfixed evidence. An adjudication CLI, PR-comment miss scanning, sharing, sync, and full-pipeline replay are not part of this command surface. A live merge, `eval relabel`, or recapture backfills merge-derived labels onto already captured cases.
+Finding-level gold is derived from recorded Fix, add-finding, auto-fix-merged, and shipped-unfixed evidence, plus confirmed post-PR misses ingested through `eval miss ingest`. An adjudication CLI, PR-comment miss scanning, sharing, sync, and full-pipeline replay are not part of this command surface. A live merge, `eval relabel`, or recapture backfills merge-derived labels onto already captured cases.

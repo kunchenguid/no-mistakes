@@ -16,10 +16,11 @@ func newEvalCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "eval",
 		Short: "Inspect and locally replay review evaluation cases",
-		Long:  "Inspect automatically collected review cases, capture runs on demand, and compare agent+model candidates. Eval never starts or uses the shared daemon.",
+		Long:  "Inspect automatically collected review cases, capture runs on demand, ingest confirmed post-PR misses as false-negative gold, and compare agent+model candidates. Eval never starts or uses the shared daemon.",
 		Args:  cobra.NoArgs,
 	}
 	cmd.AddCommand(newEvalCaptureCmd())
+	cmd.AddCommand(newEvalMissCmd())
 	cmd.AddCommand(newEvalRunCmd())
 	cmd.AddCommand(newEvalSetsCmd())
 	cmd.AddCommand(newEvalReportCmd())
@@ -75,6 +76,57 @@ func newEvalCaptureCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newEvalMissCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "miss",
+		Short: "Ingest confirmed post-PR review misses as false-negative gold",
+		Args:  cobra.NoArgs,
+	}
+	cmd.AddCommand(newEvalMissIngestCmd())
+	return cmd
+}
+
+func newEvalMissIngestCmd() *cobra.Command {
+	var findings []string
+	cmd := &cobra.Command{
+		Use:   "ingest <run> --finding <json>",
+		Short: "Capture a green review pass and label confirmed post-PR misses as false-negative gold",
+		Long:  "Reads confirmed post-PR misses from --finding JSON (repeatable), not from GitHub comments or an external ledger. Captures the named run if needed, then writes false-negative gold onto the last completed non-blocking review pass.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(findings) == 0 {
+				return fmt.Errorf("at least one --finding is required")
+			}
+			misses := make([]eval.FindingGold, 0, len(findings))
+			for _, raw := range findings {
+				miss, err := eval.ParsePostPRMissFinding(raw)
+				if err != nil {
+					return err
+				}
+				misses = append(misses, miss)
+			}
+			p, database, err := openResources()
+			if err != nil {
+				return err
+			}
+			defer database.Close()
+			store, err := eval.Open(p.EvalDir())
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			result, err := eval.IngestPostPRMiss(cmd.Context(), store, p, database, args[0], misses)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "ingested %d false-negative gold finding(s) into case %s (%d total)\n", result.Added, result.CaseID, result.Total)
+			return nil
+		},
+	}
+	cmd.Flags().StringArrayVar(&findings, "finding", nil, "confirmed miss as JSON finding object (repeatable)")
+	return cmd
 }
 
 func newEvalRunCmd() *cobra.Command {

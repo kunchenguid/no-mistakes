@@ -128,6 +128,92 @@ func TestEvalCaptureAndSetsSpeakInFindingGoldTerms(t *testing.T) {
 	}
 }
 
+func TestEvalMissIngestLabelsFalseNegativeGold(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	t.Setenv("NM_HOME", root)
+	chdir(t, t.TempDir())
+
+	p := paths.WithRoot(root)
+	if err := p.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	gateDir := p.RepoDir("eval-repo")
+	if err := git.InitBare(ctx, gateDir); err != nil {
+		t.Fatal(err)
+	}
+	workDir := filepath.Join(root, "source")
+	mustCLIGit(t, ctx, root, "clone", gateDir, workDir)
+	mustCLIGit(t, ctx, workDir, "config", "user.email", "eval@example.test")
+	mustCLIGit(t, ctx, workDir, "config", "user.name", "Eval Test")
+	if err := os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package sample\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustCLIGit(t, ctx, workDir, "add", ".")
+	mustCLIGit(t, ctx, workDir, "commit", "-m", "base")
+	mustCLIGit(t, ctx, workDir, "branch", "-M", "main")
+	mustCLIGit(t, ctx, workDir, "push", "origin", "main")
+	baseSHA := mustCLIGit(t, ctx, workDir, "rev-parse", "HEAD")
+	mustCLIGit(t, ctx, workDir, "checkout", "-b", "feature/eval")
+	if err := os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package sample\n\nfunc Changed() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustCLIGit(t, ctx, workDir, "add", "main.go")
+	mustCLIGit(t, ctx, workDir, "commit", "-m", "change")
+	mustCLIGit(t, ctx, workDir, "push", "origin", "feature/eval")
+	headSHA := mustCLIGit(t, ctx, workDir, "rev-parse", "HEAD")
+
+	repo, err := database.InsertRepoWithID("eval-repo", workDir, "https://example.test/org/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature/eval", headSHA, baseSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := database.InsertStepResult(run.ID, types.StepReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := `{"findings":[],"risk_level":"low","risk_rationale":"clean","risk_scope":"source-or-external"}`
+	if _, err := database.InsertReviewStepRoundWithProvenance(step.ID, 1, "initial", &findings, nil, headSHA, headSHA, baseSHA, []byte("{}\n"), []byte("{}\n"), 50); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateStepStatus(step.ID, types.StepStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := executeCmd("eval", "miss", "ingest", run.ID, "--finding", `{"id":"silent-wrong-set","file":"pkg/compute.go","line":12,"severity":"error","description":"returns the wrong set for a valid input"}`)
+	if err != nil {
+		t.Fatalf("eval miss ingest: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "ingested 1 false-negative gold finding") {
+		t.Fatalf("ingest output = %q", out)
+	}
+
+	out, err = executeCmd("eval", "sets")
+	if err != nil {
+		t.Fatalf("eval sets: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "1 with finding-level gold (true-positive 0, false-negative 1)") {
+		t.Fatalf("sets output = %q, want ingested false-negative gold", out)
+	}
+
+	out, err = executeCmd("eval", "miss", "ingest", run.ID, "--finding", `{"id":"silent-wrong-set","file":"pkg/compute.go","line":12,"severity":"error","description":"returns the wrong set for a valid input"}`)
+	if err != nil {
+		t.Fatalf("duplicate eval miss ingest: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "ingested 0 false-negative gold finding") {
+		t.Fatalf("duplicate ingest output = %q", out)
+	}
+}
+
 func mustCLIGit(t *testing.T, ctx context.Context, dir string, args ...string) string {
 	t.Helper()
 	out, err := git.Run(ctx, dir, args...)
