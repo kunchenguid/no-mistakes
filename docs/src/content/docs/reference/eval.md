@@ -36,9 +36,9 @@ no-mistakes eval miss ingest <run-id> \
 
 The ingest payload is the source of truth. Eval does not scrape GitHub review comments and does not read an external markdown ledger. The curator (a human, or an automation that already vetted the miss) supplies the structured finding.
 
-Both paths do exactly the same thing, so a case is equally trustworthy either way. Capturing a run that was already collected relabels gold from later merge evidence and otherwise leaves the frozen case in place; ingest can still attach gold afterwards.
+Automatic collection and `eval capture` do the same freeze, so a case is equally trustworthy either way. Capturing a run that was already collected relabels gold from later merge evidence and otherwise leaves the frozen case in place. `eval miss ingest` can still attach confirmed post-PR-miss gold afterwards.
 
-A run is skipped when there is nothing honest to freeze: no Review step, no finished pass, a gate decision the human has not made yet, or rounds recorded before provenance was on. Capturing such a run by hand reports the reason instead of freezing an incomplete label; for a parked Review, retry after the decision is recorded.
+A run is skipped when there is nothing honest to freeze: no Review step, no finished pass, a gate decision the human has not made yet, or rounds recorded before provenance was on. An incomplete later review round (no recorded findings) is skipped so a completed sibling of the same run can still be captured. Capturing a run with nothing capturable reports the reason instead of freezing an incomplete label; for a parked Review, retry after the decision is recorded.
 
 A case includes:
 
@@ -64,7 +64,7 @@ Capture writes gold from recorded gate evidence: human Fix and add-finding decis
 - Skip, and approve-with-findings on an unmerged PR, stay **unlabeled / pending** until later adjudication.
 - A later replay that raises a new issue absent from the gold set is queued as an unmatched candidate finding. It is never auto-scored as a false positive.
 
-If a PR merges after the first capture, already-captured cases are relabeled. The daemon does this best-effort when it observes the merge; `eval relabel [run-id]` or recapture is the CLI path. Relabel adds merge-derived labels onto previously unlabeled findings and drops obsolete derived merge labels that the current rounds no longer support. Adjudicated and user-fix labels are never overwritten.
+If a PR merges after the first capture, already-captured cases are relabeled. The daemon does this best-effort when it observes the merge; `eval relabel [run-id]` or recapture is the CLI path. Relabel adds merge-derived labels onto previously unlabeled findings and drops obsolete derived merge labels that the current rounds no longer support. Adjudicated, user-fix, and ingested post-PR-miss labels are never overwritten.
 
 A case with no finding-level gold is unlabeled / pending, never a pass. True-negative also stays unlabeled because the current capture evidence cannot establish that a finding is invalid without the shipped-unfixed or adjudication paths above.
 

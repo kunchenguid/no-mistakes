@@ -99,6 +99,21 @@ func TestIngestPostPRMissWritesFalseNegativeGoldOnGreenReview(t *testing.T) {
 	if again.Added != 0 || again.Total != 1 {
 		t.Fatalf("duplicate ingest = %#v, want no-op", again)
 	}
+
+	recaptured, err := Capture(ctx, store, p, sourceDB, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var afterRecapture Case
+	for _, c := range recaptured {
+		if c.SourceRoundID == greenRound.ID {
+			afterRecapture = c
+			break
+		}
+	}
+	if len(afterRecapture.Labels.Findings) != 1 || afterRecapture.Labels.Findings[0].Kind != GoldFalseNegative || afterRecapture.Labels.Findings[0].Source != goldSourcePostPRMiss {
+		t.Fatalf("recapture gold = %#v, want ingested post-PR miss to persist", afterRecapture.Labels)
+	}
 }
 
 func TestIngestPostPRMissRefusesBlockingReview(t *testing.T) {

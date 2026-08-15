@@ -679,8 +679,9 @@ func isDerivedMergeGold(source string) bool {
 // RelabelRun recomputes gold for every captured case of a run. It adds new
 // auto-fix-merged / shipped-unfixed labels onto previously unlabeled findings
 // and drops obsolete derived merge labels that the current rounds no longer
-// support. It never overwrites adjudicated or user-fix labels. Missing cases
-// are a no-op so a merge observed before the first capture cannot fail the pipeline.
+// support. It never overwrites adjudicated, user-fix, or ingested post-PR-miss
+// labels. Missing cases are a no-op so a merge observed before the first
+// capture cannot fail the pipeline.
 func RelabelRun(ctx context.Context, store *Store, p *paths.Paths, database *db.DB, runID string) ([]Case, error) {
 	if store == nil || p == nil || database == nil {
 		return nil, fmt.Errorf("eval relabel requires a store, paths, and database")

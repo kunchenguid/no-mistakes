@@ -201,8 +201,20 @@ func TestEvalMissIngestLabelsFalseNegativeGold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("eval sets: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "1 with finding-level gold (true-positive 0, false-negative 1)") {
+	if !strings.Contains(out, "1 with finding-level gold (true-positive 0, false-negative 1, false-positive 0)") {
 		t.Fatalf("sets output = %q, want ingested false-negative gold", out)
+	}
+
+	out, err = executeCmd("eval", "capture", run.ID)
+	if err != nil {
+		t.Fatalf("recapture after ingest: %v\n%s", err, out)
+	}
+	out, err = executeCmd("eval", "sets")
+	if err != nil {
+		t.Fatalf("eval sets after recapture: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "1 with finding-level gold (true-positive 0, false-negative 1, false-positive 0)") {
+		t.Fatalf("sets after recapture = %q, want ingested false-negative gold to persist", out)
 	}
 
 	out, err = executeCmd("eval", "miss", "ingest", run.ID, "--finding", `{"id":"silent-wrong-set","file":"pkg/compute.go","line":12,"severity":"error","description":"returns the wrong set for a valid input"}`)
