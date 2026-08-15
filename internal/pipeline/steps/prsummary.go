@@ -1160,7 +1160,7 @@ func buildFixResultText(rounds []*db.StepRound) string {
 func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRound, flavor prBodyFlavor) string {
 	var inner strings.Builder
 	if len(rounds) == 0 {
-		writeStepStatusDetail(&inner, sr)
+		writeStepStatusDetail(&inner, sr, flavor)
 		return foldPRBlock(summaryLine, inner.String(), flavor)
 	}
 
@@ -1328,7 +1328,7 @@ func escapePipelineFoldMarkers(s string) string {
 	return out
 }
 
-func writeStepStatusDetail(b *strings.Builder, sr *db.StepResult) {
+func writeStepStatusDetail(b *strings.Builder, sr *db.StepResult, flavor prBodyFlavor) {
 	switch sr.Status {
 	case types.StepStatusPending:
 		b.WriteString("Step has not started yet.\n\n")
@@ -1344,7 +1344,7 @@ func writeStepStatusDetail(b *strings.Builder, sr *db.StepResult) {
 		b.WriteString("Step was skipped.\n\n")
 	case types.StepStatusFailed:
 		if sr.Error != nil && strings.TrimSpace(*sr.Error) != "" {
-			b.WriteString(html.EscapeString(strings.TrimSpace(*sr.Error)))
+			b.WriteString(escapePRText(strings.TrimSpace(*sr.Error), flavor))
 			b.WriteString("\n\n")
 			return
 		}
