@@ -449,12 +449,15 @@ Local review-evaluation corpus settings for [`no-mistakes eval`](/no-mistakes/re
 | `eval.capture_provenance`  | `bool` | `true`  | Record the exact commit and configuration inputs a replay needs        |
 | `eval.auto_capture`        | `bool` | `true`  | Freeze eligible finished runs' review passes into the local corpus     |
 | `eval.max_cases`           | `int`  | `200`   | Retention target for automatic collection; `0` keeps every case        |
+| `eval.diversified_size`    | `int`  | `32`    | Cap on the official gold-only `diversified` set; `0` is one gold case per stratum |
 
 `capture_provenance` is what makes a review pass replayable at all. It is recorded when the round is written and cannot be added afterwards, because the pinned configuration is a point-in-time snapshot, so a run reviewed with it off can never be captured later.
 
 `auto_capture` collects those passes without any command: when an eligible run finishes, its decided review rounds become cases. It does nothing while `capture_provenance` is off. Collection runs after the pipeline has already reported its outcome and can never change it; a failure is logged and nothing else.
 
 `max_cases` sets the retention target enforced after automatic collection. When it is exceeded the oldest unprotected cases are dropped first. A case with a replay in progress or recorded candidate replays is protected, so the corpus can remain above the target rather than invalidate a comparison you have spent tokens on. Cases from the same repository share one local object pool, so a case costs its own records plus the objects its commits introduced rather than a copy of the repository.
+
+`diversified_size` caps the official gold-only eval set used by `eval run --cases diversified`. Selection is stratified and pinned; unlabeled cases never fill it. `0` keeps one gold case per stratum with no Hamilton bound. Corpus retention (`max_cases`) and this official-set cap are different knobs.
 
 These are operator settings for this machine's local disk, so they are global-only: an `eval` block in a repository's `.no-mistakes.yaml` is ignored. Corpus storage stays under `<NM_HOME>/eval` and no-mistakes never uploads it; replay still sends code to the selected agent's configured model provider as described in the [Evaluation toolkit](/no-mistakes/reference/eval/).
 

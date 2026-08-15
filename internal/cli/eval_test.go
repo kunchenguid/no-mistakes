@@ -112,7 +112,7 @@ func TestEvalCaptureAndSetsSpeakInFindingGoldTerms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("eval sets: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "1 with finding-level gold (true-positive 1, false-negative 0)") || !strings.Contains(out, "0 unlabeled / pending") {
+	if !strings.Contains(out, "1 with finding-level gold (true-positive 1, false-negative 0, false-positive 0)") || !strings.Contains(out, "0 unlabeled / pending") {
 		t.Fatalf("sets output = %q, want finding-level gold, not park/pass", out)
 	}
 	if strings.Contains(out, "verdict") || strings.Contains(out, "park") || strings.Contains(out, ", pass ") {

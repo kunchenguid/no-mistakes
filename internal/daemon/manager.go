@@ -316,6 +316,13 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	}
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, plan.cfg, plan.agent, plan.steps, m.broadcast)
+	executor.SetOnPRMerged(func(_ context.Context, runID string) {
+		m.wg.Add(1)
+		go func() {
+			defer m.wg.Done()
+			m.relabelEvalRun(context.Background(), plan.cfg, runID)
+		}()
+	})
 	done := make(chan struct{})
 	m.mu.Lock()
 	m.executors[plan.run.ID] = executor
@@ -991,6 +998,13 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	executor := pipeline.NewExecutor(m.db, m.paths, cfg, ag, execSteps, m.broadcast)
 	executor.SetSkippedSteps(skipSteps)
+	executor.SetOnPRMerged(func(_ context.Context, runID string) {
+		m.wg.Add(1)
+		go func() {
+			defer m.wg.Done()
+			m.relabelEvalRun(context.Background(), cfg, runID)
+		}()
+	})
 
 	// Track executor.
 	done := make(chan struct{})
@@ -1147,6 +1161,41 @@ func (m *RunManager) autoCaptureEvalCase(ctx context.Context, cfg *config.Config
 		slog.Debug("run has no eval case to collect", "run_id", runID, "reason", result.Reason)
 	default:
 		slog.Info("collected eval case", "run_id", runID, "cases", result.Captured, "pruned", result.Pruned)
+	}
+}
+
+func (m *RunManager) relabelEvalRun(ctx context.Context, cfg *config.Config, runID string) {
+	// Best-effort and off the CI step's call stack: a merge must not stall
+	// the pipeline for eval I/O. The caller holds m.wg for daemon drain.
+	if m == nil || m.paths == nil || m.db == nil {
+		return
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("panic while relabeling eval case", "run_id", runID, "panic", r)
+		}
+	}()
+	m.evalCaptureMu.Lock()
+	defer m.evalCaptureMu.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, evalAutoCaptureTimeout)
+	defer cancel()
+	store, err := eval.Open(m.paths.EvalDir())
+	if err != nil {
+		slog.Warn("failed to open eval store for relabel", "run_id", runID, "error", err)
+		return
+	}
+	defer store.Close()
+	if cfg != nil {
+		store.SetDiversifiedSize(cfg.Eval.DiversifiedSize)
+	}
+	if _, err := eval.RelabelRun(ctx, store, m.paths, m.db, runID); err != nil {
+		slog.Warn("failed to relabel eval case after merge", "run_id", runID, "error", err)
 	}
 }
 

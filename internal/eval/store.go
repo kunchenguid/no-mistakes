@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -18,9 +20,10 @@ import (
 // separate database so merely opening the normal pipeline DB never creates an
 // eval table or runs an eval migration.
 type Store struct {
-	root  string
-	cases string
-	db    *sql.DB
+	root            string
+	cases           string
+	db              *sql.DB
+	diversifiedSize int
 }
 
 // Open creates the local eval registry. Nothing calls this outside an explicit
@@ -39,7 +42,7 @@ func Open(root string) (*Store, error) {
 		return nil, fmt.Errorf("open eval registry: %w", err)
 	}
 	database.SetMaxOpenConns(1)
-	store := &Store{root: root, cases: cases, db: database}
+	store := &Store{root: root, cases: cases, db: database, diversifiedSize: config.DefaultEvalDiversifiedSize}
 	if err := store.migrate(); err != nil {
 		_ = database.Close()
 		return nil, err
@@ -102,6 +105,12 @@ CREATE TABLE IF NOT EXISTS evaluations (
 );
 CREATE INDEX IF NOT EXISTS idx_eval_evaluations_candidate ON evaluations(candidate, completed_at, id);
 CREATE INDEX IF NOT EXISTS idx_eval_evaluations_case ON evaluations(case_id, completed_at, id);
+CREATE TABLE IF NOT EXISTS diversified_pins (
+    case_id TEXT PRIMARY KEY REFERENCES cases(id) ON DELETE CASCADE,
+    stratum TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    pinned_at INTEGER NOT NULL
+);
 `)
 	if err != nil {
 		return fmt.Errorf("migrate eval registry: %w", err)
@@ -130,6 +139,7 @@ func (s *Store) dropParkPassSchema() error {
 DROP TABLE IF EXISTS evaluations;
 DROP TABLE IF EXISTS replay_case_reservations;
 DROP TABLE IF EXISTS pending_case_deletions;
+DROP TABLE IF EXISTS diversified_pins;
 DROP TABLE IF EXISTS cases;
 `)
 	if err != nil {
@@ -145,6 +155,18 @@ func (s *Store) Close() error {
 	err := s.db.Close()
 	s.db = nil
 	return err
+}
+
+// SetDiversifiedSize sets the official-set cap. 0 means one gold case per
+// stratum with no Hamilton bound. Negative values restore the default cap.
+func (s *Store) SetDiversifiedSize(n int) {
+	if s == nil {
+		return
+	}
+	if n < 0 {
+		n = config.DefaultEvalDiversifiedSize
+	}
+	s.diversifiedSize = n
 }
 
 func (s *Store) caseDir(id string) string { return filepath.Join(s.cases, id) }
@@ -164,10 +186,21 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	return nil
 }
 
-// ListCases resolves the three logical sets. Diversified is deterministic:
-// it retains the lexicographically first case in each repo/language/size/gold
-// bucket, making its composition visible and stable before a user spends tokens.
+// ListCases resolves the logical sets. Diversified is gold-only, size-capped,
+// stratified, and pinned: unlabeled cases never fill it, and pins stay until
+// the case is pruned, loses its gold, or RefreshDiversified is called. Tune is
+// leftover labeled cases after those pins, the set matcher thresholds may be
+// fitted on.
 func (s *Store) ListCases(set string) ([]Case, error) {
+	return s.listCases(set, false)
+}
+
+// RefreshDiversified rebuilds the official pin set from current gold.
+func (s *Store) RefreshDiversified() ([]Case, error) {
+	return s.listCases("diversified", true)
+}
+
+func (s *Store) listCases(set string, refreshDiversified bool) ([]Case, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("eval registry is closed")
 	}
@@ -175,8 +208,8 @@ func (s *Store) ListCases(set string) ([]Case, error) {
 	if set == "" {
 		set = "all"
 	}
-	if set != "all" && set != "labeled" && set != "diversified" {
-		return nil, fmt.Errorf("unknown case set %q (use all, labeled, or diversified)", set)
+	if set != "all" && set != "labeled" && set != "diversified" && set != "tune" {
+		return nil, fmt.Errorf("unknown case set %q (use all, labeled, diversified, or tune)", set)
 	}
 	rows, err := s.db.Query(`SELECT id, path FROM cases ORDER BY captured_at, id`)
 	if err != nil {
@@ -203,28 +236,138 @@ func (s *Store) ListCases(set string) ([]Case, error) {
 	case "all":
 		return all, nil
 	case "labeled":
-		out := make([]Case, 0, len(all))
-		for _, c := range all {
-			if c.Labels.HasGold() {
-				out = append(out, c)
-			}
-		}
-		return out, nil
+		return labeledCases(all), nil
 	case "diversified":
-		seen := make(map[string]bool, len(all))
-		out := make([]Case, 0, len(all))
-		for _, c := range all {
-			key := diversifiedKey(c)
-			if seen[key] {
+		pins, err := s.materializeDiversifiedPins(labeledCases(all), refreshDiversified)
+		if err != nil {
+			return nil, err
+		}
+		return casesByPinOrder(all, pins), nil
+	case "tune":
+		gold := labeledCases(all)
+		pins, err := s.materializeDiversifiedPins(gold, refreshDiversified)
+		if err != nil {
+			return nil, err
+		}
+		pinned := map[string]bool{}
+		for _, pin := range pins {
+			pinned[pin.CaseID] = true
+		}
+		out := make([]Case, 0, len(gold))
+		for _, c := range gold {
+			if pinned[c.ID] {
 				continue
 			}
-			seen[key] = true
 			out = append(out, c)
 		}
 		return out, nil
 	default:
 		return nil, fmt.Errorf("unknown case set %q", set)
 	}
+}
+
+func (s *Store) materializeDiversifiedPins(gold []Case, refresh bool) ([]diversifiedPin, error) {
+	existing, err := s.loadDiversifiedPins()
+	if err != nil {
+		return nil, err
+	}
+	if refresh {
+		existing = nil
+	}
+	planned := planDiversified(gold, s.diversifiedSize, existing)
+	if err := s.replaceDiversifiedPins(planned); err != nil {
+		return nil, err
+	}
+	return planned, nil
+}
+
+func (s *Store) loadDiversifiedPins() ([]diversifiedPin, error) {
+	rows, err := s.db.Query(`SELECT case_id, stratum, rank, pinned_at FROM diversified_pins ORDER BY pinned_at, case_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list diversified pins: %w", err)
+	}
+	defer rows.Close()
+	var pins []diversifiedPin
+	for rows.Next() {
+		var pin diversifiedPin
+		if err := rows.Scan(&pin.CaseID, &pin.Stratum, &pin.Rank, &pin.PinnedAt); err != nil {
+			return nil, fmt.Errorf("scan diversified pin: %w", err)
+		}
+		pins = append(pins, pin)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list diversified pins: %w", err)
+	}
+	return pins, nil
+}
+
+func (s *Store) replaceDiversifiedPins(pins []diversifiedPin) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin diversified pin update: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM diversified_pins`); err != nil {
+		return fmt.Errorf("clear diversified pins: %w", err)
+	}
+	for _, pin := range pins {
+		if _, err := tx.Exec(`INSERT INTO diversified_pins (case_id, stratum, rank, pinned_at) VALUES (?, ?, ?, ?)`,
+			pin.CaseID, pin.Stratum, pin.Rank, pin.PinnedAt); err != nil {
+			return fmt.Errorf("insert diversified pin %s: %w", pin.CaseID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit diversified pins: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) casesForRun(runID string) ([]Case, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("eval registry is closed")
+	}
+	rows, err := s.db.Query(`SELECT id, path FROM cases WHERE source_run_id = ? ORDER BY captured_at, id`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list eval cases for run: %w", err)
+	}
+	defer rows.Close()
+	var out []Case
+	for rows.Next() {
+		var id, dir string
+		if err := rows.Scan(&id, &dir); err != nil {
+			return nil, fmt.Errorf("scan eval case: %w", err)
+		}
+		c, err := loadCase(dir)
+		if err != nil {
+			return nil, fmt.Errorf("load eval case %s: %w", id, err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list eval cases for run: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) updateCaseGoldCount(id string, n int) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("eval registry is closed")
+	}
+	if _, err := s.db.Exec(`UPDATE cases SET gold_count = ? WHERE id = ?`, n, id); err != nil {
+		return fmt.Errorf("update eval case gold count: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) pinCount() (int, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("eval registry is closed")
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT count(*) FROM diversified_pins`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count diversified pins: %w", err)
+	}
+	return n, nil
 }
 
 // Prune bounds the corpus at maxCases by dropping the oldest cases first, and
@@ -392,33 +535,6 @@ func writeJSON(path string, value any) error {
 		return err
 	}
 	return nil
-}
-
-func diversifiedKey(c Case) string {
-	language, size, _ := caseComposition(c)
-	return strings.Join([]string{c.RepoFingerprint, language, size, goldBucket(c.Labels)}, "\x00")
-}
-
-func goldBucket(labels Labels) string {
-	hasTP, hasFN := false, false
-	for _, finding := range labels.Findings {
-		switch finding.Kind {
-		case GoldTruePositive:
-			hasTP = true
-		case GoldFalseNegative:
-			hasFN = true
-		}
-	}
-	switch {
-	case hasTP && hasFN:
-		return "true-positive+false-negative"
-	case hasTP:
-		return GoldTruePositive
-	case hasFN:
-		return GoldFalseNegative
-	default:
-		return "unlabeled"
-	}
 }
 
 func caseComposition(c Case) (language, size, severity string) {

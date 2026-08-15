@@ -64,6 +64,9 @@ const (
 	// copy of the repository. The cap exists to bound that JSON and to keep
 	// the corpus a recent, representative window rather than an archive.
 	DefaultEvalMaxCases = 200
+	// DefaultEvalDiversifiedSize caps the official gold-only eval set.
+	// 0 means one gold case per stratum with no Hamilton bound.
+	DefaultEvalDiversifiedSize = 32
 	// DefaultEvidenceRetention is how long a run's on-disk evidence survives
 	// before the daemon reaps it. It is comfortably longer than typical PR
 	// review latency because a PR body references these artifacts by local path
@@ -508,6 +511,7 @@ type EvalRaw struct {
 	CaptureProvenance *bool `yaml:"capture_provenance"`
 	AutoCapture       *bool `yaml:"auto_capture"`
 	MaxCases          *int  `yaml:"max_cases"`
+	DiversifiedSize   *int  `yaml:"diversified_size"`
 }
 
 // Eval is the resolved local evaluation-corpus config. It is deliberately a
@@ -532,6 +536,9 @@ type Eval struct {
 	// candidate replays, so a corpus you have spent tokens on is never
 	// silently reclaimed underneath a comparison.
 	MaxCases int
+	// DiversifiedSize caps the official gold-only eval set. 0 means one gold
+	// case per stratum (no Hamilton bound). Unlabeled cases never fill it.
+	DiversifiedSize int
 }
 
 // IntentRaw is the YAML representation of user-intent extraction settings.
@@ -757,12 +764,15 @@ intent:
 # case costs its own records plus the objects its commits introduced - not a
 # copy of the repository. max_cases bounds the corpus: the oldest cases are
 # dropped first, and a case that already has recorded replays is never dropped.
-# Set max_cases to 0 to keep every case. Everything stays under <NM_HOME>/eval
-# and is never uploaded anywhere.
+# Set max_cases to 0 to keep every case. diversified_size caps the official
+# gold-only eval set (default 32); 0 means one gold case per stratum. Unlabeled
+# cases never fill it. Everything stays under <NM_HOME>/eval and is never
+# uploaded anywhere.
 eval:
   capture_provenance: true
   auto_capture: true
   max_cases: 200
+  diversified_size: 32
 `
 
 // defaultBinary maps agent names to their default binary names.
@@ -1699,7 +1709,7 @@ func parseEvidenceRetention(value string) (time.Duration, error) {
 // kind that exists when a comparison is finally needed. The default cap keeps
 // the corpus a rolling window rather than an unbounded archive.
 func evalDefaults() Eval {
-	return Eval{CaptureProvenance: true, AutoCapture: true, MaxCases: DefaultEvalMaxCases}
+	return Eval{CaptureProvenance: true, AutoCapture: true, MaxCases: DefaultEvalMaxCases, DiversifiedSize: DefaultEvalDiversifiedSize}
 }
 
 // applyEvalOverrides applies non-nil raw values onto resolved defaults. The
@@ -1714,6 +1724,9 @@ func applyEvalOverrides(dst *Eval, src *EvalRaw) {
 	if src.MaxCases != nil && *src.MaxCases >= 0 {
 		dst.MaxCases = *src.MaxCases
 	}
+	if src.DiversifiedSize != nil && *src.DiversifiedSize >= 0 {
+		dst.DiversifiedSize = *src.DiversifiedSize
+	}
 }
 
 // validateEvalRaw fails the config closed on a negative eval.max_cases. A
@@ -1722,6 +1735,9 @@ func applyEvalOverrides(dst *Eval, src *EvalRaw) {
 func validateEvalRaw(raw EvalRaw) error {
 	if raw.MaxCases != nil && *raw.MaxCases < 0 {
 		return fmt.Errorf("eval.max_cases must be 0 (keep every case) or greater, got %d", *raw.MaxCases)
+	}
+	if raw.DiversifiedSize != nil && *raw.DiversifiedSize < 0 {
+		return fmt.Errorf("eval.diversified_size must be 0 (one gold case per stratum) or greater, got %d", *raw.DiversifiedSize)
 	}
 	return nil
 }

@@ -186,6 +186,7 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 	}
 	evaluation.HasFindingGold = c.Labels.HasGold()
 	evaluation.GoldCount = c.Labels.TrueIssueCount()
+	evaluation.FalsePositiveGold = c.Labels.FalsePositiveCount()
 	defer func() {
 		if evaluation.Status != "completed" {
 			evaluation.FalseNegative = evaluation.GoldCount
@@ -345,8 +346,11 @@ func replayOne(ctx context.Context, store *Store, c Case, session Session, candi
 	evaluation.FindingCount = findingCount(outcome.Findings)
 	score := ScoreCandidate(c.Labels, outcome.Findings)
 	evaluation.TruePositive = score.TruePositive
+	evaluation.TruePositiveExact = score.TruePositiveExact
+	evaluation.TruePositiveFuzzy = score.TruePositiveFuzzy
 	evaluation.FalseNegative = score.FalseNegative
 	evaluation.FalsePositive = score.FalsePositive
+	evaluation.FalsePositiveGold = score.FalsePositiveGold
 	evaluation.Pending = score.Pending
 	return evaluation
 }

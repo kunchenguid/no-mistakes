@@ -59,6 +59,9 @@ type StepContext struct {
 	// step in the same run (e.g. the combined document+lint pass).
 	Shared             *RunShared
 	CIReadinessChanged func(ready, declaredNoCI bool)
+	// OnPRMerged is a best-effort hook after a merged PR state is persisted.
+	// Eval uses it to relabel auto-fix/shipped-unfixed gold; nil is a no-op.
+	OnPRMerged func(ctx context.Context, runID string)
 }
 
 // RunAgentSession executes one turn of a durable review-loop role session,

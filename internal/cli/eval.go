@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/eval"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/spf13/cobra"
@@ -22,7 +23,26 @@ func newEvalCmd() *cobra.Command {
 	cmd.AddCommand(newEvalRunCmd())
 	cmd.AddCommand(newEvalSetsCmd())
 	cmd.AddCommand(newEvalReportCmd())
+	cmd.AddCommand(newEvalRelabelCmd())
 	return cmd
+}
+
+func openEvalStore() (*paths.Paths, *eval.Store, error) {
+	p, err := paths.New()
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve eval paths: %w", err)
+	}
+	store, err := eval.Open(p.EvalDir())
+	if err != nil {
+		return nil, nil, err
+	}
+	cfg, err := config.LoadGlobal(p.ConfigFile())
+	if err != nil {
+		_ = store.Close()
+		return nil, nil, err
+	}
+	store.SetDiversifiedSize(cfg.Eval.DiversifiedSize)
+	return p, store, nil
 }
 
 func newEvalCaptureCmd() *cobra.Command {
@@ -41,6 +61,9 @@ func newEvalCaptureCmd() *cobra.Command {
 				return err
 			}
 			defer store.Close()
+			if cfg, cfgErr := config.LoadGlobal(p.ConfigFile()); cfgErr == nil {
+				store.SetDiversifiedSize(cfg.Eval.DiversifiedSize)
+			}
 			cases, err := eval.Capture(cmd.Context(), store, p, database, args[0])
 			if err != nil {
 				return err
@@ -59,7 +82,7 @@ func newEvalRunCmd() *cobra.Command {
 	var candidateRaw string
 	var repeats int
 	cmd := &cobra.Command{
-		Use:   "run --cases <all|labeled|diversified> --candidate <agent+model>",
+		Use:   "run --cases <all|labeled|diversified|tune> --candidate <agent+model>",
 		Short: "Replay captured review passes and score findings against gold",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -67,11 +90,7 @@ func newEvalRunCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			p, err := paths.New()
-			if err != nil {
-				return fmt.Errorf("resolve eval paths: %w", err)
-			}
-			store, err := eval.Open(p.EvalDir())
+			_, store, err := openEvalStore()
 			if err != nil {
 				return err
 			}
@@ -84,7 +103,7 @@ func newEvalRunCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&cases, "cases", "", "case set: all, labeled (finding-level gold), or diversified")
+	cmd.Flags().StringVar(&cases, "cases", "", "case set: all, labeled (finding-level gold), diversified (official gold-only holdout), or tune")
 	cmd.Flags().StringVar(&candidateRaw, "candidate", "", "candidate as agent+model (for example codex+gpt-5.4)")
 	cmd.Flags().IntVar(&repeats, "repeats", 3, "replays per case (minimum 1)")
 	_ = cmd.MarkFlagRequired("cases")
@@ -93,20 +112,22 @@ func newEvalRunCmd() *cobra.Command {
 }
 
 func newEvalSetsCmd() *cobra.Command {
-	return &cobra.Command{
+	var refresh bool
+	cmd := &cobra.Command{
 		Use:   "sets",
 		Short: "Inspect local case-set size, finding-level gold, and composition",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			p, err := paths.New()
-			if err != nil {
-				return fmt.Errorf("resolve eval paths: %w", err)
-			}
-			store, err := eval.Open(p.EvalDir())
+			_, store, err := openEvalStore()
 			if err != nil {
 				return err
 			}
 			defer store.Close()
+			if refresh {
+				if _, err := store.RefreshDiversified(); err != nil {
+					return err
+				}
+			}
 			summaries, err := eval.InspectSets(store)
 			if err != nil {
 				return err
@@ -115,6 +136,8 @@ func newEvalSetsCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&refresh, "refresh-diversified", false, "rebuild the official diversified pin set from current gold")
+	return cmd
 }
 
 func newEvalReportCmd() *cobra.Command {
@@ -123,11 +146,7 @@ func newEvalReportCmd() *cobra.Command {
 		Short: "Report local true-positive / false-negative scores, tokens, and cost",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			p, err := paths.New()
-			if err != nil {
-				return fmt.Errorf("resolve eval paths: %w", err)
-			}
-			store, err := eval.Open(p.EvalDir())
+			_, store, err := openEvalStore()
 			if err != nil {
 				return err
 			}
@@ -137,6 +156,40 @@ func newEvalReportCmd() *cobra.Command {
 				return err
 			}
 			fmt.Fprint(cmd.OutOrStdout(), eval.RenderReport(reports))
+			return nil
+		},
+	}
+}
+
+func newEvalRelabelCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "relabel [run]",
+		Short: "Refresh gold labels when a source PR has merged after capture",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, database, err := openResources()
+			if err != nil {
+				return err
+			}
+			defer database.Close()
+			store, err := eval.Open(p.EvalDir())
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			if cfg, cfgErr := config.LoadGlobal(p.ConfigFile()); cfgErr == nil {
+				store.SetDiversifiedSize(cfg.Eval.DiversifiedSize)
+			}
+			var cases []eval.Case
+			if len(args) == 1 {
+				cases, err = eval.RelabelRun(cmd.Context(), store, p, database, args[0])
+			} else {
+				cases, err = eval.RelabelAll(cmd.Context(), store, p, database)
+			}
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "relabeled %d local review case(s)\n", len(cases))
 			return nil
 		},
 	}

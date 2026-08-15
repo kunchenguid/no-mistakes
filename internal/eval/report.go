@@ -201,21 +201,46 @@ type SetSummary struct {
 	GoldCases      int
 	TruePositive   int
 	FalseNegative  int
+	FalsePositive  int
 	Unlabeled      int
 	QueuedFindings int
+	PinCount       int
+	Cap            int
+	Warning        string
 	Composition    map[string]int
 }
 
 // InspectSets summarizes all logical sets and their diversified mix.
 func InspectSets(store *Store) ([]SetSummary, error) {
-	sets := []string{"all", "labeled", "diversified"}
+	sets := []string{"all", "labeled", "diversified", "tune"}
+	all, err := store.ListCases("all")
+	if err != nil {
+		return nil, err
+	}
+	labeledCount := 0
+	for _, c := range all {
+		if c.Labels.HasGold() {
+			labeledCount++
+		}
+	}
 	result := make([]SetSummary, 0, len(sets))
 	for _, name := range sets {
 		cases, err := store.ListCases(name)
 		if err != nil {
 			return nil, err
 		}
-		summary := SetSummary{Name: name, Cases: len(cases), Composition: map[string]int{}}
+		summary := SetSummary{Name: name, Cases: len(cases), Composition: map[string]int{}, Cap: store.diversifiedSize}
+		if name == "diversified" {
+			if n, err := store.pinCount(); err == nil {
+				summary.PinCount = n
+			}
+			if len(cases) == 0 && labeledCount == 0 {
+				summary.Warning = "diversified is empty: no labeled gold (unlabeled cases are not filled)"
+			}
+		}
+		if name == "tune" && len(cases) == 0 && labeledCount > 0 {
+			summary.Warning = "tune is empty; do not fit matcher thresholds on diversified"
+		}
 		for _, c := range cases {
 			if c.Labels.HasGold() {
 				summary.GoldCases++
@@ -225,6 +250,8 @@ func InspectSets(store *Store) ([]SetSummary, error) {
 						summary.TruePositive++
 					case GoldFalseNegative:
 						summary.FalseNegative++
+					case GoldFalsePositive:
+						summary.FalsePositive++
 					}
 				}
 			} else {
@@ -232,7 +259,8 @@ func InspectSets(store *Store) ([]SetSummary, error) {
 			}
 			summary.QueuedFindings += c.Labels.QueuedCandidateFindings
 			language, size, severity := caseComposition(c)
-			summary.Composition["repo="+shortFingerprint(c.RepoFingerprint)+", language="+language+", size="+size+", severity="+severity]++
+			ftype := findingType(c)
+			summary.Composition["repo="+shortFingerprint(c.RepoFingerprint)+", language="+language+", size="+size+", severity="+severity+", type="+ftype]++
 		}
 		result = append(result, summary)
 	}
@@ -252,8 +280,18 @@ func RenderSets(summaries []SetSummary) string {
 	var b strings.Builder
 	b.WriteString("LOCAL-ONLY EVAL CASE SETS\n")
 	for _, summary := range summaries {
-		fmt.Fprintf(&b, "\n%s: %d cases, %d with finding-level gold (true-positive %d, false-negative %d), %d unlabeled / pending, %d candidate findings queued\n",
-			summary.Name, summary.Cases, summary.GoldCases, summary.TruePositive, summary.FalseNegative, summary.Unlabeled, summary.QueuedFindings)
+		fmt.Fprintf(&b, "\n%s: %d cases, %d with finding-level gold (true-positive %d, false-negative %d, false-positive %d), %d unlabeled / pending, %d candidate findings queued\n",
+			summary.Name, summary.Cases, summary.GoldCases, summary.TruePositive, summary.FalseNegative, summary.FalsePositive, summary.Unlabeled, summary.QueuedFindings)
+		if summary.Name == "diversified" {
+			if summary.Cap == 0 {
+				fmt.Fprintf(&b, "  cap: none (one gold case per stratum), pins: %d\n", summary.PinCount)
+			} else {
+				fmt.Fprintf(&b, "  cap: %d, pins: %d\n", summary.Cap, summary.PinCount)
+			}
+		}
+		if summary.Warning != "" {
+			fmt.Fprintf(&b, "  warning: %s\n", summary.Warning)
+		}
 		keys := make([]string, 0, len(summary.Composition))
 		for key := range summary.Composition {
 			keys = append(keys, key)
@@ -287,9 +325,19 @@ func RenderReport(reports []CandidateReport) string {
 				b.WriteString("  recall: unavailable (no true-issue gold)\n")
 			} else {
 				fmt.Fprintf(&b, "  recall: %.1f%% (%d/%d gold issues)\n", 100*s.Recall(), s.TruePositive, s.TruePositive+s.FalseNegative)
+				if s.TruePositiveFuzzy > 0 {
+					fmt.Fprintf(&b, "  recall-if-exact-only: %.1f%% (%d/%d)\n", 100*s.ExactRecall(), s.TruePositiveExact, s.TruePositive+s.FalseNegative)
+				}
 				if report.Confidence != nil {
 					fmt.Fprintf(&b, "  case-level recall range: %.1f%%-%.1f%% over %d case(s)\n", 100*report.Confidence.Lower, 100*report.Confidence.Upper, report.Confidence.Cases)
 				}
+			}
+			fmt.Fprintf(&b, "  precision bounds: %.1f%%-%.1f%% (adjudicated %.1f%%; pending treated as FP for the lower bound)\n",
+				100*s.PrecisionLower(), 100*s.Precision(), 100*s.Precision())
+			if s.HasFalsePositiveGold() {
+				fmt.Fprintf(&b, "  F1: %.1f%% (headline; false-positive gold is present)\n", 100*s.F1())
+			} else {
+				fmt.Fprintf(&b, "  F1: withheld (no false-positive gold; precision in [%.1f%%, %.1f%%])\n", 100*s.PrecisionLower(), 100*s.Precision())
 			}
 		}
 		if s.Pending > 0 {

@@ -97,6 +97,7 @@ func (s *CIStep) ReconcileApprovalGate(sctx *pipeline.StepContext) (bool, error)
 		if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
 			return false, err
 		}
+		notifyPRMerged(sctx)
 		if sctx.Log != nil {
 			sctx.Log("PR has been merged; clearing stale CI approval gate")
 		}
@@ -260,6 +261,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err := sctx.DB.UpdateRunPRState(sctx.Run.ID, "merged"); err != nil {
 				return nil, err
 			}
+			notifyPRMerged(sctx)
 			sctx.Log("PR has been merged!")
 			return &pipeline.StepOutcome{}, nil
 		} else if state == scm.PRStateClosed {
@@ -576,4 +578,11 @@ func setCIMonitorReadiness(sctx *pipeline.StepContext, ready, declaredNoCI bool)
 		sctx.CIReadinessChanged(ready, declaredNoCI)
 	}
 	return nil
+}
+
+func notifyPRMerged(sctx *pipeline.StepContext) {
+	if sctx == nil || sctx.OnPRMerged == nil || sctx.Run == nil {
+		return
+	}
+	sctx.OnPRMerged(sctx.Ctx, sctx.Run.ID)
 }

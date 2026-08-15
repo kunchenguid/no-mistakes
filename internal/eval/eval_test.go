@@ -734,7 +734,12 @@ func TestParseCandidateRequiresAgentAndModel(t *testing.T) {
 
 func setupCapturedRun(t *testing.T, ctx context.Context) (*paths.Paths, *db.DB, *db.Run, *db.Repo, *db.StepRound) {
 	t.Helper()
-	return setupCapturedRunWithHistory(t, ctx, 0)
+	return setupCapturedRunWithFindings(t, ctx, `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`)
+}
+
+func setupCapturedRunWithFindings(t *testing.T, ctx context.Context, findings string) (*paths.Paths, *db.DB, *db.Run, *db.Repo, *db.StepRound) {
+	t.Helper()
+	return setupCapturedRunWithHistoryAndFindings(t, ctx, 0, findings)
 }
 
 // setupCapturedRunWithHistory builds the fixture run. padCommits adds that many
@@ -742,6 +747,11 @@ func setupCapturedRun(t *testing.T, ctx context.Context) (*paths.Paths, *db.DB, 
 // branch is cut, so the padding is real ancestry of every commit a case pins -
 // which is what makes duplicated history measurable.
 func setupCapturedRunWithHistory(t *testing.T, ctx context.Context, padCommits int) (*paths.Paths, *db.DB, *db.Run, *db.Repo, *db.StepRound) {
+	t.Helper()
+	return setupCapturedRunWithHistoryAndFindings(t, ctx, padCommits, `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`)
+}
+
+func setupCapturedRunWithHistoryAndFindings(t *testing.T, ctx context.Context, padCommits int, findings string) (*paths.Paths, *db.DB, *db.Run, *db.Repo, *db.StepRound) {
 	t.Helper()
 	root := t.TempDir()
 	p := paths.WithRoot(root)
@@ -794,7 +804,6 @@ func setupCapturedRunWithHistory(t *testing.T, ctx context.Context, padCommits i
 	if err != nil {
 		t.Fatal(err)
 	}
-	findings := `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"bug","risk_scope":"source-or-external"}`
 	repoConfigYAML, err := os.ReadFile(filepath.Join(workDir, ".no-mistakes.yaml"))
 	if err != nil {
 		t.Fatal(err)
