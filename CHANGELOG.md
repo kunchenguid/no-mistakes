@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.52.0](https://github.com/kunchenguid/no-mistakes/compare/v1.51.1...v1.52.0) (2026-08-15)
+
+
+### Features
+
+* **eval:** ingest confirmed post-PR misses as false-negative gold ([#744](https://github.com/kunchenguid/no-mistakes/issues/744)) ([f92b7bd](https://github.com/kunchenguid/no-mistakes/commit/f92b7bd6da88904d8066ba70181a4491312fe4fe))
+* **eval:** pin gold-only holdout and merge-derived finding gold ([#739](https://github.com/kunchenguid/no-mistakes/issues/739)) ([dac4dc9](https://github.com/kunchenguid/no-mistakes/commit/dac4dc9bb34aea7a6074b5ff508046fa34de1085))
+* **pipeline:** persist uncertified fixer commits for the next initial review ([#745](https://github.com/kunchenguid/no-mistakes/issues/745)) ([a68298e](https://github.com/kunchenguid/no-mistakes/commit/a68298ea66c248d04d0fffec76db3f1d7d18a402))
+* **pipeline:** ungate review counterexample tracing and name silent-wrong-result risks ([#743](https://github.com/kunchenguid/no-mistakes/issues/743)) ([7cd86d4](https://github.com/kunchenguid/no-mistakes/commit/7cd86d4209ac79f4a0923b62c298524183f5d672))
+
 ## [1.51.1](https://github.com/kunchenguid/no-mistakes/compare/v1.51.0...v1.51.1) (2026-08-14)
 
 
