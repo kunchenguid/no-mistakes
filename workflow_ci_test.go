@@ -34,3 +34,35 @@ func TestCIWorkflowUsesRaceTestsOnUnixRunners(t *testing.T) {
 		t.Fatalf("CI workflow must run the race-enabled suite on Unix runners")
 	}
 }
+
+// The flake's vendorHash is fixed-output and every go.mod/go.sum change
+// invalidates it. Only an actual nix build catches that drift before it ships.
+func TestCIWorkflowBuildsTheFlake(t *testing.T) {
+	data, err := os.ReadFile(".github/workflows/ci.yml")
+	if err != nil {
+		t.Fatalf("read workflow: %v", err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, "install-nix-action") {
+		t.Fatalf("CI workflow must install nix so the flake can be built")
+	}
+	if !strings.Contains(content, "run: nix build") {
+		t.Fatalf("CI workflow must run `nix build` to catch vendorHash drift")
+	}
+}
+
+// `nix build` and a plain `nix flake check` only touch the runner's own system,
+// so a system the flake advertises but nixpkgs cannot evaluate stays invisible
+// until a user on that platform runs `nix run`. Only `--all-systems` evaluates
+// every advertised system from the Linux runner.
+func TestCIWorkflowChecksEveryAdvertisedFlakeSystem(t *testing.T) {
+	data, err := os.ReadFile(".github/workflows/ci.yml")
+	if err != nil {
+		t.Fatalf("read workflow: %v", err)
+	}
+
+	if !strings.Contains(string(data), "run: nix flake check --all-systems") {
+		t.Fatalf("CI workflow must run `nix flake check --all-systems` so every system in flake.nix is evaluated")
+	}
+}
