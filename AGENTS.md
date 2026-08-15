@@ -38,6 +38,7 @@ Safest local verification sequence after non-trivial changes:
 
 - Keep `README.md` concise and high-level; the bar needs to be extremely high for what shows up there.
 - Most documentation lives in `docs/`, the published docs site.
+- A new page under `docs/src/content/docs` must also be registered in the `docs/astro.config.mjs` sidebar (the splash `index.mdx` is the only exemption): an unregistered page still builds and answers its URL, so nothing fails except navigation. Regressions: `TestDocsSidebarRegistersEveryAuthoredPage`, `TestDocsSidebarHasNoEntryWithoutAPage`.
 - One owner per fact: `docs/src/content/docs/reference/global-config.md` and `docs/src/content/docs/reference/repo-config.md` own configuration keys, `docs/src/content/docs/reference/environment.md` owns environment variables and the telemetry local/remote split, `docs/src/content/docs/concepts/daemon.md` owns the daemon lifecycle model, `docs/src/content/docs/concepts/review-authority.md` owns the authority-band policy (how much authority a gate may exercise, the non-negotiables, and the measurement loop) while the `auto_fix` and finding-action mechanics stay with their reference and concept owners, and guides pages explain purpose and link to those owners instead of restating tables and examples.
 - The `document.instructions` block in `.no-mistakes.yaml` states this ownership map for the pipeline's document step; update it when ownership moves.
 
