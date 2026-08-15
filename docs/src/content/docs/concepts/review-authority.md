@@ -59,10 +59,12 @@ non-reversible actions.
 3. **`ask-user` is not auto-fixable.** Intent-sensitive findings exist
    precisely because judgment is required. No `auto_fix` limit may convert an
    `ask-user` finding into an unattended fix. Two overrides do resolve
-   `ask-user` findings unattended — TUI yolo mode and
-   `no-mistakes axi run --yes` — and both are deliberate per-run consent given
-   before the run starts. The invariant is that unattended resolution of an
-   `ask-user` finding always requires explicit consent, never the default.
+   `ask-user` findings unattended: `no-mistakes axi run --yes`, explicit
+   consent given before the run starts, and TUI yolo mode, a live toggle
+   pressed with `y` while a run is being watched. The invariant is that
+   unattended resolution of an `ask-user` finding always requires explicit,
+   active consent — before the run or live while watching — and is never the
+   default.
 4. **Escalation is frictionless.** A human can pause, respond to, or abort
    any run at any point (`no-mistakes axi respond` / TUI / `axi abort`).
    Override must never require blaming the requester.
