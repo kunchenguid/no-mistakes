@@ -30,6 +30,7 @@ export default defineConfig({
             { label: "The Gate Model", slug: "concepts/gate-model" },
             { label: "Pipeline", slug: "concepts/pipeline" },
             { label: "Auto-Fix Loop", slug: "concepts/auto-fix" },
+            { label: "Review Authority", slug: "concepts/review-authority" },
             { label: "Daemon & Worktrees", slug: "concepts/daemon" },
           ],
         },
