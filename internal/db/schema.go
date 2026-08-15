@@ -139,6 +139,20 @@ CREATE TABLE IF NOT EXISTS intent_cache (
     session_id  TEXT NOT NULL,
     created_at  INTEGER NOT NULL
 );
+
+-- Per-branch range of pipeline-authored commits whose re-review did not
+-- complete. The next run's initial review reads this so it is not cold on
+-- uncertified fixer commits. PRIMARY KEY per branch: the latest uncertified
+-- HEAD replaces an older range.
+CREATE TABLE IF NOT EXISTS uncertified_pipeline_ranges (
+    repo_id       TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    branch        TEXT NOT NULL,
+    from_sha      TEXT NOT NULL,
+    to_sha        TEXT NOT NULL,
+    source_run_id TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    PRIMARY KEY (repo_id, branch)
+);
 `
 
 // migrationStatements hold additive schema changes applied to databases that

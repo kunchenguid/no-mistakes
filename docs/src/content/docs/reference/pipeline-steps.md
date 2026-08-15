@@ -83,6 +83,7 @@ AI code review of your diff.
 - Agent returns findings with severity (`error`, `warning`, `info`), file location, description, and an `action` (`no-op`, `auto-fix`, `ask-user`)
 - Also returns a `risk_level` (`low`, `medium`, `high`) and `risk_rationale`
 - Runs every review turn - the initial review and every full rereview - as a fresh, session-free invocation, so the rereview that certifies a fix round never resumes the session whose findings prescribed those fixes; the rereview prompt additionally reframes fix-round changes as pipeline-authored code to review under the same adversarial standard as the author's changes, with prior findings, fix summaries, and same-round tests treated as claims rather than evidence
+- When a fixer round commits and its re-review does not complete, persists the uncertified commit range for that branch; the next run's initial review of that range receives the same pipeline-authored provenance framing so the replacement reviewer is not cold
 - With the default `session_reuse: true`, Claude and Codex reuse one durable fixer session across review-fix turns; a resume failure retries the same fix turn in a fresh fixer session, and unsupported agents run cold
 - Atomically records the exact commit examined when a full review completes successfully; a parked review retains its candidate only for recovery, while failed, skipped, superseded, and legacy reviews grant no inferred approval authority
 

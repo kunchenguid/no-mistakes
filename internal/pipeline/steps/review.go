@@ -165,7 +165,7 @@ Previous review findings to address:
 	// net-deleted-author-lines git-diff backstop for the removal-of-required
 	// class - a fixer round that net-deletes author-added lines parks
 	// regardless of intent source. Held pending a scope decision.
-	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
+	historySection := executionContextPromptSection() + roundHistoryPromptSection(sctx) + uncertifiedRoundHistoryPromptSection(sctx) + fixRoundProvenanceClause(sctx) + userIntentPromptSection(sctx) + intentConformanceReviewClause(sctx) + pipelineDeliveryPhaseClause() + testguidance.Rule + testguidance.ReviewerAction
 
 	// Path-scoped repository review guidance, taken from the trusted
 	// default-branch config copy (regardless of allow_repo_commands) so a pushed
@@ -296,13 +296,15 @@ Risk assessment (after listing all findings):
 // it, the round-history section reads as "found and fixed" and invites less
 // scrutiny of exactly the code the pipeline itself just wrote: the fixer
 // authors both code and tests in one round, so the only independent check
-// that code ever gets is this rereview. Empty outside fix mode, leaving the
-// initial review prompt unchanged.
+// that code ever gets is this rereview.
+//
+// The same framing is emitted for an uncertified range left by a previous
+// run whose re-review did not complete, even when Fixing is false, so a
+// replacement initial review is not cold on those commits. Empty when
+// neither case applies, leaving an ordinary initial review unchanged.
 func fixRoundProvenanceClause(sctx *pipeline.StepContext) string {
-	if !sctx.Fixing {
-		return ""
-	}
-	return `
+	if sctx != nil && sctx.Fixing {
+		return `
 
 Fix-round provenance:
 - This is a re-review after this run's automated fix round(s): every commit after the starting head, plus any uncommitted worktree changes, was authored by the pipeline's own fixer agent, not by the change author.
@@ -310,6 +312,20 @@ Fix-round provenance:
 - Prior findings and fix summaries are claims, not evidence. Verify each claimed fix against the current code, and independently judge whether behavior the fix rounds introduced is correct, not merely whether it implements what was prescribed.
 - A test added or changed in the same fix round as the code it exercises is part of that round's claim, not independent proof: judge whether its asserted outcome is the right outcome and whether it could still pass with the code wrong.
 `
+	}
+	if sctx == nil || strings.TrimSpace(sctx.UncertifiedToSHA) == "" {
+		return ""
+	}
+	fromSHA := strings.TrimSpace(sctx.UncertifiedFromSHA)
+	toSHA := strings.TrimSpace(sctx.UncertifiedToSHA)
+	return fmt.Sprintf(`
+
+Fix-round provenance:
+- Commits after %s through %s on this branch were authored by a previous run's fixer and were never certified: that run's re-review did not complete. Review them as pipeline-authored code under the same adversarial standard.
+- Review that pipeline-authored code with exactly the same adversarial standard as the author's original changes. It is unreviewed new code, not a settled resolution of the findings that prompted it.
+- Prior findings and fix summaries are claims, not evidence. Verify each claimed fix against the current code, and independently judge whether behavior the fix rounds introduced is correct, not merely whether it implements what was prescribed.
+- A test added or changed in the same fix round as the code it exercises is part of that round's claim, not independent proof: judge whether its asserted outcome is the right outcome and whether it could still pass with the code wrong.
+`, fromSHA, toSHA)
 }
 
 // approvedReviewOutcome captures the immutable commit examined by this full

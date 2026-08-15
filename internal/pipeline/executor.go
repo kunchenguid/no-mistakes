@@ -306,6 +306,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			}
 			reviewedHead := gate.reviewedHeadSHA
 			run.ReviewApprovedHeadSHA = &reviewedHead
+			ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
 			return nil
 		}
 		return e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusCompleted, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult))
@@ -739,6 +740,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		CIReadinessChanged: ciReadinessChanged,
 		OnPRMerged:         e.onPRMerged,
 	}
+	if stepName == types.StepReview {
+		BindUncertifiedPipelineRange(sctx)
+	}
 
 	nextTrigger := "initial"
 	if sctx.Fixing {
@@ -1009,6 +1013,7 @@ done:
 		}
 		reviewedHead := reviewApprovedHeadSHA
 		run.ReviewApprovedHeadSHA = &reviewedHead
+		ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
 	} else if err := e.db.CompleteStepWithStatus(sr.ID, status, finalExitCode, durationMS, logPath); err != nil {
 		return false, fmt.Errorf("complete step %s: %w", stepName, err)
 	}

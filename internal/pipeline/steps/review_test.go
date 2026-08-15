@@ -453,6 +453,52 @@ func TestReviewStep_RereviewTreatsFixRoundsAsPipelineAuthoredCode(t *testing.T) 
 	})
 }
 
+func TestFixRoundProvenanceClause_EmitsForUncertifiedRangeWhenNotFixing(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	findingsJSON, _ := json.Marshal(Findings{Summary: "clean"})
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: findingsJSON}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.UncertifiedFromSHA = "from-sha"
+	sctx.UncertifiedToSHA = "to-sha"
+	sctx.UncertifiedSourceRunID = "prior-run"
+	priorFindings := `{"findings":[{"id":"review-1","severity":"error","file":"main.go","line":4,"description":"reachable bug","action":"auto-fix"}]}`
+	sctx.UncertifiedPriorRounds = []*db.StepRound{{
+		Round:        1,
+		Trigger:      "initial",
+		FindingsJSON: &priorFindings,
+	}}
+
+	if _, err := (&ReviewStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ag.calls) != 1 {
+		t.Fatalf("expected 1 review call, got %d", len(ag.calls))
+	}
+	prompt := ag.calls[0].Prompt
+	for _, want := range []string{
+		"Fix-round provenance:",
+		"Commits after from-sha through to-sha on this branch were authored by a previous run's fixer and were never certified",
+		"same adversarial standard",
+		"Prior findings and fix summaries are claims, not evidence",
+		"Previous run (uncertified fixer commits)",
+		"reachable bug",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("initial review missing uncertified provenance %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "This is a re-review after this run's automated fix round(s)") {
+		t.Errorf("uncertified initial review must not use the current-run fixer framing:\n%s", prompt)
+	}
+}
+
 func TestReviewStep_FixMode_RequiresPreviousFindings(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

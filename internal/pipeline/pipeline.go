@@ -51,6 +51,16 @@ type StepContext struct {
 	// authoritative acceptance criteria; an agent name ("claude", "codex", ...)
 	// means it was inferred from a transcript (a hint). Empty when no intent exists.
 	IntentSource string
+	// UncertifiedFromSHA/ToSHA/SourceRunID name a previous run's fixer
+	// commits on this branch whose re-review did not complete. They are set
+	// on a later run's initial review (Fixing==false) so that review still
+	// receives fix-round provenance. Empty when no such range applies.
+	UncertifiedFromSHA     string
+	UncertifiedToSHA       string
+	UncertifiedSourceRunID string
+	// UncertifiedPriorRounds are review rounds from the source run that left
+	// the uncertified range. Nil when none apply.
+	UncertifiedPriorRounds []*db.StepRound
 	// Sessions manages the run's durable review-fixer session. The session
 	// machinery remains role-generic for legacy recovery; nil runs every
 	// invocation cold.
