@@ -60,13 +60,13 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if strings.HasPrefix(branch, "refs/heads/") {
 		branch = strings.TrimPrefix(branch, "refs/heads/")
 	}
-	if branch == sctx.Repo.DefaultBranch {
-		sctx.Log(fmt.Sprintf("skipping PR creation on default branch %s", branch))
-		return &pipeline.StepOutcome{Skipped: true}, nil
-	}
 	baseBranch := sctx.Repo.DefaultBranch
 	if sctx.Config != nil && strings.TrimSpace(sctx.Config.PR.BaseBranch) != "" {
 		baseBranch = strings.TrimSpace(sctx.Config.PR.BaseBranch)
+	}
+	if branch == baseBranch {
+		sctx.Log(fmt.Sprintf("skipping PR creation on base branch %s", branch))
+		return &pipeline.StepOutcome{Skipped: true}, nil
 	}
 	provider := scm.DetectProviderContext(ctx, sctx.Repo.UpstreamURL)
 	host, skipReason := buildHost(sctx, provider)
@@ -166,7 +166,7 @@ Diff stat:
 %s
 
 Final diff paths and statuses:
-	%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, baseBranch, conventional.ReleaseTypeRule, diffStat, finalDiff, userIntentPromptSection(sctx), executionContextPromptSection())
+%s%s%s`, branch, baseSHA, sctx.Run.HeadSHA, baseBranch, conventional.ReleaseTypeRule, diffStat, finalDiff, userIntentPromptSection(sctx), executionContextPromptSection())
 
 	prompt += prBodyBudgetPromptSection(bodyLimit)
 
