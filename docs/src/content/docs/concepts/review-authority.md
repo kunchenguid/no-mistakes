@@ -33,14 +33,12 @@ risk posture — never something a single run can escalate on its own.
 | **L3 — Scoped full-auto** | Full autonomy inside a bounded, measured, reversible domain (e.g. generated docs, dependency bumps, lint normalization). | Explicit repo policy declaring the domain; still never for irreversible actions. |
 
 **The shipped default sits between L0 and L1.** Out of the box `auto_fix.review`
-is `0`, so every review finding parks for a decision, while the Test, CI,
-Rebase, and — when `commands.lint` is configured — Lint steps each auto-fix
-within their attempt limits. The Document step applies its fixes during its own
-pass rather than through a follow-up loop, and unresolved documentation findings
-pause for approval. A repository that wants strict L0 must set the looping steps
-to zero explicitly; the
+is `0`, so every review finding parks for a decision, while the remaining
+looping steps fix within their attempt limits. A repository that wants strict L0
+must set those steps to zero explicitly. The
 [`auto_fix` field reference](/no-mistakes/reference/global-config/#auto_fix)
-owns the per-step defaults and which steps the limit applies to.
+owns the per-step defaults, which steps the limit applies to, and the steps that
+fix during their own pass instead of through a follow-up loop.
 
 **Never in any band:** data deletion, credential changes, publishing
 artifacts, or force-pushing over unincorporated upstream commits. The remote
@@ -53,9 +51,11 @@ non-reversible actions.
    instructs agents to stop and ask for review and merge. Keep it that way.
    Automation may *prepare* a merge; it never *performs* one.
 2. **Unclassified findings fail closed.** A finding without an `action` is
-   treated as `ask-user`. Preserve this invariant in every step that emits
-   findings, and treat any change that would make the default permissive as a
-   security regression.
+   treated as `ask-user` — the
+   [finding-action model](/no-mistakes/concepts/auto-fix/#finding-actions) owns
+   that behavior. Preserve this invariant in every step that emits findings, and
+   treat any change that would make the default permissive as a security
+   regression.
 3. **`ask-user` is not auto-fixable.** Intent-sensitive findings exist
    precisely because judgment is required. No `auto_fix` limit may convert an
    `ask-user` finding into an unattended fix.
