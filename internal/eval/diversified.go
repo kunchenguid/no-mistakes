@@ -185,12 +185,14 @@ func planDiversified(gold []Case, cap int, existing []diversifiedPin) []diversif
 		return kept
 	}
 
+	collapsed := false
 	if len(kept) > cap {
 		kept = onePinPerStratum(kept)
 		if len(kept) > cap {
 			kept = append([]diversifiedPin(nil), kept[:cap]...)
 		}
 		pinned = pinSet(kept)
+		collapsed = true
 	}
 
 	remaining := cap - len(kept)
@@ -211,7 +213,13 @@ func planDiversified(gold []Case, cap int, existing []diversifiedPin) []diversif
 		}
 		unpinnedKeys = append(unpinnedKeys, key)
 		weights = append(weights, len(grouped[key]))
-		capacities = append(capacities, len(grouped[key]))
+		capacity := len(grouped[key])
+		if collapsed && capacity > 1 {
+			// Cap shrink already collapsed duplicates; leftover seats may
+			// fill new strata but must not recreate k>1 in one of them.
+			capacity = 1
+		}
+		capacities = append(capacities, capacity)
 	}
 	if len(unpinnedKeys) == 0 {
 		return kept

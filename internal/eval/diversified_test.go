@@ -299,6 +299,41 @@ func TestListCasesDiversified_LowCapKeepsAtMostOneCasePerStratum(t *testing.T) {
 	}
 }
 
+func TestListCasesDiversified_LowerCapFillDoesNotOverAllocateOneStratum(t *testing.T) {
+	store := openEvalStore(t)
+	store.SetDiversifiedSize(6)
+	writeGoldStratum(t, store, "repo-a", "error", 10, 10)
+	writeGoldStratum(t, store, "repo-b", "error", 10, 20)
+	writeGoldStratum(t, store, "repo-c", "info", 2, 30)
+
+	first, err := store.ListCases("diversified")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstCounts := map[string]int{}
+	for _, c := range first {
+		firstCounts[c.RepoFingerprint]++
+	}
+	if firstCounts["repo-a"] < 2 || firstCounts["repo-b"] < 2 || firstCounts["repo-c"] != 0 {
+		t.Fatalf("setup diversified = %#v, want duplicate pins in repo-a/repo-b and repo-c unoccupied so collapse frees seats", firstCounts)
+	}
+
+	store.SetDiversifiedSize(5)
+	got, err := store.ListCases("diversified")
+	if err != nil {
+		t.Fatal(err)
+	}
+	perStratum := map[string]int{}
+	for _, c := range got {
+		perStratum[diversifiedStratum(c)]++
+	}
+	for stratum, n := range perStratum {
+		if n > 1 {
+			t.Fatalf("after lowering cap to 5, stratum %q has %d official cases (ids=%v counts=%v); collapse-freed seats must not reallocate multiple cases into one stratum", stratum, n, caseIDs(got), perStratum)
+		}
+	}
+}
+
 func TestListCasesTune_IsLabeledMinusPins(t *testing.T) {
 	store := openEvalStore(t)
 	store.SetDiversifiedSize(1)
