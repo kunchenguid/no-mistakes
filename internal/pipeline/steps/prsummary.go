@@ -1272,7 +1272,7 @@ func writeFindingItems(b *strings.Builder, sr *db.StepResult, findings *types.Fi
 		emoji := severityEmoji(f.Severity)
 		loc := ""
 		if f.File != "" {
-			loc = fmt.Sprintf("`%s", html.EscapeString(f.File))
+			loc = fmt.Sprintf("`%s", escapePRText(f.File, flavor))
 			if f.Line > 0 {
 				loc += fmt.Sprintf(":%d", f.Line)
 			}
