@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -14,6 +16,45 @@ func TestOpencodeAgent_CloseWithoutServer(t *testing.T) {
 	a := &opencodeAgent{bin: "opencode"}
 	if err := a.Close(); err != nil {
 		t.Errorf("Close without server should not error: %v", err)
+	}
+}
+
+// TestOpencodeAgent_ServeEnvCarriesProjectSettingsKnob is the gate-neutralization
+// regression: under the opt-out, ensureServer must export
+// OPENCODE_DISABLE_PROJECT_CONFIG=1 to the `opencode serve` process (sessions
+// inherit it), and it must win over an inherited value. The fake bin exits before
+// becoming healthy, but it dumps the knob it was launched with first.
+func TestOpencodeAgent_ServeEnvCarriesProjectSettingsKnob(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "fake-opencode")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s' \"${OPENCODE_DISABLE_PROJECT_CONFIG-}\" > \"$NM_TEST_ENV_DUMP\"\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// An ambient value of 0 is inherited by the child in both cases; only the
+	// opt-out must override it to 1.
+	t.Setenv("OPENCODE_DISABLE_PROJECT_CONFIG", "0")
+	for _, tc := range []struct {
+		name    string
+		disable bool
+		want    string
+	}{
+		{name: "opt-out on wins over inherited value", disable: true, want: "1"},
+		{name: "no opt-out leaves the inherited value untouched", disable: false, want: "0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dump := filepath.Join(t.TempDir(), "env")
+			a := &opencodeAgent{bin: script, disableProjectSettings: tc.disable}
+			if _, err := a.ensureServer(context.Background(), t.TempDir(), []string{"NM_TEST_ENV_DUMP=" + dump}); err == nil {
+				t.Fatal("expected early-exit error from the fake bin")
+			}
+			got, err := os.ReadFile(dump)
+			if err != nil {
+				t.Fatalf("read env dump: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("serve process saw OPENCODE_DISABLE_PROJECT_CONFIG=%q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

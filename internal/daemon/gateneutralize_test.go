@@ -18,7 +18,7 @@ func fakeLookPath(bin string) (string, error) { return "/fake/bin/" + bin, nil }
 // opt-out (disable_project_settings=true), a verified harness passes the gate and
 // its pipeline agent reports neutralized.
 func TestNewPipelineAgent_OptOut_AdmitsVerifiedHarness(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi} {
+	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentPi, types.AgentOpenCode} {
 		cfg := &config.Config{Agent: name, DisableProjectSettings: true}
 		ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath)
 		if err != nil {
@@ -36,7 +36,7 @@ func TestNewPipelineAgent_OptOut_AdmitsVerifiedHarness(t *testing.T) {
 // verified neutralization knob is refused rather than launched with project
 // instructions loaded.
 func TestNewPipelineAgent_OptOut_RefusesUnverifiedHarness(t *testing.T) {
-	for _, name := range []types.AgentName{types.AgentOpenCode, types.AgentCopilot} {
+	for _, name := range []types.AgentName{types.AgentCopilot} {
 		cfg := &config.Config{Agent: name, DisableProjectSettings: true}
 		if _, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath); err == nil {
 			t.Fatalf("%s must be refused under opt-out", name)
@@ -51,8 +51,8 @@ func TestNewPipelineAgent_OptOut_RefusesUnverifiedHarness(t *testing.T) {
 // no suppression knob - is admitted and runs exactly as before.
 func TestNewPipelineAgent_NoOptOut_AdmitsEveryHarness(t *testing.T) {
 	// rovodev is omitted: its resolution runs a real version probe that a fake
-	// binary path cannot satisfy. opencode/pi/copilot already prove that an
-	// unverified adapter is admitted when the repo did not opt out.
+	// binary path cannot satisfy. copilot already proves that an unverified
+	// adapter is admitted when the repo did not opt out.
 	for _, name := range []types.AgentName{types.AgentCodex, types.AgentClaude, types.AgentOpenCode, types.AgentPi, types.AgentCopilot} {
 		cfg := &config.Config{Agent: name} // DisableProjectSettings defaults false
 		ag, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath)
@@ -81,7 +81,7 @@ func TestNewPipelineAgent_OptOut_RefusesDefeatedKnob(t *testing.T) {
 // TestNewPipelineAgent_OptOut_FallbackRefusesAnyUnverifiedMember proves an
 // ordered fallback list fails closed under opt-out if any member is unverified.
 func TestNewPipelineAgent_OptOut_FallbackRefusesAnyUnverifiedMember(t *testing.T) {
-	cfg := &config.Config{Agents: []types.AgentName{types.AgentCodex, types.AgentOpenCode}, DisableProjectSettings: true}
+	cfg := &config.Config{Agents: []types.AgentName{types.AgentCodex, types.AgentCopilot}, DisableProjectSettings: true}
 	if _, err := newPipelineAgent(context.Background(), cfg, t.TempDir(), fakeLookPath); err == nil {
 		t.Fatal("a fallback list containing an unverified harness must be refused under opt-out")
 	}
