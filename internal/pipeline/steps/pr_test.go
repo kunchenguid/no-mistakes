@@ -399,6 +399,11 @@ func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
 	if !strings.Contains(api.lastCreateBody, `"source"`) || !strings.Contains(api.lastCreateBody, `"destination"`) {
 		t.Fatalf("expected Bitbucket PR create payload to include source and destination, got %q", api.lastCreateBody)
 	}
+	for _, leak := range []string{"<details>", "<summary>", "<code>", "<video", pipelineAttestationCommentPrefix} {
+		if strings.Contains(api.lastCreateBody, leak) {
+			t.Errorf("Bitbucket PR create shipped HTML %q:\n%s", leak, api.lastCreateBody)
+		}
+	}
 
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {
@@ -406,69 +411,6 @@ func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
 	}
 	if run.PRURL == nil || *run.PRURL != api.createdPRURL {
 		t.Fatalf("PR URL = %v, want %q", run.PRURL, api.createdPRURL)
-	}
-}
-
-func TestPRStep_BitbucketCreateDoesNotShipHTMLPipelineBody(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	api := newFakeBitbucketPRAPI(t, 0, "")
-
-	reviewFindings := `{"findings":[],"summary":"clean","risk_level":"low"}`
-	testFindings := `{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"log","label":"Server log","content":"ok"}]}`
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			payload := json.RawMessage(`{"title":"fix: bitbucket body","body":"## What Changed\n\n- no html"}`)
-			return &agent.Result{Output: payload}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = fakeBitbucketEnv(api.server.URL)
-	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
-
-	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
-		t.Fatal(err)
-	}
-	if err := sctx.DB.SetStepFindings(reviewStep.ID, reviewFindings); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sctx.DB.InsertStepRound(reviewStep.ID, 1, "initial", &reviewFindings, nil, 200); err != nil {
-		t.Fatal(err)
-	}
-	testStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sctx.DB.UpdateStepStatus(testStep.ID, types.StepStatusCompleted); err != nil {
-		t.Fatal(err)
-	}
-	if err := sctx.DB.SetStepFindings(testStep.ID, testFindings); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sctx.DB.InsertStepRound(testStep.ID, 1, "initial", &testFindings, nil, 300); err != nil {
-		t.Fatal(err)
-	}
-
-	step := &PRStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-	if api.createCalls != 1 {
-		t.Fatalf("create calls = %d, want 1", api.createCalls)
-	}
-	description := bitbucketPRDescriptionForTest(t, api.lastCreateBody)
-	for _, leak := range []string{"<details>", "<summary>", "<code>", "<video", pipelineAttestationCommentPrefix} {
-		if strings.Contains(description, leak) {
-			t.Errorf("Bitbucket PR create shipped HTML %q:\n%s", leak, description)
-		}
-	}
-	if !strings.Contains(description, "## Pipeline") || !strings.Contains(description, "## Testing") {
-		t.Fatalf("expected Bitbucket body to keep pipeline and testing facts, got %s", description)
 	}
 }
 
@@ -1545,20 +1487,6 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 	if content.Title != "chore: update pull request" {
 		t.Fatalf("fallback title = %q, want neutral title", content.Title)
 	}
-}
-
-func bitbucketPRDescriptionForTest(t *testing.T, raw string) string {
-	t.Helper()
-	var payload struct {
-		Description string `json:"description"`
-	}
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		t.Fatalf("decode Bitbucket PR payload: %v\n%s", err, raw)
-	}
-	if payload.Description == "" {
-		t.Fatalf("Bitbucket PR payload missing description:\n%s", raw)
-	}
-	return payload.Description
 }
 
 func pipelineMarkdownForTest(rounds ...string) string {

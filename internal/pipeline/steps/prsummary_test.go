@@ -98,7 +98,7 @@ func TestBuildPipelineSummary_BitbucketCloudOmitsHTMLAndAttestation(t *testing.T
 	}
 	for _, leak := range []string{
 		"<details>", "</details>", "<summary>", "</summary>",
-		"<!--", "-->", "<code>", "<video", "No issues found.",
+		"<!--", "-->", "<code>", "<video",
 		pipelineAttestationCommentPrefix,
 	} {
 		if strings.Contains(md, leak) {
@@ -110,99 +110,63 @@ func TestBuildPipelineSummary_BitbucketCloudOmitsHTMLAndAttestation(t *testing.T
 	}
 }
 
-func TestBuildPipelineSummary_FindingDescriptionCannotSpoofFoldBoundary(t *testing.T) {
+func TestBuildPipelineSummary_FindingCannotSpoofFoldBoundary(t *testing.T) {
 	t.Parallel()
-	findings := types.Findings{
-		Items: []types.Finding{{
-			ID:          "lint-1",
-			Severity:    "warning",
-			File:        "foo.py",
-			Line:        12,
-			Description: "Update the header:\n### Configuration\nadd the missing key",
-			Action:      types.ActionAutoFix,
-		}},
-	}
-	raw, err := types.MarshalFindingsJSON(findings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	steps := []*db.StepResult{
-		{ID: "s1", StepName: types.StepLint, Status: types.StepStatusCompleted, FindingsJSON: &raw},
-	}
-	rounds := map[string][]*db.StepRound{
-		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &raw, DurationMS: 200}},
-	}
-
-	for _, tc := range []struct {
-		name     string
-		provider scm.Provider
+	for _, field := range []struct {
+		name        string
+		file        string
+		description string
+		spoof       string
 	}{
-		{"github", scm.ProviderGitHub},
-		{"bitbucket", scm.ProviderBitbucket},
+		{"description", "foo.py", "Update the header:\n### Configuration\nadd the missing key", "\n### Configuration"},
+		{"file", "src/app.py\n### Fake Heading", "add the missing key", "\n### Fake Heading"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(field.name, func(t *testing.T) {
 			t.Parallel()
-			md, _ := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, tc.provider)
-			if strings.Contains(md, "\n### Configuration") {
-				t.Fatalf("embedded finding text was not escaped, spoofs the PR-body fold-boundary marker:\n%s", md)
+			findings := types.Findings{
+				Items: []types.Finding{{
+					ID:          "lint-1",
+					Severity:    "warning",
+					File:        field.file,
+					Line:        12,
+					Description: field.description,
+					Action:      types.ActionAutoFix,
+				}},
 			}
-			if !strings.Contains(md, "add the missing key") {
-				t.Fatalf("expected the finding bullet to stay intact:\n%s", md)
+			raw, err := types.MarshalFindingsJSON(findings)
+			if err != nil {
+				t.Fatal(err)
 			}
-
-			_, updates := splitPipelineSectionHeader(md)
-			groups := parsePipelineUpdateGroups(updates)
-			if len(groups) != 1 {
-				t.Fatalf("expected exactly 1 step group, got %d - embedded finding text was mistaken for a fold boundary:\n%s", len(groups), md)
+			steps := []*db.StepResult{
+				{ID: "s1", StepName: types.StepLint, Status: types.StepStatusCompleted, FindingsJSON: &raw},
 			}
-		})
-	}
-}
-
-func TestBuildPipelineSummary_FindingFileCannotSpoofFoldBoundary(t *testing.T) {
-	t.Parallel()
-	findings := types.Findings{
-		Items: []types.Finding{{
-			ID:          "lint-1",
-			Severity:    "warning",
-			File:        "src/app.py\n### Fake Heading",
-			Line:        12,
-			Description: "add the missing key",
-			Action:      types.ActionAutoFix,
-		}},
-	}
-	raw, err := types.MarshalFindingsJSON(findings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	steps := []*db.StepResult{
-		{ID: "s1", StepName: types.StepLint, Status: types.StepStatusCompleted, FindingsJSON: &raw},
-	}
-	rounds := map[string][]*db.StepRound{
-		"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &raw, DurationMS: 200}},
-	}
-
-	for _, tc := range []struct {
-		name     string
-		provider scm.Provider
-	}{
-		{"github", scm.ProviderGitHub},
-		{"bitbucket", scm.ProviderBitbucket},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			md, _ := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, tc.provider)
-			if strings.Contains(md, "\n### Fake Heading") {
-				t.Fatalf("embedded finding file was not escaped, spoofs the PR-body fold-boundary marker:\n%s", md)
-			}
-			if !strings.Contains(md, "add the missing key") {
-				t.Fatalf("expected the finding bullet to stay intact:\n%s", md)
+			rounds := map[string][]*db.StepRound{
+				"s1": {{Round: 1, Trigger: "initial", FindingsJSON: &raw, DurationMS: 200}},
 			}
 
-			_, updates := splitPipelineSectionHeader(md)
-			groups := parsePipelineUpdateGroups(updates)
-			if len(groups) != 1 {
-				t.Fatalf("expected exactly 1 step group, got %d - embedded finding file was mistaken for a fold boundary:\n%s", len(groups), md)
+			for _, tc := range []struct {
+				name     string
+				provider scm.Provider
+			}{
+				{"github", scm.ProviderGitHub},
+				{"bitbucket", scm.ProviderBitbucket},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Parallel()
+					md, _ := BuildPipelineSummaryFor(steps, rounds, testPipelineHeadSHA, tc.provider)
+					if strings.Contains(md, field.spoof) {
+						t.Fatalf("embedded finding %s was not escaped, spoofs the PR-body fold-boundary marker:\n%s", field.name, md)
+					}
+					if !strings.Contains(md, "add the missing key") {
+						t.Fatalf("expected the finding bullet to stay intact:\n%s", md)
+					}
+
+					_, updates := splitPipelineSectionHeader(md)
+					groups := parsePipelineUpdateGroups(updates)
+					if len(groups) != 1 {
+						t.Fatalf("expected exactly 1 step group, got %d - embedded finding %s was mistaken for a fold boundary:\n%s", len(groups), field.name, md)
+					}
+				})
 			}
 		})
 	}

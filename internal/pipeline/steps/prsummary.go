@@ -419,10 +419,6 @@ func appendTestingDetails(details []string, seen map[string]bool, raw *string) [
 	return details
 }
 
-func renderTestedDetail(detail string) string {
-	return renderTestedDetailFor(detail, prBodyHTML)
-}
-
 func renderTestedDetailFor(detail string, flavor prBodyFlavor) string {
 	clean := sanitizePromptMultilineText(detail)
 	if clean == "" {
@@ -440,10 +436,6 @@ func renderTestedDetailFor(detail string, flavor prBodyFlavor) string {
 	escaped := html.EscapeString(clean)
 	escaped = strings.ReplaceAll(escaped, "\n", "&#10;")
 	return fmt.Sprintf("<code>%s</code>", escaped)
-}
-
-func renderTestingSummary(summary string) string {
-	return renderTestingSummaryFor(summary, prBodyHTML)
 }
 
 func renderTestingSummaryFor(summary string, flavor prBodyFlavor) string {
@@ -1219,9 +1211,6 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 func foldPRBlock(summaryLine, inner string, flavor prBodyFlavor) string {
 	inner = strings.TrimSpace(inner)
 	if flavor == prBodyMarkdown {
-		if isTautologicalStepInner(inner) {
-			return summaryLine + "\n"
-		}
 		if inner == "" {
 			return summaryLine + "\n"
 		}
@@ -1238,18 +1227,6 @@ func foldPRBlock(summaryLine, inner string, flavor prBodyFlavor) string {
 	}
 	b.WriteString("</details>\n")
 	return b.String()
-}
-
-func isTautologicalStepInner(inner string) bool {
-	switch strings.TrimSpace(inner) {
-	case "✅ No issues found.", "Step has not started yet.", "Step is currently running.",
-		"Waiting for user approval.", "Agent is currently applying fixes.",
-		"Waiting to review the latest fix.", "Step was skipped.", "Step failed.",
-		"No round details recorded.", "Status unavailable.":
-		return true
-	default:
-		return false
-	}
 }
 
 // fixRoundLine renders the one-line summary of the fix the agent applied in a
