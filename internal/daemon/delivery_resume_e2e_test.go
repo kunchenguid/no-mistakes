@@ -40,7 +40,7 @@ type failThenBlockProductionStep struct {
 
 type deliveryResumeDaemonProcess struct {
 	cmd  *exec.Cmd
-	done <-chan error
+	done <-chan struct{}
 }
 
 func (s *failThenBlockProductionStep) Name() types.StepName { return s.step.Name() }
@@ -227,13 +227,17 @@ func TestDeliveryResumeSurvivesDaemonRestart(t *testing.T) {
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
+		done := make(chan struct{})
+		go func() {
+			_ = cmd.Wait()
+			close(done)
+		}()
+		daemon := &deliveryResumeDaemonProcess{cmd: cmd, done: done}
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
 			select {
-			case err := <-done:
-				t.Fatalf("delivery resume daemon exited before readiness: %v", err)
+			case <-done:
+				t.Fatalf("delivery resume daemon exited before readiness: %v", cmd.ProcessState)
 			default:
 			}
 			client, err := ipc.Dial(p.Socket())
@@ -242,16 +246,17 @@ func TestDeliveryResumeSurvivesDaemonRestart(t *testing.T) {
 				err = client.Call(ipc.MethodHealth, &ipc.HealthParams{}, &health)
 				_ = client.Close()
 				if err == nil && health.Status == "ok" {
-					return &deliveryResumeDaemonProcess{cmd: cmd, done: done}
+					return daemon
 				}
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
-		_ = cmd.Process.Kill()
+		killDeliveryResumeDaemon(daemon)
 		t.Fatal("delivery resume daemon did not become ready")
 		return nil
 	}
 	firstDaemon := start()
+	t.Cleanup(func() { killDeliveryResumeDaemon(firstDaemon) })
 	if err := os.WriteFile(filepath.Join(p.RepoDir(repoID), "hooks", "pre-receive"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -272,10 +277,7 @@ func TestDeliveryResumeSurvivesDaemonRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	reviewCompletedAt := beforeRestart[types.StepReview.Order()-1].CompletedAt
-	if err := firstDaemon.cmd.Process.Kill(); err != nil {
-		t.Fatal(err)
-	}
-	<-firstDaemon.done
+	killDeliveryResumeDaemon(firstDaemon)
 	if err := os.Remove(blockPath); err != nil {
 		t.Fatal(err)
 	}
@@ -412,6 +414,19 @@ func stopDeliveryResumeDaemon(t *testing.T, p *paths.Paths, daemon *deliveryResu
 		_ = daemon.cmd.Process.Kill()
 		t.Fatal("replacement daemon did not stop")
 	}
+}
+
+func killDeliveryResumeDaemon(daemon *deliveryResumeDaemonProcess) {
+	if daemon == nil {
+		return
+	}
+	select {
+	case <-daemon.done:
+		return
+	default:
+	}
+	_ = daemon.cmd.Process.Kill()
+	<-daemon.done
 }
 
 func installDeliveryResumeGH(t *testing.T, dir string) {
