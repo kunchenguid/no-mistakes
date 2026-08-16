@@ -92,13 +92,14 @@ func NewRunManager(database *db.DB, p *paths.Paths, stepFactory StepFactory) *Ru
 }
 
 type recoveredRunPlan struct {
-	run     *db.Run
-	repo    *db.Repo
-	workDir string
-	gateDir string
-	cfg     *config.Config
-	agent   agent.Agent
-	steps   []pipeline.Step
+	run            *db.Run
+	repo           *db.Repo
+	workDir        string
+	gateDir        string
+	cfg            *config.Config
+	agent          agent.Agent
+	steps          []pipeline.Step
+	resumeDelivery bool
 }
 
 func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPlan {
@@ -128,8 +129,13 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 }
 
 func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*recoveredRunPlan, error) {
-	if run == nil || run.Status != types.RunRunning || run.AwaitingAgentSince == nil || run.Branch == "" {
-		return nil, fmt.Errorf("run is not a parked running run")
+	if run == nil || run.Branch == "" || (run.Status != types.RunPending && run.Status != types.RunRunning) {
+		return nil, fmt.Errorf("run is not active")
+	}
+	parkedGate := run.Status == types.RunRunning && run.AwaitingAgentSince != nil
+	deliveryCheckpoint := run.AwaitingAgentSince == nil
+	if !parkedGate && !deliveryCheckpoint {
+		return nil, fmt.Errorf("run has no recoverable boundary")
 	}
 	repo, err := m.db.GetRepo(run.RepoID)
 	if err != nil {
@@ -156,12 +162,29 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 	}
 
 	execSteps := m.steps()
-	if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
-		return nil, err
-	}
 	cfg, err := m.loadRecoveredConfig(ctx, run, repo, workDir)
 	if err != nil {
 		return nil, err
+	}
+	// The checkpoint was created after startRun resolved auto/fallback agents,
+	// so recovery must fingerprint the same effective configuration rather than
+	// the unresolved on-disk selector.
+	if !steps.IsDemoMode() {
+		if err := cfg.ResolveAgent(ctx, exec.LookPath); err != nil {
+			return nil, err
+		}
+	}
+	if parkedGate {
+		if err := pipeline.ValidateRecoveredRun(m.db, run, execSteps); err != nil {
+			return nil, err
+		}
+	} else {
+		if status, statusErr := git.Run(ctx, workDir, "status", "--porcelain", "--untracked-files=all"); statusErr != nil || strings.TrimSpace(status) != "" {
+			return nil, fmt.Errorf("delivery checkpoint worktree is dirty or unreadable")
+		}
+		if err := pipeline.ValidateRecoverableDeliveryRun(ctx, m.db, m.paths, cfg, run, execSteps); err != nil {
+			return nil, err
+		}
 	}
 	ag, err := newPipelineAgent(ctx, cfg, m.paths.EvidenceRoot(cfg.Test.Evidence.LocalRoot), exec.LookPath)
 	if err != nil {
@@ -174,13 +197,14 @@ func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*rec
 		}
 	}
 	return &recoveredRunPlan{
-		run:     run,
-		repo:    repo,
-		workDir: workDir,
-		gateDir: gateDir,
-		cfg:     cfg,
-		agent:   ag,
-		steps:   execSteps,
+		run:            run,
+		repo:           repo,
+		workDir:        workDir,
+		gateDir:        gateDir,
+		cfg:            cfg,
+		agent:          ag,
+		steps:          execSteps,
+		resumeDelivery: deliveryCheckpoint,
 	}, nil
 }
 
@@ -362,7 +386,13 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			m.mu.Unlock()
 		}()
 
-		if err := executor.Resume(runCtx, plan.run, plan.repo, plan.workDir); err != nil {
+		var executionErr error
+		if plan.resumeDelivery {
+			executionErr = executor.ResumeDelivery(runCtx, plan.run, plan.repo, plan.workDir)
+		} else {
+			executionErr = executor.Resume(runCtx, plan.run, plan.repo, plan.workDir)
+		}
+		if err := executionErr; err != nil {
 			if plan.run.Status == types.RunRunning {
 				errMsg := err.Error()
 				plan.run.Status = types.RunFailed
@@ -981,6 +1011,20 @@ func (m *RunManager) startRunWithIntentSource(ctx context.Context, repo *db.Repo
 				trackStartFailure("gate_not_neutralized")
 				return "", err
 			}
+		}
+	}
+
+	// A retry with the unmodified step plan may reuse the immediately preceding
+	// run's completed validation when every mechanical checkpoint input still
+	// matches. The pipeline owns the proof and cloned step history; this setup
+	// path merely offers the fresh run/worktree/config to that authoritative
+	// owner. Any rejection leaves the new run empty so Execute follows its
+	// existing full-validation path.
+	if len(skipSteps) == 0 {
+		if sourceRunID, reuseErr := pipeline.PrepareValidationReuse(ctx, m.db, m.paths, cfg, run, wtDir); reuseErr != nil {
+			slog.Debug("validation checkpoint not reused", "run_id", run.ID, "reason", reuseErr)
+		} else {
+			slog.Info("resuming delivery from validated checkpoint", "run_id", run.ID, "source_run_id", sourceRunID, "head", run.HeadSHA)
 		}
 	}
 

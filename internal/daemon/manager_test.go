@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +21,96 @@ import (
 )
 
 // --- RunManager integration tests ---
+
+type deliveryResumeProbe struct {
+	calls       [9]atomic.Int32
+	failAt      types.StepName
+	failureLive atomic.Bool
+}
+
+type deliveryResumeProbeStep struct {
+	name  types.StepName
+	probe *deliveryResumeProbe
+}
+
+func (s *deliveryResumeProbeStep) Name() types.StepName { return s.name }
+
+func (s *deliveryResumeProbeStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	s.probe.calls[s.name.Order()-1].Add(1)
+	if s.name == s.probe.failAt && s.probe.failureLive.CompareAndSwap(true, false) {
+		return nil, errors.New("temporary delivery failure")
+	}
+	outcome := &pipeline.StepOutcome{}
+	if s.name == types.StepReview {
+		outcome.ReviewApprovedHeadSHA = sctx.Run.HeadSHA
+	}
+	return outcome, nil
+}
+
+func TestRerunResumesValidatedRunAtDeliveryBoundary(t *testing.T) {
+	for _, failAt := range []types.StepName{types.StepPush, types.StepPR, types.StepCI} {
+		t.Run(string(failAt), func(t *testing.T) {
+			probe := &deliveryResumeProbe{failAt: failAt}
+			probe.failureLive.Store(true)
+			p, d := startTestDaemonWithSteps(t, func() []pipeline.Step {
+				result := make([]pipeline.Step, 0, len(types.AllSteps()))
+				for _, name := range types.AllSteps() {
+					result = append(result, &deliveryResumeProbeStep{name: name, probe: probe})
+				}
+				return result
+			})
+
+			repoID := "delivery-resume-" + string(failAt)
+			_, headSHA := setupTestGitRepo(t, p, d, repoID)
+			client, err := ipc.Dial(p.Socket())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+
+			var first ipc.PushReceivedResult
+			if err := client.Call(ipc.MethodPushReceived, &ipc.PushReceivedParams{
+				Gate: p.RepoDir(repoID), Ref: "refs/heads/main",
+				Old: strings.Repeat("0", 40), New: headSHA,
+			}, &first); err != nil {
+				t.Fatal(err)
+			}
+			if run := waitForRunTerminalState(t, d, first.RunID); run.Status != types.RunFailed {
+				t.Fatalf("source run status = %s, want failed", run.Status)
+			}
+
+			var retry ipc.RerunResult
+			if err := client.Call(ipc.MethodRerun, &ipc.RerunParams{RepoID: repoID, Branch: "main"}, &retry); err != nil {
+				t.Fatal(err)
+			}
+			if retry.RunID == first.RunID {
+				t.Fatal("rerun did not create a separately auditable delivery attempt")
+			}
+			if run := waitForRunTerminalState(t, d, retry.RunID); run.Status != types.RunCompleted {
+				t.Fatalf("retry status = %s, want completed (error %v)", run.Status, run.Error)
+			}
+
+			for _, name := range validationStepNamesForTest() {
+				if got := probe.calls[name.Order()-1].Load(); got != 1 {
+					t.Errorf("validation step %s executed %d times, want 1", name, got)
+				}
+			}
+			for _, name := range []types.StepName{types.StepPush, types.StepPR, types.StepCI} {
+				want := int32(1)
+				if name.Order() <= failAt.Order() {
+					want = 2
+				}
+				if got := probe.calls[name.Order()-1].Load(); got != want {
+					t.Errorf("delivery step %s executed %d times, want %d", name, got, want)
+				}
+			}
+		})
+	}
+}
+
+func validationStepNamesForTest() []types.StepName {
+	return []types.StepName{types.StepIntent, types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint}
+}
 
 func TestValidateRecoveredSessionProviders_RejectsUnavailableFixerProvider(t *testing.T) {
 	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))

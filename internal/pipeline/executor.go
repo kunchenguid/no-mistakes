@@ -190,18 +190,61 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 
 	e.initializeRunScopes(run.ID)
 
-	// Create step result records in DB
+	// A fresh run has no step rows. A delivery retry may already contain a
+	// mechanically verified copy of the completed validation rows plus pending
+	// delivery rows. Recompute the checkpoint immediately before trusting that
+	// prepared state; any drift atomically discards it and takes this same run
+	// through the ordinary full-validation path.
 	stepRecords := make(map[types.StepName]*db.StepResult)
-	for _, step := range e.steps {
-		sr, err := e.db.InsertStepResult(run.ID, step.Name())
-		if err != nil {
-			return e.failRun(run, repo, fmt.Errorf("insert step result: %w", err))
+	startIndex := 0
+	existing, err := e.db.GetStepsByRun(run.ID)
+	if err != nil {
+		return e.failRun(run, repo, fmt.Errorf("get prepared step results: %w", err))
+	}
+	if len(existing) > 0 {
+		checkpoint, checkpointErr := e.db.GetValidationCheckpoint(run.ID)
+		if checkpointErr == nil && checkpoint == nil {
+			checkpointErr = fmt.Errorf("prepared validation checkpoint is absent")
 		}
-		stepRecords[step.Name()] = sr
+		if checkpointErr == nil {
+			checkpointErr = ValidateValidationCheckpoint(ctx, e.db, e.paths, e.config, run, checkpoint)
+		}
+		if checkpointErr == nil {
+			checkpointErr = validatePreparedDeliveryPlan(existing, e.steps)
+		}
+		if checkpointErr == nil {
+			for _, result := range existing {
+				stepRecords[result.StepName] = result
+			}
+			startIndex = types.StepPush.Order() - 1
+		} else {
+			slog.Warn("prepared validation reuse rejected; validating fully", "run_id", run.ID, "error", checkpointErr)
+			if err := e.db.ResetValidationReuse(run.ID); err != nil {
+				return e.failRun(run, repo, fmt.Errorf("reset invalid validation reuse: %w", err))
+			}
+			if err := resetRunValidationFiles(logDir, e.runEvidenceDir(run.ID)); err != nil {
+				return e.failRun(run, repo, fmt.Errorf("clear invalid validation reuse: %w", err))
+			}
+		}
+	}
+	if len(stepRecords) == 0 {
+		if len(existing) == 0 {
+			if err := resetRunValidationFiles(logDir, e.runEvidenceDir(run.ID)); err != nil {
+				return e.failRun(run, repo, fmt.Errorf("clear fresh run evidence: %w", err))
+			}
+		}
+		for _, step := range e.steps {
+			sr, err := e.db.InsertStepResult(run.ID, step.Name())
+			if err != nil {
+				return e.failRun(run, repo, fmt.Errorf("insert step result: %w", err))
+			}
+			stepRecords[step.Name()] = sr
+		}
 	}
 
 	// Execute steps sequentially
-	for i, step := range e.steps {
+	for i := startIndex; i < len(e.steps); i++ {
+		step := e.steps[i]
 		if ctx.Err() != nil {
 			return e.failRun(run, repo, context.Cause(ctx))
 		}
@@ -235,6 +278,41 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 	// than leaving a silent running row after every step has finished.
 	if err := e.completeRun(run, repo); err != nil {
 		return e.failRun(run, repo, fmt.Errorf("update run status: %w", err))
+	}
+	return nil
+}
+
+func validatePreparedDeliveryPlan(results []*db.StepResult, steps []Step) error {
+	if len(results) != len(steps) || len(steps) != len(types.AllSteps()) {
+		return fmt.Errorf("prepared delivery step count changed")
+	}
+	for index, step := range steps {
+		result := results[index]
+		if result.StepName != step.Name() || result.StepOrder != step.Name().Order() {
+			return fmt.Errorf("prepared delivery step order changed")
+		}
+		if step.Name().Order() <= types.StepLint.Order() {
+			if !isCompletedValidationStatus(result.Status) {
+				return fmt.Errorf("prepared validation step %s is %s", step.Name(), result.Status)
+			}
+			continue
+		}
+		if result.Status != types.StepStatusPending {
+			return fmt.Errorf("prepared delivery step %s is %s", step.Name(), result.Status)
+		}
+	}
+	return nil
+}
+
+func resetRunValidationFiles(logDir, evidenceDir string) error {
+	if err := os.RemoveAll(logDir); err != nil {
+		return fmt.Errorf("remove run logs: %w", err)
+	}
+	if err := os.RemoveAll(evidenceDir); err != nil {
+		return fmt.Errorf("remove run evidence: %w", err)
+	}
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return fmt.Errorf("recreate run logs: %w", err)
 	}
 	return nil
 }
@@ -453,6 +531,47 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	default:
 		return e.failRun(run, repo, fmt.Errorf("step %s: unsupported approval action %q", gate.step.Name(), response.action), ctx)
 	}
+}
+
+// ResumeDelivery continues an active run whose daemon died after validation.
+// Validation and the current delivery position are re-proved before the one
+// interrupted step is rearmed. Existing push/PR/CI implementations retain sole
+// ownership of force-with-lease, provider idempotency, cancellation, and CI
+// observation behavior.
+func (e *Executor) ResumeDelivery(ctx context.Context, run *db.Run, repo *db.Repo, workDir string) error {
+	e.workDir = workDir
+	if repo == nil {
+		return fmt.Errorf("recovered delivery run has no repository")
+	}
+	if err := ValidateRecoverableDeliveryRun(ctx, e.db, e.paths, e.config, run, e.steps); err != nil {
+		return err
+	}
+	checkpoint, err := e.db.GetValidationCheckpoint(run.ID)
+	if err != nil {
+		return fmt.Errorf("reload recovered validation checkpoint: %w", err)
+	}
+	if checkpoint == nil {
+		return fmt.Errorf("reload recovered validation checkpoint: checkpoint is absent")
+	}
+	// Re-check at the last possible moment. Startup validation and delivery
+	// rearm are separated by agent construction and scheduling, during which a
+	// worktree must not be allowed to drift.
+	if err := validateCheckpointWorktree(ctx, workDir, checkpoint.ValidatedSHA); err != nil {
+		return err
+	}
+	logDir := e.paths.RunLogDir(run.ID)
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return e.failRun(run, repo, fmt.Errorf("create log dir: %w", err), ctx)
+	}
+	e.initializeRunScopes(run.ID)
+	start, err := e.db.RearmDeliveryAfterCrash(run.ID)
+	if err != nil {
+		return e.failRun(run, repo, err, ctx)
+	}
+	run.Status = types.RunRunning
+	run.Error = nil
+	e.emitRunEvent(ipc.EventRunUpdated, run, repo)
+	return e.executeRecoveredRemainder(ctx, run, repo, workDir, logDir, start)
 }
 
 func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
@@ -1017,6 +1136,16 @@ done:
 	} else if err := e.db.CompleteStepWithStatus(sr.ID, status, finalExitCode, durationMS, logPath); err != nil {
 		return false, fmt.Errorf("complete step %s: %w", stepName, err)
 	}
+	// Lint is the final pre-delivery step. Its successful completion is the
+	// only point where the authoritative step history represents a complete
+	// validation, so bind the exact commit/config/evidence here. Failure to
+	// persist the optional reuse evidence does not change this run's result;
+	// it merely makes a later retry take the existing full-validation path.
+	if stepName == types.StepLint && status == types.StepStatusCompleted && len(e.skips) == 0 {
+		if _, err := PersistValidationCheckpoint(ctx, e.db, e.paths, e.config, run, workDir); err != nil {
+			slog.Warn("validation checkpoint unavailable; later retry will validate fully", "run_id", run.ID, "error", err)
+		}
+	}
 	e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(status), "", "", &durationMS)
 	return skipRemaining, nil
 }
@@ -1246,9 +1375,28 @@ func (e *Executor) failRun(run *db.Run, repo *db.Repo, err error, ctxs ...contex
 	if errMsg == types.RunCancelReasonAbortedByUser || errMsg == types.RunCancelReasonSuperseded {
 		runStatus = types.RunCancelled
 	}
+	// A delivery failure may be retried from the validation checkpoint only
+	// when no uncommitted agent/formatter change exists. A dirty worktree, or
+	// uncertainty while inspecting it, destroys that optional authority before
+	// terminalization; the next run then validates fully.
+	invalidateCheckpoint := false
+	if runStatus == types.RunFailed && e.workDir != "" {
+		checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		status, statusErr := git.Run(checkCtx, e.workDir, "status", "--porcelain", "--untracked-files=all")
+		cancel()
+		if statusErr != nil || strings.TrimSpace(status) != "" {
+			invalidateCheckpoint = true
+		}
+	}
 	verifiedHead, verified := e.reconcileTerminalRunHead(run)
 	var dbErr error
-	if verified {
+	if invalidateCheckpoint {
+		var head *string
+		if verified {
+			head = &verifiedHead
+		}
+		dbErr = e.db.FailRunAndInvalidateValidationCheckpoint(run.ID, errMsg, runStatus, head)
+	} else if verified {
 		dbErr = e.db.UpdateRunErrorStatusWithVerifiedHead(run.ID, errMsg, runStatus, verifiedHead)
 	} else {
 		dbErr = e.db.UpdateRunErrorStatus(run.ID, errMsg, runStatus)

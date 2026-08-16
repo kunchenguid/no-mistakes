@@ -1,0 +1,82 @@
+package db
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/types"
+)
+
+func testValidationCheckpoint(runID string) *ValidationCheckpoint {
+	return &ValidationCheckpoint{
+		RunID: runID, Version: 1,
+		ValidatedSHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40),
+		ConfigHash: strings.Repeat("c", 64), IntentHash: strings.Repeat("d", 64),
+		EvidenceHashes: map[string]string{"artifact-manifest": strings.Repeat("e", 64)},
+	}
+}
+
+func TestValidationCheckpointSourceDeletionKeepsAuditRow(t *testing.T) {
+	database := openTestDB(t)
+	repo, _ := database.InsertRepo("/tmp/checkpoint-delete", "https://example.com/repo.git", "main")
+	source, _ := database.InsertRun(repo.ID, "feature", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	target, _ := database.InsertRun(repo.ID, "feature", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	if err := database.PutValidationCheckpoint(testValidationCheckpoint(source.ID)); err != nil {
+		t.Fatal(err)
+	}
+	targetCheckpoint := testValidationCheckpoint(target.ID)
+	targetCheckpoint.ReusedFromRunID = &source.ID
+	if err := database.PutValidationCheckpoint(targetCheckpoint); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.sql.Exec(`DELETE FROM runs WHERE id = ?`, source.ID); err != nil {
+		t.Fatalf("delete reused source run: %v", err)
+	}
+	got, err := database.GetValidationCheckpoint(target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.ReusedFromRunID != nil {
+		t.Fatalf("target checkpoint after source deletion = %#v", got)
+	}
+}
+
+func TestFailRunAndInvalidateValidationCheckpointIsAtomic(t *testing.T) {
+	database := openTestDB(t)
+	repo, _ := database.InsertRepo("/tmp/checkpoint-fail", "https://example.com/repo.git", "main")
+	run, _ := database.InsertRun(repo.ID, "feature", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	if err := database.PutValidationCheckpoint(testValidationCheckpoint(run.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.FailRunAndInvalidateValidationCheckpoint(run.ID, "dirty", types.RunFailed, nil); err != nil {
+		t.Fatal(err)
+	}
+	gotRun, _ := database.GetRun(run.ID)
+	gotCheckpoint, _ := database.GetValidationCheckpoint(run.ID)
+	if gotRun.Status != types.RunFailed || gotCheckpoint != nil {
+		t.Fatalf("terminal state = %s, checkpoint = %#v", gotRun.Status, gotCheckpoint)
+	}
+}
+
+func TestRecoverStaleRunsInvalidatesUnpreservedCheckpoints(t *testing.T) {
+	database := openTestDB(t)
+	repo, _ := database.InsertRepo("/tmp/checkpoint-stale", "https://example.com/repo.git", "main")
+	preserved, _ := database.InsertRun(repo.ID, "preserved", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	stale, _ := database.InsertRun(repo.ID, "stale", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	for _, run := range []*Run{preserved, stale} {
+		if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.PutValidationCheckpoint(testValidationCheckpoint(run.ID)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.RecoverStaleRunsExcept("crashed", map[string]struct{}{preserved.ID: {}}); err != nil {
+		t.Fatal(err)
+	}
+	kept, _ := database.GetValidationCheckpoint(preserved.ID)
+	removed, _ := database.GetValidationCheckpoint(stale.ID)
+	if kept == nil || removed != nil {
+		t.Fatalf("preserved checkpoint = %#v, stale checkpoint = %#v", kept, removed)
+	}
+}

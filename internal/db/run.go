@@ -623,6 +623,14 @@ func (d *DB) RecoverStaleRunsExcept(errMsg string, preserved map[string]struct{}
 		return 0, fmt.Errorf("recover stale steps: %w", err)
 	}
 
+	checkpointArgs := []any{types.RunPending, types.RunRunning}
+	checkpointArgs = append(checkpointArgs, args...)
+	if _, err := tx.Exec(`DELETE FROM validation_checkpoints WHERE run_id IN (
+		SELECT id FROM runs WHERE status IN (?, ?)`+placeholders+`
+	)`, checkpointArgs...); err != nil {
+		return 0, fmt.Errorf("invalidate stale validation checkpoints: %w", err)
+	}
+
 	// Fail stale runs. Clear any awaiting-agent marker so a recovered (now
 	// failed) run is never reported as still parked awaiting the agent,
 	// accumulating the marker's elapsed time into the run's parked total so
