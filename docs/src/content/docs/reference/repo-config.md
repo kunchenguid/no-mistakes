@@ -185,7 +185,7 @@ Select the branch that newly created pull requests target.
 | Trust | Trusted default branch, unless `allow_repo_commands: true` is explicitly enabled there |
 
 Use this when the repository's integration branch differs from its forge default branch, for example `develop` instead of `main`.
-The configured branch is used for PR lookup and creation across supported SCM providers.
+The configured branch is used for PR lookup and creation across supported SCM providers, and as the integration base for the rebase step and the CI step's merge-conflict auto-fix.
 When unset, no-mistakes preserves the existing behavior and targets `Repo.DefaultBranch`.
 
 Because this setting controls where a PR lands, a pushed branch cannot redirect its own PR target by changing `pr.base_branch`.
