@@ -188,9 +188,9 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		args = append(args, "--base", base)
 	}
 	args = append(args, h.repoArgs()...)
-	jsonFields := "number,url"
+	jsonFields := "number,url,baseRefName"
 	if h.forkOwner != "" {
-		jsonFields = "number,url,headRefName,headRepositoryOwner"
+		jsonFields = "number,url,baseRefName,headRefName,headRepositoryOwner"
 	}
 	args = append(args, "--state", "open", "--json", jsonFields)
 	cmd := h.cmd(ctx, "gh", args...)
@@ -201,6 +201,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 	var prs []struct {
 		Number              int    `json:"number"`
 		URL                 string `json:"url"`
+		BaseRefName         string `json:"baseRefName"`
 		HeadRefName         string `json:"headRefName"`
 		HeadRepositoryOwner *struct {
 			Login string `json:"login"`
@@ -213,7 +214,7 @@ func (h *Host) FindPR(ctx context.Context, branch, base string) (*scm.PR, error)
 		if !h.matchesHead(candidate.HeadRefName, candidate.HeadRepositoryOwner, branch) {
 			continue
 		}
-		pr := &scm.PR{URL: strings.TrimSpace(candidate.URL)}
+		pr := &scm.PR{URL: strings.TrimSpace(candidate.URL), BaseBranch: strings.TrimSpace(candidate.BaseRefName)}
 		if candidate.Number > 0 {
 			pr.Number = fmt.Sprintf("%d", candidate.Number)
 		} else if num, nerr := scm.ExtractPRNumber(pr.URL); nerr == nil {
@@ -290,6 +291,20 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 		return "", fmt.Errorf("gh pr view: %w", err)
 	}
 	return normalizePRState(strings.TrimSpace(string(out))), nil
+}
+
+func (h *Host) GetPRBaseBranch(ctx context.Context, pr *scm.PR) (string, error) {
+	selector, err := prSelector(pr)
+	if err != nil {
+		return "", err
+	}
+	args := append([]string{"pr", "view", selector}, h.repoArgs()...)
+	args = append(args, "--json", "baseRefName", "--jq", ".baseRefName")
+	out, err := h.cmd(ctx, "gh", args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("gh pr view base branch: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func (h *Host) GetChecks(ctx context.Context, pr *scm.PR) ([]scm.Check, error) {

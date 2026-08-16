@@ -89,6 +89,10 @@ func ExtractPRNumber(prURL string) (string, error) {
 type PR struct {
 	Number string
 	URL    string
+	// BaseBranch is the forge's actual target branch for this PR. It is
+	// authoritative once a PR exists and protects resumed CI repair from a
+	// later configuration change.
+	BaseBranch string
 }
 
 // PRContent is the title + body for creating or updating a PR.
@@ -195,6 +199,13 @@ type Host interface {
 	// FetchFailedCheckLogs is optional; returns "" when no logs can be retrieved
 	// and ErrUnsupported when the provider has no log-fetching support at all.
 	FetchFailedCheckLogs(ctx context.Context, pr *PR, branch, headSHA string, failingNames []string) (string, error)
+}
+
+// PRBaseBranchReader is implemented by providers that can read the target
+// branch of an existing PR by its durable identity. CI uses it when a run is
+// resumed after repository configuration changes.
+type PRBaseBranchReader interface {
+	GetPRBaseBranch(ctx context.Context, pr *PR) (string, error)
 }
 
 // CheckRerunner re-runs the provider-side job behind a failed check without
