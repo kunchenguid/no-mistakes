@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.53.0](https://github.com/kunchenguid/no-mistakes/compare/v1.52.0...v1.53.0) (2026-08-16)
+
+
+### Features
+
+* **eval:** label findings by recorded decision and match gold globally ([#753](https://github.com/kunchenguid/no-mistakes/issues/753)) ([f808d23](https://github.com/kunchenguid/no-mistakes/commit/f808d2389ff76d002d821a6f43999189f95fc102))
+
 ## [1.52.0](https://github.com/kunchenguid/no-mistakes/compare/v1.51.1...v1.52.0) (2026-08-15)
 
 
