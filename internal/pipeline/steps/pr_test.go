@@ -333,11 +333,55 @@ func TestPRStep_UsesConfiguredBaseBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(logData), "pr list --head feature --base develop") {
-		t.Fatalf("expected configured base branch in PR lookup, got:\n%s", logData)
+	if !strings.Contains(string(logData), "pr list --head feature ") {
+		t.Fatalf("expected PR lookup by branch, got:\n%s", logData)
+	}
+	if strings.Contains(string(logData), "pr list --head feature --base") {
+		t.Fatalf("expected PR lookup not to filter by base branch (would miss an existing PR opened against a different base), got:\n%s", logData)
 	}
 	if !strings.Contains(string(logData), "pr create --head feature --base develop") {
 		t.Fatalf("expected configured base branch in PR creation, got:\n%s", logData)
+	}
+}
+
+// TestPRStep_ExistingPRAgainstDifferentBaseIsUpdatedNotDuplicated reproduces
+// the bug where a maintainer changes pr.base_branch after a PR already exists
+// against the old base. A base-filtered `gh pr list` would then miss that
+// still-open PR (GitHub filters server-side), so the step fell through to
+// `gh pr create` and opened a second, duplicate PR against the new base while
+// orphaning the original.
+func TestPRStep_ExistingPRAgainstDifferentBaseIsUpdatedNotDuplicated(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, logFile := fakeGHWithBase(t, "https://github.com/test/repo/pull/42", "develop")
+
+	ag := &mockAgent{name: "test"}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Config.PR.BaseBranch = "main"
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ghLog := string(logData)
+	if strings.Contains(ghLog, "pr create") {
+		t.Fatalf("expected existing PR to be updated, not duplicated with a new pr create, got:\n%s", ghLog)
+	}
+	if !strings.Contains(ghLog, "pr edit") {
+		t.Fatalf("expected gh pr edit to update the existing PR, got:\n%s", ghLog)
+	}
+
+	run, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.PRURL == nil || *run.PRURL != "https://github.com/test/repo/pull/42" {
+		t.Errorf("PR URL = %v, want the existing PR to remain https://github.com/test/repo/pull/42", run.PRURL)
 	}
 }
 
@@ -401,7 +445,7 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	ghLog := string(logData)
-	if !strings.Contains(ghLog, "pr list --head feature --base develop --repo parent-owner/no-mistakes --state open --json number,url,headRefName,headRepositoryOwner") {
+	if !strings.Contains(ghLog, "pr list --head feature --repo parent-owner/no-mistakes --state open --json number,url,baseRefName,headRefName,headRepositoryOwner") {
 		t.Fatalf("expected PR lookup to use parent repo and bare head branch, got:\n%s", ghLog)
 	}
 	if strings.Contains(ghLog, "pr list --head fork-owner:feature") {

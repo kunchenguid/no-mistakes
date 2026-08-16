@@ -87,7 +87,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	}
 
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
-	existing, err := host.FindPR(ctx, branch, baseBranch)
+	existing, err := host.FindPR(ctx, branch, "")
 	if err != nil {
 		return nil, err
 	}
