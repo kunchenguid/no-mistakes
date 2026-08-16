@@ -512,7 +512,7 @@ func renderTestingArtifact(artifact types.TestArtifact, opts testingSummaryOptio
 		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n\n") {
 			b.WriteString("\n")
 		}
-		b.WriteString(fmt.Sprintf("**%s**\n\n```text\n%s\n```\n", html.EscapeString(label), escapeMarkdownFence(fenceBody)))
+		b.WriteString(fmt.Sprintf("**%s**\n\n```text\n%s\n```\n", html.EscapeString(label), escapeMarkdownFence(escapePipelineFoldMarkers(fenceBody))))
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }
@@ -554,7 +554,7 @@ func renderCompactTestingArtifact(artifact types.TestArtifact, opts testingSumma
 		inner.WriteString(renderTestedDetailFor(descriptionLine, opts.flavor))
 		inner.WriteString("\n\n")
 	}
-	inner.WriteString(fmt.Sprintf("```text\n%s\n```\n", escapeMarkdownFence(fenceBody)))
+	inner.WriteString(fmt.Sprintf("```text\n%s\n```\n", escapeMarkdownFence(escapePipelineFoldMarkers(fenceBody))))
 	return foldPRBlock("Evidence: "+html.EscapeString(label), inner.String(), opts.flavor)
 }
 
