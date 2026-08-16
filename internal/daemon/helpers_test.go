@@ -42,6 +42,18 @@ func TestMain(m *testing.M) {
 			os.Exit(2)
 		}
 		os.Exit(0)
+	case "delivery-resume-daemon":
+		p := paths.WithRoot(os.Getenv("NM_HOME"))
+		database, err := db.Open(p.DB())
+		if err == nil {
+			err = RunWithOptions(p, database, nil)
+			_ = database.Close()
+		}
+		if err != nil {
+			_, _ = os.Stderr.WriteString(err.Error() + "\n")
+			os.Exit(2)
+		}
+		os.Exit(0)
 	case "bootstrap-sink":
 		if err := RunBootstrapLogSink(); err != nil {
 			_, _ = os.Stderr.WriteString(err.Error() + "\n")
