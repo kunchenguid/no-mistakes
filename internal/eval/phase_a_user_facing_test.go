@@ -191,7 +191,7 @@ func TestPhaseAUserFacingTranscripts(t *testing.T) {
 		write("eval-report-f1-headline.txt", withFPOut)
 	})
 
-	t.Run("capture labels shipped-unfixed as FP and leaves dropped reraise unlabeled", func(t *testing.T) {
+	t.Run("capture labels shipped-unfixed as FP and leaves an undecided round unlabeled", func(t *testing.T) {
 		ctx := context.Background()
 		p, sourceDB, run, _, reviewRound := setupCapturedRun(t, ctx)
 		defer sourceDB.Close()
@@ -226,49 +226,37 @@ func TestPhaseAUserFacingTranscripts(t *testing.T) {
 		}
 		write("labels-shipped-unfixed.json", string(labelsJSON)+"\n")
 
+		// The same merged run, but with no recorded gate decision for the round,
+		// stays unlabeled: shipping unfixed is only evidence of a false positive
+		// when the human actually resolved the gate without selecting the finding.
 		p2, sourceDB2, run2, _, firstRound := setupCapturedRun(t, ctx)
 		defer sourceDB2.Close()
 		if err := sourceDB2.SetStepRoundSelection(firstRound.ID, nil, ""); err != nil {
 			t.Fatal(err)
 		}
-		steps2, err := sourceDB2.GetStepsByRun(run2.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := sourceDB2.UpdateStepStatus(steps2[0].ID, types.StepStatusCompleted); err != nil {
-			t.Fatal(err)
-		}
-		stillRaised := `{"findings":[{"id":"real-bug","severity":"error","file":"main.go","line":3,"description":"bug","action":"ask-user","review_scope":"source"}],"risk_level":"high","risk_rationale":"still present","risk_scope":"source-or-external"}`
-		if _, err := sourceDB2.InsertReviewStepRoundWithProvenance(steps2[0].ID, 2, "auto_fix", &stillRaised, nil, run2.HeadSHA, stringValue(firstRound.ReviewedHeadSHA), stringValue(firstRound.TrustedConfigSHA), firstRound.GlobalConfigYAML, firstRound.RepoConfigYAML, 25); err != nil {
-			t.Fatal(err)
-		}
-		final := `{"findings":[{"id":"other-bug","severity":"warning","file":"main.go","line":1,"description":"style","action":"ask-user","review_scope":"source"}],"risk_level":"low","risk_rationale":"different issue","risk_scope":"source-or-external"}`
-		if _, err := sourceDB2.InsertReviewStepRoundWithProvenance(steps2[0].ID, 3, "auto_fix", &final, nil, run2.HeadSHA, stringValue(firstRound.ReviewedHeadSHA), stringValue(firstRound.TrustedConfigSHA), firstRound.GlobalConfigYAML, firstRound.RepoConfigYAML, 25); err != nil {
-			t.Fatal(err)
-		}
 		if err := sourceDB2.UpdateRunPRState(run2.ID, "merged"); err != nil {
 			t.Fatal(err)
 		}
-		dropped := captureAll(t, ctx, p2, sourceDB2, run2.ID)
+		undecided := captureAll(t, ctx, p2, sourceDB2, run2.ID)
 		byRound := map[string]Labels{}
-		for _, c := range dropped {
+		for _, c := range undecided {
 			byRound[c.SourceRoundID] = c.Labels
 		}
 		if byRound[firstRound.ID].HasGold() {
-			t.Fatalf("dropped-reraise first-round labels = %#v, want unlabeled", byRound[firstRound.ID])
+			t.Fatalf("undecided first-round labels = %#v, want unlabeled", byRound[firstRound.ID])
 		}
-		type droppedRow struct {
+		type undecidedRow struct {
 			RoundID string `json:"source_round_id"`
 			Labels  Labels `json:"labels"`
 		}
-		rows := make([]droppedRow, 0, len(dropped))
-		for _, c := range dropped {
-			rows = append(rows, droppedRow{RoundID: c.SourceRoundID, Labels: c.Labels})
+		rows := make([]undecidedRow, 0, len(undecided))
+		for _, c := range undecided {
+			rows = append(rows, undecidedRow{RoundID: c.SourceRoundID, Labels: c.Labels})
 		}
-		droppedJSON, err := json.MarshalIndent(rows, "", "  ")
+		undecidedJSON, err := json.MarshalIndent(rows, "", "  ")
 		if err != nil {
 			t.Fatal(err)
 		}
-		write("labels-dropped-after-reraise.json", string(droppedJSON)+"\n")
+		write("labels-undecided-round.json", string(undecidedJSON)+"\n")
 	})
 }

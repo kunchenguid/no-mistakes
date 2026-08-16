@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"math/rand"
 	"strings"
 	"testing"
 )
@@ -78,6 +79,113 @@ func TestScoreCandidateDoesNotLetFuzzyEarlierGoldStealExactLaterMatch(t *testing
 	if score.TruePositive != 2 || score.FalseNegative != 0 {
 		t.Fatalf("score = %#v, want both gold items matched (exact-id later gold plus leftover fuzzy cover for the earlier gold), not a greedy first-gold steal", score)
 	}
+}
+
+// Both gold items match candidate 1 exactly by id, and only the first also has
+// a fuzzy (nearby-line) match on candidate 2. The tiered matcher this replaced
+// resolved the exact tier on its own, handed candidate 1 to the first gold, and
+// then had nothing left for the second - one match where two exist. A globally
+// optimal assignment gives candidate 1 to the gold that has no alternative and
+// covers the other fuzzily, with the same number of exact matches.
+func TestScoreCandidateRecoversMatchTheTieredMatcherLost(t *testing.T) {
+	labels := Labels{Findings: []FindingGold{
+		{
+			ID:          "shared-id",
+			Kind:        GoldTruePositive,
+			File:        "main.go",
+			Line:        10,
+			Description: "nil pointer dereference in the request handler",
+		},
+		{
+			ID:          "shared-id",
+			Kind:        GoldTruePositive,
+			File:        "lock.go",
+			Line:        40,
+			Description: "mutex not released on the error path",
+		},
+	}}
+	candidate := `{"findings":[` +
+		`{"id":"shared-id","file":"main.go","line":10,"description":"nil pointer dereference in the request handler"},` +
+		`{"id":"other","file":"main.go","line":11,"description":"nil pointer dereference in the request handler during shutdown"}` +
+		`]}`
+
+	score := ScoreCandidate(labels, candidate)
+	if score.TruePositive != 2 || score.FalseNegative != 0 {
+		t.Fatalf("score = %#v, want both gold items matched rather than one consumed by a tier boundary", score)
+	}
+	if score.TruePositiveExact != 1 || score.TruePositiveFuzzy != 1 {
+		t.Fatalf("score = %#v, want the exact match kept and the second gold covered fuzzily", score)
+	}
+	if score.Pending != 0 {
+		t.Fatalf("score = %#v, want both candidates consumed by the assignment", score)
+	}
+}
+
+// The assignment must be the exact optimum, not a good heuristic, so it is
+// checked against exhaustive enumeration on random small weight matrices of
+// both orientations.
+func TestMaxWeightAssignmentMatchesBruteForceOptimum(t *testing.T) {
+	rng := rand.New(rand.NewSource(20260816))
+	for trial := 0; trial < 400; trial++ {
+		rows := 1 + rng.Intn(5)
+		cols := 1 + rng.Intn(5)
+		weight := make([][]int64, rows)
+		for i := range weight {
+			weight[i] = make([]int64, cols)
+			for j := range weight[i] {
+				// Zero is the common case on purpose: it is how a missing edge
+				// is spelled, and it is where a greedy solver goes wrong.
+				if rng.Intn(3) == 0 {
+					weight[i][j] = int64(rng.Intn(4)) * 9
+				}
+			}
+		}
+		got := totalWeight(weight, maxWeightAssignment(weight))
+		want := bruteForceMaxWeight(weight)
+		if got != want {
+			t.Fatalf("assignment weight = %d, want the optimum %d for %v", got, want, weight)
+		}
+	}
+}
+
+func totalWeight(weight [][]int64, rowToCol []int) int64 {
+	var total int64
+	seen := map[int]bool{}
+	for i, j := range rowToCol {
+		if j < 0 {
+			continue
+		}
+		if seen[j] {
+			panic("assignment reused a column")
+		}
+		seen[j] = true
+		total += weight[i][j]
+	}
+	return total
+}
+
+func bruteForceMaxWeight(weight [][]int64) int64 {
+	cols := len(weight[0])
+	used := make([]bool, cols)
+	var best func(row int) int64
+	best = func(row int) int64 {
+		if row == len(weight) {
+			return 0
+		}
+		top := best(row + 1)
+		for j := 0; j < cols; j++ {
+			if used[j] {
+				continue
+			}
+			used[j] = true
+			if got := weight[row][j] + best(row+1); got > top {
+				top = got
+			}
+			used[j] = false
+		}
+		return top
+	}
+	return best(0)
 }
 
 func TestScoreCandidateKeepsUnmatchedPendingUntilAdjudicated(t *testing.T) {
