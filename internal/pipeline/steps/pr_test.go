@@ -399,9 +399,10 @@ func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
 	if !strings.Contains(api.lastCreateBody, `"source"`) || !strings.Contains(api.lastCreateBody, `"destination"`) {
 		t.Fatalf("expected Bitbucket PR create payload to include source and destination, got %q", api.lastCreateBody)
 	}
+	description := bitbucketPRDescriptionForTest(t, api.lastCreateBody)
 	for _, leak := range []string{"<details>", "<summary>", "<code>", "<video", pipelineAttestationCommentPrefix} {
-		if strings.Contains(api.lastCreateBody, leak) {
-			t.Errorf("Bitbucket PR create shipped HTML %q:\n%s", leak, api.lastCreateBody)
+		if strings.Contains(description, leak) {
+			t.Errorf("Bitbucket PR create shipped HTML %q:\n%s", leak, description)
 		}
 	}
 
@@ -1487,6 +1488,20 @@ func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
 	if content.Title != "chore: update pull request" {
 		t.Fatalf("fallback title = %q, want neutral title", content.Title)
 	}
+}
+
+func bitbucketPRDescriptionForTest(t *testing.T, raw string) string {
+	t.Helper()
+	var payload struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode Bitbucket PR payload: %v\n%s", err, raw)
+	}
+	if payload.Description == "" {
+		t.Fatalf("Bitbucket PR payload missing description:\n%s", raw)
+	}
+	return payload.Description
 }
 
 func pipelineMarkdownForTest(rounds ...string) string {

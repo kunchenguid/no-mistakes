@@ -98,7 +98,7 @@ func TestBuildPipelineSummary_BitbucketCloudOmitsHTMLAndAttestation(t *testing.T
 	}
 	for _, leak := range []string{
 		"<details>", "</details>", "<summary>", "</summary>",
-		"<!--", "-->", "<code>", "<video",
+		"<!--", "-->", "<code>", "<video", "No issues found.",
 		pipelineAttestationCommentPrefix,
 	} {
 		if strings.Contains(md, leak) {

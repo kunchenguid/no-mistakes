@@ -1211,7 +1211,7 @@ func buildStepDetails(summaryLine string, sr *db.StepResult, rounds []*db.StepRo
 func foldPRBlock(summaryLine, inner string, flavor prBodyFlavor) string {
 	inner = strings.TrimSpace(inner)
 	if flavor == prBodyMarkdown {
-		if inner == "" {
+		if inner == "" || isTautologicalStepInner(inner) {
 			return summaryLine + "\n"
 		}
 		return "### " + summaryLine + "\n\n" + inner + "\n"
@@ -1227,6 +1227,18 @@ func foldPRBlock(summaryLine, inner string, flavor prBodyFlavor) string {
 	}
 	b.WriteString("</details>\n")
 	return b.String()
+}
+
+func isTautologicalStepInner(inner string) bool {
+	switch strings.TrimSpace(inner) {
+	case "✅ No issues found.", "Step has not started yet.", "Step is currently running.",
+		"Waiting for user approval.", "Agent is currently applying fixes.",
+		"Waiting to review the latest fix.", "Step was skipped.", "Step failed.",
+		"No round details recorded.", "Status unavailable.":
+		return true
+	default:
+		return false
+	}
 }
 
 // fixRoundLine renders the one-line summary of the fix the agent applied in a
