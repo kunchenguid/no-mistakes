@@ -62,11 +62,13 @@ type RunManager struct {
 	// permanently discard the older one's payload. The critical section
 	// contains no blocking operation and no I/O, so hold time is
 	// O(subscribers) memory writes.
-	subMu          sync.Mutex
-	subscribers    map[string][]*eventMailbox // runID → subscriber mailboxes
-	stateRevs      map[string]int64           // runID → monotonic state revision
-	completedRuns  map[string]bool            // runIDs whose goroutines have finished
-	completedOrder []string                   // insertion order for FIFO eviction
+	subMu                    sync.Mutex
+	subscribers              map[string][]*eventMailbox // runID → subscriber mailboxes
+	stateRevs                map[string]int64           // runID → monotonic state revision
+	completedRuns            map[string]bool            // runIDs whose goroutines have finished
+	completedOrder           []string                   // insertion order for FIFO eviction
+	recoveredWorktreeCleanup func(string, string) error
+	recoveredEvidenceCleanup func(*config.Config, string)
 }
 
 // maxSubscribersPerRun bounds the global mailbox footprint: queued bytes can
@@ -437,10 +439,20 @@ func (m *RunManager) cleanupRecoveredRunMaterial(plan recoveredRunPlan) {
 	if !m.recoveredRunCleanupAllowed(plan.run.ID) {
 		return
 	}
-	if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
+	cleanupWorktree := m.recoveredWorktreeCleanup
+	if cleanupWorktree == nil {
+		cleanupWorktree = func(gateDir, workDir string) error {
+			return git.WorktreeRemove(context.Background(), gateDir, workDir)
+		}
+	}
+	if err := cleanupWorktree(plan.gateDir, plan.workDir); err != nil {
 		slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
 	}
-	m.cleanupRunEvidence(plan.cfg, plan.run.ID)
+	if m.recoveredEvidenceCleanup != nil {
+		m.recoveredEvidenceCleanup(plan.cfg, plan.run.ID)
+	} else {
+		m.cleanupRunEvidence(plan.cfg, plan.run.ID)
+	}
 }
 
 func (m *RunManager) failRecoveredRun(plan recoveredRunPlan, cause error) error {

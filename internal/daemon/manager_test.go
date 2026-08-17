@@ -179,7 +179,7 @@ func TestFailRecoveredRunKeepsActiveMemoryWhenTerminalizationFails(t *testing.T)
 	}
 }
 
-func TestRecoveredCleanupRejectsExecutorTerminalStateWhenDurableReadFails(t *testing.T) {
+func TestResumeRecoveredRunSkipsCleanupWhenPersistenceFails(t *testing.T) {
 	root := t.TempDir()
 	p := paths.WithRoot(root)
 	if err := p.EnsureDirs(); err != nil {
@@ -197,7 +197,14 @@ func TestRecoveredCleanupRejectsExecutorTerminalStateWhenDurableReadFails(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	run.Status = types.RunFailed
+	checkpoint := &db.ValidationCheckpoint{
+		RunID: run.ID, Version: 1, ValidatedSHA: run.HeadSHA, BaseSHA: run.BaseSHA,
+		ConfigHash: strings.Repeat("c", 64), IntentHash: strings.Repeat("d", 64),
+		EvidenceHashes: map[string]string{"artifact-manifest": strings.Repeat("e", 64)},
+	}
+	if err := database.PutValidationCheckpoint(checkpoint); err != nil {
+		t.Fatal(err)
+	}
 	workDir := p.WorktreeDir(repo.ID, run.ID)
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -219,16 +226,45 @@ func TestRecoveredCleanupRejectsExecutorTerminalStateWhenDurableReadFails(t *tes
 		t.Fatal(err)
 	}
 	manager := NewRunManager(database, p, nil)
-	plan := recoveredRunPlan{run: run, cfg: cfg, workDir: workDir, gateDir: p.RepoDir(repo.ID), resumeDelivery: true}
-	if err := manager.terminalizeRecoveredRunAfterError(plan, errors.New("executor database update failed")); err == nil {
-		t.Fatal("terminalizeRecoveredRunAfterError() unexpectedly succeeded")
+	var worktreeCleanupCalls atomic.Int32
+	var evidenceCleanupCalls atomic.Int32
+	manager.recoveredWorktreeCleanup = func(string, string) error {
+		worktreeCleanupCalls.Add(1)
+		return nil
 	}
-	manager.cleanupRecoveredRunMaterial(plan)
+	manager.recoveredEvidenceCleanup = func(*config.Config, string) {
+		evidenceCleanupCalls.Add(1)
+	}
+	plan := recoveredRunPlan{
+		run: run, repo: repo, cfg: cfg, agent: agent.NewNoop(), steps: manager.steps(),
+		workDir: workDir, gateDir: p.RepoDir(repo.ID), resumeDelivery: true,
+	}
+	manager.resumeRecoveredRun(plan)
+	manager.wg.Wait()
+	if worktreeCleanupCalls.Load() != 0 || evidenceCleanupCalls.Load() != 0 {
+		t.Fatalf("cleanup calls = worktree %d, evidence %d", worktreeCleanupCalls.Load(), evidenceCleanupCalls.Load())
+	}
 	if _, err := os.Stat(workMarker); err != nil {
 		t.Fatalf("recovery worktree material removed: %v", err)
 	}
 	if _, err := os.Stat(evidenceMarker); err != nil {
 		t.Fatalf("recovery evidence removed: %v", err)
+	}
+	reopened, err := db.Open(p.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	durable, err := reopened.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keptCheckpoint, err := reopened.GetValidationCheckpoint(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if durable.Status != types.RunPending || keptCheckpoint == nil {
+		t.Fatalf("durable status = %s, checkpoint = %#v", durable.Status, keptCheckpoint)
 	}
 }
 
