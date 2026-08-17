@@ -120,6 +120,40 @@ func (d *DB) FailRunAndInvalidateValidationCheckpoint(runID, errMsg string, stat
 	return nil
 }
 
+func (d *DB) FailActiveRecoveredRun(runID, errMsg string, invalidateCheckpoint bool) (bool, error) {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return false, fmt.Errorf("begin recovered run failure: %w", err)
+	}
+	defer tx.Rollback()
+	ts := now()
+	result, err := tx.Exec(`UPDATE runs SET error = ?, status = ?, push_active = 0,
+		terminal_head_verified_at = NULL, updated_at = ?
+		WHERE id = ? AND status IN (?, ?)`, errMsg, types.RunFailed, ts, runID, types.RunPending, types.RunRunning)
+	if err != nil {
+		return false, fmt.Errorf("terminalize active recovered run: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("inspect recovered run terminalization: %w", err)
+	}
+	if changed == 0 {
+		return false, nil
+	}
+	if changed != 1 {
+		return false, fmt.Errorf("terminalize active recovered run: changed %d rows", changed)
+	}
+	if invalidateCheckpoint {
+		if _, err := tx.Exec(`DELETE FROM validation_checkpoints WHERE run_id = ?`, runID); err != nil {
+			return false, fmt.Errorf("invalidate recovered validation checkpoint: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit recovered run failure: %w", err)
+	}
+	return true, nil
+}
+
 // RearmDeliveryAfterCrash converts the one interrupted delivery step back to
 // pending and clears the crash-stale push-active marker. Completed delivery
 // steps remain completed, so the executor resumes at the first unfinished

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"os/exec"
@@ -477,6 +478,69 @@ func TestAgentAppliedDirtyChangeInvalidatesCheckpoint(t *testing.T) {
 	}
 	if checkpoint != nil {
 		t.Fatal("dirty agent change left validation checkpoint reusable")
+	}
+}
+
+func TestResumeDeliveryPreservesRecoveryMaterialWhenFailRunPersistenceFails(t *testing.T) {
+	fixture := newFailedCheckpointFixture(t)
+	results, err := fixture.database.GetStepsByRun(fixture.source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.database.UpdateRunStatus(fixture.source.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.database.UpdateStepStatus(results[types.StepPush.Order()-1].ID, types.StepStatusPending); err != nil {
+		t.Fatal(err)
+	}
+	evidencePath := filepath.Join(fixture.p.RunLogDir(fixture.source.ID), string(types.StepTest)+".log")
+	injector, err := sql.Open("sqlite", fixture.p.DB()+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := injector.Exec(`CREATE TRIGGER reject_recovered_failure
+		BEFORE UPDATE OF status ON runs
+		WHEN OLD.id = '` + fixture.source.ID + `' AND NEW.status = 'failed'
+		BEGIN
+			SELECT RAISE(FAIL, 'injected recovered failure persistence error');
+		END`); err != nil {
+		injector.Close()
+		t.Fatal(err)
+	}
+	if err := injector.Close(); err != nil {
+		t.Fatal(err)
+	}
+	execSteps := make([]Step, 0, len(types.AllSteps()))
+	for _, name := range types.AllSteps() {
+		step := newPassStep(name)
+		if name == types.StepPush {
+			step.err = fmt.Errorf("delivery failed")
+		}
+		execSteps = append(execSteps, step)
+	}
+	reloaded, err := fixture.database.GetRun(fixture.source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := NewExecutor(fixture.database, fixture.p, fixture.cfg, nil, execSteps, nil).ResumeDelivery(context.Background(), reloaded, fixture.repo, fixture.workDir); err == nil {
+		t.Fatal("ResumeDelivery() unexpectedly succeeded")
+	}
+	durable, err := fixture.database.GetRun(fixture.source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := fixture.database.GetValidationCheckpoint(fixture.source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if durable.Status != types.RunRunning || checkpoint == nil {
+		t.Fatalf("durable status = %s, checkpoint = %#v", durable.Status, checkpoint)
+	}
+	if _, err := os.Stat(fixture.workDir); err != nil {
+		t.Fatalf("recovery worktree missing: %v", err)
+	}
+	if _, err := os.Stat(evidencePath); err != nil {
+		t.Fatalf("recovery evidence missing: %v", err)
 	}
 }
 

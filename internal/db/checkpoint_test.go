@@ -58,6 +58,27 @@ func TestFailRunAndInvalidateValidationCheckpointIsAtomic(t *testing.T) {
 	}
 }
 
+func TestFailActiveRecoveredRunPreservesConcurrentCancellation(t *testing.T) {
+	database := openTestDB(t)
+	repo, _ := database.InsertRepo("/tmp/checkpoint-cancel", "https://example.com/repo.git", "main")
+	run, _ := database.InsertRun(repo.ID, "feature", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	if err := database.PutValidationCheckpoint(testValidationCheckpoint(run.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunErrorStatus(run.ID, types.RunCancelReasonSuperseded, types.RunCancelled); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := database.FailActiveRecoveredRun(run.ID, "recovery failed", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotRun, _ := database.GetRun(run.ID)
+	gotCheckpoint, _ := database.GetValidationCheckpoint(run.ID)
+	if changed || gotRun.Status != types.RunCancelled || gotCheckpoint == nil {
+		t.Fatalf("changed = %v, status = %s, checkpoint = %#v", changed, gotRun.Status, gotCheckpoint)
+	}
+}
+
 func TestRecoverStaleRunsInvalidatesUnpreservedCheckpoints(t *testing.T) {
 	database := openTestDB(t)
 	repo, _ := database.InsertRepo("/tmp/checkpoint-stale", "https://example.com/repo.git", "main")

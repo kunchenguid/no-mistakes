@@ -440,17 +440,24 @@ func (m *RunManager) recoveredRunCleanupAllowed(runID string) bool {
 
 func (m *RunManager) failRecoveredRun(plan recoveredRunPlan, cause error) error {
 	errMsg := cause.Error()
-	var err error
-	if plan.resumeDelivery {
-		err = m.db.FailRunAndInvalidateValidationCheckpoint(plan.run.ID, errMsg, types.RunFailed, nil)
-	} else {
-		err = m.db.UpdateRunErrorStatus(plan.run.ID, errMsg, types.RunFailed)
-	}
+	changed, err := m.db.FailActiveRecoveredRun(plan.run.ID, errMsg, plan.resumeDelivery)
 	if err != nil {
 		return err
 	}
-	plan.run.Status = types.RunFailed
-	plan.run.Error = &errMsg
+	if changed {
+		plan.run.Status = types.RunFailed
+		plan.run.Error = &errMsg
+		return nil
+	}
+	durable, err := m.db.GetRun(plan.run.ID)
+	if err != nil {
+		return err
+	}
+	if durable.Status != types.RunCompleted && durable.Status != types.RunFailed && durable.Status != types.RunCancelled {
+		return fmt.Errorf("recovered run remained active after terminalization race")
+	}
+	plan.run.Status = durable.Status
+	plan.run.Error = durable.Error
 	return nil
 }
 
