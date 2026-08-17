@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -189,40 +190,55 @@ func TestResumeRecoveredRunSkipsCleanupWhenPersistenceFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo, err := database.InsertRepo("/tmp/recovered-cleanup", "https://example.com/repo.git", "main")
+	defer database.Close()
+	repo, headSHA := setupTestGitRepo(t, p, database, "recovered-cleanup")
+	workDir := p.WorktreeDir(repo.ID, "recovered-run")
+	if err := git.WorktreeAdd(context.Background(), p.RepoDir(repo.ID), workDir, headSHA); err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature", headSHA, headSHA)
 	if err != nil {
-		t.Fatal(err)
-	}
-	run, err := database.InsertRun(repo.ID, "feature", strings.Repeat("a", 40), strings.Repeat("b", 40))
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkpoint := &db.ValidationCheckpoint{
-		RunID: run.ID, Version: 1, ValidatedSHA: run.HeadSHA, BaseSHA: run.BaseSHA,
-		ConfigHash: strings.Repeat("c", 64), IntentHash: strings.Repeat("d", 64),
-		EvidenceHashes: map[string]string{"artifact-manifest": strings.Repeat("e", 64)},
-	}
-	if err := database.PutValidationCheckpoint(checkpoint); err != nil {
-		t.Fatal(err)
-	}
-	workDir := p.WorktreeDir(repo.ID, run.ID)
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	workMarker := filepath.Join(workDir, "recovery-worktree")
-	if err := os.WriteFile(workMarker, []byte("keep"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{}
-	evidenceDir := p.RunEvidenceDir(cfg.Test.Evidence.LocalRoot, run.ID)
-	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+	probe := &deliveryResumeProbe{failAt: types.StepPush}
+	probe.failureLive.Store(true)
+	execSteps := make([]pipeline.Step, 0, len(types.AllSteps()))
+	for _, name := range types.AllSteps() {
+		execSteps = append(execSteps, &deliveryResumeProbeStep{name: name, probe: probe})
+	}
+	if err := pipeline.NewExecutor(database, p, cfg, agent.NewNoop(), execSteps, nil).Execute(context.Background(), run, repo, workDir); err == nil {
+		t.Fatal("initial delivery failure unexpectedly succeeded")
+	}
+	results, err := database.GetStepsByRun(run.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	evidenceMarker := filepath.Join(evidenceDir, "recovery-evidence")
-	if err := os.WriteFile(evidenceMarker, []byte("keep"), 0o644); err != nil {
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.Close(); err != nil {
+	if err := database.UpdateStepStatus(results[types.StepPush.Order()-1].ID, types.StepStatusPending); err != nil {
+		t.Fatal(err)
+	}
+	injector, err := sql.Open("sqlite", p.DB()+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := injector.Exec(`CREATE TRIGGER reject_recovered_terminal_write
+		BEFORE UPDATE OF status ON runs
+		WHEN OLD.id = '` + run.ID + `' AND NEW.status = 'failed'
+		BEGIN
+			SELECT RAISE(FAIL, 'injected recovered terminal failure');
+		END`); err != nil {
+		injector.Close()
+		t.Fatal(err)
+	}
+	if err := injector.Close(); err != nil {
+		t.Fatal(err)
+	}
+	probe.failureLive.Store(true)
+	run, err = database.GetRun(run.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
 	manager := NewRunManager(database, p, nil)
@@ -236,7 +252,7 @@ func TestResumeRecoveredRunSkipsCleanupWhenPersistenceFails(t *testing.T) {
 		evidenceCleanupCalls.Add(1)
 	}
 	plan := recoveredRunPlan{
-		run: run, repo: repo, cfg: cfg, agent: agent.NewNoop(), steps: manager.steps(),
+		run: run, repo: repo, cfg: cfg, agent: agent.NewNoop(), steps: execSteps,
 		workDir: workDir, gateDir: p.RepoDir(repo.ID), resumeDelivery: true,
 	}
 	manager.resumeRecoveredRun(plan)
@@ -244,26 +260,22 @@ func TestResumeRecoveredRunSkipsCleanupWhenPersistenceFails(t *testing.T) {
 	if worktreeCleanupCalls.Load() != 0 || evidenceCleanupCalls.Load() != 0 {
 		t.Fatalf("cleanup calls = worktree %d, evidence %d", worktreeCleanupCalls.Load(), evidenceCleanupCalls.Load())
 	}
-	if _, err := os.Stat(workMarker); err != nil {
-		t.Fatalf("recovery worktree material removed: %v", err)
+	if _, err := os.Stat(workDir); err != nil {
+		t.Fatalf("recovery worktree removed: %v", err)
 	}
-	if _, err := os.Stat(evidenceMarker); err != nil {
+	evidencePath := filepath.Join(p.RunLogDir(run.ID), string(types.StepTest)+".log")
+	if _, err := os.Stat(evidencePath); err != nil {
 		t.Fatalf("recovery evidence removed: %v", err)
 	}
-	reopened, err := db.Open(p.DB())
+	durable, err := database.GetRun(run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
-	durable, err := reopened.GetRun(run.ID)
+	keptCheckpoint, err := database.GetValidationCheckpoint(run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	keptCheckpoint, err := reopened.GetValidationCheckpoint(run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if durable.Status != types.RunPending || keptCheckpoint == nil {
+	if durable.Status != types.RunRunning || keptCheckpoint == nil {
 		t.Fatalf("durable status = %s, checkpoint = %#v", durable.Status, keptCheckpoint)
 	}
 }
