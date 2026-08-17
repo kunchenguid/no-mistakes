@@ -333,6 +333,9 @@ func pipelineConfigHash(cfg *config.Config) (string, error) {
 	// step result. All agent, command, validation, delivery, trust, and evidence
 	// publication settings remain in the digest.
 	snapshot := struct {
+		CaptureEvalProvenance  bool
+		ReplayGlobalYAML       []byte
+		ReplayRepoYAML         []byte
 		TrustedConfigSHA       string
 		Agent                  types.AgentName
 		Agents                 []types.AgentName
@@ -354,7 +357,10 @@ func pipelineConfigHash(cfg *config.Config) (string, error) {
 		DisableProjectSettings bool
 		NoCI                   bool
 	}{
-		TrustedConfigSHA: cfg.TrustedConfigSHA, Agent: cfg.Agent, Agents: cfg.Agents,
+		CaptureEvalProvenance: cfg.CaptureEvalProvenance,
+		ReplayGlobalYAML:      append([]byte(nil), cfg.ReplayGlobalYAML...),
+		ReplayRepoYAML:        append([]byte(nil), cfg.ReplayRepoYAML...),
+		TrustedConfigSHA:      cfg.TrustedConfigSHA, Agent: cfg.Agent, Agents: cfg.Agents,
 		ACPXPath: cfg.ACPXPath, ACPRegistryOverrides: cfg.ACPRegistryOverrides,
 		AgentPathOverride: cfg.AgentPathOverride, AgentArgsOverride: cfg.AgentArgsOverride,
 		CITimeout: int64(cfg.CITimeout), SessionReuse: cfg.SessionReuse,

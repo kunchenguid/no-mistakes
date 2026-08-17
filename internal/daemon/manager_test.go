@@ -112,6 +112,45 @@ func validationStepNamesForTest() []types.StepName {
 	return []types.StepName{types.StepIntent, types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint}
 }
 
+func TestFailRecoveredPendingDeliveryRunInvalidatesCheckpoint(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	repo, err := database.InsertRepo("/tmp/recovered-delivery", "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := &db.ValidationCheckpoint{
+		RunID: run.ID, Version: 1, ValidatedSHA: run.HeadSHA, BaseSHA: run.BaseSHA,
+		ConfigHash: strings.Repeat("c", 64), IntentHash: strings.Repeat("d", 64),
+		EvidenceHashes: map[string]string{"artifact-manifest": strings.Repeat("e", 64)},
+	}
+	if err := database.PutValidationCheckpoint(checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewRunManager(database, nil, nil)
+	if err := manager.failRecoveredRun(recoveredRunPlan{run: run, resumeDelivery: true}, errors.New("checkpoint drifted")); err != nil {
+		t.Fatal(err)
+	}
+	gotRun, err := database.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotCheckpoint, err := database.GetValidationCheckpoint(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRun.Status != types.RunFailed || gotCheckpoint != nil {
+		t.Fatalf("recovered run status = %s, checkpoint = %#v", gotRun.Status, gotCheckpoint)
+	}
+}
+
 func TestValidateRecoveredSessionProviders_RejectsUnavailableFixerProvider(t *testing.T) {
 	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

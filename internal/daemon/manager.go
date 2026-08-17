@@ -393,11 +393,8 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			executionErr = executor.Resume(runCtx, plan.run, plan.repo, plan.workDir)
 		}
 		if err := executionErr; err != nil {
-			if plan.run.Status == types.RunRunning {
-				errMsg := err.Error()
-				plan.run.Status = types.RunFailed
-				plan.run.Error = &errMsg
-				if dbErr := m.db.UpdateRunErrorStatus(plan.run.ID, errMsg, types.RunFailed); dbErr != nil {
+			if plan.run.Status == types.RunPending || plan.run.Status == types.RunRunning {
+				if dbErr := m.failRecoveredRun(plan, err); dbErr != nil {
 					slog.Error("failed to mark recovered run failed", "run_id", plan.run.ID, "error", dbErr)
 				}
 			}
@@ -419,6 +416,16 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		addRunPerformanceSummary(m.db, plan.run.ID, fields)
 		telemetry.Track("run", fields)
 	}()
+}
+
+func (m *RunManager) failRecoveredRun(plan recoveredRunPlan, cause error) error {
+	errMsg := cause.Error()
+	plan.run.Status = types.RunFailed
+	plan.run.Error = &errMsg
+	if plan.resumeDelivery {
+		return m.db.FailRunAndInvalidateValidationCheckpoint(plan.run.ID, errMsg, types.RunFailed, nil)
+	}
+	return m.db.UpdateRunErrorStatus(plan.run.ID, errMsg, types.RunFailed)
 }
 
 func agentListsEqual(a, b []types.AgentName) bool {

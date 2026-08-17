@@ -304,6 +304,21 @@ func TestValidationReuseFailsClosedAtEveryInvalidationBoundary(t *testing.T) {
 			changed.Commands.Test = "go test -race ./..."
 			return f.target(t, f.head, f.base, nil), &changed
 		}},
+		{name: "provenance capture changed", mutate: func(t *testing.T, f *failedCheckpointFixture) (*db.Run, *config.Config) {
+			changed := *f.cfg
+			changed.CaptureEvalProvenance = !changed.CaptureEvalProvenance
+			return f.target(t, f.head, f.base, nil), &changed
+		}},
+		{name: "replay global config changed", mutate: func(t *testing.T, f *failedCheckpointFixture) (*db.Run, *config.Config) {
+			changed := *f.cfg
+			changed.ReplayGlobalYAML = []byte("agent: codex\n")
+			return f.target(t, f.head, f.base, nil), &changed
+		}},
+		{name: "replay repo config changed", mutate: func(t *testing.T, f *failedCheckpointFixture) (*db.Run, *config.Config) {
+			changed := *f.cfg
+			changed.ReplayRepoYAML = []byte("no_ci: true\n")
+			return f.target(t, f.head, f.base, nil), &changed
+		}},
 		{name: "intent changed", mutate: func(t *testing.T, f *failedCheckpointFixture) (*db.Run, *config.Config) {
 			return f.target(t, f.head, f.base, &db.RunIntent{Summary: "different acceptance criteria", Source: db.RunIntentSourceAgent}), f.cfg
 		}},
