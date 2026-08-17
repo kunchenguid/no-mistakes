@@ -593,26 +593,32 @@ func TestFinalizeTextResult_WithSchemaRejectsAmbiguousFencedJSON(t *testing.T) {
 func TestFencedJSONCandidates_IgnoreBackticksInsideJSONString(t *testing.T) {
 	text := "review complete\n```json\n{\"summary\":\"quoted ```snippet``` in markdown\",\"findings\":[]}\n```\npostlude"
 
-	got := fencedJSONCandidates(text)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 candidate, got %d", len(got))
+	closed, open := fencedJSONCandidates(text)
+	if len(open) != 0 {
+		t.Fatalf("expected no open candidates, got %d", len(open))
+	}
+	if len(closed) != 1 {
+		t.Fatalf("expected 1 closed candidate, got %d", len(closed))
 	}
 	want := "{\"summary\":\"quoted ```snippet``` in markdown\",\"findings\":[]}\n"
-	if got[0] != want {
-		t.Fatalf("candidate = %q, want %q", got[0], want)
+	if closed[0] != want {
+		t.Fatalf("candidate = %q, want %q", closed[0], want)
 	}
 }
 
 func TestFencedJSONCandidates_AllowIndentedClosingFence(t *testing.T) {
 	text := "review complete\n```json\n{\"summary\":\"ok\",\"findings\":[]}\n   ```\nnext paragraph"
 
-	got := fencedJSONCandidates(text)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 candidate, got %d", len(got))
+	closed, open := fencedJSONCandidates(text)
+	if len(open) != 0 {
+		t.Fatalf("expected no open candidates, got %d", len(open))
+	}
+	if len(closed) != 1 {
+		t.Fatalf("expected 1 closed candidate, got %d", len(closed))
 	}
 	want := "{\"summary\":\"ok\",\"findings\":[]}\n"
-	if got[0] != want {
-		t.Fatalf("candidate = %q, want %q", got[0], want)
+	if closed[0] != want {
+		t.Fatalf("candidate = %q, want %q", closed[0], want)
 	}
 }
 
@@ -628,8 +634,9 @@ func TestFinalizeTextResult_WithSchemaIgnoresJSONInsideNonJSONFence(t *testing.T
 		"Final answer: not valid JSON",
 	}, "\n")
 
-	if got := fencedJSONCandidates(text); len(got) != 0 {
-		t.Fatalf("expected no fenced JSON candidates, got %q", got)
+	closed, open := fencedJSONCandidates(text)
+	if len(closed) != 0 || len(open) != 0 {
+		t.Fatalf("expected no fenced JSON candidates, got closed=%q open=%q", closed, open)
 	}
 
 	_, err := finalizeTextResult("codex", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
@@ -694,5 +701,39 @@ func TestFenceContentStart_InfoTokenWithSameLineBody(t *testing.T) {
 	want := `{"findings":[]}`
 	if got := "```json{\"findings\":[]}"[start:]; got != want {
 		t.Errorf("content start = %d (got %q), want %q", start, got, want)
+	}
+}
+
+func TestFinalizeTextResult_WithSchemaParsesProseQuotingFenceExampleThenClosedBlock(t *testing.T) {
+	// Regression (upstream PR review failure): pi review output quotes
+	// ```json{...} as an inline example inside prose (an unclosed fence),
+	// then ends with a real closed ```json block. The quoted example must
+	// not shadow the trailing block, and must not fail the whole parse.
+	text := strings.Join([]string{
+		"The fix: ` ```json{\"findings\":[]}` glued to the body on the same line.",
+		"I traced the old fence parser in internal/agent/agent.go.",
+		"```json",
+		`{"findings":[{"id":"F1","severity":"warning"}],"summary":"one issue"}`,
+		"```",
+	}, "\n")
+	result, err := finalizeTextResult("pi", text, json.RawMessage(`{"type":"object"}`), TokenUsage{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var output struct {
+		Findings []struct {
+			ID       string `json:"id"`
+			Severity string `json:"severity"`
+		} `json:"findings"`
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(result.Output, &output); err != nil {
+		t.Fatalf("failed to parse output: %v", err)
+	}
+	if len(output.Findings) != 1 || output.Findings[0].ID != "F1" {
+		t.Errorf("expected trailing block findings F1, got %+v", output.Findings)
+	}
+	if output.Summary != "one issue" {
+		t.Errorf("expected summary=one issue, got %q", output.Summary)
 	}
 }

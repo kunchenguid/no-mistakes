@@ -298,25 +298,37 @@ func parseStructuredTextOutput(text string, schema json.RawMessage) (json.RawMes
 		return output, nil
 	}
 
-	candidates := fencedJSONCandidates(text)
-	var parsed []json.RawMessage
+	closed, openCands := fencedJSONCandidates(text)
+
 	var candidateErr error
-	for _, candidate := range candidates {
-		fenced, err := parseStructuredCandidate([]byte(candidate), validationSchema)
-		if err == nil {
-			parsed = append(parsed, fenced)
-			continue
+	parseCandidates := func(cands []string) []json.RawMessage {
+		var parsed []json.RawMessage
+		for _, candidate := range cands {
+			fenced, err := parseStructuredCandidate([]byte(candidate), validationSchema)
+			if err == nil {
+				parsed = append(parsed, fenced)
+				continue
+			}
+			if candidateErr == nil {
+				candidateErr = err
+			}
 		}
-		if candidateErr == nil {
-			candidateErr = err
-		}
+		return parsed
 	}
-	switch len(parsed) {
-	case 0:
-	case 1:
-		return parsed[0], nil
-	default:
+	// Closed fences are the canonical structured-output shape and win over
+	// open (unclosed, pi JSONL) candidates: prose that quotes ```json as an
+	// inline example never shadows a real trailing block, and an unclosed
+	// fence never competes with a closed one. Only when no closed fence
+	// parses do we consult the open candidates.
+	if parsed := parseCandidates(closed); len(parsed) > 1 {
 		return nil, fmt.Errorf("multiple JSON code fences found in output")
+	} else if len(parsed) == 1 {
+		return parsed[0], nil
+	}
+	if parsed := parseCandidates(openCands); len(parsed) > 1 {
+		return nil, fmt.Errorf("multiple JSON code fences found in output")
+	} else if len(parsed) == 1 {
+		return parsed[0], nil
 	}
 
 	if bare, err := lastBareJSONObject(text, validationSchema); err == nil && bare != nil {
@@ -348,53 +360,52 @@ func textValidationSchema(schema json.RawMessage) (json.RawMessage, error) {
 // Fence markers may appear anywhere in the text, including glued to the end
 // of a preceding line (e.g. "...behavior.```json"), which is a shape real
 // codex/GPT-5 output regularly produces.
-func fencedJSONCandidates(text string) []string {
-	var candidates []string
+//
+// Candidates are split into two groups. closed holds bodies of fences with
+// a matching closing fence (the canonical shape); open holds bodies of
+// fences with no closing fence, where the body runs to the end of the text
+// (the pi JSONL shape). The scan never stops at the first opener: an opener
+// whose candidate spans unrelated prose (e.g. prose quoting ```json as an
+// inline example) must not swallow a later, real fence block.
+func fencedJSONCandidates(text string) (closed, open []string) {
 	rest := text
 	for {
-		start := indexJSONFenceOpen(rest)
-		if start < 0 {
-			return candidates
+		marker := strings.Index(rest, "```")
+		if marker < 0 {
+			return closed, open
 		}
-		body := rest[start:]
-		end, next := indexJSONFenceClose(body)
+		contentStart, info := fenceContentStart(rest, marker)
+		if !strings.EqualFold(strings.TrimSpace(info), "json") {
+			// Not a JSON fence: skip it (or its whole block) and keep
+			// scanning for a real opener.
+			after := skipFenceBlock(rest[contentStart:])
+			if after < 0 {
+				after = 0
+			}
+			rest = rest[contentStart+after:]
+			continue
+		}
+		body := rest[contentStart:]
+		end, _ := indexJSONFenceClose(body)
 		if end < 0 {
-			// No closing fence: some agents (notably pi JSONL streams) emit an
-			// opening ```json fence glued to a JSON body that runs to the end
-			// of the output with no closing fence. Take everything after the
-			// opener as a candidate; parseStructuredCandidate validates it
-			// later and only adopts it when it is actually valid JSON.
-			candidates = append(candidates, body)
-			return candidates
+			// No closing fence: the JSON body runs to the end of the output
+			// (pi JSONL shape). Take everything after the opener as an open
+			// candidate; parseStructuredCandidate validates it later and
+			// only adopts it when it is actually valid JSON.
+			open = append(open, body)
+			return closed, open
 		}
-		candidates = append(candidates, body[:end])
-		rest = body[next:]
+		closed = append(closed, body[:end])
+		// Resume after the opener marker, not after this candidate's closing
+		// fence: an unvalidated candidate may span unrelated text, and a
+		// later real block must still be discovered on its own.
+		rest = rest[marker+3:]
 	}
 }
 
-// indexJSONFenceOpen returns the byte offset of the content immediately
-// following an opening ```json fence (the char after the info line's
-// newline), or -1 if no opener exists.
-func indexJSONFenceOpen(text string) int {
-	for searchStart := 0; searchStart < len(text); {
-		i := strings.Index(text[searchStart:], "```")
-		if i < 0 {
-			return -1
-		}
-		i += searchStart
-		contentStart, info := fenceContentStart(text, i)
-		if strings.EqualFold(strings.TrimSpace(info), "json") {
-			return contentStart
-		}
-		next := skipFenceBlock(text[contentStart:])
-		if next < 0 {
-			return -1
-		}
-		searchStart = contentStart + next
-	}
-	return -1
-}
-
+// fenceContentStart returns the byte offset where a fence's content begins
+// (immediately after the info token and any following newline) plus the
+// parsed info token itself.
 func fenceContentStart(text string, fenceStart int) (int, string) {
 	after := text[fenceStart+3:]
 	lineEnd := strings.IndexByte(after, '\n')
@@ -498,7 +509,11 @@ func lastBareJSONObject(text string, schema json.RawMessage) (json.RawMessage, e
 			contentStart, _ := fenceContentStart(text, i)
 			next := skipFenceBlock(text[contentStart:])
 			if next < 0 {
-				break
+				// An unpaired fence marker (e.g. ```json quoted inside prose)
+				// must not abort the scan of the whole output; skip the marker
+				// itself and keep looking for a bare object.
+				i += 2
+				continue
 			}
 			i = contentStart + next - 1
 			continue
