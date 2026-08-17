@@ -370,12 +370,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			cancel(nil)
 			_ = plan.agent.Close()
 			m.closeSubscribers(plan.run.ID)
-			if m.recoveredRunCleanupAllowed(plan.run.ID) {
-				if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
-					slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
-				}
-				m.cleanupRunEvidence(plan.cfg, plan.run.ID)
-			}
+			m.cleanupRecoveredRunMaterial(plan)
 			m.mu.Lock()
 			delete(m.executors, plan.run.ID)
 			delete(m.cancels, plan.run.ID)
@@ -436,6 +431,16 @@ func (m *RunManager) recoveredRunCleanupAllowed(runID string) bool {
 		return false
 	}
 	return run.Status == types.RunCompleted || run.Status == types.RunFailed || run.Status == types.RunCancelled
+}
+
+func (m *RunManager) cleanupRecoveredRunMaterial(plan recoveredRunPlan) {
+	if !m.recoveredRunCleanupAllowed(plan.run.ID) {
+		return
+	}
+	if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
+		slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
+	}
+	m.cleanupRunEvidence(plan.cfg, plan.run.ID)
 }
 
 func (m *RunManager) failRecoveredRun(plan recoveredRunPlan, cause error) error {
