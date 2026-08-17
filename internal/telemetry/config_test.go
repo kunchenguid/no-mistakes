@@ -8,11 +8,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 )
 
-func TestDefaultUsesDotEnvInDevBuildWhenEnvMissing(t *testing.T) {
-	prevSink := defaultSink
-	defaultSink = nil
-	defer func() { defaultSink = prevSink }()
-
+// The resolved collector configuration no longer reaches a sender in this fork
+// (see Default), so these tests assert the resolvers themselves rather than the
+// sink they used to build.
+func TestTelemetryConfigUsesDotEnvInDevBuildWhenEnvMissing(t *testing.T) {
 	prevHost := buildinfo.TelemetryHost
 	prevWebsiteID := buildinfo.TelemetryWebsiteID
 	defer func() {
@@ -42,24 +41,15 @@ func TestDefaultUsesDotEnvInDevBuildWhenEnvMissing(t *testing.T) {
 	}
 	defer os.Chdir(prevWD)
 
-	sink := Default()
-	client, ok := sink.(*Client)
-	if !ok {
-		t.Fatalf("Default() type = %T, want *Client", sink)
+	if got := defaultHostValue(); got != "https://dotenv.example" {
+		t.Fatalf("host = %q, want %q", got, "https://dotenv.example")
 	}
-	if client.endpoint != "https://dotenv.example/api/send" {
-		t.Fatalf("endpoint = %q, want %q", client.endpoint, "https://dotenv.example/api/send")
-	}
-	if client.websiteID != "website-from-dotenv" {
-		t.Fatalf("websiteID = %q, want %q", client.websiteID, "website-from-dotenv")
+	if got := defaultWebsiteID(); got != "website-from-dotenv" {
+		t.Fatalf("websiteID = %q, want %q", got, "website-from-dotenv")
 	}
 }
 
-func TestDefaultPrefersEnvVarsOverDotEnvAndEmbeddedConfig(t *testing.T) {
-	prevSink := defaultSink
-	defaultSink = nil
-	defer func() { defaultSink = prevSink }()
-
+func TestTelemetryConfigPrefersEnvVarsOverDotEnvAndEmbeddedConfig(t *testing.T) {
 	prevHost := buildinfo.TelemetryHost
 	prevVersion := buildinfo.Version
 	prevWebsiteID := buildinfo.TelemetryWebsiteID
@@ -92,24 +82,15 @@ func TestDefaultPrefersEnvVarsOverDotEnvAndEmbeddedConfig(t *testing.T) {
 	}
 	defer os.Chdir(prevWD)
 
-	sink := Default()
-	client, ok := sink.(*Client)
-	if !ok {
-		t.Fatalf("Default() type = %T, want *Client", sink)
+	if got := defaultHostValue(); got != "https://env.example" {
+		t.Fatalf("host = %q, want %q", got, "https://env.example")
 	}
-	if client.endpoint != "https://env.example/api/send" {
-		t.Fatalf("endpoint = %q, want %q", client.endpoint, "https://env.example/api/send")
-	}
-	if client.websiteID != "website-from-env" {
-		t.Fatalf("websiteID = %q, want %q", client.websiteID, "website-from-env")
+	if got := defaultWebsiteID(); got != "website-from-env" {
+		t.Fatalf("websiteID = %q, want %q", got, "website-from-env")
 	}
 }
 
-func TestDefaultUsesEmbeddedTelemetryHostAndWebsiteID(t *testing.T) {
-	prevSink := defaultSink
-	defaultSink = nil
-	defer func() { defaultSink = prevSink }()
-
+func TestTelemetryConfigUsesEmbeddedHostAndWebsiteID(t *testing.T) {
 	prevHost := buildinfo.TelemetryHost
 	prevVersion := buildinfo.Version
 	prevWebsiteID := buildinfo.TelemetryWebsiteID
@@ -126,24 +107,15 @@ func TestDefaultUsesEmbeddedTelemetryHostAndWebsiteID(t *testing.T) {
 	t.Setenv(umamiHostEnv, "")
 	t.Setenv(umamiWebsiteIDEnv, "")
 
-	sink := Default()
-	client, ok := sink.(*Client)
-	if !ok {
-		t.Fatalf("Default() type = %T, want *Client", sink)
+	if got := defaultHostValue(); got != "https://embedded.example" {
+		t.Fatalf("host = %q, want %q", got, "https://embedded.example")
 	}
-	if client.endpoint != "https://embedded.example/api/send" {
-		t.Fatalf("endpoint = %q, want %q", client.endpoint, "https://embedded.example/api/send")
-	}
-	if client.websiteID != "embedded-website" {
-		t.Fatalf("websiteID = %q, want %q", client.websiteID, "embedded-website")
+	if got := defaultWebsiteID(); got != "embedded-website" {
+		t.Fatalf("websiteID = %q, want %q", got, "embedded-website")
 	}
 }
 
-func TestDefaultUsesSelfHostedHostWhenHostConfigMissing(t *testing.T) {
-	prevSink := defaultSink
-	defaultSink = nil
-	defer func() { defaultSink = prevSink }()
-
+func TestTelemetryConfigUsesSelfHostedHostWhenHostConfigMissing(t *testing.T) {
 	prevHost := buildinfo.TelemetryHost
 	prevVersion := buildinfo.Version
 	prevWebsiteID := buildinfo.TelemetryWebsiteID
@@ -160,40 +132,20 @@ func TestDefaultUsesSelfHostedHostWhenHostConfigMissing(t *testing.T) {
 	t.Setenv(umamiHostEnv, "")
 	t.Setenv(umamiWebsiteIDEnv, "")
 
-	sink := Default()
-	client, ok := sink.(*Client)
-	if !ok {
-		t.Fatalf("Default() type = %T, want *Client", sink)
-	}
-	if client.endpoint != defaultHost+"/api/send" {
-		t.Fatalf("endpoint = %q, want %q", client.endpoint, defaultHost+"/api/send")
+	if got := defaultHostValue(); got != defaultHost {
+		t.Fatalf("host = %q, want %q", got, defaultHost)
 	}
 }
 
-func TestDefaultDisablesTelemetryWhenEnvIsOff(t *testing.T) {
-	prevSink := defaultSink
-	defaultSink = nil
-	defer func() { defaultSink = prevSink }()
-
-	prevWebsiteID := buildinfo.TelemetryWebsiteID
-	defer func() {
-		buildinfo.TelemetryWebsiteID = prevWebsiteID
-	}()
-	buildinfo.TelemetryWebsiteID = "embedded-website"
-
+func TestTelemetryConfigReadsOffEnvAsDisabled(t *testing.T) {
 	t.Setenv("NO_MISTAKES_TELEMETRY", "off")
-	t.Setenv(umamiWebsiteIDEnv, "website-from-env")
 
-	if _, ok := Default().(*Client); ok {
-		t.Fatal("Default() should disable telemetry when NO_MISTAKES_TELEMETRY=off")
+	if !telemetryDisabled() {
+		t.Fatal("telemetryDisabled() = false, want true when NO_MISTAKES_TELEMETRY=off")
 	}
 }
 
-func TestDefaultIgnoresDotEnvOutsideRepo(t *testing.T) {
-	prevSink := defaultSink
-	defaultSink = nil
-	defer func() { defaultSink = prevSink }()
-
+func TestTelemetryConfigIgnoresDotEnvOutsideRepo(t *testing.T) {
 	prevWebsiteID := buildinfo.TelemetryWebsiteID
 	defer func() {
 		buildinfo.TelemetryWebsiteID = prevWebsiteID
@@ -228,8 +180,8 @@ func TestDefaultIgnoresDotEnvOutsideRepo(t *testing.T) {
 	}
 	defer os.Chdir(prevWD)
 
-	if _, ok := Default().(*Client); ok {
-		t.Fatal("Default() should ignore dotenv outside repo")
+	if got := defaultWebsiteID(); got != "" {
+		t.Fatalf("websiteID = %q, want empty: dotenv outside the repo is ignored", got)
 	}
 }
 

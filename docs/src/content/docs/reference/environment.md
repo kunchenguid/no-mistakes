@@ -159,6 +159,20 @@ Config directory used to locate glab's `config.yml` for self-hosted GitLab detec
 When `GLAB_CONFIG_DIR` is unset, no-mistakes looks for glab's configured hosts at `$XDG_CONFIG_HOME/glab-cli/config.yml`, falling back to `~/.config/glab-cli/config.yml` when `XDG_CONFIG_HOME` is unset.
 When `GH_CONFIG_DIR` is unset, no-mistakes looks for gh's configured hosts at `$XDG_CONFIG_HOME/gh/hosts.yml`, falling back to `~/.config/gh/hosts.yml` when `XDG_CONFIG_HOME` is unset.
 
+## Telemetry in this fork
+
+This fork never sends telemetry. The sink that every telemetry call site writes to is a no-op at the source (`Default` in `internal/telemetry/telemetry.go`), so no build flag, embedded website ID, or environment combination can make a build of this fork reach a remote collector.
+
+The reason is ownership: this build runs as a local push gate on the owner's machine, so nothing about the work it sees may leave that machine. An environment variable would have been a setting anyone can forget or override; removing the sender is a property of the binary.
+
+What this means for the rest of this page:
+
+- `NO_MISTAKES_UMAMI_HOST`, `NO_MISTAKES_UMAMI_WEBSITE_ID`, and `NO_MISTAKES_TELEMETRY` are still read and still resolve a value, but nothing sends with it. The sections below describe upstream's behaviour and are kept so upstream changes still merge cleanly.
+- Nothing described below as sent to Umami is sent.
+- Everything described as local stays exactly as it is: the `agent_invocations` rows and `runs.parked_ms` in `<NM_HOME>/state.sqlite`, read with `no-mistakes stats`, never left the machine to begin with.
+
+The guard is `TestDefaultStaysNoopWithFullTelemetryConfiguration` in `internal/telemetry/nosend_test.go`: it configures a full collector setup and still requires a no-op sink.
+
 ## `NO_MISTAKES_UMAMI_HOST`
 
 Override the telemetry collection host.
@@ -192,6 +206,8 @@ Its fields are bounded enums and booleans only: surface, mode, state, relation, 
 It never sends a SHA, run ID, path, branch name, URL, remote name, or command argument.
 
 ### What stays local and what leaves the machine
+
+In this fork nothing leaves the machine at all; the split below is upstream's, kept for merges.
 
 Everything sent remotely is low-cardinality: command names, statuses, durations, counts, flag booleans, agent and step names, and - on the single terminal `run finished` event - the bounded performance rollup `agent_invocations`, `resumed_invocations`, and `fallback_invocations` (small counts only).
 Run IDs, repository paths, branch names, session identities, prompts, model outputs, diffs, and per-invocation performance records are never sent.

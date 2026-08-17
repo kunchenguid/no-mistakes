@@ -120,6 +120,15 @@ func NewClient(cfg Config) (*Client, error) {
 	}, nil
 }
 
+// Default returns the process-wide sink every telemetry call site writes to.
+//
+// This fork never sends telemetry, so the sink is unconditionally a no-op and
+// no build flag, embedded website ID, or environment combination can turn it
+// into a sender. The collector configuration (env, repo dotenv, embedded build
+// values) is still resolved by the helpers in this file and deliberately not
+// consulted here, so upstream merges stay confined to this one function. Only
+// SetDefaultForTesting installs another sink, and only from tests. The decision
+// is recorded in docs/src/content/docs/reference/environment.md.
 func Default() Sink {
 	defaultMu.Lock()
 	defer defaultMu.Unlock()
@@ -127,32 +136,8 @@ func Default() Sink {
 	if defaultSink != nil {
 		return defaultSink
 	}
-	if telemetryDisabled() {
-		defaultSink = noopSink{}
-		return defaultSink
-	}
 
-	websiteID := defaultWebsiteID()
-	if websiteID == "" {
-		defaultSink = noopSink{}
-		return defaultSink
-	}
-
-	host := defaultHostValue()
-	client, err := NewClient(Config{
-		Host:      host,
-		WebsiteID: websiteID,
-		App:       "no-mistakes",
-		Version:   buildinfo.CurrentVersion(),
-		GOOS:      runtime.GOOS,
-		GOARCH:    runtime.GOARCH,
-	})
-	if err != nil {
-		defaultSink = noopSink{}
-		return defaultSink
-	}
-
-	defaultSink = client
+	defaultSink = noopSink{}
 	return defaultSink
 }
 
