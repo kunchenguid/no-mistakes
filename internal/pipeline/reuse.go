@@ -189,8 +189,11 @@ func validateDeliveryReuseSource(database *db.DB, target, source *db.Run) error 
 	if source.HeadSHA != target.HeadSHA || source.BaseSHA != target.BaseSHA {
 		return fmt.Errorf("prepare validation reuse: preceding run commit or base changed")
 	}
-	if source.NoMistakesVersion == nil || target.NoMistakesVersion == nil || *source.NoMistakesVersion != *target.NoMistakesVersion ||
-		source.NoMistakesBuildSHA == nil || target.NoMistakesBuildSHA == nil || *source.NoMistakesBuildSHA != *target.NoMistakesBuildSHA {
+	if source.NoMistakesVersion == nil || target.NoMistakesVersion == nil ||
+		source.NoMistakesBuildSHA == nil || target.NoMistakesBuildSHA == nil ||
+		!isProvenBuildIdentity(*source.NoMistakesVersion, *source.NoMistakesBuildSHA) ||
+		!isProvenBuildIdentity(*target.NoMistakesVersion, *target.NoMistakesBuildSHA) ||
+		*source.NoMistakesVersion != *target.NoMistakesVersion || *source.NoMistakesBuildSHA != *target.NoMistakesBuildSHA {
 		return fmt.Errorf("prepare validation reuse: no-mistakes build changed or is unknown")
 	}
 	steps, err := database.GetStepsByRun(source.ID)

@@ -637,6 +637,16 @@ func (d *DB) RecoverStaleRunsExceptWithCheckpoints(errMsg string, preserved, pre
 		return 0, fmt.Errorf("invalidate stale validation checkpoints: %w", err)
 	}
 
+	verifiedPlaceholders, verifiedIDs := recoveryInclusionClause(preservedCheckpoints)
+	if verifiedPlaceholders != "" {
+		verifiedArgs := []any{ts, types.RunPending, types.RunRunning}
+		verifiedArgs = append(verifiedArgs, verifiedIDs...)
+		if _, err := tx.Exec(`UPDATE runs SET terminal_head_verified_at = ?
+			WHERE status IN (?, ?)`+verifiedPlaceholders, verifiedArgs...); err != nil {
+			return 0, fmt.Errorf("verify interrupted CI recovery heads: %w", err)
+		}
+	}
+
 	// Fail stale runs. Clear any awaiting-agent marker so a recovered (now
 	// failed) run is never reported as still parked awaiting the agent,
 	// accumulating the marker's elapsed time into the run's parked total so
@@ -682,6 +692,19 @@ func recoveryExclusionClause(preserved map[string]struct{}) (string, []any) {
 func recoveryRunIDExclusionClause(preserved map[string]struct{}) (string, []any) {
 	clause, args := recoveryExclusionClause(preserved)
 	return strings.Replace(clause, "id NOT IN", "run_id NOT IN", 1), args
+}
+
+func recoveryInclusionClause(included map[string]struct{}) (string, []any) {
+	if len(included) == 0 {
+		return "", nil
+	}
+	args := make([]any, 0, len(included))
+	placeholders := make([]string, 0, len(included))
+	for id := range included {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+	return " AND id IN (" + strings.Join(placeholders, ", ") + ")", args
 }
 
 // GetRunCIRerunState returns the CI step's persisted rerun budget for a run, or

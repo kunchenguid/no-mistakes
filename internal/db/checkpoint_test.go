@@ -144,7 +144,7 @@ func TestRecoverStaleRunsPreservesRecognizedCICheckpoint(t *testing.T) {
 	}
 	gotRun, _ := database.GetRun(run.ID)
 	gotCheckpoint, _ := database.GetValidationCheckpoint(run.ID)
-	if gotRun.Status != types.RunFailed || gotCheckpoint == nil {
-		t.Fatalf("status = %s, checkpoint = %#v", gotRun.Status, gotCheckpoint)
+	if gotRun.Status != types.RunFailed || gotRun.TerminalHeadVerifiedAt == nil || gotCheckpoint == nil {
+		t.Fatalf("status = %s, verified = %#v, checkpoint = %#v", gotRun.Status, gotRun.TerminalHeadVerifiedAt, gotCheckpoint)
 	}
 }

@@ -688,6 +688,51 @@ func TestBuildIdentityMustBeProven(t *testing.T) {
 	}
 }
 
+func TestDeliveryReuseRejectsMatchingUnprovenBuildIdentity(t *testing.T) {
+	verified := int64(1)
+	for _, identity := range []struct {
+		version string
+		commit  string
+	}{
+		{"dev", "unknown"},
+		{"v1.2.3", "not-a-sha"},
+	} {
+		source := &db.Run{Status: types.RunFailed, TerminalHeadVerifiedAt: &verified, HeadSHA: "head", BaseSHA: "base",
+			NoMistakesVersion: &identity.version, NoMistakesBuildSHA: &identity.commit}
+		target := &db.Run{HeadSHA: "head", BaseSHA: "base",
+			NoMistakesVersion: &identity.version, NoMistakesBuildSHA: &identity.commit}
+		if err := validateDeliveryReuseSource(nil, target, source); err == nil {
+			t.Fatalf("matching unproven build identity %#v was accepted", identity)
+		}
+	}
+}
+
+func TestInterruptedCIRecoveryRemainsEligibleForExplicitReuse(t *testing.T) {
+	fixture := newFailedCheckpointFixture(t)
+	steps, err := fixture.database.GetStepsByRun(fixture.source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []types.StepName{types.StepPush, types.StepPR} {
+		if err := fixture.database.UpdateStepStatus(steps[name.Order()-1].ID, types.StepStatusCompleted); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := fixture.database.UpdateStepStatus(steps[types.StepCI.Order()-1].ID, types.StepStatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.database.UpdateRunStatus(fixture.source.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.database.RecoverStaleRunsExceptWithCheckpoints("crashed", nil, map[string]struct{}{fixture.source.ID: {}}); err != nil {
+		t.Fatal(err)
+	}
+	target := fixture.target(t, fixture.head, fixture.base, nil)
+	if reused, err := PrepareValidationReuse(context.Background(), fixture.database, fixture.p, fixture.cfg, target, fixture.workDir); err != nil || reused != fixture.source.ID {
+		t.Fatalf("PrepareValidationReuse() = %q, %v", reused, err)
+	}
+}
+
 func TestPreparedRowsWithoutCheckpointRunFullValidation(t *testing.T) {
 	fixture := newFailedCheckpointFixture(t)
 	target := fixture.target(t, fixture.head, fixture.base, nil)
