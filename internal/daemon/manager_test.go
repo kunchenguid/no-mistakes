@@ -36,6 +36,21 @@ type deliveryResumeProbeStep struct {
 	probe *deliveryResumeProbe
 }
 
+type evidenceWritingProbeStep struct {
+	*deliveryResumeProbeStep
+	path string
+}
+
+func (s *evidenceWritingProbeStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(s.path, []byte("keep"), 0o644); err != nil {
+		return nil, err
+	}
+	return s.deliveryResumeProbeStep.Execute(sctx)
+}
+
 func (s *deliveryResumeProbeStep) Name() types.StepName { return s.name }
 
 func (s *deliveryResumeProbeStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
@@ -201,11 +216,17 @@ func TestResumeRecoveredRunSkipsCleanupWhenPersistenceFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{}
+	evidencePath := filepath.Join(p.RunEvidenceDir(cfg.Test.Evidence.LocalRoot, run.ID), "recovery-evidence")
 	probe := &deliveryResumeProbe{failAt: types.StepPush}
 	probe.failureLive.Store(true)
 	execSteps := make([]pipeline.Step, 0, len(types.AllSteps()))
 	for _, name := range types.AllSteps() {
-		execSteps = append(execSteps, &deliveryResumeProbeStep{name: name, probe: probe})
+		step := &deliveryResumeProbeStep{name: name, probe: probe}
+		if name == types.StepTest {
+			execSteps = append(execSteps, &evidenceWritingProbeStep{deliveryResumeProbeStep: step, path: evidencePath})
+		} else {
+			execSteps = append(execSteps, step)
+		}
 	}
 	if err := pipeline.NewExecutor(database, p, cfg, agent.NewNoop(), execSteps, nil).Execute(context.Background(), run, repo, workDir); err == nil {
 		t.Fatal("initial delivery failure unexpectedly succeeded")
@@ -263,7 +284,6 @@ func TestResumeRecoveredRunSkipsCleanupWhenPersistenceFails(t *testing.T) {
 	if _, err := os.Stat(workDir); err != nil {
 		t.Fatalf("recovery worktree removed: %v", err)
 	}
-	evidencePath := filepath.Join(p.RunLogDir(run.ID), string(types.StepTest)+".log")
 	if _, err := os.Stat(evidencePath); err != nil {
 		t.Fatalf("recovery evidence removed: %v", err)
 	}
