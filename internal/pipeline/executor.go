@@ -210,6 +210,9 @@ func (e *Executor) Execute(ctx context.Context, run *db.Run, repo *db.Repo, work
 			checkpointErr = ValidateValidationCheckpoint(ctx, e.db, e.paths, e.config, run, checkpoint)
 		}
 		if checkpointErr == nil {
+			checkpointErr = validateCheckpointWorktree(ctx, workDir, checkpoint.ValidatedSHA)
+		}
+		if checkpointErr == nil {
 			checkpointErr = validatePreparedDeliveryPlan(existing, e.steps)
 		}
 		if checkpointErr == nil {

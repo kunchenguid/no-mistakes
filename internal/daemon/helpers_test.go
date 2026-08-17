@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/logstore"
@@ -21,6 +22,8 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	buildinfo.Version = "v0.0.0-test"
+	buildinfo.Commit = strings.Repeat("a", 40)
 	switch os.Getenv("NM_DAEMON_HELPER_PROCESS") {
 	case "1":
 		if capturePath := os.Getenv("NM_CAPTURE_NM_HOME_FILE"); capturePath != "" {

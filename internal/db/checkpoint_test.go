@@ -101,3 +101,50 @@ func TestRecoverStaleRunsInvalidatesUnpreservedCheckpoints(t *testing.T) {
 		t.Fatalf("preserved checkpoint = %#v, stale checkpoint = %#v", kept, removed)
 	}
 }
+
+func TestRearmDeliveryPreservesTerminalRunState(t *testing.T) {
+	database := openTestDB(t)
+	repo, _ := database.InsertRepo("/tmp/checkpoint-rearm-terminal", "https://example.com/repo.git", "main")
+	run, _ := database.InsertRun(repo.ID, "branch", "head", "base")
+	for _, name := range types.AllSteps() {
+		result, err := database.InsertStepResult(run.ID, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name.Order() < types.StepPush.Order() {
+			if err := database.UpdateStepStatus(result.ID, types.StepStatusCompleted); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := database.UpdateRunStatus(run.ID, types.RunCancelled); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.RearmDeliveryAfterCrash(run.ID); err == nil {
+		t.Fatal("terminal run was rearmed")
+	}
+	got, _ := database.GetRun(run.ID)
+	if got.Status != types.RunCancelled {
+		t.Fatalf("status = %s, want cancelled", got.Status)
+	}
+}
+
+func TestRecoverStaleRunsPreservesRecognizedCICheckpoint(t *testing.T) {
+	database := openTestDB(t)
+	repo, _ := database.InsertRepo("/tmp/checkpoint-ci-stale", "https://example.com/repo.git", "main")
+	run, _ := database.InsertRun(repo.ID, "branch", "head", "base")
+	if err := database.PutValidationCheckpoint(testValidationCheckpoint(run.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.UpdateRunStatus(run.ID, types.RunRunning); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.RecoverStaleRunsExceptWithCheckpoints("crashed", nil, map[string]struct{}{run.ID: {}}); err != nil {
+		t.Fatal(err)
+	}
+	gotRun, _ := database.GetRun(run.ID)
+	gotCheckpoint, _ := database.GetValidationCheckpoint(run.ID)
+	if gotRun.Status != types.RunFailed || gotCheckpoint == nil {
+		t.Fatalf("status = %s, checkpoint = %#v", gotRun.Status, gotCheckpoint)
+	}
+}

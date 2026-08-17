@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+var ErrInterruptedCIMonitor = errors.New("delivery checkpoint cannot restore volatile CI monitor state")
+
 // ValidateRecoverableDeliveryRun proves that an active run interrupted by a
 // daemon crash is still at the exact checkpoint and has a single unambiguous
 // push/PR/CI continuation. It performs no writes.
@@ -22,8 +25,10 @@ func ValidateRecoverableDeliveryRun(ctx context.Context, database *db.DB, p *pat
 	if run == nil || (run.Status != types.RunPending && run.Status != types.RunRunning) || run.AwaitingAgentSince != nil || run.CustodyReturnedAt != nil {
 		return fmt.Errorf("run is not an active delivery checkpoint")
 	}
-	if run.NoMistakesVersion == nil || *run.NoMistakesVersion != buildinfo.CurrentVersion() ||
-		run.NoMistakesBuildSHA == nil || *run.NoMistakesBuildSHA != buildinfo.Commit {
+	if run.NoMistakesVersion == nil || run.NoMistakesBuildSHA == nil ||
+		!isProvenBuildIdentity(buildinfo.CurrentVersion(), buildinfo.Commit) ||
+		!isProvenBuildIdentity(*run.NoMistakesVersion, *run.NoMistakesBuildSHA) ||
+		*run.NoMistakesVersion != buildinfo.CurrentVersion() || *run.NoMistakesBuildSHA != buildinfo.Commit {
 		return fmt.Errorf("delivery checkpoint was created by a different or unknown build")
 	}
 	checkpoint, err := database.GetValidationCheckpoint(run.ID)
@@ -60,7 +65,7 @@ func ValidateRecoverableDeliveryRun(ctx context.Context, database *db.DB, p *pat
 		}
 		if !unfinished && (result.Status == types.StepStatusPending || result.Status == types.StepStatusRunning) {
 			if step.Name() == types.StepCI && result.Status == types.StepStatusRunning {
-				return fmt.Errorf("delivery checkpoint cannot restore volatile CI monitor state")
+				return ErrInterruptedCIMonitor
 			}
 			unfinished = true
 			continue
@@ -71,6 +76,23 @@ func ValidateRecoverableDeliveryRun(ctx context.Context, database *db.DB, p *pat
 		return fmt.Errorf("delivery checkpoint history is ambiguous at %s", step.Name())
 	}
 	return nil
+}
+
+func isProvenBuildIdentity(version, commit string) bool {
+	version = strings.TrimSpace(version)
+	commit = strings.TrimSpace(commit)
+	if version == "" || version == "dev" || version == "(devel)" || strings.EqualFold(version, "unknown") {
+		return false
+	}
+	if len(commit) < 7 || len(commit) > 64 || strings.EqualFold(commit, "unknown") {
+		return false
+	}
+	for _, char := range commit {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // PrepareValidationReuse finds only the immediately preceding same-branch run.

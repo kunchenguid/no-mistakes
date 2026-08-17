@@ -105,13 +105,14 @@ type recoveredRunPlan struct {
 	resumeDelivery bool
 }
 
-func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPlan {
+func (m *RunManager) recoverableParkedRuns(ctx context.Context) ([]recoveredRunPlan, map[string]struct{}) {
 	runs, err := m.db.GetActiveRuns()
 	if err != nil {
 		slog.Error("failed to list active runs for recovery", "error", err)
-		return nil
+		return nil, nil
 	}
 	plans := make([]recoveredRunPlan, 0, len(runs))
+	preservedCheckpoints := make(map[string]struct{})
 	branchCounts := make(map[string]int, len(runs))
 	for _, run := range runs {
 		branchCounts[run.RepoID+"\x00"+run.Branch]++
@@ -123,12 +124,15 @@ func (m *RunManager) recoverableParkedRuns(ctx context.Context) []recoveredRunPl
 		}
 		plan, err := m.prepareRecoveredRun(ctx, run)
 		if err != nil {
+			if errors.Is(err, pipeline.ErrInterruptedCIMonitor) {
+				preservedCheckpoints[run.ID] = struct{}{}
+			}
 			slog.Warn("active run cannot be safely resumed", "run_id", run.ID, "error", err)
 			continue
 		}
 		plans = append(plans, *plan)
 	}
-	return plans
+	return plans, preservedCheckpoints
 }
 
 func (m *RunManager) prepareRecoveredRun(ctx context.Context, run *db.Run) (*recoveredRunPlan, error) {

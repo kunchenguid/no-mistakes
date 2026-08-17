@@ -223,9 +223,18 @@ func (d *DB) RearmDeliveryAfterCrash(runID string) (int, error) {
 	} else if start < types.StepPush.Order()-1 {
 		return 0, fmt.Errorf("rearm delivery: invalid unfinished delivery step")
 	}
-	if _, err := tx.Exec(`UPDATE runs SET status = ?, error = NULL, push_active = 0,
-		awaiting_agent_since = NULL, updated_at = ? WHERE id = ?`, types.RunRunning, now(), runID); err != nil {
+	result, err := tx.Exec(`UPDATE runs SET status = ?, error = NULL, push_active = 0,
+		awaiting_agent_since = NULL, updated_at = ? WHERE id = ? AND status IN (?, ?)`,
+		types.RunRunning, now(), runID, types.RunPending, types.RunRunning)
+	if err != nil {
 		return 0, fmt.Errorf("rearm delivery run: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("inspect rearmed delivery run: %w", err)
+	}
+	if changed != 1 {
+		return 0, fmt.Errorf("rearm delivery run: active run changed concurrently")
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit rearmed delivery: %w", err)

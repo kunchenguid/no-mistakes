@@ -10,11 +10,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
+
+func init() {
+	buildinfo.Version = "v0.0.0-test"
+	buildinfo.Commit = strings.Repeat("a", 40)
+}
 
 func TestValidationCheckpointRequiresExactMechanicalEvidence(t *testing.T) {
 	database, p, run, _ := setupTest(t)
@@ -629,6 +635,55 @@ func TestResumeDeliveryAfterCrashBetweenReusePersistenceAndExecute(t *testing.T)
 	for _, name := range []types.StepName{types.StepPush, types.StepPR, types.StepCI} {
 		if got := called[name].callCount(); got != 1 {
 			t.Errorf("delivery step %s ran %d times, want 1", name, got)
+		}
+	}
+}
+
+func TestExecuteRejectsPreparedReuseAfterWorktreeDrift(t *testing.T) {
+	fixture := newFailedCheckpointFixture(t)
+	target := fixture.target(t, fixture.head, fixture.base, nil)
+	if _, err := PrepareValidationReuse(context.Background(), fixture.database, fixture.p, fixture.cfg, target, fixture.workDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.workDir, "post-prepare.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	called := map[types.StepName]*mockStep{}
+	var steps []Step
+	for _, name := range types.AllSteps() {
+		step := newPassStep(name)
+		if name == types.StepReview {
+			step.outcome.ReviewApprovedHeadSHA = fixture.head
+		}
+		called[name] = step
+		steps = append(steps, step)
+	}
+	if err := NewExecutor(fixture.database, fixture.p, fixture.cfg, nil, steps, nil).Execute(context.Background(), target, fixture.repo, fixture.workDir); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range types.AllSteps() {
+		if got := called[name].callCount(); got != 1 {
+			t.Errorf("step %s executed %d times, want full validation", name, got)
+		}
+	}
+}
+
+func TestBuildIdentityMustBeProven(t *testing.T) {
+	tests := []struct {
+		version string
+		commit  string
+		want    bool
+	}{
+		{"v1.2.3", strings.Repeat("a", 40), true},
+		{"dev", strings.Repeat("a", 40), false},
+		{"(devel)", strings.Repeat("a", 40), false},
+		{"v1.2.3", "unknown", false},
+		{"v1.2.3", "not-a-sha", false},
+		{"", strings.Repeat("a", 40), false},
+	}
+	for _, tc := range tests {
+		if got := isProvenBuildIdentity(tc.version, tc.commit); got != tc.want {
+			t.Errorf("isProvenBuildIdentity(%q, %q) = %v, want %v", tc.version, tc.commit, got, tc.want)
 		}
 	}
 }
