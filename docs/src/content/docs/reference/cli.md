@@ -77,7 +77,7 @@ When only another branch has an active run, that run appears as `other_branch_ac
 AXI help and outputs always repeat the preserve-prior-gate-progress contract: after a gate round has already produced fix commits, additional fixes belong on the same branch.
 When a relevant `branch_sync` object is present, they also include version-matched synchronization guidance to follow before a post-pipeline local commit or fresh run.
 Agents must not abort-and-restart, reset, replace the branch, or improvise Git recovery in a way that drops prior gate-fix commits.
-A fresh run re-validates the current branch state, so already-resolved findings do not re-surface.
+A fresh run ordinarily re-validates the current branch state, so already-resolved findings do not re-surface. The sole exception is an unchanged retry after an eligible delivery failure: it may reuse the exact mechanical validation checkpoint and resume at Push as described in the [pipeline-step reference](/no-mistakes/reference/pipeline-steps/#reusing-validation-after-a-delivery-failure).
 
 ## no-mistakes axi run
 
