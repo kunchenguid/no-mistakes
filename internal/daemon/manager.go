@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -357,28 +358,26 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	m.wg.Add(1)
 	go func() {
 		startedAt := time.Now()
+		cleanupRecoveryMaterial := true
 		defer m.wg.Done()
 		defer close(done)
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				errMsg := fmt.Sprintf("internal panic: %v", recovered)
-				plan.run.Status = types.RunFailed
-				plan.run.Error = &errMsg
-				if err := m.db.UpdateRunErrorStatus(plan.run.ID, errMsg, types.RunFailed); err != nil {
+				if err := m.failRecoveredRun(plan, errors.New(errMsg)); err != nil {
+					cleanupRecoveryMaterial = false
 					slog.Error("failed to update recovered run after panic", "run_id", plan.run.ID, "error", err)
 				}
 			}
 			cancel(nil)
 			_ = plan.agent.Close()
 			m.closeSubscribers(plan.run.ID)
-			if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
-				slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
+			if cleanupRecoveryMaterial {
+				if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
+					slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
+				}
+				m.cleanupRunEvidence(plan.cfg, plan.run.ID)
 			}
-			// A recovered run is a finished run too. This is the second of the
-			// two completion boundaries, and leaving it out is what let a run
-			// resumed after a daemon restart keep its empty evidence directory
-			// until some later run or restart happened to sweep it.
-			m.cleanupRunEvidence(plan.cfg, plan.run.ID)
 			m.mu.Lock()
 			delete(m.executors, plan.run.ID)
 			delete(m.cancels, plan.run.ID)
@@ -395,6 +394,7 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		if err := executionErr; err != nil {
 			if plan.run.Status == types.RunPending || plan.run.Status == types.RunRunning {
 				if dbErr := m.failRecoveredRun(plan, err); dbErr != nil {
+					cleanupRecoveryMaterial = false
 					slog.Error("failed to mark recovered run failed", "run_id", plan.run.ID, "error", dbErr)
 				}
 			}
@@ -420,12 +420,18 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 
 func (m *RunManager) failRecoveredRun(plan recoveredRunPlan, cause error) error {
 	errMsg := cause.Error()
+	var err error
+	if plan.resumeDelivery {
+		err = m.db.FailRunAndInvalidateValidationCheckpoint(plan.run.ID, errMsg, types.RunFailed, nil)
+	} else {
+		err = m.db.UpdateRunErrorStatus(plan.run.ID, errMsg, types.RunFailed)
+	}
+	if err != nil {
+		return err
+	}
 	plan.run.Status = types.RunFailed
 	plan.run.Error = &errMsg
-	if plan.resumeDelivery {
-		return m.db.FailRunAndInvalidateValidationCheckpoint(plan.run.ID, errMsg, types.RunFailed, nil)
-	}
-	return m.db.UpdateRunErrorStatus(plan.run.ID, errMsg, types.RunFailed)
+	return nil
 }
 
 func agentListsEqual(a, b []types.AgentName) bool {
