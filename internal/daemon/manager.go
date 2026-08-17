@@ -358,21 +358,19 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 	m.wg.Add(1)
 	go func() {
 		startedAt := time.Now()
-		cleanupRecoveryMaterial := true
 		defer m.wg.Done()
 		defer close(done)
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				errMsg := fmt.Sprintf("internal panic: %v", recovered)
-				if err := m.failRecoveredRun(plan, errors.New(errMsg)); err != nil {
-					cleanupRecoveryMaterial = false
+				if err := m.terminalizeRecoveredRunAfterError(plan, errors.New(errMsg)); err != nil {
 					slog.Error("failed to update recovered run after panic", "run_id", plan.run.ID, "error", err)
 				}
 			}
 			cancel(nil)
 			_ = plan.agent.Close()
 			m.closeSubscribers(plan.run.ID)
-			if cleanupRecoveryMaterial {
+			if m.recoveredRunCleanupAllowed(plan.run.ID) {
 				if err := git.WorktreeRemove(context.Background(), plan.gateDir, plan.workDir); err != nil {
 					slog.Warn("failed to remove recovered worktree", "path", plan.workDir, "error", err)
 				}
@@ -392,11 +390,8 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 			executionErr = executor.Resume(runCtx, plan.run, plan.repo, plan.workDir)
 		}
 		if err := executionErr; err != nil {
-			if plan.run.Status == types.RunPending || plan.run.Status == types.RunRunning {
-				if dbErr := m.failRecoveredRun(plan, err); dbErr != nil {
-					cleanupRecoveryMaterial = false
-					slog.Error("failed to mark recovered run failed", "run_id", plan.run.ID, "error", dbErr)
-				}
+			if dbErr := m.terminalizeRecoveredRunAfterError(plan, err); dbErr != nil {
+				slog.Error("failed to mark recovered run failed", "run_id", plan.run.ID, "error", dbErr)
 			}
 			slog.Error("recovered pipeline failed", "run_id", plan.run.ID, "error", err)
 		}
@@ -416,6 +411,31 @@ func (m *RunManager) resumeRecoveredRun(plan recoveredRunPlan) {
 		addRunPerformanceSummary(m.db, plan.run.ID, fields)
 		telemetry.Track("run", fields)
 	}()
+}
+
+func (m *RunManager) terminalizeRecoveredRunAfterError(plan recoveredRunPlan, cause error) error {
+	durable, err := m.db.GetRun(plan.run.ID)
+	if err != nil {
+		return err
+	}
+	switch durable.Status {
+	case types.RunCompleted, types.RunFailed, types.RunCancelled:
+		plan.run.Status = durable.Status
+		plan.run.Error = durable.Error
+		return nil
+	case types.RunPending, types.RunRunning:
+		return m.failRecoveredRun(plan, cause)
+	default:
+		return fmt.Errorf("recovered run has unknown durable status %q", durable.Status)
+	}
+}
+
+func (m *RunManager) recoveredRunCleanupAllowed(runID string) bool {
+	run, err := m.db.GetRun(runID)
+	if err != nil {
+		return false
+	}
+	return run.Status == types.RunCompleted || run.Status == types.RunFailed || run.Status == types.RunCancelled
 }
 
 func (m *RunManager) failRecoveredRun(plan recoveredRunPlan, cause error) error {

@@ -112,7 +112,7 @@ func validationStepNamesForTest() []types.StepName {
 	return []types.StepName{types.StepIntent, types.StepRebase, types.StepReview, types.StepTest, types.StepDocument, types.StepLint}
 }
 
-func TestFailRecoveredPendingDeliveryRunInvalidatesCheckpoint(t *testing.T) {
+func TestExecutorFailedMemoryStillTerminalizesPendingDeliveryRun(t *testing.T) {
 	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -134,8 +134,9 @@ func TestFailRecoveredPendingDeliveryRunInvalidatesCheckpoint(t *testing.T) {
 	if err := database.PutValidationCheckpoint(checkpoint); err != nil {
 		t.Fatal(err)
 	}
+	run.Status = types.RunFailed
 	manager := NewRunManager(database, nil, nil)
-	if err := manager.failRecoveredRun(recoveredRunPlan{run: run, resumeDelivery: true}, errors.New("checkpoint drifted")); err != nil {
+	if err := manager.terminalizeRecoveredRunAfterError(recoveredRunPlan{run: run, resumeDelivery: true}, errors.New("checkpoint drifted")); err != nil {
 		t.Fatal(err)
 	}
 	gotRun, err := database.GetRun(run.ID)
@@ -173,6 +174,33 @@ func TestFailRecoveredRunKeepsActiveMemoryWhenTerminalizationFails(t *testing.T)
 	}
 	if run.Status != types.RunPending || run.Error != nil {
 		t.Fatalf("in-memory run status = %s, error = %v", run.Status, run.Error)
+	}
+}
+
+func TestRecoveredCleanupRejectsExecutorTerminalStateWhenDurableReadFails(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, err := database.InsertRepo("/tmp/recovered-cleanup", "https://example.com/repo.git", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := database.InsertRun(repo.ID, "feature", strings.Repeat("a", 40), strings.Repeat("b", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Status = types.RunFailed
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewRunManager(database, nil, nil)
+	plan := recoveredRunPlan{run: run, resumeDelivery: true}
+	if err := manager.terminalizeRecoveredRunAfterError(plan, errors.New("executor database update failed")); err == nil {
+		t.Fatal("terminalizeRecoveredRunAfterError() unexpectedly succeeded")
+	}
+	if manager.recoveredRunCleanupAllowed(run.ID) {
+		t.Fatal("recovery cleanup allowed without durable terminal state")
 	}
 }
 
