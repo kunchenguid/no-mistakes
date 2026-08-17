@@ -29,9 +29,11 @@ func TestPRStep_GhNotAvailable(t *testing.T) {
 		t.Skip("gh is available, skipping unavailable test")
 	}
 
-	dir := t.TempDir()
+	// A real repo, because the step asserts head continuity before it looks
+	// for the CLI; a bare temp dir fails there and never reaches the skip.
+	dir, baseSHA, headSHA := setupGitRepo(t)
 	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, "abc", "def", config.Commands{})
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
