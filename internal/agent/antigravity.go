@@ -127,7 +127,6 @@ func (a *antigravityAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, 
 	return res, err
 }
 
-
 type antigravityParser struct {
 	onChunk func(string)
 
