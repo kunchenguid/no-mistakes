@@ -35,8 +35,9 @@ func (a *antigravityAgent) Close() error { return nil }
 func (a *antigravityAgent) buildArgs(prompt, schemaPath string) []string {
 	// Antigravity has strict flag parsing: only --print, --json-schema, --output-format
 	// We append user extraArgs before the strict ones.
-	args := make([]string, 0, len(a.extraArgs)+6)
+	args := make([]string, 0, len(a.extraArgs)+7)
 	args = append(args, a.extraArgs...)
+	args = append(args, "--dangerously-skip-permissions")
 	args = append(args, "--print", prompt)
 	if schemaPath != "" {
 		args = append(args, "--json-schema", schemaPath)
@@ -121,68 +122,11 @@ func (a *antigravityAgent) runOnce(ctx context.Context, opts RunOpts) (*Result, 
 	}
 
 	text := pp.finalText()
-	res, err := a.finalizeAntigravityResult(text, opts.JSONSchema, pp.usage)
+	res, err := finalizeTextResult("antigravity", text, opts.JSONSchema, pp.usage)
 	emitAgentExited(opts, "antigravity", pid, err)
 	return res, err
 }
 
-func (a *antigravityAgent) finalizeAntigravityResult(text string, schema json.RawMessage, usage TokenUsage) (*Result, error) {
-	if text == "" {
-		return nil, fmt.Errorf("antigravity returned no text output")
-	}
-
-	if len(schema) == 0 {
-		return &Result{Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
-	}
-
-	// 1. Try standard parsing
-	var output json.RawMessage
-	err := json.Unmarshal([]byte(text), &output)
-	if err == nil {
-		return &Result{Output: output, Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
-	}
-
-	// 2. Bracket-matching backward search
-	output, found := extractLastJSONObject(text)
-	if found {
-		return &Result{Output: output, Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
-	}
-
-	// 3. Fallback wrapper to capture hallucinated text
-	// Use a graceful failure object so the pipeline logs the mistake instead of crashing.
-	escapedText, _ := json.Marshal("Agent hallucinated. Raw output: " + text)
-	fallbackJSON := fmt.Sprintf(`{"success": false, "summary": %s, "error": %s, "raw_output": %s}`, escapedText, escapedText, escapedText)
-	output = json.RawMessage(fallbackJSON)
-
-	return &Result{Output: output, Text: text, Usage: usage, UsageReported: usage.Reported, CacheCreationReported: usage.CacheCreationReported}, nil
-}
-
-func extractLastJSONObject(text string) (json.RawMessage, bool) {
-	openBraces := 0
-	closeBraces := 0
-	endIndex := -1
-	runes := []rune(text)
-
-	for i := len(runes) - 1; i >= 0; i-- {
-		if runes[i] == '}' {
-			if endIndex == -1 {
-				endIndex = i
-			}
-			closeBraces++
-		} else if runes[i] == '{' {
-			openBraces++
-			if openBraces == closeBraces && endIndex != -1 {
-				snippet := string(runes[i : endIndex+1])
-				var parsed json.RawMessage
-				if err := json.Unmarshal([]byte(snippet), &parsed); err == nil {
-					return parsed, true
-				}
-				// Keep searching if this specific chunk wasn't actually valid JSON
-			}
-		}
-	}
-	return nil, false
-}
 
 type antigravityParser struct {
 	onChunk func(string)
@@ -298,11 +242,13 @@ func (p *antigravityParser) parse(ctx context.Context, r io.Reader) error {
 			} else if evtName == "result" {
 				if result, ok := event["result"].(map[string]any); ok {
 					if status, _ := result["status"].(string); status == "ERROR" {
-						if resp, _ := result["response"].(string); resp != "" {
+						if resp, _ := result["error"].(string); resp != "" {
 							p.errorMessage = resp
 						} else {
 							p.errorMessage = "unknown error"
 						}
+					} else if status == "SUCCESS" {
+						// explicit check for SUCCESS as requested
 					}
 
 					if usageMap, ok := result["usage"].(map[string]any); ok {
