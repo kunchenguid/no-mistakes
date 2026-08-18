@@ -1019,18 +1019,25 @@ func (c *Config) AgentArgsFor(name types.AgentName) []string {
 // agentArgsOverrideAgents lists native agent names accepted as keys in
 // agent_args_override.
 var agentArgsOverrideAgents = map[string]bool{
-	string(types.AgentClaude):   true,
-	string(types.AgentCodex):    true,
-	string(types.AgentRovoDev):  true,
-	string(types.AgentOpenCode): true,
-	string(types.AgentPi):       true,
-	string(types.AgentCopilot):  true,
+	string(types.AgentClaude):       true,
+	string(types.AgentCodex):        true,
+	string(types.AgentRovoDev):      true,
+	string(types.AgentOpenCode):     true,
+	string(types.AgentPi):           true,
+	string(types.AgentCopilot):      true,
+	string(types.AgentAntigravity):  true,
 }
 
 // reservedAgentArgs lists flags that no-mistakes manages internally and that
 // users cannot override through agent_args_override. A flag is matched by its
 // bare form (e.g. "--color") as well as the "--color=value" form.
 var reservedAgentArgs = map[string]map[string]bool{
+	string(types.AgentAntigravity): {
+		"--dangerously-skip-permissions": true,
+		"--print":                        true,
+		"--json-schema":                  true,
+		"--output-format":                true,
+	},
 	string(types.AgentClaude): {
 		"-p":              true,
 		"--print":         true,
@@ -1085,7 +1092,7 @@ var reservedAgentArgs = map[string]map[string]bool{
 func validateAgentArgsOverride(override map[string][]string) error {
 	for name, args := range override {
 		if !agentArgsOverrideAgents[name] {
-			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, codex, rovodev, opencode, pi, copilot)", name)
+			return fmt.Errorf("invalid agent name in agent_args_override: %q (valid: claude, codex, rovodev, opencode, pi, copilot, antigravity)", name)
 		}
 		reserved := reservedAgentArgs[name]
 		for i, arg := range args {
