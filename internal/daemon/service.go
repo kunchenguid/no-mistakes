@@ -57,6 +57,20 @@ var inspectManagedDaemonService = managedDaemonServiceState
 // LoginShell() fast path (a plain env lookup) then succeeds immediately.
 var resolveInstallShell = shellenv.LoginShell
 
+// installShellIsDegraded reports whether a resolveInstallShell() result is
+// shellenv.LoginShell's last-resort literal "bash" fallback rather than a
+// real, usable shell (a set $SHELL, or a getent/dscl lookup, is always an
+// absolute path). Drift detection (reinstallManagedServiceIfChanged) uses
+// this to avoid overwriting an already-installed, previously-resolved SHELL
+// with a degraded one: without this check, a later `daemon start` that
+// happens to run in a restricted environment (no SHELL, no working
+// getent/bash on PATH - the exact NixOS chicken-and-egg problem this baked-in
+// SHELL fixes) would re-resolve the degraded fallback, treat the currently
+// good SHELL as drift, and reinstall+restart the service onto a broken one.
+func installShellIsDegraded(shell string) bool {
+	return !filepath.IsAbs(shell)
+}
+
 type managedServiceState int
 
 type managedServiceLaunch struct {

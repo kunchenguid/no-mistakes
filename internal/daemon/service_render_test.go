@@ -131,6 +131,30 @@ func TestManagedServicePathUsesSharedWellKnownDirs(t *testing.T) {
 	}
 }
 
+// TestInstallShellIsDegraded locks in the signal reinstallManagedServiceIfChanged
+// uses to tell a real resolveInstallShell() result (a set $SHELL, or a
+// getent/dscl lookup - always an absolute path) apart from
+// shellenv.LoginShell's last-resort literal "bash" fallback, so drift
+// detection knows when it must not overwrite an already-installed shell (see
+// service_shell_inherit_test.go).
+func TestInstallShellIsDegraded(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		shell string
+		want  bool
+	}{
+		{"/bin/bash", false},
+		{"/run/current-system/sw/bin/bash", false},
+		{"/usr/bin/zsh", false},
+		{"bash", true},
+		{"", true},
+	} {
+		if got := installShellIsDegraded(tc.shell); got != tc.want {
+			t.Errorf("installShellIsDegraded(%q) = %v, want %v", tc.shell, got, tc.want)
+		}
+	}
+}
+
 // TestRenderSystemdUnitBakesInInstallTimeShell and
 // TestRenderLaunchAgentBakesInInstallTimeShell are the NixOS root-cause
 // regression: a daemon started by systemd/launchd inherits only HOME, a
