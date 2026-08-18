@@ -32,6 +32,31 @@ agent_args_override:
     - -c
     - model_reasoning_effort="low"
 
+# Optional Codex-only review fleet (disabled by default; global-only)
+review_fleet:
+  enabled: false
+  reviewers:
+    test-adversary:
+      model: gpt-5.6-luna
+      reasoning_effort: high
+    correctness:
+      model: gpt-5.6-terra
+      reasoning_effort: high
+    architecture:
+      model: gpt-5.6-sol
+      reasoning_effort: high
+    security:
+      model: gpt-5.6-luna
+      reasoning_effort: high
+      high_risk_paths: [internal/auth/**, internal/crypto/**]
+      escalated_reasoning_effort: max
+  consolidator:
+    model: gpt-5.6-terra
+    reasoning_effort: high
+  certifier:
+    model: gpt-5.6-sol
+    reasoning_effort: high
+
 ci_timeout: "168h"
 
 step_quiet_warning: "10m"
@@ -217,6 +242,37 @@ agent_args_override:
 ```
 
 For Codex, `service_tier` and `model_reasoning_effort` tune different things: `service_tier` selects the speed or priority lane, while `model_reasoning_effort` selects reasoning depth. no-mistakes reloads global config while setting up each run, so edits made before `no-mistakes axi run` apply to that run. For repeatable profiles, use separately initialized `NM_HOME` directories; each has its own `config.yaml` and no-mistakes state.
+
+### review_fleet
+
+Optional, global-only Codex review fleet. It is disabled by default and a
+repository's `.no-mistakes.yaml` cannot enable, disable, or modify it. v1
+requires exactly these four reviewer roles: `test-adversary`, `correctness`,
+`architecture`, and `security`, plus one `consolidator` and one `certifier`
+profile. Every profile must name its own `model` and `reasoning_effort`.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `review_fleet.enabled` | `bool` | Enable the fleet; default `false` |
+| `review_fleet.reviewers` | `map[string]object` | Exactly the four fixed reviewer roles when enabled |
+| `review_fleet.reviewers.<role>.model` | `string` | Explicit Codex model |
+| `review_fleet.reviewers.<role>.reasoning_effort` | `string` | `low`, `medium`, `high`, `xhigh`, or `max` |
+| `review_fleet.reviewers.security.high_risk_paths` | `string[]` | Bounded git-path globs that opt security review into escalation |
+| `review_fleet.reviewers.security.escalated_reasoning_effort` | `string` | Optional stronger effort for an escalated security review |
+| `review_fleet.consolidator` / `certifier` | `object` | Explicit Codex model and reasoning profile |
+
+Models are limited to 128 bytes. Security accepts at most 32 high-risk paths,
+each at most 256 bytes and 4,096 bytes in total. Invalid globs and any missing
+required profile field reject the global config before a run starts.
+
+Fleet invocations are always cold and add `--sandbox read-only`, `--ephemeral`,
+`--ignore-user-config`, `-c project_doc_max_bytes=0`, and `--ignore-rules`.
+Inherited Codex model, reasoning, sandbox, approval-bypass, session,
+project-document, and ignore-rules flags are rejected because they could
+defeat fleet isolation. Safe global Codex flags such as `service_tier` remain
+available. `high_risk_paths` uses the same git-path glob semantics as
+`ignore_patterns`: slash-separated paths, basename matching for patterns
+without a slash, and `/**` for a directory subtree.
 
 ### ci_timeout
 
