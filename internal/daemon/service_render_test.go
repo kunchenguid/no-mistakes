@@ -131,6 +131,34 @@ func TestManagedServicePathUsesSharedWellKnownDirs(t *testing.T) {
 	}
 }
 
+// TestRenderSystemdUnitBakesInInstallTimeShell and
+// TestRenderLaunchAgentBakesInInstallTimeShell are the NixOS root-cause
+// regression: a daemon started by systemd/launchd inherits only HOME, a
+// curated PATH, and proxy vars - never SHELL - so
+// internal/shellenv.LoginShell() inside the running daemon falls back to
+// shelling out to getent/dscl using that same minimal PATH, which on a
+// non-FHS distro like NixOS can't even find getent. Baking the value the
+// installing process resolved (via resolveInstallShell, which has a normal
+// environment) directly into the generated unit/plist as SHELL gives
+// LoginShell()'s fast path a real value to return immediately, without ever
+// shelling out from inside the restricted daemon process.
+func TestRenderSystemdUnitBakesInInstallTimeShell(t *testing.T) {
+	t.Parallel()
+	unit := renderSystemdUnitWithProxyEnv("/usr/local/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u", "/run/current-system/sw/bin/bash", nil)
+	want := `Environment="SHELL=/run/current-system/sw/bin/bash"`
+	if !strings.Contains(unit, want) {
+		t.Fatalf("systemd unit should bake in the install-time shell, want %q, got:\n%s", want, unit)
+	}
+}
+
+func TestRenderLaunchAgentBakesInInstallTimeShell(t *testing.T) {
+	t.Parallel()
+	plist := renderLaunchAgentWithProxyEnv("/usr/local/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u", "/run/current-system/sw/bin/bash", nil)
+	if got := extractPlistValue(t, plist, "SHELL"); got != "/run/current-system/sw/bin/bash" {
+		t.Fatalf("launchd plist SHELL = %q, want %q", got, "/run/current-system/sw/bin/bash")
+	}
+}
+
 // extractPlistValue pulls the <string> value that follows a given <key> in
 // an Apple plist. Keeps the rendering assertions readable and independent
 // of byte-for-byte formatting.

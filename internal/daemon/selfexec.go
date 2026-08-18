@@ -185,11 +185,12 @@ func reinstallManagedServiceIfChanged(p *paths.Paths) (bool, error) {
 	if len(proxyEnv) == 0 {
 		proxyEnv = inheritedProxyEnv
 	}
+	shell := resolveInstallShell()
 	switch runtimeGOOS {
 	case "darwin":
-		wanted = renderLaunchAgentWithProxyEnv(renderedExecutable, p, home, proxyEnv)
+		wanted = renderLaunchAgentWithProxyEnv(renderedExecutable, p, home, shell, proxyEnv)
 	case "linux":
-		wanted = renderSystemdUnitWithProxyEnv(renderedExecutable, p, home, proxyEnv)
+		wanted = renderSystemdUnitWithProxyEnv(renderedExecutable, p, home, shell, proxyEnv)
 	}
 	switch {
 	case readErr == nil && string(existing) == wanted:

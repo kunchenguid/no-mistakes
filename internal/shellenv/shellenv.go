@@ -144,6 +144,7 @@ func WellKnownBinDirsForHome(home string) []string {
 			filepath.Join(home, ".local", "bin"),
 			filepath.Join(home, "go", "bin"),
 			filepath.Join(home, ".cargo", "bin"),
+			filepath.Join(home, ".nix-profile", "bin"),
 			filepath.Join(home, "bin"),
 		)
 	}
@@ -156,6 +157,13 @@ func WellKnownBinDirsForHome(home string) []string {
 		"/bin",
 		"/usr/sbin",
 		"/sbin",
+		// NixOS keeps real binaries out of the FHS locations above; the system
+		// profile symlink farm is the non-FHS equivalent of /usr/bin. This is
+		// defense in depth for the degraded fallback only - the root-cause fix
+		// is baking SHELL into the generated service unit (see
+		// internal/daemon/service_systemd.go / service_launchd.go) so the login
+		// shell probe above succeeds instead of falling back to this list.
+		"/run/current-system/sw/bin",
 	)
 	return dirs
 }

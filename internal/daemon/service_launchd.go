@@ -33,11 +33,12 @@ func installLaunchAgent(p *paths.Paths, exe string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create launch agents directory: %w", err)
 	}
+	shell := resolveInstallShell()
 	// writeServiceFile resolves the proxy environment once and feeds it to the
 	// renderer, so the plist content and its permission mode stay in sync
 	// (see serviceProxyEnv / writeServiceFile).
 	render := func(proxyEnv [][2]string) string {
-		return renderLaunchAgentWithProxyEnv(exe, p, home, proxyEnv)
+		return renderLaunchAgentWithProxyEnv(exe, p, home, shell, proxyEnv)
 	}
 	if err := writeServiceFile(path, launchAgentProxyEnv, render); err != nil {
 		return fmt.Errorf("write launch agent: %w", err)
@@ -186,12 +187,13 @@ func launchdDomainTarget() (string, error) {
 // (preferring the on-disk definition when the live environment has none) and
 // pass it in.
 func renderLaunchAgent(exe string, p *paths.Paths, home string) string {
-	return renderLaunchAgentWithProxyEnv(exe, p, home, serviceProxyEnv())
+	return renderLaunchAgentWithProxyEnv(exe, p, home, resolveInstallShell(), serviceProxyEnv())
 }
 
 // renderLaunchAgentWithProxyEnv renders the launchd plist using a proxy
-// environment supplied by the caller (see serviceProxyEnv).
-func renderLaunchAgentWithProxyEnv(exe string, p *paths.Paths, home string, proxyEnv [][2]string) string {
+// environment supplied by the caller (see serviceProxyEnv) and a login shell
+// resolved by the caller (see resolveInstallShell).
+func renderLaunchAgentWithProxyEnv(exe string, p *paths.Paths, home string, shell string, proxyEnv [][2]string) string {
 	values := []string{exe, "daemon", "run", "--root", p.Root()}
 	var args strings.Builder
 	for _, value := range values {
@@ -213,6 +215,9 @@ func renderLaunchAgentWithProxyEnv(exe string, p *paths.Paths, home string, prox
 	envDict.WriteString("</string>\n")
 	envDict.WriteString("    <key>PATH</key>\n    <string>")
 	envDict.WriteString(xmlEscaped(managedServicePath(home)))
+	envDict.WriteString("</string>\n")
+	envDict.WriteString("    <key>SHELL</key>\n    <string>")
+	envDict.WriteString(xmlEscaped(shell))
 	envDict.WriteString("</string>\n")
 	for _, kv := range proxyEnv {
 		envDict.WriteString("    <key>")

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/paths"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // Base identifiers for the managed-service artifacts. The live identifiers
@@ -41,6 +42,20 @@ var serviceCommandRunner = runServiceCommand
 var serviceManagerBypassed = defaultServiceManagerBypassed
 var prepareManagedDaemonLaunch = managedDaemonLaunch
 var inspectManagedDaemonService = managedDaemonServiceState
+
+// resolveInstallShell resolves the login shell to bake into a generated
+// service unit's environment as SHELL, at install/render time - never inside
+// the running managed daemon itself. A daemon started by systemd/launchd
+// inherits only a minimal environment (HOME, a curated PATH, proxy vars; see
+// proxyEnvKeys above) with no SHELL, so internal/shellenv's LoginShell() falls
+// through to shelling out to getent/dscl using that same minimal PATH - which
+// on a non-FHS distro like NixOS can't even find getent, and the whole probe
+// degrades to WellKnownBinDirs. The process rendering the service definition
+// (`daemon install`/`daemon start`, run interactively or from the user's own
+// shell) has a normal, complete environment, so resolving SHELL here and
+// exporting it fixes the chicken-and-egg problem at its root: the daemon's own
+// LoginShell() fast path (a plain env lookup) then succeeds immediately.
+var resolveInstallShell = shellenv.LoginShell
 
 type managedServiceState int
 

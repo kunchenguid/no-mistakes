@@ -54,6 +54,7 @@ func TestStartInstallsSystemdUnitAndStartsManagedDaemon(t *testing.T) {
 		"ExecStart=/usr/local/bin/no-mistakes daemon run --root " + p.Root(),
 		"WorkingDirectory=" + p.Root(),
 		"Environment=\"HOME=" + home + "\"",
+		"Environment=\"SHELL=/bin/bash\"",
 		"Restart=always",
 		"WantedBy=default.target",
 	} {
@@ -274,7 +275,7 @@ func TestRenderSystemdUnitForwardsEveryProxyEnvKey(t *testing.T) {
 		proxyEnv = append(proxyEnv, [2]string{key, "val-" + key})
 	}
 
-	unit := renderSystemdUnitWithProxyEnv("/usr/local/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u", proxyEnv)
+	unit := renderSystemdUnitWithProxyEnv("/usr/local/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u", "/bin/bash", proxyEnv)
 	for _, key := range proxyEnvKeys {
 		want := `Environment="` + key + "=val-" + key + `"`
 		if !strings.Contains(unit, want) {
@@ -297,7 +298,7 @@ func TestRenderSystemdUnitEscapesPercentInProxyEnv(t *testing.T) {
 		{"HTTPS_PROXY", "http://user:p%40ss%3Aw0rd@proxy:8080"},
 	}
 
-	unit := renderSystemdUnitWithProxyEnv("/usr/local/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u", proxyEnv)
+	unit := renderSystemdUnitWithProxyEnv("/usr/local/bin/no-mistakes", paths.WithRoot(t.TempDir()), "/home/u", "/bin/bash", proxyEnv)
 	want := `Environment="HTTPS_PROXY=http://user:p%%40ss%%3Aw0rd@proxy:8080"`
 	if !strings.Contains(unit, want) {
 		t.Fatalf("systemd unit should double %% in proxy env so it survives specifier expansion, want %q, got:\n%s", want, unit)
