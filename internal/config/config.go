@@ -1134,13 +1134,13 @@ func (c *Config) AgentArgsFor(name types.AgentName) []string {
 // agentArgsOverrideAgents lists native agent names accepted as keys in
 // agent_args_override.
 var agentArgsOverrideAgents = map[string]bool{
-	string(types.AgentClaude):       true,
-	string(types.AgentCodex):        true,
-	string(types.AgentRovoDev):      true,
-	string(types.AgentOpenCode):     true,
-	string(types.AgentPi):           true,
-	string(types.AgentCopilot):      true,
-	string(types.AgentAntigravity):  true,
+	string(types.AgentClaude):      true,
+	string(types.AgentCodex):       true,
+	string(types.AgentRovoDev):     true,
+	string(types.AgentOpenCode):    true,
+	string(types.AgentPi):          true,
+	string(types.AgentCopilot):     true,
+	string(types.AgentAntigravity): true,
 }
 
 // reservedAgentArgs lists flags that no-mistakes manages internally and that

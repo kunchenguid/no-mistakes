@@ -56,7 +56,6 @@ func TestAntigravityAgent_BuildArgs_WithExtraArgs(t *testing.T) {
 	}
 }
 
-
 func TestAntigravityParser(t *testing.T) {
 	stream := `
 {"event": "step_update", "step_update": {"text_delta": "hello"}}
