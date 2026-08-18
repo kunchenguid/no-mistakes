@@ -17,10 +17,11 @@ CREATE TABLE IF NOT EXISTS runs (
     head_sha                TEXT NOT NULL,
     base_sha                TEXT NOT NULL,
     submitted_head_sha      TEXT,
-    no_mistakes_version     TEXT,
-    no_mistakes_build_sha   TEXT,
+    no_mistakes_version      TEXT,
+    no_mistakes_build_sha    TEXT,
     review_approved_head_sha TEXT,
-    status                  TEXT NOT NULL DEFAULT 'pending',
+    certified_head_sha       TEXT,
+    status                   TEXT NOT NULL DEFAULT 'pending',
     pr_url                  TEXT,
     pr_state                TEXT,
     pr_state_observed_at    INTEGER,
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS step_rounds (
     trigger_type         TEXT NOT NULL,
     findings_json        TEXT,
     reviewed_head_sha    TEXT,
+    certified_head_sha   TEXT,
     starting_head_sha    TEXT,
     trusted_config_sha   TEXT,
     global_config_yaml   BLOB,
@@ -167,6 +169,7 @@ var migrationStatements = []string{
 	// A parked round may retain the reviewed commit as a non-authoritative
 	// candidate. Only atomic review completion promotes it onto the run.
 	`ALTER TABLE step_rounds ADD COLUMN reviewed_head_sha TEXT`,
+	`ALTER TABLE step_rounds ADD COLUMN certified_head_sha TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN starting_head_sha TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN trusted_config_sha TEXT`,
 	`ALTER TABLE step_rounds ADD COLUMN global_config_yaml BLOB`,
@@ -193,6 +196,9 @@ var migrationStatements = []string{
 	// Review authority is nullable and never backfilled. A historical mutable
 	// head_sha cannot prove which exact commit a completed review approved.
 	`ALTER TABLE runs ADD COLUMN review_approved_head_sha TEXT`,
+	// Certification authority is nullable and never inferred from a mutable
+	// run/worktree head. Only an atomically completed Certify step may write it.
+	`ALTER TABLE runs ADD COLUMN certified_head_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN last_pushed_sha TEXT`,
 	`ALTER TABLE runs ADD COLUMN push_target_kind TEXT`,
 	`ALTER TABLE runs ADD COLUMN push_target_fingerprint TEXT`,

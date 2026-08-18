@@ -88,6 +88,12 @@ func DemoSteps() []pipeline.Step {
 			},
 		},
 		&demoStep{
+			name:       types.StepCertify,
+			delay:      3 * time.Second,
+			displayDur: 12 * time.Second,
+			log:        "Reading finalized worktree...\nChecking the exact candidate commit...\nNo blocking certification findings.",
+		},
+		&demoStep{
 			name:       types.StepPush,
 			delay:      2 * time.Second,
 			displayDur: 5 * time.Second,

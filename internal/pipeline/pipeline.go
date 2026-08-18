@@ -65,6 +65,25 @@ type StepContext struct {
 	// machinery remains role-generic for legacy recovery; nil runs every
 	// invocation cold.
 	Sessions *RunSessions
+	// ReviewFleet contains the resolved, trusted review-fleet execution plan.
+	// It is nil for ordinary runs and for eval replay. ReviewStep uses this
+	// only to fan out independent, cold review candidates; the normal single
+	// reviewer path remains unchanged when it is nil.
+	ReviewFleet *ReviewFleetSettings
+	// ReviewFleetError is set by the executor when the trusted config carried
+	// an enabled but malformed fleet. ReviewStep fails closed instead of
+	// silently falling back to one reviewer.
+	ReviewFleetError error
+	// RunReviewProfile is owned by the executor. It creates a fresh, read-only
+	// Codex adapter for every profile invocation, wraps it with the gate phase
+	// boundary and local instrumentation, waits for cancellation/process-tree
+	// cleanup, and closes it before returning. Steps must not retain or reuse
+	// the returned runner.
+	RunReviewProfile ReviewProfileRunner
+	// ForceSingleReview disables a configured fleet for isolated evaluation
+	// replay. Replay compares one candidate at a time and must not silently
+	// change its scoring surface when fleet configuration is enabled globally.
+	ForceSingleReview bool
 	// Shared carries in-memory run-scoped results one step hands to a later
 	// step in the same run (e.g. the combined document+lint pass).
 	Shared             *RunShared
@@ -73,6 +92,39 @@ type StepContext struct {
 	// Eval uses it to relabel auto-fix/shipped-unfixed gold; nil is a no-op.
 	OnPRMerged func(ctx context.Context, runID string)
 }
+
+// ReviewProfile identifies one independent reviewer in a review fleet.
+// Role, Model, and Reasoning are resolved from trusted configuration before a
+// run starts. SecurityEscalated is derived from the complete changed-path set,
+// before ignore_patterns are applied.
+type ReviewProfile struct {
+	Role               string
+	Model              string
+	Reasoning          string
+	HighRiskPaths      []string
+	EscalatedReasoning string
+	SecurityEscalated  bool
+}
+
+// ReviewFleetSettings is the execution-only projection of Config.ReviewFleet.
+// Keeping this small projection in pipeline avoids making ReviewStep depend on
+// config's YAML representation and makes replay/tests able to force the
+// single-candidate path explicitly.
+type ReviewFleetSettings struct {
+	Enabled      bool
+	Reviewers    []ReviewProfile
+	Consolidator ReviewProfile
+	Certifier    ReviewProfile
+	// CodexProfileArgs must return safe, profile-specific Codex arguments. The
+	// executor adds the final read-only/project-settings protections as a second
+	// defensive layer before constructing the adapter.
+	CodexProfileArgs func(ReviewProfile) ([]string, error)
+}
+
+// ReviewProfileRunner runs one profile invocation. Implementations are
+// executor-owned and ephemeral; callers must treat the result as immutable
+// candidate data and never persist the raw adapter output.
+type ReviewProfileRunner func(context.Context, ReviewProfile, agent.RunOpts) (*agent.Result, error)
 
 // RunAgentSession executes one turn of a durable review-loop role session,
 // running cold when sessions are unavailable. Only the review step's fixer
@@ -104,6 +156,11 @@ type StepOutcome struct {
 	// round. The executor durably records it only when the review step actually
 	// completes, never while that outcome is parked or after a failed round.
 	ReviewApprovedHeadSHA string
+	// CertifiedHeadSHA is set only by a Certify outcome that completed without
+	// a gate or was explicitly approved. The executor persists it atomically
+	// with the step completion; parked, failed, skipped, and cancelled outcomes
+	// never grant certification authority.
+	CertifiedHeadSHA string
 
 	// DurationOverrideMS, when positive, replaces the wall-clock duration
 	// reported for this step. Used by demo mode to show realistic durations

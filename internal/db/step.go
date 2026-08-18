@@ -225,6 +225,44 @@ func (d *DB) CompleteReviewStep(id, runID, approvedHeadSHA string, exitCode int,
 	return nil
 }
 
+// CompleteCertifyStep atomically completes a successful or explicitly
+// approved Certify step and records the exact clean head it examined. Neither
+// write survives if the other fails, so a parked/failed/skipped/cancelled
+// outcome cannot accidentally grant delivery authority.
+func (d *DB) CompleteCertifyStep(id, runID, certifiedHeadSHA string, exitCode int, durationMS int64, logPath string) error {
+	if certifiedHeadSHA == "" {
+		return fmt.Errorf("complete certify step: certified head is required")
+	}
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return fmt.Errorf("begin complete certify step: %w", err)
+	}
+	defer tx.Rollback()
+
+	ts := now()
+	result, err := tx.Exec(
+		`UPDATE step_results SET status = ?, exit_code = ?, duration_ms = ?, log_path = ?, completed_at = ?, last_activity_at = ?, last_activity = ?, agent_pid = NULL WHERE id = ?`,
+		types.StepStatusCompleted, exitCode, durationMS, logPath, ts, ts, fmt.Sprintf("status: %s", types.StepStatusCompleted), id,
+	)
+	if err != nil {
+		return fmt.Errorf("complete certify step: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		return fmt.Errorf("complete certify step: step row not found")
+	}
+	result, err = tx.Exec(`UPDATE runs SET certified_head_sha = ?, updated_at = ? WHERE id = ?`, certifiedHeadSHA, ts, runID)
+	if err != nil {
+		return fmt.Errorf("record certified head: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+		return fmt.Errorf("record certified head: run row not found")
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit certified step: %w", err)
+	}
+	return nil
+}
+
 // FailStep marks a step as failed with an error message and duration.
 func (d *DB) FailStep(id string, errMsg string, durationMS int64) error {
 	_, err := d.sql.Exec(

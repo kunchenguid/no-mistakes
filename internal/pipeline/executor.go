@@ -47,7 +47,11 @@ type Executor struct {
 	config *config.Config
 	agent  agent.Agent
 	steps  []Step
-	skips  map[types.StepName]bool
+	// recoverySteps is the plan aligned to a persisted run during Resume. It
+	// may omit the newly inserted Certify step for a legacy nine-step run so an
+	// active pre-certification run can finish under its original semantics.
+	recoverySteps []Step
+	skips         map[types.StepName]bool
 
 	onEvent EventFunc
 
@@ -55,7 +59,12 @@ type Executor struct {
 	// carries run-scoped step-to-step results. Both are created per Execute.
 	sessions *RunSessions
 	shared   *RunShared
-	workDir  string
+	// reviewFleet is an execution-only projection of trusted configuration. It
+	// is resolved once per run and exposed to ReviewStep through StepContext;
+	// raw candidate outputs never enter this executor state or the DB.
+	reviewFleet    *ReviewFleetSettings
+	reviewFleetErr error
+	workDir        string
 
 	mu          sync.Mutex
 	approvalCh  chan approvalResponse // buffered channel for approval responses
@@ -243,6 +252,7 @@ func (e *Executor) initializeRunScopes(runID string) {
 	sessionsEnabled := e.config != nil && e.config.SessionReuse && e.agent != nil
 	e.sessions = NewRunSessions(e.db, runID, e.agent, sessionsEnabled)
 	e.shared = &RunShared{}
+	e.reviewFleet, e.reviewFleetErr = reviewFleetSettingsFromConfig(e.config)
 }
 
 type stepExecutionState struct {
@@ -255,14 +265,15 @@ type stepExecutionState struct {
 }
 
 type recoveredGate struct {
-	index           int
-	step            Step
-	stepResult      *db.StepResult
-	findings        string
-	round           int
-	autoFixes       int
-	lastRoundID     string
-	reviewedHeadSHA string
+	index            int
+	step             Step
+	stepResult       *db.StepResult
+	findings         string
+	round            int
+	autoFixes        int
+	lastRoundID      string
+	reviewedHeadSHA  string
+	certifiedHeadSHA string
 }
 
 func ValidateRecoveredRun(database *db.DB, run *db.Run, steps []Step) error {
@@ -307,6 +318,28 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 			reviewedHead := gate.reviewedHeadSHA
 			run.ReviewApprovedHeadSHA = &reviewedHead
 			ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
+			return nil
+		}
+		if gate.step.Name() == types.StepCertify {
+			if gate.certifiedHeadSHA == "" {
+				return fmt.Errorf("recovered certify gate has no durable head candidate")
+			}
+			liveHead, headErr := git.HeadSHA(ctx, workDir)
+			if headErr != nil || liveHead != gate.certifiedHeadSHA {
+				return fmt.Errorf("recovered certify head changed before approval")
+			}
+			status, statusErr := git.Run(ctx, workDir, "status", "--porcelain")
+			if statusErr != nil {
+				return fmt.Errorf("check recovered certify worktree: %w", statusErr)
+			}
+			if strings.TrimSpace(status) != "" {
+				return fmt.Errorf("recovered certify worktree is dirty")
+			}
+			if err := e.db.CompleteCertifyStep(gate.stepResult.ID, run.ID, gate.certifiedHeadSHA, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult)); err != nil {
+				return err
+			}
+			certifiedHead := gate.certifiedHeadSHA
+			run.CertifiedHeadSHA = &certifiedHead
 			return nil
 		}
 		return e.db.CompleteStepWithStatus(gate.stepResult.ID, types.StepStatusCompleted, recoveredExitCode(gate.stepResult), duration, recoveredLogPath(gate.stepResult))
@@ -460,14 +493,16 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get recovered steps: %w", err)
 	}
-	if len(results) != len(e.steps) {
-		return nil, fmt.Errorf("recovered run has %d step records for %d steps", len(results), len(e.steps))
+	plan, err := compatibleRecoveryPlan(results, e.steps)
+	if err != nil {
+		return nil, err
 	}
+	e.recoverySteps = plan
 
 	var gate *recoveredGate
 	for index, result := range results {
-		if result.StepName != e.steps[index].Name() {
-			return nil, fmt.Errorf("recovered step %d is %q, want %q", index, result.StepName, e.steps[index].Name())
+		if result.StepName != plan[index].Name() {
+			return nil, fmt.Errorf("recovered step %d is %q, want %q", index, result.StepName, plan[index].Name())
 		}
 		if result.Status == types.StepStatusAwaitingApproval || result.Status == types.StepStatusFixReview {
 			if gate != nil || result.FindingsJSON == nil || result.StartedAt == nil || result.DurationMS == nil || result.AgentPID != nil {
@@ -489,7 +524,7 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 			}
 			gate = &recoveredGate{
 				index:       index,
-				step:        e.steps[index],
+				step:        plan[index],
 				stepResult:  result,
 				findings:    *result.FindingsJSON,
 				round:       latest.Round,
@@ -498,6 +533,9 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 			}
 			if latest.ReviewedHeadSHA != nil {
 				gate.reviewedHeadSHA = *latest.ReviewedHeadSHA
+			}
+			if result.StepName == types.StepCertify && latest.CertifiedHeadSHA != nil {
+				gate.certifiedHeadSHA = strings.TrimSpace(*latest.CertifiedHeadSHA)
 			}
 			continue
 		}
@@ -517,19 +555,61 @@ func (e *Executor) recoveredGate(runID string) (*recoveredGate, error) {
 	return gate, nil
 }
 
+func (e *Executor) activeStepPlan() []Step {
+	if len(e.recoverySteps) > 0 {
+		return e.recoverySteps
+	}
+	return e.steps
+}
+
+// compatibleRecoveryPlan aligns persisted step rows with the current fixed
+// plan. The only accepted shape difference is an old nine-step plan missing
+// the newly inserted Certify step. Such a run can recover its existing gate;
+// if fleet mode is now enabled, its later Push still fails closed because no
+// certification authority is invented for the legacy plan.
+func compatibleRecoveryPlan(results []*db.StepResult, current []Step) ([]Step, error) {
+	if len(results) == len(current) {
+		return current, nil
+	}
+	certifyIndex := -1
+	for i, step := range current {
+		if step.Name() == types.StepCertify {
+			certifyIndex = i
+			break
+		}
+	}
+	if certifyIndex < 0 || len(results) != len(current)-1 {
+		return nil, fmt.Errorf("recovered run has %d step records for %d steps", len(results), len(current))
+	}
+	plan := make([]Step, 0, len(results))
+	plan = append(plan, current[:certifyIndex]...)
+	plan = append(plan, current[certifyIndex+1:]...)
+	for i, result := range results {
+		if result == nil || result.StepName != plan[i].Name() {
+			var got types.StepName
+			if result != nil {
+				got = result.StepName
+			}
+			return nil, fmt.Errorf("recovered step %d is %q, want %q", i, got, plan[i].Name())
+		}
+	}
+	return plan, nil
+}
+
 func (e *Executor) executeRecoveredRemainder(ctx context.Context, run *db.Run, repo *db.Repo, workDir, logDir string, start int) error {
 	results, err := e.db.GetStepsByRun(run.ID)
 	if err != nil {
 		return e.failRun(run, repo, fmt.Errorf("get recovered steps: %w", err), ctx)
 	}
-	for index := start; index < len(e.steps); index++ {
+	plan := e.activeStepPlan()
+	for index := start; index < len(plan); index++ {
 		if ctx.Err() != nil {
 			return e.failRun(run, repo, context.Cause(ctx), ctx)
 		}
-		if index >= len(results) || results[index].StepName != e.steps[index].Name() || results[index].Status != types.StepStatusPending {
+		if index >= len(results) || results[index].StepName != plan[index].Name() || results[index].Status != types.StepStatusPending {
 			return e.failRun(run, repo, fmt.Errorf("recovered step plan changed at %d", index), ctx)
 		}
-		skipRemaining, err := e.executeStep(ctx, e.steps[index], results[index], run, repo, workDir, logDir, stepExecutionState{})
+		skipRemaining, err := e.executeStep(ctx, plan[index], results[index], run, repo, workDir, logDir, stepExecutionState{})
 		if err != nil {
 			return e.failRun(run, repo, err, ctx)
 		}
@@ -548,14 +628,15 @@ func (e *Executor) skipRecoveredRemainder(run *db.Run, repo *db.Repo, start int)
 	if err != nil {
 		return e.failRun(run, repo, fmt.Errorf("get recovered steps: %w", err))
 	}
-	for index := start; index < len(e.steps); index++ {
-		if index >= len(results) || results[index].StepName != e.steps[index].Name() || results[index].Status != types.StepStatusPending {
+	plan := e.activeStepPlan()
+	for index := start; index < len(plan); index++ {
+		if index >= len(results) || results[index].StepName != plan[index].Name() || results[index].Status != types.StepStatusPending {
 			return e.failRun(run, repo, fmt.Errorf("recovered step plan changed at %d", index))
 		}
 		if err := e.db.CompleteStepWithStatus(results[index].ID, types.StepStatusSkipped, 0, 0, ""); err != nil {
-			return e.failRun(run, repo, fmt.Errorf("skip recovered step %s: %w", e.steps[index].Name(), err))
+			return e.failRun(run, repo, fmt.Errorf("skip recovered step %s: %w", plan[index].Name(), err))
 		}
-		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, e.steps[index].Name(), string(types.StepStatusSkipped), "", "", nil)
+		e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, plan[index].Name(), string(types.StepStatusSkipped), "", "", nil)
 	}
 	if err := e.completeRun(run, repo); err != nil {
 		return e.failRun(run, repo, fmt.Errorf("complete recovered run: %w", err))
@@ -613,10 +694,17 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	}
 	defer logFile.Close()
 
-	// Build step context with log callback that emits events and writes to file.
-	// lastChunkNewline tracks whether the most recent chunk ended with \n,
-	// so Log knows whether it needs a leading \n to flush a streaming partial.
-	lastChunkNewline := true
+	// Build step context with log callbacks that emit events and write to the
+	// file. Fleet reviewers invoke these callbacks concurrently, so framing,
+	// file writes, throttling, and aggregate lifecycle PID state live behind one
+	// mutex in the executor-owned logger.
+	stepLog := newStepLogWriter(logFile, func(text string) {
+		e.emitLogChunk(run, repo, stepName, text)
+	}, func(text string) {
+		if dbErr := e.db.TouchStepActivity(sr.ID, text); dbErr != nil {
+			slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)
+		}
+	})
 	userIntent := ""
 	userIntentSource := ""
 	if run != nil {
@@ -631,61 +719,25 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			userIntentSource = *run.IntentSource
 		}
 	}
-	lastLogActivityAt := time.Time{}
-	touchLogActivity := func(text string, force bool) {
-		if activity := stepActivityFromLog(text); activity != "" {
-			now := time.Now()
-			if !force && !lastLogActivityAt.IsZero() && now.Sub(lastLogActivityAt) < stepActivityThrottleInterval {
-				return
-			}
-			lastLogActivityAt = now
-			if dbErr := e.db.TouchStepActivity(sr.ID, activity); dbErr != nil {
-				slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)
-			}
-		}
-	}
 	writeLog := func(text string) {
-		if text != "" {
-			prefix := ""
-			if !lastChunkNewline {
-				prefix = "\n"
-			}
-			text = prefix + strings.TrimRight(text, "\n") + "\n\n"
-			lastChunkNewline = true
-		}
-		e.emitLogChunk(run, repo, stepName, text)
-		fmt.Fprint(logFile, text)
-		touchLogActivity(text, true)
+		stepLog.writeLine(text)
 	}
 	writeLogChunk := func(text string) {
-		if text != "" {
-			lastChunkNewline = strings.HasSuffix(text, "\n")
-		}
-		e.emitLogChunk(run, repo, stepName, text)
-		fmt.Fprint(logFile, text)
-		touchLogActivity(text, strings.Contains(text, "\n"))
+		stepLog.writeChunk(text)
 	}
 	onAgentLifecycle := func(event agent.LifecycleEvent) {
-		text := event.Message
-		if text == "" {
-			text = fmt.Sprintf("%s %s", event.Agent, event.Phase)
-		}
-		switch event.Phase {
-		case agent.LifecyclePhaseStart:
-			pid := event.PID
-			if dbErr := e.db.SetStepAgentActivity(sr.ID, text, &pid); dbErr != nil {
-				slog.Warn("failed to set step agent activity in db", "step", stepName, "error", dbErr)
+		stepLog.lifecycle(event, func(text string, pid *int) {
+			switch event.Phase {
+			case agent.LifecyclePhaseStart, agent.LifecyclePhaseExit:
+				if dbErr := e.db.SetStepAgentActivity(sr.ID, text, pid); dbErr != nil {
+					slog.Warn("failed to set step agent activity in db", "step", stepName, "error", dbErr)
+				}
+			default:
+				if dbErr := e.db.TouchStepActivity(sr.ID, text); dbErr != nil {
+					slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)
+				}
 			}
-		case agent.LifecyclePhaseExit:
-			if dbErr := e.db.SetStepAgentActivity(sr.ID, text, nil); dbErr != nil {
-				slog.Warn("failed to set step agent activity in db", "step", stepName, "error", dbErr)
-			}
-		default:
-			if dbErr := e.db.TouchStepActivity(sr.ID, text); dbErr != nil {
-				slog.Warn("failed to touch step activity in db", "step", stepName, "error", dbErr)
-			}
-		}
-		writeLog(text)
+		})
 	}
 	// roundNum is shared with the perf wrapper's round closure below: an
 	// invocation during execution of round N+1 sees roundNum still at N.
@@ -703,6 +755,10 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			stepName: stepName,
 			round:    func() int { return roundNum + 1 },
 		}
+	}
+	var runReviewProfile ReviewProfileRunner
+	if (stepName == types.StepReview || stepName == types.StepCertify) && e.reviewFleet != nil && e.reviewFleet.Enabled {
+		runReviewProfile = e.newReviewProfileRunner(run, stepName, func() int { return roundNum + 1 }, onAgentLifecycle)
 	}
 	ciReady := run.CIReadyAt != nil
 	ciReadyNoCI := run.CIReadyNoCI
@@ -728,14 +784,16 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		IntentSource:     userIntentSource,
 		Sessions:         e.sessions,
 		Shared:           e.shared,
+		ReviewFleet:      e.reviewFleet,
+		ReviewFleetError: e.reviewFleetErr,
+		RunReviewProfile: runReviewProfile,
 		EvidenceDir:      e.runEvidenceDir(run.ID),
 		Fixing:           state.fixing,
 		PreviousFindings: state.previousFindings,
 		Log:              writeLog,
 		LogChunk:         writeLogChunk,
 		LogFile: func(text string) {
-			fmt.Fprintln(logFile, text)
-			touchLogActivity(text, true)
+			stepLog.writeFileOnly(text)
 		},
 		CIReadinessChanged: ciReadinessChanged,
 		OnPRMerged:         e.onPRMerged,
@@ -752,6 +810,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 	stepSkipped := false
 	currentRoundID := state.currentRoundID
 	var reviewApprovedHeadSHA string
+	var certifiedHeadSHA string
 
 	// Execute with possible fix loop
 	for {
@@ -769,8 +828,7 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			// credentialled upstream URL that slipped into a wrapped error can
 			// never land in the log file.
 			redactedErr := safeurl.RedactText(err.Error())
-			fmt.Fprintf(logFile, "\nerror: %s\n", redactedErr)
-			touchLogActivity("error: "+redactedErr, true)
+			stepLog.writeFileOnly("\nerror: " + redactedErr)
 			if dbErr := e.db.FailStep(sr.ID, redactedErr, durationMS); dbErr != nil {
 				slog.Warn("failed to mark step as failed in db", "step", stepName, "error", dbErr)
 			}
@@ -780,6 +838,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 
 		if stepName == types.StepReview {
 			reviewApprovedHeadSHA = outcome.ReviewApprovedHeadSHA
+		}
+		if stepName == types.StepCertify {
+			certifiedHeadSHA = outcome.CertifiedHeadSHA
 		}
 		outcome.Findings = normalizeFindingsJSON(outcome.Findings, string(stepName))
 		finalExitCode = outcome.ExitCode
@@ -813,6 +874,8 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 			} else {
 				inserted, dbErr = e.db.InsertReviewStepRound(sr.ID, roundNum, nextTrigger, findingsPtr, fixSummaryPtr, reviewApprovedHeadSHA, roundDuration)
 			}
+		} else if stepName == types.StepCertify {
+			inserted, dbErr = e.db.InsertCertifyStepRound(sr.ID, roundNum, nextTrigger, findingsPtr, fixSummaryPtr, certifiedHeadSHA, roundDuration)
 		} else {
 			inserted, dbErr = e.db.InsertStepRound(sr.ID, roundNum, nextTrigger, findingsPtr, fixSummaryPtr, roundDuration)
 		}
@@ -1014,6 +1077,12 @@ done:
 		reviewedHead := reviewApprovedHeadSHA
 		run.ReviewApprovedHeadSHA = &reviewedHead
 		ClearUncertifiedPipelineRangeIfCertified(ctx, e.db, repo.ID, run.Branch, reviewedHead, workDir)
+	} else if stepName == types.StepCertify && status == types.StepStatusCompleted && certifiedHeadSHA != "" {
+		if err := e.db.CompleteCertifyStep(sr.ID, run.ID, certifiedHeadSHA, finalExitCode, durationMS, logPath); err != nil {
+			return false, fmt.Errorf("complete step %s: %w", stepName, err)
+		}
+		certifiedHead := certifiedHeadSHA
+		run.CertifiedHeadSHA = &certifiedHead
 	} else if err := e.db.CompleteStepWithStatus(sr.ID, status, finalExitCode, durationMS, logPath); err != nil {
 		return false, fmt.Errorf("complete step %s: %w", stepName, err)
 	}

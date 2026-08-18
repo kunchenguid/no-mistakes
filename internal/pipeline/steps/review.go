@@ -238,6 +238,28 @@ Risk assessment (after listing all findings):
 		pathInstructions,
 	)
 
+	if sctx.ReviewFleetError != nil {
+		return nil, fmt.Errorf("review fleet configuration: %w", sctx.ReviewFleetError)
+	}
+	if reviewFleetEnabled(sctx) {
+		findings, err := executeReviewFleet(sctx, prompt, changed, workload)
+		if err != nil {
+			return nil, err
+		}
+		if stripped, n := stripDeferredPipelineOwnedDeliveryFindings(findings); n > 0 {
+			sctx.Log(fmt.Sprintf("dropped %d deferred pipeline-owned delivery finding(s) (owned by later push/PR/CI steps)", n))
+			findings = stripped
+		}
+		needsApproval := hasBlockingFindings(findings.Items)
+		findingsJSON, _ := json.Marshal(findings)
+		return approvedReviewOutcome(reviewTargetSHA, &pipeline.StepOutcome{
+			NeedsApproval: needsApproval,
+			AutoFixable:   len(findings.Items) > 0,
+			Findings:      string(findingsJSON),
+			FixSummary:    fixSummary,
+		})
+	}
+
 	// Every review turn - the initial review and every post-fix rereview -
 	// deliberately runs session-free. Round N's fixes implement round N-1's
 	// review findings, so resuming any prior review turn's session would seat

@@ -38,24 +38,24 @@ review_fleet:
   reviewers:
     test-adversary:
       model: gpt-5.6-luna
-      reasoning_effort: high
+      reasoning_effort: max
     correctness:
       model: gpt-5.6-terra
       reasoning_effort: high
     architecture:
-      model: gpt-5.6-sol
+      model: gpt-5.6-terra
       reasoning_effort: high
     security:
-      model: gpt-5.6-luna
+      model: gpt-5.6-terra
       reasoning_effort: high
       high_risk_paths: [internal/auth/**, internal/crypto/**]
-      escalated_reasoning_effort: max
+      escalated_reasoning_effort: xhigh
   consolidator:
     model: gpt-5.6-terra
     reasoning_effort: high
   certifier:
     model: gpt-5.6-sol
-    reasoning_effort: high
+    reasoning_effort: xhigh
 
 ci_timeout: "168h"
 
@@ -264,13 +264,15 @@ profile. Every profile must name its own `model` and `reasoning_effort`.
 Models are limited to 128 bytes. Security accepts at most 32 high-risk paths,
 each at most 256 bytes and 4,096 bytes in total. Invalid globs and any missing
 required profile field reject the global config before a run starts.
+`high_risk_paths` and `escalated_reasoning_effort` must be configured
+together so a matched path always has a complete escalation profile.
 
 Fleet invocations are always cold and add `--sandbox read-only`, `--ephemeral`,
 `--ignore-user-config`, `-c project_doc_max_bytes=0`, and `--ignore-rules`.
 Inherited Codex model, reasoning, sandbox, approval-bypass, session,
 project-document, and ignore-rules flags are rejected because they could
-defeat fleet isolation. Safe global Codex flags such as `service_tier` remain
-available. `high_risk_paths` uses the same git-path glob semantics as
+defeat fleet isolation. The `service_tier` config override is the only
+inherited Codex flag allowed. `high_risk_paths` uses the same git-path glob semantics as
 `ignore_patterns`: slash-separated paths, basename matching for patterns
 without a slash, and `/**` for a directory subtree.
 
@@ -407,7 +409,7 @@ The template supports literal text and two Go-style placeholders:
 
 | Variable | Value |
 | --- | --- |
-| `{{.Step}}` | Pipeline step name, such as `review`, `test`, `document`, or `lint` |
+| `{{.Step}}` | Pipeline step name, such as `review`, `test`, `document`, `lint`, or `certify` |
 | `{{.Summary}}` | Sanitized one-line summary returned by the fix agent, or the step's deterministic fallback summary |
 
 The value must be a valid UTF-8 template that renders to a non-empty, single-line commit subject.

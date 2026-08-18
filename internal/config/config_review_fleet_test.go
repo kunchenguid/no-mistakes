@@ -164,6 +164,27 @@ func TestReviewFleetValidationBoundsAndEnums(t *testing.T) {
 			want: "escalated_reasoning_effort",
 		},
 		{
+			name: "escalated_effort_must_be_stronger",
+			mut: func(yaml string) string {
+				return strings.Replace(yaml, "escalated_reasoning_effort: max", "escalated_reasoning_effort: low", 1)
+			},
+			want: "stronger",
+		},
+		{
+			name: "paths_without_escalated_effort",
+			mut: func(yaml string) string {
+				return strings.Replace(yaml, "      escalated_reasoning_effort: max\n", "", 1)
+			},
+			want: "escalated_reasoning_effort",
+		},
+		{
+			name: "escalated_effort_without_paths",
+			mut: func(yaml string) string {
+				return strings.Replace(yaml, "      high_risk_paths:\n        - internal/auth/**\n        - internal/crypto/*.go\n", "", 1)
+			},
+			want: "high_risk_paths",
+		},
+		{
 			name: "bad_glob",
 			mut:  func(yaml string) string { return strings.Replace(yaml, "internal/crypto/*.go", "internal/[a-.go", 1) },
 			want: "glob",
@@ -257,6 +278,7 @@ func TestReviewFleetCodexArgsRejectInheritedIsolationFlags(t *testing.T) {
 		{"-m", "gpt-5.4"}, {"--model=gpt-5.4"}, {"-c", `model_reasoning_effort="low"`},
 		{"--sandbox", "workspace-write"}, {"--dangerously-bypass-approvals-and-sandbox"},
 		{"--resume", "thread"}, {"-c", "project_doc_max_bytes=4096"}, {"-c", "custom_setting=true"}, {"--ignore-rules"},
+		{"--add-dir", "/tmp/extra"}, {"--profile", "unsafe"}, {"--enable", "mcp"},
 	} {
 		name := strings.NewReplacer("-", "dash", "=", "eq", " ", "_").Replace(strings.Join(args, "_"))
 		t.Run(name, func(t *testing.T) {

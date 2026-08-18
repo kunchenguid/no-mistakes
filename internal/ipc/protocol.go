@@ -247,6 +247,7 @@ type RunInfo struct {
 	Branch           string          `json:"branch"`
 	HeadSHA          string          `json:"head_sha"`
 	SubmittedHeadSHA *string         `json:"submitted_head_sha,omitempty"`
+	CertifiedHeadSHA *string         `json:"certified_head_sha,omitempty"`
 	BaseSHA          string          `json:"base_sha"`
 	Status           types.RunStatus `json:"status"`
 	PRURL            *string         `json:"pr_url,omitempty"`

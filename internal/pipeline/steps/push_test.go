@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 // TestPushStep_RefusesPostReviewClobberWithoutLaterPipelineCommit reproduces
@@ -163,6 +165,128 @@ func TestAssertReviewApprovedPushHead_RefusesMissingLegacyState(t *testing.T) {
 	err := assertReviewApprovedPushHead(sctx, headSHA)
 	if err == nil || !strings.Contains(err.Error(), "no durably recorded review-approved head") {
 		t.Fatalf("expected missing legacy approval refusal, got %v", err)
+	}
+}
+
+func recordCertification(t *testing.T, sctx *pipeline.StepContext, headSHA string) {
+	t.Helper()
+	step, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepCertify)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.CompleteCertifyStep(step.ID, sctx.Run.ID, headSHA, 0, 1, "certify.log"); err != nil {
+		t.Fatal(err)
+	}
+	sctx.Run.CertifiedHeadSHA = &headSHA
+}
+
+func TestAssertCertifiedPushHead_RequiresExactCleanReachableCandidate(t *testing.T) {
+	tests := []struct {
+		name      string
+		certified func(t *testing.T, dir, baseSHA, headSHA string) string
+		proposed  func(t *testing.T, dir, baseSHA, headSHA string) string
+		dirty     bool
+		wantError string
+	}{
+		{
+			name:      "equal",
+			certified: func(_ *testing.T, _, _, headSHA string) string { return headSHA },
+			proposed:  func(_ *testing.T, _, _, headSHA string) string { return headSHA },
+		},
+		{
+			name:      "descendant",
+			certified: func(_ *testing.T, _, _, headSHA string) string { return headSHA },
+			proposed: func(t *testing.T, dir, _, _ string) string {
+				if err := os.WriteFile(filepath.Join(dir, "later.txt"), []byte("later\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				gitCmd(t, dir, "add", "-A")
+				gitCmd(t, dir, "commit", "-m", "later pipeline change")
+				return gitCmd(t, dir, "rev-parse", "HEAD")
+			},
+			wantError: "descendant",
+		},
+		{
+			name:      "malformed",
+			certified: func(_ *testing.T, _, _, _ string) string { return "HEAD" },
+			proposed:  func(_ *testing.T, _, _, headSHA string) string { return headSHA },
+			wantError: "malformed",
+		},
+		{
+			name:      "unreachable",
+			certified: func(_ *testing.T, _, _, _ string) string { return strings.Repeat("a", 40) },
+			proposed:  func(_ *testing.T, _, _, headSHA string) string { return headSHA },
+			wantError: "unreachable",
+		},
+		{
+			name:      "stale or divergent",
+			certified: func(_ *testing.T, _, _, headSHA string) string { return headSHA },
+			proposed: func(t *testing.T, dir, baseSHA, _ string) string {
+				gitCmd(t, dir, "reset", "--hard", baseSHA)
+				return gitCmd(t, dir, "rev-parse", "HEAD")
+			},
+			wantError: "stale or divergent",
+		},
+		{
+			name:      "dirty",
+			certified: func(_ *testing.T, _, _, headSHA string) string { return headSHA },
+			proposed:  func(_ *testing.T, _, _, headSHA string) string { return headSHA },
+			dirty:     true,
+			wantError: "worktree is dirty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, baseSHA, headSHA := setupGitRepo(t)
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+			certified := tt.certified(t, dir, baseSHA, headSHA)
+			recordCertification(t, sctx, certified)
+			if tt.dirty {
+				if err := os.WriteFile(filepath.Join(dir, "uncommitted.txt"), []byte("dirty\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			proposed := tt.proposed(t, dir, baseSHA, headSHA)
+			err := assertCertifiedPushHead(sctx, proposed)
+			if tt.wantError == "" {
+				if err != nil {
+					t.Fatalf("expected exact certification binding, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("error = %v, want substring %q", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestPushStep_FleetModeRequiresCertificateAndDoesNotFormatOrCommit(t *testing.T) {
+	upstream := t.TempDir()
+	gitCmd(t, upstream, "init", "--bare")
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	gitCmd(t, dir, "remote", "add", "origin", upstream)
+	gitCmd(t, dir, "push", "origin", "main")
+	gitCmd(t, dir, "push", "origin", "feature")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{Format: "touch formatter-must-not-run"})
+	withReviewFleetEnabled(t, sctx, true)
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Run.Branch = "refs/heads/feature"
+	recordCertification(t, sctx, headSHA)
+
+	if _, err := (&PushStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "formatter-must-not-run")); !os.IsNotExist(err) {
+		t.Fatalf("fleet Push ran formatter or left unexpected file, stat error=%v", err)
+	}
+	if got := gitStatusPorcelain(t, dir); got != "" {
+		t.Fatalf("fleet Push mutated worktree: %q", got)
+	}
+	if remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); remoteHead != headSHA {
+		t.Fatalf("remote head = %s, want certified %s", remoteHead, headSHA)
 	}
 }
 

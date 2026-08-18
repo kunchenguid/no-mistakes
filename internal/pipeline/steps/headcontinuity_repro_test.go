@@ -202,6 +202,7 @@ func TestPostReviewStepsRefuseHeadClobberAtEntry(t *testing.T) {
 		&TestStep{},
 		&DocumentStep{},
 		&LintStep{},
+		&CertifyStep{},
 		&PushStep{},
 		&PRStep{},
 		&CIStep{},
@@ -248,6 +249,9 @@ func TestPostReviewStepsRefuseHeadClobberAtEntry(t *testing.T) {
 				dir, baseSHA, reviewedHead := setupGitRepo(t)
 				ag := &mockAgent{name: "codex"}
 				sctx := newTestContext(t, ag, dir, baseSHA, reviewedHead, config.Commands{})
+				if step.Name() == types.StepCertify {
+					withReviewFleetEnabled(t, sctx, true)
+				}
 				clobberedHead := reset.move(t, dir, baseSHA)
 
 				_, err := step.Execute(sctx)
@@ -274,6 +278,7 @@ func TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry(t *testing.T) {
 		&TestStep{},
 		&DocumentStep{},
 		&LintStep{},
+		&CertifyStep{},
 		&PushStep{},
 		&PRStep{},
 		&CIStep{},
@@ -284,6 +289,9 @@ func TestPostReviewStepsRefuseUnverifiableRecordedHeadAtEntry(t *testing.T) {
 			dir, baseSHA, currentHead := setupGitRepo(t)
 			ag := &mockAgent{name: "codex"}
 			sctx := newTestContext(t, ag, dir, baseSHA, strings.Repeat("f", 40), config.Commands{})
+			if step.Name() == types.StepCertify {
+				withReviewFleetEnabled(t, sctx, true)
+			}
 
 			_, err := step.Execute(sctx)
 			if err == nil || !strings.Contains(err.Error(), "not a descendant") {
@@ -330,6 +338,7 @@ func TestPostReviewStepEntryAllowsEqualAndPipelineDescendantHeads(t *testing.T) 
 		types.StepTest,
 		types.StepDocument,
 		types.StepLint,
+		types.StepCertify,
 		types.StepPush,
 		types.StepPR,
 		types.StepCI,

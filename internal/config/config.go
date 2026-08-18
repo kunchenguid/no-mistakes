@@ -765,24 +765,24 @@ log_level: info
 #   reviewers:
 #     test-adversary:
 #       model: gpt-5.6-luna
-#       reasoning_effort: high
+#       reasoning_effort: max
 #     correctness:
 #       model: gpt-5.6-terra
 #       reasoning_effort: high
 #     architecture:
-#       model: gpt-5.6-sol
+#       model: gpt-5.6-terra
 #       reasoning_effort: high
 #     security:
-#       model: gpt-5.6-luna
+#       model: gpt-5.6-terra
 #       reasoning_effort: high
 #       high_risk_paths: [internal/auth/**, internal/crypto/**]
-#       escalated_reasoning_effort: max
+#       escalated_reasoning_effort: xhigh
 #   consolidator:
 #     model: gpt-5.6-terra
 #     reasoning_effort: high
 #   certifier:
 #     model: gpt-5.6-sol
-#     reasoning_effort: high
+#     reasoning_effort: xhigh
 #
 # Maximum follow-up auto-fix attempts per step (0 = disabled after the initial pass)
 # Document fixes are attempted during the initial document pass.
@@ -1344,7 +1344,9 @@ func validateReviewFleetCodexArgSlice(args []string) error {
 			if err := validateReviewFleetCodexConfigValue(value); err != nil {
 				return err
 			}
+			continue
 		}
+		return fmt.Errorf("review_fleet cannot inherit unknown codex flag %q; only service_tier is allowed", arg)
 	}
 	return nil
 }
@@ -2115,8 +2117,18 @@ func validateReviewFleetProfile(name string, profile ReviewFleetProfile, securit
 	if !security {
 		return nil
 	}
-	if escalated := strings.TrimSpace(profile.EscalatedReasoningEffort); escalated != "" && !reviewFleetReasoningEfforts[escalated] {
+	escalated := strings.TrimSpace(profile.EscalatedReasoningEffort)
+	if len(profile.HighRiskPaths) > 0 && escalated == "" {
+		return fmt.Errorf("%s.escalated_reasoning_effort must be set when high_risk_paths is configured", name)
+	}
+	if len(profile.HighRiskPaths) == 0 && escalated != "" {
+		return fmt.Errorf("%s.high_risk_paths must be set when escalated_reasoning_effort is configured", name)
+	}
+	if escalated != "" && !reviewFleetReasoningEfforts[escalated] {
 		return fmt.Errorf("%s.escalated_reasoning_effort %q is invalid (valid: low, medium, high, xhigh, max)", name, escalated)
+	}
+	if escalated != "" && reviewFleetReasoningRank(escalated) <= reviewFleetReasoningRank(effort) {
+		return fmt.Errorf("%s.escalated_reasoning_effort must be stronger than reasoning_effort", name)
 	}
 	if len(profile.HighRiskPaths) > MaxReviewFleetHighRiskPaths {
 		return fmt.Errorf("%s.high_risk_paths has %d entries, at most %d are allowed", name, len(profile.HighRiskPaths), MaxReviewFleetHighRiskPaths)
@@ -2142,6 +2154,23 @@ func validateReviewFleetProfile(name string, profile ReviewFleetProfile, securit
 		return fmt.Errorf("%s.high_risk_paths exceeds the %d-byte limit", name, MaxReviewFleetHighRiskPathsBytes)
 	}
 	return nil
+}
+
+func reviewFleetReasoningRank(effort string) int {
+	switch effort {
+	case string(ReviewFleetReasoningLow):
+		return 1
+	case string(ReviewFleetReasoningMedium):
+		return 2
+	case string(ReviewFleetReasoningHigh):
+		return 3
+	case string(ReviewFleetReasoningXHigh):
+		return 4
+	case string(ReviewFleetReasoningMax):
+		return 5
+	default:
+		return 0
+	}
 }
 
 // validateReviewFleetGitPathGlob mirrors matchIgnorePattern in
