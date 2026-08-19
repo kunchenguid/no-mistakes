@@ -167,6 +167,57 @@ func TestMerge_AutoFixRepoOverridesGlobal(t *testing.T) {
 	}
 }
 
+func TestMerge_DraftPRDefaultsFalseAndRepoOverridesGlobal(t *testing.T) {
+	tests := []struct {
+		name       string
+		globalYAML string
+		repoYAML   string
+		want       bool
+	}{
+		{
+			name:       "default false",
+			globalYAML: "agent: claude\n",
+			repoYAML:   "commands: {}\n",
+			want:       false,
+		},
+		{
+			name:       "global true",
+			globalYAML: "draft_pr: true\n",
+			repoYAML:   "commands: {}\n",
+			want:       true,
+		},
+		{
+			name:       "repo true overrides global false",
+			globalYAML: "draft_pr: false\n",
+			repoYAML:   "draft_pr: true\n",
+			want:       true,
+		},
+		{
+			name:       "repo false overrides global true",
+			globalYAML: "draft_pr: true\n",
+			repoYAML:   "draft_pr: false\n",
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			global, err := LoadGlobalFromBytes([]byte(tt.globalYAML))
+			if err != nil {
+				t.Fatalf("LoadGlobalFromBytes() error = %v", err)
+			}
+			repo, err := LoadRepoFromBytes([]byte(tt.repoYAML))
+			if err != nil {
+				t.Fatalf("LoadRepoFromBytes() error = %v", err)
+			}
+
+			if got := Merge(global, repo).DraftPR; got != tt.want {
+				t.Errorf("DraftPR = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAutoFixLimit(t *testing.T) {
 	cfg := &Config{
 		AutoFix: AutoFix{Lint: 5, Test: 2, Review: 0, Document: 1, CI: 3, Rebase: 4},

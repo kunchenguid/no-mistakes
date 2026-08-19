@@ -99,7 +99,10 @@ type GlobalConfig struct {
 	// findings prescribed the fixes it certifies. Default true; set
 	// session_reuse: false to force every invocation cold.
 	SessionReuse bool `yaml:"-"`
-	AutoFix      AutoFixRaw
+	// DraftPR controls whether newly created GitHub pull requests start as
+	// drafts. A nil value lets a repository-level setting take precedence.
+	DraftPR *bool `yaml:"-"`
+	AutoFix AutoFixRaw
 	// CI is the operator's own CI-step floor. It is the only place the rerun
 	// budget can be set for a repository whose default branch this machine's
 	// user does not control (the common case when contributing to someone
@@ -128,6 +131,7 @@ type globalConfigRaw struct {
 	StepQuietWarning     string              `yaml:"step_quiet_warning"`
 	LogLevel             string              `yaml:"log_level"`
 	SessionReuse         *bool               `yaml:"session_reuse"`
+	DraftPR              *bool               `yaml:"draft_pr"`
 	AutoFix              AutoFixRaw          `yaml:"auto_fix"`
 	CI                   CIRaw               `yaml:"ci"`
 	Commit               CommitRaw           `yaml:"commit"`
@@ -142,6 +146,9 @@ type RepoConfig struct {
 	Agents         []types.AgentName `yaml:"-"`
 	Commands       Commands          `yaml:"commands"`
 	IgnorePatterns []string          `yaml:"ignore_patterns"`
+	// DraftPR controls whether GitHub PRs newly created for this branch are
+	// drafts. A non-nil repository value overrides the global setting.
+	DraftPR *bool `yaml:"draft_pr"`
 	// AllowRepoCommands opts in to honoring the code-executing selection
 	// fields (commands.{test,lint,format} and agent) from a contributor's
 	// pushed branch instead of the trusted default-branch copy. It is read
@@ -321,6 +328,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 		Agent                  agentList   `yaml:"agent"`
 		Commands               Commands    `yaml:"commands"`
 		IgnorePatterns         []string    `yaml:"ignore_patterns"`
+		DraftPR                *bool       `yaml:"draft_pr"`
 		AllowRepoCommands      bool        `yaml:"allow_repo_commands"`
 		AutoFix                AutoFixRaw  `yaml:"auto_fix"`
 		CI                     CIRaw       `yaml:"ci"`
@@ -340,6 +348,7 @@ func (c *RepoConfig) UnmarshalYAML(value *yaml.Node) error {
 	c.Agents = copyAgents(raw.Agent)
 	c.Commands = raw.Commands
 	c.IgnorePatterns = raw.IgnorePatterns
+	c.DraftPR = raw.DraftPR
 	c.AllowRepoCommands = raw.AllowRepoCommands
 	c.AutoFix = raw.AutoFix
 	c.CI = raw.CI
@@ -415,6 +424,7 @@ type Config struct {
 	StepQuietWarning      time.Duration
 	LogLevel              string
 	SessionReuse          bool
+	DraftPR               bool
 	Eval                  Eval
 	Commands              Commands
 	IgnorePatterns        []string
@@ -672,6 +682,10 @@ daemon_connect_timeout: "3s"
 # its fixes. Supported for claude and codex; other agents run cold. Set false to
 # force every agent invocation cold.
 session_reuse: true
+
+# Create newly opened GitHub pull requests as drafts. Existing pull requests
+# are only updated and never have their readiness state changed.
+draft_pr: false
 
 # Log level for daemon output
 # Options: debug, info, warn, error
@@ -1335,6 +1349,9 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	if raw.SessionReuse != nil {
 		cfg.SessionReuse = *raw.SessionReuse
 	}
+	if raw.DraftPR != nil {
+		cfg.DraftPR = raw.DraftPR
+	}
 	if raw.AutoFix.CI == nil {
 		raw.AutoFix.CI = raw.AutoFix.Babysit
 	}
@@ -1890,6 +1907,14 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		commit.FixMessage = *repo.Commit.FixMessage
 	}
 
+	draftPR := false
+	if global.DraftPR != nil {
+		draftPR = *global.DraftPR
+	}
+	if repo.DraftPR != nil {
+		draftPR = *repo.DraftPR
+	}
+
 	cfg := &Config{
 		Agent:                global.Agent,
 		Agents:               copyAgents(global.Agents),
@@ -1901,6 +1926,7 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		StepQuietWarning:     global.StepQuietWarning,
 		LogLevel:             global.LogLevel,
 		SessionReuse:         global.SessionReuse,
+		DraftPR:              draftPR,
 		// Eval is global-only by design (see GlobalConfig.Eval), so it is
 		// copied straight through with no repository override step.
 		Eval:           global.Eval,

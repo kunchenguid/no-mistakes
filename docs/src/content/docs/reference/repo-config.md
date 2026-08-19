@@ -12,7 +12,7 @@ The daemon also reads `document.instructions`, `review.path_instructions`, `disa
 If the default branch cannot be fetched and resolved to a readable commit, or its present `.no-mistakes.yaml` cannot be read and parsed, the run aborts before launching an agent.
 A readable default-branch tree with no `.no-mistakes.yaml` is valid and uses defaults.
 Commit the gate-control settings you want to your default branch.
-Non-executing fields (`ignore_patterns`, `auto_fix`, `commit`, `intent`, `test`) are still read from the pushed branch, except `test.evidence.branch`, which names a git ref the daemon pushes to.
+Non-executing fields (`ignore_patterns`, `draft_pr`, `auto_fix`, `commit`, `intent`, `test`) are still read from the pushed branch, except `test.evidence.branch`, which names a git ref the daemon pushes to.
 
 If you genuinely want per-branch `commands` and `agent` (for example, a single-developer repo where you trust your own feature branches), opt in with [`allow_repo_commands: true`](#allow_repo_commands) in this same file on your default branch. This re-enables the previous behavior with eyes open. The switch is read only from the trusted default-branch copy, so a contributor cannot self-enable it from a pushed branch.
 :::
@@ -31,6 +31,9 @@ commands:
 ignore_patterns:
   - "*.generated.go"
   - "vendor/**"
+
+# Override the global setting for this branch. GitHub only.
+draft_pr: true
 
 # Optional documentation ownership policy, read only from the trusted default branch.
 document:
@@ -127,6 +130,17 @@ Opt in to honoring the code-executing selection fields (`commands.{test,lint,for
 | Default | `false` |
 
 This field is itself read **only from the trusted default-branch copy** of `.no-mistakes.yaml`, never from the pushed SHA, so a contributor cannot self-enable it by setting it on a feature branch. By default the daemon reads `commands` and `agent` from your default branch (e.g. `origin/main`) so a pushed SHA cannot inject shell or pick the launched agent on the daemon host. This opt-in covers those two fields only; `document.instructions`, `review.path_instructions`, and `disable_project_settings` stay trusted-only either way. Leave this `false` for any repo that accepts contributions. Set it to `true` only for a single-developer environment where you trust every branch you push (for example, a personal repo gated by your own daemon).
+
+### draft_pr
+
+Override the global [`draft_pr`](/no-mistakes/reference/global-config/#draft_pr) setting for this repository or branch.
+
+| | |
+| --- | --- |
+| Type | `bool` |
+| Default | Inherits from global config (`false` when unset) |
+
+With `draft_pr: true`, no-mistakes passes `--draft` when it creates a new GitHub pull request. It never converts a pull request after creation and never changes the readiness state of an existing pull request during updates. This setting affects GitHub only. GitLab and Azure DevOps creation remain unchanged.
 
 ### disable_project_settings
 

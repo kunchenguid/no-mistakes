@@ -153,6 +153,40 @@ func TestCreatePRStreamsBodyThroughStdin(t *testing.T) {
 	}
 }
 
+func TestCreatePRDraftAddsFlagOnlyToNewGitHubPR(t *testing.T) {
+	t.Parallel()
+
+	var recorded [][]string
+	host := New(recordingCmdFactory("https://github.com/test/repo/pull/42\n", &recorded), nil, "", "test/repo").WithDraftPR(true)
+	if _, err := host.CreatePR(context.Background(), "feature/draft", "main", scm.PRContent{Title: "feat: draft", Body: "body"}); err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("expected one gh invocation, got %d: %v", len(recorded), recorded)
+	}
+	want := []string{"gh", "pr", "create", "--head", "feature/draft", "--base", "main", "--repo", "test/repo", "--draft", "--title", "feat: draft", "--body-file", "-"}
+	if got := recorded[0]; strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("create argv = %v, want %v", got, want)
+	}
+}
+
+func TestCreatePRDraftUsesForkHead(t *testing.T) {
+	t.Parallel()
+
+	var recorded [][]string
+	host := NewWithFork(recordingCmdFactory("https://github.com/parent/repo/pull/42\n", &recorded), nil, "", "parent/repo", "fork-owner/repo").WithDraftPR(true)
+	if _, err := host.CreatePR(context.Background(), "feature/draft", "main", scm.PRContent{Title: "feat: draft", Body: "body"}); err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if len(recorded) != 1 {
+		t.Fatalf("expected one gh invocation, got %d: %v", len(recorded), recorded)
+	}
+	want := []string{"gh", "pr", "create", "--head", "fork-owner:feature/draft", "--base", "main", "--repo", "parent/repo", "--draft", "--title", "feat: draft", "--body-file", "-"}
+	if got := recorded[0]; strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("fork create argv = %v, want %v", got, want)
+	}
+}
+
 func TestUpdatePRStreamsBodyThroughStdin(t *testing.T) {
 	t.Parallel()
 

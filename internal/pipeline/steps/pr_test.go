@@ -55,6 +55,7 @@ func TestPRStep_UpdatesExistingPR(t *testing.T) {
 	ag := &mockAgent{name: "test"}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
+	sctx.Config.DraftPR = true
 	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
 	if err != nil {
 		t.Fatal(err)
@@ -80,6 +81,9 @@ func TestPRStep_UpdatesExistingPR(t *testing.T) {
 	ghLog := string(logData)
 	if !strings.Contains(ghLog, "pr edit") {
 		t.Errorf("expected gh pr edit to be called, got:\n%s", ghLog)
+	}
+	if strings.Contains(ghLog, "--draft") {
+		t.Errorf("existing PR update must not change draft readiness, got:\n%s", ghLog)
 	}
 	if !strings.Contains(ghLog, "--body") {
 		t.Errorf("expected --body flag in gh pr edit, got:\n%s", ghLog)
@@ -327,6 +331,7 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	}
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = env
+	sctx.Config.DraftPR = true
 	sctx.Repo.UpstreamURL = "https://github.com/parent-owner/no-mistakes.git"
 	sctx.Repo.ForkURL = "https://github.com/fork-owner/no-mistakes.git"
 	sctx.Run.Branch = "refs/heads/feature"
@@ -347,7 +352,7 @@ func TestPRStep_GitHubForkCreatesParentPRWithForkHead(t *testing.T) {
 	if strings.Contains(ghLog, "pr list --head fork-owner:feature") {
 		t.Fatalf("PR lookup used unsupported owner-qualified --head, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "pr create --head fork-owner:feature --base main --repo parent-owner/no-mistakes") {
+	if !strings.Contains(ghLog, "pr create --head fork-owner:feature --base main --repo parent-owner/no-mistakes --draft") {
 		t.Fatalf("expected PR create to target parent repo with fork owner head, got:\n%s", ghLog)
 	}
 	if strings.Contains(ghLog, "--repo fork-owner/no-mistakes") {
