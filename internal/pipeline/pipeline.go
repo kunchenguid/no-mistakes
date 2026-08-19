@@ -120,6 +120,9 @@ type ReviewFleetSettings struct {
 	// run starts, then used unchanged for fingerprinting and every invocation.
 	CodexExecutable       string
 	CodexExecutableDigest string
+	// DeliveryContractDigest binds recovery to every effective setting that
+	// can change how the remaining pipeline executes, not only fleet profiles.
+	DeliveryContractDigest string
 	// CodexProfileArgs must return safe, profile-specific Codex arguments. The
 	// executor adds the final read-only/project-settings protections as a second
 	// defensive layer before constructing the adapter.

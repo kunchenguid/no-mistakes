@@ -65,6 +65,10 @@ func reviewFleetSettingsFromConfigForSource(cfg *config.Config, sourceRoot strin
 	if err != nil {
 		return nil, err
 	}
+	settings.DeliveryContractDigest, err = reviewFleetDeliveryContractDigest(cfg)
+	if err != nil {
+		return nil, err
+	}
 	roles := []string{
 		config.ReviewFleetRoleTestAdversary,
 		config.ReviewFleetRoleCorrectness,
@@ -180,13 +184,77 @@ func reviewFleetPathWithin(root, candidate string) bool {
 }
 
 type reviewFleetContract struct {
-	Version               int                          `json:"version"`
-	CodexExecutable       string                       `json:"codex_executable"`
-	CodexExecutableDigest string                       `json:"codex_executable_digest"`
-	Reviewers             []reviewFleetContractProfile `json:"reviewers"`
-	Consolidator          reviewFleetContractProfile   `json:"consolidator"`
-	Certifier             reviewFleetContractProfile   `json:"certifier"`
-	TrustedGuidance       []config.PathInstruction     `json:"trusted_guidance"`
+	Version                int                          `json:"version"`
+	CodexExecutable        string                       `json:"codex_executable"`
+	CodexExecutableDigest  string                       `json:"codex_executable_digest"`
+	Reviewers              []reviewFleetContractProfile `json:"reviewers"`
+	Consolidator           reviewFleetContractProfile   `json:"consolidator"`
+	Certifier              reviewFleetContractProfile   `json:"certifier"`
+	TrustedGuidance        []config.PathInstruction     `json:"trusted_guidance"`
+	DeliveryContractDigest string                       `json:"delivery_contract_digest"`
+}
+
+// reviewFleetDeliveryContract is the canonical effective configuration whose
+// values can alter work after Review. It deliberately records resolved values,
+// rather than raw YAML, so irrelevant spelling changes do not invalidate a
+// parked run while any behavioral change does.
+type reviewFleetDeliveryContract struct {
+	Agent                  types.AgentName     `json:"agent"`
+	Agents                 []types.AgentName   `json:"agents"`
+	ACPXPath               string              `json:"acpx_path"`
+	ACPRegistryOverrides   map[string]string   `json:"acp_registry_overrides"`
+	AgentPathOverride      map[string]string   `json:"agent_path_override"`
+	AgentArgsOverride      map[string][]string `json:"agent_args_override"`
+	CITimeout              int64               `json:"ci_timeout"`
+	StepQuietWarning       int64               `json:"step_quiet_warning"`
+	SessionReuse           bool                `json:"session_reuse"`
+	Commands               config.Commands     `json:"commands"`
+	IgnorePatterns         []string            `json:"ignore_patterns"`
+	AutoFix                config.AutoFix      `json:"auto_fix"`
+	CI                     config.CI           `json:"ci"`
+	Commit                 config.Commit       `json:"commit"`
+	Intent                 config.Intent       `json:"intent"`
+	Test                   config.Test         `json:"test"`
+	Document               config.Document     `json:"document"`
+	Review                 config.Review       `json:"review"`
+	AllowRepoCommands      bool                `json:"allow_repo_commands"`
+	DisableProjectSettings bool                `json:"disable_project_settings"`
+	NoCI                   bool                `json:"no_ci"`
+}
+
+func reviewFleetDeliveryContractDigest(cfg *config.Config) (string, error) {
+	if cfg == nil {
+		return "", fmt.Errorf("cannot fingerprint a nil effective delivery configuration")
+	}
+	contract := reviewFleetDeliveryContract{
+		Agent:                  cfg.Agent,
+		Agents:                 append([]types.AgentName(nil), cfg.Agents...),
+		ACPXPath:               cfg.ACPXPath,
+		ACPRegistryOverrides:   cfg.ACPRegistryOverrides,
+		AgentPathOverride:      cfg.AgentPathOverride,
+		AgentArgsOverride:      cfg.AgentArgsOverride,
+		CITimeout:              int64(cfg.CITimeout),
+		StepQuietWarning:       int64(cfg.StepQuietWarning),
+		SessionReuse:           cfg.SessionReuse,
+		Commands:               cfg.Commands,
+		IgnorePatterns:         append([]string(nil), cfg.IgnorePatterns...),
+		AutoFix:                cfg.AutoFix,
+		CI:                     cfg.CI,
+		Commit:                 cfg.Commit,
+		Intent:                 cfg.Intent,
+		Test:                   cfg.Test,
+		Document:               cfg.Document,
+		Review:                 cfg.Review,
+		AllowRepoCommands:      cfg.AllowRepoCommands,
+		DisableProjectSettings: cfg.DisableProjectSettings,
+		NoCI:                   cfg.NoCI,
+	}
+	encoded, err := json.Marshal(contract)
+	if err != nil {
+		return "", fmt.Errorf("encode effective delivery contract: %w", err)
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 type reviewFleetContractProfile struct {
@@ -222,11 +290,15 @@ func reviewFleetFingerprintWithGuidance(settings *ReviewFleetSettings, guidance 
 		return "", fmt.Errorf("review fleet Codex executable changed since configuration")
 	}
 	contract := reviewFleetContract{
-		Version:               reviewFleetContractVersion,
-		CodexExecutable:       settings.CodexExecutable,
-		CodexExecutableDigest: digest,
-		Reviewers:             make([]reviewFleetContractProfile, 0, len(settings.Reviewers)),
-		TrustedGuidance:       normalizeFleetGuidance(guidance),
+		Version:                reviewFleetContractVersion,
+		CodexExecutable:        settings.CodexExecutable,
+		CodexExecutableDigest:  digest,
+		Reviewers:              make([]reviewFleetContractProfile, 0, len(settings.Reviewers)),
+		TrustedGuidance:        normalizeFleetGuidance(guidance),
+		DeliveryContractDigest: settings.DeliveryContractDigest,
+	}
+	if len(settings.DeliveryContractDigest) != sha256.Size*2 {
+		return "", fmt.Errorf("review fleet effective delivery contract is not resolved")
 	}
 	for _, profile := range settings.Reviewers {
 		fingerprinted, err := reviewFleetFingerprintProfile(settings, profile)
@@ -350,7 +422,7 @@ func validateReviewFleetIsolation(args []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var readOnly, ephemeral, ignoredRules, ignoredUserConfig, suppressedProjectDoc, restrictedShellEnv bool
+	var readOnly, ephemeral, ignoredRules, ignoredUserConfig, skippedGitRepoCheck, suppressedProjectDoc, restrictedShellEnv bool
 	for i := 0; i < len(validated); i++ {
 		arg := validated[i]
 		switch {
@@ -373,6 +445,8 @@ func validateReviewFleetIsolation(args []string) ([]string, error) {
 			ignoredRules = true
 		case arg == "--ignore-user-config":
 			ignoredUserConfig = true
+		case arg == "--skip-git-repo-check":
+			skippedGitRepoCheck = true
 		case arg == "-c" || arg == "--config":
 			if i+1 >= len(validated) {
 				return nil, fmt.Errorf("review fleet Codex config flag is incomplete")
@@ -394,7 +468,7 @@ func validateReviewFleetIsolation(args []string) ([]string, error) {
 			}
 		}
 	}
-	if !readOnly || !ephemeral || !ignoredRules || !ignoredUserConfig || !suppressedProjectDoc || !restrictedShellEnv {
+	if !readOnly || !ephemeral || !ignoredRules || !ignoredUserConfig || !skippedGitRepoCheck || !suppressedProjectDoc || !restrictedShellEnv {
 		return nil, fmt.Errorf("review fleet Codex args are missing mandatory read-only isolation controls")
 	}
 	return validated, nil

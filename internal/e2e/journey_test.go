@@ -531,9 +531,11 @@ func cleanReviewScenario(t *testing.T) string {
       summary: "no issues found"
       risk_level: low
       risk_rationale: "no risks detected in the diff"
+      risk_scope: source-or-external
       tested:
         - "fakeagent: simulated test run"
       testing_summary: "simulated tests passed"
+      artifacts: []
       title: "feat: fakeagent change"
       body: "## Summary\nfakeagent canned PR body"
 `
@@ -2732,7 +2734,7 @@ func assertReviewPrompt(t *testing.T, h *Harness, run *ipc.RunInfo, invs []Invoc
 		"branch: feature/e2e",
 		baseSHA,
 		run.HeadSHA,
-		"ignore patterns: *.generated.go, vendor/**",
+		`ignore patterns: "*.generated.go, vendor/**"`,
 		"Do a full review pass before returning.",
 		"Do not stop after the first valid finding.",
 		"Do NOT run tests during review.",

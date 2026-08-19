@@ -240,9 +240,12 @@ func TestReviewStepIgnoredOrdinaryPathStillRunsFleet(t *testing.T) {
 	sctx.Run.ReviewFleetEnabled = true
 	sctx.ReviewFleet = testReviewFleetSettings()
 	sctx.Config.IgnorePatterns = []string{"*.txt"}
+	var mu sync.Mutex
 	var calls int
 	sctx.RunReviewProfile = func(_ context.Context, _ pipeline.ReviewProfile, _ agent.RunOpts) (*agent.Result, error) {
+		mu.Lock()
 		calls++
+		mu.Unlock()
 		return &agent.Result{Output: cleanFleetOutput(t)}, nil
 	}
 
@@ -250,8 +253,11 @@ func TestReviewStepIgnoredOrdinaryPathStillRunsFleet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome.Skipped || calls != 5 {
-		t.Fatalf("fleet ignored ordinary change: skipped=%t calls=%d", outcome.Skipped, calls)
+	mu.Lock()
+	gotCalls := calls
+	mu.Unlock()
+	if outcome.Skipped || gotCalls != 5 {
+		t.Fatalf("fleet ignored ordinary change: skipped=%t calls=%d", outcome.Skipped, gotCalls)
 	}
 }
 

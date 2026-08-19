@@ -34,6 +34,7 @@ func TestValidateReviewFleetIsolationRejectsMutatingOverrides(t *testing.T) {
 		"-c", `shell_environment_policy.inherit="core"`,
 		"--ignore-rules",
 		"--ignore-user-config",
+		"--skip-git-repo-check",
 	}
 	if _, err := validateReviewFleetIsolation(safe); err != nil {
 		t.Fatalf("safe review-fleet args rejected: %v", err)
@@ -207,6 +208,21 @@ func TestReviewFleetFingerprintBindsExactEffectiveContract(t *testing.T) {
 	if got := fingerprint(changedArgs); got == want {
 		t.Fatal("safe inherited argument change did not change fleet fingerprint")
 	}
+	changedCommand := testReviewFleetConfig(bin)
+	changedCommand.Commands.Test = "go test ./internal/..."
+	if got := fingerprint(changedCommand); got == want {
+		t.Fatal("effective test command change did not change fleet fingerprint")
+	}
+	changedTrust := testReviewFleetConfig(bin)
+	changedTrust.AllowRepoCommands = true
+	if got := fingerprint(changedTrust); got == want {
+		t.Fatal("allow_repo_commands change did not change fleet fingerprint")
+	}
+	changedNoCI := testReviewFleetConfig(bin)
+	changedNoCI.NoCI = true
+	if got := fingerprint(changedNoCI); got == want {
+		t.Fatal("no_ci change did not change fleet fingerprint")
+	}
 }
 
 func TestReviewFleetFingerprintRejectsChangedExecutable(t *testing.T) {
@@ -341,6 +357,7 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 				"-c", `shell_environment_policy.inherit="core"`,
 				"--ignore-rules",
 				"--ignore-user-config",
+				"--skip-git-repo-check",
 			}, nil
 		}},
 		workDir: dir,
@@ -413,7 +430,7 @@ func TestReviewProfileRunnerIsColdAndIsolatesSkillsPluginsAndEnvironment(t *test
 			t.Fatalf("cold/read-only runner args contain %q: %s", forbidden, args)
 		}
 	}
-	for _, required := range []string{"--sandbox\nread-only", "--ephemeral", "project_doc_max_bytes=0", `shell_environment_policy.inherit="core"`, "--ignore-rules", "--ignore-user-config", "gpt-test", `model_reasoning_effort="high"`} {
+	for _, required := range []string{"--sandbox\nread-only", "--ephemeral", "project_doc_max_bytes=0", `shell_environment_policy.inherit="core"`, "--ignore-rules", "--ignore-user-config", "--skip-git-repo-check", "gpt-test", `model_reasoning_effort="high"`} {
 		if !strings.Contains(args, required) {
 			t.Fatalf("runner args missing %q: %s", required, args)
 		}

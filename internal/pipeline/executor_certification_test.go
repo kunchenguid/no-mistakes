@@ -69,6 +69,22 @@ func TestRecoveredFleetRequiresExactOriginalContract(t *testing.T) {
 	if err := changed.validateRecoveredReviewFleet(run); err == nil || !strings.Contains(err.Error(), "contract changed") {
 		t.Fatalf("changed recovered contract was accepted: %v", err)
 	}
+
+	changedCommandConfig := testReviewFleetConfig(bin)
+	changedCommandConfig.Commands.Test = "go test ./internal/..."
+	changedCommand := NewExecutor(database, p, changedCommandConfig, nil, nil, nil)
+	changedCommand.initializeRunScopes(run.ID)
+	if err := changedCommand.validateRecoveredReviewFleet(run); err == nil || !strings.Contains(err.Error(), "contract changed") {
+		t.Fatalf("changed recovered test command was accepted: %v", err)
+	}
+
+	changedTrustConfig := testReviewFleetConfig(bin)
+	changedTrustConfig.AllowRepoCommands = true
+	changedTrust := NewExecutor(database, p, changedTrustConfig, nil, nil, nil)
+	changedTrust.initializeRunScopes(run.ID)
+	if err := changedTrust.validateRecoveredReviewFleet(run); err == nil || !strings.Contains(err.Error(), "contract changed") {
+		t.Fatalf("changed recovered allow_repo_commands decision was accepted: %v", err)
+	}
 }
 
 func TestExecutor_CertifyAuthorityOnlyCompletesOrIsExplicitlyApproved(t *testing.T) {

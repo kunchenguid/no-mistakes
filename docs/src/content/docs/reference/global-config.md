@@ -268,11 +268,18 @@ required profile field reject the global config before a run starts.
 together so a matched path always has a complete escalation profile.
 
 Fleet invocations are always cold and add `--sandbox read-only`, `--ephemeral`,
+`--skip-git-repo-check`,
 `--ignore-user-config`, `-c project_doc_max_bytes=0`, `--ignore-rules`, and a
 core-only shell environment policy. Each Review or Certify execution uses a
 clean detached shadow checkout that excludes repository `.agents/skills` and
 `.codex` state. It also receives an isolated `HOME`, XDG directories, and
 `CODEX_HOME`; only a bounded regular-file copy of `auth.json` is admitted.
+This shadow prevents normal discovery of excluded repository/user instruction
+state; it is not a host-filesystem confidentiality boundary. Codex's
+`read-only` sandbox prevents writes but may read other host paths that the
+operating-system account can read. Run no-mistakes under a dedicated OS
+account or an outer container when reviews must process untrusted source under
+a strict read boundary.
 Inherited Codex model, reasoning, sandbox, approval-bypass, session,
 project-document, and ignore-rules flags are rejected because they could
 defeat fleet isolation. The `service_tier` config override is the only
@@ -284,7 +291,10 @@ diff still runs the fleet when it contains an operator-classified high-risk path
 The enabled/disabled fleet mode is persisted when a run starts. Recovery uses
 that durable value plus a fingerprint of every profile, high-risk path,
 generated safe argument, and the once-resolved absolute Codex executable used
-for every invocation. A changed contract
+for every invocation. The fingerprint also binds the complete resolved
+delivery configuration, including commands, auto-fix and CI policy,
+documentation/test settings, and the trusted `allow_repo_commands` decision.
+A changed contract
 fails recovery instead of weakening an already-started run. Push requires exact
 equality with the certified commit even if the fleet is later disabled.
 Raw reviewer, consolidator, and certifier messages are never streamed into

@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
 
-func runCodex(args []string, scenario *Scenario) int {
-	prompt := extractCodexPrompt(args)
+func runCodex(args []string, stdin io.Reader, scenario *Scenario) int {
+	prompt, err := readCodexPrompt(args, stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fakeagent: codex stdin: %v\n", err)
+		return 1
+	}
 	logInvocation("codex", prompt, args)
 
 	action := scenario.Match(prompt)
@@ -76,6 +81,18 @@ func runCodex(args []string, scenario *Scenario) int {
 		},
 	})
 	return 0
+}
+
+func readCodexPrompt(args []string, stdin io.Reader) (string, error) {
+	prompt := extractCodexPrompt(args)
+	if prompt != "-" {
+		return prompt, nil
+	}
+	body, err := io.ReadAll(stdin)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
 }
 
 // patchCodexFixture rewrites the agent_message item's text body to
@@ -198,6 +215,10 @@ func extractCodexPrompt(args []string) string {
 		a := args[i]
 		if flagsWithValues[a] {
 			i++
+			continue
+		}
+		if a == "-" {
+			positionals = append(positionals, a)
 			continue
 		}
 		if len(a) > 0 && a[0] == '-' {

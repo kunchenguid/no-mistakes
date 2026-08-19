@@ -436,6 +436,12 @@ type Config struct {
 	Test           Test
 	Document       Document
 	Review         Review
+	// AllowRepoCommands records the trusted default-branch decision that chose
+	// whether pushed commands and agent selection entered this effective
+	// configuration. The pipeline does not consult it after Merge, but fleet
+	// recovery fingerprints it so a restart cannot reinterpret the same pushed
+	// configuration under a different trust decision.
+	AllowRepoCommands bool
 	// DisableProjectSettings is the resolved, trusted-only opt-out (see the
 	// RepoConfig field). When true, gate agents are launched with their
 	// project-level settings/instructions suppressed; the daemon fails the run
@@ -1289,6 +1295,7 @@ func (c *Config) ReviewFleetCodexArgs(profile string, escalate bool) ([]string, 
 		"-c", `shell_environment_policy.inherit="core"`,
 		"--ignore-rules",
 		"--ignore-user-config",
+		"--skip-git-repo-check",
 	)
 	return args, nil
 }
@@ -1811,6 +1818,9 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		pushed = &RepoConfig{}
 	}
 	effective := *pushed
+	// Persist only the trusted decision supplied by the daemon. Never retain
+	// the pushed branch's copy of this security-sensitive field.
+	effective.AllowRepoCommands = allowRepoCommands
 	if trusted != nil {
 		effective.Document = trusted.Document
 		// review.path_instructions steers the gate agent that reviews the pushed
@@ -2400,17 +2410,18 @@ func Merge(global *GlobalConfig, repo *RepoConfig) *Config {
 		SessionReuse:         global.SessionReuse,
 		// Eval and ReviewFleet are global-only by design, so they are copied
 		// straight through with no repository override step.
-		Eval:           global.Eval,
-		ReviewFleet:    copyReviewFleet(global.ReviewFleet),
-		Commands:       repo.Commands,
-		IgnorePatterns: repo.IgnorePatterns,
-		AutoFix:        af,
-		CI:             ci,
-		Commit:         commit,
-		Intent:         intent,
-		Test:           test,
-		Document:       Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
-		Review:         Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
+		Eval:              global.Eval,
+		ReviewFleet:       copyReviewFleet(global.ReviewFleet),
+		Commands:          repo.Commands,
+		IgnorePatterns:    repo.IgnorePatterns,
+		AutoFix:           af,
+		CI:                ci,
+		Commit:            commit,
+		Intent:            intent,
+		Test:              test,
+		Document:          Document{Instructions: strings.TrimSpace(repo.Document.Instructions)},
+		Review:            Review{PathInstructions: resolvePathInstructions(repo.Review.PathInstructions)},
+		AllowRepoCommands: repo.AllowRepoCommands,
 		// repo is the EffectiveRepoConfig result, so this value is already
 		// trusted-only (EffectiveRepoConfig sourced it from the trusted copy).
 		DisableProjectSettings: repo.DisableProjectSettings,

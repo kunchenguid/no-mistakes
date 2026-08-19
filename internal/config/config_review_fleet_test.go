@@ -271,6 +271,7 @@ func TestReviewFleetCodexArgsAreColdReadOnlyAndPreserveSafeOverrides(t *testing.
 		"-c", `shell_environment_policy.inherit="core"`,
 		"--ignore-rules",
 		"--ignore-user-config",
+		"--skip-git-repo-check",
 	}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("fleet args = %#v, want %#v", args, want)
