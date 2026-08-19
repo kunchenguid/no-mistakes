@@ -197,9 +197,6 @@ func finalizeWorktreeForCertification(sctx *pipeline.StepContext) (string, error
 		if err != nil {
 			return "", fmt.Errorf("resolve head after certification finalization: %w", err)
 		}
-		if err := assertPipelineHeadContinuity(sctx, types.StepCertify); err != nil {
-			return "", err
-		}
 		if err := assertCleanExactHead(sctx, head, "certification finalization commit"); err != nil {
 			return "", err
 		}

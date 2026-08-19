@@ -155,8 +155,12 @@ func commitAgentFixes(sctx *pipeline.StepContext, stepName types.StepName, summa
 	if err != nil {
 		return fmt.Errorf("resolve head after %s commit: %w", stepName, err)
 	}
-	if err := assertPipelineHeadContinuity(sctx, stepName); err != nil {
-		return err
+	currentHead, err := git.HeadSHA(ctx, sctx.WorkDir)
+	if err != nil {
+		return fmt.Errorf("verify head after %s commit: %w", stepName, err)
+	}
+	if currentHead != headSHA {
+		return fmt.Errorf("refusing to record %s fix: worktree HEAD changed from %s to %s", stepName, headSHA, currentHead)
 	}
 	ref := normalizedBranchRef(sctx.Run.Branch)
 	if _, err := git.Run(ctx, sctx.WorkDir, "update-ref", ref, headSHA); err != nil {

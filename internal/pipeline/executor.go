@@ -1462,6 +1462,18 @@ func (e *Executor) reconcileTerminalRunHead(run *db.Run) (string, bool) {
 	if observed == "" {
 		return "", false
 	}
+	if recordedRun.ReviewFleetEnabled {
+		if recordedRun.CertifiedHeadSHA == nil || observed != strings.TrimSpace(*recordedRun.CertifiedHeadSHA) {
+			slog.Warn("fleet worktree head is not the certified head before terminalization", "run", run.ID)
+			return "", false
+		}
+		status, err := git.Run(ctx, e.workDir, "status", "--porcelain")
+		if err != nil || strings.TrimSpace(status) != "" {
+			slog.Warn("fleet worktree is not clean before terminalization", "run", run.ID, "error", err)
+			return "", false
+		}
+		return observed, true
+	}
 	if observed == recorded {
 		return recorded, true
 	}
