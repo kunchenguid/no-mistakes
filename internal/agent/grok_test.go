@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -51,6 +53,52 @@ func TestGrokAgentBuildArgsPreservesExplicitModelOverrideAndResume(t *testing.T)
 	if grokArgsContain(args, "--system-prompt-override") {
 		t.Fatalf("project instruction override must be opt-in policy only: %v", args)
 	}
+}
+
+func TestGrokAgentPassesInvocationEnvironmentToProcess(t *testing.T) {
+	observationPath := filepath.Join(t.TempDir(), "environment")
+	a := newGrokEnvHelperAgent(t)
+
+	_, err := a.runOnce(context.Background(), RunOpts{
+		Prompt: "report environment",
+		CWD:    t.TempDir(),
+		Env: []string{
+			"NM_GROK_ENV_HELPER=run",
+			"NM_GROK_ENV_OBSERVATION=" + observationPath,
+			"NM_GROK_INVOCATION_VALUE=present",
+		},
+	})
+	if err != nil {
+		t.Fatalf("runOnce: %v", err)
+	}
+
+	got, err := os.ReadFile(observationPath)
+	if err != nil {
+		t.Fatalf("read environment observation: %v", err)
+	}
+	if string(got) != "present" {
+		t.Fatalf("invocation environment = %q, want present", got)
+	}
+}
+
+func newGrokEnvHelperAgent(t *testing.T) *grokAgent {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("current test executable: %v", err)
+	}
+	return &grokAgent{bin: exe, extraArgs: []string{"-test.run=^TestGrokEnvHelper$", "--"}}
+}
+
+func TestGrokEnvHelper(t *testing.T) {
+	if os.Getenv("NM_GROK_ENV_HELPER") != "run" {
+		return
+	}
+	if err := os.WriteFile(os.Getenv("NM_GROK_ENV_OBSERVATION"), []byte(os.Getenv("NM_GROK_INVOCATION_VALUE")), 0o644); err != nil {
+		os.Exit(2)
+	}
+	_, _ = os.Stdout.WriteString(`{"type":"result","subtype":"success","is_error":false,"result":"done"}` + "\n")
+	os.Exit(0)
 }
 
 func TestGrokAgentNeutralizationFailsClosedUntilEmpiricallyVerified(t *testing.T) {
